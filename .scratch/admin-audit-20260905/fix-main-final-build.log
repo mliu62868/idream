@@ -1,0 +1,277 @@
+@idream/main build: $ bun --bun prisma generate
+@idream/main build: Loaded Prisma config from prisma.config.ts.
+@idream/main build: 
+@idream/main build: Prisma schema loaded from prisma/schema.prisma.
+@idream/main build: 
+@idream/main build: ✔ Generated Prisma Client (v7.6.0) to ./../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client in 319ms
+@idream/main build: 
+@idream/main build: Start by importing your Prisma Client (See: https://pris.ly/d/importing-client)
+@idream/main build: 
+@idream/main build: 
+@idream/main build: $ bun ../../scripts/build-bun-service.mjs src/processes/finalizer.ts src/processes/event-consumer.ts src/processes/admin-command-worker.ts
+@idream/main build: ▲ Next.js 16.2.1 (Turbopack)
+@idream/main build: - Environments: .env
+@idream/main build: - Experiments (use with caution):
+@idream/main build:   ⨯ isrFlushToDisk
+@idream/main build: 
+@idream/main build:   Creating an optimized production build ...
+@idream/main build: ✓ Compiled successfully in 16.9s
+@idream/main build:   Running TypeScript ...
+@idream/main build:   Finished TypeScript in 22.7s ...
+@idream/main build:   Collecting page data using 15 workers ...
+@idream/main build:   Generating static pages using 15 workers (0/49) ...
+@idream/main build:   Generating static pages using 15 workers (12/49) 
+@idream/main build:   Generating static pages using 15 workers (24/49) 
+@idream/main build:   Generating static pages using 15 workers (36/49) 
+@idream/main build: ✓ Generating static pages using 15 workers (49/49) in 468ms
+@idream/main build:   Finalizing page optimization ...
+@idream/main build: 
+@idream/main build: Route (app)                                                                       Revalidate  Expire
+@idream/main build: ┌ ○ /
+@idream/main build: ├ ○ /_not-found
+@idream/main build: ├ ƒ /[...slug]                                                                            1m      1y
+@idream/main build: ├ ● /[...slug]                                                                            1m      1y
+@idream/main build: │ ├ /chat                                                                                 1m      1y
+@idream/main build: │ ├ /create                                                                               1m      1y
+@idream/main build: │ ├ /generate                                                                             1m      1y
+@idream/main build: │ └ [+32 more paths]
+@idream/main build: ├ ƒ /age-verification/return
+@idream/main build: ├ ƒ /api/admin-auth/[action]
+@idream/main build: ├ ƒ /api/auth/[...all]
+@idream/main build: ├ ƒ /api/internal/admin/slo-readiness
+@idream/main build: ├ ƒ /api/internal/chat/tool-effects
+@idream/main build: ├ ƒ /api/internal/chat/turns/terminal
+@idream/main build: ├ ƒ /api/internal/events/account-erasure-completion-v2/ingest
+@idream/main build: ├ ƒ /api/internal/events/ingest
+@idream/main build: ├ ƒ /api/internal/experiments/[key]/assignment
+@idream/main build: ├ ƒ /api/internal/experiments/exposure
+@idream/main build: ├ ƒ /api/internal/generation/terminal-records/ingest
+@idream/main build: ├ ƒ /api/internal/generation/transports
+@idream/main build: ├ ƒ /api/internal/metrics
+@idream/main build: ├ ƒ /api/internal/worker
+@idream/main build: ├ ƒ /api/v1/[...resource]
+@idream/main build: ├ ƒ /api/v2/admin/analytics/export
+@idream/main build: ├ ƒ /api/v2/admin/analytics/flag-monitoring
+@idream/main build: ├ ƒ /api/v2/admin/analytics/overview
+@idream/main build: ├ ƒ /api/v2/admin/analytics/retention
+@idream/main build: ├ ƒ /api/v2/admin/announcements
+@idream/main build: ├ ƒ /api/v2/admin/announcements/[id]
+@idream/main build: ├ ƒ /api/v2/admin/approvals
+@idream/main build: ├ ƒ /api/v2/admin/approvals/[id]/approve
+@idream/main build: ├ ƒ /api/v2/admin/approvals/[id]/reject
+@idream/main build: ├ ƒ /api/v2/admin/assets
+@idream/main build: ├ ƒ /api/v2/admin/assets/[id]
+@idream/main build: ├ ƒ /api/v2/admin/assets/bulk
+@idream/main build: ├ ƒ /api/v2/admin/assets/bulk/preflight
+@idream/main build: ├ ƒ /api/v2/admin/audit-log
+@idream/main build: ├ ƒ /api/v2/admin/billing/adjustments
+@idream/main build: ├ ƒ /api/v2/admin/billing/ledger
+@idream/main build: ├ ƒ /api/v2/admin/billing/reconciliation
+@idream/main build: ├ ƒ /api/v2/admin/billing/reconciliation/[id]/resolve
+@idream/main build: ├ ƒ /api/v2/admin/billing/subscriptions
+@idream/main build: ├ ƒ /api/v2/admin/billing/subscriptions/[id]/refund
+@idream/main build: ├ ƒ /api/v2/admin/billing/subscriptions/[id]/refund/reconcile
+@idream/main build: ├ ƒ /api/v2/admin/bootstrap
+@idream/main build: ├ ƒ /api/v2/admin/cases
+@idream/main build: ├ ƒ /api/v2/admin/cases/[id]
+@idream/main build: ├ ƒ /api/v2/admin/cases/[id]/actions
+@idream/main build: ├ ƒ /api/v2/admin/cases/[id]/assignment
+@idream/main build: ├ ƒ /api/v2/admin/cases/[id]/commands/close
+@idream/main build: ├ ƒ /api/v2/admin/cases/[id]/commands/reopen
+@idream/main build: ├ ƒ /api/v2/admin/cases/[id]/commands/wait
+@idream/main build: ├ ƒ /api/v2/admin/cases/[id]/decisions
+@idream/main build: ├ ƒ /api/v2/admin/cases/[id]/verification
+@idream/main build: ├ ƒ /api/v2/admin/cases/backfill
+@idream/main build: ├ ƒ /api/v2/admin/cases/backfill/customer
+@idream/main build: ├ ƒ /api/v2/admin/characters
+@idream/main build: ├ ƒ /api/v2/admin/characters/[id]
+@idream/main build: ├ ƒ /api/v2/admin/characters/[id]/commands/pause
+@idream/main build: ├ ƒ /api/v2/admin/characters/[id]/commands/restore
+@idream/main build: ├ ƒ /api/v2/admin/characters/[id]/commands/resume
+@idream/main build: ├ ƒ /api/v2/admin/characters/[id]/commands/retire
+@idream/main build: ├ ƒ /api/v2/admin/characters/[id]/draft-image
+@idream/main build: ├ ƒ /api/v2/admin/characters/[id]/identity-bootstrap
+@idream/main build: ├ ƒ /api/v2/admin/characters/[id]/image-readiness/repair
+@idream/main build: ├ ƒ /api/v2/admin/characters/[id]/image-sources
+@idream/main build: ├ ƒ /api/v2/admin/characters/[id]/image-sources/[assetId]/reviews
+@idream/main build: ├ ƒ /api/v2/admin/characters/[id]/looks/[lookId]
+@idream/main build: ├ ƒ /api/v2/admin/characters/[id]/project
+@idream/main build: ├ ƒ /api/v2/admin/characters/[id]/reference-sets
+@idream/main build: ├ ƒ /api/v2/admin/characters/[id]/releases
+@idream/main build: ├ ƒ /api/v2/admin/characters/[id]/releases/[releaseId]/commands/publish
+@idream/main build: ├ ƒ /api/v2/admin/characters/[id]/releases/[releaseId]/commands/rollback
+@idream/main build: ├ ƒ /api/v2/admin/characters/[id]/releases/[releaseId]/commands/withdraw
+@idream/main build: ├ ƒ /api/v2/admin/characters/[id]/releases/[releaseId]/monitors/[window]/refresh
+@idream/main build: ├ ƒ /api/v2/admin/characters/[id]/soul/versions
+@idream/main build: ├ ƒ /api/v2/admin/characters/[id]/video-sources
+@idream/main build: ├ ƒ /api/v2/admin/characters/[id]/voice-clips/[requestId]/commands/reclaim
+@idream/main build: ├ ƒ /api/v2/admin/characters/[id]/voice-clones
+@idream/main build: ├ ƒ /api/v2/admin/characters/[id]/voice-defaults/reset
+@idream/main build: ├ ƒ /api/v2/admin/characters/[id]/voice-presets
+@idream/main build: ├ ƒ /api/v2/admin/characters/[id]/voice-profiles/[profileId]/activate
+@idream/main build: ├ ƒ /api/v2/admin/characters/performance/backfill
+@idream/main build: ├ ƒ /api/v2/admin/characters/performance/reconciliation
+@idream/main build: ├ ƒ /api/v2/admin/characters/portfolio
+@idream/main build: ├ ƒ /api/v2/admin/characters/route-qualifications/commands/evaluate
+@idream/main build: ├ ƒ /api/v2/admin/chat/main-outbox-events
+@idream/main build: ├ ƒ /api/v2/admin/chat/main-outbox-events/commands/discard-target-missing
+@idream/main build: ├ ƒ /api/v2/admin/chat/main-outbox-events/commands/replay
+@idream/main build: ├ ƒ /api/v2/admin/chat/moderation-events
+@idream/main build: ├ ƒ /api/v2/admin/chat/overview
+@idream/main build: ├ ƒ /api/v2/admin/chat/provider-health
+@idream/main build: ├ ƒ /api/v2/admin/chat/sessions
+@idream/main build: ├ ƒ /api/v2/admin/chat/sessions/[sessionId]/commands/migrate-release
+@idream/main build: ├ ƒ /api/v2/admin/chat/usage
+@idream/main build: ├ ƒ /api/v2/admin/cms/page
+@idream/main build: ├ ƒ /api/v2/admin/cms/pages
+@idream/main build: ├ ƒ /api/v2/admin/cms/pages/publish
+@idream/main build: ├ ƒ /api/v2/admin/collaboration/[targetType]/[targetId]/activity
+@idream/main build: ├ ƒ /api/v2/admin/collaboration/[targetType]/[targetId]/watch
+@idream/main build: ├ ƒ /api/v2/admin/collaboration/mentions
+@idream/main build: ├ ƒ /api/v2/admin/commands/[commandId]
+@idream/main build: ├ ƒ /api/v2/admin/compliance/age-verifications
+@idream/main build: ├ ƒ /api/v2/admin/compliance/age-verifications/[id]/override
+@idream/main build: ├ ƒ /api/v2/admin/compliance/users/[id]/erase
+@idream/main build: ├ ƒ /api/v2/admin/compliance/users/[id]/export
+@idream/main build: ├ ƒ /api/v2/admin/content/character-assist
+@idream/main build: ├ ƒ /api/v2/admin/content/characters
+@idream/main build: ├ ƒ /api/v2/admin/content/characters/[id]
+@idream/main build: ├ ƒ /api/v2/admin/content/characters/[id]/chat-tools
+@idream/main build: ├ ƒ /api/v2/admin/content/characters/[id]/status
+@idream/main build: ├ ƒ /api/v2/admin/content/characters/[id]/tags
+@idream/main build: ├ ƒ /api/v2/admin/content/characters/[id]/visibility
+@idream/main build: ├ ƒ /api/v2/admin/content/characters/[id]/visual-profiles
+@idream/main build: ├ ƒ /api/v2/admin/content/featured
+@idream/main build: ├ ƒ /api/v2/admin/content/official
+@idream/main build: ├ ƒ /api/v2/admin/content/official/[id]
+@idream/main build: ├ ƒ /api/v2/admin/content/official/[id]/state
+@idream/main build: ├ ƒ /api/v2/admin/content/placements
+@idream/main build: ├ ƒ /api/v2/admin/content/placements/[id]
+@idream/main build: ├ ƒ /api/v2/admin/content/production/directions
+@idream/main build: ├ ƒ /api/v2/admin/content/production/estimate
+@idream/main build: ├ ƒ /api/v2/admin/content/review-queue
+@idream/main build: ├ ƒ /api/v2/admin/content/review-queue/[id]/decision
+@idream/main build: ├ ƒ /api/v2/admin/content/tags
+@idream/main build: ├ ƒ /api/v2/admin/content/tags/[id]
+@idream/main build: ├ ƒ /api/v2/admin/content/tags/merge
+@idream/main build: ├ ƒ /api/v2/admin/content/templates
+@idream/main build: ├ ƒ /api/v2/admin/content/templates/[id]
+@idream/main build: ├ ƒ /api/v2/admin/content/templates/[id]/active
+@idream/main build: ├ ƒ /api/v2/admin/creative/run-options
+@idream/main build: ├ ƒ /api/v2/admin/creative/runs
+@idream/main build: ├ ƒ /api/v2/admin/creative/runs/[id]
+@idream/main build: ├ ƒ /api/v2/admin/creative/runs/[id]/commands/attach-incident
+@idream/main build: ├ ƒ /api/v2/admin/creative/runs/[id]/commands/retry-failed
+@idream/main build: ├ ƒ /api/v2/admin/creative/runs/[id]/items/[itemId]/decisions
+@idream/main build: ├ ƒ /api/v2/admin/creative/runs/[id]/placements
+@idream/main build: ├ ƒ /api/v2/admin/creative/runs/[id]/placements/[placementId]/verification
+@idream/main build: ├ ƒ /api/v2/admin/creative/runs/[id]/placements/[placementId]/withdrawal
+@idream/main build: ├ ƒ /api/v2/admin/customers
+@idream/main build: ├ ƒ /api/v2/admin/customers/[id]
+@idream/main build: ├ ƒ /api/v2/admin/dashboard
+@idream/main build: ├ ƒ /api/v2/admin/experiments
+@idream/main build: ├ ƒ /api/v2/admin/experiments/[id]
+@idream/main build: ├ ƒ /api/v2/admin/experiments/[id]/analysis
+@idream/main build: ├ ƒ /api/v2/admin/experiments/[id]/commands/start
+@idream/main build: ├ ƒ /api/v2/admin/experiments/[id]/commands/stop
+@idream/main build: ├ ƒ /api/v2/admin/feature-flags
+@idream/main build: ├ ƒ /api/v2/admin/feature-flags/[key]
+@idream/main build: ├ ƒ /api/v2/admin/generation/backends
+@idream/main build: ├ ƒ /api/v2/admin/generation/dead-letter
+@idream/main build: ├ ƒ /api/v2/admin/generation/dead-letter/[id]/commands/discard
+@idream/main build: ├ ƒ /api/v2/admin/generation/dead-letter/[id]/commands/requeue
+@idream/main build: ├ ƒ /api/v2/admin/generation/dead-letter/commands/discard
+@idream/main build: ├ ƒ /api/v2/admin/generation/dead-letter/commands/requeue
+@idream/main build: ├ ƒ /api/v2/admin/generation/metrics
+@idream/main build: ├ ƒ /api/v2/admin/generation/model-imports
+@idream/main build: ├ ƒ /api/v2/admin/generation/model-imports/commands/register
+@idream/main build: ├ ƒ /api/v2/admin/generation/model-imports/commands/upload
+@idream/main build: ├ ƒ /api/v2/admin/generation/model-profiles
+@idream/main build: ├ ƒ /api/v2/admin/generation/model-profiles/[id]
+@idream/main build: ├ ƒ /api/v2/admin/generation/model-profiles/[id]/commands/dry-run
+@idream/main build: ├ ƒ /api/v2/admin/generation/model-profiles/[id]/commands/publish
+@idream/main build: ├ ƒ /api/v2/admin/generation/model-profiles/[id]/commands/rollback
+@idream/main build: ├ ƒ /api/v2/admin/generation/model-profiles/[id]/commands/test-job
+@idream/main build: ├ ƒ /api/v2/admin/generation/model-profiles/[id]/health
+@idream/main build: ├ ƒ /api/v2/admin/generation/presets
+@idream/main build: ├ ƒ /api/v2/admin/generation/presets/[id]
+@idream/main build: ├ ƒ /api/v2/admin/generation/recipes
+@idream/main build: ├ ƒ /api/v2/admin/generation/recipes/[id]
+@idream/main build: ├ ƒ /api/v2/admin/generation/recipes/[id]/commands/publish
+@idream/main build: ├ ƒ /api/v2/admin/generation/recipes/[id]/commands/rollback
+@idream/main build: ├ ƒ /api/v2/admin/generation/requests/[id]/commands/cancel
+@idream/main build: ├ ƒ /api/v2/admin/generation/workflows
+@idream/main build: ├ ƒ /api/v2/admin/generation/workflows/[id]
+@idream/main build: ├ ƒ /api/v2/admin/incidents
+@idream/main build: ├ ƒ /api/v2/admin/incidents/[id]
+@idream/main build: ├ ƒ /api/v2/admin/incidents/[id]/action-plans/[planId]/execute
+@idream/main build: ├ ƒ /api/v2/admin/incidents/[id]/action-plans/preview
+@idream/main build: ├ ƒ /api/v2/admin/incidents/[id]/commands/close
+@idream/main build: ├ ƒ /api/v2/admin/incidents/[id]/commands/merge
+@idream/main build: ├ ƒ /api/v2/admin/incidents/[id]/commands/resolve
+@idream/main build: ├ ƒ /api/v2/admin/incidents/[id]/commands/split
+@idream/main build: ├ ƒ /api/v2/admin/incidents/[id]/verification
+@idream/main build: ├ ƒ /api/v2/admin/incidents/backfill
+@idream/main build: ├ ƒ /api/v2/admin/incidents/correlation-outbox
+@idream/main build: ├ ƒ /api/v2/admin/incidents/correlation-outbox/commands/discard-attempt-missing
+@idream/main build: ├ ƒ /api/v2/admin/incidents/correlation-outbox/commands/replay
+@idream/main build: ├ ƒ /api/v2/admin/jobs
+@idream/main build: ├ ƒ /api/v2/admin/jobs/[id]
+@idream/main build: ├ ƒ /api/v2/admin/jobs/[id]/commands/reconcile-unknown
+@idream/main build: ├ ƒ /api/v2/admin/jobs/[id]/commands/retry
+@idream/main build: ├ ƒ /api/v2/admin/metrics
+@idream/main build: ├ ƒ /api/v2/admin/metrics/quality
+@idream/main build: ├ ƒ /api/v2/admin/metrics/reconciliation
+@idream/main build: ├ ƒ /api/v2/admin/moderation/appeals/[id]/decision
+@idream/main build: ├ ƒ /api/v2/admin/moderation/media/[id]/decision
+@idream/main build: ├ ƒ /api/v2/admin/moderation/queue
+@idream/main build: ├ ƒ /api/v2/admin/moderation/reports/[id]/decision
+@idream/main build: ├ ƒ /api/v2/admin/mutation-receipts/reconcile
+@idream/main build: ├ ƒ /api/v2/admin/ops/providers
+@idream/main build: ├ ƒ /api/v2/admin/pricing/rules
+@idream/main build: ├ ƒ /api/v2/admin/pricing/rules/[id]
+@idream/main build: ├ ƒ /api/v2/admin/pricing/rules/[id]/publish
+@idream/main build: ├ ƒ /api/v2/admin/pricing/rules/[id]/rollback
+@idream/main build: ├ ƒ /api/v2/admin/promo/redeem-codes
+@idream/main build: ├ ƒ /api/v2/admin/promo/redeem-codes/[id]/disable
+@idream/main build: ├ ƒ /api/v2/admin/promo/referrals
+@idream/main build: ├ ƒ /api/v2/admin/reconciliation/invariants
+@idream/main build: ├ ƒ /api/v2/admin/risk/abuse
+@idream/main build: ├ ƒ /api/v2/admin/saved-views
+@idream/main build: ├ ƒ /api/v2/admin/saved-views/[id]
+@idream/main build: ├ ƒ /api/v2/admin/search
+@idream/main build: ├ ƒ /api/v2/admin/support/feedback
+@idream/main build: ├ ƒ /api/v2/admin/support/feedback/[id]
+@idream/main build: ├ ƒ /api/v2/admin/support/plaintext/view
+@idream/main build: ├ ƒ /api/v2/admin/support/requests
+@idream/main build: ├ ƒ /api/v2/admin/support/requests/[id]
+@idream/main build: ├ ƒ /api/v2/admin/support/requests/[id]/escalate
+@idream/main build: ├ ƒ /api/v2/admin/today
+@idream/main build: ├ ƒ /api/v2/admin/today/all-work
+@idream/main build: ├ ƒ /api/v2/admin/today/claim
+@idream/main build: ├ ƒ /api/v2/admin/today/preferences
+@idream/main build: ├ ƒ /api/v2/admin/users
+@idream/main build: ├ ƒ /api/v2/admin/users/[id]
+@idream/main build: ├ ƒ /api/v2/admin/users/[id]/grant-bundles
+@idream/main build: ├ ƒ /api/v2/admin/users/[id]/grant-bundles/[bundleKey]
+@idream/main build: ├ ƒ /api/v2/admin/users/[id]/permissions
+@idream/main build: ├ ƒ /api/v2/admin/users/[id]/role
+@idream/main build: ├ ƒ /api/v2/admin/users/[id]/status
+@idream/main build: ├ ƒ /api/v2/admin/voice-defaults
+@idream/main build: ├ ƒ /api/v2/admin/voice-defaults/preview
+@idream/main build: ├ ƒ /characters/[id]
+@idream/main build: ├ ƒ /chat/[sessionId]
+@idream/main build: ├ ƒ /creators/[id]
+@idream/main build: ├ ○ /explore
+@idream/main build: ├ ƒ /internal-preview/characters/[token]
+@idream/main build: ├ ○ /robots.txt
+@idream/main build: ├ ƒ /sitemap.xml
+@idream/main build: └ ƒ /user-content/[id]/[filename]
+@idream/main build: 
+@idream/main build: 
+@idream/main build: ○  (Static)   prerendered as static content
+@idream/main build: ●  (SSG)      prerendered as static HTML (uses generateStaticParams)
+@idream/main build: ƒ  (Dynamic)  server-rendered on demand
+@idream/main build: 
+@idream/main build: {"packagePath":"packages/main","releaseId":"idream-658871ea-5524-44f4-91e1-1efe0b4df552","buildId":"build-TfctsWXpff2fKS","deploymentId":"idream-658871ea-5524-44f4-91e1-1efe0b4df552","releaseDir":"/Users/kk/code/idream/packages/main/.next-runtime/releases/idream-658871ea-5524-44f4-91e1-1efe0b4df552"}
+@idream/main build: Exited with code 0

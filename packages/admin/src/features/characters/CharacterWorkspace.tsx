@@ -385,7 +385,7 @@ function CharacterDetail({
     }) => {
       if (
         !journal.beginSubmission(
-          `${input.action} is being committed. Character writes stay locked until the authoritative workspace refreshes.`,
+          t("Saving your changes and updating the character. Please wait before making another change."),
         )
       ) {
         throw new Error(
@@ -407,7 +407,7 @@ function CharacterDetail({
       );
       return { result, refreshed };
     },
-    [journal, refreshCommittedProjection],
+    [journal, refreshCommittedProjection, t],
   );
   const reclaimVoiceRequest = useCallback(
     async (input: {
@@ -701,11 +701,11 @@ function CharacterDetail({
             role="status"
           >
             <p className="font-semibold">
-              {t("Approved · awaiting publication preparation")}
+              {t("Awaiting publication preparation")}
             </p>
             <p className="mt-2">
               {t(
-                "Prepare this approved Character for publishing. Nothing is published or made public yet.",
+                "Prepare this Character for publishing. Automatic checks run first; nothing is published yet.",
               )}
             </p>
             {error ? (
@@ -1143,9 +1143,6 @@ function CharacterDetail({
                 guardedPermissions.writeProject
               }
               canReview={guardedPermissions.reviewAssets}
-              canReviewImported={
-                guardedPermissions.reviewAssets && guardedPermissions.writeProject
-              }
               canRead={permissions.readImages}
               canReadProduction={permissions.readProduction}
               commitProjectMutation={runCommittedMutation}
@@ -1255,6 +1252,7 @@ export function CharacterWorkspace({
     />
   ) : (
     <CharacterPortfolio
+      canReadUnprepared={permissions.readContent}
       canOpenAssets={permissions.readImages}
       canCreate={permissions.writeProject}
       canOpenProjects={permissions.read}

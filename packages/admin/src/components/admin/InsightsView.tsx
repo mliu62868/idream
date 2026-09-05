@@ -59,19 +59,13 @@ function RetentionSection() {
         <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--ad-yellow-text)]" />
         <div>
           <h2 className="text-sm font-semibold text-[var(--ad-yellow-text)]">
-            {t("No funnel or cohort series exists behind this page")}
+            {t("Funnel and retention data are unavailable")}
           </h2>
           <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">
-            {t("This is a contract gap, not a rendering gap: the authority this page reads returns generation health only. Nothing is being hidden from you — there is no funnel or retention series to show, and none is invented here.")}
-          </p>
-          <p className="mt-3 text-xs font-semibold text-[var(--ad-yellow-text)]">
-            {t("D1 / D7 retention · invalid for decisions")}
-          </p>
-          <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">
-            {t("Legacy v1 measures any activity inside cumulative 1/7-day windows, not exact calendar-day return. Values and export are unavailable until Metric Registry v2 is certified.")}
+            {t("View generation health and check model configuration below.")}
           </p>
           <p className="mt-3 text-xs leading-5 text-[var(--ad-text-muted)]">
-            {t("What this page can answer today is below: per-profile generation health, and a configuration check that never calls a provider.")}
+            {t("D1 / D7 retention values and exports remain unavailable until the metric definitions are verified.")}
           </p>
         </div>
       </div>

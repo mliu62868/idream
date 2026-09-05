@@ -577,7 +577,7 @@ describe("Character operator workspace", () => {
       const checks = new Map(evaluation.checks.map((check) => [check.key, check]));
 
       expect(checks.get("release_assets_customer_publishable")?.passed).toBe(true);
-      expect(checks.get("release_asset_review_authority")?.passed).toBe(true);
+      expect(checks.get("release_asset_source_authority")?.passed).toBe(true);
       expect(checks.get("release_asset_generation_authority")?.passed).toBe(true);
     } finally {
       await prisma.creativeReviewDecision.deleteMany({

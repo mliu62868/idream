@@ -1,11 +1,6 @@
-import { adminRouteMetadata, renderAdminRoute, type AdminSearchParams } from "../../_server/render-admin-route";
+import { redirect } from "next/navigation";
 
-export const dynamic = "force-dynamic";
-export const runtime = "nodejs";
-export function generateMetadata() {
-  return adminRouteMetadata("Character Review");
-}
-
-export default function CharacterReviewPage({ searchParams }: { searchParams: AdminSearchParams }) {
-  return renderAdminRoute(["characters", "review"], searchParams);
+// 保留旧书签的明确去向，日常角色流程不再包含人工审核队列。
+export default function CharacterReviewPage() {
+  redirect("/admin/characters");
 }

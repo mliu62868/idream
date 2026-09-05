@@ -1,0 +1,16 @@
+{
+  "checkedAt": "2026-09-05T11:02:13Z",
+  "page": "http://127.0.0.1:3001/admin/characters/501f68d9-41ef-4f8e-bc39-ea14a88ee142?tab=video",
+  "jobId": "cmto7v8sk0003r4l7pdckcrua",
+  "attemptId": "cmto7v8te0006r4l7jegh5zzv",
+  "providerRequestId": "e93cbb3d-4e58-43fa-a90c-5f2284a16947",
+  "assetId": "media_unknown_eed5b98b6c4ad0fdfa32891af2c68872",
+  "duration": 5.041667,
+  "currentTime": 5.041667,
+  "ended": true,
+  "readyState": 4,
+  "error": null,
+  "viewport": { "width": 390, "height": 844 },
+  "documentOverflow": false,
+  "visualInspection": "Chrome screenshot inspected: same adult Rowan identity, slight smile and eyes closed at final frame; private library contains new and prior video."
+}

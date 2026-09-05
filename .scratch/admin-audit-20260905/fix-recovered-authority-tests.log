@@ -1,0 +1,62 @@
+@idream/main test: 
+@idream/main test:  RUN  v4.1.9 /Users/kk/code/idream/packages/main
+@idream/main test: 
+@idream/main test: Loaded Prisma config from prisma.config.ts.
+@idream/main test: 
+@idream/main test: Prisma schema loaded from prisma/schema.prisma.
+@idream/main test: Datasource "db": PostgreSQL database "idream_test", schema "public" at "localhost:5433"
+@idream/main test: 
+@idream/main test: 🚀  Your database is now in sync with your Prisma schema. Done in 4.08s
+@idream/main test: 
+@idream/main test: Loaded Prisma config from prisma.config.ts.
+@idream/main test: 
+@idream/main test: Prisma schema loaded from prisma/schema.prisma.
+@idream/main test: 
+@idream/main test: ✔ Generated Prisma Client (v7.6.0) to ./../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client in 619ms
+@idream/main test: 
+@idream/main test: Start by importing your Prisma Client (See: https://pris.ly/d/importing-client)
+@idream/main test: 
+@idream/main test: 
+@idream/main test: [seed] complete
+@idream/main test:  ❯ src/server/modules/admin-v2/characters/release-historical-image-authority.integration.test.ts (6 tests | 1 failed) 1293ms
+@idream/main test:      × accepts the exact adopted unknown Artifact and rejects a changed resolution Receipt 148ms
+@idream/main test: 
+@idream/main test: ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+@idream/main test: 
+@idream/main test:  FAIL  src/server/modules/admin-v2/characters/release-historical-image-authority.integration.test.ts > Release historical image authority > accepts the exact adopted unknown Artifact and rejects a changed resolution Receipt
+@idream/main test: AssertionError: expected AssertionError: release_asset_generation_… { …(3) } to be Error: recovered release fixture rollback // Object.is equality
+@idream/main test: 
+@idream/main test: - Expected
+@idream/main test: + Received
+@idream/main test: 
+@idream/main test: - Error {
+@idream/main test: -   "message": "recovered release fixture rollback",
+@idream/main test: + AssertionError {
+@idream/main test: +   "message": "release_asset_generation_authority: expected { …(3) } to match object { passed: true }
+@idream/main test: + (3 matching properties omitted from actual)",
+@idream/main test: +   "showDiff": true,
+@idream/main test: +   "expected": {
+@idream/main test: +     "passed": true,
+@idream/main test: +   },
+@idream/main test: +   "actual": {
+@idream/main test: +     "passed": false,
+@idream/main test: +   },
+@idream/main test:   }
+@idream/main test: 
+@idream/main test:  ❯ src/server/modules/admin-v2/characters/release-historical-image-authority.integration.test.ts:144:7
+@idream/main test:     142|       expect(invalid.checks.find((check) => check.key === "release_ass…
+@idream/main test:     143|       throw rollback;
+@idream/main test:     144|     })).rejects.toBe(rollback);
+@idream/main test:        |       ^
+@idream/main test:     145|   });
+@idream/main test:     146|
+@idream/main test: 
+@idream/main test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+@idream/main test: 
+@idream/main test: 
+@idream/main test:  Test Files  1 failed | 4 passed (5)
+@idream/main test:       Tests  1 failed | 44 passed (45)
+@idream/main test:    Start at  06:12:42
+@idream/main test:    Duration  19.22s (transform 1.33s, setup 0ms, import 4.28s, tests 3.72s, environment 0ms)
+@idream/main test: 
+@idream/main test: Exited with code 1

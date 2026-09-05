@@ -90,7 +90,7 @@ describe("CreateWorkspace identity confirmation", () => {
     vi.unstubAllGlobals();
   });
 
-  it("explains that unlisted sharing requires review and publication", async () => {
+  it("explains that unlisted sharing starts after publication", async () => {
     const key = draftStorageKeyForScope("user:creator-1");
     const saved = JSON.parse(window.localStorage.getItem(key)!);
     window.localStorage.setItem(key, JSON.stringify({
@@ -99,8 +99,8 @@ describe("CreateWorkspace identity confirmation", () => {
     }));
     await act(async () => root.render(createElement(CreateWorkspace)));
     await waitUntil(() => Boolean(container.querySelector('[data-testid="create-submit"]')));
-    expect(container.querySelector('[data-testid="create-submit"]')?.textContent).toContain("Submit for review");
-    expect(container.textContent).toContain("After review and publication, unlisted characters are reachable by direct link and stay out of Explore.");
+    expect(container.querySelector('[data-testid="create-submit"]')?.textContent).toContain("Save for sharing");
+    expect(container.textContent).toContain("After publication, unlisted characters are reachable by direct link and stay out of Explore.");
   });
 
   it("holds the selected identity and traits steady until confirmation finishes", async () => {

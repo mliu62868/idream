@@ -1,0 +1,54 @@
+@idream/admin build: ▲ Next.js 16.2.1 (Turbopack)
+@idream/admin build: - Environments: .env
+@idream/admin build: - Experiments (use with caution):
+@idream/admin build:   ⨯ isrFlushToDisk
+@idream/admin build: 
+@idream/admin build:   Creating an optimized production build ...
+@idream/admin build: ✓ Compiled successfully in 7.0s
+@idream/admin build:   Running TypeScript ...
+@idream/admin build:   Finished TypeScript in 9.7s ...
+@idream/admin build:   Collecting page data using 15 workers ...
+@idream/admin build:   Generating static pages using 15 workers (0/6) ...
+@idream/admin build:   Generating static pages using 15 workers (1/6) 
+@idream/admin build:   Generating static pages using 15 workers (2/6) 
+@idream/admin build:   Generating static pages using 15 workers (4/6) 
+@idream/admin build: ✓ Generating static pages using 15 workers (6/6) in 239ms
+@idream/admin build:   Finalizing page optimization ...
+@idream/admin build: 
+@idream/admin build: Route (app)
+@idream/admin build: ┌ ƒ /
+@idream/admin build: ├ ƒ /_not-found
+@idream/admin build: ├ ƒ /admin/[[...section]]
+@idream/admin build: ├ ƒ /admin/cases
+@idream/admin build: ├ ƒ /admin/cases/[id]
+@idream/admin build: ├ ƒ /admin/characters
+@idream/admin build: ├ ƒ /admin/characters/[id]
+@idream/admin build: ├ ƒ /admin/characters/new
+@idream/admin build: ├ ƒ /admin/characters/review
+@idream/admin build: ├ ƒ /admin/characters/starters
+@idream/admin build: ├ ƒ /admin/characters/taxonomy
+@idream/admin build: ├ ƒ /admin/creative/runs
+@idream/admin build: ├ ƒ /admin/creative/runs/[id]
+@idream/admin build: ├ ƒ /admin/ops/incidents
+@idream/admin build: ├ ƒ /admin/ops/incidents/[id]
+@idream/admin build: ├ ƒ /admin/ops/jobs
+@idream/admin build: ├ ƒ /admin/today
+@idream/admin build: ├ ƒ /api/admin-auth/[action]
+@idream/admin build: ├ ƒ /api/internal/metrics
+@idream/admin build: ├ ƒ /api/internal/slo-readiness
+@idream/admin build: ├ ƒ /api/v1/admin/[...resource]
+@idream/admin build: ├ ƒ /api/v2/admin/[...resource]
+@idream/admin build: ├ ƒ /api/v2/admin/metrics
+@idream/admin build: ├ ƒ /api/v2/admin/metrics/quality
+@idream/admin build: ├ ƒ /api/v2/admin/metrics/reconciliation
+@idream/admin build: ├ ƒ /api/v2/admin/today
+@idream/admin build: ├ ƒ /api/v2/admin/today/all-work
+@idream/admin build: └ ƒ /user-content/[id]/[filename]
+@idream/admin build: 
+@idream/admin build: 
+@idream/admin build: ƒ Proxy (Middleware)
+@idream/admin build: 
+@idream/admin build: ƒ  (Dynamic)  server-rendered on demand
+@idream/admin build: 
+@idream/admin build: {"packagePath":"packages/admin","releaseId":"idream-6a0f427d-9d22-4dfd-888d-b2ba41beb373","buildId":"build-TfctsWXpff2fKS","deploymentId":"idream-6a0f427d-9d22-4dfd-888d-b2ba41beb373","releaseDir":"/Users/kk/code/idream/packages/admin/.next-runtime/releases/idream-6a0f427d-9d22-4dfd-888d-b2ba41beb373"}
+@idream/admin build: Exited with code 0

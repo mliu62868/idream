@@ -200,11 +200,11 @@ describe("Visual Identity operator workbench", () => {
     expect(html).toContain("Archive Look");
     expect(html).toContain("Unchecked images leave runtime authority");
     expect(html).toContain("One image at a time");
-    expect(html).toContain("Every generation creates one candidate");
+    expect(html).toContain("Each generation creates one image");
     expect(html).toContain("Advanced identity controls");
     expect(html).toContain("Image generation route");
     expect(html).toContain("portrait");
-    expect(html).toContain("Operators create and review one image at a time");
+    expect(html).toContain("Generate one image at a time, compare results, and choose what to use");
     expect(html).not.toContain("Generate 40 route test images");
     expect(html).not.toContain("Batch IDs");
     expect(html.indexOf("Visual identity")).toBeLessThan(
@@ -305,7 +305,7 @@ describe("Visual Identity operator workbench", () => {
     );
 
     expect(html).toContain(
-      "Establish a reviewed portrait anchor in Character Assets",
+      "Choose the first identity portrait in the image library",
     );
     expect(html).toContain("Open Character Assets");
     expect(html).toMatch(/disabled=""[^>]*>Create &amp; activate version/);
@@ -337,7 +337,7 @@ describe("Visual Identity operator workbench", () => {
 
     expect(html).toContain("current Character image is available");
     expect(html).not.toContain(
-      "Establish a reviewed portrait anchor in Character Assets",
+      "Choose the first identity portrait in the image library",
     );
     expect(
       requiresReviewedIdentityBootstrap({

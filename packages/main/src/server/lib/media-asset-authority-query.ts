@@ -1,3 +1,4 @@
+import { resolveGenerationAssetSuccessAttempts } from "@/server/ai/generation-asset-success-authority";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { Errors } from "@/server/lib/errors";
 import {
@@ -38,25 +39,8 @@ export async function resolveMediaAssetAuthorityMap(
         select: { id: true, provider: true },
       })
     : [];
-  const attempts = sourceJobIds.length > 0
-    ? await db.generationAttempt.findMany({
-        where: {
-          requestId: { in: sourceJobIds },
-          status: "succeeded",
-        },
-        orderBy: [{ requestId: "asc" }, { attemptNo: "desc" }],
-        select: { requestId: true, provider: true },
-      })
-    : [];
-  const jobProviderById = new Map(
-    jobs.map((job) => [job.id, job.provider] as const),
-  );
-  const latestAttemptProviderByJobId = new Map<string, string | null>();
-  for (const attempt of attempts) {
-    if (!latestAttemptProviderByJobId.has(attempt.requestId)) {
-      latestAttemptProviderByJobId.set(attempt.requestId, attempt.provider);
-    }
-  }
+  const attemptsByAssetId = await resolveGenerationAssetSuccessAttempts(db, assets);
+  const jobProviderById = new Map(jobs.map((job) => [job.id, job.provider] as const));
 
   return new Map(
     assets.map((asset) => {
@@ -75,7 +59,7 @@ export async function resolveMediaAssetAuthorityMap(
               : null,
             jobProviderRequired: true,
             latestAttemptProvider: asset.sourceJobId
-              ? latestAttemptProviderByJobId.get(asset.sourceJobId) ?? null
+              ? attemptsByAssetId.get(asset.id)?.provider ?? null
               : null,
             latestAttemptProviderRequired: true,
           });

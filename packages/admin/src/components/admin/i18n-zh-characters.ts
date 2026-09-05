@@ -6,6 +6,42 @@
 // packages/main/src/server/modules/admin-v2/characters/{production-journey,readiness,renderer-preview}.ts。
 // 它们在 admin 源码里没有字面量，静态扫描判不出「在用」。删之前先查后端。
 export const adminZhCharacters: Record<string, string> = {
+  "Image request in progress": "图片任务处理中",
+  "The image request is in progress. Resource waits may extend the time; choose an image once it is ready.": "图片任务处理中。等待共享资源可能延长耗时，完成后可选择采用图片。",
+  "Resume generation": "继续生成",
+  "Saving your changes and updating the character. Please wait before making another change.": "正在保存更改并更新角色资料，请稍候再继续操作。",
+  "The Pocket voice candidate is ready. Listen to the preview before activation.": "Pocket 候选声音已就绪，请先试听再启用。",
+  "Generate the first portrait without references, compare the results, then use one as identity version {version}.": "无需参考图，先生成首张肖像，比较结果后采用其中一张，建立身份版本 {version}。",
+  "Generate images from the current identity, compare them, and choose which to use in the draft image set.": "基于当前身份生成图片，比较后选择用于草稿的图片。",
+  "No reference image is needed. Your selected portrait becomes identity version {version}; earlier candidates remain in history.": "无需参考图。采用的肖像将建立身份版本 {version}，此前候选保留在历史记录中。",
+  "No reference image is needed. Your selected portrait becomes the reference for later images.": "无需参考图。采用的肖像将作为后续生成图片的参考。",
+  "Each generation creates one image. Compare the results and choose which to use in the draft image set. Publishing updates the live character.": "每次生成一张图片。比较结果后选择用于草稿的图片，发布后才会更新线上角色。",
+  "Choose the first identity portrait in the image library before creating later identity versions.": "先在图片库采用首张身份肖像，再创建后续身份版本。",
+  "This character has earlier visual history but no usable portrait. Restore or choose an available portrait before creating another identity version.": "角色已有视觉历史，但缺少可用肖像。请先恢复或采用一张可用肖像，再创建后续身份版本。",
+  "The platform keeps the compatible generation route fixed. Generate one image at a time, compare results, and choose what to use.": "平台会固定兼容的生成路线。每次生成一张，比较后选择采用。",
+  "Generating image": "正在生成图片",
+  "Saving generated image": "正在保存生成的图片",
+  "Shared characters awaiting preparation": "等待发布准备的共享角色",
+  "Earlier shared characters can continue here. Open a character to run automatic checks and prepare its publishing workspace.": "历史共享角色可在这里继续。打开角色后，系统会执行自动检查并准备发布工作区。",
+  "Search characters awaiting preparation": "搜索等待发布准备的角色",
+  "No characters are awaiting preparation.": "没有等待发布准备的角色。",
+  "Load more characters": "加载更多角色",
+  "Generate an image, then choose whether to use it.": "先生成图片，再选择是否采用。",
+  "Choose the image that fits this Character. Selection updates the draft; publishing updates the live Character.": "选择符合角色的图片。采用会更新草稿，发布后才会改变线上角色。",
+  "Character editing permission is required to select an image.": "采用图片需要角色编辑权限。",
+  "Generation is complete. Choose an image to use.": "生成完成，请选择要采用的图片。",
+  "Generation is in progress. You can choose an image when it is ready.": "正在生成，完成后可选择采用图片。",
+  "Image source and availability": "图片来源与可用状态",
+  "Check the selected images and their sources before publishing.": "发布前确认所选图片及其来源。",
+  "Open image library": "打开图片库",
+  "Discard candidate": "放弃待发布版本",
+  "Could not discard candidate": "未能放弃待发布版本",
+  "Discard this candidate to edit the draft again. The live Character stays unchanged.": "放弃后可继续编辑草稿，线上角色不受影响。",
+  "Character availability and rollback": "角色状态与回滚",
+  "Archive draft": "归档草稿",
+  "Restore draft": "恢复草稿",
+  "Restore this draft to continue editing. It will remain private.": "恢复后可继续编辑，角色仍为私有草稿。",
+  "Current release": "当前版本",
   "Hide from Explore": "从 Explore 隐藏",
   "Show in Explore": "在 Explore 显示",
   "Hidden from Explore": "已从 Explore 隐藏",
@@ -30,7 +66,7 @@ export const adminZhCharacters: Record<string, string> = {
   "Advanced identity constraint": "高级身份约束",
   "Advanced settings": "高级设置",
   "Applying…": "正在设置…",
-  "Approved · awaiting publication preparation": "已审核 · 等待发布准备",
+  "Awaiting publication preparation": "等待发布准备",
   "Aspect ratio": "构图比例",
   "Backstory (optional)": "背景故事（选填）",
   "Body traits (one per line)": "身形特征（每行一个）",
@@ -129,8 +165,8 @@ export const adminZhCharacters: Record<string, string> = {
   "Persona & conversation": "人格与对话",
   "Personality (optional)": "性格（选填）",
   "Prepare publication workspace": "准备发布工作区",
-  "Prepare this approved Character for publishing. Nothing is published or made public yet.":
-    "为已通过审核的角色准备发布；此时不会发布任何内容，也不会公开角色。",
+  "Prepare this Character for publishing. Automatic checks run first; nothing is published yet.":
+    "准备角色的发布资料。系统会先执行自动检查，此操作不会发布角色。",
   "Production journey": "生产进度",
   "Production journey steps": "生产进度步骤",
   "Profile tier": "配置档位",
@@ -307,10 +343,10 @@ export const adminZhCharacters: Record<string, string> = {
   "AI seed: 一句话灵感 → 填充 Summary + Tags":
     "AI 灵感：一句话灵感 → 填充摘要 + 标签",
   "Activate a compatible platform image route": "启用兼容的平台图片线路",
-  "Activate reviewed voice": "启用已审核声音",
+  "Activate voice": "启用声音",
   "Activate this as a new identity version": "将其激活为新的身份版本",
   "Activate this as a new identity version.": "将其激活为新的身份版本。",
-  "Activating reviewed voice…": "正在启用已审核声音…",
+  "Activating voice…": "正在启用声音…",
   "Activation reason": "启用原因",
   "Active cloned voice": "当前克隆声音",
   "Active cloned voice preview": "当前克隆声音试听",
@@ -488,8 +524,6 @@ export const adminZhCharacters: Record<string, string> = {
   "Create identity version": "创建身份版本",
   "Create more images for this character": "为这个角色创建更多图片",
   "Create official character": "创建官方角色",
-  "Create one image from the locked identity, review it, then decide whether it belongs in the draft asset pack.":
-    "基于已锁定身份生成一张图片，审核后再决定是否放入草稿资产包。",
   "Create the first Character video from an image.":
     "从一张角色图片开始创建首个视频。",
   "Create the first identity portrait": "创建首张身份肖像",
@@ -568,8 +602,6 @@ export const adminZhCharacters: Record<string, string> = {
     "使用当前肖像启用图片生产",
   "Enter the exact words spoken in the reference recording.":
     "请输入参考录音中实际说出的完整文字。",
-  "Establish a reviewed portrait anchor in Character Assets before creating later identity versions.":
-    "创建后续身份版本前，请先在角色图片资产中建立经审核的肖像锚点。",
   "First release": "首次发布",
   "First release — nothing is live yet.": "这是首次发布，当前还没有线上版本。",
   "No Character releases yet": "还没有发布版本",
@@ -585,8 +617,6 @@ export const adminZhCharacters: Record<string, string> = {
     "此配置完成健康样本后才会显示预计耗时",
   "Estimated duration: {duration} · {days}-day average · {count} completed run":
     "预计耗时：{duration} · {days} 天平均值 · {count} 个已完成批次",
-  "Every generation creates one candidate. Review that image before selecting it for the draft asset pack; nothing changes the live character automatically.":
-    "每次生成只创建一张候选图。先审核这张图，再决定是否放入草稿资产包；线上角色不会自动改变。",
   "Every eligible live character has exposure or funnel observations.":
     "所有已走完观察期的线上角色都有曝光或漏斗观测。",
   "Every live image pack is complete": "所有线上图片资产包均已补齐",
@@ -625,14 +655,14 @@ export const adminZhCharacters: Record<string, string> = {
   "Generate for character": "为角色生成",
   "Generate one image": "生成一张图片",
   "Generate one image, then review it here.": "生成一张图片，然后在这里审核。",
-  "Generate the first portrait without references, review it as the identity definition, then commit it as identity version 1.":
-    "先在没有参考图的情况下生成第一张肖像，将其作为身份定义审核，再提交为身份版本 1。",
   "Generate with AI": "用 AI 生成",
   "Generate {count} {assetType}": "生成 {count} {assetType}",
   Generated: "已生成",
   "Generated candidates": "已生成候选图",
   Generating: "正在生成",
   "Generating video": "正在生成视频",
+  "Video request in progress": "视频任务处理中",
+  "Resource waits can extend the total time. This page updates automatically when the video is ready.": "资源繁忙时等待会延长。视频完成后，本页面会自动更新。",
   "Generation estimate": "生成预估",
   "Generation failed": "生成失败",
   Hero: "主视觉",
@@ -1064,7 +1094,7 @@ export const adminZhCharacters: Record<string, string> = {
   "Review submission is ready to resume with the same request key.":
     "审核提交已可使用同一个请求键继续。",
   "Review the character's visual setup evidence": "检查角色的视觉设置证据",
-  "Review voice version {version}": "审核声音版本 {version}",
+  "Listen to voice version {version}": "试听声音版本 {version}",
   "Roll back to selected snapshot": "回滚到所选快照",
   "A completed run does not select or publish an asset.":
     "生产完成不会自动采用或发布素材。",
@@ -1239,14 +1269,12 @@ export const adminZhCharacters: Record<string, string> = {
   "The live portrait is now the sealed identity reference. Image production is ready.":
     "线上肖像已封存为身份参考，现在可以开始图片生产。",
   "The locked visual identity stays unchanged.": "已锁定的视觉身份保持不变。",
-  "The platform keeps the compatible route fixed for lineage. Operators create and review one image at a time; no test images are required first.":
-    "平台会固定兼容线路以保留生成血缘；运营每次生成并审核一张，不需要先生成测试图。",
   "The primary character image is not public.": "角色主图当前未公开。",
   "The reclaim reuses the pinned provider request and idempotency key, then rechecks the user's current Voice allowance and Dreamcoin balance.":
     "回收会复用已固定的供应器请求和幂等键，并重新检查用户当前的语音额度与梦币余额。",
   "The requested server draft was not restored.": "未能恢复请求的服务端草稿。",
-  "The reviewed voice is now active for new chat speech.":
-    "已审核声音现已用于新的聊天语音。",
+  "The selected voice is now active for new chat speech.":
+    "所选声音现已用于新的聊天语音。",
   "The saved system voice defaults were recovered.":
     "已恢复保存过的系统默认声音设置。",
   "The selected image pack contains a missing or unavailable exact asset.":
@@ -1263,14 +1291,12 @@ export const adminZhCharacters: Record<string, string> = {
     "视频下载失败，请检查到该资产地址的网络连通性。",
   "The video downloaded but could not be decoded. The file may be corrupt.":
     "视频已下载但无法解码，文件可能已损坏。",
-  "The voice candidate is ready. Review its preview before activation.":
-    "候选声音已就绪，请先试听审核再启用。",
+  "The voice candidate is ready. Listen to the preview before activation.":
+    "候选声音已就绪，请先试听再启用。",
   "This browser cannot play the video's format, or the asset URL is unreachable.":
     "当前浏览器不支持该视频格式，或该资产地址不可达。",
   "This candidate is selected by the Character draft. Select a replacement in this slot before recording a superseding rejection.":
     "此候选图已被角色草稿选中；记录取代它的拒绝决定前，请先在该位置选择替代图。",
-  "This character has earlier visual history but no usable portrait authority. Repair its reviewed image evidence before creating another identity version.":
-    "此角色有早期视觉历史，但没有可用肖像权威；创建新身份版本前，请先修复经审核的图片证据。",
   "This character has no voice override and inherits the configured system female identity and performance direction.":
     "该角色没有专属声音覆盖，将继承已配置的系统女性声音身份和演绎方向。",
   "This character now inherits the system voice default.":
@@ -1450,8 +1476,6 @@ export const adminZhCharacters: Record<string, string> = {
   "male character": "男性角色",
   "male voice": "男声",
   "new users": "新用户",
-  "no reference input. The reviewed result becomes the reference authority.":
-    "不输入参考图；审核通过的结果将成为参考权威。",
   "not created": "尚未创建",
   not_live: "未上线",
   "of 3": "/ 3",
@@ -1479,6 +1503,7 @@ export const adminZhCharacters: Record<string, string> = {
   "This route no longer meets its qualification. Re-qualifying needs engineering.":
     "这条线路已不再满足资质要求。重新资质化需要工程介入，后台没有这个动作。",
   retired: "已停用",
+  withdrawn: "已放弃",
   "revision {version}": "修订版 {version}",
   "route qualification": "图片线路资格",
   "saved in Admin": "已保存到管理平台",
@@ -1701,4 +1726,13 @@ export const adminZhCharacters: Record<string, string> = {
   "Roll back": "回滚",
   "Rollback failed": "回滚失败",
   "Serving action failed": "线上操作失败",
+  "Update image selection": "更新所选图片",
+  "Load more images": "加载更多图片",
+  "Image imported. Choose it in Character operations.": "图片已导入，可在角色运营中选择使用。",
+  "Video generation in progress": "视频生成中",
+  "Image generation in progress": "图片生成中",
+  "Generation result awaiting confirmation": "生成结果待确认",
+  "The provider result is not confirmed. Check the generation task before starting another image.": "尚未确认生成结果。请先打开生成任务核对并恢复，再创建新图片。",
+  "Open generation task": "打开生成任务",
+  "View generation": "查看生成进度",
 };

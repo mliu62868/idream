@@ -1,0 +1,19 @@
+{
+  "database": "/idream_test",
+  "fixtureRolledBack": true,
+  "realServiceWithTransactionBoundReadDelegates": true,
+  "results": [
+    {
+      "case": "101 available assets",
+      "databaseCount": 101,
+      "returnedCount": 100,
+      "oldestAssetPresent": false
+    },
+    {
+      "case": "newest 100 archived; oldest still available",
+      "databaseAvailableCount": 1,
+      "returnedCount": 0
+    }
+  ]
+}
+Internal error: directory mismatch for directory "/Users/kk/code/idream/packages/main/tsconfig.json", fd 3. You don't need to do anything, but this indicates a bug.

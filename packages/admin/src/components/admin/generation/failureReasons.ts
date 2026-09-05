@@ -65,7 +65,7 @@ const TABLE: Record<string, Omit<FailureReason, "code">> = {
   },
   stale_provider_outcome: {
     title: "Provider answered after this job was already closed",
-    hint: "No action needed — the late result was discarded",
+    hint: "Open the job to check whether the late result can be recovered",
     severity: "waiting",
   },
   stale_timeout: {
@@ -128,10 +128,10 @@ const TABLE: Record<string, Omit<FailureReason, "code">> = {
     hint: "Safe to retry; if it repeats, needs engineering",
     severity: "retry",
   },
-  // admin-v2/jobs/unknown-reconciliation.ts:234 —— 运营对一个 unknown 结果裁定为"确实失败了"。
+  // Unknown reconciliation can record failure through an operator or the automatic sweeper.
   operator_confirmed_provider_failure: {
-    title: "An operator confirmed the provider failed",
-    hint: "No action needed — the unknown outcome was already reconciled",
+    title: "Provider failure was recorded",
+    hint: "Open the job to review the recorded decision and recovery options",
     severity: "waiting",
   },
   // packages/gen/src/backend/backend-video-model.ts:31 —— 配置里指的模型后端不认识，不可重试。

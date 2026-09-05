@@ -847,7 +847,7 @@ export function VisualIdentityPanel({
               </h3>
               <p className="mt-2 text-sm leading-6 text-[var(--ad-text-muted)]">
                 {t(
-                  "Every generation creates one candidate. Review that image before selecting it for the draft asset pack; nothing changes the live character automatically.",
+                  "Each generation creates one image. Compare the results and choose which to use in the draft image set. Publishing updates the live character.",
                 )}
               </p>
             </section>
@@ -878,7 +878,7 @@ export function VisualIdentityPanel({
                   <div className="mt-4 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]">
                     <p>
                       {t(
-                        "Establish a reviewed portrait anchor in Character Assets before creating later identity versions.",
+                        "Choose the first identity portrait in the image library before creating later identity versions.",
                       )}
                     </p>
                     {navigateToTab ? (
@@ -895,7 +895,7 @@ export function VisualIdentityPanel({
                   <div className="mt-4 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]">
                     <p>
                       {t(
-                        "This character has earlier visual history but no usable portrait authority. Repair its reviewed image evidence before creating another identity version.",
+                        "This character has earlier visual history but no usable portrait. Restore or choose an available portrait before creating another identity version.",
                       )}
                     </p>
                     <details className="mt-2 text-xs">
@@ -1045,7 +1045,7 @@ export function VisualIdentityPanel({
                 </div>
                 <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">
                   {t(
-                    "The platform keeps the compatible route fixed for lineage. Operators create and review one image at a time; no test images are required first.",
+                    "The platform keeps the compatible generation route fixed. Generate one image at a time, compare results, and choose what to use.",
                   )}
                 </p>
                 {navigateToTab &&

@@ -203,7 +203,7 @@ export function JobsView() {
       <CopyableId key="user" value={item.userId} />,
       format.dateTime(item.createdAt),
       value(item.requestOutcome),
-      value(item.settlement.view),
+      item.settlement.view === "not_required" ? t("No settlement needed") : value(item.settlement.view),
       item.requestOutcome === "failed"
         ? <FailureReason code={item.errorCode} key="failure" />
         : <span className="text-[var(--ad-text-muted)]" key="failure">—</span>,
@@ -478,8 +478,8 @@ function GenerationJobInspector({ detail, error, jobId, loading, onClose, onReco
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <Metric label="Request outcome" value={value(request.requestOutcome)} meta={t("legacy projection: {status}", { status: value(request.legacyStatus) })} />
             <Metric label="Delivery" value={`${request.delivery.deliveredCount}/${request.delivery.expectedOutputCount}`} meta={t("{pending} pending · {failed} failed", { pending: request.delivery.pendingCount, failed: request.delivery.failedCount })} />
-            <Metric label="Settlement" value={value(request.settlement.view)} meta={t("{captured} captured · {refunded} refunded", { captured: request.settlement.capturedDreamcoins, refunded: request.settlement.refundedDreamcoins })} />
-            <Metric label="Freshness" value={detail.freshness} meta={format.dateTime(detail.asOf)} />
+            <Metric label="Settlement" value={request.settlement.view === "not_required" ? t("No settlement needed") : value(request.settlement.view)} meta={t("{captured} captured · {refunded} refunded", { captured: request.settlement.capturedDreamcoins, refunded: request.settlement.refundedDreamcoins })} />
+            <Metric label="Freshness" value={value(detail.freshness)} meta={format.dateTime(detail.asOf)} />
           </div>
           <UnknownGenerationReconciliationControls
             detail={detail}

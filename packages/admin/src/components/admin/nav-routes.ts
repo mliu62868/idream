@@ -9,7 +9,7 @@
 
 export const ADMIN_SECTION_IDS = [
   "dashboard",
-  "content/official", "content/review-queue", "content/templates", "content/tags",
+  "content/official", "content/templates", "content/tags",
   "content/production", "content/assets", "content/placements",
   "cases", "users", "billing", "compliance",
   "analytics", "insights", "growth/characters", "experiments", "content",
@@ -34,6 +34,7 @@ export type AdminSubview =
 export type AdminRouteMatch = { sectionId: AdminSectionId; view: AdminSubview };
 
 const SECTION_ALIASES: Record<string, string> = {
+  "content/review-queue": "content/official",
   "generation/models": "generation/config",
 };
 
@@ -47,7 +48,7 @@ const CANONICAL_LIST_SECTIONS: Record<string, AdminSectionId> = {
   characters: "content/official",
   "characters/releases": "content/official",
   "characters/calendar": "content/official",
-  "characters/review": "content/review-queue",
+  "characters/review": "content/official",
   "characters/starters": "content/templates",
   "characters/taxonomy": "content/tags",
   "creative/runs": "content/production",

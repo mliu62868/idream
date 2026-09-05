@@ -1,0 +1,2890 @@
+@idream/admin test: 
+@idream/admin test:  RUN  v4.1.9 /Users/kk/code/idream/packages/admin
+@idream/admin test: 
+@idream/admin test:  ❯ src/features/characters/CharacterMediaAvailability.mounted.test.tsx (15 tests | 2 failed) 226ms
+@idream/admin test:      × images: unmatched search has a clear action and keeps the existing library 9ms
+@idream/admin test:      × Review: failed submission keeps the draft, and committed Review is not relabeled as failed by a workspace refresh 6ms
+@idream/admin test:  ❯ src/features/characters/CharacterWorkspaceDetails.mounted.test.tsx (20 tests | 2 failed) 409ms
+@idream/admin test:      × requires project write as well as creative Review for imported images: true 15ms
+@idream/admin test:      × repairs a structured approved-customer Project gap and opens Images 33ms
+@idream/admin test: DOMException [AbortError]: The operation was aborted.
+@idream/admin test:     at Fetch.onAsyncTaskManagerAbort (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/fetch/Fetch.js:546:23)
+@idream/admin test:     at Object.<anonymous> (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/fetch/Fetch.js:416:101)
+@idream/admin test:     at AsyncTaskManager.abortAll (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/async-task-manager/AsyncTaskManager.js:292:30)
+@idream/admin test:     at AsyncTaskManager.abort (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/async-task-manager/AsyncTaskManager.js:52:21)
+@idream/admin test:     at DetachedBrowserFrame.abort (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/browser/detached-browser/DetachedBrowserFrame.js:112:58)
+@idream/admin test:     at DetachedWindowAPI.abort (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/window/DetachedWindowAPI.js:51:35)
+@idream/admin test:     at teardownWindow (file:///Users/kk/code/idream/node_modules/.bun/vitest@4.1.9+978f1a0c078cafac/node_modules/vitest/dist/chunks/index.DC7d2Pf8.js:331:22)
+@idream/admin test:     at Object.teardown (file:///Users/kk/code/idream/node_modules/.bun/vitest@4.1.9+978f1a0c078cafac/node_modules/vitest/dist/chunks/index.DC7d2Pf8.js:392:10)
+@idream/admin test:     at file:///Users/kk/code/idream/node_modules/.bun/vitest@4.1.9+978f1a0c078cafac/node_modules/vitest/dist/chunks/base.BE3cXZj3.js:168:65
+@idream/admin test:     at Traces.$ (file:///Users/kk/code/idream/node_modules/.bun/vitest@4.1.9+978f1a0c078cafac/node_modules/vitest/dist/chunks/traces.DT5aQ62U.js:142:27)
+@idream/admin test: DOMException [AbortError]: The operation was aborted.
+@idream/admin test:     at Fetch.onAsyncTaskManagerAbort (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/fetch/Fetch.js:546:23)
+@idream/admin test:     at Object.<anonymous> (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/fetch/Fetch.js:416:101)
+@idream/admin test:     at AsyncTaskManager.abortAll (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/async-task-manager/AsyncTaskManager.js:292:30)
+@idream/admin test:     at AsyncTaskManager.abort (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/async-task-manager/AsyncTaskManager.js:52:21)
+@idream/admin test:     at DetachedBrowserFrame.abort (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/browser/detached-browser/DetachedBrowserFrame.js:112:58)
+@idream/admin test:     at DetachedWindowAPI.abort (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/window/DetachedWindowAPI.js:51:35)
+@idream/admin test:     at teardownWindow (file:///Users/kk/code/idream/node_modules/.bun/vitest@4.1.9+978f1a0c078cafac/node_modules/vitest/dist/chunks/index.DC7d2Pf8.js:331:22)
+@idream/admin test:     at Object.teardown (file:///Users/kk/code/idream/node_modules/.bun/vitest@4.1.9+978f1a0c078cafac/node_modules/vitest/dist/chunks/index.DC7d2Pf8.js:392:10)
+@idream/admin test:     at file:///Users/kk/code/idream/node_modules/.bun/vitest@4.1.9+978f1a0c078cafac/node_modules/vitest/dist/chunks/base.BE3cXZj3.js:168:65
+@idream/admin test:     at Traces.$ (file:///Users/kk/code/idream/node_modules/.bun/vitest@4.1.9+978f1a0c078cafac/node_modules/vitest/dist/chunks/traces.DT5aQ62U.js:142:27)
+@idream/admin test: DOMException [AbortError]: The operation was aborted.
+@idream/admin test:     at Fetch.onAsyncTaskManagerAbort (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/fetch/Fetch.js:546:23)
+@idream/admin test:     at Object.<anonymous> (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/fetch/Fetch.js:416:101)
+@idream/admin test:     at AsyncTaskManager.abortAll (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/async-task-manager/AsyncTaskManager.js:292:30)
+@idream/admin test:     at AsyncTaskManager.abort (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/async-task-manager/AsyncTaskManager.js:52:21)
+@idream/admin test:     at DetachedBrowserFrame.abort (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/browser/detached-browser/DetachedBrowserFrame.js:112:58)
+@idream/admin test:     at DetachedWindowAPI.abort (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/window/DetachedWindowAPI.js:51:35)
+@idream/admin test:     at teardownWindow (file:///Users/kk/code/idream/node_modules/.bun/vitest@4.1.9+978f1a0c078cafac/node_modules/vitest/dist/chunks/index.DC7d2Pf8.js:331:22)
+@idream/admin test:     at Object.teardown (file:///Users/kk/code/idream/node_modules/.bun/vitest@4.1.9+978f1a0c078cafac/node_modules/vitest/dist/chunks/index.DC7d2Pf8.js:392:10)
+@idream/admin test:     at file:///Users/kk/code/idream/node_modules/.bun/vitest@4.1.9+978f1a0c078cafac/node_modules/vitest/dist/chunks/base.BE3cXZj3.js:168:65
+@idream/admin test:     at Traces.$ (file:///Users/kk/code/idream/node_modules/.bun/vitest@4.1.9+978f1a0c078cafac/node_modules/vitest/dist/chunks/traces.DT5aQ62U.js:142:27)
+@idream/admin test: DOMException [AbortError]: The operation was aborted.
+@idream/admin test:     at Fetch.onAsyncTaskManagerAbort (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/fetch/Fetch.js:546:23)
+@idream/admin test:     at Object.<anonymous> (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/fetch/Fetch.js:416:101)
+@idream/admin test:     at AsyncTaskManager.abortAll (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/async-task-manager/AsyncTaskManager.js:292:30)
+@idream/admin test:     at AsyncTaskManager.abort (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/async-task-manager/AsyncTaskManager.js:52:21)
+@idream/admin test:     at DetachedBrowserFrame.abort (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/browser/detached-browser/DetachedBrowserFrame.js:112:58)
+@idream/admin test:     at DetachedWindowAPI.abort (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/window/DetachedWindowAPI.js:51:35)
+@idream/admin test:     at teardownWindow (file:///Users/kk/code/idream/node_modules/.bun/vitest@4.1.9+978f1a0c078cafac/node_modules/vitest/dist/chunks/index.DC7d2Pf8.js:331:22)
+@idream/admin test:     at Object.teardown (file:///Users/kk/code/idream/node_modules/.bun/vitest@4.1.9+978f1a0c078cafac/node_modules/vitest/dist/chunks/index.DC7d2Pf8.js:392:10)
+@idream/admin test:     at file:///Users/kk/code/idream/node_modules/.bun/vitest@4.1.9+978f1a0c078cafac/node_modules/vitest/dist/chunks/base.BE3cXZj3.js:168:65
+@idream/admin test:     at Traces.$ (file:///Users/kk/code/idream/node_modules/.bun/vitest@4.1.9+978f1a0c078cafac/node_modules/vitest/dist/chunks/traces.DT5aQ62U.js:142:27)
+@idream/admin test:  ❯ src/features/characters/CharacterImageLibrary-production.mounted.test.tsx (1 test | 1 failed) 2046ms
+@idream/admin test:    × refreshes the surrounding image library after rejecting a generated candidate 2046ms
+@idream/admin test:  ❯ src/features/characters/CharacterAssetStudio.mounted.test.tsx (25 tests | 1 failed) 2537ms
+@idream/admin test:      × opens the hero composer immediately after committing the first identity portrait 2023ms
+@idream/admin test:  ❯ src/app/admin/admin-route-shell.test.tsx (17 tests | 2 failed) 104ms
+@idream/admin test:      × ships each core decision workspace as a physical Next page 7ms
+@idream/admin test:      × renders the canonical character review route as the pending submissions queue 8ms
+@idream/admin test:  ❯ src/components/admin/i18n-view-runtime.test.tsx (0 test)
+@idream/admin test:  ❯ src/components/admin/nav-config.test.ts (19 tests | 4 failed) 72ms
+@idream/admin test:      × publishes every decision workspace exactly once inside the seven workspaces 6ms
+@idream/admin test:      × publishes canonical workspace URLs while retaining each legacy URL 2ms
+@idream/admin test:      × maps canonical routes and query-backed saved views onto domain workspaces 6ms
+@idream/admin test:      × retains compatibility routes until their Case commands reach parity 2ms
+@idream/admin test:  ❯ src/features/characters/CharacterAssetStudio.test.ts (30 tests | 2 failed) 40ms
+@idream/admin test:      × binds review and selection replay identities to the canonical request body 30ms
+@idream/admin test:      × does not claim review is available while the committed image is still running 2ms
+@idream/admin test:  ❯ src/features/search/admin-destinations.test.ts (12 tests | 1 failed) 21ms
+@idream/admin test:      × matches a whole group by its name 7ms
+@idream/admin test:  ❯ src/features/characters/CharacterSoulPanel.test.ts (4 tests | 1 failed) 9ms
+@idream/admin test:      × keeps the operator form visible and technical artifacts collapsed 7ms
+@idream/admin test:  ❯ src/features/characters/ReleasePanel.test.ts (7 tests | 2 failed) 8ms
+@idream/admin test:      × turns release authority failures into an exact operator repair action 4ms
+@idream/admin test:      × blocks publish before the request when a complete draft pack skipped review 1ms
+@idream/admin test: 
+@idream/admin test: ⎯⎯⎯⎯⎯⎯ Failed Suites 1 ⎯⎯⎯⎯⎯⎯⎯
+@idream/admin test: 
+@idream/admin test:  FAIL  src/components/admin/i18n-view-runtime.test.tsx [ src/components/admin/i18n-view-runtime.test.tsx ]
+@idream/admin test: Error: Cannot find module './ReviewQueueView' imported from /Users/kk/code/idream/packages/admin/src/components/admin/i18n-view-runtime.test.tsx
+@idream/admin test:  ❯ src/components/admin/i18n-view-runtime.test.tsx:7:1
+@idream/admin test:       5| import { ComplianceView } from "./ComplianceView";
+@idream/admin test:       6| import { InsightsView } from "./InsightsView";
+@idream/admin test:       7| import { reviewDecisionSuccess } from "./ReviewQueueView";
+@idream/admin test:        | ^
+@idream/admin test:       8| import { AdminDevLogin } from "./AdminDevLogin";
+@idream/admin test:       9| import { StatusPill } from "./ui/StatusPill";
+@idream/admin test: 
+@idream/admin test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/19]⎯
+@idream/admin test: 
+@idream/admin test: 
+@idream/admin test: ⎯⎯⎯⎯⎯⎯ Failed Tests 18 ⎯⎯⎯⎯⎯⎯⎯
+@idream/admin test: 
+@idream/admin test:  FAIL  src/app/admin/admin-route-shell.test.tsx > canonical Admin route shell > ships each core decision workspace as a physical Next page
+@idream/admin test: AssertionError: characters/review/page.tsx: expected 'import { redirect } from "next/naviga…' to contain 'renderAdminRoute('
+@idream/admin test: 
+@idream/admin test: - Expected
+@idream/admin test: + Received
+@idream/admin test: 
+@idream/admin test: - renderAdminRoute(
+@idream/admin test: + import { redirect } from "next/navigation";
+@idream/admin test: +
+@idream/admin test: + // 保留旧书签的明确去向，日常角色流程不再包含人工审核队列。
+@idream/admin test: + export default function CharacterReviewPage() {
+@idream/admin test: +   redirect("/admin/characters");
+@idream/admin test: + }
+@idream/admin test: +
+@idream/admin test: 
+@idream/admin test:  ❯ src/app/admin/admin-route-shell.test.tsx:60:36
+@idream/admin test:      58|     for (const relativePath of canonicalPageFiles) {
+@idream/admin test:      59|       const source = await readFile(path.join(adminRoot, relativePath)…
+@idream/admin test:      60|       expect(source, relativePath).toContain("renderAdminRoute(");
+@idream/admin test:        |                                    ^
+@idream/admin test:      61|       expect(source, relativePath).toContain('export const dynamic = "…
+@idream/admin test:      62|     }
+@idream/admin test: 
+@idream/admin test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/19]⎯
+@idream/admin test: 
+@idream/admin test:  FAIL  src/app/admin/admin-route-shell.test.tsx > canonical Admin route shell > renders the canonical character review route as the pending submissions queue
+@idream/admin test: AssertionError: expected '<a class="admin-skip-link" href="#adm…' to contain 'Character Review'
+@idream/admin test: 
+@idream/admin test: Expected: "Character Review"
+@idream/admin test: Received: "<a class="admin-skip-link" href="#admin-main-content" id="admin-skip-link">Skip to admin content</a><main class="min-h-screen overflow-x-clip bg-[var(--ad-canvas)] text-[var(--ad-ink)]"><div class="flex min-h-screen" id="admin-shell-background"><aside class="sticky top-0 hidden h-screen w-[248px] shrink-0 overflow-hidden border-r border-[var(--ad-border)] bg-[var(--ad-surface)] min-[1200px]:flex min-[1200px]:flex-col"><div class="flex h-14 shrink-0 items-center border-b border-[var(--ad-border)] px-5"><div><p class="text-sm font-semibold">iDream Admin</p><p class="text-[11px] text-[var(--ad-text-muted)]">moderator</p></div></div><nav class="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3"><div class="space-y-1 pb-3"></div><div class="border-t border-[var(--ad-border)] pt-3"><button aria-expanded="false" class="mb-1 flex h-10 w-full items-center gap-3 rounded-md px-3 text-[13px] font-medium text-[var(--ad-text-muted)] transition-colors hover:bg-black/[0.04] hover:text-[var(--ad-ink)]" type="button"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-layout-grid h-4 w-4" aria-hidden="true"><rect width="7" height="7" x="3" y="3" rx="1"></rect><rect width="7" height="7" x="14" y="3" rx="1"></rect><rect width="7" height="7" x="14" y="14" rx="1"></rect><rect width="7" height="7" x="3" y="14" rx="1"></rect></svg><span>Workspaces</span><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-chevron-right ml-auto h-4 w-4 transition-transform" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg></button></div></nav></aside><section class="min-w-0 flex-1" id="admin-main-content" tabindex="-1"><header class="sticky top-0 z-20 border-b border-[var(--ad-border)] bg-[rgba(247,246,243,0.92)] backdrop-blur"><div class="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2.5 md:min-h-14 md:px-6"><div class="flex min-w-0 flex-1 items-center gap-3"><button aria-controls="admin-mobile-navigation" aria-expanded="false" aria-label="Open navigation" class="grid min-h-11 min-w-11 shrink-0 place-items-center rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] min-[1200px]:hidden" type="button"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-menu h-5 w-5" aria-hidden="true"><path d="M4 5h16"></path><path d="M4 12h16"></path><path d="M4 19h16"></path></svg></button><div class="min-w-0"><nav aria-label="Breadcrumb"><ol class="flex min-w-0 items-center gap-1.5 text-[11px] text-[var(--ad-text-muted)]"><li class="shrink-0"><span>Character Studio</span></li><li aria-hidden="true" class="shrink-0">›</li><li aria-current="page" class="min-w-0"><h1 class="truncate text-sm font-semibold text-[var(--ad-ink)]">Characters</h1></li><li class="shrink-0"><span class="rounded-full bg-[var(--ad-yellow-bg)] px-2 py-0.5 text-[10px] font-semibold uppercase text-[var(--ad-yellow-text)]" data-testid="admin-environment-notice">test</span></li></ol></nav></div></div><div class="flex w-full items-center gap-2 md:w-auto"><div class="min-w-0 flex-1 md:flex-none"><div class="relative"><div class="flex h-9 min-w-0 items-center gap-2 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 focus-within:border-[var(--ad-ink)] focus-within:ring-2 focus-within:ring-[var(--ad-ink)]/10 lg:w-[320px]"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-search h-4 w-4 shrink-0 text-[var(--ad-text-muted)]" aria-hidden="true"><path d="m21 21-4.34-4.34"></path><circle cx="11" cy="11" r="8"></circle></svg><input aria-autocomplete="list" aria-controls="_R_cu_" aria-expanded="false" aria-keyshortcuts="Meta+K Control+K" aria-label="Global admin search" class="h-full min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-[var(--ad-text-muted)]" placeholder="Jump to a page or search records…" role="combobox" value=""/><kbd aria-hidden="true" class="pointer-events-none hidden shrink-0 rounded border border-[var(--ad-border)] px-1.5 text-[10px] font-medium text-[var(--ad-text-muted)] lg:inline">⌘K</kbd></div></div></div><button aria-label="Refresh" class="inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-[var(--ad-border)] px-3 text-sm text-[var(--ad-text)] hover:bg-black/[0.04]" type="button"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-refresh-ccw h-4 w-4" aria-hidden="true"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"></path><path d="M16 16h5v5"></path></svg><span class="hidden sm:inline">Refresh</span></button><div class="relative shrink-0"><button aria-controls="admin-account-menu" aria-expanded="false" aria-label="Account and shell settings" class="inline-flex h-9 items-center gap-2 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-2.5 text-sm text-[var(--ad-text)] hover:bg-black/[0.04] focus-visible:border-[var(--ad-ink)] focus-visible:ring-2 focus-visible:ring-[var(--ad-ink)]/10" type="button"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-user-round h-4 w-4 text-[var(--ad-text-muted)]" aria-hidden="true"><circle cx="12" cy="8" r="5"></circle><path d="M20 21a8 8 0 0 0-16 0"></path></svg><span class="hidden max-w-[10rem] truncate lg:inline">moderator-1</span><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-chevron-down h-3.5 w-3.5 shrink-0 transition-transform" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></button></div></div></div></header><div class="p-4 md:p-6"><section aria-labelledby="admin-section-denied-title" class="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-6" data-testid="admin-section-permission-denied"><div class="flex items-center gap-3"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-ban h-5 w-5 text-[var(--ad-red-text)]" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M4.929 4.929 19.07 19.071"></path></svg><h2 class="text-base font-semibold" id="admin-section-denied-title">No permission for this workspace</h2></div><p class="mt-2 text-sm text-[var(--ad-text-muted)]">This workspace requires permission keys your account does not have.</p><p class="mt-4 text-[11px] font-semibold uppercase text-[var(--ad-text-muted)]">Missing permission keys</p><ul class="mt-1.5 flex flex-wrap gap-2" data-testid="admin-missing-permission-keys"><li class="rounded-md bg-[var(--ad-surface-subtle)] px-2 py-1 font-mono text-xs text-[var(--ad-ink)]">character.project.read</li><li class="rounded-md bg-[var(--ad-surface-subtle)] px-2 py-1 font-mono text-xs text-[var(--ad-ink)]">character.release.read</li><li class="rounded-md bg-[var(--ad-surface-subtle)] px-2 py-1 font-mono text-xs text-[var(--ad-ink)]">character.performance.read</li></ul><p class="mt-4 text-sm text-[var(--ad-text-muted)]">These keys are granted in Team Access by an operator holding user.role.write.<!-- --> <!-- -->Navigation updates after the grant and a refresh.</p></section></div></section></div></main>"
+@idream/admin test: 
+@idream/admin test:  ❯ src/app/admin/admin-route-shell.test.tsx:126:20
+@idream/admin test:     124|     );
+@idream/admin test:     125|
+@idream/admin test:     126|     expect(markup).toContain("Character Review");
+@idream/admin test:        |                    ^
+@idream/admin test:     127|     expect(markup).toContain("Pending submissions");
+@idream/admin test:     128|     expect(markup).toContain('name="review-queue-search"');
+@idream/admin test: 
+@idream/admin test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/19]⎯
+@idream/admin test: 
+@idream/admin test:  FAIL  src/components/admin/nav-config.test.ts > admin navigation information architecture > publishes every decision workspace exactly once inside the seven workspaces
+@idream/admin test: AssertionError: expected [ 'analytics', 'announcements', …(33) ] to deeply equal [ 'analytics', 'announcements', …(34) ]
+@idream/admin test: 
+@idream/admin test: - Expected
+@idream/admin test: + Received
+@idream/admin test: 
+@idream/admin test: @@ -11,11 +11,10 @@
+@idream/admin test:     "content",
+@idream/admin test:     "content/assets",
+@idream/admin test:     "content/official",
+@idream/admin test:     "content/placements",
+@idream/admin test:     "content/production",
+@idream/admin test: -   "content/review-queue",
+@idream/admin test:     "content/tags",
+@idream/admin test:     "content/templates",
+@idream/admin test:     "dashboard",
+@idream/admin test:     "experiments",
+@idream/admin test:     "generation/backends",
+@idream/admin test: 
+@idream/admin test:  ❯ src/components/admin/nav-config.test.ts:40:52
+@idream/admin test:      38| describe("admin navigation information architecture", () => {
+@idream/admin test:      39|   it("publishes every decision workspace exactly once inside the seven…
+@idream/admin test:      40|     expect(navItems.map((item) => item.id).sort()).toEqual([...NAV_IDS…
+@idream/admin test:        |                                                    ^
+@idream/admin test:      41|     expect(new Set(navItems.map((item) => item.id)).size).toBe(NAV_IDS…
+@idream/admin test:      42|     expect(new Set(navItems.map((item) => item.group))).toEqual(new Se…
+@idream/admin test: 
+@idream/admin test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/19]⎯
+@idream/admin test: 
+@idream/admin test:  FAIL  src/components/admin/nav-config.test.ts > admin navigation information architecture > publishes canonical workspace URLs while retaining each legacy URL
+@idream/admin test: AssertionError: expected [ { id: 'dashboard', …(10) }, …(32) ] to have a length of 34 but got 33
+@idream/admin test: 
+@idream/admin test: - Expected
+@idream/admin test: + Received
+@idream/admin test: 
+@idream/admin test: - 34
+@idream/admin test: + 33
+@idream/admin test: 
+@idream/admin test:  ❯ src/components/admin/nav-config.test.ts:51:65
+@idream/admin test:      49|       else expect(item.legacyHref).toBe(item.id === "dashboard" ? "/ad…
+@idream/admin test:      50|     }
+@idream/admin test:      51|     expect(navItems.filter((item) => item.legacyHref !== null)).toHave…
+@idream/admin test:        |                                                                 ^
+@idream/admin test:      52|   });
+@idream/admin test:      53|
+@idream/admin test: 
+@idream/admin test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/19]⎯
+@idream/admin test: 
+@idream/admin test:  FAIL  src/components/admin/nav-config.test.ts > admin navigation information architecture > maps canonical routes and query-backed saved views onto domain workspaces
+@idream/admin test: AssertionError: expected { sectionId: 'content/official', …(1) } to deeply equal { …(2) }
+@idream/admin test: 
+@idream/admin test: - Expected
+@idream/admin test: + Received
+@idream/admin test: 
+@idream/admin test:   {
+@idream/admin test: -   "sectionId": "content/review-queue",
+@idream/admin test: +   "sectionId": "content/official",
+@idream/admin test:     "view": {
+@idream/admin test:       "kind": "list",
+@idream/admin test:     },
+@idream/admin test:   }
+@idream/admin test: 
+@idream/admin test:  ❯ src/components/admin/nav-config.test.ts:112:37
+@idream/admin test:     110|     expect(at("characters/releases")).toEqual({ sectionId: "content/of…
+@idream/admin test:     111|     expect(at("characters/calendar")).toEqual({ sectionId: "content/of…
+@idream/admin test:     112|     expect(at("characters/review")).toEqual({ sectionId: "content/revi…
+@idream/admin test:        |                                     ^
+@idream/admin test:     113|     expect(at("characters/starters")).toEqual({ sectionId: "content/te…
+@idream/admin test:     114|     expect(at("characters/taxonomy")).toEqual({ sectionId: "content/ta…
+@idream/admin test: 
+@idream/admin test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/19]⎯
+@idream/admin test: 
+@idream/admin test:  FAIL  src/components/admin/nav-config.test.ts > admin navigation information architecture > retains compatibility routes until their Case commands reach parity
+@idream/admin test: AssertionError: expected 'content/official' to be 'content/review-queue' // Object.is equality
+@idream/admin test: 
+@idream/admin test: Expected: "content/review-queue"
+@idream/admin test: Received: "content/official"
+@idream/admin test: 
+@idream/admin test:  ❯ src/components/admin/nav-config.test.ts:141:57
+@idream/admin test:     139|
+@idream/admin test:     140|   it("retains compatibility routes until their Case commands reach par…
+@idream/admin test:     141|     for (const id of NAV_IDS) expect(at(id)?.sectionId).toBe(id);
+@idream/admin test:        |                                                         ^
+@idream/admin test:     142|     expect(at("moderation")?.sectionId).toBe("moderation");
+@idream/admin test:     143|     expect(at("support")?.sectionId).toBe("support");
+@idream/admin test: 
+@idream/admin test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/19]⎯
+@idream/admin test: 
+@idream/admin test:  FAIL  src/features/characters/CharacterAssetStudio.mounted.test.tsx > Character Asset Studio bootstrap route projection > opens the hero composer immediately after committing the first identity portrait
+@idream/admin test: Error: Timed out waiting for Character Asset Studio
+@idream/admin test:  ❯ waitUntil src/features/characters/CharacterAssetStudio.mounted.test.tsx:55:13
+@idream/admin test:      53|   while (!predicate()) {
+@idream/admin test:      54|     if (Date.now() >= deadline)
+@idream/admin test:      55|       throw new Error("Timed out waiting for Character Asset Studio");
+@idream/admin test:        |             ^
+@idream/admin test:      56|     await act(async () => {
+@idream/admin test:      57|       await new Promise((resolve) => setTimeout(resolve, 0));
+@idream/admin test:  ❯ src/features/characters/CharacterAssetStudio.mounted.test.tsx:334:5
+@idream/admin test: 
+@idream/admin test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/19]⎯
+@idream/admin test: 
+@idream/admin test:  FAIL  src/features/characters/CharacterAssetStudio.test.ts > Character Asset Studio flow > binds review and selection replay identities to the canonical request body
+@idream/admin test: AssertionError: expected '"use client";\n\nimport {\n  creative…' to contain 'characterAssetReviewRequestKey({'
+@idream/admin test: 
+@idream/admin test: - Expected
+@idream/admin test: + Received
+@idream/admin test: 
+@idream/admin test: - characterAssetReviewRequestKey({
+@idream/admin test: + "use client";
+@idream/admin test: +
+@idream/admin test: + import {
+@idream/admin test: +   creativeRunCreateRequestSchema,
+@idream/admin test: +   type CharacterWorkspaceDetail,
+@idream/admin test: +   type CreativeRun,
+@idream/admin test: +   type CreativeRunDetail,
+@idream/admin test: + } from "@idream/shared/admin";
+@idream/admin test: + import {
+@idream/admin test: +   Check,
+@idream/admin test: +   Loader2,
+@idream/admin test: +   RefreshCcw,
+@idream/admin test: +   ShieldAlert,
+@idream/admin test: +   Sparkles,
+@idream/admin test: +   WandSparkles,
+@idream/admin test: +   X,
+@idream/admin test: + } from "lucide-react";
+@idream/admin test: + import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+@idream/admin test: + import {
+@idream/admin test: +   StatusBadge,
+@idream/admin test: +   WorkspaceButton,
+@idream/admin test: +   textAreaClass,
+@idream/admin test: + } from "@/features/operations/WorkspaceUi";
+@idream/admin test: + import { AdminV2RequestError } from "@/lib/admin-v2-api";
+@idream/admin test: + import { adminV2Operation } from "@/lib/admin-v2-operation";
+@idream/admin test: + import {
+@idream/admin test: +   claimDurableMutationIntent,
+@idream/admin test: +   clearDurableMutationIntent,
+@idream/admin test: +   readActiveDurableMutationIntent,
+@idream/admin test: +   updateDurableMutationIntent,
+@idream/admin test: +   type DurableMutationIntent,
+@idream/admin test: + } from "@/lib/durable-mutation-intent";
+@idream/admin test: + import { reconcileDurableMutationIntent } from "@/lib/durable-mutation-recovery";
+@idream/admin test: + import { usePollingTask, type PollingTask } from "@/lib/authority-resource";
+@idream/admin test: + import {
+@idream/admin test: +   committedProjectionTargetId,
+@idream/admin test: +   isProjectionRequestCancellation,
+@idream/admin test: +   SupersededProjectionError,
+@idream/admin test: +   useCommittedProjectionLoader,
+@idream/admin test: + } from "@/lib/committed-projection";
+@idream/admin test: + import { createLatestRequestGate } from "@/lib/latest-request";
+@idream/admin test: + import { cn } from "@/lib/utils";
+@idream/admin test: + import { characterIdentityBootstrapMutation } from "@/features/image-workflow-transport";
+@idream/admin test: + import { adminDateLocale, useAdminI18n } from "@/components/admin/i18n";
+@idream/admin test: + import {
+@idream/admin test: +   canChooseCharacterAssetPurpose,
+@idream/admin test: +   candidateState,
+@idream/admin test: +   characterAssetBootstrapRequestKey,
+@idream/admin test: +   characterAssetDraftSelectionRequestKey,
+@idream/admin test: +   characterAssetReviewIntentSnapshot,
+@idream/admin test: +   characterAssetRunRequestKey,
+@idream/admin test: +   characterAssetRunReceiptMessage,
+@idream/admin test: +   characterAssetSelectionIntentCommandType,
+@idream/admin test: +   characterAssetSelectionIntentSnapshot,
+@idream/admin test: +   characterAssetSelectionRecoveryVerification,
+@idream/admin test: +   characterAssetStudioLayoutClass,
+@idream/admin test: +   characterSourceVariationBlockerMessage,
+@idream/admin test: +   characterSourceVariationAvailabilityMessage,
+@idream/admin test: +   committedCharacterRunProjectionMatches,
+@idream/admin test: +   committedRunProjectionUnavailable,
+@idream/admin test: +   isCharacterAssetPurpose,
+@idream/admin test: +   nextIncompleteCharacterAssetPurpose,
+@idream/admin test: +   preferredCharacterAssetRunId,
+@idream/admin test: +   purposeConfig,
+@idream/admin test: +   resolveCharacterAssetSubject,
+@idream/admin test: +   type CharacterAssetProjectMutation,
+@idream/admin test: +   type CharacterAssetPurpose,
+@idream/admin test: +   type ReviewDraft,
+@idream/admin test: + } from "./character-asset-studio-authority";
+@idream/admin test: + import {
+@idream/admin test: +   AssetImage,
+@idream/admin test: +   CandidateBatchGrid,
+@idream/admin test: +   CandidateComparisonStage,
+@idream/admin test: +   IdentityRail,
+@idream/admin test: +   ImageProductionReadinessCard,
+@idream/admin test: + } from "./CharacterAssetStudioStage";
+@idream/admin test: +
+@idream/admin test: + export function CharacterAssetStudio({
+@idream/admin test: +   actorId = "anonymous",
+@idream/admin test: +   data,
+@idream/admin test: +   permissions,
+@idream/admin test: +   onContinue,
+@idream/admin test: +   onProjectReload,
+@idream/admin test: +   commitProjectMutation,
+@idream/admin test: +   productionOnly = false,
+@idream/admin test: + }: {
+@idream/admin test: +   actorId?: string;
+@idream/admin test: +   data: CharacterWorkspaceDetail;
+@idream/admin test: +   permissions: {
+@idream/admin test: +     read: boolean;
+@idream/admin test: +     create: boolean;
+@idream/admin test: +     review: boolean;
+@idream/admin test: +     selectDraft: boolean;
+@idream/admin test: +   };
+@idream/admin test: +   onContinue: (tab: "visual" | "preview") => void;
+@idream/admin test: +   onProjectReload: () => Promise<void>;
+@idream/admin test: +   commitProjectMutation: CharacterAssetProjectMutation;
+@idream/admin test: +   productionOnly?: boolean;
+@idream/admin test: + }) {
+@idream/admin test: +   const { locale, t } = useAdminI18n();
+@idream/admin test: +   const subject = resolveCharacterAssetSubject({
+@idream/admin test: +     draftName: data.preview.draft?.name,
+@idream/admin test: +     draftDescription: data.preview.draft?.description,
+@idream/admin test: +     liveName: data.character.name,
+@idream/admin test: +     liveDescription: data.character.description,
+@idream/admin test: +   });
+@idream/admin test: +   const [runs, setRuns] = useState<CreativeRun[]>([]);
+@idream/admin test: +   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+@idream/admin test: +   const selectedRunIdRef = useRef<string | null>(null);
+@idream/admin test: +   const [selectedRun, setSelectedRun] = useState<CreativeRunDetail | null>(
+@idream/admin test: +     null,
+@idream/admin test: +   );
+@idream/admin test: +   const [selectedIndex, setSelectedIndex] = useState(0);
+@idream/admin test: +   const [selectedExistingImageId, setSelectedExistingImageId] = useState<
+@idream/admin test: +     string | null
+@idream/admin test: +   >(null);
+@idream/admin test: +   const [comparisonItemId, setComparisonItemId] = useState<string | null>(null);
+@idream/admin test: +   const [workspaceMode, setWorkspaceMode] = useState<"library" | "review">(
+@idream/admin test: +     () =>
+@idream/admin test: +       productionOnly || !data.visual.identityBootstrap.allowed
+@idream/admin test: +         ? "library"
+@idream/admin test: +         : "review",
+@idream/admin test: +   );
+@idream/admin test: +   const [activePurpose, setActivePurpose] = useState<CharacterAssetPurpose>(
+@idream/admin test: +     () =>
+@idream/admin test: +       data.project.draftAssetRouteAuthority?.recoveryPurpose ??
+@idream/admin test: +       nextIncompleteCharacterAssetPurpose(data.journey) ??
+@idream/admin test: +       "character_chat",
+@idream/admin test: +   );
+@idream/admin test: +   const [briefs, setBriefs] = useState<Record<CharacterAssetPurpose, string>>(
+@idream/admin test: +     () => ({
+@idream/admin test: +       character_cover: data.visual.identityBootstrap.allowed
+@idream/admin test: +         ? t(
+@idream/admin test: +             "Create the first definitive portrait of {name} from the approved visual direction. This portrait will define the identity for future images.",
+@idream/admin test: +             { name: subject.name },
+@idream/admin test: +           )
+@idream/admin test: +         : t(
+@idream/admin test: +             "Create a definitive primary portrait of {name}, preserving the locked identity and personality.",
+@idream/admin test: +             { name: subject.name },
+@idream/admin test: +           ),
+@idream/admin test: +       character_hero: t(
+@idream/admin test: +         "Create a cinematic but natural hero scene for {name}, preserving the locked identity and personality.",
+@idream/admin test: +         { name: subject.name },
+@idream/admin test: +       ),
+@idream/admin test: +       character_chat: t(
+@idream/admin test: +         "Create a warm, candid conversational moment with {name}, preserving the locked identity and emotional presence.",
+@idream/admin test: +         { name: subject.name },
+@idream/admin test: +       ),
+@idream/admin test: +     }),
+@idream/admin test: +   );
+@idream/admin test: +   const [negativePrompts, setNegativePrompts] = useState<
+@idream/admin test: +     Record<CharacterAssetPurpose, string>
+@idream/admin test: +   >({
+@idream/admin test: +     character_cover: "",
+@idream/admin test: +     character_hero: "",
+@idream/admin test: +     character_chat: "",
+@idream/admin test: +   });
+@idream/admin test: +   const [loading, setLoading] = useState(true);
+@idream/admin test: +   const [busy, setBusy] = useState<
+@idream/admin test: +     "generate" | "review" | "select" | "prepare" | null
+@idream/admin test: +   >(null);
+@idream/admin test: +   const [error, setError] = useState<string | null>(null);
+@idream/admin test: +   const [message, setMessage] = useState<string | null>(null);
+@idream/admin test: +   const [refreshWarning, setRefreshWarning] = useState<string | null>(null);
+@idream/admin test: +   const readinessRepairKeys = useRef<Record<string, string>>({});
+@idream/admin test: +   const [, setReviewDrafts] = useState<Record<string, ReviewDraft>>(
+@idream/admin test: +     {},
+@idream/admin test: +   );
+@idream/admin test: +   const [runCreationIntent, setRunCreationIntent] =
+@idream/admin test: +     useState<DurableMutationIntent | null>(() =>
+@idream/admin test: +       readActiveDurableMutationIntent({
+@idream/admin test: +         scope: `character-asset:create:${actorId}:${data.character.id}`,
+@idream/admin test: +       }),
+@idream/admin test: +     );
+@idream/admin test: +   const runCreationIntentRef = useRef(runCreationIntent);
+@idream/admin test: +   const [reviewMutationIntent, setReviewMutationIntent] =
+@idream/admin test: +     useState<DurableMutationIntent | null>(() =>
+@idream/admin test: +       productionOnly
+@idream/admin test: +         ? null
+@idream/admin test: +         : readActiveDurableMutationIntent({
+@idream/admin test: +             scope: `character-asset:review:${actorId}:${data.character.id}`,
+@idream/admin test: +           }),
+@idream/admin test: +     );
+@idream/admin test: +   const [selectionMutationIntent, setSelectionMutationIntent] =
+@idream/admin test: +     useState<DurableMutationIntent | null>(() =>
+@idream/admin test: +       readActiveDurableMutationIntent({
+@idream/admin test: +         scope: `character-asset:selection:${actorId}:${data.character.id}`,
+@idream/admin test: +       }),
+@idream/admin test: +     );
+@idream/admin test: +   const runListRequestGate = useRef(createLatestRequestGate());
+@idream/admin test: +   const selectRunId = useCallback(
+@idream/admin test: +     (runId: string | null) => {
+@idream/admin test: +       selectedRunIdRef.current = runId;
+@idream/admin test: +       setSelectedRunId(runId);
+@idream/admin test: +       setComparisonItemId(null);
+@idream/admin test: +     },
+@idream/admin test: +     [setComparisonItemId],
+@idream/admin test: +   );
+@idream/admin test: +   const updateRunCreationIntentState = useCallback(
+@idream/admin test: +     (intent: DurableMutationIntent | null) => {
+@idream/admin test: +       runCreationIntentRef.current = intent;
+@idream/admin test: +       setRunCreationIntent(intent);
+@idream/admin test: +     },
+@idream/admin test: +     [],
+@idream/admin test: +   );
+@idream/admin test: +   const identityBootstrap = data.visual.identityBootstrap;
+@idream/admin test: +   const bootstrapMode = identityBootstrap.allowed;
+@idream/admin test: +   const qualifiedRoute =
+@idream/admin test: +     data.visual.routeQualifications.find(
+@idream/admin test: +       (route) => route.result === "qualified" && !route.stale,
+@idream/admin test: +     ) ?? null;
+@idream/admin test: +   const bootstrapProfile = identityBootstrap.profile;
+@idream/admin test: +   const qualifiedImageProfile = data.visual.identityCalibration?.profiles.find(
+@idream/admin test: +     (profile) =>
+@idream/admin test: +       profile.profileKey === qualifiedRoute?.generationProfileKey &&
+@idream/admin test: +       profile.profileVersion === qualifiedRoute.generationProfileVersion &&
+@idream/admin test: +       profile.workflowKey === qualifiedRoute.workflowKey &&
+@idream/admin test: +       profile.workflowVersion === qualifiedRoute.workflowVersion,
+@idream/admin test: +   );
+@idream/admin test: +   const orientationForPurpose = (purpose: CharacterAssetPurpose) => {
+@idream/admin test: +     if (bootstrapMode) return bootstrapProfile?.orientation;
+@idream/admin test: +     const preferred = purposeConfig[purpose].orientation;
+@idream/admin test: +     const allowed = qualifiedImageProfile?.allowedOrientations;
+@idream/admin test: +     // Purpose ratios are preferences; the qualified profile owns supported
+@idream/admin test: +     // dimensions. Missing capability data leaves the choice to Main's profile.
+@idream/admin test: +     return allowed?.includes(preferred) ? preferred : allowed?.[0];
+@idream/admin test: +   };
+@idream/admin test: +   const variationRouteReady =
+@idream/admin test: +     qualifiedRoute?.sourceVariationAuthority?.ready === true;
+@idream/admin test: +   const variationRouteBlocker =
+@idream/admin test: +     qualifiedRoute?.sourceVariationAuthority?.blocker ?? "no_qualified_route";
+@idream/admin test: +   const nextIncompletePurpose = nextIncompleteCharacterAssetPurpose(
+@idream/admin test: +     data.journey,
+@idream/admin test: +   );
+@idream/admin test: +   // SPEC: 「已选中」按钮的文案和点击行为必须读同一个值。
+@idream/admin test: +   // INTENT: 文案曾读路由过滤后的 pack、点击读未过滤的原始 pack —— 写着「下一个资产」、点下去跳到别处。
+@idream/admin test: +   // null = 当前用途就是最后一件待办（或图池已齐），下一步是 Launch preview。
+@idream/admin test: +   const advanceTargetPurpose =
+@idream/admin test: +     nextIncompletePurpose === activePurpose ? null : nextIncompletePurpose;
+@idream/admin test: +   const pinnedRunIds = useMemo(
+@idream/admin test: +     () =>
+@idream/admin test: +       new Set(
+@idream/admin test: +         Object.values(data.project.draftAssetSelections ?? {}).flatMap(
+@idream/admin test: +           (selection) => (selection?.runId ? [selection.runId] : []),
+@idream/admin test: +         ),
+@idream/admin test: +       ),
+@idream/admin test: +     [data.project.draftAssetSelections],
+@idream/admin test: +   );
+@idream/admin test: +   const existingImages = useMemo(() => {
+@idream/admin test: +     const images: Array<{
+@idream/admin test: +       readonly id: string;
+@idream/admin test: +       readonly url: string;
+@idream/admin test: +       readonly thumbnailUrl: string;
+@idream/admin test: +     }> = [];
+@idream/admin test: +     const seen = new Set<string>();
+@idream/admin test: +     const add = (
+@idream/admin test: +       id: string,
+@idream/admin test: +       url: string | null | undefined,
+@idream/admin test: +       thumbnailUrl: string | null | undefined = url,
+@idream/admin test: +     ) => {
+@idream/admin test: +       const displayUrl = url ?? thumbnailUrl;
+@idream/admin test: +       if (!displayUrl || seen.has(displayUrl)) return;
+@idream/admin test: +       seen.add(displayUrl);
+@idream/admin test: +       images.push({
+@idream/admin test: +         id,
+@idream/admin test: +         url: displayUrl,
+@idream/admin test: +         thumbnailUrl: thumbnailUrl ?? displayUrl,
+@idream/admin test: +       });
+@idream/admin test: +     };
+@idream/admin test: +     const references = [
+@idream/admin test: +       ...(data.visual.activeReferenceSet?.references ?? []),
+@idream/admin test: +       ...data.visual.anchors,
+@idream/admin test: +       ...data.visual.references,
+@idream/admin test: +       ...(data.visual.videoSources ?? []),
+@idream/admin test: +     ];
+@idream/admin test: +     const preferredAssetId =
+@idream/admin test: +       data.project.draftAssetPack[activePurpose] ??
+@idream/admin test: +       (activePurpose === "character_cover"
+@idream/admin test: +         ? data.project.draftImageAssetId
+@idream/admin test: +         : null);
+@idream/admin test: +     const preferred = references.find(
+@idream/admin test: +       (reference) =>
+@idream/admin test: +         reference.mediaAssetId === preferredAssetId && reference.available,
+@idream/admin test: +     );
+@idream/admin test: +     if (preferred)
+@idream/admin test: +       add(preferred.mediaAssetId, preferred.url, preferred.thumbnailUrl);
+@idream/admin test: +     add(`${data.character.id}:primary`, data.character.imageUrl);
+@idream/admin test: +     add(`${data.character.id}:draft`, data.preview.draft?.imageUrl);
+@idream/admin test: +     for (const reference of references) {
+@idream/admin test: +       if (!reference.available) continue;
+@idream/admin test: +       add(reference.mediaAssetId, reference.url, reference.thumbnailUrl);
+@idream/admin test: +     }
+@idream/admin test: +     return images;
+@idream/admin test: +   }, [activePurpose, data]);
+@idream/admin test: +
+@idream/admin test: +   const loadRuns = useCallback(
+@idream/admin test: +     async (
+@idream/admin test: +       options: {
+@idream/admin test: +         readonly signal?: AbortSignal;
+@idream/admin test: +         readonly preserveSelectedRunId?: string;
+@idream/admin test: +       } = {},
+@idream/admin test: +     ) => {
+@idream/admin test: +       const request = runListRequestGate.current.begin();
+@idream/admin test: +       const query = new URLSearchParams({
+@idream/admin test: +         limit: "20",
+@idream/admin test: +         targetType: "character",
+@idream/admin test: +         targetId: data.character.id,
+@idream/admin test: +         sort: "updated_desc",
+@idream/admin test: +       });
+@idream/admin test: +       const response = await adminV2Operation(
+@idream/admin test: +         "GET /api/v2/admin/creative/runs",
+@idream/admin test: +         {
+@idream/admin test: +           query,
+@idream/admin test: +           ...(options.signal ? { signal: options.signal } : {}),
+@idream/admin test: +         },
+@idream/admin test: +       );
+@idream/admin test: +       const scoped = [...response.items].filter((run) =>
+@idream/admin test: +         isCharacterAssetPurpose(run.purpose),
+@idream/admin test: +       );
+@idream/admin test: +       if (!request.isCurrent()) throw new SupersededProjectionError();
+@idream/admin test: +       setRuns(scoped);
+@idream/admin test: +       const current = selectedRunIdRef.current;
+@idream/admin test: +       const committedTargetId = committedProjectionTargetId(
+@idream/admin test: +         runCreationIntentRef.current,
+@idream/admin test: +       );
+@idream/admin test: +       const preserveCurrent = Boolean(
+@idream/admin test: +         current &&
+@idream/admin test: +         (scoped.some((run) => run.id === current) ||
+@idream/admin test: +           current === options.preserveSelectedRunId ||
+@idream/admin test: +           current === committedTargetId),
+@idream/admin test: +       );
+@idream/admin test: +       if (!preserveCurrent) {
+@idream/admin test: +         const desiredPurpose = nextIncompletePurpose ?? "character_chat";
+@idream/admin test: +         const selectedRunForPurpose =
+@idream/admin test: +           data.project.draftAssetSelections?.[desiredPurpose]?.runId;
+@idream/admin test: +         selectRunId(
+@idream/admin test: +           committedTargetId ??
+@idream/admin test: +             preferredCharacterAssetRunId({
+@idream/admin test: +               runs: scoped,
+@idream/admin test: +               purpose: desiredPurpose,
+@idream/admin test: +               pinnedRunId: selectedRunForPurpose,
+@idream/admin test: +             }),
+@idream/admin test: +         );
+@idream/admin test: +       }
+@idream/admin test: +       return scoped;
+@idream/admin test: +     },
+@idream/admin test: +     [
+@idream/admin test: +       nextIncompletePurpose,
+@idream/admin test: +       data.character.id,
+@idream/admin test: +       data.project.draftAssetSelections,
+@idream/admin test: +       selectRunId,
+@idream/admin test: +     ],
+@idream/admin test: +   );
+@idream/admin test: +
+@idream/admin test: +   // SPEC: 精确读一份 Run 投影，并据此确认「刚提交的那笔生成」是否已被服务端认下。
+@idream/admin test: +   // INTENT: 取消语义 / 在途去重 / 两道闸门顺序 / 失败分流全在 committed-projection 里；
+@idream/admin test: +   //         这里只剩三样组件才知道的东西：怎么取、什么算「已反映」、成功后写哪些状态。
+@idream/admin test: +   const runLoader = useCommittedProjectionLoader<CreativeRunDetail>({
+@idream/admin test: +     fetch: (runId, signal) =>
+@idream/admin test: +       adminV2Operation("GET /api/v2/admin/creative/runs/:id", {
+@idream/admin test: +         path: { id: runId },
+@idream/admin test: +         signal,
+@idream/admin test: +       }),
+@idream/admin test: +     isCurrentTarget: (runId) => selectedRunIdRef.current === runId,
+@idream/admin test: +     committed: {
+@idream/admin test: +       current: () => runCreationIntentRef.current,
+@idream/admin test: +       reflects: (intent, detail) =>
+@idream/admin test: +         committedCharacterRunProjectionMatches(
+@idream/admin test: +           intent,
+@idream/admin test: +           detail,
+@idream/admin test: +           data.character.id,
+@idream/admin test: +         ),
+@idream/admin test: +       mismatchMessage:
+@idream/admin test: +         "The committed Run projection does not match this Character and image purpose. The workspace remains locked.",
+@idream/admin test: +       onReleased: () => updateRunCreationIntentState(null),
+@idream/admin test: +     },
+@idream/admin test: +     commit: (detail, verdict) => {
+@idream/admin test: +       setSelectedRun(detail);
+@idream/admin test: +       // SPEC: 被草稿钉住的 Run 即使掉出最近 20 条也要留在列表里，否则运营台会看不到自己
+@idream/admin test: +       //       正在评审的那一条。
+@idream/admin test: +       if (pinnedRunIds.has(detail.id)) {
+@idream/admin test: +         setRuns((current) =>
+@idream/admin test: +           current.some((run) => run.id === detail.id)
+@idream/admin test: +             ? current
+@idream/admin test: +             : [detail, ...current],
+@idream/admin test: +         );
+@idream/admin test: +       }
+@idream/admin test: +       setSelectedIndex((current) => {
+@idream/admin test: +         if (isCharacterAssetPurpose(detail.purpose)) {
+@idream/admin test: +           const selectedItemId =
+@idream/admin test: +             data.project.draftAssetSelections?.[detail.purpose]?.itemId;
+@idream/admin test: +           const selectedItemIndex = detail.items.findIndex(
+@idream/admin test: +             (item) => item.id === selectedItemId,
+@idream/admin test: +           );
+@idream/admin test: +           if (selectedItemIndex >= 0) return selectedItemIndex;
+@idream/admin test: +         }
+@idream/admin test: +         return Math.min(current, Math.max(detail.items.length - 1, 0));
+@idream/admin test: +       });
+@idream/admin test: +       if (isCharacterAssetPurpose(detail.purpose)) {
+@idream/admin test: +         setActivePurpose(detail.purpose);
+@idream/admin test: +       }
+@idream/admin test: +       if (verdict.kind === "reflected") {
+@idream/admin test: +         setRefreshWarning(null);
+@idream/admin test: +         setMessage(characterAssetRunReceiptMessage(detail));
+@idream/admin test: +       }
+@idream/admin test: +     },
+@idream/admin test: +   });
+@idream/admin test: +   const loadRun = runLoader.load;
+@idream/admin test: +
+@idream/admin test: +   useEffect(() => {
+@idream/admin test: +     if (!permissions.read) return;
+@idream/admin test: +     let cancelled = false;
+@idream/admin test: +     const controller = new AbortController();
+@idream/admin test: +     const gate = runListRequestGate.current;
+@idream/admin test: +     const timer = window.setTimeout(async () => {
+@idream/admin test: +       setLoading(true);
+@idream/admin test: +       setError(null);
+@idream/admin test: +       try {
+@idream/admin test: +         await loadRuns({ signal: controller.signal });
+@idream/admin test: +       } catch (cause) {
+@idream/admin test: +         if (!cancelled && !isProjectionRequestCancellation(cause)) {
+@idream/admin test: +           setError(
+@idream/admin test: +             cause instanceof Error
+@idream/admin test: +               ? cause.message
+@idream/admin test: +               : "Character assets could not be loaded",
+@idream/admin test: +           );
+@idream/admin test: +         }
+@idream/admin test: +       } finally {
+@idream/admin test: +         if (!cancelled) setLoading(false);
+@idream/admin test: +       }
+@idream/admin test: +     }, 0);
+@idream/admin test: +     return () => {
+@idream/admin test: +       cancelled = true;
+@idream/admin test: +       gate.invalidate();
+@idream/admin test: +       controller.abort();
+@idream/admin test: +       window.clearTimeout(timer);
+@idream/admin test: +     };
+@idream/admin test: +   }, [loadRuns, permissions.read]);
+@idream/admin test: +
+@idream/admin test: +   useEffect(() => {
+@idream/admin test: +     if (!selectedRunId || selectedRun?.id === selectedRunId) return;
+@idream/admin test: +     const controller = new AbortController();
+@idream/admin test: +     const timer = window.setTimeout(() => {
+@idream/admin test: +       void loadRun(selectedRunId, { signal: controller.signal }).catch(
+@idream/admin test: +         (cause: unknown) => {
+@idream/admin test: +           // SPEC: 失败的是不是「刚提交、还在等投影」的那一条，决定它进旁注还是进主错误。
+@idream/admin test: +           const route = runLoader.routeFailure(selectedRunId, cause);
+@idream/admin test: +           if (route.kind === "recoverable") {
+@idream/admin test: +             setRefreshWarning(committedRunProjectionUnavailable(route.detail));
+@idream/admin test: +           } else if (route.kind === "fatal") {
+@idream/admin test: +             setError(route.detail ?? "Creative Run could not be loaded");
+@idream/admin test: +           }
+@idream/admin test: +         },
+@idream/admin test: +       );
+@idream/admin test: +     }, 0);
+@idream/admin test: +     return () => {
+@idream/admin test: +       if (selectedRunIdRef.current === selectedRunId) {
+@idream/admin test: +         runLoader.invalidate();
+@idream/admin test: +       }
+@idream/admin test: +       controller.abort();
+@idream/admin test: +       window.clearTimeout(timer);
+@idream/admin test: +     };
+@idream/admin test: +   }, [loadRun, runLoader, selectedRun?.id, selectedRunId]);
+@idream/admin test: +
+@idream/admin test: +   const pollingRunId = selectedRun?.id ?? null;
+@idream/admin test: +   const shouldPollSelectedRun =
+@idream/admin test: +     selectedRun !== null &&
+@idream/admin test: +     ["pending", "running"].includes(selectedRun.executionOutcome);
+@idream/admin test: +   // SPEC: 生成中的 Run 每 4s 刷新一次，失败退避到 8s。
+@idream/admin test: +   const pollAssetRun = useCallback<PollingTask>(
+@idream/admin test: +     async (context) => {
+@idream/admin test: +       if (!pollingRunId) return null;
+@idream/admin test: +       try {
+@idream/admin test: +         await Promise.all([loadRun(pollingRunId), loadRuns()]);
+@idream/admin test: +         if (!context.cancelled) setRefreshWarning(null);
+@idream/admin test: +         return 4_000;
+@idream/admin test: +       } catch (cause) {
+@idream/admin test: +         // INTENT: 请求被新一轮取代不是故障，静默停手等新一轮接管即可。
+@idream/admin test: +         if (isProjectionRequestCancellation(cause)) return null;
+@idream/admin test: +         if (!context.cancelled) {
+@idream/admin test: +           setRefreshWarning(
+@idream/admin test: +             cause instanceof Error
+@idream/admin test: +               ? `Automatic refresh was delayed: ${cause.message}. Retrying in the background; Refresh is also available.`
+@idream/admin test: +               : "Automatic refresh was delayed. Retrying in the background; Refresh is also available.",
+@idream/admin test: +           );
+@idream/admin test: +         }
+@idream/admin test: +         return 8_000;
+@idream/admin test: +       }
+@idream/admin test: +     },
+@idream/admin test: +     [loadRun, loadRuns, pollingRunId],
+@idream/admin test: +   );
+@idream/admin test: +   usePollingTask(
+@idream/admin test: +     pollingRunId && shouldPollSelectedRun ? pollAssetRun : null,
+@idream/admin test: +     4_000,
+@idream/admin test: +   );
+@idream/admin test: +
+@idream/admin test: +   const activeRunDetail =
+@idream/admin test: +     selectedRun?.id === selectedRunId ? selectedRun : null;
+@idream/admin test: +   const selectedExistingImage =
+@idream/admin test: +     existingImages.find((image) => image.id === selectedExistingImageId) ??
+@idream/admin test: +     existingImages[0] ??
+@idream/admin test: +     null;
+@idream/admin test: +   const selectedItem = activeRunDetail?.items[selectedIndex] ?? null;
+@idream/admin test: +   const comparisonItem = comparisonItemId
+@idream/admin test: +     ? (activeRunDetail?.items.find((item) => item.id === comparisonItemId) ??
+@idream/admin test: +       null)
+@idream/admin test: +     : null;
+@idream/admin test: +   const activateCandidate = (index: number) => {
+@idream/admin test: +     const nextItem = activeRunDetail?.items[index];
+@idream/admin test: +     if (!nextItem || mutationContextLocked) return;
+@idream/admin test: +     if (nextItem.id === comparisonItemId) {
+@idream/admin test: +       setComparisonItemId(selectedItem?.id ?? null);
+@idream/admin test: +     }
+@idream/admin test: +     setSelectedIndex(index);
+@idream/admin test: +     setWorkspaceMode(productionOnly ? "library" : "review");
+@idream/admin test: +   };
+@idream/admin test: +   const toggleCandidateComparison = (itemId: string) => {
+@idream/admin test: +     if (mutationContextLocked || itemId === selectedItem?.id) return;
+@idream/admin test: +     setComparisonItemId((current) => (current === itemId ? null : itemId));
+@idream/admin test: +     setWorkspaceMode(productionOnly ? "library" : "review");
+@idream/admin test: +   };
+@idream/admin test: +   const activeConfig = purposeConfig[activePurpose];
+@idream/admin test: +   const mutationContextLocked = Boolean(
+@idream/admin test: +     runCreationIntent ||
+@idream/admin test: +     selectionMutationIntent,
+@idream/admin test: +   );
+@idream/admin test: +   const canGenerate =
+@idream/admin test: +     permissions.create &&
+@idream/admin test: +     (bootstrapMode
+@idream/admin test: +       ? Boolean(bootstrapProfile) && activePurpose === "character_cover"
+@idream/admin test: +       : Boolean(qualifiedRoute) && data.visual.readiness.ready) &&
+@idream/admin test: +     !refreshWarning;
+@idream/admin test: +   const productionBlocked = !bootstrapMode && !data.visual.readiness.ready;
+@idream/admin test: +   const imageProductionRepairable =
+@idream/admin test: +     productionBlocked &&
+@idream/admin test: +     data.visual.imageReadiness?.state === "repairable" &&
+@idream/admin test: +     Boolean(data.visual.imageReadiness.repair);
+@idream/admin test: +   const recurringProductionReady = !bootstrapMode && !productionBlocked;
+@idream/admin test: +   const readinessDescriptionId = `character-image-readiness-${data.character.id}`;
+@idream/admin test: +   const canUseGenerationAction = runCreationIntent
+@idream/admin test: +     ? permissions.create
+@idream/admin test: +     : canGenerate;
+@idream/admin test: +   const selectedPackAssetId =
+@idream/admin test: +     data.project.draftAssetPack[activePurpose] ??
+@idream/admin test: +     (activePurpose === "character_cover"
+@idream/admin test: +       ? (data.project.draftImageAssetId ?? undefined)
+@idream/admin test: +       : undefined);
+@idream/admin test: +   const selectedPackRouteCurrent =
+@idream/admin test: +     data.project.draftAssetSelections?.[activePurpose]?.routeCurrent !== false;
+@idream/admin test: +   const isSelectedAsset = Boolean(selectedItem?.asset && selectedPackRouteCurrent &&
+@idream/admin test: +     selectedPackAssetId === selectedItem.asset.id);
+@idream/admin test: +   const isApprovedItem = Boolean(selectedItem?.asset);
+@idream/admin test: +   const decisionActionLabel = isSelectedAsset
+@idream/admin test: +     ? advanceTargetPurpose === null ? "Selected · preview" : "Selected · next asset"
+@idream/admin test: +     : bootstrapMode ? "Set as identity" : activePurpose === "character_cover"
+@idream/admin test: +       ? "Select primary · next asset" : activePurpose === "character_hero"
+@idream/admin test: +         ? "Select hero · next asset" : "Select chat asset · preview";
+@idream/admin test: +   const canUseDecisionAction =
+@idream/admin test: +     Boolean(selectedItem?.asset) &&
+@idream/admin test: +     (isSelectedAsset || (isApprovedItem && permissions.selectDraft));
+@idream/admin test: +   const prepareImageProduction = async () => {
+@idream/admin test: +     const readiness = data.visual.imageReadiness;
+@idream/admin test: +     if (!readiness || readiness.state !== "repairable" || !readiness.repair)
+@idream/admin test: +       return;
+@idream/admin test: +     setBusy("prepare");
+@idream/admin test: +     setError(null);
+@idream/admin test: +     setMessage(null);
+@idream/admin test: +     const signature = readiness.fingerprint;
+@idream/admin test: +     const idempotencyKey =
+@idream/admin test: +       readinessRepairKeys.current[signature] ?? crypto.randomUUID();
+@idream/admin test: +     readinessRepairKeys.current[signature] = idempotencyKey;
+@idream/admin test: +     try {
+@idream/admin test: +       const committed = await commitProjectMutation({
+@idream/admin test: +         action: "Character image-production preparation",
+@idream/admin test: +         commit: () =>
+@idream/admin test: +           adminV2Operation(
+@idream/admin test: +             "POST /api/v2/admin/characters/:id/image-readiness/repair",
+@idream/admin test: +             {
+@idream/admin test: +               path: { id: data.character.id },
+@idream/admin test: +               idempotencyKey,
+@idream/admin test: +               ifMatch: data.project.version,
+@idream/admin test: +               body: {
+@idream/admin test: +                 entityVersion: data.project.version,
+@idream/admin test: +                 expectedReadinessFingerprint: readiness.fingerprint,
+@idream/admin test: +                 reason:
+@idream/admin test: +                   "Adopt the exact live editorial portrait as future image-generation identity authority",
+@idream/admin test: +                 confirmation: `PREPARE IMAGE PRODUCTION ${data.character.id}`,
+@idream/admin test: +               },
+@idream/admin test: +             },
+@idream/admin test: +           ),
+@idream/admin test: +       });
+@idream/admin test: +       if (committed.refreshed) {
+@idream/admin test: +         delete readinessRepairKeys.current[signature];
+@idream/admin test: +       }
+@idream/admin test: +       setMessage(
+@idream/admin test: +         committed.result.state === "ready"
+@idream/admin test: +           ? "The live portrait is now the sealed identity reference. Image production is ready."
+@idream/admin test: +           : "The live portrait is now the sealed identity reference. A production administrator still needs to activate a compatible image route.",
+@idream/admin test: +       );
+@idream/admin test: +     } catch {
+@idream/admin test: +       setError(
+@idream/admin test: +         "Image production could not be enabled. Your live images were not changed. Try again.",
+@idream/admin test: +       );
+@idream/admin test: +     } finally {
+@idream/admin test: +       setBusy(null);
+@idream/admin test: +     }
+@idream/admin test: +   };
+@idream/admin test: +
+@idream/admin test: +   const choosePurpose = (
+@idream/admin test: +     purpose: CharacterAssetPurpose,
+@idream/admin test: +     options: { readonly identityCommitted?: boolean } = {},
+@idream/admin test: +   ) => {
+@idream/admin test: +     if (
+@idream/admin test: +       !canChooseCharacterAssetPurpose(
+@idream/admin test: +         purpose,
+@idream/admin test: +         bootstrapMode,
+@idream/admin test: +         options.identityCommitted,
+@idream/admin test: +       )
+@idream/admin test: +     )
+@idream/admin test: +       return;
+@idream/admin test: +     runLoader.invalidate();
+@idream/admin test: +     setActivePurpose(purpose);
+@idream/admin test: +     setMessage(null);
+@idream/admin test: +     const selectedRunForPurpose =
+@idream/admin test: +       data.project.draftAssetSelections?.[purpose]?.runId;
+@idream/admin test: +     const nextRunId = preferredCharacterAssetRunId({
+@idream/admin test: +       runs,
+@idream/admin test: +       purpose,
+@idream/admin test: +       pinnedRunId: selectedRunForPurpose,
+@idream/admin test: +     });
+@idream/admin test: +     selectRunId(nextRunId);
+@idream/admin test: +     if (!nextRunId || nextRunId !== selectedRun?.id) setSelectedRun(null);
+@idream/admin test: +     setSelectedIndex(0);
+@idream/admin test: +     // The bootstrap completion callback still closes over pre-commit authority.
+@idream/admin test: +     if (!bootstrapMode || options.identityCommitted) setWorkspaceMode("library");
+@idream/admin test: +   };
+@idream/admin test: +
+@idream/admin test: +   const createRun = async (
+@idream/admin test: +     purpose: CharacterAssetPurpose,
+@idream/admin test: +     referenceAssetIds: string[] = [],
+@idream/admin test: +   ) => {
+@idream/admin test: +     if (
+@idream/admin test: +       runCreationIntent?.status === "committed_projection_pending" &&
+@idream/admin test: +       runCreationIntent.committedTargetId
+@idream/admin test: +     ) {
+@idream/admin test: +       const committedTargetId = runCreationIntent.committedTargetId;
+@idream/admin test: +       setBusy("generate");
+@idream/admin test: +       setError(null);
+@idream/admin test: +       try {
+@idream/admin test: +         runLoader.invalidate();
+@idream/admin test: +         selectRunId(committedTargetId);
+@idream/admin test: +         setSelectedRun(null);
+@idream/admin test: +         await Promise.all([
+@idream/admin test: +           loadRuns({
+@idream/admin test: +             preserveSelectedRunId: committedTargetId,
+@idream/admin test: +           }),
+@idream/admin test: +           loadRun(committedTargetId),
+@idream/admin test: +         ]);
+@idream/admin test: +       } catch (cause) {
+@idream/admin test: +         // INTENT: 这条路径的目标必然就是已提交的那一条，出口固定是旁注——不走 routeFailure，
+@idream/admin test: +         //         因为并发的 loadRuns 失败也应留在旁注里，不该因为 intent 恰好刚被释放
+@idream/admin test: +         //         就升级成主错误。
+@idream/admin test: +         if (!isProjectionRequestCancellation(cause)) {
+@idream/admin test: +           setRefreshWarning(
+@idream/admin test: +             committedRunProjectionUnavailable(
+@idream/admin test: +               cause instanceof Error ? cause.message : null,
+@idream/admin test: +             ),
+@idream/admin test: +           );
+@idream/admin test: +         }
+@idream/admin test: +       } finally {
+@idream/admin test: +         setBusy(null);
+@idream/admin test: +       }
+@idream/admin test: +       return;
+@idream/admin test: +     }
+@idream/admin test: +     const recovered = runCreationIntent
+@idream/admin test: +       ? creativeRunCreateRequestSchema.safeParse(
+@idream/admin test: +           runCreationIntent.requestSnapshot,
+@idream/admin test: +         )
+@idream/admin test: +       : null;
+@idream/admin test: +     if (
+@idream/admin test: +       runCreationIntent &&
+@idream/admin test: +       (runCreationIntent.status === "reconciliation_required" ||
+@idream/admin test: +         (recovered !== null && !recovered.success))
+@idream/admin test: +     ) {
+@idream/admin test: +       setBusy("generate");
+@idream/admin test: +       setError(null);
+@idream/admin test: +       setMessage(null);
+@idream/admin test: +       try {
+@idream/admin test: +         const receipt = await reconcileDurableMutationIntent({
+@idream/admin test: +           intent: runCreationIntent,
+@idream/admin test: +           commandType: "creative.run.create",
+@idream/admin test: +           expectedCharacterId: data.character.id,
+@idream/admin test: +           ...(recovered?.success &&
+@idream/admin test: +           isCharacterAssetPurpose(recovered.data.purpose)
+@idream/admin test: +             ? { expectedPurpose: recovered.data.purpose }
+@idream/admin test: +             : {}),
+@idream/admin test: +         });
+@idream/admin test: +         if (receipt.state === "committed") {
+@idream/admin test: +           if (
+@idream/admin test: +             !receipt.committedTargetId ||
+@idream/admin test: +             receipt.verification?.kind !== "creative_run" ||
+@idream/admin test: +             receipt.verification.runId !== receipt.committedTargetId
+@idream/admin test: +           ) {
+@idream/admin test: +             throw new Error(
+@idream/admin test: +               "The committed Run receipt is missing exact projection evidence. The workspace remains locked.",
+@idream/admin test: +             );
+@idream/admin test: +           }
+@idream/admin test: +           const trustedRequest = creativeRunCreateRequestSchema.safeParse(
+@idream/admin test: +             receipt.verification.requestSnapshot,
+@idream/admin test: +           );
+@idream/admin test: +           if (
+@idream/admin test: +             !trustedRequest.success ||
+@idream/admin test: +             trustedRequest.data.targetType !== "character" ||
+@idream/admin test: +             trustedRequest.data.targetId !== data.character.id ||
+@idream/admin test: +             !isCharacterAssetPurpose(trustedRequest.data.purpose)
+@idream/admin test: +           ) {
+@idream/admin test: +             throw new Error(
+@idream/admin test: +               "The committed Run receipt does not contain the exact Character image request. The workspace remains locked.",
+@idream/admin test: +             );
+@idream/admin test: +           }
+@idream/admin test: +           const committed = updateDurableMutationIntent(runCreationIntent, {
+@idream/admin test: +             status: "committed_projection_pending",
+@idream/admin test: +             committedTargetId: receipt.committedTargetId,
+@idream/admin test: +             requestSnapshot: trustedRequest.data,
+@idream/admin test: +           });
+@idream/admin test: +           updateRunCreationIntentState(committed);
+@idream/admin test: +           runLoader.invalidate();
+@idream/admin test: +           selectRunId(receipt.committedTargetId);
+@idream/admin test: +           setSelectedRun(null);
+@idream/admin test: +           await Promise.all([
+@idream/admin test: +             loadRuns({
+@idream/admin test: +               preserveSelectedRunId: receipt.committedTargetId,
+@idream/admin test: +             }),
+@idream/admin test: +             loadRun(receipt.committedTargetId),
+@idream/admin test: +           ]);
+@idream/admin test: +           setMessage(
+@idream/admin test: +             "The committed generation receipt was recovered from the server.",
+@idream/admin test: +           );
+@idream/admin test: +           return;
+@idream/admin test: +         }
+@idream/admin test: +         if (receipt.state === "cancelled") {
+@idream/admin test: +           clearDurableMutationIntent(runCreationIntent);
+@idream/admin test: +           updateRunCreationIntentState(null);
+@idream/admin test: +           setMessage(
+@idream/admin test: +             "The old generation request had no committed effect. Its key was sealed, so a new request is safe.",
+@idream/admin test: +           );
+@idream/admin test: +           return;
+@idream/admin test: +         }
+@idream/admin test: +         setError(
+@idream/admin test: +           receipt.state === "failed"
+@idream/admin test: +             ? `The saved generation command ${receipt.commandId} is terminally failed. Its key remains locked for operator investigation; do not submit a replacement Run.`
+@idream/admin test: +             : `The saved generation request is ${receipt.state}. Keep this workspace locked and reconcile again after the server reaches a terminal receipt.`,
+@idream/admin test: +         );
+@idream/admin test: +       } catch (cause) {
+@idream/admin test: +         setError(
+@idream/admin test: +           cause instanceof Error
+@idream/admin test: +             ? cause.message
+@idream/admin test: +             : "The saved generation request could not be reconciled.",
+@idream/admin test: +         );
+@idream/admin test: +       } finally {
+@idream/admin test: +         setBusy(null);
+@idream/admin test: +       }
+@idream/admin test: +       return;
+@idream/admin test: +     }
+@idream/admin test: +     const profileId = bootstrapMode
+@idream/admin test: +       ? bootstrapProfile?.profileKey
+@idream/admin test: +       : qualifiedRoute?.generationProfileKey;
+@idream/admin test: +     const orientation = orientationForPurpose(purpose);
+@idream/admin test: +     if (
+@idream/admin test: +       !recovered?.success &&
+@idream/admin test: +       (!profileId ||
+@idream/admin test: +         (bootstrapMode && (!orientation || purpose !== "character_cover")))
+@idream/admin test: +     )
+@idream/admin test: +       return;
+@idream/admin test: +     const count = 1;
+@idream/admin test: +     const brief = briefs[purpose].trim();
+@idream/admin test: +     // SPEC: 这个 title 会写进生成请求并存到后端，不是纯 UI 文案 —— 所以不翻译。
+@idream/admin test: +     // INTENT: Today 页上出现的英文「… · Primary portrait」来自历史数据里存着的这个字段。
+@idream/admin test: +     //         翻译它只影响新数据，旧数据仍是英文，同一列会变成两种语言并存，更糟。
+@idream/admin test: +     //         要改得连同后端已有数据一起迁移，属另一件事。
+@idream/admin test: +     const title = `${subject.name} · ${purposeConfig[purpose].label}`;
+@idream/admin test: +     const body = recovered?.success
+@idream/admin test: +       ? recovered.data
+@idream/admin test: +       : {
+@idream/admin test: +           title,
+@idream/admin test: +           purpose,
+@idream/admin test: +           targetType: "character" as const,
+@idream/admin test: +           targetId: data.character.id,
+@idream/admin test: +           profileId: profileId ?? "",
+@idream/admin test: +           presetIds: [],
+@idream/admin test: +           referenceAssetIds,
+@idream/admin test: +           bootstrapIdentity: bootstrapMode,
+@idream/admin test: +           orientation,
+@idream/admin test: +           count,
+@idream/admin test: +           brief,
+@idream/admin test: +           ...(negativePrompts[purpose].trim()
+@idream/admin test: +             ? { negativePrompt: negativePrompts[purpose].trim() }
+@idream/admin test: +             : {}),
+@idream/admin test: +           consistencyMode: "strict" as const,
+@idream/admin test: +           priority: "normal" as const,
+@idream/admin test: +           reason: bootstrapMode
+@idream/admin test: +             ? "Create the first identity portrait"
+@idream/admin test: +             : referenceAssetIds.length
+@idream/admin test: +               ? "Create identity-preserving variations from the selected character asset"
+@idream/admin test: +               : "Create a customer-facing character asset pack candidate",
+@idream/admin test: +         };
+@idream/admin test: +     if (
+@idream/admin test: +       body.targetType !== "character" ||
+@idream/admin test: +       body.targetId !== data.character.id ||
+@idream/admin test: +       !isCharacterAssetPurpose(body.purpose)
+@idream/admin test: +     ) {
+@idream/admin test: +       setError(
+@idream/admin test: +         "The saved generation intent does not belong to this Character Asset Studio.",
+@idream/admin test: +       );
+@idream/admin test: +       return;
+@idream/admin test: +     }
+@idream/admin test: +     const requestKey = characterAssetRunRequestKey({
+@idream/admin test: +       characterId: data.character.id,
+@idream/admin test: +       title: body.title ?? title,
+@idream/admin test: +       purpose: body.purpose,
+@idream/admin test: +       profileId: body.profileId,
+@idream/admin test: +       referenceAssetIds: body.referenceAssetIds,
+@idream/admin test: +       bootstrapIdentity: body.bootstrapIdentity,
+@idream/admin test: +       orientation: body.orientation ?? "",
+@idream/admin test: +       count: body.count,
+@idream/admin test: +       brief: body.brief,
+@idream/admin test: +       negativePrompt: body.negativePrompt,
+@idream/admin test: +     });
+@idream/admin test: +     let intent = runCreationIntent;
+@idream/admin test: +     if (!intent) {
+@idream/admin test: +       const claim = await claimDurableMutationIntent({
+@idream/admin test: +         scope: `character-asset:create:${actorId}:${data.character.id}`,
+@idream/admin test: +         signature: requestKey,
+@idream/admin test: +         requestSnapshot: body,
+@idream/admin test: +       });
+@idream/admin test: +       intent = claim.intent;
+@idream/admin test: +       if (
+@idream/admin test: +         intent.signature !== requestKey ||
+@idream/admin test: +         ["committed_projection_pending", "reconciliation_required"].includes(
+@idream/admin test: +           intent.status,
+@idream/admin test: +         )
+@idream/admin test: +       ) {
+@idream/admin test: +         const saved = creativeRunCreateRequestSchema.safeParse(
+@idream/admin test: +           intent.requestSnapshot,
+@idream/admin test: +         );
+@idream/admin test: +         if (
+@idream/admin test: +           saved.success &&
+@idream/admin test: +           saved.data.targetType === "character" &&
+@idream/admin test: +           saved.data.targetId === data.character.id &&
+@idream/admin test: +           isCharacterAssetPurpose(saved.data.purpose)
+@idream/admin test: +         ) {
+@idream/admin test: +           setActivePurpose(saved.data.purpose);
+@idream/admin test: +           setBriefs((current) => ({
+@idream/admin test: +             ...current,
+@idream/admin test: +             [saved.data.purpose]: saved.data.brief,
+@idream/admin test: +           }));
+@idream/admin test: +           setNegativePrompts((current) => ({
+@idream/admin test: +             ...current,
+@idream/admin test: +             [saved.data.purpose]: saved.data.negativePrompt ?? "",
+@idream/admin test: +           }));
+@idream/admin test: +         }
+@idream/admin test: +         updateRunCreationIntentState(intent);
+@idream/admin test: +         setError(
+@idream/admin test: +           intent.status === "committed_projection_pending"
+@idream/admin test: +             ? "Another tab already has a committed Character Run receipt. Verify it before creating again."
+@idream/admin test: +             : intent.status === "reconciliation_required"
+@idream/admin test: +               ? "Another tab has an aged Character Run receipt. Reconcile it with the server before creating again."
+@idream/admin test: +               : "Another tab already started a different Character image request. Its exact context is locked for safe resume.",
+@idream/admin test: +         );
+@idream/admin test: +         return;
+@idream/admin test: +       }
+@idream/admin test: +     }
+@idream/admin test: +     updateRunCreationIntentState(intent);
+@idream/admin test: +     setBusy("generate");
+@idream/admin test: +     setError(null);
+@idream/admin test: +     setMessage(null);
+@idream/admin test: +     setRefreshWarning(null);
+@idream/admin test: +     let result: {
+@idream/admin test: +       readonly batch: { readonly id: string };
+@idream/admin test: +       readonly replayed: boolean;
+@idream/admin test: +     };
+@idream/admin test: +     try {
+@idream/admin test: +       result = await adminV2Operation("POST /api/v2/admin/creative/runs", {
+@idream/admin test: +         idempotencyKey: intent.idempotencyKey,
+@idream/admin test: +         body,
+@idream/admin test: +       });
+@idream/admin test: +     } catch (cause) {
+@idream/admin test: +       const rejectedByRuntimePreflight =
+@idream/admin test: +         cause instanceof AdminV2RequestError &&
+@idream/admin test: +         cause.status === 503 &&
+@idream/admin test: +         cause.code === "unavailable" &&
+@idream/admin test: +         cause.message.includes("No Run was created");
+@idream/admin test: +       if (
+@idream/admin test: +         cause instanceof AdminV2RequestError &&
+@idream/admin test: +         ([400, 401, 403, 404, 409, 422].includes(cause.status) ||
+@idream/admin test: +           rejectedByRuntimePreflight)
+@idream/admin test: +       ) {
+@idream/admin test: +         clearDurableMutationIntent(intent);
+@idream/admin test: +         updateRunCreationIntentState(null);
+@idream/admin test: +         setError(
+@idream/admin test: +           rejectedByRuntimePreflight
+@idream/admin test: +             ? "Image generation is offline. Restore backend health, then generate again. No Run was created."
+@idream/admin test: +             : cause.message,
+@idream/admin test: +         );
+@idream/admin test: +       } else {
+@idream/admin test: +         const unknown = updateDurableMutationIntent(intent, {
+@idream/admin test: +           status: "outcome_unknown",
+@idream/admin test: +         });
+@idream/admin test: +         updateRunCreationIntentState(unknown);
+@idream/admin test: +         setError(
+@idream/admin test: +           "Generation outcome is unknown. Choose Resume generation to replay the same intent without creating a duplicate Run.",
+@idream/admin test: +         );
+@idream/admin test: +       }
+@idream/admin test: +       setBusy(null);
+@idream/admin test: +       return;
+@idream/admin test: +     }
+@idream/admin test: +     const committed = updateDurableMutationIntent(intent, {
+@idream/admin test: +       status: "committed_projection_pending",
+@idream/admin test: +       committedTargetId: result.batch.id,
+@idream/admin test: +     });
+@idream/admin test: +     updateRunCreationIntentState(committed);
+@idream/admin test: +     setActivePurpose(body.purpose);
+@idream/admin test: +     setSelectedIndex(0);
+@idream/admin test: +     setMessage(
+@idream/admin test: +       body.bootstrapIdentity
+@idream/admin test: +         ? "First-portrait generation was committed. Results will appear here automatically."
+@idream/admin test: +         : body.referenceAssetIds.length
+@idream/admin test: +           ? "Variation run was committed from this candidate."
+@idream/admin test: +           : "Generation was committed. Results will appear here automatically.",
+@idream/admin test: +     );
+@idream/admin test: +     try {
+@idream/admin test: +       runLoader.invalidate();
+@idream/admin test: +       selectRunId(result.batch.id);
+@idream/admin test: +       setSelectedRun(null);
+@idream/admin test: +       await loadRuns({
+@idream/admin test: +         preserveSelectedRunId: result.batch.id,
+@idream/admin test: +       });
+@idream/admin test: +     } catch (refreshCause) {
+@idream/admin test: +       if (!isProjectionRequestCancellation(refreshCause)) {
+@idream/admin test: +         setRefreshWarning(
+@idream/admin test: +           refreshCause instanceof Error
+@idream/admin test: +             ? `The Run was created, but the latest projection could not be refreshed: ${refreshCause.message}. Choose Verify created Run to retry safely.`
+@idream/admin test: +             : "The Run was created, but the latest projection could not be refreshed. Choose Verify created Run to retry safely.",
+@idream/admin test: +         );
+@idream/admin test: +       }
+@idream/admin test: +     } finally {
+@idream/admin test: +       setBusy(null);
+@idream/admin test: +     }
+@idream/admin test: +   };
+@idream/admin test: +
+@idream/admin test: +   // SPEC: 按钮要说清这一下会重跑哪一张。
+@idream/admin test: +   // INTENT: 它只对 recoveryPurpose 发一条 Run，但旁边写着「3 selected assets…」，
+@idream/admin test: +   //         「Regenerate under current route」会被读成"三张一起重跑"。
+@idream/admin test: +   const regenerateLabel = data.project.draftAssetRouteAuthority?.recoveryPurpose
+@idream/admin test: +     ? t("Regenerate {purpose}", {
+@idream/admin test: +         purpose: t(
+@idream/admin test: +           purposeConfig[data.project.draftAssetRouteAuthority.recoveryPurpose]
+@idream/admin test: +             .label,
+@idream/admin test: +         ),
+@idream/admin test: +       })
+@idream/admin test: +     : t("Regenerate under current route");
+@idream/admin test: +
+@idream/admin test: +   const regenerateUnderCurrentRoute = () => {
+@idream/admin test: +     const purpose = data.project.draftAssetRouteAuthority?.recoveryPurpose;
+@idream/admin test: +     if (!purpose) return;
+@idream/admin test: +     choosePurpose(purpose);
+@idream/admin test: +     void createRun(purpose);
+@idream/admin test: +   };
+@idream/admin test: +
+@idream/admin test: +   const refreshWorkspace = async () => {
+@idream/admin test: +     setError(null);
+@idream/admin test: +     try {
+@idream/admin test: +       await Promise.all([
+@idream/admin test: +         onProjectReload(),
+@idream/admin test: +         loadRuns(),
+@idream/admin test: +         selectedRunId ? loadRun(selectedRunId) : Promise.resolve(),
+@idream/admin test: +       ]);
+@idream/admin test: +       setRefreshWarning(null);
+@idream/admin test: +     } catch (cause) {
+@idream/admin test: +       if (isProjectionRequestCancellation(cause)) return;
+@idream/admin test: +       setError(
+@idream/admin test: +         cause instanceof Error
+@idream/admin test: +           ? cause.message
+@idream/admin test: +           : "Character assets could not be refreshed",
+@idream/admin test: +       );
+@idream/admin test: +     }
+@idream/admin test: +   };
+@idream/admin test: +
+@idream/admin test: +   const verifyReviewIntentProjection = async (
+@idream/admin test: +     intent: DurableMutationIntent,
+@idream/admin test: +     snapshot: {
+@idream/admin test: +       readonly runId: string;
+@idream/admin test: +       readonly itemId: string;
+@idream/admin test: +     },
+@idream/admin test: +   ) => {
+@idream/admin test: +     runLoader.invalidate();
+@idream/admin test: +     selectRunId(snapshot.runId);
+@idream/admin test: +     const detail = await loadRun(snapshot.runId);
+@idream/admin test: +     await loadRuns({
+@idream/admin test: +       preserveSelectedRunId: snapshot.runId,
+@idream/admin test: +     });
+@idream/admin test: +     const projected = detail.items.some(
+@idream/admin test: +       (item) =>
+@idream/admin test: +         item.id === snapshot.itemId &&
+@idream/admin test: +         item.review?.id === intent.committedTargetId,
+@idream/admin test: +     );
+@idream/admin test: +     if (!projected) {
+@idream/admin test: +       throw new Error(
+@idream/admin test: +         "The exact review receipt is not present in the latest Run projection yet.",
+@idream/admin test: +       );
+@idream/admin test: +     }
+@idream/admin test: +     // The surrounding library must observe the same committed review as the inspector.
+@idream/admin test: +     await onProjectReload();
+@idream/admin test: +     clearDurableMutationIntent(intent);
+@idream/admin test: +     setReviewMutationIntent(null);
+@idream/admin test: +     setRefreshWarning(null);
+@idream/admin test: +     setReviewDrafts((current) => {
+@idream/admin test: +       const drafts = { ...current };
+@idream/admin test: +       delete drafts[snapshot.itemId];
+@idream/admin test: +       return drafts;
+@idream/admin test: +     });
+@idream/admin test: +     return detail;
+@idream/admin test: +   };
+@idream/admin test: +
+@idream/admin test: +   const resumeReviewMutation = async () => {
+@idream/admin test: +     if (!permissions.review || !reviewMutationIntent) return;
+@idream/admin test: +     const snapshot = characterAssetReviewIntentSnapshot(
+@idream/admin test: +       reviewMutationIntent.requestSnapshot,
+@idream/admin test: +     );
+@idream/admin test: +     if (
+@idream/admin test: +       reviewMutationIntent.status === "reconciliation_required" ||
+@idream/admin test: +       !snapshot
+@idream/admin test: +     ) {
+@idream/admin test: +       setBusy("review");
+@idream/admin test: +       setError(null);
+@idream/admin test: +       setMessage(null);
+@idream/admin test: +       try {
+@idream/admin test: +         const receipt = await reconcileDurableMutationIntent({
+@idream/admin test: +           intent: reviewMutationIntent,
+@idream/admin test: +           commandType: "creative.review.decision",
+@idream/admin test: +         });
+@idream/admin test: +         if (receipt.state === "committed") {
+@idream/admin test: +           if (
+@idream/admin test: +             !receipt.committedTargetId ||
+@idream/admin test: +             receipt.verification?.kind !== "creative_review_decision" ||
+@idream/admin test: +             receipt.verification.decisionId !== receipt.committedTargetId
+@idream/admin test: +           ) {
+@idream/admin test: +             throw new Error(
+@idream/admin test: +               "The committed review receipt is missing exact projection evidence. The workspace remains locked.",
+@idream/admin test: +             );
+@idream/admin test: +           }
+@idream/admin test: +           const committed = updateDurableMutationIntent(reviewMutationIntent, {
+@idream/admin test: +             status: "committed_projection_pending",
+@idream/admin test: +             committedTargetId: receipt.committedTargetId,
+@idream/admin test: +             requestSnapshot: receipt.verification.requestSnapshot,
+@idream/admin test: +           });
+@idream/admin test: +           setReviewMutationIntent(committed);
+@idream/admin test: +           selectRunId(receipt.verification.runId);
+@idream/admin test: +           await verifyReviewIntentProjection(committed, receipt.verification);
+@idream/admin test: +           setMessage(
+@idream/admin test: +             "The committed review receipt was recovered and verified against its exact Run item.",
+@idream/admin test: +           );
+@idream/admin test: +           return;
+@idream/admin test: +         }
+@idream/admin test: +         if (receipt.state === "cancelled") {
+@idream/admin test: +           clearDurableMutationIntent(reviewMutationIntent);
+@idream/admin test: +           setReviewMutationIntent(null);
+@idream/admin test: +           setMessage(
+@idream/admin test: +             "The old review request had no committed effect. Its key was sealed, so a new decision is safe.",
+@idream/admin test: +           );
+@idream/admin test: +           return;
+@idream/admin test: +         }
+@idream/admin test: +         setError(
+@idream/admin test: +           receipt.state === "failed"
+@idream/admin test: +             ? `The saved review command ${receipt.commandId} is terminally failed. Its key remains locked for operator investigation; do not submit a replacement decision.`
+@idream/admin test: +             : `The saved review request is ${receipt.state}. Keep this workspace locked and reconcile again after the server reaches a terminal receipt.`,
+@idream/admin test: +         );
+@idream/admin test: +       } catch (cause) {
+@idream/admin test: +         setError(
+@idream/admin test: +           cause instanceof Error
+@idream/admin test: +             ? cause.message
+@idream/admin test: +             : "The saved review request could not be reconciled.",
+@idream/admin test: +         );
+@idream/admin test: +       } finally {
+@idream/admin test: +         setBusy(null);
+@idream/admin test: +       }
+@idream/admin test: +       return;
+@idream/admin test: +     }
+@idream/admin test: +     setBusy("review");
+@idream/admin test: +     setError(null);
+@idream/admin test: +     setRefreshWarning(null);
+@idream/admin test: +     let currentIntent = reviewMutationIntent;
+@idream/admin test: +     try {
+@idream/admin test: +       if (reviewMutationIntent.status === "committed_projection_pending") {
+@idream/admin test: +         await verifyReviewIntentProjection(reviewMutationIntent, snapshot);
+@idream/admin test: +         return;
+@idream/admin test: +       }
+@idream/admin test: +       const result = await adminV2Operation(
+@idream/admin test: +         "POST /api/v2/admin/creative/runs/:id/items/:itemId/decisions",
+@idream/admin test: +         {
+@idream/admin test: +           path: { id: snapshot.runId, itemId: snapshot.itemId },
+@idream/admin test: +           idempotencyKey: reviewMutationIntent.idempotencyKey,
+@idream/admin test: +           body: snapshot.body,
+@idream/admin test: +         },
+@idream/admin test: +       );
+@idream/admin test: +       const committed = updateDurableMutationIntent(reviewMutationIntent, {
+@idream/admin test: +         status: "committed_projection_pending",
+@idream/admin test: +         committedTargetId: result.decisionId,
+@idream/admin test: +       });
+@idream/admin test: +       currentIntent = committed;
+@idream/admin test: +       setReviewMutationIntent(committed);
+@idream/admin test: +       await verifyReviewIntentProjection(committed, snapshot);
+@idream/admin test: +     } catch (cause) {
+@idream/admin test: +       if (currentIntent.status === "committed_projection_pending") {
+@idream/admin test: +         setRefreshWarning(
+@idream/admin test: +           cause instanceof Error
+@idream/admin test: +             ? `The review was committed, but verification is still pending: ${cause.message}`
+@idream/admin test: +             : "The review was committed, but verification is still pending.",
+@idream/admin test: +         );
+@idream/admin test: +       } else if (
+@idream/admin test: +         cause instanceof AdminV2RequestError &&
+@idream/admin test: +         [400, 401, 403, 404, 409, 422].includes(cause.status)
+@idream/admin test: +       ) {
+@idream/admin test: +         clearDurableMutationIntent(currentIntent);
+@idream/admin test: +         setReviewMutationIntent(null);
+@idream/admin test: +         setError(cause.message);
+@idream/admin test: +       } else {
+@idream/admin test: +         const unknown = updateDurableMutationIntent(currentIntent, {
+@idream/admin test: +           status: "outcome_unknown",
+@idream/admin test: +         });
+@idream/admin test: +         setReviewMutationIntent(unknown);
+@idream/admin test: +         setError(
+@idream/admin test: +           "Review outcome remains unknown. Resume will continue to reuse the same request key.",
+@idream/admin test: +         );
+@idream/admin test: +       }
+@idream/admin test: +     } finally {
+@idream/admin test: +       setBusy(null);
+@idream/admin test: +     }
+@idream/admin test: +   };
+@idream/admin test: +
+@idream/admin test: +   useEffect(() => {
+@idream/admin test: +     if (
+@idream/admin test: +       !selectionMutationIntent ||
+@idream/admin test: +       selectionMutationIntent.status !== "committed_projection_pending"
+@idream/admin test: +     ) {
+@idream/admin test: +       return;
+@idream/admin test: +     }
+@idream/admin test: +     const snapshot = characterAssetSelectionIntentSnapshot(
+@idream/admin test: +       selectionMutationIntent.requestSnapshot,
+@idream/admin test: +     );
+@idream/admin test: +     const recoveryVerification = characterAssetSelectionRecoveryVerification(
+@idream/admin test: +       selectionMutationIntent.requestSnapshot,
+@idream/admin test: +     );
+@idream/admin test: +     if (!snapshot && !recoveryVerification) return;
+@idream/admin test: +     const projected = recoveryVerification
+@idream/admin test: +       ? recoveryVerification.characterId === data.character.id &&
+@idream/admin test: +         (recoveryVerification.kind === "character_identity_bootstrap"
+@idream/admin test: +           ? data.visual.activeReferenceSet?.id ===
+@idream/admin test: +               recoveryVerification.referenceSetRevisionId &&
+@idream/admin test: +             data.visual.activeReferenceSet.references.some(
+@idream/admin test: +               (reference) =>
+@idream/admin test: +                 reference.mediaAssetId === recoveryVerification.anchorAssetId,
+@idream/admin test: +             ) &&
+@idream/admin test: +             data.project.draftImageAssetId ===
+@idream/admin test: +               recoveryVerification.draftImageAssetId &&
+@idream/admin test: +             data.project.draftAssetPack.character_cover ===
+@idream/admin test: +               recoveryVerification.draftImageAssetId &&
+@idream/admin test: +             data.visual.activeIdentity !== null
+@idream/admin test: +           : isCharacterAssetPurpose(recoveryVerification.selectedPurpose) &&
+@idream/admin test: +             data.project.draftAssetPack[
+@idream/admin test: +               recoveryVerification.selectedPurpose
+@idream/admin test: +             ] === recoveryVerification.selectedAssetId &&
+@idream/admin test: +             data.project.draftAssetSelections?.[
+@idream/admin test: +               recoveryVerification.selectedPurpose
+@idream/admin test: +             ]?.assetId === recoveryVerification.selectedAssetId)
+@idream/admin test: +       : snapshot
+@idream/admin test: +         ? snapshot.kind === "bootstrap"
+@idream/admin test: +           ? data.visual.activeReferenceSet?.id ===
+@idream/admin test: +               selectionMutationIntent.committedTargetId &&
+@idream/admin test: +             data.project.draftAssetPack.character_cover ===
+@idream/admin test: +               snapshot.body.assetId &&
+@idream/admin test: +             data.visual.activeIdentity !== null
+@idream/admin test: +           : (() => {
+@idream/admin test: +               const selection =
+@idream/admin test: +                 data.project.draftAssetSelections?.[snapshot.body.purpose];
+@idream/admin test: +               return (
+@idream/admin test: +                 data.project.draftAssetPack[snapshot.body.purpose] ===
+@idream/admin test: +                   snapshot.body.assetId &&
+@idream/admin test: +                 selection?.runId === snapshot.body.runId &&
+@idream/admin test: +                 selection?.itemId === snapshot.body.itemId &&
+@idream/admin test: +                 selection?.reviewDecisionId === snapshot.body.reviewDecisionId
+@idream/admin test: +               );
+@idream/admin test: +             })()
+@idream/admin test: +         : false;
+@idream/admin test: +     if (!projected) return;
+@idream/admin test: +     const timer = window.setTimeout(() => {
+@idream/admin test: +       clearDurableMutationIntent(selectionMutationIntent);
+@idream/admin test: +       setSelectionMutationIntent(null);
+@idream/admin test: +       setRefreshWarning(null);
+@idream/admin test: +       setMessage(
+@idream/admin test: +         recoveryVerification?.kind === "character_identity_bootstrap" ||
+@idream/admin test: +           snapshot?.kind === "bootstrap"
+@idream/admin test: +           ? "Identity bootstrap authority is verified in the Character workspace."
+@idream/admin test: +           : "The exact draft asset selection is verified in the Character workspace.",
+@idream/admin test: +       );
+@idream/admin test: +     }, 0);
+@idream/admin test: +     return () => window.clearTimeout(timer);
+@idream/admin test: +   }, [
+@idream/admin test: +     data.character.id,
+@idream/admin test: +     data.project.draftAssetPack,
+@idream/admin test: +     data.project.draftAssetSelections,
+@idream/admin test: +     data.project.draftImageAssetId,
+@idream/admin test: +     data.visual.activeIdentity,
+@idream/admin test: +     data.visual.activeReferenceSet?.id,
+@idream/admin test: +     data.visual.activeReferenceSet?.references,
+@idream/admin test: +     selectionMutationIntent,
+@idream/admin test: +   ]);
+@idream/admin test: +
+@idream/admin test: +   const resumeSelectionMutation = async () => {
+@idream/admin test: +     if (!permissions.selectDraft || !selectionMutationIntent) return;
+@idream/admin test: +     const snapshot = characterAssetSelectionIntentSnapshot(
+@idream/admin test: +       selectionMutationIntent.requestSnapshot,
+@idream/admin test: +     );
+@idream/admin test: +     const recoveryVerification = characterAssetSelectionRecoveryVerification(
+@idream/admin test: +       selectionMutationIntent.requestSnapshot,
+@idream/admin test: +     );
+@idream/admin test: +     if (
+@idream/admin test: +       selectionMutationIntent.status === "reconciliation_required" ||
+@idream/admin test: +       (!snapshot && !recoveryVerification)
+@idream/admin test: +     ) {
+@idream/admin test: +       setBusy("select");
+@idream/admin test: +       setError(null);
+@idream/admin test: +       setMessage(null);
+@idream/admin test: +       try {
+@idream/admin test: +         let commandType = characterAssetSelectionIntentCommandType(
+@idream/admin test: +           selectionMutationIntent,
+@idream/admin test: +         );
+@idream/admin test: +         let receipt: Awaited<ReturnType<typeof reconcileDurableMutationIntent>>;
+@idream/admin test: +         try {
+@idream/admin test: +           receipt = await reconcileDurableMutationIntent({
+@idream/admin test: +             intent: selectionMutationIntent,
+@idream/admin test: +             commandType,
+@idream/admin test: +             expectedCharacterId: data.character.id,
+@idream/admin test: +           });
+@idream/admin test: +         } catch (cause) {
+@idream/admin test: +           const details =
+@idream/admin test: +             cause instanceof AdminV2RequestError &&
+@idream/admin test: +             cause.status === 409 &&
+@idream/admin test: +             cause.details &&
+@idream/admin test: +             typeof cause.details === "object" &&
+@idream/admin test: +             !Array.isArray(cause.details)
+@idream/admin test: +               ? (cause.details as Record<string, unknown>)
+@idream/admin test: +               : null;
+@idream/admin test: +           const existingCommandType = details?.existingCommandType;
+@idream/admin test: +           if (
+@idream/admin test: +             existingCommandType !== "character.identity.bootstrap" &&
+@idream/admin test: +             existingCommandType !== "character.project.draft_image.select"
+@idream/admin test: +           ) {
+@idream/admin test: +             throw cause;
+@idream/admin test: +           }
+@idream/admin test: +           commandType = existingCommandType;
+@idream/admin test: +           receipt = await reconcileDurableMutationIntent({
+@idream/admin test: +             intent: selectionMutationIntent,
+@idream/admin test: +             commandType,
+@idream/admin test: +             expectedCharacterId: data.character.id,
+@idream/admin test: +           });
+@idream/admin test: +         }
+@idream/admin test: +         if (receipt.state === "committed") {
+@idream/admin test: +           const verification = receipt.verification;
+@idream/admin test: +           const matchesBootstrap =
+@idream/admin test: +             commandType === "character.identity.bootstrap" &&
+@idream/admin test: +             verification?.kind === "character_identity_bootstrap" &&
+@idream/admin test: +             verification.characterId === data.character.id &&
+@idream/admin test: +             verification.referenceSetRevisionId === receipt.committedTargetId;
+@idream/admin test: +           const matchesDraftSelection =
+@idream/admin test: +             commandType === "character.project.draft_image.select" &&
+@idream/admin test: +             verification?.kind === "character_draft_image_selection" &&
+@idream/admin test: +             verification.characterId === data.character.id &&
+@idream/admin test: +             verification.selectedAssetId === receipt.committedTargetId;
+@idream/admin test: +           if (
+@idream/admin test: +             !receipt.committedTargetId ||
+@idream/admin test: +             (!matchesBootstrap && !matchesDraftSelection)
+@idream/admin test: +           ) {
+@idream/admin test: +             throw new Error(
+@idream/admin test: +               "The committed selection receipt is missing exact Character projection evidence. The workspace remains locked.",
+@idream/admin test: +             );
+@idream/admin test: +           }
+@idream/admin test: +           const committed = updateDurableMutationIntent(
+@idream/admin test: +             selectionMutationIntent,
+@idream/admin test: +             {
+@idream/admin test: +               status: "committed_projection_pending",
+@idream/admin test: +               committedTargetId: receipt.committedTargetId,
+@idream/admin test: +               requestSnapshot: verification,
+@idream/admin test: +             },
+@idream/admin test: +           );
+@idream/admin test: +           setSelectionMutationIntent(committed);
+@idream/admin test: +           await Promise.all([onProjectReload(), loadRuns()]);
+@idream/admin test: +           setMessage(
+@idream/admin test: +             "The committed selection receipt was recovered. It remains locked until the exact Character authority is visible.",
+@idream/admin test: +           );
+@idream/admin test: +           return;
+@idream/admin test: +         }
+@idream/admin test: +         if (receipt.state === "cancelled") {
+@idream/admin test: +           clearDurableMutationIntent(selectionMutationIntent);
+@idream/admin test: +           setSelectionMutationIntent(null);
+@idream/admin test: +           setMessage(
+@idream/admin test: +             "The old selection request had no committed effect. Its key was sealed, so a new selection is safe.",
+@idream/admin test: +           );
+@idream/admin test: +           return;
+@idream/admin test: +         }
+@idream/admin test: +         setError(
+@idream/admin test: +           receipt.state === "failed"
+@idream/admin test: +             ? `The saved selection command ${receipt.commandId} is terminally failed. Its key remains locked for operator investigation; do not submit a replacement selection.`
+@idream/admin test: +             : `The saved selection request is ${receipt.state}. Keep this workspace locked and reconcile again after the server reaches a terminal receipt.`,
+@idream/admin test: +         );
+@idream/admin test: +       } catch (cause) {
+@idream/admin test: +         setError(
+@idream/admin test: +           cause instanceof Error
+@idream/admin test: +             ? cause.message
+@idream/admin test: +             : "The saved selection request could not be reconciled.",
+@idream/admin test: +         );
+@idream/admin test: +       } finally {
+@idream/admin test: +         setBusy(null);
+@idream/admin test: +       }
+@idream/admin test: +       return;
+@idream/admin test: +     }
+@idream/admin test: +     if (!snapshot) {
+@idream/admin test: +       setBusy("select");
+@idream/admin test: +       setError(null);
+@idream/admin test: +       try {
+@idream/admin test: +         await onProjectReload();
+@idream/admin test: +       } catch (cause) {
+@idream/admin test: +         setRefreshWarning(
+@idream/admin test: +           cause instanceof Error
+@idream/admin test: +             ? `Selection authority is still refreshing: ${cause.message}`
+@idream/admin test: +             : "Selection authority is still refreshing.",
+@idream/admin test: +         );
+@idream/admin test: +       } finally {
+@idream/admin test: +         setBusy(null);
+@idream/admin test: +       }
+@idream/admin test: +       return;
+@idream/admin test: +     }
+@idream/admin test: +     setBusy("select");
+@idream/admin test: +     setError(null);
+@idream/admin test: +     let currentIntent = selectionMutationIntent;
+@idream/admin test: +     try {
+@idream/admin test: +       if (currentIntent.status === "committed_projection_pending") {
+@idream/admin test: +         await onProjectReload();
+@idream/admin test: +         return;
+@idream/admin test: +       }
+@idream/admin test: +       await commitProjectMutation({
+@idream/admin test: +         action:
+@idream/admin test: +           snapshot.kind === "bootstrap"
+@idream/admin test: +             ? "Identity bootstrap recovery"
+@idream/admin test: +             : "Draft asset selection recovery",
+@idream/admin test: +         commit: async () => {
+@idream/admin test: +           if (snapshot.kind === "bootstrap") {
+@idream/admin test: +             const result = await adminV2Operation(
+@idream/admin test: +               "POST /api/v2/admin/characters/:id/identity-bootstrap",
+@idream/admin test: +               {
+@idream/admin test: +                 path: { id: data.character.id },
+@idream/admin test: +                 idempotencyKey: currentIntent.idempotencyKey,
+@idream/admin test: +                 ifMatch: snapshot.body.entityVersion,
+@idream/admin test: +                 body: snapshot.body,
+@idream/admin test: +               },
+@idream/admin test: +             );
+@idream/admin test: +             currentIntent = updateDurableMutationIntent(currentIntent, {
+@idream/admin test: +               status: "committed_projection_pending",
+@idream/admin test: +               committedTargetId: result.referenceSetRevisionId,
+@idream/admin test: +             });
+@idream/admin test: +             setSelectionMutationIntent(currentIntent);
+@idream/admin test: +             return result;
+@idream/admin test: +           }
+@idream/admin test: +           const result = await adminV2Operation(
+@idream/admin test: +             "PATCH /api/v2/admin/characters/:id/draft-image",
+@idream/admin test: +             {
+@idream/admin test: +               path: { id: data.character.id },
+@idream/admin test: +               idempotencyKey: currentIntent.idempotencyKey,
+@idream/admin test: +               ifMatch: snapshot.body.entityVersion,
+@idream/admin test: +               body: snapshot.body,
+@idream/admin test: +             },
+@idream/admin test: +           );
+@idream/admin test: +           currentIntent = updateDurableMutationIntent(currentIntent, {
+@idream/admin test: +             status: "committed_projection_pending",
+@idream/admin test: +             committedTargetId: result.selectedAssetId,
+@idream/admin test: +           });
+@idream/admin test: +           setSelectionMutationIntent(currentIntent);
+@idream/admin test: +           return result;
+@idream/admin test: +         },
+@idream/admin test: +       });
+@idream/admin test: +     } catch (cause) {
+@idream/admin test: +       if (currentIntent.status === "committed_projection_pending") {
+@idream/admin test: +         setRefreshWarning(
+@idream/admin test: +           cause instanceof Error
+@idream/admin test: +             ? `Selection was committed, but authority verification is still pending: ${cause.message}`
+@idream/admin test: +             : "Selection was committed, but authority verification is still pending.",
+@idream/admin test: +         );
+@idream/admin test: +       } else if (
+@idream/admin test: +         cause instanceof AdminV2RequestError &&
+@idream/admin test: +         [400, 401, 403, 404, 409, 422].includes(cause.status)
+@idream/admin test: +       ) {
+@idream/admin test: +         clearDurableMutationIntent(currentIntent);
+@idream/admin test: +         setSelectionMutationIntent(null);
+@idream/admin test: +         setError(cause.message);
+@idream/admin test: +       } else {
+@idream/admin test: +         currentIntent = updateDurableMutationIntent(currentIntent, {
+@idream/admin test: +           status: "outcome_unknown",
+@idream/admin test: +         });
+@idream/admin test: +         setSelectionMutationIntent(currentIntent);
+@idream/admin test: +         setError(
+@idream/admin test: +           "Selection outcome remains unknown. Resume will continue to reuse the same request key.",
+@idream/admin test: +         );
+@idream/admin test: +       }
+@idream/admin test: +     } finally {
+@idream/admin test: +       setBusy(null);
+@idream/admin test: +     }
+@idream/admin test: +   };
+@idream/admin test: +
+@idream/admin test: +   const approveAndContinue = async () => {
+@idream/admin test: +     if (selectionMutationIntent) {
+@idream/admin test: +       await resumeSelectionMutation();
+@idream/admin test: +       return;
+@idream/admin test: +     }
+@idream/admin test: +     if (refreshWarning) return;
+@idream/admin test: +     if (!activeRunDetail || !selectedItem?.asset) return;
+@idream/admin test: +     const selectedAsset = selectedItem.asset;
+@idream/admin test: +     if (isSelectedAsset) {
+@idream/admin test: +       if (advanceTargetPurpose) choosePurpose(advanceTargetPurpose);
+@idream/admin test: +       else onContinue("preview");
+@idream/admin test: +       return;
+@idream/admin test: +     }
+@idream/admin test: +     if (!isApprovedItem) return;
+@idream/admin test: +     if (!permissions.selectDraft) return;
+@idream/admin test: +     const nextIdentityVersion = identityBootstrap.nextIdentityVersion;
+@idream/admin test: +     const bootstrapReason = `Establish the selected first portrait as identity version ${nextIdentityVersion} and the next Release primary image`;
+@idream/admin test: +     const bootstrapBody = {
+@idream/admin test: +       entityVersion: data.project.version,
+@idream/admin test: +       runId: activeRunDetail.id,
+@idream/admin test: +       itemId: selectedItem.id,
+@idream/admin test: +       assetId: selectedAsset.id,
+@idream/admin test: +       ...(selectedItem.review?.id
+@idream/admin test: +         ? { reviewDecisionId: selectedItem.review.id }
+@idream/admin test: +         : {}),
+@idream/admin test: +       reason: bootstrapReason,
+@idream/admin test: +       confirmation: `BOOTSTRAP IDENTITY ${data.character.id}`,
+@idream/admin test: +     };
+@idream/admin test: +     const draftSelectionBody = {
+@idream/admin test: +       entityVersion: data.project.version,
+@idream/admin test: +       purpose: activePurpose,
+@idream/admin test: +       runId: activeRunDetail.id,
+@idream/admin test: +       itemId: selectedItem.id,
+@idream/admin test: +       assetId: selectedAsset.id,
+@idream/admin test: +       ...(selectedItem.review?.id
+@idream/admin test: +         ? { reviewDecisionId: selectedItem.review.id }
+@idream/admin test: +         : {}),
+@idream/admin test: +       reason: `Operator selected ${activeConfig.label.toLowerCase()} for the next Character Release`,
+@idream/admin test: +     };
+@idream/admin test: +     const selectionSignature = bootstrapMode
+@idream/admin test: +       ? characterAssetBootstrapRequestKey({
+@idream/admin test: +           characterId: data.character.id,
+@idream/admin test: +           entityVersion: bootstrapBody.entityVersion,
+@idream/admin test: +           runId: bootstrapBody.runId,
+@idream/admin test: +           itemId: bootstrapBody.itemId,
+@idream/admin test: +           assetId: bootstrapBody.assetId,
+@idream/admin test: +           reviewDecisionId: bootstrapBody.reviewDecisionId,
+@idream/admin test: +           reason: bootstrapReason,
+@idream/admin test: +         })
+@idream/admin test: +       : characterAssetDraftSelectionRequestKey({
+@idream/admin test: +           characterId: data.character.id,
+@idream/admin test: +           body: draftSelectionBody,
+@idream/admin test: +         });
+@idream/admin test: +     const selectionSnapshot = bootstrapMode
+@idream/admin test: +       ? { kind: "bootstrap" as const, body: bootstrapBody }
+@idream/admin test: +       : {
+@idream/admin test: +           kind: "draft_selection" as const,
+@idream/admin test: +           body: draftSelectionBody,
+@idream/admin test: +         };
+@idream/admin test: +     const claim = await claimDurableMutationIntent({
+@idream/admin test: +       scope: `character-asset:selection:${actorId}:${data.character.id}`,
+@idream/admin test: +       signature: selectionSignature,
+@idream/admin test: +       requestSnapshot: selectionSnapshot,
+@idream/admin test: +     });
+@idream/admin test: +     const intent = claim.intent;
+@idream/admin test: +     if (
+@idream/admin test: +       intent.signature !== selectionSignature ||
+@idream/admin test: +       ["committed_projection_pending", "reconciliation_required"].includes(
+@idream/admin test: +         intent.status,
+@idream/admin test: +       )
+@idream/admin test: +     ) {
+@idream/admin test: +       setSelectionMutationIntent(intent);
+@idream/admin test: +       setError(
+@idream/admin test: +         intent.status === "committed_projection_pending"
+@idream/admin test: +           ? "Another tab already committed an asset selection receipt. Verify it before selecting again."
+@idream/admin test: +           : intent.status === "reconciliation_required"
+@idream/admin test: +             ? "Another tab has an aged asset-selection receipt. Reconcile it with the server before selecting again."
+@idream/admin test: +             : "Another tab already started a different asset selection. Resume its exact locked request first.",
+@idream/admin test: +       );
+@idream/admin test: +       return;
+@idream/admin test: +     }
+@idream/admin test: +     setSelectionMutationIntent(intent);
+@idream/admin test: +     setBusy("select");
+@idream/admin test: +     setError(null);
+@idream/admin test: +     let committedIntent: DurableMutationIntent | null = null;
+@idream/admin test: +     try {
+@idream/admin test: +       await commitProjectMutation({
+@idream/admin test: +         action: bootstrapMode
+@idream/admin test: +           ? "Identity bootstrap selection"
+@idream/admin test: +           : `${activeConfig.label} selection`,
+@idream/admin test: +         commit: async () => {
+@idream/admin test: +           if (bootstrapMode) {
+@idream/admin test: +             const mutation = characterIdentityBootstrapMutation(
+@idream/admin test: +               data.character.id,
+@idream/admin test: +               data.project.version,
+@idream/admin test: +               activeRunDetail.id,
+@idream/admin test: +               selectedItem.id,
+@idream/admin test: +               selectedAsset.id,
+@idream/admin test: +               selectedItem.review?.id,
+@idream/admin test: +               bootstrapReason,
+@idream/admin test: +               intent.idempotencyKey,
+@idream/admin test: +             );
+@idream/admin test: +             const result = await adminV2Operation(
+@idream/admin test: +               mutation.operationId,
+@idream/admin test: +               mutation.options,
+@idream/admin test: +             );
+@idream/admin test: +             committedIntent = updateDurableMutationIntent(intent, {
+@idream/admin test: +               status: "committed_projection_pending",
+@idream/admin test: +               committedTargetId: result.referenceSetRevisionId,
+@idream/admin test: +             });
+@idream/admin test: +             setSelectionMutationIntent(committedIntent);
+@idream/admin test: +             setMessage(
+@idream/admin test: +               `Identity version ${nextIdentityVersion}, its sealed Reference Set, and the draft primary image were committed.`,
+@idream/admin test: +             );
+@idream/admin test: +             return result;
+@idream/admin test: +           }
+@idream/admin test: +           const result = await adminV2Operation(
+@idream/admin test: +             "PATCH /api/v2/admin/characters/:id/draft-image",
+@idream/admin test: +             {
+@idream/admin test: +               path: { id: data.character.id },
+@idream/admin test: +               idempotencyKey: intent.idempotencyKey,
+@idream/admin test: +               ifMatch: data.project.version,
+@idream/admin test: +               body: draftSelectionBody,
+@idream/admin test: +             },
+@idream/admin test: +           );
+@idream/admin test: +           committedIntent = updateDurableMutationIntent(intent, {
+@idream/admin test: +             status: "committed_projection_pending",
+@idream/admin test: +             committedTargetId: result.selectedAssetId,
+@idream/admin test: +           });
+@idream/admin test: +           setSelectionMutationIntent(committedIntent);
+@idream/admin test: +           setMessage(
+@idream/admin test: +             `${activeConfig.label} was committed to the next Character Release draft.`,
+@idream/admin test: +           );
+@idream/admin test: +           return result;
+@idream/admin test: +         },
+@idream/admin test: +         afterRefresh: () => {
+@idream/admin test: +           setRefreshWarning(null);
+@idream/admin test: +           if (activePurpose === "character_cover") {
+@idream/admin test: +             choosePurpose("character_hero", {
+@idream/admin test: +               identityCommitted: bootstrapMode,
+@idream/admin test: +             });
+@idream/admin test: +           } else if (activePurpose === "character_hero") {
+@idream/admin test: +             choosePurpose("character_chat");
+@idream/admin test: +           } else {
+@idream/admin test: +             onContinue("preview");
+@idream/admin test: +           }
+@idream/admin test: +         },
+@idream/admin test: +       });
+@idream/admin test: +     } catch (cause) {
+@idream/admin test: +       if (
+@idream/admin test: +         intent &&
+@idream/admin test: +         cause instanceof AdminV2RequestError &&
+@idream/admin test: +         [400, 401, 403, 404, 409, 422].includes(cause.status)
+@idream/admin test: +       ) {
+@idream/admin test: +         clearDurableMutationIntent(intent);
+@idream/admin test: +         setSelectionMutationIntent(null);
+@idream/admin test: +         setError(cause.message);
+@idream/admin test: +       } else if (intent) {
+@idream/admin test: +         const unknown = updateDurableMutationIntent(intent, {
+@idream/admin test: +           status: "outcome_unknown",
+@idream/admin test: +         });
+@idream/admin test: +         setSelectionMutationIntent(unknown);
+@idream/admin test: +         setError(
+@idream/admin test: +           "Selection outcome is unknown. Repeat the same selection to resume it with the same idempotency key.",
+@idream/admin test: +         );
+@idream/admin test: +       } else {
+@idream/admin test: +         setError(
+@idream/admin test: +           cause instanceof Error
+@idream/admin test: +             ? cause.message
+@idream/admin test: +             : "Character asset could not be selected",
+@idream/admin test: +         );
+@idream/admin test: +       }
+@idream/admin test: +     } finally {
+@idream/admin test: +       setBusy(null);
+@idream/admin test: +     }
+@idream/admin test: +   };
+@idream/admin test: +
+@idream/admin test: +   if (!permissions.read)
+@idream/admin test: +     return (
+@idream/admin test: +       <section className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-8">
+@idream/admin test: +         <ShieldAlert className="h-6 w-6" />
+@idream/admin test: +         <h3 className="mt-4 font-semibold">
+@idream/admin test: +           {t("No asset workspace permission")}
+@idream/admin test: +         </h3>
+@idream/admin test: +         <p className="mt-2 text-sm text-[var(--ad-text-muted)]">
+@idream/admin test: +           {t("creative.run.read is required to see character production.")}
+@idream/admin test: +         </p>
+@idream/admin test: +       </section>
+@idream/admin test: +     );
+@idream/admin test: +   if (loading)
+@idream/admin test: +     return (
+@idream/admin test: +       <section
+@idream/admin test: +         aria-busy="true"
+@idream/admin test: +         className="grid min-h-80 place-items-center rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)]"
+@idream/admin test: +         role="status"
+@idream/admin test: +       >
+@idream/admin test: +         <span className="inline-flex items-center gap-2 text-sm text-[var(--ad-text-muted)]">
+@idream/admin test: +           <Loader2 className="h-4 w-4 animate-spin" />{" "}
+@idream/admin test: +           {t("Loading character assets")}
+@idream/admin test: +         </span>
+@idream/admin test: +       </section>
+@idream/admin test: +     );
+@idream/admin test: +   const runIntentNeedsReconciliation = Boolean(
+@idream/admin test: +     runCreationIntent &&
+@idream/admin test: +     (runCreationIntent.status === "reconciliation_required" ||
+@idream/admin test: +       !creativeRunCreateRequestSchema.safeParse(
+@idream/admin test: +         runCreationIntent.requestSnapshot,
+@idream/admin test: +       ).success),
+@idream/admin test: +   );
+@idream/admin test: +   const reviewIntentNeedsReconciliation = Boolean(
+@idream/admin test: +     reviewMutationIntent &&
+@idream/admin test: +     (reviewMutationIntent.status === "reconciliation_required" ||
+@idream/admin test: +       !characterAssetReviewIntentSnapshot(
+@idream/admin test: +         reviewMutationIntent.requestSnapshot,
+@idream/admin test: +       )),
+@idream/admin test: +   );
+@idream/admin test: +   const selectionIntentNeedsReconciliation = Boolean(
+@idream/admin test: +     selectionMutationIntent &&
+@idream/admin test: +     (selectionMutationIntent.status === "reconciliation_required" ||
+@idream/admin test: +       (!characterAssetSelectionIntentSnapshot(
+@idream/admin test: +         selectionMutationIntent.requestSnapshot,
+@idream/admin test: +       ) &&
+@idream/admin test: +         !characterAssetSelectionRecoveryVerification(
+@idream/admin test: +           selectionMutationIntent.requestSnapshot,
+@idream/admin test: +         ))),
+@idream/admin test: +   );
+@idream/admin test: +   const generationActionLabel = runIntentNeedsReconciliation
+@idream/admin test: +     ? "Reconcile saved request"
+@idream/admin test: +     : runCreationIntent?.status === "outcome_unknown" ||
+@idream/admin test: +         runCreationIntent?.status === "submitting"
+@idream/admin test: +       ? "Resume generation"
+@idream/admin test: +       : runCreationIntent?.status === "committed_projection_pending"
+@idream/admin test: +         ? "Verify created Run"
+@idream/admin test: +         : `Generate 1 ${activeConfig.pluralLabel}`;
+@idream/admin test: +   const generationActionText = generationActionLabel.startsWith("Generate ")
+@idream/admin test: +     ? t("Generate {count} {assetType}", {
+@idream/admin test: +         count: 1,
+@idream/admin test: +         assetType: t(activeConfig.pluralLabel),
+@idream/admin test: +       })
+@idream/admin test: +     : t(generationActionLabel);
+@idream/admin test: +   const generationActionDescriptionId = `character-generation-action-${data.character.id}`;
+@idream/admin test: +   const generationActionDisabled =
+@idream/admin test: +     !canUseGenerationAction ||
+@idream/admin test: +     busy !== null ||
+@idream/admin test: +     (!runCreationIntent && !briefs[activePurpose].trim()) ||
+@idream/admin test: +     Boolean(selectionMutationIntent);
+@idream/admin test: +   const generationActionDescription =
+@idream/admin test: +     busy !== null
+@idream/admin test: +       ? "Wait for the current image-production action to finish."
+@idream/admin test: +       : selectionMutationIntent
+@idream/admin test: +           ? "Resolve the saved selection before starting another generation."
+@idream/admin test: +           : !permissions.create
+@idream/admin test: +             ? "creative.run.create permission is required."
+@idream/admin test: +             : !runCreationIntent && !briefs[activePurpose].trim()
+@idream/admin test: +               ? "Add a focused generation brief first."
+@idream/admin test: +               : bootstrapMode && !bootstrapProfile
+@idream/admin test: +                 ? "Publish an active text-to-image bootstrap profile first."
+@idream/admin test: +                 : bootstrapMode && activePurpose !== "character_cover"
+@idream/admin test: +                   ? "Commit the first identity portrait before generating the remaining asset pack."
+@idream/admin test: +                   : productionBlocked
+@idream/admin test: +                     ? "Complete the Character image-readiness actions first."
+@idream/admin test: +                     : refreshWarning
+@idream/admin test: +                       ? "Refresh the workspace before starting another generation."
+@idream/admin test: +                       : !qualifiedRoute && !bootstrapMode
+@idream/admin test: +                         ? "Qualify a generation route for this Character first."
+@idream/admin test: +                         : "The generation runtime is checked before any Run is created.";
+@idream/admin test: +
+@idream/admin test: +   return (
+@idream/admin test: +     <div className="space-y-4 pb-12">
+@idream/admin test: +       {error ? (
+@idream/admin test: +         <p
+@idream/admin test: +           className="rounded-lg bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"
+@idream/admin test: +           role="alert"
+@idream/admin test: +         >
+@idream/admin test: +           {t(error)}
+@idream/admin test: +         </p>
+@idream/admin test: +       ) : null}
+@idream/admin test: +       {message ? (
+@idream/admin test: +         <p
+@idream/admin test: +           className="rounded-lg bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]"
+@idream/admin test: +           role="status"
+@idream/admin test: +         >
+@idream/admin test: +           {t(message)}
+@idream/admin test: +         </p>
+@idream/admin test: +       ) : null}
+@idream/admin test: +       {!recurringProductionReady ? (
+@idream/admin test: +         <section
+@idream/admin test: +           aria-labelledby="asset-pack-title"
+@idream/admin test: +           className="overflow-hidden rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)]"
+@idream/admin test: +         >
+@idream/admin test: +           <div className="flex flex-col gap-4 p-4 sm:p-5 lg:flex-row lg:items-end lg:justify-between">
+@idream/admin test: +             <div className="min-w-0">
+@idream/admin test: +               <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">
+@idream/admin test: +                 {t(
+@idream/admin test: +                   bootstrapMode
+@idream/admin test: +                     ? "First identity portrait"
+@idream/admin test: +                     : productionBlocked
+@idream/admin test: +                       ? imageProductionRepairable
+@idream/admin test: +                         ? "Enable image production"
+@idream/admin test: +                         : "Image production setup"
+@idream/admin test: +                       : "Ready for ongoing image production",
+@idream/admin test: +                 )}
+@idream/admin test: +               </p>
+@idream/admin test: +               <h3 className="mt-1 text-xl font-semibold" id="asset-pack-title">
+@idream/admin test: +                 {t(
+@idream/admin test: +                   bootstrapMode
+@idream/admin test: +                     ? "Establish the face customers will recognize"
+@idream/admin test: +                     : productionBlocked
+@idream/admin test: +                       ? imageProductionRepairable
+@idream/admin test: +                         ? "Use the current live portrait for future image generation"
+@idream/admin test: +                         : "Finish visual setup before creating more images"
+@idream/admin test: +                       : "{name}'s images",
+@idream/admin test: +                   { name: subject.name },
+@idream/admin test: +                 )}
+@idream/admin test: +               </h3>
+@idream/admin test: +               <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--ad-text-muted)]">
+@idream/admin test: +                 {t(
+@idream/admin test: +                   bootstrapMode
+@idream/admin test: +                     ? productionOnly
+@idream/admin test: +                       ? `Generate the first portrait without references, compare the results, then set one as identity version ${identityBootstrap.nextIdentityVersion}.`
+@idream/admin test: +                       : `Generate the first portrait without references, review it as the identity definition, then commit it as identity version ${identityBootstrap.nextIdentityVersion}.`
+@idream/admin test: +                     : productionBlocked
+@idream/admin test: +                       ? imageProductionRepairable
+@idream/admin test: +                         ? "Seal the existing live portrait as the reusable identity reference. Current live images and releases will not change."
+@idream/admin test: +                         : "Complete the current visual setup action once. Existing live images and releases will not change."
+@idream/admin test: +                       : "Create one image from the locked identity, review it, then decide whether it belongs in the draft asset pack.",
+@idream/admin test: +                 )}
+@idream/admin test: +               </p>
+@idream/admin test: +             </div>
+@idream/admin test: +             <div className="flex flex-wrap gap-2">
+@idream/admin test: +               <WorkspaceButton
+@idream/admin test: +                 disabled={busy !== null}
+@idream/admin test: +                 onClick={() => void refreshWorkspace()}
+@idream/admin test: +               >
+@idream/admin test: +                 <RefreshCcw className="h-4 w-4" /> {t("Refresh")}
+@idream/admin test: +               </WorkspaceButton>
+@idream/admin test: +               {bootstrapMode ? (
+@idream/admin test: +                 <WorkspaceButton
+@idream/admin test: +                   aria-describedby={
+@idream/admin test: +                     generationActionDisabled
+@idream/admin test: +                       ? generationActionDescriptionId
+@idream/admin test: +                       : undefined
+@idream/admin test: +                   }
+@idream/admin test: +                   disabled={generationActionDisabled}
+@idream/admin test: +                   onClick={() => void createRun(activePurpose)}
+@idream/admin test: +                   tone="primary"
+@idream/admin test: +                 >
+@idream/admin test: +                   <WandSparkles className="h-4 w-4" /> {generationActionText}
+@idream/admin test: +                 </WorkspaceButton>
+@idream/admin test: +               ) : null}
+@idream/admin test: +             </div>
+@idream/admin test: +           </div>
+@idream/admin test: +           {generationActionDisabled ? (
+@idream/admin test: +             <p className="sr-only" id={generationActionDescriptionId}>
+@idream/admin test: +               {t(generationActionDescription)}
+@idream/admin test: +             </p>
+@idream/admin test: +           ) : null}
+@idream/admin test: +           {bootstrapMode ? (
+@idream/admin test: +             <div
+@idream/admin test: +               className={cn(
+@idream/admin test: +                 "mx-4 mb-4 rounded-lg p-3 text-sm sm:mx-5",
+@idream/admin test: +                 bootstrapProfile
+@idream/admin test: +                   ? "bg-[var(--ad-blue-bg)] text-[var(--ad-blue-text)]"
+@idream/admin test: +                   : "bg-[var(--ad-yellow-bg)] text-[var(--ad-yellow-text)]",
+@idream/admin test: +               )}
+@idream/admin test: +             >
+@idream/admin test: +               <p>
+@idream/admin test: +                 {bootstrapProfile
+@idream/admin test: +                   ? `${bootstrapProfile.label} · ${bootstrapProfile.orientation} · ${t(
+@idream/admin test: +                       identityBootstrap.state === "recoverable_empty_history"
+@idream/admin test: +                         ? `no reference input. The reviewed result will supersede the unanchored candidate history as identity version ${identityBootstrap.nextIdentityVersion}.`
+@idream/admin test: +                         : "no reference input. The reviewed result becomes the reference authority.",
+@idream/admin test: +                     )}`
+@idream/admin test: +                   : t(
+@idream/admin test: +                       "No active text-to-image bootstrap profile is available. Generation remains blocked until one is published.",
+@idream/admin test: +                     )}
+@idream/admin test: +               </p>
+@idream/admin test: +               {bootstrapProfile ? (
+@idream/admin test: +                 <p className="mt-1 text-xs">
+@idream/admin test: +                   {t(
+@idream/admin test: +                     "The generation runtime is checked before any Run is created.",
+@idream/admin test: +                   )}
+@idream/admin test: +                 </p>
+@idream/admin test: +               ) : null}
+@idream/admin test: +             </div>
+@idream/admin test: +           ) : !productionOnly &&
+@idream/admin test: +             data.project.draftAssetRouteAuthority?.status === "stale" ? (
+@idream/admin test: +             <div className="mx-4 mb-4 flex flex-col gap-3 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)] sm:mx-5 sm:flex-row sm:items-center sm:justify-between">
+@idream/admin test: +               <span>
+@idream/admin test: +                 {t(
+@idream/admin test: +                   `The active image route changed. ${data.project.draftAssetRouteAuthority.stalePurposes.length} selected asset${data.project.draftAssetRouteAuthority.stalePurposes.length === 1 ? "" : "s"} remain in history but cannot be published.`,
+@idream/admin test: +                 )}
+@idream/admin test: +               </span>
+@idream/admin test: +               <WorkspaceButton
+@idream/admin test: +                 disabled={!canGenerate || busy !== null}
+@idream/admin test: +                 onClick={regenerateUnderCurrentRoute}
+@idream/admin test: +               >
+@idream/admin test: +                 {regenerateLabel}
+@idream/admin test: +               </WorkspaceButton>
+@idream/admin test: +             </div>
+@idream/admin test: +           ) : productionBlocked ? (
+@idream/admin test: +             <div className="mx-4 mb-4 sm:mx-5">
+@idream/admin test: +               <ImageProductionReadinessCard
+@idream/admin test: +                 blockers={data.visual.readiness.blockers}
+@idream/admin test: +                 canRepair={
+@idream/admin test: +                   data.visual.imageReadiness?.state === "repairable" &&
+@idream/admin test: +                   permissions.selectDraft
+@idream/admin test: +                 }
+@idream/admin test: +                 descriptionId={readinessDescriptionId}
+@idream/admin test: +                 onContinue={() => onContinue("visual")}
+@idream/admin test: +                 onRepair={() => void prepareImageProduction()}
+@idream/admin test: +                 repairing={busy === "prepare"}
+@idream/admin test: +               />
+@idream/admin test: +             </div>
+@idream/admin test: +           ) : null}
+@idream/admin test: +         </section>
+@idream/admin test: +       ) : null}
+@idream/admin test: +
+@idream/admin test: +       {!productionOnly &&
+@idream/admin test: +       recurringProductionReady &&
+@idream/admin test: +       data.project.draftAssetRouteAuthority?.status === "stale" ? (
+@idream/admin test: +         <div className="flex flex-col gap-3 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)] sm:flex-row sm:items-center sm:justify-between">
+@idream/admin test: +           <span>
+@idream/admin test: +             {t(
+@idream/admin test: +               `The active image route changed. ${data.project.draftAssetRouteAuthority.stalePurposes.length} selected asset${data.project.draftAssetRouteAuthority.stalePurposes.length === 1 ? "" : "s"} remain in history but cannot be published.`,
+@idream/admin test: +             )}
+@idream/admin test: +           </span>
+@idream/admin test: +           <WorkspaceButton
+@idream/admin test: +             disabled={!canGenerate || busy !== null}
+@idream/admin test: +             onClick={regenerateUnderCurrentRoute}
+@idream/admin test: +           >
+@idream/admin test: +             {regenerateLabel}
+@idream/admin test: +           </WorkspaceButton>
+@idream/admin test: +         </div>
+@idream/admin test: +       ) : null}
+@idream/admin test: +
+@idream/admin test: +       <IdentityRail data={data} onRepair={() => onContinue("visual")} />
+@idream/admin test: +
+@idream/admin test: +       {runCreationIntent?.committedTargetId ? (
+@idream/admin test: +         <p
+@idream/admin test: +           className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 text-sm"
+@idream/admin test: +           role="status"
+@idream/admin test: +         >
+@idream/admin test: +           {t("Created Run receipt:")}{" "}
+@idream/admin test: +           <span className="font-medium">
+@idream/admin test: +             {runCreationIntent.committedTargetId}
+@idream/admin test: +           </span>
+@idream/admin test: +           {t(
+@idream/admin test: +             ". Verify its projection before starting another generation intent.",
+@idream/admin test: +           )}
+@idream/admin test: +         </p>
+@idream/admin test: +       ) : null}
+@idream/admin test: +       {!productionOnly && reviewMutationIntent ? (
+@idream/admin test: +         <div
+@idream/admin test: +           className="flex flex-col gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 text-sm sm:flex-row sm:items-center sm:justify-between"
+@idream/admin test: +           role="status"
+@idream/admin test: +         >
+@idream/admin test: +           <span>
+@idream/admin test: +             {reviewIntentNeedsReconciliation
+@idream/admin test: +               ? t(
+@idream/admin test: +                   "This saved review is aged or no longer matches the active contract. Reconcile its server receipt before another decision.",
+@idream/admin test: +                 )
+@idream/admin test: +               : reviewMutationIntent.status === "committed_projection_pending"
+@idream/admin test: +                 ? t(
+@idream/admin test: +                     "Review receipt is committed; verify the exact decision in the latest Run projection.",
+@idream/admin test: +                   )
+@idream/admin test: +                 : t(
+@idream/admin test: +                     "Review submission is ready to resume with the same request key.",
+@idream/admin test: +                   )}
+@idream/admin test: +           </span>
+@idream/admin test: +           <WorkspaceButton
+@idream/admin test: +             disabled={!permissions.review || busy !== null}
+@idream/admin test: +             onClick={() => void resumeReviewMutation()}
+@idream/admin test: +           >
+@idream/admin test: +             {reviewIntentNeedsReconciliation
+@idream/admin test: +               ? t("Reconcile review")
+@idream/admin test: +               : reviewMutationIntent.status === "committed_projection_pending"
+@idream/admin test: +                 ? t("Verify review")
+@idream/admin test: +                 : t("Resume review")}
+@idream/admin test: +           </WorkspaceButton>
+@idream/admin test: +         </div>
+@idream/admin test: +       ) : null}
+@idream/admin test: +       {selectionMutationIntent ? (
+@idream/admin test: +         <div
+@idream/admin test: +           className="flex flex-col gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 text-sm sm:flex-row sm:items-center sm:justify-between"
+@idream/admin test: +           role="status"
+@idream/admin test: +         >
+@idream/admin test: +           <span>
+@idream/admin test: +             {selectionIntentNeedsReconciliation
+@idream/admin test: +               ? t(
+@idream/admin test: +                   "This saved selection is aged or no longer matches the active contract. Reconcile its server receipt before another selection.",
+@idream/admin test: +                 )
+@idream/admin test: +               : selectionMutationIntent.status ===
+@idream/admin test: +                   "committed_projection_pending"
+@idream/admin test: +                 ? t(
+@idream/admin test: +                     "Selection receipt is committed; verify it against current Character authority.",
+@idream/admin test: +                   )
+@idream/admin test: +                 : t(
+@idream/admin test: +                     "Asset selection is ready to resume with the same request key.",
+@idream/admin test: +                   )}
+@idream/admin test: +           </span>
+@idream/admin test: +           <WorkspaceButton
+@idream/admin test: +             disabled={!permissions.selectDraft || busy !== null}
+@idream/admin test: +             onClick={() => void resumeSelectionMutation()}
+@idream/admin test: +           >
+@idream/admin test: +             {selectionIntentNeedsReconciliation
+@idream/admin test: +               ? t("Reconcile selection")
+@idream/admin test: +               : selectionMutationIntent.status ===
+@idream/admin test: +                   "committed_projection_pending"
+@idream/admin test: +                 ? t("Verify selection")
+@idream/admin test: +                 : t("Resume selection")}
+@idream/admin test: +           </WorkspaceButton>
+@idream/admin test: +         </div>
+@idream/admin test: +       ) : null}
+@idream/admin test: +       {refreshWarning ? (
+@idream/admin test: +         <p
+@idream/admin test: +           className="rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]"
+@idream/admin test: +           role="status"
+@idream/admin test: +         >
+@idream/admin test: +           {refreshWarning}
+@idream/admin test: +         </p>
+@idream/admin test: +       ) : null}
+@idream/admin test: +       <div className={characterAssetStudioLayoutClass}>
+@idream/admin test: +         <section aria-labelledby="candidate-title" className="min-w-0">
+@idream/admin test: +           <div className="flex flex-wrap items-end justify-between gap-3 pb-3">
+@idream/admin test: +             <div>
+@idream/admin test: +               <h3 className="font-semibold" id="candidate-title">
+@idream/admin test: +                 {productionBlocked
+@idream/admin test: +                   ? t("Candidate history is paused")
+@idream/admin test: +                   : activeRunDetail?.items.length
+@idream/admin test: +                     ? t("{count} recent images", {
+@idream/admin test: +                         count: activeRunDetail.items.length,
+@idream/admin test: +                       })
+@idream/admin test: +                     : existingImages.length
+@idream/admin test: +                       ? t("{count} images", { count: existingImages.length })
+@idream/admin test: +                       : t("Ready for a first run")}
+@idream/admin test: +               </h3>
+@idream/admin test: +               <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
+@idream/admin test: +                 {t(activeConfig.label)}
+@idream/admin test: +               </p>
+@idream/admin test: +             </div>
+@idream/admin test: +             {activeRunDetail ? (
+@idream/admin test: +               <div className="flex flex-wrap gap-2">
+@idream/admin test: +                 <StatusBadge value={activeRunDetail.executionOutcome} />
+@idream/admin test: +                 <StatusBadge value={activeRunDetail.reviewState} />
+@idream/admin test: +               </div>
+@idream/admin test: +             ) : null}
+@idream/admin test: +           </div>
+@idream/admin test: +
+@idream/admin test: +           {!bootstrapMode &&
+@idream/admin test: +           qualifiedRoute &&
+@idream/admin test: +           selectedItem &&
+@idream/admin test: +           !variationRouteReady ? (
+@idream/admin test: +             <div className="mt-3 flex flex-col gap-2 rounded-lg bg-[var(--ad-blue-bg)] p-3 text-xs leading-5 text-[var(--ad-blue-text)] sm:flex-row sm:items-center sm:justify-between">
+@idream/admin test: +               <div>
+@idream/admin test: +                 <p className="font-semibold">{t("More like this unavailable")}</p>
+@idream/admin test: +                 <p className="mt-1">
+@idream/admin test: +                   {t(
+@idream/admin test: +                     characterSourceVariationBlockerMessage(variationRouteBlocker),
+@idream/admin test: +                   )}
+@idream/admin test: +                 </p>
+@idream/admin test: +                 <p className="mt-1">
+@idream/admin test: +                   {t(characterSourceVariationAvailabilityMessage())}
+@idream/admin test: +                 </p>
+@idream/admin test: +               </div>
+@idream/admin test: +               <WorkspaceButton onClick={() => onContinue("visual")}>
+@idream/admin test: +                 {t("Review generation route")}
+@idream/admin test: +               </WorkspaceButton>
+@idream/admin test: +             </div>
+@idream/admin test: +           ) : null}
+@idream/admin test: +
+@idream/admin test: +           <div className="mt-1">
+@idream/admin test: +             {productionBlocked ? (
+@idream/admin test: +               <div className="grid min-h-64 place-items-center rounded-lg border border-dashed border-[var(--ad-border)] bg-black/[0.02] px-6 py-8 text-center text-[var(--ad-text-muted)]">
+@idream/admin test: +                 <div>
+@idream/admin test: +                   <ShieldAlert className="mx-auto h-6 w-6" />
+@idream/admin test: +                   <p className="mt-3 text-sm font-semibold">
+@idream/admin test: +                     {t("Image production is waiting for visual setup")}
+@idream/admin test: +                   </p>
+@idream/admin test: +                   <p className="mt-1 max-w-md text-xs leading-5">
+@idream/admin test: +                     {t(
+@idream/admin test: +                       "Complete the readiness steps above; candidate generation will appear here when the character is ready.",
+@idream/admin test: +                     )}
+@idream/admin test: +                   </p>
+@idream/admin test: +                 </div>
+@idream/admin test: +               </div>
+@idream/admin test: +             ) : selectedItem?.asset && comparisonItem?.asset ? (
+@idream/admin test: +               <CandidateComparisonStage
+@idream/admin test: +                 activeItem={selectedItem}
+@idream/admin test: +                 activePurpose={activePurpose}
+@idream/admin test: +                 comparisonItem={comparisonItem}
+@idream/admin test: +                 onClose={() => setComparisonItemId(null)}
+@idream/admin test: +                 onUseComparison={() => {
+@idream/admin test: +                   const comparisonIndex =
+@idream/admin test: +                     activeRunDetail?.items.findIndex(
+@idream/admin test: +                       (item) => item.id === comparisonItem.id,
+@idream/admin test: +                     ) ?? -1;
+@idream/admin test: +                   if (comparisonIndex >= 0) activateCandidate(comparisonIndex);
+@idream/admin test: +                 }}
+@idream/admin test: +                 subjectName={subject.name}
+@idream/admin test: +               />
+@idream/admin test: +             ) : activeRunDetail?.items.length ? (
+@idream/admin test: +               <CandidateBatchGrid
+@idream/admin test: +                 activeItemId={selectedItem?.id ?? null}
+@idream/admin test: +                 activePurpose={activePurpose}
+@idream/admin test: +                 comparisonItemId={comparisonItemId}
+@idream/admin test: +                 disabled={mutationContextLocked}
+@idream/admin test: +                 items={activeRunDetail.items}
+@idream/admin test: +                 onActivate={activateCandidate}
+@idream/admin test: +                 onCompare={toggleCandidateComparison}
+@idream/admin test: +                 runId={activeRunDetail.id}
+@idream/admin test: +                 selectedPackAssetId={selectedPackAssetId}
+@idream/admin test: +                 subjectName={subject.name}
+@idream/admin test: +               />
+@idream/admin test: +             ) : selectedExistingImage ? (
+@idream/admin test: +               <div aria-label={t("Character image library")}>
+@idream/admin test: +                 <div
+@idream/admin test: +                   className="overflow-hidden rounded-lg bg-black/[0.04]"
+@idream/admin test: +                   style={{ height: "min(500px, 60vh)" }}
+@idream/admin test: +                 >
+@idream/admin test: +                   <AssetImage
+@idream/admin test: +                     alt={t("{name} image {number}", {
+@idream/admin test: +                       name: subject.name,
+@idream/admin test: +                       number: existingImages.indexOf(selectedExistingImage) + 1,
+@idream/admin test: +                     })}
+@idream/admin test: +                     className="h-full w-full object-contain"
+@idream/admin test: +                     src={selectedExistingImage.url}
+@idream/admin test: +                   />
+@idream/admin test: +                 </div>
+@idream/admin test: +                 <div
+@idream/admin test: +                   className="mt-3 flex gap-2 overflow-x-auto pb-1"
+@idream/admin test: +                   role="list"
+@idream/admin test: +                 >
+@idream/admin test: +                   {existingImages.map((image, index) => (
+@idream/admin test: +                     <div
+@idream/admin test: +                       className="w-24 shrink-0"
+@idream/admin test: +                       key={image.id}
+@idream/admin test: +                       role="listitem"
+@idream/admin test: +                     >
+@idream/admin test: +                       <button
+@idream/admin test: +                         aria-label={t("Open image {number}", {
+@idream/admin test: +                           number: index + 1,
+@idream/admin test: +                         })}
+@idream/admin test: +                         aria-pressed={image.id === selectedExistingImage.id}
+@idream/admin test: +                         className={cn(
+@idream/admin test: +                           "w-full overflow-hidden rounded-md border bg-black/[0.04] p-0.5 transition focus-visible:outline focus-visible:outline-2",
+@idream/admin test: +                           image.id === selectedExistingImage.id
+@idream/admin test: +                             ? "border-[var(--ad-ink)] ring-1 ring-[var(--ad-ink)]"
+@idream/admin test: +                             : "border-[var(--ad-border)] hover:border-[var(--ad-text-muted)]",
+@idream/admin test: +                         )}
+@idream/admin test: +                         onClick={() => setSelectedExistingImageId(image.id)}
+@idream/admin test: +                         type="button"
+@idream/admin test: +                       >
+@idream/admin test: +                         <AssetImage
+@idream/admin test: +                           alt={t("{name} thumbnail {number}", {
+@idream/admin test: +                             name: subject.name,
+@idream/admin test: +                             number: index + 1,
+@idream/admin test: +                           })}
+@idream/admin test: +                           className="aspect-square w-full rounded-[4px] object-cover"
+@idream/admin test: +                           src={image.thumbnailUrl}
+@idream/admin test: +                         />
+@idream/admin test: +                       </button>
+@idream/admin test: +                     </div>
+@idream/admin test: +                   ))}
+@idream/admin test: +                 </div>
+@idream/admin test: +               </div>
+@idream/admin test: +             ) : (
+@idream/admin test: +               <div className="grid min-h-64 place-items-center rounded-lg border border-dashed border-[var(--ad-border)] bg-black/[0.02] px-6 text-center text-[var(--ad-text-muted)]">
+@idream/admin test: +                 <div>
+@idream/admin test: +                   <Sparkles className="mx-auto h-7 w-7" />
+@idream/admin test: +                   <p className="mt-3 text-sm">
+@idream/admin test: +                     {t("Generate an image, then choose whether to use it.")}
+@idream/admin test: +                   </p>
+@idream/admin test: +                 </div>
+@idream/admin test: +               </div>
+@idream/admin test: +             )}
+@idream/admin test: +           </div>
+@idream/admin test: +         </section>
+@idream/admin test: +
+@idream/admin test: +         {recurringProductionReady &&
+@idream/admin test: +         (productionOnly || workspaceMode === "library") ? (
+@idream/admin test: +           <aside
+@idream/admin test: +             className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 xl:sticky xl:top-24"
+@idream/admin test: +             aria-labelledby="new-image-title"
+@idream/admin test: +           >
+@idream/admin test: +             {!productionOnly ? (
+@idream/admin test: +               <div
+@idream/admin test: +                 className="flex border-b border-[var(--ad-border)]"
+@idream/admin test: +                 role="tablist"
+@idream/admin test: +                 aria-label={t("Image inspector mode")}
+@idream/admin test: +               >
+@idream/admin test: +                 <button
+@idream/admin test: +                   aria-selected={false}
+@idream/admin test: +                   className="min-h-11 border-b-2 border-transparent px-3 text-sm text-[var(--ad-text-muted)] disabled:opacity-40"
+@idream/admin test: +                   disabled={!selectedItem?.asset}
+@idream/admin test: +                   onClick={() => setWorkspaceMode("review")}
+@idream/admin test: +                   role="tab"
+@idream/admin test: +                   type="button"
+@idream/admin test: +                 >
+@idream/admin test: +                   {t("Inspect")}
+@idream/admin test: +                 </button>
+@idream/admin test: +                 <button
+@idream/admin test: +                   aria-selected="true"
+@idream/admin test: +                   className="min-h-11 border-b-2 border-[var(--ad-ink)] px-3 text-sm font-semibold"
+@idream/admin test: +                   role="tab"
+@idream/admin test: +                   type="button"
+@idream/admin test: +                 >
+@idream/admin test: +                   {t("New image")}
+@idream/admin test: +                 </button>
+@idream/admin test: +               </div>
+@idream/admin test: +             ) : null}
+@idream/admin test: +             <h3 className="sr-only" id="new-image-title">
+@idream/admin test: +               {t("New image")}
+@idream/admin test: +             </h3>
+@idream/admin test: +             <label className="mt-5 block text-xs font-semibold text-[var(--ad-text-muted)]">
+@idream/admin test: +               {t("What should be different this time?")}
+@idream/admin test: +               <textarea
+@idream/admin test: +                 aria-label={`${t(activeConfig.label)} ${t("creative brief")}`}
+@idream/admin test: +                 className={`${textAreaClass} mt-1 min-h-36`}
+@idream/admin test: +                 disabled={mutationContextLocked}
+@idream/admin test: +                 onChange={(event) =>
+@idream/admin test: +                   setBriefs((current) => ({
+@idream/admin test: +                     ...current,
+@idream/admin test: +                     [activePurpose]: event.target.value,
+@idream/admin test: +                   }))
+@idream/admin test: +                 }
+@idream/admin test: +                 value={briefs[activePurpose]}
+@idream/admin test: +               />
+@idream/admin test: +             </label>
+@idream/admin test: +             <p className="mt-3 text-xs text-[var(--ad-text-muted)]">
+@idream/admin test: +               {t("Aspect ratio")}: {orientationForPurpose(activePurpose) ?? t("Default")}
+@idream/admin test: +             </p>
+@idream/admin test: +             <details className="mt-4 border-t border-[var(--ad-border)] pt-3 text-xs">
+@idream/admin test: +               <summary className="cursor-pointer font-semibold">
+@idream/admin test: +                 {t("Settings")}
+@idream/admin test: +               </summary>
+@idream/admin test: +               <label className="mt-3 block font-semibold text-[var(--ad-text-muted)]">
+@idream/admin test: +                 {t("Negative prompt")}
+@idream/admin test: +                 <textarea
+@idream/admin test: +                   aria-label={t("Negative prompt")}
+@idream/admin test: +                   className={`${textAreaClass} mt-1 min-h-24`}
+@idream/admin test: +                   disabled={mutationContextLocked}
+@idream/admin test: +                   onChange={(event) =>
+@idream/admin test: +                     setNegativePrompts((current) => ({
+@idream/admin test: +                       ...current,
+@idream/admin test: +                       [activePurpose]: event.target.value,
+@idream/admin test: +                     }))
+@idream/admin test: +                   }
+@idream/admin test: +                   value={negativePrompts[activePurpose]}
+@idream/admin test: +                 />
+@idream/admin test: +               </label>
+@idream/admin test: +               <p className="mt-2 leading-5 text-[var(--ad-text-muted)]">
+@idream/admin test: +                 {t(
+@idream/admin test: +                   "Identity and quality safeguards are automatic. Add only exclusions specific to this image.",
+@idream/admin test: +                 )}
+@idream/admin test: +               </p>
+@idream/admin test: +             </details>
+@idream/admin test: +             <WorkspaceButton
+@idream/admin test: +               aria-describedby={
+@idream/admin test: +                 generationActionDisabled
+@idream/admin test: +                   ? generationActionDescriptionId
+@idream/admin test: +                   : undefined
+@idream/admin test: +               }
+@idream/admin test: +               className="mt-5 w-full justify-center"
+@idream/admin test: +               disabled={generationActionDisabled}
+@idream/admin test: +               onClick={() => void createRun(activePurpose)}
+@idream/admin test: +               tone="primary"
+@idream/admin test: +             >
+@idream/admin test: +               <WandSparkles className="h-4 w-4" /> {generationActionText}
+@idream/admin test: +             </WorkspaceButton>
+@idream/admin test: +             {!productionOnly && selectedItem?.asset ? (
+@idream/admin test: +               <button
+@idream/admin test: +                 className="mt-3 min-h-10 w-full text-center text-xs font-semibold text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]"
+@idream/admin test: +                 onClick={() => setWorkspaceMode("review")}
+@idream/admin test: +                 type="button"
+@idream/admin test: +               >
+@idream/admin test: +                 {t("Cancel")}
+@idream/admin test: +               </button>
+@idream/admin test: +             ) : null}
+@idream/admin test: +           </aside>
+@idream/admin test: +         ) : productionOnly &&
+@idream/admin test: +           bootstrapMode &&
+@idream/admin test: +           !productionBlocked &&
+@idream/admin test: +           selectedItem?.asset ? (
+@idream/admin test: +           <aside className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 xl:sticky xl:top-24">
+@idream/admin test: +             <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--ad-text-muted)]">
+@idream/admin test: +               {t("First identity portrait")}
+@idream/admin test: +             </p>
+@idream/admin test: +             <h4 className="mt-1 font-semibold">
+@idream/admin test: +               {t("Use this image as the Character identity?")}
+@idream/admin test: +             </h4>
+@idream/admin test: +             <p className="mt-2 text-xs leading-5 text-[var(--ad-text-muted)]">
+@idream/admin test: +               {t(
+@idream/admin test: +                 "This choice defines the face used for future image creation. You can create more candidates before choosing.",
+@idream/admin test: +               )}
+@idream/admin test: +             </p>
+@idream/admin test: +             <WorkspaceButton
+@idream/admin test: +               className="mt-4 w-full justify-center"
+@idream/admin test: +               disabled={!canUseDecisionAction || busy !== null}
+@idream/admin test: +               onClick={() => void approveAndContinue()}
+@idream/admin test: +               tone="primary"
+@idream/admin test: +             >
+@idream/admin test: +               {busy === "select" ? (
+@idream/admin test: +                 <Loader2 className="h-4 w-4 animate-spin" />
+@idream/admin test: +               ) : (
+@idream/admin test: +                 <Check className="h-4 w-4" />
+@idream/admin test: +               )}
+@idream/admin test: +               {t("Set as identity")}
+@idream/admin test: +             </WorkspaceButton>
+@idream/admin test: +           </aside>
+@idream/admin test: +         ) : !productionBlocked && selectedItem?.asset ? (
+@idream/admin test: +           <aside
+@idream/admin test: +             className="space-y-4 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 xl:sticky xl:top-24"
+@idream/admin test: +             aria-label={t("Current candidate decision inspector")}
+@idream/admin test: +           >
+@idream/admin test: +             {recurringProductionReady ? (
+@idream/admin test: +               <div
+@idream/admin test: +                 className="flex border-b border-[var(--ad-border)]"
+@idream/admin test: +                 role="tablist"
+@idream/admin test: +                 aria-label={t("Image inspector mode")}
+@idream/admin test: +               >
+@idream/admin test: +                 <button
+@idream/admin test: +                   aria-selected="true"
+@idream/admin test: +                   className="min-h-11 border-b-2 border-[var(--ad-ink)] px-3 text-sm font-semibold"
+@idream/admin test: +                   role="tab"
+@idream/admin test: +                   type="button"
+@idream/admin test: +                 >
+@idream/admin test: +                   {t("Inspect")}
+@idream/admin test: +                 </button>
+@idream/admin test: +                 <button
+@idream/admin test: +                   aria-selected={false}
+@idream/admin test: +                   className="min-h-11 border-b-2 border-transparent px-3 text-sm text-[var(--ad-text-muted)]"
+@idream/admin test: +                   onClick={() => setWorkspaceMode("library")}
+@idream/admin test: +                   role="tab"
+@idream/admin test: +                   type="button"
+@idream/admin test: +                 >
+@idream/admin test: +                   {t("New image")}
+@idream/admin test: +                 </button>
+@idream/admin test: +               </div>
+@idream/admin test: +             ) : null}
+@idream/admin test: +             <p className="text-sm leading-6 text-[var(--ad-text-muted)]">
+@idream/admin test: +               {t("Choose the image that fits this Character. Selection updates the draft; publishing updates the live Character.")}
+@idream/admin test: +             </p>
+@idream/admin test: +             {!permissions.selectDraft ? <p className="text-sm">{t("Character editing permission is required to select an image.")}</p> : null}
+@idream/admin test: +           </aside>
+@idream/admin test: +         ) : null}
+@idream/admin test: +       </div>
+@idream/admin test: +
+@idream/admin test: +       {!productionOnly &&
+@idream/admin test: +       selectedItem &&
+@idream/admin test: +       !productionBlocked &&
+@idream/admin test: +       (!recurringProductionReady || workspaceMode === "review") ? (
+@idream/admin test: +         <section
+@idream/admin test: +           aria-label={t("Current candidate actions")}
+@idream/admin test: +           className="flex flex-col gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 sm:flex-row sm:items-center sm:justify-between"
+@idream/admin test: +         >
+@idream/admin test: +           <div className="min-w-0">
+@idream/admin test: +             <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--ad-text-muted)]">
+@idream/admin test: +               {t("Current decision")}
+@idream/admin test: +             </p>
+@idream/admin test: +             <p className="mt-1 truncate text-sm font-semibold">
+@idream/admin test: +               {selectedItem
+@idream/admin test: +                 ? t("Candidate {number} · {state}", {
+@idream/admin test: +                     number: selectedItem.ordinal + 1,
+@idream/admin test: +                     state: t(candidateState(selectedItem)),
+@idream/admin test: +                   })
+@idream/admin test: +                 : t("No active candidate")}
+@idream/admin test: +             </p>
+@idream/admin test: +           </div>
+@idream/admin test: +           <div className="flex flex-wrap gap-2">
+@idream/admin test: +             {comparisonItem ? (
+@idream/admin test: +               <WorkspaceButton onClick={() => setComparisonItemId(null)}>
+@idream/admin test: +                 <X className="h-4 w-4" />
+@idream/admin test: +                 <span className="sm:hidden">{t("Image")}</span>
+@idream/admin test: +                 <span className="hidden sm:inline">
+@idream/admin test: +                   {t("Back to generated image")}
+@idream/admin test: +                 </span>
+@idream/admin test: +               </WorkspaceButton>
+@idream/admin test: +             ) : null}
+@idream/admin test: +             <WorkspaceButton
+@idream/admin test: +               disabled={
+@idream/admin test: +                 mutationContextLocked ||
+@idream/admin test: +                 bootstrapMode ||
+@idream/admin test: +                 !variationRouteReady ||
+@idream/admin test: +                 !canGenerate ||
+@idream/admin test: +                 busy !== null ||
+@idream/admin test: +                 !selectedItem?.asset ||
+@idream/admin test: +                 !isApprovedItem
+@idream/admin test: +               }
+@idream/admin test: +               onClick={() =>
+@idream/admin test: +                 selectedItem?.asset
+@idream/admin test: +                   ? void createRun(activePurpose, [selectedItem.asset.id])
+@idream/admin test: +                   : undefined
+@idream/admin test: +               }
+@idream/admin test: +             >
+@idream/admin test: +               <Sparkles className="h-4 w-4" />
+@idream/admin test: +               <span className="sm:hidden">{t("Similar")}</span>
+@idream/admin test: +               <span className="hidden sm:inline">{t("More like this")}</span>
+@idream/admin test: +             </WorkspaceButton>
+@idream/admin test: +             {selectedItem?.asset ? (
+@idream/admin test: +               <WorkspaceButton disabled={mutationContextLocked || !canUseDecisionAction || busy !== null || Boolean(refreshWarning)}
+@idream/admin test: +                 onClick={() => void approveAndContinue()} tone="primary">
+@idream/admin test: +                 {busy === "select" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+@idream/admin test: +                 {t(decisionActionLabel)}
+@idream/admin test: +               </WorkspaceButton>
+@idream/admin test: +             ) : null}
+@idream/admin test: +           </div>
+@idream/admin test: +         </section>
+@idream/admin test: +       ) : null}
+@idream/admin test: +
+@idream/admin test: +       {bootstrapMode ? (
+@idream/admin test: +         <details className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
+@idream/admin test: +           <summary className="cursor-pointer text-sm font-semibold">
+@idream/admin test: +             {t("Adjust the creative brief")}
+@idream/admin test: +           </summary>
+@idream/admin test: +           <p className="mt-2 text-xs leading-5 text-[var(--ad-text-muted)]">
+@idream/admin test: +             {t(
+@idream/admin test: +               "Keep intent human-readable. Identity, references, workflow, and route stay automatic.",
+@idream/admin test: +             )}
+@idream/admin test: +           </p>
+@idream/admin test: +           <textarea
+@idream/admin test: +             aria-label={`${t(activeConfig.label)} ${t("creative brief")}`}
+@idream/admin test: +             className={`${textAreaClass} mt-3`}
+@idream/admin test: +             disabled={mutationContextLocked}
+@idream/admin test: +             onChange={(event) =>
+@idream/admin test: +               setBriefs((current) => ({
+@idream/admin test: +                 ...current,
+@idream/admin test: +                 [activePurpose]: event.target.value,
+@idream/admin test: +               }))
+@idream/admin test: +             }
+@idream/admin test: +             value={briefs[activePurpose]}
+@idream/admin test: +           />
+@idream/admin test: +         </details>
+@idream/admin test: +       ) : null}
+@idream/admin test: +       <details className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
+@idream/admin test: +         <summary className="cursor-pointer text-sm font-semibold">
+@idream/admin test: +           {t("Recent runs and technical lineage")}
+@idream/admin test: +         </summary>
+@idream/admin test: +         <div className="mt-3 space-y-2">
+@idream/admin test: +           {runs.length ? (
+@idream/admin test: +             runs.map((run) => (
+@idream/admin test: +               <button
+@idream/admin test: +                 className={cn(
+@idream/admin test: +                   "w-full rounded-lg border p-3 text-left text-xs",
+@idream/admin test: +                   selectedRunId === run.id
+@idream/admin test: +                     ? "border-[var(--ad-ink)] bg-black/[0.03]"
+@idream/admin test: +                     : "border-[var(--ad-border)]",
+@idream/admin test: +                 )}
+@idream/admin test: +                 disabled={mutationContextLocked}
+@idream/admin test: +                 key={run.id}
+@idream/admin test: +                 onClick={() => {
+@idream/admin test: +                   runLoader.invalidate();
+@idream/admin test: +                   setSelectedRun(null);
+@idream/admin test: +                   selectRunId(run.id);
+@idream/admin test: +                   if (isCharacterAssetPurpose(run.purpose))
+@idream/admin test: +                     setActivePurpose(run.purpose);
+@idream/admin test: +                 }}
+@idream/admin test: +                 type="button"
+@idream/admin test: +               >
+@idream/admin test: +                 <span className="flex items-center justify-between gap-3">
+@idream/admin test: +                   <strong>
+@idream/admin test: +                     {isCharacterAssetPurpose(run.purpose)
+@idream/admin test: +                       ? t(purposeConfig[run.purpose].label)
+@idream/admin test: +                       : t(run.purpose)}
+@idream/admin test: +                     {pinnedRunIds.has(run.id)
+@idream/admin test: +                       ? ` · ${t("Selected in draft")}`
+@idream/admin test: +                       : ""}
+@idream/admin test: +                   </strong>
+@idream/admin test: +                   <span>
+@idream/admin test: +                     {new Date(run.updatedAt).toLocaleString(
+@idream/admin test: +                       adminDateLocale(locale),
+@idream/admin test: +                     )}
+@idream/admin test: +                   </span>
+@idream/admin test: +                 </span>
+@idream/admin test: +                 <span className="mt-1 block break-all text-[var(--ad-text-muted)]">
+@idream/admin test: +                   {run.id} · {run.counts.generated}/{run.counts.total}{" "}
+@idream/admin test: +                   {t("generated")} · {run.counts.approved} {t("approved")}
+@idream/admin test: +                 </span>
+@idream/admin test: +               </button>
+@idream/admin test: +             ))
+@idream/admin test: +           ) : (
+@idream/admin test: +             <p className="text-xs text-[var(--ad-text-muted)]">
+@idream/admin test: +               {t("No production history for this character.")}
+@idream/admin test: +             </p>
+@idream/admin test: +           )}
+@idream/admin test: +         </div>
+@idream/admin test: +         {selectedItem ? (
+@idream/admin test: +           <dl className="mt-4 grid gap-2 border-t border-[var(--ad-border)] pt-4 text-xs sm:grid-cols-2">
+@idream/admin test: +             <div>
+@idream/admin test: +               <dt className="text-[var(--ad-text-muted)]">
+@idream/admin test: +                 {t("Generation profile")}
+@idream/admin test: +               </dt>
+@idream/admin test: +               <dd className="mt-1 break-all">
+@idream/admin test: +                 {selectedItem.lineage.generationProfileKey ?? t("Pending")}
+@idream/admin test: +               </dd>
+@idream/admin test: +             </div>
+@idream/admin test: +             <div>
+@idream/admin test: +               <dt className="text-[var(--ad-text-muted)]">{t("Workflow")}</dt>
+@idream/admin test: +               <dd className="mt-1 break-all">
+@idream/admin test: +                 {selectedItem.lineage.workflowKey ?? t("Pending")}
+@idream/admin test: +               </dd>
+@idream/admin test: +             </div>
+@idream/admin test: +             <div>
+@idream/admin test: +               <dt className="text-[var(--ad-text-muted)]">{t("Request")}</dt>
+@idream/admin test: +               <dd className="mt-1 break-all">
+@idream/admin test: +                 {selectedItem.lineage.requestId ?? t("Pending")}
+@idream/admin test: +               </dd>
+@idream/admin test: +             </div>
+@idream/admin test: +             <div>
+@idream/admin test: +               <dt className="text-[var(--ad-text-muted)]">
+@idream/admin test: +                 {t("Provider request / Comfy prompt")}
+@idream/admin test: +               </dt>
+@idream/admin test: +               <dd className="mt-1 break-all">
+@idream/admin test: +                 {selectedItem.lineage.providerRequestId ?? t("Pending")}
+@idream/admin test: +               </dd>
+@idream/admin test: +             </div>
+@idream/admin test: +             <div>
+@idream/admin test: +               <dt className="text-[var(--ad-text-muted)]">{t("Asset")}</dt>
+@idream/admin test: +               <dd className="mt-1 break-all">
+@idream/admin test: +                 {selectedItem.asset?.id ?? t("Pending")}
+@idream/admin test: +               </dd>
+@idream/admin test: +             </div>
+@idream/admin test: +           </dl>
+@idream/admin test: +         ) : null}
+@idream/admin test: +       </details>
+@idream/admin test: +     </div>
+@idream/admin test: +   );
+@idream/admin test: + }
+@idream/admin test: +
+@idream/admin test: 
+@idream/admin test:  ❯ src/features/characters/CharacterAssetStudio.test.ts:676:20
+@idream/admin test:     674|     const source = readFileSync(new URL("./CharacterAssetStudio.tsx", …
+@idream/admin test:     675|
+@idream/admin test:     676|     expect(source).toContain("characterAssetReviewRequestKey({");
+@idream/admin test:        |                    ^
+@idream/admin test:     677|     expect(source).toContain("characterAssetBootstrapRequestKey({");
+@idream/admin test:     678|     expect(source).toContain("characterAssetDraftSelectionRequestKey({…
+@idream/admin test: 
+@idream/admin test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/19]⎯
+@idream/admin test: 
+@idream/admin test:  FAIL  src/features/characters/CharacterAssetStudio.test.ts > Character Asset Studio flow > does not claim review is available while the committed image is still running
+@idream/admin test: AssertionError: expected 'Generation is in progress. You can ch…' to be 'The image Run is confirmed. Generatio…' // Object.is equality
+@idream/admin test: 
+@idream/admin test: Expected: "The image Run is confirmed. Generation is still in progress; review becomes available when the image is ready."
+@idream/admin test: Received: "Generation is in progress. You can choose an image when it is ready."
+@idream/admin test: 
+@idream/admin test:  ❯ src/features/characters/CharacterAssetStudio.test.ts:687:7
+@idream/admin test:     685|         items: [{ asset: null }],
+@idream/admin test:     686|       }),
+@idream/admin test:     687|     ).toBe(
+@idream/admin test:        |       ^
+@idream/admin test:     688|       "The image Run is confirmed. Generation is still in progress; re…
+@idream/admin test:     689|     );
+@idream/admin test: 
+@idream/admin test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[10/19]⎯
+@idream/admin test: 
+@idream/admin test:  FAIL  src/features/characters/CharacterImageLibrary-production.mounted.test.tsx > refreshes the surrounding image library after rejecting a generated candidate
+@idream/admin test: Error: Image library state did not refresh
+@idream/admin test:  ❯ waitUntil src/features/characters/CharacterImageLibrary-production.mounted.test.tsx:81:40
+@idream/admin test:      79|     const deadline = Date.now() + 2_000;
+@idream/admin test:      80|     while (!predicate()) {
+@idream/admin test:      81|       if (Date.now() > deadline) throw new Error("Image library state …
+@idream/admin test:        |                                        ^
+@idream/admin test:      82|       await act(async () => { await new Promise((resolve) => setTimeou…
+@idream/admin test:      83|     }
+@idream/admin test:  ❯ src/features/characters/CharacterImageLibrary-production.mounted.test.tsx:99:5
+@idream/admin test: 
+@idream/admin test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[11/19]⎯
+@idream/admin test: 
+@idream/admin test:  FAIL  src/features/characters/CharacterMediaAvailability.mounted.test.tsx > Character media availability > images: unmatched search has a clear action and keeps the existing library
+@idream/admin test: AssertionError: expected 'Character image libraryAll images for…' to contain 'No matching images'
+@idream/admin test: 
+@idream/admin test: Expected: "No matching images"
+@idream/admin test: Received: "Character image libraryAll images for MiraGenerate here or import images made elsewhere. Character operations chooses from this same library.Import imageCreate imagesSearch imagesImportedretained-image.webpselectable"
+@idream/admin test: 
+@idream/admin test:  ❯ src/features/characters/CharacterMediaAvailability.mounted.test.tsx:270:37
+@idream/admin test:     268|
+@idream/admin test:     269|       expect(container.textContent).not.toContain(emptyLabel);
+@idream/admin test:     270|       expect(container.textContent).toContain(`No matching ${kind}`);
+@idream/admin test:        |                                     ^
+@idream/admin test:     271|       await act(async () => button("Clear search").click());
+@idream/admin test:     272|       expect(container.querySelectorAll("article")).toHaveLength(1);
+@idream/admin test: 
+@idream/admin test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[12/19]⎯
+@idream/admin test: 
+@idream/admin test:  FAIL  src/features/characters/CharacterMediaAvailability.mounted.test.tsx > Character media availability > Review: failed submission keeps the draft, and committed Review is not relabeled as failed by a workspace refresh
+@idream/admin test: AssertionError: Missing button: Review image candidate: expected undefined to be defined
+@idream/admin test:  ❯ button src/features/characters/CharacterMediaAvailability.mounted.test.tsx:132:49
+@idream/admin test:     130|     const element = [...container.querySelectorAll<HTMLButtonElement>(…
+@idream/admin test:     131|       .find((candidate) => candidate.textContent?.trim() === label);
+@idream/admin test:     132|     expect(element, `Missing button: ${label}`).toBeDefined();
+@idream/admin test:        |                                                 ^
+@idream/admin test:     133|     return element!;
+@idream/admin test:     134|   }
+@idream/admin test:  ❯ src/features/characters/CharacterMediaAvailability.mounted.test.tsx:337:27
+@idream/admin test:  ❯ Proxy.process.env.NODE_ENV.exports.act ../../node_modules/.bun/react@19.2.4/node_modules/react/cjs/react.development.js:814:22
+@idream/admin test:  ❯ src/features/characters/CharacterMediaAvailability.mounted.test.tsx:337:11
+@idream/admin test: 
+@idream/admin test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[13/19]⎯
+@idream/admin test: 
+@idream/admin test:  FAIL  src/features/characters/CharacterSoulPanel.test.ts > Character Soul editor projection > keeps the operator form visible and technical artifacts collapsed
+@idream/admin test: AssertionError: expected '<p class="rounded-lg bg-[var(--ad-red…' to contain 'Soul editor'
+@idream/admin test: 
+@idream/admin test: Expected: "Soul editor"
+@idream/admin test: Received: "<p class="rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]" role="alert">Character Soul could not be loaded</p>"
+@idream/admin test: 
+@idream/admin test:  ❯ src/features/characters/CharacterSoulPanel.test.ts:20:18
+@idream/admin test: 
+@idream/admin test: 
+@idream/admin test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[14/19]⎯
+@idream/admin test: 
+@idream/admin test:  FAIL  src/features/characters/CharacterWorkspaceDetails.mounted.test.tsx > Character workspace details > requires project write as well as creative Review for imported images: true
+@idream/admin test: AssertionError: expected false to be true // Object.is equality
+@idream/admin test: 
+@idream/admin test: - Expected
+@idream/admin test: + Received
+@idream/admin test: 
+@idream/admin test: - true
+@idream/admin test: + false
+@idream/admin test: 
+@idream/admin test:  ❯ src/features/characters/CharacterWorkspaceDetails.mounted.test.tsx:361:8
+@idream/admin test:     359|     expect([...container.querySelectorAll("button")].some(
+@idream/admin test:     360|       (button) => button.textContent === "Review image candidate",
+@idream/admin test:     361|     )).toBe(canWriteProject);
+@idream/admin test:        |        ^
+@idream/admin test:     362|   });
+@idream/admin test:     363|
+@idream/admin test: 
+@idream/admin test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[15/19]⎯
+@idream/admin test: 
+@idream/admin test:  FAIL  src/features/characters/CharacterWorkspaceDetails.mounted.test.tsx > Character workspace details > repairs a structured approved-customer Project gap and opens Images
+@idream/admin test: TypeError: result.items is not iterable
+@idream/admin test:  ❯ src/features/characters/CharacterImageLibrary.tsx:81:82
+@idream/admin test:      79|       );
+@idream/admin test:      80|       if (version !== requestVersion.current) return;
+@idream/admin test:      81|       setAssets((current) => cursor ? [...current, ...result.items] : …
+@idream/admin test:        |                                                                                  ^
+@idream/admin test:      82|       setNextCursor(result.nextCursor ?? null);
+@idream/admin test:      83|     } catch (cause) {
+@idream/admin test:  ❯ basicStateReducer ../../node_modules/.bun/react-dom@19.2.4+b1ab299f0a400331/node_modules/react-dom/cjs/react-dom-client.development.js:7935:45
+@idream/admin test:  ❯ updateReducerImpl ../../node_modules/.bun/react-dom@19.2.4+b1ab299f0a400331/node_modules/react-dom/cjs/react-dom-client.development.js:8048:17
+@idream/admin test:  ❯ updateReducer ../../node_modules/.bun/react-dom@19.2.4+b1ab299f0a400331/node_modules/react-dom/cjs/react-dom-client.development.js:7968:14
+@idream/admin test:  ❯ Object.useState ../../node_modules/.bun/react-dom@19.2.4+b1ab299f0a400331/node_modules/react-dom/cjs/react-dom-client.development.js:26511:18
+@idream/admin test:  ❯ process.env.NODE_ENV.exports.useState ../../node_modules/.bun/react@19.2.4/node_modules/react/cjs/react.development.js:1263:34
+@idream/admin test:  ❯ CharacterImageLibrary src/features/characters/CharacterImageLibrary.tsx:49:31
+@idream/admin test:  ❯ Object.react_stack_bottom_frame ../../node_modules/.bun/react-dom@19.2.4+b1ab299f0a400331/node_modules/react-dom/cjs/react-dom-client.development.js:25904:20
+@idream/admin test:  ❯ renderWithHooks ../../node_modules/.bun/react-dom@19.2.4+b1ab299f0a400331/node_modules/react-dom/cjs/react-dom-client.development.js:7662:22
+@idream/admin test:  ❯ updateFunctionComponent ../../node_modules/.bun/react-dom@19.2.4+b1ab299f0a400331/node_modules/react-dom/cjs/react-dom-client.development.js:10166:19
+@idream/admin test: 
+@idream/admin test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[16/19]⎯
+@idream/admin test: 
+@idream/admin test:  FAIL  src/features/characters/ReleasePanel.test.ts > Character release panel > turns release authority failures into an exact operator repair action
+@idream/admin test: AssertionError: expected { …(4) } to deeply equal { …(4) }
+@idream/admin test: 
+@idream/admin test: - Expected
+@idream/admin test: + Received
+@idream/admin test: 
+@idream/admin test:   {
+@idream/admin test: -   "action": "Review selected images",
+@idream/admin test: +   "action": "Review release checks",
+@idream/admin test:     "blocker": "release_asset_review_authority",
+@idream/admin test: -   "href": "/admin/characters/character-1?tab=assets",
+@idream/admin test: -   "message": "Review every selected image before publishing.",
+@idream/admin test: +   "href": "/admin/characters/character-1?tab=release",
+@idream/admin test: +   "message": "Refresh the Character and resolve this release check before publishing.",
+@idream/admin test:   }
+@idream/admin test: 
+@idream/admin test:  ❯ src/features/characters/ReleasePanel.test.ts:97:7
+@idream/admin test:      95|         "character-1",
+@idream/admin test:      96|       ),
+@idream/admin test:      97|     ).toEqual({
+@idream/admin test:        |       ^
+@idream/admin test:      98|       blocker: "release_asset_review_authority",
+@idream/admin test:      99|       message: "Review every selected image before publishing.",
+@idream/admin test: 
+@idream/admin test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[17/19]⎯
+@idream/admin test: 
+@idream/admin test:  FAIL  src/features/characters/ReleasePanel.test.ts > Character release panel > blocks publish before the request when a complete draft pack skipped review
+@idream/admin test: AssertionError: expected [] to deeply equal [ 'release_asset_review_authority' ]
+@idream/admin test: 
+@idream/admin test: - Expected
+@idream/admin test: + Received
+@idream/admin test: 
+@idream/admin test: - [
+@idream/admin test: -   "release_asset_review_authority",
+@idream/admin test: - ]
+@idream/admin test: + []
+@idream/admin test: 
+@idream/admin test:  ❯ src/features/characters/ReleasePanel.test.ts:150:49
+@idream/admin test:     148|     });
+@idream/admin test:     149|
+@idream/admin test:     150|     expect(characterReleaseDraftBlockers(data)).toEqual([
+@idream/admin test:        |                                                 ^
+@idream/admin test:     151|       "release_asset_review_authority",
+@idream/admin test:     152|     ]);
+@idream/admin test: 
+@idream/admin test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[18/19]⎯
+@idream/admin test: 
+@idream/admin test:  FAIL  src/features/search/admin-destinations.test.ts > admin destination search > matches a whole group by its name
+@idream/admin test: AssertionError: expected [ 'content/official', …(2) ] to deeply equal ArrayContaining{…}
+@idream/admin test: 
+@idream/admin test: - Expected
+@idream/admin test: + Received
+@idream/admin test: 
+@idream/admin test: - ArrayContaining [
+@idream/admin test: + [
+@idream/admin test:     "content/official",
+@idream/admin test: -   "content/review-queue",
+@idream/admin test:     "content/templates",
+@idream/admin test: +   "content/tags",
+@idream/admin test:   ]
+@idream/admin test: 
+@idream/admin test:  ❯ src/features/search/admin-destinations.test.ts:34:37
+@idream/admin test:      32|
+@idream/admin test:      33|   it("matches a whole group by its name", () => {
+@idream/admin test:      34|     expect(ids("Character Studio")).toEqual(
+@idream/admin test:        |                                     ^
+@idream/admin test:      35|       expect.arrayContaining(["content/official", "content/review-queu…
+@idream/admin test:      36|     );
+@idream/admin test: 
+@idream/admin test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[19/19]⎯
+@idream/admin test: 
+@idream/admin test: 
+@idream/admin test:  Test Files  11 failed | 171 passed (182)
+@idream/admin test:       Tests  18 failed | 1099 passed (1117)
+@idream/admin test:    Start at  04:49:28
+@idream/admin test:    Duration  11.66s (transform 21.69s, setup 0ms, import 81.05s, tests 28.24s, environment 10.52s)
+@idream/admin test: 
+@idream/admin test: Exited with code 1

@@ -1,7 +1,9 @@
+import { hasAdminZh, translateAdmin } from "@/components/admin/i18n";
 import { readFileSync } from "node:fs";
 import type { CharacterWorkspaceDetail } from "@idream/shared/admin";
 import { describe, expect, it } from "vitest";
 import {
+  candidateState,
   canChooseCharacterAssetPurpose,
   canOfferCharacterAssetTerminalRejection,
   characterAssetBootstrapRequestKey,
@@ -45,6 +47,23 @@ function journey(
 }
 
 describe("Character Asset Studio flow", () => {
+  it("translates all live candidate states and interpolates any next identity version", () => {
+    for (const executionState of ["dispatching", "provider_queued", "generating", "finalizing", "ready", "failed", "unknown"] as const) {
+      const label = candidateState({ asset: null, executionState } as Parameters<typeof candidateState>[0]);
+      expect(hasAdminZh(label), label).toBe(true);
+    }
+    const unconfirmed = candidateState({ asset: null, executionState: "failed" } as Parameters<typeof candidateState>[0], true);
+    expect(unconfirmed).toBe("Generation result awaiting confirmation");
+    expect(hasAdminZh(unconfirmed)).toBe(true);
+    const key = "Generate the first portrait without references, compare the results, then use one as identity version {version}.";
+    expect(translateAdmin("zh", key, { version: 3 })).toContain("身份版本 3");
+    expect(translateAdmin("zh", key, { version: 3 })).not.toContain("审核");
+    const studio = readFileSync(new URL("./CharacterAssetStudio.tsx", import.meta.url), "utf8");
+    expect(studio).not.toContain("review it as the identity definition");
+    expect(studio).not.toContain("review it, then decide");
+    expect(studio).not.toContain("The reviewed result");
+  });
+
   it("opens a newer active Run instead of mistaking the draft-pinned Run for the review target", () => {
     const counts = {
       total: 1,
@@ -673,7 +692,7 @@ describe("Character Asset Studio flow", () => {
   it("binds review and selection replay identities to the canonical request body", () => {
     const source = readFileSync(new URL("./CharacterAssetStudio.tsx", import.meta.url), "utf8");
 
-    expect(source).toContain("characterAssetReviewRequestKey({");
+    expect(source).not.toContain("const reviewItem = async");
     expect(source).toContain("characterAssetBootstrapRequestKey({");
     expect(source).toContain("characterAssetDraftSelectionRequestKey({");
   });
@@ -685,7 +704,7 @@ describe("Character Asset Studio flow", () => {
         items: [{ asset: null }],
       }),
     ).toBe(
-      "The image Run is confirmed. Generation is still in progress; review becomes available when the image is ready.",
+      "The image request is in progress. Resource waits may extend the time; choose an image once it is ready.",
     );
     expect(
       characterAssetRunReceiptMessage({
@@ -693,7 +712,7 @@ describe("Character Asset Studio flow", () => {
         items: [{ asset: { id: "asset-1" } }],
       }),
     ).toBe(
-      "The committed generation receipt is visible in this exact Run. Review can continue.",
+      "Generation is complete. Choose an image to use.",
     );
   });
 

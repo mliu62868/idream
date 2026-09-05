@@ -1,0 +1,184 @@
+{
+  "checkedAt": "2026-09-05T10:30:20.004Z",
+  "status": 200,
+  "character": {
+    "id": "620030d5-bb6b-4a10-88c9-2e3041ed9de7",
+    "age": 28,
+    "visibility": "private"
+  },
+  "project": {
+    "id": "85000a2c-92ef-489a-923c-55487861a665",
+    "version": 3,
+    "selected": {
+      "character_cover": {
+        "assetId": "media_w3cv1o1jnngmto6yacy",
+        "runId": "cmto6v04x0004v3l747vaxurg",
+        "itemId": "cmto6v0500005v3l7ofqrcq0d",
+        "reviewDecisionId": null,
+        "generationJobId": "cmto6v0520006v3l7hwn80cuw",
+        "bootstrapIdentity": true,
+        "generationRouteFingerprint": null,
+        "routeCurrent": true
+      },
+      "character_hero": {
+        "assetId": "media_unknown_1e0b1f08f709df0d8bef64770122a004",
+        "runId": "cmto71597000mv3l7ot2c3gu5",
+        "itemId": "cmto7159a000nv3l72xh28dx8",
+        "reviewDecisionId": null,
+        "generationJobId": "cmto7159c000ov3l70eyvcpnk",
+        "bootstrapIdentity": false,
+        "generationRouteFingerprint": "0aea6904817d5330b70f9c347074c80d5e00efd3ed822547ac0495dd5d6b8091",
+        "routeCurrent": true
+      }
+    }
+  },
+  "serving": {
+    "characterId": "620030d5-bb6b-4a10-88c9-2e3041ed9de7",
+    "state": "inactive",
+    "currentReleaseId": null,
+    "version": 1,
+    "updatedAt": "2026-09-05T09:36:25.751Z"
+  },
+  "mediaOperations": {
+    "projectionVersion": 1,
+    "asOf": "2026-09-05T10:30:19.863Z",
+    "operations": [
+      {
+        "modality": "image",
+        "requestId": "cmto8ioyz000fr4l73zrvo4qz",
+        "status": "running",
+        "attempt": {
+          "id": "cmto8iozr000ir4l7t4n9vie0",
+          "number": 1,
+          "status": "running",
+          "errorCode": null,
+          "retryability": null,
+          "operatorGuidance": null
+        },
+        "provider": {
+          "key": "comfyui",
+          "requestId": null
+        },
+        "timing": {
+          "requestedAt": "2026-09-05T10:23:15.179Z",
+          "startedAt": "2026-09-05T10:23:15.280Z",
+          "finishedAt": null,
+          "latencyMs": null
+        },
+        "costDreamcoins": 0,
+        "output": null,
+        "recoverability": {
+          "state": "not_needed",
+          "reason": null,
+          "actionHref": null,
+          "actionConfirmation": null
+        },
+        "studioHref": "/admin/characters/620030d5-bb6b-4a10-88c9-2e3041ed9de7?tab=assets",
+        "operationsHref": "/admin/ops/jobs?job=cmto8ioyz000fr4l73zrvo4qz"
+      },
+      {
+        "modality": "video",
+        "requestId": null,
+        "status": null,
+        "attempt": null,
+        "provider": null,
+        "timing": null,
+        "costDreamcoins": null,
+        "output": null,
+        "recoverability": {
+          "state": "unavailable",
+          "reason": "No operation evidence exists for this Character.",
+          "actionHref": null,
+          "actionConfirmation": null
+        },
+        "studioHref": "/admin/characters/620030d5-bb6b-4a10-88c9-2e3041ed9de7?tab=video",
+        "operationsHref": null
+      },
+      {
+        "modality": "voice",
+        "requestId": null,
+        "status": null,
+        "attempt": null,
+        "provider": null,
+        "timing": null,
+        "costDreamcoins": null,
+        "output": null,
+        "recoverability": {
+          "state": "unavailable",
+          "reason": "No operation evidence exists for this Character.",
+          "actionHref": null,
+          "actionConfirmation": null
+        },
+        "studioHref": "/admin/characters/620030d5-bb6b-4a10-88c9-2e3041ed9de7?tab=voice",
+        "operationsHref": null
+      }
+    ]
+  },
+  "journey": {
+    "projectionVersion": 1,
+    "asOf": "2026-09-05T10:30:19.949Z",
+    "stage": "image_production",
+    "status": "in_progress",
+    "steps": [
+      {
+        "code": "visual_identity",
+        "state": "complete",
+        "deepLink": "/admin/characters/620030d5-bb6b-4a10-88c9-2e3041ed9de7?tab=visual"
+      },
+      {
+        "code": "image_assets",
+        "state": "current",
+        "deepLink": "/admin/characters/620030d5-bb6b-4a10-88c9-2e3041ed9de7?tab=assets"
+      },
+      {
+        "code": "preview",
+        "state": "upcoming",
+        "deepLink": "/admin/characters/620030d5-bb6b-4a10-88c9-2e3041ed9de7?tab=preview"
+      },
+      {
+        "code": "release",
+        "state": "upcoming",
+        "deepLink": "/admin/characters/620030d5-bb6b-4a10-88c9-2e3041ed9de7?tab=release"
+      },
+      {
+        "code": "live_monitor",
+        "state": "upcoming",
+        "deepLink": "/admin/characters/620030d5-bb6b-4a10-88c9-2e3041ed9de7?tab=monitor"
+      }
+    ],
+    "blockers": [],
+    "primaryAction": {
+      "code": "continue_image_run",
+      "deepLink": "/admin/characters/620030d5-bb6b-4a10-88c9-2e3041ed9de7?tab=assets",
+      "command": null
+    },
+    "assetPack": {
+      "draft": {
+        "availablePurposes": [
+          "character_cover",
+          "character_hero"
+        ],
+        "missingPurposes": [
+          "character_chat"
+        ],
+        "completed": 2,
+        "total": 3
+      },
+      "live": {
+        "availablePurposes": [],
+        "missingPurposes": [
+          "character_cover",
+          "character_hero",
+          "character_chat"
+        ],
+        "completed": 0,
+        "total": 3
+      }
+    },
+    "release": {
+      "servingState": "inactive",
+      "currentReleaseId": null,
+      "candidateReleaseId": null
+    }
+  }
+}

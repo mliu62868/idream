@@ -1,0 +1,241 @@
+// SPEC: Slim BullMQ wrapper for the generation service:
+//   - runWorker(queue, handler) → consume ai.*.generate
+//   - enqueueDurable(queue, payload) -> hand immutable evidence to its owner
+// INTENT: Ported from packages/main jobs/queue.ts but stripped of Prisma — gen
+// has no DB and only produces the Main-owned terminal relay lifecycle.
+import { type Job as BullJob, Queue, Worker, type JobsOptions } from "bullmq";
+import type { RedisOptions } from "ioredis";
+import { bullMqJobIdForDedupeKey } from "@idream/shared/contracts";
+import { redisConnectionOptions } from "@idream/shared/env";
+import { env } from "./env";
+
+export { bullMqJobIdForDedupeKey };
+
+export type JsonPayload = Record<string, unknown>;
+
+type BullJobData = {
+  payload: JsonPayload;
+  dedupeKey?: string;
+  queue: string;
+};
+
+export type DurableEnqueueInput = {
+  readonly queue: string;
+  readonly payload: JsonPayload;
+  readonly dedupeKey: string;
+  readonly maxAttempts: number;
+};
+
+const RELAY_BACKOFF_MS = 1_000;
+const removeOnComplete = { age: 60 * 60 * 24, count: 10_000 };
+
+function redisOptions(): RedisOptions {
+  return redisConnectionOptions(env.REDIS_URL);
+}
+
+function enqueueOptions(input: DurableEnqueueInput): JobsOptions {
+  return {
+    jobId: bullMqJobIdForDedupeKey(input.dedupeKey),
+    attempts: input.maxAttempts,
+    backoff: { type: "exponential", delay: RELAY_BACKOFF_MS },
+    removeOnComplete,
+    removeOnFail: false,
+  };
+}
+
+// SPEC: Redis acceptance, not Main HTTP availability, completes Gen's
+// provider job. The Main-owned consumer retries this row independently.
+export async function enqueueDurable(
+  input: DurableEnqueueInput,
+): Promise<{ id: string }> {
+  const queue = new Queue<BullJobData>(input.queue, {
+    connection: redisOptions(),
+    prefix: env.BULLMQ_PREFIX,
+  });
+  try {
+    const job = await queue.add(
+      input.queue,
+      {
+        queue: input.queue,
+        payload: input.payload,
+        dedupeKey: input.dedupeKey,
+      },
+      enqueueOptions(input),
+    );
+    // A retry after an ambiguous Redis response may find an existing row. If
+    // that row previously exhausted its relay attempts, revive the exact row;
+    // its immutable Attempt key still prevents duplicate terminal effects.
+    if ((await job.getState()) === "failed") {
+      await job.retry("failed");
+    }
+    return { id: job.id ?? "" };
+  } finally {
+    await queue.close();
+  }
+}
+
+export interface QueueJob {
+  id: string;
+  queue: string;
+  payload: JsonPayload;
+  attemptsMade: number;
+  maxAttempts: number;
+  dedupeKey?: string;
+}
+
+export interface QueueJobSnapshot extends QueueJob {
+  state: string;
+  failedReason?: string;
+  timestamp: number;
+  processedOn?: number;
+  finishedOn?: number;
+}
+
+export type RetryFailedJobResult = {
+  readonly status:
+    | "retried"
+    | "retried_paused"
+    | "queue_paused"
+    | "not_found"
+    | "not_failed"
+    | "identity_mismatch";
+  readonly job: QueueJobSnapshot | null;
+};
+
+function toQueueJobSnapshot(
+  queueName: string,
+  job: BullJob<BullJobData>,
+  state: string,
+): QueueJobSnapshot {
+  return {
+    id: job.id ?? "",
+    queue: queueName,
+    payload: job.data.payload,
+    attemptsMade: job.attemptsMade,
+    maxAttempts: job.opts.attempts ?? 1,
+    dedupeKey: job.data.dedupeKey,
+    state,
+    failedReason: job.failedReason,
+    timestamp: job.timestamp,
+    processedOn: job.processedOn,
+    finishedOn: job.finishedOn,
+  };
+}
+
+export async function inspectFailed(
+  queueName: string,
+  options: { limit?: number; offset?: number } = {},
+): Promise<QueueJobSnapshot[]> {
+  const limit = Math.max(1, Math.min(options.limit ?? 100, 100));
+  const offset = Math.max(0, options.offset ?? 0);
+  const queue = new Queue<BullJobData>(queueName, {
+    connection: redisOptions(),
+    prefix: env.BULLMQ_PREFIX,
+  });
+  try {
+    const jobs = await queue.getJobs(
+      ["failed"],
+      offset,
+      offset + limit - 1,
+      true,
+    );
+    return Promise.all(
+      jobs
+        .filter(Boolean)
+        .map(async (job) =>
+          toQueueJobSnapshot(queueName, job, await job.getState()),
+        ),
+    );
+  } finally {
+    await queue.close();
+  }
+}
+
+export async function isQueuePaused(queueName: string): Promise<boolean> {
+  const queue = new Queue<BullJobData>(queueName, {
+    connection: redisOptions(),
+    prefix: env.BULLMQ_PREFIX,
+  });
+  try {
+    return await queue.isPaused();
+  } finally {
+    await queue.close();
+  }
+}
+
+export async function retryFailedByDedupeKey(input: {
+  queue: string;
+  dedupeKey: string;
+  resetAttemptsMade?: boolean;
+}): Promise<RetryFailedJobResult> {
+  const queue = new Queue<BullJobData>(input.queue, {
+    connection: redisOptions(),
+    prefix: env.BULLMQ_PREFIX,
+  });
+  try {
+    const job = await queue.getJob(bullMqJobIdForDedupeKey(input.dedupeKey));
+    if (!job) return { status: "not_found", job: null };
+    const state = await job.getState();
+    if (job.data.dedupeKey !== input.dedupeKey) {
+      return {
+        status: "identity_mismatch",
+        job: toQueueJobSnapshot(input.queue, job, state),
+      };
+    }
+    if (state !== "failed") {
+      return {
+        status: "not_failed",
+        job: toQueueJobSnapshot(input.queue, job, state),
+      };
+    }
+    const paused = await queue.isPaused();
+    await job.retry("failed", {
+      resetAttemptsMade: input.resetAttemptsMade ?? false,
+    });
+    return {
+      status: paused || (await queue.isPaused()) ? "retried_paused" : "retried",
+      job: toQueueJobSnapshot(input.queue, job, await job.getState()),
+    };
+  } finally {
+    await queue.close();
+  }
+}
+
+/**
+ * Long-running consumer for a single queue. Returns the BullMQ Worker so the
+ * process entry can close it on SIGTERM/SIGINT (graceful shutdown).
+ */
+export function runWorker(
+  queueName: string,
+  handler: (job: QueueJob) => Promise<void>,
+  options: { concurrency?: number; workerName?: string } = {},
+): Worker<BullJobData> {
+  return new Worker<BullJobData>(
+    queueName,
+    async (bullJob: BullJob<BullJobData>) => {
+      await handler({
+        id: bullJob.id ?? "",
+        queue: queueName,
+        payload: bullJob.data.payload,
+        attemptsMade: bullJob.attemptsMade,
+        maxAttempts: bullJob.opts.attempts ?? 1,
+        dedupeKey: bullJob.data.dedupeKey,
+      });
+    },
+    {
+      ...queueWorkerRuntimeOptions(options),
+      connection: redisOptions(),
+      prefix: env.BULLMQ_PREFIX,
+    },
+  );
+}
+
+export function queueWorkerRuntimeOptions(options: {
+  concurrency?: number;
+  workerName?: string;
+}) {
+  return {
+    concurrency: options.concurrency ?? 2,
+    ...(options.workerName ? { name: options.workerName } : {}),
+  };
+}

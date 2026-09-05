@@ -59,7 +59,7 @@ describe("characters needing attention", () => {
     })).toEqual([]);
   });
 
-  it("flags a complete draft pack that cannot publish because selections skipped review", () => {
+  it("does not add manual-review attention to complete draft packs", () => {
     expect(
       draftAssetReviewAttentionCharacterIds([
         {
@@ -77,7 +77,7 @@ describe("characters needing attention", () => {
           },
         },
       ]),
-    ).toEqual(["needs-review"]);
+    ).toEqual([]);
   });
 });
 

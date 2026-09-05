@@ -241,6 +241,46 @@ describe("Creative Run asynchronous retry command", () => {
     vi.restoreAllMocks();
   });
 
+  it("shows unknown generation consistently and opens the exact recovery request without submitting a retry", async () => {
+    const detail = runDetail();
+    detail.executionOutcome = "running";
+    detail.counts.failed = 0;
+    detail.items[0]!.status = "queued";
+    detail.items[0]!.executionState = "unknown";
+    detail.items[0]!.retryability = "unknown";
+    // A stale eligible count must not make an unresolved provider request retryable.
+    adminV2Request.mockImplementation(async (path) => {
+      if (path === `/api/v2/admin/creative/runs/${runId}`) return detail;
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    await act(async () => root.render(
+      <CreativeRunWorkspace permissions={permissions} view={{ kind: "detail", id: runId }} />,
+    ));
+    await advance();
+    expect(container.textContent).toContain("Needs confirmation");
+    expect(container.textContent).toContain("1 item(s) need confirmation");
+    expect(container.textContent).toContain("Retry unavailable");
+    expect(container.textContent).not.toContain("Waiting for an asset");
+    expect(container.textContent).not.toContain("No valid artifact");
+    const itemTab = container.querySelector('button[aria-pressed="true"]');
+    expect(itemTab?.textContent).toContain("Needs confirmation");
+    expect(itemTab?.textContent).not.toContain("failed");
+    expect(container.querySelector('a[href="/admin/ops/jobs?job=generation-job-mounted"]')?.textContent).toBe("Open generation recovery");
+    expect(retryButton(container)?.disabled).toBe(true);
+    expect(adminV2Request.mock.calls.every(([, options]) => !options?.method || options.method === "GET")).toBe(true);
+
+    detail.items[0]!.executionState = "failed";
+    detail.items[0]!.status = "failed";
+    detail.items[0]!.retryability = "eligible";
+    detail.executionOutcome = "failed";
+    detail.counts.failed = 1;
+    await act(async () => buttonByText(container, "Refresh")!.click());
+    await advance();
+    expect(container.textContent).not.toContain("Needs confirmation");
+    expect(container.querySelector('a[href="/admin/ops/jobs?job=generation-job-mounted"]')).toBeNull();
+    expect(retryButton(container)?.disabled).toBe(false);
+  });
+
   it("keeps a 202-accepted retry busy and waits for success before refreshing the Run projection", async () => {
     let runReads = 0;
     let commandReads = 0;
@@ -678,7 +718,7 @@ describe("Creative Run asynchronous retry command", () => {
     });
     await advance();
 
-    expect(container.textContent).toContain("Execution, review, placement, and verification remain separate facts.");
+    expect(container.textContent).toContain("Generate assets, choose where to use them, and verify delivery.");
     expect(container.textContent).not.toContain("Create images");
     expect(container.querySelector('textarea[aria-label="Negative prompt"]')).toBeNull();
     expect(adminV2Request.mock.calls.some(([path, options]) =>
@@ -830,7 +870,7 @@ describe("Creative Run review and placement authority", () => {
 
   it("keeps the review idempotency key until the projection refresh succeeds", async () => {
     let projectionReads = 0;
-    const detail = campaignRun();
+    const detail = { ...campaignRun(), purpose: "model_eval" as const };
     adminV2Request.mockImplementation(async (path, options) => {
       if (options?.method === "POST" && path.includes("/decisions")) {
         return { decisionId: "creative-review-1", replayed: false };
@@ -842,7 +882,7 @@ describe("Creative Run review and placement authority", () => {
     });
     await mountRun();
 
-    changeField(fieldByLabel(container, "Score"), "90");
+    changeField(fieldByLabel(container, "Identity match score"), "90");
     changeField(
       fieldByLabel(container, "Evidence and reason"),
       "Subject is sharp and on brief",
@@ -874,7 +914,7 @@ describe("Creative Run review and placement authority", () => {
   });
 
   it("stages a campaign candidate with normalized authored copy and its own reason", async () => {
-    const detail = campaignRun({ review: approvedReview });
+    const detail = campaignRun();
     adminV2Request.mockImplementation(async (_path, options) => {
       if (options?.method === "POST") return { placementId: "creative-placement-1" };
       return detail;
@@ -940,38 +980,26 @@ describe("Creative Run review and placement authority", () => {
     });
   });
 
-  it("supersedes an unused approval instead of editing the immutable decision", async () => {
+  it("preserves historical decisions as read-only evidence", async () => {
     const detail = campaignRun({ review: approvedReview });
-    adminV2Request.mockImplementation(async (_path, options) => {
-      if (options?.method === "POST") return { decisionId: "creative-review-2" };
-      return detail;
-    });
+    adminV2Request.mockImplementation(async () => detail);
     await mountRun();
-
-    // SPEC: 原判定不可改；未被使用的批准只能被一条新的驳回取代。
-    expect(container.textContent).toContain("Immutable review decision");
+    expect(container.textContent).toContain("Historical decision");
     expect(container.textContent).toContain("Sharp subject, correct campaign framing");
-    changeField(
-      fieldByLabel(container, "Withdrawal reason"),
-      "The campaign was cancelled before launch",
-    );
-    await act(async () => {
-      buttonByText(container, "Withdraw approval")?.click();
-    });
-    await advance();
+    expect(buttonByText(container, "Withdraw approval")).toBeUndefined();
+    expect(buttonByText(container, "Approve")).toBeUndefined();
+    expect(buttonByText(container, "Reject")).toBeUndefined();
+    expect(adminV2Request.mock.calls.some(([, options]) => options?.method === "POST")).toBe(false);
+  });
 
-    const decision = adminV2Request.mock.calls.find(
-      ([path, options]) => options?.method === "POST" && path.includes("/decisions"),
-    );
-    // INVARIANT: 新判定必须指回它取代的那一条，并原样保留原有的分数与可见证据。
-    expect(decision?.[1]?.body).toMatchObject({
-      decision: "rejected",
-      supersedesDecisionId: approvedReview.id,
-      score: approvedReview.score,
-      identityConsistency: approvedReview.identityConsistency,
-      quality: approvedReview.quality,
-      reason: "The campaign was cancelled before launch",
-    });
+  it("sends a generated Character asset directly back to its Character workspace", async () => {
+    const detail = { ...campaignRun(), purpose: "character_hero" as const, target: { type: "character" as const, id: "test-character" } };
+    adminV2Request.mockImplementation(async () => detail);
+    await mountRun();
+    expect(container.querySelector('a[href="/admin/characters/test-character?tab=assets"]')).not.toBeNull();
+    expect(buttonByText(container, "Approve")).toBeUndefined();
+    expect(container.textContent).not.toContain("Review required");
+    expect(container.textContent).toContain("Asset ready");
   });
 
   /**

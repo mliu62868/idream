@@ -162,6 +162,7 @@ export function CandidateBatchGrid({
   runId,
   selectedPackAssetId,
   subjectName,
+  unconfirmedOperations = [],
 }: {
   activeItemId: string | null;
   activePurpose: CharacterAssetPurpose;
@@ -173,6 +174,7 @@ export function CandidateBatchGrid({
   runId: string | null;
   selectedPackAssetId: string | null | undefined;
   subjectName: string;
+  unconfirmedOperations?: readonly { requestId: string | null; operationsHref: string | null }[];
 }) {
   const { t } = useAdminI18n();
   const activeItem = items.find((item) => item.id === activeItemId) ?? items[0] ?? null;
@@ -182,6 +184,10 @@ export function CandidateBatchGrid({
   const activeIsDraft = Boolean(
     activeItem?.asset?.id && activeItem.asset.id === selectedPackAssetId,
   );
+  const unconfirmed = (item: CreativeRunDetail["items"][number]) => !item.asset
+    ? unconfirmedOperations.find((operation) => operation.requestId === item.lineage?.requestId)
+    : undefined;
+  const activeUnconfirmed = activeItem ? unconfirmed(activeItem) : undefined;
   return (
     <div aria-label={t("Generated candidates")}>
       <div className="overflow-hidden rounded-lg bg-black/[0.04]" style={{ height: "min(500px, 60vh)" }}>
@@ -207,7 +213,7 @@ export function CandidateBatchGrid({
             comparison,
             draft,
             decision: item.review?.decision ?? null,
-            failed: item.executionState === "failed",
+            failed: item.executionState === "failed" && !unconfirmed(item),
           });
           return (
             <article
@@ -268,7 +274,7 @@ export function CandidateBatchGrid({
         <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--ad-border)] pt-3 text-xs">
           <p>
             <strong>{t("Candidate {number}", { number: activeItem.ordinal + 1 })}</strong>
-            <span className="ml-2 text-[var(--ad-text-muted)]">{t(candidateState(activeItem))}</span>
+            <span className="ml-2 text-[var(--ad-text-muted)]">{t(candidateState(activeItem, Boolean(activeUnconfirmed)))}</span>
           </p>
           <p className="text-[var(--ad-text-muted)]">
             {activeIsDraft ? t("Selected in draft") : t(purposeConfig[activePurpose].label)}
@@ -278,7 +284,12 @@ export function CandidateBatchGrid({
       ) : null}
       {/* SPEC: 首屏只说人能行动的失败原因；机器码折进技术详情。
           INTENT: provider 未就绪时不能承诺「重试」一定有意义，这里只送运营去看完整 Run 状态。 */}
-      {activeItem?.executionState === "failed" ? (
+      {activeUnconfirmed ? (
+        <div className="mt-3 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-xs" role="status">
+          <p>{t("The provider result is not confirmed. Check the generation task before starting another image.")}</p>
+          {activeUnconfirmed.operationsHref ? <Link className="mt-2 inline-block font-semibold underline" href={activeUnconfirmed.operationsHref}>{t("Open generation task")}</Link> : null}
+        </div>
+      ) : activeItem?.executionState === "failed" ? (
         <div
           className="mt-3 rounded-lg bg-[var(--ad-red-bg)] p-3 text-xs text-[var(--ad-red-text)]"
           role="alert"

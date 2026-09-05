@@ -1,0 +1,323 @@
+{
+  "checkedAt": "2026-09-05T11:47:48.362Z",
+  "database": "/idream_runtime_20260812",
+  "characters": [
+    {
+      "id": "501f68d9-41ef-4f8e-bc39-ea14a88ee142",
+      "name": "Admin Audit Rowan 20260905",
+      "age": 29,
+      "status": "draft",
+      "visibility": "private",
+      "currentContentVersionId": null,
+      "imageAssetId": null
+    },
+    {
+      "id": "620030d5-bb6b-4a10-88c9-2e3041ed9de7",
+      "name": "Chrome E2E Iris 20260905",
+      "age": 28,
+      "status": "draft",
+      "visibility": "private",
+      "currentContentVersionId": null,
+      "imageAssetId": null
+    }
+  ],
+  "projects": [
+    {
+      "id": "d8de190f-534b-404a-a759-bb20a1964626",
+      "characterId": "501f68d9-41ef-4f8e-bc39-ea14a88ee142",
+      "version": 5,
+      "activeKey": "official:501f68d9-41ef-4f8e-bc39-ea14a88ee142",
+      "draftImageAssetId": "media_gc8lmcfqh1dmto3sjl3",
+      "draftAssetPack": {
+        "character_cover": {
+          "runId": "cmto3qnon000mg6l7tu9vtnsh",
+          "itemId": "cmto3qnor000ng6l7cmqideq1",
+          "assetId": "media_gc8lmcfqh1dmto3sjl3",
+          "generationJobId": "cmto3qnou000og6l7qsadk6h9",
+          "reviewDecisionId": "cmto3uowu000vg6l7p25kaxny",
+          "bootstrapIdentity": true
+        }
+      }
+    },
+    {
+      "id": "85000a2c-92ef-489a-923c-55487861a665",
+      "characterId": "620030d5-bb6b-4a10-88c9-2e3041ed9de7",
+      "version": 4,
+      "activeKey": "official:620030d5-bb6b-4a10-88c9-2e3041ed9de7",
+      "draftImageAssetId": "media_w3cv1o1jnngmto6yacy",
+      "draftAssetPack": {
+        "character_chat": {
+          "runId": "cmto8ioyt000dr4l7l4p0w1rt",
+          "itemId": "cmto8ioyw000er4l7dnrr01wp",
+          "assetId": "media_unknown_73ea9fa77601bc064eda8ba60bfe53ad",
+          "generationJobId": "cmto8ioyz000fr4l73zrvo4qz",
+          "generationRouteFingerprint": "0aea6904817d5330b70f9c347074c80d5e00efd3ed822547ac0495dd5d6b8091"
+        },
+        "character_hero": {
+          "runId": "cmto71597000mv3l7ot2c3gu5",
+          "itemId": "cmto7159a000nv3l72xh28dx8",
+          "assetId": "media_unknown_1e0b1f08f709df0d8bef64770122a004",
+          "generationJobId": "cmto7159c000ov3l70eyvcpnk",
+          "generationRouteFingerprint": "0aea6904817d5330b70f9c347074c80d5e00efd3ed822547ac0495dd5d6b8091"
+        },
+        "character_cover": {
+          "runId": "cmto6v04x0004v3l747vaxurg",
+          "itemId": "cmto6v0500005v3l7ofqrcq0d",
+          "assetId": "media_w3cv1o1jnngmto6yacy",
+          "generationJobId": "cmto6v0520006v3l7hwn80cuw",
+          "bootstrapIdentity": true
+        }
+      }
+    }
+  ],
+  "serving": [
+    {
+      "id": "cmto6uh7b0001v3l74uf6poq9",
+      "characterId": "620030d5-bb6b-4a10-88c9-2e3041ed9de7",
+      "currentReleaseId": null,
+      "state": "inactive",
+      "version": 1,
+      "createdAt": "2026-09-05T09:36:25.751Z",
+      "updatedAt": "2026-09-05T09:36:25.751Z"
+    },
+    {
+      "id": "cmto3ppst000jg6l7ixy8m29o",
+      "characterId": "501f68d9-41ef-4f8e-bc39-ea14a88ee142",
+      "currentReleaseId": null,
+      "state": "inactive",
+      "version": 3,
+      "createdAt": "2026-09-05T08:08:44.765Z",
+      "updatedAt": "2026-09-05T09:42:44.785Z"
+    }
+  ],
+  "jobs": [
+    {
+      "id": "cmtoauv6x0003z4l7o8eckhaf",
+      "status": "completed",
+      "mode": "image",
+      "model": "redcraft-krea2-identity-edit",
+      "provider": "comfyui",
+      "outputCount": 1,
+      "deliveredOutputCount": 1,
+      "costDreamcoins": 7,
+      "createdAt": "2026-09-05T11:28:42.345Z",
+      "completedAt": "2026-09-05T11:36:43.956Z",
+      "sourceId": "cmtoauv6u0002z4l7fyy4lf05"
+    },
+    {
+      "id": "cmto8ioyz000fr4l73zrvo4qz",
+      "status": "completed",
+      "mode": "image",
+      "model": "redcraft-krea2-identity-edit",
+      "provider": "comfyui",
+      "outputCount": 1,
+      "deliveredOutputCount": 1,
+      "costDreamcoins": 7,
+      "createdAt": "2026-09-05T10:23:15.179Z",
+      "completedAt": "2026-09-05T11:35:41.639Z",
+      "sourceId": "cmto8ioyw000er4l7dnrr01wp"
+    },
+    {
+      "id": "cmto7v8sk0003r4l7pdckcrua",
+      "status": "completed",
+      "mode": "video",
+      "model": "redgraft-ltx25-i2v",
+      "provider": "comfyui",
+      "outputCount": 1,
+      "deliveredOutputCount": 1,
+      "costDreamcoins": 100,
+      "createdAt": "2026-09-05T10:05:01.124Z",
+      "completedAt": "2026-09-05T11:01:13.613Z",
+      "sourceId": "cmto7v8sh0002r4l7p7kqdh8k"
+    },
+    {
+      "id": "cmto7159c000ov3l70eyvcpnk",
+      "status": "completed",
+      "mode": "image",
+      "model": "redcraft-krea2-identity-edit",
+      "provider": "comfyui",
+      "outputCount": 1,
+      "deliveredOutputCount": 1,
+      "costDreamcoins": 7,
+      "createdAt": "2026-09-05T09:41:36.864Z",
+      "completedAt": "2026-09-05T10:02:42.724Z",
+      "sourceId": "cmto7159a000nv3l72xh28dx8"
+    },
+    {
+      "id": "cmto6v0520006v3l7hwn80cuw",
+      "status": "completed",
+      "mode": "image",
+      "model": "redcraft-krea2-redmix3-txt2img",
+      "provider": "comfyui",
+      "outputCount": 1,
+      "deliveredOutputCount": 1,
+      "costDreamcoins": 5,
+      "createdAt": "2026-09-05T09:36:50.294Z",
+      "completedAt": "2026-09-05T09:39:23.510Z",
+      "sourceId": "cmto6v0500005v3l7ofqrcq0d"
+    },
+    {
+      "id": "cmto3wvg60018g6l78rd26elg",
+      "status": "completed",
+      "mode": "video",
+      "model": "redgraft-ltx25-i2v",
+      "provider": "comfyui",
+      "outputCount": 1,
+      "deliveredOutputCount": 1,
+      "costDreamcoins": 100,
+      "createdAt": "2026-09-05T08:14:18.678Z",
+      "completedAt": "2026-09-05T08:31:25.738Z",
+      "sourceId": "cmto3wvg40017g6l70ri9ozct"
+    },
+    {
+      "id": "cmto3qnou000og6l7qsadk6h9",
+      "status": "completed",
+      "mode": "image",
+      "model": "redcraft-krea2-redmix3-txt2img",
+      "provider": "comfyui",
+      "outputCount": 1,
+      "deliveredOutputCount": 1,
+      "costDreamcoins": 5,
+      "createdAt": "2026-09-05T08:09:28.686Z",
+      "completedAt": "2026-09-05T08:10:56.689Z",
+      "sourceId": "cmto3qnor000ng6l7cmqideq1"
+    }
+  ],
+  "attempts": [
+    {
+      "id": "cmto3qnp3000rg6l7pljc3qe5",
+      "requestId": "cmto3qnou000og6l7qsadk6h9",
+      "attemptNo": 1,
+      "status": "succeeded",
+      "provider": "comfyui",
+      "startedAt": "2026-09-05T08:09:28.743Z",
+      "finishedAt": "2026-09-05T08:10:56.689Z"
+    },
+    {
+      "id": "cmto6v05k0009v3l7ou3sah77",
+      "requestId": "cmto6v0520006v3l7hwn80cuw",
+      "attemptNo": 1,
+      "status": "succeeded",
+      "provider": "comfyui",
+      "startedAt": "2026-09-05T09:36:50.368Z",
+      "finishedAt": "2026-09-05T09:39:23.510Z"
+    },
+    {
+      "id": "cmto7v8te0006r4l7jegh5zzv",
+      "requestId": "cmto7v8sk0003r4l7pdckcrua",
+      "attemptNo": 1,
+      "status": "unknown",
+      "provider": "comfyui",
+      "startedAt": "2026-09-05T10:05:01.224Z",
+      "finishedAt": "2026-09-05T10:40:01.224Z"
+    },
+    {
+      "id": "cmto3wvgq001bg6l7ibv4p56f",
+      "requestId": "cmto3wvg60018g6l78rd26elg",
+      "attemptNo": 1,
+      "status": "succeeded",
+      "provider": "comfyui",
+      "startedAt": "2026-09-05T08:14:18.744Z",
+      "finishedAt": "2026-09-05T08:31:25.738Z"
+    },
+    {
+      "id": "cmto7159u000rv3l78jtcw3vz",
+      "requestId": "cmto7159c000ov3l70eyvcpnk",
+      "attemptNo": 1,
+      "status": "unknown",
+      "provider": "comfyui",
+      "startedAt": "2026-09-05T09:41:36.923Z",
+      "finishedAt": "2026-09-05T09:46:38.571Z"
+    },
+    {
+      "id": "cmto8iozr000ir4l7t4n9vie0",
+      "requestId": "cmto8ioyz000fr4l73zrvo4qz",
+      "attemptNo": 1,
+      "status": "unknown",
+      "provider": "comfyui",
+      "startedAt": "2026-09-05T10:23:15.280Z",
+      "finishedAt": "2026-09-05T10:33:15.280Z"
+    },
+    {
+      "id": "cmtoauv7l0006z4l7cd6qedkj",
+      "requestId": "cmtoauv6x0003z4l7o8eckhaf",
+      "attemptNo": 1,
+      "status": "succeeded",
+      "provider": "comfyui",
+      "startedAt": "2026-09-05T11:30:11.808Z",
+      "finishedAt": "2026-09-05T11:36:43.956Z"
+    }
+  ],
+  "assets": [
+    {
+      "id": "media_gc8lmcfqh1dmto3sjl3",
+      "sourceJobId": "cmto3qnou000og6l7qsadk6h9",
+      "type": "image",
+      "url": "/user-content/bWVkaWFfZ2M4bG1jZnFoMWRtdG8zc2psMw/content.png",
+      "safetyStatus": "passed",
+      "visibility": "private",
+      "storageKey": "gen/cmto3qnou000og6l7qsadk6h9/attempts/cmto3qnp3000rg6l7pljc3qe5/image-1.png"
+    },
+    {
+      "id": "media_ruh96f3a52bmto4ivxf",
+      "sourceJobId": "cmto3wvg60018g6l78rd26elg",
+      "type": "video",
+      "url": "/user-content/bWVkaWFfcnVoOTZmM2E1MmJtdG80aXZ4Zg/content.mp4",
+      "safetyStatus": "passed",
+      "visibility": "private",
+      "storageKey": "gen/cmto3wvg60018g6l78rd26elg/attempts/cmto3wvgq001bg6l7ibv4p56f/video.mp4"
+    },
+    {
+      "id": "media_w3cv1o1jnngmto6yacy",
+      "sourceJobId": "cmto6v0520006v3l7hwn80cuw",
+      "type": "image",
+      "url": "/user-content/bWVkaWFfdzNjdjFvMWpubmdtdG82eWFjeQ/content.png",
+      "safetyStatus": "passed",
+      "visibility": "private",
+      "storageKey": "gen/cmto6v0520006v3l7hwn80cuw/attempts/cmto6v05k0009v3l7ou3sah77/image-1.png"
+    },
+    {
+      "id": "media_unknown_1e0b1f08f709df0d8bef64770122a004",
+      "sourceJobId": "cmto7159c000ov3l70eyvcpnk",
+      "type": "image",
+      "url": "/user-content/bWVkaWFfdW5rbm93bl8xZTBiMWYwOGY3MDlkZjBkOGJlZjY0NzcwMTIyYTAwNA/content.png",
+      "safetyStatus": "passed",
+      "visibility": "private",
+      "storageKey": "gen/cmto7159c000ov3l70eyvcpnk/attempts/cmto7159u000rv3l78jtcw3vz/image-1.png"
+    },
+    {
+      "id": "media_unknown_eed5b98b6c4ad0fdfa32891af2c68872",
+      "sourceJobId": "cmto7v8sk0003r4l7pdckcrua",
+      "type": "video",
+      "url": "/user-content/bWVkaWFfdW5rbm93bl9lZWQ1Yjk4YjZjNGFkMGZkZmEzMjg5MWFmMmM2ODg3Mg/content.mp4",
+      "safetyStatus": "passed",
+      "visibility": "private",
+      "storageKey": "gen/cmto7v8sk0003r4l7pdckcrua/attempts/cmto7v8te0006r4l7jegh5zzv/video.mp4"
+    },
+    {
+      "id": "media_unknown_73ea9fa77601bc064eda8ba60bfe53ad",
+      "sourceJobId": "cmto8ioyz000fr4l73zrvo4qz",
+      "type": "image",
+      "url": "/user-content/bWVkaWFfdW5rbm93bl83M2VhOWZhNzc2MDFiYzA2NGVkYThiYTYwYmZlNTNhZA/content.png",
+      "safetyStatus": "passed",
+      "visibility": "private",
+      "storageKey": "gen/cmto8ioyz000fr4l73zrvo4qz/attempts/cmto8iozr000ir4l7t4n9vie0/image-1.png"
+    },
+    {
+      "id": "media_v34dtjl4jkimtob56st",
+      "sourceJobId": "cmtoauv6x0003z4l7o8eckhaf",
+      "type": "image",
+      "url": "/user-content/bWVkaWFfdjM0ZHRqbDRqa2ltdG9iNTZzdA/content.png",
+      "safetyStatus": "passed",
+      "visibility": "private",
+      "storageKey": "gen/cmtoauv6x0003z4l7o8eckhaf/attempts/cmtoauv7l0006z4l7cd6qedkj/image-1.png"
+    }
+  ],
+  "reviews": [
+    {
+      "id": "cmto3uowu000vg6l7p25kaxny",
+      "artifactId": "media_gc8lmcfqh1dmto3sjl3",
+      "decision": "approved"
+    }
+  ]
+}

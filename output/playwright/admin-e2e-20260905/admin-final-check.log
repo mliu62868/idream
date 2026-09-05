@@ -1,0 +1,74 @@
+@idream/admin check: $ eslint
+@idream/admin check: 
+@idream/admin check: /Users/kk/code/idream/packages/admin/scripts/start-development.test.cjs
+@idream/admin check:   7:3  warning  'nextCli' is assigned a value but never used  @typescript-eslint/no-unused-vars
+@idream/admin check: 
+@idream/admin check: /Users/kk/code/idream/packages/admin/src/components/admin/ExperimentsView.mounted.test.tsx
+@idream/admin check:   51:67  warning  'init' is defined but never used  @typescript-eslint/no-unused-vars
+@idream/admin check: 
+@idream/admin check: /Users/kk/code/idream/packages/admin/src/components/admin/InsightsView.tsx
+@idream/admin check:    85:36  warning  'reportFailure' is assigned a value but never used                                                           @typescript-eslint/no-unused-vars
+@idream/admin check:   103:6   warning  React Hook useCallback has an unnecessary dependency: 't'. Either exclude it or remove the dependency array  react-hooks/exhaustive-deps
+@idream/admin check: 
+@idream/admin check: /Users/kk/code/idream/packages/admin/src/components/admin/TagsView.tsx
+@idream/admin check:   93:9  warning  The 'tags' logical expression could make the dependencies of useMemo Hook (at line 99) change on every render. To fix this, wrap the initialization of 'tags' in its own useMemo() Hook   react-hooks/exhaustive-deps
+@idream/admin check:   93:9  warning  The 'tags' logical expression could make the dependencies of useMemo Hook (at line 108) change on every render. To fix this, wrap the initialization of 'tags' in its own useMemo() Hook  react-hooks/exhaustive-deps
+@idream/admin check: 
+@idream/admin check: ✖ 6 problems (0 errors, 6 warnings)
+@idream/admin check: 
+@idream/admin check: $ tsc --noEmit
+@idream/admin check: $ bun ../../scripts/build-next-standalone.mjs packages/admin
+@idream/admin check: ▲ Next.js 16.2.1 (Turbopack)
+@idream/admin check: - Environments: .env
+@idream/admin check: - Experiments (use with caution):
+@idream/admin check:   ⨯ isrFlushToDisk
+@idream/admin check: 
+@idream/admin check:   Creating an optimized production build ...
+@idream/admin check: ✓ Compiled successfully in 11.6s
+@idream/admin check:   Running TypeScript ...
+@idream/admin check:   Finished TypeScript in 9.9s ...
+@idream/admin check:   Collecting page data using 15 workers ...
+@idream/admin check:   Generating static pages using 15 workers (0/6) ...
+@idream/admin check:   Generating static pages using 15 workers (1/6) 
+@idream/admin check:   Generating static pages using 15 workers (2/6) 
+@idream/admin check:   Generating static pages using 15 workers (4/6) 
+@idream/admin check: ✓ Generating static pages using 15 workers (6/6) in 246ms
+@idream/admin check:   Finalizing page optimization ...
+@idream/admin check: 
+@idream/admin check: Route (app)
+@idream/admin check: ┌ ƒ /
+@idream/admin check: ├ ƒ /_not-found
+@idream/admin check: ├ ƒ /admin/[[...section]]
+@idream/admin check: ├ ƒ /admin/cases
+@idream/admin check: ├ ƒ /admin/cases/[id]
+@idream/admin check: ├ ƒ /admin/characters
+@idream/admin check: ├ ƒ /admin/characters/[id]
+@idream/admin check: ├ ƒ /admin/characters/new
+@idream/admin check: ├ ƒ /admin/characters/review
+@idream/admin check: ├ ƒ /admin/characters/starters
+@idream/admin check: ├ ƒ /admin/characters/taxonomy
+@idream/admin check: ├ ƒ /admin/creative/runs
+@idream/admin check: ├ ƒ /admin/creative/runs/[id]
+@idream/admin check: ├ ƒ /admin/ops/incidents
+@idream/admin check: ├ ƒ /admin/ops/incidents/[id]
+@idream/admin check: ├ ƒ /admin/ops/jobs
+@idream/admin check: ├ ƒ /admin/today
+@idream/admin check: ├ ƒ /api/admin-auth/[action]
+@idream/admin check: ├ ƒ /api/internal/metrics
+@idream/admin check: ├ ƒ /api/internal/slo-readiness
+@idream/admin check: ├ ƒ /api/v1/admin/[...resource]
+@idream/admin check: ├ ƒ /api/v2/admin/[...resource]
+@idream/admin check: ├ ƒ /api/v2/admin/metrics
+@idream/admin check: ├ ƒ /api/v2/admin/metrics/quality
+@idream/admin check: ├ ƒ /api/v2/admin/metrics/reconciliation
+@idream/admin check: ├ ƒ /api/v2/admin/today
+@idream/admin check: ├ ƒ /api/v2/admin/today/all-work
+@idream/admin check: └ ƒ /user-content/[id]/[filename]
+@idream/admin check: 
+@idream/admin check: 
+@idream/admin check: ƒ Proxy (Middleware)
+@idream/admin check: 
+@idream/admin check: ƒ  (Dynamic)  server-rendered on demand
+@idream/admin check: 
+@idream/admin check: {"packagePath":"packages/admin","releaseId":"idream-a5ed6461-4c2b-469e-a066-17d78f834c09","buildId":"build-TfctsWXpff2fKS","deploymentId":"idream-a5ed6461-4c2b-469e-a066-17d78f834c09","releaseDir":"/Users/kk/code/idream/packages/admin/.next-runtime/releases/idream-a5ed6461-4c2b-469e-a066-17d78f834c09"}
+@idream/admin check: Exited with code 0

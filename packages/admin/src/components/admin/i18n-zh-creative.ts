@@ -5,6 +5,26 @@
 // TRAP: 本域约 17 个键是后端下发的短语（packages/main/src/server/modules/admin-v2/creative/**、
 // packages/shared/src/admin/contracts/creative.ts），经 t(后端字符串) 动态取值，静态扫描看不见。
 export const adminZhCreative: Record<string, string> = {
+  "Generation outcome needs confirmation": "生成结果待确认",
+  "Needs confirmation": "待确认",
+  "Retry unavailable": "暂不可重试",
+  "The provider outcome is unknown. Confirm the result in Generation Jobs before retrying or using this item.": "生成服务的结果尚未确认。请到生成任务中确认结果，完成恢复后再重试或使用此素材。",
+  "Open generation recovery": "打开生成任务恢复",
+  "{count} item(s) need confirmation. These are not confirmed failures; retry is unavailable until recovery is complete.": "{count} 项结果待确认，尚不能计为失败；请先完成恢复，再进行重试。",
+
+  "Asset ready": "素材已就绪",
+  "Waiting for an asset": "等待素材生成",
+  "Choose where to use this asset. Generation does not publish it automatically.": "请选择素材用途，生成完成后不会自动发布。",
+  "The asset will be available after generation and automatic checks finish.": "生成和自动检查完成后，即可使用素材。",
+  "Choose assets in Character workspace": "回角色工作区采用素材",
+  "Open asset library": "打开素材库",
+  "Choose an asset destination": "选择素材用途",
+  "Model evaluation": "模型评估",
+  "Historical decision": "历史评审记录",
+  "Generation brief": "生成要求",
+  "Generate assets, choose where to use them, and verify delivery.": "生成素材、选择用途并确认交付结果。",
+  "Explain why this asset should become the campaign candidate": "说明选择此素材用于活动的原因",
+
   "Describe artifacts, subjects, text, or composition to exclude.":
     "描述需要排除的瑕疵、主体、文字或构图。",
   "1 approved asset is hidden because generation authority is incomplete or untrusted.":
@@ -315,8 +335,8 @@ export const adminZhCreative: Record<string, string> = {
   "Shot plan": "镜头方案",
   "Show all characters": "显示全部角色",
   "Stage campaign candidate": "暂存活动候选图",
-  "Staging preserves the current live image. Verification activates this candidate only after the runtime surface renders the same reviewed asset.":
-    "暂存不会替换当前线上图片；只有真实页面渲染了同一张已审核素材后，验证才会激活候选图。",
+  "Staging preserves the current live image. Verification activates this candidate only after the runtime surface renders the selected asset.":
+    "暂存不会替换当前线上图片；确认实际页面使用所选素材后，才会激活候选图。",
   "Staging reason": "暂存原因",
   "Standalone placements are draft records only. Customer-visible campaign activation happens from a verified Creative Run; Character images publish through a Character Release.":
     "独立投放记录只能保存为草稿。面向用户的活动图片必须从已验证的创意生产批次激活；角色图片必须通过角色发布版本上线。",
@@ -328,7 +348,7 @@ export const adminZhCreative: Record<string, string> = {
   "Tags and descriptions make assets searchable for chat reuse.": "标签与描述让资产可以被检索并在聊天中复用。",
   "Template cover": "模板封面",
   "Test batch ready": "测试批次已就绪",
-  "The brief and generation route are frozen evidence for this Run.": "创意简报和生成路线是该批次不可变的审核依据。",
+  "The brief and generation route are frozen evidence for this Run.": "创意简报和生成路线记录了该批次的生成依据，可用于比较和采用素材。",
   "The current live portrait will become the sealed identity reference for future batches. Existing live images and releases will not change.":
     "当前线上肖像将被封存为后续批次的身份参考；现有线上图片和发布版本不会改变。",
   "The earlier immutable decision is preserved, but it cannot authorize selection without the required visible evidence. This new decision will supersede it.":

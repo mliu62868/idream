@@ -49,7 +49,7 @@ export type CharacterReleaseCreationState =
 const CHARACTER_RELEASE_AUTHORITY = defineTransitionAuthority(
   CHARACTER_RELEASE_STATES,
   {
-    approved: ["published"],
+    approved: ["published", "withdrawn"],
     published: ["superseded", "withdrawn"],
     superseded: [],
     withdrawn: [],
@@ -68,7 +68,7 @@ const CHARACTER_SERVING_AUTHORITY = defineTransitionAuthority(
     inactive: ["live", "retired"],
     live: ["live", "paused", "retired"],
     paused: ["live", "retired"],
-    retired: [],
+    retired: ["inactive"],
   },
 );
 
@@ -247,7 +247,7 @@ const CREATIVE_RUN_ITEM_AUTHORITY = defineTransitionAuthority(
   CREATIVE_RUN_ITEM_STATES,
   {
     queued: ["generated", "failed"],
-    generated: ["approved", "rejected"],
+    generated: ["approved", "rejected", "published"],
     approved: ["approved", "rejected", "published"],
     rejected: ["approved", "rejected"],
     regenerate_requested: ["generated", "failed"],

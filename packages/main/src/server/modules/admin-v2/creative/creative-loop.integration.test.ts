@@ -276,32 +276,20 @@ describe("Creative retry through verified placement", () => {
       needsReconciliation: false,
     });
     expect(await prisma.contentProductionBatch.findUnique({ where: { id: runId } })).toMatchObject({
-      workflowStage: "review",
+      workflowStage: "placement",
       verificationState: "pending",
       version: 4,
     });
   });
 
-  it("records immutable review, publishes a distribution placement, and verifies the served slot", async () => {
-    const reviewResponse = await decideItem(
-      request(`/api/v2/admin/creative/runs/${runId}/items/${itemId}/decisions`, {
-        entityVersion: 4,
-        decision: "approved",
-        identityConsistency: "passed",
-        score: 94,
-        reason: "Asset matches the brief and identity evidence",
-      }),
-      { params: Promise.resolve({ id: runId, itemId }) },
-    );
-    const reviewPayload = await reviewResponse.json();
-    expect(reviewResponse.status, JSON.stringify(reviewPayload)).toBe(200);
-    const reviewed = reviewPayload.data;
-    expect(reviewed).toMatchObject({ workflowStage: "placement", version: 5 });
-    expect(await prisma.creativeReviewDecision.count({ where: { runItemId: itemId } })).toBe(1);
+  it("publishes a generated image directly and verifies its served slot without any review decision", async () => {
+    expect(await prisma.creativeReviewDecision.count({ where: { runItemId: itemId } })).toBe(0);
+    await expect(prisma.contentProductionItem.findUniqueOrThrow({ where: { id: itemId } }))
+      .resolves.toMatchObject({ status: "generated", mediaAssetId: assetId });
 
     const placementResponse = await publishPlacement(
       request(`/api/v2/admin/creative/runs/${runId}/placements`, {
-        entityVersion: 5,
+        entityVersion: 4,
         itemId,
         assetId,
         slot: "campaign",
@@ -318,7 +306,7 @@ describe("Creative retry through verified placement", () => {
     expect(placementResponse.status).toBe(200);
     const placement = (await placementResponse.json()).data;
     withdrawnPlacementId = placement.placementId;
-    expect(placement).toMatchObject({ verificationState: "verifying", runVersion: 6 });
+    expect(placement).toMatchObject({ verificationState: "verifying", runVersion: 5 });
     await expect(prisma.mediaAssetPlacement.findUniqueOrThrow({
       where: { id: placement.placementId },
     })).resolves.toMatchObject({
@@ -335,7 +323,7 @@ describe("Creative retry through verified placement", () => {
       request(
         `/api/v2/admin/creative/runs/${runId}/placements/${withdrawnPlacementId}/withdrawal`,
         {
-          entityVersion: 6,
+          entityVersion: 5,
           reason: "Withdraw the staged candidate before changing the campaign decision",
         },
         withdrawalKey,
@@ -348,7 +336,7 @@ describe("Creative retry through verified placement", () => {
     expect(firstWithdrawalPayload.data).toMatchObject({
       placementId: withdrawnPlacementId,
       verificationState: "overridden",
-      runVersion: 7,
+      runVersion: 6,
     });
     const replayedWithdrawalResponse = await withdraw();
     const replayedWithdrawalPayload = await replayedWithdrawalResponse.json();
@@ -383,14 +371,14 @@ describe("Creative retry through verified placement", () => {
         id: runId,
         deploymentState: "unplaced",
         verificationState: "pending",
-        version: 7,
+        version: 6,
         items: [{ placement: null }],
       },
     });
 
     const restagedPlacementResponse = await publishPlacement(
       request(`/api/v2/admin/creative/runs/${runId}/placements`, {
-        entityVersion: 7,
+        entityVersion: 6,
         itemId,
         assetId,
         slot: "campaign",
@@ -407,12 +395,12 @@ describe("Creative retry through verified placement", () => {
     placementId = restagedPlacement.placementId;
     expect(restagedPlacement).toMatchObject({
       verificationState: "verifying",
-      runVersion: 8,
+      runVersion: 7,
     });
 
     const verificationResponse = await verifyPlacement(
       request(`/api/v2/admin/creative/runs/${runId}/placements/${placementId}/verification`, {
-        entityVersion: 8,
+        entityVersion: 7,
         reason: "Observed the current distribution slot serving the expected asset",
       }),
       { params: Promise.resolve({ id: runId, placementId }) },
@@ -421,7 +409,7 @@ describe("Creative retry through verified placement", () => {
     const verified = (await verificationResponse.json()).data;
     expect(verified).toMatchObject({
       verificationState: "passed",
-      runVersion: 9,
+      runVersion: 8,
       checks: {
         runtimeSurfaceSupported: true,
         placementVisibleInRuntime: true,
@@ -436,14 +424,14 @@ describe("Creative retry through verified placement", () => {
       runId,
       placementId,
       actor: { id: adminId, role: "admin" },
-      expectedVersion: 9,
+      expectedVersion: 8,
       reason: "A passed verification is terminal and cannot be rewritten",
       requestId: `creative-terminal-verification-${suffix}`,
     })).rejects.toThrow("Only a staged placement can be verified");
     await expect(prisma.contentProductionBatch.findUniqueOrThrow({ where: { id: runId } })).resolves.toMatchObject({
       workflowStage: "verification",
       verificationState: "passed",
-      version: 9,
+      version: 8,
     });
     await expect(prisma.mediaAssetPlacement.findUniqueOrThrow({ where: { id: placementId } })).resolves.toMatchObject({
       verificationState: "passed",
@@ -468,7 +456,7 @@ describe("Creative retry through verified placement", () => {
       deploymentState: "placed",
       verificationState: "passed",
       counts: { generated: 1, failed: 0, reviewed: 1, approved: 1, placed: 1, total: 1 },
-      version: 9,
+      version: 8,
     });
     expect(detail.items[0].lineage).toMatchObject({
       requestId: jobId,
@@ -476,7 +464,7 @@ describe("Creative retry through verified placement", () => {
       workflowKey: "mock-image",
       workflowVersion: "7",
       assetId,
-      reviewDecisionId: expect.any(String),
+      reviewDecisionId: null,
       placementVersionId: placementId,
     });
     const listResponse = await listRuns(request(`/api/v2/admin/creative/runs?search=${runId}&limit=10`));
@@ -500,7 +488,7 @@ describe("Creative retry through verified placement", () => {
 
     const closedPlacementResponse = await publishPlacement(
       request(`/api/v2/admin/creative/runs/${runId}/placements`, {
-        entityVersion: 9,
+        entityVersion: 8,
         itemId,
         assetId,
         slot: "campaign",
@@ -526,13 +514,13 @@ describe("Creative retry through verified placement", () => {
       },
       select: { commandType: true },
     });
-    expect(mutationReceipts.filter(({ commandType }) => commandType === "creative.review.decision")).toHaveLength(1);
+    expect(mutationReceipts.filter(({ commandType }) => commandType === "creative.review.decision")).toHaveLength(0);
     expect(mutationReceipts.filter(({ commandType }) => commandType === "creative.placement.publish")).toHaveLength(2);
     expect(mutationReceipts.filter(({ commandType }) => commandType === "creative.placement.verify")).toHaveLength(1);
 
     const publishedReview = await decideItem(
       request(`/api/v2/admin/creative/runs/${runId}/items/${itemId}/decisions`, {
-        entityVersion: 9,
+        entityVersion: 8,
         decision: "rejected",
         identityConsistency: "failed",
         reason: "A published immutable item cannot be rewritten by a later review",
@@ -540,10 +528,10 @@ describe("Creative retry through verified placement", () => {
       { params: Promise.resolve({ id: runId, itemId }) },
     );
     expect(publishedReview.status).toBe(409);
-    expect(await prisma.creativeReviewDecision.count({ where: { runItemId: itemId } })).toBe(1);
+    expect(await prisma.creativeReviewDecision.count({ where: { runItemId: itemId } })).toBe(0);
     expect(await prisma.controlPlaneCommand.count({
       where: { actorId: adminId, commandType: "creative.review.decision" },
-    })).toBe(1);
+    })).toBe(0);
   });
 
   it("scans past non-matching derived outcomes without returning an unpageable false empty", async () => {

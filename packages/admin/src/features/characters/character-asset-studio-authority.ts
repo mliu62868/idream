@@ -86,8 +86,8 @@ export function characterAssetRunReceiptMessage(input: {
 }) {
   return input.executionOutcome === "succeeded" &&
     input.items.some((item) => item.asset !== null)
-    ? "The committed generation receipt is visible in this exact Run. Review can continue."
-    : "The image Run is confirmed. Generation is still in progress; review becomes available when the image is ready.";
+    ? "Generation is complete. Choose an image to use."
+    : "The image request is in progress. Resource waits may extend the time; choose an image once it is ready.";
 }
 
 export function canOfferCharacterAssetTerminalRejection(input: {
@@ -493,18 +493,17 @@ export function committedRunProjectionUnavailable(detail: string | null) {
     : "The committed Run projection is still unavailable. Verification can be retried without another create request.";
 }
 
-export function candidateState(item: CreativeRunDetail["items"][number]) {
-  if (item.review?.decision === "approved" && item.review.identityConsistency === "passed") return "Approved identity";
-  if (item.review?.decision === "approved" && item.review.identityConsistency === "unscored") return "Approved first identity";
-  if (item.review?.decision === "rejected") return "Rejected";
+export function candidateState(item: CreativeRunDetail["items"][number], resultUnconfirmed = false) {
   if (item.asset) return "Ready to decide";
+  if (resultUnconfirmed) return "Generation result awaiting confirmation";
   return {
     dispatching: "Preparing generation",
     provider_queued: "Waiting for generation capacity",
-    generating: "Generating image",
+    generating: "Image request in progress",
     finalizing: "Saving generated image",
     ready: "Ready to decide",
     failed: "Generation failed",
+    unknown: "Generation outcome needs confirmation",
   }[item.executionState];
 }
 

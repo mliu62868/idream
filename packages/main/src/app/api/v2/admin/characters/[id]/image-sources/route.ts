@@ -41,6 +41,9 @@ export async function GET(
       await listCharacterImageSources({
         characterId: id,
         purpose: query.purpose,
+        cursor: query.cursor,
+        search: query.search,
+        limit: query.limit,
       }),
     );
   });

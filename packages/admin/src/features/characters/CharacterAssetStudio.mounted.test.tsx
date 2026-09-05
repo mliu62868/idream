@@ -297,14 +297,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
             version: 1,
             identityReviewMode: "defines_identity",
             asset: { id: assetId, url: "/portrait.png", thumbnailUrl: "/portrait.png" },
-            review: {
-              id: "bootstrap-to-hero-review",
-              decision: "approved",
-              identityConsistency: "unscored",
-              score: 95,
-              reason: "The intended face is clear and suitable as the identity anchor.",
-              quality: { artifactFree: true, singleSubject: true, intentMatch: true, noVisibleText: true },
-            },
+            review: null,
             lineage: { requestId: "bootstrap-to-hero-request" },
           }],
         };
@@ -331,8 +324,8 @@ describe("Character Asset Studio bootstrap route projection", () => {
       />;
     }
     await act(async () => root.render(<BootstrapJourney />));
-    await waitUntil(() => [...container.querySelectorAll("button")].some((button) => button.textContent?.includes("Set as identity anchor")));
-    const select = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Set as identity anchor"));
+    await waitUntil(() => [...container.querySelectorAll("button")].some((button) => button.textContent?.includes("Set as identity")));
+    const select = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Set as identity"));
     expect(select?.disabled).toBe(false);
     await act(async () => select?.click());
     await waitUntil(() => container.textContent?.includes("Identity bootstrap authority is verified") === true);
@@ -1753,7 +1746,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
     });
   });
 
-  it("keeps a committed refresh usable when polling supersedes its projection requests", async () => {
+  it("blocks duplicate creation while a same-purpose Run is active, including when viewing completed history", async () => {
     vi.useFakeTimers();
     const runningRun = {
       id: "running-run",
@@ -1764,28 +1757,17 @@ describe("Character Asset Studio bootstrap route projection", () => {
       updatedAt: "2026-07-16T12:00:00.000Z",
     };
     const runningDetail = { ...runningRun, version: 1, items: [] };
-    const listRefresh = deferred<unknown>();
-    const detailRefresh = deferred<unknown>();
-    let listReads = 0;
+    const historical = { ...runningDetail, id: "historical-run", executionOutcome: "succeeded" };
+    let finished = false;
     adminV2Request.mockImplementation(async (path, options) => {
-      if (
-        path === "/api/v2/admin/creative/runs" &&
-        options?.method === "POST"
-      ) {
-        return { batch: { id: "new-run" }, replayed: false };
-      }
-      if (path.includes("/api/v2/admin/creative/runs?")) {
-        listReads += 1;
-        if (listReads === 2) return listRefresh.promise;
-        return {
-          items: [runningRun],
-          pageInfo: { endCursor: null, hasNextPage: false },
-        };
-      }
-      if (path === "/api/v2/admin/creative/runs/new-run")
-        return detailRefresh.promise;
-      if (path === "/api/v2/admin/creative/runs/running-run")
-        return runningDetail;
+      if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") return { batch: { id: "new-run" }, replayed: false };
+      if (path.includes("/api/v2/admin/creative/runs?")) return {
+        items: [finished ? { ...runningRun, executionOutcome: "succeeded" } : runningRun, historical],
+        pageInfo: { endCursor: null, hasNextPage: false },
+      };
+      if (path.endsWith("/historical-run")) return historical;
+      if (path.endsWith("/running-run")) return finished ? { ...runningDetail, executionOutcome: "succeeded" } : runningDetail;
+      if (path.endsWith("/new-run")) return { ...runningDetail, id: "new-run", target: { type: "character", id: "character-ready" } };
       throw new Error(`Unexpected Admin request: ${path}`);
     });
     const normalData = withCharacterWorkspaceDetail(data, {
@@ -1905,53 +1887,20 @@ describe("Character Asset Studio bootstrap route projection", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
-    const generate = [...container.querySelectorAll("button")].find((button) =>
-      button.textContent?.includes("Generate 1 portrait"),
-    );
+    const pending = () => [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Image request in progress"));
+    expect(pending()?.disabled).toBe(true);
+    await act(async () => pending()?.click());
+    const history = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("historical-run"));
+    await act(async () => { history?.click(); await vi.advanceTimersByTimeAsync(0); });
+    expect(pending()?.disabled).toBe(true);
+    await act(async () => pending()?.click());
+    expect(adminV2Request.mock.calls.some(([, options]) => options?.method === "POST")).toBe(false);
+    finished = true;
+    await act(async () => { await vi.advanceTimersByTimeAsync(4_000); });
+    const generate = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Generate 1 portrait"));
     expect(generate?.disabled).toBe(false);
-
-    await act(async () => {
-      generate?.click();
-      await Promise.resolve();
-    });
-    expect(listReads).toBe(2);
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(4_000);
-    });
-    await act(async () => {
-      listRefresh.resolve({
-        items: [runningRun],
-        pageInfo: { endCursor: null, hasNextPage: false },
-      });
-      detailRefresh.resolve({
-        ...runningDetail,
-        id: "new-run",
-        target: {
-          type: "character",
-          id: "character-ready",
-        },
-      });
-      await Promise.resolve();
-      await vi.advanceTimersByTimeAsync(0);
-    });
-
-    expect(container.textContent).not.toContain(
-      "latest projection could not be refreshed",
-    );
-    expect(container.textContent).not.toContain(
-      "Automatic refresh was delayed",
-    );
-    expect(container.textContent).not.toContain("Created Run receipt");
-    expect(
-      readActiveDurableMutationIntent({
-        scope: "character-asset:create:anonymous:character-ready",
-      }),
-    ).toBeNull();
-    expect(
-      container.querySelector<HTMLTextAreaElement>(
-        'textarea[aria-label*="creative brief"]',
-      )?.disabled,
-    ).toBe(false);
+    await act(async () => { generate?.click(); await vi.advanceTimersByTimeAsync(0); });
+    expect(adminV2Request.mock.calls.filter(([, options]) => options?.method === "POST")).toHaveLength(1);
   });
 
   it("direct-loads the exact draft-pinned Run after it falls outside the recent 20", async () => {

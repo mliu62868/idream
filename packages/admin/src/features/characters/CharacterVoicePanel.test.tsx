@@ -382,14 +382,14 @@ describe("CharacterVoicePanel voice identity controls", () => {
     expect(container.textContent).toContain(
       "Creating a candidate never changes Character.voiceId",
     );
-    const activate = button("Activate reviewed voice");
+    const activate = button("Activate voice");
     expect(activate?.disabled).toBe(true);
     await typeInto(
       "#character-voice-activation-reason",
       "Reviewed the candidate preview",
     );
-    expect(button("Activate reviewed voice")?.disabled).toBe(false);
-    await act(async () => button("Activate reviewed voice")?.click());
+    expect(button("Activate voice")?.disabled).toBe(false);
+    await act(async () => button("Activate voice")?.click());
 
     expect(adminV2Request).toHaveBeenCalledTimes(1);
     const [path, options] = adminV2Request.mock.calls[0] ?? [];
@@ -415,8 +415,8 @@ describe("CharacterVoicePanel voice identity controls", () => {
       "Reviewed the candidate preview",
     );
 
-    await act(async () => button("Activate reviewed voice")?.click());
-    await act(async () => button("Activate reviewed voice")?.click());
+    await act(async () => button("Activate voice")?.click());
+    await act(async () => button("Activate voice")?.click());
 
     expect(adminV2Request).toHaveBeenCalledTimes(2);
     const keys = adminV2Request.mock.calls.map(
@@ -443,7 +443,7 @@ describe("CharacterVoicePanel voice identity controls", () => {
       "#character-voice-activation-reason",
       "Reviewed the candidate preview",
     );
-    expect(button("Activate reviewed voice")?.disabled).toBe(true);
+    expect(button("Activate voice")?.disabled).toBe(true);
     expect(container.textContent).toContain(
       "The candidate provider must be ready",
     );

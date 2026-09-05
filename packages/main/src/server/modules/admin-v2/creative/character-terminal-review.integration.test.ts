@@ -128,8 +128,8 @@ afterAll(async () => {
   await prisma.$disconnect();
 });
 
-describe("unused approved Character candidate terminal review", () => {
-  it("records a CAS-linked superseding rejection for an unused closed candidate", async () => {
+describe("retired daily Character review writes", () => {
+  it("rejects a new review while preserving the historical decision and candidate", async () => {
     const fixture = await createApprovedCandidate("unused");
     const quality = {
       artifactFree: true,
@@ -151,26 +151,16 @@ describe("unused approved Character candidate terminal review", () => {
         reason: "Approved visual evidence remains valid, but this candidate will not be used",
         requestId: `${prefix}unused-terminal`,
       }),
-    ).resolves.toMatchObject({ version: 2 });
-    const latest = await prisma.creativeReviewDecision.findFirstOrThrow({
-      where: { runItemId: fixture.itemId },
-      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    });
-    expect(latest).toMatchObject({
-      decision: "rejected",
-      supersedesDecisionId: fixture.decision.id,
-      identityConsistency: "passed",
-      score: 94,
-    });
-    expect(latest.evidence).toMatchObject({ quality });
-    await expect(
-      prisma.contentProductionItem.findUniqueOrThrow({
-        where: { id: fixture.itemId },
-      }),
-    ).resolves.toMatchObject({ status: "rejected" });
+    ).rejects.toMatchObject({ status: 409, details: { code: "manual_asset_review_retired" } });
+    expect(await prisma.creativeReviewDecision.count({ where: { runItemId: fixture.itemId } })).toBe(1);
+    await expect(prisma.creativeReviewDecision.findUniqueOrThrow({ where: { id: fixture.decision.id } }))
+      .resolves.toMatchObject({ decision: "approved", supersedesDecisionId: null });
+    await expect(prisma.contentProductionItem.findUniqueOrThrow({ where: { id: fixture.itemId } }))
+      .resolves.toMatchObject({ status: "approved", version: 1 });
+
   });
 
-  it("blocks the correction while an active Character Look still references the asset", async () => {
+  it("preserves active Look references when an obsolete review client submits a rejection", async () => {
     const fixture = await createApprovedCandidate("look-dependent");
     await prisma.characterLook.create({
       data: {
@@ -208,7 +198,7 @@ describe("unused approved Character candidate terminal review", () => {
     ).rejects.toMatchObject({
       status: 409,
       details: {
-        dependencies: expect.arrayContaining(["active_character_look"]),
+        code: "manual_asset_review_retired",
       },
     });
   });

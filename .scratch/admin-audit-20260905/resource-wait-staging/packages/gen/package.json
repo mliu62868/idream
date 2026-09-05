@@ -1,0 +1,43 @@
+{
+  "name": "@idream/gen",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Generation Service — gen/image + gen/video. Slow async workers: payload self-contained, write blob only, NO DB authority. Durable terminal records enter a Main-owned relay for projection.",
+  "engines": {
+    "node": ">=22",
+    "bun": "1.4.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "bun ../../scripts/build-bun-service.mjs src/image.ts src/video.ts",
+    "dev:image": "bun src/image.ts",
+    "dev:video": "bun src/video.ts",
+    "start:image": "bun dist/image.js",
+    "start:video": "bun dist/video.js",
+    "probe:image": "bun src/probe-image-pipeline.ts",
+    "probe:video": "bun src/probe-video-pipeline.ts",
+    "probe:sentry": "bun src/probe-sentry.ts",
+    "probe:character-consistency": "bun src/probe-character-consistency.ts",
+    "sync:comfyui-workflows": "bun src/sync-comfyui-workflows.ts",
+    "smoke:backend": "bun src/backend/smoke.ts",
+    "preflight": "bun src/preflight.ts"
+  },
+  "dependencies": {
+    "@idream/shared": "workspace:*",
+    "@sentry/node": "10.70.0",
+    "bullmq": "^5.79.0",
+    "dotenv": "^17.4.2",
+    "ioredis": "^5.11.1",
+    "pino": "^10.3.1",
+    "sharp": "^0.34.5",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24",
+    "tsx": "^4.22.4",
+    "typescript": "^5",
+    "vitest": "^4.1.8"
+  }
+}

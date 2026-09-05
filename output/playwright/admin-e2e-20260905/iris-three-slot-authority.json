@@ -1,0 +1,121 @@
+{
+  "status": 200,
+  "character": "620030d5-bb6b-4a10-88c9-2e3041ed9de7",
+  "project": {
+    "id": "85000a2c-92ef-489a-923c-55487861a665",
+    "characterId": "620030d5-bb6b-4a10-88c9-2e3041ed9de7",
+    "draftImageAssetId": "media_w3cv1o1jnngmto6yacy",
+    "draftAssetPackHash": "46eac84b3ff311569c61662866fdde0e06cb73c8590e0a8561e23acb02a2a710",
+    "draftAssetPack": {
+      "character_cover": "media_w3cv1o1jnngmto6yacy",
+      "character_hero": "media_unknown_1e0b1f08f709df0d8bef64770122a004",
+      "character_chat": "media_unknown_73ea9fa77601bc064eda8ba60bfe53ad"
+    },
+    "draftAssetSelections": {
+      "character_cover": {
+        "assetId": "media_w3cv1o1jnngmto6yacy",
+        "runId": "cmto6v04x0004v3l747vaxurg",
+        "itemId": "cmto6v0500005v3l7ofqrcq0d",
+        "reviewDecisionId": null,
+        "generationJobId": "cmto6v0520006v3l7hwn80cuw",
+        "bootstrapIdentity": true,
+        "generationRouteFingerprint": null,
+        "routeCurrent": true
+      },
+      "character_hero": {
+        "assetId": "media_unknown_1e0b1f08f709df0d8bef64770122a004",
+        "runId": "cmto71597000mv3l7ot2c3gu5",
+        "itemId": "cmto7159a000nv3l72xh28dx8",
+        "reviewDecisionId": null,
+        "generationJobId": "cmto7159c000ov3l70eyvcpnk",
+        "bootstrapIdentity": false,
+        "generationRouteFingerprint": "0aea6904817d5330b70f9c347074c80d5e00efd3ed822547ac0495dd5d6b8091",
+        "routeCurrent": true
+      },
+      "character_chat": {
+        "assetId": "media_unknown_73ea9fa77601bc064eda8ba60bfe53ad",
+        "runId": "cmto8ioyt000dr4l7l4p0w1rt",
+        "itemId": "cmto8ioyw000er4l7dnrr01wp",
+        "reviewDecisionId": null,
+        "generationJobId": "cmto8ioyz000fr4l73zrvo4qz",
+        "bootstrapIdentity": false,
+        "generationRouteFingerprint": "0aea6904817d5330b70f9c347074c80d5e00efd3ed822547ac0495dd5d6b8091",
+        "routeCurrent": true
+      }
+    },
+    "draftAssetRouteAuthority": {
+      "status": "current",
+      "currentRouteFingerprint": "0aea6904817d5330b70f9c347074c80d5e00efd3ed822547ac0495dd5d6b8091",
+      "stalePurposes": [],
+      "missingPurposes": [],
+      "recoveryPurpose": null,
+      "releaseReady": true,
+      "releaseBlockers": []
+    },
+    "version": 4,
+    "updatedAt": "2026-09-05T11:36:52.847Z"
+  },
+  "serving": {
+    "characterId": "620030d5-bb6b-4a10-88c9-2e3041ed9de7",
+    "state": "inactive",
+    "currentReleaseId": null,
+    "version": 1,
+    "updatedAt": "2026-09-05T09:36:25.751Z"
+  },
+  "preview": {
+    "releaseId": null,
+    "contentVersionId": "e583add3-5547-4d4e-8eb3-14c50c2f8e32",
+    "label": "Draft Preview",
+    "name": "Chrome E2E Iris 20260905",
+    "description": "一位热情而细心的成年植物学家，陪你发现城市花园里的小故事。",
+    "persona": {
+      "soul": {
+        "age": 28,
+        "name": "Chrome E2E Iris 20260905",
+        "gender": "female",
+        "detailsMarkdown": "",
+        "characterPromise": "一位热情而细心的成年植物学家，陪你发现城市花园里的小故事。"
+      },
+      "compiled": {
+        "fingerprint": "ed890273773fa5172b90a2288a4669c8c3f80cc6cb46dc3e4c5008101bdaf1fa",
+        "systemPrompt": "# Chrome E2E Iris 20260905 — Character Soul\n\nYou are Chrome E2E Iris 20260905. Speak and act consistently with this character.\n\n## Basic information\n- Age: 28\n- Gender: female\n- Character: 一位热情而细心的成年植物学家，陪你发现城市花园里的小故事。",
+        "compilerVersion": "character-soul-3",
+        "estimatedTokens": 55
+      },
+      "schemaVersion": 3
+    },
+    "opening": {
+      "firstMessage": "欢迎来到温室。今天你想认识哪一株植物？"
+    },
+    "appearance": {
+      "style": "realistic",
+      "stableTraits": [
+        "short brown hair",
+        "green eyes",
+        "adult facial features"
+      ],
+      "identityAnchor": "28-year-old adult woman, short brown hair, green eyes, warm natural smile",
+      "referenceDirection": "Waist-up portrait in a bright greenhouse, olive linn shirt, soft daylight, one adult person."
+    },
+    "imageUrl": "/user-content/bWVkaWFfdzNjdjFvMWpubmdtdG82eWFjeQ/content.png",
+    "assetPack": {
+      "character_cover": {
+        "assetId": "media_w3cv1o1jnngmto6yacy",
+        "imageUrl": "/user-content/bWVkaWFfdzNjdjFvMWpubmdtdG82eWFjeQ/content.png",
+        "status": "available"
+      },
+      "character_hero": {
+        "assetId": "media_unknown_1e0b1f08f709df0d8bef64770122a004",
+        "imageUrl": "/user-content/bWVkaWFfdW5rbm93bl8xZTBiMWYwOGY3MDlkZjBkOGJlZjY0NzcwMTIyYTAwNA/content.png",
+        "status": "available"
+      },
+      "character_chat": {
+        "assetId": "media_unknown_73ea9fa77601bc064eda8ba60bfe53ad",
+        "imageUrl": "/user-content/bWVkaWFfdW5rbm93bl83M2VhOWZhNzc2MDFiYzA2NGVkYThiYTYwYmZlNTNhZA/content.png",
+        "status": "available"
+      }
+    },
+    "assetPackReady": true
+  },
+  "releases": []
+}

@@ -1,27 +1,20 @@
+import { resolveMediaAssetAuthorityMap } from "@/server/lib/media-asset-authority-query";
 import {
-  CHARACTER_IDENTITY_APPROVAL_MIN_SCORE,
   characterImageQualificationSchema,
   type CharacterImageQualification,
   type CharacterImageReviewRequest,
 } from "@idream/shared/admin";
 import type { Prisma } from "@prisma/client";
-import { inTransaction, prisma } from "@/server/lib/db";
+import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import {
   hasHydratableMediaBlobAuthority,
   inspectOperatorUploadAuthority,
   isMediaAssetOperationalForAuthority,
 } from "@/server/lib/media-asset-authority";
-import { assertMediaAssetCustomerPublishable } from "@/server/lib/media-asset-authority-query";
 import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { creativeReviewQuality } from "@/server/modules/admin-v2/shared/creative-review-quality";
-import { mediaAssetAuthorityDependencies } from "@/server/modules/admin-v2/shared/media-asset-authority-dependencies";
-import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { draftAssetRouteEntries, type CharacterDraftAssetPurpose } from "./draft-asset-route-authority";
-import {
-  lockCharacterGenerationAuthority,
-  lockCharacterMediaAssetAuthorities,
-} from "./generation-authority-lock";
 import {
   characterVisualProfileSnapshotHash,
   referenceSetSnapshotHash,
@@ -52,6 +45,7 @@ type QualificationFacts = {
   readonly asset: CharacterImageAsset;
   readonly item: CharacterImageItem | null;
   readonly review: CharacterImageDecision | null;
+  readonly customerPublishable: boolean;
   readonly currentVisualAuthority: CurrentVisualAuthority | null;
   readonly selectedEntries: ReturnType<typeof draftAssetRouteEntries>;
 };
@@ -159,83 +153,9 @@ export function evaluateCharacterImageReviewAuthority(input: {
   if (input.source === "operator_upload" && !input.currentVisualAuthority) {
     blockers.push("visual_authority_missing");
   }
-  if (!input.review) {
-    blockers.push("review_pending");
-    return { qualified: false, blockers } as const;
-  }
-  if (input.review.decision === "rejected") {
-    blockers.push("review_rejected");
-    return { qualified: false, blockers } as const;
-  }
-  const exactDecision =
-    input.review.artifactId === input.assetId &&
-    (
-      input.pinnedReviewDecisionId === undefined ||
-      input.pinnedReviewDecisionId === input.review.id
-    );
-  if (
-    input.pinnedReviewDecisionId !== undefined &&
-    input.pinnedReviewDecisionId !== input.review.id
-  ) {
-    blockers.push("review_authority_changed");
-  }
-  const expectedIdentity = input.bootstrapIdentity ? "unscored" : "passed";
-  const commonEvidencePassed =
-    exactDecision &&
-    input.review.decision === "approved" &&
-    input.review.identityConsistency === expectedIdentity &&
-    (
-      input.bootstrapIdentity ||
-      (
-        input.review.score !== null &&
-        input.review.score >= CHARACTER_IDENTITY_APPROVAL_MIN_SCORE
-      )
-    );
-  if (input.source === "operator_upload") {
-    const evidence = importedReviewAuthority(input.review.evidence);
-    const visualAuthorityMatches = Boolean(
-      evidence &&
-      input.currentVisualAuthority &&
-      evidence.authority.characterId === input.characterId &&
-      evidence.authority.assetId === input.assetId &&
-      evidence.authority.visualProfileId ===
-        input.currentVisualAuthority.visualProfileId &&
-      evidence.authority.visualProfileVersion ===
-        input.currentVisualAuthority.visualProfileVersion &&
-      evidence.authority.visualProfileHash ===
-        input.currentVisualAuthority.visualProfileHash &&
-      evidence.authority.referenceSetRevisionId ===
-        input.currentVisualAuthority.referenceSetRevisionId &&
-      evidence.authority.referenceSetSnapshotHash ===
-        input.currentVisualAuthority.referenceSetSnapshotHash,
-    );
-    if (input.currentVisualAuthority && evidence && !visualAuthorityMatches) {
-      blockers.push("visual_authority_changed");
-    }
-    if (
-      !commonEvidencePassed ||
-      !evidence ||
-      Object.values(evidence.quality).some((passed) => !passed)
-    ) {
-      blockers.push("review_evidence_incomplete");
-    }
-    return {
-      qualified: blockers.length === 0 && visualAuthorityMatches,
-      blockers: [...new Set(blockers)],
-    } as const;
-  }
-  if (
-    !commonEvidencePassed ||
-    creativeReviewQuality(input.review.evidence) === null ||
-    !Object.values(creativeReviewQuality(input.review.evidence) ?? {})
-      .every(Boolean)
-  ) {
-    blockers.push("review_evidence_incomplete");
-  }
-  return {
-    qualified: blockers.length === 0,
-    blockers: [...new Set(blockers)],
-  } as const;
+  // 采用素材本身就是运营的质量选择；历史人工评分不再决定素材能否使用。
+  // 自动拦截、所属角色、真实来源和可读取的文件仍由 Main 校验。
+  return { qualified: blockers.length === 0, blockers } as const;
 }
 
 function sourceFacts(facts: QualificationFacts) {
@@ -307,7 +227,7 @@ function qualifyCharacterImage(facts: QualificationFacts) {
     characterId: facts.asset.characterId ?? "",
     assetId: facts.asset.id,
     assetAvailable,
-    sourceAuthorityValid: source.sourceAuthorityValid,
+    sourceAuthorityValid: source.sourceAuthorityValid && facts.customerPublishable,
     bootstrapIdentity: source.bootstrapIdentity,
     review: facts.review,
     currentVisualAuthority: facts.currentVisualAuthority,
@@ -321,18 +241,11 @@ function qualifyCharacterImage(facts: QualificationFacts) {
         ? [purpose as CharacterDraftAssetPurpose]
         : [],
   );
-  const selectedReviewAuthorityChanged = Boolean(
-    facts.review && selectedPurposes.some((purpose) =>
-      facts.selectedEntries[purpose]?.reviewDecisionId !== facts.review?.id
-    ),
-  );
   const releaseQualifiedPurposes = selectedPurposes.filter((purpose) => {
     const entry = facts.selectedEntries[purpose];
     if (
       !entry ||
-      !selectablePurposes.includes(purpose) ||
-      !facts.review ||
-      entry.reviewDecisionId !== facts.review.id
+      !selectablePurposes.includes(purpose)
     ) {
       return false;
     }
@@ -348,9 +261,7 @@ function qualifyCharacterImage(facts: QualificationFacts) {
       entry.generationJobId === facts.item.jobId,
     );
   });
-  const state = facts.review?.decision === "rejected"
-    ? "rejected" as const
-    : releaseQualifiedPurposes.length > 0
+  const state = releaseQualifiedPurposes.length > 0
       ? "release_qualified" as const
       : selectedPurposes.length > 0
         ? "selected" as const
@@ -363,9 +274,7 @@ function qualifyCharacterImage(facts: QualificationFacts) {
     selectablePurposes,
     selectedPurposes,
     releaseQualifiedPurposes,
-    blockers: selectedReviewAuthorityChanged
-      ? [...new Set([...reviewAuthority.blockers, "review_authority_changed" as const])]
-      : reviewAuthority.blockers,
+    blockers: reviewAuthority.blockers,
     authority: {
       runId: source.source === "generation" ? facts.item?.batchId ?? null : null,
       itemId: source.source === "generation" ? facts.item?.id ?? null : null,
@@ -462,6 +371,7 @@ async function loadQualificationFacts(
     select: { draftAssetPack: true },
   });
   const selectedEntries = draftAssetRouteEntries(project?.draftAssetPack ?? {});
+  const publishability = await resolveMediaAssetAuthorityMap(db, assets);
   return assets.map((asset) => {
     const item = itemByAssetId.get(asset.id) ?? null;
     const source = asset.sourceJobId ? "generation" : "operator_upload";
@@ -472,6 +382,7 @@ async function loadQualificationFacts(
       asset,
       item,
       review,
+      customerPublishable: publishability.get(asset.id)?.publishable === true,
       currentVisualAuthority: visualAuthority,
       selectedEntries,
     } satisfies QualificationFacts;
@@ -508,7 +419,7 @@ export async function resolveSelectableCharacterImage(
   if (!facts) throw Errors.notFound("Character image qualification not found");
   const qualification = qualifyCharacterImage(facts);
   if (!qualification.selectablePurposes.includes(input.purpose)) {
-    throw Errors.conflict("Review this image before choosing it for Character operations", {
+    throw Errors.conflict("图片不可采用，请检查文件、来源和用途", {
       assetId: asset.id,
       purpose: input.purpose,
       state: qualification.state,
@@ -520,24 +431,16 @@ export async function resolveSelectableCharacterImage(
   const assertions = [
     ["runId", input.assertedRunId, qualification.authority.runId],
     ["itemId", input.assertedItemId, qualification.authority.itemId],
-    [
-      "reviewDecisionId",
-      input.assertedReviewDecisionId,
-      qualification.authority.reviewDecisionId,
-    ],
   ] as const;
   const stale = assertions.find(([, asserted, canonical]) =>
     asserted !== undefined && asserted !== canonical
   );
   if (stale) {
-    throw Errors.conflict("Character image Review authority changed before selection", {
+    throw Errors.conflict("Character image source changed before selection", {
       field: stale[0],
       asserted: stale[1],
       canonical: stale[2],
     });
-  }
-  if (!qualification.authority.reviewDecisionId) {
-    throw Errors.conflict("Character image has no approved Review authority");
   }
   const sourceMeta = record(facts.item?.job?.sourceMeta);
   return {
@@ -551,7 +454,9 @@ export async function resolveSelectableCharacterImage(
       ...(qualification.authority.itemId
         ? { itemId: qualification.authority.itemId }
         : {}),
-      reviewDecisionId: qualification.authority.reviewDecisionId,
+      ...(qualification.authority.reviewDecisionId
+        ? { reviewDecisionId: qualification.authority.reviewDecisionId }
+        : {}),
       ...(qualification.authority.generationJobId
         ? { generationJobId: qualification.authority.generationJobId }
         : {}),
@@ -575,145 +480,9 @@ export async function reviewImportedCharacterImage(
   },
   db?: Prisma.TransactionClient,
 ) {
-  const review = input.review;
-  if (
-    review.decision === "approved" &&
-    (
-      review.identityConsistency !== "passed" ||
-      review.score === undefined ||
-      review.score < CHARACTER_IDENTITY_APPROVAL_MIN_SCORE ||
-      Object.values(review.quality).some((passed) => !passed)
-    )
-  ) {
-    throw Errors.badRequest(
-      "An imported Character image approval requires complete Review evidence",
-    );
-  }
-  return inTransaction(db, async (tx) => {
-    await lockCharacterGenerationAuthority(tx, input.characterId);
-    await lockCharacterMediaAssetAuthorities(tx, [input.assetId]);
-    const asset = await tx.mediaAsset.findUnique({ where: { id: input.assetId } });
-    const linkedItem = asset
-      ? await tx.contentProductionItem.findFirst({
-          where: { mediaAssetId: asset.id },
-          select: { id: true },
-        })
-      : null;
-    const uploadAuthority = asset ? inspectOperatorUploadAuthority(asset) : null;
-    if (
-      !asset ||
-      asset.characterId !== input.characterId ||
-      asset.type !== "image" ||
-      asset.deletedAt !== null ||
-      asset.safetyStatus !== "passed" ||
-      platformPurpose(asset) !== "character_library" ||
-      linkedItem !== null ||
-      uploadAuthority?.publishable !== true
-    ) {
-      throw Errors.badRequest(
-        "Only an available operator-uploaded Character library image can use this Review path",
-      );
-    }
-    const visualAuthority = await currentVisualAuthority(tx, input.characterId);
-    if (!visualAuthority) {
-      throw Errors.conflict(
-        "Publish a sealed Character visual identity before reviewing imported images",
-        { blocker: "visual_authority_missing" },
-      );
-    }
-    const latest = await tx.creativeReviewDecision.findFirst({
-      where: { artifactId: asset.id, runItemId: null },
-      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    });
-    if (latest?.id !== review.supersedesDecisionId) {
-      throw Errors.conflict(
-        "Character image Review authority changed before this decision was recorded",
-        {
-          expectedSupersedesDecisionId:
-            review.supersedesDecisionId ?? null,
-          latestDecisionId: latest?.id ?? null,
-        },
-      );
-    }
-    if (latest) {
-      const dependencies = await mediaAssetAuthorityDependencies(tx, asset.id);
-      if (dependencies.length > 0) {
-        throw Errors.conflict(
-          "Remove this image from Character placement and serving before replacing its Review decision",
-          { assetId: asset.id, dependencies },
-        );
-      }
-    }
-    await assertMediaAssetCustomerPublishable(tx, asset);
-    const decision = await tx.creativeReviewDecision.create({
-      data: {
-        runItemId: null,
-        artifactId: asset.id,
-        supersedesDecisionId: latest?.id ?? null,
-        decision: review.decision,
-        identityConsistency: review.identityConsistency,
-        score: review.score,
-        reason: review.reason,
-        evidence: toInputJson({
-          quality: review.quality,
-          characterImageImport: {
-            schemaVersion: CHARACTER_IMAGE_IMPORT_REVIEW_EVIDENCE_SCHEMA,
-            source: "operator_upload",
-            characterId: input.characterId,
-            assetId: asset.id,
-            ...visualAuthority,
-          },
-        }),
-        reviewerId: input.actor.id,
-      },
-    });
-    await tx.adminAuditLog.create({
-      data: {
-        actorId: input.actor.id,
-        actorRole: input.actor.role,
-        action: "character.image.review_decided",
-        targetType: "media_asset",
-        targetId: asset.id,
-        reason: review.reason,
-        ...(latest
-          ? { before: toInputJson({ decisionId: latest.id, decision: latest.decision }) }
-          : {}),
-        after: toInputJson({
-          decisionId: decision.id,
-          supersedesDecisionId: decision.supersedesDecisionId,
-          decision: decision.decision,
-          identityConsistency: decision.identityConsistency,
-          score: decision.score,
-          visualAuthority,
-        }),
-        requestId: input.requestId,
-      },
-    });
-    await tx.mainOutboxEvent.create({
-      data: {
-        eventType: "character.image.review_decided.v1",
-        aggregateType: "character",
-        aggregateId: input.characterId,
-        payload: toInputJson({
-          characterId: input.characterId,
-          assetId: asset.id,
-          decisionId: decision.id,
-          supersedesDecisionId: decision.supersedesDecisionId,
-          decision: decision.decision,
-        }),
-      },
-    });
-    const qualification = (
-      await characterImageQualifications(tx, input.characterId, [asset])
-    ).get(asset.id);
-    if (!qualification) {
-      throw Errors.internal("Character image qualification was not projected");
-    }
-    return {
-      characterId: input.characterId,
-      assetId: asset.id,
-      decisionId: decision.id,
-      qualification,
-    };
+  void input;
+  void db;
+  throw Errors.conflict("Manual asset reviews are retired; select the image directly", {
+    code: "manual_asset_review_retired",
   });
 }

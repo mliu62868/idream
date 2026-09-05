@@ -7,7 +7,6 @@ import { transitionControlPlaneCommand } from "../shared/control-plane-command-t
 import { toInputJson } from "../shared/prisma-json";
 import { releaseMonitorDueAt } from "./release-monitor";
 import {
-  isCharacterReleaseTransitionAllowed,
   isCharacterServingTransitionAllowed,
   type CharacterReleaseCreationState,
 } from "../shared/state-transition-authority";
@@ -37,11 +36,13 @@ type ReleaseCommandRow = Awaited<
 >;
 
 type ReleaseCommandType =
+  | "character.release.withdraw"
   | "character.release.publish"
   | "character.release.rollback"
   | "character.serving.pause"
   | "character.serving.resume"
-  | "character.serving.retire";
+  | "character.serving.retire"
+  | "character.serving.restore";
 
 interface ExecuteReleaseCommandInput {
   readonly commandId: string;
@@ -55,7 +56,7 @@ interface ExecuteReleaseCommandInput {
 interface ReleaseCommandResult {
   readonly status: "succeeded" | "failed";
   readonly commandId: string;
-  readonly releaseId: string;
+  readonly releaseId: string | null;
   readonly errorCode?: string;
 }
 
@@ -206,7 +207,7 @@ async function appendExecutionEvidence(
       attemptCount: number;
     };
     commandType: ReleaseCommandType;
-    releaseId: string;
+    releaseId: string | null;
     characterId: string;
     before: Record<string, unknown>;
     after: Record<string, unknown>;
@@ -220,7 +221,7 @@ async function appendExecutionEvidence(
     select: { role: true },
   });
   const reason = reasonFromPayload(input.command.requestPayload);
-  await tx.characterReleaseEvent.create({
+  if (input.releaseId) await tx.characterReleaseEvent.create({
     data: {
       releaseId: input.releaseId,
       characterId: input.characterId,
@@ -242,8 +243,8 @@ async function appendExecutionEvidence(
       actorId: input.command.actorId,
       actorRole: actor?.role ?? "unknown",
       action: `${input.commandType}.executed`,
-      targetType: "character_release",
-      targetId: input.releaseId,
+      targetType: input.releaseId ? "character_release" : "character_serving",
+      targetId: input.releaseId ?? input.characterId,
       reason,
       before: toInputJson(input.before),
       after: toInputJson(input.after),
@@ -253,8 +254,8 @@ async function appendExecutionEvidence(
   await tx.mainOutboxEvent.create({
     data: {
       eventType: `${input.eventType}.v2`,
-      aggregateType: "character_release",
-      aggregateId: input.releaseId,
+      aggregateType: input.releaseId ? "character_release" : "character_serving",
+      aggregateId: input.releaseId ?? input.characterId,
       payload: toInputJson({
         commandId: input.command.id,
         characterId: input.characterId,
@@ -313,6 +314,7 @@ async function publishRelease(
       "project_missing",
       "Release Project is missing",
     );
+  await lockCharacterGenerationAuthority(tx, characterId);
   const validation = await validateCharacterReleaseSnapshot(
     tx,
     release,
@@ -578,6 +580,64 @@ async function executeRollback(
   return publishRelease(tx, rollbackCommand, rollback, policyVersion, now);
 }
 
+async function withdrawRelease(
+  tx: Prisma.TransactionClient,
+  command: ReleaseCommandRow,
+  _policyVersion: string,
+  now: Date,
+) {
+  const release = await tx.characterRelease.findUniqueOrThrow({ where: { id: command.targetId } });
+  const project = await tx.characterProject.findUniqueOrThrow({ where: { id: release.projectId } });
+  await lockCharacterGenerationAuthority(tx, project.characterId);
+  if (release.status !== "approved" || release.version !== command.expectedVersion) {
+    throw new ReleaseCommandError("release_version_conflict", "Only the expected unpublished candidate can be withdrawn");
+  }
+  await transitionCharacterRelease(tx, { releaseId: release.id, to: "withdrawn", expectedVersion: release.version });
+  await appendExecutionEvidence(tx, {
+    command, commandType: "character.release.withdraw", releaseId: release.id, characterId: project.characterId,
+    before: { releaseStatus: release.status, releaseVersion: release.version },
+    after: { releaseStatus: "withdrawn", releaseVersion: release.version + 1 },
+    eventType: "character.release.withdrawn", now, result: { withdrawn: true },
+  });
+  return release.id;
+}
+
+// An unpublished draft has no Release to retire. Keep all content and assets,
+// and restore only to inactive: this operation can never publish a Character.
+async function executeDraftArchive(
+  tx: Prisma.TransactionClient,
+  command: ReleaseCommandRow,
+  serving: { id: string; state: string; version: number; currentReleaseId: string | null },
+  restoring: boolean,
+  now: Date,
+) {
+  const character = await tx.character.findUniqueOrThrow({ where: { id: command.targetId }, select: { source: true, status: true, visibility: true } });
+  const project = await tx.characterProject.findFirst({ where: { characterId: command.targetId } });
+  const restoredActiveKey = `${character.source === "official" ? "official" : "customer-publication"}:${command.targetId}`;
+  const restoredStatus = character.source === "official" ? "draft" : "approved";
+  const published = await tx.characterRelease.count({ where: { projectId: project?.id ?? "", publishedAt: { not: null } } });
+  if (!project || serving.currentReleaseId !== null || published > 0 || serving.state !== (restoring ? "retired" : "inactive")) {
+    throw new ReleaseCommandError("draft_archive_state_invalid", "Only an unpublished draft can be archived or restored here");
+  }
+  // Do not resurrect a frozen candidate when restoring an abandoned draft.
+  const candidates = await tx.characterRelease.findMany({ where: { projectId: project.id, status: "approved" } });
+  for (const candidate of candidates) {
+    await transitionCharacterRelease(tx, { releaseId: candidate.id, to: "withdrawn", expectedVersion: candidate.version });
+  }
+  const nextState = restoring ? "inactive" : "retired";
+  await transitionCharacterServing(tx, { servingId: serving.id, to: nextState, expectedVersion: serving.version, expectedCurrentReleaseId: null });
+  await tx.characterProject.update({ where: { id: project.id }, data: { activeKey: restoring ? restoredActiveKey : null, version: { increment: 1 } } });
+  await tx.character.update({ where: { id: command.targetId }, data: { status: restoring ? restoredStatus : "archived", visibility: "private" } });
+  await appendExecutionEvidence(tx, {
+    command, commandType: command.commandType as ReleaseCommandType, releaseId: null, characterId: command.targetId,
+    before: { servingState: serving.state, servingVersion: serving.version, projectVersion: project.version, activeKey: project.activeKey, characterStatus: character.status, characterSource: character.source, visibility: character.visibility },
+    after: { servingState: nextState, servingVersion: serving.version + 1, projectVersion: project.version + 1, activeKey: restoring ? restoredActiveKey : null, characterStatus: restoring ? restoredStatus : "archived", characterSource: character.source, visibility: "private", withdrawnReleaseIds: candidates.map((item) => item.id) },
+    eventType: restoring ? "character.draft.restored" : "character.draft.archived", now,
+    result: { servingState: nextState, withdrawnReleaseIds: candidates.map((item) => item.id) },
+  });
+  return null;
+}
+
 async function executeServingState(
   tx: Prisma.TransactionClient,
   command: ReleaseCommandRow,
@@ -604,14 +664,19 @@ async function executeServingState(
   });
   if (
     !serving ||
-    serving.version !== command.expectedVersion ||
-    !serving.currentReleaseId
+    serving.version !== command.expectedVersion
   ) {
     throw new ReleaseCommandError(
       "serving_version_conflict",
       "CharacterServing changed or has no current Release",
     );
   }
+  const retiring = command.commandType === "character.serving.retire";
+  const restoring = command.commandType === "character.serving.restore";
+  if (restoring || (retiring && serving.currentReleaseId === null)) {
+    return executeDraftArchive(tx, command, serving, restoring, now);
+  }
+  if (!serving.currentReleaseId) throw new ReleaseCommandError("serving_pointer_invalid", "Current Release is missing");
   const release = await tx.characterRelease.findUnique({
     where: { id: serving.currentReleaseId },
   });
@@ -630,11 +695,10 @@ async function executeServingState(
     );
   }
   const pausing = command.commandType === "character.serving.pause";
-  const retiring = command.commandType === "character.serving.retire";
-  const expectedState = pausing || retiring ? "live" : "paused";
+  const expectedState = pausing ? "live" : "paused";
   const nextState = retiring ? "retired" : pausing ? "paused" : "live";
   if (
-    serving.state !== expectedState ||
+    (!retiring && serving.state !== expectedState) ||
     !isCharacterServingTransitionAllowed(serving.state, nextState)
   ) {
     throw new ReleaseCommandError(
@@ -838,7 +902,7 @@ type ReleaseCommandHandler = (
   command: ReleaseCommandRow,
   policyVersion: string,
   now: Date,
-) => Promise<string>;
+) => Promise<string | null>;
 
 const RELEASE_COMMAND_HANDLERS: Readonly<
   Record<ReleaseCommandType, ReleaseCommandHandler>
@@ -853,10 +917,12 @@ const RELEASE_COMMAND_HANDLERS: Readonly<
       policyVersion,
       now,
     ),
+  "character.release.withdraw": withdrawRelease,
   "character.release.rollback": executeRollback,
   "character.serving.pause": executeServingState,
   "character.serving.resume": executeServingState,
   "character.serving.retire": executeServingState,
+  "character.serving.restore": executeServingState,
 };
 
 function isReleaseCommandType(value: string): value is ReleaseCommandType {
@@ -884,7 +950,7 @@ export async function executeCharacterReleaseCommand(
       status: "succeeded",
       commandId: existing.id,
       releaseId:
-        stringValue(record(existing.result).releaseId) ?? existing.targetId,
+        stringValue(record(existing.result).releaseId),
     };
   }
   if (!isReleaseCommandType(existing.commandType)) {

@@ -32,7 +32,7 @@ describe("admin destination search", () => {
 
   it("matches a whole group by its name", () => {
     expect(ids("Character Studio")).toEqual(
-      expect.arrayContaining(["content/official", "content/review-queue", "content/templates"]),
+      expect.arrayContaining(["content/official", "content/tags", "content/templates"]),
     );
     expect(ids("角色工作室").length).toBeGreaterThan(1);
   });
@@ -46,7 +46,7 @@ describe("admin destination search", () => {
       .map((destination) => destination.id);
     // "Characters" 前缀命中，排最前；"Taxonomy" 只因为分组叫 Character Studio 才入选，排最后。
     expect(ranked[0]).toBe("content/official");
-    expect(ranked.indexOf("content/tags")).toBeGreaterThan(ranked.indexOf("content/review-queue"));
+    expect(ranked.indexOf("content/tags")).toBeGreaterThan(ranked.indexOf("content/official"));
   });
 
   // SPEC: 兼容目的地既在所属工作区可发现，也必须支持命令面板直达。

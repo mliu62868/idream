@@ -1,3 +1,4 @@
+import { recoveredGenerationFixture } from "@/server/test/recovered-generation-fixture";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
@@ -118,9 +119,29 @@ function evaluate(candidate: CharacterReleaseSnapshotCandidate) {
 describe("Release historical image authority", () => {
   it("keeps reviewed images valid after the production route moves from Qwen to RedCraft", async () => {
     const result = await evaluate(await imageCandidate("route-upgrade"));
-    for (const key of ["generation_route_qualified", "visual_identity_exact_version", "reference_set_published_snapshot", "release_asset_manifest_available", "release_assets_customer_publishable", "release_asset_review_authority", "release_asset_generation_authority"]) {
+    for (const key of ["generation_route_qualified", "visual_identity_exact_version", "reference_set_published_snapshot", "release_asset_manifest_available", "release_assets_customer_publishable", "release_asset_source_authority", "release_asset_generation_authority"]) {
       expect(result.checks.find((check) => check.key === key), key).toMatchObject({ passed: true });
     }
+  });
+
+  it("accepts the exact adopted unknown Artifact and rejects a changed resolution Receipt", async () => {
+    const candidate = await imageCandidate("recovered-output");
+    const placement = candidate.generationProvenance.placements[1]!;
+    const rollback = new Error("recovered release fixture rollback");
+    await expect(prisma.$transaction(async (tx) => {
+      const recovered = await recoveredGenerationFixture(tx, placement.assetId as string, `${P}recovered-output-owner`);
+      placement.attemptId = recovered.attempt.id;
+      placement.attemptNo = recovered.attempt.attemptNo;
+      const evaluateRecovered = () => evaluateCharacterReleaseSnapshot(tx, candidate, CHARACTER_RELEASE_POLICY_VERSION, new Date());
+      const valid = await evaluateRecovered();
+      for (const key of ["release_assets_customer_publishable", "release_asset_source_authority", "release_asset_generation_authority"]) {
+        expect(valid.checks.find((check) => check.key === key), key).toMatchObject({ passed: true });
+      }
+      await tx.inboundEventReceipt.update({ where: { id: recovered.receipt.id }, data: { payloadHash: "0".repeat(64) } });
+      const invalid = await evaluateRecovered();
+      expect(invalid.checks.find((check) => check.key === "release_assets_customer_publishable")).toMatchObject({ passed: false });
+      throw rollback;
+    })).rejects.toBe(rollback);
   });
 
   it("rejects disagreement between a historical Job and its successful Attempt", async () => {

@@ -1,3 +1,4 @@
+import { resolveGenerationAssetSuccessAttempts } from "@/server/ai/generation-asset-success-authority";
 import type { Prisma } from "@prisma/client";
 import { inTransaction } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
@@ -100,6 +101,8 @@ export async function createCharacterRelease(
       where: { characterId: input.characterId },
     });
     if (!project) throw Errors.notFound("Character Project not found");
+    const serving = await tx.characterServing.findUnique({ where: { characterId: input.characterId } });
+    if (serving?.state === "retired") throw Errors.conflict("Restore the archived draft before publishing");
     if (project.version !== input.expectedProjectVersion) {
       throw Errors.conflict("Character draft changed before publishing");
     }
@@ -247,26 +250,10 @@ export async function createCharacterRelease(
     const selectedItemById = new Map(
       selectedItems.map((item) => [item.id, item]),
     );
-    const generationAttempts = await tx.generationAttempt.findMany({
-      where: {
-        requestId: {
-          in: selectedEntries.flatMap((entry) =>
-            entry.generationJobId ? [entry.generationJobId] : [],
-          ),
-        },
-        status: "succeeded",
-      },
-      orderBy: [{ requestId: "asc" }, { attemptNo: "desc" }],
+    const selectedAssets = await tx.mediaAsset.findMany({
+      where: { id: { in: selectedEntries.map((entry) => entry.assetId) } },
     });
-    const latestAttemptByJobId = new Map<
-      string,
-      (typeof generationAttempts)[number]
-    >();
-    for (const attempt of generationAttempts) {
-      if (!latestAttemptByJobId.has(attempt.requestId)) {
-        latestAttemptByJobId.set(attempt.requestId, attempt);
-      }
-    }
+    const attemptsByAssetId = await resolveGenerationAssetSuccessAttempts(tx, selectedAssets);
     // 血缘不完整的槽位不进 provenance：候选快照因此缺 pinned 条目，规则引擎的
     // release_asset_generation_authority 与 release_assets_customer_publishable 当场失败关闭。
     const placementGenerationProvenance = draftAssetEntries.flatMap((entry) => {
@@ -275,7 +262,7 @@ export async function createCharacterRelease(
         : null;
       const job = item?.job ?? null;
       const attempt = entry.generationJobId
-        ? (latestAttemptByJobId.get(entry.generationJobId) ?? null)
+        ? (attemptsByAssetId.get(entry.assetId) ?? null)
         : null;
       if (!job || !attempt || job.id !== entry.generationJobId) return [];
       return [

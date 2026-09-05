@@ -40,16 +40,25 @@ export function approvedIdentityConsistencyForMode(
 export function deriveCreativeItemExecutionState(input: {
   readonly itemStatus: string;
   readonly jobStatus: string | null;
+  readonly jobErrorCode?: string | null;
   readonly attemptStatus: string | null;
   readonly transportStatus: string | null;
   readonly hasAsset: boolean;
 }) {
   if (input.hasAsset) return "ready" as const;
+  // Reconciliation keeps the unknown Attempt as historical evidence. The
+  // confirmed failure marker is written atomically with the terminal request.
+  if (input.jobStatus === "failed" && input.jobErrorCode === "operator_confirmed_provider_failure") {
+    return "failed" as const;
+  }
+  if (input.attemptStatus === "unknown" || input.transportStatus === "unknown") {
+    return "unknown" as const;
+  }
   if (
     input.itemStatus === "failed" ||
     ["failed", "blocked", "refunded"].includes(input.jobStatus ?? "") ||
-    ["failed", "cancelled", "unknown"].includes(input.attemptStatus ?? "") ||
-    ["failed", "unknown"].includes(input.transportStatus ?? "")
+    ["failed", "cancelled"].includes(input.attemptStatus ?? "") ||
+    ["failed"].includes(input.transportStatus ?? "")
   ) {
     return "failed" as const;
   }
@@ -75,12 +84,13 @@ export function deriveCreativeItemExecutionState(input: {
 
 export function deriveCreativeRunContinuation(
   itemStatuses: readonly string[],
-  options: { readonly requiresVerifiedPlacement?: boolean } = {},
+  options: { readonly requiresVerifiedPlacement?: boolean; readonly requiresReview?: boolean } = {},
 ) {
   const requiresVerifiedPlacement = options.requiresVerifiedPlacement ?? true;
+  const requiresReview = options.requiresReview ?? false;
   const terminalStatuses = requiresVerifiedPlacement
     ? ["published", "rejected", "failed"]
-    : ["approved", "published", "rejected", "failed"];
+    : [...(requiresReview ? [] : ["generated"]), "approved", "published", "rejected", "failed"];
   const allResolved = itemStatuses.length > 0 &&
     itemStatuses.every((status) => terminalStatuses.includes(status));
   if (allResolved) {
@@ -88,14 +98,14 @@ export function deriveCreativeRunContinuation(
       itemStatuses.some((status) => status === "published");
     return {
       lifecycleState: "closed" as const,
-      workflowStage: runtimeVerified ? "verification" as const : "review" as const,
+      workflowStage: runtimeVerified ? "verification" as const : requiresReview ? "review" as const : "generation" as const,
       verificationState: runtimeVerified ? "passed" as const : "pending" as const,
       status: "completed" as const,
     };
   }
   const workflowStage = itemStatuses.some((status) => ["queued", "regenerate_requested"].includes(status))
     ? "generation" as const
-    : itemStatuses.some((status) => status === "generated")
+    : requiresReview && itemStatuses.some((status) => status === "generated")
       ? "review" as const
       : "placement" as const;
   return {

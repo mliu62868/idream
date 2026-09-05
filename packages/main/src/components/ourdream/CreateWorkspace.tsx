@@ -888,7 +888,7 @@ export function CreateWorkspace() {
       setStatus(
         character
           ? character.status === "pending_review"
-            ? `${character.name} submitted for review. Approval starts publication preparation; the character goes live after Release is published.`
+            ? `${character.name} is saved and awaiting publication preparation. Sharing starts after publication.`
             : `Saved ${character.name} to My AI.`
           : "Character submitted.",
       );
@@ -1462,9 +1462,9 @@ export function CreateWorkspace() {
                   </div>
                   <p className="mt-2 text-[12px] font-medium text-[rgb(170,170,170)]">
                     {state.visibility === "public"
-                      ? "Public characters are reviewed before appearing in Explore and Community."
+                      ? "Public characters appear in Explore and Community after publication."
                       : state.visibility === "unlisted"
-                        ? "After review and publication, unlisted characters are reachable by direct link and stay out of Explore."
+                        ? "After publication, unlisted characters are reachable by direct link and stay out of Explore."
                         : "Private characters stay in your My AI only."}
                   </p>
                 </div>
@@ -1476,7 +1476,7 @@ export function CreateWorkspace() {
                   type="button"
                 >
                   <Wand2 className="h-4 w-4" />
-                  {pending ? "Submitting…" : state.visibility === "private" ? "Save character" : "Submit for review"}
+                  {pending ? "Submitting…" : state.visibility === "private" ? "Save character" : "Save for sharing"}
                 </button>
               </div>
             )}

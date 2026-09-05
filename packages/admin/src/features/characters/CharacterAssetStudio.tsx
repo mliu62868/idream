@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  CHARACTER_IDENTITY_APPROVAL_MIN_SCORE,
   creativeRunCreateRequestSchema,
   type CharacterWorkspaceDetail,
   type CreativeRun,
@@ -13,7 +12,6 @@ import {
   RefreshCcw,
   ShieldAlert,
   Sparkles,
-  ThumbsDown,
   WandSparkles,
   X,
 } from "lucide-react";
@@ -21,7 +19,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   StatusBadge,
   WorkspaceButton,
-  fieldClass,
   textAreaClass,
 } from "@/features/operations/WorkspaceUi";
 import { AdminV2RequestError } from "@/lib/admin-v2-api";
@@ -47,13 +44,10 @@ import { characterIdentityBootstrapMutation } from "@/features/image-workflow-tr
 import { adminDateLocale, useAdminI18n } from "@/components/admin/i18n";
 import {
   canChooseCharacterAssetPurpose,
-  canOfferCharacterAssetTerminalRejection,
   candidateState,
   characterAssetBootstrapRequestKey,
   characterAssetDraftSelectionRequestKey,
   characterAssetReviewIntentSnapshot,
-  characterAssetReviewRequestKey,
-  characterAssetReviewDefinesIdentity,
   characterAssetRunRequestKey,
   characterAssetRunReceiptMessage,
   characterAssetSelectionIntentCommandType,
@@ -64,15 +58,11 @@ import {
   characterSourceVariationAvailabilityMessage,
   committedCharacterRunProjectionMatches,
   committedRunProjectionUnavailable,
-  emptyReviewDraft,
-  isCharacterAssetApprovalActionable,
   isCharacterAssetPurpose,
   nextIncompleteCharacterAssetPurpose,
   preferredCharacterAssetRunId,
   purposeConfig,
-  resolveCharacterAssetReviewEvidence,
   resolveCharacterAssetSubject,
-  reviewQualityChecks,
   type CharacterAssetProjectMutation,
   type CharacterAssetPurpose,
   type ReviewDraft,
@@ -173,7 +163,7 @@ export function CharacterAssetStudio({
   const [message, setMessage] = useState<string | null>(null);
   const [refreshWarning, setRefreshWarning] = useState<string | null>(null);
   const readinessRepairKeys = useRef<Record<string, string>>({});
-  const [reviewDrafts, setReviewDrafts] = useState<Record<string, ReviewDraft>>(
+  const [, setReviewDrafts] = useState<Record<string, ReviewDraft>>(
     {},
   );
   const [runCreationIntent, setRunCreationIntent] =
@@ -345,6 +335,7 @@ export function CharacterAssetStudio({
           data.project.draftAssetSelections?.[desiredPurpose]?.runId;
         selectRunId(
           committedTargetId ??
+            scoped.find((run) => ["pending", "running"].includes(run.executionOutcome))?.id ??
             preferredCharacterAssetRunId({
               runs: scoped,
               purpose: desiredPurpose,
@@ -416,6 +407,26 @@ export function CharacterAssetStudio({
     },
   });
   const loadRun = runLoader.load;
+  const unconfirmedOperations = data.mediaOperations.operations.filter((operation) =>
+    operation.modality === "image" && operation.status === "unknown" && operation.requestId,
+  );
+
+  const refreshedDeliveries = useRef(new Set<string>());
+  useEffect(() => {
+    if (!selectedRun) return;
+    const assetIds = selectedRun.items.flatMap((item) => item.asset ? [item.asset.id] : []);
+    const terminal = ["succeeded", "partially_succeeded", "failed", "cancelled"].includes(selectedRun.executionOutcome);
+    const itemFailure = selectedRun.items.some((item) => item.executionState === "failed");
+    if (assetIds.length === 0 && !terminal && !itemFailure) return;
+    const receipt = `${selectedRun.id}:${terminal ? selectedRun.executionOutcome : itemFailure ? "needs_confirmation" : "delivered"}:${assetIds.sort().join(",")}`;
+    if (refreshedDeliveries.current.has(receipt)) return;
+    // A Run projection can deliver an image without a project mutation. Refresh
+    // the library and workspace once per delivered asset set, including recovery.
+    refreshedDeliveries.current.add(receipt);
+    void onProjectReload().catch((cause) => {
+      setRefreshWarning(cause instanceof Error ? cause.message : "Character assets could not be refreshed");
+    });
+  }, [onProjectReload, selectedRun]);
 
   useEffect(() => {
     if (!permissions.read) return;
@@ -475,7 +486,8 @@ export function CharacterAssetStudio({
   const pollingRunId = selectedRun?.id ?? null;
   const shouldPollSelectedRun =
     selectedRun !== null &&
-    ["pending", "running"].includes(selectedRun.executionOutcome);
+    (["pending", "running"].includes(selectedRun.executionOutcome) ||
+      runs.some((run) => ["pending", "running"].includes(run.executionOutcome)));
   // SPEC: 生成中的 Run 每 4s 刷新一次，失败退避到 8s。
   const pollAssetRun = useCallback<PollingTask>(
     async (context) => {
@@ -511,7 +523,6 @@ export function CharacterAssetStudio({
     existingImages[0] ??
     null;
   const selectedItem = activeRunDetail?.items[selectedIndex] ?? null;
-  const reviewDefinesIdentity = characterAssetReviewDefinesIdentity(selectedItem);
   const comparisonItem = comparisonItemId
     ? (activeRunDetail?.items.find((item) => item.id === comparisonItemId) ??
       null)
@@ -530,26 +541,18 @@ export function CharacterAssetStudio({
     setComparisonItemId((current) => (current === itemId ? null : itemId));
     setWorkspaceMode(productionOnly ? "library" : "review");
   };
-  const reviewDraft = selectedItem
-    ? (reviewDrafts[selectedItem.id] ?? emptyReviewDraft(reviewDefinesIdentity))
-    : emptyReviewDraft(reviewDefinesIdentity);
-  const updateReviewDraft = (update: (current: ReviewDraft) => ReviewDraft) => {
-    if (!selectedItem) return;
-    setReviewDrafts((current) => ({
-      ...current,
-      [selectedItem.id]: update(
-        current[selectedItem.id] ?? emptyReviewDraft(reviewDefinesIdentity),
-      ),
-    }));
-  };
   const activeConfig = purposeConfig[activePurpose];
+  const imageRequestInProgress = runs.some((run) => run.purpose === activePurpose && ["pending", "running"].includes(
+    selectedRun?.id === run.id ? selectedRun.executionOutcome : run.executionOutcome,
+  )) || (selectedRun?.purpose === activePurpose && ["pending", "running"].includes(selectedRun.executionOutcome));
   const mutationContextLocked = Boolean(
     runCreationIntent ||
-    (!productionOnly && reviewMutationIntent) ||
     selectionMutationIntent,
   );
   const canGenerate =
     permissions.create &&
+    !imageRequestInProgress &&
+    unconfirmedOperations.length === 0 &&
     (bootstrapMode
       ? Boolean(bootstrapProfile) && activePurpose === "character_cover"
       : Boolean(qualifiedRoute) && data.visual.readiness.ready) &&
@@ -569,72 +572,19 @@ export function CharacterAssetStudio({
     (activePurpose === "character_cover"
       ? (data.project.draftImageAssetId ?? undefined)
       : undefined);
-  const selectedPackReviewDecisionId =
-    data.project.draftAssetSelections?.[activePurpose]?.reviewDecisionId;
   const selectedPackRouteCurrent =
     data.project.draftAssetSelections?.[activePurpose]?.routeCurrent !== false;
-  const isSelectedAsset = Boolean(
-    selectedItem?.asset &&
-    selectedItem.review &&
-    selectedPackRouteCurrent &&
-    selectedPackAssetId === selectedItem.asset.id &&
-    selectedPackReviewDecisionId === selectedItem.review.id,
-  );
-  const hasDecision = Boolean(selectedItem?.review);
-  const hasCompleteReviewEvidence = Boolean(selectedItem?.review?.quality);
-  const isDraftAuthorityAsset = Boolean(
-    selectedItem?.asset && selectedPackAssetId === selectedItem.asset.id,
-  );
-  const canRecordTerminalRejection = Boolean(
-    activeRunDetail &&
-    canOfferCharacterAssetTerminalRejection({
-      lifecycleState: activeRunDetail.lifecycleState,
-      decision: selectedItem?.review?.decision ?? null,
-      hasCompleteEvidence: hasCompleteReviewEvidence,
-      isDraftAuthority: isDraftAuthorityAsset,
-    }),
-  );
-  const isApprovedItem =
-    productionOnly && bootstrapMode
-      ? Boolean(selectedItem?.asset)
-      : isCharacterAssetApprovalActionable({
-          bootstrapIdentity: reviewDefinesIdentity,
-          decision: selectedItem?.review?.decision ?? null,
-          identityConsistency:
-            selectedItem?.review?.identityConsistency ?? null,
-          score: selectedItem?.review?.score ?? null,
-          quality: selectedItem?.review?.quality ?? null,
-        });
+  const isSelectedAsset = Boolean(selectedItem?.asset && selectedPackRouteCurrent &&
+    selectedPackAssetId === selectedItem.asset.id);
+  const isApprovedItem = Boolean(selectedItem?.asset);
   const decisionActionLabel = isSelectedAsset
-    ? advanceTargetPurpose === null
-      ? "Selected · preview"
-      : "Selected · next asset"
-    : selectedItem?.review?.decision === "rejected"
-      ? "Rejected"
-      : !isApprovedItem
-        ? "Review candidate first"
-        : bootstrapMode
-          ? "Set as identity anchor"
-          : activePurpose === "character_cover"
-            ? "Select primary · next asset"
-            : activePurpose === "character_hero"
-              ? "Select hero · next asset"
-              : "Select chat asset · preview";
+    ? advanceTargetPurpose === null ? "Selected · preview" : "Selected · next asset"
+    : bootstrapMode ? "Set as identity" : activePurpose === "character_cover"
+      ? "Select primary · next asset" : activePurpose === "character_hero"
+        ? "Select hero · next asset" : "Select chat asset · preview";
   const canUseDecisionAction =
     Boolean(selectedItem?.asset) &&
     (isSelectedAsset || (isApprovedItem && permissions.selectDraft));
-  // 审图门槛只留真实判断：分数 + 质量勾选。理由不再拦人——这是单人自用后台，
-  // 「看一眼觉得行就能过」，写给没人读的审计日志的理由只是打断心流。
-  const approvalEvidenceReady =
-    reviewDraft.score.trim().length > 0 &&
-    Number.isInteger(Number(reviewDraft.score)) &&
-    Number(reviewDraft.score) >=
-      (reviewDefinesIdentity ? 0 : CHARACTER_IDENTITY_APPROVAL_MIN_SCORE) &&
-    Number(reviewDraft.score) <= 100 &&
-    Object.values(reviewDraft.quality).every(Boolean);
-  // 拒绝一张图通常就是「不好看，重生成」，不必先写一段理由。
-  const rejectionEvidenceReady = true;
-
   const prepareImageProduction = async () => {
     const readiness = data.visual.imageReadiness;
     if (!readiness || readiness.state !== "repairable" || !readiness.repair)
@@ -716,6 +666,12 @@ export function CharacterAssetStudio({
     purpose: CharacterAssetPurpose,
     referenceAssetIds: string[] = [],
   ) => {
+    if (unconfirmedOperations.length > 0) return;
+    if (!runCreationIntent && (
+      runs.some((run) => run.purpose === purpose && ["pending", "running"].includes(
+        selectedRun?.id === run.id ? selectedRun.executionOutcome : run.executionOutcome,
+      )) || (selectedRun?.purpose === purpose && ["pending", "running"].includes(selectedRun.executionOutcome))
+    )) return;
     if (
       runCreationIntent?.status === "committed_projection_pending" &&
       runCreationIntent.committedTargetId
@@ -876,7 +832,7 @@ export function CharacterAssetStudio({
           consistencyMode: "strict" as const,
           priority: "normal" as const,
           reason: bootstrapMode
-            ? "Create the reviewed first identity anchor"
+            ? "Create the first identity portrait"
             : referenceAssetIds.length
               ? "Create identity-preserving variations from the selected character asset"
               : "Create a customer-facing character asset pack candidate",
@@ -1493,165 +1449,6 @@ export function CharacterAssetStudio({
     }
   };
 
-  const reviewItem = async (decision: "approved" | "rejected") => {
-    if (reviewMutationIntent) {
-      await resumeReviewMutation();
-      return null;
-    }
-    if (refreshWarning) return null;
-    if (!activeRunDetail || !selectedItem) return null;
-    const numericScore = reviewDraft.score.trim()
-      ? Number(reviewDraft.score)
-      : undefined;
-    const validScore =
-      numericScore !== undefined &&
-      Number.isInteger(numericScore) &&
-      numericScore >=
-        (reviewDefinesIdentity ? 0 : CHARACTER_IDENTITY_APPROVAL_MIN_SCORE) &&
-      numericScore <= 100;
-    if (decision === "approved" && !validScore) {
-      setError(
-        decision === "approved"
-          ? reviewDefinesIdentity
-            ? "Approval requires an integer score from 0 to 100 and concrete visible evidence."
-            : `Approval requires an identity match score from ${CHARACTER_IDENTITY_APPROVAL_MIN_SCORE} to 100 and concrete visible evidence.`
-          : "Rejection requires a concrete visible reason.",
-      );
-      return null;
-    }
-    if (
-      decision === "approved" &&
-      reviewDraft.identity !== (reviewDefinesIdentity ? "unscored" : "passed")
-    ) {
-      setError(
-        reviewDefinesIdentity
-          ? "The first portrait defines identity and must remain unscored for identity consistency."
-          : "A customer-facing approval requires identity consistency to pass.",
-      );
-      return null;
-    }
-    if (
-      decision === "approved" &&
-      Object.values(reviewDraft.quality).some((passed) => !passed)
-    ) {
-      setError(
-        "Every required visible quality check must pass before approval.",
-      );
-      return null;
-    }
-    const submittedEvidence = resolveCharacterAssetReviewEvidence({
-      decision,
-      draft: {
-        identityConsistency: reviewDraft.identity,
-        score: numericScore,
-        quality: reviewDraft.quality,
-      },
-      previous: selectedItem.review,
-    });
-    const body = {
-      entityVersion: activeRunDetail.version,
-      ...(selectedItem.review
-        ? { supersedesDecisionId: selectedItem.review.id }
-        : {}),
-      decision,
-      identityConsistency: submittedEvidence.identityConsistency,
-      ...(submittedEvidence.score !== undefined
-        ? { score: submittedEvidence.score }
-        : {}),
-      quality: submittedEvidence.quality,
-      reason: reviewDraft.reason.trim(),
-    };
-    const requestSignature = characterAssetReviewRequestKey({
-      runId: activeRunDetail.id,
-      itemId: selectedItem.id,
-      body,
-    });
-    const reviewSnapshot = {
-      runId: activeRunDetail.id,
-      itemId: selectedItem.id,
-      body,
-    };
-    const claim = await claimDurableMutationIntent({
-      scope: `character-asset:review:${actorId}:${data.character.id}`,
-      signature: requestSignature,
-      requestSnapshot: reviewSnapshot,
-    });
-    const intent = claim.intent;
-    if (
-      intent.signature !== requestSignature ||
-      ["committed_projection_pending", "reconciliation_required"].includes(
-        intent.status,
-      )
-    ) {
-      setReviewMutationIntent(intent);
-      setError(
-        intent.status === "committed_projection_pending"
-          ? "Another tab already committed a review receipt. Verify that exact decision before reviewing again."
-          : intent.status === "reconciliation_required"
-            ? "Another tab has an aged review receipt. Reconcile it with the server before reviewing again."
-            : "Another tab already started a different review decision. Resume its exact locked request first.",
-      );
-      return null;
-    }
-    setReviewMutationIntent(intent);
-    setBusy("review");
-    setError(null);
-    setMessage(null);
-    setRefreshWarning(null);
-    let committed: DurableMutationIntent;
-    try {
-      const result = await adminV2Operation(
-        "POST /api/v2/admin/creative/runs/:id/items/:itemId/decisions",
-        {
-          path: { id: activeRunDetail.id, itemId: selectedItem.id },
-          idempotencyKey: intent.idempotencyKey,
-          body,
-        },
-      );
-      committed = updateDurableMutationIntent(intent, {
-        status: "committed_projection_pending",
-        committedTargetId: result.decisionId,
-      });
-      setReviewMutationIntent(committed);
-      setMessage(
-        decision === "approved"
-          ? "Review decision was committed."
-          : "Rejection was committed. Choose another result or generate a new Run.",
-      );
-      try {
-        return await verifyReviewIntentProjection(committed, reviewSnapshot);
-      } catch (refreshCause) {
-        if (isProjectionRequestCancellation(refreshCause)) return null;
-        setRefreshWarning(
-          refreshCause instanceof Error
-            ? `The decision was committed, but the latest projection could not be refreshed: ${refreshCause.message}. The same command can be retried safely.`
-            : "The decision was committed, but the latest projection could not be refreshed. The same command can be retried safely.",
-        );
-        return null;
-      }
-    } catch (cause) {
-      if (
-        cause instanceof AdminV2RequestError &&
-        [400, 401, 403, 404, 409, 422].includes(cause.status)
-      ) {
-        clearDurableMutationIntent(intent);
-        setReviewMutationIntent(null);
-        setError(cause.message);
-      } else {
-        const unknown = updateDurableMutationIntent(intent, {
-          status: "outcome_unknown",
-        });
-        setReviewMutationIntent(unknown);
-        setError(
-          "Review outcome is unknown. Submit the same decision again to resume it without creating a duplicate decision.",
-        );
-      }
-      return null;
-    } finally {
-      setBusy(null);
-    }
-  };
-
   const approveAndContinue = async () => {
     if (selectionMutationIntent) {
       await resumeSelectionMutation();
@@ -1689,7 +1486,7 @@ export function CharacterAssetStudio({
       ...(selectedItem.review?.id
         ? { reviewDecisionId: selectedItem.review.id }
         : {}),
-      reason: `Approved ${activeConfig.label.toLowerCase()} selected for the next Character Release`,
+      reason: `Operator selected ${activeConfig.label.toLowerCase()} for the next Character Release`,
     };
     const selectionSignature = bootstrapMode
       ? characterAssetBootstrapRequestKey({
@@ -1885,7 +1682,11 @@ export function CharacterAssetStudio({
       ? "Resume generation"
       : runCreationIntent?.status === "committed_projection_pending"
         ? "Verify created Run"
-        : `Generate 1 ${activeConfig.pluralLabel}`;
+        : unconfirmedOperations.length > 0
+          ? "Generation result awaiting confirmation"
+          : imageRequestInProgress
+          ? "Image request in progress"
+          : `Generate 1 ${activeConfig.pluralLabel}`;
   const generationActionText = generationActionLabel.startsWith("Generate ")
     ? t("Generate {count} {assetType}", {
         count: 1,
@@ -1895,15 +1696,16 @@ export function CharacterAssetStudio({
   const generationActionDescriptionId = `character-generation-action-${data.character.id}`;
   const generationActionDisabled =
     !canUseGenerationAction ||
+    unconfirmedOperations.length > 0 ||
     busy !== null ||
     (!runCreationIntent && !briefs[activePurpose].trim()) ||
-    Boolean(reviewMutationIntent || selectionMutationIntent);
+    Boolean(selectionMutationIntent);
   const generationActionDescription =
-    busy !== null
+    unconfirmedOperations.length > 0
+      ? "The provider result is not confirmed. Check the generation task before starting another image."
+      : busy !== null
       ? "Wait for the current image-production action to finish."
-      : reviewMutationIntent
-        ? "Resolve the saved review before starting another generation."
-        : selectionMutationIntent
+      : selectionMutationIntent
           ? "Resolve the saved selection before starting another generation."
           : !permissions.create
             ? "creative.run.create permission is required."
@@ -1972,14 +1774,13 @@ export function CharacterAssetStudio({
               <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--ad-text-muted)]">
                 {t(
                   bootstrapMode
-                    ? productionOnly
-                      ? `Generate the first portrait without references, compare the results, then set one as identity version ${identityBootstrap.nextIdentityVersion}.`
-                      : `Generate the first portrait without references, review it as the identity definition, then commit it as identity version ${identityBootstrap.nextIdentityVersion}.`
+                    ? "Generate the first portrait without references, compare the results, then use one as identity version {version}."
                     : productionBlocked
                       ? imageProductionRepairable
                         ? "Seal the existing live portrait as the reusable identity reference. Current live images and releases will not change."
                         : "Complete the current visual setup action once. Existing live images and releases will not change."
-                      : "Create one image from the locked identity, review it, then decide whether it belongs in the draft asset pack.",
+                      : "Generate images from the current identity, compare them, and choose which to use in the draft image set.",
+                  { version: identityBootstrap.nextIdentityVersion },
                 )}
               </p>
             </div>
@@ -2024,8 +1825,9 @@ export function CharacterAssetStudio({
                 {bootstrapProfile
                   ? `${bootstrapProfile.label} · ${bootstrapProfile.orientation} · ${t(
                       identityBootstrap.state === "recoverable_empty_history"
-                        ? `no reference input. The reviewed result will supersede the unanchored candidate history as identity version ${identityBootstrap.nextIdentityVersion}.`
-                        : "no reference input. The reviewed result becomes the reference authority.",
+                        ? "No reference image is needed. Your selected portrait becomes identity version {version}; earlier candidates remain in history."
+                        : "No reference image is needed. Your selected portrait becomes the reference for later images.",
+                      { version: identityBootstrap.nextIdentityVersion },
                     )}`
                   : t(
                       "No active text-to-image bootstrap profile is available. Generation remains blocked until one is published.",
@@ -2197,7 +1999,9 @@ export function CharacterAssetStudio({
             </div>
             {activeRunDetail ? (
               <div className="flex flex-wrap gap-2">
-                <StatusBadge value={activeRunDetail.executionOutcome} />
+                {activeRunDetail.items.some((item) => !item.asset && unconfirmedOperations.some((operation) => operation.requestId === item.lineage?.requestId))
+                  ? <span className="rounded bg-[var(--ad-yellow-bg)] px-2 py-1 text-xs">{t("Generation result awaiting confirmation")}</span>
+                  : <StatusBadge value={activeRunDetail.executionOutcome} />}
                 <StatusBadge value={activeRunDetail.reviewState} />
               </div>
             ) : null}
@@ -2267,6 +2071,7 @@ export function CharacterAssetStudio({
                 runId={activeRunDetail.id}
                 selectedPackAssetId={selectedPackAssetId}
                 subjectName={subject.name}
+                unconfirmedOperations={unconfirmedOperations}
               />
             ) : selectedExistingImage ? (
               <div aria-label={t("Character image library")}>
@@ -2325,7 +2130,7 @@ export function CharacterAssetStudio({
                 <div>
                   <Sparkles className="mx-auto h-7 w-7" />
                   <p className="mt-3 text-sm">
-                    {t("Generate one image, then review it here.")}
+                    {t("Generate an image, then choose whether to use it.")}
                   </p>
                 </div>
               </div>
@@ -2494,245 +2299,10 @@ export function CharacterAssetStudio({
                 </button>
               </div>
             ) : null}
-            <section
-              aria-label={t("Record the visible review evidence")}
-              className={
-                recurringProductionReady
-                  ? "pt-1"
-                  : "border-t border-[var(--ad-border)] pt-4"
-              }
-            >
-              <div className="flex flex-wrap items-start justify-between gap-2">
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--ad-text-muted)]">
-                    {t("Review evidence")}
-                  </p>
-                  <h4
-                    className="mt-1 text-sm font-semibold"
-                    id="character-candidate-review-title"
-                  >
-                    {t("Candidate {number}", {
-                      number: selectedItem.ordinal + 1,
-                    })}
-                  </h4>
-                </div>
-                {selectedItem.review ? (
-                  <StatusBadge
-                    tone={
-                      selectedItem.review.decision === "approved"
-                        ? "good"
-                        : "bad"
-                    }
-                    value={selectedItem.review.decision}
-                  />
-                ) : (
-                  <StatusBadge tone="warn" value="pending" />
-                )}
-              </div>
-              {!hasDecision || !hasCompleteReviewEvidence ? (
-                <>
-                  <p className="mt-2 text-xs leading-5 text-[var(--ad-text-muted)]">
-                    {t(
-                      hasDecision
-                        ? "The earlier immutable decision is preserved, but it is missing required visible evidence. Record a superseding review to make this candidate actionable."
-                        : reviewDefinesIdentity
-                          ? "This portrait defines identity, so identity consistency is intentionally unscored. Judge artifacts, subject count, composition, and customer intent."
-                          : "Score the artifact and state identity consistency separately. A composition rejection does not automatically mean identity failed.",
-                    )}
-                  </p>
-                  {hasDecision && selectedItem.review ? (
-                    <p className="mt-3 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-xs text-[var(--ad-yellow-text)]">
-                      {t("Earlier decision")}: {t(selectedItem.review.decision)}{" "}
-                      · {t(selectedItem.review.identityConsistency)} ·{" "}
-                      {selectedItem.review.reason}
-                    </p>
-                  ) : null}
-                  <fieldset className="mt-3 space-y-2">
-                    <legend className="sr-only">
-                      {t("Required visible quality checks")}
-                    </legend>
-                    {reviewQualityChecks.map(([key, label]) => (
-                      <label
-                        className="flex min-h-10 items-center gap-3 rounded-md border border-[var(--ad-border)] px-3 text-xs"
-                        key={key}
-                      >
-                        <input
-                          checked={reviewDraft.quality[key]}
-                          onChange={(event) =>
-                            updateReviewDraft((current) => ({
-                              ...current,
-                              quality: {
-                                ...current.quality,
-                                [key]: event.target.checked,
-                              },
-                            }))
-                          }
-                          type="checkbox"
-                        />
-                        <span>{t(label)}</span>
-                      </label>
-                    ))}
-                  </fieldset>
-                  <div className="mt-3 grid grid-cols-2 gap-2">
-                    <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
-                      {reviewDefinesIdentity
-                        ? t("Quality score")
-                        : t("Identity match score ({minimum}–100 required)", {
-                            minimum: CHARACTER_IDENTITY_APPROVAL_MIN_SCORE,
-                          })}
-                      <input
-                        className={`${fieldClass} mt-1`}
-                        max={100}
-                        min={
-                          reviewDefinesIdentity
-                            ? 0
-                            : CHARACTER_IDENTITY_APPROVAL_MIN_SCORE
-                        }
-                        onChange={(event) =>
-                          updateReviewDraft((current) => ({
-                            ...current,
-                            score: event.target.value,
-                          }))
-                        }
-                        placeholder="0–100"
-                        step={1}
-                        type="number"
-                        value={reviewDraft.score}
-                      />
-                    </label>
-                    <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
-                      {t("Identity consistency")}
-                      <select
-                        className={`${fieldClass} mt-1`}
-                        disabled={reviewDefinesIdentity}
-                        onChange={(event) =>
-                          updateReviewDraft((current) => ({
-                            ...current,
-                            identity: event.target
-                              .value as ReviewDraft["identity"],
-                          }))
-                        }
-                        value={reviewDraft.identity}
-                      >
-                        {reviewDefinesIdentity ? (
-                          <option value="unscored">
-                            {t("Unscored · defines identity")}
-                          </option>
-                        ) : (
-                          <>
-                            <option value="passed">{t("Passed")}</option>
-                            <option value="failed">{t("Failed")}</option>
-                            <option value="unscored">{t("Unscored")}</option>
-                          </>
-                        )}
-                      </select>
-                    </label>
-                  </div>
-                  <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
-                    {t("Evidence and reason")}
-                    <textarea
-                      className={`${textAreaClass} mt-1`}
-                      onChange={(event) =>
-                        updateReviewDraft((current) => ({
-                          ...current,
-                          reason: event.target.value,
-                        }))
-                      }
-                      placeholder={t(
-                        "Describe artifacts, subject count, identity markers, composition, and intended customer context",
-                      )}
-                      value={reviewDraft.reason}
-                    />
-                  </label>
-                  <p className="mt-2 text-xs leading-5 text-[var(--ad-text-muted)]">
-                    {t(
-                      "Review actions apply only to the current candidate and stay separate from draft adoption.",
-                    )}
-                  </p>
-                </>
-              ) : selectedItem.review ? (
-                <div className="mt-3 rounded-lg bg-black/[0.035] p-3 text-xs leading-5">
-                  <strong className="capitalize">
-                    {t(selectedItem.review.decision)}
-                  </strong>{" "}
-                  · {t("identity")} {t(selectedItem.review.identityConsistency)}
-                  {selectedItem.review.score !== null
-                    ? ` · ${selectedItem.review.score}/100`
-                    : ""}
-                  <br />
-                  <span className="text-[var(--ad-text-muted)]">
-                    {selectedItem.review.reason}
-                  </span>
-                  {selectedItem.review.supersedesDecisionId ? (
-                    <>
-                      <br />
-                      <span className="break-all text-[var(--ad-text-muted)]">
-                        {t("Supersedes")}{" "}
-                        {selectedItem.review.supersedesDecisionId}
-                      </span>
-                    </>
-                  ) : null}
-                  {canRecordTerminalRejection ? (
-                    <div className="mt-4 border-t border-[var(--ad-border)] pt-4">
-                      <h4 className="text-sm font-semibold">
-                        {t("Terminal disposition")}
-                      </h4>
-                      <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">
-                        {t(
-                          "If this approved candidate will not be used, record a superseding rejection so its Run can close with an explicit outcome. The original score, identity result, and visible-quality evidence stay preserved.",
-                        )}
-                      </p>
-                      <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
-                        {t("Withdrawal reason")}
-                        <textarea
-                          className={`${textAreaClass} mt-1`}
-                          onChange={(event) =>
-                            updateReviewDraft((current) => ({
-                              ...current,
-                              reason: event.target.value,
-                            }))
-                          }
-                          placeholder={t(
-                            "Explain why this approved candidate will not be used",
-                          )}
-                          value={reviewDraft.reason}
-                        />
-                      </label>
-                      <div className="mt-3">
-                        <WorkspaceButton
-                          disabled={
-                            mutationContextLocked ||
-                            !permissions.review ||
-                            busy !== null ||
-                            Boolean(refreshWarning) ||
-                            !rejectionEvidenceReady
-                          }
-                          onClick={() => void reviewItem("rejected")}
-                          tone="danger"
-                        >
-                          <ThumbsDown className="h-4 w-4" />{" "}
-                          {t("Record superseding rejection")}
-                        </WorkspaceButton>
-                      </div>
-                    </div>
-                  ) : selectedItem.review.decision === "approved" &&
-                    isDraftAuthorityAsset ? (
-                    <p className="mt-4 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-xs text-[var(--ad-yellow-text)]">
-                      {t(
-                        "This candidate is selected by the Character draft. Select a replacement in this slot before recording a superseding rejection.",
-                      )}
-                    </p>
-                  ) : null}
-                </div>
-              ) : null}
-              {!permissions.review || !permissions.selectDraft ? (
-                <p className="mt-3 text-xs text-[var(--ad-text-muted)]">
-                  {t(
-                    "Review and project-write grants control approval and primary image selection.",
-                  )}
-                </p>
-              ) : null}
-            </section>
+            <p className="text-sm leading-6 text-[var(--ad-text-muted)]">
+              {t("Choose the image that fits this Character. Selection updates the draft; publishing updates the live Character.")}
+            </p>
+            {!permissions.selectDraft ? <p className="text-sm">{t("Character editing permission is required to select an image.")}</p> : null}
           </aside>
         ) : null}
       </div>
@@ -2753,7 +2323,7 @@ export function CharacterAssetStudio({
               {selectedItem
                 ? t("Candidate {number} · {state}", {
                     number: selectedItem.ordinal + 1,
-                    state: t(candidateState(selectedItem)),
+                    state: t(candidateState(selectedItem, unconfirmedOperations.some((operation) => operation.requestId === selectedItem.lineage?.requestId))),
                   })
                 : t("No active candidate")}
             </p>
@@ -2788,76 +2358,12 @@ export function CharacterAssetStudio({
               <span className="sm:hidden">{t("Similar")}</span>
               <span className="hidden sm:inline">{t("More like this")}</span>
             </WorkspaceButton>
-            {selectedItem?.asset &&
-            (!hasDecision || !hasCompleteReviewEvidence) ? (
-              <>
-                <WorkspaceButton
-                  disabled={
-                    mutationContextLocked ||
-                    !permissions.review ||
-                    busy !== null ||
-                    Boolean(refreshWarning) ||
-                    !rejectionEvidenceReady
-                  }
-                  onClick={() => void reviewItem("rejected")}
-                  tone="danger"
-                >
-                  <ThumbsDown className="h-4 w-4" />
-                  <span className="sm:hidden">{t("Reject")}</span>
-                  <span className="hidden sm:inline">
-                    {t(
-                      hasDecision
-                        ? "Record superseding rejection"
-                        : "Reject current",
-                    )}
-                  </span>
-                </WorkspaceButton>
-                <WorkspaceButton
-                  disabled={
-                    mutationContextLocked ||
-                    !permissions.review ||
-                    busy !== null ||
-                    Boolean(refreshWarning) ||
-                    !approvalEvidenceReady
-                  }
-                  onClick={() => void reviewItem("approved")}
-                  tone="primary"
-                >
-                  {busy === "review" ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Check className="h-4 w-4" />
-                  )}
-                  <span className="sm:hidden">{t("Approve")}</span>
-                  <span className="hidden sm:inline">
-                    {t(
-                      hasDecision
-                        ? "Record superseding approval"
-                        : "Approve current candidate",
-                    )}
-                  </span>
-                </WorkspaceButton>
-              </>
-            ) : selectedItem?.review?.decision === "approved" ? (
-              <WorkspaceButton
-                disabled={
-                  mutationContextLocked ||
-                  !canUseDecisionAction ||
-                  busy !== null ||
-                  Boolean(refreshWarning)
-                }
-                onClick={() => void approveAndContinue()}
-                tone="primary"
-              >
-                {busy === "select" ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Check className="h-4 w-4" />
-                )}
+            {selectedItem?.asset ? (
+              <WorkspaceButton disabled={mutationContextLocked || !canUseDecisionAction || busy !== null || Boolean(refreshWarning)}
+                onClick={() => void approveAndContinue()} tone="primary">
+                {busy === "select" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
                 {t(decisionActionLabel)}
               </WorkspaceButton>
-            ) : selectedItem?.review?.decision === "rejected" ? (
-              <StatusBadge tone="bad" value="rejected" />
             ) : null}
           </div>
         </section>

@@ -1,0 +1,56 @@
+@idream/admin test: 
+@idream/admin test:  RUN  v4.1.9 /Users/kk/code/idream/packages/admin
+@idream/admin test: 
+@idream/admin test: GET http://localhost:3000/api/v2/admin/jobs?mode=image&sort=created_desc&limit=25 401 (Unauthorized)
+@idream/admin test: GET http://localhost:3000/api/v2/admin/generation/dead-letter?limit=25 401 (Unauthorized)
+@idream/admin test: DOMException [AbortError]: The operation was aborted.
+@idream/admin test:     at Fetch.onAsyncTaskManagerAbort (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/fetch/Fetch.js:546:23)
+@idream/admin test:     at Object.<anonymous> (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/fetch/Fetch.js:416:101)
+@idream/admin test:     at AsyncTaskManager.abortAll (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/async-task-manager/AsyncTaskManager.js:292:30)
+@idream/admin test:     at AsyncTaskManager.abort (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/async-task-manager/AsyncTaskManager.js:52:21)
+@idream/admin test:     at DetachedBrowserFrame.abort (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/browser/detached-browser/DetachedBrowserFrame.js:112:58)
+@idream/admin test:     at DetachedWindowAPI.abort (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/window/DetachedWindowAPI.js:51:35)
+@idream/admin test:     at teardownWindow (file:///Users/kk/code/idream/node_modules/.bun/vitest@4.1.9+978f1a0c078cafac/node_modules/vitest/dist/chunks/index.DC7d2Pf8.js:331:22)
+@idream/admin test:     at Object.teardown (file:///Users/kk/code/idream/node_modules/.bun/vitest@4.1.9+978f1a0c078cafac/node_modules/vitest/dist/chunks/index.DC7d2Pf8.js:392:10)
+@idream/admin test:     at file:///Users/kk/code/idream/node_modules/.bun/vitest@4.1.9+978f1a0c078cafac/node_modules/vitest/dist/chunks/base.BE3cXZj3.js:168:65
+@idream/admin test:     at Traces.$ (file:///Users/kk/code/idream/node_modules/.bun/vitest@4.1.9+978f1a0c078cafac/node_modules/vitest/dist/chunks/traces.DT5aQ62U.js:142:27)
+@idream/admin test: DOMException [AbortError]: The operation was aborted.
+@idream/admin test:     at Fetch.onAsyncTaskManagerAbort (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/fetch/Fetch.js:546:23)
+@idream/admin test:     at Object.<anonymous> (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/fetch/Fetch.js:416:101)
+@idream/admin test:     at AsyncTaskManager.abortAll (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/async-task-manager/AsyncTaskManager.js:292:30)
+@idream/admin test:     at AsyncTaskManager.abort (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/async-task-manager/AsyncTaskManager.js:52:21)
+@idream/admin test:     at DetachedBrowserFrame.abort (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/browser/detached-browser/DetachedBrowserFrame.js:112:58)
+@idream/admin test:     at DetachedWindowAPI.abort (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/window/DetachedWindowAPI.js:51:35)
+@idream/admin test:     at teardownWindow (file:///Users/kk/code/idream/node_modules/.bun/vitest@4.1.9+978f1a0c078cafac/node_modules/vitest/dist/chunks/index.DC7d2Pf8.js:331:22)
+@idream/admin test:     at Object.teardown (file:///Users/kk/code/idream/node_modules/.bun/vitest@4.1.9+978f1a0c078cafac/node_modules/vitest/dist/chunks/index.DC7d2Pf8.js:392:10)
+@idream/admin test:     at file:///Users/kk/code/idream/node_modules/.bun/vitest@4.1.9+978f1a0c078cafac/node_modules/vitest/dist/chunks/base.BE3cXZj3.js:168:65
+@idream/admin test:     at Traces.$ (file:///Users/kk/code/idream/node_modules/.bun/vitest@4.1.9+978f1a0c078cafac/node_modules/vitest/dist/chunks/traces.DT5aQ62U.js:142:27)
+@idream/admin test: DOMException [AbortError]: The operation was aborted.
+@idream/admin test:     at Fetch.onAsyncTaskManagerAbort (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/fetch/Fetch.js:546:23)
+@idream/admin test:     at Object.<anonymous> (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/fetch/Fetch.js:416:101)
+@idream/admin test:     at AsyncTaskManager.abortAll (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/async-task-manager/AsyncTaskManager.js:292:30)
+@idream/admin test:     at AsyncTaskManager.abort (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/async-task-manager/AsyncTaskManager.js:52:21)
+@idream/admin test:     at DetachedBrowserFrame.abort (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/browser/detached-browser/DetachedBrowserFrame.js:112:58)
+@idream/admin test:     at DetachedWindowAPI.abort (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/window/DetachedWindowAPI.js:51:35)
+@idream/admin test:     at teardownWindow (file:///Users/kk/code/idream/node_modules/.bun/vitest@4.1.9+978f1a0c078cafac/node_modules/vitest/dist/chunks/index.DC7d2Pf8.js:331:22)
+@idream/admin test:     at Object.teardown (file:///Users/kk/code/idream/node_modules/.bun/vitest@4.1.9+978f1a0c078cafac/node_modules/vitest/dist/chunks/index.DC7d2Pf8.js:392:10)
+@idream/admin test:     at file:///Users/kk/code/idream/node_modules/.bun/vitest@4.1.9+978f1a0c078cafac/node_modules/vitest/dist/chunks/base.BE3cXZj3.js:168:65
+@idream/admin test:     at Traces.$ (file:///Users/kk/code/idream/node_modules/.bun/vitest@4.1.9+978f1a0c078cafac/node_modules/vitest/dist/chunks/traces.DT5aQ62U.js:142:27)
+@idream/admin test: DOMException [AbortError]: The operation was aborted.
+@idream/admin test:     at Fetch.onAsyncTaskManagerAbort (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/fetch/Fetch.js:546:23)
+@idream/admin test:     at Object.<anonymous> (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/fetch/Fetch.js:416:101)
+@idream/admin test:     at AsyncTaskManager.abortAll (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/async-task-manager/AsyncTaskManager.js:292:30)
+@idream/admin test:     at AsyncTaskManager.abort (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/async-task-manager/AsyncTaskManager.js:52:21)
+@idream/admin test:     at DetachedBrowserFrame.abort (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/browser/detached-browser/DetachedBrowserFrame.js:112:58)
+@idream/admin test:     at DetachedWindowAPI.abort (file:///Users/kk/code/idream/node_modules/.bun/happy-dom@20.11.1/node_modules/happy-dom/lib/window/DetachedWindowAPI.js:51:35)
+@idream/admin test:     at teardownWindow (file:///Users/kk/code/idream/node_modules/.bun/vitest@4.1.9+978f1a0c078cafac/node_modules/vitest/dist/chunks/index.DC7d2Pf8.js:331:22)
+@idream/admin test:     at Object.teardown (file:///Users/kk/code/idream/node_modules/.bun/vitest@4.1.9+978f1a0c078cafac/node_modules/vitest/dist/chunks/index.DC7d2Pf8.js:392:10)
+@idream/admin test:     at file:///Users/kk/code/idream/node_modules/.bun/vitest@4.1.9+978f1a0c078cafac/node_modules/vitest/dist/chunks/base.BE3cXZj3.js:168:65
+@idream/admin test:     at Traces.$ (file:///Users/kk/code/idream/node_modules/.bun/vitest@4.1.9+978f1a0c078cafac/node_modules/vitest/dist/chunks/traces.DT5aQ62U.js:142:27)
+@idream/admin test: 
+@idream/admin test:  Test Files  183 passed (183)
+@idream/admin test:       Tests  1124 passed (1124)
+@idream/admin test:    Start at  05:04:50
+@idream/admin test:    Duration  13.13s (transform 25.62s, setup 0ms, import 124.02s, tests 30.88s, environment 16.34s)
+@idream/admin test: 
+@idream/admin test: Exited with code 0

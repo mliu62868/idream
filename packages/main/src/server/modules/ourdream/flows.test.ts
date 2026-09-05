@@ -646,7 +646,14 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
       body: { visibility: "public" },
     });
     expectOk(submit);
-    expect(submit.data.character.status).toBe("pending_review");
+    expect(submit.data.character.status).toBe("approved");
+    expect(submit.data.character.visibility).toBe("public");
+    expect(await prisma.characterSubmission.count({
+      where: { characterId: submit.data.character.id, status: "pending" },
+    })).toBe(0);
+    expect(await prisma.characterSubmission.findFirstOrThrow({
+      where: { characterId: submit.data.character.id },
+    })).toMatchObject({ status: "approved", reviewerId: null });
   });
 });
 

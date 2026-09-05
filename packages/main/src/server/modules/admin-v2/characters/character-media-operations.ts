@@ -1,3 +1,5 @@
+import { validatedAutomaticFailureCorrection } from "@/server/ai/generation-unknown-resolution-evidence";
+import { resolveGenerationAssetSuccessAttempts } from "@/server/ai/generation-asset-success-authority";
 import {
   characterMediaOperationsProjectionSchema,
   type CharacterMediaOperationsProjection,
@@ -14,6 +16,7 @@ import {
   operationalGenerationJobWhere,
 } from "@/server/modules/metric-data-scope";
 import { resolveGenerationAttemptRetryAuthority } from "@/server/modules/generation/generation-attempt-authority";
+import { deriveCreativeItemExecutionState } from "../creative/run-state";
 import { characterWorkspaceTabLink } from "./character-deep-link";
 
 // SPEC: This projector only reads evidence owned by Generation and Voice authorities.
@@ -200,6 +203,17 @@ export async function loadCharacterMediaOperationsProjection(
     );
   }
 
+  const resolvedAssets = await resolveGenerationAssetSuccessAttempts(prisma,
+    [imageJob, videoJob].flatMap((job) => job?.assets ?? []),
+  );
+  const automaticCorrections = new Set((await Promise.all(
+    [imageJob, videoJob].flatMap((job) => {
+      const attempt = job ? latestAttemptByRequestId.get(job.id) : null;
+      return job?.status === "failed" && attempt?.status === "unknown"
+        ? [validatedAutomaticFailureCorrection(prisma, job.id, attempt.id).then((evidence) => evidence ? job.id : null)]
+        : [];
+    }),
+  )).filter((id): id is string => id !== null));
   const generationOperation = (
     modality: "image" | "video",
     tab: "assets" | "video",
@@ -211,6 +225,22 @@ export async function loadCharacterMediaOperationsProjection(
       ? latestTransportByAttemptId.get(attempt.id) ?? null
       : null;
     const asset = job.assets[0] ?? null;
+    const executionState = deriveCreativeItemExecutionState({
+      itemStatus: "queued",
+      jobStatus: job.status,
+      jobErrorCode: job.errorCode,
+      attemptStatus: attempt?.status ?? null,
+      transportStatus: transport?.status ?? null,
+      hasAsset: Boolean(asset),
+    });
+    // The queued Job is an admission record; active provider execution belongs
+    // to its latest Attempt/transport. Use the same derivation as the studio.
+    const status = ["completed", "failed", "blocked", "refunded"].includes(job.status)
+      ? job.status
+      : ({ ready: "completed", generating: "running", finalizing: "finalizing",
+          unknown: "unknown",
+          failed: attempt?.status === "unknown" ? "unknown" : "failed",
+          provider_queued: "queued", dispatching: "pending" } as const)[executionState];
     const finishedAt = attempt?.finishedAt ?? job.finishedAt ?? job.completedAt;
     const latencyMs = attempt?.startedAt && finishedAt
       ? Math.max(0, finishedAt.getTime() - attempt.startedAt.getTime())
@@ -226,6 +256,12 @@ export async function loadCharacterMediaOperationsProjection(
         : null;
     const retryAuthority = retryAuthorityByRequestId.get(job.id) ?? null;
     const recovery = (() => {
+      if (job.status === "completed" && asset && resolvedAssets.has(asset.id)) {
+        return { state: "not_needed" as const, reason: null };
+      }
+      if (automaticCorrections.has(job.id)) {
+        return { state: "operator_action" as const, reason: "Validated provider success arrived after automatic timeout settlement; adopt the recovered output in Jobs." };
+      }
       if (attempt?.status === "unknown") {
         if (
           retryAuthority?.allowed &&
@@ -267,7 +303,7 @@ export async function loadCharacterMediaOperationsProjection(
     return {
       modality,
       requestId: job.id,
-      status: job.status,
+      status,
       attempt: attempt ? {
         id: attempt.id,
         number: attempt.attemptNo,

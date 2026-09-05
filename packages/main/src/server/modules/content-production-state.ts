@@ -1,9 +1,18 @@
+import { validatedAutomaticFailureCorrection } from "@/server/ai/generation-unknown-resolution-evidence";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
-import { isCreativeRunItemTransitionAllowed } from "@/server/modules/admin-v2/shared/state-transition-authority";
+import {
+  isCreativeRunItemTransitionAllowed,
+  isCreativeRunLifecycleTransitionAllowed,
+  isCreativeRunWorkflowTransitionAllowed,
+  isCreativeRunVerificationTransitionAllowed,
+} from "@/server/modules/admin-v2/shared/state-transition-authority";
+
+import { deriveCreativeRunContinuation } from "./admin-v2/creative/run-state";
 
 type DbClient = Prisma.TransactionClient | typeof prisma;
+type AutomaticFailureRecovery = { readonly jobId: string; readonly attemptId: string; readonly decisionId: string };
 
 const REVIEWED_ITEM_STATUSES = new Set(["approved", "rejected", "published", "failed"]);
 
@@ -194,7 +203,11 @@ export function deriveCreativeRunState(input: {
 export async function refreshContentProductionBatchStats(
   db: DbClient,
   batchId: string,
+  recovery?: AutomaticFailureRecovery,
 ) {
+  // Read the version before child facts so a concurrent writer cannot make a
+  // stale count/stage projection appear current by advancing the version first.
+  const batch = await db.contentProductionBatch.findUniqueOrThrow({ where: { id: batchId }, select: { purpose: true, lifecycleState: true, workflowStage: true, verificationState: true, version: true } });
   const items = await db.contentProductionItem.findMany({
     where: { batchId },
     select: { status: true },
@@ -221,25 +234,68 @@ export async function refreshContentProductionBatchStats(
           ? "queued"
           : "draft";
 
-  await db.contentProductionBatch.update({
-    where: { id: batchId },
+  const continuation = deriveCreativeRunContinuation(items.map((item) => item.status), { requiresVerifiedPlacement: batch.purpose === "campaign", requiresReview: batch.purpose === "model_eval" });
+  const recoveredItem = recovery ? await db.contentProductionItem.findFirst({
+    where: { batchId, jobId: recovery.jobId, status: "generated", mediaAssetId: { not: null } },
+  }) : null;
+  const recoveredFailure = recovery && recoveredItem
+    ? await validatedAutomaticFailureCorrection(db, recovery.jobId, recovery.attemptId) : null;
+  const canResumeRecoveredFailure = recoveredFailure?.priorDecisionId === recovery?.decisionId &&
+    Boolean(recoveredFailure) && batch.lifecycleState === "closed" &&
+    batch.workflowStage === "generation" && batch.verificationState === "pending";
+  const canAdvance = batch.purpose !== "model_eval" &&
+    (batch.lifecycleState === "active" || canResumeRecoveredFailure) && batch.workflowStage !== "verification";
+  const nextLifecycleState = canAdvance ? continuation.lifecycleState : batch.lifecycleState;
+  const nextWorkflowStage = canAdvance ? continuation.workflowStage : batch.workflowStage;
+  // A retry command owns its verifying result until the executor verifies the
+  // frozen attempt set. Generation completion must not overwrite that evidence.
+  const nextVerificationState = canAdvance && batch.verificationState !== "verifying"
+    ? continuation.verificationState : batch.verificationState;
+  if (
+    (nextLifecycleState !== batch.lifecycleState && !isCreativeRunLifecycleTransitionAllowed(batch.lifecycleState, nextLifecycleState)) ||
+    (nextWorkflowStage !== batch.workflowStage && !isCreativeRunWorkflowTransitionAllowed(batch.workflowStage, nextWorkflowStage)) ||
+    (nextVerificationState !== batch.verificationState && !isCreativeRunVerificationTransitionAllowed(batch.verificationState, nextVerificationState))
+  ) throw Errors.conflict("Creative Run cannot project generation from its present authority state");
+  const changed = await db.contentProductionBatch.updateMany({
+    where: { id: batchId, version: batch.version, lifecycleState: batch.lifecycleState, workflowStage: batch.workflowStage, verificationState: batch.verificationState },
     data: {
+      version: { increment: 1 },
+      lifecycleState: nextLifecycleState,
+      workflowStage: nextWorkflowStage,
+      verificationState: nextVerificationState,
       totalItems,
       completedItems,
       failedItems,
       approvedItems,
-      status,
+      status: batch.purpose === "model_eval" || activeItems > 0 ? status : continuation.status,
     },
   });
+  if (changed.count !== 1) throw Errors.conflict("Creative Run changed while projecting generation results");
 }
 
 export async function markProductionItemGenerated(
   db: DbClient,
-  input: { jobId: string; mediaAssetId: string },
+  input: { jobId: string; mediaAssetId: string; automaticFailureRecovery?: Omit<AutomaticFailureRecovery, "jobId"> },
 ) {
   const current = await db.contentProductionItem.findUnique({ where: { jobId: input.jobId } });
   if (!current) return;
-  if (!isCreativeRunItemTransitionAllowed(current.status, "generated")) {
+  let recovery: AutomaticFailureRecovery | undefined;
+  if (current.status === "failed" && current.mediaAssetId === null && input.automaticFailureRecovery) {
+    const authority = { jobId: input.jobId, ...input.automaticFailureRecovery };
+    const [correction, attempt, artifact] = await Promise.all([
+      validatedAutomaticFailureCorrection(db, input.jobId, authority.attemptId),
+      db.generationAttempt.findFirst({ where: { requestId: input.jobId }, orderBy: { attemptNo: "desc" } }),
+      db.generationArtifact.findFirst({ where: { attemptId: authority.attemptId, assetId: input.mediaAssetId, validationState: "valid", archiveState: "active" } }),
+    ]);
+    const delivered = artifact ? await db.generationDelivery.count({ where: {
+      requestId: input.jobId, artifactId: artifact.id, status: "delivered", targetType: "user_library",
+    } }) : 0;
+    if (correction?.priorDecisionId === authority.decisionId && attempt?.id === authority.attemptId &&
+      (attempt.creativeRunItemId === null || attempt.creativeRunItemId === current.id) && delivered === 1) recovery = authority;
+  }
+  // Ordinary completion cannot undo a failed item. Only the same transaction's
+  // audited timeout compensation may project its already-delivered Artifact.
+  if (!recovery && !isCreativeRunItemTransitionAllowed(current.status, "generated")) {
     throw Errors.conflict("Generation completion cannot rewrite Creative item state", {
       itemId: current.id,
       from: current.status,
@@ -247,7 +303,7 @@ export async function markProductionItemGenerated(
     });
   }
   const changed = await db.contentProductionItem.updateMany({
-    where: { id: current.id, status: current.status, version: current.version },
+    where: { id: current.id, jobId: input.jobId, mediaAssetId: current.mediaAssetId, status: current.status, version: current.version },
     data: {
       mediaAssetId: input.mediaAssetId,
       status: "generated",
@@ -255,7 +311,7 @@ export async function markProductionItemGenerated(
     },
   });
   if (changed.count !== 1) throw Errors.conflict("Creative item changed during generation projection");
-  await refreshContentProductionBatchStats(db, current.batchId);
+  await refreshContentProductionBatchStats(db, current.batchId, recovery);
 }
 
 export async function markProductionItemFailed(db: DbClient, jobId: string) {

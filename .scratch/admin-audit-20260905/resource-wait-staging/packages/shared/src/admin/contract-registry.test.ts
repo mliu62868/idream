@@ -1,0 +1,49 @@
+import { describe, expect, it } from "vitest";
+import { ADMIN_V2_API_OPERATIONS } from "./api-manifest";
+import {
+  ADMIN_V2_PENDING_CONTRACTS,
+  requireExecutableAdminV2Contract,
+  resolveAdminV2Contract,
+} from "./contract-registry";
+
+function manifestRefs() {
+  return [...new Set(ADMIN_V2_API_OPERATIONS.flatMap((operation) => [
+    operation.contract.request,
+    operation.contract.response,
+  ]))].sort();
+}
+
+function manifestBaseRefs() {
+  return new Set(manifestRefs().map((ref) => ref.split("+")[0] ?? ref));
+}
+
+describe("Admin v2 executable contract registry", () => {
+  it("resolves every request and response ref in the current manifest", () => {
+    for (const ref of manifestRefs()) {
+      expect(resolveAdminV2Contract(ref), ref).not.toBeNull();
+    }
+  });
+
+  it("automatically executes a positive and negative fixture for every bound contract", () => {
+    const executed = new Set<string>();
+    for (const ref of manifestRefs()) {
+      const binding = resolveAdminV2Contract(ref);
+      if (!binding || binding.kind === "pending" || executed.has(binding.fixtureKey)) continue;
+      executed.add(binding.fixtureKey);
+
+      expect(binding.schema.safeParse(binding.fixtures.valid).success, `${ref} positive`).toBe(true);
+      expect(binding.schema.safeParse(binding.fixtures.invalid).success, `${ref} negative`).toBe(false);
+    }
+    expect(executed.size).toBe(manifestBaseRefs().size);
+  });
+
+  it("hard-gates the manifest at zero pending contracts", () => {
+    const referenced = manifestBaseRefs();
+    const pending = Object.entries(ADMIN_V2_PENDING_CONTRACTS);
+    expect(pending).toHaveLength(0);
+
+    expect([...manifestBaseRefs()].filter((ref) => resolveAdminV2Contract(ref)?.kind === "pending").sort())
+      .toEqual(Object.keys(ADMIN_V2_PENDING_CONTRACTS).sort());
+    expect([...referenced].filter((ref) => requireExecutableAdminV2Contract(ref))).toHaveLength(referenced.size);
+  });
+});

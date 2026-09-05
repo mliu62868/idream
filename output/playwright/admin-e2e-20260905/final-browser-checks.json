@@ -1,0 +1,30 @@
+{
+  "checkedAt": "2026-09-05T11:50:55.582Z",
+  "iris": {
+    "withdrawnTranslated": true,
+    "private": true,
+    "inactive": true,
+    "overflow": false
+  },
+  "cms": {
+    "headingPersisted": true,
+    "introPersisted": true,
+    "overflow": false
+  },
+  "rowan": {
+    "url": "http://127.0.0.1:3001/admin/characters/501f68d9-41ef-4f8e-bc39-ea14a88ee142?tab=assets",
+    "private": true,
+    "imageCards": 2,
+    "overflow": false
+  },
+  "chat": {
+    "url": "http://localhost:3000/chat/13c1f069-5de5-47a7-a522-987e3f9b7171",
+    "replyPersisted": true,
+    "text": "Create\nExplore\nChat\nGenerate\nMy AI\nFeed\nCommunity\nHelp Desk\nSafety Center\nMore\nProfile\nUpgrade\n\n2026 OURDREAM.AI\n\nExplore\nMIRA AUDIT 20260902\nMemory on\nGenerate\n\nMemory on: this character remembers details across your chats.\n\nConversation preferences\nI found a quiet cafe with a view of the rainy street. Come sit with me—what caught your eye today?\nLocal Chrome acceptance check. Let's keep this brief: suggest one photograph I could take of the rainy cafe window today.\nA. Focus on the rain-streaked glass with the warm cafe lights blurring into gold behind it—the droplets turning the street outside into soft bokeh. Simple, and every drop tells a different story."
+  },
+  "consoleErrors": {
+    "iris": 0,
+    "rowan": 0,
+    "chat": 0
+  }
+}

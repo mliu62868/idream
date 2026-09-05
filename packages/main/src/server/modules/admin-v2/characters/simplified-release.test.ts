@@ -33,6 +33,16 @@ describe("simplified Character publishing", () => {
     }
   });
 
+  it("previews real opening and images without retired QA placeholders", () => {
+    const page = source("src/app/internal-preview/characters/[token]/page.tsx");
+    expect(page).toContain("{preview.openingMessage}");
+    expect(page).toContain("CharacterCard");
+    expect(page).toContain("CharacterDetailHero");
+    expect(page).not.toContain("QA turn");
+    expect(page).not.toContain("Response evidence");
+    expect(page).not.toContain("Array.from({ length: 5 }");
+  });
+
   it("removes project phase, scheduled serving, and per-character QA storage", () => {
     const schema = source("prisma/schema.prisma");
     const migration = source(

@@ -53,7 +53,13 @@ describe("Character Release asset manifest", () => {
     })).not.toBeNull();
   });
 
-  it.each(["runId", "itemId", "reviewDecisionId", "generationJobId"] as const)(
+  it("accepts directly adopted generation without a manual review decision", () => {
+    const placements = [placement("character_avatar"), placement("character_hero"), placement("character_chat")]
+      .map(({ reviewDecisionId: _historicalReview, ...generated }) => generated);
+    expect(parseCharacterReleaseAssetManifest({ schemaVersion: 2, placements })?.placements).toEqual(placements);
+  });
+
+  it.each(["runId", "itemId", "generationJobId"] as const)(
     "rejects a generated placement missing %s instead of treating it as an import",
     (field) => {
       const partial: Record<string, unknown> = { ...placement("character_chat") };

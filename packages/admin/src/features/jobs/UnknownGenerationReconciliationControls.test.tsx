@@ -147,3 +147,17 @@ describe("Unknown Generation reconciliation controls", () => {
     expect(html).not.toContain("Confirm failed and refund");
   });
 });
+
+
+it("offers only compensation after Main validates a zero-refund automatic failure", () => {
+  const html = renderToStaticMarkup(<UnknownGenerationReconciliationControls detail={{
+    ...detail,
+    request: { ...detail.request, requestOutcome: "failed" },
+    unknownTerminalEvidence: { attemptId: "attempt-unknown-1", outcome: "succeeded", transportStatus: "unknown", terminalRecordRef: "late.json", terminalRecordChecksum: "a".repeat(64), artifactCount: 1, adoptable: true, adoptionBlockReason: null },
+    unknownReconciliations: [{ id: "automatic-failed", attemptId: "attempt-unknown-1", resolution: "confirm_failed", actorId: "system:generation-unknown-sweeper", reason: "Automatic timeout", providerEvidenceRefs: [], nextReviewAt: null, reviewStatus: "not_applicable", refundAmount: 0, deliveredCount: 0, occurredAt: "2026-09-05T11:03:00.000Z" }],
+  }} onReconciled={() => undefined} />);
+  expect(html).toContain("Adopt recovered provider success");
+  expect(html).toContain("Adopt recovered success");
+  expect(html).not.toContain("Remain unknown and review later");
+  expect(html).not.toContain("Confirm failed and refund");
+});

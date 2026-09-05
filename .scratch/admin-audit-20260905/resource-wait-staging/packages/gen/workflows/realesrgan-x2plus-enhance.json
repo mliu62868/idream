@@ -1,0 +1,26 @@
+{
+  "workflowKey": "realesrgan-x2plus-enhance",
+  "modelId": "realesrgan-x2plus",
+  "backendKind": "comfyui",
+  "comfyWorkflow": { "id": "f3b5e0e3-e844-4a57-bd6f-39dafb6aee20", "name": "iDream Image Enhance 2x" },
+  "version": 1,
+  "negativePromptMode": "conditioning",
+  "capabilities": ["img2img", "enhance", "referenceImages"],
+  "identity": {
+    "mode": "single_reference",
+    "maxReferences": 1,
+    "acceptedRoles": ["source_image"],
+    "supportsLookReference": false,
+    "supportsSourceImageWithIdentity": false
+  },
+  "quality": { "maxCandidates": 1, "evaluatorDimensions": ["artifact", "identity"] },
+  "apiPrompt": {
+    "1": { "class_type": "LoadImage", "inputs": { "image": "" } },
+    "2": { "class_type": "UpscaleModelLoader", "inputs": { "model_name": "RealESRGAN_x2plus.pth" } },
+    "3": { "class_type": "ImageUpscaleWithModel", "inputs": { "upscale_model": ["2", 0], "image": ["1", 0] } },
+    "4": { "class_type": "SaveImage", "inputs": { "images": ["3", 0], "filename_prefix": "idream-enhance-2x" } }
+  },
+  "inputs": [
+    { "key": "source_image", "type": "image", "referenceRoles": ["source_image"], "target": { "nodeId": "1", "field": "image" } }
+  ]
+}

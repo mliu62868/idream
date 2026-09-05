@@ -6052,8 +6052,10 @@ describe("image generation service contract", () => {
         where: { userId, idempotencyKey: variationIdempotencyKey },
       }),
     ).resolves.toBe(1);
-    expect(job.prompt).toContain("Locked identity");
-    expect(job.prompt).toContain("pearl-white hair");
+    expect(job.prompt).toMatch(/^Edit the supplied source image/);
+    expect(job.prompt).toContain("Preserve the source subject's face, age, hair and body proportions");
+    expect(job.prompt).toContain("do not copy that reference's crop, pose, clothes or background");
+    expect(job.prompt).toContain("deep red velvet jacket");
     expect(job.prompt).toContain("lantern-lit library");
     const queued = await jobQueue.getByDedupeKey("ai.image.generate", `generation:${job.id}:attempt:1`);
     const queuedPayload = queued?.payload as { controls?: Record<string, unknown>; referenceImages?: unknown[] } | undefined;

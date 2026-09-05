@@ -1,0 +1,481 @@
+$ bun scripts/start-pm2-ecosystem.cjs current restart
+$ bun src/scripts/control-generation-cutover-queues.ts pause-and-drain
+{
+  "ok": true,
+  "queues": [
+    {
+      "queue": "ai.image.generate",
+      "paused": true
+    },
+    {
+      "queue": "ai.video.generate",
+      "paused": true
+    },
+    {
+      "queue": "app.generation.terminal.ingest",
+      "paused": true
+    },
+    {
+      "queue": "app.ai.finalize",
+      "paused": true
+    }
+  ],
+  "activeBullRows": [],
+  "pendingTerminalOutboxes": 0,
+  "ignoredHistory": [
+    {
+      "queue": "ai.video.generate",
+      "bullJobId": "dedupe_Z2VuZXJhdGlvbjpjbXMwZXlkYncwMDFnbW1sN3p4aDQyaXoz",
+      "generationJobId": "cms0eydbw001gmml7zxh42iz3",
+      "attemptId": "cms0eydcd001mmml7iy65cacf"
+    }
+  ]
+}
+[PM2] Applying action stopProcessId on app [main-web](ids: [ 173 ])
+[PM2] [main-web](173) ✓
+┌─────┬─────────────────────────┬─────────────┬─────────┬─────────┬──────────┬────────┬──────┬───────────┬──────────┬──────────┬──────────┬──────────┐
+│ id  │ name                    │ namespace   │ version │ mode    │ pid      │ uptime │ ↺    │ status    │ cpu      │ mem      │ user     │ watching │
+├─────┼─────────────────────────┼─────────────┼─────────┼─────────┼──────────┼────────┼──────┼───────────┼──────────┼──────────┼──────────┼──────────┤
+│ 180 │ admin-command-worker    │ default     │ 0.3.1   │ fork    │ 48180    │ 14m    │ 57   │ online    │ 17%      │ 312.8mb  │ kk       │ enabled  │
+│ 174 │ admin-web               │ default     │ 0.3.1   │ fork    │ 78276    │ 2h     │ 0    │ online    │ 1%       │ 49.0mb   │ kk       │ disabled │
+│ 175 │ chat                    │ default     │ 0.0.0   │ fork    │ 28749    │ 51m    │ 3    │ online    │ 5%       │ 173.5mb  │ kk       │ enabled  │
+│ 13  │ comfyui-image           │ default     │ 0.3.1   │ fork    │ 55766    │ 2D     │ 6    │ online    │ 0%       │ 28.6mb   │ kk       │ disabled │
+│ 12  │ comfyui-video           │ default     │ 0.3.1   │ fork    │ 9321     │ 5D     │ 10   │ online    │ 0%       │ 29.3mb   │ kk       │ disabled │
+│ 15  │ comfyui-video-h3        │ default     │ 0.3.1   │ fork    │ 9388     │ 5D     │ 6    │ online    │ 0%       │ 29.4mb   │ kk       │ disabled │
+│ 171 │ fish-audio              │ default     │ 0.3.1   │ fork    │ 78274    │ 2h     │ 0    │ online    │ 1%       │ 47.6mb   │ kk       │ enabled  │
+│ 178 │ gen-finalizer           │ default     │ 0.3.1   │ fork    │ 48177    │ 14m    │ 57   │ online    │ 8%       │ 268.8mb  │ kk       │ enabled  │
+│ 176 │ gen-image               │ default     │ 0.0.0   │ fork    │ 28750    │ 51m    │ 3    │ online    │ 6%       │ 186.0mb  │ kk       │ enabled  │
+│ 177 │ gen-video               │ default     │ 0.0.0   │ fork    │ 78279    │ 2h     │ 0    │ online    │ 6%       │ 170.6mb  │ kk       │ disabled │
+│ 179 │ main-event-consumer     │ default     │ 0.3.1   │ fork    │ 48176    │ 14m    │ 57   │ online    │ 11%      │ 224.9mb  │ kk       │ enabled  │
+│ 173 │ main-web                │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 172 │ pocket-tts              │ default     │ 0.3.1   │ fork    │ 78273    │ 2h     │ 0    │ online    │ 1%       │ 41.8mb   │ kk       │ enabled  │
+└─────┴─────────────────────────┴─────────────┴─────────┴─────────┴──────────┴────────┴──────┴───────────┴──────────┴──────────┴──────────┴──────────┘
+[PM2] Applying action stopProcessId on app [admin-web](ids: [ 174 ])
+[PM2] [admin-web](174) ✓
+┌─────┬─────────────────────────┬─────────────┬─────────┬─────────┬──────────┬────────┬──────┬───────────┬──────────┬──────────┬──────────┬──────────┐
+│ id  │ name                    │ namespace   │ version │ mode    │ pid      │ uptime │ ↺    │ status    │ cpu      │ mem      │ user     │ watching │
+├─────┼─────────────────────────┼─────────────┼─────────┼─────────┼──────────┼────────┼──────┼───────────┼──────────┼──────────┼──────────┼──────────┤
+│ 180 │ admin-command-worker    │ default     │ 0.3.1   │ fork    │ 48180    │ 14m    │ 57   │ online    │ 17%      │ 312.8mb  │ kk       │ enabled  │
+│ 174 │ admin-web               │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 175 │ chat                    │ default     │ 0.0.0   │ fork    │ 28749    │ 51m    │ 3    │ online    │ 5%       │ 173.5mb  │ kk       │ enabled  │
+│ 13  │ comfyui-image           │ default     │ 0.3.1   │ fork    │ 55766    │ 2D     │ 6    │ online    │ 0%       │ 28.6mb   │ kk       │ disabled │
+│ 12  │ comfyui-video           │ default     │ 0.3.1   │ fork    │ 9321     │ 5D     │ 10   │ online    │ 0%       │ 29.3mb   │ kk       │ disabled │
+│ 15  │ comfyui-video-h3        │ default     │ 0.3.1   │ fork    │ 9388     │ 5D     │ 6    │ online    │ 0%       │ 29.4mb   │ kk       │ disabled │
+│ 171 │ fish-audio              │ default     │ 0.3.1   │ fork    │ 78274    │ 2h     │ 0    │ online    │ 1%       │ 47.6mb   │ kk       │ enabled  │
+│ 178 │ gen-finalizer           │ default     │ 0.3.1   │ fork    │ 48177    │ 14m    │ 57   │ online    │ 9%       │ 268.8mb  │ kk       │ enabled  │
+│ 176 │ gen-image               │ default     │ 0.0.0   │ fork    │ 28750    │ 51m    │ 3    │ online    │ 6%       │ 186.0mb  │ kk       │ enabled  │
+│ 177 │ gen-video               │ default     │ 0.0.0   │ fork    │ 78279    │ 2h     │ 0    │ online    │ 8%       │ 170.6mb  │ kk       │ disabled │
+│ 179 │ main-event-consumer     │ default     │ 0.3.1   │ fork    │ 48176    │ 14m    │ 57   │ online    │ 7%       │ 224.9mb  │ kk       │ enabled  │
+│ 173 │ main-web                │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 172 │ pocket-tts              │ default     │ 0.3.1   │ fork    │ 78273    │ 2h     │ 0    │ online    │ 0%       │ 41.8mb   │ kk       │ enabled  │
+└─────┴─────────────────────────┴─────────────┴─────────┴─────────┴──────────┴────────┴──────┴───────────┴──────────┴──────────┴──────────┴──────────┘
+[PM2] Applying action stopProcessId on app [chat](ids: [ 175 ])
+[PM2] [chat](175) ✓
+┌─────┬─────────────────────────┬─────────────┬─────────┬─────────┬──────────┬────────┬──────┬───────────┬──────────┬──────────┬──────────┬──────────┐
+│ id  │ name                    │ namespace   │ version │ mode    │ pid      │ uptime │ ↺    │ status    │ cpu      │ mem      │ user     │ watching │
+├─────┼─────────────────────────┼─────────────┼─────────┼─────────┼──────────┼────────┼──────┼───────────┼──────────┼──────────┼──────────┼──────────┤
+│ 180 │ admin-command-worker    │ default     │ 0.3.1   │ fork    │ 48180    │ 14m    │ 57   │ online    │ 1%       │ 312.8mb  │ kk       │ enabled  │
+│ 174 │ admin-web               │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 175 │ chat                    │ default     │ 0.0.0   │ fork    │ 0        │ 0      │ 3    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 13  │ comfyui-image           │ default     │ 0.3.1   │ fork    │ 55766    │ 2D     │ 6    │ online    │ 0%       │ 28.6mb   │ kk       │ disabled │
+│ 12  │ comfyui-video           │ default     │ 0.3.1   │ fork    │ 9321     │ 5D     │ 10   │ online    │ 0%       │ 29.3mb   │ kk       │ disabled │
+│ 15  │ comfyui-video-h3        │ default     │ 0.3.1   │ fork    │ 9388     │ 5D     │ 6    │ online    │ 0%       │ 29.4mb   │ kk       │ disabled │
+│ 171 │ fish-audio              │ default     │ 0.3.1   │ fork    │ 78274    │ 2h     │ 0    │ online    │ 0%       │ 47.6mb   │ kk       │ enabled  │
+│ 178 │ gen-finalizer           │ default     │ 0.3.1   │ fork    │ 48177    │ 14m    │ 57   │ online    │ 0%       │ 268.8mb  │ kk       │ enabled  │
+│ 176 │ gen-image               │ default     │ 0.0.0   │ fork    │ 28750    │ 51m    │ 3    │ online    │ 0%       │ 186.0mb  │ kk       │ enabled  │
+│ 177 │ gen-video               │ default     │ 0.0.0   │ fork    │ 78279    │ 2h     │ 0    │ online    │ 1%       │ 170.6mb  │ kk       │ disabled │
+│ 179 │ main-event-consumer     │ default     │ 0.3.1   │ fork    │ 48176    │ 14m    │ 57   │ online    │ 0%       │ 224.9mb  │ kk       │ enabled  │
+│ 173 │ main-web                │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 172 │ pocket-tts              │ default     │ 0.3.1   │ fork    │ 78273    │ 2h     │ 0    │ online    │ 0%       │ 41.8mb   │ kk       │ enabled  │
+└─────┴─────────────────────────┴─────────────┴─────────┴─────────┴──────────┴────────┴──────┴───────────┴──────────┴──────────┴──────────┴──────────┘
+[PM2] Applying action stopProcessId on app [main-event-consumer](ids: [ 179 ])
+[PM2] [main-event-consumer](179) ✓
+┌─────┬─────────────────────────┬─────────────┬─────────┬─────────┬──────────┬────────┬──────┬───────────┬──────────┬──────────┬──────────┬──────────┐
+│ id  │ name                    │ namespace   │ version │ mode    │ pid      │ uptime │ ↺    │ status    │ cpu      │ mem      │ user     │ watching │
+├─────┼─────────────────────────┼─────────────┼─────────┼─────────┼──────────┼────────┼──────┼───────────┼──────────┼──────────┼──────────┼──────────┤
+│ 180 │ admin-command-worker    │ default     │ 0.3.1   │ fork    │ 48180    │ 14m    │ 57   │ online    │ 0%       │ 312.8mb  │ kk       │ enabled  │
+│ 174 │ admin-web               │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 175 │ chat                    │ default     │ 0.0.0   │ fork    │ 0        │ 0      │ 3    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 13  │ comfyui-image           │ default     │ 0.3.1   │ fork    │ 55766    │ 2D     │ 6    │ online    │ 0%       │ 28.6mb   │ kk       │ disabled │
+│ 12  │ comfyui-video           │ default     │ 0.3.1   │ fork    │ 9321     │ 5D     │ 10   │ online    │ 0%       │ 29.3mb   │ kk       │ disabled │
+│ 15  │ comfyui-video-h3        │ default     │ 0.3.1   │ fork    │ 9388     │ 5D     │ 6    │ online    │ 0%       │ 29.4mb   │ kk       │ disabled │
+│ 171 │ fish-audio              │ default     │ 0.3.1   │ fork    │ 78274    │ 2h     │ 0    │ online    │ 0%       │ 47.6mb   │ kk       │ enabled  │
+│ 178 │ gen-finalizer           │ default     │ 0.3.1   │ fork    │ 48177    │ 14m    │ 57   │ online    │ 0%       │ 268.8mb  │ kk       │ enabled  │
+│ 176 │ gen-image               │ default     │ 0.0.0   │ fork    │ 28750    │ 51m    │ 3    │ online    │ 0%       │ 186.0mb  │ kk       │ enabled  │
+│ 177 │ gen-video               │ default     │ 0.0.0   │ fork    │ 78279    │ 2h     │ 0    │ online    │ 0%       │ 170.6mb  │ kk       │ disabled │
+│ 179 │ main-event-consumer     │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 57   │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 173 │ main-web                │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 172 │ pocket-tts              │ default     │ 0.3.1   │ fork    │ 78273    │ 2h     │ 0    │ online    │ 0%       │ 41.8mb   │ kk       │ enabled  │
+└─────┴─────────────────────────┴─────────────┴─────────┴─────────┴──────────┴────────┴──────┴───────────┴──────────┴──────────┴──────────┴──────────┘
+[PM2] Applying action stopProcessId on app [admin-command-worker](ids: [ 180 ])
+[PM2] [admin-command-worker](180) ✓
+┌─────┬─────────────────────────┬─────────────┬─────────┬─────────┬──────────┬────────┬──────┬───────────┬──────────┬──────────┬──────────┬──────────┐
+│ id  │ name                    │ namespace   │ version │ mode    │ pid      │ uptime │ ↺    │ status    │ cpu      │ mem      │ user     │ watching │
+├─────┼─────────────────────────┼─────────────┼─────────┼─────────┼──────────┼────────┼──────┼───────────┼──────────┼──────────┼──────────┼──────────┤
+│ 180 │ admin-command-worker    │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 57   │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 174 │ admin-web               │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 175 │ chat                    │ default     │ 0.0.0   │ fork    │ 0        │ 0      │ 3    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 13  │ comfyui-image           │ default     │ 0.3.1   │ fork    │ 55766    │ 2D     │ 6    │ online    │ 0%       │ 28.6mb   │ kk       │ disabled │
+│ 12  │ comfyui-video           │ default     │ 0.3.1   │ fork    │ 9321     │ 5D     │ 10   │ online    │ 0%       │ 29.3mb   │ kk       │ disabled │
+│ 15  │ comfyui-video-h3        │ default     │ 0.3.1   │ fork    │ 9388     │ 5D     │ 6    │ online    │ 0%       │ 29.4mb   │ kk       │ disabled │
+│ 171 │ fish-audio              │ default     │ 0.3.1   │ fork    │ 78274    │ 2h     │ 0    │ online    │ 0%       │ 47.6mb   │ kk       │ enabled  │
+│ 178 │ gen-finalizer           │ default     │ 0.3.1   │ fork    │ 48177    │ 14m    │ 57   │ online    │ 0%       │ 268.8mb  │ kk       │ enabled  │
+│ 176 │ gen-image               │ default     │ 0.0.0   │ fork    │ 28750    │ 51m    │ 3    │ online    │ 0%       │ 186.0mb  │ kk       │ enabled  │
+│ 177 │ gen-video               │ default     │ 0.0.0   │ fork    │ 78279    │ 2h     │ 0    │ online    │ 0%       │ 170.6mb  │ kk       │ disabled │
+│ 179 │ main-event-consumer     │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 57   │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 173 │ main-web                │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 172 │ pocket-tts              │ default     │ 0.3.1   │ fork    │ 78273    │ 2h     │ 0    │ online    │ 0%       │ 41.8mb   │ kk       │ enabled  │
+└─────┴─────────────────────────┴─────────────┴─────────┴─────────┴──────────┴────────┴──────┴───────────┴──────────┴──────────┴──────────┴──────────┘
+[PM2] Applying action stopProcessId on app [gen-image](ids: [ 176 ])
+[PM2] [gen-image](176) ✓
+┌─────┬─────────────────────────┬─────────────┬─────────┬─────────┬──────────┬────────┬──────┬───────────┬──────────┬──────────┬──────────┬──────────┐
+│ id  │ name                    │ namespace   │ version │ mode    │ pid      │ uptime │ ↺    │ status    │ cpu      │ mem      │ user     │ watching │
+├─────┼─────────────────────────┼─────────────┼─────────┼─────────┼──────────┼────────┼──────┼───────────┼──────────┼──────────┼──────────┼──────────┤
+│ 180 │ admin-command-worker    │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 57   │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 174 │ admin-web               │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 175 │ chat                    │ default     │ 0.0.0   │ fork    │ 0        │ 0      │ 3    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 13  │ comfyui-image           │ default     │ 0.3.1   │ fork    │ 55766    │ 2D     │ 6    │ online    │ 0%       │ 28.6mb   │ kk       │ disabled │
+│ 12  │ comfyui-video           │ default     │ 0.3.1   │ fork    │ 9321     │ 5D     │ 10   │ online    │ 0%       │ 29.3mb   │ kk       │ disabled │
+│ 15  │ comfyui-video-h3        │ default     │ 0.3.1   │ fork    │ 9388     │ 5D     │ 6    │ online    │ 0%       │ 29.4mb   │ kk       │ disabled │
+│ 171 │ fish-audio              │ default     │ 0.3.1   │ fork    │ 78274    │ 2h     │ 0    │ online    │ 0%       │ 47.6mb   │ kk       │ enabled  │
+│ 178 │ gen-finalizer           │ default     │ 0.3.1   │ fork    │ 48177    │ 14m    │ 57   │ online    │ 0%       │ 268.8mb  │ kk       │ enabled  │
+│ 176 │ gen-image               │ default     │ 0.0.0   │ fork    │ 0        │ 0      │ 3    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 177 │ gen-video               │ default     │ 0.0.0   │ fork    │ 78279    │ 2h     │ 0    │ online    │ 0%       │ 170.6mb  │ kk       │ disabled │
+│ 179 │ main-event-consumer     │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 57   │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 173 │ main-web                │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 172 │ pocket-tts              │ default     │ 0.3.1   │ fork    │ 78273    │ 2h     │ 0    │ online    │ 0%       │ 41.8mb   │ kk       │ enabled  │
+└─────┴─────────────────────────┴─────────────┴─────────┴─────────┴──────────┴────────┴──────┴───────────┴──────────┴──────────┴──────────┴──────────┘
+[PM2] Applying action stopProcessId on app [gen-video](ids: [ 177 ])
+[PM2] [gen-video](177) ✓
+┌─────┬─────────────────────────┬─────────────┬─────────┬─────────┬──────────┬────────┬──────┬───────────┬──────────┬──────────┬──────────┬──────────┐
+│ id  │ name                    │ namespace   │ version │ mode    │ pid      │ uptime │ ↺    │ status    │ cpu      │ mem      │ user     │ watching │
+├─────┼─────────────────────────┼─────────────┼─────────┼─────────┼──────────┼────────┼──────┼───────────┼──────────┼──────────┼──────────┼──────────┤
+│ 180 │ admin-command-worker    │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 57   │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 174 │ admin-web               │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 175 │ chat                    │ default     │ 0.0.0   │ fork    │ 0        │ 0      │ 3    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 13  │ comfyui-image           │ default     │ 0.3.1   │ fork    │ 55766    │ 2D     │ 6    │ online    │ 0%       │ 28.6mb   │ kk       │ disabled │
+│ 12  │ comfyui-video           │ default     │ 0.3.1   │ fork    │ 9321     │ 5D     │ 10   │ online    │ 0%       │ 29.3mb   │ kk       │ disabled │
+│ 15  │ comfyui-video-h3        │ default     │ 0.3.1   │ fork    │ 9388     │ 5D     │ 6    │ online    │ 0%       │ 29.4mb   │ kk       │ disabled │
+│ 171 │ fish-audio              │ default     │ 0.3.1   │ fork    │ 78274    │ 2h     │ 0    │ online    │ 0%       │ 47.6mb   │ kk       │ enabled  │
+│ 178 │ gen-finalizer           │ default     │ 0.3.1   │ fork    │ 48177    │ 14m    │ 57   │ online    │ 0%       │ 268.8mb  │ kk       │ enabled  │
+│ 176 │ gen-image               │ default     │ 0.0.0   │ fork    │ 0        │ 0      │ 3    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 177 │ gen-video               │ default     │ 0.0.0   │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 179 │ main-event-consumer     │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 57   │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 173 │ main-web                │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 172 │ pocket-tts              │ default     │ 0.3.1   │ fork    │ 78273    │ 2h     │ 0    │ online    │ 0%       │ 41.8mb   │ kk       │ enabled  │
+└─────┴─────────────────────────┴─────────────┴─────────┴─────────┴──────────┴────────┴──────┴───────────┴──────────┴──────────┴──────────┴──────────┘
+[PM2] Applying action stopProcessId on app [gen-finalizer](ids: [ 178 ])
+[PM2] [gen-finalizer](178) ✓
+┌─────┬─────────────────────────┬─────────────┬─────────┬─────────┬──────────┬────────┬──────┬───────────┬──────────┬──────────┬──────────┬──────────┐
+│ id  │ name                    │ namespace   │ version │ mode    │ pid      │ uptime │ ↺    │ status    │ cpu      │ mem      │ user     │ watching │
+├─────┼─────────────────────────┼─────────────┼─────────┼─────────┼──────────┼────────┼──────┼───────────┼──────────┼──────────┼──────────┼──────────┤
+│ 180 │ admin-command-worker    │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 57   │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 174 │ admin-web               │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 175 │ chat                    │ default     │ 0.0.0   │ fork    │ 0        │ 0      │ 3    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 13  │ comfyui-image           │ default     │ 0.3.1   │ fork    │ 55766    │ 2D     │ 6    │ online    │ 0%       │ 28.6mb   │ kk       │ disabled │
+│ 12  │ comfyui-video           │ default     │ 0.3.1   │ fork    │ 9321     │ 5D     │ 10   │ online    │ 0%       │ 29.3mb   │ kk       │ disabled │
+│ 15  │ comfyui-video-h3        │ default     │ 0.3.1   │ fork    │ 9388     │ 5D     │ 6    │ online    │ 0%       │ 29.4mb   │ kk       │ disabled │
+│ 171 │ fish-audio              │ default     │ 0.3.1   │ fork    │ 78274    │ 2h     │ 0    │ online    │ 0%       │ 47.6mb   │ kk       │ enabled  │
+│ 178 │ gen-finalizer           │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 57   │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 176 │ gen-image               │ default     │ 0.0.0   │ fork    │ 0        │ 0      │ 3    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 177 │ gen-video               │ default     │ 0.0.0   │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 179 │ main-event-consumer     │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 57   │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 173 │ main-web                │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 172 │ pocket-tts              │ default     │ 0.3.1   │ fork    │ 78273    │ 2h     │ 0    │ online    │ 0%       │ 41.8mb   │ kk       │ enabled  │
+└─────┴─────────────────────────┴─────────────┴─────────┴─────────┴──────────┴────────┴──────┴───────────┴──────────┴──────────┴──────────┴──────────┘
+{
+  "mode": "quiescent",
+  "ok": true,
+  "expected": {
+    "image": 0,
+    "video": 0
+  },
+  "image": {
+    "ok": true,
+    "expected": 0,
+    "pm2Live": [],
+    "groups": [],
+    "redis": [],
+    "targetRedisDb": 0,
+    "invalidRedisWorkers": 0,
+    "issues": []
+  },
+  "video": {
+    "ok": true,
+    "expected": 0,
+    "pm2Live": [],
+    "groups": [],
+    "redis": [],
+    "targetRedisDb": 0,
+    "invalidRedisWorkers": 0,
+    "issues": []
+  },
+  "issues": []
+}
+$ bun src/scripts/check-generation-dispatch-cutover.ts
+{
+  "ok": true,
+  "activeRequests": 0,
+  "inFlightBullRows": 0,
+  "pendingTerminalOutboxes": 0,
+  "ignoredHistory": [
+    {
+      "queue": "ai.video.generate",
+      "bullJobId": "dedupe_Z2VuZXJhdGlvbjpjbXMwZXlkYncwMDFnbW1sN3p4aDQyaXoz"
+    }
+  ],
+  "issues": []
+}
+[PM2] Applying action deleteProcessId on app [fish-audio](ids: [ 171 ])
+[PM2] [fish-audio](171) ✓
+┌─────┬─────────────────────────┬─────────────┬─────────┬─────────┬──────────┬────────┬──────┬───────────┬──────────┬──────────┬──────────┬──────────┐
+│ id  │ name                    │ namespace   │ version │ mode    │ pid      │ uptime │ ↺    │ status    │ cpu      │ mem      │ user     │ watching │
+├─────┼─────────────────────────┼─────────────┼─────────┼─────────┼──────────┼────────┼──────┼───────────┼──────────┼──────────┼──────────┼──────────┤
+│ 180 │ admin-command-worker    │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 57   │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 174 │ admin-web               │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 175 │ chat                    │ default     │ 0.0.0   │ fork    │ 0        │ 0      │ 3    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 13  │ comfyui-image           │ default     │ 0.3.1   │ fork    │ 55766    │ 2D     │ 6    │ online    │ 0%       │ 28.6mb   │ kk       │ disabled │
+│ 12  │ comfyui-video           │ default     │ 0.3.1   │ fork    │ 9321     │ 5D     │ 10   │ online    │ 0%       │ 29.3mb   │ kk       │ disabled │
+│ 15  │ comfyui-video-h3        │ default     │ 0.3.1   │ fork    │ 9388     │ 5D     │ 6    │ online    │ 0.5%     │ 29.4mb   │ kk       │ disabled │
+│ 178 │ gen-finalizer           │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 57   │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 176 │ gen-image               │ default     │ 0.0.0   │ fork    │ 0        │ 0      │ 3    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 177 │ gen-video               │ default     │ 0.0.0   │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 179 │ main-event-consumer     │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 57   │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 173 │ main-web                │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 172 │ pocket-tts              │ default     │ 0.3.1   │ fork    │ 78273    │ 2h     │ 0    │ online    │ 0.5%     │ 41.8mb   │ kk       │ enabled  │
+└─────┴─────────────────────────┴─────────────┴─────────┴─────────┴──────────┴────────┴──────┴───────────┴──────────┴──────────┴──────────┴──────────┘
+[PM2] Applying action deleteProcessId on app [main-web](ids: [ 173 ])
+[PM2] [main-web](173) ✓
+┌─────┬─────────────────────────┬─────────────┬─────────┬─────────┬──────────┬────────┬──────┬───────────┬──────────┬──────────┬──────────┬──────────┐
+│ id  │ name                    │ namespace   │ version │ mode    │ pid      │ uptime │ ↺    │ status    │ cpu      │ mem      │ user     │ watching │
+├─────┼─────────────────────────┼─────────────┼─────────┼─────────┼──────────┼────────┼──────┼───────────┼──────────┼──────────┼──────────┼──────────┤
+│ 180 │ admin-command-worker    │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 57   │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 174 │ admin-web               │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 175 │ chat                    │ default     │ 0.0.0   │ fork    │ 0        │ 0      │ 3    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 13  │ comfyui-image           │ default     │ 0.3.1   │ fork    │ 55766    │ 2D     │ 6    │ online    │ 0%       │ 28.6mb   │ kk       │ disabled │
+│ 12  │ comfyui-video           │ default     │ 0.3.1   │ fork    │ 9321     │ 5D     │ 10   │ online    │ 0%       │ 29.3mb   │ kk       │ disabled │
+│ 15  │ comfyui-video-h3        │ default     │ 0.3.1   │ fork    │ 9388     │ 5D     │ 6    │ online    │ 0%       │ 29.4mb   │ kk       │ disabled │
+│ 178 │ gen-finalizer           │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 57   │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 176 │ gen-image               │ default     │ 0.0.0   │ fork    │ 0        │ 0      │ 3    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 177 │ gen-video               │ default     │ 0.0.0   │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 179 │ main-event-consumer     │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 57   │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 172 │ pocket-tts              │ default     │ 0.3.1   │ fork    │ 78273    │ 2h     │ 0    │ online    │ 0%       │ 41.8mb   │ kk       │ enabled  │
+└─────┴─────────────────────────┴─────────────┴─────────┴─────────┴──────────┴────────┴──────┴───────────┴──────────┴──────────┴──────────┴──────────┘
+[PM2] Applying action deleteProcessId on app [admin-web](ids: [ 174 ])
+[PM2] [admin-web](174) ✓
+┌─────┬─────────────────────────┬─────────────┬─────────┬─────────┬──────────┬────────┬──────┬───────────┬──────────┬──────────┬──────────┬──────────┐
+│ id  │ name                    │ namespace   │ version │ mode    │ pid      │ uptime │ ↺    │ status    │ cpu      │ mem      │ user     │ watching │
+├─────┼─────────────────────────┼─────────────┼─────────┼─────────┼──────────┼────────┼──────┼───────────┼──────────┼──────────┼──────────┼──────────┤
+│ 180 │ admin-command-worker    │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 57   │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 175 │ chat                    │ default     │ 0.0.0   │ fork    │ 0        │ 0      │ 3    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 13  │ comfyui-image           │ default     │ 0.3.1   │ fork    │ 55766    │ 2D     │ 6    │ online    │ 0%       │ 28.6mb   │ kk       │ disabled │
+│ 12  │ comfyui-video           │ default     │ 0.3.1   │ fork    │ 9321     │ 5D     │ 10   │ online    │ 0%       │ 29.3mb   │ kk       │ disabled │
+│ 15  │ comfyui-video-h3        │ default     │ 0.3.1   │ fork    │ 9388     │ 5D     │ 6    │ online    │ 0%       │ 29.4mb   │ kk       │ disabled │
+│ 178 │ gen-finalizer           │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 57   │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 176 │ gen-image               │ default     │ 0.0.0   │ fork    │ 0        │ 0      │ 3    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 177 │ gen-video               │ default     │ 0.0.0   │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 179 │ main-event-consumer     │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 57   │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 172 │ pocket-tts              │ default     │ 0.3.1   │ fork    │ 78273    │ 2h     │ 0    │ online    │ 0%       │ 41.8mb   │ kk       │ enabled  │
+└─────┴─────────────────────────┴─────────────┴─────────┴─────────┴──────────┴────────┴──────┴───────────┴──────────┴──────────┴──────────┴──────────┘
+[PM2] Applying action deleteProcessId on app [chat](ids: [ 175 ])
+[PM2] [chat](175) ✓
+┌─────┬─────────────────────────┬─────────────┬─────────┬─────────┬──────────┬────────┬──────┬───────────┬──────────┬──────────┬──────────┬──────────┐
+│ id  │ name                    │ namespace   │ version │ mode    │ pid      │ uptime │ ↺    │ status    │ cpu      │ mem      │ user     │ watching │
+├─────┼─────────────────────────┼─────────────┼─────────┼─────────┼──────────┼────────┼──────┼───────────┼──────────┼──────────┼──────────┼──────────┤
+│ 180 │ admin-command-worker    │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 57   │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 13  │ comfyui-image           │ default     │ 0.3.1   │ fork    │ 55766    │ 2D     │ 6    │ online    │ 0%       │ 28.6mb   │ kk       │ disabled │
+│ 12  │ comfyui-video           │ default     │ 0.3.1   │ fork    │ 9321     │ 5D     │ 10   │ online    │ 0%       │ 29.3mb   │ kk       │ disabled │
+│ 15  │ comfyui-video-h3        │ default     │ 0.3.1   │ fork    │ 9388     │ 5D     │ 6    │ online    │ 0%       │ 29.4mb   │ kk       │ disabled │
+│ 178 │ gen-finalizer           │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 57   │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 176 │ gen-image               │ default     │ 0.0.0   │ fork    │ 0        │ 0      │ 3    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 177 │ gen-video               │ default     │ 0.0.0   │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 179 │ main-event-consumer     │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 57   │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 172 │ pocket-tts              │ default     │ 0.3.1   │ fork    │ 78273    │ 2h     │ 0    │ online    │ 0%       │ 41.8mb   │ kk       │ enabled  │
+└─────┴─────────────────────────┴─────────────┴─────────┴─────────┴──────────┴────────┴──────┴───────────┴──────────┴──────────┴──────────┴──────────┘
+[PM2] Applying action deleteProcessId on app [main-event-consumer](ids: [ 179 ])
+[PM2] [main-event-consumer](179) ✓
+┌─────┬─────────────────────────┬─────────────┬─────────┬─────────┬──────────┬────────┬──────┬───────────┬──────────┬──────────┬──────────┬──────────┐
+│ id  │ name                    │ namespace   │ version │ mode    │ pid      │ uptime │ ↺    │ status    │ cpu      │ mem      │ user     │ watching │
+├─────┼─────────────────────────┼─────────────┼─────────┼─────────┼──────────┼────────┼──────┼───────────┼──────────┼──────────┼──────────┼──────────┤
+│ 180 │ admin-command-worker    │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 57   │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 13  │ comfyui-image           │ default     │ 0.3.1   │ fork    │ 55766    │ 2D     │ 6    │ online    │ 0%       │ 28.6mb   │ kk       │ disabled │
+│ 12  │ comfyui-video           │ default     │ 0.3.1   │ fork    │ 9321     │ 5D     │ 10   │ online    │ 0%       │ 29.3mb   │ kk       │ disabled │
+│ 15  │ comfyui-video-h3        │ default     │ 0.3.1   │ fork    │ 9388     │ 5D     │ 6    │ online    │ 0%       │ 29.4mb   │ kk       │ disabled │
+│ 178 │ gen-finalizer           │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 57   │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 176 │ gen-image               │ default     │ 0.0.0   │ fork    │ 0        │ 0      │ 3    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 177 │ gen-video               │ default     │ 0.0.0   │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 172 │ pocket-tts              │ default     │ 0.3.1   │ fork    │ 78273    │ 2h     │ 0    │ online    │ 0%       │ 41.8mb   │ kk       │ enabled  │
+└─────┴─────────────────────────┴─────────────┴─────────┴─────────┴──────────┴────────┴──────┴───────────┴──────────┴──────────┴──────────┴──────────┘
+[PM2] Applying action deleteProcessId on app [admin-command-worker](ids: [ 180 ])
+[PM2] [admin-command-worker](180) ✓
+┌─────┬─────────────────────┬─────────────┬─────────┬─────────┬──────────┬────────┬──────┬───────────┬──────────┬──────────┬──────────┬──────────┐
+│ id  │ name                │ namespace   │ version │ mode    │ pid      │ uptime │ ↺    │ status    │ cpu      │ mem      │ user     │ watching │
+├─────┼─────────────────────┼─────────────┼─────────┼─────────┼──────────┼────────┼──────┼───────────┼──────────┼──────────┼──────────┼──────────┤
+│ 13  │ comfyui-image       │ default     │ 0.3.1   │ fork    │ 55766    │ 2D     │ 6    │ online    │ 0%       │ 28.6mb   │ kk       │ disabled │
+│ 12  │ comfyui-video       │ default     │ 0.3.1   │ fork    │ 9321     │ 5D     │ 10   │ online    │ 0%       │ 29.3mb   │ kk       │ disabled │
+│ 15  │ comfyui-video-h3    │ default     │ 0.3.1   │ fork    │ 9388     │ 5D     │ 6    │ online    │ 0%       │ 29.4mb   │ kk       │ disabled │
+│ 178 │ gen-finalizer       │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 57   │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 176 │ gen-image           │ default     │ 0.0.0   │ fork    │ 0        │ 0      │ 3    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 177 │ gen-video           │ default     │ 0.0.0   │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 172 │ pocket-tts          │ default     │ 0.3.1   │ fork    │ 78273    │ 2h     │ 0    │ online    │ 0%       │ 41.8mb   │ kk       │ enabled  │
+└─────┴─────────────────────┴─────────────┴─────────┴─────────┴──────────┴────────┴──────┴───────────┴──────────┴──────────┴──────────┴──────────┘
+[PM2] Applying action deleteProcessId on app [gen-image](ids: [ 176 ])
+[PM2] [gen-image](176) ✓
+┌─────┬─────────────────────┬─────────────┬─────────┬─────────┬──────────┬────────┬──────┬───────────┬──────────┬──────────┬──────────┬──────────┐
+│ id  │ name                │ namespace   │ version │ mode    │ pid      │ uptime │ ↺    │ status    │ cpu      │ mem      │ user     │ watching │
+├─────┼─────────────────────┼─────────────┼─────────┼─────────┼──────────┼────────┼──────┼───────────┼──────────┼──────────┼──────────┼──────────┤
+│ 13  │ comfyui-image       │ default     │ 0.3.1   │ fork    │ 55766    │ 2D     │ 6    │ online    │ 0%       │ 28.6mb   │ kk       │ disabled │
+│ 12  │ comfyui-video       │ default     │ 0.3.1   │ fork    │ 9321     │ 5D     │ 10   │ online    │ 0%       │ 29.3mb   │ kk       │ disabled │
+│ 15  │ comfyui-video-h3    │ default     │ 0.3.1   │ fork    │ 9388     │ 5D     │ 6    │ online    │ 0%       │ 29.4mb   │ kk       │ disabled │
+│ 178 │ gen-finalizer       │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 57   │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 177 │ gen-video           │ default     │ 0.0.0   │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 172 │ pocket-tts          │ default     │ 0.3.1   │ fork    │ 78273    │ 2h     │ 0    │ online    │ 0%       │ 41.8mb   │ kk       │ enabled  │
+└─────┴─────────────────────┴─────────────┴─────────┴─────────┴──────────┴────────┴──────┴───────────┴──────────┴──────────┴──────────┴──────────┘
+[PM2] Applying action deleteProcessId on app [gen-video](ids: [ 177 ])
+[PM2] [gen-video](177) ✓
+┌─────┬─────────────────────┬─────────────┬─────────┬─────────┬──────────┬────────┬──────┬───────────┬──────────┬──────────┬──────────┬──────────┐
+│ id  │ name                │ namespace   │ version │ mode    │ pid      │ uptime │ ↺    │ status    │ cpu      │ mem      │ user     │ watching │
+├─────┼─────────────────────┼─────────────┼─────────┼─────────┼──────────┼────────┼──────┼───────────┼──────────┼──────────┼──────────┼──────────┤
+│ 13  │ comfyui-image       │ default     │ 0.3.1   │ fork    │ 55766    │ 2D     │ 6    │ online    │ 0%       │ 28.6mb   │ kk       │ disabled │
+│ 12  │ comfyui-video       │ default     │ 0.3.1   │ fork    │ 9321     │ 5D     │ 10   │ online    │ 0%       │ 29.3mb   │ kk       │ disabled │
+│ 15  │ comfyui-video-h3    │ default     │ 0.3.1   │ fork    │ 9388     │ 5D     │ 6    │ online    │ 0%       │ 29.4mb   │ kk       │ disabled │
+│ 178 │ gen-finalizer       │ default     │ 0.3.1   │ fork    │ 0        │ 0      │ 57   │ stopped   │ 0%       │ 0b       │ kk       │ disabled │
+│ 172 │ pocket-tts          │ default     │ 0.3.1   │ fork    │ 78273    │ 2h     │ 0    │ online    │ 0%       │ 41.8mb   │ kk       │ enabled  │
+└─────┴─────────────────────┴─────────────┴─────────┴─────────┴──────────┴────────┴──────┴───────────┴──────────┴──────────┴──────────┴──────────┘
+[PM2] Applying action deleteProcessId on app [gen-finalizer](ids: [ 178 ])
+[PM2] [gen-finalizer](178) ✓
+┌─────┬─────────────────────┬─────────────┬─────────┬─────────┬──────────┬────────┬──────┬───────────┬──────────┬──────────┬──────────┬──────────┐
+│ id  │ name                │ namespace   │ version │ mode    │ pid      │ uptime │ ↺    │ status    │ cpu      │ mem      │ user     │ watching │
+├─────┼─────────────────────┼─────────────┼─────────┼─────────┼──────────┼────────┼──────┼───────────┼──────────┼──────────┼──────────┼──────────┤
+│ 13  │ comfyui-image       │ default     │ 0.3.1   │ fork    │ 55766    │ 2D     │ 6    │ online    │ 0%       │ 28.6mb   │ kk       │ disabled │
+│ 12  │ comfyui-video       │ default     │ 0.3.1   │ fork    │ 9321     │ 5D     │ 10   │ online    │ 0%       │ 29.3mb   │ kk       │ disabled │
+│ 15  │ comfyui-video-h3    │ default     │ 0.3.1   │ fork    │ 9388     │ 5D     │ 6    │ online    │ 0%       │ 29.4mb   │ kk       │ disabled │
+│ 172 │ pocket-tts          │ default     │ 0.3.1   │ fork    │ 78273    │ 2h     │ 0    │ online    │ 0%       │ 41.8mb   │ kk       │ enabled  │
+└─────┴─────────────────────┴─────────────┴─────────┴─────────┴──────────┴────────┴──────┴───────────┴──────────┴──────────┴──────────┴──────────┘
+[PM2][WARN] Applications fish-audio, pocket-tts, main-web, admin-web, chat, gen-image, gen-video, gen-finalizer, main-event-consumer, admin-command-worker not running, starting...
+[PM2] App [pocket-tts] launched (1 instances)
+[PM2] App [fish-audio] launched (1 instances)
+[PM2] App [main-web] launched (1 instances)
+[PM2] App [admin-web] launched (1 instances)
+[PM2] App [chat] launched (1 instances)
+[PM2] App [gen-image] launched (1 instances)
+[PM2] App [gen-video] launched (1 instances)
+[PM2] App [gen-finalizer] launched (1 instances)
+[PM2] App [main-event-consumer] launched (1 instances)
+[PM2] App [admin-command-worker] launched (1 instances)
+┌─────┬─────────────────────────┬─────────────┬─────────┬─────────┬──────────┬────────┬──────┬───────────┬──────────┬──────────┬──────────┬──────────┐
+│ id  │ name                    │ namespace   │ version │ mode    │ pid      │ uptime │ ↺    │ status    │ cpu      │ mem      │ user     │ watching │
+├─────┼─────────────────────────┼─────────────┼─────────┼─────────┼──────────┼────────┼──────┼───────────┼──────────┼──────────┼──────────┼──────────┤
+│ 190 │ admin-command-worker    │ default     │ 0.3.1   │ fork    │ 51602    │ 0s     │ 0    │ online    │ 0%       │ 15.8mb   │ kk       │ enabled  │
+│ 184 │ admin-web               │ default     │ 0.3.1   │ fork    │ 51596    │ 0s     │ 0    │ online    │ 0%       │ 33.1mb   │ kk       │ disabled │
+│ 185 │ chat                    │ default     │ 0.0.0   │ fork    │ 51597    │ 0s     │ 0    │ online    │ 0%       │ 32.6mb   │ kk       │ enabled  │
+│ 13  │ comfyui-image           │ default     │ 0.3.1   │ fork    │ 55766    │ 2D     │ 6    │ online    │ 0%       │ 28.6mb   │ kk       │ disabled │
+│ 12  │ comfyui-video           │ default     │ 0.3.1   │ fork    │ 9321     │ 5D     │ 10   │ online    │ 0%       │ 29.3mb   │ kk       │ disabled │
+│ 15  │ comfyui-video-h3        │ default     │ 0.3.1   │ fork    │ 9388     │ 5D     │ 6    │ online    │ 0%       │ 29.4mb   │ kk       │ disabled │
+│ 181 │ fish-audio              │ default     │ 0.3.1   │ fork    │ 51594    │ 0s     │ 0    │ online    │ 0%       │ 33.2mb   │ kk       │ enabled  │
+│ 188 │ gen-finalizer           │ default     │ 0.3.1   │ fork    │ 51600    │ 0s     │ 0    │ online    │ 0%       │ 24.7mb   │ kk       │ enabled  │
+│ 186 │ gen-image               │ default     │ 0.0.0   │ fork    │ 51598    │ 0s     │ 0    │ online    │ 0%       │ 32.2mb   │ kk       │ enabled  │
+│ 187 │ gen-video               │ default     │ 0.0.0   │ fork    │ 51599    │ 0s     │ 0    │ online    │ 0%       │ 32.3mb   │ kk       │ disabled │
+│ 189 │ main-event-consumer     │ default     │ 0.3.1   │ fork    │ 51601    │ 0s     │ 0    │ online    │ 0%       │ 23.2mb   │ kk       │ enabled  │
+│ 183 │ main-web                │ default     │ 0.3.1   │ fork    │ 51595    │ 0s     │ 0    │ online    │ 0%       │ 32.3mb   │ kk       │ disabled │
+│ 182 │ pocket-tts              │ default     │ 0.3.1   │ fork    │ 51593    │ 0s     │ 0    │ online    │ 0%       │ 33.5mb   │ kk       │ enabled  │
+└─────┴─────────────────────────┴─────────────┴─────────┴─────────┴──────────┴────────┴──────┴───────────┴──────────┴──────────┴──────────┴──────────┘
+{
+  "mode": "ready",
+  "ok": true,
+  "expected": {
+    "image": 1,
+    "video": 1
+  },
+  "image": {
+    "ok": true,
+    "expected": 1,
+    "pm2Live": [
+      {
+        "pid": 51598,
+        "pmId": 186,
+        "slot": 0,
+        "status": "online"
+      }
+    ],
+    "groups": [
+      {
+        "rootPid": 51598,
+        "runtimePid": 51598,
+        "pgid": 51598,
+        "startedAt": "Sat Sep 5 05:34:35 2026",
+        "classification": "registered",
+        "slot": 0
+      }
+    ],
+    "redis": [
+      {
+        "identity": "idream.gen-image.v1.pm2-a00205a2-cd08-48c4-bb39-0d4cebd39715.0.51598",
+        "runId": "pm2-a00205a2-cd08-48c4-bb39-0d4cebd39715",
+        "slot": 0,
+        "pid": 51598,
+        "db": 0
+      }
+    ],
+    "targetRedisDb": 0,
+    "invalidRedisWorkers": 0,
+    "issues": []
+  },
+  "video": {
+    "ok": true,
+    "expected": 1,
+    "pm2Live": [
+      {
+        "pid": 51599,
+        "pmId": 187,
+        "slot": 0,
+        "status": "online"
+      }
+    ],
+    "groups": [
+      {
+        "rootPid": 51599,
+        "runtimePid": 51599,
+        "pgid": 51599,
+        "startedAt": "Sat Sep 5 05:34:35 2026",
+        "classification": "registered",
+        "slot": 0
+      }
+    ],
+    "redis": [
+      {
+        "identity": "idream.gen-video.v1.pm2-a00205a2-cd08-48c4-bb39-0d4cebd39715.0.51599",
+        "runId": "pm2-a00205a2-cd08-48c4-bb39-0d4cebd39715",
+        "slot": 0,
+        "pid": 51599,
+        "db": 0
+      }
+    ],
+    "targetRedisDb": 0,
+    "invalidRedisWorkers": 0,
+    "issues": []
+  },
+  "issues": []
+}
+$ bun src/scripts/control-generation-cutover-queues.ts resume
+{
+  "ok": true,
+  "queues": [
+    {
+      "queue": "ai.image.generate",
+      "paused": false
+    },
+    {
+      "queue": "ai.video.generate",
+      "paused": false
+    },
+    {
+      "queue": "app.generation.terminal.ingest",
+      "paused": false
+    },
+    {
+      "queue": "app.ai.finalize",
+      "paused": false
+    }
+  ]
+}

@@ -24,8 +24,8 @@ import {
 // SPEC: 用户把一个可见的 Character 复制成自己的私有副本。
 //
 // INVARIANT: 副本的身份图是**新的一行 MediaAsset**，只共享底层 blob（shared_immutable
-// locator），safetyStatus 重置为 unknown —— 复用源行的 `passed` 等于把审核权威跨 owner
-// 洗白。副本自身必须重新挣得审核结论。
+// locator）。基础自动检查属于同一份不可变 bytes，可继承 passed；拥有权、可见性和
+// 平台投放信息属于各自的资产行，不能随 blob 跨 owner 继承。
 
 export async function duplicateCharacterForUser(input: {
   readonly userId: string;
@@ -192,10 +192,9 @@ export async function duplicateCharacterForUser(input: {
           sourcePromptHash: sourceImageAsset.sourcePromptHash,
           prompt: sourceImageAsset.prompt,
           visibility: "private",
-          // A distinct asset must earn its own review decision. Reusing the
-          // source row's `passed`/platform approval would launder authority
-          // across owners even though the underlying bytes are shared.
-          safetyStatus: "unknown",
+          // The locked source was verified passed above, and no bytes change.
+          // Keep that automated result without creating a manual review record.
+          safetyStatus: sourceImageAsset.safetyStatus,
           metadata: toInputJson({
             ...retainedTechnicalMetadata,
             source: "character_duplicate",

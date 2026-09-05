@@ -1,22 +1,17 @@
 "use client";
 
 import {
-  CHARACTER_IDENTITY_APPROVAL_MIN_SCORE,
   characterVideoProductionRecipe,
-  creativeReviewDecisionRequestSchema,
   creativeRunCreateRequestSchema,
   type CharacterWorkspaceDetail,
-  type CreativeReviewDecisionRequest,
   type CreativeRun,
   type CreativeRunDetail,
 } from "@idream/shared/admin";
 import {
-  Check,
   ImageIcon,
   Loader2,
   RefreshCcw,
   Sparkles,
-  ThumbsDown,
   Video,
 } from "lucide-react";
 import Link from "next/link";
@@ -45,7 +40,6 @@ import { cn } from "@/lib/utils";
 type CharacterVideoPermissions = {
   readonly read: boolean;
   readonly create: boolean;
-  readonly review: boolean;
 };
 
 export type RunCommittedMutation = <T>(input: {
@@ -57,12 +51,6 @@ export type RunCommittedMutation = <T>(input: {
 type CharacterVideoCreateRequest = ReturnType<
   typeof creativeRunCreateRequestSchema.parse
 >;
-
-type CharacterVideoReviewSnapshot = {
-  readonly runId: string;
-  readonly itemId: string;
-  readonly body: CreativeReviewDecisionRequest;
-};
 
 type CharacterVideoSourceOption = {
   readonly assetId: string;
@@ -77,22 +65,6 @@ const adoptedSourceLabels = {
   character_hero: "Character hero",
   character_chat: "Chat moment",
 } as const;
-
-const reviewChecks = [
-  ["artifactFree", "No visible artifacts or flicker"],
-  ["singleSubject", "Exactly one intended subject"],
-  ["intentMatch", "Motion matches the brief"],
-  ["noVisibleText", "No unintended visible text"],
-] as const;
-
-type ReviewQuality = Record<(typeof reviewChecks)[number][0], boolean>;
-
-const emptyReviewQuality = (): ReviewQuality => ({
-  artifactFree: false,
-  singleSubject: false,
-  intentMatch: false,
-  noVisibleText: false,
-});
 
 export function characterVideoSourceOptions(
   data: Pick<CharacterWorkspaceDetail, "project" | "visual">,
@@ -142,10 +114,11 @@ function videoExecutionLabel(item: CreativeRunDetail["items"][number] | null) {
   return {
     dispatching: "Preparing video generation",
     provider_queued: "Waiting for video capacity",
-    generating: "Generating video",
+    generating: "Video request in progress",
     finalizing: "Saving generated video",
     ready: "Video ready",
     failed: "Video generation failed",
+    unknown: "Generation outcome needs confirmation",
   }[item.executionState];
 }
 
@@ -167,10 +140,6 @@ export function characterVideoProgress(input: {
     stage: videoExecutionLabel(input.item as CreativeRunDetail["items"][number] | null),
     elapsedMs,
     estimatedDurationMs,
-    estimatedRemainingMs:
-      estimatedDurationMs === null
-        ? null
-        : Math.max(0, estimatedDurationMs - elapsedMs),
     longerThanExpected:
       estimatedDurationMs !== null && elapsedMs > estimatedDurationMs * 1.25,
   };
@@ -190,10 +159,6 @@ function createRequestSignature(
   return JSON.stringify({ characterId, body });
 }
 
-function reviewRequestSignature(snapshot: CharacterVideoReviewSnapshot) {
-  return JSON.stringify(snapshot);
-}
-
 function savedCreateRequest(
   intent: DurableMutationIntent,
   characterId: string,
@@ -211,18 +176,6 @@ function savedCreateRequest(
     return null;
   }
   return parsed.data;
-}
-
-function savedReviewSnapshot(value: unknown): CharacterVideoReviewSnapshot | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const snapshot = value as Record<string, unknown>;
-  if (typeof snapshot.runId !== "string" || typeof snapshot.itemId !== "string") {
-    return null;
-  }
-  const body = creativeReviewDecisionRequestSchema.safeParse(snapshot.body);
-  return body.success
-    ? { runId: snapshot.runId, itemId: snapshot.itemId, body: body.data }
-    : null;
 }
 
 function createdRunProjectionMatches(
@@ -316,7 +269,6 @@ export function CharacterVideoStudio({
   onCreateImage,
   onProjectReload,
   permissions,
-  productionOnly = false,
   runCommittedMutation,
 }: {
   readonly actorId: string;
@@ -324,14 +276,11 @@ export function CharacterVideoStudio({
   readonly onCreateImage: () => void;
   readonly onProjectReload?: () => Promise<void>;
   readonly permissions: CharacterVideoPermissions;
-  readonly productionOnly?: boolean;
   readonly runCommittedMutation: RunCommittedMutation;
 }) {
   const { locale, t } = useAdminI18n();
   const createIntentScope =
     `character-video:create:${actorId}:${data.character.id}`;
-  const reviewIntentScope =
-    `character-video:review:${actorId}:${data.character.id}`;
   const sources = useMemo(() => characterVideoSourceOptions(data), [data]);
   const [preferredSourceAssetId, setPreferredSourceAssetId] = useState(
     () => sources[0]?.assetId ?? "",
@@ -353,22 +302,13 @@ export function CharacterVideoStudio({
   //         "现在到底在看哪个 Run"没有单一出处。改成 id 驱动后，列表与详情各是一份
   //         只读投影，谁也写不了对方。
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
-  const [busy, setBusy] = useState<"create" | "review" | "refresh" | null>(null);
+  const [busy, setBusy] = useState<"create" | "refresh" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const [reviewQuality, setReviewQuality] =
-    useState<ReviewQuality>(emptyReviewQuality);
-  const [identityConsistency, setIdentityConsistency] =
-    useState<"passed" | "failed">("passed");
-  const [score, setScore] = useState("90");
-  const [reviewReason, setReviewReason] = useState("");
   const [progressNowMs, setProgressNowMs] = useState(0);
   const refreshedTerminalRunIds = useRef(new Set<string>());
   const [createIntent, setCreateIntent] = useState<DurableMutationIntent | null>(
     () => readActiveDurableMutationIntent({ scope: createIntentScope }),
-  );
-  const [reviewIntent, setReviewIntent] = useState<DurableMutationIntent | null>(
-    () => readActiveDurableMutationIntent({ scope: reviewIntentScope }),
   );
   const runList = useAuthorityResource({
     key: data.character.id,
@@ -390,10 +330,14 @@ export function CharacterVideoStudio({
       }
       return [...response.items];
     }, [data.character.id]),
+  }, {
+    pollWhile: ({ data: listed }) => listed?.some((run) => ["pending", "running"].includes(run.executionOutcome)) ? 5_000 : null,
   });
   const listedRuns = runList.data ?? EMPTY_VIDEO_RUNS;
   // SPEC: 没有显式选择时看最新一条。
-  const activeRunId = selectedRunId ?? listedRuns[0]?.id ?? null;
+  const activeRunId = selectedRunId ?? listedRuns.find((run) =>
+    ["pending", "running"].includes(run.executionOutcome)
+  )?.id ?? listedRuns[0]?.id ?? null;
 
   // INVARIANT: 详情必须是这个 Character 的视频 Run；不是就报错，不渲染别人的画面。
   const fetchRunDetail = useCallback(async (runId: string) => {
@@ -449,6 +393,9 @@ export function CharacterVideoStudio({
     selectedRun && !listedRuns.some((run) => run.id === selectedRun.id)
       ? [selectedRun, ...listedRuns]
       : listedRuns;
+  const videoRequestInProgress = runs.some((run) => ["pending", "running"].includes(
+    selectedRun?.id === run.id ? selectedRun.executionOutcome : run.executionOutcome,
+  ));
   // SPEC: loading 只表示"这一屏还没有可看的内容"，前台刷新不清空已有画面。
   const loading =
     (runList.loading && runList.data === null) ||
@@ -497,6 +444,7 @@ export function CharacterVideoStudio({
   };
 
   const createVideo = async () => {
+    if (!createIntent && videoRequestInProgress) return;
     if (!permissions.create || (!sourceAssetId && !createIntent)) return;
     setError(null);
     setMessage(null);
@@ -683,9 +631,9 @@ export function CharacterVideoStudio({
     setBusy("refresh");
     setError(null);
     try {
-      // SPEC: 有选中 Run 就只刷它，否则刷列表——列表刷完自然带出最新一条的详情。
-      if (activeRunId) await runDetail.refresh();
-      else await runList.refresh();
+      // The list also owns whether another video is still active, even while
+      // the operator is viewing a historical result.
+      await Promise.all([runList.refresh(), ...(activeRunId ? [runDetail.refresh()] : [])]);
       await onProjectReload?.();
     } catch {
       setError(VIDEO_LIBRARY_REFRESH_ERROR);
@@ -719,206 +667,7 @@ export function CharacterVideoStudio({
       : createIntent.status === "reconciliation_required"
         ? "Reconcile saved video request"
         : "Resume video creation"
-    : "Create video";
-  const reviewRecoveryLabel =
-    reviewIntent?.status === "committed_projection_pending"
-      ? "Verify saved review"
-      : reviewIntent?.status === "reconciliation_required"
-        ? "Reconcile saved review"
-        : "Resume saved review";
-  const numericScore = Number(score);
-  const approvalReady =
-    Object.values(reviewQuality).every(Boolean) &&
-    identityConsistency === "passed" &&
-    Number.isInteger(numericScore) &&
-    numericScore >= CHARACTER_IDENTITY_APPROVAL_MIN_SCORE &&
-    numericScore <= 100 &&
-    reviewReason.trim().length >= 3;
-  const rejectionReady = reviewReason.trim().length >= 3;
-
-  const verifySavedReview = async (
-    intent: DurableMutationIntent,
-    snapshot: CharacterVideoReviewSnapshot,
-  ) => {
-    const detail = await fetchRunDetail(snapshot.runId);
-    showRun(detail);
-    const projected = detail.items.some(
-      (item) =>
-        item.id === snapshot.itemId &&
-        item.review?.id === intent.committedTargetId,
-    );
-    if (!projected) {
-      throw new Error(
-        "The exact decision is not present on the latest video Run item yet.",
-      );
-    }
-    clearDurableMutationIntent(intent);
-    setReviewIntent(null);
-    setReviewQuality(emptyReviewQuality());
-    setReviewReason("");
-    setMessage(
-      snapshot.body.decision === "approved"
-        ? "Video approved for the Character video library. Nothing was published automatically."
-        : "Video rejected. The immutable decision remains in Run history.",
-    );
-    return detail;
-  };
-
-  const commitSavedReview = async (
-    intent: DurableMutationIntent,
-    snapshot: CharacterVideoReviewSnapshot,
-  ) => {
-    let currentIntent = intent;
-    try {
-      const mutation = await runCommittedMutation({
-        action: "Review Character video",
-        commit: async () => {
-          const result = await adminV2Operation(
-            "POST /api/v2/admin/creative/runs/:id/items/:itemId/decisions",
-            {
-              path: { id: snapshot.runId, itemId: snapshot.itemId },
-              idempotencyKey: currentIntent.idempotencyKey,
-              body: snapshot.body,
-            },
-          );
-          currentIntent = updateDurableMutationIntent(currentIntent, {
-            status: "committed_projection_pending",
-            committedTargetId: result.decisionId,
-          });
-          setReviewIntent(currentIntent);
-          return result;
-        },
-      });
-      void mutation;
-      await verifySavedReview(currentIntent, snapshot);
-    } catch (cause) {
-      if (currentIntent.status === "committed_projection_pending") {
-        setError(
-          cause instanceof Error
-            ? `The review was committed, but exact decision verification is pending: ${cause.message}`
-            : "The review was committed, but exact decision verification is pending.",
-        );
-      } else if (isDefinitiveMutationRejection(cause)) {
-        clearDurableMutationIntent(currentIntent);
-        setReviewIntent(null);
-        setError(cause.message);
-      } else {
-        currentIntent = updateDurableMutationIntent(currentIntent, {
-          status: "outcome_unknown",
-        });
-        setReviewIntent(currentIntent);
-        setError(
-          "Review outcome is unknown. Resume saved review to replay the exact decision with the same key.",
-        );
-      }
-    }
-  };
-
-  const resumeReview = async () => {
-    if (!permissions.review || !reviewIntent) return;
-    setBusy("review");
-    setError(null);
-    setMessage(null);
-    try {
-      let intent = reviewIntent;
-      let snapshot = savedReviewSnapshot(intent.requestSnapshot);
-      if (intent.status === "reconciliation_required" || !snapshot) {
-        const receipt = await reconcileDurableMutationIntent({
-          intent,
-          commandType: "creative.review.decision",
-        });
-        if (receipt.state === "cancelled") {
-          clearDurableMutationIntent(intent);
-          setReviewIntent(null);
-          setMessage(
-            "The old review request had no committed effect. A new decision is now safe.",
-          );
-          return;
-        }
-        if (
-          receipt.state !== "committed" ||
-          !receipt.committedTargetId ||
-          receipt.verification?.kind !== "creative_review_decision" ||
-          receipt.verification.decisionId !== receipt.committedTargetId
-        ) {
-          throw new Error(
-            `The saved review is ${receipt.state}. Keep its exact decision locked until a committed receipt is available.`,
-          );
-        }
-        snapshot = savedReviewSnapshot(receipt.verification.requestSnapshot);
-        if (!snapshot) {
-          throw new Error(
-            "The recovered review receipt is missing its exact Run item request.",
-          );
-        }
-        intent = updateDurableMutationIntent(intent, {
-          status: "committed_projection_pending",
-          committedTargetId: receipt.committedTargetId,
-          requestSnapshot: snapshot,
-        });
-        setReviewIntent(intent);
-      }
-      if (!snapshot) return;
-      if (intent.status === "committed_projection_pending") {
-        await verifySavedReview(intent, snapshot);
-      } else {
-        await commitSavedReview(intent, snapshot);
-      }
-    } catch (cause) {
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : "The saved video review could not be recovered",
-      );
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const reviewVideo = async (decision: "approved" | "rejected") => {
-    if (reviewIntent) {
-      await resumeReview();
-      return;
-    }
-    if (!permissions.review || !selectedRun || !selectedItem?.asset) return;
-    const body = creativeReviewDecisionRequestSchema.parse({
-      entityVersion: selectedRun.version,
-      ...(selectedItem.review
-        ? { supersedesDecisionId: selectedItem.review.id }
-        : {}),
-      decision,
-      identityConsistency,
-      ...(Number.isInteger(numericScore) ? { score: numericScore } : {}),
-      quality: reviewQuality,
-      reason: reviewReason.trim(),
-    });
-    const snapshot = {
-      runId: selectedRun.id,
-      itemId: selectedItem.id,
-      body,
-    } satisfies CharacterVideoReviewSnapshot;
-    const claim = await claimDurableMutationIntent({
-      scope: reviewIntentScope,
-      signature: reviewRequestSignature(snapshot),
-      requestSnapshot: snapshot,
-    });
-    setReviewIntent(claim.intent);
-    setBusy("review");
-    setError(null);
-    setMessage(null);
-    try {
-      if (claim.intent.signature !== reviewRequestSignature(snapshot)) {
-        setError(
-          "Another tab already started a different video review. Resume its exact saved decision first.",
-        );
-        return;
-      }
-      await commitSavedReview(claim.intent, snapshot);
-    } finally {
-      setBusy(null);
-    }
-  };
-
+    : videoRequestInProgress ? "Video request in progress" : "Create video";
   // SPEC: 写入失败优先，然后是详情取数失败（含轮询失败），最后才是列表失败。
   // INTENT: 三种失败原来共用一个 error，谁最后写谁显示。拆开之后要显式定一个次序：
   //         越靠近运营刚才那个动作的越先说。轮询失败当年就是红色报错，保持不变。
@@ -942,27 +691,6 @@ export function CharacterVideoStudio({
     <section aria-labelledby="character-video-title" className="space-y-5">
       {shownError ? <p className="rounded-lg bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">{t(shownError)}</p> : null}
       {message ? <p className="rounded-lg bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]" role="status">{t(message)}</p> : null}
-      {!productionOnly && reviewIntent ? (
-        <div
-          className="flex flex-col gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 text-sm sm:flex-row sm:items-center sm:justify-between"
-          role="status"
-        >
-          <span>
-            {t(
-              reviewIntent.status === "committed_projection_pending"
-                ? "A review receipt is committed. Verify its exact decision before another review."
-                : "A saved review must be resumed with its original request key before another review.",
-            )}
-          </span>
-          <WorkspaceButton
-            disabled={busy !== null || !permissions.review}
-            onClick={() => void resumeReview()}
-          >
-            {t(reviewRecoveryLabel)}
-          </WorkspaceButton>
-        </div>
-      ) : null}
-
       <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center justify-between gap-3 pb-3">
@@ -1009,14 +737,7 @@ export function CharacterVideoStudio({
                               })}`
                             : ""}
                         </p>
-                        {progress.estimatedRemainingMs !== null &&
-                        !progress.longerThanExpected ? (
-                          <p>
-                            {t("Estimated remaining {duration}", {
-                              duration: formatDuration(progress.estimatedRemainingMs),
-                            })}
-                          </p>
-                        ) : null}
+                        <p>{t("Resource waits can extend the total time. This page updates automatically when the video is ready.")}</p>
                         {progress.longerThanExpected ? (
                           <p className="mt-1 text-[var(--ad-yellow-text)]">
                             {t(
@@ -1059,41 +780,6 @@ export function CharacterVideoStudio({
             </div>
           )}
 
-          {!productionOnly && selectedItem?.asset ? (
-            <details className="mt-4 border-t border-[var(--ad-border)] pt-3" open={!selectedItem.review}>
-              <summary className="cursor-pointer text-sm font-semibold">{t("Video review")}</summary>
-              <div className="mt-4 max-w-2xl">
-                {selectedItem.review ? (
-                  <div className="text-sm">
-                    <StatusBadge tone={selectedItem.review.decision === "approved" ? "good" : "bad"} value={selectedItem.review.decision} />
-                    <p className="mt-3 leading-6">{selectedItem.review.reason}</p>
-                    <p className="mt-2 text-xs text-[var(--ad-text-muted)]">{t("Identity")} {t(selectedItem.review.identityConsistency)}{selectedItem.review.score !== null ? ` · ${selectedItem.review.score}/100` : ""}</p>
-                  </div>
-                ) : (
-                  <>
-                    <fieldset className="grid gap-2 sm:grid-cols-2">
-                      <legend className="sr-only">{t("Video quality checks")}</legend>
-                      {reviewChecks.map(([key, label]) => (
-                        <label className="flex min-h-10 items-center gap-3 rounded-md bg-[var(--ad-surface-subtle)] px-3 text-xs" key={key}>
-                          <input checked={reviewQuality[key]} onChange={(event) => setReviewQuality((current) => ({ ...current, [key]: event.target.checked }))} type="checkbox" />
-                          <span>{t(label)}</span>
-                        </label>
-                      ))}
-                    </fieldset>
-                    <div className="mt-3 grid grid-cols-2 gap-2">
-                      <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Identity")}<select className={`${fieldClass} mt-1`} onChange={(event) => setIdentityConsistency(event.target.value as "passed" | "failed")} value={identityConsistency}><option value="passed">{t("Passed")}</option><option value="failed">{t("Failed")}</option></select></label>
-                      <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Score")}<input className={`${fieldClass} mt-1`} max={100} min={0} onChange={(event) => setScore(event.target.value)} step={1} type="number" value={score} /></label>
-                    </div>
-                    <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">{t("Evidence and reason")}<textarea className={`${textAreaClass} mt-1`} onChange={(event) => setReviewReason(event.target.value)} placeholder={t("Describe motion, identity stability, artifacts, and intent match")} value={reviewReason} /></label>
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      <WorkspaceButton disabled={busy !== null || !permissions.review || !rejectionReady} onClick={() => void reviewVideo("rejected")} tone="danger"><ThumbsDown className="h-4 w-4" />{t("Reject")}</WorkspaceButton>
-                      <WorkspaceButton disabled={busy !== null || !permissions.review || !approvalReady} onClick={() => void reviewVideo("approved")} tone="primary">{busy === "review" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}{t("Approve video")}</WorkspaceButton>
-                    </div>
-                  </>
-                )}
-              </div>
-            </details>
-          ) : null}
         </div>
 
         <aside className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5 xl:sticky xl:top-4" aria-label={t("New Character video")}>
@@ -1167,7 +853,7 @@ export function CharacterVideoStudio({
                   : t("Estimated duration unavailable until this profile has completed health samples")}
               </p>
             </div>
-            <WorkspaceButton className="mt-4 w-full justify-center" disabled={loading || busy !== null || !permissions.create || (!createIntent && (!sourceAssetId || brief.trim().length === 0))} onClick={() => void createVideo()} tone="primary">
+            <WorkspaceButton className="mt-4 w-full justify-center" disabled={loading || busy !== null || !permissions.create || (!createIntent && (videoRequestInProgress || !sourceAssetId || brief.trim().length === 0))} onClick={() => void createVideo()} tone="primary">
               {busy === "create" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}{t(createActionLabel)}
             </WorkspaceButton>
           </div>

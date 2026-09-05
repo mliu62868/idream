@@ -10,7 +10,8 @@ import {
   RefreshCcw,
   UploadCloud,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { CmsArticleEditor } from "./CmsArticleEditor";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n, type AdminLocale } from "@/components/admin/i18n";
 import { formatDateTime } from "@/components/admin/ui/format";
@@ -71,11 +72,10 @@ const emptyArticleBody =
   '{\n  "heading": "",\n  "intro": "",\n  "sections": []\n}';
 const inputClass =
   "rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]";
-const textAreaClass =
-  "rounded-md min-h-44 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-2 font-mono text-xs outline-none focus:border-[var(--ad-ink)]";
 
-export function CmsView() {
+export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
   const { locale, t, value: valueLabel } = useAdminI18n();
+  const [viewPage, setViewPage] = useState<PageDetail | null>(null);
   const [pages, setPages] = useState<PageRow[]>([]);
   const [loading, setLoading] = useState(true);
   // INVARIANT: 存异常对象而不只是它的 message —— AuthorityRequestError 要靠 cause 才能按错误码
@@ -88,7 +88,7 @@ export function CmsView() {
   const [editBusy, setEditBusy] = useState(false);
   const { feedback, reportSuccess, clearFeedback } = useWriteFeedback();
 
-  async function load() {
+  const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -104,17 +104,18 @@ export function CmsView() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [t]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 0);
     return () => window.clearTimeout(timer);
-  }, []);
+  }, [load]);
 
   function startPublish(
     page: PageRow,
     nextStatus: PublishDraft["nextStatus"],
   ) {
+    if (!canWrite) return;
     setError(null);
     setEditDraft(null);
     setPublishDraft({
@@ -127,7 +128,7 @@ export function CmsView() {
   }
 
   async function publish() {
-    if (!publishDraft || !canConfirmPublish(publishDraft)) return;
+    if (!canWrite || !publishDraft || !canConfirmPublish(publishDraft)) return;
     setPublishBusy(true);
     setError(null);
     try {
@@ -157,8 +158,17 @@ export function CmsView() {
     }
   }
 
+  async function view(page: PageRow) {
+    setError(null);
+    try {
+      const data = await apiGet<{ page: unknown }>(`/api/v2/admin/cms/page?path=${encodeURIComponent(page.path)}`);
+      if (!isPageDetail(data.page)) throw new Error(t("The CMS page response was incomplete."));
+      setViewPage(data.page);
+    } catch (cause) { setError({ message: requestErrorMessage(cause, t), cause }); }
+  }
+
   async function startEdit(page: PageRow) {
-    if (!page.editable || page.contentStatus === "published") return;
+    if (!canWrite || !page.editable || page.contentStatus === "published") return;
     setError(null);
     setPublishDraft(null);
     setEditLoadingPath(page.path);
@@ -188,7 +198,7 @@ export function CmsView() {
   }
 
   async function saveEdit() {
-    if (!editDraft || !canSaveEdit(editDraft)) return;
+    if (!canWrite || !editDraft || !canSaveEdit(editDraft)) return;
     setEditBusy(true);
     setError(null);
     try {
@@ -243,13 +253,11 @@ export function CmsView() {
         <p className={page.publishability === "ready" ? "text-[var(--ad-green-text)]" : "text-[var(--ad-yellow-text)]"}>
           {valueLabel(page.publishability)}
         </p>
-        {page.issues.slice(0, 3).map((issue) => (
-          <p className="mt-1 text-xs text-[var(--ad-text-muted)]" key={`${issue.path}-${issue.code}-${issue.message}`}>
-            {issue.path || "page"}: {issue.message}
-          </p>
-        ))}
+        <CmsPublicationIssues issues={page.issues} />
       </div>,
       <div className="flex justify-end gap-2" key="actions">
+        <button className="min-h-8 rounded-md border border-[var(--ad-border)] px-2 text-xs" type="button" onClick={() => void view(page)}>{t("View page")}</button>
+        {canWrite ? <>
         {page.contentStatus !== "published" ? (
           <button
             className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs disabled:opacity-50"
@@ -286,6 +294,7 @@ export function CmsView() {
             {t("Publish")}
           </button>
         ) : null}
+        </> : <span className="text-xs text-[var(--ad-text-muted)]">{t("Read only")}</span>}
       </div>,
     ],
   }));
@@ -315,9 +324,15 @@ export function CmsView() {
         <AuthorityRequestError cause={error.cause} message={error.message} onRetry={() => void load()} />
       ) : null}
 
-      <CreatePageForm onCreated={reportSuccess} reload={load} />
+      {canWrite ? <CreatePageForm onCreated={reportSuccess} reload={load} /> : <p className="text-sm text-[var(--ad-text-muted)]">{t("You can browse CMS pages. Creating, editing and publishing requires CMS write access.")}</p>}
 
-      {editDraft ? (
+      {viewPage ? <section className="space-y-4 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
+        <div className="flex items-start justify-between gap-3"><div><h3 className="font-semibold">{viewPage.title}</h3><p className="mt-1 text-sm text-[var(--ad-text-muted)]">{viewPage.path} · {valueLabel(viewPage.contentStatus)}</p></div><button className="min-h-9 px-3 text-sm" type="button" onClick={() => setViewPage(null)}>{t("Close")}</button></div>
+        <p className="text-sm">{viewPage.description}</p>
+        <CmsArticleEditor bodyJson={JSON.stringify(viewPage.body, null, 2)} onChange={() => undefined} readOnly />
+      </section> : null}
+
+      {canWrite && editDraft ? (
         <EditPageForm
           busy={editBusy}
           draft={editDraft}
@@ -327,7 +342,7 @@ export function CmsView() {
         />
       ) : null}
 
-      {publishDraft ? (
+      {canWrite && publishDraft ? (
         <section className="rounded-lg border border-[var(--ad-yellow-text)]/20 bg-[var(--ad-yellow-bg)] p-3">
           <p className="text-xs font-semibold text-[var(--ad-yellow-text)]">
             {t("Confirm CMS status change")}{" "}
@@ -386,7 +401,7 @@ export function CmsView() {
           caption="CMS pages"
           empty={
             <EmptyState
-              hint={t("Create a draft above; it is not served until you publish it.")}
+              hint={canWrite ? t("Create a draft above; it is not served until you publish it.") : t("No pages have been created yet. Refresh later to check for updates.")}
               title={t("No CMS pages yet.")}
             />
           }
@@ -406,6 +421,55 @@ export function CmsView() {
       )}
     </div>
   );
+}
+
+function CmsPublicationIssues({ issues }: { issues: PublicationIssue[] }) {
+  const { t } = useAdminI18n();
+  if (issues.length === 0) return null;
+  function fieldLabel(path: string) {
+    const paragraph = /^body\.sections\.(\d+)\.paragraphs\.(\d+)$/.exec(path);
+    if (paragraph) return t("Section {section}, paragraph {paragraph}", { section: Number(paragraph[1]) + 1, paragraph: Number(paragraph[2]) + 1 });
+    const section = /^body\.sections\.(\d+)\.(heading|paragraphs)$/.exec(path);
+    if (section) return section[2] === "heading" ? t("Section {section} heading", { section: Number(section[1]) + 1 }) : t("Section {section} paragraphs", { section: Number(section[1]) + 1 });
+    switch (path) {
+      case "title": return t("Page title");
+      case "description": return t("Meta description");
+      case "body.heading": return t("Article heading");
+      case "body.intro": return t("Introduction");
+      case "body.sections": return t("Article sections");
+      case "body.cta.label": return t("Button label");
+      case "body.cta.href": return t("Button destination");
+      case "canonical": return t("Canonical path");
+      case "path": return t("Page path");
+      default: return t("Page content");
+    }
+  }
+  // Zod can emit both nonblank and minimum-length issues for one field. Show the
+  // strongest bound once, while retaining every original issue for diagnostics.
+  const grouped = new Map<string, PublicationIssue>();
+  const bound = (issue: PublicationIssue) => Number(/[<>]=?(\d+)/.exec(issue.message)?.[1] ?? 0);
+  for (const issue of issues) {
+    const key = `${issue.path}:${issue.code}${["too_small", "too_big"].includes(issue.code) ? "" : `:${issue.message}`}`;
+    const previous = grouped.get(key);
+    if (!previous || (issue.code === "too_small" && bound(issue) > bound(previous)) || (issue.code === "too_big" && bound(issue) < bound(previous))) grouped.set(key, issue);
+  }
+  function message(issue: PublicationIssue) {
+    const field = fieldLabel(issue.path);
+    const count = bound(issue);
+    if (count && issue.code === "too_small") return t(issue.message.includes("array") ? "{field}: at least {count} items." : "{field} needs at least {count} characters.", { field, count });
+    if (count && issue.code === "too_big") return t(issue.message.includes("array") ? "{field}: at most {count} items." : "{field} allows at most {count} characters.", { field, count });
+    if (issue.code === "template_requires_edit") return t("Edit and save this template as a draft before publishing.");
+    if (issue.code === "path_not_cms_owned") return t("This page path is managed by the application.");
+    if (issue.message === "section headings must be unique") return t("Give each section a different heading.");
+    if (issue.message === "an indexable page must be self-canonical") return t("For an indexed page, use its own page path as the canonical path.");
+    if (issue.message === "CMS body must not exceed 128 KiB") return t("The article is too large. Keep its content below 128 KiB.");
+    if (issue.code === "invalid_type") return t("Complete {field} before publishing.", { field });
+    return t("Check {field} before publishing.", { field });
+  }
+  return <div className="mt-1 text-xs text-[var(--ad-text-muted)]">
+    <ul className="space-y-1">{[...grouped.entries()].map(([key, issue]) => <li key={key}>{message(issue)}</li>)}</ul>
+    <details className="mt-2"><summary className="cursor-pointer">{t("Technical details")}</summary><ul className="mt-2 space-y-1 break-words font-mono">{issues.map((issue, index) => <li key={index}>{issue.path || "page"}: {issue.message}</li>)}</ul></details>
+  </div>;
 }
 
 function EditPageForm({
@@ -472,14 +536,7 @@ function EditPageForm({
           placeholder={t("Canonical path (blank uses the page path)")}
           value={draft.canonical}
         />
-        <textarea
-          aria-label={t("CMS article body JSON")}
-          className={`${textAreaClass} md:col-span-2`}
-          onChange={(event) =>
-            onChange({ ...draft, bodyJson: event.target.value })
-          }
-          value={draft.bodyJson}
-        />
+        <CmsArticleEditor bodyJson={draft.bodyJson} onChange={(bodyJson) => onChange({ ...draft, bodyJson })} />
         <input
           className={inputClass}
           onChange={(event) =>
@@ -534,7 +591,7 @@ function CreatePageForm({ onCreated, reload }: { onCreated: (message: string) =>
   const [reason, setReason] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const [err, setErr] = useState<{ message: string; cause: unknown } | null>(null);
 
   async function create() {
     setBusy(true);
@@ -563,7 +620,7 @@ function CreatePageForm({ onCreated, reload }: { onCreated: (message: string) =>
       await reload();
       onCreated(t("Created draft {path}. It is not served until you publish it.", { path: expectedPath }));
     } catch (error) {
-      setErr(requestErrorMessage(error, t));
+      setErr({ message: requestErrorMessage(error, t), cause: error });
     } finally {
       setBusy(false);
     }
@@ -621,12 +678,7 @@ function CreatePageForm({ onCreated, reload }: { onCreated: (message: string) =>
           <option value="noindex">{t("noindex")}</option>
           <option value="index">{t("index")}</option>
         </select>
-        <textarea
-          aria-label={t("CMS article body JSON")}
-          className={`${textAreaClass} md:col-span-2`}
-          onChange={(event) => setBodyJson(event.target.value)}
-          value={bodyJson}
-        />
+        <CmsArticleEditor bodyJson={bodyJson} onChange={setBodyJson} />
         <input
           className={inputClass}
           onChange={(event) => setReason(event.target.value)}
@@ -655,9 +707,7 @@ function CreatePageForm({ onCreated, reload }: { onCreated: (message: string) =>
         </button>
       </div>
       {err ? (
-        <p className="mt-2 text-xs text-[var(--ad-red-text)]" role="alert">
-          {err}
-        </p>
+        <AuthorityRequestError cause={err.cause} message={err.message} onRetry={() => void reload()} />
       ) : null}
     </section>
   );
@@ -680,7 +730,8 @@ function canSaveEdit(draft: EditDraft) {
 
 // INTENT: 文案由调用方注入——这是个模块级纯函数，拿不到 t()，硬编码英文会在中文 locale 露馅。
 function parseBodyObject(value: string, invalidMessage: string): Record<string, unknown> {
-  const parsed = JSON.parse(value) as unknown;
+  let parsed: unknown;
+  try { parsed = JSON.parse(value); } catch { throw new Error(invalidMessage); }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error(invalidMessage);
   }

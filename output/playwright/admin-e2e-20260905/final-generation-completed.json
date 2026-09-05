@@ -1,0 +1,222 @@
+{
+  "checkedAt": "2026-09-05T11:37:06.728Z",
+  "jobs": [
+    {
+      "id": "cmtoauv6x0003z4l7o8eckhaf",
+      "status": "completed",
+      "version": 3,
+      "sourceId": "cmtoauv6u0002z4l7fyy4lf05",
+      "provider": "comfyui",
+      "model": "redcraft-krea2-identity-edit",
+      "deliveredOutputCount": 1,
+      "createdAt": "2026-09-05T11:28:42.345Z",
+      "completedAt": "2026-09-05T11:36:43.956Z"
+    },
+    {
+      "id": "cmto8ioyz000fr4l73zrvo4qz",
+      "status": "completed",
+      "version": 5,
+      "sourceId": "cmto8ioyw000er4l7dnrr01wp",
+      "provider": "comfyui",
+      "model": "redcraft-krea2-identity-edit",
+      "deliveredOutputCount": 1,
+      "createdAt": "2026-09-05T10:23:15.179Z",
+      "completedAt": "2026-09-05T11:35:41.639Z"
+    }
+  ],
+  "attempts": [
+    {
+      "id": "cmto8iozr000ir4l7t4n9vie0",
+      "requestId": "cmto8ioyz000fr4l73zrvo4qz",
+      "status": "unknown",
+      "attemptNo": 1,
+      "startedAt": "2026-09-05T10:23:15.280Z",
+      "finishedAt": "2026-09-05T10:33:15.280Z"
+    },
+    {
+      "id": "cmtoauv7l0006z4l7cd6qedkj",
+      "requestId": "cmtoauv6x0003z4l7o8eckhaf",
+      "status": "succeeded",
+      "attemptNo": 1,
+      "startedAt": "2026-09-05T11:30:11.808Z",
+      "finishedAt": "2026-09-05T11:36:43.956Z"
+    }
+  ],
+  "events": [
+    {
+      "attemptId": "cmto8iozr000ir4l7t4n9vie0",
+      "sequence": 1,
+      "eventType": "generation.attempt.queued.v1",
+      "occurredAt": "2026-09-05T10:23:15.207Z"
+    },
+    {
+      "attemptId": "cmto8iozr000ir4l7t4n9vie0",
+      "sequence": 2,
+      "eventType": "generation.transport.running.v1",
+      "occurredAt": "2026-09-05T10:23:15.280Z"
+    },
+    {
+      "attemptId": "cmto8iozr000ir4l7t4n9vie0",
+      "sequence": 3,
+      "eventType": "generation.attempt.unknown.v1",
+      "occurredAt": "2026-09-05T10:33:15.280Z"
+    },
+    {
+      "attemptId": "cmtoauv7l0006z4l7cd6qedkj",
+      "sequence": 1,
+      "eventType": "generation.attempt.queued.v1",
+      "occurredAt": "2026-09-05T11:28:42.369Z"
+    },
+    {
+      "attemptId": "cmtoauv7l0006z4l7cd6qedkj",
+      "sequence": 2,
+      "eventType": "generation.resource.waiting.v1",
+      "occurredAt": "2026-09-05T11:28:45.335Z"
+    },
+    {
+      "attemptId": "cmtoauv7l0006z4l7cd6qedkj",
+      "sequence": 3,
+      "eventType": "generation.resource.waiting.v1",
+      "occurredAt": "2026-09-05T11:29:15.529Z"
+    },
+    {
+      "attemptId": "cmtoauv7l0006z4l7cd6qedkj",
+      "sequence": 4,
+      "eventType": "generation.resource.waiting.v1",
+      "occurredAt": "2026-09-05T11:29:45.619Z"
+    },
+    {
+      "attemptId": "cmtoauv7l0006z4l7cd6qedkj",
+      "sequence": 5,
+      "eventType": "generation.transport.running.v1",
+      "occurredAt": "2026-09-05T11:30:11.808Z"
+    },
+    {
+      "attemptId": "cmtoauv7l0006z4l7cd6qedkj",
+      "sequence": 6,
+      "eventType": "generation.attempt.terminal_record_ingested.v1",
+      "occurredAt": "2026-09-05T11:36:43.281Z"
+    },
+    {
+      "attemptId": "cmtoauv7l0006z4l7cd6qedkj",
+      "sequence": 7,
+      "eventType": "generation.attempt.succeeded.v1",
+      "occurredAt": "2026-09-05T11:36:43.956Z"
+    }
+  ],
+  "transports": [
+    {
+      "id": "cmto8ipc9000lr4l70v8oqp1c",
+      "attemptId": "cmto8iozr000ir4l7t4n9vie0",
+      "status": "unknown",
+      "transportAttemptNo": 1,
+      "providerRequestId": null,
+      "startedAt": "2026-09-05T10:23:15.280Z",
+      "finishedAt": "2026-09-05T10:33:15.280Z"
+    },
+    {
+      "id": "cmtoaws8b000az4l775amav8y",
+      "attemptId": "cmtoauv7l0006z4l7cd6qedkj",
+      "status": "succeeded",
+      "transportAttemptNo": 1,
+      "providerRequestId": "1ac29078-6123-438b-b624-61be0a5ed6e1",
+      "startedAt": "2026-09-05T11:30:11.808Z",
+      "finishedAt": "2026-09-05T11:36:43.281Z"
+    }
+  ],
+  "usage": [
+    {
+      "id": "cmtob56lb0001aml7k1mnclcw",
+      "attemptId": "cmtoauv7l0006z4l7cd6qedkj"
+    }
+  ],
+  "ledger": [],
+  "artifacts": [
+    {
+      "id": "cmtoa28oq0003wil7q7e3d9dj",
+      "attemptId": "cmto8iozr000ir4l7t4n9vie0",
+      "ordinal": 0,
+      "providerRef": null,
+      "terminalRecordChecksum": "d45027629a4c751da4d03edb9b6e2ee6a301e657dfbdcbbdc5473d4d2fbff286",
+      "validationState": "valid",
+      "assetId": "media_unknown_73ea9fa77601bc064eda8ba60bfe53ad",
+      "archiveState": "active",
+      "createdAt": "2026-09-05T11:06:26.810Z"
+    },
+    {
+      "id": "cmtob56lh0002aml7xy074c8k",
+      "attemptId": "cmtoauv7l0006z4l7cd6qedkj",
+      "ordinal": 0,
+      "providerRef": null,
+      "terminalRecordChecksum": "afed54f899a6cece694a34b5c169b59c67098e21f080edc4aa773ae9ca519bfd",
+      "validationState": "valid",
+      "assetId": "media_v34dtjl4jkimtob56st",
+      "archiveState": "active",
+      "createdAt": "2026-09-05T11:36:43.685Z"
+    }
+  ],
+  "deliveries": [
+    {
+      "id": "generation_delivery_f40b909609709cd921f991dc64ab6065",
+      "requestId": "cmto8ioyz000fr4l73zrvo4qz",
+      "artifactId": "cmtoa28oq0003wil7q7e3d9dj",
+      "targetType": "user_library",
+      "targetId": "seed-admin-user",
+      "status": "delivered",
+      "deliveredAt": "2026-09-05T11:35:41.639Z",
+      "createdAt": "2026-09-05T11:06:26.825Z"
+    },
+    {
+      "id": "generation_delivery_659ec16c9ff9586a43bd35571dc4ab23",
+      "requestId": "cmtoauv6x0003z4l7o8eckhaf",
+      "artifactId": "cmtob56lh0002aml7xy074c8k",
+      "targetType": "user_library",
+      "targetId": "seed-admin-user",
+      "status": "delivered",
+      "deliveredAt": "2026-09-05T11:36:43.956Z",
+      "createdAt": "2026-09-05T11:36:44.004Z"
+    }
+  ],
+  "decisions": [
+    {
+      "id": "cmto9yoo50000wgl7r0g14qn5",
+      "jobId": "cmto8ioyz000fr4l73zrvo4qz",
+      "type": "unknown_reconciliation_confirm_failed",
+      "message": "Provider outcome stayed unknown for more than 30 minutes; settled automatically as failed and refunded so the reader is not left waiting.",
+      "metadata": {
+        "actorId": "system:generation-unknown-sweeper",
+        "attemptId": "cmto8iozr000ir4l7t4n9vie0",
+        "commandId": "c4ec6ed9-2d69-408f-9d29-d0a78b120f8e",
+        "resolution": "confirm_failed",
+        "nextReviewAt": null,
+        "refundAmount": 0,
+        "deliveredCount": 0,
+        "providerEvidenceRefs": [
+          "attempt:cmto8iozr000ir4l7t4n9vie0"
+        ]
+      },
+      "createdAt": "2026-09-05T11:03:40.902Z"
+    },
+    {
+      "id": "cmtob3uxa000ez4l7vfe6o6p8",
+      "jobId": "cmto8ioyz000fr4l73zrvo4qz",
+      "type": "unknown_reconciliation_adopt_succeeded",
+      "message": "Chrome验收恢复：核对原任务晚到成功、同Attempt产物、系统超时结算实际退款0，恢复原素材批次。",
+      "metadata": {
+        "actorId": "seed-admin-user",
+        "attemptId": "cmto8iozr000ir4l7t4n9vie0",
+        "commandId": "75953a6f-8641-4000-81a4-88d074331c34",
+        "resolution": "adopt_succeeded",
+        "nextReviewAt": null,
+        "refundAmount": 0,
+        "deliveredCount": 1,
+        "providerEvidenceRefs": [
+          "terminal-record:gen/terminal-records/cmto8iozr000ir4l7t4n9vie0/terminal.json"
+        ],
+        "correctsAutomaticCommandId": "c4ec6ed9-2d69-408f-9d29-d0a78b120f8e",
+        "correctsAutomaticDecisionId": "cmto9yoo50000wgl7r0g14qn5"
+      },
+      "createdAt": "2026-09-05T11:35:41.902Z"
+    }
+  ]
+}

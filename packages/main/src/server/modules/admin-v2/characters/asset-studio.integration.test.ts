@@ -1,3 +1,5 @@
+import { recoveredGenerationFixture } from "@/server/test/recovered-generation-fixture";
+import { resolveMediaAssetAuthorityMap } from "@/server/lib/media-asset-authority-query";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PATCH as patchContentAssetRoute } from "@/app/api/v2/admin/assets/[id]/route";
@@ -227,20 +229,93 @@ describe.sequential("Character image placement authority", () => {
     await prisma.$disconnect();
   });
 
-  it("selects three reviewed operator uploads without generation lineage", async () => {
-    await expect(selectCharacterDraftImage({
-      characterId,
-      expectedProjectVersion: 1,
-      purpose: "character_cover",
-      assetId: unusedAssetId,
-      actor: { id: actorId, role: "admin" },
-      reason: "An unreviewed upload must remain only a candidate",
-      requestId: `image-placement-unreviewed-${suffix}`,
-    })).rejects.toMatchObject({
-      status: 409,
-      message: "Review this image before choosing it for Character operations",
-      details: expect.objectContaining({ state: "candidate" }),
-    });
+  it("rejects synthetic or mock generated images before direct adoption and accepts a real completed output without review", async () => {
+    const rollback = new Error("generated image provenance verified");
+    await expect(prisma.$transaction(async (tx) => {
+      const assetId = `generated-placement-${suffix}`;
+      const jobId = `generated-placement-job-${suffix}`;
+      const itemId = `generated-placement-item-${suffix}`;
+      const runId = `generated-placement-run-${suffix}`;
+      const attemptId = `generated-placement-attempt-${suffix}`;
+      await tx.generationJob.create({ data: {
+        id: jobId, userId: actorId, characterId, mode: "image", controls: {}, presetIds: [],
+        status: "completed", deliveredOutputCount: 1, provider: "comfyui", sourceType: "content_production_item", sourceId: itemId,
+      } });
+      await tx.generationAttempt.create({ data: {
+        id: attemptId, requestId: jobId, attemptNo: 1, status: "succeeded", provider: "comfyui",
+      } });
+      await tx.mediaAsset.create({ data: {
+        id: assetId, ownerId: actorId, characterId, sourceJobId: jobId, type: "image",
+        url: `/assets/${assetId}.webp`, storageKey: `test-fixtures/${assetId}.webp`,
+        safetyStatus: "passed", metadata: { synthetic: false, provider: "comfyui" },
+      } });
+      await tx.contentProductionBatch.create({ data: {
+        id: runId, title: "Generated adoption provenance", purpose: "character_cover",
+        targetType: "character", targetId: characterId, presetIds: [], totalItems: 1,
+        completedItems: 1, status: "completed", createdById: actorId,
+        items: { create: { id: itemId, itemIndex: 0, status: "generated", mediaAssetId: assetId, jobId, tags: [] } },
+      } });
+      const selection = {
+        characterId, expectedProjectVersion: 1, purpose: "character_cover" as const, assetId,
+        actor: { id: actorId, role: "admin" as const }, reason: "Directly adopt a real generated image",
+        requestId: `generated-adoption-${suffix}`,
+      };
+      const projectBefore = await tx.characterProject.findUniqueOrThrow({ where: { id: projectId } });
+      const auditBefore = await tx.adminAuditLog.count({ where: { actorId } });
+      for (const invalid of ["synthetic", "job_provider", "attempt_provider"] as const) {
+        await tx.mediaAsset.update({ where: { id: assetId }, data: { metadata: { synthetic: invalid === "synthetic", provider: "comfyui" } } });
+        await tx.generationJob.update({ where: { id: jobId }, data: { provider: invalid === "job_provider" ? "mock" : "comfyui" } });
+        await tx.generationAttempt.update({ where: { id: attemptId }, data: { provider: invalid === "attempt_provider" ? "mock-worker" : "comfyui" } });
+        const qualification = (await characterImageQualifications(tx, characterId, [await tx.mediaAsset.findUniqueOrThrow({ where: { id: assetId } })])).get(assetId);
+        expect(qualification?.selectablePurposes).toEqual([]);
+        expect(qualification?.blockers).toContain("source_authority_invalid");
+        await expect(selectCharacterDraftImage(selection, tx)).rejects.toMatchObject({ status: 409 });
+        expect(await tx.characterProject.findUniqueOrThrow({ where: { id: projectId } })).toEqual(projectBefore);
+        expect(await tx.adminAuditLog.count({ where: { actorId } })).toBe(auditBefore);
+      }
+      await tx.generationAttempt.update({ where: { id: attemptId }, data: { provider: "comfyui" } });
+      expect(await tx.creativeReviewDecision.count({ where: { artifactId: assetId } })).toBe(0);
+      const recovered = await recoveredGenerationFixture(tx, assetId, actorId);
+      const publishability = async (asset = recovered.asset) => (await resolveMediaAssetAuthorityMap(tx, [asset])).get(asset.id);
+      expect(await publishability()).toMatchObject({ publishable: true });
+      // Completed alone, a copied asset, and a different successful sibling are insufficient.
+      expect(await publishability({ ...recovered.asset, id: `${assetId}-forged` })).toMatchObject({ publishable: false });
+      expect(await publishability({ ...recovered.asset, storageKey: "another-output.webp" })).toMatchObject({ publishable: false });
+      for (const invalid of ["receipt", "command", "delivery", "artifact", "request", "metadata"] as const) {
+        if (invalid === "receipt") await tx.inboundEventReceipt.update({ where: { id: recovered.receipt.id }, data: { payloadHash: "0".repeat(64) } });
+        if (invalid === "command") await tx.controlPlaneCommand.update({ where: { id: recovered.command.id }, data: { status: "failed" } });
+        if (invalid === "delivery") await tx.generationDelivery.update({ where: { id: recovered.delivery.id }, data: { requestId: `${jobId}-wrong` } });
+        if (invalid === "artifact") await tx.generationArtifact.update({ where: { id: recovered.artifact.id }, data: { terminalRecordChecksum: "0".repeat(64) } });
+        if (invalid === "request") await tx.generationJob.update({ where: { id: jobId }, data: { status: "running" } });
+        if (invalid === "metadata") await tx.mediaAsset.update({ where: { id: assetId }, data: { metadata: { recoveredUnknown: false, provider: "comfyui" } } });
+        const actual = await tx.mediaAsset.findUniqueOrThrow({ where: { id: assetId } });
+        expect(await publishability(actual), invalid).toMatchObject({ publishable: false });
+        await expect(selectCharacterDraftImage(selection, tx)).rejects.toMatchObject({ status: 409 });
+        await tx.inboundEventReceipt.update({ where: { id: recovered.receipt.id }, data: { payloadHash: recovered.receipt.payloadHash } });
+        await tx.controlPlaneCommand.update({ where: { id: recovered.command.id }, data: { status: "succeeded" } });
+        await tx.generationDelivery.update({ where: { id: recovered.delivery.id }, data: { requestId: jobId } });
+        await tx.generationArtifact.update({ where: { id: recovered.artifact.id }, data: { terminalRecordChecksum: recovered.artifact.terminalRecordChecksum } });
+        await tx.generationJob.update({ where: { id: jobId }, data: { status: "completed" } });
+        await tx.mediaAsset.update({ where: { id: assetId }, data: { metadata: recovered.asset.metadata! } });
+      }
+      await expect(selectCharacterDraftImage(selection, tx)).resolves.toMatchObject({ selectedAssetId: assetId, projectVersion: 2 });
+      expect(await tx.creativeReviewDecision.count({ where: { artifactId: assetId } })).toBe(0);
+      throw rollback;
+    })).rejects.toBe(rollback);
+  });
+
+  it("selects operator uploads without requiring a manual review or generation lineage", async () => {
+    const rollback = new Error("direct selection verified");
+    await expect(prisma.$transaction(async (tx) => {
+      const selected = await selectCharacterDraftImage({
+        characterId, expectedProjectVersion: 1, purpose: "character_cover", assetId: unusedAssetId,
+        actor: { id: actorId, role: "admin" }, reason: "Use an image without artificial approval",
+        requestId: `image-placement-unreviewed-${suffix}`,
+      }, tx);
+      expect(selected.selectedAssetId).toBe(unusedAssetId);
+      expect(await tx.creativeReviewDecision.count({ where: { artifactId: unusedAssetId } })).toBe(0);
+      throw rollback;
+    })).rejects.toBe(rollback);
 
     await expect(selectCharacterDraftImage({
       characterId,
@@ -387,7 +462,7 @@ describe.sequential("Character image placement authority", () => {
     });
   });
 
-  it("surfaces a selected placement whose pinned Review was superseded", async () => {
+  it("preserves selected placement when a historical review is superseded", async () => {
     const latestReviewId = `review-latest-${heroAssetId}`;
     await prisma.creativeReviewDecision.create({
       data: {
@@ -431,9 +506,9 @@ describe.sequential("Character image placement authority", () => {
     );
 
     expect(qualifications.get(heroAssetId)).toMatchObject({
-      state: "selected",
-      blockers: ["review_authority_changed"],
-      releaseQualifiedPurposes: [],
+      state: "release_qualified",
+      blockers: [],
+      releaseQualifiedPurposes: ["character_hero"],
       authority: { reviewDecisionId: latestReviewId },
     });
   });

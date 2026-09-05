@@ -132,12 +132,13 @@ export async function transitionCharacterServing(
 ) {
   const current = await tx.characterServing.findUnique({
     where: { id: input.servingId },
-    select: { state: true, version: true },
+    select: { state: true, version: true, currentReleaseId: true },
   });
   if (
     !current ||
     (input.expectedVersion !== undefined &&
       current.version !== input.expectedVersion) ||
+    (current.state === "retired" && input.to === "inactive" && current.currentReleaseId !== null) ||
     !isCharacterServingTransitionAllowed(current.state, input.to)
   ) {
     throw conflictError(

@@ -3,6 +3,42 @@
 // INVARIANT: key 在所有 i18n-zh-*.ts 之间互斥——同一个 key 只能有一个域文件持有；
 // 由 i18n-zh-exclusivity.test.ts 强制。新增文案放它所属的域文件，不要另开「杂项」文件。
 export const adminZhGrowth: Record<string, string> = {
+  "Section {section}, paragraph {paragraph}": "第 {section} 节第 {paragraph} 段",
+  "Section {section} heading": "第 {section} 节标题",
+  "Section {section} paragraphs": "第 {section} 节正文",
+  "Article sections": "文章章节",
+  "Canonical path": "规范页面路径",
+  "Page path": "页面路径",
+  "Page content": "页面内容",
+  "{field}: at least {count} items.": "{field}至少需要 {count} 项。",
+  "{field} needs at least {count} characters.": "{field}至少需要 {count} 个字符。",
+  "{field}: at most {count} items.": "{field}最多允许 {count} 项。",
+  "{field} allows at most {count} characters.": "{field}最多允许 {count} 个字符。",
+  "Edit and save this template as a draft before publishing.": "请先编辑模板并保存为草稿，再发布。",
+  "This page path is managed by the application.": "此页面路径由应用管理。",
+  "Give each section a different heading.": "各章节请使用不同的标题。",
+  "For an indexed page, use its own page path as the canonical path.": "允许搜索引擎索引时，规范路径应与页面自身路径一致。",
+  "The article is too large. Keep its content below 128 KiB.": "文章过大，请将正文控制在 128 KiB 以内。",
+  "Complete {field} before publishing.": "发布前请补齐{field}。",
+  "Check {field} before publishing.": "发布前请检查{field}。",
+  "No pages have been created yet. Refresh later to check for updates.": "尚无页面，可稍后刷新查看更新。",
+  "View page": "查看页面",
+  "You can browse CMS pages. Creating, editing and publishing requires CMS write access.": "当前可浏览页面；创建、编辑和发布需要 CMS 编辑权限。",
+  "Article content": "文章内容",
+  "Article heading": "文章标题",
+  "Introduction": "引言",
+  "For publication: an introduction of at least 60 characters, two sections, and paragraphs of at least 40 characters. Drafts can be incomplete.": "发布时需要至少 60 字引言、两个章节，每段至少 40 字。草稿可稍后补齐。",
+  "Section heading": "章节标题",
+  "Section paragraphs": "章节正文",
+  "Separate paragraphs with a blank line.": "段落之间空一行。",
+  "Remove section": "移除章节",
+  "Add section": "添加章节",
+  "Call to action (optional)": "行动按钮（选填）",
+  "Button label": "按钮文字",
+  "Button destination": "按钮链接",
+  "Remove call to action": "移除行动按钮",
+  "The JSON does not match article fields. Correct it in the advanced editor to continue using fields.": "JSON 与文章字段不匹配，请先在高级编辑器修正。",
+  "Advanced JSON editor": "高级 JSON 编辑器",
   // 表格/空态收口到共享原语时新增的文案。
   "Create a draft above; it is not served until you publish it.": "在上方新建草稿；发布前不会对外提供。",
   "Create one above to broadcast it site-wide.": "在上方新建一条，即可全站广播。",
@@ -117,7 +153,6 @@ export const adminZhGrowth: Record<string, string> = {
   "Current version": "当前版本",
   "Currently featured": "当前推荐",
   "Customers are charged this price from the next generation onwards and the previous active version is archived. A rollback restores it, but orders placed in between keep the new price.": "从下一次生成起客户按这个价格计费，上一个启用版本会被归档。回滚能把它请回来，但这期间已经下单的按新价结算。",
-  "D1 / D7 retention · invalid for decisions": "D1 / D7 留存 · 不可用于决策",
   "Deactivate": "停用",
   "Delete announcement": "删除公告",
   "Directional only · no assignment or exposure records": "仅供方向参考 · 无分配或曝光记录",
@@ -143,8 +178,6 @@ export const adminZhGrowth: Record<string, string> = {
   "Indexing": "索引",
   "Latest authority was refreshed. Your draft remains in the fields; review it and save again to apply it.":
     "已刷新到最新权威版本；你的草稿仍保留在输入框中。确认后再次保存即可应用。",
-  "Legacy v1 measures any activity inside cumulative 1/7-day windows, not exact calendar-day return. Values and export are unavailable until Metric Registry v2 is certified.":
-    "旧版 v1 衡量累计 1/7 天窗口内的任意活动，并非精确自然日回访；指标注册表 v2 认证前，相关数值与导出均不可用。",
   "Lift hidden from decision use until every arm has ≥": "各实验组达到至少以下条件前，提升幅度不可用于决策：≥",
   "Link URL (optional)": "链接 URL（可选）",
   "Live featured": "实际上线推荐",
@@ -279,12 +312,11 @@ export const adminZhGrowth: Record<string, string> = {
     "{variant}：成熟样本 {subjects} 个，比例 {rate}%，相对对照组提升 {lift} pp，p={p}。",
   "Lift is withheld from decisions until every arm has at least {minimum} mature production exposures and all guardrails pass.":
     "在每个实验组都达到至少 {minimum} 次成熟的生产曝光、且护栏全部通过之前，提升幅度不参与决策。",
-  "No funnel or cohort series exists behind this page":
-    "本页背后没有漏斗或分群序列",
-  "This is a contract gap, not a rendering gap: the authority this page reads returns generation health only. Nothing is being hidden from you — there is no funnel or retention series to show, and none is invented here.":
-    "这是数据契约的缺口，不是渲染的缺口：本页读取的权威只返回生成健康度。没有任何东西被藏起来——根本不存在可展示的漏斗或留存序列，本页也不会编一个出来。",
-  "What this page can answer today is below: per-profile generation health, and a configuration check that never calls a provider.":
-    "本页今天能回答的问题在下方：按档案看生成健康度，以及一次不调用供应器的配置检查。",
+  "Funnel and retention data are unavailable": "漏斗与留存数据暂不可用",
+  "View generation health and check model configuration below.":
+    "目前可在下方查看生成健康度并检查模型配置。",
+  "D1 / D7 retention values and exports remain unavailable until the metric definitions are verified.":
+    "D1 / D7 留存指标口径完成验证前，不提供相关数值或导出。",
   "Deleted “{title}”. It no longer shows anywhere on the site.":
     "已删除“{title}”。它不再出现在站内任何位置。",
   "Deactivated “{title}”. It is hidden from the site now.":

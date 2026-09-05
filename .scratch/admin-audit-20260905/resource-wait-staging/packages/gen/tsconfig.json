@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "types": ["node"],
+    "paths": {
+      "@idream/shared": ["../shared/src/index.ts"],
+      "@idream/shared/contracts": ["../shared/src/contracts/index.ts"],
+      "@idream/shared/env": ["../shared/src/contracts/env.ts"],
+      "@idream/shared/media/generated-image-sanity": ["../shared/src/media/generated-image-sanity.ts"],
+      "@idream/shared/storage": ["../shared/src/storage/s3-blob.ts"],
+      "@idream/shared/storage/local-blob": ["../shared/src/storage/local-blob.ts"],
+      "@idream/shared/moderation": ["../shared/src/moderation/safety-gateway.ts"],
+      "@idream/shared/gen-workflow": ["../shared/src/gen/workflow.ts"],
+      "@idream/shared/observability/sentry": ["../shared/src/observability/sentry.ts"]
+    }
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules"]
+}

@@ -1,0 +1,50 @@
+[
+  {
+    "name": "main-web",
+    "pid": 51595,
+    "status": "online",
+    "revision": "idream-worktree-7a195254b464e2a475b1d0e56661fb59586e6d685a9f62acd48190fc044ba5ec"
+  },
+  {
+    "name": "admin-web",
+    "pid": 51596,
+    "status": "online",
+    "revision": "idream-worktree-7a195254b464e2a475b1d0e56661fb59586e6d685a9f62acd48190fc044ba5ec"
+  },
+  {
+    "name": "chat",
+    "pid": 51597,
+    "status": "online",
+    "revision": "idream-worktree-7a195254b464e2a475b1d0e56661fb59586e6d685a9f62acd48190fc044ba5ec"
+  },
+  {
+    "name": "gen-image",
+    "pid": 51598,
+    "status": "online",
+    "revision": "idream-worktree-7a195254b464e2a475b1d0e56661fb59586e6d685a9f62acd48190fc044ba5ec"
+  },
+  {
+    "name": "gen-video",
+    "pid": 51599,
+    "status": "online",
+    "revision": "idream-worktree-7a195254b464e2a475b1d0e56661fb59586e6d685a9f62acd48190fc044ba5ec"
+  },
+  {
+    "name": "gen-finalizer",
+    "pid": 51600,
+    "status": "online",
+    "revision": "idream-worktree-7a195254b464e2a475b1d0e56661fb59586e6d685a9f62acd48190fc044ba5ec"
+  },
+  {
+    "name": "main-event-consumer",
+    "pid": 51601,
+    "status": "online",
+    "revision": "idream-worktree-7a195254b464e2a475b1d0e56661fb59586e6d685a9f62acd48190fc044ba5ec"
+  },
+  {
+    "name": "admin-command-worker",
+    "pid": 51602,
+    "status": "online",
+    "revision": "idream-worktree-7a195254b464e2a475b1d0e56661fb59586e6d685a9f62acd48190fc044ba5ec"
+  }
+]

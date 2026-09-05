@@ -89,6 +89,8 @@ type AdminCommandOperationId =
   | "POST /api/v2/admin/characters/:id/commands/pause"
   | "POST /api/v2/admin/characters/:id/commands/resume"
   | "POST /api/v2/admin/characters/:id/commands/retire"
+  | "POST /api/v2/admin/characters/:id/commands/restore"
+  | "POST /api/v2/admin/characters/:id/releases/:releaseId/commands/withdraw"
   | "POST /api/v2/admin/characters/:id/releases/:releaseId/commands/publish"
   | "POST /api/v2/admin/characters/:id/releases/:releaseId/commands/rollback"
   | "POST /api/v2/admin/chat/sessions/:sessionId/commands/migrate-release"
@@ -424,6 +426,27 @@ export function publishCharacterRelease(request: Request, characterId: string, r
   });
 }
 
+const withdrawReleaseDefinition = {
+  ...publishReleaseDefinition,
+  commandType: "character.release.withdraw",
+} as const satisfies CommandDefinition;
+
+export function withdrawCharacterRelease(request: Request, characterId: string, releaseId: string) {
+  return commandResponse(request, async () => {
+    const actor = await actorWithPermission(request, withdrawReleaseDefinition.permission, { characterId });
+    const parsed = await parseCommand(request, "POST /api/v2/admin/characters/:id/releases/:releaseId/commands/withdraw");
+    requireConfirmation(parsed.body.confirmation, `${characterId}:${releaseId}:withdraw`);
+    const replay = await replayExactCommandBeforeMutablePreflight({ actor, parsed, definition: withdrawReleaseDefinition, targetId: releaseId, coordinationKey: characterCommandCoordinationKey(characterId) });
+    if (replay) return replay;
+    const release = await prisma.characterRelease.findUnique({ where: { id: releaseId } });
+    const project = release ? await prisma.characterProject.findUnique({ where: { id: release.projectId } }) : null;
+    if (!release || project?.characterId !== characterId) throw Errors.notFound("Character release not found for character");
+    if (release.version !== parsed.body.entityVersion) return versionConflict(parsed.requestId, { id: release.id, status: release.status, version: release.version }, parsed.body.entityVersion);
+    if (release.status !== "approved") throw Errors.conflict("Only an unpublished candidate can be withdrawn");
+    return acceptCommand({ actor, parsed, definition: withdrawReleaseDefinition, targetId: releaseId, coordinationKey: characterCommandCoordinationKey(characterId) });
+  });
+}
+
 const rollbackReleaseDefinition = {
   commandType: "character.release.rollback",
   targetType: "character_serving",
@@ -500,13 +523,18 @@ const servingRetireDefinition = {
   commandType: "character.serving.retire",
 } as const satisfies CommandDefinition;
 
+const servingRestoreDefinition = {
+  ...servingPauseDefinition,
+  commandType: "character.serving.restore",
+} as const satisfies CommandDefinition;
+
 export function changeCharacterServingState(
   request: Request,
   characterId: string,
-  action: "pause" | "resume" | "retire",
+  action: "pause" | "resume" | "retire" | "restore",
 ) {
   return commandResponse(request, async () => {
-    const definition = action === "resume"
+    const definition = action === "restore" ? servingRestoreDefinition : action === "resume"
       ? servingResumeDefinition
       : action === "retire"
         ? servingRetireDefinition
@@ -533,9 +561,13 @@ export function changeCharacterServingState(
     if (serving.version !== parsed.body.entityVersion) {
       return versionConflict(parsed.requestId, { characterId, state: serving.state, version: serving.version }, parsed.body.entityVersion);
     }
-    if (action === "resume" ? serving.state !== "paused" : serving.state !== "live") {
+    const allowed = action === "restore"
+      ? serving.state === "retired" && serving.currentReleaseId === null
+      : action === "retire" ? ["inactive", "live", "paused"].includes(serving.state)
+      : action === "resume" ? serving.state === "paused" : serving.state === "live";
+    if (!allowed) {
       throw new InvariantFailedError(
-        [{ code: "serving_state_invalid", message: `Character must be ${action === "resume" ? "paused" : "live"} before ${action}.` }],
+        [{ code: "serving_state_invalid", message: `Character serving state does not allow ${action}.` }],
         `/admin/characters/${characterId}?tab=release`,
       );
     }

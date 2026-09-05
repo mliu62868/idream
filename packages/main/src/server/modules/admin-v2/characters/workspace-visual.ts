@@ -112,6 +112,7 @@ export async function loadCharacterVisualWorkspace(input: {
   const [
     visualPoolAssets,
     videoSourceAssets,
+    selectedSourceAssets,
     routeQualifications,
     qualifiedRoute,
     bootstrapProfile,
@@ -138,6 +139,17 @@ export async function loadCharacterVisualWorkspace(input: {
       }),
       orderBy: { createdAt: "desc" },
       take: 60,
+    }),
+    prisma.mediaAsset.findMany({
+      where: operationalMediaAssetWhere({
+        characterId,
+        id: { in: [...new Set([
+          ...Object.values(characterAssetPack(project.draftAssetPack)),
+          ...(project.draftImageAssetId ? [project.draftImageAssetId] : []),
+          ...(character.imageAssetId ? [character.imageAssetId] : []),
+          ...strings(activeIdentity?.anchorAssetIds),
+        ])] },
+      }),
     }),
     activeIdentity ? prisma.generationRouteQualification.findMany({
       where: { style: activeIdentity.style },
@@ -195,13 +207,14 @@ export async function loadCharacterVisualWorkspace(input: {
     qualificationProfileKey(profile.profileKey, profile.version),
     profile,
   ]));
-  const poolAssetById = new Map(visualPoolAssets.map((asset) => [asset.id, asset]));
+  // Selected identities/placements must survive the recent-source window.
+  const poolAssetById = new Map([...visualPoolAssets, ...selectedSourceAssets].map((asset) => [asset.id, asset]));
   // visual.anchors 承载的是**可选图池**（前端 referenceCandidates = anchors ∪ references）。
   // 现在池 = 角色当前所有可用图，运营因此能把任何一张审核通过的新图选进参考集——
   // 这正是原先被 anchorAssetIds 挡住的事。已在参考集里的图由 references 提供，两者去重后展示。
   const anchors = activeIdentity
     ? visualPoolDtos(
-        visualPoolAssets.map((asset) => asset.id),
+        [...poolAssetById.keys()],
         "identity_anchor",
         poolAssetById,
         characterId,
@@ -371,7 +384,7 @@ export async function loadCharacterVisualWorkspace(input: {
     } : null,
     anchors,
     references,
-    videoSources: videoSourceAssets.map((asset) =>
+    videoSources: [...new Map([...videoSourceAssets, ...selectedSourceAssets].map((asset) => [asset.id, asset])).values()].map((asset) =>
       videoSourceAssetDto(asset, characterId)
     ),
     videoGenerationEstimate,

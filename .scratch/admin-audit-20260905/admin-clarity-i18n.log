@@ -1,0 +1,42 @@
+@idream/admin test: 
+@idream/admin test:  RUN  v4.1.9 /Users/kk/code/idream/packages/admin
+@idream/admin test: 
+@idream/admin test:  ❯ src/components/admin/i18n-completeness.test.ts (2 tests | 1 failed) 597ms
+@idream/admin test:      × provides Chinese for every literal translation key 350ms
+@idream/admin test: 
+@idream/admin test: ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+@idream/admin test: 
+@idream/admin test:  FAIL  src/components/admin/i18n-completeness.test.ts > admin Chinese locale completeness > provides Chinese for every literal translation key
+@idream/admin test: AssertionError: expected [ …(7) ] to deeply equal []
+@idream/admin test: 
+@idream/admin test: - Expected
+@idream/admin test: + Received
+@idream/admin test: 
+@idream/admin test: - []
+@idream/admin test: + [
+@idream/admin test: +   "src/features/creative/CreativeRunWorkspace.tsx:325 \"Generate assets, choose where to use them, and verify delivery.\"",
+@idream/admin test: +   "src/features/creative/CreativeRunWorkspace.tsx:333 \"Choose an asset destination\"",
+@idream/admin test: +   "src/features/creative/CreativeRunWorkspace.tsx:377 \"Generation brief\"",
+@idream/admin test: +   "src/features/creative/CreativeRunWorkspace.tsx:473 \"Model evaluation\"",
+@idream/admin test: +   "src/features/creative/CreativeRunWorkspace.tsx:494 \"Historical decision\"",
+@idream/admin test: +   "src/features/creative/CreativeRunWorkspace.tsx:691 \"Explain why this asset should become the campaign candidate\"",
+@idream/admin test: +   "src/features/creative/CreativeRunWorkspace.tsx:1182 \"Model evaluation\"",
+@idream/admin test: + ]
+@idream/admin test: 
+@idream/admin test:  ❯ src/components/admin/i18n-completeness.test.ts:225:58
+@idream/admin test:     223| describe("admin Chinese locale completeness", () => {
+@idream/admin test:     224|   it("provides Chinese for every literal translation key", () => {
+@idream/admin test:     225|     expect(auditAdminTranslations().missingTranslations).toEqual([]);
+@idream/admin test:        |                                                          ^
+@idream/admin test:     226|   });
+@idream/admin test:     227|
+@idream/admin test: 
+@idream/admin test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+@idream/admin test: 
+@idream/admin test: 
+@idream/admin test:  Test Files  1 failed | 2 passed (3)
+@idream/admin test:       Tests  1 failed | 8 passed (9)
+@idream/admin test:    Start at  04:53:01
+@idream/admin test:    Duration  934ms (transform 316ms, setup 0ms, import 676ms, tests 655ms, environment 0ms)
+@idream/admin test: 
+@idream/admin test: Exited with code 1

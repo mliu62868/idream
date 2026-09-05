@@ -13,7 +13,6 @@ import type { AdminActor } from "../shared/authority";
 import { collectReleaseMonitorFacts } from "./release-monitor";
 import { directCharacterAudienceWhere, publicCharacterAudienceWhere } from "../../ourdream/public-content-audience";
 import { updateCharacterForUser } from "../../ourdream/character-update";
-import { reviewSubmission } from "../content/review";
 import { ensureCustomerCharacterPublicationPrep } from "./publication-prep";
 
 const P = "zt-serving-visibility-";
@@ -195,12 +194,12 @@ describe("Character serving and catalog visibility", () => {
           } });
         }
         await updateCharacterForUser({ userId: actorId, characterId, patch: { visibility } });
-        const pending = await tx.characterSubmission.findFirstOrThrow({ where: { characterId, status: "pending" } });
-        const reviewed = await reviewSubmission({ tx, actor, requestId: randomUUID(), id: pending.id,
-          body: { decision: "approve", reason: "Review sharing after owner withdrawal", confirmation: pending.id } });
-        expect(reviewed.publication).toMatchObject({
-          projectId: projectBefore.id, revisionId: draftRevisionId,
-          servingState: "paused", created: false,
+        const submission = await tx.characterSubmission.findFirstOrThrow({ where: { characterId, status: "approved" } });
+        expect(submission.reviewerId).toBeNull();
+        expect(await tx.characterSubmission.count({ where: { characterId, status: "pending" } })).toBe(0);
+        const publication = await ensureCustomerCharacterPublicationPrep(tx, { characterId, submissionId: submission.id, actorId });
+        expect(publication).toMatchObject({
+          projectId: projectBefore.id, revisionId: draftRevisionId, servingState: "paused", created: false,
         });
         expect(await tx.character.findUniqueOrThrow({ where: { id: characterId } })).toMatchObject({
           visibility, status: "approved", currentContentVersionId: draftContentVersionId,

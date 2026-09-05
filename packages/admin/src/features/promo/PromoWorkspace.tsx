@@ -264,7 +264,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
         loadingLabel="Loading redeem codes…"
         rows={codeRows(codes.rows ?? [], canWrite, confirmDisable, valueLabel, format)}
         state={codes}
-        title={t("Redeem codes")}
+        scope="codes"
       />
       <Pager
         cursor={query.codeCursor}
@@ -287,7 +287,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
         loadingLabel="Loading referrals…"
         rows={referralRows(referrals.rows ?? [], valueLabel, format)}
         state={referrals}
-        title={t("Referrals")}
+        scope="referrals"
       />
       <Pager
         cursor={query.referralCursor}
@@ -590,13 +590,13 @@ function AuthoritySection({
   loadingLabel,
   rows,
   state,
-  title,
+  scope,
 }: {
   empty: string;
   loadingLabel: string;
   rows: DataTableRow[];
   state: AuthorityState;
-  title: string;
+  scope: PromoScope;
 }) {
   if (!state.rows && state.loading) {
     return (
@@ -616,9 +616,9 @@ function AuthoritySection({
     );
   return (
     <DataTable
-      caption={title}
+      caption={scope === "codes" ? "Redeem codes" : "Referrals"}
       headers={
-        title === "Redeem codes"
+        scope === "codes"
           ? [
               "ID",
               "Status",

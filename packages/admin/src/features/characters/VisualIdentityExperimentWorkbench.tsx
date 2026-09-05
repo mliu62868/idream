@@ -381,11 +381,19 @@ export function VisualIdentityExperimentWorkbench({
   const uploadedSourcesResource = useAuthorityResource<SourceOption[]>({
     key: data.character.id,
     load: useCallback(async () => {
-      const response = await adminV2Operation(
-        "GET /api/v2/admin/characters/:id/image-sources",
-        { path: { id: data.character.id } },
-      );
-      return response.items.map(uploadedSourceOption);
+      const sources: SourceOption[] = [];
+      let cursor: string | null = null;
+      do {
+        const response: import("@idream/shared/admin").CharacterImageSourceListResponse = await adminV2Operation(
+          "GET /api/v2/admin/characters/:id/image-sources",
+          { path: { id: data.character.id },
+            query: new URLSearchParams(cursor ? { cursor } : {}),
+          },
+        );
+        sources.push(...response.items.map(uploadedSourceOption));
+        cursor = response.nextCursor ?? null;
+      } while (cursor);
+      return sources;
     }, [data.character.id]),
   });
   const uploadedSources = uploadedSourcesResource.data ?? EMPTY_SOURCE_OPTIONS;

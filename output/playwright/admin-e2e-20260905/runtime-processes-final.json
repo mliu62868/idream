@@ -1,0 +1,69 @@
+{
+  "checkedAt": "2026-09-05T11:51:32.521075+00:00",
+  "processes": [
+    {
+      "name": "main-web",
+      "pid": 85944,
+      "status": "online",
+      "restarts": 0,
+      "startedAtMs": 1788609036244,
+      "sourceRevision": "idream-worktree-962a30c6a796892fabc822830ad07b3ff87bde04cdad458c62f4216438e5c478"
+    },
+    {
+      "name": "admin-web",
+      "pid": 85945,
+      "status": "online",
+      "restarts": 0,
+      "startedAtMs": 1788609036244,
+      "sourceRevision": "idream-worktree-962a30c6a796892fabc822830ad07b3ff87bde04cdad458c62f4216438e5c478"
+    },
+    {
+      "name": "chat",
+      "pid": 85946,
+      "status": "online",
+      "restarts": 0,
+      "startedAtMs": 1788609036250,
+      "sourceRevision": "idream-worktree-962a30c6a796892fabc822830ad07b3ff87bde04cdad458c62f4216438e5c478"
+    },
+    {
+      "name": "gen-image",
+      "pid": 85947,
+      "status": "online",
+      "restarts": 0,
+      "startedAtMs": 1788609036252,
+      "sourceRevision": "idream-worktree-962a30c6a796892fabc822830ad07b3ff87bde04cdad458c62f4216438e5c478"
+    },
+    {
+      "name": "gen-video",
+      "pid": 85948,
+      "status": "online",
+      "restarts": 0,
+      "startedAtMs": 1788609036258,
+      "sourceRevision": "idream-worktree-962a30c6a796892fabc822830ad07b3ff87bde04cdad458c62f4216438e5c478"
+    },
+    {
+      "name": "gen-finalizer",
+      "pid": 85949,
+      "status": "online",
+      "restarts": 0,
+      "startedAtMs": 1788609036260,
+      "sourceRevision": "idream-worktree-962a30c6a796892fabc822830ad07b3ff87bde04cdad458c62f4216438e5c478"
+    },
+    {
+      "name": "main-event-consumer",
+      "pid": 85950,
+      "status": "online",
+      "restarts": 0,
+      "startedAtMs": 1788609036266,
+      "sourceRevision": "idream-worktree-962a30c6a796892fabc822830ad07b3ff87bde04cdad458c62f4216438e5c478"
+    },
+    {
+      "name": "admin-command-worker",
+      "pid": 85951,
+      "status": "online",
+      "restarts": 0,
+      "startedAtMs": 1788609036268,
+      "sourceRevision": "idream-worktree-962a30c6a796892fabc822830ad07b3ff87bde04cdad458c62f4216438e5c478"
+    }
+  ]
+}

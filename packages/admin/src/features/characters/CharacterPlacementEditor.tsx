@@ -32,6 +32,8 @@ export function CharacterPlacementEditor({
 }) {
   const { t } = useAdminI18n();
   const [assets, setAssets] = useState<CharacterImageSourceAsset[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const requestVersion = useRef(0);
   const [choosing, setChoosing] = useState<PlacementPurpose | null>(null);
   const [busyAssetId, setBusyAssetId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -39,7 +41,8 @@ export function CharacterPlacementEditor({
   const [loadError, setLoadError] = useState<string | null>(null);
   const pendingSelection = useRef<{ signature: string; key: string } | null>(null);
 
-  const loadAssets = useCallback(async () => {
+  const loadAssets = useCallback(async (cursor: string | null = null) => {
+    const version = ++requestVersion.current;
     setLoading(true);
     setLoadError(null);
     try {
@@ -47,14 +50,16 @@ export function CharacterPlacementEditor({
         "GET /api/v2/admin/characters/:id/image-sources",
         {
           path: { id: data.character.id },
-          query: new URLSearchParams({ purpose: "character_library" }),
+          query: new URLSearchParams({ purpose: "character_library", ...(cursor ? { cursor } : {}) }),
         },
       );
-      setAssets([...result.items]);
+      if (version !== requestVersion.current) return;
+      setAssets((current) => cursor ? [...current, ...result.items] : [...result.items]);
+      setNextCursor(result.nextCursor ?? null);
     } catch (cause) {
-      setLoadError(cause instanceof Error ? cause.message : t("Character images could not be loaded"));
+      if (version === requestVersion.current) setLoadError(cause instanceof Error ? cause.message : t("Character images could not be loaded"));
     } finally {
-      setLoading(false);
+      if (version === requestVersion.current) setLoading(false);
     }
   }, [data.character.id, t]);
 
@@ -186,8 +191,8 @@ export function CharacterPlacementEditor({
           {/* SPEC: A failed read cannot establish that no qualified choices exist. */}
           {loading && assets.length === 0 ? (
             <div className="grid min-h-36 place-items-center"><Loader2 className="h-5 w-5 animate-spin" /></div>
-          ) : loadError && selectableAssets.length === 0 ? null : selectableAssets.length === 0 ? (
-            <p className="mt-4 rounded-lg border border-dashed border-[var(--ad-border)] p-6 text-center text-sm text-[var(--ad-text-muted)]">{t("No reviewed images are selectable for this placement. Review an imported candidate or approve a matching generated image in Images first.")}</p>
+          ) : loadError && selectableAssets.length === 0 ? null : selectableAssets.length === 0 && !nextCursor ? (
+            <p className="mt-4 rounded-lg border border-dashed border-[var(--ad-border)] p-6 text-center text-sm text-[var(--ad-text-muted)]">{t("No images are available. Create or import images in Images first.")}</p>
           ) : (
             <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-6">
               {selectableAssets.map((asset) => {
@@ -220,7 +225,7 @@ export function CharacterPlacementEditor({
                       {busyAssetId === asset.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : current ? <Check className="h-3.5 w-3.5" /> : null}
                       {t(
                         currentAuthorityStale
-                          ? "Update Review authority"
+                          ? "Update image selection"
                           : current
                             ? "Current"
                             : usedElsewhere
@@ -233,6 +238,12 @@ export function CharacterPlacementEditor({
               })}
             </div>
           )}
+          {nextCursor ? (
+            <WorkspaceButton className="mt-4" disabled={loading} onClick={() => void loadAssets(nextCursor)}>
+              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              {t("Load more images")}
+            </WorkspaceButton>
+          ) : null}
         </div>
       ) : null}
     </section>

@@ -132,6 +132,7 @@ export function createdCharacterPublicationStatus(input: {
 }) {
   const shared = input.visibility === "public" || input.visibility === "unlisted";
   if (shared && input.publicationState === "live") return "live";
+  if (input.status === "pending_review") return "awaiting publication preparation";
   if (
     shared &&
     (
@@ -139,7 +140,7 @@ export function createdCharacterPublicationStatus(input: {
       (input.publicationState === undefined && input.status === "approved")
     )
   ) {
-    return "approved · awaiting publication";
+    return "awaiting publication";
   }
   return input.status?.replaceAll("_", " ") ?? "";
 }

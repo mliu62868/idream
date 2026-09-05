@@ -15,6 +15,7 @@ import {
 } from "@/components/admin/assets/assets-api";
 import { WorkspaceButton, fieldClass } from "@/features/operations/WorkspaceUi";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
+import { readActiveDurableMutationIntent } from "@/lib/durable-mutation-intent";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import {
@@ -52,7 +53,14 @@ export function CharacterVideoLibrary({
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
-  const [creatorOpen, setCreatorOpen] = useState(false);
+  const activeVideo = data.mediaOperations.operations.find((operation) =>
+    operation.modality === "video" && operation.requestId &&
+    ["pending", "queued", "running", "moderating_input", "moderating_output", "finalizing", "unknown"].includes(operation.status ?? "")
+  );
+  const [creatorOpen, setCreatorOpen] = useState(() => Boolean(
+    readActiveDurableMutationIntent({ scope: `character-video:create:${actorId}:${data.character.id}` }),
+  ));
+  const showCreator = creatorOpen || Boolean(activeVideo);
   const [error, setError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -209,9 +217,9 @@ export function CharacterVideoLibrary({
               {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
               {t("Import video")}
             </WorkspaceButton>
-            <WorkspaceButton disabled={!canCreate || !canReadProduction} onClick={() => setCreatorOpen((open) => !open)} tone="primary">
-              {creatorOpen ? <X className="h-4 w-4" /> : <WandSparkles className="h-4 w-4" />}
-              {t(creatorOpen ? "Close creator" : "Create video")}
+            <WorkspaceButton disabled={!canCreate || !canReadProduction || Boolean(activeVideo)} onClick={() => setCreatorOpen((open) => !open)} tone="primary">
+              {showCreator ? <X className="h-4 w-4" /> : <WandSparkles className="h-4 w-4" />}
+              {t(activeVideo ? "Video generation in progress" : showCreator ? "Close creator" : "Create video")}
             </WorkspaceButton>
           </div>
         </div>
@@ -241,15 +249,14 @@ export function CharacterVideoLibrary({
         </div>
       ) : null}
 
-      {creatorOpen ? (
+      {showCreator ? (
         <section aria-label={t("Video creator")} className="rounded-xl border border-[var(--ad-border)] bg-black/[0.015] p-3 sm:p-4">
           <CharacterVideoStudio
             actorId={actorId}
             data={data}
             onCreateImage={onCreateImage}
             onProjectReload={refreshAfterProduction}
-            permissions={{ read: canReadProduction, create: canCreate, review: false }}
-            productionOnly
+            permissions={{ read: canReadProduction, create: canCreate }}
             runCommittedMutation={runCommittedMutation}
           />
         </section>
@@ -261,7 +268,7 @@ export function CharacterVideoLibrary({
           <div className="grid min-h-48 place-items-center rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)]">
             <Loader2 className="h-5 w-5 animate-spin" />
           </div>
-        ) : loadError && assets.length === 0 ? null : visibleAssets.length === 0 ? (
+        ) : (loadError || activeVideo) && assets.length === 0 ? null : visibleAssets.length === 0 ? (
           <div className="grid min-h-52 place-items-center rounded-xl border border-dashed border-[var(--ad-border)] bg-black/[0.015] p-8 text-center">
             <div>
               <Video className="mx-auto h-7 w-7 text-[var(--ad-text-muted)]" />

@@ -1,0 +1,37 @@
+{
+  "database": "/idream_test",
+  "fixtureRolledBack": true,
+  "results": [
+    {
+      "name": "replace image",
+      "status": 409,
+      "message": "The active Character Release already pins an immutable image set"
+    },
+    {
+      "name": "prepare replacement release",
+      "status": 409,
+      "message": "Character already has a Release ready to publish"
+    },
+    {
+      "name": "withdraw approved release",
+      "status": 409,
+      "message": "Character Release transition is not allowed"
+    },
+    {
+      "name": "supersede approved release",
+      "status": 409,
+      "message": "Character Release transition is not allowed"
+    },
+    {
+      "name": "replace reference set",
+      "status": 409,
+      "message": "Withdraw or finish the active Character Release before publishing a new Reference Set"
+    },
+    {
+      "name": "final candidate state",
+      "status": "approved",
+      "version": 1
+    }
+  ]
+}
+Internal error: directory mismatch for directory "/Users/kk/code/idream/packages/main/tsconfig.json", fd 3. You don't need to do anything, but this indicates a bug.

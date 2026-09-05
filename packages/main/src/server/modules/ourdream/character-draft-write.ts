@@ -1,3 +1,4 @@
+import { ensureCustomerCharacterPublicationPrep } from "@/server/modules/admin-v2/characters/publication-prep";
 import type { CharacterDraft, Prisma } from "@prisma/client";
 import { dispatchGenerationAttemptOutbox } from "@/server/modules/generation/generation-attempt-authority";
 import { lockCharacterMediaAssetAuthorities } from "@/server/modules/admin-v2/characters/generation-authority-lock";
@@ -421,7 +422,7 @@ export async function submitCharacterDraft(input: {
         description,
         systemPrompt: userContent.personaSnapshot.compiled.systemPrompt,
         visibility: input.visibility,
-        status: input.visibility === "private" ? "approved" : "pending_review",
+        status: "approved",
         style,
         gender,
         imageAssetId: anchorAssetId,
@@ -487,13 +488,19 @@ export async function submitCharacterDraft(input: {
       "create_preview",
     );
     await tx.characterStats.create({ data: { characterId: created.id } });
-    await tx.characterSubmission.create({
+    const submission = await tx.characterSubmission.create({
       data: {
         characterId: created.id,
         submitterId: userId,
-        status: input.visibility === "private" ? "approved" : "pending",
+        status: "approved",
+        reviewReason: "automatic_checks_passed",
       },
     });
+    if (input.visibility !== "private") {
+      await ensureCustomerCharacterPublicationPrep(tx, {
+        characterId: created.id, submissionId: submission.id, actorId: userId,
+      });
+    }
     await tx.characterDraft.update({
       where: { id: draft.id },
       data: {

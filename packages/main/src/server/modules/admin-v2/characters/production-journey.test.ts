@@ -208,20 +208,17 @@ describe("Character Production Journey", () => {
     });
   });
 
-  it("routes a complete but unreviewed image pack to review before preview or release", () => {
+  it("takes a complete image pack directly to preview without manual review", () => {
     expect(
       journey({
         draftPurposes: allPurposes,
         draftPurposesNeedingReview: ["character_cover", "character_hero"],
       }),
     ).toMatchObject({
-      stage: "image_production",
-      status: "blocked",
-      primaryAction: {
-        code: "review_asset_pack",
-        deepLink: "/admin/characters/character-1?tab=assets",
-      },
-      blockers: [{ code: "draft_asset_review_missing" }],
+      stage: "preview",
+      status: "ready",
+      primaryAction: { code: "preview_character", deepLink: "/admin/characters/character-1?tab=preview" },
+      blockers: [],
     });
   });
 

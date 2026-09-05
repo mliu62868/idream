@@ -1,3 +1,4 @@
+import { validatedAutomaticFailureCorrection, type AutomaticFailureCorrectionDb } from "@/server/ai/generation-unknown-resolution-evidence";
 import {
   Prisma,
   type GenerationAttempt,
@@ -84,10 +85,7 @@ type GenerationRetryAuthorityAttempt = Pick<
   "id" | "status" | "retryability"
 >;
 
-type GenerationRetryAuthorityDb = Pick<
-  Prisma.TransactionClient,
-  "generationDelivery" | "generationJobEvent"
->;
+type GenerationRetryAuthorityDb = AutomaticFailureCorrectionDb & Pick<Prisma.TransactionClient, "generationDelivery">;
 
 export type GenerationAttemptRetryAuthority =
   | {
@@ -614,6 +612,9 @@ export async function resolveGenerationAttemptRetryAuthority(
     metadata.resolution === "confirm_failed" &&
     input.request.errorCode === "operator_confirmed_provider_failure"
   ) {
+    if (await validatedAutomaticFailureCorrection(db, input.request.id, latestAttempt.id)) {
+      return { allowed: false, code: "unknown_attempt_unresolved", message: "Validated late success is available; adopt the recovered output before creating another Attempt", details: { requestId: input.request.id, attemptId: latestAttempt.id } };
+    }
     return { allowed: true, basis: "operator_confirmed_unknown_failure" };
   }
   return {

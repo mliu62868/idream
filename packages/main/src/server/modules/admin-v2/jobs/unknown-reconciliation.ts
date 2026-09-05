@@ -1,3 +1,5 @@
+import { probeRecoverableTerminalEvidence } from "@/server/ai/local-pipeline";
+import { AUTOMATIC_UNKNOWN_SETTLEMENT_ACTOR_ID, validatedAutomaticFailureCorrection, RECOVERED_SUCCESS_EVENT_TYPES, recoveredReceiptSource, recoveredReceiptHashMatches, validatedUnknownSuccessResolution } from "@/server/ai/generation-unknown-resolution-evidence";
 import { randomUUID } from "node:crypto";
 import {
   aiFinalizePayloadSchema,
@@ -41,10 +43,6 @@ const RECONCILABLE_REQUEST_STATUSES = [
   "failed",
 ] as const;
 const MAX_REVIEW_DELAY_MS = 90 * 24 * 60 * 60 * 1_000;
-const RECOVERED_SUCCESS_EVENT_TYPES = [
-  "unknown_terminal_evidence_recovered",
-  "unknown_terminal_resolution_evidence_recovered",
-] as const;
 const TERMINAL_UNKNOWN_RECONCILIATION_EVENT_TYPES = [
   "unknown_reconciliation_adopt_succeeded",
   "unknown_reconciliation_confirm_failed",
@@ -91,6 +89,13 @@ export async function reconcileUnknownGenerationRequest(input: {
       }).catch(() => false);
     }
     return replay;
+  }
+
+  if (input.actor.id === AUTOMATIC_UNKNOWN_SETTLEMENT_ACTOR_ID && input.command.resolution === "confirm_failed") {
+    const recovery = await probeRecoverableTerminalEvidence(input.requestId);
+    if (!recovery.attemptId || input.idempotencyKey !== `generation-unknown-sweep:${input.requestId}:${recovery.attemptId}` || recovery.defer || recovery.sourceDispatchRecoverable) {
+      throw Errors.conflict("Original generation execution or terminal relay is still recoverable; automatic settlement must wait");
+    }
   }
 
   const recoveredSuccess = input.command.resolution === "adopt_succeeded"
@@ -158,7 +163,10 @@ export async function reconcileUnknownGenerationRequest(input: {
     const priorTerminalDecision = priorTerminalDecisions.find(
       (event) => jsonRecord(event.metadata).attemptId === latestAttempt.id,
     );
-    if (priorTerminalDecision) {
+    const automaticCorrection = priorTerminalDecision && input.command.resolution === "adopt_succeeded"
+      ? await validatedAutomaticFailureCorrection(tx, request.id, latestAttempt.id)
+      : null;
+    if (priorTerminalDecision && !automaticCorrection) {
       throw Errors.conflict(
         "Unknown Generation Attempt already has a terminal operator resolution",
         {
@@ -213,6 +221,7 @@ export async function reconcileUnknownGenerationRequest(input: {
         request,
         attempt: latestAttempt,
         evidence: recoveredSuccess,
+        automaticCorrection,
         now,
       });
       requestStatus = adopted.requestStatus;
@@ -275,6 +284,7 @@ export async function reconcileUnknownGenerationRequest(input: {
     const evidence = {
       providerEvidenceRefs: input.command.providerEvidenceRefs,
       nextReviewAt: response.nextReviewAt,
+      ...(automaticCorrection ? { correctsAutomaticDecisionId: automaticCorrection.priorDecisionId, correctsAutomaticCommandId: automaticCorrection.priorCommandId } : {}),
     };
 
     await tx.generationJobEvent.create({
@@ -401,61 +411,6 @@ type PreparedRecoveredSuccess = {
   };
 };
 
-async function validatedUnknownSuccessResolution(
-  tx: Prisma.TransactionClient,
-  attemptId: string,
-) {
-  const attempt = await tx.generationAttempt.findUnique({
-    where: { id: attemptId },
-    select: { requestId: true, status: true },
-  });
-  if (!attempt || attempt.status !== "unknown") return null;
-  const event = await tx.generationJobEvent.findFirst({
-    where: {
-      jobId: attempt.requestId,
-      type: { in: [...RECOVERED_SUCCESS_EVENT_TYPES] },
-      metadata: { path: ["attemptId"], equals: attemptId },
-    },
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-  });
-  const metadata = jsonRecord(event?.metadata);
-  const parsed = aiFinalizePayloadSchema.safeParse(metadata.recoveredSuccess);
-  if (
-    !event ||
-    !parsed.success ||
-    parsed.data.kind !== "generation.completed" ||
-    parsed.data.attemptId !== attemptId ||
-    parsed.data.generationJobId !== attempt.requestId
-  ) return null;
-  const expectedHash = canonicalSha256({
-    terminalRecordRef: parsed.data.terminalRecordRef,
-    terminalRecordChecksum: parsed.data.terminalRecordChecksum,
-  });
-  const receiptSource = recoveredReceiptSource(event.type);
-  if (!receiptSource) return null;
-  const receipt = await tx.inboundEventReceipt.findUnique({
-    where: {
-      sourceService_sourceEventId: {
-        sourceService: receiptSource,
-        sourceEventId: attemptId,
-      },
-    },
-  });
-  if (
-    receipt?.processingState !== "processed" ||
-    !recoveredReceiptHashMatches(
-      receiptSource,
-      receipt.payloadHash,
-      expectedHash,
-      parsed.data.terminalRecordChecksum,
-    ) ||
-    (receiptSource === "gen_resolution" &&
-      (metadata.resolutionReceiptId !== receipt.id ||
-        metadata.resolutionPayloadHash !== expectedHash))
-  ) return null;
-  return { payload: parsed.data, receiptId: receipt.id, eventId: event.id };
-}
-
 async function prepareRecoveredSuccessAdoption(
   requestId: string,
 ): Promise<PreparedRecoveredSuccess> {
@@ -538,6 +493,7 @@ async function adoptRecoveredSuccess(
     readonly request: GenerationJob;
     readonly attempt: GenerationAttempt;
     readonly evidence: PreparedRecoveredSuccess;
+    readonly automaticCorrection: Awaited<ReturnType<typeof validatedAutomaticFailureCorrection>>;
     readonly now: Date;
   },
 ) {
@@ -750,6 +706,7 @@ async function adoptRecoveredSuccess(
     await markProductionItemGenerated(tx, {
       jobId: input.request.id,
       mediaAssetId: firstAsset.id,
+      ...(input.automaticCorrection ? { automaticFailureRecovery: { attemptId: input.attempt.id, decisionId: input.automaticCorrection.priorDecisionId } } : {}),
     });
   }
   const reopened = input.request.status === "failed"
@@ -868,24 +825,6 @@ function generationPromptHash(value: string) {
   let hash = 5381;
   for (const char of value) hash = (hash * 33) ^ char.charCodeAt(0);
   return `prompt_${Math.abs(hash)}`;
-}
-
-function recoveredReceiptSource(eventType: string) {
-  if (eventType === "unknown_terminal_evidence_recovered") return "gen" as const;
-  if (eventType === "unknown_terminal_resolution_evidence_recovered") {
-    return "gen_resolution" as const;
-  }
-  return null;
-}
-
-function recoveredReceiptHashMatches(
-  source: "gen" | "gen_resolution",
-  actual: string,
-  envelopeHash: string,
-  terminalRecordChecksum: string,
-) {
-  return actual === envelopeHash ||
-    (source === "gen" && actual === terminalRecordChecksum);
 }
 
 function jsonRecord(value: unknown): Record<string, unknown> {

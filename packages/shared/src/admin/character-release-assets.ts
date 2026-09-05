@@ -19,9 +19,11 @@ export const characterReleaseAssetPlacementSchema = z.object({
 }).strict().superRefine((placement, ctx) => {
   // Imports have no generation lineage; partial generated evidence is never an import.
   if (![placement.runId, placement.itemId, placement.generationJobId].some(Boolean)) return;
-  for (const field of ["runId", "itemId", "reviewDecisionId", "generationJobId"] as const) {
+  // Daily adoption has no manual review gate. Historical review IDs remain
+  // readable, while the run, item and generation job still establish lineage.
+  for (const field of ["runId", "itemId", "generationJobId"] as const) {
     if (!placement[field]) {
-      ctx.addIssue({ code: "custom", path: [field], message: "Generated placements require complete generation and review lineage" });
+      ctx.addIssue({ code: "custom", path: [field], message: "Generated placements require complete generation lineage" });
     }
   }
 });

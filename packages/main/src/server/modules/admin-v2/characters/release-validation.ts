@@ -1,3 +1,4 @@
+import { resolveGenerationAssetSuccessAttempts } from "@/server/ai/generation-asset-success-authority";
 import type { Prisma } from "@prisma/client";
 import { parseCharacterReleaseAssetManifest } from "@idream/shared/admin";
 import {
@@ -64,7 +65,7 @@ export const releaseCheckKeys = [
   "release_avatar_manifest_available",
   "release_asset_manifest_available",
   "release_assets_customer_publishable",
-  "release_asset_review_authority",
+  "release_asset_source_authority",
   "release_asset_generation_authority",
   "snapshot_hash_matches",
 ] as const;
@@ -116,7 +117,7 @@ const RELEASE_PROPOSAL_BLOCKER_CODES = {
   release_avatar_manifest_available: () => "approved_avatar_missing",
   release_asset_manifest_available: null,
   release_assets_customer_publishable: null,
-  release_asset_review_authority: null,
+  release_asset_source_authority: null,
   release_asset_generation_authority: null,
   snapshot_hash_matches: null,
 } as const satisfies Readonly<
@@ -385,26 +386,7 @@ export async function evaluateCharacterReleaseSnapshot(
       latestUploadReviewByAssetId.set(decision.artifactId, decision);
     }
   }
-  const placementAttempts = await tx.generationAttempt.findMany({
-    where: {
-      requestId: {
-        in: manifestPlacements.flatMap((placement) =>
-          placement.generationJobId ? [placement.generationJobId] : [],
-        ),
-      },
-      status: "succeeded",
-    },
-    orderBy: [{ requestId: "asc" }, { attemptNo: "desc" }],
-  });
-  const latestAttemptByJobId = new Map<
-    string,
-    (typeof placementAttempts)[number]
-  >();
-  for (const attempt of placementAttempts) {
-    if (!latestAttemptByJobId.has(attempt.requestId)) {
-      latestAttemptByJobId.set(attempt.requestId, attempt);
-    }
-  }
+  const attemptsByAssetId = await resolveGenerationAssetSuccessAttempts(tx, placementAssets);
   const rawPlacementProvenance = Array.isArray(provenance.placements)
     ? provenance.placements.map(releaseRecord)
     : [];
@@ -429,7 +411,7 @@ export async function evaluateCharacterReleaseSnapshot(
         : null;
       const job = item?.job ?? null;
       const latestAttempt = placement.generationJobId
-        ? latestAttemptByJobId.get(placement.generationJobId)
+        ? attemptsByAssetId.get(placement.assetId)
         : null;
       const pinnedCandidates = rawPlacementProvenance.filter(
         (candidate) => candidate.slotKey === placement.slotKey,
@@ -496,7 +478,7 @@ export async function evaluateCharacterReleaseSnapshot(
   const syntheticPlacementSlots = customerPublishabilityFailures
     .filter((failure) => failure.reasons.includes("metadata_synthetic"))
     .map((failure) => failure.slotKey);
-  const invalidReviewAuthoritySlots = manifestPlacements.flatMap(
+  const invalidImageSourceSlots = manifestPlacements.flatMap(
     (placement) => {
       const asset = placementAssetById.get(placement.assetId);
       if (!strictGeneratedRelease) {
@@ -569,7 +551,7 @@ export async function evaluateCharacterReleaseSnapshot(
       if (!placement.itemId) return [placement.slotKey];
       const item = placementItemById.get(placement.itemId);
       const job = item?.job ?? null;
-      const attempt = latestAttemptByJobId.get(placement.generationJobId);
+      const attempt = attemptsByAssetId.get(placement.assetId);
       const asset = placementAssetById.get(placement.assetId);
       const pinnedCandidates = rawPlacementProvenance.filter(
         (candidate) => candidate.slotKey === placement.slotKey,
@@ -618,7 +600,8 @@ export async function evaluateCharacterReleaseSnapshot(
         sourceMeta.targetId === project?.characterId &&
         sourceMeta.bootstrapIdentity === placement.bootstrapIdentity &&
         asset?.sourceJobId === job.id &&
-        attempt.status === "succeeded" &&
+        // The asset-bound resolver also accepts an adopted unknown Attempt
+        // after verifying its resolution Receipt, command, Artifact and Delivery.
         attempt.provider === job.provider &&
         attempt.profileKey === job.profileId &&
         attempt.profileVersion === job.profileVersion &&
@@ -892,9 +875,9 @@ export async function evaluateCharacterReleaseSnapshot(
       },
     },
     {
-      key: "release_asset_review_authority",
-      passed: invalidReviewAuthoritySlots.length === 0,
-      evidence: { invalidReviewAuthoritySlots },
+      key: "release_asset_source_authority",
+      passed: invalidImageSourceSlots.length === 0,
+      evidence: { invalidImageSourceSlots },
     },
     {
       key: "release_asset_generation_authority",

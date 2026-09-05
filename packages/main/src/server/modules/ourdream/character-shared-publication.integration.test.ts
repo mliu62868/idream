@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
-import { adminV2 } from "@/server/test/admin-v2-http";
 import { api, createUser, expectOk, purgeTestData } from "@/server/test/helpers";
 import { getCharacterWorkspace } from "../admin-v2/characters/workspace";
 import { prepareApprovedCustomerCharacterPublication } from "../admin-v2/characters/publication-prep";
@@ -57,10 +56,10 @@ async function submit(suffix: string, visibility: "public" | "unlisted" | "priva
 }
 
 describe("customer shared Character publication", () => {
-  it.each(["public", "unlisted"] as const)("routes %s Create through review and publication preparation", async (visibility) => {
+  it.each(["public", "unlisted"] as const)("routes %s Create directly to publication preparation after automatic checks", async (visibility) => {
     const result = await submit(visibility, visibility);
-    expect(result.character).toMatchObject({ visibility, status: "pending_review" });
-    expect(result.submission.status).toBe("pending");
+    expect(result.character).toMatchObject({ visibility, status: "approved" });
+    expect(result.submission.status).toBe("approved");
     const replay = await api("POST", `character-drafts/${result.draftId}/submit`, {
       userId: result.userId, ageGate: true, body: { visibility },
     });
@@ -70,22 +69,11 @@ describe("customer shared Character publication", () => {
     const pending = await api("GET", "library/created", { userId: result.userId, ageGate: true });
     expectOk(pending);
     expect(pending.data.items).toContainEqual(expect.objectContaining({
-      id: result.characterId, publicationState: "pending_review",
+      id: result.characterId, publicationState: "awaiting_publication",
     }));
 
-    const moderatorId = `${prefix}moderator-${visibility}`;
-    await createUser({ id: moderatorId, role: "moderator" });
-    const queue = await adminV2("GET", "/api/v2/admin/content/review-queue", { userId: moderatorId, role: "moderator" });
-    expectOk(queue);
-    expect(queue.data.items).toContainEqual(expect.objectContaining({ submissionId: result.submission.id }));
-    const reviewed = await adminV2("POST", `/api/v2/admin/content/review-queue/${result.submission.id}/decision`, {
-      userId: moderatorId, role: "moderator",
-      body: { decision: "approve", reason: "Prepare this shared Character", confirmation: result.submission.id },
-    });
-    expectOk(reviewed);
-    expect(reviewed.data.publication).toMatchObject({
-      state: "publication_prep", deepLink: `/admin/characters/${result.characterId}?tab=assets`,
-    });
+    expect(await prisma.characterSubmission.count({ where: { characterId: result.characterId, status: "pending" } })).toBe(0);
+    expect(result.submission.reviewerId).toBeNull();
     expect(await getCharacterWorkspace(result.characterId)).toMatchObject({
       project: { characterId: result.characterId }, serving: { state: "inactive" }, releases: [],
     });
@@ -129,15 +117,38 @@ describe("customer shared Character publication", () => {
       .toMatchObject({ visibility: "unlisted", status: "approved" });
   });
 
-  it.each(["private", "public"] as const)("keeps the review queue authoritative when %s changes to unlisted", async (visibility) => {
+  it.each(["private", "public"] as const)("prepares publication without manual review when %s changes to unlisted", async (visibility) => {
     const result = await submit(`change-${visibility}`, visibility);
     const updated = await api("PATCH", `characters/${result.characterId}`, {
       userId: result.userId, ageGate: true, body: { visibility: "unlisted" },
     });
     expectOk(updated);
-    expect(updated.data.character).toMatchObject({ visibility: "unlisted", status: "pending_review", publicationState: "pending_review" });
+    expect(updated.data.character).toMatchObject({ visibility: "unlisted", status: "approved", publicationState: "awaiting_publication" });
     const pending = await prisma.characterSubmission.findMany({ where: { characterId: result.characterId, status: "pending" } });
-    expect(pending).toHaveLength(1);
-    if (visibility === "public") expect(pending[0].id).toBe(result.submission.id);
+    expect(pending).toHaveLength(0);
+    expect(await prisma.characterServing.findUnique({ where: { characterId: result.characterId } })).toMatchObject({ state: "inactive", currentReleaseId: null });
   });
+  it("keeps automatic text checks and report removals effective without manual review", async () => {
+    const result = await submit("automatic-boundaries", "private");
+    expect((await api("PATCH", `characters/${result.characterId}`, {
+      userId: result.userId, ageGate: true, body: { description: "underage minor" },
+    })).status).toBe(403);
+    expect(await prisma.character.findUniqueOrThrow({ where: { id: result.characterId } }))
+      .toMatchObject({ description: "A warm radio host", status: "approved" });
+    await prisma.character.update({ where: { id: result.characterId }, data: { status: "removed" } });
+    expect((await api("PATCH", `characters/${result.characterId}`, {
+      userId: result.userId, ageGate: true, body: { visibility: "public" },
+    })).status).toBe(403);
+    expect(await prisma.characterProject.count({ where: { characterId: result.characterId } })).toBe(0);
+  });
+
+  it("does not create duplicate submissions when sharing preferences are replayed", async () => {
+    const result = await submit("sharing-replay", "public");
+    for (let i = 0; i < 2; i++) expectOk(await api("PATCH", `characters/${result.characterId}`, {
+      userId: result.userId, ageGate: true, body: { visibility: "unlisted" },
+    }));
+    expect(await prisma.characterSubmission.count({ where: { characterId: result.characterId } })).toBe(1);
+    expect(await prisma.characterProject.count({ where: { characterId: result.characterId } })).toBe(1);
+  });
+
 });

@@ -111,11 +111,7 @@ export function CharacterSoulPanel({
       <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">{t("Immutable authority")}</p>
             <h3 className="mt-1 text-lg font-semibold">{t("Character Soul version")} {data.soul.current.version}</h3>
-            <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-              {t("schema")} {data.soul.current.schemaVersion ?? t("Soul invalid")} · {data.soul.current.compilerVersion ?? t("not compiled")} · {data.soul.current.estimatedTokens ?? "—"} {t("tokens")}
-            </p>
           </div>
           <span className={data.soul.valid && data.soul.current.diagnostics.length === 0
             ? "text-sm font-semibold text-[var(--ad-green-text)]"
@@ -125,9 +121,6 @@ export function CharacterSoulPanel({
               : t("Review diagnostics")}
           </span>
         </div>
-        <p className="mt-3 break-all font-mono text-xs text-[var(--ad-text-muted)]">
-          {data.soul.current.fingerprint ?? t("No valid fingerprint")}
-        </p>
         {data.soul.changedFields.length > 0 ? (
           <div className="mt-4">
             <p className="text-sm font-semibold">{t("Changed from Serving version")} {data.soul.previous?.version}</p>
@@ -181,10 +174,15 @@ export function CharacterSoulPanel({
         </div>
       </section>
 
-      <div className="grid gap-5 xl:grid-cols-2">
-        <ReadOnlyArtifact title={t("Generated SOUL.md")} unavailableLabel={t("Unavailable until the Soul compiles.")} value={draftPreview?.markdown ?? ""} />
-        <ReadOnlyArtifact title={t("Compiled system prompt")} unavailableLabel={t("Unavailable until the Soul compiles.")} value={draftPreview?.systemPrompt ?? ""} />
-      </div>
+      <details className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5">
+        <summary className="cursor-pointer text-sm font-semibold">{t("Technical details")}</summary>
+        <p className="mt-3 text-xs text-[var(--ad-text-muted)]">{t("schema")} {data.soul.current.schemaVersion ?? t("Soul invalid")} · {data.soul.current.compilerVersion ?? t("not compiled")} · {data.soul.current.estimatedTokens ?? "—"} {t("tokens")}</p>
+        <p className="mt-2 break-all font-mono text-xs text-[var(--ad-text-muted)]">{data.soul.current.fingerprint ?? t("No valid fingerprint")}</p>
+        <div className="mt-4 grid gap-5 xl:grid-cols-2">
+          <ReadOnlyArtifact title={t("Generated SOUL.md")} unavailableLabel={t("Unavailable until the Soul compiles.")} value={draftPreview?.markdown ?? ""} />
+          <ReadOnlyArtifact title={t("Compiled system prompt")} unavailableLabel={t("Unavailable until the Soul compiles.")} value={draftPreview?.systemPrompt ?? ""} />
+        </div>
+      </details>
       {confirmOpen ? (
         <ConfirmDialog
           onClose={() => setConfirmOpen(false)}
@@ -271,7 +269,7 @@ function Area({ label, value, onChange }: { label: string; value: string; onChan
 
 function ReadOnlyArtifact({ title, unavailableLabel, value }: { title: string; unavailableLabel: string; value: string | null }) {
   return (
-    <details className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]" open>
+    <details className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
       <summary className="cursor-pointer p-4 font-semibold">{title}</summary>
       <pre className="max-h-[36rem] overflow-auto whitespace-pre-wrap border-t border-[var(--ad-border)] p-4 text-xs leading-6">{value ?? unavailableLabel}</pre>
     </details>

@@ -57,7 +57,7 @@ describe("Character and Creative operator workspaces", () => {
       />,
     );
     for (const html of [writable, readOnly]) {
-      expect(html).toContain("Execution, review, placement, and verification remain separate facts.");
+      expect(html).toContain("Generate assets, choose where to use them, and verify delivery.");
       expect(html).toContain("Run, title or purpose");
       expect(html).toContain("Loading Creative Run facts");
       expect(html).not.toContain("Create images");

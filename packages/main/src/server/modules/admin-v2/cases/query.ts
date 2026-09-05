@@ -1,3 +1,4 @@
+import { caseEvidenceSummary } from "./evidence-summary";
 import { operationsCaseDetailSchema, type OperationsCaseQuery } from "@idream/shared/admin";
 import { Prisma, type AdminCase } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
@@ -303,14 +304,7 @@ export async function getCaseDetail(request: Request, caseId: string) {
         caseId: row.caseId,
         source: { type: row.sourceType, id: row.sourceId },
         evidenceType: row.sourceType,
-        summary:
-          typeof snapshot.description === "string"
-            ? snapshot.description
-            : typeof snapshot.appealText === "string"
-              ? snapshot.appealText
-              : row.sourceType === "support_message" && typeof snapshot.body === "string"
-                ? snapshot.body
-              : `${row.sourceType} ${row.sourceId}`,
+        summary: caseEvidenceSummary(row.sourceType, snapshot),
         occurredAt: row.occurredAt.toISOString(),
         access: "full",
       };

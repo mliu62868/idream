@@ -40,7 +40,6 @@ const canonicalPageFiles = [
   "today/page.tsx",
   "characters/page.tsx",
   "characters/new/page.tsx",
-  "characters/review/page.tsx",
   "characters/[id]/page.tsx",
   "creative/runs/page.tsx",
   "creative/runs/[id]/page.tsx",
@@ -112,20 +111,13 @@ describe("canonical Admin route shell", () => {
     expect(markup).toContain('aria-label="Refresh"');
   });
 
-  it("renders the canonical character review route as the pending submissions queue", () => {
-    const markup = renderToString(
-      <AdminConsoleClient
-        {...shellProps({
-          actor: { id: "moderator-1", role: "moderator" },
-          initialPermissions: ["safety.review.read"],
-          initialSection: "characters/review",
-        })}
-      />,
-    );
-
-    expect(markup).toContain("Character Review");
-    expect(markup).toContain("Pending submissions");
-    expect(markup).toContain('name="review-queue-search"');
+  it("redirects the retired review bookmark to character management", async () => {
+    const source = await readFile(path.join(adminRoot, "characters/review/page.tsx"), "utf8");
+    expect(source).toContain('redirect("/admin/characters")');
+    const markup = renderToString(<AdminConsoleClient {...shellProps({ initialPermissions: ["character.project.read", "character.release.read", "character.performance.read"], initialSection: "characters/review" })} />);
+    expect(markup).not.toContain("Pending submissions");
+    expect(markup).not.toContain('name="review-queue-search"');
+    expect(markup).toContain("Characters");
   });
 
   // SPEC: 服务端第一帧使用运营的语言与工作模式；已授权的低频入口由关闭的工作区目录承载。

@@ -2115,7 +2115,7 @@ describe("generation config control plane", () => {
     );
   });
 
-  it("runs content production while enforcing Creative review and verified placement authority", async () => {
+  it("completes daily content production without manual review while preserving placement authority", async () => {
     const admin = await setupActor("admin", "content-production");
     const support = await setupActor("support", "content-production");
     const character = await createCharacter({
@@ -2359,10 +2359,10 @@ describe("generation config control plane", () => {
     await runQueuedGenerationJobs(12);
 
     const detailBatch = await readCreativeRunProjection(created.data.batch.id);
-    expect(detailBatch).toMatchObject({ completedItems: 1, status: "reviewing" });
+    expect(detailBatch).toMatchObject({ completedItems: 1, status: "completed" });
     const detailSecondBatch = await readCreativeRunProjection(createdSecond.data.batch.id);
-    expect(detailSecondBatch).toMatchObject({ completedItems: 1, status: "reviewing" });
-    // 两个单图 Run 合起来提供「一个批准、一个拒绝」这两条评审路径。
+    expect(detailSecondBatch).toMatchObject({ completedItems: 1, status: "completed" });
+    // 两个单图 Run 均在交付后完成；采用和投放使用各自权威，不产生人工审核。
     const generatedItems = [
       ...detailBatch.items,
       ...detailSecondBatch.items,
@@ -2372,6 +2372,7 @@ describe("generation config control plane", () => {
       status: string;
     }>;
     expect(generatedItems.every((item) => item.status === "generated" && item.asset?.id)).toBe(true);
+    expect(await prisma.creativeReviewDecision.count({ where: { runItemId: { in: itemIds } } })).toBe(0);
 
     const assetId = generatedItems[0]?.asset?.id as string;
     const libraryApprove = await adminV2Api("PATCH", `/api/v2/admin/assets/${assetId}`, {

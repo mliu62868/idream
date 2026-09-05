@@ -1,13 +1,13 @@
-# ADR-12：Character Asset Studio 的草稿、审核与发布权威
+# ADR-12：Character Asset Studio 的草稿与发布权威
 
-更新日期：2026-07-13  
-状态：Accepted / Implemented  
-产品说明：[联合评审方案](../product/CHARACTER_ASSET_STUDIO_REVIEW.md)  
+更新日期：2026-09-05
+状态：Accepted / Implemented
+产品说明：[联合评审方案](../product/CHARACTER_ASSET_STUDIO_REVIEW.md)
 运营流程：[Character Asset Studio 运营手册](../product/CHARACTER_ASSET_STUDIO_OPERATIONS_GUIDE.md)
 
 ## 1. 决策
 
-Character Asset Studio 复用 Creative Run 作为生成 authority、Creative Review Decision 作为审核 authority、Character Project 作为草稿选择 authority、Character Release/Serving 作为发布 authority。
+2026-09-05 产品决策取消日常人工审核关卡，替代本文此前的逐图批准要求。Character Asset Studio 复用 Creative Run 作为生成 authority、Character Project 作为草稿选择 authority、Character Release/Serving 作为发布 authority。历史 Creative Review Decision 只保留为记录；模型评估的实验评分继续使用该存储。基础自动拦截、举报和申诉处理不变。
 
 任何单一 UI 状态、Asset ID 或 Character image 字段都不能跨越这些边界代替完整发布事实。
 
@@ -20,7 +20,7 @@ Character Asset Studio 复用 Creative Run 作为生成 authority、Creative Rev
 | 运行生成路线 | active `GenerationModelProfile` + pinned `GenerationRouteQualification` | 兼容的 profile/workflow version、单图策略、精确 lineage |
 | Creative Run | `ContentProductionBatch` | purpose、targetType/targetId、profile/workflow、brief、count |
 | Run Item | `ContentProductionItem` | ordinal、Job、Asset、status、version、direction lineage |
-| 素材审核 | `CreativeReviewDecision` | decision、identityConsistency、artifactId、reviewer、reason |
+| 历史决策与模型实验评分 | `CreativeReviewDecision` | 保留历史事实，不作为日常采用和发布的前置条件 |
 | 草稿资产包 | `CharacterProject.draftAssetPack` | purpose 到 exact lineage 的内部映射 |
 | 草稿主图 | `CharacterProject.draftImageAssetId` | cover 的可查询 FK 与 Preview fallback |
 | 发布快照 | `CharacterRelease.releasePlacementManifest` | 三个 placement 的 immutable lineage |
@@ -39,26 +39,25 @@ Character Asset Studio 复用 Creative Run 作为生成 authority、Creative Rev
 - 角色运营 Run 每次必须且只能生成 1 个 Item；旧的模型评测矩阵不是正式生图前置门槛；
 - 生成参数固定到 Run/Item lineage，不能随后静默替换。
 
-### 3.2 审核与采用
+### 3.2 采用
 
-- Review 可以在批次仍生成时对已完成 Item 进行；
-- 可采用的最新 Review Decision 必须为 `approved` 且 `identityConsistency=passed`；
+- 已完成且通过基础自动检查的素材可直接采用，不创建虚假的评分或人工批准；
 - Asset 必须存在、可用，并精确属于所提交的 Run Item；
 - Run 的 target/purpose 必须和 Character/selection purpose 完全一致；
 - Character Project 更新使用 `If-Match` + body `entityVersion` 做 compare-and-swap；
 - 采用只更新草稿，不直接修改 live Character；
-- active candidate Release 存在时禁止改写草稿资产包。
+- 待发布 candidate Release 存在时禁止改写草稿资产包；可通过有审计的 withdraw 放弃候选后编辑。
 
 ### 3.3 发布
 
 - Release proposal 把三个草稿 entry 转换为 immutable placements；
-- placement 保存 `assetId + runId + itemId + reviewDecisionId`；
+- 生成 placement 保存 `assetId + runId + itemId + generationJobId`；上传素材保留独立上传来源，不伪造生成记录；历史 `reviewDecisionId` 为可选记录；
 - slot/purpose 映射固定为：
   - `character_avatar` → `character_cover`
   - `character_hero` → `character_hero`
   - `character_chat` → `character_chat`
-- 发布 validation 重新检查素材可用性、角色归属、Run/Item/purpose 和**最新** Review Decision；
-- proposal 后出现更新的拒绝决定时，历史 approved decision 不再足以发布；
+- 发布 validation 重新检查素材可用性、角色归属、Run/Item/purpose 与 provider/attempt 来源；
+- 历史评分和决策变化不改变图片资格；文件、安全状态和来源失效仍阻止发布；
 - 只有 publish command 成功后才更新 Serving/live projection。
 
 ## 4. 状态流
@@ -75,14 +74,12 @@ sequenceDiagram
     O->>A: Generate one purpose image
     A->>C: POST Creative Run count=1 (idempotent)
     C-->>A: Run + one Item + one Job
-    O->>A: Approve candidate identity
-    A->>C: Append Review Decision
     O->>A: Select candidate
     A->>P: CAS update draftAssetPack
     P-->>A: New project version
     O->>A: Propose Release
     A->>R: Freeze placements + lineage
-    O->>A: Review and validate
+    O->>A: Validate frozen snapshot
     A->>R: Recheck current asset authority
     O->>A: Publish command
     R->>S: Update serving/live projection
@@ -98,19 +95,19 @@ sequenceDiagram
     "assetId": "asset_...",
     "runId": "run_...",
     "itemId": "item_...",
-    "reviewDecisionId": "decision_..."
+    "generationJobId": "job_..."
   },
   "character_hero": {
     "assetId": "asset_...",
     "runId": "run_...",
     "itemId": "item_...",
-    "reviewDecisionId": "decision_..."
+    "generationJobId": "job_..."
   },
   "character_chat": {
     "assetId": "asset_...",
     "runId": "run_...",
     "itemId": "item_...",
-    "reviewDecisionId": "decision_..."
+    "generationJobId": "job_..."
   }
 }
 ```
@@ -124,10 +121,8 @@ sequenceDiagram
 | 查询角色 Runs | `GET /api/v2/admin/creative/runs?targetType=character&targetId=…&sort=updated_desc` | `creative.run.read` | cursor query |
 | 创建 Run | `POST /api/v2/admin/creative/runs` | `creative.run.write` | `Idempotency-Key` |
 | 查询 Run lineage | `GET /api/v2/admin/creative/runs/:id` | `creative.run.read` | read |
-| 审核 Item | `POST /api/v2/admin/creative/runs/:id/items/:itemId/decisions` | `creative.run.review` | `Idempotency-Key` + entity version |
 | 采用草稿素材 | `PATCH /api/v2/admin/characters/:id/draft-image` | `character.project.write` | `If-Match` + entity version |
 | 创建 Release proposal | `POST /api/v2/admin/characters/:id/releases` | `character.release.propose` | `Idempotency-Key` |
-| 审核 Release | `POST /api/v2/admin/characters/:id/releases/:releaseId/review` | `character.release.review` | `If-Match` |
 | 校验 Release | `POST /api/v2/admin/characters/:id/releases/:releaseId/validation` | `character.release.publish` | `Idempotency-Key` |
 | 发布 Release | `POST /api/v2/admin/characters/:id/releases/:releaseId/commands/publish` | `character.release.publish` | `Idempotency-Key` |
 
@@ -146,7 +141,7 @@ API manifest 与 Zod 契约的单一事实来源：
 - Collaboration activity；
 - Outbox event。
 
-生成、审核、Release proposal、validation 与 publish 分别保留自己的审计与事件证据。客户端成功提示不是任何异步动作完成的 authority。
+生成、采用、Release proposal、validation 与 publish 分别保留自己的审计与事件证据。客户端成功提示不是任何异步动作完成的 authority。
 
 ## 8. 失败语义
 
@@ -154,11 +149,10 @@ API manifest 与 Zod 契约的单一事实来源：
 | --- | --- |
 | Run target/purpose 不匹配 | fail closed |
 | Asset 不属于 Item 或不可用 | fail closed |
-| 最新审核未 approved/passed | fail closed |
 | Character Project version 过期 | conflict，客户端刷新后重试 |
 | active candidate Release 已存在 | conflict，先处理 Release |
-| proposal 后审核权威变化 | validation failed，不执行 publish |
-| 生成部分失败 | 保留成功 Item，可提前审核；失败项不冒充成功 |
+| proposal 后文件或来源失效 | validation failed，可放弃候选后修复并重建 |
+| 生成部分失败 | 保留成功 Item，可直接选择采用；失败项不冒充成功 |
 
 ## 9. 关键实现位置
 
@@ -176,10 +170,10 @@ API manifest 与 Zod 契约的单一事实来源：
 最低回归集：
 
 ```bash
-bun test packages/admin/src/features/characters/CharacterAssetStudio.test.ts
-bun test packages/shared/src/admin/contracts/characters-asset-studio.test.ts
-bun test packages/main/src/server/modules/admin-v2/characters/asset-studio.integration.test.ts
-bun test packages/main/src/server/modules/admin-v2/characters/release-lifecycle.integration.test.ts
+bun run --filter @idream/admin test src/features/characters/CharacterAssetStudio.test.ts
+bun run --filter @idream/shared test src/admin/contracts/characters-asset-studio.test.ts
+bun run --filter @idream/main test src/server/modules/admin-v2/characters/asset-studio.integration.test.ts
+bun run --filter @idream/main test src/server/modules/admin-v2/characters/release-recovery.integration.test.ts
 ```
 
-合并前继续执行仓库级 `bun run check` 与完整测试。涉及 schema 时必须在隔离 PostgreSQL 数据库演练 migration；涉及工作台交互时必须完成真实浏览器生成、审核、三类采用、Preview 与控制台检查。
+合并前继续执行仓库级 `bun run check` 与完整测试。涉及 schema 时必须在隔离 PostgreSQL 数据库演练 migration；涉及工作台交互时必须完成真实浏览器生成、三类采用、Preview 与控制台检查。

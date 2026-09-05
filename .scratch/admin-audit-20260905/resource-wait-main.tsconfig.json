@@ -1,0 +1,40 @@
+{
+  "extends": "/Users/kk/code/idream/packages/main/tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@/*": [
+        "/Users/kk/code/idream/packages/main/src/*"
+      ],
+      "@idream/shared/catalog": [
+        "/Users/kk/code/idream/packages/shared/src/catalog/index.ts"
+      ],
+      "@idream/shared/admin": [
+        "/Users/kk/code/idream/packages/shared/src/admin/index.ts"
+      ],
+      "@idream/shared/admin/api-manifest": [
+        "/Users/kk/code/idream/packages/shared/src/admin/api-manifest.ts"
+      ],
+      "@idream/shared/admin/contracts": [
+        "/Users/kk/code/idream/packages/shared/src/admin/contracts/index.ts"
+      ],
+      "@idream/shared/admin/permissions": [
+        "/Users/kk/code/idream/packages/shared/src/admin/permissions.ts"
+      ],
+      "@idream/shared/observability/sentry": [
+        "/Users/kk/code/idream/packages/shared/src/observability/sentry.ts"
+      ],
+      "@idream/shared/chat/companion-runtime": [
+        "/Users/kk/code/idream/packages/shared/src/chat/companion-runtime.ts"
+      ],
+      "@idream/shared/contracts": [
+        "/Users/kk/code/idream/.scratch/admin-audit-20260905/resource-wait-staging/packages/shared/src/contracts/index.ts"
+      ]
+    },
+    "incremental": false
+  },
+  "include": [
+    "/Users/kk/code/idream/packages/main/next-env.d.ts",
+    "/Users/kk/code/idream/.scratch/admin-audit-20260905/resource-wait-staging/packages/main/src/server/ai/generation-transport-execution.ts",
+    "/Users/kk/code/idream/.scratch/admin-audit-20260905/resource-wait-staging/packages/main/src/server/ai/generation-transport-execution.integration.test.ts"
+  ]
+}

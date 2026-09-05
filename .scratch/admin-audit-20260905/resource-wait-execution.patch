@@ -1,0 +1,669 @@
+--- a/packages/gen/.env.production.example
++++ b/packages/gen/.env.production.example
+@@ -24,6 +24,8 @@
+ COMFYUI_MODEL_ROOT=/var/lib/comfyui/models
+ # Cross-worker host lock. Both workers must resolve the same local path.
+ GEN_ACCELERATOR_LOCK_PATH=/tmp/idream-generation-accelerator.lock
++# Resource queue budget is independent of provider execution; default is 2 * GEN_VIDEO_TIMEOUT_MS.
++# GEN_ACCELERATOR_WAIT_TIMEOUT_MS=3600000
+ # Optional absolute paths when ffprobe/ffmpeg are not available on PATH.
+ # GEN_FFPROBE_BIN=/opt/homebrew/bin/ffprobe
+ # GEN_FFMPEG_BIN=/opt/homebrew/bin/ffmpeg
+--- a/packages/gen/.env.example
++++ b/packages/gen/.env.example
+@@ -38,6 +38,8 @@
+ # GEN_ACCELERATOR_LOCK_PATH=/tmp/idream-generation-accelerator.lock
+ # GEN_ACCELERATOR_LOCK_POLL_MS=1000
+ # GEN_ACCELERATOR_LOCK_STALE_MS=2100000
++# Resource queue budget is independent of provider execution; default is 2 * GEN_VIDEO_TIMEOUT_MS.
++# GEN_ACCELERATOR_WAIT_TIMEOUT_MS=3600000
+ 
+ # LTX local I2V:
+ # GEN_VIDEO_PROVIDER=backend
+--- a/packages/gen/src/transport-execution.ts
++++ b/packages/gen/src/transport-execution.ts
+@@ -4,6 +4,7 @@
+ export async function recordTransportExecution(input: GenerationTransportExecutionEvent): Promise<void> {
+   const response = await fetch(env.MAIN_GENERATION_TRANSPORT_URL, {
+     method: "POST",
++    signal: AbortSignal.timeout(10_000),
+     headers: { "content-type": "application/json", "x-internal-token": env.INTERNAL_TOKEN },
+     body: JSON.stringify(input),
+   });
+--- a/packages/gen/src/pipeline.test.ts
++++ b/packages/gen/src/pipeline.test.ts
+@@ -2152,3 +2152,60 @@
+     }),
+   );
+ });
++
++it.each(["image", "video"] as const)("waits for a device before admitting one %s provider invocation", async (mode) => {
++  const harness = lifecycleHarness(mode, "succeeded");
++  const provider = harness.providers[mode];
++  const generate = provider.generate;
++  const recordTransportExecution = vi.fn(async () => undefined);
++  Object.assign(provider, { managesInvocationBoundary: true, generate: vi.fn(async (input: Parameters<GenProviders["image"]["generate"]>[0] | Parameters<GenProviders["video"]["generate"]>[0]) => {
++    await input.executionBoundary!.onResourceWait();
++    await input.executionBoundary!.onResourceWait();
++    expect(recordTransportExecution.mock.calls).toHaveLength(2);
++    expect(harness.providers.blob.putPrivateIfAbsent).not.toHaveBeenCalled();
++    expect(harness.generate).not.toHaveBeenCalled();
++    await input.executionBoundary!.beforeProviderInvocation();
++    return generate(input as never);
++  }) });
++  await harness.run(makePipelineDeps(harness.providers, { recordTransportExecution }));
++  expect(recordTransportExecution).toHaveBeenNthCalledWith(1, expect.objectContaining({ status: "waiting", providerRequestId: null }));
++  expect(recordTransportExecution).toHaveBeenNthCalledWith(3, expect.objectContaining({ status: "running" }));
++  expect(harness.generate).toHaveBeenCalledTimes(1);
++});
++
++it.each(["wait", "entry"] as const)("never invokes or writes terminal evidence after Main revokes %s authority", async (rejectedPhase) => {
++  const harness = lifecycleHarness("image", "succeeded");
++  Object.assign(harness.providers.image, { managesInvocationBoundary: true });
++  harness.providers.image.generate = vi.fn(async (input) => {
++    try {
++      await input.executionBoundary!.onResourceWait();
++      await input.executionBoundary!.beforeProviderInvocation();
++      return imageLifecycleResult("succeeded");
++    } catch {
++      return { ok: false as const, error: { code: "backend_error", message: "backend classified authority failure", retryable: true } };
++    }
++  });
++  const recordTransportExecution = vi.fn(async (input) => {
++    if ((input.status === "waiting") === (rejectedPhase === "wait")) throw new Error("Main dispatch revoked");
++  });
++  const acknowledgeTerminalRecord = vi.fn(async () => undefined);
++  await expect(harness.run(makePipelineDeps(harness.providers, { recordTransportExecution, acknowledgeTerminalRecord }))).rejects.toThrow("Main dispatch revoked");
++  expect(harness.generate).not.toHaveBeenCalled();
++  expect(harness.providers.blob.putPrivateIfAbsent).not.toHaveBeenCalled();
++  expect(acknowledgeTerminalRecord).not.toHaveBeenCalled();
++});
++
++it("settles a resource wait timeout as preparation failure without provider accounting", async () => {
++  const harness = lifecycleHarness("image", "succeeded");
++  Object.assign(harness.providers.image, { managesInvocationBoundary: true });
++  harness.providers.image.generate = vi.fn(async (input) => {
++    await input.executionBoundary!.onResourceWait();
++    return { ok: false as const, error: { code: "backend_error", message: "resource wait timed out", retryable: true } };
++  });
++  const acknowledgeTerminalRecord = vi.fn(async () => undefined);
++  await harness.run(makePipelineDeps(harness.providers, { acknowledgeTerminalRecord, attemptsMade: 2, maxAttempts: 3 }));
++  expect(acknowledgeTerminalRecord).toHaveBeenCalledWith(expect.objectContaining({
++    terminalRecord: expect.objectContaining({ outcome: "failed", providerInvoked: false, error: expect.objectContaining({ code: "preparation_failed", retryability: "retryable" }) }),
++  }));
++  expect(harness.providers.blob.putPrivateIfAbsent).not.toHaveBeenCalledWith(expect.objectContaining({ key: expect.stringContaining("invocation") }));
++});
+--- a/packages/gen/src/generation-execution.ts
++++ b/packages/gen/src/generation-execution.ts
+@@ -14,6 +14,7 @@
+ import type {
+   BlobStore,
+   ImageModel,
++  GenerationInvocationBoundary,
+   ProviderFailure,
+   ProviderInvocationMetadata,
+   ProviderResult,
+@@ -73,6 +74,7 @@
+   model: GenerationModel;
+   invoke: (input: {
+     providerIdempotencyKey: string;
++    executionBoundary?: GenerationInvocationBoundary;
+   }) => Promise<ProviderResult<TProviderOutput>>;
+   normalizeArtifacts: (
+     output: TProviderOutput,
+@@ -190,36 +192,67 @@
+   async execute<TProviderOutput>(
+     adapter: GenerationAdapter<TProviderOutput>,
+   ): Promise<void> {
+-    await this.recordTransport("running");
+     const providerReplayIsSafe =
+       adapter.model.retryCapabilities?.deterministicIdempotencyKey === true;
+-    const reservation = await reserveGenerationInvocation(
+-      this.options.blob,
+-      this.invocationGuard(),
+-    );
+-    if (!providerReplayIsSafe) {
+-      if (!reservation.created) {
+-        if (
+-          reservation.guard.transportAttemptNo >=
+-          this.#identity.transportAttemptNo
+-        ) {
+-          throw new Error(
+-            `provider invocation is already reserved for ${this.#identity.attemptId}`,
++    let invocationStartedAt: number | undefined;
++    let boundaryError: unknown;
++    let terminalSettled = false;
++    const beforeProviderInvocation = async () => {
++      try {
++        if (invocationStartedAt !== undefined) throw new Error("Provider invocation boundary entered twice");
++        // INVARIANT: waiting for a device creates neither provider authority nor
++        // an invocation guard. Recheck Main after acquiring it, before submission.
++        await this.recordTransport("running");
++        const reservation = await reserveGenerationInvocation(this.options.blob, this.invocationGuard());
++        if (!providerReplayIsSafe && !reservation.created) {
++          if (reservation.guard.transportAttemptNo >= this.#identity.transportAttemptNo) {
++            throw new Error(`provider invocation is already reserved for ${this.#identity.attemptId}`);
++          }
++          await this.fail(
++            "ambiguous_incomplete_provider_invocation",
++            "A prior non-replayable provider invocation did not leave terminal evidence",
++            { outcome: "unknown", retryability: "not_retryable" },
++            { providerInvoked: true, providerReplayIsSafe: false },
+           );
++          terminalSettled = true;
++          throw new Error("Prior provider invocation requires reconciliation");
+         }
+-        await this.fail(
+-          "ambiguous_incomplete_provider_invocation",
+-          "A prior non-replayable provider invocation did not leave terminal evidence",
+-          { outcome: "unknown", retryability: "not_retryable" },
+-          { providerInvoked: true, providerReplayIsSafe: false },
+-        );
+-        return;
++        invocationStartedAt = performance.now();
++      } catch (error) {
++        boundaryError = error;
++        throw error;
+       }
+-    }
+-    const invocationStartedAt = performance.now();
++    };
++    const executionBoundary: GenerationInvocationBoundary = {
++      beforeProviderInvocation,
++      onResourceWait: async () => {
++        try {
++          await this.recordTransport("waiting");
++        } catch (error) {
++          boundaryError = error;
++          throw error;
++        }
++      },
++    };
++    if (!adapter.model.managesInvocationBoundary) {
++      try { await beforeProviderInvocation(); } catch (error) {
++        if (terminalSettled) return;
++        throw error;
++      }
++    }
+     const result = await adapter.invoke({
+       providerIdempotencyKey: this.#identity.idempotencyKey,
++      ...(adapter.model.managesInvocationBoundary ? { executionBoundary } : {}),
+     });
++    if (terminalSettled) return;
++    // Backend adapters classify ordinary errors, but cannot turn a rejected Main
++    // authority check into provider failure or overwrite existing terminal facts.
++    if (boundaryError !== undefined) throw boundaryError;
++    if (invocationStartedAt === undefined) {
++      if (result.ok) throw new Error("Backend returned success without provider invocation authority");
++      await this.failPreparation(new Error(result.error.message));
++      return;
++    }
+     const invocationLatencyMs = performance.now() - invocationStartedAt;
+ 
+     if (!result.ok) {
+@@ -440,7 +473,7 @@
+   }
+ 
+   private async recordTransport(
+-    status: "running" | "failed" | "unknown",
++    status: "waiting" | "running" | "failed" | "unknown",
+     error: { code: string; message: string } | null = null,
+     accounting?: ReturnType<typeof invocationAccounting>,
+     providerRequestId: string | null = null,
+--- a/packages/gen/src/pipeline.ts
++++ b/packages/gen/src/pipeline.ts
+@@ -125,7 +125,8 @@
+   const imageModel = providers.image;
+   await execution.execute({
+     model: imageModel,
+-    invoke: ({ providerIdempotencyKey }) => imageModel.generate({
++    invoke: ({ providerIdempotencyKey, executionBoundary }) => imageModel.generate({
++      executionBoundary,
+       prompt: payload.prompt,
+       count: payload.count,
+       seed: payload.seed,
+@@ -289,7 +290,8 @@
+   const videoModel = providers.video;
+   await execution.execute({
+     model: videoModel,
+-    invoke: ({ providerIdempotencyKey }) => videoModel.generate({
++    invoke: ({ providerIdempotencyKey, executionBoundary }) => videoModel.generate({
++      executionBoundary,
+       prompt: payload.prompt,
+       seconds: payload.seconds,
+       seed: payload.seed,
+--- a/packages/gen/src/providers.ts
++++ b/packages/gen/src/providers.ts
+@@ -54,9 +54,16 @@
+ 
+ const retryablePipelineCategories = new Set(["rate_limited", "overloaded", "timeout", "internal"]);
+ 
++export type GenerationInvocationBoundary = {
++  onResourceWait: () => Promise<void>;
++  beforeProviderInvocation: () => Promise<void>;
++};
++
+ export interface ImageModel {
+   readonly retryCapabilities?: ProviderRetryCapabilities;
++  readonly managesInvocationBoundary?: true;
+   generate(input: {
++    executionBoundary?: GenerationInvocationBoundary;
+     prompt: string;
+     count: number;
+     seed?: string;
+@@ -82,7 +89,9 @@
+ 
+ export interface VideoModel {
+   readonly retryCapabilities?: ProviderRetryCapabilities;
++  readonly managesInvocationBoundary?: true;
+   generate(input: {
++    executionBoundary?: GenerationInvocationBoundary;
+     prompt: string;
+     seconds: number;
+     seed?: string;
+@@ -624,7 +633,7 @@
+ function buildBackendImageModel(): ImageModel {
+   return new BackendImageModel(
+     getBackendRegistry(),
+-    (run) => withGenerationAcceleratorLease("image", run),
++    (run, options) => withGenerationAcceleratorLease("image", run, options),
+     prepareComfyUiRunnerMemory,
+   );
+ }
+@@ -653,7 +662,7 @@
+     case "backend":
+       return new BackendVideoModel(
+         getBackendRegistry(),
+-        (run) => withGenerationAcceleratorLease("video", run),
++        (run, options) => withGenerationAcceleratorLease("video", run, options),
+         prepareComfyUiRunnerMemory,
+       );
+     case "pipeline":
+--- a/packages/gen/src/env.ts
++++ b/packages/gen/src/env.ts
+@@ -217,6 +217,11 @@
+   get ACCELERATOR_LOCK_POLL_MS(): number {
+     return positiveIntegerEnv("GEN_ACCELERATOR_LOCK_POLL_MS", 1_000);
+   },
++  get ACCELERATOR_WAIT_TIMEOUT_MS(): number {
++    // Bound queue residency separately from execution: allow two maximum video
++    // execution windows ahead of this worker on the shared image/video device.
++    return positiveIntegerEnv("GEN_ACCELERATOR_WAIT_TIMEOUT_MS", 2 * this.VIDEO_TIMEOUT_MS);
++  },
+   get ACCELERATOR_LOCK_STALE_MS(): number {
+     return positiveIntegerEnv(
+       "GEN_ACCELERATOR_LOCK_STALE_MS",
+--- a/packages/gen/src/backend/generation-accelerator-lease.test.ts
++++ b/packages/gen/src/backend/generation-accelerator-lease.test.ts
+@@ -1,7 +1,7 @@
+ import { mkdtemp, rm, writeFile } from "node:fs/promises";
+ import { tmpdir } from "node:os";
+ import path from "node:path";
+-import { afterEach, describe, expect, it } from "vitest";
++import { afterEach, describe, expect, it, vi } from "vitest";
+ import { withGenerationAcceleratorLease } from "./generation-accelerator-lease";
+ 
+ describe("generation accelerator lease", () => {
+@@ -62,4 +62,17 @@
+       { lockPath, pollMs: 5, staleMs: 1 },
+     )).resolves.toBe("acquired");
+   });
++  it.each(["deadline", "revoked"] as const)("stops resource waiting on %s without entering the live owner's device", async (reason) => {
++    dir = await mkdtemp(path.join(tmpdir(), "idream-accelerator-"));
++    const lockPath = path.join(dir, "mps.lock");
++    await writeFile(lockPath, JSON.stringify({ pid: process.pid, token: "live", kind: "video", acquiredAtMs: 0 }));
++    const run = vi.fn(async () => "must not run");
++    const onWait = vi.fn(async () => { if (reason === "revoked") throw new Error("Main authority revoked"); });
++    await expect(withGenerationAcceleratorLease("image", run, {
++      lockPath, pollMs: 2, staleMs: 1, waitTimeoutMs: 25, heartbeatMs: 5, onWait,
++    })).rejects.toThrow(reason === "deadline" ? "resource wait timed out" : "Main authority revoked");
++    expect(run).not.toHaveBeenCalled();
++    expect(onWait).toHaveBeenCalled();
++  });
++
+ });
+--- a/packages/gen/src/backend/backend-video-model.test.ts
++++ b/packages/gen/src/backend/backend-video-model.test.ts
+@@ -85,7 +85,8 @@
+       {
+         resolveForModel: vi.fn(() => ({ backend: stub, descriptor })),
+       },
+-      async (run) => {
++      async (run, options) => {
++        await options?.onWait?.();
+         events.push("lease:acquired");
+         const result = await run();
+         events.push("lease:released");
+@@ -96,12 +97,14 @@
+       },
+     );
+ 
+-    const result = await model.generate(validGenerationInput());
++    const result = await model.generate({ ...validGenerationInput(), executionBoundary: { onResourceWait: async () => { events.push("wait"); }, beforeProviderInvocation: async () => { events.push("admit"); } }, });
+ 
+     expect(result.ok).toBe(true);
+     expect(events).toEqual([
++      "wait",
+       "lease:acquired",
+       "prepare:video",
++      "admit",
+       "submit",
+       "lease:released",
+     ]);
+--- a/packages/gen/src/backend/backend-image-model.test.ts
++++ b/packages/gen/src/backend/backend-image-model.test.ts
+@@ -197,7 +197,8 @@
+     };
+     const model = new BackendImageModel(
+       registry,
+-      async (run) => {
++      async (run, options) => {
++        await options?.onWait?.();
+         events.push("lease:acquired");
+         const result = await run();
+         events.push("lease:released");
+@@ -210,6 +211,7 @@
+ 
+     const result = await model.generate({
+       prompt: "a cat",
++      executionBoundary: { onResourceWait: async () => { events.push("wait"); }, beforeProviderInvocation: async () => { events.push("admit"); } },
+       count: 1,
+       model: "m",
+       controls: PIN,
+@@ -217,8 +219,10 @@
+ 
+     expect(result.ok).toBe(true);
+     expect(events).toEqual([
++      "wait",
+       "lease:acquired",
+       "prepare:image",
++      "admit",
+       "submit",
+       "lease:released",
+     ]);
+--- a/packages/gen/src/backend/backend-image-model.ts
++++ b/packages/gen/src/backend/backend-image-model.ts
+@@ -38,7 +38,7 @@
+ type GenerateResult = Awaited<ReturnType<ImageModel["generate"]>>;
+ type SuccessData = Extract<GenerateResult, { ok: true }>["data"];
+ type ImageAsset = SuccessData["assets"][number];
+-type RunWithAcceleratorLease = <T>(run: () => Promise<T>) => Promise<T>;
++type RunWithAcceleratorLease = <T>(run: () => Promise<T>, options?: { onWait?: () => Promise<void> }) => Promise<T>;
+ type PrepareComfyUiRunner = (runner: ComfyUiRunner) => Promise<void>;
+ 
+ const runWithoutAcceleratorLease: RunWithAcceleratorLease = (run) => run();
+@@ -118,6 +118,7 @@
+ }
+ 
+ export class BackendImageModel implements ImageModel {
++  readonly managesInvocationBoundary = true;
+   constructor(
+     private readonly registry: BackendRegistry | Promise<BackendRegistry>,
+     private readonly runWithAcceleratorLease: RunWithAcceleratorLease =
+@@ -196,6 +197,7 @@
+             comfyUiRunnerForDescriptor(descriptor),
+           );
+         }
++        await input.executionBoundary?.beforeProviderInvocation();
+         for (let index = 0; index < count; index += 1) {
+           failurePhase = "pre_submit";
+           const slots: SlotValues = {
+@@ -226,7 +228,7 @@
+             });
+           }
+         }
+-      });
++      }, { onWait: input.executionBoundary?.onResourceWait });
+       return {
+         ok: true,
+         data: { assets },
+--- a/packages/gen/src/backend/backend-video-model.ts
++++ b/packages/gen/src/backend/backend-video-model.ts
+@@ -27,13 +27,14 @@
+ type ReferenceImages = NonNullable<VideoGeneratePayload["referenceImages"]>;
+ const PRODUCTION_DURATION_TOLERANCE_SECONDS = 0.25;
+ const PRODUCTION_FPS_TOLERANCE = 0.05;
+-type RunWithAcceleratorLease = <T>(run: () => Promise<T>) => Promise<T>;
++type RunWithAcceleratorLease = <T>(run: () => Promise<T>, options?: { onWait?: () => Promise<void> }) => Promise<T>;
+ type PrepareComfyUiRunner = (runner: ComfyUiRunner) => Promise<void>;
+ 
+ const runWithoutAcceleratorLease: RunWithAcceleratorLease = (run) => run();
+ const skipComfyUiMemoryTransition: PrepareComfyUiRunner = async () => {};
+ 
+ export class BackendVideoModel implements VideoModel {
++  readonly managesInvocationBoundary = true;
+   constructor(
+     private readonly registry: BackendRegistry | Promise<BackendRegistry>,
+     private readonly runWithAcceleratorLease: RunWithAcceleratorLease =
+@@ -117,6 +118,7 @@
+             comfyUiRunnerForDescriptor(descriptor),
+           );
+         }
++        await input.executionBoundary?.beforeProviderInvocation();
+         const handle = await backend.submit({
+           descriptor,
+           slots,
+@@ -126,7 +128,7 @@
+         });
+         providerRequestId = handle.id;
+         return backend.poll(handle);
+-      });
++      }, { onWait: input.executionBoundary?.onResourceWait });
+       const asset = result.assets.find(
+         (candidate) => candidate.contentType === "video/mp4",
+       );
+--- a/packages/gen/src/backend/generation-accelerator-lease.ts
++++ b/packages/gen/src/backend/generation-accelerator-lease.ts
+@@ -15,6 +15,9 @@
+   readonly lockPath?: string;
+   readonly pollMs?: number;
+   readonly staleMs?: number;
++  readonly waitTimeoutMs?: number;
++  readonly heartbeatMs?: number;
++  readonly onWait?: () => Promise<void>;
+ };
+ 
+ // SPEC: image and video ComfyUI processes may differ, but both consume the same
+@@ -36,7 +39,11 @@
+   };
+ 
+   await mkdir(path.dirname(lockPath), { recursive: true });
+-  await acquire(lockPath, owner, pollMs, staleMs);
++  await acquire(lockPath, owner, pollMs, staleMs, {
++    timeoutMs: options.waitTimeoutMs ?? env.ACCELERATOR_WAIT_TIMEOUT_MS,
++    heartbeatMs: options.heartbeatMs ?? 30_000,
++    onWait: options.onWait,
++  });
+   try {
+     return await run();
+   } finally {
+@@ -49,12 +56,16 @@
+   owner: LeaseOwner,
+   pollMs: number,
+   staleMs: number,
++  wait: { timeoutMs: number; heartbeatMs: number; onWait?: () => Promise<void> },
+ ) {
++  const deadline = Date.now() + wait.timeoutMs;
++  let nextHeartbeatAt = 0;
+   while (true) {
++    if (Date.now() >= deadline) throw new Error("Generation accelerator resource wait timed out before provider invocation");
+     try {
+       const handle = await open(lockPath, "wx", 0o600);
+       try {
+-        await handle.writeFile(`${JSON.stringify(owner)}\n`);
++        await handle.writeFile(`${JSON.stringify({ ...owner, acquiredAtMs: Date.now() })}\n`);
+       } finally {
+         await handle.close();
+       }
+@@ -71,7 +82,11 @@
+       }
+       continue;
+     }
+-    await delay(pollMs);
++    if (Date.now() >= nextHeartbeatAt) {
++      await wait.onWait?.();
++      nextHeartbeatAt = Date.now() + wait.heartbeatMs;
++    }
++    await delay(Math.min(pollMs, Math.max(1, deadline - Date.now())));
+   }
+ }
+ 
+--- a/packages/shared/src/contracts/durable.test.ts
++++ b/packages/shared/src/contracts/durable.test.ts
+@@ -279,3 +279,16 @@
+     }
+   });
+ });
++
++
++it("separates resource waiting from provider invocation evidence", () => {
++  const wait = {
++    version: 1, attemptId: "wait-attempt", attemptNo: 1, generationJobId: "wait-job",
++    transportAttemptNo: 1, provider: "backend", model: "model", providerRequestId: null,
++    idempotencyKey: "provider-key", status: "waiting", occurredAt: "2026-09-05T12:00:00.000Z",
++  };
++  expect(generationTransportExecutionEventSchema.parse(wait)).toMatchObject({ status: "waiting" });
++  for (const invalid of [{ providerRequestId: "already-submitted" }, { error: { code: "provider_error", message: "error" } }, { accounting: { usage: {}, latencyMs: 0, costMicros: null, pricingVersion: null } }]) {
++    expect(generationTransportExecutionEventSchema.safeParse({ ...wait, ...invalid }).success).toBe(false);
++  }
++});
+--- a/packages/shared/src/contracts/durable.ts
++++ b/packages/shared/src/contracts/durable.ts
+@@ -183,10 +183,17 @@
+   model: z.string().min(1),
+   providerRequestId: z.string().nullable(),
+   idempotencyKey: z.string().min(1),
+-  status: z.enum(["running", "failed", "unknown"]),
++  status: z.enum(["waiting", "running", "failed", "unknown"]),
+   occurredAt: z.string().datetime(),
+   error: z.object({ code: z.string().min(1), message: z.string().min(1) }).nullable().default(null),
+   accounting: generationProviderAccountingSchema.optional(),
++}).superRefine((event, context) => {
++  if (event.status === "waiting" && (
++    event.providerRequestId !== null ||
++    event.error !== null || event.accounting !== undefined
++  )) {
++    context.addIssue({ code: "custom", path: ["status"], message: "Resource waiting cannot contain provider invocation evidence" });
++  }
+ });
+ 
+ export const generationTerminalRecordIngestSchema = z.object({
+--- a/packages/main/src/server/ai/generation-transport-execution.integration.test.ts
++++ b/packages/main/src/server/ai/generation-transport-execution.integration.test.ts
+@@ -1,6 +1,7 @@
+ import { randomUUID } from "node:crypto";
+ import { afterAll, beforeAll, describe, expect, it } from "vitest";
+ import { prisma } from "@/server/lib/db";
++import { reconcileStaleGenerationJobs } from "./local-pipeline";
+ import { recordGenerationTransportExecution } from "./generation-transport-execution";
+ 
+ describe("Generation TransportExecution authority", () => {
+@@ -65,6 +66,19 @@
+     await prisma.$disconnect();
+   });
+ 
++
++  it("records durable resource liveness without starting provider time, then forbids phase regression", async () => {
++    const wait = { ...base, status: "waiting", error: null, occurredAt: "2026-07-11T11:00:00.000Z" };
++    await expect(recordGenerationTransportExecution(wait)).resolves.toMatchObject({ acknowledged: true, status: "persisted" });
++    await expect(recordGenerationTransportExecution(wait)).resolves.toMatchObject({ status: "duplicate" });
++    await recordGenerationTransportExecution({ ...wait, occurredAt: "2026-07-11T11:30:00.000Z" });
++    await expect(prisma.generationAttempt.findUniqueOrThrow({ where: { id: attemptId } })).resolves.toMatchObject({ status: "queued", startedAt: null });
++    await expect(prisma.generationTransportExecution.count({ where: { attemptId } })).resolves.toBe(0);
++    await expect(prisma.aiUsageFact.count({ where: { attemptId } })).resolves.toBe(0);
++    await expect(prisma.generationAttemptEvent.count({ where: { attemptId, eventType: "generation.resource.waiting.v1" } })).resolves.toBe(2);
++    await expect(recordGenerationTransportExecution({ ...wait, provider: "wrong-provider" })).rejects.toThrow("exact dispatch authority");
++  });
++
+   it("records one provider invocation and idempotently closes its failure", async () => {
+     await expect(recordGenerationTransportExecution({ ...base, status: "running", error: null })).resolves.toMatchObject({ status: "persisted" });
+     await expect(recordGenerationTransportExecution({ ...base, status: "running", error: null })).resolves.toMatchObject({ status: "duplicate" });
+@@ -94,9 +108,11 @@
+       costMicros: BigInt(50_000),
+       pricingVersion: "pipeline-v1",
+     });
+-    await expect(prisma.generationAttemptEvent.count({ where: { attemptId } })).resolves.toBe(2);
++    await expect(prisma.generationAttemptEvent.count({ where: { attemptId, eventType: { not: "generation.resource.waiting.v1" } } })).resolves.toBe(2);
+     await expect(recordGenerationTransportExecution({ ...base, status: "unknown", occurredAt: "2026-07-11T12:00:03.000Z", error: { code: "timeout", message: "outcome unknown" } })).rejects.toThrow("already terminal");
+ 
++    await expect(recordGenerationTransportExecution({ ...base, status: "waiting", error: null })).rejects.toThrow("Resource waiting cannot follow provider entry");
++    await expect(prisma.generationAttempt.findUniqueOrThrow({ where: { id: attemptId } })).resolves.toMatchObject({ startedAt: new Date(base.occurredAt) });
+     const retry = { ...base, transportAttemptNo: 2, occurredAt: "2026-07-11T12:00:04.000Z" };
+     await recordGenerationTransportExecution({ ...retry, status: "running", error: null });
+     await recordGenerationTransportExecution({
+@@ -288,6 +304,10 @@
+         status: "running",
+         error: null,
+       })).rejects.toThrow("after dispatch authority was revoked");
++      await expect(recordGenerationTransportExecution({
++        ...base, generationJobId: cancelledJobId, attemptId: cancelledAttemptId,
++        idempotencyKey: `generation:${cancelledAttemptId}:provider`, status: "waiting", error: null,
++      })).rejects.toThrow("after dispatch authority was revoked");
+       await expect(prisma.generationTransportExecution.count({
+         where: { attemptId: cancelledAttemptId },
+       })).resolves.toBe(0);
+@@ -299,6 +319,33 @@
+         where: { id: cancelledAttemptId },
+       });
+       await prisma.generationJob.deleteMany({ where: { id: cancelledJobId } });
++    }
++  });
++
++
++  it("keeps a waiting worker live but still quarantines an expired provider execution", async () => {
++    const waitingAttemptId = `transport-waiting-${suffix}`;
++    const old = new Date("2026-01-01T00:00:00.000Z");
++    const waitingAt = "2030-01-01T12:00:00.000Z";
++    await prisma.generationAttempt.create({ data: { id: waitingAttemptId, requestId: generationJobId, attemptNo: 6, status: "queued", provider: base.provider, workflowKey: base.model, workflowVersion: 1, createdAt: old } });
++    await prisma.generationJob.update({ where: { id: generationJobId }, data: { updatedAt: old } });
++    await createDispatchAuthority(waitingAttemptId, 6);
++    await prisma.mainOutboxEvent.update({ where: { id: `transport-dispatch-${waitingAttemptId}` }, data: { createdAt: old, updatedAt: old, nextRunAt: old } });
++    const input = { ...base, attemptId: waitingAttemptId, attemptNo: 6, idempotencyKey: `generation:${waitingAttemptId}:provider`, occurredAt: waitingAt, error: null };
++    try {
++      await recordGenerationTransportExecution({ ...input, status: "waiting" });
++      await expect(reconcileStaleGenerationJobs({ now: new Date("2030-01-01T12:00:30.000Z"), timeoutMs: 60_000, generationJobIds: [generationJobId] })).resolves.toMatchObject({ quarantined: 0 });
++      await expect(prisma.generationAttempt.findUniqueOrThrow({ where: { id: waitingAttemptId } })).resolves.toMatchObject({ status: "queued", startedAt: null });
++      await recordGenerationTransportExecution({ ...input, occurredAt: "2030-01-01T12:01:00.000Z", status: "running" });
++      await expect(reconcileStaleGenerationJobs({ now: new Date("2030-01-01T12:03:00.000Z"), timeoutMs: 60_000, generationJobIds: [generationJobId] })).resolves.toMatchObject({ quarantined: 1 });
++      await expect(prisma.generationAttempt.findUniqueOrThrow({ where: { id: waitingAttemptId } })).resolves.toMatchObject({ status: "unknown", startedAt: new Date("2030-01-01T12:01:00.000Z") });
++      await expect(recordGenerationTransportExecution({ ...input, status: "waiting" })).rejects.toThrow("after dispatch authority was revoked");
++    } finally {
++      await prisma.aiUsageFact.deleteMany({ where: { attemptId: waitingAttemptId } });
++      await prisma.generationTransportExecution.deleteMany({ where: { attemptId: waitingAttemptId } });
++      await prisma.generationAttemptEvent.deleteMany({ where: { attemptId: waitingAttemptId } });
++      await prisma.generationAttempt.deleteMany({ where: { id: waitingAttemptId } });
++      await prisma.mainOutboxEvent.deleteMany({ where: { id: `transport-dispatch-${waitingAttemptId}` } });
+     }
+   });
+ 
+--- a/packages/main/src/server/ai/generation-transport-execution.ts
++++ b/packages/main/src/server/ai/generation-transport-execution.ts
+@@ -43,7 +43,7 @@
+       );
+     }
+     if (
+-      input.status === "running" &&
++      (input.status === "running" || input.status === "waiting") &&
+       (
+         !request ||
+         !["queued", "moderating_input", "running", "moderating_output"].includes(
+@@ -96,6 +96,19 @@
+         attemptId: input.attemptId,
+         transportAttemptNo: input.transportAttemptNo,
+       });
++    }
++    if (input.status === "waiting") {
++      if (existing) throw Errors.conflict("Resource waiting cannot follow provider entry for the same transport");
++      const event = await recordGenerationAttemptEvent(tx, {
++        eventId: `${input.attemptId}:resource-wait:${input.transportAttemptNo}:${input.occurredAt}`,
++        attemptId: input.attemptId,
++        eventType: "generation.resource.waiting.v1",
++        occurredAt: new Date(input.occurredAt),
++        payload: transportEventPayload(input),
++      });
++      // Resource liveness is durable, but startedAt and TransportExecution remain
++      // absent until the worker owns the device and rechecks provider authority.
++      return { acknowledged: true, status: event.disposition === "duplicate" ? "duplicate" : "persisted" };
+     }
+     let disposition: "persisted" | "duplicate" = "persisted";
+     if (!existing) {

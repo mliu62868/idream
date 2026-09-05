@@ -769,7 +769,7 @@ function Select({
       >
         {options.map((option) => (
           <option key={option || "all"} value={option}>
-            {option ? enumLabel(option) : t("All")}
+            {option === "pending_review" ? t("Awaiting publication preparation") : option ? enumLabel(option) : t("All")}
           </option>
         ))}
       </select>

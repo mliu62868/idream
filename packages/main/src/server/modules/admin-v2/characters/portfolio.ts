@@ -85,16 +85,9 @@ export function draftAssetReviewAttentionCharacterIds(
     readonly draftAssetPack: Prisma.JsonValue;
   }[],
 ) {
-  return projects.flatMap((project) => {
-    const entries = draftAssetRouteEntries(project.draftAssetPack);
-    const complete = characterAssetPurposes.every(
-      (purpose) => entries[purpose]?.assetId,
-    );
-    const missingReview = characterAssetPurposes.some(
-      (purpose) => entries[purpose] && !entries[purpose]?.reviewDecisionId,
-    );
-    return complete && missingReview ? [project.characterId] : [];
-  });
+  // 历史字段保留兼容旧查询；人工审核不再产生运营待办。
+  void projects;
+  return [] as string[];
 }
 
 function assetIds(pack: CharacterAssetPack) {

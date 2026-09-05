@@ -206,12 +206,12 @@ describe("truthful public UI states", () => {
     )).toBeNull();
   });
 
-  it("states that approval still awaits operator Release publication", () => {
+  it("states that sharing still awaits explicit publication", () => {
     expect(createdCharacterPublicationStatus({
       status: "approved",
       visibility: "unlisted",
       publicationState: "awaiting_publication",
-    })).toBe("approved · awaiting publication");
+    })).toBe("awaiting publication");
     expect(createdCharacterPublicationStatus({
       status: "approved",
       visibility: "unlisted",
@@ -221,7 +221,7 @@ describe("truthful public UI states", () => {
       status: "approved",
       visibility: "public",
       publicationState: "awaiting_publication",
-    })).toBe("approved · awaiting publication");
+    })).toBe("awaiting publication");
     expect(createdCharacterPublicationStatus({
       status: "approved",
       visibility: "public",
@@ -240,9 +240,9 @@ describe("truthful public UI states", () => {
     expect(createdCharacterPublicationStatus({
       status: "pending_review",
       visibility: "public",
-    })).toBe("pending review");
+    })).toBe("awaiting publication preparation");
     expect(source("CreateWorkspace.tsx")).toContain(
-      "Approval starts publication preparation; the character goes live after Release is published.",
+      "is saved and awaiting publication preparation. Sharing starts after publication.",
     );
     expect(source("CreateWorkspace.tsx")).not.toContain(
       "Public characters go live after approval.",

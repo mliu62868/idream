@@ -84,6 +84,8 @@ describe("Character workspace details", () => {
     //         是 undefined，只是因为它的 promise 落在断言窗口之后才没炸。详情页每多一个自取数
     //         面板都会改变 flush 顺序、把它掀出来。按路径给形状，别再让顺序决定成败。
     adminV2Request.mockImplementation(async (path: string) => {
+      if (path.includes("/characters/character-detail/image-sources")) return { items: [], nextCursor: null };
+      if (path.includes("/creative/runs?")) return { items: [], pageInfo: { endCursor: null, hasNextPage: false } };
       if (path.includes("/collaboration/")) {
         return { items: [], actors: [], watcherIds: [], pageInfo: { endCursor: null, hasNextPage: false } };
       }
@@ -282,7 +284,7 @@ describe("Character workspace details", () => {
         : path.startsWith("/api/v2/admin/assets")
     );
     adminV2Request.mockImplementation(async (path: string) =>
-      isLibraryRequest(path) ? { items: [] } : workspace,
+      isLibraryRequest(path) ? { items: [], nextCursor: null } : workspace,
     );
     await act(async () => {
       root.render(
@@ -308,7 +310,7 @@ describe("Character workspace details", () => {
     expect(container.textContent?.includes(deniedMessage)).toBe(!canRead);
   });
 
-  it.each([false, true])("requires project write as well as creative Review for imported images: %s", async (canWriteProject) => {
+  it.each([false, true])("does not add manual review controls to imported images, regardless of project write: %s", async (canWriteProject) => {
     window.history.replaceState(null, "", "/admin/characters/character-detail?tab=assets");
     const reviewPermissions = new Set<AdminPermissionKey>([
       "character.project.read",
@@ -340,7 +342,7 @@ describe("Character workspace details", () => {
               authority: { runId: null, itemId: null, reviewDecisionId: null, generationJobId: null },
               review: null,
             },
-          }] }
+          }], nextCursor: null }
         : workspace,
     );
     await act(async () => {
@@ -358,7 +360,7 @@ describe("Character workspace details", () => {
 
     expect([...container.querySelectorAll("button")].some(
       (button) => button.textContent === "Review image candidate",
-    )).toBe(canWriteProject);
+    )).toBe(false);
   });
 
   it.each([false, true])("uses generation config read for both system voice preview buttons: %s", async (canPreview) => {
@@ -454,6 +456,7 @@ describe("Character workspace details", () => {
           },
         );
       }
+      if (path.includes("/image-sources")) return { items: [], nextCursor: null };
       return workspace;
     });
 
@@ -469,7 +472,7 @@ describe("Character workspace details", () => {
       );
     });
     await waitUntil(
-      () => container.textContent?.includes("Approved · awaiting publication preparation") === true,
+      () => container.textContent?.includes("Awaiting publication preparation") === true,
       "publication preparation recovery",
     );
     const button = [...container.querySelectorAll("button")].find(
@@ -635,5 +638,13 @@ describe("Character workspace details", () => {
       "Images panel after in-workspace link",
     );
     expect(window.location.search).toBe("?tab=assets");
+    await waitUntil(
+      () => container.querySelector('section[aria-label="Character image library"]')?.textContent?.includes("No images yet") === true,
+      "the image library read after the tab link",
+    );
+    expect(adminV2Request.mock.calls.some(([path]) =>
+      path.includes("/characters/character-detail/image-sources") &&
+      new URL(path, "http://localhost").searchParams.get("purpose") === "character_library",
+    )).toBe(true);
   });
 });

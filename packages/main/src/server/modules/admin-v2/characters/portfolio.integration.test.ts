@@ -676,7 +676,7 @@ describe("Character Portfolio authority/read model", () => {
     ).toBe(true);
   });
 
-  it("surfaces a complete draft image pack with missing reviews as actionable attention", async () => {
+  it("does not flag complete image packs merely because they have no manual review", async () => {
     const originalProject = await prisma.characterProject.findUniqueOrThrow({
       where: { id: projectA },
       select: { draftAssetPack: true },
@@ -702,13 +702,7 @@ describe("Character Portfolio authority/read model", () => {
         }),
         { asOf, authorizedDraftAssetCharacterIds: null },
       );
-      expect(flagged.items).toHaveLength(1);
-      expect(flagged.items[0]?.needsAttention).toBe(true);
-      expect(flagged.items[0]?.journey.primaryAction).toEqual({
-        code: "review_asset_pack",
-        deepLink: `/admin/characters/${characterA}?tab=assets`,
-        command: null,
-      });
+      expect(flagged.items).toHaveLength(0);
     } finally {
       await prisma.characterProject.update({
         where: { id: projectA },
@@ -766,6 +760,12 @@ describe("Character Portfolio authority/read model", () => {
         createdById: producerId,
       },
     });
+    const job = await prisma.generationJob.create({ data: {
+      userId: producerId, mode: "image", status: "running", controls: {}, presetIds: [],
+    } });
+    await prisma.contentProductionItem.create({ data: {
+      batchId: runId, itemIndex: 0, jobId: job.id, status: "queued", tags: [],
+    } });
     try {
       const data = await listCharacterPortfolioData(
         prisma,
@@ -777,7 +777,14 @@ describe("Character Portfolio authority/read model", () => {
         deepLink: `/admin/characters/${characterA}?tab=assets`,
         command: null,
       });
+      await prisma.generationJob.update({ where: { id: job.id }, data: { status: "completed" } });
+      const completed = await listCharacterPortfolioData(prisma,
+        characterPortfolioQuerySchema.parse({ search: "Astra", limit: 20 }),
+        { asOf, authorizedDraftAssetCharacterIds: null });
+      expect(completed.items[0].journey.primaryAction.code).toBe("continue_asset_pack");
     } finally {
+      await prisma.contentProductionItem.deleteMany({ where: { batchId: runId } });
+      await prisma.generationJob.delete({ where: { id: job.id } });
       await prisma.contentProductionBatch.deleteMany({ where: { id: runId } });
       await prisma.characterProject.update({
         where: { id: projectA },

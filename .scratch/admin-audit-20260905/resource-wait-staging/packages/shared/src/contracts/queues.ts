@@ -1,0 +1,44 @@
+// SPEC: Canonical BullMQ queue names, shared by every service (SSoT).
+// INTENT: One place to name queues so producer/consumer never drift across the
+// physical split. Cross-service queues name their consumer-side authority.
+// INVARIANTS: A queue name is a stable wire identifier — renaming is a migration.
+
+/** Generation workers (gen/image, gen/video) — payload self-contained, no DB authority. */
+export const GEN_QUEUES = {
+  imageGenerate: "ai.image.generate",
+  videoGenerate: "ai.video.generate",
+} as const;
+
+/** Main-side authority write-back (gen-finalizer, main-event-consumer). */
+export const MAIN_QUEUES = {
+  /** gen/* -> gen-finalizer: relay one immutable terminal record into Main. */
+  generationTerminalIngest: "app.generation.terminal.ingest",
+  /** gen/* → gen-finalizer: settle assets + dreamcoins + output moderation. */
+  aiFinalize: "app.ai.finalize",
+} as const;
+
+// INVARIANT: queue pause/drain, cutover inspection, recovery receipts and their
+// verifier cover this one exact set.
+export const GENERATION_CUTOVER_QUEUES = [
+  GEN_QUEUES.imageGenerate,
+  GEN_QUEUES.videoGenerate,
+  MAIN_QUEUES.generationTerminalIngest,
+  MAIN_QUEUES.aiFinalize,
+] as const;
+
+export const ALL_QUEUE_NAMES = [
+  ...Object.values(GEN_QUEUES),
+  ...Object.values(MAIN_QUEUES),
+] as const;
+
+export type QueueName = (typeof ALL_QUEUE_NAMES)[number];
+
+// SPEC: derive the BullMQ job id that makes a dedupe key collide with itself.
+// INTENT: BullMQ dedupes on job id, so this mapping is what turns at-least-once
+// enqueues into one provider invocation. Main and Gen both enqueue onto the same
+// queues, so they must derive the id identically — two copies that drift stop
+// colliding and let the same Attempt be dispatched, and billed, twice.
+// INVARIANT: base64url of the UTF-8 key — stable across processes and restarts.
+export function bullMqJobIdForDedupeKey(dedupeKey: string): string {
+  return `dedupe_${Buffer.from(dedupeKey, "utf8").toString("base64url")}`;
+}

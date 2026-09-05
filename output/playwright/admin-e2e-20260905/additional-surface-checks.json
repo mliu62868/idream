@@ -1,0 +1,251 @@
+[
+  {
+    "path": "/admin/customers",
+    "title": "客户 | iDream Admin",
+    "headings": [
+      "客户",
+      "客户"
+    ],
+    "alerts": [],
+    "overflow": false,
+    "console": "## Console messages\n<no console messages found>"
+  },
+  {
+    "path": "/admin/customer-ops/billing",
+    "title": "计费运营 | iDream Admin",
+    "headings": [
+      "计费运营",
+      "计费运营",
+      "调整账本"
+    ],
+    "alerts": [],
+    "overflow": false,
+    "console": "## Console messages\n<no console messages found>"
+  },
+  {
+    "path": "/admin/customer-ops/account-requests",
+    "title": "账号请求 | iDream Admin",
+    "headings": [
+      "账号请求",
+      "DSAR - 导出 / 擦除",
+      "年龄验证队列"
+    ],
+    "alerts": [],
+    "overflow": false,
+    "console": "## Console messages\n<no console messages found>"
+  },
+  {
+    "path": "/admin/growth/funnels",
+    "title": "配置诊断 | iDream Admin",
+    "headings": [
+      "配置诊断",
+      "本页背后没有漏斗或分群序列",
+      "模型健康度 + 配置检查"
+    ],
+    "alerts": [],
+    "overflow": false,
+    "console": "## Console messages\n<no console messages found>"
+  },
+  {
+    "path": "/admin/growth/characters",
+    "title": "角色表现 | iDream Admin",
+    "headings": [
+      "角色表现",
+      "角色表现",
+      "Chrome E2E Iris 20260905",
+      "Admin Audit Rowan 20260905",
+      "Mira Audit 20260902",
+      "Mara Vale Launch",
+      "Alexa Reeves",
+      "E2E Admin Ops 0830",
+      "Chrome Role Audit 0828",
+      "Raya Reyes",
+      "Admin Soul Audit",
+      "Audit Rowan Vale 0825",
+      "Truth or Dare: Stepmother Edition",
+      "Truth or Dare : Confessional",
+      "Tamsin Jacobs - A 'Bullish' Request",
+      "Summoned to Another World",
+      "Stephanie, your dumbass stepsis",
+      "Sophie - The Single Mother",
+      "Sarah Mercer",
+      "Melissa Burke",
+      "Lola Moonstruck",
+      "Kennedy Graham",
+      "Emily : Coming Home",
+      "Eleanor Dawn",
+      "Diana - The bet to date the weird girl !",
+      "Editorial image readiness fixture",
+      "Editorial repair fixture"
+    ],
+    "alerts": [],
+    "overflow": false,
+    "console": "## Console messages\n<no console messages found>"
+  },
+  {
+    "path": "/admin/growth/experiments",
+    "title": "实验 | iDream Admin",
+    "headings": [
+      "实验",
+      "受管实验工作区",
+      "实验定义 (0)",
+      "功能开关监测 (3)"
+    ],
+    "alerts": [],
+    "overflow": false,
+    "console": "## Console messages\n<no console messages found>"
+  },
+  {
+    "path": "/admin/growth/merchandising",
+    "title": "推荐位运营 | iDream Admin",
+    "headings": [
+      "推荐位运营",
+      "推荐位运营",
+      "推荐位编排"
+    ],
+    "alerts": [],
+    "overflow": false,
+    "console": "## Console messages\n<no console messages found>"
+  },
+  {
+    "path": "/admin/growth/offers",
+    "title": "定价 | iDream Admin",
+    "headings": [
+      "定价",
+      "定价",
+      "创建定价规则草稿"
+    ],
+    "alerts": [],
+    "overflow": false,
+    "console": "## Console messages\n<no console messages found>"
+  },
+  {
+    "path": "/admin/ops/providers",
+    "title": "服务提供方 | iDream Admin",
+    "headings": [
+      "服务提供方",
+      "服务提供方"
+    ],
+    "alerts": [],
+    "overflow": false,
+    "console": "## Console messages\n<no console messages found>"
+  },
+  {
+    "path": "/admin/ops/profiles",
+    "title": "配置与灰度 | iDream Admin",
+    "headings": [
+      "配置与灰度",
+      "配置与灰度",
+      "Character Multi-Reference Identity (Qwen-Edit)"
+    ],
+    "alerts": [],
+    "overflow": false,
+    "console": "## Console messages\n<no console messages found>"
+  },
+  {
+    "path": "/admin/ops/recipes?limit=25",
+    "title": "提示词配方 | iDream Admin",
+    "headings": [
+      "提示词配方",
+      "提示词配方"
+    ],
+    "alerts": [],
+    "overflow": false,
+    "console": "## Console messages\n<no console messages found>"
+  },
+  {
+    "path": "/admin/ops/chat",
+    "title": "聊天运营 | iDream Admin",
+    "headings": [
+      "聊天运营",
+      "聊天运营",
+      "Main → Chat 交付失败"
+    ],
+    "alerts": [],
+    "overflow": false,
+    "console": "## Console messages\n<no console messages found>"
+  },
+  {
+    "path": "/admin/system/access",
+    "title": "团队访问 | iDream Admin",
+    "headings": [
+      "团队访问",
+      "团队访问",
+      "权限覆盖",
+      "角色与授权包"
+    ],
+    "alerts": [],
+    "overflow": false,
+    "console": "## Console messages\n<no console messages found>"
+  },
+  {
+    "path": "/admin/system/audit",
+    "title": "审计日志 | iDream Admin",
+    "headings": [
+      "审计日志",
+      "审计日志"
+    ],
+    "alerts": [],
+    "overflow": false,
+    "console": "## Console messages\n<no console messages found>"
+  },
+  {
+    "path": "/admin/creative/placements",
+    "title": "铺位 | iDream Admin",
+    "headings": [
+      "铺位",
+      "铺位"
+    ],
+    "alerts": [],
+    "overflow": false,
+    "console": "## Console messages\n<no console messages found>"
+  },
+  {
+    "path": "/admin/characters/starters?limit=25",
+    "title": "角色起始模板 | iDream Admin",
+    "headings": [
+      "角色起始模板",
+      "角色起始模板"
+    ],
+    "alerts": [],
+    "overflow": false,
+    "console": "## Console messages\n<no console messages found>"
+  },
+  {
+    "path": "/admin/characters/taxonomy",
+    "title": "分类体系 | iDream Admin",
+    "headings": [
+      "分类体系",
+      "分类体系",
+      "合并标签",
+      "标签分类法 —— 共 22 个"
+    ],
+    "alerts": [],
+    "overflow": false,
+    "console": "## Console messages\n<no console messages found>"
+  },
+  {
+    "path": "/admin/growth/merchandising?view=announcements",
+    "title": "公告 | iDream Admin",
+    "headings": [
+      "公告",
+      "公告 (0)",
+      "创建公告"
+    ],
+    "alerts": [],
+    "overflow": false,
+    "console": "## Console messages\n<no console messages found>"
+  },
+  {
+    "path": "/admin/growth/offers?view=promo",
+    "title": "促销 | iDream Admin",
+    "headings": [
+      "促销",
+      "促销",
+      "创建兑换码"
+    ],
+    "alerts": [],
+    "overflow": false,
+    "console": "## Console messages\n<no console messages found>"
+  }
+]

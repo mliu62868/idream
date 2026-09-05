@@ -1,0 +1,65 @@
+{
+  "job": {
+    "id": "cmto3wvg60018g6l78rd26elg",
+    "status": "completed",
+    "finishedAt": "2026-09-05T08:31:25.738Z",
+    "deliveredOutputCount": 1,
+    "assets": [
+      {
+        "id": "media_ruh96f3a52bmto4ivxf",
+        "contentType": "video/mp4",
+        "width": null,
+        "height": null,
+        "storageKey": "gen/cmto3wvg60018g6l78rd26elg/attempts/cmto3wvgq001bg6l7ibv4p56f/video.mp4",
+        "url": "/user-content/bWVkaWFfcnVoOTZmM2E1MmJtdG80aXZ4Zg/content.mp4"
+      }
+    ]
+  },
+  "attempts": [
+    {
+      "id": "cmto3wvgq001bg6l7ibv4p56f",
+      "requestId": "cmto3wvg60018g6l78rd26elg",
+      "attemptNo": 1,
+      "provider": "comfyui",
+      "profileKey": "profile_video_redgraft_ltx25_v1",
+      "profileVersion": 2,
+      "workflowKey": "redgraft-ltx25-i2v",
+      "workflowVersion": 2,
+      "status": "succeeded",
+      "terminalSequence": 4,
+      "errorClass": null,
+      "errorCode": null,
+      "errorSignature": null,
+      "retryability": null,
+      "operatorGuidance": null,
+      "sourceCommandId": null,
+      "creativeRunItemId": "cmto3wvg40017g6l70ri9ozct",
+      "terminalRecordRef": "gen/terminal-records/cmto3wvgq001bg6l7ibv4p56f/terminal.json",
+      "startedAt": "2026-09-05T08:14:18.744Z",
+      "finishedAt": "2026-09-05T08:31:25.738Z",
+      "createdAt": "2026-09-05T08:14:18.698Z"
+    }
+  ],
+  "transports": [
+    {
+      "id": "cmto3wvig001eg6l75ytth0io",
+      "status": "succeeded",
+      "providerRequestId": "3c85df61-f6eb-461e-9b9b-11c4a41942bb",
+      "latencyMs": 1025934,
+      "startedAt": "2026-09-05T08:14:18.744Z",
+      "finishedAt": "2026-09-05T08:31:24.711Z"
+    }
+  ],
+  "deliveries": [
+    {
+      "id": "generation_delivery_df179f5fe75e04d7807262c51f2d5ebe",
+      "requestId": "cmto3wvg60018g6l78rd26elg",
+      "artifactId": "cmto4ivsv000dgvl76hzjku32",
+      "targetType": "user_library",
+      "targetId": "seed-admin-user",
+      "status": "delivered",
+      "deliveredAt": "2026-09-05T08:31:25.738Z",
+      "createdAt": "2026-09-05T08:31:25.759Z"
+    }
+  ]
+}

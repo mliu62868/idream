@@ -1,11 +1,12 @@
 // @vitest-environment happy-dom
 
-import { act } from "react";
+import { act, type ComponentProps } from "react";
 import type { AdminPermissionKey } from "@idream/shared/admin";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { adminV2Request } = vi.hoisted(() => ({
+const { imageSelectionCommit, adminV2Request } = vi.hoisted(() => ({
+  imageSelectionCommit: vi.fn<() => Promise<void>>(),
   adminV2Request: vi.fn<
     (
       path: string,
@@ -22,6 +23,15 @@ vi.mock("@/lib/admin-v2-api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/admin-v2-api")>();
   return { ...actual, adminV2Request };
 });
+
+vi.mock("./CharacterImageLibrary", () => ({
+  CharacterImageLibrary: ({ canCreate, commitProjectMutation }: ComponentProps<typeof import("./CharacterImageLibrary").CharacterImageLibrary>) => (
+    <button disabled={!canCreate} onClick={() => void commitProjectMutation({
+      action: "character_hero image selection",
+      commit: imageSelectionCommit,
+    })}>Use image in placement</button>
+  ),
+}));
 
 import { AdminI18nProvider } from "@/components/admin/i18n";
 
@@ -105,10 +115,10 @@ function releaseTabSelected() {
   );
 }
 
-async function render() {
+async function render(locale: "en" | "zh" = "en") {
   await act(async () => {
     root.render(
-      <AdminI18nProvider locale="en">
+      <AdminI18nProvider locale={locale}>
         <CharacterWorkspace
           actorId="operator-a"
           permissions={permissions}
@@ -145,6 +155,7 @@ beforeEach(() => {
   window.sessionStorage.clear();
   window.history.replaceState(null, "", "/admin/characters/character-1");
   adminV2Request.mockReset();
+  imageSelectionCommit.mockReset();
   adminV2Request.mockImplementation(async (path) => {
     if (path === "/api/v2/admin/characters/character-1") return workspace;
     throw new Error(`unexpected request: ${path}`);
@@ -186,6 +197,37 @@ function seedPendingCommand(
 }
 
 describe("Character workspace — 每个命令出口都接到了运营界面", () => {
+  it.each([
+    ["en", "Saving your changes and updating the character. Please wait before making another change."],
+    ["zh", "正在保存更改并更新角色资料，请稍候再继续操作。"],
+  ] as const)("shows a clear %s placement-saving notice and preserves the write lock until refresh", async (locale, message) => {
+    window.history.replaceState(null, "", "/admin/characters/character-1?tab=assets");
+    let finishCommit!: () => void;
+    let finishRefresh!: (value: typeof workspace) => void;
+    imageSelectionCommit.mockImplementation(() => new Promise((resolve) => { finishCommit = resolve; }));
+    let reads = 0;
+    adminV2Request.mockImplementation(async (path) => {
+      if (path === "/api/v2/admin/characters/character-1") {
+        reads += 1;
+        if (reads > 1) return new Promise((resolve) => { finishRefresh = resolve; });
+        return workspace;
+      }
+      throw new Error(`unexpected request: ${path}`);
+    });
+    await render(locale);
+    await act(async () => clickButton("Use image in placement").click());
+    await waitUntil(() => bannerContaining(message) !== null, "saving notice");
+    expect(text()).not.toContain("character_hero image selection");
+    expect(text()).not.toContain("authoritative workspace");
+    expect(clickButton("Use image in placement").disabled).toBe(true);
+    await act(async () => finishCommit());
+    await waitUntil(() => reads === 2, "committed workspace refresh");
+    expect(clickButton("Use image in placement").disabled).toBe(true);
+    await act(async () => finishRefresh(workspace));
+    await waitUntil(() => bannerContaining(message) === null, "saving notice cleared");
+    expect(clickButton("Use image in placement").disabled).toBe(false);
+  });
+
   // SPEC: 有落盘日志时首屏直接落在 Release 页签，并锁住写入。
   it("restores a persisted command, locks writes, and lands on the release tab", async () => {
     seedPendingCommand();

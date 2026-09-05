@@ -1,3 +1,4 @@
+import { deriveCreativeRunContinuation } from "./run-state";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { Errors } from "@/server/lib/errors";
 import {
@@ -407,8 +408,8 @@ export async function executeCreativeRetryCommand(
         });
       }
       if (
-        run.lifecycleState !== "active" ||
-        !isCreativeRunLifecycleTransitionAllowed(run.lifecycleState, run.lifecycleState)
+        !["active", "closed"].includes(run.lifecycleState) ||
+        !isCreativeRunLifecycleTransitionAllowed(run.lifecycleState, "active")
       ) {
         throw Errors.conflict("Creative Run is not active for retry", { lifecycleState: run.lifecycleState });
       }
@@ -535,6 +536,7 @@ export async function executeCreativeRetryCommand(
           verificationState: run.verificationState,
         },
         data: {
+          lifecycleState: "active",
           workflowStage: "generation",
           verificationState: "verifying",
           status: "queued",
@@ -639,7 +641,12 @@ export async function verifyCreativeRetryCommands(
       const currentRun = await tx.contentProductionBatch.findUniqueOrThrow({
         where: { id: command.targetId },
       });
-      const nextWorkflowStage = verificationPassed ? "review" : "generation";
+      const runItems = await tx.contentProductionItem.findMany({ where: { batchId: currentRun.id }, select: { status: true } });
+      const continuation = deriveCreativeRunContinuation(runItems.map((item) => item.status), {
+        requiresVerifiedPlacement: currentRun.purpose === "campaign",
+        requiresReview: currentRun.purpose === "model_eval",
+      });
+      const nextWorkflowStage = verificationPassed ? continuation.workflowStage : "generation";
       const nextVerificationState = verificationPassed ? "pending" : "failed";
       if (
         !isCreativeRunWorkflowTransitionAllowed(currentRun.workflowStage, nextWorkflowStage) ||
@@ -655,7 +662,8 @@ export async function verifyCreativeRetryCommands(
         data: {
           workflowStage: nextWorkflowStage,
           verificationState: nextVerificationState,
-          status: verificationPassed ? "reviewing" : "completed",
+          status: verificationPassed ? continuation.status : "completed",
+          ...(verificationPassed ? { lifecycleState: continuation.lifecycleState } : {}),
           version: { increment: 1 },
         },
       });

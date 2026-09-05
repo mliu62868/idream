@@ -881,6 +881,7 @@ describe("Admin v2 finite-state authority inventory", () => {
       "src/server/modules/admin-v2/creative/placement.ts",
       "src/server/modules/admin-v2/creative/retry-executor.ts",
       "src/server/modules/admin-v2/creative/review-decision.ts",
+      "src/server/modules/content-production-state.ts",
     ]);
     for (const path of writers) {
       expect(source(path), path).toContain("isCreativeRunWorkflowTransitionAllowed");

@@ -1,0 +1,231 @@
+@idream/main test: 
+@idream/main test:  RUN  v4.1.9 /Users/kk/code/idream/packages/main
+@idream/main test: 
+@idream/main test: Loaded Prisma config from prisma.config.ts.
+@idream/main test: 
+@idream/main test: Prisma schema loaded from prisma/schema.prisma.
+@idream/main test: Datasource "db": PostgreSQL database "idream_test", schema "public" at "localhost:5433"
+@idream/main test: 
+@idream/main test: 🚀  Your database is now in sync with your Prisma schema. Done in 9.64s
+@idream/main test: 
+@idream/main test: Loaded Prisma config from prisma.config.ts.
+@idream/main test: 
+@idream/main test: Prisma schema loaded from prisma/schema.prisma.
+@idream/main test: 
+@idream/main test: ✔ Generated Prisma Client (v7.6.0) to ./../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client in 499ms
+@idream/main test: 
+@idream/main test: Start by importing your Prisma Client (See: https://pris.ly/d/importing-client)
+@idream/main test: 
+@idream/main test: 
+@idream/main test: [seed] complete
+@idream/main test: (node:78795) DeprecationWarning: Calling client.query() when the client is already executing a query is deprecated and will be removed in pg@9.0. Use async/await or an external async flow control mechanism instead.
+@idream/main test: (Use `node --trace-deprecation ...` to show where the warning was created)
+@idream/main test:  ❯ src/server/modules/admin-v2/jobs/unknown-automatic-settlement.integration.test.ts (6 tests | 6 failed) 232ms
+@idream/main test:      × adopts the same late artifact after a zero-refund system timeout and preserves both audited decisions 8ms
+@idream/main test:      × does not compensate refunded terminal authority 2ms
+@idream/main test:      × does not compensate manual terminal authority 1ms
+@idream/main test:      × does not compensate forged terminal authority 1ms
+@idream/main test:      × does not compensate older-evidence terminal authority 1ms
+@idream/main test:      × does not auto-settle while the exact original queued execution remains recoverable 1ms
+@idream/main test: 
+@idream/main test: ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 6 ⎯⎯⎯⎯⎯⎯⎯
+@idream/main test: 
+@idream/main test:  FAIL  src/server/modules/admin-v2/jobs/unknown-automatic-settlement.integration.test.ts > automatic unknown timeout compensation > adopts the same late artifact after a zero-refund system timeout and preserves both audited decisions
+@idream/main test: PrismaClientValidationError: 
+@idream/main test: Invalid `prisma.character.create()` invocation in
+@idream/main test: /Users/kk/code/idream/packages/main/src/server/modules/admin-v2/jobs/unknown-automatic-settlement.integration.test.ts:27:26
+@idream/main test: 
+@idream/main test:   24 const requestId = `automatic-recovery-${randomUUID()}`;
+@idream/main test:   25 const characterId = `automatic-recovery-character-${randomUUID()}`;
+@idream/main test:   26 requestIds.push(requestId); characterIds.push(characterId);
+@idream/main test: → 27 await prisma.character.create({
+@idream/main test:        data: {
+@idream/main test:          id: "automatic-recovery-character-78752faf-a948-4ef3-8b70-578fd184169a",
+@idream/main test:          name: "Automatic timeout recovery",
+@idream/main test:          age: 28,
+@idream/main test:          source: "official",
+@idream/main test:          appearance: {},
+@idream/main test:          advancedDetails: {},
+@idream/main test:      +   description: String
+@idream/main test:        }
+@idream/main test:      })
+@idream/main test: 
+@idream/main test: Argument `description` is missing.
+@idream/main test:  ❯ ar ../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client/src/runtime/core/errorRendering/throwValidationException.ts:46:8
+@idream/main test:  ❯ throwValidationException ../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client/src/runtime/RequestHandler.ts:211:6
+@idream/main test:  ❯ Gr.handleAndLogRequestError ../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client/src/runtime/RequestHandler.ts:183:11
+@idream/main test:  ❯ Gr.request ../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client/src/runtime/RequestHandler.ts:152:11
+@idream/main test:  ❯ a ../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client/src/runtime/getPrismaClient.ts:938:23
+@idream/main test:  ❯ fixture src/server/modules/admin-v2/jobs/unknown-automatic-settlement.integration.test.ts:27:3
+@idream/main test: 
+@idream/main test:  ❯ src/server/modules/admin-v2/jobs/unknown-automatic-settlement.integration.test.ts:72:15
+@idream/main test: 
+@idream/main test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/6]⎯
+@idream/main test: 
+@idream/main test:  FAIL  src/server/modules/admin-v2/jobs/unknown-automatic-settlement.integration.test.ts > automatic unknown timeout compensation > does not compensate refunded terminal authority
+@idream/main test: PrismaClientValidationError: 
+@idream/main test: Invalid `prisma.character.create()` invocation in
+@idream/main test: /Users/kk/code/idream/packages/main/src/server/modules/admin-v2/jobs/unknown-automatic-settlement.integration.test.ts:27:26
+@idream/main test: 
+@idream/main test:   24 const requestId = `automatic-recovery-${randomUUID()}`;
+@idream/main test:   25 const characterId = `automatic-recovery-character-${randomUUID()}`;
+@idream/main test:   26 requestIds.push(requestId); characterIds.push(characterId);
+@idream/main test: → 27 await prisma.character.create({
+@idream/main test:        data: {
+@idream/main test:          id: "automatic-recovery-character-74dc117c-fde3-44da-86cf-e47d10b7801b",
+@idream/main test:          name: "Automatic timeout recovery",
+@idream/main test:          age: 28,
+@idream/main test:          source: "official",
+@idream/main test:          appearance: {},
+@idream/main test:          advancedDetails: {},
+@idream/main test:      +   description: String
+@idream/main test:        }
+@idream/main test:      })
+@idream/main test: 
+@idream/main test: Argument `description` is missing.
+@idream/main test:  ❯ ar ../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client/src/runtime/core/errorRendering/throwValidationException.ts:46:8
+@idream/main test:  ❯ throwValidationException ../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client/src/runtime/RequestHandler.ts:211:6
+@idream/main test:  ❯ Gr.handleAndLogRequestError ../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client/src/runtime/RequestHandler.ts:183:11
+@idream/main test:  ❯ Gr.request ../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client/src/runtime/RequestHandler.ts:152:11
+@idream/main test:  ❯ a ../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client/src/runtime/getPrismaClient.ts:938:23
+@idream/main test:  ❯ fixture src/server/modules/admin-v2/jobs/unknown-automatic-settlement.integration.test.ts:27:3
+@idream/main test: 
+@idream/main test:  ❯ src/server/modules/admin-v2/jobs/unknown-automatic-settlement.integration.test.ts:101:15
+@idream/main test: 
+@idream/main test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/6]⎯
+@idream/main test: 
+@idream/main test:  FAIL  src/server/modules/admin-v2/jobs/unknown-automatic-settlement.integration.test.ts > automatic unknown timeout compensation > does not compensate manual terminal authority
+@idream/main test: PrismaClientValidationError: 
+@idream/main test: Invalid `prisma.character.create()` invocation in
+@idream/main test: /Users/kk/code/idream/packages/main/src/server/modules/admin-v2/jobs/unknown-automatic-settlement.integration.test.ts:27:26
+@idream/main test: 
+@idream/main test:   24 const requestId = `automatic-recovery-${randomUUID()}`;
+@idream/main test:   25 const characterId = `automatic-recovery-character-${randomUUID()}`;
+@idream/main test:   26 requestIds.push(requestId); characterIds.push(characterId);
+@idream/main test: → 27 await prisma.character.create({
+@idream/main test:        data: {
+@idream/main test:          id: "automatic-recovery-character-d9a43093-ee04-414e-97a4-ddb0e87395a2",
+@idream/main test:          name: "Automatic timeout recovery",
+@idream/main test:          age: 28,
+@idream/main test:          source: "official",
+@idream/main test:          appearance: {},
+@idream/main test:          advancedDetails: {},
+@idream/main test:      +   description: String
+@idream/main test:        }
+@idream/main test:      })
+@idream/main test: 
+@idream/main test: Argument `description` is missing.
+@idream/main test:  ❯ ar ../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client/src/runtime/core/errorRendering/throwValidationException.ts:46:8
+@idream/main test:  ❯ throwValidationException ../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client/src/runtime/RequestHandler.ts:211:6
+@idream/main test:  ❯ Gr.handleAndLogRequestError ../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client/src/runtime/RequestHandler.ts:183:11
+@idream/main test:  ❯ Gr.request ../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client/src/runtime/RequestHandler.ts:152:11
+@idream/main test:  ❯ a ../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client/src/runtime/getPrismaClient.ts:938:23
+@idream/main test:  ❯ fixture src/server/modules/admin-v2/jobs/unknown-automatic-settlement.integration.test.ts:27:3
+@idream/main test: 
+@idream/main test:  ❯ src/server/modules/admin-v2/jobs/unknown-automatic-settlement.integration.test.ts:101:15
+@idream/main test: 
+@idream/main test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/6]⎯
+@idream/main test: 
+@idream/main test:  FAIL  src/server/modules/admin-v2/jobs/unknown-automatic-settlement.integration.test.ts > automatic unknown timeout compensation > does not compensate forged terminal authority
+@idream/main test: PrismaClientValidationError: 
+@idream/main test: Invalid `prisma.character.create()` invocation in
+@idream/main test: /Users/kk/code/idream/packages/main/src/server/modules/admin-v2/jobs/unknown-automatic-settlement.integration.test.ts:27:26
+@idream/main test: 
+@idream/main test:   24 const requestId = `automatic-recovery-${randomUUID()}`;
+@idream/main test:   25 const characterId = `automatic-recovery-character-${randomUUID()}`;
+@idream/main test:   26 requestIds.push(requestId); characterIds.push(characterId);
+@idream/main test: → 27 await prisma.character.create({
+@idream/main test:        data: {
+@idream/main test:          id: "automatic-recovery-character-01be53ad-f7c4-4512-bb8a-f785a6247797",
+@idream/main test:          name: "Automatic timeout recovery",
+@idream/main test:          age: 28,
+@idream/main test:          source: "official",
+@idream/main test:          appearance: {},
+@idream/main test:          advancedDetails: {},
+@idream/main test:      +   description: String
+@idream/main test:        }
+@idream/main test:      })
+@idream/main test: 
+@idream/main test: Argument `description` is missing.
+@idream/main test:  ❯ ar ../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client/src/runtime/core/errorRendering/throwValidationException.ts:46:8
+@idream/main test:  ❯ throwValidationException ../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client/src/runtime/RequestHandler.ts:211:6
+@idream/main test:  ❯ Gr.handleAndLogRequestError ../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client/src/runtime/RequestHandler.ts:183:11
+@idream/main test:  ❯ Gr.request ../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client/src/runtime/RequestHandler.ts:152:11
+@idream/main test:  ❯ a ../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client/src/runtime/getPrismaClient.ts:938:23
+@idream/main test:  ❯ fixture src/server/modules/admin-v2/jobs/unknown-automatic-settlement.integration.test.ts:27:3
+@idream/main test: 
+@idream/main test:  ❯ src/server/modules/admin-v2/jobs/unknown-automatic-settlement.integration.test.ts:101:15
+@idream/main test: 
+@idream/main test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/6]⎯
+@idream/main test: 
+@idream/main test:  FAIL  src/server/modules/admin-v2/jobs/unknown-automatic-settlement.integration.test.ts > automatic unknown timeout compensation > does not compensate older-evidence terminal authority
+@idream/main test: PrismaClientValidationError: 
+@idream/main test: Invalid `prisma.character.create()` invocation in
+@idream/main test: /Users/kk/code/idream/packages/main/src/server/modules/admin-v2/jobs/unknown-automatic-settlement.integration.test.ts:27:26
+@idream/main test: 
+@idream/main test:   24 const requestId = `automatic-recovery-${randomUUID()}`;
+@idream/main test:   25 const characterId = `automatic-recovery-character-${randomUUID()}`;
+@idream/main test:   26 requestIds.push(requestId); characterIds.push(characterId);
+@idream/main test: → 27 await prisma.character.create({
+@idream/main test:        data: {
+@idream/main test:          id: "automatic-recovery-character-04433852-5233-46eb-96ec-cc72fc55391c",
+@idream/main test:          name: "Automatic timeout recovery",
+@idream/main test:          age: 28,
+@idream/main test:          source: "official",
+@idream/main test:          appearance: {},
+@idream/main test:          advancedDetails: {},
+@idream/main test:      +   description: String
+@idream/main test:        }
+@idream/main test:      })
+@idream/main test: 
+@idream/main test: Argument `description` is missing.
+@idream/main test:  ❯ ar ../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client/src/runtime/core/errorRendering/throwValidationException.ts:46:8
+@idream/main test:  ❯ throwValidationException ../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client/src/runtime/RequestHandler.ts:211:6
+@idream/main test:  ❯ Gr.handleAndLogRequestError ../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client/src/runtime/RequestHandler.ts:183:11
+@idream/main test:  ❯ Gr.request ../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client/src/runtime/RequestHandler.ts:152:11
+@idream/main test:  ❯ a ../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client/src/runtime/getPrismaClient.ts:938:23
+@idream/main test:  ❯ fixture src/server/modules/admin-v2/jobs/unknown-automatic-settlement.integration.test.ts:27:3
+@idream/main test: 
+@idream/main test:  ❯ src/server/modules/admin-v2/jobs/unknown-automatic-settlement.integration.test.ts:101:15
+@idream/main test: 
+@idream/main test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/6]⎯
+@idream/main test: 
+@idream/main test:  FAIL  src/server/modules/admin-v2/jobs/unknown-automatic-settlement.integration.test.ts > automatic unknown timeout compensation > does not auto-settle while the exact original queued execution remains recoverable
+@idream/main test: PrismaClientValidationError: 
+@idream/main test: Invalid `prisma.character.create()` invocation in
+@idream/main test: /Users/kk/code/idream/packages/main/src/server/modules/admin-v2/jobs/unknown-automatic-settlement.integration.test.ts:27:26
+@idream/main test: 
+@idream/main test:   24 const requestId = `automatic-recovery-${randomUUID()}`;
+@idream/main test:   25 const characterId = `automatic-recovery-character-${randomUUID()}`;
+@idream/main test:   26 requestIds.push(requestId); characterIds.push(characterId);
+@idream/main test: → 27 await prisma.character.create({
+@idream/main test:        data: {
+@idream/main test:          id: "automatic-recovery-character-a0498570-faf5-4ec5-995f-ef1aadf29b71",
+@idream/main test:          name: "Automatic timeout recovery",
+@idream/main test:          age: 28,
+@idream/main test:          source: "official",
+@idream/main test:          appearance: {},
+@idream/main test:          advancedDetails: {},
+@idream/main test:      +   description: String
+@idream/main test:        }
+@idream/main test:      })
+@idream/main test: 
+@idream/main test: Argument `description` is missing.
+@idream/main test:  ❯ ar ../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client/src/runtime/core/errorRendering/throwValidationException.ts:46:8
+@idream/main test:  ❯ throwValidationException ../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client/src/runtime/RequestHandler.ts:211:6
+@idream/main test:  ❯ Gr.handleAndLogRequestError ../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client/src/runtime/RequestHandler.ts:183:11
+@idream/main test:  ❯ Gr.request ../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client/src/runtime/RequestHandler.ts:152:11
+@idream/main test:  ❯ a ../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client/src/runtime/getPrismaClient.ts:938:23
+@idream/main test:  ❯ fixture src/server/modules/admin-v2/jobs/unknown-automatic-settlement.integration.test.ts:27:3
+@idream/main test: 
+@idream/main test:  ❯ src/server/modules/admin-v2/jobs/unknown-automatic-settlement.integration.test.ts:114:15
+@idream/main test: 
+@idream/main test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/6]⎯
+@idream/main test: 
+@idream/main test: 
+@idream/main test:  Test Files  1 failed | 4 passed (5)
+@idream/main test:       Tests  6 failed | 53 passed (59)
+@idream/main test:    Start at  07:23:40
+@idream/main test:    Duration  31.17s (transform 1.25s, setup 0ms, import 3.77s, tests 10.56s, environment 0ms)
+@idream/main test: 
+@idream/main test: Exited with code 1

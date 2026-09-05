@@ -1,0 +1,249 @@
+{
+  "applicationSourceDigest": "1634619a8f9c580a919523f90f6a281f16d6db7e24b891b6c363a8f7e5c17baa",
+  "files": [
+    {
+      "path": "packages/admin/src/app/admin/characters/review/page.tsx",
+      "sha256": "bbc1383de7a3b864b6ad9e7001c188ca55951ee35ada14eb19bd318120602e86"
+    },
+    {
+      "path": "packages/admin/src/components/admin/CmsArticleEditor.tsx",
+      "sha256": "bc52b3c461e11164089ac83c927f7beb6b6e755b4bedc2098e3b61850dda003e"
+    },
+    {
+      "path": "packages/admin/src/components/admin/CmsView.tsx",
+      "sha256": "6bc9faf9602ff1735154424f37288c81a4e2006eac693949a3305e2a47069100"
+    },
+    {
+      "path": "packages/admin/src/components/admin/ReviewQueueView.tsx",
+      "deleted": true
+    },
+    {
+      "path": "packages/admin/src/components/admin/i18n-dictionary.ts",
+      "sha256": "678be1097341189670b52b657d98257599203d12463fb0d85b29818802fb9493"
+    },
+    {
+      "path": "packages/admin/src/components/admin/i18n-zh-characters.ts",
+      "sha256": "46f22671a17cd6c02d2dbcb01a5d590e8c4839b487ebdd8dc595b32091730142"
+    },
+    {
+      "path": "packages/admin/src/components/admin/i18n-zh-creative.ts",
+      "sha256": "6ef93e767536a03e93a5215a67e5d988a131c17c600a24416487fadf11513e0c"
+    },
+    {
+      "path": "packages/admin/src/components/admin/i18n-zh-customers.ts",
+      "sha256": "35cf5a782fa3c0dab9ee939e9edd500653ad96394bd103707743a060b1c1d653"
+    },
+    {
+      "path": "packages/admin/src/components/admin/i18n-zh-growth.ts",
+      "sha256": "9d55d9babd9a6bdcc8c5c3fd7d28b4e1597c32a5b6b76ea6c488c87f9bd0ecc8"
+    },
+    {
+      "path": "packages/admin/src/components/admin/nav-config.tsx",
+      "sha256": "540958b731ae066196f522caafcd482c8d1ae94043484467d9228db798110397"
+    },
+    {
+      "path": "packages/admin/src/components/admin/nav-routes.ts",
+      "sha256": "c4f591674a56d17f723bb0c69a33edf773801832a1596abddffab6ad19f67e07"
+    },
+    {
+      "path": "packages/admin/src/features/cases/CaseWorkspace.tsx",
+      "sha256": "50f09b8a805e9a755ea3e6a545df9fb33b128a442832785c0347bce3322c8bec"
+    },
+    {
+      "path": "packages/admin/src/features/characters/CharacterAssetStudio.tsx",
+      "sha256": "f2c9e8d84ec2c9c4d4f4a396ff4bd3b5a2e00fad870ef631b87b94105eef1df5"
+    },
+    {
+      "path": "packages/admin/src/features/characters/CharacterImageLibrary.tsx",
+      "sha256": "e8220ace3300b7939bd2d013ac1e0b44e28dd4d3018a6355372a8d262399e8f5"
+    },
+    {
+      "path": "packages/admin/src/features/characters/CharacterPlacementEditor.tsx",
+      "sha256": "3cb58fe59d7d5ecf0355123107e97010e9fb9170388f664af8bd838cd80c2075"
+    },
+    {
+      "path": "packages/admin/src/features/characters/CharacterPortfolio.tsx",
+      "sha256": "22bfa037e36efec8947e22c97ff3f073175e3b85104df5cf3714f8138ee422af"
+    },
+    {
+      "path": "packages/admin/src/features/characters/CharacterSoulPanel.tsx",
+      "sha256": "08c48437fb0dee7206e02c5954950255c13f95a8cb4a3a82e134c2ab02189859"
+    },
+    {
+      "path": "packages/admin/src/features/characters/CharacterVideoLibrary.tsx",
+      "sha256": "177f6164e13a41f590d1c2e960fa4754a6923d743208bfbcecc9e868ef83d3cd"
+    },
+    {
+      "path": "packages/admin/src/features/characters/CharacterVideoStudio.tsx",
+      "sha256": "91751fe614cccafc82efc68952954ccf17c1260c8afeef9e6b2217da97fa5c1c"
+    },
+    {
+      "path": "packages/admin/src/features/characters/CharacterWorkspace.tsx",
+      "sha256": "130e4807c1a94cf979a8f98ffa83030434d50caeea0cb448475c1cb5bc9bcb01"
+    },
+    {
+      "path": "packages/admin/src/features/characters/ReleasePanel.tsx",
+      "sha256": "bdb7dc799d17d3a49d5e82ae34fadb3f1f81b71e6f12c36df7563884b9220041"
+    },
+    {
+      "path": "packages/admin/src/features/characters/UnpreparedCharacters.tsx",
+      "sha256": "8e0f447234a01bcff7e5884b6e66ec394c755ef2a930c2e7a0fd44755f0f3473"
+    },
+    {
+      "path": "packages/admin/src/features/characters/VisualIdentityExperimentWorkbench.tsx",
+      "sha256": "73d388be558d221d314db7310dfb16e4811aa380b6a2ad3f8872d16794f378d7"
+    },
+    {
+      "path": "packages/admin/src/features/characters/character-asset-studio-authority.ts",
+      "sha256": "d6b6ad7cfaa0cf92adaf1b112e1e89b27bf1c2248d5b9bc06dfb99bce7f92732"
+    },
+    {
+      "path": "packages/admin/src/features/creative/CreativeRunWorkspace.tsx",
+      "sha256": "c60294eb36f9d95576449bf8e53a96201969ff7223e64bcdee8f6cc7e579daa3"
+    },
+    {
+      "path": "packages/main/src/app/api/v2/admin/characters/[id]/commands/restore/route.ts",
+      "sha256": "6d787f92d99f88da60a03b0182c22a25f80703ef93b9709c86ac79b812d658e9"
+    },
+    {
+      "path": "packages/main/src/app/api/v2/admin/characters/[id]/image-sources/route.ts",
+      "sha256": "f79e56ae499c737d9a48bc95376ef03120288edab7b1b2e061837e0f0b170b85"
+    },
+    {
+      "path": "packages/main/src/app/api/v2/admin/characters/[id]/releases/[releaseId]/commands/withdraw/route.ts",
+      "sha256": "b8f3b329738a9910f91a71b63c2607e0d834012aa00ac0c9570726c0803a65a8"
+    },
+    {
+      "path": "packages/main/src/app/internal-preview/characters/[token]/page.tsx",
+      "sha256": "7fbb996084dd2145d877eadcf7a2c25065ef00a3eb6de256856902a45cb7922e"
+    },
+    {
+      "path": "packages/main/src/components/ourdream/CreateWorkspace.tsx",
+      "sha256": "6709f1e68c0a145e9a2c169f5fe2a65876aebb1d6dfadcbd44f6650f5f4f3053"
+    },
+    {
+      "path": "packages/main/src/components/ourdream/ProfileWorkspace.tsx",
+      "sha256": "2db49ea1b247238ef6c7b31baa0544458327d22ee5c4f11af493d842ab4d1876"
+    },
+    {
+      "path": "packages/main/src/processes/admin-command-worker.ts",
+      "sha256": "3c5260dc00abf2396b63bd09dfcb33d5705c4be69725f12b144de1ce562aaeaa"
+    },
+    {
+      "path": "packages/main/src/server/modules/admin-v2/cases/evidence-summary.ts",
+      "sha256": "929ac805ca7a0827c3b74de898411a12e1f5b82f6b6eb70b0efa6d958d1b7fb9"
+    },
+    {
+      "path": "packages/main/src/server/modules/admin-v2/cases/query.ts",
+      "sha256": "254a6980a1852762b282ea1880c807d9531965e6aeea5ba582cc3efc0949bfd8"
+    },
+    {
+      "path": "packages/main/src/server/modules/admin-v2/characters/asset-studio.ts",
+      "sha256": "48d41b8550b5bdefea7f01f50ca00435bb687abb670f8d05bd67579b59f0dbf8"
+    },
+    {
+      "path": "packages/main/src/server/modules/admin-v2/characters/character-media-operations.ts",
+      "sha256": "e9ba975c03bedd4e816007bfff4efef43570dc8e131bdf75e256ea2c6e63c203"
+    },
+    {
+      "path": "packages/main/src/server/modules/admin-v2/characters/creation.ts",
+      "sha256": "9f6562d26b9809f76c7187b45310cd8a05fa48b491918e5f9c59fb883752c01f"
+    },
+    {
+      "path": "packages/main/src/server/modules/admin-v2/characters/image-qualification.ts",
+      "sha256": "c3eceb4de3aa0cb62d91c488857f19714deba0ccb18b94b43874a5382c589c20"
+    },
+    {
+      "path": "packages/main/src/server/modules/admin-v2/characters/image-sources.ts",
+      "sha256": "88646e07cc7281260bb451b21931f5a765212faa67eeb9f968e5546ee86f73dd"
+    },
+    {
+      "path": "packages/main/src/server/modules/admin-v2/characters/portfolio.ts",
+      "sha256": "892192e95d91718b18ace0092bfb3ecb64344caf840e0e57d4bdbc5d374fef06"
+    },
+    {
+      "path": "packages/main/src/server/modules/admin-v2/characters/production-journey.ts",
+      "sha256": "13fee07ff82ece09accb8c8afb5b835533c252765620b16301076dcc55ce9a02"
+    },
+    {
+      "path": "packages/main/src/server/modules/admin-v2/characters/publication-prep.ts",
+      "sha256": "569176dbaafbe0271abfc4bd95196932b884331b9bd0147f738f69375fccce72"
+    },
+    {
+      "path": "packages/main/src/server/modules/admin-v2/characters/release-executor.ts",
+      "sha256": "8024638fbcec489fa5dc6698a6b9f217c303f3208ae2610a4ef19572ac8aeb2a"
+    },
+    {
+      "path": "packages/main/src/server/modules/admin-v2/characters/release-lifecycle.ts",
+      "sha256": "9998c40d54ae89070c37414a6e1b99000eb71506fdf26f46cd8d8b0cc3355990"
+    },
+    {
+      "path": "packages/main/src/server/modules/admin-v2/characters/release-validation.ts",
+      "sha256": "4a26ac8c431cf77a66ddbc2c312e85f07fa7f721483e6cc00499b84791492040"
+    },
+    {
+      "path": "packages/main/src/server/modules/admin-v2/characters/transition.ts",
+      "sha256": "b5ed9984f53e237627b2270ce74738f25f14ded12cce41b28354be0c6d98063e"
+    },
+    {
+      "path": "packages/main/src/server/modules/admin-v2/characters/workspace-visual.ts",
+      "sha256": "e6d1d6be7a67c687304f97ede6eda1776f71a5eef3f1ccd01c17d5e7d0533600"
+    },
+    {
+      "path": "packages/main/src/server/modules/admin-v2/characters/workspace.ts",
+      "sha256": "41bd878cc53c5ac729e5878593b47f43e780f6d4549136084263dc6b79c071cd"
+    },
+    {
+      "path": "packages/main/src/server/modules/admin-v2/commands/authoritative.ts",
+      "sha256": "e17d23425e02e237a3f1ab068453b47b87b33f5c45ace75ecc726e7da1ef3f99"
+    },
+    {
+      "path": "packages/main/src/server/modules/admin-v2/creative/placement.ts",
+      "sha256": "8926736e5abaee7aa59a21eecffa986158e59d423a5088aaba4052bccf733e54"
+    },
+    {
+      "path": "packages/main/src/server/modules/admin-v2/creative/retry-executor.ts",
+      "sha256": "6d835016cb5e4a677e8418384880e6f285242869000bbdabb0a2228314233a64"
+    },
+    {
+      "path": "packages/main/src/server/modules/admin-v2/creative/review-decision.ts",
+      "sha256": "5e4fc799c57ba8aad782f717faed240b212ea1c2a6c0c0329f7d0faaf61cebb1"
+    },
+    {
+      "path": "packages/main/src/server/modules/admin-v2/creative/run-create.ts",
+      "sha256": "caf21df1a3035a8b649f5ff9223c1e093b22ffffcdb271fe82425a1145a3528e"
+    },
+    {
+      "path": "packages/main/src/server/modules/admin-v2/creative/run-state.ts",
+      "sha256": "88b707ead5e37a26bc6adda1e65d51a4e8a4396ae62014eb3b4a327d02eb5d90"
+    },
+    {
+      "path": "packages/main/src/server/modules/admin-v2/shared/state-transition-authority.ts",
+      "sha256": "e6772c8403fce0b01555bfb15ed9ca2a1e36f9113b4ec2107a33445720204fcc"
+    },
+    {
+      "path": "packages/main/src/server/modules/content-production-state.ts",
+      "sha256": "8a19f107579db1e17e01f1d7a1227d5bf97fed41f0a6b2c1926aba9e7298d62f"
+    },
+    {
+      "path": "packages/main/src/server/modules/ourdream/character-draft-write.ts",
+      "sha256": "81d8d11d2873beb27e77dbcf359a722041b1c9133c8f972d3f3546d5f26e8f41"
+    },
+    {
+      "path": "packages/main/src/server/modules/ourdream/character-duplicate.ts",
+      "sha256": "f0bd3037c13dd243bec334b6ba5c926b2f6be0aea4760f4f84abbb520bcbcea4"
+    },
+    {
+      "path": "packages/main/src/server/modules/ourdream/character-update.ts",
+      "sha256": "0da20be39bbe50d515d99292933ab1a8dfb81b0bc367ff51504bd7af3fabc0fd"
+    },
+    {
+      "path": "packages/shared/src/admin/api-manifest.ts",
+      "sha256": "4bbb9e04f77a0a08cecca4b2f2a9d4d9a1429c1f2709f4ea7e479b136a3de123"
+    },
+    {
+      "path": "packages/shared/src/admin/contracts/characters-asset-studio.ts",
+      "sha256": "2c43b464fc607361399996378aaf85f95ca4db22e65dae23c325694902991468"
+    }
+  ]
+}

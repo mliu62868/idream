@@ -442,6 +442,7 @@ export async function getCreativeRunDetail(input: {
         executionState: deriveCreativeItemExecutionState({
           itemStatus: item.status,
           jobStatus: item.job?.status ?? null,
+          jobErrorCode: item.job?.errorCode ?? null,
           attemptStatus: latestAttempt?.status ?? null,
           transportStatus: latestTransport?.status ?? null,
           hasAsset: Boolean(asset),

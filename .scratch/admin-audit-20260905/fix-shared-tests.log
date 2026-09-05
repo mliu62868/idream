@@ -1,0 +1,10 @@
+@idream/shared test: 
+@idream/shared test:  RUN  v4.1.9 /Users/kk/code/idream/packages/shared
+@idream/shared test: 
+@idream/shared test: 
+@idream/shared test:  Test Files  52 passed (52)
+@idream/shared test:       Tests  331 passed (331)
+@idream/shared test:    Start at  04:59:55
+@idream/shared test:    Duration  891ms (transform 3.11s, setup 0ms, import 6.51s, tests 496ms, environment 2ms)
+@idream/shared test: 
+@idream/shared test: Exited with code 0

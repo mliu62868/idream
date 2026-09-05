@@ -129,6 +129,7 @@ describe("Character Project creation authority", () => {
       replayed: false,
     });
     const characterId = String(payload.data.characterId);
+    expect(payload.data.deepLink).toBe(`/admin/characters/${characterId}?tab=assets`);
     const projectId = String(payload.data.projectId);
     createdIds.push(characterId, projectId);
 

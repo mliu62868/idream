@@ -291,23 +291,6 @@ export function projectCharacterProductionJourneySnapshot(input: {
     };
     stage = "image_production";
     status = "in_progress";
-  } else if (
-    draft.completed === draft.total &&
-    input.draftPurposesNeedingReview.length > 0
-  ) {
-    const deepLink = tabLink("assets");
-    blockers.push({
-      code: "draft_asset_review_missing",
-      message: "Every selected image must have an approved review decision before publishing.",
-      deepLink,
-    });
-    primaryAction = {
-      code: "review_asset_pack",
-      deepLink,
-      command: null,
-    };
-    stage = "image_production";
-    status = "blocked";
   } else {
     const liveNow = input.servingState === "live";
     const workingPack = liveNow && draft.completed === 0 ? live : draft;
@@ -419,7 +402,7 @@ export async function projectCharacterProductionJourneys(
           targetId: { in: ids },
           purpose: { in: [...characterProductionPurposes] },
           lifecycleState: "active",
-          status: { in: ["draft", "queued", "reviewing"] },
+          items: { some: { job: { status: { in: ["queued", "running"] } } } },
         },
         select: { targetId: true },
       }),
@@ -623,12 +606,7 @@ export async function projectCharacterProductionJourneys(
           draftPackByCharacter.get(characterId) ?? {},
           availableIds,
         ),
-        draftPurposesNeedingReview: characterProductionPurposes.filter(
-          (purpose) => {
-            const entry = draftAssetRouteEntries(project.draftAssetPack)[purpose];
-            return Boolean(entry && !entry.reviewDecisionId);
-          },
-        ),
+        draftPurposesNeedingReview: [],
         livePurposes: availablePurposes(
           livePackByCharacter.get(characterId) ?? {},
           availableIds,

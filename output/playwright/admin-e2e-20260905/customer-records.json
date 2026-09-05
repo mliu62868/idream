@@ -1,0 +1,91 @@
+{
+  "user": {
+    "id": "cmto7go8i001uv3l77l905w5w",
+    "dataClass": "audit"
+  },
+  "usage": [
+    {
+      "turnId": "2925c1e9-cda0-4377-9bc9-de1ac7184100",
+      "userId": "cmto7go8i001uv3l77l905w5w",
+      "productDay": "2026-09-05T00:00:00.000Z",
+      "createdAt": "2026-09-05T09:55:45.412Z"
+    }
+  ],
+  "turns": [
+    {
+      "id": "2925c1e9-cda0-4377-9bc9-de1ac7184100",
+      "sessionId": "13c1f069-5de5-47a7-a522-987e3f9b7171",
+      "attempt": 3,
+      "userContent": "Local Chrome acceptance check. Let's keep this brief: suggest one photograph I could take of the rainy cafe window today.",
+      "assistantContent": "A. Focus on the rain-streaked glass with the warm cafe lights blurring into gold behind it—the droplets turning the street outside into soft bokeh. Simple, and every drop tells a different story.",
+      "assistantStatus": "sent",
+      "model": "Ornith-1.5-35B-A3B-Abliterated-MLX-4bit",
+      "promptTokens": 1189,
+      "completionTokens": 43,
+      "terminalEvidence": {
+        "model": "Ornith-1.5-35B-A3B-Abliterated-MLX-4bit",
+        "tools": [],
+        "prompt": {
+          "soulFingerprint": "0f65461b77a4285932175a62882007656466d3056d0f19fe86f450566ab51fe7",
+          "systemPromptDigest": "128eec7a0f6ef0dbb81331c689eec83ebc6d2c464ed74ecc7c8b44a2398007bb",
+          "preparedTurnVersion": 5,
+          "productPromptVersion": "companion-product-1"
+        },
+        "runtime": "embedded_dsh",
+        "provider": "openai",
+        "attemptId": "c5ff9583-f483-470e-ad4a-e17cee298384:3",
+        "authority": "dsh_terminal_candidate",
+        "execution": {
+          "steps": 1,
+          "toolCalls": 0
+        },
+        "memoryMode": "private",
+        "attribution": {
+          "requestId": "chatcmpl-1ed87f08"
+        },
+        "completedAt": "2026-09-05T11:07:38.966Z",
+        "finishReason": "stop",
+        "igrepVersion": "0.1.137",
+        "contentDigest": "5ea63a26280b46b4fa03b93638eec1151b1bdc9429edc93b23a2dda2ea3d57d6",
+        "modelRequests": [
+          {
+            "bodyDigest": "70def344b48f6340ae1290f5404903ec5e52de8d10fe8d742e6438f925a72d07",
+            "maxInputTokens": 6000,
+            "systemPromptDigest": "128eec7a0f6ef0dbb81331c689eec83ebc6d2c464ed74ecc7c8b44a2398007bb",
+            "estimatedInputTokens": 1433
+          }
+        ],
+        "pluginVersion": "0.1.0",
+        "profileDigest": "fa72d93b47f537202d4483a7e1ad3f29db898dd9e97220f4a87296eb77a825c9",
+        "runtimeInstance": {
+          "id": "0f0d45b5-a48f-4562-af39-1159b49c12f6",
+          "startedAt": "2026-09-05T10:09:42.243Z"
+        },
+        "igrepObservations": {
+          "wake": {
+            "hits": 0,
+            "calls": 0,
+            "failures": 0,
+            "evidenceMatches": 0
+          },
+          "memory": {
+            "hits": 0,
+            "calls": 0,
+            "failures": 0,
+            "evidenceMatches": 0
+          },
+          "search": {
+            "hits": 0,
+            "calls": 0,
+            "failures": 0,
+            "evidenceMatches": 0
+          }
+        },
+        "preparedSystemPromptDigest": "128eec7a0f6ef0dbb81331c689eec83ebc6d2c464ed74ecc7c8b44a2398007bb"
+      },
+      "characterReleaseId": "rollback:cmtk7ubta0084xnl7wt9zqpiu",
+      "createdAt": "2026-09-05T09:55:45.405Z",
+      "terminalAt": "2026-09-05T11:07:39.375Z"
+    }
+  ]
+}

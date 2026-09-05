@@ -105,13 +105,14 @@ export async function getCharacterWorkspace(characterId: string) {
   ]);
   if (!character) throw Errors.notFound("Character not found");
   if (!project) {
-    const approvedSubmission =
+    const publicationSubmission =
       character.source === "user" &&
       ["public", "unlisted"].includes(character.visibility) &&
-      character.status === "approved" &&
+      ["approved", "pending_review"].includes(character.status) &&
+      character.creatorId &&
       character.currentContentVersionId
         ? await prisma.characterSubmission.findFirst({
-            where: { characterId, status: "approved" },
+            where: { characterId, status: character.status === "pending_review" ? "pending" : "approved", submitterId: character.creatorId },
             orderBy: [
               { reviewedAt: "desc" },
               { submittedAt: "desc" },
@@ -122,11 +123,11 @@ export async function getCharacterWorkspace(characterId: string) {
         : null;
     throw Errors.notFound(
       "Character Project not found",
-      approvedSubmission
+      publicationSubmission
         ? {
             reason: "customer_publication_prep_missing",
             characterId,
-            submissionId: approvedSubmission.id,
+            submissionId: publicationSubmission.id,
             recoveryOperation: "POST /api/v2/admin/characters/:id/project",
           }
         : undefined,

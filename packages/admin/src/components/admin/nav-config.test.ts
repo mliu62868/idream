@@ -28,7 +28,7 @@ const NAV_IDS = [
   "dashboard", "generation/jobs", "generation/config", "generation/recipes", "generation/presets", "generation/dead-letter",
   "ops/providers", "generation/backends", "generation/workflows", "generation/metrics",
   "content/production", "content/assets", "content/placements", "content",
-  "content/official", "content/templates", "content/tags", "content/review-queue",
+  "content/official", "content/templates", "content/tags",
   "cms", "cases", "chat", "users", "billing", "pricing", "promo",
   "announcements", "analytics", "insights", "experiments", "compliance", "ops/incidents",
   "approvals", "system/access", "audit-log",
@@ -48,7 +48,7 @@ describe("admin navigation information architecture", () => {
       if (TARGET_ONLY_NAV_IDS.includes(item.id)) expect(item.legacyHref).toBeNull();
       else expect(item.legacyHref).toBe(item.id === "dashboard" ? "/admin" : `/admin/${item.id}`);
     }
-    expect(navItems.filter((item) => item.legacyHref !== null)).toHaveLength(34);
+    expect(navItems.filter((item) => item.legacyHref !== null)).toHaveLength(33);
   });
 
   it("presents Character as the primary admin object", () => {
@@ -109,7 +109,7 @@ describe("admin navigation information architecture", () => {
     expect(at("characters/new")).toEqual({ sectionId: "content/official", view: { kind: "new" } });
     expect(at("characters/releases")).toEqual({ sectionId: "content/official", view: { kind: "list" } });
     expect(at("characters/calendar")).toEqual({ sectionId: "content/official", view: { kind: "list" } });
-    expect(at("characters/review")).toEqual({ sectionId: "content/review-queue", view: { kind: "list" } });
+    expect(at("characters/review")).toEqual({ sectionId: "content/official", view: { kind: "list" } });
     expect(at("characters/starters")).toEqual({ sectionId: "content/templates", view: { kind: "list" } });
     expect(at("characters/taxonomy")).toEqual({ sectionId: "content/tags", view: { kind: "list" } });
     expect(at("characters/char-1")).toEqual({ sectionId: "content/official", view: { kind: "detail", id: "char-1" } });
@@ -139,6 +139,9 @@ describe("admin navigation information architecture", () => {
 
   it("retains compatibility routes until their Case commands reach parity", () => {
     for (const id of NAV_IDS) expect(at(id)?.sectionId).toBe(id);
+    expect(at("content/review-queue")?.sectionId).toBe("content/official");
+    expect(at("characters/review")?.sectionId).toBe("content/official");
+    expect(navItems.map((item) => item.id)).not.toContain("content/review-queue");
     expect(at("moderation")?.sectionId).toBe("moderation");
     expect(at("support")?.sectionId).toBe("support");
     expect(at("risk")?.sectionId).toBe("risk");

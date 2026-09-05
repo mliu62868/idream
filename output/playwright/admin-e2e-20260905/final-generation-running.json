@@ -1,0 +1,163 @@
+{
+  "checkedAt": "2026-09-05T11:30:40.907Z",
+  "jobs": [
+    {
+      "id": "cmto8ioyz000fr4l73zrvo4qz",
+      "status": "failed",
+      "version": 2,
+      "sourceId": "cmto8ioyw000er4l7dnrr01wp",
+      "provider": "comfyui",
+      "model": "redcraft-krea2-identity-edit",
+      "deliveredOutputCount": 0,
+      "createdAt": "2026-09-05T10:23:15.179Z",
+      "completedAt": null
+    },
+    {
+      "id": "cmtoauv6x0003z4l7o8eckhaf",
+      "status": "queued",
+      "version": 1,
+      "sourceId": "cmtoauv6u0002z4l7fyy4lf05",
+      "provider": "comfyui",
+      "model": "redcraft-krea2-identity-edit",
+      "deliveredOutputCount": 0,
+      "createdAt": "2026-09-05T11:28:42.345Z",
+      "completedAt": null
+    }
+  ],
+  "attempts": [
+    {
+      "id": "cmto8iozr000ir4l7t4n9vie0",
+      "requestId": "cmto8ioyz000fr4l73zrvo4qz",
+      "status": "unknown",
+      "attemptNo": 1,
+      "startedAt": "2026-09-05T10:23:15.280Z",
+      "finishedAt": "2026-09-05T10:33:15.280Z"
+    },
+    {
+      "id": "cmtoauv7l0006z4l7cd6qedkj",
+      "requestId": "cmtoauv6x0003z4l7o8eckhaf",
+      "status": "running",
+      "attemptNo": 1,
+      "startedAt": "2026-09-05T11:30:11.808Z",
+      "finishedAt": null
+    }
+  ],
+  "events": [
+    {
+      "attemptId": "cmto8iozr000ir4l7t4n9vie0",
+      "sequence": 1,
+      "eventType": "generation.attempt.queued.v1",
+      "occurredAt": "2026-09-05T10:23:15.207Z"
+    },
+    {
+      "attemptId": "cmto8iozr000ir4l7t4n9vie0",
+      "sequence": 2,
+      "eventType": "generation.transport.running.v1",
+      "occurredAt": "2026-09-05T10:23:15.280Z"
+    },
+    {
+      "attemptId": "cmto8iozr000ir4l7t4n9vie0",
+      "sequence": 3,
+      "eventType": "generation.attempt.unknown.v1",
+      "occurredAt": "2026-09-05T10:33:15.280Z"
+    },
+    {
+      "attemptId": "cmtoauv7l0006z4l7cd6qedkj",
+      "sequence": 1,
+      "eventType": "generation.attempt.queued.v1",
+      "occurredAt": "2026-09-05T11:28:42.369Z"
+    },
+    {
+      "attemptId": "cmtoauv7l0006z4l7cd6qedkj",
+      "sequence": 2,
+      "eventType": "generation.resource.waiting.v1",
+      "occurredAt": "2026-09-05T11:28:45.335Z"
+    },
+    {
+      "attemptId": "cmtoauv7l0006z4l7cd6qedkj",
+      "sequence": 3,
+      "eventType": "generation.resource.waiting.v1",
+      "occurredAt": "2026-09-05T11:29:15.529Z"
+    },
+    {
+      "attemptId": "cmtoauv7l0006z4l7cd6qedkj",
+      "sequence": 4,
+      "eventType": "generation.resource.waiting.v1",
+      "occurredAt": "2026-09-05T11:29:45.619Z"
+    },
+    {
+      "attemptId": "cmtoauv7l0006z4l7cd6qedkj",
+      "sequence": 5,
+      "eventType": "generation.transport.running.v1",
+      "occurredAt": "2026-09-05T11:30:11.808Z"
+    }
+  ],
+  "transports": [
+    {
+      "id": "cmto8ipc9000lr4l70v8oqp1c",
+      "attemptId": "cmto8iozr000ir4l7t4n9vie0",
+      "status": "unknown",
+      "transportAttemptNo": 1,
+      "providerRequestId": null,
+      "startedAt": "2026-09-05T10:23:15.280Z",
+      "finishedAt": "2026-09-05T10:33:15.280Z"
+    },
+    {
+      "id": "cmtoaws8b000az4l775amav8y",
+      "attemptId": "cmtoauv7l0006z4l7cd6qedkj",
+      "status": "running",
+      "transportAttemptNo": 1,
+      "providerRequestId": null,
+      "startedAt": "2026-09-05T11:30:11.808Z",
+      "finishedAt": null
+    }
+  ],
+  "usage": [],
+  "ledger": [],
+  "artifacts": [
+    {
+      "id": "cmtoa28oq0003wil7q7e3d9dj",
+      "attemptId": "cmto8iozr000ir4l7t4n9vie0",
+      "ordinal": 0,
+      "providerRef": null,
+      "terminalRecordChecksum": "d45027629a4c751da4d03edb9b6e2ee6a301e657dfbdcbbdc5473d4d2fbff286",
+      "validationState": "late_after_unknown",
+      "assetId": null,
+      "archiveState": "archived",
+      "createdAt": "2026-09-05T11:06:26.810Z"
+    }
+  ],
+  "deliveries": [
+    {
+      "id": "generation_delivery_f40b909609709cd921f991dc64ab6065",
+      "requestId": "cmto8ioyz000fr4l73zrvo4qz",
+      "artifactId": "cmtoa28oq0003wil7q7e3d9dj",
+      "targetType": "user_library",
+      "targetId": "seed-admin-user",
+      "status": "suppressed",
+      "deliveredAt": null,
+      "createdAt": "2026-09-05T11:06:26.825Z"
+    }
+  ],
+  "decisions": [
+    {
+      "id": "cmto9yoo50000wgl7r0g14qn5",
+      "jobId": "cmto8ioyz000fr4l73zrvo4qz",
+      "type": "unknown_reconciliation_confirm_failed",
+      "message": "Provider outcome stayed unknown for more than 30 minutes; settled automatically as failed and refunded so the reader is not left waiting.",
+      "metadata": {
+        "actorId": "system:generation-unknown-sweeper",
+        "attemptId": "cmto8iozr000ir4l7t4n9vie0",
+        "commandId": "c4ec6ed9-2d69-408f-9d29-d0a78b120f8e",
+        "resolution": "confirm_failed",
+        "nextReviewAt": null,
+        "refundAmount": 0,
+        "deliveredCount": 0,
+        "providerEvidenceRefs": [
+          "attempt:cmto8iozr000ir4l7t4n9vie0"
+        ]
+      },
+      "createdAt": "2026-09-05T11:03:40.902Z"
+    }
+  ]
+}

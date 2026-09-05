@@ -1,0 +1,13 @@
+@idream/main typecheck: $ bun --bun prisma generate
+@idream/main typecheck: Loaded Prisma config from prisma.config.ts.
+@idream/main typecheck: 
+@idream/main typecheck: Prisma schema loaded from prisma/schema.prisma.
+@idream/main typecheck: 
+@idream/main typecheck: ✔ Generated Prisma Client (v7.6.0) to ./../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client in 811ms
+@idream/main typecheck: 
+@idream/main typecheck: Start by importing your Prisma Client (See: https://pris.ly/d/importing-client)
+@idream/main typecheck: 
+@idream/main typecheck: 
+@idream/main typecheck: Generating route types...
+@idream/main typecheck: ✓ Types generated successfully
+@idream/main typecheck: Exited with code 0

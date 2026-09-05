@@ -42,7 +42,7 @@ const matrices: readonly MatrixCase[] = [
     name: "Character Release",
     states: CHARACTER_RELEASE_STATES,
     allowed: {
-      approved: ["published"],
+      approved: ["published", "withdrawn"],
       published: ["superseded", "withdrawn"],
       superseded: [],
       withdrawn: [],
@@ -56,7 +56,7 @@ const matrices: readonly MatrixCase[] = [
       inactive: ["live", "retired"],
       live: ["live", "paused", "retired"],
       paused: ["live", "retired"],
-      retired: [],
+      retired: ["inactive"],
     },
     permits: isCharacterServingTransitionAllowed,
   },
@@ -143,7 +143,7 @@ const matrices: readonly MatrixCase[] = [
     states: CREATIVE_RUN_ITEM_STATES,
     allowed: {
       queued: ["generated", "failed"],
-      generated: ["approved", "rejected"],
+      generated: ["approved", "rejected", "published"],
       approved: ["approved", "rejected", "published"],
       rejected: ["approved", "rejected"],
       regenerate_requested: ["generated", "failed"],

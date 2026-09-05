@@ -18,7 +18,6 @@ import {
   adminV2OperationEndpoint,
 } from "@/lib/admin-v2-operation";
 import { AdminV2RequestError } from "@/lib/admin-v2-api";
-import { characterAssetPurposes } from "./character-asset-studio-authority";
 import type {
   CharacterCommandJournal,
   CharacterCommandSubmission,
@@ -59,7 +58,7 @@ const releaseCheckLabels: Record<string, string> = {
   release_avatar_manifest_available: "Avatar placement",
   release_asset_manifest_available: "Image pack placement",
   release_assets_customer_publishable: "Customer-publishable assets",
-  release_asset_review_authority: "Asset review authority",
+  release_asset_source_authority: "Image source and availability",
   release_asset_generation_authority: "Asset generation authority",
   snapshot_hash_matches: "Snapshot integrity",
 };
@@ -95,11 +94,11 @@ export function releaseBlockerGuidance(
   characterId: string,
 ): ReleaseBlockerGuidance {
   const base = `/admin/characters/${encodeURIComponent(characterId)}`;
-  if (blocker === "release_asset_review_authority") {
+  if (blocker === "release_asset_source_authority") {
     return {
       blocker,
-      message: "Review every selected image before publishing.",
-      action: "Review selected images",
+      message: "Check the selected images and their sources before publishing.",
+      action: "Open image library",
       href: `${base}?tab=assets`,
     };
   }
@@ -166,12 +165,7 @@ export function characterReleaseDraftBlockers(
   ) {
     return ["release_asset_manifest_available"];
   }
-  const selections = data.project.draftAssetSelections;
-  return characterAssetPurposes.some(
-    (purpose) => !selections?.[purpose]?.reviewDecisionId,
-  )
-    ? ["release_asset_review_authority"]
-    : [];
+  return [];
 }
 
 function ReleaseSummary({
@@ -239,7 +233,9 @@ export function characterReleaseConfirmationVisible(input: {
   return (
     input.hasRollbackSource ||
     input.servingState === "live" ||
-    input.servingState === "paused"
+    input.servingState === "paused" ||
+    input.servingState === "inactive" ||
+    input.servingState === "retired"
   );
 }
 
@@ -276,7 +272,7 @@ export function ReleasePanel({
     ({ release }) =>
       release.id !== current?.release.id && release.status === "superseded",
   );
-  const [reason, setReason] = useState(() => t("Publish current Character"));
+  const [reason, setReason] = useState("");
   const [selectedRollbackSourceId, setSelectedRollbackSourceId] = useState("");
   const [releaseConfirmed, setReleaseConfirmed] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
@@ -285,7 +281,7 @@ export function ReleasePanel({
   const createIdempotencyKeys = useRef<Record<string, string>>({});
 
   const submitCommand = async (
-    kind: "publish" | "rollback",
+    kind: "publish" | "rollback" | "withdraw",
     releaseId: string,
     version: number,
   ) => {
@@ -299,7 +295,7 @@ export function ReleasePanel({
     }
     const body = {
       entityVersion: version,
-      reason: { code: `operator_${kind}`, summary: reason },
+      reason: { code: `operator_${kind}`, summary: reason.trim() || t(kind === "withdraw" ? "Discard candidate" : kind === "rollback" ? "Roll back" : "Publish current Character") },
       confirmation: `${data.character.id}:${releaseId}:${kind}`,
     };
     try {
@@ -332,10 +328,11 @@ export function ReleasePanel({
         ? { id: candidate.release.id, version: candidate.release.version }
         : undefined;
       if (!releaseRef) {
+        const publishReason = reason.trim() || t("Publish current Character");
         const signature = JSON.stringify({
           characterId: data.character.id,
           entityVersion: data.project.version,
-          reason,
+          reason: publishReason,
         });
         const idempotencyKey =
           createIdempotencyKeys.current[signature] ?? crypto.randomUUID();
@@ -343,7 +340,7 @@ export function ReleasePanel({
         const mutation = characterReleaseCreateMutation(
           data.character.id,
           data.project.version,
-          reason,
+          publishReason,
           `${data.character.id}:publish`,
           idempotencyKey,
         );
@@ -370,7 +367,20 @@ export function ReleasePanel({
     }
   };
 
-  const servingCommand = async (action: "pause" | "resume" | "retire") => {
+  const withdrawCandidate = async () => {
+    if (!candidate || writesLocked || busy) return;
+    setBusy("withdraw");
+    setError(null);
+    try {
+      await submitCommand("withdraw", candidate.release.id, candidate.release.version);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : t("Could not discard candidate"));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const servingCommand = async (action: "pause" | "resume" | "retire" | "restore") => {
     if (!data.serving || writesLocked || !releaseConfirmed) return;
     setBusy(action);
     setError(null);
@@ -385,7 +395,7 @@ export function ReleasePanel({
     try {
       const body = {
         entityVersion: data.serving.version,
-        reason: { code: `operator_${action}`, summary: reason },
+        reason: { code: `operator_${action}`, summary: reason.trim() || t(action === "restore" ? "Restore draft" : action === "retire" ? (data.serving.state === "inactive" ? "Archive draft" : "Retire Character") : action === "pause" ? "Pause serving" : "Resume serving") },
         confirmation: `${data.character.id}:${action}`,
       };
       const outcome = await journal.submit({
@@ -466,7 +476,8 @@ export function ReleasePanel({
   const draftBlockers = characterReleaseDraftBlockers(data);
   const blockers = [...new Set([...draftBlockers, ...authorityBlockers])];
   const canPublish =
-    Boolean(candidate) || (!noUnpublishedChanges && blockers.length === 0);
+    data.serving?.state !== "retired" &&
+    (Boolean(candidate) || (!noUnpublishedChanges && blockers.length === 0));
   const confirmationVisible = characterReleaseConfirmationVisible({
     hasRollbackSource: rollbackSources.length > 0,
     servingState: data.serving?.state ?? null,
@@ -490,12 +501,12 @@ export function ReleasePanel({
                   className="mb-3 text-sm font-semibold"
                   id="current-release-title"
                 >
-                  {t("Current live release")}
+                  {data.serving?.state === "live" ? t("Current live release") : t("Current release")}
                 </h3>
                 <ReleaseSummary
                   item={current}
                   ordinal={releaseOrdinals.get(current.release.id)}
-                  serving
+                  serving={data.serving?.state === "live"}
                 />
               </section>
             ) : null}
@@ -512,6 +523,16 @@ export function ReleasePanel({
                   ordinal={releaseOrdinals.get(candidate.release.id)}
                   serving={false}
                 />
+                <p className="mt-3 text-xs text-[var(--ad-text-muted)]">
+                  {t("Discard this candidate to edit the draft again. The live Character stays unchanged.")}
+                </p>
+                <WorkspaceButton
+                  className="mt-2"
+                  disabled={!permissions.publishRelease || Boolean(busy) || writesLocked}
+                  onClick={() => void withdrawCandidate()}
+                >
+                  {t("Discard candidate")}
+                </WorkspaceButton>
               </section>
             ) : null}
             {history.length > 0 ? (
@@ -586,7 +607,7 @@ export function ReleasePanel({
 
         <details className="mt-5 border-t border-[var(--ad-border)] pt-4">
           <summary className="cursor-pointer text-xs font-semibold">
-            {t("Rollback and live operations")}
+            {t("Character availability and rollback")}
           </summary>
           {data.serving?.state === "live" && ["public", "unlisted"].includes(data.character.visibility) ? (
             <div className="mt-4 space-y-2">
@@ -622,7 +643,7 @@ export function ReleasePanel({
               </label>
             </>
           ) : null}
-          <label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">
+          {rollbackSources.length > 0 ? <label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">
             {t("Historical rollback source")}
             <select
               className={`${fieldClass} mt-1`}
@@ -638,13 +659,14 @@ export function ReleasePanel({
                 </option>
               ))}
             </select>
-          </label>
+          </label> : null}
           <div className="mt-3 grid gap-2">
-            <WorkspaceButton
+            {rollbackSources.length > 0 ? <WorkspaceButton
               disabled={
                 !permissions.publishRelease ||
                 !releaseConfirmed ||
                 !rollbackSource ||
+                data.serving?.state === "retired" ||
                 Boolean(busy) ||
                 writesLocked
               }
@@ -652,7 +674,7 @@ export function ReleasePanel({
               tone="danger"
             >
               <RotateCcw className="h-4 w-4" /> {t("Roll back")}
-            </WorkspaceButton>
+            </WorkspaceButton> : null}
             {data.serving?.state === "live" ? (
               <>
                 <WorkspaceButton
@@ -666,17 +688,26 @@ export function ReleasePanel({
                 >
                   {t("Pause serving")}
                 </WorkspaceButton>
+
+              </>
+            ) : null}
+            {data.serving && ["inactive", "live", "paused"].includes(data.serving.state) ? (
+              <WorkspaceButton
+                disabled={!permissions.publishRelease || !releaseConfirmed || Boolean(busy) || writesLocked}
+                onClick={() => void servingCommand("retire")}
+                tone="danger"
+              >
+                {t(data.serving.state === "inactive" ? "Archive draft" : "Retire Character")}
+              </WorkspaceButton>
+            ) : null}
+            {data.serving?.state === "retired" && data.serving.currentReleaseId === null ? (
+              <>
+                <p className="text-xs text-[var(--ad-text-muted)]">{t("Restore this draft to continue editing. It will remain private.")}</p>
                 <WorkspaceButton
-                  disabled={
-                    !permissions.publishRelease ||
-                    !releaseConfirmed ||
-                    Boolean(busy) ||
-                    writesLocked
-                  }
-                  onClick={() => void servingCommand("retire")}
-                  tone="danger"
+                  disabled={!permissions.publishRelease || !releaseConfirmed || Boolean(busy) || writesLocked}
+                  onClick={() => void servingCommand("restore")}
                 >
-                  {t("Retire Character")}
+                  {t("Restore draft")}
                 </WorkspaceButton>
               </>
             ) : null}

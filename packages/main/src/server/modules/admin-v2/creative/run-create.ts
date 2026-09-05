@@ -1,3 +1,4 @@
+import { assertMediaAssetCustomerPublishable } from "@/server/lib/media-asset-authority-query";
 import {
   characterRouteEvaluationMatrixKey,
   characterRouteEvaluationMatrixSchemaVersion,
@@ -9,7 +10,7 @@ import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
-import { isMediaAssetOperationalForAuthority } from "@/server/lib/media-asset-authority";
+import { hasHydratableMediaBlobAuthority, isMediaAssetOperationalForAuthority } from "@/server/lib/media-asset-authority";
 import { toInputJson } from "@/server/lib/request-json";
 import type {
   AdminActor,
@@ -368,12 +369,16 @@ export async function createCreativeRun(
           id: true,
           characterId: true,
           metadata: true,
+          sourceJobId: true,
+          storageKey: true,
+          url: true,
           sourceJob: {
             select: {
               id: true,
               seed: true,
               sourceType: true,
               sourceId: true,
+              status: true,
               visualProfileId: true,
               visualProfileVersion: true,
               referenceSetRevisionId: true,
@@ -466,50 +471,34 @@ export async function createCreativeRun(
       };
     }
     if (additionalReferenceAssets.some((asset) =>
+      !hasHydratableMediaBlobAuthority(asset) ||
+      asset.sourceJob?.status !== "completed" ||
       asset.sourceJob?.visualProfileId !== visualProfile.id ||
       asset.sourceJob.visualProfileVersion !== visualProfile.version ||
       asset.sourceJob.referenceSetRevisionId !== activeReferenceSet.id
     )) {
       throw Errors.conflict("A variation source must be derived from the active Character identity authority");
     }
+    for (const asset of additionalReferenceAssets) {
+      await assertMediaAssetCustomerPublishable(prisma, asset);
+    }
     const variationSourceItems = additionalReferenceAssets.map((asset) => ({
       assetId: asset.id,
+      jobId: asset.sourceJob?.id,
       itemId: asset.sourceJob?.sourceType === "content_production_item"
         ? asset.sourceJob.sourceId
         : null,
     }));
     if (variationSourceItems.some((source) => !source.itemId)) {
-      throw Errors.conflict("A variation source must come from a reviewed Creative Run candidate");
+      throw Errors.conflict("A variation source must come from a completed Creative Run candidate");
     }
-    const latestVariationDecisions = await prisma.creativeReviewDecision.findMany({
-      where: {
-        runItemId: {
-          in: variationSourceItems.flatMap((source) =>
-            source.itemId ? [source.itemId] : []
-          ),
-        },
-      },
-      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    const variationItems = await prisma.contentProductionItem.findMany({
+      where: { id: { in: variationSourceItems.flatMap((source) => source.itemId ? [source.itemId] : []) } },
+      select: { id: true, mediaAssetId: true, jobId: true },
     });
-    const latestDecisionByItemId = new Map<string, (typeof latestVariationDecisions)[number]>();
-    for (const decision of latestVariationDecisions) {
-      // Variation sources are generated Run items. Artifact-level upload
-      // reviews have no runItemId and cannot substitute for this lineage.
-      if (
-        decision.runItemId &&
-        !latestDecisionByItemId.has(decision.runItemId)
-      ) {
-        latestDecisionByItemId.set(decision.runItemId, decision);
-      }
-    }
-    if (variationSourceItems.some((source) => {
-      if (!source.itemId) return true;
-      const decision = latestDecisionByItemId.get(source.itemId);
-      return decision?.artifactId !== source.assetId || decision.decision !== "approved";
-    })) {
-      throw Errors.conflict(
-        "A variation source requires the latest immutable Creative Run decision to be approved",
-      );
+    if (variationSourceItems.some((source) => !variationItems.some((item) =>
+      item.id === source.itemId && item.mediaAssetId === source.assetId && item.jobId === source.jobId))) {
+      throw Errors.conflict("Variation source does not match its generated Run item");
     }
   }
   const presets = await prisma.generationPreset.findMany({
@@ -927,11 +916,16 @@ export async function createCreativeRun(
             select: {
               id: true,
               characterId: true,
+              metadata: true,
+              sourceJobId: true,
+              storageKey: true,
+              url: true,
               sourceJob: {
                 select: {
                   id: true,
                   sourceType: true,
                   sourceId: true,
+                  status: true,
                   visualProfileId: true,
                   visualProfileVersion: true,
                   referenceSetRevisionId: true,
@@ -1044,6 +1038,9 @@ export async function createCreativeRun(
           routeFingerprint: currentQualifiedRoute.routeFingerprint,
         };
       }
+      for (const asset of currentAdditionalReferenceAssets) {
+        await assertMediaAssetCustomerPublishable(tx, asset);
+      }
       const currentSourceItems = currentAdditionalReferenceAssets.map((asset) => ({
         assetId: asset.id,
         itemId: asset.sourceJob?.sourceType === "content_production_item"
@@ -1051,36 +1048,22 @@ export async function createCreativeRun(
           : null,
         sourceJob: asset.sourceJob,
       }));
-      const currentSourceDecisions = currentSourceItems.length > 0
-        ? await tx.creativeReviewDecision.findMany({
-            where: {
-              runItemId: {
-                in: currentSourceItems.flatMap((source) => source.itemId ? [source.itemId] : []),
-              },
-            },
-            orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-          })
-        : [];
-      const currentLatestDecisionByItemId = new Map<string, (typeof currentSourceDecisions)[number]>();
-      for (const decision of currentSourceDecisions) {
-        if (
-          decision.runItemId &&
-          !currentLatestDecisionByItemId.has(decision.runItemId)
-        ) {
-          currentLatestDecisionByItemId.set(decision.runItemId, decision);
-        }
-      }
+      const currentItems = await tx.contentProductionItem.findMany({
+        where: { id: { in: currentSourceItems.flatMap((source) => source.itemId ? [source.itemId] : []) } },
+        select: { id: true, mediaAssetId: true, jobId: true },
+      });
       const sourceAuthorityChanged =
         currentAdditionalReferenceAssets.length !== additionalReferenceAssets.length ||
+        currentAdditionalReferenceAssets.some((asset) => !isMediaAssetOperationalForAuthority(asset.metadata) || !hasHydratableMediaBlobAuthority(asset)) ||
         currentSourceItems.some((source) => {
           if (
             !source.itemId ||
+            source.sourceJob?.status !== "completed" ||
             source.sourceJob?.visualProfileId !== visualProfile.id ||
             source.sourceJob.visualProfileVersion !== visualProfile.version ||
             source.sourceJob.referenceSetRevisionId !== activeReferenceSet.id
           ) return true;
-          const decision = currentLatestDecisionByItemId.get(source.itemId);
-          return decision?.artifactId !== source.assetId || decision.decision !== "approved";
+          return !currentItems.some((item) => item.id === source.itemId && item.mediaAssetId === source.assetId && item.jobId === source.sourceJob?.id);
         });
       if (sourceAuthorityChanged) {
         throw Errors.conflict("Variation source authority changed before the Run was committed", {

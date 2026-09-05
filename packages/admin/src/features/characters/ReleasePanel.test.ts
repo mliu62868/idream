@@ -85,24 +85,24 @@ describe("Character release panel", () => {
           "Character is not ready to publish",
           409,
           "conflict",
-          { blockers: ["release_asset_review_authority"] },
+          { blockers: ["release_asset_source_authority"] },
         ),
       ),
-    ).toEqual(["release_asset_review_authority"]);
+    ).toEqual(["release_asset_source_authority"]);
     expect(
       releaseBlockerGuidance(
-        "release_asset_review_authority",
+        "release_asset_source_authority",
         "character-1",
       ),
     ).toEqual({
-      blocker: "release_asset_review_authority",
-      message: "Review every selected image before publishing.",
-      action: "Review selected images",
+      blocker: "release_asset_source_authority",
+      message: "Check the selected images and their sources before publishing.",
+      action: "Open image library",
       href: "/admin/characters/character-1?tab=assets",
     });
   });
 
-  it("blocks publish before the request when a complete draft pack skipped review", () => {
+  it("allows a complete draft pack without manual review", () => {
     const data = characterWorkspaceDetail({
       project: {
         draftAssetPack: {
@@ -147,8 +147,6 @@ describe("Character release panel", () => {
       preview: { draft: { assetPackReady: true } },
     });
 
-    expect(characterReleaseDraftBlockers(data)).toEqual([
-      "release_asset_review_authority",
-    ]);
+    expect(characterReleaseDraftBlockers(data)).toEqual([]);
   });
 });

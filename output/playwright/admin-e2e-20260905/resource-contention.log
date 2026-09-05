@@ -1,0 +1,2 @@
+{"event":"acceptance_resource_lease_acquired","pid":81041,"at":"2026-09-05T11:28:40.792Z","durationMs":90000}
+{"event":"acceptance_resource_lease_released","at":"2026-09-05T11:30:10.796Z"}

@@ -82,6 +82,53 @@ describe("Character release history empty state", () => {
       .find((button) => button.textContent?.trim() === "发布角色");
   }
 
+  it("discards a blocked candidate with its exact version and leaves publishing separate", async () => {
+    const request = vi.spyOn(transport, "adminV2Request").mockResolvedValue({ commandId: "withdraw-command" });
+    const stamp = "2026-09-05T00:00:00.000Z";
+    await render(characterWorkspaceDetail({ releases: [{ release: {
+      id: "blocked-candidate", projectId: "project-fixture", revisionId: "revision-fixture", characterContentVersionId: "content-fixture",
+      visualProfileId: null, visualProfileVersion: null, referenceSetRevisionId: null, generationProvenance: {}, releasePlacementManifest: {},
+      snapshotHash: "snapshot", readiness: "blocked", status: "approved", legacy: false, publishedAt: null, supersedesId: null, rollbackOfReleaseId: null,
+      version: 4, createdAt: stamp, updatedAt: stamp,
+    }, checks: [], monitors: [] }] }));
+    const discard = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "放弃待发布版本")!;
+    expect(discard.disabled).toBe(false);
+    await act(async () => discard.click());
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledWith("/api/v2/admin/characters/character-fixture/releases/blocked-candidate/commands/withdraw", expect.objectContaining({ body: expect.objectContaining({ entityVersion: 4, confirmation: "character-fixture:blocked-candidate:withdraw", reason: { code: "operator_withdraw", summary: "放弃待发布版本" } }) }));
+  });
+
+  it.each(["inactive", "paused"] as const)("offers direct exit from %s without publishing first", async (state) => {
+    const request = vi.spyOn(transport, "adminV2Request").mockResolvedValue({ commandId: "archive-command" });
+    await render(characterWorkspaceDetail({ serving: { characterId: "character-fixture", state, version: 9, currentReleaseId: state === "paused" ? "published" : null, updatedAt: "2026-09-05T00:00:00.000Z" } }));
+    const label = state === "inactive" ? "归档草稿" : "停用角色";
+    const button = [...container.querySelectorAll<HTMLButtonElement>("button")].find((item) => item.textContent?.trim() === label)!;
+    expect(button).toBeDefined();
+    expect(button.disabled).toBe(true);
+    await act(async () => container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
+    expect(button.disabled).toBe(false);
+    await act(async () => button.click());
+    expect(request).toHaveBeenCalledWith("/api/v2/admin/characters/character-fixture/commands/retire", expect.objectContaining({ body: expect.objectContaining({ entityVersion: 9, confirmation: "character-fixture:retire" }) }));
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("restores an archived draft to editing without offering publication", async () => {
+    const request = vi.spyOn(transport, "adminV2Request").mockResolvedValue({ commandId: "restore-command" });
+    await render(characterWorkspaceDetail({ ...readyCharacter(), serving: { characterId: "character-fixture", state: "retired", currentReleaseId: null, version: 10, updatedAt: "2026-09-05T00:00:00.000Z" } }));
+    expect(publishButton()).toBeUndefined();
+    const button = [...container.querySelectorAll<HTMLButtonElement>("button")].find((item) => item.textContent?.trim() === "恢复草稿")!;
+    expect(button).toBeDefined();
+    await act(async () => container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
+    await act(async () => button.click());
+    expect(request).toHaveBeenCalledWith("/api/v2/admin/characters/character-fixture/commands/restore", expect.objectContaining({ body: expect.objectContaining({ entityVersion: 10, reason: { code: "operator_restore", summary: "恢复草稿" } }) }));
+  });
+
+  it("never offers draft restoration for a retired published Character", async () => {
+    await render(characterWorkspaceDetail({ serving: { characterId: "character-fixture", state: "retired", currentReleaseId: "previously-published", version: 10, updatedAt: "2026-09-05T00:00:00.000Z" } }));
+    expect(container.textContent).not.toContain("恢复草稿");
+    expect(publishButton()).toBeUndefined();
+  });
+
   it("describes the first release instead of an incident queue when publishing is available", async () => {
     await render(readyCharacter());
 

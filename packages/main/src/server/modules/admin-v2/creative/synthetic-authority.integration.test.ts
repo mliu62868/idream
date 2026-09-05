@@ -79,7 +79,7 @@ describe("Creative customer media authority", () => {
       data: {
         id: reviewRunId,
         title: "Synthetic review authority fixture",
-        purpose: "campaign",
+        purpose: "model_eval",
         targetType: "campaign",
         targetId: `campaign-${suffix}`,
         presetIds: [],
@@ -489,7 +489,7 @@ describe("Creative customer media authority", () => {
       data: {
         id: providerReviewRunId,
         title: "Mock provider review authority fixture",
-        purpose: "campaign",
+        purpose: "model_eval",
         targetType: "campaign",
         targetId: `provider-review-campaign-${suffix}`,
         presetIds: [],
@@ -812,14 +812,14 @@ describe("Creative customer media authority", () => {
     await prisma.$disconnect();
   });
 
-  it("rejects approval of an explicitly synthetic asset", async () => {
+  it("rejects model evaluation approval of an explicitly synthetic asset", async () => {
     await expect(recordCreativeReviewDecision({
       runId: reviewRunId,
       itemId: reviewItemId,
       actor: { id: adminId, role: "admin" },
       expectedVersion: 1,
       decision: "approved",
-      identityConsistency: "unscored",
+      identityConsistency: "passed",
       score: 92,
       reason: "Approve a campaign asset",
       requestId: `creative-authority-review-${suffix}`,
@@ -832,14 +832,14 @@ describe("Creative customer media authority", () => {
     });
   });
 
-  it("rejects approval when immutable job provenance uses a mock provider", async () => {
+  it("rejects model evaluation approval when immutable job provenance uses a mock provider", async () => {
     await expect(recordCreativeReviewDecision({
       runId: providerReviewRunId,
       itemId: providerReviewItemId,
       actor: { id: adminId, role: "admin" },
       expectedVersion: 1,
       decision: "approved",
-      identityConsistency: "unscored",
+      identityConsistency: "passed",
       score: 92,
       reason: "Approve a provider-backed campaign asset",
       requestId: `creative-authority-provider-review-${suffix}`,

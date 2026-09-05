@@ -193,9 +193,9 @@ describe("Character placement qualification", () => {
       (button) => button.textContent?.includes("Replace image"),
     );
     await act(async () => replaceButton?.click());
-    await waitUntil(() => container.textContent?.includes("Update Review authority") === true);
+    await waitUntil(() => container.textContent?.includes("Update image selection") === true);
     const staleCurrentButton = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
-      (button) => button.textContent?.includes("Update Review authority"),
+      (button) => button.textContent?.includes("Update image selection"),
     );
     expect(staleCurrentButton?.disabled).toBe(false);
     const cancelButton = [...container.querySelectorAll<HTMLButtonElement>("button")].find(

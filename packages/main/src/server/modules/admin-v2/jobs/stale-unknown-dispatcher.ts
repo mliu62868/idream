@@ -2,12 +2,12 @@ import type { PrismaClient } from "@prisma/client";
 import { logger } from "@/server/lib/logger";
 import { reconcileUnknownGenerationRequest } from "./unknown-reconciliation";
 
-// SPEC: 无人认领的 unknown Attempt 会在宽限期后自动结算为 failed 并全额退款。
+// SPEC: 无人认领且原执行/终态接力不再可恢复的 unknown，宽限期后结算失败并退款。
 // INTENT: unknown 是「provider 结果不明」的不可改写事实，Request 会停在
 //   queued/running。过去只有运营在后台点一下才能收口，于是用户看到的是一个永远
 //   「排队中」的任务：不报错、不能重试、不退币，连角色都因为「还有生成在跑」而删不掉。
 //   宽限期留给 provider 迟到的成功证据（late_after_* 通道仍然接得住），过了就必须
-//   给用户一个确定的结局——失败并把币还回去，比无限期挂着诚实。
+//   且确认原执行没有继续推进后，才给用户一个确定的结局——失败并把币还回去，比无限期挂着诚实。
 const UNKNOWN_SETTLEMENT_GRACE_MS = 30 * 60_000;
 
 const SWEEPER_ACTOR = {

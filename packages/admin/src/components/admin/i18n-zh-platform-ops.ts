@@ -114,6 +114,10 @@ export const adminZhPlatformOps: Record<string, string> = {
   "Job timed out while waiting for the provider": "等待供应商时任务超时",
   "Needs engineering — the console offered an action the authority rejects": "需要工程介入——后台给出了一个后端并不接受的操作",
   "No action needed — the late result was discarded": "无需处理——迟到的结果已丢弃",
+  "Open the job to check whether the late result can be recovered": "打开任务检查迟到结果是否可以恢复",
+  "Provider failure was recorded": "任务已按失败结算",
+  "Open the job to review the recorded decision and recovery options": "打开任务查看结算记录和可用恢复操作",
+  "Validated provider success arrived after automatic timeout settlement; adopt the recovered output in Jobs.": "自动超时结算后收到已验证的成功结果，请前往生成任务恢复产物。",
   "No action needed": "无需处理",
   "No generation jobs recorded yet.": "还没有生成任务记录。",
   "Open the job for its own failure reason": "打开对应任务查看它自己的失败原因",
@@ -660,6 +664,7 @@ export const adminZhPlatformOps: Record<string, string> = {
   "Session status": "会话状态",
   "Sessions": "会话",
   "Settlement": "结算",
+  "No settlement needed": "无需结算",
   "Settles the Request as failed and refunds the remaining captured Dreamcoins. The unknown Attempt evidence is retained unchanged.":
     "将请求结算为失败并退还剩余已扣梦币；未知尝试证据保持不变。",
   "Share the error code with engineering": "请把错误代码给工程",

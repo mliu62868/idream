@@ -60,6 +60,8 @@ export function UnknownGenerationReconciliationControls({
   const request = detail.request;
   const latestAttempt = detail.attempts.at(-1) ?? null;
   const latestDecision = detail.unknownReconciliations.at(-1) ?? null;
+  const compensatingAdoption = detail.unknownTerminalEvidence?.adoptable === true &&
+    latestDecision?.resolution === "confirm_failed";
   const hasTerminalDecision =
     latestDecision?.resolution === "confirm_failed" ||
     latestDecision?.resolution === "adopt_succeeded";
@@ -75,8 +77,8 @@ export function UnknownGenerationReconciliationControls({
   if (
     !latestAttempt ||
     latestAttempt.status !== "unknown" ||
-    request.requestOutcome !== "needs_reconciliation" ||
-    hasTerminalDecision
+    (!compensatingAdoption && request.requestOutcome !== "needs_reconciliation") ||
+    (hasTerminalDecision && !compensatingAdoption)
   ) return null;
 
   const evidenceRefs = unknownGenerationEvidenceRefs(detail);
@@ -231,7 +233,7 @@ export function UnknownGenerationReconciliationControls({
         <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-700" />
         <div className="min-w-0 flex-1">
           <h3 className="text-sm font-semibold text-amber-950">
-            {t("Unknown provider outcome requires an operator decision")}
+            {t(compensatingAdoption ? "Adopt recovered provider success" : "Unknown provider outcome requires an operator decision")}
           </h3>
           <p className="mt-1 text-xs text-amber-900/80">
             {t("Attempt {attemptNo} stays unknown. Evidence captured: {count} reference(s).", {
@@ -297,14 +299,14 @@ export function UnknownGenerationReconciliationControls({
                   <CheckCircle2 className="h-4 w-4" /> {t("Adopt recovered success")}
                 </button>
               ) : null}
-              <button
+              {!compensatingAdoption ? <button
                 className="inline-flex min-h-9 items-center gap-2 rounded-md border border-amber-700/30 px-3 text-xs font-semibold disabled:opacity-50"
                 disabled={busy}
                 onClick={openRemainUnknown}
                 type="button"
               >
                 <Clock3 className="h-4 w-4" /> {t("Remain unknown and review later")}
-              </button>
+              </button> : null}
               {!terminalEvidence?.adoptable &&
               !recoveredSuccessCannotResolveAsFailure ? (
                 <button

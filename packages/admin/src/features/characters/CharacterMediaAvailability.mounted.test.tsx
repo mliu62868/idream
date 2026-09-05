@@ -149,7 +149,6 @@ describe("Character media availability", () => {
           canRead
           canReadProduction
           canReview
-          canReviewImported
           commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
           data={data}
           onContinue={() => undefined}
@@ -257,7 +256,9 @@ describe("Character media availability", () => {
     });
 
     it(`${kind}: unmatched search has a clear action and keeps the existing library`, async () => {
-      request().mockResolvedValue({ items: [asset] });
+      request().mockImplementation(async (_operation, options) => ({
+        items: kind === "images" && options?.query?.get("search") ? [] : [asset],
+      }));
       await renderLibrary(kind);
       await waitUntil(() => container.querySelector("article") !== null);
       const search = container.querySelector<HTMLInputElement>(`input[placeholder="Search ${kind}"]`);
@@ -268,11 +269,11 @@ describe("Character media availability", () => {
       });
 
       expect(container.textContent).not.toContain(emptyLabel);
-      expect(container.textContent).toContain(`No matching ${kind}`);
+      await waitUntil(() => container.textContent?.includes(`No matching ${kind}`) === true);
       await act(async () => button("Clear search").click());
-      expect(container.querySelectorAll("article")).toHaveLength(1);
+      await waitUntil(() => container.querySelectorAll("article").length === 1);
       expect(search?.value).toBe("");
-      expect(request()).toHaveBeenCalledTimes(1);
+      expect(request()).toHaveBeenCalledTimes(kind === "images" ? 3 : 1);
     });
 
     it(`${kind}: a refresh failure preserves loaded assets with a stale-data notice`, async () => {
@@ -322,37 +323,26 @@ describe("Character media availability", () => {
     });
   }
 
-  it("Review: failed submission keeps the draft, and committed Review is not relabeled as failed by a workspace refresh", async () => {
-    let reviews = 0;
-    adminV2Operation.mockImplementation(async (operationId: string) => {
-      if (operationId.startsWith("GET ")) return { items: [image] };
-      reviews += 1;
-      if (reviews === 1) throw new Error("Review unavailable");
-      return {};
-    });
-    const onProjectReload = vi.fn(async () => {
-      throw new Error("Workspace refresh unavailable");
-    });
-    await renderLibrary("images", true, onProjectReload);
-    await waitUntil(() => container.querySelector("article") !== null);
-    await act(async () => button("Review image candidate").click());
-    const reason = container.querySelector<HTMLTextAreaElement>("textarea");
-    expect(reason).not.toBeNull();
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(reason, "Does not match the intended identity");
-      reason?.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    await act(async () => button("Reject candidate").click());
-    await waitUntil(() => container.querySelector('[role="alert"]') !== null);
-    expect(reason?.value).toBe("Does not match the intended identity");
-    expect(button("Reject candidate").disabled).toBe(false);
-
-    await act(async () => button("Reject candidate").click());
-    await waitUntil(() => reviews === 2 && onProjectReload.mock.calls.length === 1);
-    expect(container.textContent).toContain("Review rejected. This image remains in the library but cannot be selected.");
-    expect(container.querySelector("textarea")).toBeNull();
-    // Workspace refresh owns its own error and retry UI in CharacterWorkspace.
-    expect(container.querySelector('[role="alert"]')).toBeNull();
+  it("videos: reopens in-progress generation after a page remount", async () => {
+    apiGet.mockResolvedValue({ items: [] });
+    const data = structuredClone(characterWorkspaceDetail());
+    const videoOperation = data.mediaOperations.operations.find((operation) => operation.modality === "video")!;
+    videoOperation.requestId = "active-video";
+    videoOperation.status = "running";
+    const render = () => root.render(<CharacterVideoLibrary actorId="operator-1" data={data}
+      canRead canReadProduction canCreate canImport canArchive={false}
+      onCreateImage={() => undefined} onProjectReload={async () => undefined}
+      runCommittedMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })} />);
+    await act(async () => render());
+    await waitUntil(() => apiGet.mock.calls.length === 1);
+    expect(container.textContent).toContain("Finish production");
+    expect(container.textContent).toContain("Video generation in progress");
+    expect(container.textContent).not.toContain("No videos yet");
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await act(async () => render());
+    expect(container.textContent).toContain("Finish production");
+    expect(container.textContent).not.toContain("No videos yet");
   });
 
   it("video import permission is independent from video production permission", async () => {
@@ -413,4 +403,16 @@ describe("Character media availability", () => {
     await waitUntil(() => selections === 2);
     expect(container.querySelector('[role="alert"]')).toBeNull();
   });
+  it("placement: reaches a selectable image beyond a full page of unavailable candidates", async () => {
+    adminV2Operation.mockImplementation(async (_operation, options) => options.query?.get("cursor")
+      ? { items: [image], nextCursor: null }
+      : { items: [], nextCursor: "older-images" });
+    await renderPlacement();
+    await waitUntil(() => container.textContent?.includes("Load more images") === true);
+    expect(container.textContent).not.toContain("No images are available");
+    await act(async () => button("Load more images").click());
+    await waitUntil(() => container.querySelector('button[aria-label="Use image for character_cover"]') !== null);
+    expect(adminV2Operation.mock.calls[1]?.[1].query.get("cursor")).toBe("older-images");
+  });
+
 });

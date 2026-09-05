@@ -489,7 +489,7 @@ describe("Character image Creative Run authority", () => {
     });
   });
 
-  it("rejects identity candidate approval without the visible quality checklist", async () => {
+  it("retains system composition evidence while rejecting obsolete manual identity review writes", async () => {
     const response = await createCreativeRun(request({
       title: "Mara identity review quality gate",
       purpose: "identity_calibration",
@@ -521,42 +521,6 @@ describe("Character image Creative Run authority", () => {
     const batch = await prisma.contentProductionBatch.findUniqueOrThrow({
       where: { id: batchId },
       select: { version: true },
-    });
-
-    await expect(recordCreativeReviewDecision({
-      runId: batchId,
-      itemId: item.id,
-      actor: { id: actorId, role: "admin" },
-      expectedVersion: batch.version,
-      decision: "approved",
-      identityConsistency: "unscored",
-      reason: "Attempt to approve identity without reviewing the visible image",
-      requestId: `character-identity-review-quality-${suffix}`,
-    })).rejects.toMatchObject({
-      status: 400,
-      message:
-        "Character identity review requires the complete visible quality checklist",
-    });
-
-    await expect(recordCreativeReviewDecision({
-      runId: batchId,
-      itemId: item.id,
-      actor: { id: actorId, role: "admin" },
-      expectedVersion: batch.version,
-      decision: "approved",
-      identityConsistency: "unscored",
-      quality: {
-        artifactFree: true,
-        singleSubject: false,
-        intentMatch: true,
-        noVisibleText: true,
-      },
-      reason: "The candidate contains a composite layout",
-      requestId: `character-identity-review-single-subject-${suffix}`,
-    })).rejects.toMatchObject({
-      status: 400,
-      message:
-        "A Character identity candidate cannot be approved while a required quality check is failing",
     });
 
     const job = await prisma.generationJob.findFirstOrThrow({
@@ -591,27 +555,6 @@ describe("Character image Creative Run authority", () => {
       data: { status: "generated", mediaAssetId: assetId },
     });
 
-    await expect(recordCreativeReviewDecision({
-      runId: batchId,
-      itemId: item.id,
-      actor: { id: actorId, role: "admin" },
-      expectedVersion: batch.version,
-      decision: "approved",
-      identityConsistency: "unscored",
-      quality: {
-        artifactFree: true,
-        singleSubject: true,
-        intentMatch: true,
-        noVisibleText: true,
-      },
-      reason: "All client-supplied checkboxes claim the image is valid",
-      requestId: `character-identity-system-quality-${suffix}`,
-    })).rejects.toMatchObject({
-      status: 400,
-      message:
-        "Character identity approval requires system-verified single-frame evidence",
-    });
-
     await prisma.mediaAsset.update({
       where: { id: assetId },
       data: {
@@ -628,39 +571,15 @@ describe("Character image Creative Run authority", () => {
         },
       },
     });
-    const approved = await recordCreativeReviewDecision({
-      runId: batchId,
-      itemId: item.id,
-      actor: { id: actorId, role: "admin" },
-      expectedVersion: batch.version,
-      decision: "approved",
-      identityConsistency: "unscored",
-      quality: {
-        artifactFree: true,
-        singleSubject: true,
-        intentMatch: true,
-        noVisibleText: true,
-      },
-      reason: "The system and reviewer both confirm a valid identity portrait",
-      requestId: `character-identity-system-quality-pass-${suffix}`,
-    });
-    expect(approved).toMatchObject({ decision: "approved" });
-    const decision = await prisma.creativeReviewDecision.findUniqueOrThrow({
-      where: { id: approved.decisionId },
-    });
-    expect(decision.evidence).toMatchObject({
-      quality: {
-        artifactFree: true,
-        singleSubject: true,
-      },
-      automaticComposition: {
-        evaluatorVersion: "generated-image-sanity-v2",
-        composition: {
-          status: "passed",
-          reason: "single_continuous_frame_detected",
-        },
-      },
-    });
+    await expect(recordCreativeReviewDecision({
+      runId: batchId, itemId: item.id, actor: { id: actorId, role: "admin" },
+      expectedVersion: batch.version, decision: "approved", identityConsistency: "unscored",
+      reason: "An old client attempts the removed manual approval action",
+      requestId: `retired-identity-review-${suffix}`,
+    })).rejects.toMatchObject({ status: 409, details: { code: "manual_asset_review_retired" } });
+    expect(await prisma.creativeReviewDecision.count({ where: { runItemId: item.id } })).toBe(0);
+    await expect(prisma.contentProductionItem.findUniqueOrThrow({ where: { id: item.id } }))
+      .resolves.toMatchObject({ status: "generated", mediaAssetId: assetId });
     const detail = await getCreativeRunDetail({
       runId: batchId,
       actor: { id: actorId, role: "admin" },
@@ -1696,7 +1615,16 @@ describe("Character image Creative Run authority", () => {
         url: `/assets/${variationSourceAssetId}.webp`,
         storageKey: `test-fixtures/${variationSourceAssetId}.webp`,
         safetyStatus: "passed",
-        metadata: {},
+        metadata: { synthetic: false, provider: "comfyui" },
+      },
+    });
+    await prisma.generationAttempt.create({
+      data: {
+        requestId: variationSourceJobId,
+        attemptNo: 1,
+        status: "succeeded",
+        provider: "comfyui",
+        finishedAt: new Date(),
       },
     });
     await prisma.contentProductionItem.update({
@@ -1717,8 +1645,9 @@ describe("Character image Creative Run authority", () => {
         createdAt: new Date(Date.now() - 1_000),
       },
     });
-    const rejectedVariation = await createCreativeRun(request({
-      title: "Mara rejected-source variation",
+    await prisma.generationJob.update({ where: { id: variationSourceJobId }, data: { status: "running" } });
+    const incompleteVariation = await createCreativeRun(request({
+      title: "Mara incomplete-source variation",
       purpose: "character_hero",
       targetType: "character",
       targetId: characterId,
@@ -1726,12 +1655,15 @@ describe("Character image Creative Run authority", () => {
       referenceAssetIds: [variationSourceAssetId],
       orientation: "4:5",
       count: 1,
-      brief: "A direct API call must not reuse a rejected candidate.",
+      brief: "A source file is insufficient while its generation is still running.",
       consistencyMode: "strict",
       priority: "normal",
-      reason: "Prove rejected variation sources fail closed",
+      reason: "Prove incomplete generation sources fail closed",
     }, `character-image-rejected-variation-${suffix}`));
-    expect(rejectedVariation.status).toBe(409);
+    expect(incompleteVariation.status).toBe(409);
+    const incompletePayload = await incompleteVariation.json();
+    expect(incompletePayload).toMatchObject({ error: { message: "A variation source must be derived from the active Character identity authority" } });
+    await prisma.generationJob.update({ where: { id: variationSourceJobId }, data: { status: "completed" } });
 
     const approvedSourceDecision = await prisma.creativeReviewDecision.create({
       data: {
@@ -2079,7 +2011,7 @@ describe("Character image Creative Run authority", () => {
     })).rejects.toMatchObject({
       status: 409,
       details: {
-        dependencies: expect.arrayContaining(["downstream_generation_lineage"]),
+        code: "manual_asset_review_retired",
       },
     });
   });

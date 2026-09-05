@@ -1,7 +1,10 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { characterWorkspaceDetail } from "./character-workspace-fixture";
 import {
+  CharacterSoulPanel,
   compileSoulDraftPreview,
   soulDraftFromWorkspace,
 } from "./CharacterSoulPanel";
@@ -12,6 +15,16 @@ const panelSource = readFileSync(
 );
 
 describe("Character Soul editor projection", () => {
+  it("keeps the operator form visible and technical artifacts collapsed", () => {
+    const html = renderToStaticMarkup(createElement(CharacterSoulPanel, { data: characterWorkspaceDetail({ soul: { current: { soul: { name: "Mira", age: 31, gender: "female", characterPromise: "Notices what changes.", detailsMarkdown: "" } } }, preview: { draft: { opening: { firstMessage: "Hello." } } } }), canWrite: true, runCommittedMutation: async ({ commit }) => ({ result: await commit(), refreshed: true }) }));
+    expect(html).toContain("Soul editor");
+    expect(html).toContain("Technical details");
+    expect(html).toContain("Generated SOUL.md");
+    expect(html).toContain("Compiled system prompt");
+    expect(html.match(/<details[^>]*>/g)).toHaveLength(3);
+    expect(html).not.toMatch(/<details[^>]*\sopen(?:=|>)/);
+  });
+
   it("round-trips the minimal Soul fields and keeps opening separate", () => {
     const data = characterWorkspaceDetail({
       soul: {

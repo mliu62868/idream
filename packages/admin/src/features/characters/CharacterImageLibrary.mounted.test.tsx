@@ -13,16 +13,17 @@ vi.mock("@/lib/admin-v2-operation", () => ({ adminV2Operation }));
 vi.mock("next/image", () => ({
   default: ({ alt = "" }: { alt?: string }) => <span data-image-alt={alt} />,
 }));
-vi.mock("@/components/admin/i18n", () => ({
-  useAdminI18n: () => ({
+vi.mock("@/components/admin/i18n", () => {
+  const context = {
     t: (value: string, values?: Readonly<Record<string, string | number>>) =>
       Object.entries(values ?? {}).reduce(
         (text, [key, replacement]) =>
           text.replaceAll(`{${key}}`, String(replacement)),
         value,
       ),
-  }),
-}));
+  };
+  return { useAdminI18n: () => context };
+});
 vi.mock("./CharacterAssetStudio", () => ({
   CharacterAssetStudio: ({ permissions }: { permissions: { review: boolean } }) => (
     <div data-review-allowed={permissions.review} data-testid="character-asset-studio" />
@@ -50,15 +51,6 @@ async function waitUntil(predicate: () => boolean) {
 function setInputValue(input: HTMLInputElement, value: string) {
   const setter = Object.getOwnPropertyDescriptor(
     HTMLInputElement.prototype,
-    "value",
-  )?.set;
-  setter?.call(input, value);
-  input.dispatchEvent(new Event("input", { bubbles: true }));
-}
-
-function setTextAreaValue(input: HTMLTextAreaElement, value: string) {
-  const setter = Object.getOwnPropertyDescriptor(
-    HTMLTextAreaElement.prototype,
     "value",
   )?.set;
   setter?.call(input, value);
@@ -130,12 +122,35 @@ describe("Character image library imported Review", () => {
     container.remove();
   });
 
+  it("reopens an active image creator after remount even when identity bootstrap is complete", async () => {
+    adminV2Operation.mockResolvedValue({ items: [], nextCursor: null });
+    const data = structuredClone(characterWorkspaceDetail());
+    data.visual.identityBootstrap.allowed = false;
+    const operation = data.mediaOperations.operations.find((item) => item.modality === "image")!;
+    operation.requestId = "running-image-request";
+    operation.status = "running";
+    const render = () => root.render(<CharacterImageLibrary actorId="operator-1" data={data}
+      canRead canReadProduction canCreate canReview canArchive={false}
+      commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
+      onContinue={() => undefined} onProjectReload={async () => undefined} />);
+    await act(async () => render());
+    await waitUntil(() => adminV2Operation.mock.calls.length > 0);
+    expect(container.querySelector('[data-testid="character-asset-studio"]')).not.toBeNull();
+    expect(container.textContent).toContain("Image request in progress");
+    expect(container.textContent).not.toContain("No images yet");
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await act(async () => render());
+    expect(container.querySelector('[data-testid="character-asset-studio"]')).not.toBeNull();
+    expect(adminV2Operation.mock.calls.every(([operation]) => operation.startsWith("GET "))).toBe(true);
+  });
+
   it("refreshes completed image facts from the shell without losing the library filter", async () => {
     let current = importedAsset();
     adminV2Operation.mockImplementation(async () => ({ items: [current] }));
     await act(async () => root.render(
       <CharacterImageLibrary actorId="operator-1" canArchive={false} canCreate canRead
-        canReadProduction canReview canReviewImported={false}
+        canReadProduction canReview
         commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
         data={characterWorkspaceDetail()} onContinue={() => undefined}
         onProjectReload={async () => undefined} />,
@@ -162,7 +177,6 @@ describe("Character image library imported Review", () => {
           canRead
           canReadProduction
           canReview
-          canReviewImported={false}
           commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
           data={characterWorkspaceDetail({ visual: { identityBootstrap: { allowed: true } } })}
           onContinue={() => undefined}
@@ -177,93 +191,45 @@ describe("Character image library imported Review", () => {
       .toBe("true");
   });
 
-  it("keeps identity bootstrap separate and grants an upload real Review authority", async () => {
-    let reviewed = false;
-    const onProjectReload = vi.fn(async () => undefined);
-    adminV2Operation.mockImplementation(async (operationId: string) => {
-      if (operationId === "GET /api/v2/admin/characters/:id/image-sources") {
-        return { items: [importedAsset(reviewed ? "selectable" : "candidate")] };
-      }
-      if (operationId === "POST /api/v2/admin/characters/:id/image-sources/:assetId/reviews") {
-        reviewed = true;
-        return {
-          characterId: "character-fixture",
-          assetId: "media-upload-1",
-          decisionId: "review-upload-1",
-          qualification: importedAsset("selectable").qualification,
-          replayed: false,
-        };
-      }
-      throw new Error(`Unexpected operation ${operationId}`);
+  it("shows imported images without an artificial review action", async () => {
+    adminV2Operation.mockResolvedValue({ items: [importedAsset("selectable")], nextCursor: null });
+    await act(async () => root.render(
+      <CharacterImageLibrary actorId="operator-1" canArchive={false} canCreate canRead
+        canReadProduction canReview
+        commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
+        data={characterWorkspaceDetail()} onContinue={() => undefined}
+        onProjectReload={async () => undefined} />,
+    ));
+    await waitUntil(() => container.textContent?.includes("final-character.webp") === true);
+    expect(container.textContent).not.toContain("Review image candidate");
+    expect(container.textContent).not.toContain("Approve for placement");
+    expect(container.querySelector('input[type="number"]')).toBeNull();
+    expect(adminV2Operation.mock.calls.every(([operation]) => operation.startsWith("GET "))).toBe(true);
+  });
+
+  it("loads older pages and sends searches to the full library", async () => {
+    const older = { ...importedAsset("selectable"), id: "older", filename: "older.webp" };
+    adminV2Operation.mockImplementation(async (_operation, options) => {
+      const query = options.query as URLSearchParams;
+      return query.get("cursor") || query.get("search")
+        ? { items: [older], nextCursor: null }
+        : { items: [importedAsset("selectable")], nextCursor: "next-page" };
     });
-
-    await act(async () => {
-      root.render(
-        <CharacterImageLibrary
-          actorId="operator-1"
-          canArchive={false}
-          canCreate
-          canRead
-          canReadProduction
-          canReview
-          canReviewImported
-          commitProjectMutation={async ({ commit }) => ({
-            result: await commit(),
-            refreshed: true,
-          })}
-          data={characterWorkspaceDetail()}
-          onContinue={() => undefined}
-          onProjectReload={onProjectReload}
-        />,
-      );
-    });
-
-    await waitUntil(() => container.textContent?.includes("Review image candidate") === true);
-    const reviewButton = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent?.includes("Review image candidate"),
-    );
-    await act(async () => reviewButton?.click());
-
-    expect(container.textContent).toContain("Initial identity sources belong in Identity Lab");
-    const approveButton = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
-      (button) => button.textContent?.includes("Approve for placement"),
-    );
-    expect(approveButton?.disabled).toBe(true);
-
-    const score = container.querySelector<HTMLInputElement>('input[type="number"]');
-    const uncheckedQuality = [...container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')]
-      .filter((checkbox) => !checkbox.checked);
-    const reason = container.querySelector<HTMLTextAreaElement>("textarea");
-    await act(async () => {
-      if (score) setInputValue(score, "95");
-      for (const checkbox of uncheckedQuality) checkbox.click();
-      if (reason) setTextAreaValue(reason, "Matches the sealed Character identity");
-    });
-    expect(approveButton?.disabled).toBe(false);
-
-    await act(async () => approveButton?.click());
-    await waitUntil(() => reviewed && onProjectReload.mock.calls.length === 1);
-
-    const reviewCall = adminV2Operation.mock.calls.find(
-      ([operationId]) => operationId === "POST /api/v2/admin/characters/:id/image-sources/:assetId/reviews",
-    );
-    expect(reviewCall?.[1]).toEqual(expect.objectContaining({
-      path: { id: "character-fixture", assetId: "media-upload-1" },
-      body: {
-        decision: "approved",
-        identityConsistency: "passed",
-        score: 95,
-        quality: {
-          artifactFree: true,
-          singleSubject: true,
-          intentMatch: true,
-          noVisibleText: true,
-        },
-        reason: "Matches the sealed Character identity",
-      },
-    }));
-    expect(reviewCall?.[1].body).not.toHaveProperty("runId");
-    expect(reviewCall?.[1].body).not.toHaveProperty("itemId");
-    expect(container.textContent).toContain("selectable");
+    await act(async () => root.render(
+      <CharacterImageLibrary actorId="operator-1" canArchive={false} canCreate canRead
+        canReadProduction canReview
+        commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
+        data={characterWorkspaceDetail()} onContinue={() => undefined}
+        onProjectReload={async () => undefined} />,
+    ));
+    await waitUntil(() => container.textContent?.includes("Load more images") === true);
+    await act(async () => [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Load more images"))?.click());
+    await waitUntil(() => container.textContent?.includes("older.webp") === true);
+    expect(container.textContent).toContain("final-character.webp");
+    const input = container.querySelector<HTMLInputElement>('input[placeholder="Search images"]')!;
+    await act(async () => setInputValue(input, "older"));
+    await waitUntil(() => adminV2Operation.mock.calls.some(([, options]) => options.query?.get("search") === "older"));
+    await waitUntil(() => !container.textContent?.includes("final-character.webp"));
+    expect(container.textContent).toContain("older.webp");
   });
 });

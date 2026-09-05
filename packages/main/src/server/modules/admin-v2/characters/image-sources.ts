@@ -26,6 +26,7 @@ import {
 } from "@/server/modules/admin-v2/shared/image-upload";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { providers } from "@/server/providers";
+import { decodeAdminListCursor, encodeAdminListCursor, parseIsoCursorKey } from "../shared/list-cursor";
 import { characterImageQualifications } from "./image-qualification";
 
 const LIST_LIMIT = 100;
@@ -57,11 +58,26 @@ export async function parseCharacterImageSourceForm(
 export async function listCharacterImageSources(input: {
   characterId: string;
   purpose?: CharacterImageUploadPurpose;
+  cursor?: string;
+  search?: string;
+  limit?: number;
 }) {
   await requireCharacter(input.characterId);
   const purpose = input.purpose ?? IMAGE_SOURCE_PURPOSE;
-  const assets = await prisma.mediaAsset.findMany({
-    where: operationalMediaAssetWhere({
+  const limit = input.limit ?? LIST_LIMIT;
+  const search = input.search?.trim().toLowerCase() ?? "";
+  const queryIdentity = { characterId: input.characterId, purpose, search };
+  const scope = "character-image-sources";
+  const cursorKeys = input.cursor
+    ? decodeAdminListCursor(input.cursor, scope, queryIdentity) : null;
+  if (cursorKeys && (cursorKeys.length !== 2 || typeof cursorKeys[1] !== "string")) {
+    throw Errors.badRequest("Invalid image library cursor");
+  }
+  let anchor = cursorKeys ? {
+    createdAt: parseIsoCursorKey(cursorKeys[0], scope),
+    id: cursorKeys[1] as string,
+  } : null;
+  const where = operationalMediaAssetWhere({
       characterId: input.characterId,
       type: "image",
       safetyStatus: "passed",
@@ -108,28 +124,44 @@ export async function listCharacterImageSources(input: {
               },
             ],
           }),
-    }),
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    take: LIST_LIMIT,
-  });
-  // Archive removes library membership; a rejected Review remains inspectable.
-  const visibleAssets = assets.filter((asset) =>
-    mediaAssetPlatformStatus(asset.metadata) !== "archived"
-  );
-  const qualifications = purpose === CHARACTER_LIBRARY_PURPOSE
-    ? await characterImageQualifications(
-        prisma,
-        input.characterId,
-        visibleAssets,
-      )
-    : new Map<string, CharacterImageQualification>();
+    });
+  const items: CharacterImageSourceAsset[] = [];
+  // Filter membership and search before the visible page limit. Scanning keyset
+  // batches preserves legacy JSON metadata and never hides older eligible rows.
+  while (items.length <= limit) {
+    const assets = await prisma.mediaAsset.findMany({
+      where: { AND: [where, ...(anchor ? [{ OR: [
+        { createdAt: { lt: anchor.createdAt } },
+        { createdAt: anchor.createdAt, id: { lt: anchor.id } },
+      ] }] : [])] },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: LIST_LIMIT,
+    });
+    const visibleAssets = assets.filter((asset) =>
+      mediaAssetPlatformStatus(asset.metadata) !== "archived"
+    );
+    const qualifications = purpose === CHARACTER_LIBRARY_PURPOSE
+      ? await characterImageQualifications(prisma, input.characterId, visibleAssets)
+      : new Map<string, CharacterImageQualification>();
+    for (const asset of visibleAssets) {
+      const dto = characterImageSourceAssetDto(asset, qualifications.get(asset.id) ?? null);
+      if (search && ![dto.id, dto.filename, dto.qualification?.source ?? "", dto.qualification?.state ?? ""]
+        .join(" ").toLowerCase().includes(search)) continue;
+      items.push(dto);
+      if (items.length > limit) break;
+    }
+    if (assets.length < LIST_LIMIT) break;
+    const last = assets[assets.length - 1];
+    anchor = { createdAt: last.createdAt, id: last.id };
+  }
+  const hasMore = items.length > limit;
+  const page = items.slice(0, limit);
+  const last = page[page.length - 1];
   return characterImageSourceListResponseSchema.parse({
-    items: visibleAssets.map((asset) =>
-      characterImageSourceAssetDto(
-        asset,
-        qualifications.get(asset.id) ?? null,
-      )
-    ),
+    items: page,
+    nextCursor: hasMore && last
+      ? encodeAdminListCursor(scope, queryIdentity, [last.createdAt, last.id])
+      : null,
   });
 }
 

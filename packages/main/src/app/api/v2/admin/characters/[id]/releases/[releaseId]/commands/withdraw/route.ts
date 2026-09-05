@@ -1,0 +1,8 @@
+import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
+import { withdrawCharacterRelease } from "@/server/modules/admin-v2/commands/authoritative";
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+export async function POST(request: Request, context: { params: Promise<{ id: string; releaseId: string }> }) {
+  const { id, releaseId } = await context.params;
+  return adminV2Route(request, () => withdrawCharacterRelease(request, id, releaseId));
+}

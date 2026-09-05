@@ -1,9 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   authoredCampaignPlacementCopy,
-  canTerminallyRejectUnusedApproval,
   committedProjectionWarning,
-  nonCampaignReviewSummary,
+  nonCampaignAssetSummary,
 } from "./CreativeRunWorkspace";
 
 // INTENT: 这个文件曾经有 36 条断言在读 CreativeRunWorkspace.tsx 的源码字符串——按
@@ -13,19 +12,9 @@ import {
 //         这里只留下不需要渲染就能验的纯函数。
 
 describe("Creative Run review handoff", () => {
-  it("only describes a non-runtime Run as complete after its lifecycle is closed", () => {
-    expect(nonCampaignReviewSummary({
-      lifecycleState: "active",
-      itemReviewed: false,
-    })).toMatchObject({ title: "Review required", complete: false });
-    expect(nonCampaignReviewSummary({
-      lifecycleState: "active",
-      itemReviewed: true,
-    })).toMatchObject({ title: "Candidate reviewed", complete: false });
-    expect(nonCampaignReviewSummary({
-      lifecycleState: "closed",
-      itemReviewed: true,
-    })).toMatchObject({ title: "Review complete", complete: true });
+  it("offers generated assets directly without requiring a review or closed lifecycle", () => {
+    expect(nonCampaignAssetSummary(false)).toMatchObject({ title: "Waiting for an asset", complete: false });
+    expect(nonCampaignAssetSummary(true)).toMatchObject({ title: "Asset ready", complete: true });
   });
 
   it("describes committed mutations separately from projection refresh failures", () => {
@@ -35,31 +24,6 @@ describe("Creative Run review handoff", () => {
     )).toBe(
       "Placement activation was committed, but the latest projection could not be refreshed: gateway unavailable. Retry the same command safely or refresh the workspace.",
     );
-  });
-
-  it("offers terminal rejection for unused Character candidates and active campaign approvals", () => {
-    expect(canTerminallyRejectUnusedApproval({
-      purpose: "campaign",
-      lifecycleState: "active",
-      decision: "approved",
-      hasPlacement: false,
-    })).toBe(true);
-    expect(canTerminallyRejectUnusedApproval({
-      purpose: "character_hero",
-      lifecycleState: "closed",
-      decision: "approved",
-      hasPlacement: false,
-    })).toBe(true);
-    for (const input of [
-      { purpose: "feed", lifecycleState: "active", decision: "approved", hasPlacement: false },
-      { purpose: "campaign", lifecycleState: "closed", decision: "approved", hasPlacement: false },
-      { purpose: "character_chat", lifecycleState: "retired", decision: "approved", hasPlacement: false },
-      { purpose: "campaign", lifecycleState: "active", decision: "rejected", hasPlacement: false },
-      { purpose: "campaign", lifecycleState: "active", decision: "approved", hasPlacement: true },
-      { purpose: "character_cover", lifecycleState: "closed", decision: "approved", hasPlacement: true },
-    ]) {
-      expect(canTerminallyRejectUnusedApproval(input)).toBe(false);
-    }
   });
 
   it("normalizes authored campaign copy", () => {

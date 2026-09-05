@@ -1,3 +1,4 @@
+import { validatedAutomaticFailureCorrection } from "@/server/ai/generation-unknown-resolution-evidence";
 import {
   generationJobDetailResponseSchema,
   generationJobListResponseSchema,
@@ -252,6 +253,7 @@ function generationJobProjection(
     readonly nextReviewAt: string | null;
   },
   latestUnknownResolution: "adopt_succeeded" | "confirm_failed" | "remain_unknown" | null,
+  automaticCorrectionAvailable = false,
 ) {
   const deliveredCount = deliveries.delivered ?? 0;
   return {
@@ -260,7 +262,7 @@ function generationJobProjection(
     characterId: row.characterId,
     derivedFromJobId: row.derivedFromJobId,
     mode: row.mode,
-    requestOutcome: requestOutcome(
+    requestOutcome: automaticCorrectionAvailable ? "needs_reconciliation" : requestOutcome(
       row.status,
       row.outputCount,
       deliveredCount,
@@ -322,6 +324,8 @@ export type GenerationJobsQueryAuthorityDb = Pick<
   | "generationSettlementLink"
   | "dreamcoinLedger"
   | "generationJobEvent"
+  | "inboundEventReceipt"
+  | "controlPlaneCommand"
 >;
 
 export async function queryGenerationJobsV2Authority(input: {
@@ -422,6 +426,11 @@ export async function queryGenerationJobsV2Authority(input: {
       latestReconciliationByRequest.set(event.jobId, event);
     }
   }
+  const automaticCorrections = new Set((await Promise.all(page.flatMap((row) => {
+    const attempt = latestAttemptByRequest.get(row.id);
+    return row.status === "failed" && attempt?.status === "unknown"
+      ? [validatedAutomaticFailureCorrection(db, row.id, attempt.id).then((evidence) => evidence ? row.id : null)] : [];
+  }))).filter((id): id is string => id !== null));
   const response = generationJobListResponseSchema.parse({
     items: page.map((row) => generationJobProjection(
       row,
@@ -437,6 +446,7 @@ export async function queryGenerationJobsV2Authority(input: {
         latestReconciliationByRequest.get(row.id) ?? null,
         latestAttemptByRequest.get(row.id)?.id ?? null,
       ),
+      automaticCorrections.has(row.id),
     )),
     pageInfo: {
       endCursor: hasNextPage && last ? cursorForRow(last, query.sort, queryHash) : null,
@@ -622,6 +632,14 @@ export async function getGenerationJobV2(request: Request, requestId: string) {
   const recoveredAssetCount = typeof recoveredMetadata.assetCount === "number"
     ? recoveredMetadata.assetCount
     : recoveredArtifacts.length;
+  const latestTerminalDecision = unknownReconciliationEvents.filter((event) =>
+    jsonRecord(event.metadata).attemptId === latestAttempt?.id &&
+    ["unknown_reconciliation_confirm_failed", "unknown_reconciliation_adopt_succeeded"].includes(event.type)
+  ).at(-1) ?? null;
+  const automaticCorrection = latestAttempt && latestTerminalDecision
+    ? await validatedAutomaticFailureCorrection(prisma, row.id, latestAttempt.id)
+    : null;
+  const terminalDecisionAllowsAdoption = !latestTerminalDecision || Boolean(automaticCorrection);
   const unknownTerminalEvidence =
     recoveredAttemptId && recoveredOutcome && recoveredRef && recoveredTransport
       ? {
@@ -632,6 +650,7 @@ export async function getGenerationJobV2(request: Request, requestId: string) {
           terminalRecordChecksum: recoveredChecksum,
           artifactCount: recoveredAssetCount,
           adoptable:
+            terminalDecisionAllowsAdoption &&
             recoveredOutcome === "succeeded" &&
             recoveredTransport.status === "unknown" &&
             latestAttempt?.id === recoveredAttemptId &&
@@ -696,6 +715,7 @@ export async function getGenerationJobV2(request: Request, requestId: string) {
         unknownReconciliationEvents.at(-1) ?? null,
         latestAttempt?.id ?? null,
       ),
+      Boolean(automaticCorrection),
     ),
     attempts: attempts.map((attempt) => ({
       id: attempt.id,

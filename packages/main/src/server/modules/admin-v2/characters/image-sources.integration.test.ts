@@ -187,7 +187,7 @@ describe("Character local image source authority", () => {
     expect(recent.items).toContainEqual(first.asset);
   });
 
-  it("keeps a library upload through publication and Review rejection until archive", async () => {
+  it("keeps a library upload through publication and historical Review rejection until archive", async () => {
     const png = Uint8Array.from(await sharp({
       create: {
         width: 144,
@@ -214,7 +214,7 @@ describe("Character local image source authority", () => {
       source: "operator_upload",
       state: "candidate",
       selectablePurposes: [],
-      blockers: ["visual_authority_missing", "review_pending"],
+      blockers: ["visual_authority_missing"],
       authority: {
         runId: null,
         itemId: null,
@@ -262,7 +262,7 @@ describe("Character local image source authority", () => {
       purpose: "character_library",
     });
     expect(afterRejection.items.find((asset) => asset.id === result.asset.id))
-      .toMatchObject({ qualification: { state: "rejected" } });
+      .toMatchObject({ qualification: { state: "candidate" } });
 
     await prisma.$executeRaw`
       UPDATE "media_assets"
@@ -332,4 +332,38 @@ describe("Character local image source authority", () => {
       await prisma.character.delete({ where: { id: otherCharacterId } });
     }
   });
+  it("paginates beyond 100 images after archive filtering and searches the entire library", async () => {
+    const prefix = `pagination-${suffix}`;
+    const createdAt = new Date("2030-01-01T00:00:00.000Z");
+    const ids = Array.from({ length: 201 }, (_, index) => `${prefix}-${String(index).padStart(3, "0")}`);
+    try {
+      await prisma.mediaAsset.createMany({ data: ids.map((id, index) => ({
+        id, ownerId: actorId, characterId, type: "image", url: `https://example.test/${id}.png`,
+        safetyStatus: "passed", visibility: "private", contentType: "image/png", createdAt,
+        metadata: { purpose: "character_library", filename: index === 0 ? "oldest-needle.png" : `${id}.png`,
+          ...(index > 100 ? { platformAsset: { status: "archived" } } : {}),
+        },
+      })) });
+      const first = await listCharacterImageSources({ characterId, purpose: "character_library" });
+      expect(first.items).toHaveLength(100);
+      expect(first.items.map((asset) => asset.id)).toEqual(ids.slice(1, 101).reverse());
+      expect(first.nextCursor).not.toBeNull();
+      // The anchor may be archived between requests; keyset paging still reaches older rows.
+      await prisma.mediaAsset.update({ where: { id: ids[1] }, data: {
+        metadata: { purpose: "character_library", platformAsset: { status: "archived" } },
+      } });
+      const second = await listCharacterImageSources({ characterId, purpose: "character_library", cursor: first.nextCursor! });
+      expect(second.items.some((asset) => asset.id === ids[0])).toBe(true);
+      expect(second.items.every((asset) => !first.items.some((previous) => previous.id === asset.id))).toBe(true);
+      expect(second.nextCursor).toBeNull();
+      const found = await listCharacterImageSources({ characterId, purpose: "character_library", search: "OLDEST-NEEDLE" });
+      expect(found.items.map((asset) => asset.id)).toEqual([ids[0]]);
+      expect(found.nextCursor).toBeNull();
+      await expect(listCharacterImageSources({ characterId, purpose: "character_library", search: "different", cursor: first.nextCursor! }))
+        .rejects.toMatchObject({ status: 400 });
+    } finally {
+      await prisma.mediaAsset.deleteMany({ where: { id: { in: ids } } });
+    }
+  });
+
 });

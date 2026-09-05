@@ -225,7 +225,7 @@ describe("ProfileWorkspace media pagination", () => {
     await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/custom" })));
     await settle();
     await click(button("created"));
-    expect(container.textContent).toContain("approved · awaiting publication");
+    expect(container.textContent).toContain("awaiting publication");
     await click(button("Make private"));
     expect(patches).toEqual([{ visibility: "private" }]);
   });

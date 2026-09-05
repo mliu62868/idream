@@ -8,6 +8,22 @@ import {
 import { identityExperimentCandidateSeed } from "@/server/modules/admin-v2/creative/run-create";
 
 describe("Creative Run item execution projection", () => {
+  it.each(["queued", "running", "failed"])("keeps an unknown attempt distinct from failure while the request is %s", (jobStatus) => {
+    expect(deriveCreativeItemExecutionState({
+      itemStatus: "queued", jobStatus, attemptStatus: "unknown", transportStatus: "unknown", hasAsset: false,
+    })).toBe("unknown");
+  });
+
+  it("accepts terminal reconciliation without rewriting the historical unknown attempt", () => {
+    expect(deriveCreativeItemExecutionState({
+      itemStatus: "failed", jobStatus: "failed", jobErrorCode: "operator_confirmed_provider_failure",
+      attemptStatus: "unknown", transportStatus: "unknown", hasAsset: false,
+    })).toBe("failed");
+    expect(deriveCreativeItemExecutionState({
+      itemStatus: "generated", jobStatus: "completed", attemptStatus: "unknown", transportStatus: "unknown", hasAsset: true,
+    })).toBe("ready");
+  });
+
   it("shows provider work as generating while the durable item is still queued", () => {
     expect(deriveCreativeItemExecutionState({
       itemStatus: "queued",
@@ -40,6 +56,11 @@ describe("Creative Run item execution projection", () => {
 });
 
 describe("Creative Run continuation after placement verification", () => {
+  it("finishes ordinary generation without waiting for manual decisions", () => {
+    expect(deriveCreativeRunContinuation(["generated", "failed"], { requiresVerifiedPlacement: false })).toMatchObject({ lifecycleState: "closed", workflowStage: "generation", status: "completed", verificationState: "pending" });
+    expect(deriveCreativeRunContinuation(["generated"], { requiresVerifiedPlacement: false, requiresReview: true })).toMatchObject({ lifecycleState: "active", workflowStage: "review" });
+  });
+
   it("moves a single approved campaign candidate directly into placement", () => {
     expect(deriveCreativeRunContinuation(["approved"])).toEqual({
       lifecycleState: "active",
@@ -49,10 +70,10 @@ describe("Creative Run continuation after placement verification", () => {
     });
   });
 
-  it("closes a non-runtime Run at review after every candidate has a terminal decision", () => {
+  it("closes a model experiment only after every sample has a terminal evaluation", () => {
     expect(deriveCreativeRunContinuation(
       ["approved", "rejected", "failed"],
-      { requiresVerifiedPlacement: false },
+      { requiresVerifiedPlacement: false, requiresReview: true },
     )).toEqual({
       lifecycleState: "closed",
       workflowStage: "review",
@@ -61,10 +82,10 @@ describe("Creative Run continuation after placement verification", () => {
     });
   });
 
-  it("keeps the Run active while another candidate still needs review", () => {
+  it("keeps the campaign active while another generated candidate can still be placed", () => {
     expect(deriveCreativeRunContinuation(["published", "generated"])).toEqual({
       lifecycleState: "active",
-      workflowStage: "review",
+      workflowStage: "placement",
       verificationState: "pending",
       status: "reviewing",
     });
@@ -82,7 +103,7 @@ describe("Creative Run continuation after placement verification", () => {
   it("does not claim runtime verification when a campaign ends without a published candidate", () => {
     expect(deriveCreativeRunContinuation(["rejected", "failed"])).toEqual({
       lifecycleState: "closed",
-      workflowStage: "review",
+      workflowStage: "generation",
       verificationState: "pending",
       status: "completed",
     });

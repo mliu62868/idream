@@ -461,7 +461,7 @@ describe("generation terminal record durable ingest", () => {
     }
   });
 
-  it("links late terminal evidence after stale quarantine without rewriting the unknown Attempt", async () => {
+  it.each(["known", "pending"] as const)("links late terminal evidence after stale quarantine with %s provider identity without rewriting the unknown Attempt", async (identity) => {
     await reserveAttempt();
     const staleAt = new Date("2026-01-01T00:00:00.000Z");
     await prisma.generationJob.update({
@@ -476,7 +476,7 @@ describe("generation terminal record durable ingest", () => {
       data: {
         attemptId,
         transportAttemptNo: terminalRecord.transportAttemptNo,
-        providerRequestId: terminalRecord.providerRequestId,
+        providerRequestId: identity === "known" ? terminalRecord.providerRequestId : null,
         idempotencyKey: terminalRecord.providerIdempotencyKey,
         status: "running",
         startedAt: staleAt,
@@ -504,6 +504,9 @@ describe("generation terminal record durable ingest", () => {
       acknowledged: true,
       status: "persisted",
     });
+    await expect(ingestGenerationTerminalRecord(input)).resolves.toMatchObject({ acknowledged: true, status: "duplicate" });
+    expect(await prisma.inboundEventReceipt.count({ where: { sourceService: "gen_resolution", sourceEventId: attemptId } })).toBe(1);
+
     await expect(prisma.generationAttempt.findUniqueOrThrow({
       where: { id: attemptId },
     })).resolves.toMatchObject({ status: "unknown", terminalRecordRef: null });
@@ -512,6 +515,7 @@ describe("generation terminal record durable ingest", () => {
     })).resolves.toMatchObject({
       status: "unknown",
       terminalRecordRef: null,
+      providerRequestId: identity === "known" ? terminalRecord.providerRequestId : null,
     });
     await expect(prisma.generationArtifact.findFirstOrThrow({
       where: { attemptId },

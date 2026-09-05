@@ -1,3 +1,5 @@
+import { ensureCustomerCharacterPublicationPrep } from "@/server/modules/admin-v2/characters/publication-prep";
+import { moderateText } from "@/server/moderation/text-authority";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { isMediaAssetOperationalForAuthority } from "@/server/lib/media-asset-authority";
@@ -21,7 +23,7 @@ import {
 // INVARIANT: 名字或简介一变就意味着人设重编译 —— 追加一版不可变 content version，
 // 并滚一版 CharacterVisualProfile，绝不原地改写既有版本。
 // INVARIANT: private 与 live Serving 不能共存；转私有时暂停 Serving 并清掉排程发布，
-// 但保留 Release 指针，以便日后重新过审后恢复。
+// 但保留 Release 指针，以便日后显式恢复发布。
 
 export async function updateCharacterForUser(input: {
   readonly userId: string;
@@ -42,15 +44,24 @@ export async function updateCharacterForUser(input: {
       where: { id, creatorId: userId, deletedAt: null },
     });
     if (!existing) throw Errors.notFound("Character not found");
+    if (existing.age < 18) throw Errors.badRequest("Characters must be at least 18 years old");
+    if (requestsSharing && ["rejected", "removed"].includes(existing.status)) {
+      throw Errors.forbidden("This Character is unavailable for sharing. Resolve its report or appeal first.");
+    }
+    if (shouldRebuildPrompt || requestsSharing) {
+      const moderation = await moderateText("character", id,
+        `${body.name ?? existing.name} ${body.description ?? existing.description} ${JSON.stringify(existing.advancedDetails)}`, "input");
+      if (moderation.status === "blocked") throw Errors.forbidden("Character failed safety checks", moderation);
+    }
     const serving = body.visibility
       ? await tx.characterServing.findUnique({ where: { characterId: id }, include: { currentRelease: true } })
       : null;
     // An already published shared Character only changes its listing preference.
-    // Withdrawal to private followed by sharing must still re-enter review.
+    // Sharing after withdrawal returns to publication preparation.
     const listingChange = requestsSharing && !shouldRebuildPrompt &&
       ["public", "unlisted"].includes(existing.visibility) && existing.status === "approved" &&
       serving?.state === "live" && serving.currentRelease?.status === "published";
-    const requiresReview = requestsSharing && !listingChange;
+    const requiresPublication = requestsSharing && !listingChange;
     const nextName = body.name ?? existing.name;
     const nextDescription = body.description ?? existing.description;
     const immutableContentSnapshot = shouldRebuildPrompt
@@ -143,7 +154,7 @@ export async function updateCharacterForUser(input: {
     if (body.visibility === "private") {
       if (serving?.state === "live") {
         // INVARIANT: private presentation and live Serving authority cannot coexist.
-        // Keep the immutable Release pinned so a later reviewed publication can resume it.
+        // Keep the immutable Release pinned so an explicit publication can resume it.
         await transitionCharacterServing(tx, {
           servingId: serving.id,
           to: "paused",
@@ -161,28 +172,29 @@ export async function updateCharacterForUser(input: {
         systemPrompt: userContent?.personaSnapshot.compiled.systemPrompt,
         currentContentVersionId: contentVersion?.id,
         visibility: body.visibility,
-        status: requiresReview
-          ? "pending_review"
+        status: requiresPublication
+          ? "approved"
           : body.visibility && existing.status === "pending_review"
             ? "approved"
             : undefined,
       },
     });
-    if (requiresReview) {
-      const pendingSubmission = await tx.characterSubmission.findFirst({
+    if (requiresPublication) {
+      // 自动检查完成后直接准备发布；不创建人工待审任务。
+      await tx.characterSubmission.updateMany({
         where: { characterId: updated.id, status: "pending" },
-        orderBy: [{ submittedAt: "desc" }, { id: "desc" }],
-        select: { id: true },
+        data: { status: "approved", reviewReason: "automatic_checks_passed" },
       });
-      if (!pendingSubmission) {
-        await tx.characterSubmission.create({
-          data: {
-            characterId: updated.id,
-            submitterId: userId,
-            status: "pending",
-          },
-        });
-      }
+      const accepted = !shouldRebuildPrompt ? await tx.characterSubmission.findFirst({
+        where: { characterId: updated.id, status: "approved" },
+        orderBy: [{ submittedAt: "desc" }, { id: "desc" }],
+      }) : null;
+      const submission = accepted ?? await tx.characterSubmission.create({
+        data: { characterId: updated.id, submitterId: userId, status: "approved", reviewReason: "automatic_checks_passed" },
+      });
+      await ensureCustomerCharacterPublicationPrep(tx, {
+        characterId: updated.id, submissionId: submission.id, actorId: userId,
+      });
     } else if (body.visibility && existing.status === "pending_review") {
       await tx.characterSubmission.updateMany({
         where: { characterId: updated.id, status: "pending" },

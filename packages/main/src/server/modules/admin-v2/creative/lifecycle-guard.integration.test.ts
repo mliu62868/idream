@@ -8,7 +8,7 @@ describe("Creative Run lifecycle guards", () => {
   const suffix = randomUUID();
   const actor = { id: `creative-lifecycle-actor-${suffix}`, role: "admin" } as const;
   const profileId = `creative-lifecycle-profile-${suffix}`;
-  const blockedStates = ["draft", "closed"] as const;
+  const blockedStates = ["draft", "closed", "archived"] as const;
   const reviewRunIds = blockedStates.map((state) => `creative-review-${state}-${suffix}`);
   const reviewItemIds = blockedStates.map((state) => `creative-review-item-${state}-${suffix}`);
   const reviewAssetIds = blockedStates.map((state) => `creative-review-asset-${state}-${suffix}`);
@@ -53,7 +53,7 @@ describe("Creative Run lifecycle guards", () => {
         data: {
           id: reviewRunIds[index],
           title: `Review guard ${state}`,
-          purpose: "feed",
+          purpose: "model_eval",
           targetType: "none",
           presetIds: [],
           count: 1,
@@ -154,13 +154,13 @@ describe("Creative Run lifecycle guards", () => {
     const allRunIds = [...reviewRunIds, ...retryRunIds];
     await prisma.controlPlaneCommandAttempt.deleteMany({ where: { commandId: { in: commandIds } } });
     await prisma.controlPlaneCommand.deleteMany({ where: { id: { in: commandIds } } });
-    await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: { in: allRunIds } } });
+    await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: { in: [...allRunIds, ...retryJobIds, ...retryItemIds] } } });
     await prisma.adminAuditLog.deleteMany({
       where: { OR: [{ targetId: { in: allRunIds } }, { targetId: { in: [...reviewItemIds, ...retryItemIds] } }] },
     });
     await prisma.creativeReviewDecision.deleteMany({ where: { runItemId: { in: reviewItemIds } } });
     await prisma.contentProductionBatch.deleteMany({ where: { id: { in: allRunIds } } });
-    await prisma.generationAttempt.deleteMany({ where: { id: { in: priorAttemptIds } } });
+    await prisma.generationAttempt.deleteMany({ where: { requestId: { in: retryJobIds } } });
     await prisma.generationJob.deleteMany({ where: { id: { in: retryJobIds } } });
     await prisma.mediaAsset.deleteMany({ where: { id: { in: reviewAssetIds } } });
     await prisma.generationModelProfile.delete({ where: { id: profileId } });
@@ -197,8 +197,9 @@ describe("Creative Run lifecycle guards", () => {
     }
   });
 
-  it("rejects retry for draft and closed Runs without generation or domain effects", async () => {
+  it("rejects retry for draft and archived Runs without generation or domain effects", async () => {
     for (const [index, state] of blockedStates.entries()) {
+      if (state === "closed") continue;
       await expect(executeCreativeRetryCommand(prisma, {
         commandId: commandIds[index],
         workerId: `creative-lifecycle-worker-${state}-${suffix}`,
@@ -224,5 +225,14 @@ describe("Creative Run lifecycle guards", () => {
         status: "failed",
       });
     }
+  });
+
+  it("reopens a closed generation run for an explicitly requested failed-item retry", async () => {
+    const index = blockedStates.indexOf("closed");
+    await executeCreativeRetryCommand(prisma, { commandId: commandIds[index], workerId: `closed-retry-${suffix}` });
+    expect(await prisma.contentProductionBatch.findUniqueOrThrow({ where: { id: retryRunIds[index] } })).toMatchObject({ lifecycleState: "active", workflowStage: "generation", verificationState: "verifying", version: 2 });
+    expect(await prisma.contentProductionItem.findUniqueOrThrow({ where: { id: retryItemIds[index] } })).toMatchObject({ status: "regenerate_requested" });
+    expect(await prisma.generationAttempt.count({ where: { sourceCommandId: commandIds[index] } })).toBe(1);
+    expect(await prisma.controlPlaneCommand.findUniqueOrThrow({ where: { id: commandIds[index] } })).toMatchObject({ status: "verifying" });
   });
 });

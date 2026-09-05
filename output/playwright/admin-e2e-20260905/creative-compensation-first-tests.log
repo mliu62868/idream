@@ -1,0 +1,84 @@
+@idream/main test: 
+@idream/main test:  RUN  v4.1.9 /Users/kk/code/idream/packages/main
+@idream/main test: 
+@idream/main test: Loaded Prisma config from prisma.config.ts.
+@idream/main test: 
+@idream/main test: Prisma schema loaded from prisma/schema.prisma.
+@idream/main test: Datasource "db": PostgreSQL database "idream_test", schema "public" at "localhost:5433"
+@idream/main test: 
+@idream/main test: 🚀  Your database is now in sync with your Prisma schema. Done in 17.49s
+@idream/main test: 
+@idream/main test: Loaded Prisma config from prisma.config.ts.
+@idream/main test: 
+@idream/main test: Prisma schema loaded from prisma/schema.prisma.
+@idream/main test: 
+@idream/main test: ✔ Generated Prisma Client (v7.6.0) to ./../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client in 1.34s
+@idream/main test: 
+@idream/main test: Start by importing your Prisma Client (See: https://pris.ly/d/importing-client)
+@idream/main test: 
+@idream/main test: 
+@idream/main test: [seed] complete
+@idream/main test:  ❯ src/server/modules/admin-v2/shared/finite-state-authority-inventory.test.ts (43 tests | 3 failed) 30058ms
+@idream/main test:      × funnels every Generation Request status mutation through one versioned from-state CAS authority 3969ms
+@idream/main test:      × binds every Creative Run workflow or verification writer to both independent authorities 6896ms
+@idream/main test:      × funnels Incident, Case, Experiment, Release, and Serving transitions through aggregate owners 15356ms
+@idream/main test: (node:82163) DeprecationWarning: Calling client.query() when the client is already executing a query is deprecated and will be removed in pg@9.0. Use async/await or an external async flow control mechanism instead.
+@idream/main test: (Use `node --trace-deprecation ...` to show where the warning was created)
+@idream/main test: 
+@idream/main test: ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+@idream/main test: 
+@idream/main test:  FAIL  src/server/modules/admin-v2/shared/finite-state-authority-inventory.test.ts > Admin v2 finite-state authority inventory > funnels every Generation Request status mutation through one versioned from-state CAS authority
+@idream/main test: AssertionError: expected [ …(3) ] to deeply equal [ …(2) ]
+@idream/main test: 
+@idream/main test: - Expected
+@idream/main test: + Received
+@idream/main test: 
+@idream/main test:   [
+@idream/main test:     "src/server/ai/generation-request-transition.ts",
+@idream/main test:     "src/server/modules/admin-v2/generation/dead-letter.ts",
+@idream/main test: +   "src/server/test/recovered-generation-fixture.ts",
+@idream/main test:   ]
+@idream/main test: 
+@idream/main test:  ❯ src/server/modules/admin-v2/shared/finite-state-authority-inventory.test.ts:851:34
+@idream/main test:     849|       mutationTargetsModel(path, "generationJob"),
+@idream/main test:     850|     );
+@idream/main test:     851|     expect(directWriters.sort()).toEqual([
+@idream/main test:        |                                  ^
+@idream/main test:     852|       "src/server/ai/generation-request-transition.ts",
+@idream/main test:     853|       "src/server/modules/admin-v2/generation/dead-letter.ts",
+@idream/main test: 
+@idream/main test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯
+@idream/main test: 
+@idream/main test:  FAIL  src/server/modules/admin-v2/shared/finite-state-authority-inventory.test.ts > Admin v2 finite-state authority inventory > binds every Creative Run workflow or verification writer to both independent authorities
+@idream/main test: Error: Test timed out in 5000ms.
+@idream/main test: If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+@idream/main test:  ❯ src/server/modules/admin-v2/shared/finite-state-authority-inventory.test.ts:875:3
+@idream/main test:     873|   });
+@idream/main test:     874|
+@idream/main test:     875|   it("binds every Creative Run workflow or verification writer to both…
+@idream/main test:        |   ^
+@idream/main test:     876|     const writers = productionTypeScript.filter((path) =>
+@idream/main test:     877|       mutationWritesField(path, "contentProductionBatch", "workflowSta…
+@idream/main test: 
+@idream/main test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯
+@idream/main test: 
+@idream/main test:  FAIL  src/server/modules/admin-v2/shared/finite-state-authority-inventory.test.ts > Admin v2 finite-state authority inventory > funnels Incident, Case, Experiment, Release, and Serving transitions through aggregate owners
+@idream/main test: Error: Test timed out in 15000ms.
+@idream/main test: If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+@idream/main test:  ❯ src/server/modules/admin-v2/shared/finite-state-authority-inventory.test.ts:963:3
+@idream/main test:     961|   });
+@idream/main test:     962|
+@idream/main test:     963|   it("funnels Incident, Case, Experiment, Release, and Serving transit…
+@idream/main test:        |   ^
+@idream/main test:     964|     const ownedAxes = [
+@idream/main test:     965|       ["opsIncident", "status", "src/server/modules/admin-v2/incidents…
+@idream/main test: 
+@idream/main test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/3]⎯
+@idream/main test: 
+@idream/main test: 
+@idream/main test:  Test Files  1 failed | 1 passed (2)
+@idream/main test:       Tests  3 failed | 47 passed (50)
+@idream/main test:    Start at  07:33:43
+@idream/main test:    Duration  71.65s (transform 2.53s, setup 0ms, import 4.40s, tests 33.03s, environment 0ms)
+@idream/main test: 
+@idream/main test: Exited with code 1

@@ -33,29 +33,10 @@ import { cn } from "@/lib/utils";
 
 type Permissions = { read: boolean; write: boolean; review: boolean; place: boolean; manageIncident?: boolean };
 
-export function nonCampaignReviewSummary(input: {
-  readonly lifecycleState: string;
-  readonly itemReviewed: boolean;
-}) {
-  if (input.lifecycleState === "closed") {
-    return {
-      title: "Review complete",
-      description: "This intended use does not yet have a verified runtime destination. Review is complete; hand the reviewed asset to its downstream owner without marking it live here.",
-      complete: true,
-    } as const;
-  }
-  if (input.itemReviewed) {
-    return {
-      title: "Candidate reviewed",
-      description: "This candidate has a decision, but the Run is still open. Review every remaining candidate before downstream handoff.",
-      complete: false,
-    } as const;
-  }
-  return {
-    title: "Review required",
-    description: "This Run is still awaiting a review decision. Nothing is ready for downstream handoff yet.",
-    complete: false,
-  } as const;
+export function nonCampaignAssetSummary(hasAsset: boolean) {
+  return hasAsset
+    ? { title: "Asset ready", description: "Choose where to use this asset. Generation does not publish it automatically.", complete: true }
+    : { title: "Waiting for an asset", description: "The asset will be available after generation and automatic checks finish.", complete: false };
 }
 
 export function committedProjectionWarning(
@@ -218,35 +199,6 @@ function isDefinitiveAdminMutationRejection(
     [400, 401, 403, 404, 409, 422].includes(cause.status);
 }
 
-export function canTerminallyRejectUnusedApproval(input: {
-  readonly purpose: string;
-  readonly lifecycleState: string;
-  readonly decision: string | null;
-  readonly hasPlacement: boolean;
-}) {
-  const characterAssetPurpose = [
-    "character_cover",
-    "character_hero",
-    "character_chat",
-  ].includes(input.purpose);
-  const lifecycleEligible =
-    input.purpose === "campaign"
-      ? input.lifecycleState === "active"
-      : characterAssetPurpose
-        ? ["active", "closed"].includes(input.lifecycleState)
-        : false;
-  return lifecycleEligible &&
-    input.decision === "approved" &&
-    !input.hasPlacement;
-}
-
-const reviewQualityChecks = [
-  ["artifactFree", "No visible artifacts"],
-  ["singleSubject", "Exactly one intended subject"],
-  ["intentMatch", "Composition matches the intended use"],
-  ["noVisibleText", "No visible text, watermark, or contact sheet"],
-] as const;
-
 function denied() {
   return <section className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-8"><ShieldAlert className="h-6 w-6" /><h2 className="mt-4 text-lg font-semibold"><AdminText text="No permission" /></h2><p className="mt-2 text-sm text-[var(--ad-text-muted)]"><AdminText text="creative.run.read is required for this workspace." /></p></section>;
 }
@@ -370,7 +322,7 @@ function RunList({ permissions }: { permissions: Permissions }) {
   return (
     <section aria-labelledby="creative-runs-title">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-        <div><h2 className="sr-only" id="creative-runs-title">{t("Creative Runs")}</h2><p className="max-w-2xl text-sm text-[var(--ad-text-muted)]">{t("Execution, review, placement, and verification remain separate facts.")}</p></div>
+        <div><h2 className="sr-only" id="creative-runs-title">{t("Creative Runs")}</h2><p className="max-w-2xl text-sm text-[var(--ad-text-muted)]">{t("Generate assets, choose where to use them, and verify delivery.")}</p></div>
         <form className="grid gap-2 sm:grid-cols-[minmax(220px,1fr)_180px_auto]" onSubmit={(event) => { event.preventDefault(); apply(); }}>
           <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Search")}<input className={`${fieldClass} mt-1`} onChange={(event) => setSearch(event.target.value)} placeholder={t("Run, title or purpose")} value={search} /></label>
           <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Outcome")}<select className={`${fieldClass} mt-1`} onChange={(event) => setOutcome(event.target.value)} value={outcome}>{["all", "pending", "running", "succeeded", "partially_succeeded", "failed", "cancelled"].map((value) => <option key={value}>{t(value.replaceAll("_", " "))}</option>)}</select></label>
@@ -378,7 +330,7 @@ function RunList({ permissions }: { permissions: Permissions }) {
         </form>
       </div>
       {error ? <div className="mt-5 rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]" role="alert">{error} <button className="ml-2 underline" onClick={() => void runs.refresh()} type="button">{t("Retry")}</button></div> : null}
-      <div className="mt-6">{loading && items.length === 0 ? <LoadingWorkspace label="Loading Creative Run facts" /> : items.length === 0 ? error ? null : <EmptyWorkspace filtered={filtered} onClear={() => applyQuery({ search: "", outcome: "all" }, "push")} /> : <div className="grid gap-3">{items.map((run) => <Link className="grid gap-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 transition-colors hover:border-[var(--ad-ink)] focus-visible:outline focus-visible:outline-2 sm:grid-cols-[1fr_auto]" href={`/admin/creative/runs/${run.id}`} key={run.id}><div><div className="flex flex-wrap items-center gap-2"><strong>{t(run.purpose)}</strong><StatusBadge value={run.executionOutcome} /><StatusBadge value={run.reviewState} /><StatusBadge value={run.deploymentState} /><StatusBadge value={run.verificationState} /></div><p className="mt-2 text-xs text-[var(--ad-text-muted)]">{run.target.type === "none" ? t("Destination chosen after review") : `${run.target.type}:${run.target.id}`} · {t(run.workflowStage)}  {t("· owner")} {run.ownerId ?? t("unassigned")}</p><div className="mt-3 flex flex-wrap gap-3 text-xs tabular-nums"><span>{run.counts.generated}/{run.counts.total}  {t("generated")}</span><span>{run.counts.failed}  {t("failed")}</span><span>{run.counts.approved}  {t("approved")}</span><span>{run.counts.placed}  {t("placed")}</span></div></div><span className="self-center text-xs text-[var(--ad-text-muted)]">{t("Open operator flow →")}</span></Link>)}</div>}</div>
+      <div className="mt-6">{loading && items.length === 0 ? <LoadingWorkspace label="Loading Creative Run facts" /> : items.length === 0 ? error ? null : <EmptyWorkspace filtered={filtered} onClear={() => applyQuery({ search: "", outcome: "all" }, "push")} /> : <div className="grid gap-3">{items.map((run) => <Link className="grid gap-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 transition-colors hover:border-[var(--ad-ink)] focus-visible:outline focus-visible:outline-2 sm:grid-cols-[1fr_auto]" href={`/admin/creative/runs/${run.id}`} key={run.id}><div><div className="flex flex-wrap items-center gap-2"><strong>{t(run.purpose)}</strong><StatusBadge value={run.executionOutcome} />{run.purpose === "model_eval" ? <StatusBadge value={run.reviewState} /> : null}<StatusBadge value={run.deploymentState} /><StatusBadge value={run.verificationState} /></div><p className="mt-2 text-xs text-[var(--ad-text-muted)]">{run.target.type === "none" ? t("Choose an asset destination") : `${run.target.type}:${run.target.id}`} · {t(run.workflowStage)}  {t("· owner")} {run.ownerId ?? t("unassigned")}</p><div className="mt-3 flex flex-wrap gap-3 text-xs tabular-nums"><span>{run.counts.generated}/{run.counts.total}  {t("generated")}</span><span>{run.counts.failed}  {t("failed")}</span><span>{run.counts.placed}  {t("placed")}</span></div></div><span className="self-center text-xs text-[var(--ad-text-muted)]">{t("Open operator flow →")}</span></Link>)}</div>}</div>
       <div className="mt-4">
         <Pagination
           detail={asOf ? t("Fresh as of {time}", { time: formatDateTime(asOf, locale) }) : t("Not loaded yet")}
@@ -411,7 +363,7 @@ function AssetViewer({ run, selected, onSelect }: { run: CreativeRunDetail; sele
   return <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px]" onKeyDown={move} tabIndex={0} aria-label={t("Creative asset viewer. Use left and right arrow keys to move between items.")}><div className="min-h-80 overflow-hidden rounded-xl border border-[var(--ad-border)] bg-black/[0.04]">{item.asset ? (
     // eslint-disable-next-line @next/next/no-img-element -- operator blob URLs are not compatible with Next image optimization
     <img alt={t("Creative item {ordinal}", { ordinal: item.ordinal + 1 })} className="max-h-[70vh] w-full object-contain" src={item.asset.url} />
-  ) : <div className="grid min-h-80 place-items-center text-[var(--ad-text-muted)]"><ImageIcon className="h-8 w-8" /><span>{t("No valid artifact")}</span></div>}</div><aside className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"><div className="flex flex-wrap gap-2"><StatusBadge value={item.executionState} /><StatusBadge value={item.status} /><StatusBadge value={item.retryability} /></div><dl className="mt-4 space-y-3 text-xs"><div><dt className="text-[var(--ad-text-muted)]">{t("Request / attempt")}</dt><dd className="mt-1 break-all">{item.lineage.requestId ?? t("Unavailable")}<br />{item.lineage.attemptId ?? t("Unavailable")}</dd></div><div><dt className="text-[var(--ad-text-muted)]">{t("Provider request / Comfy prompt")}</dt><dd className="mt-1 break-all">{item.lineage.providerRequestId ?? t("Pending")}</dd></div><div><dt className="text-[var(--ad-text-muted)]">{t("Asset")}</dt><dd className="mt-1 break-all">{item.asset?.id ?? t("Unavailable")}</dd></div><div><dt className="text-[var(--ad-text-muted)]">{t("Latest review")}</dt><dd className="mt-1">{item.review ? t("{decision} · {identity}", { decision: t(item.review.decision), identity: t(item.review.identityConsistency) }) : t("Pending")}</dd></div><div><dt className="text-[var(--ad-text-muted)]">{t("Placement")}</dt><dd className="mt-1">{item.placement ? t("{slot} · {verification}", { slot: t(item.placement.slot), verification: t(item.placement.verificationState) }) : t("Unplaced")}</dd></div></dl></aside></div>;
+  ) : <div className="grid min-h-80 place-items-center text-[var(--ad-text-muted)]"><ImageIcon className="h-8 w-8" /><span>{t(item.executionState === "unknown" ? "Generation outcome needs confirmation" : "No valid artifact")}</span></div>}</div><aside className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"><div className="flex flex-wrap gap-2"><StatusBadge value={item.executionState === "unknown" ? "Needs confirmation" : item.executionState} tone={item.executionState === "unknown" ? "warn" : undefined} />{item.executionState === "unknown" ? <StatusBadge value="Retry unavailable" tone="warn" /> : <><StatusBadge value={item.status} /><StatusBadge value={item.retryability} /></>}</div>{item.executionState === "unknown" ? <div className="mt-4 text-sm" role="status"><p>{t("The provider outcome is unknown. Confirm the result in Generation Jobs before retrying or using this item.")}</p>{item.lineage.requestId ? <Link className="mt-3 inline-flex min-h-11 items-center font-semibold underline" href={`/admin/ops/jobs?job=${encodeURIComponent(item.lineage.requestId)}`}>{t("Open generation recovery")}</Link> : null}</div> : null}<dl className="mt-4 space-y-3 text-xs"><div><dt className="text-[var(--ad-text-muted)]">{t("Request / attempt")}</dt><dd className="mt-1 break-all">{item.lineage.requestId ?? t("Unavailable")}<br />{item.lineage.attemptId ?? t("Unavailable")}</dd></div><div><dt className="text-[var(--ad-text-muted)]">{t("Provider request / Comfy prompt")}</dt><dd className="mt-1 break-all">{item.lineage.providerRequestId ?? t("Pending")}</dd></div><div><dt className="text-[var(--ad-text-muted)]">{t("Asset")}</dt><dd className="mt-1 break-all">{item.asset?.id ?? t("Unavailable")}</dd></div><div><dt className="text-[var(--ad-text-muted)]">{t("Placement")}</dt><dd className="mt-1">{item.placement ? t("{slot} · {verification}", { slot: t(item.placement.slot), verification: t(item.placement.verificationState) }) : t("Unplaced")}</dd></div></dl></aside></div>;
 }
 
 function ReviewContext({ run, itemIndex }: { run: CreativeRunDetail; itemIndex: number }) {
@@ -422,7 +374,7 @@ function ReviewContext({ run, itemIndex }: { run: CreativeRunDetail; itemIndex: 
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">{t("Decision context")}</p>
-          <h3 className="mt-1 font-semibold" id="creative-review-context-title">{t("Review against the brief")}</h3>
+          <h3 className="mt-1 font-semibold" id="creative-review-context-title">{t("Generation brief")}</h3>
         </div>
         <p className="text-xs text-[var(--ad-text-muted)]">{t("The brief and generation route are frozen evidence for this Run.")}</p>
       </div>
@@ -451,100 +403,27 @@ function ReviewContext({ run, itemIndex }: { run: CreativeRunDetail; itemIndex: 
   );
 }
 
-function ReviewForm({
-  run,
-  itemIndex,
-  permissions,
-  reload,
-  onAdvance,
-}: {
+function ModelEvaluationForm({ run, itemIndex, permissions, reload, onAdvance }: {
   run: CreativeRunDetail;
   itemIndex: number;
   permissions: Permissions;
   reload: () => Promise<void>;
   onAdvance?: (index: number) => void;
 }) {
-  const { t, value: enumLabel } = useAdminI18n();
+  const { t } = useAdminI18n();
   const item = run.items[itemIndex];
-  const identityReviewMode = item?.identityReviewMode ?? "not_applicable";
-  const routeEvaluationReview = run.purpose === "model_eval";
   const [reason, setReason] = useState("");
   const [score, setScore] = useState("");
-  const [identityConsistency, setIdentityConsistency] = useState<"passed" | "failed" | "unscored">(
-    identityReviewMode === "preserves_identity" || routeEvaluationReview
-      ? "passed"
-      : "unscored",
-  );
-  const [quality, setQuality] = useState({
-    artifactFree: false,
-    singleSubject: false,
-    intentMatch: false,
-    noVisibleText: false,
-  });
+  const [identityConsistency, setIdentityConsistency] = useState<"passed" | "failed">("passed");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
   const idempotencyKeys = useRef<Record<string, string>>({});
   if (!item) return null;
-  const characterAssetReview = run.purpose === "character_cover" ||
-    run.purpose === "character_hero" ||
-    run.purpose === "character_chat";
-  const requiresEvidenceRepair = Boolean(
-    item.review &&
-    characterAssetReview &&
-    item.review.quality === null,
-  );
-  const immutableReview = item.review && !requiresEvidenceRepair ? item.review : null;
-  const canWithdrawApproval = canTerminallyRejectUnusedApproval({
-    purpose: run.purpose,
-    lifecycleState: run.lifecycleState,
-    decision: immutableReview?.decision ?? null,
-    hasPlacement: Boolean(item.placement),
-  });
   const decide = async (decision: "approved" | "rejected") => {
-    const numericScore = score.trim() ? Number(score) : undefined;
-    const terminalApprovalRejection =
-      decision === "rejected" && immutableReview?.decision === "approved";
-    const submittedIdentityConsistency = terminalApprovalRejection
-      ? immutableReview.identityConsistency
-      : identityConsistency;
-    const submittedScore = terminalApprovalRejection
-      ? immutableReview.score ?? undefined
-      : numericScore;
-    const submittedQuality = terminalApprovalRejection
-      ? immutableReview.quality ?? undefined
-      : characterAssetReview
-        ? quality
-        : undefined;
-    const validScore = numericScore !== undefined &&
-      Number.isInteger(numericScore) &&
-      numericScore >= 0 &&
-      numericScore <= 100;
-    if (
-      reason.trim().length < 3 ||
-      (decision === "approved" && !validScore) ||
-      (routeEvaluationReview && (
-        !validScore ||
-        identityConsistency === "unscored"
-      )) ||
-      (characterAssetReview && decision === "approved" && Object.values(quality).some((passed) => !passed)) ||
-      (decision === "approved" && identityReviewMode === "defines_identity" && identityConsistency !== "unscored") ||
-      (decision === "approved" && identityReviewMode === "preserves_identity" && identityConsistency !== "passed")
-    ) {
-      setError(decision === "approved"
-        ? "Approval requires an integer score from 0 to 100, complete visible checks, and concrete evidence."
-        : "Rejection requires a concrete reason.");
-      return;
-    }
-    const body = {
-      entityVersion: run.version,
-      ...(item.review ? { supersedesDecisionId: item.review.id } : {}),
-      decision,
-      identityConsistency: submittedIdentityConsistency,
-      ...(submittedScore !== undefined ? { score: submittedScore } : {}),
-      ...(submittedQuality ? { quality: submittedQuality } : {}),
-      reason: reason.trim(),
-    };
+    const numericScore = Number(score);
+    if (!score.trim() || !Number.isInteger(numericScore) || numericScore < 0 || numericScore > 100 || reason.trim().length < 3) return;
+    const body = { entityVersion: run.version, decision, identityConsistency, score: numericScore, reason: reason.trim() };
     const requestSignature = JSON.stringify({
       runId: run.id,
       itemId: item.id,
@@ -569,7 +448,7 @@ function ReviewForm({
       delete idempotencyKeys.current[requestSignature];
       setReason("");
       setScore("");
-      if (routeEvaluationReview) {
+      {
         const nextUnreviewedIndex = run.items.findIndex(
           (candidate, index) => index > itemIndex && candidate.review === null,
         );
@@ -587,16 +466,32 @@ function ReviewForm({
     }
     finally { setBusy(false); }
   };
-  const validScore = score.trim().length > 0 &&
-    Number.isInteger(Number(score)) &&
-    Number(score) >= 0 &&
-    Number(score) <= 100;
-  const validReason = reason.trim().length >= 3;
-  const allQualityPassed = Object.values(quality).every(Boolean);
-  if (immutableReview) {
-    return <section className="mt-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" aria-labelledby="creative-review-title"><h3 className="font-semibold" id="creative-review-title">{t("Immutable review decision")}</h3><p className="mt-2 text-sm"><strong className="capitalize">{t(immutableReview.decision)}</strong> · {t("identity")} {t(immutableReview.identityConsistency)}{immutableReview.score !== null ? ` · ${immutableReview.score}/100` : ""}</p>{immutableReview.quality ? <ul className="mt-3 grid gap-2 text-xs sm:grid-cols-2">{reviewQualityChecks.map(([key, label]) => <li className="rounded-md bg-black/[0.035] px-3 py-2" key={key}>{t(immutableReview.quality?.[key] ? "Passed" : "Failed")} · {t(label)}</li>)}</ul> : null}<p className="mt-3 text-sm leading-6 text-[var(--ad-text-muted)]">{immutableReview.reason}</p>{immutableReview.supersedesDecisionId ? <p className="mt-2 break-all text-xs text-[var(--ad-text-muted)]">{t("Supersedes")} {immutableReview.supersedesDecisionId}</p> : null}{canWithdrawApproval ? <div className="mt-4 border-t border-[var(--ad-border)] pt-4"><h4 className="text-sm font-semibold">{t("Terminal disposition")}</h4><p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">{t("If this approved candidate will not be activated, record a superseding rejection so every candidate has an explicit terminal outcome and the Run can close.")}</p><p className="mt-2 text-xs text-[var(--ad-text-muted)]">{t("The original score, identity result and visible-quality evidence are preserved. If the asset is selected by a Character authority, replace or withdraw it there first.")}</p><label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">{t("Withdrawal reason")}<textarea className={`${textAreaClass} mt-1`} onChange={(event) => setReason(event.target.value)} placeholder={t("Explain why this approved candidate will not be used")} value={reason} /></label>{error ? <p className="mt-3 text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}{warning ? <p className="mt-3 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">{warning}</p> : null}<div className="mt-3"><WorkspaceButton disabled={!permissions.review || busy || !validReason} onClick={() => void decide("rejected")} tone="danger"><X className="h-4 w-4" /> {characterAssetReview ? t("Record superseding rejection") : t("Withdraw approval")}</WorkspaceButton></div></div> : immutableReview.decision === "approved" && item.placement ? <p className="mt-4 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-xs text-[var(--ad-yellow-text)]">{item.placement.status === "scheduled" && item.placement.verificationState === "verifying" ? t("Use Withdraw staged placement below before superseding this approval.") : t("This candidate is already active. Replace its live placement before superseding the approval.")}</p> : null}</section>;
-  }
-  return <section className="mt-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" aria-labelledby="creative-review-title"><h3 className="font-semibold" id="creative-review-title">{requiresEvidenceRepair ? t("Complete missing review evidence") : t("Review decision")}</h3><p className="mt-1 text-xs text-[var(--ad-text-muted)]">{requiresEvidenceRepair ? t("The earlier immutable decision is preserved, but it cannot authorize selection without the required visible evidence. This new decision will supersede it.") : routeEvaluationReview ? t("Score identity match against the sealed Character references. Every evaluation sample requires an explicit pass or fail and a 0–100 score.") : t("Record what you observed. Decision, identity consistency, score, and visible quality remain separate facts.")}</p>{requiresEvidenceRepair && item.review ? <p className="mt-3 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-xs text-[var(--ad-yellow-text)]">{t("Earlier decision:")} {enumLabel(item.review.decision)} · {enumLabel(item.review.identityConsistency)} · {item.review.reason}</p> : null}{characterAssetReview ? <fieldset className="mt-4 grid gap-2 sm:grid-cols-2"><legend className="sr-only">{t("Visible quality checks")}</legend>{reviewQualityChecks.map(([key, label]) => <label className="flex min-h-11 items-center gap-3 rounded-md border border-[var(--ad-border)] px-3 text-xs" key={key}><input checked={quality[key]} onChange={(event) => setQuality((current) => ({ ...current, [key]: event.target.checked }))} type="checkbox" /><span>{t(label)}</span></label>)}</fieldset> : null}<div className="mt-4 grid gap-3 sm:grid-cols-[120px_180px_1fr]"><label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t(routeEvaluationReview ? "Identity match score" : "Score")}<input className={`${fieldClass} mt-1`} max={100} min={0} onChange={(event) => setScore(event.target.value)} placeholder={t(routeEvaluationReview ? "Required for every sample" : "Required to approve")} step={1} type="number" value={score} /></label><label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Identity consistency")}<select className={`${fieldClass} mt-1`} disabled={identityReviewMode === "defines_identity"} onChange={(event) => setIdentityConsistency(event.target.value as "passed" | "failed" | "unscored")} value={identityConsistency}><option value="passed">{t("Passed")}</option><option value="failed">{t("Failed")}</option>{!routeEvaluationReview ? <option value="unscored">{identityReviewMode === "defines_identity" ? t("Unscored · defines identity") : t("Unscored")}</option> : null}</select></label><label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Evidence and reason")}<textarea className={`${textAreaClass} mt-1`} onChange={(event) => setReason(event.target.value)} placeholder={t("Describe the visible evidence behind this decision")} value={reason} /></label></div>{error ? <p className="mt-3 text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}{warning ? <p className="mt-3 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">{warning}</p> : null}<div className="mt-4 flex flex-wrap gap-2"><WorkspaceButton disabled={!permissions.review || !item.asset || busy || !validReason || !validScore || (characterAssetReview && !allQualityPassed) || (identityReviewMode === "defines_identity" && identityConsistency !== "unscored") || (identityReviewMode === "preserves_identity" && identityConsistency !== "passed") || (routeEvaluationReview && identityConsistency === "unscored")} onClick={() => void decide("approved")} tone="primary"><Check className="h-4 w-4" /> {requiresEvidenceRepair ? t("Record superseding approval") : t("Approve")}</WorkspaceButton><WorkspaceButton disabled={!permissions.review || !item.asset || busy || !validReason || (routeEvaluationReview && (!validScore || identityConsistency === "unscored"))} onClick={() => void decide("rejected")} tone="danger"><X className="h-4 w-4" /> {requiresEvidenceRepair ? t("Record superseding rejection") : t("Reject")}</WorkspaceButton></div>{!permissions.review ? <p className="mt-3 text-xs text-[var(--ad-text-muted)]">{t("creative.run.review is not granted.")}</p> : null}</section>;
+  const validScore = score.trim().length > 0 && Number.isInteger(Number(score)) && Number(score) >= 0 && Number(score) <= 100;
+  if (item.review) return null;
+  return (
+    <section className="mt-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
+      <h3 className="font-semibold">{t("Model evaluation")}</h3>
+      <p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t("Score identity match against the sealed Character references. Every evaluation sample requires an explicit pass or fail and a 0–100 score.")}</p>
+      <div className="mt-4 grid gap-3 sm:grid-cols-[120px_180px_1fr]">
+        <label className="text-xs font-semibold">{t("Identity match score")}<input className={`${fieldClass} mt-1`} max={100} min={0} onChange={(event) => setScore(event.target.value)} step={1} type="number" value={score} /></label>
+        <label className="text-xs font-semibold">{t("Identity consistency")}<select className={`${fieldClass} mt-1`} onChange={(event) => setIdentityConsistency(event.target.value as "passed" | "failed")} value={identityConsistency}><option value="passed">{t("Passed")}</option><option value="failed">{t("Failed")}</option></select></label>
+        <label className="text-xs font-semibold">{t("Evidence and reason")}<textarea className={`${textAreaClass} mt-1`} onChange={(event) => setReason(event.target.value)} value={reason} /></label>
+      </div>
+      {error ? <p className="mt-3 text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}
+      {warning ? <p className="mt-3 text-sm text-[var(--ad-yellow-text)]" role="status">{warning}</p> : null}
+      <div className="mt-4 flex gap-2">
+        <WorkspaceButton disabled={!permissions.review || !item.asset || busy || !validScore || reason.trim().length < 3 || identityConsistency !== "passed"} onClick={() => void decide("approved")} tone="primary"><Check className="h-4 w-4" />{t("Approve")}</WorkspaceButton>
+        <WorkspaceButton disabled={!permissions.review || !item.asset || busy || !validScore || reason.trim().length < 3} onClick={() => void decide("rejected")} tone="danger"><X className="h-4 w-4" />{t("Reject")}</WorkspaceButton>
+      </div>
+    </section>
+  );
+}
+
+function HistoricalDecision({ run, itemIndex }: { run: CreativeRunDetail; itemIndex: number }) {
+  const { t } = useAdminI18n();
+  const decision = run.items[itemIndex]?.review;
+  if (!decision) return null;
+  return <details className="mt-4 rounded-xl border border-[var(--ad-border)] p-4"><summary className="cursor-pointer text-sm font-semibold">{t("Historical decision")}</summary><p className="mt-3 text-sm">{t(decision.decision)} · {t(decision.identityConsistency)}{decision.score !== null ? ` · ${decision.score}/100` : ""}</p><p className="mt-2 text-sm text-[var(--ad-text-muted)]">{decision.reason}</p></details>;
 }
 
 function PlacementForm({ run, itemIndex, permissions, reload }: { run: CreativeRunDetail; itemIndex: number; permissions: Permissions; reload: () => Promise<void> }) {
@@ -619,13 +514,16 @@ function PlacementForm({ run, itemIndex, permissions, reload }: { run: CreativeR
   const hasPartialCampaignCta = Boolean(ctaLabel.trim()) !==
     Boolean(campaignHref.trim());
   if (!item) return <div className="mt-4"><CollaborationPanel canWrite={permissions.write} targetId={run.id} targetType="creative_run" targetVersion={run.version} /></div>;
+  if (item.executionState === "unknown") return null;
   if (!placementSupported) {
-    const summary = nonCampaignReviewSummary({
-      lifecycleState: run.lifecycleState,
-      itemReviewed: Boolean(item.review),
-    });
-    return <><section className="mt-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"><h3 className="font-semibold">{t(summary.title)}</h3><p className="mt-2 text-sm leading-6 text-[var(--ad-text-muted)]">{t(summary.description)}</p></section><div className="mt-4"><CollaborationPanel canWrite={permissions.write} targetId={run.id} targetType="creative_run" targetVersion={run.version} /></div></>;
+    if (run.purpose === "model_eval") return null;
+    const summary = nonCampaignAssetSummary(Boolean(item.asset));
+    const href = run.target.type === "character"
+      ? `/admin/characters/${encodeURIComponent(run.target.id)}?tab=${run.purpose === "character_video" ? "video" : "assets"}`
+      : "/admin/creative/library";
+    return <section className="mt-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"><h3 className="font-semibold">{t(summary.title)}</h3><p className="mt-2 text-sm text-[var(--ad-text-muted)]">{t(summary.description)}</p><Link className="mt-3 inline-flex min-h-11 items-center text-sm font-semibold underline" href={href}>{t(run.target.type === "character" ? "Choose assets in Character workspace" : "Open asset library")}</Link></section>;
   }
+
   const place = async () => {
     if (!item.asset) return;
     const body = {
@@ -751,7 +649,7 @@ function PlacementForm({ run, itemIndex, permissions, reload }: { run: CreativeR
           {item.placement ? <StatusBadge value={item.placement.verificationState} /> : null}
         </div>
         <p className="mt-2 text-xs leading-5 text-[var(--ad-text-muted)]">
-          {t("Staging preserves the current live image. Verification activates this candidate only after the runtime surface renders the same reviewed asset.")}
+          {t("Staging preserves the current live image. Verification activates this candidate only after the runtime surface renders the selected asset.")}
         </p>
         {!item.placement ? (
           <>
@@ -791,7 +689,7 @@ function PlacementForm({ run, itemIndex, permissions, reload }: { run: CreativeR
               <textarea
                 className={`${textAreaClass} mt-1`}
                 onChange={(event) => setStageReason(event.target.value)}
-                placeholder={t("Explain why this reviewed asset should become the campaign candidate")}
+                placeholder={t("Explain why this asset should become the campaign candidate")}
                 value={stageReason}
               />
             </label>
@@ -813,7 +711,7 @@ function PlacementForm({ run, itemIndex, permissions, reload }: { run: CreativeR
         <div className="mt-4 flex flex-wrap gap-2">
           {!item.placement ? (
             <WorkspaceButton
-              disabled={!permissions.place || !item.asset || item.review?.decision !== "approved" || busy || !targetId.trim() || !eyebrow.trim() || !campaignTitle.trim() || hasPartialCampaignCta || stageReason.trim().length < 3}
+              disabled={!permissions.place || !item.asset || !["generated", "approved", "published"].includes(item.status) || busy || !targetId.trim() || !eyebrow.trim() || !campaignTitle.trim() || hasPartialCampaignCta || stageReason.trim().length < 3}
               onClick={() => void place()}
               tone="primary"
             >
@@ -912,7 +810,7 @@ function RunDetail({
     {
       // SPEC: 生成中的 Run 每 4s 刷新一次，失败退避到 8s。
       pollWhile: ({ data, error: refreshFailure }) =>
-        data && ["pending", "running"].includes(data.executionOutcome)
+        data && (["pending", "running"].includes(data.executionOutcome) || data.items.some((item) => item.executionState === "unknown"))
           ? refreshFailure === null ? 4_000 : 8_000
           : null,
     },
@@ -1141,6 +1039,7 @@ function RunDetail({
   }, [permissions.write, retryCommand, run, submitRetryIntent]);
   const retryFailed = async () => {
     if (!run || retrying || retrySubmissionLock.current) return;
+    if (run.items.some((item) => item.executionState === "unknown") && retryCommand?.status !== "submission_unknown") return;
     let idempotencyKey = retryIdempotencyKey;
     let entityVersion = run.version;
     if (retryCommand?.status === "submission_unknown") {
@@ -1187,6 +1086,7 @@ function RunDetail({
     : null;
   if (loading && !run) return <LoadingWorkspace label="Loading Creative Run lineage and outcomes" />;
   if (!run) return <section className="rounded-xl bg-[var(--ad-red-bg)] p-5" role="alert">{shownError ?? t("Creative Run not found")} <button className="ml-2 underline" onClick={() => void runResource.refresh()} type="button">{t("Retry")}</button></section>;
+  const unknownCount = run.items.filter((item) => item.executionState === "unknown").length;
   const retryCount = run.retryEligibility.eligibleCount;
   const selectedItemId = run.items[selected]?.id ?? `missing-${selected}`;
   const retryFailedTerminal =
@@ -1282,7 +1182,7 @@ function RunDetail({
       </div>
     </div>
   ) : null;
-  return <section aria-labelledby="creative-run-title"><Link className="inline-flex min-h-11 items-center gap-2 text-sm text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]" href="/admin/creative/runs"><ArrowLeft className="h-4 w-4" />  {t("Creative Runs")}</Link><div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between"><div><p className="text-xs uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">{t("Creative Run ·")} {run.id}</p><h2 className="mt-1 text-2xl font-semibold" id="creative-run-title">{run.title}</h2><div className="mt-2 flex flex-wrap gap-2"><span className="inline-flex items-center gap-1 text-xs"><span className="text-[var(--ad-text-muted)]">{t("Execution")}</span><StatusBadge value={run.executionOutcome} /></span><span className="inline-flex items-center gap-1 text-xs"><span className="text-[var(--ad-text-muted)]">{t("Review")}</span><StatusBadge value={run.reviewState} /></span><span className="inline-flex items-center gap-1 text-xs"><span className="text-[var(--ad-text-muted)]">{t("Deployment")}</span><StatusBadge value={run.deploymentState} /></span><span className="inline-flex items-center gap-1 text-xs"><span className="text-[var(--ad-text-muted)]">{t("Verification")}</span><StatusBadge value={run.verificationState} /></span></div></div><div className="flex flex-wrap gap-2"><WorkspaceButton disabled={loading} onClick={() => void runResource.refresh()}><RefreshCcw className={cn("h-4 w-4", loading && "animate-spin")} /> {loading ? t("Refreshing…") : t("Refresh")}</WorkspaceButton><WorkspaceButton aria-busy={retryBusy} disabled={!permissions.write || (retryCount === 0 && !retrySubmissionUnknown) || retrying} onClick={() => void retryFailed()}><RotateCcw className={cn("h-4 w-4", retryBusy && "animate-spin")} /> {retryLabel}</WorkspaceButton></div></div>{retryCommandStatus}<IncidentAttachment permissions={permissions} reload={reloadAfterCommit} run={run} /><div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-5">{(["generated", "failed", "reviewed", "approved", "placed"] as const).map((key) => <div className="rounded-lg bg-[var(--ad-surface)] p-3" key={key}><p className="text-xs capitalize text-[var(--ad-text-muted)]">{t(key)}</p><p className="mt-1 text-xl font-semibold tabular-nums">{run.counts[key]}<span className="text-xs font-normal text-[var(--ad-text-muted)]"> / {run.counts.total}</span></p></div>)}</div>{shownError ? <p className="mt-4 text-sm text-[var(--ad-red-text)]" role="alert">{shownError}</p> : null}{backgroundRefreshWarning ? <p className="mt-4 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">{backgroundRefreshWarning}</p> : null}{warning ? <p className="mt-4 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">{warning}</p> : null}<ReviewContext itemIndex={selected} run={run} /><div className="mt-5 flex gap-2 overflow-x-auto pb-2" aria-label={t("Creative items")}>{run.items.map((item, index) => <button aria-pressed={selected === index} className={cn("min-h-11 min-w-28 rounded-md border px-3 text-left text-xs focus-visible:outline focus-visible:outline-2", selected === index ? "border-[var(--ad-ink)] bg-black/[0.04]" : "border-[var(--ad-border)]")} key={item.id} onClick={() => setSelected(index)} type="button">{t("Item")} {item.ordinal + 1}<br /><span className="text-[var(--ad-text-muted)]">{t(item.executionState.replaceAll("_", " "))}</span></button>)}</div><AssetViewer onSelect={setSelected} run={run} selected={selected} /><ReviewForm itemIndex={selected} key={`review-${selectedItemId}`} onAdvance={setSelected} permissions={permissions} reload={reloadAfterCommit} run={run} /><PlacementForm itemIndex={selected} key={`placement-${selectedItemId}`} permissions={permissions} reload={reloadAfterCommit} run={run} /></section>;
+  return <section aria-labelledby="creative-run-title"><Link className="inline-flex min-h-11 items-center gap-2 text-sm text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]" href="/admin/creative/runs"><ArrowLeft className="h-4 w-4" />  {t("Creative Runs")}</Link><div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between"><div><p className="text-xs uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">{t("Creative Run ·")} {run.id}</p><h2 className="mt-1 text-2xl font-semibold" id="creative-run-title">{run.title}</h2><div className="mt-2 flex flex-wrap gap-2"><span className="inline-flex items-center gap-1 text-xs"><span className="text-[var(--ad-text-muted)]">{t("Execution")}</span><StatusBadge value={unknownCount > 0 ? "Needs confirmation" : run.executionOutcome} tone={unknownCount > 0 ? "warn" : undefined} /></span>{run.purpose === "model_eval" ? <span className="inline-flex items-center gap-1 text-xs"><span className="text-[var(--ad-text-muted)]">{t("Model evaluation")}</span><StatusBadge value={run.reviewState} /></span> : null}<span className="inline-flex items-center gap-1 text-xs"><span className="text-[var(--ad-text-muted)]">{t("Deployment")}</span><StatusBadge value={run.deploymentState} /></span><span className="inline-flex items-center gap-1 text-xs"><span className="text-[var(--ad-text-muted)]">{t("Verification")}</span><StatusBadge value={run.verificationState} /></span></div></div><div className="flex flex-wrap gap-2"><WorkspaceButton disabled={loading} onClick={() => void runResource.refresh()}><RefreshCcw className={cn("h-4 w-4", loading && "animate-spin")} /> {loading ? t("Refreshing…") : t("Refresh")}</WorkspaceButton><WorkspaceButton aria-busy={retryBusy} disabled={!permissions.write || ((retryCount === 0 || unknownCount > 0) && !retrySubmissionUnknown) || retrying} onClick={() => void retryFailed()}><RotateCcw className={cn("h-4 w-4", retryBusy && "animate-spin")} /> {retryLabel}</WorkspaceButton></div></div>{retryCommandStatus}{unknownCount > 0 ? <p className="mt-4 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">{t("{count} item(s) need confirmation. These are not confirmed failures; retry is unavailable until recovery is complete.", { count: unknownCount })}</p> : null}<IncidentAttachment permissions={permissions} reload={reloadAfterCommit} run={run} /><div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-5">{(run.purpose === "model_eval" ? ["generated", "failed", "reviewed", "approved"] as const : ["generated", "failed", "placed"] as const).map((key) => <div className="rounded-lg bg-[var(--ad-surface)] p-3" key={key}><p className="text-xs capitalize text-[var(--ad-text-muted)]">{t(key)}</p><p className="mt-1 text-xl font-semibold tabular-nums">{run.counts[key]}<span className="text-xs font-normal text-[var(--ad-text-muted)]"> / {run.counts.total}</span></p></div>)}</div>{shownError ? <p className="mt-4 text-sm text-[var(--ad-red-text)]" role="alert">{shownError}</p> : null}{backgroundRefreshWarning ? <p className="mt-4 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">{backgroundRefreshWarning}</p> : null}{warning ? <p className="mt-4 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">{warning}</p> : null}<ReviewContext itemIndex={selected} run={run} /><div className="mt-5 flex gap-2 overflow-x-auto pb-2" aria-label={t("Creative items")}>{run.items.map((item, index) => <button aria-pressed={selected === index} className={cn("min-h-11 min-w-28 rounded-md border px-3 text-left text-xs focus-visible:outline focus-visible:outline-2", selected === index ? "border-[var(--ad-ink)] bg-black/[0.04]" : "border-[var(--ad-border)]")} key={item.id} onClick={() => setSelected(index)} type="button">{t("Item")} {item.ordinal + 1}<br /><span className="text-[var(--ad-text-muted)]">{t(item.executionState === "unknown" ? "Needs confirmation" : item.executionState.replaceAll("_", " "))}</span></button>)}</div><AssetViewer onSelect={setSelected} run={run} selected={selected} /><HistoricalDecision itemIndex={selected} run={run} />{run.purpose === "model_eval" ? <ModelEvaluationForm itemIndex={selected} key={`evaluation-${selectedItemId}`} onAdvance={setSelected} permissions={permissions} reload={reloadAfterCommit} run={run} /> : null}<PlacementForm itemIndex={selected} key={`placement-${selectedItemId}`} permissions={permissions} reload={reloadAfterCommit} run={run} /></section>;
 }
 
 export function CreativeRunWorkspace({

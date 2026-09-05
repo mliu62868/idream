@@ -1,0 +1,16 @@
+import { prisma } from '../../packages/main/src/server/lib/db';
+const target = new URL(process.env.DATABASE_URL!);
+if (!['localhost', '127.0.0.1'].includes(target.hostname) || target.pathname !== '/idream_runtime_20260812') throw Error('Unexpected runtime DB');
+const ids = ['cmtoauv6x0003z4l7o8eckhaf', 'cmto8ioyz000fr4l73zrvo4qz'];
+const jobs = await prisma.generationJob.findMany({ where: { id: { in: ids } }, select: { id: true, status: true, version: true, sourceId: true, provider: true, model: true, deliveredOutputCount: true, createdAt: true, completedAt: true } });
+const attempts = await prisma.generationAttempt.findMany({ where: { requestId: { in: ids } }, select: { id: true, requestId: true, status: true, attemptNo: true, startedAt: true, finishedAt: true } });
+const attemptIds = attempts.map((row) => row.id);
+const events = await prisma.generationAttemptEvent.findMany({ where: { attemptId: { in: attemptIds } }, orderBy: [{ attemptId: 'asc' }, { sequence: 'asc' }], select: { attemptId: true, sequence: true, eventType: true, occurredAt: true } });
+const transports = await prisma.generationTransportExecution.findMany({ where: { attemptId: { in: attemptIds } }, select: { id: true, attemptId: true, status: true, transportAttemptNo: true, providerRequestId: true, startedAt: true, finishedAt: true } });
+const usage = await prisma.aiUsageFact.findMany({ where: { attemptId: { in: attemptIds } }, select: { id: true, attemptId: true } });
+const ledger = await prisma.dreamcoinLedger.findMany({ where: { sourceId: { in: ids } }, select: { id: true, sourceId: true, delta: true, reason: true } });
+const artifacts = await prisma.generationArtifact.findMany({ where: { attemptId: { in: attemptIds } } });
+const deliveries = await prisma.generationDelivery.findMany({ where: { requestId: { in: ids } } });
+const decisions = await prisma.generationJobEvent.findMany({ where: { jobId: { in: ids }, type: { startsWith: 'unknown_reconciliation_' } }, orderBy: { createdAt: 'asc' } });
+console.log(JSON.stringify({ checkedAt: new Date().toISOString(), jobs, attempts, events, transports, usage, ledger, artifacts, deliveries, decisions }, null, 2));
+await prisma.$disconnect();

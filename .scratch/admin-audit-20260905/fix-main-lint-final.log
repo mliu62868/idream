@@ -1,0 +1,23 @@
+@idream/main lint: 
+@idream/main lint: /Users/kk/code/idream/packages/main/src/server/modules/ourdream/admin-console.test.ts
+@idream/main lint:   16:17  warning  'adminAuditLogRoute' is defined but never used. Allowed unused vars must match /^_/u              @typescript-eslint/no-unused-vars
+@idream/main lint:   17:19  warning  'adminFeatureFlagRoute' is defined but never used. Allowed unused vars must match /^_/u           @typescript-eslint/no-unused-vars
+@idream/main lint:   18:17  warning  'adminSavedViewsRoute' is defined but never used. Allowed unused vars must match /^_/u            @typescript-eslint/no-unused-vars
+@idream/main lint:   18:47  warning  'adminSavedViewCreateRoute' is defined but never used. Allowed unused vars must match /^_/u       @typescript-eslint/no-unused-vars
+@idream/main lint:   19:20  warning  'adminSavedViewDeleteRoute' is defined but never used. Allowed unused vars must match /^_/u       @typescript-eslint/no-unused-vars
+@idream/main lint:   20:17  warning  'adminSupportRequestsRoute' is defined but never used. Allowed unused vars must match /^_/u       @typescript-eslint/no-unused-vars
+@idream/main lint:   21:19  warning  'adminSupportRequestPatchRoute' is defined but never used. Allowed unused vars must match /^_/u   @typescript-eslint/no-unused-vars
+@idream/main lint:   22:18  warning  'adminSupportEscalateRoute' is defined but never used. Allowed unused vars must match /^_/u       @typescript-eslint/no-unused-vars
+@idream/main lint:   23:18  warning  'adminSupportPlaintextRoute' is defined but never used. Allowed unused vars must match /^_/u      @typescript-eslint/no-unused-vars
+@idream/main lint:   24:17  warning  'adminUsersRoute' is defined but never used. Allowed unused vars must match /^_/u                 @typescript-eslint/no-unused-vars
+@idream/main lint:   25:18  warning  'adminUserStatusRoute' is defined but never used. Allowed unused vars must match /^_/u            @typescript-eslint/no-unused-vars
+@idream/main lint:   26:18  warning  'adminUserRoleRoute' is defined but never used. Allowed unused vars must match /^_/u              @typescript-eslint/no-unused-vars
+@idream/main lint:   28:10  warning  'adminUserPermissionsReadRoute' is defined but never used. Allowed unused vars must match /^_/u   @typescript-eslint/no-unused-vars
+@idream/main lint:   29:11  warning  'adminUserPermissionsWriteRoute' is defined but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+@idream/main lint: 
+@idream/main lint: /Users/kk/code/idream/packages/main/src/server/modules/ourdream/modules.test.ts
+@idream/main lint:   30:21  warning  'adminV2Api' is defined but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+@idream/main lint: 
+@idream/main lint: ✖ 15 problems (0 errors, 15 warnings)
+@idream/main lint: 
+@idream/main lint: Exited with code 0

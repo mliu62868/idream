@@ -1,3 +1,4 @@
+import { resolveGenerationAssetSuccessAttempts } from "@/server/ai/generation-asset-success-authority";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -558,7 +559,7 @@ describe("unknown Generation Attempt operator reconciliation", () => {
         model: queuePayload.model,
         providerRequestId,
         completedAt: new Date().toISOString(),
-        usage: { images: 1 },
+        usage: { images: 1, providerRequestIds: [providerRequestId] },
         assets: [{
           ordinal: 0,
           key: `${queuePayload.outputPrefix as string}recovered.webp`,
@@ -968,7 +969,7 @@ describe("unknown Generation Attempt operator reconciliation", () => {
         model: queuePayload.model,
         providerRequestId,
         completedAt: new Date(Date.now() + 1_000).toISOString(),
-        usage: { images: 1 },
+        usage: { images: 1, providerRequestIds: [providerRequestId] },
         assets: [{
           ordinal: 0,
           key: `${queuePayload.outputPrefix as string}resolved.webp`,
@@ -1085,6 +1086,7 @@ describe("unknown Generation Attempt operator reconciliation", () => {
         where: { sourceJobId: explicitRequestId },
       });
       expect(asset.providerAssetId).toBe(successRecord.assets[0].key);
+      expect((await resolveGenerationAssetSuccessAttempts(prisma, [asset])).get(asset.id)).toMatchObject({ id: explicitAttemptId, status: "unknown" });
       await expect(prisma.generationDelivery.count({
         where: { requestId: explicitRequestId, status: "delivered" },
       })).resolves.toBe(1);

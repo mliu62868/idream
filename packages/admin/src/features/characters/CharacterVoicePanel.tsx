@@ -188,7 +188,7 @@ export function CharacterVoicePanel({
       setMessage(
         mutation.result.replayed
           ? "The existing voice candidate result was recovered."
-          : "The voice candidate is ready. Review its preview before activation.",
+          : "The voice candidate is ready. Listen to the preview before activation.",
       );
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Voice cloning failed");
@@ -226,7 +226,7 @@ export function CharacterVoicePanel({
       setMessage(
         mutation.result.replayed
           ? "The existing voice candidate result was recovered."
-          : "The Pocket voice candidate is ready. Review its preview before activation.",
+          : "The Pocket voice candidate is ready. Listen to the preview before activation.",
       );
     } catch (cause) {
       setError(
@@ -270,7 +270,7 @@ export function CharacterVoicePanel({
       setMessage(
         mutation.result.replayed
           ? "The existing voice activation result was recovered."
-          : "The reviewed voice is now active for new chat speech.",
+          : "The selected voice is now active for new chat speech.",
       );
     } catch (cause) {
       setError(
@@ -497,7 +497,7 @@ export function CharacterVoicePanel({
                 className="mt-3 text-lg font-semibold"
                 id="voice-candidate-review-title"
               >
-                {t("Review voice version {version}", {
+                {t("Listen to voice version {version}", {
                   version: candidate.version,
                 })}
               </h3>
@@ -568,8 +568,8 @@ export function CharacterVoicePanel({
                 >
                   <CheckCircle2 aria-hidden="true" className="h-4 w-4" />
                   {busy
-                    ? t("Activating reviewed voice…")
-                    : t("Activate reviewed voice")}
+                    ? t("Activating voice…")
+                    : t("Activate voice")}
                 </WorkspaceButton>
               </div>
             </div>

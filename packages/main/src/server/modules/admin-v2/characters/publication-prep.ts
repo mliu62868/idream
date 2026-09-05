@@ -1,8 +1,12 @@
+import { loadCharacterSoulSnapshot } from "@idream/shared/chat/persona";
+import { hasHydratableMediaBlobAuthority } from "@/server/lib/media-asset-authority";
+import { moderateText } from "@/server/moderation/text-authority";
+import { assertIdentityImageMediaInTx } from "@/server/modules/ourdream/customer-media-authority";
 import type { Prisma } from "@prisma/client";
 import { Errors } from "@/server/lib/errors";
 import { toInputJson } from "../shared/prisma-json";
 import { characterWorkspaceTabLink } from "./character-deep-link";
-import { lockCharacterGenerationAuthority } from "./generation-authority-lock";
+import { lockCharacterGenerationAuthority, lockCharacterMediaAssetAuthorities } from "./generation-authority-lock";
 
 export type CustomerCharacterPublicationPrep = {
   state: "publication_prep";
@@ -17,7 +21,7 @@ export type CustomerCharacterPublicationPrep = {
 };
 
 /**
- * SPEC: approval for public or unlisted sharing opens production authority; it does not publish.
+ * SPEC: public or unlisted sharing opens production authority; it does not publish.
  * INVARIANT: new sharing creates inactive Serving; sharing after withdrawal
  * retains the paused Release. Qualification, asset visibility and live Serving
  * remain owned by the Release publish/resume executor.
@@ -62,7 +66,7 @@ export async function ensureCustomerCharacterPublicationPrep(
       (character.status === "approved" && submission.status === "approved")
     )
   ) {
-    throw Errors.conflict("Character submission does not match publication-prep review authority");
+    throw Errors.conflict("Character submission does not match publication preparation");
   }
   const contentVersion = await tx.characterContentVersion.findFirst({
     where: {
@@ -110,7 +114,7 @@ export async function ensureCustomerCharacterPublicationPrep(
         characterContentVersionId: contentVersion.id,
         projectSnapshot: toInputJson({
           schemaVersion: "customer-character-publication-prep-v1",
-          source: "customer_submission_review",
+          source: "customer_submission",
           submissionId: input.submissionId,
           contentVersion: contentVersion.version,
           contentHash: contentVersion.contentHash,
@@ -171,26 +175,55 @@ export async function prepareApprovedCustomerCharacterPublication(
   await lockCharacterGenerationAuthority(tx, input.characterId);
   const character = await tx.character.findUnique({
     where: { id: input.characterId },
-    select: { id: true, source: true, visibility: true, status: true },
+    select: { id: true, source: true, visibility: true, status: true, age: true, creatorId: true, imageAssetId: true, currentContentVersionId: true, name: true, description: true, advancedDetails: true, deletedAt: true },
   });
   if (!character) throw Errors.notFound("Character not found");
   if (
     character.source !== "user" ||
     !["public", "unlisted"].includes(character.visibility) ||
-    character.status !== "approved"
+    !["approved", "pending_review"].includes(character.status) ||
+    character.deletedAt !== null ||
+    !character.creatorId
   ) {
-    throw Errors.conflict("Only an approved public or unlisted customer Character can enter publication preparation");
+    throw Errors.conflict("Only a shared customer Character can enter publication preparation");
   }
   const submission = await tx.characterSubmission.findFirst({
     where: {
       id: input.submissionId,
       characterId: character.id,
-      status: "approved",
+      status: character.status === "pending_review" ? "pending" : "approved",
+      submitterId: character.creatorId,
     },
     select: { id: true },
   });
   if (!submission) {
-    throw Errors.conflict("Approved customer Character is missing review authority");
+    throw Errors.conflict("Customer Character is missing matching submission authority");
+  }
+  const recoveredPending = character.status === "pending_review";
+  if (recoveredPending) {
+    // Historical submissions use the same automatic checks as new shared characters.
+    // All state changes remain in this transaction; no human review is fabricated.
+    if (character.age < 18) throw Errors.badRequest("Characters must be at least 18 years old");
+    const content = character.currentContentVersionId
+      ? await tx.characterContentVersion.findFirst({ where: { id: character.currentContentVersionId, characterId: character.id } })
+      : null;
+    if (!content) throw Errors.conflict("Customer Character is missing immutable content authority");
+    const soul = loadCharacterSoulSnapshot(content.personaSnapshot);
+    if (!soul.ok || soul.snapshot.soul.age < 18) throw Errors.badRequest("Character Soul must describe an adult");
+    if (!character.imageAssetId) throw Errors.badRequest("The character identity image is missing");
+    await lockCharacterMediaAssetAuthorities(tx, [character.imageAssetId]);
+    const image = await assertIdentityImageMediaInTx(tx, character.imageAssetId, character.creatorId);
+    if (image.characterId !== character.id) throw Errors.badRequest("The identity image belongs to another character");
+    if (!hasHydratableMediaBlobAuthority(image)) throw Errors.badRequest("The identity image has no available media source");
+    const moderation = await moderateText("character", character.id, JSON.stringify({
+      name: character.name, description: character.description, details: character.advancedDetails,
+      soul: soul.snapshot.soul, opening: content.openingSnapshot, appearance: content.appearanceSnapshot,
+    }), "publication_preparation");
+    if (moderation.status === "blocked") throw Errors.forbidden("Character failed safety checks", moderation);
+    await tx.character.update({ where: { id: character.id }, data: { status: "approved" } });
+    await tx.characterSubmission.update({ where: { id: submission.id }, data: {
+      status: "approved", reviewerId: null, reviewedAt: null, reviewReason: null,
+    } });
   }
   const publication = await ensureCustomerCharacterPublicationPrep(tx, {
     characterId: character.id,
@@ -200,7 +233,7 @@ export async function prepareApprovedCustomerCharacterPublication(
   if (!publication) {
     throw Errors.conflict("Customer Character publication preparation was not created");
   }
-  if (publication.created) {
+  if (publication.created || recoveredPending) {
     await tx.adminAuditLog.create({
       data: {
         actorId: input.actor.id,
@@ -209,7 +242,7 @@ export async function prepareApprovedCustomerCharacterPublication(
         targetType: "character_project",
         targetId: publication.projectId,
         reason: input.reason,
-        before: toInputJson({ projectId: null, servingState: null }),
+        before: toInputJson({ characterStatus: character.status, submissionStatus: recoveredPending ? "pending" : "approved" }),
         after: toInputJson(publication),
         requestId: input.requestId,
       },

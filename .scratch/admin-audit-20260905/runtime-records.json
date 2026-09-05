@@ -1,0 +1,95 @@
+{
+  "checkedAt": "2026-09-05T08:34:13.903Z",
+  "character": {
+    "id": "501f68d9-41ef-4f8e-bc39-ea14a88ee142",
+    "status": "draft",
+    "visibility": "private",
+    "imageAssetId": null
+  },
+  "serving": {
+    "id": "cmto3ppst000jg6l7ixy8m29o",
+    "characterId": "501f68d9-41ef-4f8e-bc39-ea14a88ee142",
+    "currentReleaseId": null,
+    "state": "inactive",
+    "version": 1,
+    "createdAt": "2026-09-05T08:08:44.765Z",
+    "updatedAt": "2026-09-05T08:08:44.765Z"
+  },
+  "versions": [
+    {
+      "id": "e83921af-3da7-400c-9b9f-984c757916ac",
+      "version": 1,
+      "openingSnapshot": {
+        "firstMessage": "欢迎来到我的书店。今天想找一本新书，还是坐下来聊聊？"
+      },
+      "createdAt": "2026-09-05T08:08:44.758Z"
+    },
+    {
+      "id": "cmto3z7ag001fg6l7jktilut3",
+      "version": 2,
+      "openingSnapshot": {
+        "firstMessage": "欢迎回到书店。今天我们从哪一本书聊起？"
+      },
+      "createdAt": "2026-09-05T08:16:07.336Z"
+    }
+  ],
+  "jobs": [
+    {
+      "id": "cmto3qnou000og6l7qsadk6h9",
+      "status": "completed",
+      "mode": "image",
+      "model": "redcraft-krea2-redmix3-txt2img",
+      "provider": "comfyui",
+      "outputCount": 1,
+      "deliveredOutputCount": 1,
+      "costDreamcoins": 5,
+      "createdAt": "2026-09-05T08:09:28.686Z",
+      "finishedAt": "2026-09-05T08:10:56.689Z",
+      "assets": [
+        {
+          "id": "media_gc8lmcfqh1dmto3sjl3",
+          "type": "image",
+          "url": "/user-content/bWVkaWFfZ2M4bG1jZnFoMWRtdG8zc2psMw/content.png",
+          "storageKey": "gen/cmto3qnou000og6l7qsadk6h9/attempts/cmto3qnp3000rg6l7pljc3qe5/image-1.png",
+          "contentType": "image/png"
+        }
+      ]
+    },
+    {
+      "id": "cmto3wvg60018g6l78rd26elg",
+      "status": "completed",
+      "mode": "video",
+      "model": "redgraft-ltx25-i2v",
+      "provider": "comfyui",
+      "outputCount": 1,
+      "deliveredOutputCount": 1,
+      "costDreamcoins": 100,
+      "createdAt": "2026-09-05T08:14:18.678Z",
+      "finishedAt": "2026-09-05T08:31:25.738Z",
+      "assets": [
+        {
+          "id": "media_ruh96f3a52bmto4ivxf",
+          "type": "video",
+          "url": "/user-content/bWVkaWFfcnVoOTZmM2E1MmJtdG80aXZ4Zg/content.mp4",
+          "storageKey": "gen/cmto3wvg60018g6l78rd26elg/attempts/cmto3wvgq001bg6l7ibv4p56f/video.mp4",
+          "contentType": "video/mp4"
+        }
+      ]
+    }
+  ],
+  "attempts": [
+    {
+      "id": "cmto3qnp3000rg6l7pljc3qe5",
+      "requestId": "cmto3qnou000og6l7qsadk6h9",
+      "attemptNo": 1,
+      "status": "succeeded"
+    },
+    {
+      "id": "cmto3wvgq001bg6l7ibv4p56f",
+      "requestId": "cmto3wvg60018g6l78rd26elg",
+      "attemptNo": 1,
+      "status": "succeeded"
+    }
+  ],
+  "ledger": []
+}

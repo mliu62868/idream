@@ -75,8 +75,8 @@ function draftAssetIds(value: Prisma.JsonValue) {
 }
 
 /**
- * SPEC: 运营位只能选择 Review 已批准且来源权威完整的角色图片。
- * INTENT: 选择动作不接收客户端创造的资格；Main 重新解析最新 Review，上传与生成各自保留
+ * SPEC: 运营位可直接采用来源完整且通过基础自动检查的角色图片。
+ * INTENT: 选择动作不接收客户端创造的资格；Main 重新校验素材可用性，上传与生成各自保留
  *         独立来源事实，再把精确 authority pin 进草稿供 Preview / Release 使用。
  */
 export async function selectCharacterDraftImage(

@@ -124,7 +124,7 @@ describe("Creative workflow transition concurrency", () => {
       data: {
         id: partialRunId,
         title: "Partially generated Creative review",
-        purpose: "campaign",
+        purpose: "model_eval",
         targetType: "none",
         presetIds: [],
         count: 2,
@@ -159,7 +159,7 @@ describe("Creative workflow transition concurrency", () => {
       data: {
         id: reviewRunId,
         title: "Concurrent Creative review",
-        purpose: "feed",
+        purpose: "model_eval",
         targetType: "none",
         presetIds: [],
         count: 1,
@@ -290,7 +290,7 @@ describe("Creative workflow transition concurrency", () => {
       data: {
         id: legacyReviewRunId,
         title: "Legacy Character review evidence repair",
-        purpose: "character_cover",
+        purpose: "model_eval",
         targetType: "character",
         targetId: `legacy-review-character-${suffix}`,
         presetIds: [],
@@ -350,7 +350,7 @@ describe("Creative workflow transition concurrency", () => {
       data: {
         id: terminalRejectRunId,
         title: "All-rejected Creative review",
-        purpose: "feed",
+        purpose: "model_eval",
         targetType: "none",
         presetIds: [],
         count: 1,
@@ -554,7 +554,7 @@ describe("Creative workflow transition concurrency", () => {
     await expect(prisma.mainOutboxEvent.count({ where: { aggregateId: closedRunId } })).resolves.toBe(0);
   });
 
-  it("uses the latest item decision before matching its artifact", async () => {
+  it("places the exact generated artifact even when a historical review targeted another image", async () => {
     await expect(publishDistributionPlacement({
       runId: supersededRunId,
       itemId: supersededItemId,
@@ -568,18 +568,18 @@ describe("Creative workflow transition concurrency", () => {
       title: "Superseded campaign",
       reason: "An older approval must not reappear after a newer decision",
       requestId: `superseded-placement-${suffix}`,
-    })).rejects.toThrow("An approved immutable review decision is required before placement");
+    })).resolves.toMatchObject({ verificationState: "verifying", runVersion: 2 });
 
     await expect(prisma.contentProductionBatch.findUniqueOrThrow({
       where: { id: supersededRunId },
     })).resolves.toMatchObject({
-      workflowStage: "placement",
-      verificationState: "pending",
-      version: 1,
+      workflowStage: "verification",
+      verificationState: "verifying",
+      version: 2,
     });
     await expect(prisma.mediaAssetPlacement.count({
       where: { targetId: supersededTargetId },
-    })).resolves.toBe(0);
+    })).resolves.toBe(1);
   });
 
   it("closes a Run immediately when review resolves its final item by rejection", async () => {
@@ -590,6 +590,7 @@ describe("Creative workflow transition concurrency", () => {
       expectedVersion: 1,
       decision: "rejected",
       identityConsistency: "failed",
+       score: 91,
       reason: "The final candidate does not meet the creative brief",
       requestId: `terminal-reject-${suffix}`,
     })).resolves.toMatchObject({
@@ -608,414 +609,7 @@ describe("Creative workflow transition concurrency", () => {
     });
   });
 
-  it("protects legacy Character dependencies on a first rejection without blocking a first approval", async () => {
-    const characterId = `creative-transition-first-decision-character-${suffix}`;
-    const projectId = `creative-transition-first-decision-project-${suffix}`;
-    const dependencyRejectAssetId =
-      `creative-transition-first-reject-dependent-asset-${suffix}`;
-    const placementRejectAssetId =
-      `creative-transition-first-reject-placement-asset-${suffix}`;
-    const dependencyApproveAssetId =
-      `creative-transition-first-approve-dependent-asset-${suffix}`;
-    const dependencyRejectRunId =
-      `creative-transition-first-reject-dependent-run-${suffix}`;
-    const placementRejectRunId =
-      `creative-transition-first-reject-placement-run-${suffix}`;
-    const dependencyApproveRunId =
-      `creative-transition-first-approve-dependent-run-${suffix}`;
-    const dependencyRejectItemId = `${dependencyRejectRunId}-item`;
-    const placementRejectItemId = `${placementRejectRunId}-item`;
-    const dependencyApproveItemId = `${dependencyApproveRunId}-item`;
-    const activePlacementId =
-      `creative-transition-first-reject-placement-${suffix}`;
-    const runIds = [
-      dependencyRejectRunId,
-      placementRejectRunId,
-      dependencyApproveRunId,
-    ];
-    const itemIds = [
-      dependencyRejectItemId,
-      placementRejectItemId,
-      dependencyApproveItemId,
-    ];
-    const assetIds = [
-      dependencyRejectAssetId,
-      placementRejectAssetId,
-      dependencyApproveAssetId,
-    ];
 
-    await prisma.character.create({
-      data: {
-        id: characterId,
-        name: "Legacy review authority fixture",
-        age: 29,
-        description: "Existing Character assets need first-decision protection.",
-        appearance: {},
-        advancedDetails: {},
-      },
-    });
-    await prisma.mediaAsset.createMany({
-      data: assetIds.map((id) => ({
-        id,
-        ownerId: actor.id,
-        characterId,
-        type: "image",
-        url: `memory://${id}`,
-        safetyStatus: "passed",
-        visibility: "private",
-        metadata: {},
-      })),
-    });
-    await prisma.characterProject.create({
-      data: {
-        id: projectId,
-        characterId,
-        draftImageAssetId: dependencyRejectAssetId,
-        draftAssetPack: {
-          character_cover: { assetId: dependencyRejectAssetId },
-          character_hero: { assetId: dependencyApproveAssetId },
-        },
-      },
-    });
-    await prisma.contentProductionBatch.createMany({
-      data: [
-        [dependencyRejectRunId, "character_cover"],
-        [placementRejectRunId, "character_chat"],
-        [dependencyApproveRunId, "character_hero"],
-      ].map(([id, purpose]) => ({
-        id,
-        title: `First immutable review ${purpose}`,
-        purpose,
-        targetType: "character",
-        targetId: characterId,
-        presetIds: [],
-        count: 1,
-        totalItems: 1,
-        completedItems: 1,
-        status: "reviewing",
-        lifecycleState: "active",
-        workflowStage: "review",
-        verificationState: "pending",
-        version: 1,
-        createdById: actor.id,
-      })),
-    });
-    await prisma.contentProductionItem.createMany({
-      data: [
-        [dependencyRejectItemId, dependencyRejectRunId, dependencyRejectAssetId],
-        [placementRejectItemId, placementRejectRunId, placementRejectAssetId],
-        [dependencyApproveItemId, dependencyApproveRunId, dependencyApproveAssetId],
-      ].map(([id, batchId, mediaAssetId]) => ({
-        id,
-        batchId,
-        itemIndex: 0,
-        mediaAssetId,
-        status: "generated",
-        tags: [],
-      })),
-    });
-    await prisma.mediaAssetPlacement.create({
-      data: {
-        id: activePlacementId,
-        mediaAssetId: placementRejectAssetId,
-        slot: "campaign",
-        targetType: "campaign",
-        targetId: `creative-transition-first-reject-placement-target-${suffix}`,
-        status: "published",
-        verificationState: "passed",
-        publishedAt: new Date(),
-        verifiedAt: new Date(),
-        createdById: actor.id,
-        metadata: {},
-      },
-    });
-    const failingQuality = {
-      artifactFree: false,
-      singleSubject: true,
-      intentMatch: false,
-      noVisibleText: true,
-    };
-    try {
-      await expect(recordCreativeReviewDecision({
-        runId: dependencyRejectRunId,
-        itemId: dependencyRejectItemId,
-        actor,
-        expectedVersion: 1,
-        decision: "rejected",
-        identityConsistency: "failed",
-        quality: failingQuality,
-        reason: "A first rejection must not revoke a Character draft dependency",
-        requestId: `first-reject-dependent-${suffix}`,
-      })).rejects.toMatchObject({
-        status: 409,
-        details: {
-          assetId: dependencyRejectAssetId,
-          dependencies: expect.arrayContaining(["character_project_draft"]),
-        },
-      });
-      await expect(prisma.creativeReviewDecision.count({
-        where: { runItemId: dependencyRejectItemId },
-      })).resolves.toBe(0);
-
-      await expect(recordCreativeReviewDecision({
-        runId: placementRejectRunId,
-        itemId: placementRejectItemId,
-        actor,
-        expectedVersion: 1,
-        decision: "rejected",
-        identityConsistency: "failed",
-        quality: failingQuality,
-        reason: "A first rejection must not revoke an active placement",
-        requestId: `first-reject-placement-${suffix}`,
-      })).rejects.toThrow(
-        "A staged or active placement must be withdrawn",
-      );
-      await expect(prisma.creativeReviewDecision.count({
-        where: { runItemId: placementRejectItemId },
-      })).resolves.toBe(0);
-
-      await expect(recordCreativeReviewDecision({
-        runId: dependencyApproveRunId,
-        itemId: dependencyApproveItemId,
-        actor,
-        expectedVersion: 1,
-        decision: "approved",
-        identityConsistency: "passed",
-        score: 93,
-        quality: {
-          artifactFree: true,
-          singleSubject: true,
-          intentMatch: true,
-          noVisibleText: true,
-        },
-        reason: "A first approval establishes review authority without revoking use",
-        requestId: `first-approve-dependent-${suffix}`,
-      })).resolves.toMatchObject({
-        lifecycleState: "closed",
-        version: 2,
-      });
-      await expect(prisma.creativeReviewDecision.count({
-        where: { runItemId: dependencyApproveItemId },
-      })).resolves.toBe(1);
-    } finally {
-      await prisma.mainOutboxEvent.deleteMany({
-        where: { aggregateId: { in: runIds } },
-      });
-      await prisma.adminAuditLog.deleteMany({
-        where: { targetId: { in: itemIds } },
-      });
-      await prisma.mediaAssetPlacement.deleteMany({
-        where: { id: activePlacementId },
-      });
-      await prisma.creativeReviewDecision.deleteMany({
-        where: { runItemId: { in: itemIds } },
-      });
-      await prisma.contentProductionItem.deleteMany({
-        where: { id: { in: itemIds } },
-      });
-      await prisma.contentProductionBatch.deleteMany({
-        where: { id: { in: runIds } },
-      });
-      await prisma.characterProject.deleteMany({ where: { id: projectId } });
-      await prisma.mediaAsset.deleteMany({ where: { id: { in: assetIds } } });
-      await prisma.character.deleteMany({ where: { id: characterId } });
-    }
-  });
-
-  it("blocks rejection and supersession when the artifact is reference-only in an active Visual Profile", async () => {
-    const characterId = `creative-transition-reference-only-character-${suffix}`;
-    const visualProfileId = `creative-transition-reference-only-profile-${suffix}`;
-    const rejectAssetId = `creative-transition-reference-only-reject-asset-${suffix}`;
-    const supersedeAssetId = `creative-transition-reference-only-supersede-asset-${suffix}`;
-    const rejectRunId = `creative-transition-reference-only-reject-run-${suffix}`;
-    const supersedeRunId = `creative-transition-reference-only-supersede-run-${suffix}`;
-    const rejectItemId = `${rejectRunId}-item`;
-    const supersedeItemId = `${supersedeRunId}-item`;
-    const existingDecisionId = `creative-transition-reference-only-decision-${suffix}`;
-    const runIds = [rejectRunId, supersedeRunId];
-    const itemIds = [rejectItemId, supersedeItemId];
-    const assetIds = [rejectAssetId, supersedeAssetId];
-    await prisma.character.create({
-      data: {
-        id: characterId,
-        name: "Reference-only review fixture",
-        age: 27,
-        description: "Active Visual Profile references retain review authority.",
-        appearance: {},
-        advancedDetails: {},
-      },
-    });
-    await prisma.mediaAsset.createMany({
-      data: assetIds.map((id) => ({
-        id,
-        ownerId: actor.id,
-        characterId,
-        type: "image",
-        url: `memory://${id}`,
-        safetyStatus: "passed",
-        visibility: "private",
-        metadata: {},
-      })),
-    });
-    await prisma.characterVisualProfile.create({
-      data: {
-        id: visualProfileId,
-        characterId,
-        version: 1,
-        status: "active",
-        identityPrompt: "Reference-only visual authority",
-        faceTraits: {},
-        hairTraits: {},
-        bodyTraits: {},
-        signatureTraits: {},
-        styleTraits: {},
-        anchorAssetIds: [],
-        adapterRefs: [],
-        createdFrom: "creative_transition_reference_only_test",
-        // 参考图归一后只存在于 active Reference Set，每个 identity 版本都带一个——
-        // fixture 必须建出这个不变式，否则测的是真实流程已不会产生的状态。
-        referenceSetRevisions: {
-          create: {
-            revision: 1,
-            status: "active",
-            createdFrom: "creative_transition_reference_only_test",
-            references: {
-              create: assetIds.map((mediaAssetId, position) => ({
-                mediaAssetId,
-                position,
-                role: "identity_reference",
-                selectionReason: "Reference-only authority fixture",
-              })),
-            },
-          },
-        },
-      },
-    });
-    await prisma.contentProductionBatch.createMany({
-      data: runIds.map((id) => ({
-        id,
-        title: "Reference-only immutable review",
-        purpose: "character_hero",
-        targetType: "character",
-        targetId: characterId,
-        presetIds: [],
-        count: 1,
-        totalItems: 1,
-        completedItems: 1,
-        status: "reviewing",
-        lifecycleState: "active",
-        workflowStage: "review",
-        verificationState: "pending",
-        version: 1,
-        createdById: actor.id,
-      })),
-    });
-    await prisma.contentProductionItem.createMany({
-      data: [{
-        id: rejectItemId,
-        batchId: rejectRunId,
-        itemIndex: 0,
-        mediaAssetId: rejectAssetId,
-        status: "generated",
-        tags: [],
-      }, {
-        id: supersedeItemId,
-        batchId: supersedeRunId,
-        itemIndex: 0,
-        mediaAssetId: supersedeAssetId,
-        status: "approved",
-        tags: [],
-      }],
-    });
-    await prisma.creativeReviewDecision.create({
-      data: {
-        id: existingDecisionId,
-        runItemId: supersedeItemId,
-        artifactId: supersedeAssetId,
-        decision: "approved",
-        identityConsistency: "passed",
-        score: 91,
-        reason: "Existing immutable approval",
-        reviewerId: actor.id,
-      },
-    });
-    const passedQuality = {
-      artifactFree: true,
-      singleSubject: true,
-      intentMatch: true,
-      noVisibleText: true,
-    };
-    try {
-      await expect(recordCreativeReviewDecision({
-        runId: rejectRunId,
-        itemId: rejectItemId,
-        actor,
-        expectedVersion: 1,
-        decision: "rejected",
-        identityConsistency: "failed",
-        quality: {
-          ...passedQuality,
-          intentMatch: false,
-        },
-        reason: "A reference-only identity asset cannot be rejected while active",
-        requestId: `reference-only-reject-${suffix}`,
-      })).rejects.toMatchObject({
-        status: 409,
-        details: {
-          assetId: rejectAssetId,
-          dependencies: expect.arrayContaining(["active_visual_identity"]),
-        },
-      });
-      await expect(recordCreativeReviewDecision({
-        runId: supersedeRunId,
-        itemId: supersedeItemId,
-        actor,
-        expectedVersion: 1,
-        supersedesDecisionId: existingDecisionId,
-        decision: "approved",
-        identityConsistency: "passed",
-        score: 94,
-        quality: passedQuality,
-        reason: "An active reference cannot have its immutable review superseded",
-        requestId: `reference-only-supersede-${suffix}`,
-      })).rejects.toMatchObject({
-        status: 409,
-        details: {
-          assetId: supersedeAssetId,
-          dependencies: expect.arrayContaining(["active_visual_identity"]),
-        },
-      });
-      await expect(prisma.creativeReviewDecision.count({
-        where: { runItemId: rejectItemId },
-      })).resolves.toBe(0);
-      await expect(prisma.creativeReviewDecision.count({
-        where: { runItemId: supersedeItemId },
-      })).resolves.toBe(1);
-    } finally {
-      await prisma.mainOutboxEvent.deleteMany({
-        where: { aggregateId: { in: runIds } },
-      });
-      await prisma.adminAuditLog.deleteMany({
-        where: { targetId: { in: itemIds } },
-      });
-      await prisma.creativeReviewDecision.deleteMany({
-        where: { runItemId: { in: itemIds } },
-      });
-      await prisma.contentProductionItem.deleteMany({
-        where: { id: { in: itemIds } },
-      });
-      await prisma.contentProductionBatch.deleteMany({
-        where: { id: { in: runIds } },
-      });
-      await prisma.characterVisualProfile.deleteMany({
-        where: { id: visualProfileId },
-      });
-      await prisma.mediaAsset.deleteMany({
-        where: { id: { in: assetIds } },
-      });
-      await prisma.character.deleteMany({ where: { id: characterId } });
-    }
-  });
 
   it("lets exactly one conflicting review commit for one expected Run and item version", async () => {
     const results = await Promise.allSettled([
@@ -1026,6 +620,7 @@ describe("Creative workflow transition concurrency", () => {
         expectedVersion: 1,
         decision: "approved",
         identityConsistency: "passed",
+         score: 91,
         reason: "Approve from the first tab",
         requestId: `review-first-${suffix}`,
       }),
@@ -1036,6 +631,7 @@ describe("Creative workflow transition concurrency", () => {
         expectedVersion: 1,
         decision: "rejected",
         identityConsistency: "failed",
+         score: 91,
         reason: "Reject from the second tab",
         requestId: `review-second-${suffix}`,
       }),
@@ -1070,6 +666,7 @@ describe("Creative workflow transition concurrency", () => {
       expectedVersion: 1,
       decision: "approved",
       identityConsistency: "passed",
+       score: 91,
       reason: "Approve the first ready candidate",
       requestId: `partial-review-${suffix}`,
     })).resolves.toMatchObject({
@@ -1128,7 +725,7 @@ describe("Creative workflow transition concurrency", () => {
     expect(latest).toMatchObject({
       supersedesDecisionId: legacyReviewDecisionId,
       decision: "approved",
-      score: 91,
+       score: 91,
       evidence: {
         quality: {
           artifactFree: true,
@@ -1155,6 +752,7 @@ describe("Creative workflow transition concurrency", () => {
       supersedesDecisionId: legacyReviewDecisionId,
       decision: "rejected",
       identityConsistency: "failed",
+       score: 91,
       quality: {
         artifactFree: false,
         singleSubject: true,
@@ -1186,6 +784,7 @@ describe("Creative workflow transition concurrency", () => {
       supersedesDecisionId: latest!.id,
       decision: "rejected",
       identityConsistency: "failed",
+       score: 91,
       quality: {
         artifactFree: false,
         singleSubject: true,
@@ -1197,7 +796,7 @@ describe("Creative workflow transition concurrency", () => {
     })).rejects.toThrow("must be withdrawn");
   });
 
-  it("withdraws one staged campaign candidate before recording its terminal rejection", async () => {
+  it("withdraws one staged campaign candidate without fabricating a new review", async () => {
     const staged = await publishDistributionPlacement({
       runId: withdrawalRunId,
       itemId: withdrawalItemId,
@@ -1230,7 +829,7 @@ describe("Creative workflow transition concurrency", () => {
       identityConsistency: "failed",
       reason: "The staged placement must be withdrawn before review authority changes",
       requestId: `withdrawal-review-guard-${suffix}`,
-    })).rejects.toThrow("must be withdrawn");
+    })).rejects.toMatchObject({ status: 409, details: { code: "manual_asset_review_retired" } });
     await expect(prisma.creativeReviewDecision.count({
       where: { runItemId: withdrawalItemId },
     })).resolves.toBe(1);
@@ -1299,36 +898,9 @@ describe("Creative workflow transition concurrency", () => {
       where: { eventType: "creative.placement.withdrawn.v2", aggregateId: withdrawalRunId },
     })).resolves.toBe(1);
 
-    const rejected = await recordCreativeReviewDecision({
-      runId: withdrawalRunId,
-      itemId: withdrawalItemId,
-      actor,
-      expectedVersion: 3,
-      supersedesDecisionId: withdrawalDecisionId,
-      decision: "rejected",
-      identityConsistency: "failed",
-      reason: "The campaign direction was retired after the staged placement was withdrawn",
-      requestId: `withdrawal-terminal-review-${suffix}`,
-    });
-    expect(rejected).toMatchObject({
-      decision: "rejected",
-      lifecycleState: "closed",
-      workflowStage: "review",
-      verificationState: "pending",
-      version: 4,
-    });
-    await expect(prisma.contentProductionItem.findUniqueOrThrow({
-      where: { id: withdrawalItemId },
-    })).resolves.toMatchObject({ status: "rejected" });
-    const decisions = await prisma.creativeReviewDecision.findMany({
-      where: { runItemId: withdrawalItemId },
-      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-    });
-    expect(decisions).toHaveLength(2);
-    expect(decisions.at(-1)).toMatchObject({
-      decision: "rejected",
-      supersedesDecisionId: withdrawalDecisionId,
-    });
+    expect(await prisma.creativeReviewDecision.count({ where: { runItemId: withdrawalItemId } })).toBe(1);
+    await expect(prisma.contentProductionBatch.findUniqueOrThrow({ where: { id: withdrawalRunId } }))
+      .resolves.toMatchObject({ version: 3, lifecycleState: "active", workflowStage: "placement" });
   });
 
   it("lets exactly one concurrent placement commit for one expected Run and item version", async () => {
@@ -1454,13 +1026,13 @@ describe("Creative workflow transition concurrency", () => {
       placementId: restaged.placementId,
       actor,
       expectedVersion: 4,
-      reason: "Verify one winner while another candidate still awaits review",
+      reason: "Verify one winner while another generated candidate remains available for placement",
       requestId: `placement-verification-passed-${suffix}`,
     });
     expect(verified.verificationState).toBe("passed");
     await expect(prisma.contentProductionBatch.findUniqueOrThrow({ where: { id: placementRunId } })).resolves.toMatchObject({
       lifecycleState: "active",
-      workflowStage: "review",
+      workflowStage: "placement",
       verificationState: "pending",
       status: "reviewing",
       version: 5,

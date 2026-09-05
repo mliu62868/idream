@@ -30,6 +30,7 @@ import {
 } from "./portfolio-query";
 import { permissionDenied } from "./character-permission-denied";
 import { CharacterListEmptyState } from "./CharacterListEmptyState";
+import { UnpreparedCharacters } from "./UnpreparedCharacters";
 import { CharacterPortfolioCard } from "./CharacterPortfolioCard";
 
 // INTENT: 稳定引用，避免"投影还没到"时每次渲染都换一个新的空值。
@@ -52,12 +53,14 @@ function restoredCursorStack(): readonly string[] {
 }
 
 export function CharacterPortfolio({
+  canReadUnprepared = false,
   canOpenAssets,
   canCreate,
   canOpenProjects,
   canRead,
   mode,
 }: {
+  canReadUnprepared?: boolean;
   canOpenAssets: boolean;
   canCreate: boolean;
   canOpenProjects: boolean;
@@ -329,6 +332,7 @@ export function CharacterPortfolio({
             ) : null
         ) : null}
       </div>
+      {!performanceMode && canReadUnprepared ? <UnpreparedCharacters /> : null}
       {performanceMode ? (
         <div className="mt-4 flex flex-col justify-end gap-2 lg:flex-row">
           <div className="w-full lg:max-w-[42rem]">{filterForm}</div>

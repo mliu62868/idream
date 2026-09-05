@@ -1,0 +1,10 @@
+@idream/gen test: 
+@idream/gen test:  RUN  v4.1.9 /Users/kk/code/idream/packages/gen
+@idream/gen test: 
+@idream/gen test: 
+@idream/gen test:  Test Files  25 passed (25)
+@idream/gen test:       Tests  294 passed (294)
+@idream/gen test:    Start at  07:15:14
+@idream/gen test:    Duration  12.96s (transform 2.32s, setup 0ms, import 10.69s, tests 9.96s, environment 4ms)
+@idream/gen test: 
+@idream/gen test: Exited with code 0

@@ -25,11 +25,12 @@ describe("resolveFailureReason", () => {
   });
   // SPEC: 新登记的码都要能从生产代码里查到发出点；这里锁住它们的严重度分类，
   // 因为严重度决定运营是"重试"还是"找工程"还是"先对账"。
-  // SPEC: 迟到的结果是「无需处理」，落库失败和结果未知是「需要工程介入」。
+  // SPEC: 迟到结果需查看恢复资格，不能仅凭失败码断言成功产物已丢弃。
   // INTENT: 三者都不该说「可以安全重试」——provider_outcome_unknown 意味着那一次到底跑没跑
   //         不知道，直接重试可能产生第二次真实生成和第二次扣费。宁可让运营先去对账。
   it("never tells the operator to retry a job whose outcome is unknown", () => {
     expect(resolveFailureReason("stale_provider_outcome").severity).toBe("waiting");
+    expect(resolveFailureReason("stale_provider_outcome").hint).toContain("recovered");
     for (const code of ["terminal_record_persist_failed", "provider_outcome_unknown"]) {
       expect(resolveFailureReason(code).severity).toBe("engineering");
       expect(resolveFailureReason(code).title).not.toBe("Unknown error");

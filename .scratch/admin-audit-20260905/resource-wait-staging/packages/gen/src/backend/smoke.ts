@@ -1,0 +1,179 @@
+// SPEC: Real end-to-end smoke — drives `providers.image.generate()` with
+// GEN_IMAGE_PROVIDER=backend against a LIVE registered backend, reproducing a real
+// image through BackendImageModel -> BackendRegistry -> GenBackend. The default
+// targets ComfyUI; pass a Draw Things model id to drive draw-things-cli through
+// the same provider seam the gen worker uses in production.
+// Requires --model <modelId>; retired models must never remain as an implicit
+// fallback. Pass --ref <image path> to
+// drive an img2img/edit workflow off a local reference image, and --prompt to
+// override the default smoke prompt. Multi-reference workflows use repeated
+// --ref plus one matching --ref-role per reference so semantic graph slots are
+// exercised explicitly instead of inferred from array order.
+// INTENT: Manual-only dev script, not part of `vitest run` (no live server in
+// CI; see package.json's `smoke:backend` script). Forces GEN_IMAGE_PROVIDER to
+// "backend" unconditionally so package-local .env cannot select another Gen
+// provider. Workflow discovery uses env.ts's file-relative bundled default, so
+// the same descriptor authority is used regardless of the caller's cwd.
+// INVARIANTS: never commits the generated PNG; writes under the OS temp dir
+// unless --out points elsewhere. Exits 1 on any failure (ok:false, missing
+// body, or a thrown error) so it composes as a CLI health check. --ref is
+// read once into memory (smoke-scale images only, no streaming).
+import { Buffer } from "node:buffer";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import {
+  resolveSmokeGenerationOverrides,
+  resolveSmokeReferences,
+  resolveSmokeWorkflowPin,
+} from "./smoke-args";
+
+// Must happen before providers.ts/env.ts are evaluated by the imports below —
+// import statements are hoisted, so these assignments run first regardless of
+// where they appear in the file, but keeping them textually first avoids
+// confusion about ordering.
+process.env.GEN_IMAGE_PROVIDER = "backend";
+
+const { providers } = await import("../providers");
+const { env } = await import("../env");
+const { assertGeneratedImageSanity } = await import("@idream/shared/media/generated-image-sanity");
+const { logger } = await import("../logger");
+const { loadWorkflowDescriptors } = await import("./workflow");
+
+const SMOKE_PROMPT =
+  "adult woman, upper-body portrait, oval face, hazel eyes, long auburn hair, soft daylight, photorealistic, high detail";
+
+async function main() {
+  const outPath = resolveOutPath();
+  const requestedModel = resolveArg("--model");
+  if (!requestedModel) {
+    throw new Error("--model is required; no implicit image model is allowed");
+  }
+  const workflowPin = resolveSmokeWorkflowPin(
+    await loadWorkflowDescriptors(env.GEN_WORKFLOW_DIR),
+    requestedModel,
+  );
+  const modelId = workflowPin.modelId;
+  const promptOverride = resolveArg("--prompt");
+  const cliArgs = process.argv.slice(2);
+  const generationOverrides = resolveSmokeGenerationOverrides(cliArgs);
+  const referenceSpecs = resolveSmokeReferences(cliArgs);
+  const referenceImages = referenceSpecs.length > 0
+    ? await Promise.all(referenceSpecs.map(async (reference, index) => ({
+        assetId: `smoke-ref-${index + 1}`,
+        role: reference.role,
+        b64Json: (await readFile(reference.path)).toString("base64"),
+        contentType: contentTypeFromPath(reference.path),
+      })))
+    : undefined;
+  const hasReferences = referenceSpecs.length > 0;
+
+  const startedAt = Date.now();
+
+  const result = await providers.image.generate({
+    model: modelId,
+    prompt: promptOverride ?? SMOKE_PROMPT,
+    count: 1,
+    // INTENT: edit/img2img descriptors (e.g. qwen-image-edit) declare their own
+    // default width/height (832x1216) on the width/height slots. Passing the
+    // txt2img default orientation "4:5" here would inject explicit width/height
+    // values that override those declared defaults, so whenever a reference
+    // image drives the run, omit orientation entirely (undefined) and let the
+    // descriptor's own declared slot defaults apply instead.
+    orientation: hasReferences ? undefined : "4:5",
+    seed: generationOverrides.seed ?? "42",
+    // Reference-driven descriptors own their validated step defaults; only the
+    // generic text-to-image smoke supplies a ten-step fallback.
+    controls: {
+      workflowKey: workflowPin.workflowKey,
+      workflowVersion: workflowPin.workflowVersion,
+      ...(generationOverrides.steps === undefined
+        ? hasReferences
+          ? {}
+          : { steps: 10 }
+        : { steps: generationOverrides.steps }),
+      ...(generationOverrides.refBoost === undefined
+        ? {}
+        : { ref_boost: generationOverrides.refBoost }),
+      ...(generationOverrides.groundingPx === undefined
+        ? {}
+        : { grounding_px: generationOverrides.groundingPx }),
+    },
+    ...(referenceImages ? { referenceImages } : {}),
+  });
+
+  const durationMs = Date.now() - startedAt;
+
+  if (!result.ok) {
+    logger.error({ model: modelId, error: result.error, durationMs }, "backend smoke failed");
+    process.exitCode = 1;
+    return;
+  }
+
+  const assets = result.data.assets;
+  if (!assets.length) {
+    logger.error({ model: modelId, durationMs }, "backend smoke returned zero assets");
+    process.exitCode = 1;
+    return;
+  }
+
+  await mkdir(path.dirname(outPath), { recursive: true });
+
+  for (const [index, asset] of assets.entries()) {
+    if (!asset.body) {
+      logger.warn({ model: modelId, index, durationMs }, "backend smoke asset has no body, skipping");
+      continue;
+    }
+    const buffer = Buffer.from(asset.body);
+    assertGeneratedImageSanity(buffer, "backend smoke");
+
+    const target = assets.length > 1 ? suffixPath(outPath, index) : outPath;
+    await writeFile(target, buffer);
+
+    logger.info(
+      {
+        model: modelId,
+        width: asset.width,
+        height: asset.height,
+        bytes: buffer.byteLength,
+        durationMs,
+        outPath: target,
+      },
+      "backend smoke ok",
+    );
+  }
+}
+
+function resolveOutPath(): string {
+  const flagIndex = process.argv.indexOf("--out");
+  const explicit = flagIndex >= 0 ? process.argv[flagIndex + 1] : undefined;
+  return explicit ? path.resolve(explicit) : path.join(tmpdir(), `idream-backend-smoke-${Date.now()}.png`);
+}
+
+function resolveArg(flag: string): string | undefined {
+  const flagIndex = process.argv.indexOf(flag);
+  return flagIndex >= 0 ? process.argv[flagIndex + 1] : undefined;
+}
+
+function suffixPath(target: string, index: number): string {
+  const ext = path.extname(target);
+  const base = target.slice(0, target.length - ext.length);
+  return `${base}-${index + 1}${ext}`;
+}
+
+function contentTypeFromPath(filePath: string): string {
+  switch (path.extname(filePath).toLowerCase()) {
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".webp":
+      return "image/webp";
+    default:
+      return "image/png";
+  }
+}
+
+main().catch((error: unknown) => {
+  logger.error({ err: error instanceof Error ? error.message : String(error) }, "backend smoke crashed");
+  process.exitCode = 1;
+});

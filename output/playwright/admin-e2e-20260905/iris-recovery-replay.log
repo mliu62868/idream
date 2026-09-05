@@ -1,0 +1,58 @@
+{
+  "mode": "apply",
+  "jobId": "cmto7159c000ov3l70eyvcpnk",
+  "attemptId": "cmto7159u000rv3l78jtcw3vz",
+  "promptId": "41003306-72b3-486e-984e-1d751788ebdd",
+  "jobStatus": "queued",
+  "version": 1,
+  "providerExecutionMs": 331959,
+  "originalChecksum": "eeeb062a6170d4670159be1cdefd7f1876b276c107a46c25379e585c440ed63f",
+  "resolutionRef": "gen/terminal-records/cmto7159u000rv3l78jtcw3vz/resolution-comfyui-success.json",
+  "resolutionChecksum": "14e1d8d05267055984a7aec3e710030af6abc0171adbe8a3b8859b3d36821771",
+  "assetKey": "gen/cmto7159c000ov3l70eyvcpnk/attempts/cmto7159u000rv3l78jtcw3vz/image-1.png",
+  "assetSha256": "ec2d1f6a771b6f7e610a607bd997af88f702c510f5cf3080aba5a741430cb0a1",
+  "image": {
+    "width": 832,
+    "height": 1024
+  },
+  "sanity": {
+    "schemaVersion": "1",
+    "evaluatorVersion": "generated-image-sanity-v2",
+    "sanity": {
+      "status": "passed"
+    },
+    "composition": {
+      "status": "passed",
+      "reason": "single_continuous_frame_detected"
+    }
+  }
+}
+{
+  "acknowledgment": {
+    "acknowledged": true,
+    "status": "duplicate",
+    "receiptId": "cmto7o21s00008ll7y3vtfoju"
+  },
+  "result": {
+    "commandId": "dcbee563-5acc-433e-8a7f-c2bf4c5500dd",
+    "requestId": "cmto7159c000ov3l70eyvcpnk",
+    "attemptId": "cmto7159u000rv3l78jtcw3vz",
+    "attemptStatus": "unknown",
+    "resolution": "adopt_succeeded",
+    "requestStatus": "completed",
+    "version": 3,
+    "refundAmount": 0,
+    "deliveredCount": 1,
+    "nextReviewAt": null,
+    "reconciledAt": "2026-09-05T10:02:42.724Z"
+  }
+}
+{
+  "attemptsAfter": 1,
+  "deliveriesAfter": [
+    {
+      "status": "delivered",
+      "artifactId": "cmto7o22000018ll78vz1mrcn"
+    }
+  ]
+}

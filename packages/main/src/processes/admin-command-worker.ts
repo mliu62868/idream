@@ -26,10 +26,12 @@ import { isProcessEntrypoint } from "./process-entrypoint";
 
 const COMMAND_TYPES = [
   "character.release.publish",
+  "character.release.withdraw",
   "character.release.rollback",
   "character.serving.pause",
   "character.serving.resume",
   "character.serving.retire",
+  "character.serving.restore",
   "incident.resolve",
   "incident.action_plan.execute",
   "case.close",
@@ -38,10 +40,12 @@ const COMMAND_TYPES = [
 ] as const;
 const CHARACTER_COMMAND_TYPES = new Set<string>([
   "character.release.publish",
+  "character.release.withdraw",
   "character.release.rollback",
   "character.serving.pause",
   "character.serving.resume",
   "character.serving.retire",
+  "character.serving.restore",
 ]);
 const IDLE_DELAY_MS = 1_000;
 const BUSY_DELAY_MS = 50;

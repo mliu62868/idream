@@ -90,9 +90,9 @@ export async function publishDistributionPlacement(input: {
       where: { id: input.itemId, batchId: run.id, mediaAssetId: input.assetId },
       include: { mediaAsset: true },
     });
-    if (!item || !item.mediaAsset) throw Errors.notFound("Approved Creative asset not found");
+    if (!item || !item.mediaAsset) throw Errors.notFound("Creative asset not found");
     if (!isCreativeRunItemTransitionAllowed(item.status, "published")) {
-      throw Errors.conflict("Creative Run item must be approved before placement", { status: item.status });
+      throw Errors.conflict("Creative Run item must have a generated asset before placement", { status: item.status });
     }
     if (
       item.mediaAsset.deletedAt ||
@@ -109,17 +109,6 @@ export async function publishDistributionPlacement(input: {
       undefined,
       { requireCompleteProviderAuthority: true },
     );
-    const latestReview = await tx.creativeReviewDecision.findFirst({
-      where: { runItemId: item.id },
-      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    });
-    if (
-      !latestReview ||
-      latestReview.artifactId !== input.assetId ||
-      latestReview.decision !== "approved"
-    ) {
-      throw Errors.badRequest("An approved immutable review decision is required before placement");
-    }
     const rollbackTarget = await tx.mediaAssetPlacement.findFirst({
       where: {
         slot: input.slot,
@@ -472,8 +461,8 @@ export async function verifyCreativePlacement(input: {
           },
         })
       : null;
-    if (!item || item.status !== "approved") {
-      throw Errors.conflict("Staged placement lost its approved Creative Run item authority");
+    if (!item || !isCreativeRunItemTransitionAllowed(item.status, "published")) {
+      throw Errors.conflict("Staged placement lost its generated Creative Run item authority");
     }
     const rollbackTarget = await tx.mediaAssetPlacement.findFirst({
       where: {
@@ -571,7 +560,7 @@ export async function verifyCreativePlacement(input: {
           id: item.id,
           batchId: run.id,
           mediaAssetId: placement.mediaAssetId,
-          status: "approved",
+          status: item.status,
           version: item.version,
         },
         data: { status: "published", version: { increment: 1 } },

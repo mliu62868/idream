@@ -453,7 +453,7 @@ type RecoverableTerminalProbe = {
 // INTENT: Redis and Blob probes must never run while PostgreSQL authority rows
 // are locked. An unavailable dependency conservatively defers this stale row;
 // the next bounded scan can decide after authority is reachable again.
-async function probeRecoverableTerminalEvidence(
+export async function probeRecoverableTerminalEvidence(
   generationJobId: string,
 ): Promise<RecoverableTerminalProbe> {
   const [job, attempt, dispatchRows] = await Promise.all([

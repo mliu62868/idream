@@ -1,3 +1,4 @@
+import { recoveredGenerationFixture } from "@/server/test/recovered-generation-fixture";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { compileCharacterSoul } from "@idream/shared";
@@ -6,6 +7,7 @@ import {
   characterMediaOperationsProjectionSchema,
 } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
+import { loadCharacterMediaOperationsProjection } from "./character-media-operations";
 import { getCharacterWorkspace } from "./workspace";
 import { toInputJson } from "../shared/prisma-json";
 
@@ -354,7 +356,7 @@ describe("Character media operations projection", () => {
       );
       expect(projection.operations[1]).toMatchObject({
         requestId: jobId,
-        status: "running",
+        status: "unknown",
         provider: {
           key: "backend",
           requestId: `unknown-provider-request-${suffix}`,
@@ -369,6 +371,42 @@ describe("Character media operations projection", () => {
     } finally {
       await prisma.generationTransportExecution.deleteMany({ where: { id: transportId } });
       await prisma.generationAttempt.deleteMany({ where: { id: attemptId } });
+      await prisma.generationJob.deleteMany({ where: { id: jobId } });
+    }
+  });
+
+  it("clears recovery only after the completed output has exact adopted success authority", async () => {
+    const jobId = `media-ops-recovered-${suffix}`;
+    const assetId = `media-ops-recovered-asset-${suffix}`;
+    try {
+      await prisma.generationJob.create({ data: {
+        id: jobId, userId, characterId, mode: "image", controls: {}, presetIds: [], status: "completed", deliveredOutputCount: 1, provider: "comfyui",
+      } });
+      await prisma.generationAttempt.create({ data: {
+        requestId: jobId, attemptNo: 1, status: "unknown", provider: "comfyui", operatorGuidance: "Reconcile provider before retrying.",
+      } });
+      await prisma.mediaAsset.create({ data: {
+        id: assetId, ownerId: userId, characterId, sourceJobId: jobId, type: "image", safetyStatus: "passed",
+        storageKey: `gen/${jobId}/recovered.webp`, url: `/user-content/${assetId}.webp`, metadata: { provider: "comfyui", recoveredUnknown: true },
+      } });
+      const before = await loadCharacterMediaOperationsProjection(characterId);
+      expect(before.operations[0]).toMatchObject({ requestId: jobId, status: "completed", recoverability: { state: "operator_action" } });
+      const recovered = await prisma.$transaction((tx) => recoveredGenerationFixture(tx, assetId, userId));
+      const after = await loadCharacterMediaOperationsProjection(characterId);
+      expect(after.operations[0]).toMatchObject({
+        requestId: jobId, status: "completed", attempt: { id: recovered.attempt.id, status: "unknown" },
+        output: { mediaAssetId: assetId, availability: "available" }, recoverability: { state: "not_needed", reason: null },
+      });
+    } finally {
+      const attempts = await prisma.generationAttempt.findMany({ where: { requestId: jobId }, select: { id: true } });
+      const attemptIds = attempts.map((attempt) => attempt.id);
+      await prisma.controlPlaneCommand.deleteMany({ where: { targetId: jobId } });
+      await prisma.inboundEventReceipt.deleteMany({ where: { sourceEventId: { in: attemptIds } } });
+      await prisma.generationJobEvent.deleteMany({ where: { jobId } });
+      await prisma.generationDelivery.deleteMany({ where: { requestId: jobId } });
+      await prisma.generationArtifact.deleteMany({ where: { attemptId: { in: attemptIds } } });
+      await prisma.mediaAsset.deleteMany({ where: { id: assetId } });
+      await prisma.generationAttempt.deleteMany({ where: { requestId: jobId } });
       await prisma.generationJob.deleteMany({ where: { id: jobId } });
     }
   });
@@ -751,4 +789,51 @@ describe("Character media operations projection", () => {
       await prisma.mediaAsset.deleteMany({ where: { id: assetId } });
     }
   });
+  it("shows an executing video as running even while its admission Job remains queued", async () => {
+    const jobId = `active-video-${suffix}`;
+    const attemptId = `active-video-attempt-${suffix}`;
+    try {
+      await prisma.generationJob.create({ data: {
+        id: jobId, userId, characterId, mode: "video", controls: {}, presetIds: [], status: "queued",
+      } });
+      await prisma.generationAttempt.create({ data: {
+        id: attemptId, requestId: jobId, attemptNo: 1, provider: "comfyui", status: "running",
+      } });
+      await prisma.generationTransportExecution.create({ data: {
+        attemptId, transportAttemptNo: 1, status: "running", providerRequestId: "running-provider-request",
+      } });
+      const projection = await loadCharacterMediaOperationsProjection(characterId);
+      expect(projection.operations.find((row) => row.modality === "video")).toMatchObject({
+        requestId: jobId, status: "running", attempt: { id: attemptId, status: "running" },
+      });
+      await prisma.generationAttempt.update({ where: { id: attemptId }, data: { status: "succeeded" } });
+      const finalizing = await loadCharacterMediaOperationsProjection(characterId);
+      expect(finalizing.operations.find((row) => row.modality === "video")?.status).toBe("finalizing");
+    } finally {
+      await prisma.generationTransportExecution.deleteMany({ where: { attemptId } });
+      await prisma.generationAttempt.deleteMany({ where: { id: attemptId } });
+      await prisma.generationJob.deleteMany({ where: { id: jobId } });
+    }
+  });
+
+  it("keeps an adopted portrait available for video after newer images fill the recent-source window", async () => {
+    const ids = Array.from({ length: 61 }, (_, index) => `video-source-${suffix}-${index}`);
+    try {
+      await prisma.mediaAsset.createMany({ data: ids.map((id, index) => ({
+        id, ownerId: userId, characterId, type: "image", safetyStatus: "passed", metadata: {},
+        url: `https://example.test/${id}.png`, createdAt: new Date(1_900_000_000_000 + index),
+      })) });
+      await prisma.characterProject.update({ where: { id: projectId }, data: {
+        draftImageAssetId: ids[0], draftAssetPack: { character_cover: ids[0] },
+      } });
+      const workspace = await getCharacterWorkspace(characterId);
+      expect(workspace.visual.videoSources).toContainEqual(expect.objectContaining({
+        mediaAssetId: ids[0], available: true,
+      }));
+    } finally {
+      await prisma.characterProject.update({ where: { id: projectId }, data: { draftImageAssetId: null, draftAssetPack: {} } });
+      await prisma.mediaAsset.deleteMany({ where: { id: { in: ids } } });
+    }
+  });
+
 });

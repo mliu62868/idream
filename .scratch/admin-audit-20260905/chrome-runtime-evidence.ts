@@ -1,0 +1,13 @@
+import { prisma } from '../../packages/main/src/server/lib/db';
+const ids=['620030d5-bb6b-4a10-88c9-2e3041ed9de7','501f68d9-41ef-4f8e-bc39-ea14a88ee142'];
+const target=new URL(process.env.DATABASE_URL!);
+if(!['localhost','127.0.0.1'].includes(target.hostname)||target.pathname!=='/idream_runtime_20260812')throw Error('Unexpected runtime DB');
+const characters=await prisma.character.findMany({where:{id:{in:ids}},select:{id:true,name:true,age:true,status:true,visibility:true,currentContentVersionId:true,imageAssetId:true}});
+const projects=await prisma.characterProject.findMany({where:{characterId:{in:ids}},select:{id:true,characterId:true,version:true,activeKey:true,draftImageAssetId:true,draftAssetPack:true}});
+const serving=await prisma.characterServing.findMany({where:{characterId:{in:ids}}});
+const jobs=await prisma.generationJob.findMany({where:{characterId:{in:ids}},orderBy:{createdAt:'desc'},select:{id:true,status:true,mode:true,model:true,provider:true,outputCount:true,deliveredOutputCount:true,costDreamcoins:true,createdAt:true,completedAt:true,sourceId:true}});
+const attempts=await prisma.generationAttempt.findMany({where:{requestId:{in:jobs.map(j=>j.id)}},select:{id:true,requestId:true,attemptNo:true,status:true,provider:true,startedAt:true,finishedAt:true}});
+const assets=await prisma.mediaAsset.findMany({where:{sourceJobId:{in:jobs.map(j=>j.id)}},select:{id:true,sourceJobId:true,type:true,url:true,safetyStatus:true,visibility:true,storageKey:true}});
+const reviews=await prisma.creativeReviewDecision.findMany({where:{artifactId:{in:assets.map(a=>a.id)}},select:{id:true,artifactId:true,decision:true}});
+console.log(JSON.stringify({checkedAt:new Date().toISOString(),database:target.pathname,characters,projects,serving,jobs,attempts,assets,reviews},null,2));
+await prisma.$disconnect();

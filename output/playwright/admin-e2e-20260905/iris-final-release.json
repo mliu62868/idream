@@ -1,0 +1,21 @@
+{
+  "projectVersion": 4,
+  "assetPackReady": true,
+  "releaseReady": true,
+  "serving": {
+    "characterId": "620030d5-bb6b-4a10-88c9-2e3041ed9de7",
+    "state": "inactive",
+    "currentReleaseId": null,
+    "version": 1,
+    "updatedAt": "2026-09-05T09:36:25.751Z"
+  },
+  "releases": [
+    {
+      "id": "cmtobad4v000jz4l7fi2f3siz",
+      "status": "withdrawn",
+      "version": 2,
+      "publishedAt": null
+    }
+  ],
+  "overflow": false
+}

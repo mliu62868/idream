@@ -452,7 +452,19 @@ async function ingestUnknownTerminalResolution(
     !transport ||
     transport.status !== "unknown" ||
     transport.idempotencyKey !== input.terminalRecord.providerIdempotencyKey ||
-    transport.providerRequestId !== input.terminalRecord.providerRequestId ||
+    (
+      transport.providerRequestId !== input.terminalRecord.providerRequestId &&
+      !(
+        // A stale lease can be quarantined before the provider returns its ID.
+        // Only an Attempt with no canonical terminal fact may add that late ID
+        // as resolution evidence; never rewrite the original unknown Transport.
+        canonicalReceipt === null &&
+        originalTerminalRecordRef === null &&
+        transport.providerRequestId === null &&
+        typeof input.terminalRecord.providerRequestId === "string" &&
+        input.terminalRecord.providerRequestId.trim().length > 0
+      )
+    ) ||
     transport.terminalRecordRef !== originalTerminalRecordRef
   ) {
     return quarantine("generation_unknown_resolution_transport_mismatch");

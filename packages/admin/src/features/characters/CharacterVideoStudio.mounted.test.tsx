@@ -316,13 +316,44 @@ describe("Character Video Studio", () => {
     ]);
   });
 
+  it("blocks a new video while a Run is active even when completed history is selected, then allows creation after completion", async () => {
+    let finished = false;
+    const historical = { ...readyRun, id: "video-history" };
+    adminV2Request.mockImplementation(async (path, options) => {
+      if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") return { batch: { id: "video-run-2" }, replayed: false };
+      if (path.includes("/creative/runs?")) return { items: [historical, finished ? readyRun : pendingRun], pageInfo: { endCursor: null, hasNextPage: false } };
+      if (path.endsWith("/video-history")) return historical;
+      if (path.endsWith("/video-run-1")) return finished ? readyRun : pendingRun;
+      if (path.endsWith("/video-run-2")) return { ...pendingRun, id: "video-run-2" };
+      throw new Error(`Unexpected request ${path}`);
+    });
+    await act(async () => root.render(<CharacterVideoStudio actorId="actor-1" data={data}
+      onCreateImage={vi.fn()} permissions={{ create: true, read: true }} runCommittedMutation={runCommittedMutation} />));
+    const pending = () => [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Video request in progress"));
+    await waitUntil(() => pending()?.disabled === true);
+    await act(async () => pending()?.click());
+    const history = container.querySelector<HTMLButtonElement>('[aria-label="Video Run history"] button');
+    await act(async () => history?.click());
+    await waitUntil(() => adminV2Request.mock.calls.some(([path]) => path.endsWith("/video-history")));
+    expect(pending()?.disabled).toBe(true);
+    await act(async () => pending()?.click());
+    expect(adminV2Request.mock.calls.some(([, options]) => options?.method === "POST")).toBe(false);
+    finished = true;
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Refresh"]')?.click());
+    const create = () => [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Create video"));
+    await waitUntil(() => create()?.disabled === false);
+    await act(async () => create()?.click());
+    await waitUntil(() => adminV2Request.mock.calls.some(([, options]) => options?.method === "POST"));
+    expect(adminV2Request.mock.calls.filter(([, options]) => options?.method === "POST")).toHaveLength(1);
+  });
+
   it("creates one pinned 4-second Character video Run from the selected image", async () => {
     await act(async () => root.render(
       <CharacterVideoStudio
         actorId="actor-1"
         data={data}
         onCreateImage={vi.fn()}
-        permissions={{ create: true, read: true, review: true }}
+        permissions={{ create: true, read: true }}
         runCommittedMutation={runCommittedMutation}
       />,
     ));
@@ -392,7 +423,9 @@ describe("Character Video Studio", () => {
         negativePrompt: "hand distortion, camera shake, visible text",
       },
     });
-    await waitUntil(() => container.textContent?.includes("Generating video") === true);
+    await waitUntil(() => container.textContent?.includes("Video request in progress") === true);
+    expect(container.textContent).toContain("Resource waits can extend the total time");
+    expect(container.textContent).not.toContain("Estimated remaining");
   });
 
   it.each(["Motion brief", "Negative prompt"])("keeps an oversized %s editable without starting a video", async (label) => {
@@ -401,7 +434,7 @@ describe("Character Video Studio", () => {
         actorId="actor-1"
         data={data}
         onCreateImage={vi.fn()}
-        permissions={{ create: true, read: true, review: true }}
+        permissions={{ create: true, read: true }}
         runCommittedMutation={runCommittedMutation}
       />,
     ));
@@ -454,7 +487,7 @@ describe("Character Video Studio", () => {
         actorId="actor-1"
         data={noSamples}
         onCreateImage={vi.fn()}
-        permissions={{ create: true, read: true, review: true }}
+        permissions={{ create: true, read: true }}
         runCommittedMutation={runCommittedMutation}
       />,
     ));
@@ -477,7 +510,7 @@ describe("Character Video Studio", () => {
         actorId="actor-1"
         data={noSourceData}
         onCreateImage={onCreateImage}
-        permissions={{ create: true, read: true, review: true }}
+        permissions={{ create: true, read: true }}
         runCommittedMutation={runCommittedMutation}
       />,
     ));
@@ -530,7 +563,7 @@ describe("Character Video Studio", () => {
         actorId="actor-1"
         data={data}
         onCreateImage={vi.fn()}
-        permissions={{ create: true, read: true, review: true }}
+        permissions={{ create: true, read: true }}
         runCommittedMutation={runCommittedMutation}
       />,
     ));
@@ -579,7 +612,7 @@ describe("Character Video Studio", () => {
           actorId="actor-1"
           data={data}
           onCreateImage={vi.fn()}
-          permissions={{ create: true, read: true, review: true }}
+          permissions={{ create: true, read: true }}
           runCommittedMutation={runCommittedMutation}
         />,
       ));
@@ -617,7 +650,7 @@ describe("Character Video Studio", () => {
     await waitUntil(() => resume?.disabled === false);
     await act(async () => resume?.click());
     await waitUntil(() => createAttempts === 2);
-    expect(container.textContent).toContain("Generating video");
+    expect(container.textContent).toContain("Video request in progress");
 
     const createCalls = adminV2Request.mock.calls.filter(
       ([path, options]) => path === "/api/v2/admin/creative/runs" && options?.method === "POST",
@@ -635,107 +668,17 @@ describe("Character Video Studio", () => {
     expect(runCommittedMutationSpy).toHaveBeenCalledTimes(2);
   });
 
-  it("recovers a lost review response and unlocks only after the exact decision is projected", async () => {
-    const expectedDecisionId = "video-review-expected";
-    let reviewAttempts = 0;
-    let projectedDecisionId: string | null = null;
-    adminV2Request.mockImplementation(async (path: string, options?: {
-      method?: string;
-      idempotencyKey?: string;
-    }) => {
-      if (path.includes("/decisions") && options?.method === "POST") {
-        reviewAttempts += 1;
-        if (reviewAttempts === 1) throw new Error("connection closed after review submit");
-        return { decisionId: expectedDecisionId, replayed: true };
-      }
-      if (path === "/api/v2/admin/creative/runs/video-run-1") {
-        return {
-          ...readyRun,
-          items: [{
-            ...readyRun.items[0],
-            review: projectedDecisionId ? {
-              id: projectedDecisionId,
-              supersedesDecisionId: null,
-              decision: "approved",
-              identityConsistency: "passed",
-              score: 90,
-              quality: {
-                artifactFree: true,
-                singleSubject: true,
-                intentMatch: true,
-                noVisibleText: true,
-              },
-              reason: "Visible motion evidence passed",
-              reviewerId: "actor-1",
-              createdAt: "2026-07-30T12:05:00.000Z",
-            } : null,
-          }],
-        };
-      }
-      return {
-        items: [readyRun],
-        pageInfo: { endCursor: null, hasNextPage: false },
-      };
-    });
+  it("delivers playable video without a manual review step", async () => {
+    adminV2Request.mockImplementation(async (path: string) => path.endsWith("/video-run-1")
+      ? readyRun : { items: [readyRun], pageInfo: { endCursor: null, hasNextPage: false } });
     await act(async () => root.render(
-      <CharacterVideoStudio
-        actorId="actor-1"
-        data={data}
-        onCreateImage={vi.fn()}
-        permissions={{ create: true, read: true, review: true }}
-        runCommittedMutation={runCommittedMutation}
-      />,
+      <CharacterVideoStudio actorId="actor-1" data={data} onCreateImage={vi.fn()}
+        permissions={{ create: true, read: true }} runCommittedMutation={runCommittedMutation} />,
     ));
-    await waitUntil(() => container.textContent?.includes("Approve video") === true);
-    for (const checkbox of container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')) {
-      await act(async () => checkbox.click());
-      expect(checkbox.checked).toBe(true);
-    }
-    await act(async () => {
-      const reason = [...container.querySelectorAll<HTMLTextAreaElement>("textarea")].find(
-        (textarea) => textarea.placeholder.includes("Describe motion"),
-      );
-      const setter = Object.getOwnPropertyDescriptor(
-        HTMLTextAreaElement.prototype,
-        "value",
-      )?.set;
-      setter?.call(reason, "Visible motion evidence passed");
-      reason?.dispatchEvent(new Event("input", { bubbles: true }));
-      expect(reason?.value).toBe("Visible motion evidence passed");
-    });
-    expect([...container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')]
-      .every((checkbox) => checkbox.checked)).toBe(true);
-    const approve = [...container.querySelectorAll("button")]
-      .find((button) => button.textContent?.includes("Approve video"));
-    expect(approve?.disabled).toBe(false);
-    await act(async () => approve?.click());
-    await waitUntil(() => container.textContent?.includes("Review outcome is unknown") === true);
-    const firstReviewCall = adminV2Request.mock.calls.find(
-      ([path, options]) => path.includes("/decisions") && options?.method === "POST",
-    );
-
-    const resume = [...container.querySelectorAll("button")]
-      .find((button) => button.textContent?.includes("Resume saved review"));
-    await act(async () => resume?.click());
-    await waitUntil(() => container.textContent?.includes("exact decision") === true);
-    const reviewCalls = adminV2Request.mock.calls.filter(
-      ([path, options]) => path.includes("/decisions") && options?.method === "POST",
-    );
-    expect(reviewCalls).toHaveLength(2);
-    expect(reviewCalls[1]?.[1]?.idempotencyKey).toBe(firstReviewCall?.[1]?.idempotencyKey);
-    expect(readActiveDurableMutationIntent({
-      scope: "character-video:review:actor-1:character-video-1",
-    })?.committedTargetId).toBe(expectedDecisionId);
-
-    projectedDecisionId = expectedDecisionId;
-    const verify = [...container.querySelectorAll("button")]
-      .find((button) => button.textContent?.includes("Verify saved review"));
-    await act(async () => verify?.click());
-    await waitUntil(() => container.textContent?.includes("Nothing was published automatically") === true);
-    expect(readActiveDurableMutationIntent({
-      scope: "character-video:review:actor-1:character-video-1",
-    })).toBeNull();
-    expect(container.textContent).not.toContain("Publish video");
+    await waitUntil(() => container.querySelector("video") !== null);
+    expect(container.textContent).not.toContain("Approve video");
+    expect(container.textContent).not.toContain("Video review");
+    expect(adminV2Request.mock.calls.every(([path]) => !path.includes("/decisions"))).toBe(true);
   });
 
   // SPEC: 播放失败一定要有一句能读懂的原因，任何 MediaError 码都不能落空。
@@ -753,7 +696,7 @@ describe("Character Video Studio", () => {
     expect(videoPlaybackIssueMessage("stalled")).toContain("did not start playing");
   });
 
-  it("shows honest stage, elapsed time, ETA, and long-running guidance", () => {
+  it("shows elapsed time and historical duration without claiming a queue-aware countdown", () => {
     expect(
       characterVideoProgress({
         createdAt: "2026-07-30T12:00:00.000Z",
@@ -762,10 +705,9 @@ describe("Character Video Studio", () => {
         nowMs: new Date("2026-07-30T12:10:00.000Z").getTime(),
       }),
     ).toEqual({
-      stage: "Generating video",
+      stage: "Video request in progress",
       elapsedMs: 10 * 60_000,
       estimatedDurationMs: 15 * 60_000,
-      estimatedRemainingMs: 5 * 60_000,
       longerThanExpected: false,
     });
     expect(
@@ -794,7 +736,7 @@ describe("Character Video Studio", () => {
         data={data}
         onCreateImage={vi.fn()}
         onProjectReload={onProjectReload}
-        permissions={{ create: true, read: true, review: true }}
+        permissions={{ create: true, read: true }}
         runCommittedMutation={runCommittedMutation}
       />,
     ));

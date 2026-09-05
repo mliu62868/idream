@@ -36,7 +36,7 @@ function importedEvidence(
 }
 
 describe("Character image qualification interface", () => {
-  it("keeps an operator upload as a candidate until Review creates authority", () => {
+  it("allows an operator upload without a manual Review", () => {
     expect(evaluateCharacterImageReviewAuthority({
       source: "operator_upload",
       characterId: "character-1",
@@ -47,8 +47,8 @@ describe("Character image qualification interface", () => {
       review: null,
       currentVisualAuthority: visualAuthority,
     })).toEqual({
-      qualified: false,
-      blockers: ["review_pending"],
+      qualified: true,
+      blockers: [],
     });
   });
 
@@ -64,7 +64,7 @@ describe("Character image qualification interface", () => {
       currentVisualAuthority: null,
     })).toEqual({
       qualified: false,
-      blockers: ["visual_authority_missing", "review_pending"],
+      blockers: ["visual_authority_missing"],
     });
   });
 
@@ -89,7 +89,7 @@ describe("Character image qualification interface", () => {
     })).toEqual({ qualified: true, blockers: [] });
   });
 
-  it("invalidates an imported approval when Visual Identity authority changes", () => {
+  it("does not let historical review evidence block current operator selection", () => {
     expect(evaluateCharacterImageReviewAuthority({
       source: "operator_upload",
       characterId: "character-1",
@@ -107,8 +107,8 @@ describe("Character image qualification interface", () => {
       },
       currentVisualAuthority: visualAuthority,
     })).toEqual({
-      qualified: false,
-      blockers: ["visual_authority_changed"],
+      qualified: true,
+      blockers: [],
     });
   });
 
@@ -137,7 +137,7 @@ describe("Character image qualification interface", () => {
     });
   });
 
-  it("fails a Release pin when a newer Review decision owns the artifact", () => {
+  it("keeps image eligibility independent of later manual decisions", () => {
     const result = evaluateCharacterImageReviewAuthority({
       source: "operator_upload",
       characterId: "character-1",
@@ -157,10 +157,13 @@ describe("Character image qualification interface", () => {
       currentVisualAuthority: visualAuthority,
     });
 
-    expect(result.qualified).toBe(false);
-    expect(result.blockers).toEqual([
-      "review_authority_changed",
-      "review_evidence_incomplete",
-    ]);
+    expect(result).toEqual({ qualified: true, blockers: [] });
+  });
+  it.each(["generation", "operator_upload"] as const)("still rejects unavailable or invalid %s sources without a review", (source) => {
+    expect(evaluateCharacterImageReviewAuthority({
+      source, characterId: "character-1", assetId: "asset-1", assetAvailable: false,
+      sourceAuthorityValid: false, bootstrapIdentity: false, review: null,
+      currentVisualAuthority: visualAuthority,
+    })).toEqual({ qualified: false, blockers: ["asset_unavailable", "source_authority_invalid"] });
   });
 });

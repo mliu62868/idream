@@ -51,7 +51,6 @@ import { RecipesSection } from "@/components/admin/recipes/RecipesSection";
 import { PresetsSection } from "@/components/admin/presets/PresetsSection";
 import { AssetsSection } from "@/components/admin/assets/AssetsSection";
 import { TagsView } from "@/components/admin/TagsView";
-import { ReviewQueueView } from "@/components/admin/ReviewQueueView";
 import { CmsView } from "@/components/admin/CmsView";
 import { ComplianceView } from "@/components/admin/ComplianceView";
 import { InsightsView } from "@/components/admin/InsightsView";
@@ -187,8 +186,6 @@ export const navItems: NavItem[] = [
 
   apiItem({ id: "content/official", label: "Characters", href: "/admin/characters", icon: UserRound, group: "Character Studio", apiWorkspace: "character_workspace", chrome: "compact", navigation: "primary",
     render: (ctx) => <CharacterWorkspace actorId={ctx.actorId} permissions={ctx.permissions} view={ctx.view} /> }),
-  item({ id: "content/review-queue", label: "Character Review", href: "/admin/characters/review", icon: ClipboardCheck, group: "Character Studio", read: read("safety.review.read"),
-    render: () => <ReviewQueueView /> }),
   item({ id: "content/templates", label: "Character Starters", href: "/admin/characters/starters", icon: Sparkles, group: "Character Studio", read: read("content.read"), navigation: "tool",
     render: (ctx) => <StartersSection view={ctx.view} /> }),
   item({ id: "content/tags", label: "Taxonomy", href: "/admin/characters/taxonomy", icon: Flag, group: "Character Studio", read: read("content.read"), navigation: "tool",
@@ -239,7 +236,7 @@ export const navItems: NavItem[] = [
   item({ id: "announcements", label: "Announcements", href: "/admin/growth/merchandising?view=announcements", icon: MessageSquare, group: "Growth", read: read("growth.promo.read"), navigation: "tool",
     render: () => <AnnouncementsView /> }),
   item({ id: "cms", label: "CMS & SEO", href: "/admin/growth/content", icon: FileText, group: "Growth", read: read("content.read"),
-    render: () => <CmsView /> }),
+    render: (ctx) => <CmsView canWrite={ctx.permissions.has("content.cms.write")} /> }),
   item({ id: "pricing", label: "Pricing", href: "/admin/growth/offers?view=pricing", icon: Coins, group: "Growth", read: read("billing.read"),
     render: (ctx) => <PricingWorkspace canWrite={ctx.permissions.has("config.pricing.write")} /> }),
   item({ id: "promo", label: "Promotions", href: "/admin/growth/offers?view=promo", icon: Ticket, group: "Growth", read: read("growth.promo.read"), navigation: "tool",

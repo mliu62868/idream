@@ -324,6 +324,21 @@ describe("CaseWorkspace decision loop", () => {
     expect(panel).toContain("Provider confirmed the duplicate charge.");
   });
 
+  it("selects readable evidence and sends the selected authority IDs", async () => {
+    await mount({ canAssign: false, canDecide: true });
+    expect(container.textContent).not.toContain("Evidence IDs (comma separated)");
+    const evidence = container.querySelector<HTMLInputElement>('fieldset input[type="checkbox"]')!;
+    expect(evidence.checked).toBe(true);
+    expect(evidence.closest("label")?.textContent).toContain("Customer reported a double charge.");
+    const verify = () => [...container.querySelectorAll("button")].find((button) => button.textContent === "Verify from authority")!;
+    await act(async () => evidence.click());
+    expect(verify().disabled).toBe(true);
+    await act(async () => evidence.click());
+    await act(async () => verify().click());
+    expect(adminV2Request).toHaveBeenCalledWith("/api/v2/admin/cases/case-1/verification", expect.objectContaining({ body: { entityVersion: 4, state: "passed", evidenceRefs: ["evidence-1"] } }));
+    expect(container.querySelector("#case-evidence-title")?.closest("section")?.querySelector("details")?.open).toBe(false);
+  });
+
   it("sends a stable assignment key when retrying a lost response", async () => {
     const read = adminV2Request.getMockImplementation()!;
     let assignmentWrites = 0;

@@ -27,7 +27,6 @@ import {
 } from "@/server/test/helpers";
 import { legacyRedeemCodeHash } from "@/server/lib/redeem-codes";
 import { adminV2 } from "@/server/test/admin-v2-http";
-import { adminV2 as adminV2Api } from "@/server/test/admin-v2-http";
 import type { ApiResult } from "@/server/test/helpers";
 
 // SPEC: Remaining API surface (BackendFeatureSpec §5.1/5.6/5.7/5.9/5.10) —
@@ -1054,19 +1053,33 @@ describe("tags, likes, duplicate", () => {
     })).resolves.toBe(0);
   });
 
-  it("keeps the duplicate private image serviceable after the source Character and asset are archived", async () => {
+  it.each(["unknown", "blocked"] as const)("does not copy an image whose automatic safety result is %s", async (safetyStatus) => {
+    const userId = `${P}dup-safety-${safetyStatus}`;
+    const characterId = `${P}dup-safety-character-${safetyStatus}`;
+    const mediaId = `${P}dup-safety-media-${safetyStatus}`;
+    await createUser({ id: userId });
+    await createCharacter({ id: characterId, creatorId: userId, source: "user", visibility: "private" });
+    await createMedia({ id: mediaId, ownerId: userId });
+    await prisma.mediaAsset.update({
+      where: { id: mediaId },
+      data: { characterId, safetyStatus, storageKey: `${P}dup-safety/${safetyStatus}.webp` },
+    });
+    await prisma.character.update({ where: { id: characterId }, data: { imageAssetId: mediaId } });
+    const response = await api("POST", `characters/${characterId}/duplicate`, { userId, ageGate: true });
+    expectError(response, 409, "conflict");
+    expect(response.error?.message).toBe("The source Character image is no longer available");
+    expect(await prisma.character.count({ where: { creatorId: userId } })).toBe(1);
+    expect(await prisma.mediaAsset.count({ where: { ownerId: userId } })).toBe(1);
+    expect(await prisma.mediaAsset.findUniqueOrThrow({ where: { id: mediaId } })).toMatchObject({ safetyStatus });
+  });
+
+  it("keeps the duplicate private image serviceable without manual review after the source Character and asset are archived", async () => {
     const userId = `${P}dup-blob-user`;
-    const reviewerId = `${P}dup-blob-reviewer`;
     const sourceCharacterId = `${P}dup-blob-character`;
     const sourceMediaId = `${P}dup-blob-media`;
     const storageKey = `${P}dup-blob/source.webp`;
     const bytes = Buffer.from("independent duplicate image bytes");
     await createUser({ id: userId, dataClass: "customer" });
-    await createUser({
-      id: reviewerId,
-      role: "moderator",
-      dataClass: "internal",
-    });
     await createCharacter({
       id: sourceCharacterId,
       creatorId: userId,
@@ -1124,7 +1137,8 @@ describe("tags, likes, duplicate", () => {
       contentType: "image/webp",
       width: 512,
       height: 512,
-      safetyStatus: "unknown",
+      safetyStatus: "passed",
+      visibility: "private",
     });
     expect(duplicateMedia.url).not.toBe(`/user-content/${sourceMediaId}/content.webp`);
     expect(duplicateMedia.thumbnailUrl).toBe(duplicateMedia.url);
@@ -1149,53 +1163,13 @@ describe("tags, likes, duplicate", () => {
     };
     await expect(
       imageReferenceInputsForGenerationJob(generationReferenceInput),
-    ).resolves.toEqual([]);
-
-    const mediaQueue = await adminV2("GET", "moderation/queue", {
-      userId: reviewerId,
-      role: "moderator",
-      query: {
-        scope: "media",
-        search: duplicateMediaId,
-      },
-    });
-    expectOk(mediaQueue);
-    expect(mediaQueue.data.mediaReview).toEqual([
-      expect.objectContaining({
-        id: duplicateMediaId,
-        characterId: duplicateCharacterId,
-        safetyStatus: "unknown",
-        reviewKind: "independent_duplicate",
-        sourceAssetId: sourceMediaId,
-      }),
+    ).resolves.toEqual([
+      expect.objectContaining({ assetId: duplicateMediaId, role: "source_image", storageKey }),
     ]);
-
-    const mediaDecision = await adminV2(
-      "POST",
-      `moderation/media/${duplicateMediaId}/decision`,
-      {
-        userId: reviewerId,
-        role: "moderator",
-        body: {
-          decision: "passed",
-          reason: "Independent duplicate image review passed",
-          confirmation: duplicateMediaId,
-        },
-      },
-    );
-    expectOk(mediaDecision);
-    expect(mediaDecision.data.asset).toMatchObject({
-      id: duplicateMediaId,
-      safetyStatus: "passed",
-    });
-    await expect(
-      prisma.adminAuditLog.findFirst({
-        where: {
-          action: "safety.media.review",
-          targetId: duplicateMediaId,
-        },
-      }),
-    ).resolves.not.toBeNull();
+    expect(await prisma.creativeReviewDecision.count({ where: { artifactId: duplicateMediaId } })).toBe(0);
+    expect(await prisma.adminAuditLog.count({
+      where: { action: "safety.media.review", targetId: duplicateMediaId },
+    })).toBe(0);
 
     const publish = await api("PATCH", `characters/${duplicateCharacterId}`, {
       userId,
@@ -1203,44 +1177,12 @@ describe("tags, likes, duplicate", () => {
       body: { visibility: "public" },
     });
     expectOk(publish);
-    const submission = await prisma.characterSubmission.findFirstOrThrow({
-      where: {
-        characterId: duplicateCharacterId,
-        status: "pending",
-      },
-      orderBy: { submittedAt: "desc" },
-    });
-    const characterQueue = await adminV2Api(
-      "GET",
-      `/api/v2/admin/content/review-queue?search=${encodeURIComponent(duplicateCharacterId)}`,
-      { userId: reviewerId, role: "moderator" },
-    );
-    expectOk(characterQueue);
-    expect(characterQueue.data.items).toEqual([
-      expect.objectContaining({
-        submissionId: submission.id,
-        character: expect.objectContaining({
-          id: duplicateCharacterId,
-          status: "pending_review",
-          imageAssetId: duplicateMediaId,
-        }),
-      }),
-    ]);
-    const characterDecision = await adminV2Api(
-      "POST",
-      `/api/v2/admin/content/review-queue/${submission.id}/decision`,
-      {
-        userId: reviewerId,
-        role: "moderator",
-        body: {
-          decision: "approve",
-          reviewReason: "Character and independent identity image approved",
-          reason: "Public Character review passed",
-          confirmation: submission.id,
-        },
-      },
-    );
-    expectOk(characterDecision);
+    expect(await prisma.characterSubmission.count({
+      where: { characterId: duplicateCharacterId, status: "pending" },
+    })).toBe(0);
+    expect(await prisma.characterSubmission.findFirstOrThrow({
+      where: { characterId: duplicateCharacterId },
+    })).toMatchObject({ status: "approved", reviewerId: null });
     await expect(
       prisma.character.findUniqueOrThrow({
         where: { id: duplicateCharacterId },

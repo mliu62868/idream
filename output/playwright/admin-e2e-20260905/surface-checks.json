@@ -1,0 +1,59 @@
+[
+  {
+    "path": "/admin/creative/library",
+    "state": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Script ran on page and returned:\n```json\n{\"url\":\"/admin/creative/library\",\"title\":\"素材库 | iDream Admin\",\"text\":\"iDream Admin\\n\\n管理员\\n\\n今日工作\\n角色\\n工作区\\n系统\\n平台运营\\n运营素材\\n客户运营\\n增长\\n运营素材\\n›\\n素材库\\n本地环境\\n素材库\\n⌘K\\n刷新\\nseed-admin-user\\n素材库\\n\\n上传、整理并暂存运营图片素材。\\n\\n上传运营图片\\n\\n可使用任意工具制作图片，再将最终 JPEG、PNG 或 WebP 上传到这里。角色图片仍在角色工作台中管理。\\n\\n用途\\n活动\\n首页\\n信息流\\nSEO\\n模板封面\\n上传图片\\n全部\\n已生成\\n已通过\\n已拒绝\\n已发布\\n已归档\\n全部\\n角色封面\\n角色大图\\n角色聊天\\n角色视频\\n信息流\\n首页\\nSEO\\n模板封面\\n活动\\n模型评测\\n形象校准\\n\\n已选 0 项\\n\\n仅在所有当前使用关系都已替换或撤回后归档。\\n\\n选择本页\\n清空选择\\n归档已选\\n选择\\n已生成\\n\\nmedia_w3cv1o1jnngmto6yacy\\n\\n角色封面\\n\\n选择\\n已通过\\n\\nmedia_gc8lmcfqh1dmto3sjl3\\n\\n角色封面\\n\\n选择\\n已通过\\n\\nmedia_wxjv99uj7mkmtk6ridi\\n\\n角色聊天\\n\\n选择\\n已拒绝\\n\\nmedia_th56xg0z95omtk63tsu\\n\\n角色聊天\\n\\n选择\\n已通过\\n\\nmedia_wpxay0tf8rcmtk5ltns\\n\\n角色大图\\n\\n选择\\n已拒绝\\n\\nmedia_2e2uxl07kb1mtk52ikb\\n\\n角色大图\\n\\n选择\\n已通过\\n\\nmedia_mbmrikh9g69mtk3y44j\\n\\n角色封面\\n\\n选择\\n已拒绝\\n\\nmedia_0ezs1lptyvjqmtk3mxnl\\n\\n角色封面\\n\\n选择\\n已通过\\n\\nmedia_ybr4ign3gnmtfkdcoq\\n\\n角色聊天\\n\\n选择\\n已通过\\n\\nmedia_uzmd51m3l7pmtfk6emn\\n\\n角色大图\\n\\n选择\\n已通过\\n\\nmedia_m11cku4ozgmtfk1gld\\n\\n角色封面\\n\\n选择\\n已生成\\n\\nmedia_oumf585hymtclpko3\\n\\n角色封面\\n\\n选择\\n已通过\\n\\nmedia_ht2cywbqz79msp1fphq\\n\\n角色聊天\\n\\n选择\\n已通过\\n\\nmedia_646qxeh3oh5msp1cxd4\\n\\n角色大图\\n\\n选择\\n已通过\\n\\nmedia_rho20qs1lihmsp194g4\\n\\n角色封面\\n\\n选择\\n已通过\\n\\nmedia_5c31l6gcbfdmsh8hcdi\\n\\n角色大图\\n\\n选择\\n已通过\\n\\nmedia_p31sz5ubwwqmsh2odqx\\n\\n角色封面\\n\\n选择\\n已通过\\n\\nmedia_p7wkcf8vdfmsh223a3\\n\\n角色聊天\\n\\n选择\\n已通过\\n\\nmedia_eln56oo1gakmsa1qcfo\\n\\n角色大图\\n\\n选择\\n已生成\\n\\nmedia_n8y5nm5cp8ms9ob46q\\n\\n形象校准\\n\\n选择\\n已生成\\n\\nmedia_kkyeb3s7jbrms9moppc\\n\\n形象校准\\n\\n选择\\n已生成\\n\\nmedia_61wnrnvyjbms1e7c89\\n\\n形象校准\\n\\n选择\\n已生成\\n\\nmedia_lqe2rd97efqms0ekypu\\n\\n形象校准\\n\\n选择\\n已通过\\n\\nmedia_oymm5s0loyms0deiol\\n\\n形象校准\\n\\n选择\\n已生成\\n\\nmedia_rlrsjp8myipms027w6t\\n\\n形象校准\\n\\n共 25 行\\n\\n第 1 页\\n上一页\\n下一页\"}\n```"
+        }
+      ]
+    },
+    "consoleResult": {
+      "content": [
+        {
+          "type": "text",
+          "text": "## Console messages\n<no console messages found>"
+        }
+      ]
+    }
+  },
+  {
+    "path": "/admin/growth/health",
+    "state": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Script ran on page and returned:\n```json\n{\"url\":\"/admin/growth/health\",\"title\":\"产品健康 | iDream Admin\",\"text\":\"iDream Admin\\n\\n管理员\\n\\n今日工作\\n角色\\n工作区\\n系统\\n平台运营\\n运营素材\\n客户运营\\n增长\\n增长\\n›\\n产品健康\\n本地环境\\n产品健康\\n⌘K\\n刷新\\nseed-admin-user\\n产品健康\\n\\n对比经认证的产品指标和独立来源的旧版运营诊断数据。\\n\\n标准口径: 刷新中\\n旧版诊断: 刷新中\\n最近 1 小时\\n最近 24 小时\\n最近 7 天\\n最近 30 天\\n开始时间\\n结束时间\\n应用时间窗口\\n重置\"}\n```"
+        }
+      ]
+    },
+    "consoleResult": {
+      "content": [
+        {
+          "type": "text",
+          "text": "## Console messages\n<no console messages found>"
+        }
+      ]
+    }
+  },
+  {
+    "path": "/admin/system/approvals",
+    "state": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Script ran on page and returned:\n```json\n{\"url\":\"/admin/system/approvals\",\"title\":\"审批 | iDream Admin\",\"text\":\"iDream Admin\\n\\n管理员\\n\\n今日工作\\n角色\\n工作区\\n系统\\n平台运营\\n运营素材\\n客户运营\\n增长\\n系统\\n›\\n审批\\n本地环境\\n审批\\n⌘K\\n刷新\\nseed-admin-user\\n审批\\n\\n基于完整审批权威数据审核高风险请求；申请人隔离和所需权限继续由服务端强制执行。\\n\\n审批权威 · 截至 06:00:23\\n搜索\\n状态\\n待处理\\n已通过\\n已拒绝\\n已取消\\n筛选审批\\n\\n当前没有待审批请求\\n\\n完整的审批权威查询未返回待处理工作。\"}\n```"
+        }
+      ]
+    },
+    "consoleResult": {
+      "content": [
+        {
+          "type": "text",
+          "text": "## Console messages\n<no console messages found>"
+        }
+      ]
+    }
+  }
+]
