@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RequiredImageAction } from "@idream/shared/chat/image-action";
-import type { AgentRunInput, AgentRunRecoveryScan } from "./agent-run-store.js";
+import type { AgentRunInput, AgentRunProposal, AgentRunRecoveryScan } from "./agent-run-store.js";
 
 const store = vi.hoisted(() => ({
   admitAgentRun: vi.fn(async () => ({ duplicate: false, terminal: false })),
@@ -13,7 +13,7 @@ const store = vi.hoisted(() => ({
   ),
   readAgentRunCompletion: vi.fn(async () => null),
   readAgentRunInput: vi.fn(),
-  readAgentRunProposal: vi.fn(async () => null),
+  readAgentRunProposal: vi.fn<() => Promise<AgentRunProposal | null>>(async () => null),
   writeAgentRunProposal: vi.fn(async () => undefined),
 }));
 const runtime = vi.hoisted(() => ({
@@ -43,7 +43,7 @@ vi.mock("./agent-runtime/runtime.js", () => ({
 }));
 vi.mock("./prepared-turn.js", () => ({
   prepareCompanionTurn: vi.fn(async ({ snapshot }) => ({
-    version: 4,
+    version: 5,
     characterName: "Companion",
     context: {
       policy: { imageToolEnabled: productContext.imageToolEnabled },
@@ -194,6 +194,59 @@ describe("AgentRun account-erasure drain", () => {
     expect(store.readAgentRunInput).toHaveBeenCalledWith("turn-1", 1);
   });
 
+  it.each([
+    { status: 429, body: { error: "rate_limited" } },
+    { status: 401, body: { error: "unauthorized" } },
+    { status: 200, body: { accepted: false } },
+    { status: 200, body: { accepted: true, duplicate: false, terminalMessageId: "another-message", committedAt: "2026-08-28T12:00:00.000Z" } },
+    { status: 200, body: { accepted: true, duplicate: false, terminalMessageId: "assistant-1", committedAt: "invalid-date" } },
+  ])("retains the exact proposal without done or cleanup for an unconfirmed Main ACK: $status $body", async ({ status, body }) => {
+    const proposal: AgentRunProposal = {
+      schemaVersion: 1,
+      attemptId: "assistant-1:1",
+      proposedAt: "2026-08-28T12:00:00.000Z",
+      terminal: {
+        version: 1, turnId: "turn-1", sessionId: "session-1", assistantMessageId: "assistant-1", attempt: 1,
+        status: "sent", content: "A durable reply.", model: "test-model",
+        promptTokens: 10, completionTokens: 4, sceneVersion: 0, scene: null,
+        terminalEvidence: { authority: "test", prompt: {
+          productPromptVersion: "companion-product-1", preparedTurnVersion: 5,
+          systemPromptDigest: "a".repeat(64), soulFingerprint: "b".repeat(64),
+        } },
+      },
+    };
+    store.listIncompleteAgentRuns.mockResolvedValueOnce({
+      runs: [{ turnId: "turn-1", attempt: 1, userId: "user-1" }], failures: [],
+    });
+    store.readAgentRunProposal.mockResolvedValueOnce(proposal);
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json(body, { status })));
+
+    await recoverIncompleteAgentRuns();
+    await cancelAgentRunsForUser("user-1");
+
+    expect(runtime.runCompanion).not.toHaveBeenCalled();
+    expect(store.writeAgentRunProposal).not.toHaveBeenCalled();
+    expect(store.completeAgentRun).not.toHaveBeenCalled();
+    expect(stream.appendStreamEvent).not.toHaveBeenCalled();
+    const request = vi.mocked(fetch).mock.calls[0]?.[1];
+    expect(JSON.parse(String(request?.body))).toEqual(proposal.terminal);
+
+    store.listIncompleteAgentRuns.mockResolvedValueOnce({
+      runs: [{ turnId: "turn-1", attempt: 1, userId: "user-1" }], failures: [],
+    });
+    store.readAgentRunProposal.mockResolvedValueOnce(proposal);
+    vi.mocked(fetch).mockResolvedValueOnce(Response.json({
+      accepted: true, duplicate: true, terminalMessageId: "assistant-1",
+      committedAt: "2026-08-28T12:00:00.000Z",
+    }));
+    await recoverIncompleteAgentRuns();
+    await cancelAgentRunsForUser("user-1");
+    expect(runtime.runCompanion).not.toHaveBeenCalled();
+    expect(store.completeAgentRun).toHaveBeenCalledExactlyOnceWith("turn-1", 1, expect.objectContaining({ outcome: "committed" }));
+    expect(stream.appendStreamEvent).toHaveBeenCalledExactlyOnceWith("stream:assistant-1", expect.objectContaining({ type: "done", attempt: 1 }));
+    expect(vi.mocked(fetch).mock.calls[1]?.[1]?.body).toBe(request?.body);
+  });
+
   it("waits for the user's active writer to finish after aborting it", async () => {
     const started = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
@@ -225,7 +278,7 @@ describe("AgentRun account-erasure drain", () => {
     await expect(cancelAgentRunsForUser("user-1")).resolves.toBe(0);
   });
 
-  it("routes a required image action through the Agent-authored prompt and caption", async () => {
+  it("records Agent-authored image direction and deterministic confirmation evidence", async () => {
     const completed = Promise.withResolvers<void>();
     store.completeAgentRun.mockImplementationOnce(async () => {
       completed.resolve();
@@ -248,7 +301,7 @@ describe("AgentRun account-erasure drain", () => {
           outputCount: 1,
         },
       });
-      const content = "靠近一点，只给你看。";
+      const content = "好，图片请求已确认。";
       await port.emit({
         invocationId: invocation.invocationId,
         attemptId: invocation.attemptId,
@@ -274,6 +327,11 @@ describe("AgentRun account-erasure drain", () => {
           argumentsDigest: "c".repeat(64),
         }],
         completedAt: "2026-08-28T12:00:01.000Z",
+        acknowledgement: { version: "image-action-ack-1", locale: "zh" },
+        modelRequests: [{
+          systemPromptDigest: "d".repeat(64), bodyDigest: "e".repeat(64),
+          estimatedInputTokens: 100, maxInputTokens: 2_000,
+        }],
       });
     });
 
@@ -286,7 +344,7 @@ describe("AgentRun account-erasure drain", () => {
     const streamPayloads = stream.appendStreamEvent.mock.calls.map(([, event]) => event);
     expect(streamPayloads).toContainEqual(expect.objectContaining({
       type: "delta",
-      delta: "靠近一点，只给你看。",
+      delta: "好，图片请求已确认。",
     }));
     expect(store.writeAgentRunProposal).toHaveBeenCalledWith(
       "turn-1",
@@ -294,13 +352,17 @@ describe("AgentRun account-erasure drain", () => {
       expect.objectContaining({
         terminal: expect.objectContaining({
           status: "sent",
-          content: "靠近一点，只给你看。",
+          content: "好，图片请求已确认。",
           model: "test-model",
           terminalEvidence: expect.objectContaining({
             authority: "dsh_terminal_candidate",
+            acknowledgement: { version: "image-action-ack-1", locale: "zh" },
             prompt: expect.objectContaining({
               productPromptVersion: "companion-product-1",
+              systemPromptDigest: "d".repeat(64),
             }),
+            preparedSystemPromptDigest: expect.any(String),
+            modelRequests: [expect.objectContaining({ bodyDigest: "e".repeat(64) })],
             tools: [expect.objectContaining({
               callId: "model-tool-call-1",
               name: "generate_image_async",

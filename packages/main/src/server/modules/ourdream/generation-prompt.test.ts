@@ -38,6 +38,21 @@ function prompt(
 }
 
 describe("image generation prompt", () => {
+  it("compiles a source-image edit without replacing its composition with a new portrait", () => {
+    const text = buildGenerationPrompt({
+      mode: "image", character, visualProfile: null, consistencyMode: "strict",
+      sourceImageAssetId: "delivered-chat-image",
+      userPrompt: "Add a small red scarf. Keep the same face and framing.",
+      presetFragment: "", lookFragment: "", sourceType: "chat_image",
+    });
+    expect(text).toMatch(/^Edit the supplied source image/);
+    expect(text).toContain("Add a small red scarf. Keep the same face and framing.");
+    expect(text).toContain("composition, framing, camera angle, pose, background and lighting");
+    expect(text).toContain("identity reference");
+    expect(text).not.toContain("High quality in-character portrait");
+    expect(text).not.toContain("bartender");
+  });
+
   it("removes Agent-authored identity claims while preserving the concrete scene", () => {
     const direction = sanitizeChatImageDirection(
       "Full nude selfie of a young woman around 20 years old at a rainy bedroom window, 4:5 close-up, warm bedside light, dark hair loose around her face, direct gaze, wet porcelain skin.",

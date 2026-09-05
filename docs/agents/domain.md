@@ -1,56 +1,10 @@
-# Domain Docs
+# 领域文档约定
 
-This repository uses a multi-context domain-documentation layout.
+定义领域术语、设计模块边界或记录 / 修改架构决策时，按涉及范围读取已有文档：
 
-## Before exploring, read these
+- 仓库级关系：`CONTEXT-MAP.md` 与 `docs/adr/` 中相关 ADR。
+- package 内术语与决策：对应 `packages/<context>/CONTEXT.md` 与 `packages/<context>/docs/adr/` 中相关 ADR；context 为 main、chat、gen、admin、shared。
 
-- `CONTEXT-MAP.md` at the repository root, when present
-- The relevant context file under `packages/<context>/CONTEXT.md`
-- System-wide ADRs under `docs/adr/`
-- Context-specific ADRs under `packages/<context>/docs/adr/`
+这些文件尚未建立时直接继续，不把缺失作为阻塞，也不创建空占位。仅在本次工作已明确术语或决策、需要记录时创建；既有产品与架构文档的权威关系见根目录 [AGENTS.md](../../AGENTS.md)。
 
-The expected contexts are:
-
-- `packages/main`
-- `packages/chat`
-- `packages/gen`
-- `packages/admin`
-- `packages/shared`
-
-If these files or directories do not exist, proceed silently. Do not flag their absence or create empty placeholders. Domain-modeling skills create them lazily when terminology or architectural decisions are resolved.
-
-Existing product and architecture sources of truth defined by `AGENTS.md` remain authoritative.
-
-## Expected structure
-
-```text
-/
-├── CONTEXT-MAP.md
-├── docs/adr/
-└── packages/
-    ├── main/
-    │   ├── CONTEXT.md
-    │   └── docs/adr/
-    ├── chat/
-    │   ├── CONTEXT.md
-    │   └── docs/adr/
-    ├── gen/
-    │   ├── CONTEXT.md
-    │   └── docs/adr/
-    ├── admin/
-    │   ├── CONTEXT.md
-    │   └── docs/adr/
-    └── shared/
-        ├── CONTEXT.md
-        └── docs/adr/
-```
-
-## Use the glossary's vocabulary
-
-When output names a domain concept—in an issue title, refactor proposal, hypothesis, or test—use the term defined in the relevant `CONTEXT.md`.
-
-If the concept is missing, reconsider whether the project already uses another term or record the gap for domain modeling.
-
-## Flag ADR conflicts
-
-If proposed work contradicts an existing ADR, surface the conflict explicitly instead of silently overriding the decision.
+在 issue、方案和测试中使用已有领域术语；概念缺失时先核对是否已有别名。提案与现有 ADR 冲突时明确指出，不静默覆盖决策。

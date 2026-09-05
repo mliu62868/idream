@@ -13,13 +13,15 @@ import { isOpenRouterBaseUrl } from "@idream/shared";
 import { parseImageAgentToolCall } from "@idream/shared/chat/image-action";
 import { createHash } from "node:crypto";
 import { logger } from "../logger.js";
-import type { CompanionToolCall, PreparedTurnProfile } from "./contracts";
+import type { CompanionModelRequestEvidence, CompanionToolCall, PreparedTurnProfile } from "./contracts";
 
 export interface OpenAiCompatibleAdapterOptions {
   profile: PreparedTurnProfile;
   apiKey: string;
   openRouterProviderOnly?: readonly string[];
   requiredToolName?: CompanionToolCall["name"];
+  maxInputTokens?: number;
+  observeRequest?: (evidence: CompanionModelRequestEvidence) => void;
   fetch?: typeof globalThis.fetch;
 }
 
@@ -305,6 +307,8 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
   private readonly request: typeof globalThis.fetch;
   private readonly requiredToolName: CompanionToolCall["name"] | undefined;
   private requiredToolCompleted: boolean;
+  private readonly maxInputTokens: number | undefined;
+  private readonly observeRequest: OpenAiCompatibleAdapterOptions["observeRequest"];
 
   constructor(options: OpenAiCompatibleAdapterOptions) {
     super();
@@ -314,6 +318,8 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
     this.openRouter = isOpenRouterBaseUrl(this.profile.baseUrl);
     this.request = options.fetch ?? globalThis.fetch;
     this.requiredToolName = options.requiredToolName;
+    this.maxInputTokens = options.maxInputTokens;
+    this.observeRequest = options.observeRequest;
     this.requiredToolCompleted = !options.requiredToolName;
     if (!this.apiKey) throw new Error("OpenAI-compatible API key is required");
     if (this.openRouter && !this.providerOnly?.length) {
@@ -335,13 +341,25 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
     }
 
     let omission: unknown;
+    let totalUsage: TokenUsage | undefined;
     for (const jsonCompatibilityMode of [false, true]) {
       const chunks: StreamChunk[] = [];
       try {
         for await (const chunk of this.streamOnce(options, jsonCompatibilityMode)) {
-          chunks.push(chunk);
+          if (chunk.type === "usage") {
+            totalUsage = {
+              inputTokens: (totalUsage?.inputTokens ?? 0) + (chunk.usage.inputTokens ?? 0),
+              outputTokens: (totalUsage?.outputTokens ?? 0) + (chunk.usage.outputTokens ?? 0),
+              cacheReadTokens: (totalUsage?.cacheReadTokens ?? 0) + (chunk.usage.cacheReadTokens ?? 0),
+              cacheWriteTokens: (totalUsage?.cacheWriteTokens ?? 0) + (chunk.usage.cacheWriteTokens ?? 0),
+              reasoningTokens: (totalUsage?.reasoningTokens ?? 0) + (chunk.usage.reasoningTokens ?? 0),
+            };
+          } else chunks.push(chunk);
         }
-        yield* requiredToolOnlyChunks(chunks, this.requiredToolName);
+        for (const chunk of requiredToolOnlyChunks(chunks, this.requiredToolName)) {
+          if (chunk.type === "finish" && totalUsage) yield { type: "usage", usage: totalUsage };
+          yield chunk;
+        }
         return;
       } catch (error) {
         if (!isRequiredToolOmission(error)) throw error;
@@ -382,6 +400,7 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
             arguments: argumentsJson,
           },
         };
+        if (totalUsage) yield { type: "usage", usage: totalUsage };
         yield { type: "finish", reason: { kind: "tool-calls" } };
         return;
       }
@@ -417,8 +436,8 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
       // SPEC: the image-direction skill receives only Character/runtime system
       // authority, the current Scene state and the latest user request. Stale
       // assistant photo acknowledgements are not visual-direction evidence and
-      // must not compete with the required native tool call. After the tool is
-      // observed, the conversational step receives the complete history again.
+      // must not compete with the required native tool call. Chat supplies the
+      // confirmation locally after Main accepts this tool's effect.
       messages: forceRequiredTool
         ? requiredToolMessages(options.system, options.messages, jsonCompatibilityMode)
         : openAiMessages(options.system, options.messages),
@@ -474,6 +493,29 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
     }
 
     try {
+      // Apply the same character estimate as PreparedTurn, now
+      // including DSH guidance, resident memory, tool results and wire schemas.
+      // This is an input estimate, not a claim about a provider's tokenizer.
+      const estimatedInputTokens = Math.max(1, Math.ceil(JSON.stringify({
+        messages: body.messages,
+        tools: body.tools ?? [],
+      }).length / 4));
+      if (this.maxInputTokens !== undefined && estimatedInputTokens > this.maxInputTokens) {
+        throw new LlmError("assembled model request exceeds the prepared input budget", "INPUT_BUDGET_EXCEEDED");
+      }
+      const serializedBody = JSON.stringify(body);
+      this.observeRequest?.({
+        bodyDigest: createHash("sha256").update(serializedBody).digest("hex"),
+        systemPromptDigest: createHash("sha256").update(body.messages
+          .filter((message): message is { role: "system"; content: string } =>
+            message !== null && typeof message === "object"
+            && "role" in message && message.role === "system"
+            && "content" in message && typeof message.content === "string")
+          .map(message => message.content)
+          .join("\n")).digest("hex"),
+        estimatedInputTokens,
+        ...(this.maxInputTokens === undefined ? {} : { maxInputTokens: this.maxInputTokens }),
+      });
       const response = await this.request(chatCompletionsUrl(this.profile.baseUrl), {
         method: "POST",
         headers: {
@@ -482,7 +524,7 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
           "content-type": "application/json",
           accept: "text/event-stream",
         },
-        body: JSON.stringify(body),
+        body: serializedBody,
         signal: timeout.signal,
       });
       if (!response.ok) {
@@ -604,6 +646,10 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
         throw new LlmError("provider stream ended without a finish reason", "INVALID_RESPONSE");
       }
       const resolvedFinish = finishReason(nativeFinish);
+      // A completed request spent tokens even if it omitted its required tool.
+      // The compatibility wrapper accounts for both requests before returning
+      // one validated DSH completion anchor.
+      if (usage) yield { type: "usage", usage };
       if (forceRequiredTool) {
         const requiredToolObserved = [...blocks.values()].some(
           (state) => state.type === "tool-call" && state.name === this.requiredToolName,
@@ -656,7 +702,6 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
           );
         }
       }
-      if (usage) yield { type: "usage", usage };
       yield {
         type: "finish",
         reason: resolvedFinish,

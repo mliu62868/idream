@@ -9,7 +9,7 @@ import {
 } from "./contracts";
 
 const preparedTurn = {
-  version: 4 as const,
+  version: 5 as const,
   model: "model-1",
   characterName: "Mira",
   messages: [

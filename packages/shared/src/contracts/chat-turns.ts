@@ -172,6 +172,15 @@ export const chatToolEffectSchema = z.object({
   arguments: z.record(z.string(), z.unknown()),
 }).strict();
 
+// A successful HTTP response alone is not a durable terminal acknowledgement.
+export const chatTerminalAckSchema = z.object({
+  accepted: z.literal(true),
+  duplicate: z.boolean(),
+  terminalMessageId: z.string().min(1),
+  committedAt: z.string().datetime(),
+}).strict();
+
 export type ChatExecutionSnapshot = z.infer<typeof chatExecutionSnapshotSchema>;
 export type ChatTerminalCommit = z.infer<typeof chatTerminalCommitSchema>;
+export type ChatTerminalAck = z.infer<typeof chatTerminalAckSchema>;
 export type ChatToolEffect = z.infer<typeof chatToolEffectSchema>;

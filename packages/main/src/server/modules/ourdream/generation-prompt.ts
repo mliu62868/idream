@@ -120,6 +120,7 @@ export function buildGenerationPrompt(input: {
   presetFragment: string;
   lookFragment: string;
   sourceType?: string;
+  sourceImageAssetId?: string;
 }) {
   const userPrompt = cleanPromptText(input.userPrompt, 900);
   const base =
@@ -130,6 +131,7 @@ export function buildGenerationPrompt(input: {
           consistencyMode: input.consistencyMode,
           userPrompt,
           sourceType: input.sourceType,
+          sourceImageAssetId: input.sourceImageAssetId,
         })
       : buildVideoGenerationPrompt(input.character, userPrompt);
   const preset = cleanPromptText(input.presetFragment, 500);
@@ -148,12 +150,25 @@ function buildImageGenerationPrompt(input: {
   consistencyMode: "balanced" | "strict" | "creative";
   userPrompt: string;
   sourceType?: string;
+  sourceImageAssetId?: string;
 }) {
   const request =
     input.userPrompt ||
     (input.sourceType === "chat_image"
       ? "candid in-character portrait shared from the current moment"
       : "natural in-character portrait");
+
+  // The source owns the scene being edited. Reusing the new-portrait template
+  // made the identity portrait compete with it for framing and background.
+  if (input.sourceImageAssetId) {
+    return [
+      "Edit the supplied source image; do not create a new portrait",
+      "Preserve its composition, framing, camera angle, pose, background and lighting unless the requested edit explicitly changes them",
+      "Any separate identity reference identifies the same adult person only; do not copy that reference's crop, pose, clothes or background",
+      "Preserve the source subject's face, age, hair and body proportions",
+      `Apply only this requested edit: ${request}`,
+    ].join(". ");
+  }
 
   if (!input.character) {
     return clampPrompt(

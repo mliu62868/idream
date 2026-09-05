@@ -416,6 +416,15 @@ export async function editChatTurn(userId: string, messageId: string, nextConten
 export async function commitChatTerminal(input: ChatTerminalCommit) {
   const now = new Date();
   const updated = await prisma.$transaction(async (tx) => {
+    const owner = await tx.recentChat.findUnique({
+      where: { sessionId: input.sessionId },
+      select: { userId: true },
+    });
+    if (!owner) throw Errors.notFound("Chat session not found");
+    // Use the same user -> session -> Turn order as cancel/edit/delete. Taking
+    // the Turn first deadlocks with a user-first mutation during memory commit.
+    await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${owner.userId} FOR UPDATE`;
+    await tx.$queryRaw`SELECT "sessionId" FROM "recent_chats" WHERE "sessionId" = ${input.sessionId} FOR UPDATE`;
     const changed = await tx.chatTurn.updateMany({
       where: {
         id: input.turnId,
@@ -456,13 +465,13 @@ export async function commitChatTerminal(input: ChatTerminalCommit) {
           });
         }
         if (current.memoryEnabled) {
-          await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${session.userId} FOR UPDATE`;
           await scheduleCompanionMemoryProjection(tx, session);
         }
       }
       return { turn: current, duplicate: false };
     }
     const sameTerminal = current.attempt === input.attempt
+      && current.sessionId === input.sessionId
       && current.assistantMessageId === input.assistantMessageId
       && current.assistantStatus === input.status
       && current.assistantContent === input.content
@@ -478,7 +487,6 @@ export async function commitChatTerminal(input: ChatTerminalCommit) {
         where: { sessionId: input.sessionId },
         select: { userId: true, characterId: true },
       });
-      await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${session.userId} FOR UPDATE`;
       // A duplicate ACK may follow a Chat crash after Main committed. The
       // idempotent projection closes that window without rerunning the model.
       await scheduleCompanionMemoryProjection(tx, session);

@@ -130,6 +130,6 @@ opening message 是 Session snapshot，不伪造成数据库 Turn。内部 tool 
 - 图片工具只建立一个 Generation Request；成功结算，失败退款。
 - 明确图片动作成功后直接提交按用户 locale 选择的确定性确认文案；该路径不调用 Caption 模型，角色拒绝、讨价还价或 provider 超时不能覆盖已接受动作。
 - 第一轮 `PreparedTurn` 包含 Session 从不可变 ContentVersion 固定的 opening message。
-- `PreparedTurn.trace` 与 Main terminal evidence 均包含 Product Agent Contract 版本、最终 system prompt SHA-256 与 Soul fingerprint。
+- `PreparedTurn.trace` 与 Main terminal evidence 均包含 Product Agent Contract 版本及 Soul fingerprint。PreparedTurn 固定产品 system 摘要；Main terminal 另保留每次实际 provider 请求的最终 system SHA-256 和完整请求正文摘要，覆盖 DSH 动态注入，不能把编译摘要冒充最终请求摘要。
 - Chat package 在依赖、源码、构建和运行环境中都不需要 PostgreSQL/Prisma。
 - 账号删除会清除 Main 产品事实、Blob、AgentRun、boundaries 和 DSH workspace。

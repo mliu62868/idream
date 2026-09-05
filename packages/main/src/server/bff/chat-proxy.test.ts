@@ -672,6 +672,51 @@ describe("Main-owned Chat façade", () => {
     });
   });
 
+  it("commits without a lock inversion against a concurrent user-first Chat mutation", async () => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const sessionId = await ensureSession(proxyChatRequest);
+    const begun = await beginChatTurn({
+      userId: USER_ID, sessionId, content: "Stay with me.", idempotencyKey: `lock-order-${randomUUID()}`,
+    });
+    const userLocked = Promise.withResolvers<number>();
+    const continueMutation = Promise.withResolvers<void>();
+    const mutation = prisma.$transaction(async (tx) => {
+      const [{ pid }] = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+      await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${USER_ID} FOR UPDATE`;
+      userLocked.resolve(pid);
+      await continueMutation.promise;
+      await tx.$queryRaw`SELECT "sessionId" FROM "recent_chats" WHERE "sessionId" = ${sessionId} FOR UPDATE`;
+      await tx.$queryRaw`SELECT id FROM "chat_turns" WHERE id = ${begun.snapshot!.turnId} FOR UPDATE`;
+    }, { timeout: 10_000 });
+    const pid = await userLocked.promise;
+    const terminal = commitChatTerminal({
+      version: 1, turnId: begun.snapshot!.turnId, sessionId,
+      assistantMessageId: begun.assistant.id, attempt: 1, status: "sent",
+      content: "I’m here.", model: "test-model", promptTokens: 10, completionTokens: 3,
+      sceneVersion: 0, scene: null, terminalEvidence: TEST_TERMINAL_EVIDENCE,
+    });
+    // Attach rejection handlers before deliberately creating contention.
+    const settled = Promise.allSettled([mutation, terminal]);
+    try {
+      await vi.waitFor(async () => {
+        const rows = await prisma.$queryRaw<Array<{ blocked: boolean }>>`
+          SELECT EXISTS (
+            SELECT 1 FROM pg_stat_activity
+            WHERE datname = current_database() AND ${pid} = ANY(pg_blocking_pids(pid))
+          ) AS blocked`;
+        expect(rows[0]?.blocked).toBe(true);
+      }, { timeout: 2_000, interval: 10 });
+    } finally {
+      continueMutation.resolve();
+    }
+    const results = await settled;
+    for (const result of results) {
+      if (result.status === "rejected") throw result.reason;
+    }
+    expect(results.map(result => result.status)).toEqual(["fulfilled", "fulfilled"]);
+    expect(results[1]).toMatchObject({ value: { accepted: true } });
+  });
+
   it("stores only the selected final reply after Main acknowledges the terminal CAS", async () => {
     const { proxyChatRequest } = await import("./chat-proxy");
     const sessionId = await ensureSession(proxyChatRequest);

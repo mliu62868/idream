@@ -85,6 +85,7 @@ describe("Agent runtime configuration", () => {
       IGREP_LLM_URL: "http://stale-user-config/v1",
       IGREP_LLM_MODEL: "stale-user-model",
       IGREP_LLM_API_KEY: "stale-user-secret",
+      IGREP_LLM_EXTRA_BODY: JSON.stringify({ model: "hidden-model", temperature: 1, presence_penalty: 1.5 }),
     };
 
     bindIgrepLlmEnvironment(config.igrepLlm, childEnvironment);
@@ -93,7 +94,9 @@ describe("Agent runtime configuration", () => {
       IGREP_LLM_URL: "https://maintenance.example/v1",
       IGREP_LLM_MODEL: "maintenance-model",
       IGREP_LLM_API_KEY: "maintenance-secret",
+      IGREP_LLM_EXTRA_BODY: JSON.stringify({ temperature: 0, top_p: 1, presence_penalty: 0 }),
     });
+    expect(config.modelProfile.temperature).toBe(0.9);
   });
 
   it("keeps normal and private agent capacity in separate bounded pools", () => {

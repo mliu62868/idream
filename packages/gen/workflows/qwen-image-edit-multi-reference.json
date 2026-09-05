@@ -6,7 +6,7 @@
     "id": "8bf807d5-cfc7-4fb2-90d6-774b983df93c",
     "name": "iDream · Qwen Image Edit · Identity + Source"
   },
-  "version": 2,
+  "version": 3,
   "negativePromptMode": "positive_instruction",
   "capabilities": [
     "img2img",
@@ -88,11 +88,11 @@
           1
         ],
         "image1": [
-          "8",
+          "12",
           0
         ],
         "image2": [
-          "12",
+          "8",
           0
         ],
         "prompt": ""

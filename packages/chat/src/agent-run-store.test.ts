@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import * as store from "./agent-run-store.js";
 import type { AgentRunInput } from "./agent-run-store.js";
 
@@ -15,12 +15,16 @@ async function fixture() {
 }
 
 afterEach(async () => {
+  vi.useRealTimers();
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
   delete process.env.CHAT_FS_ROOT;
 });
 
 describe("AgentRun local authority", () => {
   it("keeps only an exact proposal plus a bounded failed trace", async () => {
+    // Exercise duplicate admission inside the seven-day retention window.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-08-27T12:00:02.000Z"));
     const { root, store } = await fixture();
     const input = {
       schemaVersion: 1 as const,

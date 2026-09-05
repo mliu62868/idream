@@ -1215,7 +1215,7 @@ async function seedAdminControlPlane() {
         convertedModelPath: null,
         modelFormat: "safetensors",
         runnerConfig: {
-          workflowVersion: 2,
+          workflowVersion: 3,
           publicSelection: { surface: "generator_image_edit" },
           capabilities: {
             textToImage: false,
@@ -1238,7 +1238,7 @@ async function seedAdminControlPlane() {
         concurrencyLimit: 1,
         enabled: true,
         rolloutPercent: 100,
-        version: 2,
+        version: 3,
         status: "active",
         dryRunSummary: {
           status: "configuration_validated",
@@ -1260,7 +1260,7 @@ async function seedAdminControlPlane() {
         convertedModelPath: null,
         modelFormat: "safetensors",
         runnerConfig: {
-          workflowVersion: 2,
+          workflowVersion: 3,
           publicSelection: { surface: "generator_image_edit" },
           capabilities: {
             textToImage: false,
@@ -1283,7 +1283,7 @@ async function seedAdminControlPlane() {
         concurrencyLimit: 1,
         enabled: true,
         rolloutPercent: 100,
-        version: 2,
+        version: 3,
         status: "active",
         dryRunSummary: {
           status: "configuration_validated",

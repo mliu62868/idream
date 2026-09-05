@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { ChatTerminalCommit, ChatToolEffect } from "@idream/shared/contracts";
+import { chatTerminalAckSchema, type ChatTerminalCommit, type ChatToolEffect } from "@idream/shared/contracts";
 import { COMPANION_PRODUCT_PROMPT_VERSION } from "@idream/shared";
 import type {
   CompanionCommitAck,
@@ -300,13 +300,6 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
   }
 }
 
-type MainTerminalAck = {
-  accepted: true;
-  duplicate: boolean;
-  terminalMessageId: string;
-  committedAt: string;
-};
-
 async function settleTerminalProposal(
   proposal: AgentRunProposal,
   stream: string,
@@ -316,7 +309,9 @@ async function settleTerminalProposal(
   const response = await postMain("/api/internal/chat/turns/terminal", terminal);
   if (!response.ok) {
     const reason = `Main terminal commit HTTP ${response.status}`;
-    if (response.status >= 500) throw new Error(reason);
+    // Keep exact recovery bytes for transport/auth/rate-limit failures. Only
+    // Main's permanent input/identity rejections can end proposal recovery.
+    if (![400, 404, 409, 410, 422].includes(response.status)) throw new Error(reason);
     const rejected = rejectedCommit(proposal.attemptId, reason);
     await appendAgentRunEvent(terminal.turnId, terminal.attempt, "main.terminal_rejected", {
       status: response.status,
@@ -335,7 +330,11 @@ async function settleTerminalProposal(
     });
     return rejected;
   }
-  const result = await response.json() as MainTerminalAck;
+  const parsed = chatTerminalAckSchema.safeParse(await response.json());
+  if (!parsed.success || parsed.data.terminalMessageId !== terminal.assistantMessageId) {
+    throw new Error("Main terminal commit returned an invalid acknowledgement");
+  }
+  const result = parsed.data;
   const ack: CompanionCommitAck = {
     attemptId: proposal.attemptId,
     accepted: true,
@@ -568,9 +567,15 @@ function terminalEvidence(
     completedAt: candidate.completedAt,
     execution: candidate.execution,
     tools: candidate.tools,
+    ...(candidate.acknowledgement ? { acknowledgement: candidate.acknowledgement } : {}),
     attribution: candidate.attribution ?? null,
     profileDigest,
-    prompt,
+    prompt: {
+      ...prompt,
+      systemPromptDigest: candidate.modelRequests?.at(-1)?.systemPromptDigest ?? prompt.systemPromptDigest,
+    },
+    preparedSystemPromptDigest: prompt.systemPromptDigest,
+    ...(candidate.modelRequests ? { modelRequests: candidate.modelRequests } : {}),
     memoryMode,
     runtime: "embedded_dsh",
     runtimeInstance: runtimeInstance ?? null,

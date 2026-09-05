@@ -29,6 +29,7 @@ describe("companion composition identity", () => {
     expect(manifest).toMatchObject({
       schemaVersion: 2,
       idream: {
+        igrepMaintenance: { sampling: { temperature: 0, top_p: 1, presence_penalty: 0 } },
         adapter: { name: "openai-compatible", contractVersion: 1 },
         bridges: {
           preparedTurn: 1,
@@ -37,7 +38,7 @@ describe("companion composition identity", () => {
           commit: 1,
         },
         executionPolicy: {
-          version: 1,
+          version: 3,
           maxSteps: 8,
           maxParallelToolCalls: 1,
           effectfulToolConcurrency: 1,

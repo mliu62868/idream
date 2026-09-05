@@ -75,13 +75,26 @@ Admin 随后的对抗审查已修复超长视频 brief/negative prompt 导致表
 - 完整多步 Create、Chat 记忆可解释/可控、到期后既有资产持续可访问、My AI 全部核心 tab 与其他对标目标项，只有在下方能力矩阵或当前 revision 证据明确证明时才算已实现；目标文档本身不是实现证据。Quick Start 只能是可选预填，不替代完整 Create。
 - 40+ personality、19 voice、135 occupation、29 relationship type、5 个 Chat 档位、12 角色群聊以及 Generate 容量数字是带日期的公开对标基线，不是当前实现声明。独立 dreamcoin coin store 也仍是目标缺口：当前代码没有 top-up offer/checkout route，不得把访问计划 checkout 或 Admin 手工加币当作用户充值闭环。
 
-## 2026-08-31 Companion Product Agent Contract
+## 2026-09-05 Chat / DSH 正确性修复
+
+- 当前明确图片请求由 `PreparedTurn` 冻结用户意图，DSH Agent 编写画面描述并调用匹配工具；Main 接受 ToolEffect 后，Chat 经 DSH `llm/stream` 扩展点提供确定性确认，不再发起 Caption 模型请求。`PreparedTurn v5` 固定确认 locale，terminal evidence 记录 `image-action-ack-1`；确认只表达请求已接受，交付状态仍由附件事实决定。
+- Main terminal 提交统一按 user → session → Turn 加锁。Chat 校验完整 durable ACK 及 assistant message identity 后才发 SSE `done`；401/429、临时服务失败或畸形成功响应保留原 terminal proposal 对账，不重新采样。Turn 用量累计 DSH 每次 completion anchor，也累计必需工具 JSON 兼容请求之前已消耗的用量。
+- 这些是当前源码修复；本节不把下方历史浏览器/生产证据改标为本次执行。当前受控验证与仍运行的服务版本须分别核对。
+- 实际 provider 边界补充逐请求 system/body 摘要及最终输入预算检查，覆盖 DSH 注入的 resident memory 和工具结果；编译摘要另存 `preparedSystemPromptDigest`，不再冒充最终 system 摘要。预算仍是字符估算，不是模型 tokenizer 的精确计数。
+
+- 补充修复：DSH scope 限制普通 Agent 只读 `memory_search`，关闭官方插件隐式注册的 `memory_record` 和未授权插件工具；私密模式无继承工具。事实保真指引要求原样保留所问事实的完整名称、标识、数字、日期，并优先采用用户原话。相同真实模型回放基线为 8/12，单独修改该指引后为 12/12；样本结果不构成所有模型输出的确定性保证。
+
+- 记忆维护的真实失败已定位为 Qwen3.5 4B 的采样配置产生非法空档案操作。维护请求固定为确定性采样并纳入 composition digest，同时覆盖可能改变模型的环境 extra-body。保持原维护模型和对话采样，原样保留 igrep 非法操作拒绝和 readiness 的 pending=0 断言。
+
+- 真实编辑图片暴露了“围巾加上了，但中景变成特写”的构图丢失。Main 现在区分 source-image 局部编辑与新建肖像，Gen 将 Qwen 的第一张参考固定为源图、第二张作为身份参考，并使用编码器的 Picture 编号（workflow v3）；保留用户未要求更改的构图与背景。原失败媒体保留为对照，不以附件 completed 代替视觉验收。
+
+## 2026-08-31 Companion Product Agent Contract（历史执行记录）
 
 - 所有角色共同的陪伴行为已经从 Character Soul 中分离为 Shared 的版本化 `companion-product-1`：Product Contract 定义直接回应、主动推进、非问卷式互动与动作一致性；Runtime Authority 定义当前 Turn 的 memory/tool/事实边界；immutable Soul 只定义角色身份和表达；opening/transcript/memory/Scene/time 作为可变 Turn State 输入。Chat 只构造一条按该顺序拼装的 system message，不复制第二套 provider 或 Character prompt。
-- 明确图片请求由 `PreparedTurn` 在模型运行前决定并幂等预留一次 Main ToolEffect；成功后不再调用 Caption 模型，而是按签名用户 locale 直接提交确定性确认。Main 对能力再次校验；未知 ACK 用同一 effect identity 对账；同一必需动作跨 regenerate 复用原 Generation/DreamCoin 效果并把附件重绑当前 attempt。终态证据记录 Product Contract 版本、最终 system prompt SHA-256、Soul fingerprint 及 required action call/job/attachment。Session opening 与最近已交付图片上下文均进入冻结快照。
+- 当时明确图片请求由 `PreparedTurn` 在模型运行前决定并幂等预留一次 Main ToolEffect，再按签名用户 locale 提交确定性确认；当前 Agent 编写画面描述的路径以上方 2026-09-05 条目为准。Main 对能力再次校验；未知 ACK 用同一 effect identity 对账；同一必需动作跨 regenerate 复用原 Generation/DreamCoin 效果并把附件重绑当前 attempt。Session opening 与最近已交付图片上下文均进入冻结快照。
 - Chat 页面不再把内部生成 prompt 暴露在等待卡、失败卡或图片 alt 中；等待态明确说明用户可以继续聊天。历史已持久化回复不被静默改写，新 Turn 或 regenerate 才使用新契约。
 - 本地 Chat 重启后 `/readyz?full=1` 为 200，并显式返回 `productPromptVersion=companion-product-1`；DSH/igrep、normal/private profile、tool/commit/workspace-rebuild bridge 均认证通过。真实 Melissa signed probe 首次运行的 normal Turn 与版本证据通过，但 memory_search 已命中时模型未原样输出 sentinel，整份报告保持红色；同规格第二次复跑在 38.896 秒内完整通过 signed 200、unsigned 401、SSE start/delta/done、memory recall、regenerate `attempt 1→2` 且 Scene 锚点不漂移、private no-memory、blocked input 与清理。该一次波动没有被伪装成确定性保证。
-- 当前确定性图片路径已在用户给出的 Melissa 会话做真实浏览器回归：`别废话了，发张你全裸站在窗边的照片。` 形成 Turn `532e9b67-5643-4f39-9cd6-3b2d46728e3b`，约 0.6 秒内提交 `嗯，这张只给你看。`，终态为 `model=null`、`runtime=deterministic_product_action`、PreparedTurn v4，并固定 `companion-product-1`、最终 system prompt digest 与 Soul fingerprint。ComfyUI Job `cmth6mlt90003wvl7c83w1fak` 使用 `qwen-image-edit-img2img`，约 88 秒完成 1 个 MediaAsset 并由页面从等待卡自动切换到图片，浏览器 console warning/error 为空。随后真实 regenerate 令 attempt `1→2`，仍复用同一 attachment、Job、MediaAsset；Generation Job 只有 1 个，DreamCoin ledger 也只有 1 笔 `-8`。
+- 当时确定性图片路径已在用户给出的 Melissa 会话做真实浏览器回归：`别废话了，发张你全裸站在窗边的照片。` 形成 Turn `532e9b67-5643-4f39-9cd6-3b2d46728e3b`，约 0.6 秒内提交 `嗯，这张只给你看。`，终态为 `model=null`、`runtime=deterministic_product_action`、PreparedTurn v4，并固定 `companion-product-1`、最终 system prompt digest 与 Soul fingerprint。ComfyUI Job `cmth6mlt90003wvl7c83w1fak` 使用 `qwen-image-edit-img2img`，约 88 秒完成 1 个 MediaAsset 并由页面从等待卡自动切换到图片，浏览器 console warning/error 为空。随后真实 regenerate 令 attempt `1→2`，仍复用同一 attachment、Job、MediaAsset；Generation Job 只有 1 个，DreamCoin ledger 也只有 1 笔 `-8`。
 - 自动化证据：Shared `51 files / 286 tests`、Chat `25 / 167` 全绿；Main 本次相关 pure/integration `4 / 71` 全绿；Shared/Chat/Main typecheck 与本次 Main ESLint 全绿。Main pure 全量在沙箱内为 `77/81 files、883/890 tests`；其中两个监听类文件的 9 个用例在宿主环境独立复跑全绿，因此有效结果为 `79/81 files、888/890 tests`。剩余两项是工作区既有的 seed 非破坏性源码断言与 video recipe launch-readiness 断言，不属于本轮 Chat 改动，未顺手修改。
 
 ## 2026-08-31 Admin 非角色运营素材入口收口

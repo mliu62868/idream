@@ -96,7 +96,7 @@ const preparedTrace = z.object({
   contextRevision: z.string().regex(/^\d+$/),
 }).strict();
 export const preparedTurnSchema = z.object({
-  version: z.literal(4),
+  version: z.literal(5),
   model: nonEmptyString,
   characterName: nonEmptyString,
   messages: z.array(preparedTurnMessageSchema).min(1),
@@ -107,6 +107,7 @@ export const preparedTurnSchema = z.object({
   requiredAction: z.object({
     name: toolName,
     requestedNudity: z.enum(["unspecified", "none", "full"]),
+    replyLocale: nonEmptyString,
   }).strict().nullable(),
 }).strict().superRefine((turn, context) => {
   if (turn.model !== turn.profile.model) {
@@ -182,6 +183,14 @@ const companionUsage = z.object({
   reasoningTokens: nonNegativeInteger,
 }).strict();
 export const COMPANION_TERMINAL_CONTENT_MAX_BYTES = 2_097_152;
+export const companionModelRequestEvidenceSchema = z.object({
+  bodyDigest: sha256,
+  systemPromptDigest: sha256,
+  estimatedInputTokens: positiveInteger,
+  maxInputTokens: positiveInteger.optional(),
+}).strict();
+export type CompanionModelRequestEvidence = z.infer<typeof companionModelRequestEvidenceSchema>;
+
 export const companionTerminalCandidateSchema = z.object({
   attemptId: nonEmptyString,
   content: z.string().min(1).superRefine((value, context) => {
@@ -196,6 +205,11 @@ export const companionTerminalCandidateSchema = z.object({
   execution: z.object({ steps: positiveInteger, toolCalls: nonNegativeInteger }).strict(),
   tools: z.array(companionToolReservationSchema),
   completedAt: isoDateTime,
+  modelRequests: z.array(companionModelRequestEvidenceSchema).optional(),
+  acknowledgement: z.object({
+    version: z.literal("image-action-ack-1"),
+    locale: nonEmptyString,
+  }).strict().optional(),
   attribution: z.object({
     requestId: nonEmptyString.optional(),
     actualProvider: nonEmptyString.optional(),

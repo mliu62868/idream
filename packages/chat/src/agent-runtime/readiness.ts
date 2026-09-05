@@ -238,7 +238,7 @@ function bridgeInvocation(
     expectedProfileDigest,
     deadlineAt: new Date(Date.now() + 60_000).toISOString(),
     preparedTurn: {
-      version: 4,
+      version: 5,
       model: profile.model,
       characterName: "Readiness",
       messages: [{

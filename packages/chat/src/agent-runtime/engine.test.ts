@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LlmAdapter, LlmError, type GenerateOptions, type StreamChunk } from "@deepseek-ai/dsh-llm";
+import { LlmAdapter, LlmError, type GenerateOptions, type StreamChunk, type TokenUsage } from "@deepseek-ai/dsh-llm";
 import type {
   CompanionCommitAck,
   CompanionEvent,
@@ -42,7 +42,7 @@ class OneStepAdapter extends LlmAdapter {
 }
 
 class ToolThenTextAdapter extends LlmAdapter {
-  private calls = 0;
+  calls = 0;
 
   constructor(
     private readonly imagePrompt = "Mira fully nude at the blue-lit observatory tonight",
@@ -116,7 +116,7 @@ function invocation(withTool = false): CompanionInvocation {
     ),
     deadlineAt: new Date(Date.now() + 30_000).toISOString(),
     preparedTurn: {
-      version: 4,
+      version: 5,
       model: "deepseek/test",
       characterName: "Mira",
       messages: [
@@ -182,6 +182,7 @@ function requiredImageInvocation(): CompanionInvocation {
       requiredAction: {
         name: "generate_image_async",
         requestedNudity: "full",
+        replyLocale: "en",
       },
     },
   };
@@ -223,7 +224,11 @@ function normalInvocation(): CompanionInvocation {
 class MemoryReplyAdapter extends LlmAdapter {
   readonly requests: GenerateOptions[] = [];
 
-  constructor(private readonly text: string, private readonly nativeCall = false) { super(); }
+  constructor(
+    private readonly text: string,
+    private readonly nativeCall = false,
+    private readonly usages: readonly (TokenUsage | undefined)[] = [],
+  ) { super(); }
 
   async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     this.requests.push(options);
@@ -234,12 +239,15 @@ class MemoryReplyAdapter extends LlmAdapter {
         name: "memory_search", argumentsDelta: args };
       yield { type: "block-end", index: 0, block: { type: "tool-call",
         id: "memory-1" as never, name: "memory_search", arguments: args } };
+      if (this.usages[0]) yield { type: "usage", usage: this.usages[0] };
       yield { type: "finish", reason: { kind: "tool-calls" } };
       return;
     }
     yield { type: "block-start", index: 0, blockType: "text" };
     yield { type: "text-delta", index: 0, text: this.text };
     yield { type: "block-end", index: 0, block: { type: "text", text: this.text } };
+    const usage = this.usages[this.requests.length - 1];
+    if (usage) yield { type: "usage", usage };
     yield { type: "finish", reason: { kind: "stop" } };
   }
 }
@@ -293,6 +301,37 @@ async function waitFor(check: () => boolean): Promise<void> {
 }
 
 describe("Chat embedded companion runtime", () => {
+  it.each(["normal", "private"] as const)("restricts plugin tools in %s mode at presentation and dispatch", async (mode) => {
+    let writes = 0;
+    const denied: boolean[] = [];
+    const adapter = new MemoryReplyAdapter("I can read only the permitted memories.");
+    const runtime = await engine(adapter, undefined, {
+      ...memoryPorts,
+      plugin: async () => ({ name: "igrep", inject: ["tools"], apply(ctx) {
+        for (const name of ["memory_search", "memory_record", "unexpected_plugin_tool"]) {
+          ctx.tools.register({ name, description: name,
+            parameters: { type: "object", properties: {} },
+            output: { schema: { type: "object", properties: {} }, render: () => [] },
+            async execute() { if (name !== "memory_search") writes += 1; return {}; },
+          });
+        }
+        ctx.on("agent/session-start", async ({ agent }) => {
+          for (const name of ["memory_record", "unexpected_plugin_tool"]) {
+            const result = await ctx.tools.execute({ name, arguments: {}, callId: `blocked-${name}` as never, agent, signal: new AbortController().signal });
+            denied.push(result.isError === true);
+          }
+        });
+      } }),
+    });
+    const connection = port();
+    await runtime.run(mode === "normal" ? normalInvocation() : invocation(), connection.runtimePort);
+    expect(adapter.requests).toHaveLength(1);
+    expect(adapter.requests[0]?.tools?.map(tool => tool.name) ?? []).toEqual(mode === "normal" ? ["memory_search"] : []);
+    expect(writes).toBe(0);
+    expect(denied).toEqual([true, true]);
+    expect(connection.candidates).toHaveLength(1);
+  });
+
   it("rejects the observed unexecuted memory call despite preRecall evidence, without another model call or commit", async () => {
     const text = 'I can see the gardens below, rooftops layered against the fading light, and you here beside me. Before we decide on the trains, let me check what I remember from earlier sessions.\n\n{memory_search: "exact rooftop probe code word"}';
     const adapter = new MemoryReplyAdapter(text);
@@ -333,9 +372,15 @@ describe("Chat embedded companion runtime", () => {
     expect(connection.events.some(event => event.type === "text_reset" || event.type === "failed")).toBe(false);
   });
 
-  it("allows a native memory_search result followed by a normal final answer", async () => {
+  it.each([
+    { finalUsage: { inputTokens: 30, outputTokens: 7, reasoningTokens: 2 }, expected: { promptTokens: 55, completionTokens: 11, reasoningTokens: 3 } },
+    { finalUsage: undefined, expected: { promptTokens: 25, completionTokens: 4, reasoningTokens: 1 } },
+  ])("accounts for every model step around native memory_search, including missing final usage: $finalUsage", async ({ finalUsage, expected }) => {
     let executed = 0;
-    const adapter = new MemoryReplyAdapter(`We chose ${recallMarker}.`, true);
+    const adapter = new MemoryReplyAdapter(`We chose ${recallMarker}.`, true, [
+      { inputTokens: 20, cacheReadTokens: 3, cacheWriteTokens: 2, outputTokens: 4, reasoningTokens: 1 },
+      finalUsage,
+    ]);
     const runtime = await engine(adapter, undefined, {
       ...memoryPorts,
       plugin: async () => ({ name: "igrep", inject: ["tools"], apply(ctx) {
@@ -353,6 +398,7 @@ describe("Chat embedded companion runtime", () => {
     expect(adapter.requests).toHaveLength(2);
     expect(JSON.stringify(adapter.requests[1].messages)).toContain('"tool-result"');
     expect(connection.candidates[0]?.content).toBe(`We chose ${recallMarker}.`);
+    expect(connection.candidates[0]?.usage).toEqual(expected);
     expect(connection.events.some(event => event.type === "failed")).toBe(false);
   });
 
@@ -469,7 +515,21 @@ describe("Chat embedded companion runtime", () => {
     expect(connection.candidates).toHaveLength(1);
   });
 
-  it("does not expose a required image reply written in the wrong script", async () => {
+  it.each(["failed", "unknown"] as const)("does not confirm an image when Main reports %s", async (outcome) => {
+    const adapter = new ToolThenTextAdapter();
+    const runtime = await engine(adapter);
+    const connection = port({ executeTool: async (call) => ({
+      attemptId: call.attemptId, callId: call.callId, name: call.name,
+      outcome, error: { code: "main_effect_unconfirmed", message: "Unconfirmed", retryable: true },
+    }) });
+    await runtime.run(requiredImageInvocation(), connection.runtimePort);
+    expect(adapter.calls).toBe(1);
+    expect(connection.candidates).toEqual([]);
+    expect(connection.events.some(event => event.type === "text_delta")).toBe(false);
+    expect(connection.events.at(-1)?.type).toBe("failed");
+  });
+
+  it("confirms an accepted image in the user's script without asking the caption provider", async () => {
     const value = requiredImageInvocation();
     const invocation = {
       ...value,
@@ -482,23 +542,25 @@ describe("Chat embedded companion runtime", () => {
         ),
       },
     };
-    const runtime = await engine(new ToolThenTextAdapter(
+    const adapter = new ToolThenTextAdapter(
       "A concrete selfie at the observatory tonight",
       "Je peux te renvoyer la dernière photo.",
-    ));
+    );
+    const runtime = await engine(adapter);
     const connection = port();
 
     await runtime.run(invocation, connection.runtimePort);
 
-    expect(connection.candidates).toEqual([]);
+    expect(adapter.calls).toBe(1);
+    expect(connection.candidates[0]).toMatchObject({
+      content: "好，图片请求已确认。",
+      acknowledgement: { version: "image-action-ack-1", locale: "zh" },
+    });
     expect(connection.events).not.toContainEqual(expect.objectContaining({
       type: "text_delta",
       delta: expect.stringContaining("Je peux"),
     }));
-    expect(connection.events.at(-1)).toMatchObject({
-      type: "failed",
-      error: { code: "required_image_reply_language_mismatch", retryable: true },
-    });
+    expect(connection.events.some(event => event.type === "failed")).toBe(false);
   });
 
   it("turns a rejected Main CAS into a failed runtime terminal", async () => {

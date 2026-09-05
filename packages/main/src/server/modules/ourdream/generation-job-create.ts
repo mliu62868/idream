@@ -242,6 +242,9 @@ export async function createGenerationJobForUser(
     presetFragment,
     lookFragment: selectedLook ? JSON.stringify(selectedLook.appearanceDelta) : "",
     sourceType: options.source?.sourceType,
+    sourceImageAssetId: typeof requestedSourceImageAssetId === "string"
+      ? requestedSourceImageAssetId
+      : undefined,
   });
   const negativePrompt =
     body.mode === "image"

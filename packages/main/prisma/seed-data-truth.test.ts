@@ -299,9 +299,9 @@ describe("seed data provenance", () => {
         sampler: "sa_solver",
         scheduler: "beta",
         cfgScale: 1,
-        version: 2,
+        version: 3,
         runnerConfig: expect.objectContaining({
-          workflowVersion: 2,
+          workflowVersion: 3,
           publicSelection: { surface: "generator_image_edit" },
         }),
         enabled: true,

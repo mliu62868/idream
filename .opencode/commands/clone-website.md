@@ -9,9 +9,7 @@ description: "Reverse-engineer and clone any website as a pixel-perfect replica"
 
 You are about to reverse-engineer and rebuild **$ARGUMENTS** as pixel-perfect clones.
 
-When multiple URLs are provided, process them independently and in parallel where possible, while keeping each site's extraction artifacts isolated in dedicated folders (for example, `docs/research/<hostname>/`).
-
-This is not a two-phase process (inspect then build). You are a **foreman walking the job site** — as you inspect each section of the page, you write a detailed specification to a file, then hand that file to a specialist builder agent with everything they need. Extraction and construction happen in parallel, but extraction is meticulous and produces auditable artifacts.
+Keep each site's extraction artifacts in its own folder (for example, `docs/research/<hostname>/`). Extract a section's evidence before implementing it. Delegate only when an independent task materially improves speed or quality; follow the repository's worktree and integration rules.
 
 ## Scope Defaults
 
@@ -26,15 +24,13 @@ If the user provides additional instructions (specific fidelity level, customiza
 
 ## Pre-Flight
 
-1. **Browser automation is required.** Check for available browser MCP tools (Chrome MCP, Playwright MCP, Browserbase MCP, Puppeteer MCP, etc.). Use whichever is available — if multiple exist, prefer Chrome MCP. If none are detected, ask the user which browser tool they have and how to connect it. This skill cannot work without browser automation.
-2. Parse `$ARGUMENTS` as one or more URLs. Normalize and validate each URL; if any are invalid, ask the user to correct them before proceeding. For each valid URL, verify it is accessible via your browser MCP tool.
-3. Verify the base project builds: `npm run build`. The Next.js + shadcn/ui + Tailwind v4 scaffold should already be in place. If not, tell the user to set it up first.
+1. **Browser automation is required.** Use the user's selected browser or an available browser tool, including a working CLI. Ask for access only if no usable browser route is available.
+2. Parse and normalize the target URLs, fixing obvious formatting omissions. Verify access with the selected browser tool. If a target remains ambiguous or inaccessible, request the missing information and continue work on independent accessible targets.
+3. Locate the target workspace and its scripts before editing. In iDream, `src/` and `public/` below are relative to the target package, usually `packages/main`, not the repository root. Reuse the existing scaffold; resolve routine setup within the authorized task. Run a baseline check only when it will resolve an actual uncertainty.
 4. Create the output directories if they don't exist: `docs/research/`, `docs/research/components/`, `docs/design-references/`, `scripts/`. For multiple clones, also prepare per-site folders like `docs/research/<hostname>/` and `docs/design-references/<hostname>/`.
-5. When working with multiple sites in one command, optionally confirm whether to run them in parallel (recommended, if resources allow) or sequentially to avoid overload.
+5. Choose sequential or parallel execution from task independence and available resources; this reversible choice needs no separate confirmation.
 
 ## Guiding Principles
-
-These are the truths that separate a successful clone from a "close enough" mess. Internalize them — they should inform every decision you make.
 
 ### 1. Completeness Beats Speed
 
@@ -42,11 +38,7 @@ Every builder agent must receive **everything** it needs to do its job perfectly
 
 ### 2. Small Tasks, Perfect Results
 
-When an agent gets "build the entire features section," it glosses over details — it approximates spacing, guesses font sizes, and produces something "close enough" but clearly wrong. When it gets a single focused component with exact CSS values, it nails it every time.
-
-Look at each section and judge its complexity. A simple banner with a heading and a button? One agent. A complex section with 3 different card variants, each with unique hover states and internal layouts? One agent per card variant plus one for the section wrapper. When in doubt, make it smaller.
-
-**Complexity budget rule:** If a builder prompt exceeds ~150 lines of spec content, the section is too complex for one agent. Break it into smaller pieces. This is a mechanical check — don't override it with "but it's all related."
+Choose task boundaries by shared dependencies and independently verifiable results, not component counts or prompt length. Keep coupled work together; delegate a section only when another agent can complete it independently.
 
 ### 3. Real Content, Real Assets
 
@@ -95,7 +87,7 @@ A section with a sticky sidebar and scrolling content panels is fundamentally di
 Many components have multiple visual states — a tab bar shows different cards per tab, a header looks different at scroll position 0 vs 100, a card has hover effects. You must extract ALL states, not just whatever is visible on page load.
 
 For tabbed/stateful content:
-- Click each tab/button via browser MCP
+- Click each tab/button via browser tool
 - Extract the content, images, and card data for EACH state
 - Record which content belongs to which state
 - Note the transition animation between states (opacity, slide, fade, etc.)
@@ -111,15 +103,15 @@ For scroll-dependent elements:
 
 Every component gets a specification file in `docs/research/components/` BEFORE any builder is dispatched. This file is the contract between your extraction work and the builder agent. The builder receives the spec file contents inline in its prompt — the file also persists as an auditable artifact that the user (or you) can review if something looks wrong.
 
-The spec file is not optional. It is not a nice-to-have. If you dispatch a builder without first writing a spec file, you are shipping incomplete instructions based on whatever you can remember from a browser MCP session, and the builder will guess to fill gaps.
+The spec file is not optional. It is not a nice-to-have. If you dispatch a builder without first writing a spec file, you are shipping incomplete instructions based on whatever you can remember from a browser tool session, and the builder will guess to fill gaps.
 
-### 9. Build Must Always Compile
+### 9. Verification
 
-Every builder agent must verify `npx tsc --noEmit` passes before finishing. After merging worktrees, you verify `npm run build` passes. A broken build is never acceptable, even temporarily.
+Use the target package's scripts, such as `bun run --filter @idream/main typecheck` and `bun run --filter @idream/main build`; use `@idream/admin` for that package. Builders run checks relevant to their changes. After assembly and visual fixes, run the affected package's required checks once on the final state, plus any wider repository gates required for the task. Repeat a check only after a relevant change, failure, or unresolved concern.
 
 ## Phase 1: Reconnaissance
 
-Navigate to the target URL with browser MCP.
+Navigate to the target URL with browser tool.
 
 ### Screenshots
 - Take **full-page screenshots** at desktop (1440px) and mobile (390px) viewports
@@ -141,7 +133,7 @@ Extract these from the page before doing anything else:
 
 This is a dedicated pass AFTER screenshots and BEFORE anything else. Its purpose is to discover every behavior on the page — many of which are invisible in a static screenshot.
 
-**Scroll sweep:** Scroll the page slowly from top to bottom via browser MCP. At each section, pause and observe:
+**Scroll sweep:** Scroll the page slowly from top to bottom via browser tool. At each section, pause and observe:
 - Does the header change appearance? Record the scroll position where it triggers.
 - Do elements animate into view? Record which ones and the animation type.
 - Does a sidebar or tab indicator auto-switch as you scroll? Record the mechanism.
@@ -157,7 +149,7 @@ This is a dedicated pass AFTER screenshots and BEFORE anything else. Its purpose
 - Buttons, cards, links, images, nav items
 - Record what changes: color, scale, shadow, underline, opacity
 
-**Responsive sweep:** Test at 3 viewport widths via browser MCP:
+**Responsive sweep:** Test at 3 viewport widths via browser tool:
 - Desktop: 1440px
 - Tablet: 768px
 - Mobile: 390px
@@ -184,14 +176,14 @@ This is sequential. Do it yourself (not delegated to an agent) since it touches 
 3. **Create TypeScript interfaces** in `src/types/` for the content structures you've observed
 4. **Extract SVG icons** — find all inline `<svg>` elements on the page, deduplicate them, and save as named React components in `src/components/icons.tsx`. Name them by visual function (e.g., `SearchIcon`, `ArrowRightIcon`, `LogoIcon`).
 5. **Download global assets** — write and run a Node.js script (`scripts/download-assets.mjs`) that downloads all images, videos, and other binary assets from the page to `public/`. Preserve meaningful directory structure.
-6. Verify: `npm run build` passes
+6. Check the shared foundation before dependent work starts; choose the focused check that covers the changed configuration, styles, or types.
 
 ### Asset Discovery Script Pattern
 
-Use browser MCP to enumerate all assets on the page:
+Use browser tool to enumerate all assets on the page:
 
 ```javascript
-// Run this via browser MCP to discover all assets
+// Run this via browser tool to discover all assets
 JSON.stringify({
   images: [...document.querySelectorAll('img')].map(img => ({
     src: img.src || img.currentSrc,
@@ -232,14 +224,14 @@ This is the core loop. For each section in your page topology (top to bottom), y
 
 ### Step 1: Extract
 
-For each section, use browser MCP to extract everything:
+For each section, use browser tool to extract everything:
 
 1. **Screenshot** the section in isolation (scroll to it, screenshot the viewport). Save to `docs/design-references/`.
 
 2. **Extract CSS** for every element in the section. Use the extraction script below — don't hand-measure individual properties. Run it once per component container and capture the full output:
 
 ```javascript
-// Per-component extraction — run via browser MCP
+// Per-component extraction — run via browser tool
 // Replace SELECTOR with the actual CSS selector for the component
 (function(selector) {
   const el = document.querySelector(selector);
@@ -286,7 +278,7 @@ For each section, use browser MCP to extract everything:
 
 ```javascript
 // State A: capture styles at current state (e.g., scroll position 0)
-// Then trigger the state change (scroll, click, hover via browser MCP)
+// Then trigger the state change (scroll, click, hover via browser tool)
 // State B: re-run the extraction script on the same element
 // The diff between A and B IS the behavior specification
 ```
@@ -376,28 +368,24 @@ Fill every section. If a section doesn't apply (e.g., no states for a static foo
 
 ### Step 3: Dispatch Builders
 
-Based on complexity, dispatch builder agent(s) in worktree(s):
-
-**Simple section** (1-2 sub-components): One builder agent gets the entire section.
-
-**Complex section** (3+ distinct sub-components): Break it up. One agent per sub-component, plus one agent for the section wrapper that imports them. Sub-component builders go first since the wrapper depends on them.
+If an independent section warrants delegation, give its builder clear file ownership and the required shared foundation. Otherwise, implement it locally using the same extracted evidence.
 
 **What every builder agent receives:**
 - The full contents of its component spec file (inline in the prompt — don't say "go read the spec file")
 - Path to the section screenshot in `docs/design-references/`
 - Which shared components to import (`icons.tsx`, `cn()`, shadcn primitives)
 - The target file path (e.g., `src/components/HeroSection.tsx`)
-- Instruction to verify with `npx tsc --noEmit` before finishing
+- The target package's relevant verification commands and completion criteria
 - For responsive behavior: the specific breakpoint values and what changes
 
-**Don't wait.** As soon as you've dispatched the builder(s) for one section, move to extracting the next section. Builders work in parallel in their worktrees while you continue extraction.
+While a builder works, continue independent extraction or implementation; wait when the next step depends on its result.
 
 ### Step 4: Merge
 
 As builder agents complete their work:
-- Merge their worktree branches into main
+- Integrate their changes into the current task branch, preserving unrelated work
 - You have full context on what each agent built, so resolve any conflicts intelligently
-- After each merge, verify the build still passes: `npm run build`
+- Check integration where shared types, imports, or behavior changed; use the verification rule above instead of rebuilding the whole repository after every merge
 - If a merge introduces type errors, fix them immediately
 
 The extract → spec → dispatch → merge cycle continues until all sections are built.
@@ -410,7 +398,7 @@ After all sections are built and merged, wire everything together in `src/app/pa
 - Implement the page-level layout from your topology doc (scroll containers, column structures, sticky positioning, z-index layering)
 - Connect real content to component props
 - Implement page-level behaviors: scroll snap, scroll-driven animations, dark-to-light transitions, intersection observers, smooth scroll (Lenis etc.)
-- Verify: `npm run build` passes clean
+- Complete the visual QA below, then verify the final assembled state using the affected package's scripts
 
 ## Phase 5: Visual QA Diff
 
@@ -421,7 +409,7 @@ After assembly, do NOT declare the clone complete. Take side-by-side comparison 
 3. Compare again at mobile (390px)
 4. For each discrepancy found:
    - Check the component spec file — was the value extracted correctly?
-   - If the spec was wrong: re-extract from browser MCP, update the spec, fix the component
+   - If the spec was wrong: re-extract from browser tool, update the spec, fix the component
    - If the spec was right but the builder got it wrong: fix the component to match the spec
 5. Test all interactive behaviors: scroll through the page, click every button/tab, hover over interactive elements
 6. Verify smooth scroll feels right, header transitions work, tab switching works, animations play
@@ -441,7 +429,7 @@ Before dispatching ANY builder agent, verify you can check every box. If you can
 - [ ] All images in the section are identified (including overlays and layered compositions)
 - [ ] Responsive behavior is documented for at least desktop and mobile
 - [ ] Text content is verbatim from the site, not paraphrased
-- [ ] The builder prompt is under ~150 lines of spec; if over, the section needs to be split
+- [ ] The delegated task has independent file ownership and a checkable result
 
 ## What NOT to Do
 
@@ -452,11 +440,9 @@ These are lessons from previous failed clones — each one cost hours of rework:
 - **Don't miss overlay/layered images.** A background watercolor + foreground UI mockup = 2 images. Check every container's DOM tree for multiple `<img>` elements and positioned overlays.
 - **Don't build mockup components for content that's actually videos/animations.** Check if a section uses `<video>`, Lottie, or canvas before building elaborate HTML mockups of what the video shows.
 - **Don't approximate CSS classes.** "It looks like `text-lg`" is wrong if the computed value is `18px` and `text-lg` is `18px/28px` but the actual line-height is `24px`. Extract exact values.
-- **Don't build everything in one monolithic commit.** The whole point of this pipeline is incremental progress with verified builds at each step.
 - **Don't reference docs from builder prompts.** Each builder gets the CSS spec inline in its prompt — never "see DESIGN_TOKENS.md for colors." The builder should have zero need to read external docs.
 - **Don't skip asset extraction.** Without real images, videos, and fonts, the clone will always look fake regardless of how perfect the CSS is.
 - **Don't give a builder agent too much scope.** If you're writing a builder prompt and it's getting long because the section is complex, that's a signal to break it into smaller tasks.
-- **Don't bundle unrelated sections into one agent.** A CTA section and a footer are different components with different designs — don't hand them both to one agent and hope for the best.
 - **Don't skip responsive extraction.** If you only inspect at desktop width, the clone will break at tablet and mobile. Test at 1440, 768, and 390 during extraction.
 - **Don't forget smooth scroll libraries.** Check for Lenis (`.lenis` class), Locomotive Scroll, or similar. Default browser scrolling feels noticeably different and the user will spot it immediately.
 - **Don't dispatch builders without a spec file.** The spec file forces exhaustive extraction and creates an auditable artifact. Skipping it means the builder gets whatever you can fit in a prompt from memory.
@@ -468,6 +454,6 @@ When done, report:
 - Total components created
 - Total spec files written (should match components)
 - Total assets downloaded (images, videos, SVGs, fonts)
-- Build status (`npm run build` result)
+- Final verification commands and results
 - Visual QA results (any remaining discrepancies)
 - Any known gaps or limitations

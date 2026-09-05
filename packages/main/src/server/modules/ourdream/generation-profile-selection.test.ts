@@ -119,13 +119,14 @@ describe("public image-edit workflow authority", () => {
       ...profile,
       workflowKey,
       runnerConfig: {
-        workflowVersion: 2,
+        workflowVersion: workflowKey === "qwen-image-edit-multi-reference" ? 3 : 2,
         publicSelection: { surface: "generator_image_edit" },
         capabilities: { textToImage: false, initImage: true },
       },
     }));
     const selected = await projectPublicImageEditGenerationProfiles([
       ...profiles,
+      { ...profiles[1], runnerConfig: { ...profiles[1].runnerConfig, workflowVersion: 2 } },
       { ...profiles[0], runnerConfig: { ...profiles[0].runnerConfig, workflowVersion: 1 } },
       { ...profiles[0], runnerConfig: { workflowVersion: 2, capabilities: { initImage: true } } },
     ]);

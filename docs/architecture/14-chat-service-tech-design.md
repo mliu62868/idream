@@ -34,9 +34,17 @@ Chat 只构造一条 system message，层级固定：
 2. `buildCompanionRuntimeAuthority`：当前 Turn 的 memory、tool、事实与输出约束。
 3. immutable compiled Character Soul：角色身份、声音和角色特有互动方式。
 
-opening、历史 Turn、memory recall、Scene 与时间是可变事实，作为紧邻当前用户消息的 replay/plugin messages 输入；不得复制进 system prompt。`PreparedTurn.trace` 固定 Product Contract 版本、最终 system prompt SHA-256 与 Soul fingerprint，三者原样进入 Main 终态证据。
+opening、历史 Turn、检索到的 memory notes、Scene 与时间是可变事实，作为紧邻当前用户消息的 replay/plugin messages 输入。DSH 官方 igrep 的 resident profile 经 `igrep_memory_profile` 变量进入运行时 system section，不属于不可变 Character Soul。
+
+`PreparedTurn.trace` 固定 Product Contract 版本、Chat 编译的产品 system SHA-256 与 Soul fingerprint；Main terminal 的 `preparedSystemPromptDigest` 保留该编译摘要。实际 provider 请求边界另记录 `modelRequests`：每次物理请求的完整正文摘要、最终 system 摘要与输入估算；`prompt.systemPromptDigest` 对应最后一次实际模型请求。图片的本地确认步骤不制造模型请求或用量。预算在该边界重新检查，包含 DSH 动态记忆、工具结果及序列化工具 schema；超预算停止请求，不能静默裁掉固定 Soul 或当前用户输入。输入估算沿用字符启发式，不等同于 provider tokenizer 的精确计数。
 
 Product Contract 决定「Chat 交互共同遵循什么产品行为」，Soul 决定「此刻由谁、用什么声音表达」。Soul 不能覆盖 Product Contract 或 Runtime Authority，Runtime 也不能重写 Soul 的角色事实。
+
+记忆维护使用独立的确定性采样（temperature 0、top_p 1、presence_penalty 0），经官方 `IGREP_LLM_EXTRA_BODY` 交给子进程，并进入 composition digest；启动时覆盖环境中的同名任意请求覆写。角色对话继续使用原 `CHAT_MODEL_*` 采样。维护返回 deferred 或非法操作时仍保留待处理数据，full readiness 仍须验证 pending 为 0。
+
+普通 Agent 在 DSH 工具注册层仅允许继承 `memory_search`；私密 Agent 不继承任何插件工具。官方插件随 `memory: true` 注册的 `memory_record` 不进入模型 schema，也不能执行。图片工具仍由本轮不可变授权在 Agent scope 注册。记忆回答优先采用用户原始陈述，完整保留被问及的名称、标识、数字和日期；助手的简写不能替换用户事实。
+
+编辑已有图片时，Main 从已验证的 source image 编译局部编辑指令，不再套用新建肖像提示词。Gen 的 Qwen multi-reference workflow v3 将源图接入 image1、身份图接入 image2，并使用编码器的 Picture 1 / Picture 2 标签明确编辑目标；身份图不能替换源图的构图、姿势和背景。
 
 ## 3. Turn 热路径
 
@@ -108,12 +116,12 @@ DSH tool_call
 
 ToolEffect 明确携带作用域，不能把调用语义编码进模型生成的 `callId`。普通模型 tool call 使用 `effectScope=attempt`，幂等键由 `turnId + attempt + toolCallId` 决定，参数 digest 不同则冲突。`PreparedTurn.requiredAction` 表示产品已经接受的明确用户图片意图，使用 `effectScope=turn_action`，效果身份仅由 `turnId + tool name` 决定：regenerate 即使让 Agent 写出不同的具体场景，也只把首次接受的同一附件重绑到当前 attempt，不创建第二个 Generation Job、不改写已经持久化的生成控制，也不重复扣费。`intent.requestedNudity` 是独立的结构化用户边界，由 Main 编译进最终生图 prompt；Agent 负责具体场景，不负责重建或猜测这条边界。当前 Chat 工具只有图片生成与编辑，因此实现只覆盖 image。将来真实 video tool 出现时复用同一端口和既有 Generation 生命周期，不增加通用 hook 框架。
 
-明确图片意图在模型运行前由 `PreparedTurn` 固化并预留一次 Main ToolEffect。Main 接受动作后，Chat 不再运行 DSH/Caption 模型，而是按当前消息脚本和签名 locale 直接提交版本化的确定性确认文案：
+明确图片意图在模型运行前由 `PreparedTurn` 固化授权；DSH Agent 编写画面描述，通过唯一匹配工具向 Main 预留 ToolEffect。Main 接受动作后，Chat 使用 DSH 官方 `llm/stream` waterfall 提供版本化确定性确认，不再请求 Caption 模型；DSH 继续记录工具结果并正常完成 `agent/turn-stopping`。确认语言由当前消息脚本和冻结的签名用户 locale 决定：
 
 - 确认文案一次性进入 SSE 和 Main terminal，不能被 Character Soul 改写成拒绝、交换条件或拖延；
 - 附件状态独立拥有 `requesting/accepted/queued/running/completed/failed` 交付事实，文案不虚构图片已完成；
 - Main ACK 不确定时，Chat 使用完全相同的 effect identity 有界重试并对账；
-- terminal evidence 记录 Product Contract、PreparedTurn、system prompt digest、Soul fingerprint，以及 required action 的 call/attachment/job/media id 和确认语言；不能用 DSH 的 `toolCalls=0` 冒充没有产品动作。
+- terminal evidence 记录 Product Contract、PreparedTurn、system prompt digest、Soul fingerprint、ToolEffect identity，以及 `acknowledgement.version/locale`。附件表持有 attachment/job/media 交付事实；不能用 DSH 的 `toolCalls=0` 冒充没有产品动作。`execution.steps` 包含本地确认步骤，模型用量只累计实际 provider 步骤。
 
 ## 6. API
 

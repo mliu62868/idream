@@ -64,7 +64,7 @@ export function compilePreparedTurn(
     },
   };
   const execution = preparedTurnSchema.parse({
-    version: 4,
+    version: 5,
     model: profile.model,
     characterName: fitted.context.persona.name,
     messages: fitted.messages,
@@ -157,7 +157,9 @@ export function fitPreparedTurnBudget(
     hasRecentImageContext: fitted.hasRecentImageContext,
     previousAssistantText: fitted.previousAssistantText,
   });
-  const requiredAction = fitted.policy.imageToolEnabled && imageIntent.kind !== "none" ? imageIntent.action : null;
+  const requiredAction = fitted.policy.imageToolEnabled && imageIntent.kind !== "none"
+    ? { ...imageIntent.action, replyLocale: fitted.userLocale }
+    : null;
   const registeredTools = fitted.policy.imageToolEnabled ? registryChatTools() : [];
   const tools = requiredAction
     ? registeredTools.filter((tool) => tool.name === requiredAction.name)

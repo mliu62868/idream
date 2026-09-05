@@ -275,8 +275,8 @@ describe("buildBackendRegistry", () => {
       seed: 9,
     });
     expect(multiReferencePrompt["3"].inputs).toMatchObject({
-      image1: ["8", 0],
-      image2: ["12", 0],
+      image1: ["12", 0],
+      image2: ["8", 0],
     });
     expect(multiReferencePrompt["8"].inputs.image).toBe("identity.png");
     expect(multiReferencePrompt["12"].inputs.image).toBe("source.png");

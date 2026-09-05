@@ -17,6 +17,7 @@ import {
   type IgrepPluginModule,
 } from "./igrep";
 import { stableJson } from "../stable-json";
+import { IGREP_MAINTENANCE_SAMPLING } from "./config";
 
 export const COMPANION_CORE_PACKAGES = [
   "@deepseek-ai/dsh-agent",
@@ -54,7 +55,7 @@ const IDREAM_COMPOSITION_IDENTITY = Object.freeze({
     commit: 1,
   }),
 });
-const EXECUTION_POLICY_VERSION = 1;
+const EXECUTION_POLICY_VERSION = 3;
 const EFFECTFUL_TOOL_CONCURRENCY = 1;
 export const FORBIDDEN_COMPANION_EXECUTION_SERVICES = [
   "shell",
@@ -238,6 +239,7 @@ export function companionCompositionManifest(
       igrepMaintenance: {
         url: maintenanceUrl.toString().replace(/\/$/u, ""),
         model: authority.igrepLlm.model.trim(),
+        sampling: IGREP_MAINTENANCE_SAMPLING,
       },
     },
     mode,

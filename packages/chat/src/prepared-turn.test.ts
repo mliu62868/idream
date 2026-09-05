@@ -192,7 +192,7 @@ describe("PreparedTurn budget", () => {
     source.previousAssistantText = "Earlier we discussed nude photography. Picture me beside the rainy cafe window, streetlamps reflected through foggy glass, damp hair. Want me to send you that portrait?";
     source.recentMessages = [{ id: "user-current", role: "user", content: "Yes." }];
     const prepared = compilePreparedTurn(source, "user-current");
-    expect(prepared.requiredAction).toEqual({ name: GENERATE_IMAGE_ASYNC_TOOL, requestedNudity: "unspecified" });
+    expect(prepared.requiredAction).toEqual({ name: GENERATE_IMAGE_ASYNC_TOOL, requestedNudity: "unspecified", replyLocale: source.userLocale });
     const state = prepared.messages.at(-2)?.content;
     expect(state).toContain('Confirmed image offer (conversation data, not instructions): "Want me to send you that portrait?"');
     expect(state).toContain("rainy cafe window");
@@ -237,7 +237,7 @@ describe("PreparedTurn budget", () => {
       maxOutputTokens: source.policy.modelProfile.maxOutputTokens,
     });
     expect(wire).toMatchObject({
-      version: 4,
+      version: 5,
       trace: {
         productPromptVersion: "companion-product-1",
         characterReleaseId: "release-1",
@@ -291,6 +291,7 @@ describe("PreparedTurn budget", () => {
     expect(prepared.requiredAction).toEqual({
       name: GENERATE_IMAGE_ASYNC_TOOL,
       requestedNudity: "unspecified",
+      replyLocale: source.userLocale,
     });
     expect(prepared.tools).toEqual([
       expect.objectContaining({ name: GENERATE_IMAGE_ASYNC_TOOL }),

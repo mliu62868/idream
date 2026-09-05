@@ -234,7 +234,7 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
     );
     expect(identityAndSource).toMatchObject({
       modelId: "qwen-image-edit-multi-reference",
-      version: 2,
+      version: 3,
       identity: {
         mode: "multi_reference",
         maxReferences: 2,
@@ -265,8 +265,8 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
       }),
     ]);
     expect(identityAndSource.apiPrompt["3"]?.inputs).toMatchObject({
-      image1: ["8", 0],
-      image2: ["12", 0],
+      image1: ["12", 0],
+      image2: ["8", 0],
     });
     expectImageMemoryBarrier(identityAndSource, "2", "3", "4", "1:clip", 0);
   });

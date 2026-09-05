@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { stableNumericSeed } from "../providers";
 import { BackendImageModel } from "./backend-image-model";
@@ -111,6 +112,28 @@ function modelWithDescriptor(
 }
 
 describe("BackendImageModel", () => {
+  it("identifies the edit source separately from the identity portrait for Qwen's numbered image inputs", async () => {
+    const workflow = workflowDescriptorSchema.parse(JSON.parse(readFileSync(
+      new URL("../../workflows/qwen-image-edit-multi-reference.json", import.meta.url), "utf8",
+    )));
+    if (workflow.backendKind !== "comfyui") throw new Error("Qwen edit must use its ComfyUI graph");
+    expect(workflow.apiPrompt["3"].inputs).toMatchObject({ image1: ["12", 0], image2: ["8", 0] });
+    expect(workflow.version).toBe(3);
+    const backend = makeStubBackend();
+    const result = await modelWithDescriptor(backend, workflow).generate({
+      prompt: "Add a red scarf; keep the source framing.", count: 1, model: workflow.modelId,
+      controls: { workflowKey: workflow.workflowKey, workflowVersion: workflow.version },
+      referenceImages: [
+        { assetId: "source", role: "source_image", b64Json: Buffer.from(PNG).toString("base64") },
+        { assetId: "identity", role: "identity_anchor", b64Json: Buffer.from(PNG).toString("base64") },
+      ],
+    });
+    expect(result.ok).toBe(true);
+    expect(submittedSlots(backend).prompt).toContain("Edit Picture 1");
+    expect(submittedSlots(backend).prompt).toContain("Picture 2 is an identity reference only");
+    expect(submittedSlots(backend).prompt).toContain("Add a red scarf; keep the source framing.");
+  });
+
   it("applies workflow-native negative prompt semantics before submission", async () => {
     const backend = makeStubBackend();
     const model = modelWithDescriptor(backend, positiveInstructionDescriptor);

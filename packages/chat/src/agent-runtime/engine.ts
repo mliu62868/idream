@@ -27,6 +27,7 @@ import {
   type CompanionCommitAck,
   type CompanionEvent,
   type CompanionInvocation,
+  type CompanionModelRequestEvidence,
   type CompanionTerminalCandidate,
   type CompanionToolCall,
   type CompanionToolResult,
@@ -49,6 +50,7 @@ import type {
   CompanionWorkspaceRebuildSource,
 } from "./rebuild-source";
 import { stableJson } from "../stable-json";
+import { imageAcknowledgement } from "../image-acknowledgement";
 type EventPayload = CompanionEvent extends infer Event
   ? Event extends CompanionEvent
     ? Omit<Event, "invocationId" | "attemptId" | "sequence" | "occurredAt">
@@ -59,7 +61,10 @@ export interface CompanionEngineOptions {
   instance?: CompanionReadiness["instance"];
   workspaces: AttemptWorkspaceStore;
   plugin(): Promise<IgrepPluginModule>;
-  adapter(profile: PreparedTurnProfile, requiredToolName?: CompanionToolCall["name"]): LlmAdapter;
+  adapter(profile: PreparedTurnProfile, requiredToolName: CompanionToolCall["name"] | undefined, requestPolicy: {
+    maxInputTokens: number;
+    observeRequest(evidence: CompanionModelRequestEvidence): void;
+  }): LlmAdapter;
   igrepCommand: string;
   observeWake?: typeof observeIgrepWake;
   recallMemory?: typeof recallIgrepMemory;
@@ -104,6 +109,10 @@ const COMPANION_MEMORY_GUIDANCE = [
   "anything. If they ask about something specific that is not in view here, call",
   "memory_search with a natural-language question before answering; if it finds",
   "nothing, say honestly that you don't recall rather than inventing it.",
+  "When recalling a specific fact, preserve its complete name, identifier, number",
+  "or date exactly as the person gave it. Prefer the person's original statement",
+  "over an assistant paraphrase; a shorter paraphrase does not replace their fact.",
+  "Brevity and natural expression must not omit part of the requested fact.",
 ].join(" ") + "\n\n{{igrep_memory_profile}}";
 
 const MAX_RECALL_NOTES = 6;
@@ -449,6 +458,7 @@ export function buildReplaySeed(
 }
 
 class ToolBridge {
+  lastResult?: CompanionToolResult;
   private readonly entries = new Map<string, {
     name: CompanionToolCall["name"];
     startedAt: number;
@@ -544,6 +554,7 @@ class ToolBridge {
       outcome: result.outcome,
       durationMs: Math.max(0, Date.now() - entry.startedAt),
     });
+    this.lastResult = result;
     return result;
   }
 }
@@ -742,15 +753,22 @@ export class CompanionEngine {
         }
         return next();
       }, { prepend: true });
+      const modelRequests: CompanionModelRequestEvidence[] = [];
       const adapter = this.options.adapter(
         invocation.preparedTurn.profile,
         invocation.preparedTurn.requiredAction?.name,
+        {
+          maxInputTokens: invocation.preparedTurn.budget.maxInputTokens,
+          observeRequest: evidence => { modelRequests.push(evidence); },
+        },
       );
       ctx.llm.registerAdapter([invocation.preparedTurn.profile.provider], adapter);
 
       let latestAssistant: AssistantMessage | undefined;
-      let latestUsage: TokenUsage | undefined;
+      const totalUsage = wireUsage();
       let latestFinish: StreamChunk & { type: "finish" } | undefined;
+      let providerAttribution: ReturnType<typeof wireAttribution>;
+      let acknowledgement: ReturnType<typeof imageAcknowledgement> | undefined;
       let turnEnd: TurnEndReason | undefined;
       let stepCount = 0;
       let currentStepText = "";
@@ -758,6 +776,27 @@ export class CompanionEngine {
       const bridge = new ToolBridge(port.executeTool, (payload) => {
         void event(payload);
       });
+
+      // DSH explicitly supports short-circuiting llm/stream. Keep its tool-result
+      // and stopping lifecycle, but never ask a caption model to reinterpret an
+      // accepted Main action. No result or failed/unknown result cannot confirm.
+      ctx.on("llm/stream", async function* (options, next) {
+        const action = invocation.preparedTurn.requiredAction;
+        if (!action || bridge.callCount === 0) {
+          yield* next();
+          return;
+        }
+        options.signal?.throwIfAborted();
+        if (bridge.callCount !== 1 || bridge.lastResult?.outcome !== "succeeded") {
+          throw new Error("required image action has no successful Main acknowledgement");
+        }
+        acknowledgement = imageAcknowledgement(current.content, action.replyLocale);
+        const text = acknowledgement.content;
+        yield { type: "block-start", index: 0, blockType: "text" };
+        yield { type: "text-delta", index: 0, text };
+        yield { type: "block-end", index: 0, block: { type: "text", text } };
+        yield { type: "finish", reason: { kind: "stop" } };
+      }, { prepend: true });
 
       ctx.on("session/event", (_session, sessionEvent) => {
         // Cordis can surface the same durable Session event through more than
@@ -776,11 +815,18 @@ export class CompanionEngine {
               event({ type: "text_delta", delta: chunk.text });
             }
           }
-          if (chunk.type === "finish") latestFinish = chunk;
+          if (chunk.type === "finish") {
+            latestFinish = chunk;
+            providerAttribution = wireAttribution(chunk) ?? providerAttribution;
+          }
         } else if (sessionEvent.type === "assistant/message") {
           latestAssistant = sessionEvent.data.message;
-          latestUsage = sessionEvent.data.usage;
-          const usage = wireUsage(latestUsage);
+          // DSH's completion anchor carries usage for one model request. A
+          // tool round trip adds another request; Main records the whole Turn.
+          const usage = wireUsage(sessionEvent.data.usage);
+          totalUsage.promptTokens += usage.promptTokens;
+          totalUsage.completionTokens += usage.completionTokens;
+          totalUsage.reasoningTokens += usage.reasoningTokens;
           event({ type: "usage", usage });
           if (usage.reasoningTokens > 0) {
             event({ type: "reasoning_usage", reasoningTokens: usage.reasoningTokens });
@@ -859,6 +905,15 @@ export class CompanionEngine {
           maxTokens: invocation.preparedTurn.profile.maxOutputTokens,
         },
         setup: async (agentCtx) => {
+          // The official memory switch also registers memory_record. Main owns
+          // durable memory through committed-Turn projection; this attempt may
+          // only read it. DSH restrictions cover both schemas and dispatch, and
+          // leave the explicitly authorized scope-local image tools below intact.
+          agentCtx.tools.restrict({
+            allow: mode === "normal"
+              ? ctx!.tools.schemas().filter(tool => tool.name === "memory_search").map(tool => tool.name)
+              : [],
+          });
           invocation.preparedTurn.messages
             .filter((message) => message.role === "system")
             .forEach((message, index) => {
@@ -989,17 +1044,22 @@ export class CompanionEngine {
             if (latestFinish.reason.kind !== "stop" && latestFinish.reason.kind !== "max-tokens") {
               throw new Error(`non-terminal finish reason ${latestFinish.reason.kind}`);
             }
-            const attribution = wireAttribution(latestFinish);
+            const attribution = providerAttribution;
             const candidate: CompanionTerminalCandidate = {
               attemptId: invocation.attemptId,
               content,
               finishReason: latestFinish.reason.kind === "max-tokens" ? "length" : "stop",
               provider: invocation.preparedTurn.profile.provider,
               model: invocation.preparedTurn.profile.model,
-              usage: wireUsage(latestUsage),
+              usage: { ...totalUsage },
               execution: { steps: stepCount, toolCalls: bridge.callCount },
               tools: bridge.reservations,
               completedAt: new Date().toISOString(),
+              ...(modelRequests.length ? { modelRequests } : {}),
+              ...(acknowledgement ? { acknowledgement: {
+                version: acknowledgement.version,
+                locale: acknowledgement.locale,
+              } } : {}),
               ...(attribution ? { attribution } : {}),
             };
             // Some adapters only expose the assembled assistant message. Keep a

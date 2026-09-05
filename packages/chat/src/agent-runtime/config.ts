@@ -24,6 +24,15 @@ export interface IgrepLlmConfig {
   apiKey: string;
 }
 
+// Profile extraction/reconciliation emits a strict operation protocol. Creative
+// sampling caused invalid empty-profile operations even after igrep's repairs.
+// These settings are independent of the companion's conversational sampling.
+export const IGREP_MAINTENANCE_SAMPLING = Object.freeze({
+  temperature: 0,
+  top_p: 1,
+  presence_penalty: 0,
+});
+
 /**
  * INVARIANT: every official igrep plugin or CLI child inherits Chat's
  * validated maintenance model, never a user's ~/.igreprc defaults.
@@ -35,6 +44,9 @@ export function bindIgrepLlmEnvironment(
   environment.IGREP_LLM_URL = config.url;
   environment.IGREP_LLM_MODEL = config.model;
   environment.IGREP_LLM_API_KEY = config.apiKey;
+  // Replace ambient extra-body overrides as well: they can otherwise change
+  // the validated model or request protocol inside the official CLI child.
+  environment.IGREP_LLM_EXTRA_BODY = JSON.stringify(IGREP_MAINTENANCE_SAMPLING);
 }
 
 function required(env: NodeJS.ProcessEnv, name: string): string {

@@ -1,8 +1,9 @@
 import { once } from "node:events";
+import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import type { GenerateOptions } from "@deepseek-ai/dsh-llm";
-import { OpenAiCompatibleAdapter } from "./openai-adapter";
+import { OpenAiCompatibleAdapter, type OpenAiCompatibleAdapterOptions } from "./openai-adapter";
 
 const servers: Server[] = [];
 
@@ -12,7 +13,7 @@ afterEach(async () => {
   }));
 });
 
-function adapterFor(baseUrl: string, fetchImpl?: typeof fetch): OpenAiCompatibleAdapter {
+function adapterFor(baseUrl: string, fetchImpl?: typeof fetch, requestPolicy: Partial<OpenAiCompatibleAdapterOptions> = {}): OpenAiCompatibleAdapter {
   return new OpenAiCompatibleAdapter({
     profile: {
       tier: "test",
@@ -32,6 +33,7 @@ function adapterFor(baseUrl: string, fetchImpl?: typeof fetch): OpenAiCompatible
     apiKey: "provider-secret",
     openRouterProviderOnly: ["DeepSeek"],
     ...(fetchImpl ? { fetch: fetchImpl } : {}),
+    ...requestPolicy,
   });
 }
 
@@ -46,6 +48,39 @@ async function drain(adapter: OpenAiCompatibleAdapter): Promise<void> {
 }
 
 describe("OpenAI-compatible DSH adapter", () => {
+  it("rejects dynamic DSH context exceeding the prepared budget before contacting a provider", async () => {
+    let requests = 0;
+    const adapter = adapterFor("https://provider.example/v1", async () => {
+      requests += 1;
+      return new Response('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n');
+    }, { maxInputTokens: 20 });
+    await expect((async () => {
+      for await (const _chunk of adapter.stream({
+        provider: "openrouter", model: "deepseek/test", messages: [],
+        system: "Dynamic resident memory ".repeat(40),
+      })) {}
+    })()).rejects.toThrow(/input budget/);
+    expect(requests).toBe(0);
+  });
+
+  it("records the exact serialized provider request and assembled system digest", async () => {
+    const observed: unknown[] = [];
+    let body = "";
+    const adapter = adapterFor("https://provider.example/v1", async (_input, init) => {
+      body = String(init?.body);
+      return new Response('data: {"choices":[{"delta":{"content":"Okay"},"finish_reason":"stop"}]}\n\n');
+    }, { maxInputTokens: 2_000, observeRequest: value => observed.push(value) });
+    for await (const _chunk of adapter.stream({
+      provider: "openrouter", model: "deepseek/test", messages: [],
+      system: "Product rules\nDSH memory guidance\nResident profile",
+    })) {}
+    expect(observed).toEqual([expect.objectContaining({
+      bodyDigest: createHash("sha256").update(body).digest("hex"),
+      systemPromptDigest: createHash("sha256").update("Product rules\nDSH memory guidance\nResident profile").digest("hex"),
+      maxInputTokens: 2_000,
+    })]);
+  });
+
   it("forces the reserved image tool on the first Agent step only", async () => {
     const choices: unknown[] = [];
     const tokenLimits: unknown[] = [];
@@ -336,7 +371,9 @@ describe("OpenAI-compatible DSH adapter", () => {
           `data: ${JSON.stringify({
             choices: [{ delta: { content }, finish_reason: null }],
           })}\n\n`,
-          `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`,
+          `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], usage: {
+            prompt_tokens: requests.length * 10, completion_tokens: requests.length * 2,
+          } })}\n\n`,
           "data: [DONE]\n\n",
         ].join(""), { status: 200 });
       }) as typeof fetch,
@@ -378,6 +415,9 @@ describe("OpenAI-compatible DSH adapter", () => {
       }),
     }));
     expect(chunks.at(-1)).toEqual({ type: "finish", reason: { kind: "tool-calls" } });
+    expect(chunks).toContainEqual({
+      type: "usage", usage: { inputTokens: 30, outputTokens: 6, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 },
+    });
   });
 
   it("pins OpenRouter routing and preserves streamed usage and finish", async () => {

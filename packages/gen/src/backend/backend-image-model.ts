@@ -176,7 +176,13 @@ export class BackendImageModel implements ImageModel {
     const workflowControlSlots = resolveWorkflowControlSlots(descriptor, input.controls);
     const promptSlots = workflowPromptSlots({
       mode: descriptor.negativePromptMode,
-      prompt: input.prompt,
+      // Qwen's first reference is the scene being edited. Put the source first
+      // in the graph, then identify the secondary portrait explicitly. A real
+      // edit followed the identity scene when it occupied image1, even when
+      // the prompt asked for image2. Use the encoder's own "Picture N" labels.
+      prompt: descriptor.workflowKey === "qwen-image-edit-multi-reference"
+        ? `Edit Picture 1, the source image. Preserve Picture 1's framing, pose, clothes, background and lighting except for the requested changes. Picture 2 is an identity reference only; do not copy its scene, pose or clothes.\n\n${input.prompt}`
+        : input.prompt,
       negativePrompt: input.negativePrompt,
     });
 
