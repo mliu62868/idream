@@ -98,12 +98,10 @@ export async function validatedAutomaticFailureCorrection(
   requestId: string,
   attemptId: string,
 ) {
-  const [request, decisions, success, refunds] = await Promise.all([
-    tx.generationJob.findUnique({ where: { id: requestId }, select: { status: true, errorCode: true, deliveredOutputCount: true } }),
-    tx.generationJobEvent.findMany({ where: { jobId: requestId, type: { in: ["unknown_reconciliation_confirm_failed", "unknown_reconciliation_adopt_succeeded"] }, metadata: { path: ["attemptId"], equals: attemptId } }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 1 }),
-    validatedUnknownSuccessResolution(tx, attemptId),
-    tx.dreamcoinLedger.count({ where: { sourceId: requestId, reason: "refund", delta: { gt: 0 } } }),
-  ]);
+  const request = await tx.generationJob.findUnique({ where: { id: requestId }, select: { status: true, errorCode: true, deliveredOutputCount: true } });
+  const decisions = await tx.generationJobEvent.findMany({ where: { jobId: requestId, type: { in: ["unknown_reconciliation_confirm_failed", "unknown_reconciliation_adopt_succeeded"] }, metadata: { path: ["attemptId"], equals: attemptId } }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 1 });
+  const success = await validatedUnknownSuccessResolution(tx, attemptId);
+  const refunds = await tx.dreamcoinLedger.count({ where: { sourceId: requestId, reason: "refund", delta: { gt: 0 } } });
   const decision = decisions[0];
   const metadata = jsonRecord(decision?.metadata);
   if (!request || request.status !== "failed" || request.errorCode !== "operator_confirmed_provider_failure" ||
@@ -111,10 +109,8 @@ export async function validatedAutomaticFailureCorrection(
     decision?.type !== "unknown_reconciliation_confirm_failed" || metadata.actorId !== AUTOMATIC_UNKNOWN_SETTLEMENT_ACTOR_ID ||
     metadata.resolution !== "confirm_failed" || metadata.refundAmount !== 0 || metadata.deliveredCount !== 0 ||
     typeof metadata.commandId !== "string") return null;
-  const [command, event] = await Promise.all([
-    tx.controlPlaneCommand.findUnique({ where: { id: metadata.commandId } }),
-    tx.generationJobEvent.findUnique({ where: { id: success.eventId } }),
-  ]);
+  const command = await tx.controlPlaneCommand.findUnique({ where: { id: metadata.commandId } });
+  const event = await tx.generationJobEvent.findUnique({ where: { id: success.eventId } });
   const result = unknownGenerationReconciliationResultSchema.safeParse(command?.result);
   if (!command || command.status !== "succeeded" || command.commandType !== "generation.request.reconcile_unknown" ||
     command.targetId !== requestId || command.actorId !== AUTOMATIC_UNKNOWN_SETTLEMENT_ACTOR_ID ||

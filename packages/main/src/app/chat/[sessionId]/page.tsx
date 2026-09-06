@@ -9,15 +9,15 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
   const { sessionId } = await params;
   const canonical = `/chat/${encodeURIComponent(sessionId)}`;
   return {
-    title: "Private chat | ourdream.ai",
+    title: "Private chat | iDream",
     alternates: {
       canonical,
     },
     openGraph: {
       type: "website",
-      siteName: "ourdream.ai",
-      title: "Private chat | ourdream.ai",
-      description: "Continue a private Ourdream chat.",
+      siteName: "iDream",
+      title: "Private chat | iDream",
+      description: "Continue a private iDream chat.",
       url: canonical,
     },
     robots: { index: false, follow: false },

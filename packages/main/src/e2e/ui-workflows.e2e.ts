@@ -1,3 +1,4 @@
+import { completeSignupRecoveryCode } from "./signup-recovery";
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import type { Prisma } from "@prisma/client";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -1442,6 +1443,7 @@ test("help desk signup redirect preserves anonymous support request draft", asyn
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
   await page.getByRole("button", { name: "Join Free" }).click();
+  await completeSignupRecoveryCode(page);
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/helpdesk");
   await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
@@ -1545,6 +1547,7 @@ test("help desk signup redirect preserves anonymous roadmap idea draft", async (
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
   await page.getByRole("button", { name: "Join Free" }).click();
+  await completeSignupRecoveryCode(page);
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/helpdesk");
   await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
@@ -1665,6 +1668,7 @@ test("help desk signup redirect applies anonymous roadmap vote intent", async ({
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
   await page.getByRole("button", { name: "Join Free" }).click();
+  await completeSignupRecoveryCode(page);
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/helpdesk");
   await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
@@ -1744,6 +1748,7 @@ test("help desk signup redirect preserves anonymous appeal draft", async ({ page
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
   await page.getByRole("button", { name: "Join Free" }).click();
+  await completeSignupRecoveryCode(page);
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/helpdesk");
   await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
@@ -2975,6 +2980,7 @@ test("global header signup redirect returns anonymous generator intent", async (
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
   await page.getByRole("button", { name: "Join Free" }).click();
+  await completeSignupRecoveryCode(page);
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/generate");
   await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
@@ -3072,6 +3078,7 @@ test("generate preset signup redirect preserves anonymous preset draft", async (
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
   await page.getByRole("button", { name: "Join Free" }).click();
+  await completeSignupRecoveryCode(page);
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/generate");
   await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
@@ -3162,6 +3169,7 @@ test("create signup redirect returns anonymous draft to the builder", async ({ p
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
   await page.getByRole("button", { name: "Join Free" }).click();
+  await completeSignupRecoveryCode(page);
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/create");
   await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
@@ -3431,6 +3439,7 @@ test("character detail signup redirect returns anonymous chat intent to the char
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
   await page.getByRole("button", { name: "Join Free" }).click();
+  await completeSignupRecoveryCode(page);
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/characters/melissa-burke");
   await expect(page.getByRole("heading", { name: "Melissa Burke" })).toBeVisible({
@@ -3468,6 +3477,7 @@ test("character detail like signup redirect returns anonymous intent and persist
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
   await page.getByRole("button", { name: "Join Free" }).click();
+  await completeSignupRecoveryCode(page);
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/characters/melissa-burke");
   await expect(page.getByRole("heading", { name: "Melissa Burke" })).toBeVisible({
@@ -3545,6 +3555,7 @@ test("character detail generate signup redirect preserves character intent", asy
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
   await page.getByRole("button", { name: "Join Free" }).click();
+  await completeSignupRecoveryCode(page);
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/generate");
   expect(new URL(page.url()).searchParams.get("characterId")).toBe("melissa-burke");
@@ -3820,6 +3831,7 @@ test("chat hub signup redirect returns anonymous user to the hub", async ({ page
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
   await page.getByRole("button", { name: "Join Free" }).click();
+  await completeSignupRecoveryCode(page);
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/chat");
   await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
@@ -4836,6 +4848,7 @@ test("upgrade signup redirect returns anonymous checkout intent to plans", async
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
   await page.getByRole("button", { name: "Join Free" }).click();
+  await completeSignupRecoveryCode(page);
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/upgrade");
   expect(new URL(page.url()).searchParams.get("plan")).toBe("premium");
@@ -5063,6 +5076,7 @@ test("creator profile signup redirect returns anonymous follow intent to creator
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
   await page.getByRole("button", { name: "Join Free" }).click();
+  await completeSignupRecoveryCode(page);
 
   await expect.poll(() => new URL(page.url()).pathname).toBe(creatorPath);
   const me = await page.request.get("/api/v1/me");
@@ -5107,6 +5121,7 @@ test("community signup redirect returns anonymous follow intent to creator", asy
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
   await page.getByRole("button", { name: "Join Free" }).click();
+  await completeSignupRecoveryCode(page);
 
   await expect.poll(() => new URL(page.url()).pathname).toBe(creatorPath);
   const me = await page.request.get("/api/v1/me");
@@ -5341,6 +5356,7 @@ test("feed chat signup redirect returns anonymous intent to character detail", a
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
   await page.getByRole("button", { name: "Join Free" }).click();
+  await completeSignupRecoveryCode(page);
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/characters/melissa-burke");
   await expect(page.getByRole("heading", { name: "Melissa Burke" })).toBeVisible({
@@ -5388,6 +5404,7 @@ test("feed like signup redirect returns anonymous intent to focused feed item", 
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
   await page.getByRole("button", { name: "Join Free" }).click();
+  await completeSignupRecoveryCode(page);
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/feed");
   expect(new URL(page.url()).searchParams.get("item")).toBe("character:melissa-burke");
@@ -5456,6 +5473,7 @@ test("feed remix signup redirect preserves anonymous generator intent", async ({
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
   await page.getByRole("button", { name: "Join Free" }).click();
+  await completeSignupRecoveryCode(page);
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/generate");
   expect(new URL(page.url()).searchParams.get("characterId")).toBe("melissa-burke");
@@ -5992,6 +6010,7 @@ test("profile prompts anonymous visitors to sign in before showing private contr
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
   await page.getByRole("button", { name: "Join Free" }).click();
+  await completeSignupRecoveryCode(page);
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/profile");
   expect(new URL(page.url()).hash).toBe("#billing");
@@ -6038,6 +6057,7 @@ test("profile subroutes preserve anonymous auth return targets", async ({ page }
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
   await page.getByRole("button", { name: "Join Free" }).click();
+  await completeSignupRecoveryCode(page);
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/profile/redeem-code");
   await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
@@ -6191,23 +6211,32 @@ test("profile account management signs out sessions and deletes the account", as
   await page.getByLabel("Delete confirmation").fill("NOPE");
   await expect(deleteButton).toBeDisabled();
   await page.getByLabel("Delete confirmation").fill("DELETE");
+  await expect(deleteButton).toBeDisabled();
+  await page.getByLabel("Current account password").fill("password123");
   await expect(deleteButton).toBeEnabled();
   const deletionResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "POST" &&
     new URL(response.url()).pathname === "/api/v1/account/delete-request"
-  ).then((response) => ({ status: response.status() }));
+  ).then(async (response) => ({ status: response.status(), payload: await response.json() }));
   await deleteButton.click();
   const deletionResponse = await deletionResponsePromise;
   expect(deletionResponse.status).toBe(200);
-  await expect(page).toHaveURL(/\/login\?accountDeletionGraceEndsAt=/);
-  expect(new URL(page.url()).pathname).toBe("/login");
-  await expect(page.getByTestId("account-deletion-grace-notice")).toBeVisible();
+  expect(deletionResponse.payload.data.receipt).toEqual(expect.any(String));
+  const statusPath = `/login#deletion=${encodeURIComponent(deletionResponse.payload.data.receipt)}`;
+  await expect(page).toHaveURL(new URL(statusPath, page.url()).href);
+  await expect(page.getByRole("heading", { name: "Account deletion scheduled" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Private status link — bookmark this page" })).toHaveAttribute("href", statusPath);
 
   const deletion = await prisma.accountDeletion.findUniqueOrThrow({
     where: { userId: user.id },
   });
-  expect(new URL(page.url()).searchParams.get("accountDeletionGraceEndsAt"))
-    .toBe(deletion.graceEndsAt.toISOString());
+  const statusResponse = await page.request.get("/api/v1/account/deletion-status", {
+    headers: { authorization: `Bearer ${deletionResponse.payload.data.receipt}` },
+  });
+  expect(statusResponse.ok()).toBe(true);
+  expect((await statusResponse.json()).data.deletion).toMatchObject({
+    id: deletion.id, graceEndsAt: deletion.graceEndsAt.toISOString(), status: "awaiting_chat",
+  });
   const requestEventId = `user_deleted_${user.id}`;
   const requestOutbox = await prisma.mainOutboxEvent.findUniqueOrThrow({
     where: { id: requestEventId },
@@ -6242,6 +6271,7 @@ test("profile account management signs out sessions and deletes the account", as
     prisma.mediaAsset.findUnique({ where: { id: mediaId } }),
   ).resolves.not.toBeNull();
 
+  await page.getByRole("link", { name: "Back to login", exact: true }).click();
   await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Email").filter({ visible: true }).fill(email);
   await page.getByLabel("Password").filter({ visible: true }).fill("password123");
@@ -6360,4 +6390,6 @@ test("profile account management signs out sessions and deletes the account", as
     select: { attempts: true },
   });
   expect(terminalBlobReceipt.attempts).toBeGreaterThanOrEqual(1);
+  await page.goto(statusPath);
+  await expect(page.getByRole("heading", { name: "Account deletion completed" })).toBeVisible();
 });

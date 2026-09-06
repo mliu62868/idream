@@ -118,10 +118,9 @@ describe("truthful public UI states", () => {
     });
   });
 
-  it("eager-loads the above-the-fold route logo", () => {
-    expect(source("OurdreamRoutePage.tsx")).toMatch(
-      /<Image[\s\S]*?loading="eager"[\s\S]*?src="\/images\/ourdream\/ourdream-logo\.svg"/,
-    );
+  it("renders the owned wordmark without waiting for a reference-site logo", () => {
+    expect(source("OurdreamRoutePage.tsx")).toMatch(/<span[^>]*>iDream<\/span>/);
+    expect(source("OurdreamRoutePage.tsx")).not.toContain("/ourdream-logo.svg");
   });
 
   it("keeps character cards readable beside the tablet sidebar", () => {

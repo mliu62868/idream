@@ -5,7 +5,7 @@ describe("public site identity", () => {
   it("does not invent legal entities or third-party channels", () => {
     expect(publicSiteIdentity({})).toEqual({
       affiliateUrl: null,
-      brandName: "ourdream.ai",
+      brandName: "iDream",
       discordUrl: null,
       helpCenterUrl: null,
       legalName: null,

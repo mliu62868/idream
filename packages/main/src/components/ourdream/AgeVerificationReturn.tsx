@@ -175,7 +175,7 @@ export function AgeVerificationReturnFrame({
                 Age verified
               </h1>
               <p className="mt-4 text-[14px] font-medium leading-7 text-[rgb(170,170,170)]">
-                Verification is complete. Returning you to Ourdream now.
+                Verification is complete. Returning you to iDream now.
               </p>
             </>
           )}

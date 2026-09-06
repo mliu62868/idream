@@ -5,13 +5,13 @@ describe("publicSiteOrigin", () => {
   it("uses the configured main origin without preserving a path", () => {
     expect(
       publicSiteOrigin({
-        MAIN_WEB_URL: "https://www.ourdream.ai/some/path",
+        MAIN_WEB_URL: "https://www.idream.dev/some/path",
         BETTER_AUTH_URL: "https://auth.example.com",
       }).href,
-    ).toBe("https://www.ourdream.ai/");
+    ).toBe("https://www.idream.dev/");
   });
 
-  it("falls back through the auth origin to the production origin", () => {
+  it("uses the auth origin or a local development default", () => {
     expect(
       publicSiteOrigin({
         MAIN_WEB_URL: "not a url",
@@ -23,7 +23,7 @@ describe("publicSiteOrigin", () => {
         MAIN_WEB_URL: undefined,
         BETTER_AUTH_URL: undefined,
       }).href,
-    ).toBe("https://ourdream.ai/");
+    ).toBe("http://localhost:3000/");
   });
 
   it("never emits an HTTP or loopback SEO origin in production", () => {
@@ -31,15 +31,18 @@ describe("publicSiteOrigin", () => {
       publicSiteOrigin({
         APP_ENV: "production",
         MAIN_WEB_URL: "http://main.example.com",
-        BETTER_AUTH_URL: "https://auth.ourdream.ai",
+        BETTER_AUTH_URL: "https://auth.idream.dev",
       }).href,
-    ).toBe("https://auth.ourdream.ai/");
-    expect(
-      publicSiteOrigin({
-        APP_ENV: "production",
-        MAIN_WEB_URL: "http://localhost:3000",
-        BETTER_AUTH_URL: "http://127.0.0.1:3000",
-      }).href,
-    ).toBe("https://ourdream.ai/");
+    ).toBe("https://auth.idream.dev/");
+  });
+
+  it.each([
+    {},
+    { MAIN_WEB_URL: "http://localhost:3000", BETTER_AUTH_URL: "http://127.0.0.1:3000" },
+    { MAIN_WEB_URL: "not a URL", BETTER_AUTH_URL: "https://auth.internal" },
+    { MAIN_WEB_URL: "https://user:password@main.idream.dev", BETTER_AUTH_URL: "ftp://main.idream.dev" },
+  ])("rejects missing or unusable production configuration: %j", (origins) => {
+    expect(() => publicSiteOrigin({ APP_ENV: "production", ...origins }))
+      .toThrow("Public site origin is not configured");
   });
 });

@@ -25,9 +25,9 @@ export async function resolveGenerationAssetSuccessAttempts(db: Db, assets: read
     where: { assetId: { in: assets.map((asset) => asset.id) }, attemptId: { in: unknownAttempts.map((attempt) => attempt.id) } },
   }) : [];
   const boundAttemptIds = new Set(artifacts.map((artifact) => artifact.attemptId));
-  await Promise.all(unknownAttempts.filter((attempt) => boundAttemptIds.has(attempt.id)).map(async (attempt) => {
+  for (const attempt of unknownAttempts.filter((attempt) => boundAttemptIds.has(attempt.id))) {
     recoveryByAttempt.set(attempt.id, await adoptedResolution(db, attempt));
-  }));
+  }
   const deliveries = artifacts.length > 0 ? await db.generationDelivery.findMany({ where: {
     artifactId: { in: artifacts.map((artifact) => artifact.id) }, status: "delivered", deliveredAt: { not: null }, targetType: "user_library",
   } }) : [];

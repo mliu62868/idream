@@ -12,15 +12,15 @@ export function buildCharacterPageMetadata(
 ): Metadata {
   const canonical = `/characters/${encodeURIComponent(id)}`;
   if (!character) {
-    const title = "Character | ourdream.ai";
-    const description = "View an Ourdream character.";
+    const title = "Character | iDream";
+    const description = "View an iDream character.";
     return {
       title,
       description,
       alternates: { canonical },
       openGraph: {
         type: "website",
-        siteName: "ourdream.ai",
+        siteName: "iDream",
         title,
         description,
         url: canonical,
@@ -29,10 +29,10 @@ export function buildCharacterPageMetadata(
     };
   }
 
-  const title = `${character.name} | ourdream.ai`;
+  const title = `${character.name} | iDream`;
   const description =
     character.description.trim() ||
-    `Meet ${character.name}, an AI character on ourdream.ai.`;
+    `Meet ${character.name}, an AI character on iDream.`;
 
   return {
     title,
@@ -40,7 +40,7 @@ export function buildCharacterPageMetadata(
     alternates: { canonical },
     openGraph: {
       type: "website",
-      siteName: "ourdream.ai",
+      siteName: "iDream",
       title,
       description,
       url: canonical,

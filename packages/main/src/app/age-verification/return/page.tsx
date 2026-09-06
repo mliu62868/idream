@@ -5,8 +5,8 @@ import { safeAgeVerificationReturnTarget } from "@/lib/age-verification-return";
 import type { OurdreamRoute } from "@/types/ourdream";
 
 export const metadata: Metadata = {
-  title: "Age verification | ourdream.ai",
-  description: "Confirm the result of your Ourdream age verification.",
+  title: "Age verification | iDream",
+  description: "Confirm the result of your iDream age verification.",
   alternates: { canonical: "/age-verification/return" },
   robots: { index: false, follow: false },
 };

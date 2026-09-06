@@ -37,7 +37,7 @@ These pages describe the product rules and the controls currently available in t
 
 ## Product boundaries
 
-Ourdream is an adult AI character platform. Characters and generated responses are software outputs, not real people. Public characters and media must pass the product's publication and review states before they can appear in public discovery.
+iDream is an adult AI character platform. Characters and generated responses are software outputs, not real people. Public characters and media must pass the product's publication and review states before they can appear in public discovery.
 
 ## Where to begin
 

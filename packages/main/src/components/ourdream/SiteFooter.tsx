@@ -100,7 +100,7 @@ export function SiteFooter() {
 
         <div className="md:text-right">
           <div className="text-[12px] font-medium uppercase leading-5 text-[rgb(114,113,112)]">
-            <p>{currentYear} OURDREAM.AI</p>
+            <p>{currentYear} iDream</p>
             {identity.legalName ? <p>{identity.legalName}</p> : null}
             {identity.supportEmail ? (
               <a

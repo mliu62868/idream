@@ -6,7 +6,7 @@ import { AuthWorkspace } from "./AuthWorkspace";
 describe("AuthWorkspace hydration authority", () => {
   it.each([
     ["signup", 4],
-    ["login", 3],
+    ["login", 4],
   ] as const)(
     "keeps the %s form non-interactive until client hydration",
     (mode, disabledControlCount) => {

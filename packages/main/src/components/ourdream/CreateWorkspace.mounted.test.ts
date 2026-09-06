@@ -90,6 +90,81 @@ describe("CreateWorkspace identity confirmation", () => {
     vi.unstubAllGlobals();
   });
 
+  function savePendingPreview(phase: "running" | "paused" = "running") {
+    const key = draftStorageKeyForScope("user:creator-1");
+    const saved = JSON.parse(window.localStorage.getItem(key)!);
+    saved.previewBatch = {
+      ...saved.previewBatch, phase, currentCandidateNumber: 4,
+      activeRequestKey: "preview-original-request", activePreviewJobId: "preview-4",
+      activeJobStatus: "running", candidates: saved.previewBatch.candidates.slice(0, 3),
+      deadlineAt: Date.now() - 60_000, failureReason: phase === "paused" ? "user_paused" : null,
+    };
+    window.localStorage.setItem(key, JSON.stringify(saved));
+    return key;
+  }
+
+  function interceptPreview(read: () => Promise<Response>) {
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation((input, init) =>
+      String(input) === "/api/v1/character-drafts/draft-1/preview?previewJobId=preview-4"
+        ? read() : originalFetch(input, init));
+  }
+
+  function completedPreviewResponse() {
+    return Response.json({ ok: true, data: {
+      previewJob: { id: "preview-4", status: "completed" },
+      asset: { id: "asset-4", url: "/api/v1/media/asset-4/content", isSynthetic: false },
+    } });
+  }
+
+  it("reloads an expired running batch and reconciles the same completed job", async () => {
+    savePendingPreview();
+    interceptPreview(async () => completedPreviewResponse());
+    await act(async () => root.render(createElement(CreateWorkspace)));
+    await waitUntil(() => container.querySelector('[data-testid="create-preview-progress"]')?.textContent?.includes("4 completed") === true);
+    expect(container.querySelector('[data-testid="create-preview-progress"]')?.textContent).not.toContain("failed");
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("checks a paused request without enqueueing a replacement candidate", async () => {
+    savePendingPreview("paused");
+    interceptPreview(async () => completedPreviewResponse());
+    await act(async () => root.render(createElement(CreateWorkspace)));
+    await waitUntil(() => container.textContent?.includes("checking paused") === true);
+    const readCount = () => vi.mocked(fetch).mock.calls.filter(([input]) => String(input).includes("preview?previewJobId="));
+    expect(readCount()).toHaveLength(0);
+    const check = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "Check preview status");
+    expect(check).toBeDefined();
+    await act(async () => check?.click());
+    await waitUntil(() => container.querySelector('[data-testid="create-preview-progress"]')?.textContent?.includes("4 completed") === true);
+    expect(readCount()).toHaveLength(1);
+    expect(vi.mocked(fetch).mock.calls.filter(([input, init]) => String(input).endsWith("/preview") && init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("pauses checking to confirm an existing image and ignores the old poll's late result", async () => {
+    const key = savePendingPreview();
+    let finishRead!: (response: Response) => void;
+    const read = new Promise<Response>(resolve => { finishRead = resolve; });
+    interceptPreview(() => read);
+    await act(async () => root.render(createElement(CreateWorkspace)));
+    await waitUntil(() => [...container.querySelectorAll("button")].some(button => button.textContent === "Pause checking"));
+    await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Pause checking")?.click());
+    expect(container.querySelector<HTMLButtonElement>('[data-testid="create-confirm-identity"]')?.disabled).toBe(false);
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="create-confirm-identity"]')?.click());
+    await act(async () => releaseConfirmation?.(Response.json({ ok: true, data: {} })));
+    await act(async () => finishRead(completedPreviewResponse()));
+    expect(container.textContent).toContain("Identity confirmed");
+    const saved = JSON.parse(window.localStorage.getItem(key)!);
+    expect(saved.previewBatch.phase).toBe("paused");
+    expect(saved.previewBatch.failureReason).toBe("user_paused");
+    expect(saved.confirmedPreviewJobId).toBe("preview-1");
+    await act(async () => root.render(null));
+    await act(async () => root.render(createElement(CreateWorkspace)));
+    await waitUntil(() => container.textContent?.includes("Identity confirmed") === true);
+    expect(container.textContent).toContain("checking paused");
+    expect([...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Next")?.disabled).toBe(false);
+  });
+
   it("explains that unlisted sharing starts after publication", async () => {
     const key = draftStorageKeyForScope("user:creator-1");
     const saved = JSON.parse(window.localStorage.getItem(key)!);
@@ -101,6 +176,42 @@ describe("CreateWorkspace identity confirmation", () => {
     await waitUntil(() => Boolean(container.querySelector('[data-testid="create-submit"]')));
     expect(container.querySelector('[data-testid="create-submit"]')?.textContent).toContain("Save for sharing");
     expect(container.textContent).toContain("After publication, unlisted characters are reachable by direct link and stay out of Explore.");
+  });
+
+  it.each([409, 401])("locks the original private input on account switch/session loss (%s) even without a focus event", async (status) => {
+    const key = draftStorageKeyForScope("user:creator-1");
+    window.localStorage.setItem(key, JSON.stringify({ ...initialCharacterDraft(), name: "Private original input" }));
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) === "/api/v1/character-drafts" && init?.method === "POST") {
+        expect(new Headers(init.headers).get("x-idream-viewer-scope")).toBe("user:creator-1");
+        return Response.json({ ok: false, error: { message: status === 409 ? "Your account changed. Reload this page." : "Unauthorized" } }, { status });
+      }
+      return originalFetch(input, init);
+    });
+    await act(async () => root.render(createElement(CreateWorkspace)));
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="create-step-identity"]')));
+    await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "Next")?.click());
+    expect(container.querySelector('[data-testid="create-viewer-changed"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("Private original input");
+    expect(JSON.parse(window.localStorage.getItem(key)!).name).toBe("Private original input");
+    expect(window.localStorage.getItem(draftStorageKeyForScope("user:creator-2"))).toBeNull();
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(0);
+  });
+
+  it("hides private fields on focus after a viewer switch and discards a late confirmation", async () => {
+    await act(async () => root.render(createElement(CreateWorkspace)));
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="create-confirm-identity"]')));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="create-confirm-identity"]')?.click());
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation((input, init) => String(input) === "/api/v1/me"
+      ? Promise.resolve(Response.json({ ok: true, data: { user: { id: "creator-2" }, anonymousId: null } }))
+      : originalFetch(input, init));
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await act(async () => releaseConfirmation?.(Response.json({ ok: true, data: {} })));
+    expect(container.querySelector('[data-testid="create-viewer-changed"]')).not.toBeNull();
+    expect(container.querySelector("img")).toBeNull();
+    expect(window.localStorage.getItem(draftStorageKeyForScope("user:creator-2"))).toBeNull();
   });
 
   it("holds the selected identity and traits steady until confirmation finishes", async () => {

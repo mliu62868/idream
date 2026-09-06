@@ -5,10 +5,10 @@ import type { SupportConversation } from "@idream/shared/contracts";
 import { parseSupportConversationResponse, parseSupportReplyResponse, parseViewerAuthorityResponse } from "@/lib/public-api-contracts";
 import { apiEnvelopeErrorMessage } from "@/lib/viewer-resource-client";
 
-export function HelpDeskConversation({ ticketId, viewerScope, onReplied }: {
+export function HelpDeskConversation({ ticketId, viewerScope, onUpdated }: {
   ticketId: string;
   viewerScope: string;
-  onReplied: () => void;
+  onUpdated: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [conversation, setConversation] = useState<SupportConversation | null>(null);
@@ -16,8 +16,8 @@ export function HelpDeskConversation({ ticketId, viewerScope, onReplied }: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const serial = useRef(0);
-  const notifyReplied = useRef(onReplied);
-  useEffect(() => { notifyReplied.current = onReplied; }, [onReplied]);
+  const notifyUpdated = useRef(onUpdated);
+  useEffect(() => { notifyUpdated.current = onUpdated; }, [onUpdated]);
   const pendingReply = useRef<{ messageId: string; body: string } | null>(null);
   const request = useCallback(async (reply?: { messageId: string; body: string }) => {
     const current = ++serial.current;
@@ -44,13 +44,14 @@ export function HelpDeskConversation({ ticketId, viewerScope, onReplied }: {
       if (current !== serial.current) return;
       if (!response.ok) throw new Error(apiEnvelopeErrorMessage(raw) ?? "Could not load your support conversation.");
       setConversation((reply ? parseSupportReplyResponse(raw) : parseSupportConversationResponse(raw)).request);
-      if (reply) { setDraft(""); pendingReply.current = null; accepted = true; }
+      accepted = true;
+      if (reply) { setDraft(""); pendingReply.current = null; }
     } catch (cause) {
       if (current === serial.current) setError(cause instanceof Error ? cause.message : "Could not load your support conversation.");
     } finally {
       if (current === serial.current) setBusy(false);
     }
-    if (accepted && current === serial.current) notifyReplied.current();
+    if (accepted && current === serial.current) notifyUpdated.current();
   }, [ticketId, viewerScope]);
 
   useEffect(() => {

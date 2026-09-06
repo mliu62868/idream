@@ -11,7 +11,7 @@ import { SiteFooter } from "@/components/ourdream/SiteFooter";
 //   不出内容的路由都在对爬虫说「收录我，我的正主是首页」，是教科书式的软 404。
 //   这里把两项都显式反掉；`canonical: null` 是 Next 用来退订继承值的写法。
 export const metadata: Metadata = {
-  title: "Page not found | ourdream.ai",
+  title: "Page not found | iDream",
   robots: { index: false, follow: false },
   alternates: { canonical: null },
 };

@@ -441,11 +441,15 @@ export type ServerJobArrival = {
   refreshBalanceAndQuote: boolean;
 };
 
-export function projectServerJobArrival(job: GenerationJobFact): ServerJobArrival {
+export function projectServerJobArrival(
+  job: GenerationJobFact,
+  activeJobId: string | null = job.id,
+): ServerJobArrival {
+  const isActiveJob = job.id === activeJobId;
   if (!isTerminalGenerationJobStatus(job.status) && job.errorCode === "provider_outcome_unknown") {
     return {
       settled: true,
-      statusMessage: "The generation result needs review. Contact support before trying again.",
+      statusMessage: isActiveJob ? "The generation result needs review. Contact support before trying again." : null,
       showResults: false,
       refreshBalanceAndQuote: false,
     };
@@ -454,12 +458,12 @@ export function projectServerJobArrival(job: GenerationJobFact): ServerJobArriva
   const completed = job.status === "completed";
   return {
     settled,
-    statusMessage: completed
+    statusMessage: !isActiveJob ? null : completed
       ? "Generation complete."
       : settled
         ? settledGenerationStatusMessage(job)
         : null,
-    showResults: completed,
+    showResults: completed && isActiveJob,
     refreshBalanceAndQuote: settled,
   };
 }

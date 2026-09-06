@@ -61,7 +61,7 @@ export async function generateMetadata({
 
   if (renderDecision === "cms" && resolution.state === "published") {
     const authority = cmsRouteAuthority(resolution.page);
-    const title = `${resolution.page.title} | ourdream.ai`;
+    const title = `${resolution.page.title} | iDream`;
     return {
       title,
       description: resolution.page.description,
@@ -79,7 +79,7 @@ export async function generateMetadata({
   if (renderDecision === "not_found" || !route) notFound();
 
   const authority = publicRouteAuthority(path, route);
-  const title = `${route.title} | ourdream.ai`;
+  const title = `${route.title} | iDream`;
   return {
     title,
     description: route.description,
@@ -133,7 +133,7 @@ function authorityMetadata(
     alternates: { canonical: authority.canonicalPath },
     openGraph: {
       type: "website",
-      siteName: "ourdream.ai",
+      siteName: "iDream",
       title,
       description,
       url: authority.canonicalPath,

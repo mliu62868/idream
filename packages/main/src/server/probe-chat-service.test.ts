@@ -445,6 +445,9 @@ describe("chat service conversation probe", () => {
   });
 
   it("preserves exact recall diagnostics before cleanup without passing a mismatched answer", async () => {
+    // This case checks diagnostics and cleanup, not elapsed time. With a 1ms
+    // window, a real clock can expire before the first mocked idle read under load.
+    vi.useFakeTimers({ toFake: ["Date"] });
     db.findUser.mockResolvedValue(auditActor);
     vi.stubEnv("CHAT_SERVICE_PROBE_SETTLE_TIMEOUT_MS", "1");
     const requests = installFailFastProbeFetch("recall_mismatch");

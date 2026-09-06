@@ -1121,7 +1121,7 @@ async function hardDeleteMainAccountAuthority(
   await tx.experimentExposureFact.deleteMany({
     where: { subjectType: "user", subjectId: input.userId },
   });
-  await tx.verification.deleteMany({ where: { identifier: user.email } });
+  await tx.verification.deleteMany({ where: { identifier: { in: [user.email, `account-recovery:${input.userId}`] } } });
 
   // JSON payloads and loose operational rows have no User FK. Parameterized
   // SQL closes the exact-id projections without scanning or interpolating.

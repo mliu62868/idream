@@ -1,4 +1,4 @@
-const DEFAULT_PUBLIC_SITE_ORIGIN = "https://ourdream.ai";
+const DEVELOPMENT_SITE_ORIGIN = "http://localhost:3000";
 
 type PublicSiteEnvironment = {
   APP_ENV?: string;
@@ -16,7 +16,6 @@ export function publicSiteOrigin(
   for (const candidate of [
     source.MAIN_WEB_URL,
     source.BETTER_AUTH_URL,
-    DEFAULT_PUBLIC_SITE_ORIGIN,
   ]) {
     if (!candidate) continue;
     try {
@@ -31,7 +30,11 @@ export function publicSiteOrigin(
     }
   }
 
-  return new URL(DEFAULT_PUBLIC_SITE_ORIGIN);
+  // SEO must never invent a production host or publish a competitor canonical.
+  if (source.APP_ENV === "production") {
+    throw new Error("Public site origin is not configured: set MAIN_WEB_URL or BETTER_AUTH_URL to a public HTTPS origin in production");
+  }
+  return new URL(DEVELOPMENT_SITE_ORIGIN);
 }
 
 export function isPublicHttpsUrl(value: string | URL | null | undefined) {

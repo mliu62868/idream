@@ -203,10 +203,9 @@ async function projectCharacterPreviewRequestState(
         completedAt: request.completedAt ?? request.finishedAt ?? new Date(),
       },
     });
-    await tx.characterDraft.updateMany({
-      where: { id: preview.draftId, ownerId: request.userId },
-      data: { previewJobId: preview.id },
-    });
+    // INVARIANT: delivery creates an available candidate; only preview-anchor
+    // confirms the user's identity choice. Later candidates and terminal replays
+    // must never replace that choice or confirm an unselected draft.
     return;
   }
   if (["failed", "blocked", "refunded", "cancelled"].includes(request.status)) {

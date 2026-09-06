@@ -1,6 +1,6 @@
 # iDream 用户故事
 
-更新日期：2026-09-01
+更新日期：2026-09-05
 
 > **本文档是目标用户旅程与验收规格，不描述实现进度。** 当前真实实现状态以 [`CURRENT_FUNCTIONAL_COVERAGE.md`](./CURRENT_FUNCTIONAL_COVERAGE.md) 为单一事实来源。
 
@@ -15,10 +15,10 @@
 
 ### Journey B：完整创建一个角色
 
-1. 用户进入六步 Create：Style → General → Face → Body → Details → Image，并可前进、后退和恢复草稿。
+1. 用户进入完整 Create，覆盖 Style → General → Face → Body → Details → Image 六类任务；步骤可等价合并，并可前进、后退和恢复草稿。
 2. 用户编辑 Gender/Style、外观/race、发型/面部、体型、名称、年龄、简介、tags、personality/Soul、Voice、Occupation、hobbies、fetishes、relationship type、custom details 和开场信息。
 3. 系统生成或刷新视觉候选，用户选择 Visual Identity anchor。
-4. 用户保存私有角色并进入 My AI、Chat 或 Generate，也可提交公开审核。
+4. 用户保存私有角色并进入 My AI、Chat 或 Generate，也可提交公开发布。
 5. Quick Start 可以预填向导，但不能替代完整字段、预览、编辑、可见性和发布流程。
 
 ### Journey C：聊天、历史与已发布动作
@@ -43,7 +43,7 @@
 2. 用户编辑、复制、删除或发布自建角色，管理 presets 和媒体。
 3. 用户在 Feed/Community 浏览角色、媒体、Comics、Dreamers、Characters 和 Collections。
 4. 用户进入 Creator Profile，并执行 Chat、Remix、Like、Follow、Share 或 Report。
-5. Group Chats/Packs 进入 P1 对标交付前只显示明确 unavailable 空态。
+5. Group Chats/Packs 进入 P1 对标交付前默认隐藏新任务入口，既有深链显示不可用原因与返回路径。
 
 ### Journey F：理解成本、购买能力并保有历史
 
@@ -61,6 +61,20 @@
 4. 用户可对 rejected/removed content、账号处罚或审核决定提交申诉。
 5. 系统记录举报或申诉并进入审核队列。
 6. 审核处理后，必要时隐藏内容、限制账户或通知用户。
+
+### Journey H：声音互动与跨日回访
+
+1. 用户选择或试听角色声音，在 Chat 播放一条语音，或在通话能力已发布时进入双向通话。
+2. 发起前了解语音片段与通话的费用单位、可用额度，并明确授予麦克风权限。
+3. 拒绝权限、断网或余额不足时可结束/恢复，不显示假连接，也不继续无声计费。
+4. 通话结束后能查看时长与用量；下次回到角色时按用户允许的上下文继续。Voice Clip 可用不等于 Voice Call 已完成。
+
+### Journey I：求助、找回账号与退出
+
+1. 用户遇到登录、生成、付款或内容问题，先找到对应帮助；未解决时提交可追踪的工单。
+2. 用户查看状态、补充信息、接收处理结果，必要时继续追问或申诉。
+3. 找回登录状态后返回原任务；删除账号前明确资产、余额、公开内容和可恢复性的影响。
+4. 删除执行中、失败与完成分别可见；删除后其他账号不能从缓存或共享链接读到应被撤除的私有内容。
 
 ## 2. 用户故事与验收条件
 
@@ -103,19 +117,19 @@
 | US-CH-11 | 作为聊天用户，我希望配置 response length、scene generation、active messages 和互动强度。 | P1 | 控制值影响后续 Turn 且可恢复；版本固定到 snapshot；不静默改写 Soul |
 | US-CH-12 | 作为聊天用户，我希望在一个 Group Chat 中让最多 12 个角色交互，并选择或 `@` 指定回复者。 | P1 | 角色编排、参与者容量、历史、memory、额度、Product Action 和权限在服务端权威收敛 |
 | US-CH-13 | 作为聊天用户，我希望发起双向 Voice Call，而不只是播放单条语音。 | P1 | 通话建立/中断/恢复/结束状态、Voice Identity、时长、额度/结算可追踪 |
-| US-CH-14 | 作为聊天用户，我希望从版本化 conversation-profile Catalog 选择体验档位，并在使用前知道能力和成本。 | P1 | 当前公开对标基线为 5 个用户可感知档位；档位不改变 Soul/Release 身份；服务端决定底层 provider/model；执行前 quote 与 entitlement 可见 |
+| US-CH-14 | 作为聊天用户，我希望从版本化 conversation-profile Catalog 选择体验档位，并在使用前知道能力和成本。 | P1 | 2026-09-01 历史对标基线为 5 个用户可感知档位；档位不改变 Soul/Release 身份；服务端决定底层 provider/model；执行前 quote 与 entitlement 可见 |
 
 ### 2.4 创建角色
 
 | ID | 用户故事 | 优先级 | 验收条件 |
 | --- | --- | --- | --- |
-| US-CR-01 | 作为创作者，我希望按 Style → General → Face → Body → Details → Image 完成创建，以便理解进度并随时返回修改。 | P0 | 六步均可前进、后退和刷新恢复；当前步与已填内容进入可恢复草稿 |
+| US-CR-01 | 作为创作者，我希望按 Style → General → Face → Body → Details → Image 完成创建，以便理解进度并随时返回修改。 | P0 | 六类任务均可完成、返回修改和刷新恢复；允许能力等价的分步组织，逐字段记录映射；当前步与已填内容进入可恢复草稿 |
 | US-CR-02 | 作为创作者，我希望配置外观/race、发型、体型和可选 Custom 字段，以便精确描述角色。 | P0 | 完整属性可组合、修改并持久化；已填内容不因切换步骤丢失 |
 | US-CR-03 | 作为创作者，我希望编辑名称、年龄、简介、tags、personality/Soul、Voice、Occupation、hobbies、fetishes、relationship type、custom details 和开场信息。 | P0 | 稳定 Soul/Voice 与可变 Scene/memory 分开；草稿自动保存；用户可回到任意步骤修改 |
 | US-CR-04 | 作为创作者，我希望从一个或多个视觉候选中选择角色基准形象。 | P0 | 候选逐步出现且可刷新；失败可重试且不丢草稿；选择后形成 active Visual Identity anchor |
 | US-CR-05 | 作为创作者，我希望完成后将角色保存到 My AI，并继续 Chat 或 Generate。 | P0 | 私有 Character 立即进入 Characters/Created 与可用任务；不被公开发布流程阻塞 |
 | US-CR-06 | 作为深度创作者，我希望继续精炼 Soul、Visual Identity、Reference Set、Voice Identity 和分发信息。 | P1 | 高级编辑支持版本化保存，不静默改写当前 Serving Release |
-| US-CR-07 | 作为创作者，我希望选择角色公开或私有，以便控制分发范围。 | P1 | 私有角色可直接使用；公开角色进入审核、Release 与 Serving 流程 |
+| US-CR-07 | 作为创作者，我希望选择角色公开或私有，以便控制分发范围。 | P1 | 私有角色可直接使用；公开角色通过基础自动检查后进入发布准备、Release 与 Serving；不设置日常人工批准关卡 |
 | US-CR-08 | 作为希望快速起步的用户，我希望用一句描述预填创建向导。 | P1 | Quick Start 只预填完整向导；用户仍可审阅和修改所有字段、预览、可见性与发布设置 |
 | US-CR-09 | 作为平台运营者，我希望创建流程遵循既定内容策略和成年人角色底线。 | P0 | 失败时阻止创建并返回可理解的规则结果 |
 | US-CR-10 | 作为 Product DRI，我希望创建 Catalog 广度可量化，以免少量选项被误判为完整对标。 | P1 | parity matrix 对 40+ personality、19 voice、135 occupation、29 relationship type 的公开基线逐项标记 matched/equivalent/intentional divergence |
@@ -125,17 +139,17 @@
 | ID | 用户故事 | 优先级 | 验收条件 |
 | --- | --- | --- | --- |
 | US-GN-01 | 作为生成用户，我希望使用 Image 生成，并在 Video 进入当前发布范围时选择 Image 或 Video 模式，以便匹配输出类型。 | P0 | Image 模式可用；Video 关闭时不显示不可用入口；Video 启用时模式切换状态明确，字段、执行前报价和扣币规则随模式变化 |
-| US-GN-02 | 作为生成用户，我希望在 Image 中选择角色或 Freeplay，并在 Video 启用时只选择满足当前 I2V contract 的已发布角色。 | P0 | Image 未选 Character/Freeplay 时不可提交；Video 不提供无契约的 Freeplay，选择后展示 exact Character/Release 摘要 |
+| US-GN-02 | 作为生成用户，我希望在 Image 中选择角色或 Freeplay，并在 Video 启用时只选择满足当前 I2V contract 且自己有权使用的角色（含合格私有角色）。 | P0 | Image 未选 Character/Freeplay 时不可提交；Video 不提供无契约的 Freeplay，选择后展示 exact Character/Release 摘要 |
 | US-GN-03 | 作为生成用户，我希望选择 Mode Presets 或 Image Edit，以便快速进入常用生成模式。 | P1 | Presets/Image Edit 可选；不同模式展示对应字段 |
 | US-GN-04 | 作为生成用户，我希望选择背景、姿势和服装 preset，以便控制结果方向。 | P1 | 每个控件有内置、My Presets、Community、Custom、Create a Preset；组合值进入任务 payload |
 | US-GN-05 | 作为 Premium 用户，我希望使用 custom prompt 和 negative prompt，以便获得更细粒度控制。 | P1 | 免费用户看到锁定和升级入口；Premium 用户可输入并提交 |
 | US-GN-06 | 作为生成用户，我希望配置模型/风格、比例和数量，以便控制输出质量和成本。 | P1 | Advanced Settings 可保存到任务 payload；premium/experimental 选项受 entitlement 控制 |
 | US-GN-07 | 作为生成用户，我希望看到生成进度，以便知道任务是否仍在运行。 | P0 | 点击 Generate 后出现任务状态；完成后进入图库；失败时可重试 |
-| US-GN-08 | 作为生成用户，我希望查看 Images 和 Liked，并在 Video 启用时查看 Videos，以便管理历史结果。 | P0 | 可用 tab 可切换；按类型展示资产；liked 只展示收藏内容；Video 关闭时不显示空的 Videos 死入口 |
+| US-GN-08 | 作为生成用户，我希望查看 Images 和 Liked，并查看已有 Videos，以便管理历史结果。 | P0 | 可用 tab 可切换；按类型展示资产；liked 只展示收藏内容；Video 新生成关闭时仍能访问既有视频；无历史资产且未发布该能力时不显示空的 Videos 死入口 |
 | US-GN-09 | 作为生成用户，我希望筛选、批量选择、下载、收藏或删除生成结果，以便管理资产。 | P1 | Filter/Manage/Select All/Like/Download/Delete 操作成功后 UI 状态更新 |
 | US-GN-10 | 作为平台运营者，我希望生成请求校验 dreamcoin 余额、执行前报价、entitlement 和内容安全。 | P0 | 余额或 entitlement 不足时阻止并引导升级/充值；禁止内容不创建任务 |
 | US-GN-11 | 作为聊天用户，我希望从当前 Chat 上下文发起的生成继承同一角色和场景。 | P0 | payload 固定 Character/Release/VisualProfile/Scene/accepted brief；结果回绑当前 Turn 与 Gallery |
-| US-GN-12 | 作为付费用户，我希望执行前看到成本，失败后自动退款。 | P0 | 提交前显示 required/balance；Request/Attempt/Delivery/settlement 可追踪；未交付按幂等规则退款 |
+| US-GN-12 | 作为付费用户，我希望执行前看到成本，失败后自动退款。 | P0 | 提交前显示 required/balance；Request/Attempt/Delivery/settlement 可追踪；确证终态未交付按幂等规则退款；结果未知时先核对原请求，不立即重新生成或承诺退款完成 |
 | US-GN-13 | 作为生成用户，我希望分别使用 Create、Edit 和 Enhance，并在允许时使用 source/reference asset。 | P1 | 模式契约、source asset、accepted brief、权限/provenance、quote 和 result lineage 可追踪 |
 | US-GN-14 | 作为视频生成用户，我希望配置多 scene、时长、比例、质量和可选 AI voice/audio。 | P1 | 只在精确 workflow/provider/capacity/entitlement 可用时显示；逐段状态、交付与结算可追踪 |
 
@@ -144,7 +158,7 @@
 | ID | 用户故事 | 优先级 | 验收条件 |
 | --- | --- | --- | --- |
 | US-PF-01 | 作为登录用户，我希望在 My AI 查看 Recent、Characters、Presets、Created 和 Media，以便继续聊天、创作或资产管理任务。 | P0 | 所有核心 tab 均有真实数据、加载态、空态、搜索和后续操作 |
-| US-PF-02 | 作为登录用户，我希望从 Recent 继续最近会话，也能从其他 tab 直接进入对应任务。 | P0 | Recent 可继续 Chat；Characters/Created 可进入编辑、Chat 或 Generate；Presets/Media 有对应管理动作；Group Chats/Packs 未获发布 authority 时只显示明确 unavailable 空态 |
+| US-PF-02 | 作为登录用户，我希望从 Recent 继续最近会话，也能从其他 tab 直接进入对应任务。 | P0 | Recent 可继续 Chat；Characters/Created 可进入编辑、Chat 或 Generate；Presets/Media 有对应管理动作；Group Chats/Packs 未获发布 authority 时默认隐藏新任务入口，既有深链显示不可用原因与返回路径 |
 | US-PF-03 | 作为创作者，我希望编辑或删除自己创建的角色。 | P1 | Created 列表支持 edit、duplicate、delete；危险操作二次确认 |
 | US-PF-04 | 作为登录用户，我希望在 Profile 管理余额、预付访问/重新购买、兑换码、推荐和账号，以便控制账户状态。 | P0 | Profile 显示对应入口；敏感操作二次确认或重新认证 |
 | US-PF-05 | 作为社区用户，我希望浏览 feed，以便发现其他用户发布的角色或内容。 | P1 | Feed 有卡片流、Chat、Remix、Like、Share、Report |
@@ -176,7 +190,7 @@
 | US-SE-01 | 作为 SEO 访问者，我希望长尾页面解释主题并提供下一步入口。 | P1 | 页面有 H1、正文、相关页面、Create/Explore/Upgrade CTA |
 | US-SE-02 | 作为内容运营，我希望每个获准发布的公开路由有独立 metadata。 | P0 | dedicated registry 或已发布 CMS 才可索引；title、description、canonical 按路径配置；未授权模板返回 404 |
 | US-SE-03 | 作为访问者，我希望比较页明确说明平台优势。 | P1 | 对比页列出核心功能、价格/权益差异和转换 CTA |
-| US-SE-04 | 作为访问者，我希望资源 hub 聚合指南、比较、类型和视频入口。 | P1 | Library 页面最多展示 24 个相关入口；链接可访问 |
+| US-SE-04 | 作为访问者，我希望资源 hub 聚合指南、比较、类型和视频入口。 | P1 | Library 每页至多 24 个相关入口并可继续分页；所有已发布内容可达，链接可访问 |
 | US-SE-05 | 作为联盟伙伴，我希望查看 RevShare/CPA 条款、申请、归因链接、推广素材、dashboard 和佣金状态。 | P1 | 公开条款与后台计算一致；归因和佣金有可审计状态；未开放时不显示假申请或假 dashboard |
 | US-SE-06 | 作为内容访问者，我希望从 Images、Videos、Glossary 和 Authors 索引进入真实内容或产品任务。 | P1 | 索引只展示已发布条目；内部链接、metadata 和 CTA 可用 |
 
@@ -187,6 +201,28 @@
 | US-MB-01 | 作为移动用户，我希望底部导航固定显示，以便快速切换核心功能。 | P0 | Explore、Chat、Create、Generate 在移动端固定可见；active 状态正确 |
 | US-MB-02 | 作为移动用户，我希望角色卡两列展示，以便高效浏览。 | P0 | 390px 视口下两列稳定；文字不溢出；底部导航不遮挡关键操作 |
 | US-MB-03 | 作为移动用户，我希望顶部促销 banner 不影响筛选操作。 | P1 | banner 高度稳定；筛选横向滚动可用；首批卡片可见 |
+
+### 2.10 账号、帮助与支持（PRD AC / SF）
+
+| ID | 用户故事 | 优先级 | 验收条件 |
+| --- | --- | --- | --- |
+| US-AC-01 | 作为新用户，我希望注册或登录后继续刚才的任务，避免重新找角色或重填草稿。 | P0 | 原角色/场景/合法返回路径和本人草稿恢复；不自动提交付费请求；账号切换不带入他人草稿和余额 |
+| US-AC-02 | 作为无法登录的用户，我希望重新获取验证码或恢复访问。 | P0 | 验证失败/过期/发送受限有明确下一步；成功后建立正确会话；退出后受保护资源不可继续访问 |
+| US-AC-03 | 作为用户，我希望清楚了解删除账号的影响并完成删除。 | P0 | 执行前说明聊天、私有资产、公开内容、余额及依法保留记录的边界；重新认证与确认；执行中/失败/完成可查，重试不重复执行 |
+| US-SF-01 | 作为需要帮助的用户，我希望按问题找到说明并联系支持。 | P0 | 账号、支付、生成、聊天、隐私均有真实帮助入口；付费问题不会因未购买高档计划无法求助 |
+| US-SF-02 | 作为求助用户，我希望查看工单状态并补充回复。 | P0 | 提交有回执；仅本人可读客户对话；等待/处理中/解决/关闭明确；内部备注不外泄，未解决时可按规则继续跟进 |
+| US-SF-03 | 作为内容用户，我希望举报或申诉后知道处理状态。 | P0/P1 | 关联具体对象与原因；提交可恢复；结果与对象可见性一致；案件处理不等于增加所有作品的日常人工审核 |
+
+### 2.11 分享、Packs 与联盟（PRD PF / AF）
+
+| ID | 用户故事 | 优先级 | 验收条件 |
+| --- | --- | --- | --- |
+| US-PF-13 | 作为创作者，我希望控制私有、链接可见与公开发现的范围。 | P1 | 私有仅本人；链接可见不进入公开目录；公开须显式发布；撤下阻止新公开访问，既有聊天与已交付资产按自身权利保留 |
+| US-PF-14 | 作为创作者，我希望 Remix 后仍保留原作者与来源。 | P1 | 仅允许有授权的公开素材；复制生成自己的草稿，不编辑原作；保存/生成不会自动发布或共享私有聊天 |
+| US-PF-15 | 作为 Pack 购买者，我希望理解购买内容并持续查看已获得的作品。 | P1 | 明确角色、当前内容、是否包含未来新增、价格、使用权与退款边界；购买只解锁该 Pack；重复确认不重复扣款；访问计划到期不锁回已购权益，撤下/侵权处理按明确条款执行 |
+| US-AF-01 | 作为联盟申请者，我希望知道资格、佣金规则并收到申请结果。 | P1 | 条款有版本、生效范围与适用计划；申请有回执和状态；未开放不伪造提交成功 |
+| US-AF-02 | 作为联盟伙伴，我希望取得推广链接并核对有效转化。 | P1 | 链接归属明确；点击、待确认/有效/撤销转化分别展示；归因窗口与退款冲正一致；普通 referral 奖励不冒充 Affiliate 佣金 |
+| US-AF-03 | 作为联盟伙伴，我希望查看收益和结算进度并反馈差异。 | P1 | 待确认、可结算、已支付/失败可区分；结算引用可追踪；支持异常申诉；无真实转化不展示模拟收入 |
 
 ## 3. 关键边界场景
 
@@ -206,23 +242,25 @@
 - Feed Share/Report、Profile Invite/Redeem、访问周期购买等操作必须有 auth 和 side-effect handling。
 - 长尾 SEO 页面缺少真实正文时，不能误导为完整内容页，应进入内容补齐队列。
 
-## 4. MVP 用户故事范围
+### 3.1 跨功能验收场景
 
-MVP 必须包含：
+| 场景 | 前提与操作 | 必须观察的用户结果 |
+| --- | --- | --- |
+| 登录恢复 | 游客填创建草稿或从角色进入生成，再注册/登录 | 返回原任务且保留输入；付费动作等待明确提交 |
+| 结果未知 | 提交生成后响应丢失，再刷新或重新登录 | 可核对原任务；确证失败前不诱导另建付费任务；最终最多一笔有效结算 |
+| 多端与换号 | A 账号发起任务，切换 B，再切回 A | B 看不到 A 的草稿、媒体、请求和客服记录；A 可恢复原状态 |
+| 发布与版本 | 编辑已发布角色再显式发布，或撤下公开角色 | 新访问遵循新发布状态；既有会话不静默改写角色身份，私有资产不泄露 |
+| 媒体能力停用 | 已有视频后关闭新视频生成或计划到期 | 已交付作品仍可播放/下载；只阻止新的受限请求 |
+| 付款确认延迟 | 付款返回处理中，刷新并重复收到确认 | 显示待确认并提供查询；以真实确认开通一次；不让用户盲目再付 |
+| 部分媒体交付 | 批量/多 scene 任务只完成部分结果 | 每项交付与扣费可核对，未完成部分按报价规则处理；不一概标成功或全额退款 |
+| 通话中断 | 麦克风拒绝、断网、额度耗尽或用户挂断 | 状态与计费结束一致；重连不产生双通话或重复用量 |
+| 作品分享与购买 | 私有作品加入合集，或购买指定 Pack | 加入合集不自动公开；买家只获得被明确授权的作品，不继承作者私人会话 |
+| 客服与退款 | 用户从失败任务提工单，运营处理后用户重访 | 保留原任务/订单关联，客户状态可更新；内部说明不作为客户结果 |
 
-- US-AG-01 到 US-AG-04
-- US-EX-01 到 US-EX-06
-- US-CH-01 到 US-CH-04、US-CH-06 到 US-CH-09
-- US-CR-01 到 US-CR-05、US-CR-09
-- US-GN-01、US-GN-02、US-GN-07、US-GN-10 到 US-GN-12
-- US-PF-01、US-PF-02、US-PF-04、US-PF-08、US-PF-09
-- US-UP-01 到 US-UP-07
-- US-SE-02
-- US-MB-01、US-MB-02
+这些是待执行的验收规格，不是本轮测试记录。
 
-MVP 之后实现：
+## 4. 分期与故事使用规则
 
-- 公开视频生成进入默认可见发布范围。
-- Group Chats 与 Packs 的完整产品语义、数据模型、额度和分发。
-- 多语言 UI（真实 i18n 字典层、路由内容和 locale 切换）。
-- Community/Feed 个性化、创作者激励和大规模 SEO 正文运营按产品依赖和资源分期，不由单一 Chat 留存指标决定是否属于产品范围。
+分期唯一入口为 [PRD §12](PRD.md#12-交付阶段与完整范围)。阶段 A 必须覆盖本文件所有 P0 故事；P0/P1 混合项按明确适用条件验收。阶段 B 覆盖全部 P1，包括 Voice Call、视频、群聊、Packs、Comics、社区、Coin Store 和联盟。阶段 C 是已有完整能力的规模优化。优先级不是完成状态，不重复维护容易失配的 MVP ID 清单。
+
+已有故事 ID 保持稳定，新增故事引用 PRD 需求族；不假设 `US-CH-xx` 与 `CH-xx` 数字一一对应。各域映射见 [对标矩阵](PRODUCT_PARITY_MATRIX.md)。每次实现应把该故事拆为正常结果、拒绝/失败、恢复、权限和计费验收，再关联所测 revision 与证据。

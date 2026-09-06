@@ -12,16 +12,16 @@ import "./globals.css";
 //   robots 的 index,follow 本就是爬虫默认值，全站声明它只会制造这个 bug。
 export const metadata: Metadata = {
   metadataBase: publicSiteOrigin(),
-  title: "ourdream.ai | AI Characters, Chat & Image Generation",
+  title: "iDream | AI Characters, Chat & Image Generation",
   description:
-    "Ourdream is an adult AI roleplay platform for discovering characters, creating companions, chatting privately, and generating media.",
+    "iDream is an adult AI roleplay platform for discovering characters, creating companions, chatting privately, and generating media.",
   icons: {
     icon: "/seo/favicon.ico",
   },
   openGraph: {
     type: "website",
-    siteName: "ourdream.ai",
-    title: "ourdream.ai | AI Characters, Chat & Image Generation",
+    siteName: "iDream",
+    title: "iDream | AI Characters, Chat & Image Generation",
     description:
       "Discover AI characters, create companions, chat privately, and generate character-aware media.",
     url: "/",

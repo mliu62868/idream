@@ -165,7 +165,7 @@ test.describe("public route smoke", () => {
 
     const articleText = await page.locator("article").innerText();
     expect(articleText).not.toContain(
-      "Ourdream combines adult character discovery, private chat, companion creation, generation tools",
+      "iDream combines adult character discovery, private chat, companion creation, generation tools",
     );
   });
 

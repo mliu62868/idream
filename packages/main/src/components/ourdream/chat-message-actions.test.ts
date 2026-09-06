@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   canRegenerateChatMessage,
   canSubmitChatMessage,
-  chatMessageActionPaddingClass,
   isImmutableOpeningMessage,
   isLocalChatMessageId,
 } from "./chat-message-actions";
@@ -22,16 +21,6 @@ describe("chat message action authority", () => {
       role: "user",
       replyToMessageId: null,
     })).toBe(false);
-  });
-
-  it("reserves space for the exact visible action count and confirmation width", () => {
-    expect(chatMessageActionPaddingClass(0, false)).toBe("pr-4");
-    expect(chatMessageActionPaddingClass(2, false)).toBe("pr-[76px]");
-    expect(chatMessageActionPaddingClass(3, false)).toBe("pr-[108px]");
-    expect(chatMessageActionPaddingClass(4, false)).toBe("pr-[140px]");
-    expect(chatMessageActionPaddingClass(2, true)).toBe("pr-[112px]");
-    expect(chatMessageActionPaddingClass(3, true)).toBe("pr-[144px]");
-    expect(chatMessageActionPaddingClass(4, true)).toBe("pr-[176px]");
   });
 
   it("hides commands that Chat authority will reject while a reply is active", () => {

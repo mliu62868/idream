@@ -41,6 +41,7 @@ export default defineConfig({
       "src/server/next-standalone-runtime.test.ts",
       "src/server/probe-web-surface-assets.test.ts",
       "src/server/probe-payment-provider.test.ts",
+      "src/server/probe-product-config.test.ts",
       "src/server/probe-age-verification.test.ts",
       "src/server/probe-generation-persistence.test.ts",
       "src/server/probe-chat-service.test.ts",

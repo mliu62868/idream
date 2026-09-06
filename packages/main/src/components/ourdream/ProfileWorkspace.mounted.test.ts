@@ -123,6 +123,29 @@ describe("ProfileWorkspace media pagination", () => {
     await settle();
   }
 
+  it("clears sensitive account controls and drops a delayed recovery code after switching accounts", async () => {
+    const deferred = deferredResponse();
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/v1/account/recovery-code") return deferred.promise;
+      return originalFetch(input, init);
+    }));
+    await mountMedia();
+    const password = container.querySelector<HTMLInputElement>('[aria-label="Current account password"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(password, "A-private-password");
+      password.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await click(button("Generate new recovery code"));
+    viewer = "viewer-b";
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await settle();
+    deferred.resolve(Response.json({ ok: true, data: { recoveryCode: "A-secret-recovery-code" } }));
+    await settle();
+    expect(container.textContent).not.toContain("A-secret-recovery-code");
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Current account password"]')?.value).toBe("");
+  });
+
   it("shows and searches saved preset labels and opens the selected preset in Generate", async () => {
     const originalFetch = globalThis.fetch;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

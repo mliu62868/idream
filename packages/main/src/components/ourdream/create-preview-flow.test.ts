@@ -6,6 +6,7 @@ import {
   newCreatePreviewBatch,
   parseCreatePreviewBatch,
   retryCreatePreviewBatch,
+  resumeCreatePreviewBatch,
   type CreatePreviewBatch,
   type CreatePreviewCandidate,
 } from "./create-preview-flow";
@@ -31,6 +32,29 @@ function resumedLastCandidate(overrides: Partial<CreatePreviewBatch> = {}): Crea
 }
 
 describe("create preview batch", () => {
+  it("reloads an expired observation window and sees backend completion without replacing the job", async () => {
+    const saved = resumedLastCandidate({ phase: "failed", failureReason: "timed_out" });
+    const parsed = parseCreatePreviewBatch(saved)!;
+    expect(parsed.phase).toBe("paused");
+    const enqueue = vi.fn();
+    const restored = resumeCreatePreviewBatch(parsed, 30 * 60_000);
+    const result = await continueCreatePreviewBatch(restored, {
+      enqueue, persist: vi.fn(), now: () => 30 * 60_000,
+      read: async () => ({ id: "job-4", status: "completed", asset: candidate(4) }),
+    });
+    expect(result.phase).toBe("complete");
+    expect(result.candidates).toHaveLength(4);
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it("never automatically retries terminal failure or an outcome needing support", () => {
+    for (const failureReason of ["generation_failed", "outcome_unknown"] as const) {
+      const saved = resumedLastCandidate({ phase: "failed", failureReason });
+      expect(resumeCreatePreviewBatch(saved)).toBe(saved);
+    }
+  });
+
+
   it("pauses an unknown outcome and rechecks the same preview after support resolves it", async () => {
     const enqueue = vi.fn();
     const read = vi.fn(async () => ({ id: "job-4", status: "queued" as const, errorCode: "provider_outcome_unknown", asset: null }));
@@ -38,7 +62,7 @@ describe("create preview batch", () => {
     const failed = await continueCreatePreviewBatch(resumedLastCandidate(), {
       enqueue, read, persist: vi.fn(), now: () => clock, sleep: async (ms) => { clock += ms; },
     });
-    expect(failed).toMatchObject({ phase: "failed", failureReason: "outcome_unknown", activePreviewJobId: "job-4" });
+    expect(failed).toMatchObject({ phase: "paused", failureReason: "outcome_unknown", activePreviewJobId: "job-4" });
     expect(read).toHaveBeenCalledTimes(1);
     expect(failed.errorMessage).toContain("Contact support");
     const restored = parseCreatePreviewBatch(JSON.parse(JSON.stringify(failed)))!;
@@ -132,7 +156,7 @@ describe("create preview batch", () => {
     );
 
     expect(first).toMatchObject({
-      phase: "failed",
+      phase: "paused",
       failureReason: "request_failed",
       activePreviewJobId: "",
       activeRequestKey: "create-preview-request-last",
@@ -217,7 +241,7 @@ describe("create preview batch", () => {
     });
 
     expect(timedOut).toMatchObject({
-      phase: "failed",
+      phase: "paused",
       failureReason: "timed_out",
       activePreviewJobId: "job-4",
     });
@@ -263,7 +287,7 @@ describe("create preview batch", () => {
 
     expect(abortObserved).toHaveBeenCalledTimes(1);
     expect(settled).toMatchObject({
-      phase: "failed",
+      phase: "paused",
       failureReason: "timed_out",
       activePreviewJobId: "job-4",
     });

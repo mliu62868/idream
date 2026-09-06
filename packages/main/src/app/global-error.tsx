@@ -19,13 +19,13 @@ export default function GlobalError({
   return (
     <html lang="en" className="dark h-full">
       <body className="grid min-h-full place-items-center bg-black px-4 font-sans text-white">
-        <title>Temporary problem | ourdream.ai</title>
+        <title>Temporary problem | iDream</title>
         <main className="max-w-xl text-center" role="alert">
           <p className="text-xs font-black uppercase text-pink-400">
             Application unavailable
           </p>
           <h1 className="mt-4 text-4xl font-black uppercase">
-            We could not open Ourdream
+            We could not open iDream
           </h1>
           <p className="mt-5 text-sm leading-7 text-white/65">
             Nothing was substituted or discarded. Retry the application shell

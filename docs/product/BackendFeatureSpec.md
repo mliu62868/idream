@@ -1,6 +1,6 @@
 # iDream 后台功能规格
 
-更新日期：2026-09-01
+更新日期：2026-09-05
 
 ## 1. 目的
 
@@ -14,6 +14,8 @@
 - `packages/main/src/server/modules/ourdream/service.ts`
 - `packages/main/src/lib/ourdream-data.ts`
 - `packages/main/src/components/ourdream/*`
+
+产品分期与用户结果以 [PRD](PRD.md) 为准，跨域验收见 [用户故事](UserStory.md) 与 [对标矩阵](PRODUCT_PARITY_MATRIX.md)。六步 Create 表示历史竞品任务基线，允许完整能力等价的步骤组织；5 档同为 2026-09-01 历史参考，不是实时竞品目录。日常角色/素材通过基础自动检查后进入准备与显式发布，不新增人工批准；举报/申诉保留。本文中的状态、API 和实体是目标契约，不因本轮文档梳理而新增第二套实现。
 
 ## 2. 后台模块边界
 
@@ -32,11 +34,11 @@
 | Paid Access & Entitlements | 一次性周期访问、checkout、webhook、Premium/Deluxe 权益与 append-only ledger | 是 |
 | Dreamcoin Coin Store | 与访问计划分开的 top-up offers、quote、一次性 checkout、provider confirmation、幂等 ledger 与购买历史 | P1 |
 | Trust & Safety | 输入/输出审核、举报、审核队列、申诉、政策原因 | 是 |
-| User Library | P0 Recent/Characters/Created/Presets/Media 完整资产与任务入口；Group Chats/Packs 为 P1 对标目标，未获发布 authority 时仅明确 unavailable 空态 | P0/P1 |
+| User Library | P0 Recent/Characters/Created/Presets/Media 完整资产与任务入口；Group Chats/Packs 为 P1 对标目标，未获发布 authority 时默认隐藏新任务入口，既有深链说明不可用原因与返回路径 | P0/P1 |
 | Profile & Account | 余额、预付访问状态/重新购买、兑换码、推荐奖励、账号管理；偏好/通知 P1，语言仅在真实 i18n 后启用 | P0/P1 |
 | Feed & Community | Feed actions、leaderboard、creator profile/levels、Creator Studio、collections/Packs、Dreamcoin/现金创作者收益 | P1 |
 | SEO Content | sitemap 内容、文章、比较页、metadata | P1 |
-| Support | helpdesk、工单或外部支持映射 | P1 |
+| Support | P0 基础帮助、工单回执/客户回复/解决与信息隔离；P1 扩展反馈与内容 | P0/P1 |
 | Affiliate & Partnerships | 公开 RevShare/CPA 条款、申请/审核、归因链接、素材、dashboard、佣金与对账 | P1 |
 | Analytics | 产品事件、漏斗、风控指标 | P0 轻量 |
 | Admin/Ops | 审核后台、用户/内容/任务管理、生成配置、产品配置、计费排障、审计 | P0 内部 |

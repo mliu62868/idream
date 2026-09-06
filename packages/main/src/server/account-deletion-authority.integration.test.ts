@@ -6,6 +6,7 @@ import {
 } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
+import { hashPassword } from "@/server/lib/auth";
 import {
   prismaPgSchema,
   prismaPgSearchPath,
@@ -156,8 +157,10 @@ describe("account deletion authority", () => {
       },
     });
 
+    await prisma.account.create({ data: { userId: user.id, providerId: "credential", accountId: user.email, password: hashPassword("Deletion-password-0905!") } });
     const requested = await api("POST", "account/delete-request", {
       userId: user.id,
+      body: { password: "Deletion-password-0905!", confirmation: "DELETE", expectedUserId: user.id },
     });
 
     expectOk(requested);

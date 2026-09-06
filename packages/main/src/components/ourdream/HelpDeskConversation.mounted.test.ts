@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act, createElement } from "react";
+import { act, createElement, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HelpDeskHistoryPanel } from "./HelpDeskWorkspace";
@@ -57,6 +57,31 @@ describe("Help Desk support conversation", () => {
     expect(writes).toHaveLength(2); expect(writes[1].messageId).toBe(writes[0].messageId);
     expect(container.textContent).toContain("Image ABC in my gallery.");
     expect(container.querySelector("textarea")?.value).toBe("");
+  });
+  it("refreshes the parent ticket status after reading an operator resolution", async () => {
+    let resolved = false;
+    const originalFetch = fetch;
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).startsWith("/api/v1/support/requests/") && !init?.method) {
+        return Promise.resolve(envelope({ request: { ...conversation, status: resolved ? "resolved" : ticket.status, canReply: !resolved } }));
+      }
+      return originalFetch(input, init);
+    }));
+    function History() {
+      const [status, setStatus] = useState(ticket.status);
+      return createElement(HelpDeskHistoryPanel, {
+        viewerScope: "user:customer", authenticated: true, error: "", loading: false,
+        history: { supportRequests: [{ ...ticket, status }], reports: [], appeals: [] },
+        onRefresh: () => setStatus(resolved ? "resolved" : ticket.status),
+      });
+    }
+    await act(async () => root.render(createElement(History)));
+    await settle(); await click("View conversation");
+    resolved = true;
+    await click("Refresh conversation");
+    expect(container.textContent).toContain("Status: resolved");
+    expect([...container.querySelectorAll("span")].some((node) => node.textContent === "Resolved")).toBe(true);
+    expect(container.querySelector("textarea")).toBeNull();
   });
   it("clears a reply draft when the signed-in customer changes before submission", async () => {
     await mount(); await click("View conversation"); await type("Private account detail");

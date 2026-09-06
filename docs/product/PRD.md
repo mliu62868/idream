@@ -1,13 +1,13 @@
 # iDream 产品需求文档
 
-更新日期：2026-09-01
+更新日期：2026-09-05
 
 > **本文档是目标产品规格参考（需求 / 信息架构 / 功能地图 / 转化漏斗），不描述实现进度。**
 > 当前真实实现状态以 [`CURRENT_FUNCTIONAL_COVERAGE.md`](./CURRENT_FUNCTIONAL_COVERAGE.md) 为单一事实来源（SSoT），请勿在本文重新加入逐行实现状态列。
 
 ## 1. 文档目的
 
-本文档定义 iDream 的产品定位、目标用户、功能优先级、页面信息架构、经济承诺和成功指标。**OurDream.ai 是 iDream 的主要产品对标：其公开可验证的发现、创建、聊天、生成、资产、社区、付费与内容体验共同构成完整度参考。**当前官方公开面证据见 [`OURDREAM_PRODUCT_PARITY_SNAPSHOT_2026-09-01.md`](../research/OURDREAM_PRODUCT_PARITY_SNAPSHOT_2026-09-01.md)；代码、数据和运行状态仍以 iDream 自己的 SSoT 为准。
+本文档定义 iDream 的产品定位、目标用户、功能优先级、页面信息架构、经济承诺和成功指标。**OurDream.ai 是 iDream 的主要产品对标：其公开可验证的发现、创建、聊天、生成、资产、社区、付费与内容体验共同构成完整度参考。**历史官方公开面证据见 [`OURDREAM_PRODUCT_PARITY_SNAPSHOT_2026-09-01.md`](../research/OURDREAM_PRODUCT_PARITY_SNAPSHOT_2026-09-01.md)；最新公开资料复核见 [2026-09-05 补充记录](../research/OURDREAM_PRODUCT_REVIEW_2026-09-05.md)。代码、数据和运行状态仍以 iDream 自己的 SSoT 为准。文档分工与阅读顺序见 [产品文档索引](README.md)。
 
 ## 2. 产品定位
 
@@ -18,11 +18,34 @@ iDream 是一个 **全面对标 OurDream.ai 的 18+ AI 角色扮演 / AI 伴侣�
 产品主张：
 
 - **完整发现**：Explore、搜索、排序、筛选、角色详情、推荐、Feed、Community 与公开内容共同帮助用户找到角色和创作者。
-- **完整创建**：对齐当前公开可验证的六步 Style → General → Face → Body → Details → Image 任务，覆盖身份/风格、外观、发型/面部、体型、名称、personality/Soul、Voice、Occupation、hobbies、fetishes、relationship type、custom details、视觉候选、私有保存和公开发布；快捷入口不能删减完整创建能力。
+- **完整创建**：对齐 2026-09-01 公开观察的六步 Style → General → Face → Body → Details → Image 任务，覆盖身份/风格、外观、发型/面部、体型、名称、personality/Soul、Voice、Occupation、hobbies、fetishes、relationship type、custom details、视觉候选、私有保存和公开发布；快捷入口不能删减完整创建能力。
 - **完整互动**：Chat 支持历史、Scene、记忆、编辑、重生成、举报以及已发布的图片/编辑/语音动作；Video 只有在独立 Chat capability 与 Product Action contract 发布后进入 Chat。
 - **完整生成**：Image、条件 Video、Character/Freeplay、Presets、Image Edit、背景/姿势/服装、Prompt、Advanced Settings、异步状态与 Gallery 管理构成一条完整生成链。
 - **完整资产与分发**：My AI、Created、Characters、Presets、Media、Feed、Community、Creator Profile、Like/Follow/Share/Remix/Report 都属于目标产品范围。
 - **可靠且透明**：角色身份固定、生成可追踪、重试不重复执行或扣费；聊天历史和已交付媒体不因计划到期被锁回；定价与 dreamcoin 口径见 `ECONOMY_AND_PRICING.md`。
+
+### 2.1 用户价值与产品承诺
+
+面向希望探索虚构角色、进行成人角色扮演、获得陪伴或创作角色媒体的成年人，iDream 提供从灵感到互动、从创作到保存与传播的一站式体验。对外简述：**发现你喜欢的角色，创造你想象的人物，在聊天、声音、图片与视频中展开故事。**
+
+| 用户要完成的事 | 常见阻力 | iDream 的体验承诺 |
+| --- | --- | --- |
+| 找到适合自己的角色或故事 | 目录难筛选，点开后与介绍不符 | 可理解的角色信息、筛选与开场，登录后回到原角色 |
+| 创造自己想象的人物 | 字段复杂，预览不像，输入丢失 | 完整可编辑资料、可恢复草稿、可重选形象与声音 |
+| 继续角色扮演或陪伴 | 忘记上下文，角色变样，互动中断 | 可控记忆与场景、稳定身份、可继续的会话与媒体动作 |
+| 创作并积累作品 | 工具割裂，失败扣款，作品难找 | Chat 与 Generate 衔接，成本透明，结果进入可检索资产库 |
+| 分享作品并获得反馈或收益 | 不清楚谁能看见、来源或收益怎么算 | 显式发布与授权、作者归属、可核对互动及收益 |
+| 安心购买并解决问题 | 权益不清、付款未到账、求助无回音 | 付款状态可查询、异常可恢复、客服可追踪、到期保有既有资产 |
+
+长期关系是重要使用方式，与单次角色扮演、独立生成和创作者使用并列。上述人群及阻力是本轮产品假设，尚未经过用户访谈验证；用各路径完成率、回访与用户反馈校准，不能当作已证实的市场结论。
+
+### 2.2 对标方式与自主选择
+
+- 按用户任务、控制能力和结果质量评估等价性；品牌、文案、素材和内部实现由 iDream 自己建立。六步创建是任务广度基线，当前五步实现须逐项证明字段、恢复、预览与发布等价，不能仅因少一步判失败，也不能仅因有向导判完成。
+- 图片、视频、Voice Clip、双向 Voice Call 均是完整目标。条件发布表示当前能力尚需验收，不能改写成永久可选功能；Generate 视频与 Chat 内视频分别验收。
+- 保留既定自主选择：加密货币支付、一次性预付周期访问、不自动续订、不锁回既有资产、基础角色身份与记忆不按套餐降质。具体价格与权益只引用经济规格。
+- 私有内容不会因收藏、生成、进入合集或复制而自动公开。日常角色与素材通过基础自动检查后进入准备与显式发布，不增加人工批准关卡；举报、申诉和异常处理保留。
+- 用户界面以角色、场景、费用、任务进度和作品表达能力；模型、工作流和内部执行标识仅在选型、问题追踪等确有需要时披露。
 
 ## 3. 用户与角色
 
@@ -150,13 +173,13 @@ OurDream 公开可验证的页面族全部进入对标库存，但 iDream 只在
 | CH-12 | 用户可调整 response length、scene generation、active messages 和互动强度；控制值版本化固定到 Turn snapshot，不静默改写 Soul。 | P1 |
 | CH-13 | 支持最多 12 个角色的 Group Chat，用户可选择或 `@` 指定应答角色；编排、历史、memory、额度、Product Action 和权限均有权威契约。 | P1 |
 | CH-14 | 支持与单条 Voice Clip 分开的双向 Voice Call，包含通话状态、中断恢复、语音身份、时长与结算。 | P1 |
-| CH-15 | 提供版本化 conversation-profile Catalog；当前公开对标基线为 5 个用户可感知档位。每个档位在执行前明示能力与成本，底层 provider/model 仍由服务端权威选择，不因档位改变角色身份。 | P1 |
+| CH-15 | 提供版本化 conversation-profile Catalog；2026-09-01 对标基线为 5 个用户可感知档位（历史观察，不代表当前竞品目录）。每个档位在执行前明示能力与成本，底层 provider/model 仍由服务端权威选择，不因档位改变角色身份。 | P1 |
 
 ### 6.4 角色创建器
 
 | ID | 需求 | 优先级 |
 | --- | --- | --- |
-| CR-01 | 创建器覆盖当前公开六步任务 Style → General → Face → Body → Details → Image；用户可前进、后退和回到任意步骤修改。 | P0 |
+| CR-01 | 创建器覆盖 2026-09-01 公开观察的六步任务 Style → General → Face → Body → Details → Image；用户可前进、后退和回到任意步骤修改。 | P0 |
 | CR-02 | 用户可配置 Gender、Style、外观/race、发型/面部、体型、名称、年龄、简介、tags、personality/Soul、Voice、Occupation、hobbies、fetishes、relationship type、custom details 和开场信息；稳定角色资料与可变 Scene/memory 分开。 | P0 |
 | CR-03 | 草稿自动保存并可刷新/注册后恢复；用户能回到任一步修改，不能因预览或登录失败丢失输入。 | P0 |
 | CR-04 | 系统生成一个或多个视觉候选，用户可刷新并选择 Visual Identity anchor；候选失败可重试且不丢失草稿。 | P0 |
@@ -170,12 +193,12 @@ OurDream 公开可验证的页面族全部进入对标库存，但 iDream 只在
 
 ### 6.5 图片生成器与条件 Video
 
-> Image 是基线发布能力；Video 是完整对标目标，但只有在 `video_gen` 功能位、entitlement、video model/provider 与 launch gate 同时满足时才暴露。关闭态不能显示不可点击的 `Video Beta` / `Videos` 死入口。
+> Image 是基线发布能力；Video 是完整对标目标，但只有在 `video_gen` 功能位、entitlement、video model/provider 与 launch gate 同时满足时才暴露。关闭态隐藏新生成入口，但既有视频仍可查看、播放和下载；没有历史资产时不显示空的 `Videos` 死入口。
 
 | ID | 需求 | 优先级 |
 | --- | --- | --- |
 | GN-01 | 支持 Image，并在 Video 获得发布 capability 时支持 Image / Video 模式切换。 | P0 |
-| GN-02 | Image 生成前必须选择 Character 或 Freeplay；Video 启用时只允许满足已发布 I2V/Serving contract 的 Character，不把 Freeplay 自动外推到 Video。 | P0 |
+| GN-02 | Image 生成前必须选择 Character 或 Freeplay；Video 启用时只允许满足已发布 I2V contract 且用户有权使用的 Character（含合格私有角色），不把 Freeplay 自动外推到 Video。 | P0 |
 | GN-03 | 支持 Mode Presets，并包含 Presets 和 Image Edit 模式。 | P1 |
 | GN-04 | 支持 Background、Pose、Outfit preset，preset 来源包含内置、My Presets、Community、Custom。 | P1 |
 | GN-05 | Video 启用时，Image 和 Video 模式字段不同：Video 模式不显示 Pose，并可标注 new model。 | P1 |
@@ -205,7 +228,7 @@ OurDream 公开可验证的页面族全部进入对标库存，但 iDream 只在
 | PF-05 | Feed 展示用户或平台推荐内容流，并提供 Chat、Remix、Like、Share、Report。 | P1 |
 | PF-06 | Community 展示 banner carousel、Dreamers/Characters/Collections、Featured/Top leaderboard 和 release/gender/style filters。 | P1 |
 | PF-07 | 支持点赞、收藏、关注、举报和分享。 | P1 |
-| PF-08 | Group Chats 与 Packs 属于完整对标目标域；未获发布 authority 时只能显示明确 unavailable 空态，发布时需具备真实数据模型、操作和权限。 | P1 |
+| PF-08 | Group Chats 与 Packs 属于完整对标目标域；未获发布 authority 时默认不暴露新任务入口；既有深链显示明确不可用原因与返回路径，发布时需具备真实数据模型、操作和权限。 | P1 |
 | PF-09 | 用户的聊天历史和已生成媒体在计划到期后仍可查看；媒体保持可下载，删除行为必须说明影响范围。 | P0 |
 | PF-10 | Profile 支持偏好与通知；语言切换仅在未来接入真实 i18n 字典层后启用。 | P1 |
 | PF-11 | Community 支持版本化 Creator levels、公开角色资格、Creator Studio 数据、Pack 收益、Dreamcoin/现金激励与对账；所有门槛、收益和 payout 都由 canonical facts 与账本权威支持。 | P1 |
@@ -252,6 +275,25 @@ OurDream 公开可验证的页面族全部进入对标库存，但 iDream 只在
 | SF-04 | 所有用户生成内容必须可举报并进入审核流程。 | P0 |
 | SF-05 | 平台必须禁止未成年人/未成年外观、真实人物、现有 IP、非同意框架、违法和规避内容。 | P0 |
 | SF-06 | 支持用户对角色、媒体、feed item、聊天消息、用户、moderation decision、安全问题和版权/肖像问题提交 report 或 appeal。 | P0/P1 |
+
+### 6.10 账号与任务连续性
+
+| ID | 需求 | 优先级 |
+| --- | --- | --- |
+| AC-01 | 注册、登录和退出具有明确结果；登录后恢复原角色、合法返回路径和本人草稿，不自动发起付费动作。 | P0 |
+| AC-02 | 提供验证码重发/过期处理、访问恢复和会话失效说明；切换账号隔离草稿、媒体、余额与待核对请求。 | P0 |
+| AC-03 | 删除账号前说明历史、私有资产、公开内容、余额和保留记录的影响；执行状态可查询，失败可恢复。 | P0 |
+| SF-07 | 基础帮助与客服覆盖账号、支付、生成和聊天；支持工单回执、补充回复、状态和解决结果，不能被高级计划挡住。 | P0 |
+
+### 6.11 联盟与作品权益
+
+| ID | 需求 | 优先级 |
+| --- | --- | --- |
+| AF-01 | Affiliate 提供真实条款、资格、申请回执与结果；普通 referral 与商业联盟分开表达。 | P1 |
+| AF-02 | 伙伴可获得归因链接与素材，核对点击、有效/待确认/撤销转化，归因窗口和佣金规则版本化。 | P1 |
+| AF-03 | 佣金与结算有明确状态、核对和支持入口，不以预计收益冒充已支付收入。 | P1 |
+| PF-13 | 私有、链接可见和公开发现分别控制；Remix 保留作者、授权与来源，不自动公开私有作品。 | P1 |
+| PF-14 | Packs 明确当前/未来内容范围、价格、使用权、购买与退款边界；不因访问计划到期锁回已购权益。 | P1 |
 
 ## 7. 产品实体与权威映射
 
@@ -420,26 +462,17 @@ Explore、Create、Chat、Generate、My AI、Feed/Community/Creator Economy、Up
 - 可靠性：生成任务应异步处理，可恢复、可重试、可展示失败原因。
 - 所有权：计划变化不得隐藏既有聊天历史或已交付媒体。
 
-## 12. MVP 建议
+## 12. 交付阶段与完整范围
 
-MVP 应优先实现：
+阶段表示交付顺序，不代表完整范围缩减；不是日历排期或当前上线声明。新增需求按依赖进入阶段，已经实现的 P1 能力无需撤回。
 
-1. 年龄门槛、注册登录与可恢复的用户会话。
-2. 真实角色目录的发现、搜索、筛选、详情与一键开始聊天。
-3. 完整多步创建：身份/风格/外观/发型/体型、名称、tags、Soul/高级资料、预览 anchor、私有保存和公开提交；Quick Start 只作可选预填入口。
-4. Chat 的历史、Scene、official igrep memory、编辑、重生成、举报和已发布 Product Action。
-5. Image/条件 Video Generate：Character/Freeplay、Presets、Image Edit、Prompt、Advanced Settings、任务状态、结算/退款和 Gallery。
-6. My AI/Profile：Recent、Characters、Created、Presets、Media、余额、预付访问、兑换码、推荐、偏好与账号管理。
-7. Feed/Community/Creator Profile 的基础浏览、Chat、Remix、Like、Follow、Share、Report。
-8. Upgrade 的一次性周期访问、Premium/Deluxe entitlement、透明 dreamcoin 成本与既有资产持续可访问。
-9. 已获 publication authority 的 Marketing、Library、Article、Comparison、Terms、Help 与 Support/Appeal 闭环。
+| 阶段 | 用户可完成的结果 | 退出条件 |
+| --- | --- | --- |
+| A 核心可用 | 发现/创建角色 → Chat 或 Image → 保存/回访；完成账号、报价、预付访问和客服恢复 | P0 故事在同一候选版本走通；异常不丢草稿、不重复扣费；购买与权益须独立真实验证 |
+| B 完整平台 | 视频、语音片段与通话、生成编辑与增强、社区发布/互动、Group Chat、Packs、Comics、Coin Store、联盟、帮助与内容获客 | 所有 P1 目标有真实数据、权限、交付与恢复证据；每个域有明确对标判定 |
+| C 规模优化 | 个性化发现、创作者增长优化、内容规模化、多语言与运营效率 | 不降低 A/B 体验，以完成率、留存、成本和支持负担判断收益 |
 
-V1.1 再实现：
-
-- 视频生成进入默认可见发布范围。
-- Group Chats 与 Packs 的完整产品语义、数据模型、额度和分发（属于完整对标目标，不是产品外能力）。
-- 多语言 UI（真实 i18n 字典层、路由内容和 locale 切换）。
-- Feed/Community 个性化、创作者激励和大规模 SEO 内容运营按依赖与资源分期推进，不以 WSCU 达标作为是否属于产品范围的 Gate。
+阶段 A 通过只能称核心可用；完成完整对标须同时满足 B。公开生产发布另受目标环境 readiness 约束。执行顺序和未完成项见 [剩余工作](REMAINING_WORK_EXECUTION_PLAN.md)，按域验收入口见 [对标矩阵](PRODUCT_PARITY_MATRIX.md)。
 
 ## 13. 验收标准
 
@@ -447,3 +480,5 @@ V1.1 再实现：
 - 首页、Create、Generate、Profile、Upgrade、Article、Comparison、Library、Marketing、Terms 都有功能需求。
 - 每个 P0 需求都能映射到页面、数据实体和用户故事。
 - 成人内容安全、年龄确认、隐私和举报要求被列为 P0。
+- 每条用户旅程同时覆盖成功、失败/未知、退出/恢复、权限与成本；具体跨域场景见 `UserStory.md §3`。
+- 完整对标结论必须引用矩阵中各域的判定与证据；当前文档更新不构成运行验收。

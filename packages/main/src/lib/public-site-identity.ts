@@ -10,7 +10,7 @@ type PublicSiteIdentityEnvironment = {
 
 export type PublicSiteIdentity = {
   affiliateUrl: string | null;
-  brandName: "ourdream.ai";
+  brandName: "iDream";
   discordUrl: string | null;
   helpCenterUrl: string | null;
   legalName: string | null;
@@ -35,7 +35,7 @@ export function publicSiteIdentity(
 ): PublicSiteIdentity {
   return {
     affiliateUrl: httpsUrl(source.NEXT_PUBLIC_SITE_AFFILIATE_URL),
-    brandName: "ourdream.ai",
+    brandName: "iDream",
     discordUrl: httpsUrl(source.NEXT_PUBLIC_SITE_DISCORD_URL),
     helpCenterUrl: httpsUrl(source.NEXT_PUBLIC_SITE_HELP_CENTER_URL),
     legalName: nonBlank(source.NEXT_PUBLIC_SITE_LEGAL_NAME, 160),

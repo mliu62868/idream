@@ -49,7 +49,6 @@ import {
 import {
   canRegenerateChatMessage,
   canSubmitChatMessage,
-  chatMessageActionPaddingClass,
   isImmutableOpeningMessage,
   isLocalChatMessageId,
   LOCAL_CHAT_MESSAGE_ID_PREFIX,
@@ -1214,22 +1213,11 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
                     (message.id === latestUserMessageId ||
                       message.replyToMessageId === latestUserMessageId);
                   const canPlayMessage = !isUser && message.status === "sent" && Boolean(message.content.trim());
-                  const messageActionCount = showMessageActions
-                    ? 1 +
-                      Number(canDeleteMessage) +
-                      Number(canEditMessage) +
-                      Number(canRegenerateMessage) +
-                      Number(canPlayMessage)
-                    : 0;
-                  const actionPaddingClass = chatMessageActionPaddingClass(
-                    messageActionCount,
-                    messageDeleteConfirm,
-                  );
                   return (
                     <div
                       aria-busy={!isUser && replyInProgress}
                       aria-label={isUser ? "Your message" : "Assistant message"}
-                      className={`group relative max-w-[78%] rounded-[16px] px-4 py-3 text-[14px] leading-6 ${actionPaddingClass} ${
+                      className={`group relative min-w-0 max-w-full break-words rounded-[16px] px-4 py-3 text-[15px] leading-6 md:max-w-[78%] md:text-[14px] ${
                         isUser
                           ? "ml-auto bg-white text-[rgb(13,13,13)]"
                           : "bg-[rgb(36,36,36)] text-white"

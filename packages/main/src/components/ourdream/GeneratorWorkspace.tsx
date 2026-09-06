@@ -79,6 +79,7 @@ import {
   type GenerationQuoteRequest,
   type GenerationRequestEffects,
 } from "@/lib/generation-request";
+import { readCurrentGenerationJob, saveCurrentGenerationJob } from "@/lib/generation-current-job";
 import { useGenerationRequest } from "@/hooks/useGenerationRequest";
 import {
   exactGenerationQuoteForCount,
@@ -530,6 +531,7 @@ export function GeneratorWorkspace() {
   // Keep actionable jobs visible while completed history stays out of the Gallery's way.
   const visibleJobs = showOlderCompletedJobs ? jobs : jobs.filter((job) =>
     job.status !== "completed" || recentCompletedIds.has(job.id));
+  const currentGenerationJobRef = useRef<string | null>(null);
   const [latestResults, setLatestResults] = useState<MediaItem[]>([]);
   const [identityMedia, setIdentityMedia] = useState<MediaItem[]>([]);
   const [identityMediaAuthority, setIdentityMediaAuthority] = useState(initialAuthorityStatus);
@@ -985,6 +987,7 @@ export function GeneratorWorkspace() {
     enhancementPendingRef.current = false;
     setEnhancement(null);
     looksRequestSerialRef.current += 1;
+    currentGenerationJobRef.current = null;
     resetJobs();
     resetMedia();
     resetUserPresets();
@@ -1518,13 +1521,14 @@ export function GeneratorWorkspace() {
     try {
       const response = await fetch(`/api/v1/generation/jobs/${jobId}`, {
         cache: "no-store",
+        headers: { "x-idream-viewer-scope": viewerRequest.scope },
         signal: viewerRequest.controller.signal,
       });
       if (!response.ok) return;
       const payload = parseGenerationJobDetailResponse(await response.json());
       if (!privateViewerRequestIsCurrent(viewerRequest)) return;
       const job = payload.job;
-      const arrival = projectServerJobArrival(job);
+      const arrival = projectServerJobArrival(job, currentGenerationJobRef.current);
       setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
       if (arrival.statusMessage) setStatus(arrival.statusMessage);
       if (arrival.showResults) {
@@ -1532,9 +1536,12 @@ export function GeneratorWorkspace() {
         setGalleryTab(job.mode);
       }
       if (arrival.refreshBalanceAndQuote) refreshBalanceAndQuoteAuthority();
-      if (arrival.showResults) void refreshMedia(job.mode);
+      if (job.status === "completed" && (arrival.showResults || job.mode === galleryTabRef.current)) {
+        void refreshMedia(job.mode);
+      }
     } catch (error) {
-      if (!(error instanceof DOMException && error.name === "AbortError")) {
+      if (privateViewerRequestIsCurrent(viewerRequest) && currentGenerationJobRef.current === jobId &&
+          !(error instanceof DOMException && error.name === "AbortError")) {
         setStatus("Generation status could not refresh. Retrying…");
       }
     } finally {
@@ -1548,6 +1555,13 @@ export function GeneratorWorkspace() {
     refreshMedia,
     setJobs,
   ]);
+
+  useEffect(() => {
+    if (!config?.viewer.authenticated || !config.viewer.scope || currentGenerationJobRef.current) return;
+    const jobId = readCurrentGenerationJob(window.sessionStorage, config.viewer.scope);
+    currentGenerationJobRef.current = jobId;
+    if (jobId) void pollGeneration(jobId);
+  }, [config?.viewer.authenticated, config?.viewer.scope, pollGeneration]);
 
   useEffect(() => {
     if (!ageGateAccepted) return;
@@ -1664,6 +1678,9 @@ export function GeneratorWorkspace() {
       void refreshConfig();
     },
     trackJob: (jobId) => {
+      currentGenerationJobRef.current = jobId;
+      saveCurrentGenerationJob(window.sessionStorage, viewerScopeRef.current, jobId);
+      setLatestResults([]);
       void pollGeneration(jobId);
     },
   };

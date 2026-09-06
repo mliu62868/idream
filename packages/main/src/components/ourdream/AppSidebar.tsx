@@ -1,4 +1,3 @@
-import Image from "next/image";
 import Link from "next/link";
 import {
   Bot,
@@ -39,14 +38,7 @@ export function AppSidebar({
     <aside className="hidden h-screen w-[220px] shrink-0 md:flex md:sticky md:top-0 md:z-30">
       <div className="flex h-screen w-[220px] flex-col overflow-hidden rounded-r-[24px] bg-[rgb(18,18,18)] px-0 pb-4 pt-2">
         <div className="flex h-11 items-center justify-between px-5">
-          <Image
-            src="/images/ourdream/ourdream-logo.svg"
-            alt="ourdream.ai"
-            width={121}
-            height={14}
-            className="h-3.5 w-auto object-contain"
-            loading="eager"
-          />
+          <span className="text-[24px] font-black tracking-tight text-white">iDream</span>
           <span className="h-4 w-4 rounded-[4px] border border-[rgb(114,113,112)]" />
         </div>
 
@@ -145,7 +137,7 @@ export function AppSidebar({
             Upgrade
           </Link>
           <div className="mt-4 text-center text-[9px] font-medium uppercase leading-3 text-[rgb(114,113,112)]">
-            <p>{currentYear} OURDREAM.AI</p>
+            <p>{currentYear} iDream</p>
           </div>
         </div>
       </div>

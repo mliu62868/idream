@@ -25,6 +25,8 @@ export interface RateLimitPolicy {
 export const RATE_LIMITS = {
   // 登录：实测改前 8 次错误密码 27ms/次、无退避。
   authLogin: { limit: 10, windowMs: 5 * 60_000 },
+  authRecovery: { limit: 5, windowMs: 15 * 60_000 },
+  accountReauthenticate: { limit: 10, windowMs: 5 * 60_000 },
   // 注册：免费账号是多个滥用路径的入场券，收得比登录更紧。
   authSignup: { limit: 5, windowMs: 60 * 60_000 },
   // 兑换码：码空间小且哈希弱，枚举收益高。

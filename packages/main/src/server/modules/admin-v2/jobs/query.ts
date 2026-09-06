@@ -426,11 +426,14 @@ export async function queryGenerationJobsV2Authority(input: {
       latestReconciliationByRequest.set(event.jobId, event);
     }
   }
-  const automaticCorrections = new Set((await Promise.all(page.flatMap((row) => {
+  const automaticCorrections = new Set<string>();
+  for (const row of page) {
     const attempt = latestAttemptByRequest.get(row.id);
-    return row.status === "failed" && attempt?.status === "unknown"
-      ? [validatedAutomaticFailureCorrection(db, row.id, attempt.id).then((evidence) => evidence ? row.id : null)] : [];
-  }))).filter((id): id is string => id !== null));
+    if (row.status === "failed" && attempt?.status === "unknown" &&
+        await validatedAutomaticFailureCorrection(db, row.id, attempt.id)) {
+      automaticCorrections.add(row.id);
+    }
+  }
   const response = generationJobListResponseSchema.parse({
     items: page.map((row) => generationJobProjection(
       row,

@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 
@@ -86,13 +85,7 @@ export function AgeGate({
         className="flex w-full max-w-sm flex-col items-center rounded-[28px] border border-white/10 bg-[rgb(36,36,36)] p-6 text-center shadow-[2px_2px_8px_3px_rgba(0,0,0,0.25)]"
         role="dialog"
       >
-        <Image
-          src="/images/ourdream/age-gate-logo.png"
-          alt="ourdream.ai"
-          width={100}
-          height={16}
-          className="h-4 w-[100px] opacity-60"
-        />
+        <span className="text-[24px] font-black tracking-tight text-white">iDream</span>
         <h2
           className="mt-6 text-[24px] font-bold uppercase leading-[26px] text-white"
           id="age-gate-title"

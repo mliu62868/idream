@@ -26,6 +26,7 @@ import {
   purgeTestData,
 } from "@/server/test/helpers";
 import { legacyRedeemCodeHash } from "@/server/lib/redeem-codes";
+import { hashPassword } from "@/server/lib/auth";
 import { adminV2 } from "@/server/test/admin-v2-http";
 import type { ApiResult } from "@/server/test/helpers";
 
@@ -555,7 +556,8 @@ describe("referrals + account", () => {
 
   it("signs out all sessions and processes a delete request", async () => {
     const userId = `${P}account`;
-    await createUser({ id: userId });
+    const accountUser = await createUser({ id: userId });
+    await prisma.account.create({ data: { userId, providerId: "credential", accountId: accountUser.email, password: hashPassword("password123") } });
     await prisma.session.create({
       data: { userId, token: `${P}tok-1`, expiresAt: new Date(Date.now() + 100000) },
     });
@@ -564,7 +566,7 @@ describe("referrals + account", () => {
     expectOk(signOut);
     expect(await prisma.session.count({ where: { userId } })).toBe(0);
 
-    const del = await api("POST", "account/delete-request", { userId });
+    const del = await api("POST", "account/delete-request", { userId, body: { password: "password123", confirmation: "DELETE", expectedUserId: userId } });
     expectOk(del);
     const user = await prisma.user.findUnique({ where: { id: userId } });
     expect(user?.status).toBe("deleted");
@@ -585,6 +587,7 @@ describe("referrals + account", () => {
 
     const deleted = await api("POST", "account/delete-request", {
       cookie: cookieHeader(signup.setCookies),
+      body: { password, confirmation: "DELETE", expectedUserId: userId },
     });
     expectOk(deleted);
     expect(deleted.setCookies.join(";")).toContain("idream_session=;");
@@ -602,7 +605,8 @@ describe("referrals + account", () => {
   it("commits account deletion and keeps its Chat erasure intent pending until graceEndsAt", async () => {
     const userId = `${P}account-delete-outbox`;
     const eventId = `user_deleted_${userId}`;
-    await createUser({ id: userId });
+    const accountUser = await createUser({ id: userId });
+    await prisma.account.create({ data: { userId, providerId: "credential", accountId: accountUser.email, password: hashPassword("password123") } });
     await prisma.session.create({
       data: {
         userId,
@@ -610,7 +614,7 @@ describe("referrals + account", () => {
         expiresAt: new Date(Date.now() + 100_000),
       },
     });
-    const deleted = await api("POST", "account/delete-request", { userId });
+    const deleted = await api("POST", "account/delete-request", { userId, body: { password: "password123", confirmation: "DELETE", expectedUserId: userId } });
     expectOk(deleted);
     expect(deleted.data).toMatchObject({
       requested: true,

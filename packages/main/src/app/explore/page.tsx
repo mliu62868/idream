@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import { permanentRedirect } from "next/navigation";
 
 export const metadata: Metadata = {
-  title: "Explore AI Characters | ourdream.ai",
+  title: "Explore AI Characters | iDream",
   description:
-    "Explore Ourdream AI characters with search, filters, categories, and creator cards.",
+    "Explore iDream AI characters with search, filters, categories, and creator cards.",
   alternates: {
     canonical: "/",
   },

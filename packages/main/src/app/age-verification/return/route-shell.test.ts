@@ -24,7 +24,7 @@ describe("canonical age verification return route", () => {
 
     const serverMarkup = await render();
     expect(await render()).toBe(serverMarkup);
-    expect(serverMarkup).toContain("ourdream.ai");
+    expect(serverMarkup).toContain("iDream");
     expect(serverMarkup).toContain("Checking your verification");
     expect(serverMarkup).toContain('role="status"');
     expect(metadata.robots).toEqual({ index: false, follow: false });

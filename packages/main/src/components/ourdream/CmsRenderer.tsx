@@ -25,7 +25,7 @@ export function CmsRenderer({ page }: Readonly<{ page: PublishedRoutePage }>) {
       <article className="px-4 py-10 md:px-[60px] md:py-14">
         <div className="mx-auto max-w-3xl">
           <p className="text-[12px] font-black uppercase leading-4 text-[rgb(253,95,194)]">
-            Ourdream guide
+            iDream guide
           </p>
           <h1 className="mt-3 text-[40px] font-black uppercase leading-none tracking-normal text-white md:text-[60px]">
             {body.heading}

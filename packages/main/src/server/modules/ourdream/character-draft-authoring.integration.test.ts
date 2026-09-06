@@ -4,6 +4,7 @@ import { DEFAULT_FISH_AUDIO_DELIVERY } from "@idream/shared/admin";
 import * as draftVoice from "./character-draft-voice";
 import { resolveCharacterVoiceAuthority } from "@/server/modules/voice-defaults";
 import { prisma } from "@/server/lib/db";
+import { transitionGenerationRequest } from "@/server/ai/generation-request-transition";
 import { api, createUser, expectOk, expectError, purgeTestData } from "@/server/test/helpers";
 
 const prefix = `zt-create-authoring-${randomUUID()}-`;
@@ -31,6 +32,63 @@ async function recordPreviewInput(draftId: string, previewId: string, userId: st
 }
 
 describe("Create authoring authority", () => {
+  it("keeps completed candidates unconfirmed until explicit selection and preserves that anchor after later completion", async () => {
+    const userId = `${prefix}late-candidate-owner`;
+    await createUser({ id: userId });
+    const draft = await prisma.characterDraft.create({ data: {
+      ownerId: userId, name: "Avery", gender: "female", style: "realistic", step: 3,
+      appearance: { prompt: "Freckles" }, hair: {}, body: {}, tags: [],
+      advancedDetails: { age: 25, description: "A warm companion", firstMessage: "Hello there." },
+    } });
+    const candidates = [];
+    for (const index of [1, 2]) {
+      const preview = await prisma.characterPreviewJob.create({ data: { draftId: draft.id, status: "running" } });
+      const request = await recordPreviewInput(draft.id, preview.id, userId);
+      await prisma.generationJob.update({ where: { id: request.id }, data: { status: "running" } });
+      const asset = await prisma.mediaAsset.create({ data: {
+        id: `${prefix}late-candidate-${index}`, sourceJobId: request.id, ownerId: userId,
+        type: "image", url: `/user-content/late-candidate-${index}.png`, storageKey: `${prefix}late-candidate-${index}.png`,
+        visibility: "private", safetyStatus: "passed", metadata: { synthetic: false },
+      } });
+      candidates.push({ preview, request, asset });
+    }
+    const first = candidates[0]!;
+    const second = candidates[1]!;
+    const complete = (requestId: string) => prisma.$transaction(tx => transitionGenerationRequest(tx, {
+      requestId, to: "completed", data: { completedAt: new Date() },
+    }));
+    await complete(first.request.id);
+    const beforeConfirmation = await api("GET", "character-drafts/current", { userId, ageGate: true });
+    expectOk(beforeConfirmation);
+    expect(beforeConfirmation.data.draft.previewJobId).toBeNull();
+    const unconfirmedSubmit = await api("POST", `character-drafts/${draft.id}/submit`, {
+      userId, ageGate: true, body: { visibility: "private" },
+    });
+    expectError(unconfirmedSubmit, 400, "bad_request");
+    expect(await prisma.character.count({ where: { creatorId: userId } })).toBe(0);
+    expectOk(await api("POST", `character-drafts/${draft.id}/preview-anchor`, {
+      userId, ageGate: true, body: { previewJobId: first.preview.id },
+    }));
+    await complete(second.request.id);
+    // Duplicate terminal delivery must not change the user's selection either.
+    await complete(second.request.id);
+    expect((await prisma.characterDraft.findUniqueOrThrow({ where: { id: draft.id } })).previewJobId).toBe(first.preview.id);
+    expect((await prisma.characterPreviewJob.findUniqueOrThrow({ where: { id: second.preview.id } })).resultAssetId).toBe(second.asset.id);
+    const savedStep = await api("PATCH", `character-drafts/${draft.id}`, {
+      userId, ageGate: true, body: { step: 4, appearance: { prompt: "Freckles" }, hair: {}, body: {} },
+    });
+    expectOk(savedStep);
+    expect(savedStep.data.draft.previewJobId).toBe(first.preview.id);
+    const submitted = await api("POST", `character-drafts/${draft.id}/submit`, {
+      userId, ageGate: true, body: { visibility: "private" },
+    });
+    expectOk(submitted);
+    const character = await prisma.character.findUniqueOrThrow({ where: { id: submitted.data.character.id } });
+    expect(character.imageAssetId).toBe(first.asset.id);
+    expect((await prisma.mediaAsset.findUniqueOrThrow({ where: { id: first.asset.id } })).characterId).toBe(character.id);
+    expect((await prisma.mediaAsset.findUniqueOrThrow({ where: { id: second.asset.id } })).characterId).toBeNull();
+  });
+
   it("preserves face, hair and body in the Character, content snapshot and active visual profile", async () => {
     const userId = `${prefix}owner`;
     await createUser({ id: userId });

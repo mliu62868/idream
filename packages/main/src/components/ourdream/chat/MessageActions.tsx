@@ -3,8 +3,8 @@
 import { Flag, Loader2, Pencil, RefreshCw, Square, Trash2, Volume2 } from "lucide-react";
 
 // SPEC: Per-message action cluster. Assistant turns get Play + Regenerate; both
-//       roles get Report; only the latest Turn gets Delete/Regenerate/Edit. Pinned
-//       top-right of the bubble.
+//       roles get Report; only the latest Turn gets Delete/Regenerate/Edit. Actions sit
+//       below the content so controls never take width away from reading.
 // INTENT: keep the existing Flag/Report behavior; add management without clutter.
 export function MessageActions({
   isUser,
@@ -34,12 +34,12 @@ export function MessageActions({
     ? "bg-[var(--ds-brand-pink)] text-white opacity-100 shadow-[0_0_0_1px_rgba(255,255,255,0.28),0_0_18px_rgba(253,95,194,0.45)]"
     : tone;
   return (
-    <div className="absolute right-2 top-2 flex items-center gap-1 opacity-70 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+    <div className="mt-2 flex flex-wrap items-center justify-end gap-1 opacity-80 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
       {onPlay ? (
         <button
           aria-label={voiceLabel}
           aria-pressed={voiceActive}
-          className={`grid h-7 w-7 place-items-center rounded-full transition ${voiceTone} disabled:opacity-50`}
+          className={`grid h-11 w-11 md:h-7 md:w-7 place-items-center rounded-full transition ${voiceTone} disabled:opacity-50`}
           data-state={voiceState ?? "idle"}
           data-testid="chat-play-voice"
           disabled={pending || voiceState === "loading"}
@@ -59,7 +59,7 @@ export function MessageActions({
       {onRegenerate ? (
         <button
           aria-label="Regenerate reply"
-          className={`grid h-7 w-7 place-items-center rounded-full ${tone} disabled:opacity-50`}
+          className={`grid h-11 w-11 md:h-7 md:w-7 place-items-center rounded-full ${tone} disabled:opacity-50`}
           data-testid="chat-regenerate"
           disabled={pending}
           onClick={onRegenerate}
@@ -72,7 +72,7 @@ export function MessageActions({
       {onEdit ? (
         <button
           aria-label="Edit message"
-          className={`grid h-7 w-7 place-items-center rounded-full ${tone} disabled:opacity-50`}
+          className={`grid h-11 w-11 md:h-7 md:w-7 place-items-center rounded-full ${tone} disabled:opacity-50`}
           data-testid="chat-edit-message"
           disabled={pending}
           onClick={onEdit}
@@ -85,7 +85,7 @@ export function MessageActions({
       {onDelete ? (
         <button
           aria-label={deleteConfirm ? "Confirm delete message" : "Delete message"}
-          className={`inline-flex h-7 min-w-7 items-center justify-center rounded-full ${deleteConfirm ? "px-2 text-[11px] font-bold uppercase" : "w-7"} ${tone} disabled:opacity-50`}
+          className={`inline-flex h-11 min-w-11 md:h-7 md:min-w-7 items-center justify-center rounded-full ${deleteConfirm ? "px-2 text-[11px] font-bold uppercase" : "w-11 md:w-7"} ${tone} disabled:opacity-50`}
           data-testid="chat-delete-message"
           disabled={pending}
           onClick={onDelete}
@@ -97,7 +97,7 @@ export function MessageActions({
       ) : null}
       <button
         aria-label="Report message"
-        className={`grid h-7 w-7 place-items-center rounded-full ${tone}`}
+        className={`grid h-11 w-11 md:h-7 md:w-7 place-items-center rounded-full ${tone}`}
         onClick={onReport}
         title="Report message"
         type="button"

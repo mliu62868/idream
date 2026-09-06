@@ -605,6 +605,24 @@ describe("generator config authority", () => {
 
 // INVARIANT 5 — terminal job detection
 describe("generation job settlement", () => {
+  it("updates settlement for another tab's candidate without replacing the active video result", () => {
+    const image = { id: "create-candidate", mode: "image" as const, status: "completed", errorCode: null };
+    expect(projectServerJobArrival(image, "my-video")).toEqual({
+      settled: true, statusMessage: null, showResults: false, refreshBalanceAndQuote: true,
+    });
+    expect(projectServerJobArrival(image, null).showResults).toBe(false);
+    expect(projectServerJobArrival({ ...image, id: "my-video", mode: "video" }, "my-video")).toMatchObject({
+      statusMessage: "Generation complete.", showResults: true,
+    });
+  });
+
+  it("does not overwrite the current task with another job's failure or review warning", () => {
+    for (const job of [
+      { id: "other", mode: "image" as const, status: "failed", errorCode: null },
+      { id: "other", mode: "image" as const, status: "queued", errorCode: "provider_outcome_unknown" },
+    ]) expect(projectServerJobArrival(job, "current").statusMessage).toBeNull();
+  });
+
   it("stops polling an unconfirmed outcome without announcing a refund", () => {
     const job = { id: "uncertain-job", mode: "video" as const, status: "queued", errorCode: "provider_outcome_unknown" };
     expect(pendingGenerationJobIds([job])).toEqual([]);

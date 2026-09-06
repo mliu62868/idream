@@ -517,18 +517,11 @@ function SafetyHeader({ activePath }: Readonly<{ activePath: string }>) {
     <header className="fixed top-0 z-30 w-full border-b border-white/[0.07] bg-[#0d0d0d]/95 font-safety-docs backdrop-blur lg:sticky">
       <div className="flex h-16 items-center gap-4 px-4 lg:px-12">
         <Link className="flex shrink-0 items-center" href="/">
-          <Image
-            alt="ourdream Trust & Safety home page"
-            className="h-6 w-auto"
-            height={15}
-            loading="eager"
-            src="/images/ourdream/safety/logo-dark.svg"
-            width={130}
-          />
+          <span className="text-[24px] font-black tracking-tight text-white">iDream</span>
         </Link>
         <nav className="ml-auto hidden items-center gap-6 text-[14px] font-semibold text-[#8f898d] md:flex">
           <Link className="transition-colors hover:text-white" href="/">
-            ourdream
+            iDream
           </Link>
           <Link
             className="inline-flex h-9 items-center rounded-xl bg-[#ff79c5] px-4 text-white transition-colors hover:bg-[#f17bb6]"
@@ -663,20 +656,14 @@ function SafetyFooter() {
       <div className="mx-auto max-w-[920px] px-5 py-20 text-[#777276]">
         <div className="flex flex-col gap-8 md:flex-row md:items-center md:justify-between">
           <Link href="/">
-            <Image
-              alt="ourdream Trust & Safety home page"
-              className="h-6 w-auto"
-              height={15}
-              src="/images/ourdream/safety/logo-dark.svg"
-              width={130}
-            />
+            <span className="text-[24px] font-black tracking-tight text-white">iDream</span>
           </Link>
           <div className="flex flex-wrap gap-7 text-[14px] font-medium">
             <Link className="transition-colors hover:text-white" href="/helpdesk">
               Help Desk
             </Link>
             <Link className="transition-colors hover:text-white" href="/">
-              ourdream.ai
+              iDream
             </Link>
           </div>
           <Link
@@ -689,7 +676,7 @@ function SafetyFooter() {
         </div>
         <div className="mt-16 border-t border-white/[0.07] pt-10">
           <p className="text-[13px] font-semibold text-[#8f898d]">
-            ourdream.ai Trust & Safety
+            iDream Trust & Safety
           </p>
         </div>
       </div>

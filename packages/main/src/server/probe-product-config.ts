@@ -1,9 +1,10 @@
+import { pathToFileURL } from "node:url";
 import { prisma } from "@/server/lib/db";
 import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 import {
   productionVideoRecipeForProfile,
 } from "@/server/modules/generation/production-video-profile";
-import { characterVideoProductionRecipes } from "@idream/shared";
+import { characterVideoProductionRecipe } from "@idream/shared";
 import {
   filterPublicTextToImageGenerationProfiles,
   generationProfileDeclaresTextToImage,
@@ -40,7 +41,7 @@ async function main() {
   if (!report.ok) process.exitCode = 1;
 }
 
-async function runProbe(): Promise<ProductConfigProbeReport> {
+export async function runProbe(): Promise<ProductConfigProbeReport> {
   const checkedAt = new Date().toISOString();
   const startedAt = Date.now();
 
@@ -157,8 +158,9 @@ async function runProbe(): Promise<ProductConfigProbeReport> {
     const activeVideoProfileKeys = new Set(
       activeVideoExecutionBindings.map((binding) => binding.profileKey),
     );
-    const missingVideoProfileKeys = characterVideoProductionRecipes
-      .map((recipe) => recipe.profileKey)
+    // Optional, explicitly selected recipes may be disabled by operators.
+    // Readiness requires the canonical default route plus validation of every exposed route.
+    const missingVideoProfileKeys = [characterVideoProductionRecipe.profileKey]
       .filter((profileKey) => !activeVideoProfileKeys.has(profileKey));
     const failureReasons = [
       activeImageProfiles < 1 ? "missing active image model profile" : null,
@@ -257,7 +259,7 @@ async function runProbe(): Promise<ProductConfigProbeReport> {
   }
 }
 
-main().catch((error: unknown) => {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main().catch((error: unknown) => {
   process.stderr.write(error instanceof Error ? `${error.message}\n` : `${String(error)}\n`);
   process.exitCode = 1;
 });

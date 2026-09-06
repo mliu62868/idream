@@ -1,6 +1,6 @@
 # iDream 产品功能地图
 
-更新日期：2026-09-01
+更新日期：2026-09-05
 
 > **本文档是 iDream 目标产品功能地图（价值层级 / 页面模板 / 导航图 / 功能模块矩阵），不描述实现进度。**
 > 当前真实实现状态以 [`CURRENT_FUNCTIONAL_COVERAGE.md`](./CURRENT_FUNCTIONAL_COVERAGE.md) 为单一事实来源（SSoT），请勿在本文重新加入逐行实现状态列。
@@ -18,9 +18,9 @@ iDream 按 OurDream 的完整用户任务对标，而不是只比较视觉页面
 | P0 公开入口真相 | dedicated/CMS publication registry、404、sitemap/robots/canonical | 只发布有权威内容的入口 | 路由库存不能冒充内容完成 |
 | P1 对标深度 | Presets/Image Edit/高级生成、Voice、条件 Video、完整角色精炼、Group Chats/Packs | 补齐对标站的深度控制和后续产品域 | 依赖各能力自己的交付与成本 Gate |
 | P1 分发、生态与内容 | Feed、Community、Creator Profile、Remix/Like/Follow/Share、Affiliate、Images/Videos/Glossary/Authors、Library/Article/Comparison | 覆盖发现、分发、联盟合作和内容获客 | 属于完整对标范围，不受关系指标前置 |
-| P2 规模优化 | 个性化排序、creator incentives、内容规模化、本地化与运营自动化 | 提升效率和规模 | 按依赖、数据质量和资源分期 |
+| P2 规模优化 | 个性化排序、creator incentives 优化、内容规模化、本地化与运营自动化 | 提升效率和规模 | 按依赖、数据质量和资源分期 |
 
-同一页面和路由可以覆盖多个层级；层级表示产品优先级，不等于删除已有功能。
+同一页面和路由可以覆盖多个层级；层级表示产品优先级，不等于删除已有功能。分期以 [PRD §12](PRD.md#12-交付阶段与完整范围) 为准；需求、故事、证据与退出条件的映射见 [对标矩阵](PRODUCT_PARITY_MATRIX.md)。
 
 资料来源：
 
@@ -35,7 +35,7 @@ iDream 按 OurDream 的完整用户任务对标，而不是只比较视觉页面
 
 ### 1.1 带日期的公开广度基线
 
-下表来自 2026-09-01 官方公开 UI/营销资料，仅作为 parity 验收输入，不写死运行时 Catalog。每项必须在逐功能矩阵中标记 `matched`、`equivalent` 或 `intentional_divergence`；只有泛化控件、极少选项或静态文案不能判为完成。
+下表来自 2026-09-01 官方公开 UI/营销资料，仅作为历史 parity 验收输入，不写死运行时 Catalog。[2026-09-05 复核](../research/OURDREAM_PRODUCT_REVIEW_2026-09-05.md) 未重新完成登录态目录盘点；旧数量不代表今日实时参数。创建的分步数量允许任务等价，完整性以字段、预览、恢复和后续动作判定。每项必须在逐功能矩阵中标记 `matched`、`equivalent` 或 `intentional_divergence`；只有泛化控件、极少选项或静态文案不能判为完成。
 
 | 维度 | OurDream 公开观察值 | iDream 对标验收 |
 | --- | --- | --- |
@@ -122,7 +122,7 @@ iDream 按 OurDream 的完整用户任务对标，而不是只比较视觉页面
 | Preview candidates | `/create` | CharacterPreviewJob 生成/刷新一个或多个可恢复候选 |
 | Visual identity anchor | `/create` | 用户从候选中选择基准图，形成 CharacterVisualProfile active identity |
 | Bring to life | `/create` | 创建 Character、保存到 My AI、开始 Chat 或继续编辑 |
-| Visibility and release | `/create` / Character settings / Admin | 私有使用与公开提交分离；公开角色进入审核、immutable Release 与 Serving |
+| Visibility and release | `/create` / Character settings / Admin | 私有使用与公开提交分离；公开角色通过基础自动检查后进入发布准备、immutable Release 与 Serving，不增加日常人工批准 |
 | Optional Quick Start | `/create` | 用一句描述预填完整向导；不得删除或隐藏上述完整创建能力 |
 
 ### 5.3 Chat
@@ -136,7 +136,7 @@ iDream 按 OurDream 的完整用户任务对标，而不是只比较视觉页面
 | Memory control | chat / profile | memory enabled 状态、暂停、纠正后重建、按角色清除；不建立第二套手工 memory authority |
 | Pinned memories / custom instructions | chat / profile | 用户固定关键事实和自定义交互要求；必须投影到 Main committed context 与 official igrep authority，不建立无来源的第二套记忆 |
 | Conversation controls | chat | 用户可配置 response length、scene generation、active messages 与成人互动强度；控制值进入版本化 Turn snapshot |
-| Conversation profiles | chat | 当前公开对标基线为 5 个用户可感知档位；用户在执行前看到能力与成本，执行 provider/model 仍由服务端权威选择，不改写 Soul 身份 |
+| Conversation profiles | chat | 2026-09-01 历史对标基线为 5 个用户可感知档位；用户在执行前看到能力与成本，执行 provider/model 仍由服务端权威选择，不改写 Soul 身份 |
 | Group Chat | chat / My AI | 一个会话内最多 12 个角色参与，可显式选择或 `@` 指定应答角色；历史、memory、额度、Product Action 与权限有明确编排 |
 | Voice Call | chat | 实时或近实时双向语音会话，与按消息播放的 Voice Clip 分开建模和计费 |
 | Deterministic Product Action | chat | 已获发布 capability 的图片/编辑/语音请求形成 accepted effect、delivery、attachment、settlement/refund 与 replay identity；Video 仅在显式 Chat capability 与 Product Action contract 发布后进入该链 |
@@ -150,10 +150,10 @@ iDream 按 OurDream 的完整用户任务对标，而不是只比较视觉页面
 | 功能 | 页面 | 数据 |
 | --- | --- | --- |
 | Image mode | `/generate` | GenerationJob.mode |
-| Video mode | `/generate` | GenerationJob.mode（仅在 `video_gen`、entitlement、video model/provider 同时满足时曝光；只接受满足已发布 I2V/Serving contract 的 Character） |
+| Video mode | `/generate` | GenerationJob.mode（仅在 `video_gen`、entitlement、video model/provider 同时满足时曝光；只接受满足已发布 I2V contract 且用户有权使用的 Character，含合格私有角色） |
 | Mode presets | `/generate` | generationModePreset（Presets、Image Edit） |
 | Create / Edit / Enhance | `/generate` | 新图创建、已有图编辑、质量增强分开契约；保留 source asset、accepted edit brief 与出图 lineage |
-| Select source | `/generate` | Image 可选择 Character 或 Freeplay；Video 启用时选择符合已发布 I2V contract 的 Character |
+| Select source | `/generate` | Image 可选择 Character 或 Freeplay；Video 启用时选择符合已发布 I2V contract 且用户有权使用的 Character，含合格私有角色 |
 | Character consistency | `/generate`、Chat image | CharacterVisualProfile（active identity version、anchor/reference assets、consistency mode；详见 `CHARACTER_IMAGE_GENERATION_SYSTEM.md`） |
 | Background | `/generate` | controls.backgroundPresetId（All/My Presets/Community/categories/Custom/Create a Preset） |
 | Pose | `/generate` | controls.posePresetId（Image mode only；preset categories） |
@@ -163,7 +163,7 @@ iDream 按 OurDream 的完整用户任务对标，而不是只比较视觉页面
 | Reference-guided generation | `/generate` | 允许的 reference/source asset、身份约束、权限与 provenance；不把官方营销页对 upload 的冲突文案当成已确认边界 |
 | Multi-scene video | `/generate` | 时长、scene 序列、每段输入、AI voice/audio、宽高比、质量档与逐段交付/结算；只在对应 provider/profile/capacity 已发布时暴露 |
 | Generate action | `/generate` | async job |
-| Images/Liked/Videos | `/generate` | MediaAsset（Images/Liked 默认可见；Videos 仅 Video 启用时可见） |
+| Images/Liked/Videos | `/generate` | MediaAsset（Images/Liked 默认可见；有既有视频时 Videos 仍可见，不受新视频生成功能停用影响） |
 | Gallery filter/manage | `/generate` | MediaAsset query、bulk selection（Filter、Manage、Select All、Like） |
 | Long-tail generator pages | `/generate/*`、`/generator/*` | SEO route content |
 | Chat context handoff | Chat → Generation | exact Character/Release/VisualProfile/Scene/accepted visual brief，不由页面重新猜测 |
@@ -192,7 +192,7 @@ iDream 按 OurDream 的完整用户任务对标，而不是只比较视觉页面
 | --- | --- | --- |
 | My AI search | `/custom` | user library search |
 | My AI core | `/custom` | Recent、Characters、Presets、Created、Media 共同构成 P0 资产面，支持 search、加载态、空态和继续操作 |
-| My AI P1 tabs | `/custom` | Group Chats/Packs 属于 P1 完整对标目标；未发布时只显示明确 unavailable 空态 |
+| My AI P1 tabs | `/custom` | Group Chats/Packs 属于 P1 完整对标目标；未发布时默认隐藏新任务入口，既有深链显示不可用原因与返回路径 |
 | Profile settings | `/profile` | User、Preferences |
 | Dreamcoin balance | `/profile`、app-wide | DreamcoinLedger |
 | Access status and repurchase | `/profile#billing`、`/upgrade` | Entitlement + Subscription（legacy physical name） |
@@ -239,6 +239,8 @@ iDream 按 OurDream 的完整用户任务对标，而不是只比较视觉页面
 | Reporting docs | `/safety/reporting/how-to-report` | reports、regulator/security paths（in-product/email/report types） |
 | Privacy/safety tools | `/safety/your-account/*` | privacy、mute、delete、account controls |
 
+新增故事对应功能：账号注册/登录恢复、会话失效与删除状态（AC）；基础帮助、客户工单回执/回复/解决（SF）；私有/链接可见/公开范围与 Remix 来源（PF）；联盟申请、归因、收益与结算（AF）。这些能力覆盖正常结果、异常恢复和权限，验收见 `UserStory.md §2.10–2.11`；基础客服属于 P0，不能被 Bugs/Features 的 Premium 门槛挡住。
+
 ### 5.9 完整对标后续域（P1）
 
 以下功能属于完整对标的 P1 目标域。每个域都必须定义范围、数据模型、权限、额度/计费、交付与分发；在正式发布前遵守全局 unavailable/404 真相边界，不能用空 tab 或静态页面冒充完成。
@@ -266,7 +268,7 @@ iDream 按 OurDream 的完整用户任务对标，而不是只比较视觉页面
 
 - 通过完整向导选择 Gender、Style、外观/race、发型、体型、名称、tags、hobbies/fetishes 与高级资料。
 - 自动保存草稿，生成或刷新预览候选，并选择 Visual Identity anchor。
-- 保存私有角色后进入 My AI、Chat 或 Generate；也可提交公开审核。
+- 保存私有角色后进入 My AI、Chat 或 Generate；也可提交公开发布。
 - 后续继续编辑 Soul、Reference Set、Voice Identity 与分发信息；Quick Start 只负责预填。
 
 ### Generate `/generate`
@@ -285,7 +287,7 @@ iDream 按 OurDream 的完整用户任务对标，而不是只比较视觉页面
 
 - 平等访问 Recent、Characters、Presets、Created 和 Media，并搜索/继续相应任务。
 - 管理已创建角色、会话、presets 与媒体资产。
-- Group Chats/Packs 属于 P1 对标目标；未发布时仅显示明确 unavailable 空态。
+- Group Chats/Packs 属于 P1 对标目标；未发布时默认隐藏新任务入口，既有深链显示不可用原因与返回路径。
 - 从可创建域的空态进入创建；延期域不展示行动入口。
 - 在 Profile 查看余额、预付访问/重新购买、兑换码、推荐奖励、支持、法律和账号管理；偏好/通知属于 P1。
 

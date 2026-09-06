@@ -88,14 +88,7 @@ function AppTopbar({
       <div className="flex h-14 items-center justify-between gap-3 px-4 md:px-[60px]">
         <MobileAppMenu activeHref={activeHref} currentPath={currentPath} />
         <Link className="hidden md:block" href="/">
-          <Image
-            alt="ourdream.ai"
-            className="h-3.5 w-auto"
-            height={15}
-            loading="eager"
-            src="/images/ourdream/ourdream-logo.svg"
-            width={130}
-          />
+          <span className="text-[24px] font-black tracking-tight text-white">iDream</span>
         </Link>
         <AppSearch />
         <div className="flex items-center gap-3">
@@ -132,7 +125,7 @@ function PageHero({ route }: Readonly<{ route: OurdreamRoute }>) {
     <section className="px-4 pb-8 pt-10 md:px-[60px] md:pb-12 md:pt-14">
       <div className="mx-auto max-w-5xl">
         <div className="mb-4 flex items-center gap-2 text-[12px] font-bold uppercase leading-4 text-[rgb(253,95,194)]">
-          <span>{route.eyebrow ?? "ourdream.ai"}</span>
+          <span>{route.eyebrow ?? "iDream"}</span>
           <ChevronRight className="h-3.5 w-3.5" />
           <span className="text-[rgb(170,170,170)]">{route.template}</span>
         </div>
@@ -471,7 +464,7 @@ const articleContentByPath: Record<
       {
         title: "How it works",
         body:
-          "In Ourdream, the card idea usually starts in Create, becomes a saved companion, then flows into chat, Generate, and My AI without losing the original character context.",
+          "In iDream, the card idea usually starts in Create, becomes a saved companion, then flows into chat, Generate, and My AI without losing the original character context.",
         bullets: [
           "Start with the character premise and choose the closest style.",
           "Add appearance and personality details before previewing.",
@@ -549,12 +542,12 @@ const articleContentByPath: Record<
   },
   "/guides/sillytavern-setup-guide": {
     intro:
-      "Use this page as a practical bridge from external card-writing habits into an Ourdream workflow that keeps discovery, chat, creation, and generation in one account.",
+      "Use this page as a practical bridge from external card-writing habits into an iDream workflow that keeps discovery, chat, creation, and generation in one account.",
     sections: [
       {
         title: "Overview",
         body:
-          "SillyTavern-style cards often contain personality, scenario, and first-message fields. Those map cleanly into Ourdream's Create steps when you keep each field focused.",
+          "SillyTavern-style cards often contain personality, scenario, and first-message fields. Those map cleanly into iDream's Create steps when you keep each field focused.",
       },
       {
         title: "How it works",
@@ -624,7 +617,7 @@ function ArticlePage({ route }: Readonly<{ route: OurdreamRoute }>) {
           </aside>
           <div>
             <p className="text-[12px] font-black uppercase leading-4 text-[rgb(253,95,194)]">
-              Ourdream guide
+              iDream guide
             </p>
             <h1 className="mt-3 text-[40px] font-black uppercase leading-[0.98] text-white md:text-[60px]">
               {route.title}
@@ -754,7 +747,7 @@ function ComparisonChecklist({ route }: Readonly<{ route: OurdreamRoute }>) {
         <div className="mt-7 overflow-hidden rounded-[16px] border border-white/10 bg-[rgb(18,18,18)]">
           <div className="grid border-b border-white/10 bg-[rgb(28,28,28)] text-[12px] font-black uppercase leading-4 text-white md:grid-cols-[180px_1fr_1fr]">
             <div className="p-4 text-[rgb(170,170,170)]">Area</div>
-            <div className="p-4">Ourdream</div>
+            <div className="p-4">iDream</div>
             <div className="p-4">What to verify elsewhere</div>
           </div>
           {comparisonFeatureRows.map((row) => (
@@ -827,7 +820,7 @@ function ComparisonRouteCards({ route }: Readonly<{ route: OurdreamRoute }>) {
               </h3>
               <p className="mt-3 text-[13px] font-medium leading-6 text-[rgb(170,170,170)]">
                 Review feature fit, pricing, creator workflow, and the fastest
-                path into a real Ourdream action.
+                path into a real iDream action.
               </p>
               <span className="mt-5 inline-flex items-center gap-2 text-[13px] font-bold text-white">
                 Open
@@ -952,7 +945,7 @@ function TermsPage({ route }: Readonly<{ route: OurdreamRoute }>) {
           </h1>
           <div className="mt-8 max-w-4xl space-y-5 rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-6 text-[15px] leading-8 text-[rgb(170,170,170)]">
             <p>
-              Ourdream is intended for adults. By using the service, you agree
+              iDream is intended for adults. By using the service, you agree
               to follow the platform rules, respect creator and user safety, and
               avoid content that violates age, consent, likeness, or abuse
               policies.

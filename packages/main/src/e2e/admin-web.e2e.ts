@@ -2017,7 +2017,7 @@ test("admin API Phase 3: CMS write (admin) + compliance/analytics gating", async
     await expect(page.getByLabel("Search characters, guides, and generators")).toBeVisible();
     await expect(page.locator("aside").getByRole("link", { name: "Create", exact: true })).toBeVisible();
     await expect(page.locator("aside").getByRole("link", { name: "Generate", exact: true })).toBeVisible();
-    await expect(page.locator("footer")).toContainText("OURDREAM.AI");
+    await expect(page.locator("footer")).toContainText("iDream");
     await expect(page.locator("article").getByRole("link", { name: "Explore", exact: true })).toHaveAttribute("href", "/");
     expect(consoleFailures).toEqual([]);
   } finally {

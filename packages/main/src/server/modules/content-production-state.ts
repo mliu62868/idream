@@ -282,11 +282,9 @@ export async function markProductionItemGenerated(
   let recovery: AutomaticFailureRecovery | undefined;
   if (current.status === "failed" && current.mediaAssetId === null && input.automaticFailureRecovery) {
     const authority = { jobId: input.jobId, ...input.automaticFailureRecovery };
-    const [correction, attempt, artifact] = await Promise.all([
-      validatedAutomaticFailureCorrection(db, input.jobId, authority.attemptId),
-      db.generationAttempt.findFirst({ where: { requestId: input.jobId }, orderBy: { attemptNo: "desc" } }),
-      db.generationArtifact.findFirst({ where: { attemptId: authority.attemptId, assetId: input.mediaAssetId, validationState: "valid", archiveState: "active" } }),
-    ]);
+    const correction = await validatedAutomaticFailureCorrection(db, input.jobId, authority.attemptId);
+    const attempt = await db.generationAttempt.findFirst({ where: { requestId: input.jobId }, orderBy: { attemptNo: "desc" } });
+    const artifact = await db.generationArtifact.findFirst({ where: { attemptId: authority.attemptId, assetId: input.mediaAssetId, validationState: "valid", archiveState: "active" } });
     const delivered = artifact ? await db.generationDelivery.count({ where: {
       requestId: input.jobId, artifactId: artifact.id, status: "delivered", targetType: "user_library",
     } }) : 0;

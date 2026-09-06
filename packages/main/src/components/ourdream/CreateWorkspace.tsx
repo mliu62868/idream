@@ -36,6 +36,7 @@ import {
   parseCreatePreviewBatch,
   parseCreatePreviewCandidate,
   retryCreatePreviewBatch,
+  resumeCreatePreviewBatch,
   type CreatePreviewBatch,
   type CreatePreviewCandidate,
   type CreatePreviewJobStatus,
@@ -66,7 +67,7 @@ export type ServerCharacterDraft = {
   previewJobId: string | null;
 };
 
-type PreviewStatus = "idle" | "generating" | "complete" | "failed";
+type PreviewStatus = "idle" | "generating" | "paused" | "complete" | "failed";
 
 // Templates store free-form Json; pull a usable string for the draft's prompt-shaped fields.
 function pickString(value: unknown, ...keys: string[]): string {
@@ -234,7 +235,7 @@ export function CreateWorkspace() {
   const [viewerScope, setViewerScope] = useState<string | null>(null);
   const storageKey = viewerScope ? draftStorageKeyForScope(viewerScope) : null;
   const [viewerAuthorityState, setViewerAuthorityState] = useState<
-    "loading" | "ready" | "error"
+    "loading" | "ready" | "error" | "changed"
   >("loading");
   const [viewerAuthorityAttempt, setViewerAuthorityAttempt] = useState(0);
   const [templates, setTemplates] = useState<CreateTemplate[]>([]);
@@ -253,6 +254,20 @@ export function CreateWorkspace() {
   const previewRunRef = useRef(0);
   const previewRunSequenceRef = useRef(0);
   const stateRef = useRef(state);
+  const viewerBlockedRef = useRef(false);
+
+  const invalidateViewer = useCallback(() => {
+    viewerBlockedRef.current = true;
+    previewRunRef.current = 0;
+    voicePreviewSequence.current += 1;
+    setHydrated(false);
+    setViewerAuthorityState("changed");
+    setState(initialCharacterDraft());
+    setPreview(DEFAULT_PREVIEW);
+    setVoicePreviewUrl("");
+    setCreatedCharacterId("");
+    setPending(false);
+  }, []);
 
   const step = state.step;
   const previewCandidates = state.previewBatch?.candidates ??
@@ -268,18 +283,26 @@ export function CreateWorkspace() {
       body?: unknown,
       method = "POST",
       options?: { idempotencyKey?: string; signal?: AbortSignal },
-    ) =>
-      api(
+    ) => {
+      if (viewerBlockedRef.current || !viewerScope) {
+        return Promise.reject(new Error("Your account changed. Reload to open its private draft."));
+      }
+      return api(
         path,
         body,
         method,
         () => createDraftTransfer(viewerScope, stateRef.current),
-        options,
-      ),
-    [viewerScope],
+        { ...options, viewerScope, onViewerChanged: invalidateViewer },
+      ).then((payload) => {
+        if (viewerBlockedRef.current) throw new Error("Your account changed. Reload to open its private draft.");
+        return payload;
+      });
+    },
+    [invalidateViewer, viewerScope],
   );
   const persistPreviewBatch = useCallback(
     (batch: CreatePreviewBatch) => {
+      if (viewerBlockedRef.current) return;
       setState((current) => ({ ...current, previewBatch: batch }));
       if (storageKey) {
         persistPreviewBatchForStorage(storageKey, batch, stateRef.current);
@@ -309,7 +332,7 @@ export function CreateWorkspace() {
   useEffect(() => {
     if (!ageGateAccepted) return;
     const controller = new AbortController();
-    fetch("/api/v1/me", { signal: controller.signal })
+    fetch("/api/v1/me", { cache: "no-store", signal: controller.signal })
       .then(async (response) => {
         if (!response.ok) throw new Error("Viewer authority unavailable");
         return parseViewerAuthorityResponse(await response.json());
@@ -333,6 +356,32 @@ export function CreateWorkspace() {
     return () => controller.abort();
   }, [ageGateAccepted, viewerAuthorityAttempt]);
 
+  useEffect(() => {
+    if (!viewerScope) return;
+    const controller = new AbortController();
+    const checkViewer = async () => {
+      try {
+        const response = await fetch("/api/v1/me", { cache: "no-store", signal: controller.signal });
+        if (!response.ok) return;
+        const payload = parseViewerAuthorityResponse(await response.json());
+        if (!controller.signal.aborted && viewerScopeFromAuthority({
+          userId: payload.user?.id, anonymousId: payload.anonymousId,
+        }) !== viewerScope) invalidateViewer();
+      } catch {
+        // Network failure does not prove a switch. Every private request also
+        // carries its original viewer scope, checked by Main before side effects.
+      }
+    };
+    const onVisible = () => { if (document.visibilityState === "visible") void checkViewer(); };
+    window.addEventListener("focus", checkViewer);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      controller.abort();
+      window.removeEventListener("focus", checkViewer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [invalidateViewer, viewerScope]);
+
   // Local storage keeps unsaved keystrokes. When it is absent, the signed-in
   // user's server draft restores the last durable step across browsers/devices.
   useEffect(() => {
@@ -352,9 +401,12 @@ export function CreateWorkspace() {
       serverAsset?: { id?: string; url: string; isSynthetic?: boolean } | null,
       serverPreviewJob?: { id: string; status: string; errorCode?: string | null } | null,
     ) => {
-      restored = next;
+      if (viewerBlockedRef.current) return;
+      restored = next.previewBatch
+        ? { ...next, previewBatch: resumeCreatePreviewBatch(next.previewBatch) }
+        : next;
       if (serverAsset?.url && next.confirmedPreviewJobId) {
-        restored = { ...next, confirmedPreviewUrl: serverAsset.url };
+        restored = { ...restored, confirmedPreviewUrl: serverAsset.url };
       }
       // The server may have finished a preview before this browser ever saw
       // it. Restore that exact candidate without enqueueing another batch.
@@ -374,7 +426,7 @@ export function CreateWorkspace() {
       setRestoredPreviewReviewId("");
       if (!next.previewBatch && serverPreviewJob?.errorCode === "provider_outcome_unknown") {
         setRestoredPreviewReviewId(serverPreviewJob.id);
-        setPreviewStatus("failed");
+        setPreviewStatus("paused");
         setStatus(`The preview result needs review. Contact support with request ${serverPreviewJob.id}.`);
       }
       const applied = restored;
@@ -390,10 +442,13 @@ export function CreateWorkspace() {
           applied.confirmedPreviewJobId || restoredCandidate?.previewJobId || "",
         );
       }
-      if (applied.previewBatch?.phase === "complete" || restoredPreviewUrl) {
-        setPreviewStatus("complete");
-      } else if (applied.previewBatch?.phase === "running") {
+      if (applied.previewBatch?.phase === "running") {
         setPreviewStatus("generating");
+      } else if (applied.previewBatch?.phase === "paused") {
+        setPreviewStatus("paused");
+        setStatus(applied.previewBatch.errorMessage);
+      } else if (applied.previewBatch?.phase === "complete" || (!applied.previewBatch && restoredPreviewUrl)) {
+        setPreviewStatus("complete");
       } else if (applied.previewBatch?.phase === "failed" || serverPreviewJob?.status === "failed") {
         setPreviewStatus("failed");
         setStatus(
@@ -447,7 +502,7 @@ export function CreateWorkspace() {
   }, [requestApi, storageKey, viewerScope]);
 
   useEffect(() => {
-    if (!hydrated || !storageKey) return;
+    if (!hydrated || !storageKey || viewerBlockedRef.current) return;
     try {
       window.localStorage.setItem(storageKey, JSON.stringify(state));
     } catch {
@@ -713,12 +768,15 @@ export function CreateWorkspace() {
                 : undefined,
             };
           },
-          persist: persistPreviewBatch,
+          persist: (batch) => {
+            if (previewRunRef.current === runId) persistPreviewBatch(batch);
+          },
           isActive: () => previewRunRef.current === runId,
         });
         if (previewRunRef.current !== runId) return;
         if (settled.phase === "complete") {
-          const selected = settled.candidates[0];
+          const selected = settled.candidates.find((candidate) =>
+            candidate.previewJobId === stateRef.current.confirmedPreviewJobId) ?? settled.candidates[0];
           if (selected) {
             setPreview(selected.url);
             setSelectedPreviewJobId((current) => current || selected.previewJobId);
@@ -726,8 +784,8 @@ export function CreateWorkspace() {
           setPreviewStatus("complete");
           return;
         }
-        setPreviewStatus("failed");
-        setStatus(settled.errorMessage || "Preview generation failed. Try again.");
+        setPreviewStatus(settled.phase === "paused" ? "paused" : "failed");
+        setStatus(settled.errorMessage || "Preview checking paused. Check the saved request again.");
       } finally {
         if (previewRunRef.current === runId) {
           previewRunRef.current = 0;
@@ -780,8 +838,8 @@ export function CreateWorkspace() {
       const draftId = await ensureDraft();
       await saveStep(3);
       const existingBatch = state.previewBatch;
-      const retrying = existingBatch?.phase === "failed";
-      const batch = existingBatch?.phase === "failed"
+      const retrying = existingBatch?.phase === "failed" || existingBatch?.phase === "paused";
+      const batch = retrying
         ? retryCreatePreviewBatch(existingBatch)
         : newCreatePreviewBatch();
       if (!retrying) {
@@ -792,8 +850,8 @@ export function CreateWorkspace() {
         ...current,
         previewBatch: batch,
         restoredPreviewCandidate: null,
-        confirmedPreviewJobId: "",
-        confirmedPreviewUrl: "",
+        confirmedPreviewJobId: retrying ? current.confirmedPreviewJobId : "",
+        confirmedPreviewUrl: retrying ? current.confirmedPreviewUrl : "",
       }));
       persistPreviewBatch(batch);
       await runPreviewBatch(draftId, batch);
@@ -917,7 +975,17 @@ export function CreateWorkspace() {
     }
   }
 
-  if (!hydrated) {
+  if (!hydrated || viewerAuthorityState === "changed") {
+    if (viewerAuthorityState === "changed") {
+      return (
+        <section className="mx-auto my-16 max-w-xl rounded-2xl border border-white/10 bg-[rgb(18,18,18)] p-6 text-center" role="alert" data-testid="create-viewer-changed">
+          <h1 className="text-lg font-black text-white">Your account changed</h1>
+          <p className="mt-2 text-sm leading-6 text-neutral-300">This draft stays with the original account. Reload to open the current account’s workspace, or sign back in to continue your draft.</p>
+          <button type="button" className="mt-4 rounded-full bg-white px-5 py-3 font-bold text-black" onClick={() => window.location.reload()}>Reload workspace</button>
+          <Link href="/login?next=%2Fcreate" className="ml-4 inline-block py-3 text-sm text-white underline">Sign in</Link>
+        </section>
+      );
+    }
     if (viewerAuthorityState === "error") {
       return (
         <section
@@ -1300,8 +1368,9 @@ export function CreateWorkspace() {
                     {CREATE_PREVIEW_CANDIDATE_COUNT} ·{" "}
                     {state.previewBatch.phase === "complete"
                       ? "completed"
-                      : state.previewBatch.phase === "failed"
-                        ? state.previewBatch.failureReason === "outcome_unknown" ? "needs review" : "failed"
+                      : state.previewBatch.phase === "paused"
+                        ? state.previewBatch.failureReason === "outcome_unknown" ? "needs review" : "checking paused"
+                      : state.previewBatch.phase === "failed" ? "failed"
                         : state.previewBatch.activeJobStatus === "running"
                           ? "processing"
                           : "queued"}
@@ -1322,10 +1391,21 @@ export function CreateWorkspace() {
                   )}
                   {previewStatus === "complete"
                     ? "Regenerate preview candidates"
+                    : previewStatus === "paused" ? "Check preview status"
                     : previewStatus === "failed"
                       ? restoredPreviewReviewId || state.previewBatch?.failureReason === "outcome_unknown" ? "Check preview status" : "Retry preview candidates"
                       : "Generate preview candidates"}
                 </button>
+                {previewStatus === "generating" && state.previewBatch && (
+                  <button type="button" className="min-h-11 text-sm text-white underline" onClick={() => {
+                    previewRunRef.current = 0;
+                    const batch = stateRef.current.previewBatch;
+                    if (batch) persistPreviewBatch({ ...batch, phase: "paused", failureReason: "user_paused", errorMessage: "Checking paused. Any queued image keeps running; check its status to continue." });
+                    setPending(false);
+                    setPreviewStatus("paused");
+                    setStatus("Checking paused. You can confirm an available image or check the saved request again.");
+                  }}>Pause checking</button>
+                )}
                 {(restoredPreviewReviewId || state.previewBatch?.failureReason === "outcome_unknown") && (
                   <Link className="text-[13px] text-white underline" href="/helpdesk">Contact support</Link>
                 )}
@@ -1373,7 +1453,7 @@ export function CreateWorkspace() {
                     })}
                   </div>
                 )}
-                {previewStatus === "complete" && previewCandidates.length > 0 && (
+                {previewStatus !== "generating" && previewCandidates.length > 0 && (
                   <div className="grid gap-2 rounded-[12px] bg-black/25 p-3">
                     {state.confirmedPreviewJobId ? (
                       <p className="flex items-center gap-2 text-[13px] font-semibold text-[rgb(120,220,170)]">
@@ -1432,6 +1512,9 @@ export function CreateWorkspace() {
                   <p className="text-[13px] font-semibold text-[rgb(255,140,140)]">
                     Preview failed. Your draft is saved; retry before publishing.
                   </p>
+                )}
+                {previewStatus === "paused" && (
+                  <p className="text-[13px] leading-6 text-neutral-300">Checking is paused. This does not cancel queued work or mean generation failed. Check the saved request again, or confirm an available identity.</p>
                 )}
               </div>
             )}
@@ -1575,12 +1658,13 @@ async function api(
   body?: unknown,
   method = "POST",
   createResumeTarget?: () => string | null,
-  options?: { idempotencyKey?: string; signal?: AbortSignal },
+  options?: { idempotencyKey?: string; signal?: AbortSignal; viewerScope?: string; onViewerChanged?: () => void },
 ) {
   const response = await fetch(path, {
     method,
     headers: {
       "content-type": "application/json",
+      ...(options?.viewerScope ? { "x-idream-viewer-scope": options.viewerScope } : {}),
       ...(options?.idempotencyKey
         ? { "Idempotency-Key": options.idempotencyKey }
         : {}),
@@ -1592,6 +1676,10 @@ async function api(
   // Logged-out users can't create drafts; send them to sign up instead of
   // dead-ending on a 401 (mirrors CharacterDetailClient.startChat).
   if (response.status === 401) {
+    if (options?.viewerScope?.startsWith("user:")) {
+      options.onViewerChanged?.();
+      throw new Error("Your session ended. Sign in to the original account to continue your draft.");
+    }
     const resumeTarget = createResumeTarget?.();
     const currentTarget = `${window.location.pathname}${window.location.search}${window.location.hash}`;
     const next = encodeURIComponent(resumeTarget ?? (currentTarget || "/create"));
@@ -1599,6 +1687,9 @@ async function api(
     throw new Error("Sign in to create a character. Redirecting…");
   }
   const payload = (await response.json()) as DraftPayload;
+  if (response.status === 409 && payload.error?.message?.startsWith("Your account changed")) {
+    options?.onViewerChanged?.();
+  }
   if (!response.ok || payload.ok === false) {
     throw new Error(payload.error?.message ?? "Sign in, accept the age gate, then try again.");
   }

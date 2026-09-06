@@ -127,10 +127,7 @@ import { getOurdreamRoute, ourdreamRoutePaths } from "@/lib/ourdream-data";
 import { isPublicRouteDiscoverable } from "@/lib/public-route-authority";
 import { activeAnnouncements, readAnnouncements } from "@/server/announcements/store";
 import { logger } from "@/server/lib/logger";
-import {
-  accountDeletionPublicState,
-  requestAccountDeletion,
-} from "@/server/account-deletion-authority";
+import { dispatchAccountAccess, newRecoveryCode, storeRecoveryCode } from "./account-access";
 import {
   redeemCodeDreamcoins,
   redeemCodeHashCandidates,
@@ -474,6 +471,9 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
 
   if (!resource) return ok({ service: "idream-api", version: "v1" });
 
+  const accountAccessResponse = await dispatchAccountAccess(request, segments);
+  if (accountAccessResponse) return accountAccessResponse;
+
 
   if (resource === "auth") {
     // 凭据端点：便宜、可自动重复、失败无代价 —— 爆破与批量注册的入口。
@@ -553,7 +553,7 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
     requireAgeGate(ctx);
     if (!id && method === "GET") return ok(await getCharacterDraftVoiceCatalog());
     if (id === "preview" && !action && method === "POST") {
-      requireUser(ctx);
+      requireGeneratorViewer(request, requireUser(ctx).id);
       requireAgeVerified(ctx);
       const selection = characterDraftVoiceSelectionSchema.parse(await jsonBody(request));
       return ok(await previewCharacterDraftVoice({
@@ -564,6 +564,11 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
   }
 
   if (resource === "character-drafts") {
+    // Bind retained browser input to its original account before any read,
+    // write, idempotency replay, or preview dispatch can use the current cookie.
+    if (request.headers.has("x-idream-viewer-scope")) {
+      requireGeneratorViewer(request, requireUser(await getAuthCtx(request)).id);
+    }
     if (!id && method === "POST") return createDraft(request);
     if (id === "current" && !action && method === "GET") return currentDraft(request);
     if (id && !action && method === "PATCH") return updateDraft(request, id);
@@ -700,7 +705,6 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
 
   if (resource === "account") {
     if (id === "sign-out-all" && method === "POST") return signOutAll(request);
-    if (id === "delete-request" && method === "POST") return deleteRequest(request);
   }
 
   const customerCareResponse = await dispatchCustomerCareRequest(request, segments);
@@ -736,6 +740,7 @@ async function signup(request: Request) {
 
   const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 30);
   const token = createSessionToken();
+  const recoveryCode = newRecoveryCode();
   const user = await prisma.$transaction(async (tx) => {
     const anonymousId = await claimableAnonymousId(tx, ctx.anonymousId);
     const created = await tx.user.create({
@@ -768,6 +773,7 @@ async function signup(request: Request) {
         },
       },
     });
+    await storeRecoveryCode(tx, created.id, recoveryCode);
     if (anonymousId) {
       await tx.ageGateAcceptance.updateMany({
         where: { anonymousId, userId: null },
@@ -847,6 +853,8 @@ async function signup(request: Request) {
   const response = ok({
     user: userDTO(user),
     session: { expiresAt },
+    recoveryCode,
+    recoveryCodeExpiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1_000).toISOString(),
   });
   response.headers.append("set-cookie", sessionCookie(token, expiresAt));
   return response;
@@ -892,6 +900,10 @@ async function login(request: Request) {
     const user = await tx.user.findUnique({ where: { id: account.userId } });
     if (!user || user.status !== "active" || user.deletedAt) {
       throw Errors.forbidden("Account is not active");
+    }
+    const currentAccount = await tx.account.findUnique({ where: { id: account.id } });
+    if (!currentAccount || !verifyPassword(body.password, currentAccount.password)) {
+      throw Errors.unauthorized("Invalid email or password");
     }
     await tx.session.create({
       data: {
@@ -4075,21 +4087,6 @@ async function signOutAll(request: Request) {
   const user = requireUser(ctx);
   await prisma.session.deleteMany({ where: { userId: user.id } });
   const response = ok({ signedOut: true });
-  response.headers.append("set-cookie", clearSessionCookie());
-  return response;
-}
-
-async function deleteRequest(request: Request) {
-  const ctx = await getAuthCtx(request);
-  const user = requireUser(ctx);
-  const deletion = await prisma.$transaction((tx) =>
-    requestAccountDeletion(tx, { userId: user.id }),
-  );
-
-  const response = ok({
-    requested: true,
-    deletion: accountDeletionPublicState(deletion),
-  });
   response.headers.append("set-cookie", clearSessionCookie());
   return response;
 }

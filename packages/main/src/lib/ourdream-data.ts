@@ -54,37 +54,37 @@ export const categoryFilters = [
 
 export const homeFaqs = [
   {
-    question: "What is Our Dream AI?",
+    question: "What is iDream?",
     answer:
-      "Our Dream AI is an AI roleplay platform for creating personalized AI characters, chatting with them, generating images, and building a companion that remembers context over time.",
+      "iDream is an AI roleplay platform for creating personalized AI characters, chatting with them, generating images, and building a companion that remembers context over time.",
   },
   {
-    question: "How do you create an AI girlfriend on ourdream?",
+    question: "How do you create an AI girlfriend on iDream?",
     answer:
       "Use the creator to choose a name, appearance, visual style, personality details, tags, and visibility. Preview the character image before creating the final private or public character.",
   },
   {
-    question: "What is ourdream.ai's pricing?",
+    question: "What is iDream's pricing?",
     answer:
       "The Upgrade page loads the currently active plans, billing periods, prices, included dreamcoins, and configured entitlements from the live plan catalog.",
   },
   {
-    question: "Is ourdream ai legit and safe to use?",
+    question: "Is iDream legit and safe to use?",
     answer:
-      "Ourdream emphasizes privacy, safety moderation, original AI characters, and rules against underage-looking content or real-person deepfakes.",
+      "iDream emphasizes privacy, safety moderation, original AI characters, and rules against underage-looking content or real-person deepfakes.",
   },
   {
-    question: "Are my AI roleplay chats private on Our Dream AI?",
+    question: "Are my AI roleplay chats private on iDream?",
     answer:
       "Private chat history is designed to stay tied to your account, with product controls and moderation paths focused on keeping roleplay conversations secure.",
   },
   {
-    question: "What images can I generate on ourdream.ai?",
+    question: "What images can I generate on iDream?",
     answer:
       "The generator pages focus on realistic and anime-style AI images for created companions, with premium controls for prompts and character selection.",
   },
   {
-    question: "What do Ourdream upgrades include?",
+    question: "What do iDream upgrades include?",
     answer:
       "Upgrade benefits vary by plan. The live plan cards show the exact message, voice, image, video, model, control, and dreamcoin entitlements currently configured.",
   },
@@ -341,7 +341,7 @@ const routeOverrides: Record<
     template: "generator",
   },
   "/upgrade": {
-    title: "Upgrade Ourdream",
+    title: "Upgrade iDream",
     description:
       "Prepaid upgrade page with plan cards, access periods, dreamcoin allowances, and premium generation controls from the live catalog.",
     template: "upgrade",
@@ -365,7 +365,7 @@ const routeOverrides: Record<
   "/guides/sillytavern-setup-guide": {
     title: "SillyTavern Setup Guide",
     description:
-      "A practical guide for translating SillyTavern-style character cards into focused Ourdream character, chat, and image-generation fields.",
+      "A practical guide for translating SillyTavern-style character cards into focused iDream character, chat, and image-generation fields.",
     template: "article",
   },
   "/type": {
@@ -383,7 +383,7 @@ const routeOverrides: Record<
   "/comparison": {
     title: "Compare AI Girlfriend Platforms",
     description:
-      "Comparison hub for AI companion alternatives and Ourdream competitor pages.",
+      "Comparison hub for AI companion alternatives and iDream competitor pages.",
     template: "comparison",
   },
   "/games": {
@@ -413,11 +413,12 @@ const routeOverrides: Record<
 };
 
 function toTitle(path: string) {
-  const last = path.split("/").filter(Boolean).at(-1) ?? "ourdream ai";
+  const last = path.split("/").filter(Boolean).at(-1) ?? "iDream";
   return last
     .split("-")
     .map((word) => (word ? word[0].toUpperCase() + word.slice(1) : word))
     .join(" ")
+    .replace(/\bOurdream(?: Ai)?\b/g, "iDream")
     .replace(/\bAi\b/g, "AI")
     .replace(/\bNsfw\b/g, "NSFW");
 }
@@ -488,15 +489,15 @@ function defaultDescriptionForRoute({
 
   switch (template) {
     case "article":
-      return `${title} is a practical guide for adults using Ourdream character chat, creation tools, and media generation.`;
+      return `${title} is a practical guide for adults using iDream character chat, creation tools, and media generation.`;
     case "comparison":
       return `${title} compares companion platforms by roleplay depth, creator tools, media features, pricing, and trust signals.`;
     case "generator":
       return `${title} gives adults direct access to image generation workflows with character selection and gallery management.`;
     case "library":
-      return `${title} gathers related Ourdream guides, generators, companion types, and discovery pages in one place.`;
+      return `${title} gathers related iDream guides, generators, companion types, and discovery pages in one place.`;
     case "marketing":
-      return `${title} introduces Ourdream's adult AI companion experience, from character discovery to creation and private chat.`;
+      return `${title} introduces iDream's adult AI companion experience, from character discovery to creation and private chat.`;
     case "profile":
       return `${title} keeps your companions, media, presets, community activity, and account actions organized.`;
     case "safety":
@@ -540,7 +541,7 @@ export function getOurdreamRoute(path: string): OurdreamRoute | undefined {
       override?.description ??
       defaultDescriptionForRoute({ path: normalized, template, title }),
     template,
-    eyebrow: override?.eyebrow ?? "ourdream.ai",
+    eyebrow: override?.eyebrow ?? "iDream",
   };
 }
 

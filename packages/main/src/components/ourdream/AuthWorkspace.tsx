@@ -11,6 +11,8 @@ import { ArrowRight } from "lucide-react";
 import Link from "next/link";
 import { parseViewerAuthorityResponse } from "@/lib/public-api-contracts";
 import { authHrefForTarget, safeInternalAuthRedirect } from "./authRedirect";
+import { AccountRecovery, RecoveryCodeCard } from "./AccountRecovery";
+import { AccountDeletionStatus } from "./AccountDeletionStatus";
 
 export function AuthWorkspace({
   mode,
@@ -22,6 +24,13 @@ export function AuthWorkspace({
   const [pending, setPending] = useState(false);
   const [interactive, setInteractive] = useState(false);
   const [loginRecoveryHref, setLoginRecoveryHref] = useState("/login");
+  const [recovering, setRecovering] = useState(false);
+  const [recoveryCode, setRecoveryCode] = useState<{ code: string; ownerId: string } | null>(null);
+  const deletionReceipt = useSyncExternalStore(
+    subscribeLocationHash,
+    () => new URLSearchParams(window.location.hash.slice(1)).get("deletion"),
+    () => null,
+  );
   const accountDeletionGraceEndsAt = accountDeletionGraceEndsAtFromSearch(
     useSyncExternalStore(
       subscribeLocationSearch,
@@ -33,6 +42,7 @@ export function AuthWorkspace({
     mode === "signup" && status === "Email already registered";
 
   const redirectIfAlreadyAuthenticated = useCallback(async () => {
+    if (new URLSearchParams(window.location.hash.slice(1)).has("deletion")) return false;
     try {
       const response = await fetch("/api/v1/me");
       if (!response.ok) return false;
@@ -72,11 +82,17 @@ export function AuthWorkspace({
       const payload = (await response.json()) as {
         ok: boolean;
         error?: { message: string };
+        data?: { recoveryCode?: string; user?: { id: string } };
       };
       if (!response.ok || !payload.ok) {
         if (await redirectIfAlreadyAuthenticated()) return;
         setLoginRecoveryHref(authLoginRecoveryHref());
         setStatus(payload.error?.message ?? "Authentication failed");
+        return;
+      }
+      if (mode === "signup" && payload.data?.recoveryCode && payload.data.user) {
+        setRecoveryCode({ code: payload.data.recoveryCode, ownerId: payload.data.user.id });
+        setPassword("");
         return;
       }
       window.location.replace(authRedirectTarget());
@@ -88,6 +104,9 @@ export function AuthWorkspace({
     }
   }
 
+  if (deletionReceipt) return <AccountDeletionStatus key={deletionReceipt} receipt={deletionReceipt} />;
+  if (recoveryCode) return <section className="mx-auto max-w-xl px-4 py-10"><RecoveryCodeCard code={recoveryCode.code} ownerId={recoveryCode.ownerId} onContinue={() => window.location.replace(authRedirectTarget())} /></section>;
+  if (recovering) return <section className="mx-auto max-w-xl px-4 py-10"><AccountRecovery onBack={() => setRecovering(false)} onComplete={() => window.location.replace(authRedirectTarget())} /></section>;
   return (
     <section className="px-4 py-10 md:px-[60px] md:py-16">
       <div className="mx-auto grid max-w-5xl gap-6 md:grid-cols-[1fr_420px]">
@@ -96,7 +115,7 @@ export function AuthWorkspace({
             {mode === "signup" ? "Join free" : "Welcome back"}
           </p>
           <h1 className="mt-3 text-[44px] font-black uppercase leading-none md:text-[68px]">
-            {mode === "signup" ? "Create your Ourdream account" : "Log in to Ourdream"}
+            {mode === "signup" ? "Create your iDream account" : "Log in to iDream"}
           </h1>
           <p className="mt-5 max-w-xl text-[15px] font-medium leading-7 text-[rgb(170,170,170)]">
             Sign in to unlock Create, Chat, Generate, My AI, dreamcoins, and
@@ -162,6 +181,7 @@ export function AuthWorkspace({
             {pending ? "Working..." : mode === "signup" ? "Join Free" : "Login"}
             <ArrowRight className="h-4 w-4" />
           </button>
+          {mode === "login" && <button disabled={!interactive} type="button" className="mt-4 text-sm font-bold underline underline-offset-4" onClick={() => setRecovering(true)}>Forgot password? Recover access</button>}
           {status && (
             <div className="mt-4 space-y-2">
               <p
@@ -174,13 +194,7 @@ export function AuthWorkspace({
               </p>
               {mode === "login" && (
                 <p className="text-[13px] font-medium text-[rgb(170,170,170)]">
-                  Need account help?{" "}
-                  <Link
-                    className="font-black text-white underline decoration-white/30 underline-offset-4 hover:decoration-white"
-                    href="/helpdesk"
-                  >
-                    Contact Help Desk
-                  </Link>
+                  Use your saved recovery code if you cannot log in. Open Recover access above for lost or expired code guidance.
                 </p>
               )}
               {shouldShowSignupLoginRecovery && (
@@ -221,4 +235,9 @@ export function accountDeletionGraceEndsAtFromSearch(search: string) {
 function subscribeLocationSearch(onChange: () => void) {
   window.addEventListener("popstate", onChange);
   return () => window.removeEventListener("popstate", onChange);
+}
+
+function subscribeLocationHash(onChange: () => void) {
+  window.addEventListener("hashchange", onChange);
+  return () => window.removeEventListener("hashchange", onChange);
 }

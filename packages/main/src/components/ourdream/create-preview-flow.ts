@@ -2,10 +2,8 @@ import { isRenderableMediaSource } from "@/lib/public-api-contracts";
 
 export const CREATE_PREVIEW_CANDIDATE_COUNT = 4;
 export const CREATE_PREVIEW_POLL_INTERVAL_MS = 1_200;
-// Four production ComfyUI candidates currently take about six minutes when
-// executed serially. Keep one batch bounded, while leaving enough room for
-// ordinary queue variance instead of turning a healthy 90-second job into a
-// client-side failure.
+// Bound browser observation, not backend execution. Queue contention can
+// exceed this window; a timeout pauses checking and never declares job failure.
 export const CREATE_PREVIEW_TOTAL_WAIT_MS = 12 * 60_000;
 
 export type CreatePreviewCandidate = {
@@ -20,10 +18,11 @@ export type CreatePreviewFailureReason =
   | "generation_failed"
   | "request_failed"
   | "outcome_unknown"
-  | "timed_out";
+  | "timed_out"
+  | "user_paused";
 
 export type CreatePreviewBatch = {
-  phase: "running" | "failed" | "complete";
+  phase: "running" | "paused" | "failed" | "complete";
   currentCandidateNumber: number;
   activeRequestKey: string;
   activePreviewJobId: string;
@@ -111,6 +110,15 @@ export function retryCreatePreviewBatch(
     failureReason: null,
     errorMessage: "",
   };
+}
+
+// A reloaded page gets a fresh observation window for the same durable job.
+// Never automatically enqueue a replacement after failure or an unknown outcome.
+export function resumeCreatePreviewBatch(batch: CreatePreviewBatch, now = Date.now()): CreatePreviewBatch {
+  if (!batch.activePreviewJobId || batch.phase === "complete" ||
+      batch.failureReason === "generation_failed" || batch.failureReason === "outcome_unknown" ||
+      batch.failureReason === "user_paused") return batch;
+  return retryCreatePreviewBatch(batch, now);
 }
 
 export async function continueCreatePreviewBatch(
@@ -212,12 +220,12 @@ export async function continueCreatePreviewBatch(
           );
     batch = {
       ...batch,
-      phase: "failed",
+      phase: flowError.reason === "generation_failed" ? "failed" : "paused",
       activePreviewJobId:
         flowError.reason === "generation_failed"
           ? ""
           : batch.activePreviewJobId,
-      activeJobStatus: null,
+      activeJobStatus: flowError.reason === "generation_failed" ? null : batch.activeJobStatus,
       failureReason: flowError.reason,
       errorMessage: flowError.message,
     };
@@ -312,7 +320,7 @@ async function runBeforeBatchDeadline<T>(
 function previewTimedOutError() {
   return new CreatePreviewFlowError(
     "timed_out",
-    "Preview generation is taking longer than expected. Retry to keep checking the same job.",
+    "Preview checking is paused after a long wait. Your job may still be queued or running. Check status to continue watching the same request.",
   );
 }
 
@@ -322,7 +330,7 @@ function assertFlowActive(isActive: () => boolean) {
 
 export function parseCreatePreviewBatch(value: unknown): CreatePreviewBatch | null {
   if (!isRecord(value)) return null;
-  if (value.phase !== "running" && value.phase !== "failed" && value.phase !== "complete") {
+  if (value.phase !== "running" && value.phase !== "paused" && value.phase !== "failed" && value.phase !== "complete") {
     return null;
   }
   if (
@@ -355,7 +363,8 @@ export function parseCreatePreviewBatch(value: unknown): CreatePreviewBatch | nu
     value.failureReason === "generation_failed" ||
     value.failureReason === "request_failed" ||
     value.failureReason === "outcome_unknown" ||
-    value.failureReason === "timed_out"
+    value.failureReason === "timed_out" ||
+    value.failureReason === "user_paused"
       ? value.failureReason
       : null;
   if (activeJobStatus && !activePreviewJobId) return null;
@@ -373,9 +382,10 @@ export function parseCreatePreviewBatch(value: unknown): CreatePreviewBatch | nu
   ) {
     return null;
   }
-  if (value.phase === "failed" && !failureReason) return null;
+  if ((value.phase === "failed" || value.phase === "paused") && !failureReason) return null;
   return {
-    phase: value.phase,
+    // Migrate saved observation errors from the old failure-only UI.
+    phase: value.phase === "failed" && failureReason !== "generation_failed" ? "paused" : value.phase,
     currentCandidateNumber: value.currentCandidateNumber,
     activeRequestKey,
     activePreviewJobId,

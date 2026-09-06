@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { UserPersonaPanel } from "./UserPersonaPanel";
+import { RecoveryCodeCard } from "./AccountRecovery";
 import {
   isBlankImagePreview,
   isBuiltInMediaPlaceholderUrl,
@@ -147,8 +148,9 @@ export function createdCharacterPublicationStatus(input: {
 
 export function accountDeletionLoginHref(payload: unknown) {
   const value = payload as {
-    data?: { deletion?: { graceEndsAt?: unknown } };
+    data?: { deletion?: { graceEndsAt?: unknown }; receipt?: unknown };
   } | null;
+  if (typeof value?.data?.receipt === "string") return `/login#deletion=${encodeURIComponent(value.data.receipt)}`;
   const raw = value?.data?.deletion?.graceEndsAt;
   if (typeof raw !== "string" || !Number.isFinite(Date.parse(raw))) {
     return "/login";
@@ -295,6 +297,9 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
     initialAuthorityStatus,
   );
   const [deleteConfirm, setDeleteConfirm] = useState("");
+  const [securityPassword, setSecurityPassword] = useState("");
+  const [securityPending, setSecurityPending] = useState(false);
+  const [savedRecoveryCode, setSavedRecoveryCode] = useState<{ code: string; ownerId: string } | null>(null);
   const [deleteConfirmMediaId, setDeleteConfirmMediaId] = useState<string | null>(null);
   const [deleteConfirmCharacterId, setDeleteConfirmCharacterId] = useState<string | null>(null);
   const [status, setStatus] = useState("");
@@ -311,11 +316,19 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
   const libraryCursorTrailRef = useRef<Array<string | null>>([null]);
   const libraryQueryRef = useRef("");
   const profileRequestSerialRef = useRef(0);
+  const securityOwnerScopeRef = useRef("");
+  const securityRequestSerialRef = useRef(0);
   const libraryRequestSerialRef = useRef(0);
   const mediaCollectionsRequestSerialRef = useRef(0);
   const preferencesRequestSerialRef = useRef(0);
 
   const showAnonymousProfile = useCallback(() => {
+    securityOwnerScopeRef.current = "";
+    securityRequestSerialRef.current += 1;
+    setSecurityPassword("");
+    setDeleteConfirm("");
+    setSavedRecoveryCode(null);
+    setSecurityPending(false);
     libraryRequestSerialRef.current += 1;
     mediaCollectionsRequestSerialRef.current += 1;
     preferencesRequestSerialRef.current += 1;
@@ -383,7 +396,13 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
       setAuthState("authenticated");
       setDisplayName(nextName);
       setProfileName(nextName);
-      setProfileOwnerScope(`user:${user.id}`);
+      const ownerScope = `user:${user.id}`;
+      if (securityOwnerScopeRef.current !== ownerScope) {
+        securityRequestSerialRef.current += 1;
+        setSecurityPassword(""); setDeleteConfirm(""); setSavedRecoveryCode(null); setSecurityPending(false);
+        securityOwnerScopeRef.current = ownerScope;
+      }
+      setProfileOwnerScope(ownerScope);
       setBalance(profileData.balance);
       setSubscription(profileData.subscription);
       setBillingAccess(profileData.billingAccess);
@@ -559,6 +578,18 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
   }, [ageGateAccepted, refreshProfile]);
 
   useEffect(() => {
+    if (!ageGateAccepted) return;
+    const focus = () => void refreshProfile();
+    const blur = () => {
+      securityRequestSerialRef.current += 1;
+      setSecurityPassword(""); setDeleteConfirm(""); setSecurityPending(false);
+    };
+    window.addEventListener("focus", focus);
+    window.addEventListener("blur", blur);
+    return () => { window.removeEventListener("focus", focus); window.removeEventListener("blur", blur); };
+  }, [ageGateAccepted, refreshProfile]);
+
+  useEffect(() => {
     function syncAuthTarget() {
       setAuthTarget(
         authNextTargetFromPath(
@@ -730,21 +761,51 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
   }
 
   async function requestAccountDeletion() {
+    if (securityPending) return;
     if (deleteConfirm !== "DELETE") {
       setStatus("Type DELETE to confirm account deletion.");
       return;
     }
+    setSecurityPending(true);
+    const serial = ++securityRequestSerialRef.current;
+    let receipt: string | null = null;
     try {
-      const response = await fetch("/api/v1/account/delete-request", { method: "POST" });
+      const body = { password: securityPassword, confirmation: deleteConfirm, expectedUserId: profileOwnerScope.replace(/^user:/, "") };
+      const prepared = await fetch("/api/v1/account/deletion-receipt", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      const preparation = await prepared.json();
+      if (serial !== securityRequestSerialRef.current) return;
+      if (!prepared.ok || !preparation.ok) { setStatus(preparation.error?.message ?? "Password verification failed."); return; }
+      receipt = preparation.data.receipt;
+      const response = await fetch("/api/v1/account/delete-request", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
       const payload = await response.json().catch(() => null);
-      if (response.ok) {
-        window.location.href = accountDeletionLoginHref(payload);
+      if (serial !== securityRequestSerialRef.current) return;
+      if (response.ok || response.status >= 500) {
+        window.location.href = accountDeletionLoginHref({ data: { receipt: payload?.data?.receipt ?? receipt } });
         return;
       }
-      setStatus("Account deletion failed.");
+      setStatus(payload?.error?.message ?? "Account deletion failed. You can retry after correcting the error.");
     } catch {
-      setStatus("Network error. Please try again.");
+      if (serial !== securityRequestSerialRef.current) return;
+      if (receipt) { window.location.href = `/login#deletion=${encodeURIComponent(receipt)}`; return; }
+      setStatus("Password verification could not finish. Check your connection and try again.");
+    } finally {
+      if (serial === securityRequestSerialRef.current) { setSecurityPassword(""); setSecurityPending(false); }
     }
+  }
+
+  async function generateRecoveryCode() {
+    if (securityPending) return;
+    setSecurityPending(true); setSavedRecoveryCode(null);
+    const serial = ++securityRequestSerialRef.current;
+    try {
+      const response = await fetch("/api/v1/account/recovery-code", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: securityPassword, expectedUserId: profileOwnerScope.replace(/^user:/, "") }) });
+      const payload = await response.json();
+      if (serial !== securityRequestSerialRef.current) return;
+      if (!response.ok || !payload.ok) { setStatus(payload.error?.message ?? "Could not create a recovery code."); return; }
+      setSavedRecoveryCode({ code: payload.data.recoveryCode, ownerId: profileOwnerScope.replace(/^user:/, "") });
+      setStatus("New recovery code created. Save it now; the previous code no longer works.");
+    } catch { if (serial === securityRequestSerialRef.current) setStatus("The code could not be received. Generate a new code and save it; any previous code may have been replaced."); }
+    finally { if (serial === securityRequestSerialRef.current) { setSecurityPassword(""); setSecurityPending(false); } }
   }
 
   async function deleteMedia(id: string) {
@@ -1456,11 +1517,16 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
                 Sign out all sessions
               </button>
             </div>
+            <label className="mt-4 block text-sm font-bold">Current password<input className="mt-2 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 py-3 text-sm" aria-label="Current account password" autoComplete="current-password" type="password" value={securityPassword} onChange={(event) => setSecurityPassword(event.target.value)} /></label>
+            <p className="mt-2 text-sm leading-6 text-white/60">Confirm your password to replace a recovery code or delete your account.</p>
+            <button className="mt-3 rounded-full bg-[rgb(36,36,36)] px-4 py-3 text-sm font-bold disabled:opacity-40" type="button" disabled={securityPending || !securityPassword || !profileOwnerScope} onClick={generateRecoveryCode}>Generate new recovery code</button>
+            {savedRecoveryCode && savedRecoveryCode.ownerId === profileOwnerScope.replace(/^user:/, "") && <div className="mt-4"><RecoveryCodeCard key={savedRecoveryCode.code} code={savedRecoveryCode.code} ownerId={savedRecoveryCode.ownerId} /></div>}
             <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
               Delete account
               <span className="mt-1 block text-[11px] font-medium normal-case leading-5 text-[rgb(154,153,152)]">
-                Access ends immediately. Personal data is erased after the account-deletion grace period.
+                Access ends immediately and all sessions are signed out. Erasure begins after 30 days; this grace period does not provide self-service cancellation or restoration.
               </span>
+              <span className="mt-2 block text-[12px] font-medium normal-case leading-6 text-white/65">Chats, memories, private characters, drafts and owned media are erased. Your published characters, posts and collections are removed from this service as erasure completes; copies already downloaded by other people cannot be recalled. Remaining dreamcoins and paid access become unusable, and deletion does not request a refund. Minimal de-identified transaction records and legally required evidence may be retained; an active retention requirement may delay erasure. You receive a private status link that works after logout. Interrupted work retries automatically.</span>
               <div className="mt-2 flex gap-2">
                 <input
                   aria-label="Delete confirmation"
@@ -1471,7 +1537,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
                 />
                 <button
                   className="inline-flex h-10 items-center gap-2 rounded-full bg-[rgb(120,25,40)] px-4 text-[12px] font-black text-white disabled:opacity-40"
-                  disabled={deleteConfirm !== "DELETE"}
+                  disabled={deleteConfirm !== "DELETE" || !securityPassword || securityPending || !profileOwnerScope}
                   onClick={requestAccountDeletion}
                   type="button"
                 >

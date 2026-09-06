@@ -1,3 +1,4 @@
+import { completeSignupRecoveryCode } from "./signup-recovery";
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 
@@ -156,7 +157,7 @@ test("flow 1: age gate → explore grid → character detail", async ({ page }) 
     await page.getByRole("heading", { level: 1 }).textContent()
   )?.trim();
   expect(characterName).toBeTruthy();
-  await expect(page).toHaveTitle(`${characterName} | ourdream.ai`);
+  await expect(page).toHaveTitle(`${characterName} | iDream`);
   await expect(page.locator('link[rel="canonical"]')).toHaveAttribute(
     "href",
     page.url(),
@@ -363,8 +364,9 @@ test("flow 2: signup through the UI creates an authenticated session", async ({ 
     .filter({ visible: true })
     .fill("password123");
   await page.getByRole("button", { name: /join free/i }).click();
+  await completeSignupRecoveryCode(page);
 
-  // AuthWorkspace redirects to "/" on success.
+  // Saving the recovery code completes signup and returns to "/".
   await expect(page).toHaveURL(/\/$/);
 
   // The session cookie (shared with page.request) authenticates /me.
@@ -411,6 +413,7 @@ test("auth UI handles invalid login, duplicate signup recovery, logout, returnin
     .filter({ visible: true })
     .fill("password123");
   await page.getByRole("button", { name: "Join Free" }).click();
+  await completeSignupRecoveryCode(page);
   await expect(page).toHaveURL(/\/$/);
   await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
 
@@ -463,7 +466,7 @@ test("auth UI handles invalid login, duplicate signup recovery, logout, returnin
 
   await page.goto("/login?already=1");
   await expect(page).toHaveURL(/\/$/);
-  await expect(page.getByRole("heading", { name: "Log in to Ourdream" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Log in to iDream" })).toHaveCount(0);
 });
 
 test("flow 3: chat session persists through the real server", async ({ page }) => {

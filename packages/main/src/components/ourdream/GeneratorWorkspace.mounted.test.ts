@@ -16,6 +16,7 @@ vi.mock("next/image", () => ({
 vi.mock("./AgeGateBoundary", () => ({ useAgeGateAccess: () => ({ accepted: true }) }));
 
 import { GeneratorWorkspace } from "./GeneratorWorkspace";
+import { saveCurrentGenerationJob } from "@/lib/generation-current-job";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -63,6 +64,7 @@ describe("GeneratorWorkspace media journeys", () => {
   let requests: string[];
 
   beforeEach(() => {
+    window.sessionStorage.clear();
     // Keep browser storage isolated from Node's optional file-backed storage.
     const stored = new Map<string, string>();
     vi.stubGlobal("localStorage", {
@@ -102,6 +104,8 @@ describe("GeneratorWorkspace media journeys", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    vi.useRealTimers();
+    window.sessionStorage.clear();
     vi.unstubAllGlobals();
   });
 
@@ -129,6 +133,45 @@ describe("GeneratorWorkspace media journeys", () => {
     await settle();
     expect(container.textContent).toContain("100 coins");
   }
+
+  it("keeps the restored video active when an unrelated candidate completes, then delivers that video", async () => {
+    saveCurrentGenerationJob(window.sessionStorage, config.viewer.scope, "my-video");
+    const originalFetch = globalThis.fetch;
+    let videoCompleted = false;
+    const job = (id: string, status: string) => ({ id, status, mode: id === "my-video" ? "video" : "image",
+      errorCode: null, costDreamcoins: 5, outputCount: 1, createdAt: new Date().toISOString() });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.startsWith("/api/v1/generation/jobs?")) return Response.json({ ok: true, data: {
+        items: [job("other-candidate", "queued"), job("my-video", "running")],
+      } });
+      if (path === "/api/v1/generation/jobs/other-candidate") return Response.json({ ok: true, data: {
+        job: job("other-candidate", "completed"), assets: [mediaItem("other-candidate-result")],
+      } });
+      if (path === "/api/v1/generation/jobs/my-video") return Response.json({ ok: true, data: {
+        job: job("my-video", videoCompleted ? "completed" : "running"),
+        assets: videoCompleted ? [mediaItem("my-video-result", "video")] : [],
+      } });
+      return originalFetch(input, init);
+    }));
+    vi.useFakeTimers();
+    await act(async () => root.render(createElement(GeneratorWorkspace)));
+    await act(async () => vi.advanceTimersByTimeAsync(100));
+    await act(async () => button("Videos").click());
+    await act(async () => vi.advanceTimersByTimeAsync(100));
+    expect(container.querySelector('[data-media-id="video-1"]')).not.toBeNull();
+    await act(async () => vi.advanceTimersByTimeAsync(2_000));
+    expect(container.querySelector('[data-media-id="video-1"]')).not.toBeNull();
+    expect(container.querySelector('[data-media-id="image-1"]')).toBeNull();
+    expect(container.querySelector('[data-generation-job-id="other-candidate"]')?.textContent).toContain("completed");
+    expect(container.textContent).not.toContain("Generation complete.");
+    expect(container.querySelector('video source[src="/user-content/my-video-result.mp4"]')).toBeNull();
+    videoCompleted = true;
+    await act(async () => vi.advanceTimersByTimeAsync(2_000));
+    expect(container.textContent).toContain("Generation complete.");
+    expect(container.querySelector('video source[src="/user-content/my-video-result.mp4"]')).not.toBeNull();
+    expect(container.querySelector('img[src="/user-content/other-candidate-result.png"]')).toBeNull();
+  });
 
   it("keeps actionable jobs visible and lets completed history expand without displacing the Gallery", async () => {
     const originalFetch = globalThis.fetch;
