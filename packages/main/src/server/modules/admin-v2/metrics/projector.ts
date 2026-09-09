@@ -860,16 +860,15 @@ export async function requeueQuarantinedMetricEvent(
 }
 
 export async function loadCanonicalMetricDataset(
-  db: PrismaClient,
+  db: PrismaClient | Prisma.TransactionClient,
   options: { readonly userIds?: readonly string[] } = {},
 ): Promise<CanonicalMetricDataset> {
   const userWhere = options.userIds ? { userId: { in: [...options.userIds] } } : {};
-  const [signups, exchanges, deliveries, subscriptions] = await Promise.all([
-    db.customerSignupFact.findMany({ where: userWhere, orderBy: { occurredAt: "asc" } }),
-    db.chatExchangeFact.findMany({ where: userWhere, orderBy: { occurredAt: "asc" } }),
-    db.generationFulfillmentFact.findMany({ where: userWhere, orderBy: { occurredAt: "asc" } }),
-    db.subscriptionLifecycleFact.findMany({ where: userWhere, orderBy: { activeAt: "asc" } }),
-  ]);
+  // Callers may supply one transaction-bound pg client for a consistent view.
+  const signups = await db.customerSignupFact.findMany({ where: userWhere, orderBy: { occurredAt: "asc" } });
+  const exchanges = await db.chatExchangeFact.findMany({ where: userWhere, orderBy: { occurredAt: "asc" } });
+  const deliveries = await db.generationFulfillmentFact.findMany({ where: userWhere, orderBy: { occurredAt: "asc" } });
+  const subscriptions = await db.subscriptionLifecycleFact.findMany({ where: userWhere, orderBy: { activeAt: "asc" } });
   return {
     signups: signups.map((row) => ({ userId: row.userId, occurredAt: row.occurredAt, eligible: row.eligible })),
     chatExchanges: exchanges.map((row) => ({
@@ -923,7 +922,7 @@ function percentile95(values: readonly number[]): number | null {
 }
 
 export async function reconcileCanonicalMetricFacts(
-  db: PrismaClient,
+  db: PrismaClient | Prisma.TransactionClient,
   options: { readonly sourceEventPrefix?: string; readonly windowStart?: Date; readonly asOf?: Date } = {},
 ): Promise<MetricReconciliationReport> {
   const sourceWhere = options.sourceEventPrefix ? { sourceEventId: { startsWith: options.sourceEventPrefix } } : {};
@@ -934,17 +933,15 @@ export async function reconcileCanonicalMetricFacts(
       ...(options.asOf ? { lte: options.asOf } : {}),
     },
   };
-  const [receipts, signups, exchanges, deliveries, subscriptions] = await Promise.all([
-    db.metricProjectionReceipt.findMany({ where: receiptWhere }),
-    db.customerSignupFact.findMany({ where: sourceWhere }),
-    db.chatExchangeFact.findMany({ where: sourceWhere }),
-    db.generationFulfillmentFact.findMany({ where: sourceWhere }),
-    db.subscriptionLifecycleFact.findMany({
-      where: options.sourceEventPrefix
-        ? { activatedSourceEventId: { startsWith: options.sourceEventPrefix } }
-        : {},
-    }),
-  ]);
+  const receipts = await db.metricProjectionReceipt.findMany({ where: receiptWhere });
+  const signups = await db.customerSignupFact.findMany({ where: sourceWhere });
+  const exchanges = await db.chatExchangeFact.findMany({ where: sourceWhere });
+  const deliveries = await db.generationFulfillmentFact.findMany({ where: sourceWhere });
+  const subscriptions = await db.subscriptionLifecycleFact.findMany({
+    where: options.sourceEventPrefix
+      ? { activatedSourceEventId: { startsWith: options.sourceEventPrefix } }
+      : {},
+  });
   const facts = [...signups, ...exchanges, ...deliveries, ...subscriptions];
   const incompleteOutcomeCount = receipts.filter((row) =>
     row.outcome === "quarantined" && isServerOutcomeEventType(row.eventType),
@@ -959,12 +956,10 @@ export async function reconcileCanonicalMetricFacts(
     ...exchanges.flatMap((row) => row.characterReleaseId ? [row.characterReleaseId] : []),
     ...deliveries.flatMap((row) => row.characterReleaseId ? [row.characterReleaseId] : []),
   ])];
-  const [joinedUsers, joinedCharacters, joinedContentVersions, joinedReleases] = await Promise.all([
-    db.user.count({ where: { id: { in: userIds } } }),
-    db.character.count({ where: { id: { in: characterIds } } }),
-    db.characterContentVersion.count({ where: { id: { in: contentVersionIds } } }),
-    db.characterRelease.count({ where: { id: { in: releaseIds } } }),
-  ]);
+  const joinedUsers = await db.user.count({ where: { id: { in: userIds } } });
+  const joinedCharacters = await db.character.count({ where: { id: { in: characterIds } } });
+  const joinedContentVersions = await db.characterContentVersion.count({ where: { id: { in: contentVersionIds } } });
+  const joinedReleases = await db.characterRelease.count({ where: { id: { in: releaseIds } } });
   const userJoinCoverage = coverage(joinedUsers, userIds.length);
   const characterJoinCoverage = coverage(joinedCharacters, characterIds.length);
   const contentVersionJoinCoverage = coverage(joinedContentVersions, contentVersionIds.length);

@@ -1,0 +1,143 @@
+{
+  "recordedAt": "2026-09-06T10:40:26.668Z",
+  "head": "cbf0499728be84a19d8b9b9ca13b679ce16babe4",
+  "worktreeRevision": "idream-worktree-9b56f5dacf380f3bfb5f801e40c7ff035d735c222a2d77e66e04b9560160ef07",
+  "scope": "development read-only basic health, not full provider certification",
+  "processes": [
+    {
+      "name": "comfyui-video",
+      "pid": 91529,
+      "status": "online",
+      "restarts": 12,
+      "exec": "/Users/kk/code/idream/scripts/start-comfyui-idream.cjs",
+      "sourceRevision": null
+    },
+    {
+      "name": "comfyui-image",
+      "pid": 91540,
+      "status": "online",
+      "restarts": 8,
+      "exec": "/Users/kk/code/idream/scripts/start-comfyui-idream.cjs",
+      "sourceRevision": null
+    },
+    {
+      "name": "comfyui-video-h3",
+      "pid": 91583,
+      "status": "online",
+      "restarts": 8,
+      "exec": "/Users/kk/code/idream/scripts/start-comfyui-idream.cjs",
+      "sourceRevision": null
+    },
+    {
+      "name": "fish-audio",
+      "pid": 96143,
+      "status": "online",
+      "restarts": 0,
+      "exec": "/Users/kk/code/idream/scripts/start-fish-audio.cjs",
+      "sourceRevision": "idream-worktree-d270bfac8c47ca38183d5869820c2f619e7bc1cf0213940a4ed91806c06c3552"
+    },
+    {
+      "name": "pocket-tts",
+      "pid": 96142,
+      "status": "online",
+      "restarts": 0,
+      "exec": "/Users/kk/code/idream/scripts/start-pocket-tts.cjs",
+      "sourceRevision": "idream-worktree-d270bfac8c47ca38183d5869820c2f619e7bc1cf0213940a4ed91806c06c3552"
+    },
+    {
+      "name": "main-web",
+      "pid": 96144,
+      "status": "online",
+      "restarts": 0,
+      "exec": "/Users/kk/code/idream/packages/main/scripts/start-development.cjs",
+      "sourceRevision": "idream-worktree-d270bfac8c47ca38183d5869820c2f619e7bc1cf0213940a4ed91806c06c3552"
+    },
+    {
+      "name": "admin-web",
+      "pid": 96145,
+      "status": "online",
+      "restarts": 0,
+      "exec": "/Users/kk/code/idream/packages/admin/scripts/start-development.cjs",
+      "sourceRevision": "idream-worktree-d270bfac8c47ca38183d5869820c2f619e7bc1cf0213940a4ed91806c06c3552"
+    },
+    {
+      "name": "chat",
+      "pid": 37635,
+      "status": "online",
+      "restarts": 1,
+      "exec": "/Users/kk/code/idream/packages/chat/src/main.ts",
+      "sourceRevision": "idream-worktree-d270bfac8c47ca38183d5869820c2f619e7bc1cf0213940a4ed91806c06c3552"
+    },
+    {
+      "name": "gen-image",
+      "pid": 37633,
+      "status": "online",
+      "restarts": 1,
+      "exec": "/Users/kk/code/idream/packages/gen/src/image.ts",
+      "sourceRevision": "idream-worktree-d270bfac8c47ca38183d5869820c2f619e7bc1cf0213940a4ed91806c06c3552"
+    },
+    {
+      "name": "gen-video",
+      "pid": 96148,
+      "status": "online",
+      "restarts": 0,
+      "exec": "/Users/kk/code/idream/packages/gen/src/video.ts",
+      "sourceRevision": "idream-worktree-d270bfac8c47ca38183d5869820c2f619e7bc1cf0213940a4ed91806c06c3552"
+    },
+    {
+      "name": "gen-finalizer",
+      "pid": 45361,
+      "status": "online",
+      "restarts": 14,
+      "exec": "/Users/kk/code/idream/packages/main/src/processes/finalizer.ts",
+      "sourceRevision": "idream-worktree-d270bfac8c47ca38183d5869820c2f619e7bc1cf0213940a4ed91806c06c3552"
+    },
+    {
+      "name": "main-event-consumer",
+      "pid": 45355,
+      "status": "online",
+      "restarts": 14,
+      "exec": "/Users/kk/code/idream/packages/main/src/processes/event-consumer.ts",
+      "sourceRevision": "idream-worktree-d270bfac8c47ca38183d5869820c2f619e7bc1cf0213940a4ed91806c06c3552"
+    },
+    {
+      "name": "admin-command-worker",
+      "pid": 45360,
+      "status": "online",
+      "restarts": 14,
+      "exec": "/Users/kk/code/idream/packages/main/src/processes/admin-command-worker.ts",
+      "sourceRevision": "idream-worktree-d270bfac8c47ca38183d5869820c2f619e7bc1cf0213940a4ed91806c06c3552"
+    }
+  ],
+  "http": [
+    {
+      "service": "main",
+      "status": 200,
+      "ms": 241,
+      "title": "iDream | AI Characters, Chat &amp; Image Generation"
+    },
+    {
+      "service": "admin",
+      "status": 200,
+      "ms": 227,
+      "title": "Admin | iDream Admin"
+    },
+    {
+      "service": "chat",
+      "status": 200,
+      "ms": 151,
+      "readiness": {
+        "ok": true,
+        "service": "chat",
+        "accepting": true,
+        "warmed": true,
+        "fileStore": true,
+        "redis": true,
+        "agentRuntime": true,
+        "reason": null,
+        "fresh": true,
+        "observedAt": "2026-09-06T10:40:26.590Z"
+      }
+    }
+  ]
+}

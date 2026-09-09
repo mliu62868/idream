@@ -277,7 +277,7 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
 
   return (
     <div aria-busy={loading}>
-      <PageHeader purpose={t("Upload, organize, and stage operational image assets.")} title={t("Library")} />
+      <PageHeader purpose={t("Upload, organize, and stage operational image assets.")} title={t("Operational Assets")} />
       {canReview ? (
         <section
           aria-label={t("Upload operational images")}

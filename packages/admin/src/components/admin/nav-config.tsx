@@ -18,6 +18,7 @@ import {
   Play,
   ScrollText,
   Server,
+  Settings,
   ShieldAlert,
   UserRound,
   SlidersHorizontal,
@@ -86,10 +87,11 @@ import {
 
 export const ADMIN_WORKSPACES = [
   "Today",
-  "Character Studio",
-  "Operational Assets",
-  "Customer Operations",
-  "Growth",
+  "Characters",
+  "Content Operations",
+  "Customers & Support",
+  "Revenue & Marketing",
+  "Analytics",
   "Platform Operations",
   "System",
 ] as const;
@@ -184,18 +186,18 @@ export const navItems: NavItem[] = [
   apiItem({ id: "dashboard", label: "Today", href: "/admin/today", icon: Gauge, group: "Today", apiWorkspace: "today", navigation: "primary",
     render: (ctx) => <TodayWorkspace workMode={ctx.workMode} /> }),
 
-  apiItem({ id: "content/official", label: "Characters", href: "/admin/characters", icon: UserRound, group: "Character Studio", apiWorkspace: "character_workspace", chrome: "compact", navigation: "primary",
+  apiItem({ id: "content/official", label: "Characters", href: "/admin/characters", icon: UserRound, group: "Characters", apiWorkspace: "character_workspace", chrome: "compact",
     render: (ctx) => <CharacterWorkspace actorId={ctx.actorId} permissions={ctx.permissions} view={ctx.view} /> }),
-  item({ id: "content/templates", label: "Character Starters", href: "/admin/characters/starters", icon: Sparkles, group: "Character Studio", read: read("content.read"), navigation: "tool",
+  item({ id: "content/templates", label: "Character Starters", href: "/admin/characters/starters", icon: Sparkles, group: "Characters", read: read("content.read"),
     render: (ctx) => <StartersSection view={ctx.view} /> }),
-  item({ id: "content/tags", label: "Taxonomy", href: "/admin/characters/taxonomy", icon: Flag, group: "Character Studio", read: read("content.read"), navigation: "tool",
+  item({ id: "content/tags", label: "Taxonomy", href: "/admin/characters/taxonomy", icon: Flag, group: "Characters", read: read("content.read"),
     render: () => <TagsView /> }),
 
-  item({ id: "content/assets", label: "Library", href: "/admin/creative/library", icon: ImageIcon, group: "Operational Assets", read: read("creative.asset.read"),
+  item({ id: "content/assets", label: "Operational Assets", href: "/admin/creative/library", icon: ImageIcon, group: "Content Operations", read: read("creative.asset.read"),
     render: (ctx) => <AssetsSection canReview={ctx.permissions.has("content.asset.review")} view={ctx.view} /> }),
-  item({ id: "content/placements", label: "Placements", href: "/admin/creative/placements", icon: Bookmark, group: "Operational Assets", read: read("creative.placement.read"),
+  item({ id: "content/placements", label: "Placements", href: "/admin/creative/placements", icon: Bookmark, group: "Content Operations", read: read("creative.placement.read"),
     render: (ctx) => <PlacementsSection canPublish={ctx.permissions.has("creative.placement.publish")} view={ctx.view} /> }),
-  apiItem({ id: "content/production", label: "Generation History", href: "/admin/creative/runs", icon: Play, group: "Operational Assets", apiWorkspace: "creative_runs", navigation: "tool",
+  apiItem({ id: "content/production", label: "Generation History", href: "/admin/creative/runs", icon: Play, group: "Content Operations", apiWorkspace: "creative_runs", navigation: "tool",
     render: (ctx) => <CreativeRunWorkspace actorId={ctx.actorId} permissions={{
       read: ctx.canRead,
       write: ctx.permissions.has("creative.run.write"),
@@ -204,42 +206,42 @@ export const navItems: NavItem[] = [
       manageIncident: ctx.permissions.has("ops.incident.manage"),
     }} view={ctx.view} /> }),
 
-  apiItem({ id: "cases", label: "Cases", href: "/admin/cases?view=mine", icon: Ticket, group: "Customer Operations", apiWorkspace: "cases",
+  apiItem({ id: "cases", label: "Cases", href: "/admin/cases?view=mine", icon: Ticket, group: "Customers & Support", apiWorkspace: "cases",
     render: (ctx) => <CaseWorkspace
       canAssign={ctx.permissions.has("case.assign")}
       canDecide={ctx.permissions.has("case.decide")}
       initialCaseId={detailId(ctx.view)}
       key={detailId(ctx.view) ?? "case-list"}
     /> }),
-  apiItem({ id: "users", label: "Customers", href: "/admin/customers", icon: Users, group: "Customer Operations", apiWorkspace: "customers",
+  apiItem({ id: "users", label: "Customers", href: "/admin/customers", icon: Users, group: "Customers & Support", apiWorkspace: "customers",
     render: (ctx) => <CustomerWorkspace initialCustomerId={detailId(ctx.view)} /> }),
-  item({ id: "billing", label: "Billing Operations", href: "/admin/customer-ops/billing", icon: BadgeDollarSign, group: "Customer Operations", read: read("billing.read"),
+  item({ id: "billing", label: "Orders & Billing", href: "/admin/customer-ops/billing", icon: BadgeDollarSign, group: "Revenue & Marketing", read: read("billing.read"),
     render: (ctx) => <BillingWorkspace
       canAdjust={ctx.permissions.has("billing.ledger.adjust")}
       canReconcile={ctx.permissions.has("billing.checkout.reconcile")}
       canRefund={ctx.permissions.has("billing.subscription.refund")}
     /> }),
-  item({ id: "compliance", label: "Account Requests", href: "/admin/customer-ops/account-requests", icon: ShieldAlert, group: "Customer Operations", read: read("compliance.read"), navigation: "tool",
+  item({ id: "compliance", label: "Account Requests", href: "/admin/customer-ops/account-requests", icon: ShieldAlert, group: "Customers & Support", read: read("compliance.read"),
     render: () => <ComplianceView /> }),
 
-  apiItem({ id: "analytics", label: "Product Health", href: "/admin/growth/health", icon: BarChart3, group: "Growth", apiWorkspace: "metrics",
+  apiItem({ id: "analytics", label: "Product Health", href: "/admin/growth/health", icon: BarChart3, group: "Analytics", apiWorkspace: "metrics",
     render: (ctx) => <AnalyticsWorkspace
       canReadCanonical={ctx.canRead}
       canReadLegacy={ctx.permissions.has("analytics.export")}
     /> }),
-  apiTargetItem({ id: "growth/characters", label: "Character Performance", href: "/admin/growth/characters", icon: Activity, group: "Growth", apiWorkspace: "character_performance",
+  apiTargetItem({ id: "growth/characters", label: "Character Performance", href: "/admin/growth/characters", icon: Activity, group: "Analytics", apiWorkspace: "character_performance",
     render: (ctx) => <CharacterPerformanceWorkspace permissions={ctx.permissions} /> }),
-  apiItem({ id: "experiments", label: "Experiments", href: "/admin/growth/experiments", icon: Flag, group: "Growth", apiWorkspace: "experiments",
+  apiItem({ id: "experiments", label: "Experiments", href: "/admin/growth/experiments", icon: Flag, group: "Analytics", apiWorkspace: "experiments",
     render: () => <ExperimentsView /> }),
-  item({ id: "content", label: "Featured Merchandising", href: "/admin/growth/merchandising?view=featured", icon: Library, group: "Growth", read: read("content.read"),
+  item({ id: "content", label: "Featured Merchandising", href: "/admin/growth/merchandising?view=featured", icon: Library, group: "Content Operations", read: read("content.read"),
     render: (ctx) => <ContentMerchandisingWorkspace canWrite={ctx.permissions.has("content.takedown.write")} /> }),
-  item({ id: "announcements", label: "Announcements", href: "/admin/growth/merchandising?view=announcements", icon: MessageSquare, group: "Growth", read: read("growth.promo.read"), navigation: "tool",
+  item({ id: "announcements", label: "Announcements", href: "/admin/growth/merchandising?view=announcements", icon: MessageSquare, group: "Content Operations", read: read("growth.promo.read"),
     render: () => <AnnouncementsView /> }),
-  item({ id: "cms", label: "CMS & SEO", href: "/admin/growth/content", icon: FileText, group: "Growth", read: read("content.read"),
+  item({ id: "cms", label: "Site Content & SEO", href: "/admin/growth/content", icon: FileText, group: "Content Operations", read: read("content.read"),
     render: (ctx) => <CmsView canWrite={ctx.permissions.has("content.cms.write")} /> }),
-  item({ id: "pricing", label: "Pricing", href: "/admin/growth/offers?view=pricing", icon: Coins, group: "Growth", read: read("billing.read"),
+  item({ id: "pricing", label: "Pricing", href: "/admin/growth/offers?view=pricing", icon: Coins, group: "Revenue & Marketing", read: read("billing.read"),
     render: (ctx) => <PricingWorkspace canWrite={ctx.permissions.has("config.pricing.write")} /> }),
-  item({ id: "promo", label: "Promotions", href: "/admin/growth/offers?view=promo", icon: Ticket, group: "Growth", read: read("growth.promo.read"), navigation: "tool",
+  item({ id: "promo", label: "Promotions", href: "/admin/growth/offers?view=promo", icon: Ticket, group: "Revenue & Marketing", read: read("growth.promo.read"),
     render: (ctx) => <PromoWorkspace canWrite={ctx.permissions.has("growth.promo.write")} /> }),
 
   apiItem({ id: "ops/incidents", label: "Incidents", href: "/admin/ops/incidents", icon: ShieldAlert, group: "Platform Operations", apiWorkspace: "incidents",
@@ -327,14 +329,27 @@ export const navItems: NavItem[] = [
     render: () => <AuditWorkspace /> }),
 ];
 
+// 分组身份不依赖首个可读页面；权限变化不能改变图标或偷偷改变点击目的地。
+export const WORKSPACE_ICONS: Record<AdminWorkspace, LucideIcon> = {
+  Today: Gauge,
+  Characters: UserRound,
+  "Content Operations": ImageIcon,
+  "Customers & Support": Users,
+  "Revenue & Marketing": Coins,
+  Analytics: BarChart3,
+  "Platform Operations": Server,
+  System: Settings,
+};
+
+// 默认按业务任务排序。专业工作模式只将相关任务提前，永远不改变授权集合。
 const MODE_GROUP_ORDER: Record<WorkMode, readonly AdminWorkspace[]> = {
-  character_producer: ["Today", "Character Studio", "Operational Assets", "Growth", "Platform Operations", "Customer Operations", "System"],
-  creative_operator: ["Today", "Operational Assets", "Character Studio", "Platform Operations", "Growth", "Customer Operations", "System"],
-  platform_ops: ["Today", "Platform Operations", "Customer Operations", "System", "Operational Assets", "Character Studio", "Growth"],
-  support: ["Today", "Customer Operations", "Platform Operations", "System", "Character Studio", "Operational Assets", "Growth"],
-  moderator: ["Today", "Customer Operations", "Character Studio", "System", "Platform Operations", "Operational Assets", "Growth"],
-  growth_analyst: ["Today", "Growth", "Character Studio", "Operational Assets", "Customer Operations", "Platform Operations", "System"],
-  admin: ["Today", "System", "Platform Operations", "Character Studio", "Operational Assets", "Customer Operations", "Growth"],
+  admin: ADMIN_WORKSPACES,
+  character_producer: ADMIN_WORKSPACES,
+  creative_operator: ["Today", "Content Operations", "Characters", "Customers & Support", "Revenue & Marketing", "Analytics", "Platform Operations", "System"],
+  platform_ops: ["Today", "Platform Operations", "Characters", "Content Operations", "Customers & Support", "Revenue & Marketing", "Analytics", "System"],
+  support: ["Today", "Customers & Support", "Revenue & Marketing", "Characters", "Content Operations", "Analytics", "Platform Operations", "System"],
+  moderator: ["Today", "Customers & Support", "Characters", "Content Operations", "Revenue & Marketing", "Analytics", "Platform Operations", "System"],
+  growth_analyst: ["Today", "Analytics", "Characters", "Content Operations", "Revenue & Marketing", "Customers & Support", "Platform Operations", "System"],
 };
 
 export function defaultWorkModeForRole(role: string | undefined): WorkMode {
@@ -375,7 +390,7 @@ export function navGroupsForPermissions(
 ) {
   // SPEC: 工作模式只排序分组，不能成为权限之外的第二套功能可见性门槛。
   // INVARIANT: 包括兼容工具在内，每个满足 read.allOf 的目的地都进入所属工作区；
-  //            shell 再决定常驻入口、工作区入口与区内切换，不靠搜索或记 URL 补洞。
+  //            shell 再展示分组、常规页面与低频工具，不靠搜索或记 URL 补洞。
   return MODE_GROUP_ORDER[mode]
     .map((group) => ({
       group,
@@ -392,14 +407,14 @@ export function navGroupsForPermissions(
 // a necessary compatibility tool must be discoverable without pretending it is a new workspace.
 // Production traffic telemetry decides their eventual sunset.
 const COMPATIBILITY_ITEMS: NavItem[] = [
-  item({ id: "moderation", label: "Moderation Cases", href: "/admin/moderation", icon: ShieldAlert, group: "Customer Operations", read: read("safety.review.read"), navigation: "tool",
+  item({ id: "moderation", label: "Moderation Cases", href: "/admin/moderation", icon: ShieldAlert, group: "Customers & Support", read: read("safety.review.read"), navigation: "tool",
     render: (ctx) => <ModerationWorkspace canDecide={ctx.permissions.has("safety.review.write")} /> }),
-  item({ id: "support", label: "Support Cases", href: "/admin/support", icon: Ticket, group: "Customer Operations", read: read("support.request.read"), navigation: "tool",
+  item({ id: "support", label: "Support Cases", href: "/admin/support", icon: Ticket, group: "Customers & Support", read: read("support.request.read"), navigation: "tool",
     render: (ctx) => <SupportWorkspace
       canViewPlaintext={ctx.permissions.has("support.plaintext.view")}
       canWrite={ctx.permissions.has("support.request.write")}
     /> }),
-  item({ id: "risk", label: "Risk Cases", href: "/admin/risk", icon: ShieldAlert, group: "Customer Operations", read: read("billing.read"), navigation: "tool",
+  item({ id: "risk", label: "Risk Cases", href: "/admin/risk", icon: ShieldAlert, group: "Customers & Support", read: read("billing.read"), navigation: "tool",
     render: (ctx) => <RiskWorkspace canRead={ctx.permissions.has("billing.read")} /> }),
 ];
 

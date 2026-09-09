@@ -12,6 +12,7 @@ import type { ChatExecutionSnapshot } from "@idream/shared/contracts";
 import { buildContext, type BuiltContext } from "./context.js";
 import { buildCompanionSystemPrompt, buildTurnStateBlock } from "./prompt.js";
 import { registryChatTools } from "./agent-tools.js";
+import { estimateModelRequestInputTokens, formatModelRequestInput } from "./agent-runtime/model-request-format.js";
 import {
   preparedTurnSchema,
   type PreparedTurnInput,
@@ -178,9 +179,15 @@ export function fitPreparedTurnBudget(
   ].join("\n");
   const calculate = () => {
     const messages = buildPreparedMessages(fitted, currentUserMessageId, turnState);
-    const usedInputTokens = estimateTokens(
-      `${messages.map((message) => message.content).join("\n")}\n${JSON.stringify(tools)}`,
-    );
+    const input = { messages, tools, requiredTool: Boolean(requiredAction) };
+    const nativeTokens = estimateModelRequestInputTokens(formatModelRequestInput(input));
+    // A provider may require the JSON compatibility retry. Fit both complete
+    // wire formats now, before accepting history into the immutable snapshot.
+    const usedInputTokens = requiredAction
+      ? Math.max(nativeTokens, estimateModelRequestInputTokens(formatModelRequestInput({
+          ...input, jsonCompatibilityMode: true,
+        })))
+      : nativeTokens;
     return { messages, usedInputTokens };
   };
 
@@ -216,10 +223,6 @@ export function fitPreparedTurnBudget(
       dropped: [...dropped],
     },
   };
-}
-
-function estimateTokens(text: string): number {
-  return Math.max(1, Math.ceil(text.length / 4));
 }
 
 function sha256(value: string): string {

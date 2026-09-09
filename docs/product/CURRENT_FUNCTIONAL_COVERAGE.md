@@ -1,10 +1,48 @@
 # iDream 当前功能覆盖审计
 
-更新日期：2026-09-05
+更新日期：2026-09-07
 
 ## 结论
 
-Companion Agent 的共同产品人格、角色 Soul 与逐轮事实已经成为三类独立权威；截图中的“动作已执行、角色却口头拒绝”路径已在源码、终态证据和真实图片交付中闭合。iDream 的目标定位是全面对标 OurDream.ai 的 18+ AI 角色扮演 / AI 伴侣平台；身份、记忆和行动连续性是 Chat 质量能力，不是缩减 Create、Generate、My AI、Feed/Community 或公开内容范围的总定位。历史消息不改写，当前证据只证明本地受控运行，不代表公开生产发布签发。
+iDream 的核心用户与运营链已有受控运行证据，当前集中实施五角色体验、默认生成性能与可信运营指标。完整目标仍是对标 OurDream.ai 的 18+ AI 角色扮演 / 伴侣平台，覆盖 Create、Chat、Generate、My AI、Feed/Community、商业化及内容运营。下文按日期记录实现与证据；历史报告不自动验收新源码，本地 development 不代表公开生产发布。
+
+## 2026-09-08 UTC Main 记忆来源保护
+
+已在原有候选 prepare 内加入 Main 原文完整性校验：检查官方 dialogue 的集合、顺序、角色、完整正文和来源时间，拒绝维护改变原文或用撤回注释覆盖仍有效来源。坏候选整体丢弃后只调用官方 fresh ingest 一次；记录来源可用但派生被拒绝，不伪造 maintain 成功。Main fence、原子 promote 和真实编辑/删除契约保持。执行策略版本8，外层预算包含最多两次 ingest。详细边界和逐项验证见 [本轮报告](../product-audits/2026-09-08-core-authority.md)。`eb659d7…` 完成651项相关测试、根目录check、完整readiness、正式签名探针与三轮 Main 记忆流程；8个核心服务同源。纠正删除后，独立索引与实际回复均回到剩余的蓝色窗台事实，但模型把完整标签多写一个字母，精确表达质量未通过。390px刷新/滚动核对与清理对账完成；4个本轮会话移除、3条日额度事实保留、账本不变，过期的任务外登录记录保留。
+
+这不是上游 profile 语义或 Forget 授权修复。五组固定真实模型诊断也表明，仅增加共享提示没有充分改善事实遵从：蜡烛动作改善，雨夜及用户选择仍出错，因此已撤回候选，保持 `companion-product-1`。没有用新提示覆盖旧失败，也没有重新标记旧图片为本轮成果。
+
+## 2026-09-07 图文连续性与记忆撤回诊断
+
+已复现并修复强制图片工具适配器丢弃历史与召回的问题：保留带来源和说话人标记的引用证据，当前请求仍是唯一动作，原生与 JSON 兼容两路一致。`fe322…` 完成正式两轮对话与新图，42项检查、唯一8审计币扣费、原键重播、390px刷新加载及清理对账通过；雨天、笔记本在窗台且位于白杯左侧得到保留，夜色仍更像黄昏，未签发整体质量通过。随后独立复查发现引用封装未计入长会话预算，已将准备与适配器请求格式统一，沿既有最旧完整对话规则裁剪，固定或后加内容超限仍明确拒绝；执行策略升级为7。预算增量及媒体分别绑定实际验证版本，详见[本轮报告](../product-audits/2026-09-07-core-quality.md)。
+
+igrep 0.1.137 的隔离故障注入已确定性证明：正常用户输入下，错误模型 Forget 提议可产生 4 条撤回注释并删除已有 profile，官方 maintain/doctor 仍报成功。6 次请求全部访问本机假模型，没有真实模型消费或业务记忆修改。当前安装包和核对的 0.1.139 wheel 未提供可靠的用户授权边界；上游修复仍待可维护源码或已修复版本，未用过滤撤回标记或另写记忆算法掩盖问题。追踪见 `.scratch/core-quality-20260907/issues/01-igrep-retraction-authority.md`。
+
+最终预算候选`e63c…`的224项Chat测试、根目录check、完整readiness及新的签名Main产品探针通过；8个核心服务同源。`fe322…`图片与浏览器证据保持原版本，13组实际适配器正文对照相同，不把图片改标为后续源码验收。最终对账16项通过，本轮5个精确会话与临时鉴权均已清理，余额0；永久用量、生成产物和账本保留。
+
+评阅更正：水彩 Mira 的“雨天书店”可能指画作题材，不能直接判定人物从书店迁移到画室。摄影师雨天上下文在工具步骤被丢弃有独立可复现证据；文本精确事实、动作归属与严格局部改图的质量问题仍待解决。
+
+## 2026-09-06 核心体验与运营实施
+
+本批保留并整合已有 Admin 导航、Today、声音权威与确认行为改动。新增三条可执行能力：
+
+| 目标 | 当前实现 | 验收边界 |
+| --- | --- | --- |
+| 五角色完整体验 | 固定航海、摄影、社交、园艺、水彩五个成年角色的内容、Release/私有版本、视觉引用和声音；正式 API 检查跨会话事实、原键重放、图片/编辑、声音和历史。支持原键恢复及仅本次会话清理。 | 工具本身的回归通过不等同于真实模型质量；实际报告分别保存自动事实、主观审阅和 source。当前样板均为 realistic，英文即时跨会话不代表 anime、中文或 D7。 |
+| 默认生成性能 | ComfyUI 参考图片按内容哈希命名，修复跨请求引用变化导致缓存失效及同请求不同引用覆盖风险。Gen 在已有 terminal accounting 记录 lease 等待、准备、提交、后端等待/执行、下载校验和产物持久化；Main 诊断按数据类别与 profile/workflow 版本输出 p50/p95。 | 同字节稳定输入的回归先红后绿；真实同规格前后对照另存。缺分段为未知，后端执行含装载，不等于纯推理；用户端到端使用 Main Job 事实。 |
+| 可持续运营统计 | 修复指标首次物化空值与后续复用旧值；现有 event-consumer 启动及每 15 分钟单飞刷新，失败可重试，关闭等待当前事务。Admin 只取当前定义最新快照，CLI 给出认证阻断与成熟样本。 | WPCU 保持 official，不自动认证定义或引入伪造客户事实。本地指标缺认证时继续 blocked，不能用历史内部使用量签发经营结论。 |
+
+操作入口和口径见 [核心体验验证](CORE_EXPERIENCE_VALIDATION.md)。本轮真实样本、浏览器与最终候选检查的原始记录统一位于本机 `.tmp/core-experience-20260906/`、`.tmp/character-quality/` 和 `.tmp/metrics-closure-20260906/`；只有对应报告实际完成的项目才计入运行验收。旧上线页已收敛为 [当前验收入口](LAUNCH_READINESS_AUDIT.md)，其 2026-07 原文保留为历史快照。
+
+### 本批受控运行结果
+
+在候选 `4717c375…` 完成 Main 用量归属修复后，园艺、水彩两个角色完成同源自动旅程；航海、摄影、社交的原始失败保留，分别独立完成媒体后续。五角色共十张图片（含五次编辑）和五段 Pocket/Fish 语音具备 Main 持久化、来源、原键重播及实际账本证据；其中摄影/社交的两张原图仍属于旧候选 `24fd7c7b…`，历史用量分类错误不重写。严格即时跨会话标签回忆为五例四例通过，不代表长期记忆或人物体验认证。
+
+默认 RedGraft 视频在 `4717c375…` 实际交付 768×1152、121帧/24fps、5.041667秒 MP4及音轨，完整解码、受保护下载、唯一100审计币扣费通过。Main总交付806.836秒，provider执行805.261秒（含装载），实际设备锁等待不足1毫秒。Krea2身份编辑同规格两seed前后对照像素一致，第二组观察快约8.8%；冷暖状态及小样本限制保留，不能外推成默认Qwen或视频统一提升。
+
+已修复实测暴露的记忆摘录截断、已交付图片编辑意图遗漏、JSON工具兼容路径丢失实际provider请求归属，以及Gen新用量缺角色/audit分类。十五项运营指标已物化且周期刷新，仍因合格事实或认证不足而不可用于决策。
+
+质量限制仍是下一阶段重点：igrep误将普通事实标为用户撤回；模型改写精确标签、时间与用户动作；图文场景不连续；Alexa正确输入下仍把头像服装/背景带入改图；声音全量听感未评。Mara暴露的Chat扩大编辑要求已在Main采用冻结用户文本修复，并新增超长方向在附件/计费前拒绝；d6bf独立同句绿→红编辑已验证指令/底图权威、唯一8币扣费、原键重播和移动端实际加载；另修复保留要求跨句误判为取消。主构图保持，但封面纹样及全图细节仍改变，局部编辑质量未批准，旧失败不改标。完整版本、账本与产物入口在[本轮实施报告](../product-audits/2026-09-06-core-experience.md)。
 
 ## 2026-09-05 Admin 日常运营简化
 
@@ -762,7 +800,7 @@ Chrome 实测通过的流程：年龄门禁（拦截 fresh 访客）、注册(�
 | --- | --- |
 | 图片生成 | 当前生产 worker 使用 `GEN_IMAGE_PROVIDER=backend`，通过 workflow-native `BackendImageModel` 直接连接 ComfyUI 0.28.0 / MPS (`COMFYUI_API_URL=http://127.0.0.1:8188`)；Redcraft 真实 smoke 为 832×1024、880,175 bytes、132,649ms。legacy `pipeline@8091` gateway 当前未运行，因此 `launch:probe:pipeline --include-catalog` 为 6/7；这不是 backend 失败，也不能宣称整套 pipeline pass。公开上线仍需生产容量、对象存储与 live canary |
 | Chat | 本地已经通过 `CHAT_MODEL_PROVIDER=pipeline` + OpenAI-compatible oMLX endpoint probe；chat service BFF probe 强制覆盖 conversation smoke，跳过会话不再算通过，且 reload 必须命中本次 assistant message；Chat 图片附件当前态已用 Chrome 验证 signup -> Melissa Chat -> image request -> completed attachment -> More-like-this variation -> Generate handoff -> ledger/jobs/media persistence，且空白/不可用完成图会显示 `Preview unavailable` fallback |
-| Voice | 代码与生产模板的默认权威现为 `VOICE_PROVIDER=pocket-tts`：未绑定 active profile 的英语角色走官方 Pocket CPU runtime，系统默认 `alba`，Admin 可在 21 个官方音色中选择系统回退身份，也可为每个角色创建唯一持久化 alias。`AppSetting.voice.defaults` 已升级为 provider-aware schema v3；旧 Fish-only 设置或与当前 provider 不匹配的设置不会被误用。已激活 `CharacterVoiceProfile` 继续固定自身 provider/voice id，历史 VoiceClipRequest 继续固定原 provider，不因默认切换漂移。Fish S2 Pro 保留为 `VOICE_IDENTITY_PROVIDER=fish-audio` 的可选参考音频克隆链路；Pocket 3.0.2 不应用 Fish 的 delivery 参数，使用各官方音色原生英语演绎。launch readiness 对 Pocket 系统默认要求真实 catalog discovery 与 preset alias → synthesize → delete；配置 Fish identity 时再追加 Fish clone → synthesize → delete。2026-08-31 本机 Pocket 3.0.2 已实证 `catalog_ready=true`、21 个英语音色，Alba / Anna 分别在 404ms / 439ms 内生成不同 WAV；本轮实现与受控探针不等于公开生产 cutover，真实 production canary 仍为 `NOT_EVALUATED`。 |
+| Voice | 代码与生产模板的默认权威现为 `VOICE_PROVIDER=pocket-tts`：未绑定 active profile 的英语角色走官方 Pocket CPU runtime，系统默认 `alba`，Admin 可在 21 个官方音色中选择系统回退身份，也可为每个角色创建唯一持久化 alias。`AppSetting.voice.defaults` 已升级为 provider-aware schema v3；旧 Fish-only 设置或与当前 provider 不匹配的设置不会被误用。已激活 `CharacterVoiceProfile` 继续固定自身 provider/voice id，历史 VoiceClipRequest 继续固定原 provider，不因默认切换漂移。Fish S2 Pro 保留为 `VOICE_IDENTITY_PROVIDER=fish-audio` 的可选参考音频克隆链路；Pocket 3.0.2 不应用 Fish 的 delivery 参数，使用各官方音色原生英语演绎。launch readiness 对 Pocket 系统默认要求真实 catalog discovery 与 preset alias → synthesize → delete；配置 Fish identity 时再追加 Fish clone → synthesize → delete。2026-08-31 本机 Pocket 3.0.2 已实证 `catalog_ready=true`、21 个英语音色，Alba / Anna 分别在 404ms / 439ms 内生成不同 WAV；本轮实现与受控探针不等于公开生产 cutover，真实 production canary 仍为 `NOT_EVALUATED`。 2026-09-06 Admin 音色审计修复了 Fish 复制与 Pocket 官方目录互斥、默认回退覆写性别映射、试听与未保存设置混用、失败重试及未知提交清理、历史分页丢失 active 等问题；受控浏览器验证候选→试听→启用→恢复默认，真实语音交付及旧消息不重复扣量通过，详细证据见 `.scratch/voice-audit-20260906/report.md`。同日继续修复角色音色切换与语音请求并发时的混合快照：Main/Admin 使用同一事务声音权威，审核原因绑定对象，默认草稿冲突显式处理、确认与重试固定原快照；真实 Pocket/Fish 新生成、恢复默认后的历史重播和用量核对通过，见 `.scratch/voice-audit-20260906/round2-report.md`。 |
 | Payment | 本地 mock checkout 可验证权益闭环且 UI 明确标为 demo-only；BTCPay 已延后，公开上线前必须恢复 BTCPay Greenfield credentials、webhook secret、provider live probe；payment live probe 现在必须创建 launch-test invoice 并返回 HTTPS checkout URL，避免只读 store 权限误判为可收款 |
 | Age verification | 本地 age gate 可用；Go.cam 已延后，公开上线前必须恢复 Go.cam gateway、public HTTPS return/callback URL、webhook signature secret、provider live probe |
 | Blob storage | 本地 blob 可验证 `/user-content`；R2/S3 已延后，公开上线前必须恢复 bucket/endpoint/access keys，并跑 write/sign/read/delete probe |

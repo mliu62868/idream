@@ -363,7 +363,9 @@ describe("BackendImageModel", () => {
     expect(result.data.assets).toHaveLength(2);
     expect(result.invocation).toEqual({
       providerRequestId: "handle-1",
-      usage: { providerRequestIds: ["handle-1", "handle-1"] },
+      usage: { providerRequestIds: ["handle-1", "handle-1"], performance: {
+        resourceWaitMs: expect.any(Number), runnerPreparationMs: expect.any(Number), totalMs: expect.any(Number), requests: [],
+      } },
       costMicros: null,
       pricingVersion: null,
     });
@@ -380,6 +382,29 @@ describe("BackendImageModel", () => {
       (call: unknown[]) => (call[0] as { slots: { width: number; height: number } }).slots,
     );
     expect(sizes[0]).toMatchObject({ width: 832, height: 1216 });
+  });
+
+  it("separates accelerator waiting from runner preparation and preserves backend evidence", async () => {
+    let now = 0;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    const evidence = { prepareMs: 2, submitMs: 3, waitMs: 60, downloadMs: 4, validationMs: 1, providerExecutionMs: 55, cachedNodeCount: 4 };
+    const backend = makeStubBackend({ poll: vi.fn(async () => {
+      now += 70;
+      return { assets: [{ body: PNG, width: 832, height: 1216, contentType: "image/png" }], performance: evidence };
+    }) });
+    try {
+      const model = new BackendImageModel(
+        { resolveForModel: () => ({ backend, descriptor }) },
+        async (run) => { now += 40; return run(); },
+        async () => { now += 10; },
+      );
+      const result = await model.generate({ prompt: "a cat", count: 1, model: "m", controls: PIN });
+      expect(result.ok).toBe(true);
+      expect(result.invocation?.usage).toMatchObject({ performance: {
+        resourceWaitMs: 40, runnerPreparationMs: 10, totalMs: 120,
+        requests: [{ providerRequestId: "handle-1", ...evidence }],
+      } });
+    } finally { clock.mockRestore(); }
   });
 
   it("maps a post-submit poll error to an ambiguous provider outcome", async () => {
@@ -401,7 +426,9 @@ describe("BackendImageModel", () => {
     expect(result.error.message).toContain("network blip");
     expect(result.invocation).toEqual({
       providerRequestId: "handle-1",
-      usage: { providerRequestIds: ["handle-1"] },
+      usage: { providerRequestIds: ["handle-1"], performance: {
+        resourceWaitMs: expect.any(Number), runnerPreparationMs: expect.any(Number), totalMs: expect.any(Number), requests: [],
+      } },
       costMicros: null,
       pricingVersion: null,
     });

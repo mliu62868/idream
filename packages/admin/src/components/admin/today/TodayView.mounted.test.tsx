@@ -126,6 +126,40 @@ afterEach(async () => {
 });
 
 describe("Today operator actions", () => {
+  it("selects one preview without claiming or duplicating queue items", async () => {
+    await mount([claimable("case-1"), claimable("case-2")]);
+    expect(container.querySelectorAll('input[type="checkbox"]')).toHaveLength(2);
+    await click(container.querySelector('[aria-label="Preview case case-2"]')!);
+    const preview = container.querySelector('[data-testid="today-preview"]')!;
+    expect(preview.textContent).toContain("customer case-2 is waiting");
+    expect(preview.querySelector("a")?.getAttribute("href")).toBe("/admin/cases/case-2");
+    expect(adminV2Request.mock.calls.every(([, options]) => !options?.method)).toBe(true);
+  });
+
+  it("restores the chosen category from its URL and does not show other queues", async () => {
+    window.history.replaceState(null, "", "/admin/today?queue=unassigned");
+    await mount([claimable("case-1")]);
+    expect(container.querySelector('[data-testid="today-queue-unassigned-work"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="today-queue-next-best-actions"]')).toBeNull();
+    await click(buttons().find((button) => button.textContent?.includes("Watching")));
+    expect(window.location.search).toBe("?queue=watching");
+    expect(container.querySelector('[data-testid="today-preview"]')).toBeNull();
+    expect(container.textContent).toContain("No matching work right now.");
+  });
+
+  it("offers source navigation but no mutations for resolved work", async () => {
+    const value = data([]);
+    value.projection.recentlyResolved = { totalCount: 1, items: [claimable("resolved-1")] };
+    window.history.replaceState(null, "", "/admin/today?queue=resolved");
+    await act(async () => {
+      root.render(createElement(ToastProvider, null, createElement(TodayView, { data: value, workMode: "support" })));
+    });
+    await settle();
+    expect(container.querySelector('[data-testid="today-preview"] a')?.getAttribute("href")).toBe("/admin/cases/resolved-1");
+    expect(container.querySelectorAll('input[type="checkbox"]')).toHaveLength(0);
+    expect(container.querySelector('[data-testid="today-preview"]')?.textContent).not.toContain("Claim");
+  });
+
   it("replaces the visible overdue floor with the authoritative count", async () => {
     await mount([claimable("case-1")]);
 

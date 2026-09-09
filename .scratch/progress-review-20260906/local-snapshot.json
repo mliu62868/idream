@@ -1,0 +1,299 @@
+{
+  "recordedAt": "2026-09-06T10:39:11.365Z",
+  "scope": "read-only local development snapshot, not production or certified business metrics",
+  "database": {
+    "host": "localhost",
+    "port": "5433",
+    "name": "idream_runtime_20260812"
+  },
+  "configuredProviders": {
+    "APP_ENV": "development",
+    "BLOB_PROVIDER": "mock",
+    "PAYMENT_PROVIDER": "mock",
+    "AGE_VERIFICATION_PROVIDER": "mock",
+    "VOICE_PROVIDER": "pocket-tts",
+    "VOICE_IDENTITY_PROVIDER": "fish-audio"
+  },
+  "users": [
+    {
+      "dataClass": "audit",
+      "status": "active",
+      "count": 6
+    },
+    {
+      "dataClass": "audit",
+      "status": "suspended",
+      "count": 2
+    },
+    {
+      "dataClass": "customer",
+      "status": "active",
+      "count": 39
+    },
+    {
+      "dataClass": "customer",
+      "status": "deleted",
+      "count": 3
+    },
+    {
+      "dataClass": "fixture",
+      "status": "active",
+      "count": 31
+    },
+    {
+      "dataClass": "fixture",
+      "status": "deleted",
+      "count": 3
+    },
+    {
+      "dataClass": "internal",
+      "status": "active",
+      "count": 106
+    }
+  ],
+  "characters": [
+    {
+      "source": "official",
+      "visibility": "private",
+      "status": "archived",
+      "serving_state": "inactive",
+      "count": 1
+    },
+    {
+      "source": "official",
+      "visibility": "private",
+      "status": "archived",
+      "serving_state": "retired",
+      "count": 1
+    },
+    {
+      "source": "official",
+      "visibility": "private",
+      "status": "draft",
+      "serving_state": "inactive",
+      "count": 6
+    },
+    {
+      "source": "official",
+      "visibility": "private",
+      "status": "draft",
+      "serving_state": null,
+      "count": 1
+    },
+    {
+      "source": "official",
+      "visibility": "public",
+      "status": "approved",
+      "serving_state": "live",
+      "count": 15
+    },
+    {
+      "source": "official",
+      "visibility": "public",
+      "status": "removed",
+      "serving_state": null,
+      "count": 1
+    },
+    {
+      "source": "official",
+      "visibility": "unlisted",
+      "status": "approved",
+      "serving_state": "live",
+      "count": 2
+    },
+    {
+      "source": "official",
+      "visibility": "unlisted",
+      "status": "approved",
+      "serving_state": null,
+      "count": 14
+    },
+    {
+      "source": "user",
+      "visibility": "private",
+      "status": "approved",
+      "serving_state": null,
+      "count": 8
+    },
+    {
+      "source": "user",
+      "visibility": "private",
+      "status": "archived",
+      "serving_state": null,
+      "count": 1
+    },
+    {
+      "source": "user",
+      "visibility": "private",
+      "status": "removed",
+      "serving_state": null,
+      "count": 1
+    },
+    {
+      "source": "user",
+      "visibility": "unlisted",
+      "status": "approved",
+      "serving_state": "live",
+      "count": 1
+    },
+    {
+      "source": "user",
+      "visibility": "unlisted",
+      "status": "approved",
+      "serving_state": null,
+      "count": 5
+    }
+  ],
+  "subscriptions": [
+    {
+      "provider": "btcpay",
+      "status": "refunded",
+      "count": 1
+    },
+    {
+      "provider": "mock",
+      "status": "active",
+      "count": 14
+    },
+    {
+      "provider": "mock",
+      "status": "canceled",
+      "count": 1
+    }
+  ],
+  "checkouts": [
+    {
+      "provider": "btcpay",
+      "status": "created",
+      "count": 1
+    },
+    {
+      "provider": "btcpay",
+      "status": "refunded",
+      "count": 1
+    },
+    {
+      "provider": "mock",
+      "status": "completed",
+      "count": 13
+    }
+  ],
+  "metrics": [],
+  "profiles": [
+    {
+      "profileKey": "character-image-multi-identity",
+      "mode": "image",
+      "workflowKey": "qwen-image-edit-multi-identity",
+      "enabled": true,
+      "status": "active",
+      "version": 2,
+      "rolloutPercent": 100
+    },
+    {
+      "profileKey": "character-image-single-identity-redcraft",
+      "mode": "image",
+      "workflowKey": "redcraft-krea2-identity-edit",
+      "enabled": true,
+      "status": "active",
+      "version": 5,
+      "rolloutPercent": 100
+    },
+    {
+      "profileKey": "character-image-variation",
+      "mode": "image",
+      "workflowKey": "qwen-image-edit-multi-reference",
+      "enabled": true,
+      "status": "active",
+      "version": 3,
+      "rolloutPercent": 100
+    },
+    {
+      "profileKey": "chat-image-edit",
+      "mode": "image",
+      "workflowKey": "qwen-image-edit-img2img",
+      "enabled": true,
+      "status": "active",
+      "version": 2,
+      "rolloutPercent": 100
+    },
+    {
+      "profileKey": "creative-profile-35dd618b-f383-4f77-aeb3-0900a71cffb0",
+      "mode": "image",
+      "workflowKey": null,
+      "enabled": true,
+      "status": "active",
+      "version": 1,
+      "rolloutPercent": 100
+    },
+    {
+      "profileKey": "image-enhance-2x",
+      "mode": "image",
+      "workflowKey": "realesrgan-x2plus-enhance",
+      "enabled": true,
+      "status": "active",
+      "version": 1,
+      "rolloutPercent": 100
+    },
+    {
+      "profileKey": "profile_image_default_v1",
+      "mode": "image",
+      "workflowKey": "redcraft-krea2-redmix3-txt2img",
+      "enabled": true,
+      "status": "active",
+      "version": 3,
+      "rolloutPercent": 100
+    },
+    {
+      "profileKey": "profile_image_premium_v1",
+      "mode": "image",
+      "workflowKey": "redcraft-krea2-redmix3-txt2img",
+      "enabled": true,
+      "status": "active",
+      "version": 3,
+      "rolloutPercent": 100
+    },
+    {
+      "profileKey": "profile_video_h3_v1",
+      "mode": "video",
+      "workflowKey": "minimax-h3-redcraft-i2v",
+      "enabled": false,
+      "status": "active",
+      "version": 4,
+      "rolloutPercent": 100
+    },
+    {
+      "profileKey": "profile_video_redgraft_ltx25_v1",
+      "mode": "video",
+      "workflowKey": "redgraft-ltx25-i2v",
+      "enabled": true,
+      "status": "active",
+      "version": 2,
+      "rolloutPercent": 100
+    }
+  ],
+  "voice_defaults": [
+    {
+      "key": "voice.defaults",
+      "version": 2,
+      "value": {
+        "delivery": {
+          "topK": 30,
+          "topP": 0.75,
+          "speed": 0.94,
+          "preset": "sensual",
+          "intensity": 75,
+          "temperature": 0.72,
+          "repetitionPenalty": 1.2
+        },
+        "provider": "pocket_tts",
+        "schemaVersion": 3,
+        "defaultVoiceId": "alba",
+        "genderVoiceIds": {
+          "male": "alba",
+          "trans": "alba",
+          "female": "alba"
+        }
+      }
+    }
+  ]
+}

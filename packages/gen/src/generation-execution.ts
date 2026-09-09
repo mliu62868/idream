@@ -266,6 +266,7 @@ export class GenerationExecution {
     }
 
     let normalized: NormalizedGeneration;
+    const artifactPersistenceStartedAt = performance.now();
     try {
       normalized = await adapter.normalizeArtifacts(result.data);
     } catch (error) {
@@ -298,7 +299,7 @@ export class GenerationExecution {
         },
         {
           providerRequestId: result.invocation?.providerRequestId ?? null,
-          accounting: invocationAccounting(result.invocation, invocationLatencyMs),
+          accounting: invocationAccounting(result.invocation, invocationLatencyMs, {}, performance.now() - artifactPersistenceStartedAt),
           providerInvoked: true,
           providerReplayIsSafe,
         },
@@ -310,6 +311,7 @@ export class GenerationExecution {
       result.invocation,
       invocationLatencyMs,
       normalized.usage,
+      performance.now() - artifactPersistenceStartedAt,
     );
     await this.persistAndAcknowledge({
       ...this.terminalRecordBase({
@@ -510,6 +512,7 @@ function invocationAccounting(
   invocation: ProviderInvocationMetadata | undefined,
   latencyMs: number,
   fallbackUsage: Readonly<Record<string, unknown>> = {},
+  artifactPersistenceMs?: number,
 ) {
   const pricingVersion = invocation?.pricingVersion?.trim() || null;
   const providerCost = invocation?.costMicros;
@@ -519,8 +522,16 @@ function invocationAccounting(
     (providerCost ?? -1) >= 0
       ? providerCost ?? null
       : null;
+  const usage = { ...(invocation?.usage ?? fallbackUsage) };
+  if (artifactPersistenceMs !== undefined) {
+    const observed = usage.performance;
+    usage.performance = {
+      ...(typeof observed === "object" && observed !== null && !Array.isArray(observed) ? observed : {}),
+      artifactPersistenceMs,
+    };
+  }
   return {
-    usage: { ...(invocation?.usage ?? fallbackUsage) },
+    usage,
     latencyMs: Math.max(0, Math.round(latencyMs)),
     costMicros,
     pricingVersion,

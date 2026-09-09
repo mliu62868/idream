@@ -7,15 +7,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Ban,
   ChevronDown,
-  ChevronRight,
   Languages,
-  LayoutGrid,
   Menu,
   RefreshCcw,
   UserRound,
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { AdminNavigation } from "./AdminNavigation";
 import { focusAdminMainContent } from "./admin-skip-link";
 import {
   AdminI18nProvider,
@@ -136,29 +135,6 @@ function AdminConsoleContent({
     () => navGroupsForPermissions(permissions, workMode),
     [permissions, workMode],
   );
-  const permittedNavItems = navGroups.flatMap(({ items }) => items);
-  // SPEC: 常驻导航只回答两个最高频问题：今天做什么、当前角色怎么样。
-  //       其他能力按业务工作区收敛成一个入口，具体页面在页头的区内切换器中选择。
-  // INVARIANT: 每个已授权页面至少有一个「工作区入口 → 区内入口」路径；兼容工具也不例外。
-  const primaryNavItems = permittedNavItems.filter((item) => item.navigation === "primary");
-  const primaryWorkspaceNames = new Set(primaryNavItems.map((item) => item.group));
-  const workspaceNavGroups = navGroups.filter(
-    ({ group }) => group !== "Today" && !primaryWorkspaceNames.has(group),
-  );
-  const activeWorkspaceItems = canAccessActiveSection
-    ? navGroups.find(({ group }) => group === activeItem.group)?.items ?? []
-    : [];
-  const activeInWorkspaces = workspaceNavGroups.some(
-    ({ group }) => group === activeItem.group,
-  );
-  // 手动开合只属于当前 section；同一个客户端边界切到另一低频 section 时，按新页面重新推导。
-  // 这样既不需要 effect 同步派生状态，也不会让 Jobs 页的折叠选择把 Dead-letter 一并藏住。
-  const [workspaceNavState, setWorkspaceNavState] = useState(
-    () => ({ sectionId, open: activeInWorkspaces }),
-  );
-  const workspaceNavOpen = workspaceNavState.sectionId === sectionId
-    ? workspaceNavState.open
-    : activeInWorkspaces;
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   useEffect(() => {
@@ -285,48 +261,8 @@ function AdminConsoleContent({
               <p className="text-[11px] text-[var(--ad-text-muted)]">{t(actor.role)}</p>
             </div>
           </div>
-          <nav ref={sidebarNavRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3">
-            <div className="space-y-1 pb-3">
-              {primaryNavItems.map((item) => (
-                <NavLink
-                  active={item.group === activeItem.group}
-                  item={item}
-                  key={item.id}
-                />
-              ))}
-            </div>
-            {workspaceNavGroups.length > 0 ? (
-              <div className="border-t border-[var(--ad-border)] pt-3">
-                <button
-                  aria-expanded={workspaceNavOpen}
-                  className={cn(
-                    "mb-1 flex h-10 w-full items-center gap-3 rounded-md px-3 text-[13px] font-medium text-[var(--ad-text-muted)] transition-colors hover:bg-black/[0.04] hover:text-[var(--ad-ink)]",
-                    activeInWorkspaces && "bg-black/[0.05] text-[var(--ad-ink)]",
-                  )}
-                  onClick={() => setWorkspaceNavState({ sectionId, open: !workspaceNavOpen })}
-                  type="button"
-                >
-                  <LayoutGrid aria-hidden="true" className="h-4 w-4" />
-                  <span>{t("Workspaces")}</span>
-                  <ChevronRight
-                    aria-hidden="true"
-                    className={cn("ml-auto h-4 w-4 transition-transform", workspaceNavOpen && "rotate-90")}
-                  />
-                </button>
-                {workspaceNavOpen ? (
-                  <div className="mt-2 border-l border-[var(--ad-border)] pl-2">
-                    {workspaceNavGroups.map(({ group, items }) => (
-                      <WorkspaceLink
-                        active={group === activeItem.group}
-                        entry={workspaceEntry(items)}
-                        group={group}
-                        key={group}
-                      />
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
+          <nav aria-label={t("Admin navigation")} ref={sidebarNavRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3">
+            <AdminNavigation activeItem={activeItem} groups={navGroups} key={sectionId} />
           </nav>
         </aside>
 
@@ -361,33 +297,13 @@ function AdminConsoleContent({
                   <X className="h-5 w-5" />
                 </button>
               </div>
-              <nav className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3">
-                <section className="border-b border-[var(--ad-border)] pb-3">
-                  {primaryNavItems.map((item) => (
-                    <NavLink
-                      active={item.group === activeItem.group}
-                      item={item}
-                      key={item.id}
-                      onNavigate={() => setMobileNavOpen(false)}
-                    />
-                  ))}
-                </section>
-                {workspaceNavGroups.length > 0 ? (
-                  <section className="pt-3">
-                    <h2 className="px-3 pb-2 text-[10px] font-semibold uppercase text-[var(--ad-text-muted)]">
-                      {t("Workspaces")}
-                    </h2>
-                    {workspaceNavGroups.map(({ group, items }) => (
-                      <WorkspaceLink
-                        active={group === activeItem.group}
-                        entry={workspaceEntry(items)}
-                        group={group}
-                        key={group}
-                        onNavigate={() => setMobileNavOpen(false)}
-                      />
-                    ))}
-                  </section>
-                ) : null}
+              <nav aria-label={t("Admin navigation")} className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3">
+                <AdminNavigation
+                  activeItem={activeItem}
+                  groups={navGroups}
+                  key={sectionId}
+                  onNavigate={() => setMobileNavOpen(false)}
+                />
               </nav>
             </aside>
           </div>
@@ -414,12 +330,10 @@ function AdminConsoleContent({
                   <Menu className="h-5 w-5" />
                 </button>
                 <ShellTitle
-                  activeItem={activeItem}
                   chrome={activeItem.chrome}
                   environmentNotice={adminShellEnvironmentNotice(shellSignals)}
                   group={activeItem.group}
                   label={activeItem.label}
-                  workspaceItems={activeWorkspaceItems}
                 />
               </div>
               <div className="flex w-full items-center gap-2 md:w-auto">
@@ -536,19 +450,15 @@ function PermissionDenied({
 //         chrome="compact" 时页名本身就是 h1（角色工作台自带 96px 头像加角色名的大标题，
 //         外壳再叠一个 h1 就是两层标题），其余页面照常出一行独立标题。
 function ShellTitle({
-  activeItem,
   chrome,
   environmentNotice,
   group,
   label,
-  workspaceItems,
 }: {
-  activeItem: NavItem;
   chrome: NavItem["chrome"];
   environmentNotice: string | null;
   group: string;
   label: string;
-  workspaceItems: readonly NavItem[];
 }) {
   const { t } = useAdminI18n();
   const compact = chrome === "compact";
@@ -562,7 +472,7 @@ function ShellTitle({
           {showGroup ? (
             <>
               <li className="shrink-0">
-                <WorkspaceMenu activeItem={activeItem} group={group} items={workspaceItems} />
+                <span>{t(group)}</span>
               </li>
               <li aria-hidden="true" className="shrink-0">›</li>
             </>
@@ -591,146 +501,6 @@ function ShellTitle({
       )}
     </div>
   );
-}
-
-// SPEC: 全局目录只选择工作区；区内切换器先给常规任务，再渐进披露低频工具。
-// INTENT: 低频子视图不能和日常任务争夺同等注意力，也不能靠搜索或记 URL 才能到达。
-function WorkspaceMenu({
-  activeItem,
-  group,
-  items,
-}: {
-  activeItem: NavItem;
-  group: string;
-  items: readonly NavItem[];
-}) {
-  const { t } = useAdminI18n();
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement | null>(null);
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const mainItems = items.filter((item) => item.navigation !== "tool");
-  const toolItems = items.filter((item) => item.navigation === "tool");
-  const activeInTools = toolItems.some((item) => item.id === activeItem.id);
-  // 手动开合只属于当前 section；同一个客户端边界切到低频工具时必须自动展开。
-  const [toolNavState, setToolNavState] = useState(
-    () => ({ sectionId: activeItem.id, open: activeInTools }),
-  );
-  const toolNavOpen = toolNavState.sectionId === activeItem.id
-    ? toolNavState.open
-    : activeInTools;
-
-  useEffect(() => {
-    if (!open) return;
-    function closeOnOutsidePointer(event: PointerEvent) {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
-    }
-    function closeOnEscape(event: globalThis.KeyboardEvent) {
-      if (event.key !== "Escape") return;
-      setOpen(false);
-      triggerRef.current?.focus();
-    }
-    document.addEventListener("pointerdown", closeOnOutsidePointer);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("pointerdown", closeOnOutsidePointer);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [open]);
-
-  if (items.length <= 1) return <span>{t(group)}</span>;
-
-  return (
-    <div className="relative" ref={rootRef}>
-      <button
-        aria-controls="admin-workspace-section-menu"
-        aria-expanded={open}
-        className="inline-flex min-h-8 items-center gap-1 rounded px-1 font-medium text-[var(--ad-text-muted)] hover:bg-black/[0.04] hover:text-[var(--ad-ink)] focus-visible:text-[var(--ad-ink)] focus-visible:ring-2 focus-visible:ring-[var(--ad-ink)]/10"
-        onClick={() => setOpen((previous) => !previous)}
-        ref={triggerRef}
-        type="button"
-      >
-        {t(group)}
-        <ChevronDown
-          aria-hidden="true"
-          className={cn("h-3 w-3 transition-transform", open && "rotate-180")}
-        />
-      </button>
-      {open ? (
-        <nav
-          aria-label={t(group)}
-          className="absolute left-0 z-50 mt-1 max-h-[min(80vh,40rem)] w-[min(86vw,18rem)] overflow-y-auto rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-1.5 shadow-xl"
-          id="admin-workspace-section-menu"
-        >
-          <WorkspaceMenuItems
-            activeItem={activeItem}
-            items={mainItems.length > 0 ? mainItems : toolItems}
-            onNavigate={() => setOpen(false)}
-          />
-          {mainItems.length > 0 && toolItems.length > 0 ? (
-            <div className="mt-1 border-t border-[var(--ad-border)] pt-1">
-              <button
-                aria-controls="admin-workspace-tools-menu"
-                aria-expanded={toolNavOpen}
-                className="flex min-h-10 w-full items-center gap-2 rounded-md px-3 text-left text-[12px] font-medium text-[var(--ad-text-muted)] hover:bg-black/[0.04] hover:text-[var(--ad-ink)] focus-visible:ring-2 focus-visible:ring-[var(--ad-ink)]/10"
-                onClick={() => setToolNavState({
-                  sectionId: activeItem.id,
-                  open: !toolNavOpen,
-                })}
-                type="button"
-              >
-                <span>{t("Tools & diagnostics")}</span>
-                <ChevronRight
-                  aria-hidden="true"
-                  className={cn("ml-auto h-3.5 w-3.5 transition-transform", toolNavOpen && "rotate-90")}
-                />
-              </button>
-              {toolNavOpen ? (
-                <div className="border-l border-[var(--ad-border)] pl-1" id="admin-workspace-tools-menu">
-                  <WorkspaceMenuItems
-                    activeItem={activeItem}
-                    items={toolItems}
-                    onNavigate={() => setOpen(false)}
-                  />
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-        </nav>
-      ) : null}
-    </div>
-  );
-}
-
-function WorkspaceMenuItems({
-  activeItem,
-  items,
-  onNavigate,
-}: {
-  activeItem: NavItem;
-  items: readonly NavItem[];
-  onNavigate: () => void;
-}) {
-  const { t } = useAdminI18n();
-
-  return items.map((item) => {
-    const Icon = item.icon;
-    const active = item.id === activeItem.id;
-    return (
-      <Link
-        aria-current={active ? "page" : undefined}
-        className={cn(
-          "flex min-h-10 items-center gap-3 rounded-md px-3 text-[13px] text-[var(--ad-text-muted)] hover:bg-black/[0.04] hover:text-[var(--ad-ink)]",
-          active && "bg-black/[0.05] font-semibold text-[var(--ad-ink)]",
-        )}
-        href={item.href}
-        key={item.id}
-        onClick={onNavigate}
-      >
-        <Icon aria-hidden="true" className="h-4 w-4 shrink-0" />
-        <span>{t(item.label)}</span>
-      </Link>
-    );
-  });
 }
 
 // SPEC: 右上角账号菜单——身份、语言、工作模式、数据来源、退出。
@@ -866,61 +636,5 @@ function AccountMenu({
         </div>
       ) : null}
     </div>
-  );
-}
-
-// SPEC: 工作区入口落到第一个常规任务；只有账号没有任何常规任务权限时，才回退到低频工具。
-function workspaceEntry(items: readonly NavItem[]) {
-  return items.find((item) => item.navigation !== "tool") ?? items[0]!;
-}
-
-function WorkspaceLink({
-  active,
-  entry,
-  group,
-  onNavigate,
-}: {
-  active: boolean;
-  entry: NavItem;
-  group: string;
-  onNavigate?: () => void;
-}) {
-  const { t } = useAdminI18n();
-  const Icon = entry.icon;
-
-  return (
-    <Link
-      className={cn(
-        "mb-1 flex h-10 items-center gap-3 rounded-md px-3 text-[13px] font-medium text-[var(--ad-text-muted)] transition-colors hover:bg-black/[0.04] hover:text-[var(--ad-ink)]",
-        active && "bg-black/[0.05] text-[var(--ad-ink)]",
-      )}
-      href={entry.href}
-      onClick={onNavigate}
-    >
-      <Icon aria-hidden="true" className="h-4 w-4" />
-      <span>{t(group)}</span>
-      {active ? <ChevronRight aria-hidden="true" className="ml-auto h-4 w-4" /> : null}
-    </Link>
-  );
-}
-
-// SPEC: shared primary sidebar link markup for desktop and mobile.
-function NavLink({ active, item, onNavigate }: { active: boolean; item: NavItem; onNavigate?: () => void }) {
-  const { t } = useAdminI18n();
-  const Icon = item.icon;
-
-  return (
-    <Link
-      className={cn(
-        "mb-1 flex h-10 items-center gap-3 rounded-md px-3 text-[13px] font-medium text-[var(--ad-text-muted)] transition-colors hover:bg-black/[0.04] hover:text-[var(--ad-ink)]",
-        active && "bg-black/[0.05] text-[var(--ad-ink)]",
-      )}
-      href={item.href}
-      onClick={onNavigate}
-    >
-      <Icon aria-hidden="true" className="h-4 w-4" />
-      <span>{t(item.label)}</span>
-      {active ? <ChevronRight className="ml-auto h-4 w-4" /> : null}
-    </Link>
   );
 }

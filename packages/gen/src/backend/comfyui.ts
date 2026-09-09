@@ -7,7 +7,7 @@
 // ComfyUI prompt_id, bounded by job.timeoutMs via AbortController. poll() drives the
 // wait loop with its own AbortController + job.timeoutMs. health() is a readiness
 // probe, bounded by a fixed HEALTH_TIMEOUT_MS regardless of job timeout config.
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { assertGeneratedImageSanity } from "@idream/shared/media/generated-image-sanity";
 import { logger } from "../logger";
 import { syncComfyUiWorkflow } from "./comfyui-workflow";
@@ -64,6 +64,8 @@ interface PendingJob {
   timeoutMs: number;
   slots: ResolvedGenJob["slots"];
   outputKind: "image" | "video";
+  prepareMs: number;
+  submitMs: number;
 }
 
 export class ComfyUIBackend implements GenBackend {
@@ -100,6 +102,7 @@ export class ComfyUIBackend implements GenBackend {
   }
 
   async submit(job: ResolvedGenJob): Promise<BackendHandle> {
+    const prepareStartedAt = performance.now();
     if (job.descriptor.backendKind !== "comfyui") {
       throw new Error(
         `comfyui: workflow ${job.descriptor.workflowKey} targets ${job.descriptor.backendKind}`,
@@ -109,6 +112,8 @@ export class ComfyUIBackend implements GenBackend {
     const workflow = await this.getWorkflowGraph(descriptor, job.timeoutMs);
     const slots = await this.bindReferenceImageSlots(job);
     const prompt = bindComfySlots(descriptor, slots);
+    const prepareMs = performance.now() - prepareStartedAt;
+    const submitStartedAt = performance.now();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), job.timeoutMs);
     let response: Response;
@@ -173,6 +178,8 @@ export class ComfyUIBackend implements GenBackend {
       );
     }
     this.pending.set(promptId, {
+      prepareMs,
+      submitMs: performance.now() - submitStartedAt,
       timeoutMs: job.timeoutMs,
       slots: job.slots,
       outputKind: descriptor.capabilities.includes("video")
@@ -202,8 +209,13 @@ export class ComfyUIBackend implements GenBackend {
       timeoutMs * COMFY_TOTAL_WAIT_BUDGET_MULTIPLIER,
     );
     try {
-      const output = await this.waitForOutput(handle.id, timeoutMs, controller.signal);
+      const waitStartedAt = performance.now();
+      const { output, providerExecutionMs, cachedNodeCount } = await this.waitForOutput(handle.id, timeoutMs, controller.signal);
+      const waitMs = performance.now() - waitStartedAt;
+      const downloadStartedAt = performance.now();
       const bytes = await this.fetchComfyOutput(output, controller.signal);
+      const downloadMs = performance.now() - downloadStartedAt;
+      const validationStartedAt = performance.now();
       const outputKind = pending?.outputKind ?? outputKindFromFilename(output.filename);
       let verifiedVideo;
       if (outputKind === "video") {
@@ -225,6 +237,15 @@ export class ComfyUIBackend implements GenBackend {
         height: numberSlot(pending?.slots, "height") ?? 0,
       };
       return {
+        ...(pending ? { performance: {
+          prepareMs: pending.prepareMs,
+          submitMs: pending.submitMs,
+          waitMs,
+          downloadMs,
+          validationMs: performance.now() - validationStartedAt,
+          providerExecutionMs,
+          cachedNodeCount,
+        } } : {}),
         assets: [
           {
             body: bytes,
@@ -327,9 +348,13 @@ export class ComfyUIBackend implements GenBackend {
         );
       }
       const bytes = await this.referenceImageBytes(reference, job.timeoutMs);
+      // LoadImage's filename participates in ComfyUI's cache key. Reusing an
+      // immutable reference must reuse that input across product requests;
+      // different bytes must never overwrite a queued request's reference.
+      const referenceName = `idream-reference-${createHash("sha256").update(bytes).digest("hex")}.png`;
       const image = await this.uploadImage(
         bytes,
-        `${job.requestId ?? "ref"}-${i}.png`,
+        referenceName,
         reference.contentType,
         job.timeoutMs,
       );
@@ -403,7 +428,7 @@ export class ComfyUIBackend implements GenBackend {
     promptId: string,
     timeoutMs: number,
     signal: AbortSignal,
-  ): Promise<ComfyImageOutput> {
+  ): Promise<{ output: ComfyImageOutput; providerExecutionMs: number | null; cachedNodeCount: number | null }> {
     const startedAt = Date.now();
     const totalWaitDeadlineAt =
       startedAt + timeoutMs * COMFY_TOTAL_WAIT_BUDGET_MULTIPLIER;
@@ -441,7 +466,7 @@ export class ComfyUIBackend implements GenBackend {
             "definitive",
           );
         }
-        return output;
+        return { output, ...comfyExecutionEvidence(status.messages) };
       }
       if (!observedExecuting) {
         const placement = await this.queuePlacement(promptId, signal);
@@ -508,6 +533,33 @@ export class ComfyUIBackend implements GenBackend {
 }
 
 // ComfyUI reports each queue slot as a tuple whose second element is the prompt id.
+export function comfyExecutionEvidence(messages: unknown): {
+  providerExecutionMs: number | null;
+  cachedNodeCount: number | null;
+} {
+  let startedAt: number | null = null;
+  let completedAt: number | null = null;
+  let cachedNodeCount: number | null = null;
+  for (const message of Array.isArray(messages) ? messages : []) {
+    if (!Array.isArray(message)) continue;
+    const payload = jsonRecord(message[1]);
+    const timestamp = payload.timestamp;
+    if (typeof timestamp === "number" && Number.isFinite(timestamp) && timestamp >= 0) {
+      if (message[0] === "execution_start") startedAt = timestamp;
+      if (message[0] === "execution_success") completedAt = timestamp;
+    }
+    if (message[0] === "execution_cached" && Array.isArray(payload.nodes)) {
+      cachedNodeCount = new Set(payload.nodes.filter((node) => typeof node === "string")).size;
+    }
+  }
+  return {
+    providerExecutionMs: startedAt !== null && completedAt !== null && completedAt >= startedAt
+      ? completedAt - startedAt
+      : null,
+    cachedNodeCount,
+  };
+}
+
 function queueListsPrompt(entries: unknown, promptId: string): boolean {
   if (!Array.isArray(entries)) return false;
   return entries.some(

@@ -5,6 +5,50 @@ import {
 } from "./image-action";
 
 describe("Chat image action authority", () => {
+  it.each([
+    "Edit the picture you just sent: change only the notebook from blue to green. Preserve the same face, hairstyle, clothes, pose, background and camera framing. Make the edited picture now.",
+    "Edit the picture you just sent: change only the notebook from green to red. Preserve the same face, hairstyle, clothes, pose, background and camera framing. Do not change anything else. Make the edited picture now.",
+    "Please modify the photo you sent me: make the notebook green.",
+    "Change the image you just generated to use a green notebook.",
+  ])("authorizes editing an explicitly referenced delivered image: %s", (userText) => {
+    expect(imageIntentForUserRequest({ userText, hasRecentImageContext: true })).toMatchObject({
+      kind: "edit", reason: "explicit_last_image_edit", action: { name: "edit_last_image" },
+    });
+  });
+
+  it.each([".", "!", "?", ";", "。", "！", "？", "；"])("keeps preservation negation within its own clause (%s)", separator => {
+    expect(imageIntentForUserRequest({
+      userText: `Edit this image: make the notebook red. Do not change anything else${separator} Make the edited picture now.`,
+      hasRecentImageContext: true,
+    })).toMatchObject({ kind: "edit", action: { name: "edit_last_image" } });
+    expect(imageIntentForUserRequest({
+      userText: `把这张图片里的本子改红。别改其他${separator}生成修改后的图片。`,
+      hasRecentImageContext: true,
+    })).toMatchObject({ kind: "edit", action: { name: "edit_last_image" } });
+  });
+
+  it("keeps a separate new-image request after an unrelated negative instruction", () => {
+    expect(imageIntentForUserRequest({ userText: "Do not change the topic. Make a picture of the rainy window." }))
+      .toMatchObject({ kind: "generate", action: { name: "generate_image_async" } });
+  });
+
+  it.each([
+    'Please explain "edit the picture you just sent".',
+    "Do not edit the picture you just sent.",
+    "How would you edit the photo you sent me?",
+    "I like the picture you just sent.",
+    "Edit this image: make the notebook red. Actually, do not edit this picture.",
+    "Do not generate any images. Let's only discuss how you would edit this picture.",
+    "Make a picture; no need to send any photo.",
+    "Don't want any pictures. Let's talk.",
+    "把这张图片里的本子改红。别生成图片。",
+    "不要再给我发图片；只讨论这张图片。",
+    "不想看图片。聊聊窗外的雨吧。",
+    "How would you edit this image? Do not change anything else. Explain the picture in words.",
+  ])("does not authorize editing from discussion or negation: %s", (userText) => {
+    expect(imageIntentForUserRequest({ userText, hasRecentImageContext: true }).kind).toBe("none");
+  });
+
   it("takes the confirmed scene and boundary only from the precise proposal", () => {
     expect(imageIntentForUserRequest({
       previousAssistantText: "Earlier we talked about nude photography. Would you like a photo by the window?",

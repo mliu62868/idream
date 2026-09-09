@@ -246,8 +246,6 @@ export async function createVoiceClip(
 
   const voiceAuthority = await resolveCharacterVoiceAuthority({
     characterId: character.id,
-    voiceId: character.voiceId,
-    gender: character.gender,
   });
   const proposedProviderPayload = pinnedVoiceProviderPayloadSchema.parse({
     providerKey: voiceAuthority.providerKey,

@@ -1,0 +1,10 @@
+@idream/main test:pure: 
+@idream/main test:pure:  RUN  v4.1.9 /Users/kk/code/idream/packages/main
+@idream/main test:pure: 
+@idream/main test:pure: 
+@idream/main test:pure:  Test Files  1 passed (1)
+@idream/main test:pure:       Tests  9 passed (9)
+@idream/main test:pure:    Start at  06:33:47
+@idream/main test:pure:    Duration  544ms (transform 276ms, setup 0ms, import 473ms, tests 7ms, environment 0ms)
+@idream/main test:pure: 
+@idream/main test:pure: Exited with code 0

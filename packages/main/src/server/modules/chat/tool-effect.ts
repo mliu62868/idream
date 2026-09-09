@@ -12,7 +12,7 @@ import {
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
-import { sanitizeChatImageDirection } from "@/server/modules/ourdream/generation-prompt";
+import { compileChatImagePrompt, sanitizeChatImageDirection } from "@/server/modules/ourdream/generation-prompt";
 import { createChatImageGenerationJob } from "@/server/modules/ourdream/service";
 import { loadChatAuthoritySnapshot } from "./chat-authority-snapshot";
 import { chatTurnForEffect } from "./turn-ledger";
@@ -101,6 +101,20 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
     assertTurnActionIntent(prior, effect.intent);
     call = persistedTurnActionCall(prior, call);
   } else {
+    if (call.name === "edit_last_image") {
+      // assertFrozenImageAction verified this exact Main-owned userContent.
+      // Chat has no source pixels: its invented preservation details must never
+      // replace the user's edit. Historical requesting/accepted effects above
+      // retain their already-frozen direction and idempotency contract.
+      try {
+        const instruction = sanitizeChatImageDirection(turn.userContent, { rejectTruncation: true });
+        compileChatImagePrompt(instruction, effect.intent.requestedNudity, { rejectTruncation: true });
+        call = { ...call, arguments: { ...call.arguments, instruction } };
+      } catch (error) {
+        if (error instanceof RangeError) throw Errors.badRequest(error.message);
+        throw error;
+      }
+    }
     try {
       await prisma.chatTurnAttachment.create({
         data: {

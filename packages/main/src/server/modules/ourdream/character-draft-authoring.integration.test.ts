@@ -150,7 +150,7 @@ describe("Create authoring authority", () => {
     expect(character.systemPrompt).toContain("## Relationship\nChildhood friend");
     expect(prepare).toHaveBeenCalledWith({ ...selection, userId, draftId });
     expect(character.voiceId).toBe(prepared.voiceId);
-    expect(await resolveCharacterVoiceAuthority({ characterId, voiceId: character.voiceId, gender: character.gender })).toMatchObject({
+    expect(await resolveCharacterVoiceAuthority({ characterId })).toMatchObject({
       providerKey: "pocket_tts", voiceId: prepared.voiceId, source: "character_clone", characterVoiceProfileVersion: 1,
     });
     const replay = await api("POST", `character-drafts/${draftId}/submit`, { userId, ageGate: true, body: { visibility: "private" } });

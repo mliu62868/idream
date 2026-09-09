@@ -3,7 +3,7 @@
 import { act } from "react";
 import { hydrateRoot, type Root } from "react-dom/client";
 import { renderToString } from "react-dom/server";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdminPermissionKey } from "@idream/shared/admin/permissions";
 import { AdminConsoleClient } from "@/components/admin/AdminConsoleClient";
 import {
@@ -61,9 +61,15 @@ function accountMenuTrigger() {
   return trigger;
 }
 
+// 外壳交互不依赖工作台数据，避免导航挂载用例向本地 Main 发出请求。
+beforeEach(() => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(() => new Promise<Response>(() => {}));
+});
+
 afterEach(async () => {
   await act(async () => root?.unmount());
   root = null;
+  vi.restoreAllMocks();
   container?.remove();
   container = null;
   document.cookie = `${ADMIN_LOCALE_COOKIE}=; path=/; max-age=0`;
@@ -137,168 +143,110 @@ describe("admin shell keyboard and account menu", () => {
     expect(window.localStorage.getItem(ADMIN_LOCALE_COOKIE)).toBeNull();
   });
 
-  // SPEC: 常驻导航只保留最高频对象；其余能力先进入业务工作区，而不是平铺成几十个同级入口。
-  it("expands the workspace directory in place", async () => {
-    await mountShell(shellProps({
-      permissions: ["admin.approval.review"],
-    }));
-    const workspaceToggle = [...document.querySelectorAll<HTMLButtonElement>("aside nav button")]
-      .find((button) => button.textContent?.includes("Workspaces"));
+  function navButton(label: string, scope: ParentNode = document) {
+    const button = [...scope.querySelectorAll<HTMLButtonElement>("aside nav button")]
+      .find((button) => button.textContent === label);
+    if (!button) throw new Error(`Missing navigation button: ${label}`);
+    return button;
+  }
 
-    expect(workspaceToggle).toBeDefined();
-    expect(workspaceToggle?.getAttribute("aria-expanded")).toBe("false");
-    await act(async () => workspaceToggle!.click());
+  function sidebarHrefs() {
+    return [...document.querySelectorAll<HTMLAnchorElement>("aside nav a")]
+      .map((link) => link.getAttribute("href"));
+  }
 
-    expect(workspaceToggle?.getAttribute("aria-expanded")).toBe("true");
-    expect([...document.querySelectorAll<HTMLAnchorElement>("aside nav a")]
-      .some((link) => link.textContent?.includes("System"))).toBe(true);
+  it("shows business groups immediately and expands without navigating to an arbitrary page", async () => {
+    await mountShell(shellProps({ permissions: ["admin.approval.review", "billing.read"] }));
+    expect([...document.querySelectorAll("aside nav button")].map((node) => node.textContent))
+      .toEqual(["Customers & Support", "Revenue & Marketing", "System"]);
+    expect(sidebarHrefs()).not.toContain("/admin/system/approvals");
+    const before = window.location.href;
+    await act(async () => navButton("System").click());
+    expect(navButton("System").getAttribute("aria-expanded")).toBe("true");
+    expect(sidebarHrefs()).toContain("/admin/system/approvals");
+    expect(window.location.href).toBe(before);
+    expect(document.querySelector('button[aria-controls="admin-workspace-section-menu"]')).toBeNull();
   });
 
-  // SPEC: 侧栏按工作区收敛；区内先展示常规任务，低频工具再渐进披露，不能退化成搜索或记 URL。
-  it("keeps every permitted tool reachable without flattening subviews into the sidebar", async () => {
+  it("reveals operational tools in the sidebar while keeping routine pages directly visible", async () => {
     await mountShell(shellProps({
       initialSection: "ops/jobs",
       permissions: ["generation.job.read", "ops.queue.read"],
       preferences: { workMode: "support" },
     }));
-    const workspaceToggle = [...document.querySelectorAll<HTMLButtonElement>("aside nav button")]
-      .find((button) => button.textContent?.includes("Workspaces"));
-
-    expect(workspaceToggle).toBeDefined();
-    expect(workspaceToggle?.getAttribute("aria-expanded")).toBe("true");
-
-    const sidebarHrefs = [...document.querySelectorAll<HTMLAnchorElement>("aside nav a")]
-      .map((link) => link.getAttribute("href"));
-    expect(sidebarHrefs).toContain("/admin/ops/jobs");
-    expect(sidebarHrefs).not.toContain("/admin/ops/jobs?view=dead-letter");
-    expect(sidebarHrefs).not.toContain("/admin/ops/providers?view=backends");
-
-    const sectionToggle = document.querySelector<HTMLButtonElement>(
-      'button[aria-controls="admin-workspace-section-menu"]',
-    );
-    expect(sectionToggle?.textContent).toContain("Platform Operations");
-    await act(async () => sectionToggle!.click());
-
-    const mainSectionHrefs = [...document.querySelectorAll<HTMLAnchorElement>(
-      '#admin-workspace-section-menu a',
-    )].map((link) => link.getAttribute("href"));
-    expect(mainSectionHrefs).toContain("/admin/ops/jobs");
-    expect(mainSectionHrefs).toContain("/admin/ops/providers");
-    expect(mainSectionHrefs).not.toContain("/admin/ops/jobs?view=dead-letter");
-    expect(mainSectionHrefs).not.toContain("/admin/ops/providers?view=backends");
-
-    const toolsToggle = document.querySelector<HTMLButtonElement>(
-      'button[aria-controls="admin-workspace-tools-menu"]',
-    );
-    expect(toolsToggle?.textContent).toContain("Tools & diagnostics");
-    expect(toolsToggle?.getAttribute("aria-expanded")).toBe("false");
-    await act(async () => toolsToggle!.click());
-
-    const toolHrefs = [...document.querySelectorAll<HTMLAnchorElement>(
-      '#admin-workspace-tools-menu a',
-    )].map((link) => link.getAttribute("href"));
-    expect(toolHrefs).toContain("/admin/ops/jobs?view=dead-letter");
-    expect(toolHrefs).toContain("/admin/ops/providers?view=backends");
+    expect(navButton("Platform Operations").getAttribute("aria-expanded")).toBe("true");
+    expect(sidebarHrefs()).toContain("/admin/ops/jobs");
+    expect(sidebarHrefs()).toContain("/admin/ops/providers");
+    expect(sidebarHrefs()).not.toContain("/admin/ops/jobs?view=dead-letter");
+    await act(async () => navButton("Tools & diagnostics").click());
+    expect(sidebarHrefs()).toContain("/admin/ops/jobs?view=dead-letter");
+    expect(sidebarHrefs()).toContain("/admin/ops/providers?view=backends");
+    expect(document.querySelectorAll('aside nav [aria-current="page"]')).toHaveLength(1);
   });
 
-  // SPEC: 常见 13 英寸 Chrome 内容宽度约 1272px，已经属于桌面工作区，不应退回抽屉导航。
-  // SPEC: 工作区菜单在常见 840px 高视口里应直接露出完整工具列表，低矮窗口才滚动。
-  it("uses the desktop shell from 1200px and gives the workspace menu enough visible height", async () => {
-    await mountShell(shellProps({
-      initialSection: "ops/jobs?view=dead-letter",
-      permissions: ["generation.job.read", "ops.queue.read"],
-      preferences: { workMode: "support" },
-    }));
-
-    const desktopSidebar = document.querySelector<HTMLElement>("main > div > aside");
-    const mobileTrigger = document.querySelector<HTMLButtonElement>('[aria-label="Open navigation"]');
-    expect(desktopSidebar?.className).toContain("min-[1200px]:flex");
-    expect(mobileTrigger?.className).toContain("min-[1200px]:hidden");
-
-    const sectionToggle = document.querySelector<HTMLButtonElement>(
-      'button[aria-controls="admin-workspace-section-menu"]',
-    );
-    await act(async () => sectionToggle!.click());
-    expect(document.querySelector<HTMLElement>("#admin-workspace-section-menu")?.className)
-      .toContain("max-h-[min(80vh,40rem)]");
-  });
-
-  // SPEC: 搜索结果在同一个 Next 路由段内只更新 query 时，工作区目录与页头切换器都要跟着新页面。
-  it("reopens Workspaces when the mounted shell enters another low-frequency destination", async () => {
+  it("reopens the current group and tools after a query-only route change", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockImplementation(() => new Promise<Response>(() => {}));
     const permissions: AdminPermissionKey[] = ["ops.queue.read", "generation.job.read"];
     try {
-      const jobsProps = shellProps({ initialSection: "ops/jobs", permissions });
-      await mountShell(jobsProps);
-      const workspaceToggle = [...document.querySelectorAll<HTMLButtonElement>("aside nav button")]
-        .find((button) => button.textContent?.includes("Workspaces"));
-
-      expect(workspaceToggle?.getAttribute("aria-expanded")).toBe("true");
-      await act(async () => workspaceToggle!.click());
-      expect(workspaceToggle?.getAttribute("aria-expanded")).toBe("false");
-
+      await mountShell(shellProps({ initialSection: "ops/jobs", permissions }));
+      await act(async () => navButton("Platform Operations").click());
+      expect(navButton("Platform Operations").getAttribute("aria-expanded")).toBe("false");
       await act(async () => {
-        root!.render(
-          <AdminConsoleClient
-            {...shellProps({ initialSection: "ops/jobs?view=dead-letter", permissions })}
-          />,
-        );
+        root!.render(<AdminConsoleClient {...shellProps({ initialSection: "ops/jobs?view=dead-letter", permissions })} />);
       });
-
-      expect(workspaceToggle?.getAttribute("aria-expanded")).toBe("true");
-      const sectionToggle = document.querySelector<HTMLButtonElement>(
-        'button[aria-controls="admin-workspace-section-menu"]',
-      );
-      await act(async () => sectionToggle!.click());
-      const toolsToggle = document.querySelector<HTMLButtonElement>(
-        'button[aria-controls="admin-workspace-tools-menu"]',
-      );
-      expect(toolsToggle?.getAttribute("aria-expanded")).toBe("true");
-      expect(document.querySelector('#admin-workspace-tools-menu [aria-current="page"]')?.textContent)
-        .toContain("Dead-letter");
+      expect(navButton("Platform Operations").getAttribute("aria-expanded")).toBe("true");
+      expect(navButton("Tools & diagnostics").getAttribute("aria-expanded")).toBe("true");
+      expect(document.querySelector('aside nav [aria-current="page"]')?.textContent).toBe("Dead-letter");
     } finally {
       fetchMock.mockRestore();
     }
   });
 
-  // SPEC: 兼容工具不是侧栏一级入口，但只要命令尚未合并，就必须从所属工作区可发现。
-  it("surfaces a compatibility-only tool through its workspace", async () => {
-    await mountShell(shellProps({
-      initialSection: "support",
-      permissions: ["case.read", "support.request.read"],
-    }));
-
-    const workspaceToggle = [...document.querySelectorAll<HTMLButtonElement>("aside nav button")]
-      .find((button) => button.textContent?.includes("Workspaces"));
-    expect(workspaceToggle?.getAttribute("aria-expanded")).toBe("true");
-    const sidebarHrefs = [...document.querySelectorAll<HTMLAnchorElement>("aside nav a")]
-      .map((link) => link.getAttribute("href"));
-    expect(sidebarHrefs).toContain("/admin/cases?view=mine");
-    expect(sidebarHrefs).not.toContain("/admin/support");
-
-    const sectionToggle = document.querySelector<HTMLButtonElement>(
-      'button[aria-controls="admin-workspace-section-menu"]',
-    );
-    await act(async () => sectionToggle!.click());
-    expect(document.querySelector<HTMLButtonElement>(
-      'button[aria-controls="admin-workspace-tools-menu"]',
-    )?.getAttribute("aria-expanded")).toBe("true");
-    expect([...document.querySelectorAll<HTMLAnchorElement>(
-      '#admin-workspace-tools-menu a',
-    )].some((link) => link.getAttribute("href") === "/admin/support")).toBe(true);
+  it("keeps compatibility tools discoverable and opens their active deep links", async () => {
+    await mountShell(shellProps({ initialSection: "support", permissions: ["case.read", "support.request.read"] }));
+    expect(sidebarHrefs()).toContain("/admin/cases?view=mine");
+    expect(sidebarHrefs()).toContain("/admin/support");
+    expect(navButton("History & specialist tools").getAttribute("aria-expanded")).toBe("true");
+    expect(document.querySelector('aside nav [aria-current="page"]')?.textContent).toBe("Support Cases");
   });
 
-  // SPEC: 如果账号只有一个低频工具权限，该工具就是工作区入口；渐进披露不能把唯一能力藏掉。
-  it("uses a tool as the workspace entry when it is the only permitted destination", async () => {
-    await mountShell(shellProps({
-      initialSection: "support",
-      permissions: ["support.request.read"],
-    }));
+  it("shows a tool-only account its actual page without a redundant tools disclosure", async () => {
+    await mountShell(shellProps({ initialSection: "support", permissions: ["support.request.read"] }));
+    expect(sidebarHrefs()).toEqual(["/admin/support"]);
+    expect([...document.querySelectorAll("aside nav button")].map((node) => node.textContent))
+      .toEqual(["Customers & Support"]);
+  });
 
-    const workspaceHrefs = [...document.querySelectorAll<HTMLAnchorElement>("aside nav a")]
-      .map((link) => link.getAttribute("href"));
-    expect(workspaceHrefs).toContain("/admin/support");
-    expect(document.querySelector('button[aria-controls="admin-workspace-section-menu"]')).toBeNull();
+  it("keeps mobile navigation isolated, traps focus, and restores it on Escape", async () => {
+    await mountShell(shellProps({ permissions: ["billing.read", "admin.approval.review"] }));
+    const trigger = document.querySelector<HTMLButtonElement>('[aria-label="Open navigation"]')!;
+    expect(trigger.className).toContain("min-[1200px]:hidden");
+    expect(document.querySelector("main > div > aside")?.className).toContain("min-[1200px]:flex");
+    await act(async () => trigger.click());
+    const drawer = document.querySelector<HTMLElement>('[role="dialog"][aria-label="Admin navigation"]')!;
+    expect(drawer).not.toBeNull();
+    expect(document.getElementById("admin-main-content")?.hasAttribute("inert")).toBe(true);
+    const group = [...drawer.querySelectorAll<HTMLButtonElement>("nav button")]
+      .find((node) => node.textContent === "Revenue & Marketing")!;
+    await act(async () => group.click());
+    expect([...drawer.querySelectorAll("a")].map((node) => node.getAttribute("href")))
+      .toEqual(["/admin/customer-ops/billing", "/admin/growth/offers?view=pricing"]);
+    const ids = [...document.querySelectorAll("[id]")].map((node) => node.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    const focusable = [...drawer.querySelectorAll<HTMLElement>("button, a[href]")];
+    await act(async () => {
+      focusable.at(-1)!.focus();
+      focusable.at(-1)!.dispatchEvent(new window.KeyboardEvent("keydown", { bubbles: true, key: "Tab" }));
+    });
+    expect(document.activeElement).toBe(focusable[0]);
+    await act(async () => {
+      focusable[0].dispatchEvent(new window.KeyboardEvent("keydown", { bubbles: true, key: "Tab", shiftKey: true }));
+    });
+    expect(document.activeElement).toBe(focusable.at(-1));
+    await act(async () => drawer.dispatchEvent(new window.KeyboardEvent("keydown", { bubbles: true, key: "Escape" })));
+    expect(document.querySelector('[role="dialog"][aria-label="Admin navigation"]')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    expect(document.getElementById("admin-main-content")?.hasAttribute("inert")).toBe(false);
   });
 });

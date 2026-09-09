@@ -1,0 +1,15 @@
+{
+  "gitHead": "cbf0499728be84a19d8b9b9ca13b679ce16babe4",
+  "files": {
+    "packages/admin/src/features/characters/CharacterVoicePanel.tsx": "d672be7a98ee1278df041c1d46bd3c6f75aa3955ef7403b32c9992cc6c856ab1",
+    "packages/admin/src/features/characters/CharacterVoicePanel.test.tsx": "4d18b464a4dd65bfd23a9d9e9a5686422c473dfcb2bf822c56de5665d33aed35",
+    "packages/admin/src/features/characters/character-workspace-fixture.ts": "c6a28824573237b74be7ad51745f6812ef6eb7c9e50b21b9a879d9852c3ee9d4",
+    "packages/admin/src/components/admin/i18n-zh-characters.ts": "08b3513a7765ce7c80056660951b88e1dc6c9dc9493168ce0dc6d15c73e2c359",
+    "packages/main/src/server/modules/admin-v2/characters/voice-identity.ts": "4f5bfa8cc437e2f6bb7ac5fc81b1a57e22f1228aa55a56222596d2e043ac1b95",
+    "packages/main/src/server/modules/admin-v2/characters/voice-identity.integration.test.ts": "a627ac34c6dee14350e6efd526627caf0a649d7b8fb583d6b7024c47dffa80ce",
+    "packages/main/src/server/modules/admin-v2/characters/workspace.ts": "e46be0e97e65001f2701636688984888046f47625bf255a7be5eda11ab434c2e",
+    "packages/main/src/server/modules/admin-v2/characters/workspace.integration.test.ts": "c37de7a5b1cbd6ac1ac5d24c6bf8af42c9d828503b36714a2a28df1bb16484fd",
+    "packages/main/src/server/modules/voice-defaults.ts": "34b3b4be305225d8b400a7a7e14f41c16cac4c6cacd8634a386f0b0a40796e78",
+    "packages/shared/src/admin/contracts/characters-media-operations.ts": "42393486fcaf5ad7bcce79a624a867bb5ec9beb33d1bd248516c4c1e617e0879"
+  }
+}

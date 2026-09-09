@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { compileCharacterSoul } from "@idream/shared";
 import { BFF_HEADER } from "@idream/shared/bff";
 
@@ -6,6 +6,7 @@ const db = vi.hoisted(() => ({
   findUser: vi.fn(),
   findTurn: vi.fn(),
   findPendingProjection: vi.fn(),
+  findSessions: vi.fn(),
   createSession: vi.fn(async () => ({})),
   deleteSessions: vi.fn(async () => ({ count: 1 })),
 }));
@@ -15,6 +16,7 @@ vi.mock("./lib/db", () => ({
     user: { findUnique: db.findUser },
     chatTurn: { findUnique: db.findTurn },
     mainOutboxEvent: { findFirst: db.findPendingProjection },
+    recentChat: { findMany: db.findSessions },
     session: { create: db.createSession, deleteMany: db.deleteSessions },
     $disconnect: vi.fn(async () => undefined),
   },
@@ -28,6 +30,8 @@ import {
   cleanupExistingProbeState,
   describeDshRecallFailure,
   fetchProbeCompanionAttemptEvidence,
+  fetchAuditCompanionAttemptEvidence,
+  waitForProbeMemoryMaintenance,
   evaluateDshRecallEvidence,
   projectDshCompanionEvidence,
   runProbe,
@@ -41,6 +45,8 @@ const auditActor = {
   status: "active",
   deletedAt: null,
 };
+
+beforeEach(() => { db.findSessions.mockResolvedValue([]); });
 
 function completedDshTrace() {
   return {
@@ -88,6 +94,7 @@ afterEach(() => {
   db.findUser.mockReset();
   db.findTurn.mockReset();
   db.findPendingProjection.mockReset();
+  db.findSessions.mockReset();
   db.createSession.mockClear();
   db.deleteSessions.mockClear();
 });
@@ -377,6 +384,69 @@ describe("chat service DSH evidence", () => {
 });
 
 describe("chat service conversation probe", () => {
+  const cleanupInput = {
+    serviceUrl: "http://127.0.0.1:3100", mainWebUrl: "http://127.0.0.1:3000", authToken: "probe-auth-token", secret: "probe-secret", userId: auditActor.id, characterId: "lola-moonstruck",
+  };
+  const probeTitle = "Probe 11111111-1111-4111-8111-111111111111 first";
+
+  it("cleans only PG-owned target Probe sessions and preserves other Characters' Quality and ordinary history", async () => {
+    db.findUser.mockResolvedValue(auditActor);
+    db.findPendingProjection.mockResolvedValue(null);
+    const sessions = [
+      { sessionId: "target-probe", userId: auditActor.id, characterId: cleanupInput.characterId, title: probeTitle },
+      { sessionId: "mara-quality", userId: auditActor.id, characterId: "mara", title: "Quality preserved first" },
+      { sessionId: "mara-history", userId: auditActor.id, characterId: "mara", title: "Mara" },
+      { sessionId: "another-user", userId: "another-audit-user", characterId: cleanupInput.characterId, title: probeTitle },
+    ];
+    db.findSessions.mockImplementation(async ({ where }: { where: { userId: string; characterId: string } }) => sessions.filter((session) => session.userId === where.userId && session.characterId === where.characterId));
+    const mutations: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+      const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+      mutations.push(`${init?.method ?? "GET"} ${url.pathname}`);
+      if (url.pathname === "/api/v1/chat/sessions/target-probe" && init?.method === "DELETE") sessions.splice(sessions.findIndex((session) => session.sessionId === "target-probe"), 1);
+      else if (url.pathname !== "/api/v1/chat/memory/lola-moonstruck" || init?.method !== "DELETE") throw new Error("Unexpected cross-scope request");
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }));
+    expect(await cleanupExistingProbeState(cleanupInput)).toMatchObject({ ok: true });
+    expect(mutations).toEqual(["DELETE /api/v1/chat/sessions/target-probe", "DELETE /api/v1/chat/memory/lola-moonstruck"]);
+    expect(sessions.map((session) => session.sessionId)).toEqual(["mara-quality", "mara-history", "another-user"]);
+    for (const [query] of db.findSessions.mock.calls) expect(query.where).toEqual({ userId: auditActor.id, characterId: cleanupInput.characterId });
+    const relationships = db.findPendingProjection.mock.calls.map(([query]) => query.where.aggregateId);
+    expect(new Set(relationships).size).toBe(1);
+  });
+
+  it.each(["Quality preserved return", "Lola Moonstruck", null])("refuses the whole target preflight before any mutation for protected or unknown title %s", async (title) => {
+    db.findUser.mockResolvedValue(auditActor);
+    db.findSessions.mockResolvedValue([
+      { sessionId: "eligible-first", userId: auditActor.id, characterId: cleanupInput.characterId, title: probeTitle },
+      { sessionId: "protected-target", userId: auditActor.id, characterId: cleanupInput.characterId, title },
+    ]);
+    const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    expect(await cleanupExistingProbeState(cleanupInput)).toMatchObject({ ok: false, error: expect.stringContaining("protected-target") });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(db.createSession).not.toHaveBeenCalled();
+    expect(db.findPendingProjection).not.toHaveBeenCalled();
+  });
+
+  it("rejects same-Character Quality in runProbe before creating even its temporary auth Session", async () => {
+    db.findUser.mockResolvedValue(auditActor);
+    db.findSessions.mockResolvedValue([{ sessionId: "quality-active", userId: auditActor.id, characterId: cleanupInput.characterId, title: "Quality live first" }]);
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ ok: true, service: "chat" }), { status: 200 })); vi.stubGlobal("fetch", fetch);
+    const report = await runProbe({ serviceUrl: cleanupInput.serviceUrl, mainWebUrl: cleanupInput.mainWebUrl, secret: cleanupInput.secret, userId: auditActor.id, characterId: cleanupInput.characterId });
+    expect(report).toMatchObject({ ok: false, error: { message: expect.stringContaining("quality-active") } });
+    expect(db.createSession).not.toHaveBeenCalled();
+    expect(db.deleteSessions).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledTimes(1); // health is read-only
+  });
+
+  it("keeps direct preflight cleanup restricted to the dedicated audit actor", async () => {
+    db.findUser.mockResolvedValue({ ...auditActor, id: "other-audit-user" });
+    const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    expect(await cleanupExistingProbeState({ ...cleanupInput, userId: "other-audit-user" })).toMatchObject({ ok: false, error: expect.stringContaining("dedicated active audit actor") });
+    expect(db.findSessions).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["preflight", false, false],
     ["preflight", false, true],
@@ -390,6 +460,8 @@ describe("chat service conversation probe", () => {
     if (initialPending) setTimeout(() => { pending = false; }, 100);
     const remaining = new Set(["session-source", "session-recall"]);
     const deletes: string[] = [];
+    db.findUser.mockResolvedValue(auditActor);
+    db.findSessions.mockImplementation(async () => [...remaining].map((sessionId) => ({ sessionId, userId: auditActor.id, characterId: "lola-moonstruck", title: probeTitle })));
     db.findPendingProjection.mockImplementation(async () => pending ? { id: "relationship-rebuild" } : null);
     vi.stubGlobal("fetch", vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
       const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
@@ -606,6 +678,41 @@ describe("chat service conversation probe", () => {
     expect(JSON.stringify(evidence)).not.toContain("must-not-leak");
   });
 
+  it("allows quality evidence for another audit owner but never another owner's Turn", async () => {
+    const userId = "private-character-audit-owner";
+    db.findUser.mockResolvedValue({ ...auditActor, id: userId });
+    db.findPendingProjection.mockResolvedValue(null);
+    db.findTurn.mockResolvedValue({
+      attempt: 1, assistantStatus: "sent", terminalEvidence: completedDshTrace(),
+      session: { sessionId: "quality-session", userId, characterId: "private-character" },
+    });
+    const input = { serviceUrl: "http://127.0.0.1:3100", internalToken: "audit-token", userId, sessionId: "quality-session", messageId: "assistant-normal", attempt: 1, mode: "normal" as const };
+    const evidence = await fetchAuditCompanionAttemptEvidence(input);
+    expect(evidence.ok).toBe(true);
+    expect(JSON.stringify(evidence)).not.toContain("must-not-leak");
+    await expect(fetchProbeCompanionAttemptEvidence(input)).rejects.toThrow("dedicated audit actor");
+    await expect(fetchAuditCompanionAttemptEvidence({ ...input, userId: "different-owner" })).rejects.toThrow("probe identity");
+  });
+
+  it("rejects customer or admin actors before reading quality Turn evidence", async () => {
+    const input = { serviceUrl: "http://127.0.0.1:3100", internalToken: "audit-token", userId: "customer", sessionId: "quality-session", messageId: "assistant-normal", attempt: 1, mode: "normal" as const };
+    db.findUser.mockResolvedValue({ ...auditActor, dataClass: "customer" });
+    await expect(fetchAuditCompanionAttemptEvidence(input)).rejects.toThrow("active audit user");
+    expect(db.findTurn).not.toHaveBeenCalled();
+  });
+
+  it("observes idle memory maintenance at least once even with a minimal deadline", async () => {
+    vi.stubEnv("CHAT_SERVICE_PROBE_SETTLE_TIMEOUT_MS", "1");
+    const now = vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValue(2);
+    db.findPendingProjection.mockResolvedValue(null);
+    try {
+      await expect(waitForProbeMemoryMaintenance({ userId: auditActor.id, characterId: "character-probe" })).resolves.toBe(true);
+      expect(db.findPendingProjection).toHaveBeenCalledTimes(1);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
   it("polls until Main's relationship projection leaves pending", async () => {
     db.findTurn.mockResolvedValue({
       attempt: 1,
@@ -708,6 +815,10 @@ describe("chat service conversation probe", () => {
     });
 
     expect(report.conversation?.error).toBe("recall stream failed: provider_failed");
+    const creationBodies = vi.mocked(fetch).mock.calls.filter(([input, init]) => String(input).endsWith("/api/v1/chat/sessions") && init?.method === "POST").map(([, init]) => JSON.parse(String(init?.body)));
+    expect(creationBodies).toHaveLength(2);
+    expect(creationBodies[0].title).toMatch(/^Probe [a-f0-9-]{36} first$/u);
+    expect(creationBodies[1].title).toBe(creationBodies[0].title.replace(/ first$/u, " recall"));
     expect(requests.some((request) => request.includes("/regenerate"))).toBe(false);
     expect(requests.filter((request) =>
       request.endsWith("/messages"))).toEqual([

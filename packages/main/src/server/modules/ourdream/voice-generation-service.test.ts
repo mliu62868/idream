@@ -6,6 +6,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { dispatchV1 } from "@/server/modules/ourdream/service";
 import { providers } from "@/server/providers";
+import * as generationCharacterAuthority from "./generation-character-authority";
 import { postDreamcoinEntry } from "@/server/modules/billing/ledger";
 import { reclaimExpiredVoiceClip } from "./voice-clip";
 import {
@@ -83,6 +84,75 @@ afterAll(async () => {
 });
 
 describe("voice generation service contract", () => {
+  it.each(["activate", "reset"] as const)("freezes one coherent voice identity when %s races the permission read", async (transition) => {
+    const userId = `${P}snapshot-${transition}-user`;
+    const messageId = `${P}snapshot-${transition}-message`;
+    const referenceId = `${P}snapshot-${transition}-reference`;
+    const voiceA = `${P}snapshot-${transition}-voice-a`;
+    const voiceB = `${P}snapshot-${transition}-voice-b`;
+    await createUser({ id: userId });
+    await grantVoice(userId, 10);
+    await prisma.mediaAsset.create({ data: {
+      id: referenceId, ownerId: SYS, characterId: CHAR, type: "voice",
+      url: `/user-content/${referenceId}/content.wav`, visibility: "private",
+      contentType: "audio/wav", metadata: { filename: "voice.wav", sizeBytes: 2048 },
+    } });
+    await prisma.characterVoiceProfile.createMany({ data: [voiceA, voiceB].map((voiceId, index) => ({
+      characterId: CHAR, version: index + 1, provider: "pocket_tts", providerVoiceId: voiceId,
+      model: "pocket-tts", language: "english", status: index === 0 ? "active" : "candidate",
+      referenceAssetId: referenceId, sampleText: "A consistent role voice", createdById: SYS,
+    })) });
+    await prisma.character.update({ where: { id: CHAR }, data: { voiceId: voiceA } });
+    let permissionRead = () => {};
+    let resumeRead = () => {};
+    const readReady = new Promise<void>((resolve) => { permissionRead = resolve; });
+    const resume = new Promise<void>((resolve) => { resumeRead = resolve; });
+    const read = generationCharacterAuthority.readableCharacter;
+    const permission = vi.spyOn(generationCharacterAuthority, "readableCharacter").mockImplementationOnce(async (id, viewerId) => {
+      const snapshot = await read(id, viewerId);
+      permissionRead();
+      await resume;
+      return snapshot;
+    });
+    const configuredVoice = providers.voice;
+    providers.voice = { clip: {
+      providerKey: "pocket_tts", providerReplay: "durable_same_key",
+      synthesize: configuredVoice.clip.synthesize.bind(configuredVoice.clip),
+    }, identity: null };
+    const operation = api("POST", "generation/voice", {
+      userId, ageGate: true, body: { characterId: CHAR, messageId, text: "Freeze the coherent voice authority" },
+    });
+    try {
+      await Promise.race([readReady, operation.then(() => { throw new Error("Voice request did not reach the permission read"); })]);
+      // These are the same atomic pointer/profile writes as Admin activate/reset.
+      // The request is concurrently suspended with the older permission snapshot.
+      await prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT "id" FROM "characters" WHERE "id" = ${CHAR} FOR UPDATE`;
+        await tx.characterVoiceProfile.update({ where: { providerVoiceId: voiceA }, data: { status: "archived", archivedAt: new Date() } });
+        if (transition === "activate") {
+          await tx.characterVoiceProfile.update({ where: { providerVoiceId: voiceB }, data: { status: "active" } });
+        }
+        await tx.character.update({ where: { id: CHAR }, data: { voiceId: transition === "activate" ? voiceB : null } });
+      });
+      resumeRead();
+      expectOk(await operation, 201);
+      const request = await prisma.voiceClipRequest.findUniqueOrThrow({ where: { userId_messageId: { userId, messageId } } });
+      expect(request.providerPayload).toMatchObject(transition === "activate" ? {
+        providerKey: "pocket_tts", voiceId: voiceB, voiceAuthority: "character_clone", characterVoiceProfileVersion: 2,
+      } : {
+        providerKey: "pocket_tts", voiceId: "alba", voiceAuthority: "system_default", characterVoiceProfileVersion: null,
+      });
+    } finally {
+      resumeRead();
+      await operation;
+      permission.mockRestore();
+      providers.voice = configuredVoice;
+      await prisma.character.update({ where: { id: CHAR }, data: { voiceId: null } });
+      await prisma.characterVoiceProfile.deleteMany({ where: { characterId: CHAR, providerVoiceId: { in: [voiceA, voiceB] } } });
+      await prisma.mediaAsset.delete({ where: { id: referenceId } });
+    }
+  });
+
   it("single-flights concurrent requests for the same message", async () => {
     const userId = `${P}single-flight-user`;
     const messageId = `${P}single-flight-message`;

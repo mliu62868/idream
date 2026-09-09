@@ -134,6 +134,7 @@ describe("Generation TransportExecution authority", () => {
 
     const facts = await prisma.aiUsageFact.findMany({ where: { attemptId }, orderBy: { sourceEventId: "asc" } });
     expect(facts).toHaveLength(3);
+    expect(facts.every(fact => fact.userId === userId && fact.dataClass === "fixture" && fact.actorIsInternal && fact.environment === "test")).toBe(true);
     expect(facts.reduce((total, fact) => total + (fact.costMicros ?? BigInt(0)), BigInt(0))).toBe(BigInt(125_000));
     expect(facts.map((fact) => fact.costMicros)).toEqual([BigInt(50_000), BigInt(75_000), null]);
 

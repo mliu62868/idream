@@ -72,6 +72,19 @@ describe("typed Scene State", () => {
     });
   });
 
+  it("does not turn an everyday mention of day into a scene time change", () => {
+    expect(deriveSceneDelta({ userText: "I had a difficult day. Keep our nighttime scene.", assistantText: "I sit beside you." }).time).toBeNull();
+  });
+
+  it("does not promote proposals or conflicting assistant relations to authoritative Scene fields", () => {
+    for (const input of [
+      { userText: "Would the book look better left of the cup tomorrow?", assistantText: "Maybe." },
+      { userText: "The book is left of the cup.", assistantText: "The book is right of the cup." },
+    ]) {
+      expect(deriveSceneDelta(input)).not.toHaveProperty("objectRelations");
+    }
+  });
+
   it.each([
     "I am falling in love with you.",
     "I'm interested in astronomy.",

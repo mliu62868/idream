@@ -4,7 +4,7 @@ import { translateAdmin } from "@/components/admin/i18n";
 import { ALL_SECTION_ITEMS, canReadWorkspace } from "@/components/admin/nav-config";
 
 // SPEC: 把每个已授权能力页变成可直接搜索的跳转目标，供全局搜索框当命令面板用。
-// INTENT: 侧栏负责工作区发现，页头负责区内浏览；搜索负责知道目标名称时的快速直达，
+// INTENT: 侧栏负责分组与区内页面发现；搜索负责知道目标名称时的快速直达，
 //         包括尚未完成命令迁移的兼容工具，但不能反过来成为这些工具的唯一入口。
 export type AdminDestination = {
   id: string;

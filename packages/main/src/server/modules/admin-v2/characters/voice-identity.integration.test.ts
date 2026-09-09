@@ -2,9 +2,11 @@ import { randomUUID } from "node:crypto";
 import { DEFAULT_FISH_AUDIO_DELIVERY } from "@idream/shared/admin";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/server/lib/db";
+import { logger } from "@/server/lib/logger";
 
 const providerState = vi.hoisted(() => ({
   providerKey: "fish_audio",
+  identityProviderKey: null as "fish_audio" | "pocket_tts" | null,
   cloneCalls: 0,
   presetCalls: 0,
   synthesizeCalls: 0,
@@ -12,13 +14,24 @@ const providerState = vi.hoisted(() => ({
   deletedVoiceIds: [] as string[],
   referenceTexts: [] as string[],
   storedKeys: [] as string[],
+  deletedKeys: [] as string[],
   inspectOk: true,
+  unavailableProviders: [] as string[],
   persistedPreviewOk: true,
   voiceCloning: true,
   runtime: "mlx_audio",
   runtimeVersion: "mlx-audio-test",
   catalogVoices: [] as string[],
 }));
+
+vi.mock("@/server/lib/env", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/server/lib/env")>();
+  return { ...actual, env: { ...actual.env,
+    get VOICE_IDENTITY_PROVIDER() {
+      return providerState.identityProviderKey?.replace("_", "-") ?? actual.env.VOICE_IDENTITY_PROVIDER;
+    },
+  } };
+});
 
 vi.mock("@/server/providers", () => ({
   providers: {
@@ -33,7 +46,7 @@ vi.mock("@/server/providers", () => ({
       },
       identity: {
         get providerKey() {
-          return providerState.providerKey;
+          return providerState.identityProviderKey ?? providerState.providerKey;
         },
         async cloneVoice(input: {
           voiceId: string;
@@ -96,15 +109,17 @@ vi.mock("@/server/providers", () => ({
           return { ok: true as const, data: { deleted: true as const } };
         },
         async inspectCapabilities() {
-          return providerState.inspectOk
+          return providerState.inspectOk && !providerState.unavailableProviders.includes(providerState.identityProviderKey ?? providerState.providerKey)
             ? {
                 ok: true as const,
                 data: {
                   voiceCloning: providerState.voiceCloning,
-                  runtime: providerState.runtime,
+                  runtime: providerState.identityProviderKey
+                    ? (providerState.identityProviderKey === "pocket_tts" ? "pocket_tts" : "mlx_audio")
+                    : providerState.runtime,
                   runtimeVersion: providerState.runtimeVersion,
                   acceleration:
-                    providerState.providerKey === "pocket_tts" ? "cpu" : "mlx",
+                    (providerState.identityProviderKey ?? providerState.providerKey) === "pocket_tts" ? "cpu" : "mlx",
                   catalogVoices: providerState.catalogVoices,
                 },
               }
@@ -130,7 +145,8 @@ vi.mock("@/server/providers", () => ({
       async signGetUrl() {
         return { ok: true as const, data: { url: "https://blob.example.test/voice" } };
       },
-      async delete() {
+      async delete(input: { key: string }) {
+        providerState.deletedKeys.push(input.key);
         return { ok: true as const, data: { deleted: true as const } };
       },
     },
@@ -150,6 +166,13 @@ vi.mock("@/server/providers/voice/factory", () => ({
         providerKey,
         async cloneVoice() {
           throw new Error("Clone is outside persisted-candidate activation");
+        },
+        async createPresetVoice(input: { voiceId: string; presetVoiceId: string; language: string }) {
+          providerState.presetCalls += 1;
+          return { ok: true as const, data: {
+            voiceId: input.voiceId, presetVoiceId: input.presetVoiceId,
+            model: "pocket-tts", language: input.language,
+          } };
         },
         async previewVoice() {
           providerState.synthesizeCalls += 1;
@@ -176,7 +199,7 @@ vi.mock("@/server/providers/voice/factory", () => ({
           return { ok: true as const, data: { deleted: true as const } };
         },
         async inspectCapabilities() {
-          if (!providerState.inspectOk) {
+          if (!providerState.inspectOk || providerState.unavailableProviders.includes(providerKey)) {
             return {
               ok: false as const,
               error: {
@@ -205,11 +228,15 @@ vi.mock("@/server/providers/voice/factory", () => ({
   },
 }));
 
+import { updateVoiceDefaultSettings, VOICE_DEFAULTS_SETTING_KEY } from "@/server/modules/voice-defaults";
+import { toInputJson } from "../shared/prisma-json";
+
 import {
   activateCharacterVoiceProfile,
   createCharacterVoiceClone,
   createCharacterVoicePreset,
   inspectConfiguredVoiceIdentityRuntime,
+  inspectCharacterVoiceRuntimes,
   parseVoiceCloneForm,
   resetCharacterVoiceToSystemDefault,
 } from "./voice-identity";
@@ -904,6 +931,198 @@ describe("Character voice identity authority", () => {
         eventType: "character.voice.reset_to_system_default.v1",
       },
     })).toBe(1);
+  });
+  it("keeps Pocket presets and candidate readiness independent of Fish cloning", async () => {
+    providerState.providerKey = "pocket_tts";
+    providerState.identityProviderKey = "fish_audio";
+    providerState.inspectOk = true;
+    providerState.voiceCloning = true;
+    providerState.catalogVoices = ["alba", "anna"];
+    const presetInput = {
+      characterId, actor: { id: actorId, role: "admin" as const },
+      idempotencyKey: `voice-split-preset-${suffix}`, requestId: randomUUID(),
+      request: { presetVoiceId: "anna", sampleText: "A distinct catalog voice.", reason: "Review the catalog candidate" },
+    };
+    try {
+      await expect(inspectCharacterVoiceRuntimes("pocket_tts")).resolves.toMatchObject({
+        provider: "fish_audio", cloningAvailable: true, runtimeStatus: "ready",
+        presetRuntime: { provider: "pocket_tts", runtimeStatus: "ready", catalogVoiceIds: ["alba", "anna"] },
+        candidateRuntimeStatus: "ready",
+      });
+      providerState.unavailableProviders = ["fish_audio"];
+      await expect(inspectCharacterVoiceRuntimes("pocket_tts")).resolves.toMatchObject({
+        provider: "fish_audio", cloningAvailable: false, runtimeStatus: "unavailable",
+        presetRuntime: { provider: "pocket_tts", runtimeStatus: "ready", catalogVoiceIds: ["alba", "anna"] },
+        candidateRuntimeStatus: "ready",
+      });
+      const candidate = await createCharacterVoicePreset(presetInput);
+      expect(candidate.profile.provider).toBe("pocket_tts");
+      const current = await prisma.character.findUniqueOrThrow({ where: { id: characterId }, select: { voiceId: true } });
+      const active = await prisma.characterVoiceProfile.findFirst({ where: { characterId, status: "active" }, select: { id: true } });
+      await expect(activateCharacterVoiceProfile({
+        characterId, profileId: candidate.profile.id, actor: { id: actorId, role: "admin" },
+        idempotencyKey: `voice-split-activation-${suffix}`, requestId: randomUUID(),
+        request: { expectedCurrentVoiceId: current.voiceId, expectedActiveProfileId: active?.id ?? null,
+          reason: "Activate the healthy Pocket candidate while cloning is offline" },
+      })).resolves.toMatchObject({ profile: { id: candidate.profile.id, status: "active" } });
+      providerState.inspectOk = false;
+      providerState.providerKey = "mock";
+      await expect(createCharacterVoicePreset(presetInput)).resolves.toEqual({ ...candidate, replayed: true });
+    } finally {
+      providerState.providerKey = "fish_audio";
+      providerState.identityProviderKey = null;
+      providerState.unavailableProviders = [];
+      providerState.inspectOk = true;
+      providerState.catalogVoices = [];
+    }
+  });
+
+  it("replays committed clones after runtime outage and configured provider change", async () => {
+    const input = {
+      characterId, actor: { id: actorId, role: "admin" as const },
+      idempotencyKey: `voice-outage-replay-${suffix}`, requestId: randomUUID(),
+      form: cloneForm("outage.wav", "A durable clone receipt."),
+    };
+    const first = await createCharacterVoiceClone(input);
+    const cloneCalls = providerState.cloneCalls;
+    providerState.inspectOk = false;
+    providerState.providerKey = "mock";
+    try {
+      await expect(createCharacterVoiceClone(input)).resolves.toEqual({ ...first, replayed: true });
+      expect(providerState.cloneCalls).toBe(cloneCalls);
+    } finally {
+      providerState.inspectOk = true;
+      providerState.providerKey = "fish_audio";
+    }
+  });
+
+  it("preserves committed voice artifacts after a lost transaction acknowledgement", async () => {
+    const input = {
+      characterId, actor: { id: actorId, role: "admin" as const },
+      idempotencyKey: `voice-lost-commit-${suffix}`, requestId: randomUUID(),
+      form: cloneForm("commit.wav", "The committed clone must remain playable."),
+    };
+    const transact = prisma.$transaction.bind(prisma);
+    const transaction = vi.spyOn(prisma, "$transaction").mockImplementationOnce(async (callback, options) => {
+      await transact(callback, options);
+      throw new Error("Synthetic lost COMMIT acknowledgement");
+    });
+    try {
+      await expect(createCharacterVoiceClone(input)).rejects.toThrow("Synthetic lost COMMIT acknowledgement");
+    } finally {
+      transaction.mockRestore();
+    }
+    const replay = await createCharacterVoiceClone(input);
+    expect(replay.replayed).toBe(true);
+    expect(providerState.deletedVoiceIds).not.toContain(replay.profile.providerVoiceId);
+    expect(providerState.deletedKeys.some((key) => key.includes(replay.profile.providerVoiceId))).toBe(false);
+    expect(await prisma.characterVoiceProfile.findUnique({ where: { id: replay.profile.id } })).not.toBeNull();
+  });
+  it("waits for an in-flight Character commit before deciding whether to delete artifacts", async () => {
+    const input = {
+      characterId, actor: { id: actorId, role: "admin" as const },
+      idempotencyKey: `voice-pending-commit-${suffix}`, requestId: randomUUID(),
+      form: cloneForm("pending.wav", "A commit still in flight must retain its voice."),
+    };
+    let releaseCommit = () => {};
+    let signalWritten = () => {};
+    const commitGate = new Promise<void>((resolve) => { releaseCommit = resolve; });
+    const written = new Promise<void>((resolve) => { signalWritten = resolve; });
+    const transact = prisma.$transaction.bind(prisma);
+    let pendingCommit: Promise<unknown> | null = null;
+    let blockingPid = 0;
+    const transaction = vi.spyOn(prisma, "$transaction").mockImplementationOnce(async (callback, options) => {
+      pendingCommit = transact(async (tx) => {
+        const rows = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+        blockingPid = rows[0]!.pid;
+        const result = await callback(tx);
+        signalWritten();
+        await commitGate;
+        return result;
+      }, options);
+      await Promise.race([written, pendingCommit]);
+      throw new Error("Lost connection while COMMIT is still pending");
+    });
+    const operation = createCharacterVoiceClone(input);
+    void operation.catch(() => {});
+    try {
+      await Promise.race([written, operation]);
+      const deadline = Date.now() + 2_000;
+      let waitingOnCommit = false;
+      while (Date.now() < deadline) {
+        const rows = await prisma.$queryRaw<Array<{ waiting: boolean }>>`
+          SELECT EXISTS (
+            SELECT 1 FROM pg_stat_activity
+            WHERE ${blockingPid} = ANY(pg_blocking_pids(pid))
+          ) AS waiting`;
+        if (rows[0]?.waiting) { waitingOnCommit = true; break; }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(waitingOnCommit).toBe(true);
+    } finally {
+      releaseCommit();
+      await pendingCommit;
+      transaction.mockRestore();
+    }
+    await expect(operation).rejects.toThrow("Lost connection while COMMIT is still pending");
+    const replay = await createCharacterVoiceClone(input);
+    expect(replay.replayed).toBe(true);
+    expect(providerState.deletedVoiceIds).not.toContain(replay.profile.providerVoiceId);
+    expect(providerState.deletedKeys.some((key) => key.includes(replay.profile.providerVoiceId))).toBe(false);
+  });
+
+  it("preserves the original failure and logs deferred cleanup when commit authority is unreadable", async () => {
+    const input = {
+      characterId, actor: { id: actorId, role: "admin" as const },
+      idempotencyKey: `voice-unreadable-commit-${suffix}`, requestId: randomUUID(),
+      form: cloneForm("unreadable.wav", "Keep evidence until commit authority can be read."),
+    };
+    const previousDeletes = [...providerState.deletedVoiceIds];
+    const transaction = vi.spyOn(prisma, "$transaction")
+      .mockRejectedValueOnce(new Error("Original mutation connection loss"))
+      .mockRejectedValueOnce(new Error("Commit authority database unavailable"));
+    const warning = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      await expect(createCharacterVoiceClone(input)).rejects.toThrow("Original mutation connection loss");
+      expect(providerState.deletedVoiceIds).toEqual(previousDeletes);
+      expect(warning).toHaveBeenCalledWith(expect.objectContaining({
+        characterId, providerVoiceId: expect.stringMatching(/^idream-/),
+        err: expect.objectContaining({ message: "Commit authority database unavailable" }),
+      }), "Voice cleanup deferred because commit authority could not be verified");
+    } finally {
+      transaction.mockRestore();
+      warning.mockRestore();
+    }
+  });
+
+  it("replays a saved default setting after the system provider changes", async () => {
+    const previous = await prisma.appSetting.findUnique({ where: { key: VOICE_DEFAULTS_SETTING_KEY } });
+    providerState.providerKey = "mock";
+    const input = {
+      actor: { id: actorId, role: "admin" as const },
+      idempotencyKey: `voice-default-replay-${suffix}`, requestId: randomUUID(),
+      request: { provider: "mock", expectedVersion: previous?.version ?? 0,
+        defaultVoiceId: "default", genderVoiceIds: { female: "default", male: "default", trans: "default" },
+        delivery: DEFAULT_FISH_AUDIO_DELIVERY, reason: "Verify durable default setting receipt",
+      },
+    };
+    try {
+      const saved = await updateVoiceDefaultSettings(input);
+      providerState.providerKey = "fish_audio";
+      await expect(updateVoiceDefaultSettings(input)).resolves.toEqual({ ...saved, replayed: true });
+    } finally {
+      providerState.providerKey = "fish_audio";
+      if (previous) {
+        await prisma.appSetting.update({ where: { key: VOICE_DEFAULTS_SETTING_KEY }, data: {
+          value: toInputJson(previous.value), version: previous.version, status: previous.status, updatedAt: previous.updatedAt,
+        } });
+      } else {
+        await prisma.appSetting.deleteMany({ where: { key: VOICE_DEFAULTS_SETTING_KEY } });
+      }
+      await prisma.mainOutboxEvent.deleteMany({ where: {
+        eventType: "voice.defaults.updated.v1", payload: { path: ["actorId"], equals: actorId },
+      } });
+    }
   });
 });
 

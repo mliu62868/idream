@@ -36,7 +36,7 @@ const NAV_IDS = [
 const TARGET_ONLY_NAV_IDS = ["growth/characters", "ops/invariants"];
 
 describe("admin navigation information architecture", () => {
-  it("publishes every decision workspace exactly once inside the seven workspaces", () => {
+  it("publishes every decision workspace exactly once inside the task groups", () => {
     expect(navItems.map((item) => item.id).sort()).toEqual([...NAV_IDS, ...TARGET_ONLY_NAV_IDS].sort());
     expect(new Set(navItems.map((item) => item.id)).size).toBe(NAV_IDS.length + TARGET_ONLY_NAV_IDS.length);
     expect(new Set(navItems.map((item) => item.group))).toEqual(new Set(ADMIN_WORKSPACES));
@@ -54,7 +54,10 @@ describe("admin navigation information architecture", () => {
   it("presents Character as the primary admin object", () => {
     expect(navItems.find((item) => item.id === "content/official")?.label).toBe("Characters");
     expect(navItems.filter((item) => item.navigation === "primary").map((item) => item.label))
-      .toEqual(["Today", "Characters"]);
+      .toEqual(["Today"]);
+    const groups = navGroupsForPermissions(new Set(ALL_SECTION_ITEMS.flatMap((item) => item.read.allOf)), "admin");
+    expect(groups.slice(0, 2).map(({ group }) => group)).toEqual(["Today", "Characters"]);
+    expect(groups.slice(-2).map(({ group }) => group)).toEqual(["Platform Operations", "System"]);
   });
 
   // SPEC: 入口层级是产品语义，不由组件按 URL 或名字猜。
@@ -62,11 +65,7 @@ describe("admin navigation information architecture", () => {
   it("classifies low-frequency tools without removing their destinations", () => {
     expect(ALL_SECTION_ITEMS.filter((item) => item.navigation === "tool").map((item) => item.id).sort())
       .toEqual([
-        "announcements",
-        "compliance",
         "content/production",
-        "content/tags",
-        "content/templates",
         "generation/backends",
         "generation/dead-letter",
         "generation/metrics",
@@ -74,7 +73,6 @@ describe("admin navigation information architecture", () => {
         "generation/workflows",
         "insights",
         "moderation",
-        "promo",
         "risk",
         "support",
       ].sort());
@@ -202,8 +200,8 @@ describe("permission and work-mode navigation", () => {
     const ids = groups.flatMap((group) => group.items.map((item) => item.id));
 
     expect(ids).toEqual([
-      "dashboard", "cases", "users", "billing", "compliance", "support", "risk",
-      "audit-log", "pricing",
+      "dashboard", "cases", "users", "compliance", "support", "risk",
+      "billing", "pricing", "audit-log",
     ]);
     // 同一个 read key 可能打开多个工作区；模式只改变分组顺序，不能擅自隐藏其中一个入口。
     expect(ids).toContain("pricing");
@@ -269,7 +267,7 @@ describe("permission and work-mode navigation", () => {
         .toEqual(expectedIds);
     }
     expect(navGroupsForPermissions(permissions, "support")[0]?.group).toBe("Today");
-    expect(navGroupsForPermissions(permissions, "support")[1]?.group).toBe("Customer Operations");
+    expect(navGroupsForPermissions(permissions, "support")[1]?.group).toBe("Customers & Support");
     expect(navGroupsForPermissions(permissions, "platform_ops")[1]?.group).toBe("Platform Operations");
 
     expect(sectionIsPermitted("generation/dead-letter", permissions)).toBe(true);

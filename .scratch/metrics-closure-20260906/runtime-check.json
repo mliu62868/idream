@@ -1,0 +1,475 @@
+{
+  "mode": "check",
+  "environment": "development",
+  "database": {
+    "host": "localhost",
+    "port": "5433",
+    "name": "idream_runtime_20260812"
+  },
+  "asOf": "2026-09-06T23:46:33.185Z",
+  "quality": {
+    "asOf": "2026-09-06T23:46:33.185Z",
+    "qualityState": "invalid",
+    "incompleteOutcomeCount": 0,
+    "duplicateEffectCount": 0,
+    "impossibleStateCount": 0,
+    "fixtureInternalLeakageCount": 0,
+    "joinCoverage": 1,
+    "userJoinCoverage": 1,
+    "characterJoinCoverage": 1,
+    "contentVersionJoinCoverage": 1,
+    "releaseJoinCoverage": 1,
+    "eventLagP95Ms": 20203,
+    "freshnessSloMs": 3600000,
+    "scannedFactCount": 0,
+    "checks": [
+      {
+        "key": "server_outcome_completeness",
+        "status": "passed",
+        "observed": 0,
+        "threshold": "= 0"
+      },
+      {
+        "key": "duplicate_effect",
+        "status": "passed",
+        "observed": 0,
+        "threshold": "= 0"
+      },
+      {
+        "key": "impossible_state",
+        "status": "passed",
+        "observed": 0,
+        "threshold": "= 0"
+      },
+      {
+        "key": "fixture_internal_leakage",
+        "status": "passed",
+        "observed": 0,
+        "threshold": "= 0"
+      },
+      {
+        "key": "authoritative_join_coverage",
+        "status": "passed",
+        "observed": 1,
+        "threshold": ">= 0.99"
+      },
+      {
+        "key": "event_lag_p95",
+        "status": "passed",
+        "observed": 20203,
+        "threshold": "<= 3600000ms"
+      },
+      {
+        "key": "eligible_fact_presence",
+        "status": "failed",
+        "observed": 0,
+        "threshold": "> 0"
+      }
+    ]
+  },
+  "snapshots": 15,
+  "decisionReady": false,
+  "blockedMetrics": [
+    {
+      "key": "north_star.wpcu",
+      "publicationStatus": "official",
+      "qualityState": "invalid",
+      "reasons": [
+        "definition_not_certified",
+        "definition_validation_timestamp_missing",
+        "definition_validation_evidence_missing",
+        "quality_check_failed:metrics.eligible_fact_presence",
+        "source_fact_missing:chat_exchange_fact",
+        "source_fact_missing:generation_fulfillment_fact",
+        "source_fact_missing:subscription_lifecycle_fact",
+        "metric_snapshot_not_certified",
+        "metric_snapshot_latest_data_missing"
+      ]
+    },
+    {
+      "key": "north_star.wscu",
+      "publicationStatus": "shadow",
+      "qualityState": "invalid",
+      "reasons": [
+        "definition_validation_timestamp_missing",
+        "definition_validation_evidence_missing",
+        "quality_check_failed:metrics.eligible_fact_presence",
+        "source_fact_missing:chat_exchange_fact",
+        "metric_snapshot_not_certified",
+        "metric_snapshot_latest_data_missing"
+      ]
+    },
+    {
+      "key": "diagnostic.wsr",
+      "publicationStatus": "diagnostic",
+      "qualityState": "invalid",
+      "reasons": [
+        "definition_validation_timestamp_missing",
+        "definition_validation_evidence_missing",
+        "quality_check_failed:metrics.eligible_fact_presence",
+        "source_fact_missing:chat_exchange_fact",
+        "metric_snapshot_not_certified",
+        "metric_snapshot_latest_data_missing"
+      ]
+    },
+    {
+      "key": "guardrail.wscru",
+      "publicationStatus": "shadow",
+      "qualityState": "invalid",
+      "reasons": [
+        "definition_validation_timestamp_missing",
+        "definition_validation_evidence_missing",
+        "quality_check_failed:metrics.eligible_fact_presence",
+        "source_fact_missing:generation_fulfillment_fact",
+        "metric_snapshot_not_certified",
+        "metric_snapshot_latest_data_missing"
+      ]
+    },
+    {
+      "key": "business.wpscu",
+      "publicationStatus": "shadow",
+      "qualityState": "invalid",
+      "reasons": [
+        "definition_validation_timestamp_missing",
+        "definition_validation_evidence_missing",
+        "quality_check_failed:metrics.eligible_fact_presence",
+        "source_fact_missing:chat_exchange_fact",
+        "source_fact_missing:subscription_lifecycle_fact",
+        "metric_snapshot_not_certified",
+        "metric_snapshot_latest_data_missing"
+      ]
+    },
+    {
+      "key": "activation.chat_24h",
+      "publicationStatus": "diagnostic",
+      "qualityState": "invalid",
+      "reasons": [
+        "definition_not_certified",
+        "definition_validation_timestamp_missing",
+        "definition_validation_evidence_missing",
+        "quality_check_failed:metrics.eligible_fact_presence",
+        "source_fact_missing:customer_signup_fact",
+        "source_fact_missing:chat_exchange_fact",
+        "metric_snapshot_not_certified",
+        "metric_snapshot_latest_data_missing"
+      ]
+    },
+    {
+      "key": "activation.relationship_7d",
+      "publicationStatus": "diagnostic",
+      "qualityState": "invalid",
+      "reasons": [
+        "definition_not_certified",
+        "definition_validation_timestamp_missing",
+        "definition_validation_evidence_missing",
+        "quality_check_failed:metrics.eligible_fact_presence",
+        "source_fact_missing:customer_signup_fact",
+        "source_fact_missing:chat_exchange_fact",
+        "metric_snapshot_not_certified",
+        "metric_snapshot_latest_data_missing"
+      ]
+    },
+    {
+      "key": "activation.generation_7d",
+      "publicationStatus": "diagnostic",
+      "qualityState": "invalid",
+      "reasons": [
+        "definition_not_certified",
+        "definition_validation_timestamp_missing",
+        "definition_validation_evidence_missing",
+        "quality_check_failed:metrics.eligible_fact_presence",
+        "source_fact_missing:customer_signup_fact",
+        "source_fact_missing:generation_fulfillment_fact",
+        "metric_snapshot_not_certified",
+        "metric_snapshot_latest_data_missing"
+      ]
+    },
+    {
+      "key": "retention.same_character_d1",
+      "publicationStatus": "diagnostic",
+      "qualityState": "invalid",
+      "reasons": [
+        "definition_not_certified",
+        "definition_validation_timestamp_missing",
+        "definition_validation_evidence_missing",
+        "quality_check_failed:metrics.eligible_fact_presence",
+        "source_fact_missing:chat_exchange_fact",
+        "metric_snapshot_not_certified",
+        "metric_snapshot_latest_data_missing"
+      ]
+    },
+    {
+      "key": "retention.same_character_d7",
+      "publicationStatus": "diagnostic",
+      "qualityState": "invalid",
+      "reasons": [
+        "definition_not_certified",
+        "definition_validation_timestamp_missing",
+        "definition_validation_evidence_missing",
+        "quality_check_failed:metrics.eligible_fact_presence",
+        "source_fact_missing:chat_exchange_fact",
+        "metric_snapshot_not_certified",
+        "metric_snapshot_latest_data_missing"
+      ]
+    },
+    {
+      "key": "retention.same_character_w1",
+      "publicationStatus": "diagnostic",
+      "qualityState": "invalid",
+      "reasons": [
+        "definition_not_certified",
+        "definition_validation_timestamp_missing",
+        "definition_validation_evidence_missing",
+        "quality_check_failed:metrics.eligible_fact_presence",
+        "source_fact_missing:chat_exchange_fact",
+        "metric_snapshot_not_certified",
+        "metric_snapshot_latest_data_missing"
+      ]
+    },
+    {
+      "key": "conversion.paid_d7",
+      "publicationStatus": "diagnostic",
+      "qualityState": "invalid",
+      "reasons": [
+        "definition_not_certified",
+        "definition_validation_timestamp_missing",
+        "definition_validation_evidence_missing",
+        "quality_check_failed:metrics.eligible_fact_presence",
+        "source_fact_missing:customer_signup_fact",
+        "source_fact_missing:subscription_lifecycle_fact",
+        "metric_snapshot_not_certified",
+        "metric_snapshot_latest_data_missing"
+      ]
+    },
+    {
+      "key": "conversion.paid_d30",
+      "publicationStatus": "diagnostic",
+      "qualityState": "invalid",
+      "reasons": [
+        "definition_not_certified",
+        "definition_validation_timestamp_missing",
+        "definition_validation_evidence_missing",
+        "quality_check_failed:metrics.eligible_fact_presence",
+        "source_fact_missing:customer_signup_fact",
+        "source_fact_missing:subscription_lifecycle_fact",
+        "metric_snapshot_not_certified",
+        "metric_snapshot_latest_data_missing"
+      ]
+    },
+    {
+      "key": "cost.provider_variable_7d",
+      "publicationStatus": "diagnostic",
+      "qualityState": "invalid",
+      "reasons": [
+        "priced_invocations=0/0",
+        "Cash revenue is not inferred from provider cost."
+      ]
+    },
+    {
+      "key": "margin.character_contribution_7d",
+      "publicationStatus": "diagnostic",
+      "qualityState": "invalid",
+      "reasons": [
+        "cash_attribution_authority_unavailable",
+        "Dreamcoin consumption is not cash revenue."
+      ]
+    }
+  ],
+  "metrics": [
+    {
+      "key": "north_star.wpcu",
+      "definitionVersion": 2,
+      "publicationStatus": "official",
+      "qualityState": "invalid",
+      "decisionUse": "blocked",
+      "value": null,
+      "sampleSize": 0,
+      "matureSampleSize": 0,
+      "immatureSampleSize": 0,
+      "maturity": "insufficient_data",
+      "latestDataAt": null
+    },
+    {
+      "key": "north_star.wscu",
+      "definitionVersion": 1,
+      "publicationStatus": "shadow",
+      "qualityState": "invalid",
+      "decisionUse": "blocked",
+      "value": null,
+      "sampleSize": 0,
+      "matureSampleSize": 0,
+      "immatureSampleSize": 0,
+      "maturity": "insufficient_data",
+      "latestDataAt": null
+    },
+    {
+      "key": "diagnostic.wsr",
+      "definitionVersion": 1,
+      "publicationStatus": "diagnostic",
+      "qualityState": "invalid",
+      "decisionUse": "blocked",
+      "value": null,
+      "sampleSize": 0,
+      "matureSampleSize": 0,
+      "immatureSampleSize": 0,
+      "maturity": "insufficient_data",
+      "latestDataAt": null
+    },
+    {
+      "key": "guardrail.wscru",
+      "definitionVersion": 1,
+      "publicationStatus": "shadow",
+      "qualityState": "invalid",
+      "decisionUse": "blocked",
+      "value": null,
+      "sampleSize": 0,
+      "matureSampleSize": 0,
+      "immatureSampleSize": 0,
+      "maturity": "insufficient_data",
+      "latestDataAt": null
+    },
+    {
+      "key": "business.wpscu",
+      "definitionVersion": 1,
+      "publicationStatus": "shadow",
+      "qualityState": "invalid",
+      "decisionUse": "blocked",
+      "value": null,
+      "sampleSize": 0,
+      "matureSampleSize": 0,
+      "immatureSampleSize": 0,
+      "maturity": "insufficient_data",
+      "latestDataAt": null
+    },
+    {
+      "key": "activation.chat_24h",
+      "definitionVersion": 1,
+      "publicationStatus": "diagnostic",
+      "qualityState": "invalid",
+      "decisionUse": "blocked",
+      "value": null,
+      "sampleSize": 0,
+      "matureSampleSize": 0,
+      "immatureSampleSize": 0,
+      "maturity": "insufficient_data",
+      "latestDataAt": null
+    },
+    {
+      "key": "activation.relationship_7d",
+      "definitionVersion": 1,
+      "publicationStatus": "diagnostic",
+      "qualityState": "invalid",
+      "decisionUse": "blocked",
+      "value": null,
+      "sampleSize": 0,
+      "matureSampleSize": 0,
+      "immatureSampleSize": 0,
+      "maturity": "insufficient_data",
+      "latestDataAt": null
+    },
+    {
+      "key": "activation.generation_7d",
+      "definitionVersion": 1,
+      "publicationStatus": "diagnostic",
+      "qualityState": "invalid",
+      "decisionUse": "blocked",
+      "value": null,
+      "sampleSize": 0,
+      "matureSampleSize": 0,
+      "immatureSampleSize": 0,
+      "maturity": "insufficient_data",
+      "latestDataAt": null
+    },
+    {
+      "key": "retention.same_character_d1",
+      "definitionVersion": 1,
+      "publicationStatus": "diagnostic",
+      "qualityState": "invalid",
+      "decisionUse": "blocked",
+      "value": null,
+      "sampleSize": 0,
+      "matureSampleSize": 0,
+      "immatureSampleSize": 0,
+      "maturity": "insufficient_data",
+      "latestDataAt": null
+    },
+    {
+      "key": "retention.same_character_d7",
+      "definitionVersion": 1,
+      "publicationStatus": "diagnostic",
+      "qualityState": "invalid",
+      "decisionUse": "blocked",
+      "value": null,
+      "sampleSize": 0,
+      "matureSampleSize": 0,
+      "immatureSampleSize": 0,
+      "maturity": "insufficient_data",
+      "latestDataAt": null
+    },
+    {
+      "key": "retention.same_character_w1",
+      "definitionVersion": 1,
+      "publicationStatus": "diagnostic",
+      "qualityState": "invalid",
+      "decisionUse": "blocked",
+      "value": null,
+      "sampleSize": 0,
+      "matureSampleSize": 0,
+      "immatureSampleSize": 0,
+      "maturity": "insufficient_data",
+      "latestDataAt": null
+    },
+    {
+      "key": "conversion.paid_d7",
+      "definitionVersion": 1,
+      "publicationStatus": "diagnostic",
+      "qualityState": "invalid",
+      "decisionUse": "blocked",
+      "value": null,
+      "sampleSize": 0,
+      "matureSampleSize": 0,
+      "immatureSampleSize": 0,
+      "maturity": "insufficient_data",
+      "latestDataAt": null
+    },
+    {
+      "key": "conversion.paid_d30",
+      "definitionVersion": 1,
+      "publicationStatus": "diagnostic",
+      "qualityState": "invalid",
+      "decisionUse": "blocked",
+      "value": null,
+      "sampleSize": 0,
+      "matureSampleSize": 0,
+      "immatureSampleSize": 0,
+      "maturity": "insufficient_data",
+      "latestDataAt": null
+    },
+    {
+      "key": "cost.provider_variable_7d",
+      "definitionVersion": 1,
+      "publicationStatus": "diagnostic",
+      "qualityState": "invalid",
+      "decisionUse": "blocked",
+      "value": null,
+      "sampleSize": 0,
+      "matureSampleSize": 0,
+      "immatureSampleSize": 0,
+      "maturity": "insufficient_data",
+      "latestDataAt": null
+    },
+    {
+      "key": "margin.character_contribution_7d",
+      "definitionVersion": 1,
+      "publicationStatus": "diagnostic",
+      "qualityState": "invalid",
+      "decisionUse": "blocked",
+      "value": null,
+      "sampleSize": 0,
+      "matureSampleSize": 0,
+      "immatureSampleSize": 0,
+      "maturity": "insufficient_data",
+      "latestDataAt": null
+    }
+  ]
+}

@@ -219,6 +219,8 @@ const base = {
     runtimeVersion: null,
     runtimeLanguage: "en",
     catalogVoiceIds: [],
+    presetRuntime: { provider: "pocket_tts", runtimeStatus: "inactive", catalogVoiceIds: [] },
+    candidateRuntimeStatus: null,
     currentVoiceId: null,
     effectiveVoiceId: "fish-female-default",
     authoritySource: "system_default",

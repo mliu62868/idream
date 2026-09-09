@@ -1,0 +1,145 @@
+{
+  "tag": "pocket",
+  "calls": [
+    {
+      "status": 201,
+      "elapsedMs": 616,
+      "body": {
+        "ok": true,
+        "data": {
+          "assetId": "media_voice_78aaf7f1-ffa5-4dc4-a091-012768cf1135",
+          "contentUrl": "/api/v1/media/media_voice_78aaf7f1-ffa5-4dc4-a091-012768cf1135/content",
+          "durationMs": 4320,
+          "messageId": "voice-audit-user-20260906-pocket"
+        }
+      }
+    },
+    {
+      "status": 200,
+      "elapsedMs": 49,
+      "body": {
+        "ok": true,
+        "data": {
+          "assetId": "media_voice_78aaf7f1-ffa5-4dc4-a091-012768cf1135",
+          "contentUrl": "/api/v1/media/media_voice_78aaf7f1-ffa5-4dc4-a091-012768cf1135/content",
+          "durationMs": 4320,
+          "messageId": "voice-audit-user-20260906-pocket"
+        }
+      }
+    }
+  ],
+  "request": {
+    "id": "voice_clip_request_d3b7fe84e2e5618111a94c3478c7f3a8dc37d9fe609a1b22452968126df2a4cf",
+    "userId": "voice-audit-user-20260906",
+    "characterId": "c4f97ea8-418f-44af-999a-9dc02975e2d7",
+    "messageId": "voice-audit-user-20260906-pocket",
+    "requestFingerprint": "3044dce4056dea4d60f45619763cdd98eb99f9d58f4181d3331be2ca0833dcdd",
+    "synthesisPayload": {
+      "text": "Hello. This is a short voice delivery test.",
+      "scene": null,
+      "intent": "play",
+      "version": 1,
+      "sessionId": "voice-audit-session-20260906",
+      "sceneVersion": 0
+    },
+    "providerPayload": {
+      "tone": "Speak as Voice Audit Iris 20260906. Warm, expressive realistic delivery consistent with the Character Soul.",
+      "voiceId": "idream-c811d02c-9f3a-45f9-9d51-c58ae6886759",
+      "delivery": {
+        "topK": 30,
+        "topP": 0.75,
+        "speed": 0.94,
+        "preset": "sensual",
+        "intensity": 75,
+        "temperature": 0.72,
+        "repetitionPenalty": 1.2
+      },
+      "providerKey": "pocket_tts",
+      "voiceAuthority": "character_clone",
+      "systemVoiceSettingVersion": null,
+      "characterVoiceProfileVersion": 1
+    },
+    "status": "succeeded",
+    "attemptNo": 1,
+    "leaseOwner": null,
+    "leaseExpiresAt": null,
+    "mediaAssetId": "media_voice_78aaf7f1-ffa5-4dc4-a091-012768cf1135",
+    "provider": "pocket_tts",
+    "providerRequestId": "voice:voice_clip_request_d3b7fe84e2e5618111a94c3478c7f3a8dc37d9fe609a1b22452968126df2a4cf:provider",
+    "errorCode": null,
+    "error": null,
+    "startedAt": "2026-09-06T10:05:16.972Z",
+    "completedAt": "2026-09-06T10:05:17.484Z",
+    "createdAt": "2026-09-06T10:05:16.972Z",
+    "updatedAt": "2026-09-06T10:05:17.484Z",
+    "usageFacts": [
+      {
+        "id": "voice_usage_voice_clip_request_d3b7fe84e2e5618111a94c3478c7f3a8dc37d9fe609a1b22452968126df2a4cf_1",
+        "requestId": "voice_clip_request_d3b7fe84e2e5618111a94c3478c7f3a8dc37d9fe609a1b22452968126df2a4cf",
+        "attemptNo": 1,
+        "userId": "voice-audit-user-20260906",
+        "characterId": "c4f97ea8-418f-44af-999a-9dc02975e2d7",
+        "mediaAssetId": "media_voice_78aaf7f1-ffa5-4dc4-a091-012768cf1135",
+        "durationMs": 4320,
+        "costDreamcoins": 0,
+        "intent": "play",
+        "occurredAt": "2026-09-06T10:05:17.483Z"
+      }
+    ],
+    "mediaAsset": {
+      "id": "media_voice_78aaf7f1-ffa5-4dc4-a091-012768cf1135",
+      "ownerId": "voice-audit-user-20260906",
+      "sourceJobId": null,
+      "characterId": "c4f97ea8-418f-44af-999a-9dc02975e2d7",
+      "type": "voice",
+      "url": "/api/v1/media/media_voice_78aaf7f1-ffa5-4dc4-a091-012768cf1135/content",
+      "thumbnailUrl": null,
+      "storageKey": "voice/a29b3fc27df1ab216b1aae884a412e6142c10ddfea2beced7626fe07787c0487.wav",
+      "contentType": "audio/wav",
+      "width": null,
+      "height": null,
+      "providerAssetId": "voice/a29b3fc27df1ab216b1aae884a412e6142c10ddfea2beced7626fe07787c0487.wav",
+      "sourcePromptHash": null,
+      "prompt": "Hello. This is a short voice delivery test.",
+      "visibility": "private",
+      "safetyStatus": "passed",
+      "metadata": {
+        "tone": "Speak as Voice Audit Iris 20260906. Warm, expressive realistic delivery consistent with the Character Soul.",
+        "scene": null,
+        "voiceId": "idream-c811d02c-9f3a-45f9-9d51-c58ae6886759",
+        "delivery": {
+          "topK": 30,
+          "topP": 0.75,
+          "speed": 0.94,
+          "preset": "sensual",
+          "intensity": 75,
+          "temperature": 0.72,
+          "repetitionPenalty": 1.2
+        },
+        "provider": "pocket_tts",
+        "attemptNo": 1,
+        "messageId": "voice-audit-user-20260906-pocket",
+        "requestId": "voice_clip_request_d3b7fe84e2e5618111a94c3478c7f3a8dc37d9fe609a1b22452968126df2a4cf",
+        "sessionId": "voice-audit-session-20260906",
+        "durationMs": 4320,
+        "providerKey": "voice/a29b3fc27df1ab216b1aae884a412e6142c10ddfea2beced7626fe07787c0487.wav",
+        "cacheVersion": 8,
+        "sceneAdapter": "pocket-tts-reference-state-1",
+        "sceneApplied": false,
+        "sceneVersion": 0,
+        "costDreamcoins": 0,
+        "voiceAuthority": "character_clone",
+        "generationIntent": "requested",
+        "replacedAssetIds": [],
+        "providerIdempotencyKey": "voice:voice_clip_request_d3b7fe84e2e5618111a94c3478c7f3a8dc37d9fe609a1b22452968126df2a4cf:provider",
+        "systemVoiceSettingVersion": null,
+        "characterVoiceProfileVersion": 1
+      },
+      "liked": false,
+      "createdAt": "2026-09-06T10:05:17.481Z",
+      "deletedAt": null
+    }
+  },
+  "allowanceRemainingMs": 55680,
+  "totalCostDreamcoins": 0
+}

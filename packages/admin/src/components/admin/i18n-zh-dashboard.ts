@@ -3,6 +3,18 @@
 // INVARIANT: key 在所有 i18n-zh-*.ts 之间互斥——同一个 key 只能有一个域文件持有；
 // 由 i18n-zh-exclusivity.test.ts 强制。新增文案放它所属的域文件，不要另开「杂项」文件。
 export const adminZhDashboard: Record<string, string> = {
+  "Record ID": "记录编号",
+  "Last changed": "最近更新",
+  "billing subscription refund": "订阅退款",
+  "Operational incident": "运行事故",
+  "Preview {title}": "预览{title}",
+  "Priority work": "优先处理",
+  "Continue in the original workspace.": "前往原工作区继续处理",
+  "Open source record": "去处理",
+  "Work details": "详细信息",
+  "Work preview": "事项预览",
+  "Select a work item to preview its details.": "选择事项，查看详情与下一步操作。",
+  "Back to work list": "返回事项列表",
   "Active users": "活跃用户",
   "Added to Watching": "已添加关注",
   "All Work failed to load": "全部工作加载失败",
@@ -198,6 +210,12 @@ export const adminZhDashboard: Record<string, string> = {
   "Re-run the snapshot after the projector catches up": "等投影器追上之后重跑快照",
   "Cash attribution authority is unavailable": "现金归因权威不可用",
   "Revenue cannot be attributed until it is back — needs engineering": "它恢复之前收入无法归因 —— 需要工程介入",
+  "No eligible provider invocations in this window": "当前窗口没有符合口径的模型调用",
+  "No production customer canonical invocations were recorded in the last seven days, so there is no cost total to report": "最近七天尚无符合生产环境、客户和权威事实口径的调用，暂时没有可报告的成本",
+  "Provider pricing coverage is incomplete": "模型调用的价格记录不完整",
+  "Record verified prices for every eligible invocation before using the cost total": "为每次符合口径的调用补齐经核实的价格，再使用成本总额",
+  "Provider cost total exceeds the supported numeric range": "模型成本总额超出支持的数值范围",
+  "Engineering must support this total without losing precision before it can be reported": "需要工程支持精确计算这个总额，避免数值精度丢失后再报告",
   "Unrecognised certification failure": "无法识别的认证失败",
   "Hand the raw code to engineering": "把原始错误码转给工程",
 };

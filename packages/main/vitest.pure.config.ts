@@ -21,6 +21,7 @@ export default defineConfig({
       "src/e2e/playwright-chat-service-outcome.test.ts",
       "src/e2e/playwright-workspace-lease.test.ts",
       "src/lib/**/*.test.ts",
+      "src/scripts/character-quality/*.test.ts",
       "src/server/launch-readiness.test.ts",
       "src/server/modules/voice-defaults.test.ts",
       "src/server/modules/chat/companion-memory-authority.test.ts",

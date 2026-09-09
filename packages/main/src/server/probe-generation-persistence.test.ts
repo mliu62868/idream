@@ -1,9 +1,46 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { canonicalSha256 } from "./modules/admin-v2/shared/canonical-json";
 import {
   evaluateGenerationPersistenceSnapshot,
   generationPersistenceProbeName,
+  waitForGenerationPersistence,
   type GenerationPersistenceSnapshot,
 } from "./probe-generation-persistence";
+
+describe("generation persistence observation", () => {
+  it("waits for the original job's asynchronous outbox before accepting delivery", async () => {
+    vi.useFakeTimers();
+    try {
+      const snapshot = successfulSnapshot();
+      snapshot.receipt!.payloadHash = canonicalSha256({ terminalRecordRef: snapshot.attempt!.terminalRecordRef, terminalRecordChecksum: "a".repeat(64) });
+      const complete = evaluateGenerationPersistenceSnapshot(snapshot);
+      expect(complete.ok).toBe(true);
+      snapshot.outbox!.status = "pending";
+      const pending = evaluateGenerationPersistenceSnapshot(snapshot);
+      let reads = 0;
+      const inspect = vi.fn(async () => ++reads === 1 ? pending : complete);
+      const observation = waitForGenerationPersistence("original-job", { inspect, timeoutMs: 1000, pollMs: 100 });
+      await vi.advanceTimersByTimeAsync(100);
+      expect(await observation).toEqual(complete);
+      expect(inspect.mock.calls.length).toBe(2);
+      expect(inspect).toHaveBeenCalledWith("original-job");
+    } finally { vi.useRealTimers(); }
+  });
+  it("returns unresolved facts on timeout instead of turning an observation deadline into success", async () => {
+    vi.useFakeTimers();
+    try {
+      const snapshot = successfulSnapshot();
+      snapshot.receipt!.payloadHash = canonicalSha256({ terminalRecordRef: snapshot.attempt!.terminalRecordRef, terminalRecordChecksum: "a".repeat(64) });
+      snapshot.outbox!.status = "pending";
+      const pending = evaluateGenerationPersistenceSnapshot(snapshot);
+      const inspect = vi.fn(async () => pending);
+      const observation = waitForGenerationPersistence("original-job", { inspect, timeoutMs: 200, pollMs: 100 });
+      await vi.advanceTimersByTimeAsync(200);
+      expect((await observation).ok).toBe(false);
+      expect(inspect.mock.calls.length).toBe(3);
+    } finally { vi.useRealTimers(); }
+  });
+});
 
 function successfulSnapshot(): GenerationPersistenceSnapshot {
   const checksum = "a".repeat(64);

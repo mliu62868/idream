@@ -2,15 +2,14 @@
 
 import { todayAllWorkResponseSchema, type TodayAllWorkResponse, type TodayProjection, type TodaySourceType } from "@idream/shared/admin";
 import { AlertTriangle, CheckCircle2, Clock3, Eye, Inbox, SlidersHorizontal, UserRound, X } from "lucide-react";
-import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useAdminI18n } from "@/components/admin/i18n";
 import type { WorkMode } from "@/components/admin/nav-config";
-import { formatDateTime, formatRelativeTime } from "@/components/admin/ui/format";
+import { formatDateTime } from "@/components/admin/ui/format";
 import { Pagination } from "@/components/admin/ui/Pagination";
 import { adminV2Request } from "@/lib/admin-v2-api";
 import { useActionFeedback } from "./feedback";
-import { focusWorkItem, formatCount, queueHealth, slaState, todayCounts, type QueueHealth, type TodayCounts } from "./health";
+import { formatCount, queueHealth, todayCounts, type QueueHealth, type TodayCounts } from "./health";
 import {
   activeTodayFilters,
   parseTodayUrl,
@@ -21,7 +20,7 @@ import {
   type TodayFilterKey,
   type TodayUrlState,
 } from "./query";
-import { todayWorkItemTitle, WorkQueue, type WorkDensity } from "./WorkQueue";
+import { WorkQueue, type WorkDensity } from "./WorkQueue";
 
 type Row = Record<string, unknown>;
 
@@ -63,6 +62,7 @@ export function TodayView({ data, onPreferenceChanged, workMode }: { data: Today
   const { projection } = data;
   const refresh = onPreferenceChanged ?? (() => undefined);
   const [urlState, setUrlState] = useState<TodayUrlState>({ tab: "summary", limit: 25 });
+  const summaryQueue = urlState.queue ?? "priority";
   const [allWork, setAllWork] = useState<TodayAllWorkResponse | null>(null);
   const [allWorkError, setAllWorkError] = useState("");
   const [reloadVersion, setReloadVersion] = useState(0);
@@ -73,7 +73,6 @@ export function TodayView({ data, onPreferenceChanged, workMode }: { data: Today
   const now = new Date();
   const counts = todayCounts(projection, overdueTotal, now);
   const health = queueHealth(counts);
-  const focus = focusWorkItem(projection);
 
   useEffect(() => {
     const restore = () => {
@@ -148,86 +147,44 @@ export function TodayView({ data, onPreferenceChanged, workMode }: { data: Today
 
   const queueProps = { density, onFeedback: report, onPreferenceChanged: refreshAll };
   const filters = activeTodayFilters(urlState);
+  const queueOptions = [
+    { id: "priority", label: "Priority work", name: "Next best actions", icon: Clock3, queue: projection.nextBestActions },
+    { id: "mine", label: "Mine today", name: "My shift", icon: UserRound, queue: projection.myShift },
+    { id: "unassigned", label: "Unclaimed", name: "Unassigned work", icon: Inbox, queue: projection.unassigned },
+    { id: "watching", label: "Watching", name: "Watching", icon: Eye, queue: projection.watching },
+    { id: "resolved", label: "Recently resolved", name: "Recently resolved", icon: CheckCircle2, queue: projection.recentlyResolved },
+  ] as const;
+  const activeQueue = queueOptions.find((option) => option.id === summaryQueue)!;
 
   return (
     <div className="space-y-4" data-testid="today-view">
       <HealthBanner
         asOf={projection.asOf}
         counts={counts}
-        focus={focus}
         health={health}
-        now={now}
         onFocus={(target) => openAllWork(target === "overdue" ? { sla: "overdue" } : { owner: "unassigned" })}
       />
 
       <KpiBand counts={counts} onSelect={openAllWork} />
 
-      <div className="flex flex-wrap items-center gap-2">
-        <div aria-label={t("Today view")} className="flex gap-1 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-1" role="tablist">
-          <button aria-selected={urlState.tab === "summary"} className="min-h-10 rounded-md px-4 text-sm font-semibold aria-selected:bg-[var(--ad-ink)] aria-selected:text-white" onClick={() => navigate({ tab: "summary", limit: 25 })} role="tab" type="button">{t("Summary")}</button>
-          <button aria-selected={urlState.tab === "all"} className="min-h-10 rounded-md px-4 text-sm font-semibold aria-selected:bg-[var(--ad-ink)] aria-selected:text-white" onClick={() => navigate({ ...urlState, tab: "all" })} role="tab" type="button">{t("All work")}</button>
-        </div>
-        <div aria-label={t("Row density")} className="ml-auto flex gap-1 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-1" role="group">
-          <button aria-pressed={density === "compact"} className="min-h-10 rounded-md px-3 text-xs font-semibold aria-pressed:bg-[var(--ad-ink)] aria-pressed:text-white" onClick={() => changeDensity("compact")} type="button">{t("Compact")}</button>
-          <button aria-pressed={density === "comfortable"} className="min-h-10 rounded-md px-3 text-xs font-semibold aria-pressed:bg-[var(--ad-ink)] aria-pressed:text-white" onClick={() => changeDensity("comfortable")} type="button">{t("Comfortable")}</button>
-        </div>
-      </div>
-
-      {urlState.tab === "summary" ? <>
-        <WorkQueue
-          {...queueProps}
-          description={t("Overdue or due-today work owned by you, plus commands awaiting completion or verification.")}
-          icon={UserRound}
-          queue={projection.myShift}
-          queueName="My shift"
-        />
-
-        <WorkQueue
-          {...queueProps}
-          description={t("The ten highest-ranked items you are authorized to work on.")}
-          groupRelatedCreativeRuns
-          icon={Clock3}
-          queue={projection.nextBestActions}
-          queueName="Next best actions"
-        />
-
-        <div className="grid items-start gap-3 xl:grid-cols-3">
-          <WorkQueue
-            {...queueProps}
-            description={t("Unowned work you are permitted to claim in its source domain.")}
-            icon={Inbox}
-            queue={projection.unassigned}
-            queueName="Unassigned work"
-          />
-          <WorkQueue
-            {...queueProps}
-            description={t("Items you explicitly watch.")}
-            icon={Eye}
-            queue={projection.watching}
-            queueName="Watching"
-            watchedQueue
-          />
-          <WorkQueue
-            {...queueProps}
-            actionable={false}
-            description={t("Work completed and verified during the last 24 hours.")}
-            icon={CheckCircle2}
-            queue={projection.recentlyResolved}
-            queueName="Recently resolved"
-          />
-        </div>
-
-        {/* 这四个数字不产生本页的任何动作，是平台背景 —— 保持折叠，也不再自称"运营上下文"。 */}
-        <details className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
-          <summary className="cursor-pointer px-4 py-3 text-sm font-semibold">{t("Platform background")}</summary>
-          <div className="grid gap-px border-t border-[var(--ad-border)] bg-black/[0.05] sm:grid-cols-2 lg:grid-cols-4">
-            <ContextValue label={t("Active users")} value={data.legacy.metrics.users.active} />
-            <ContextValue label={t("Queued generation jobs")} value={data.legacy.metrics.generation.queued} />
-            <ContextValue label={t("Active subscriptions")} value={data.legacy.metrics.billing.activeSubscriptions} />
-            <ContextValue label={t("Feature flags")} value={data.legacy.featureFlags.length} />
-          </div>
-        </details>
-      </> : <section className="space-y-3" data-testid="today-all-work">
+      <div className="grid items-start gap-3 xl:grid-cols-[160px_minmax(0,1fr)]">
+        <nav aria-label={t("Today view")} className="flex gap-1 overflow-x-auto rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-2 xl:sticky xl:top-4 xl:flex-col">
+          {queueOptions.map(({ id, label, icon: Icon, queue }) => <button aria-current={urlState.tab === "summary" && summaryQueue === id ? "page" : undefined} className="flex min-h-12 shrink-0 items-center gap-2 rounded-md px-3 text-left text-sm aria-[current=page]:bg-[var(--ad-red-bg)] aria-[current=page]:font-semibold aria-[current=page]:text-[var(--ad-red-text)]" key={id} onClick={() => { navigate({ tab: "summary", queue: id, limit: 25 }); }} type="button"><Icon className="h-4 w-4 shrink-0" /><span>{t(label)}</span><span className="ml-auto text-xs tabular-nums">{queue.totalCount}</span></button>)}
+          <button aria-current={urlState.tab === "all" ? "page" : undefined} className="flex min-h-12 shrink-0 items-center gap-2 rounded-md px-3 text-left text-sm aria-[current=page]:bg-[var(--ad-red-bg)] aria-[current=page]:font-semibold" onClick={() => openAllWork({})} type="button"><Inbox className="h-4 w-4" />{t("All work")}</button>
+          <details className="shrink-0 border-t border-[var(--ad-border)] px-3 py-3 text-xs text-[var(--ad-text-muted)]"><summary className="cursor-pointer">{t("Row density")}</summary><div className="mt-2 flex gap-2">{(["compact", "comfortable"] as const).map((value) => <button aria-pressed={density === value} className="min-h-9 rounded px-2 aria-pressed:bg-[var(--ad-ink)] aria-pressed:text-white" key={value} onClick={() => changeDensity(value)} type="button">{t(value === "compact" ? "Compact" : "Comfortable")}</button>)}</div></details>
+        </nav>
+        <div className="min-w-0">
+      {urlState.tab === "summary" ? <WorkQueue
+        {...queueProps}
+        actionable={summaryQueue !== "resolved"}
+        description={summaryQueue === "priority" ? t("The ten highest-ranked items you are authorized to work on.") : t("Select a work item to preview its details.")}
+        groupRelatedCreativeRuns={summaryQueue === "priority"}
+        icon={activeQueue.icon}
+        key={summaryQueue}
+        queue={activeQueue.queue}
+        queueName={activeQueue.name}
+        watchedQueue={summaryQueue === "watching"}
+      /> : <section className="space-y-3" data-testid="today-all-work">
         <div className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
           <details>
             <summary className="flex min-h-11 cursor-pointer items-center gap-2 px-4 text-sm font-semibold">
@@ -235,7 +192,7 @@ export function TodayView({ data, onPreferenceChanged, workMode }: { data: Today
               {t("Filters")}
               {allWork ? <span className="ml-auto text-xs font-normal tabular-nums text-[var(--ad-text-muted)]">{t("{count} results", { count: allWork.totalCount })}</span> : null}
             </summary>
-            <div className="grid gap-3 border-t border-[var(--ad-border)] p-4 sm:grid-cols-2 xl:grid-cols-6">
+            <div className="grid gap-3 border-t border-[var(--ad-border)] p-4 sm:grid-cols-2 xl:grid-cols-3">
               <TodayFilter label="Domain" onChange={(value) => updateFilter({ domain: value as TodayUrlState["domain"], status: undefined })} value={urlState.domain} values={["admin_case", "ops_incident", "control_plane_command", "collaboration_mention", "character_release", "creative_run"]} />
               <TodayFilter label="Severity" onChange={(value) => updateFilter({ severity: value as TodayUrlState["severity"] })} value={urlState.severity} values={["critical", "high", "medium", "low"]} />
               <TodayFilter label="SLA" onChange={(value) => updateFilter({ sla: value as TodayUrlState["sla"] })} value={urlState.sla} values={["overdue", "due_today", "upcoming", "none"]} />
@@ -298,6 +255,17 @@ export function TodayView({ data, onPreferenceChanged, workMode }: { data: Today
           />
         </> : null}
       </section>}
+        </div>
+      </div>
+      <details className="border-t border-[var(--ad-border)] pt-3 text-sm text-[var(--ad-text-muted)]">
+        <summary className="cursor-pointer">{t("Platform background")}</summary>
+        <div className="grid gap-3 sm:grid-cols-4">
+          <ContextValue label={t("Active users")} value={data.legacy.metrics.users.active} />
+          <ContextValue label={t("Queued generation jobs")} value={data.legacy.metrics.generation.queued} />
+          <ContextValue label={t("Active subscriptions")} value={data.legacy.metrics.billing.activeSubscriptions} />
+          <ContextValue label={t("Feature flags")} value={data.legacy.featureFlags.length} />
+        </div>
+      </details>
     </div>
   );
 }
@@ -311,23 +279,19 @@ const BANNER_TONE = {
 function HealthBanner({
   asOf,
   counts,
-  focus,
   health,
-  now,
   onFocus,
 }: {
   asOf: string;
   counts: TodayCounts;
-  focus: ReturnType<typeof focusWorkItem>;
   health: QueueHealth;
-  now: Date;
   onFocus: (target: "overdue" | "unassigned") => void;
 }) {
   const { locale, t } = useAdminI18n();
   const tone = BANNER_TONE[health.tone];
-  const overdueFocus = focus && slaState(focus.slaDueAt, now) === "overdue" ? focus.slaDueAt : null;
+
   return (
-    <section aria-label={t("Queue health")} className={`rounded-lg border ${tone.border} ${tone.surface} px-4 py-3`} data-testid="today-health" role="status">
+    <section aria-label={t("Queue health")} className={`border-b ${tone.border} pb-3`} data-testid="today-health" role="status">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         {health.tone === "calm"
           ? <CheckCircle2 aria-hidden className={`h-4 w-4 ${tone.text}`} />
@@ -340,13 +304,6 @@ function HealthBanner({
           </button>
         ) : null}
       </div>
-      {focus ? (
-        <p className="mt-2 flex flex-wrap items-baseline gap-x-2 text-xs">
-          <span className="font-semibold text-[var(--ad-text-muted)]">{t("Start here")}</span>
-          <Link className="font-semibold underline underline-offset-2" href={focus.deepLink}>{todayWorkItemTitle(focus, t)}</Link>
-          {overdueFocus ? <span className="text-[var(--ad-red-text)]">{t("SLA due {elapsed}", { elapsed: formatRelativeTime(overdueFocus, now.toISOString(), locale) })}</span> : null}
-        </p>
-      ) : null}
       {counts.mine === 0 && counts.unassigned > 0 ? (
         <p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t("Your shift is empty while {count} items have no owner. Claim one to start.", { count: counts.unassigned })}</p>
       ) : null}
@@ -357,7 +314,7 @@ function HealthBanner({
 function KpiBand({ counts, onSelect }: { counts: TodayCounts; onSelect: (patch: Partial<TodayUrlState>) => void }) {
   const { t } = useAdminI18n();
   return (
-    <div className="grid gap-3 sm:grid-cols-3 xl:grid-cols-5" data-testid="today-kpis">
+    <div className="flex flex-wrap items-center gap-x-6 gap-y-2" data-testid="today-kpis">
       <Kpi label={t("Open work")} onClick={() => onSelect({})} value={String(counts.pending)} />
       <Kpi
         alert={counts.overdue > 0}
@@ -375,11 +332,11 @@ function KpiBand({ counts, onSelect }: { counts: TodayCounts; onSelect: (patch: 
 }
 
 function Kpi({ alert = false, label, onClick, title, value }: { alert?: boolean; label: string; onClick?: () => void; title?: string; value: string }) {
-  const className = `rounded-lg border px-4 py-3 text-left ${alert ? "border-[var(--ad-red-text)]/25 bg-[var(--ad-red-bg)]" : "border-[var(--ad-border)] bg-[var(--ad-surface)]"}`;
+  const className = `flex min-h-12 items-baseline gap-2 rounded px-1 text-left ${alert ? "text-[var(--ad-red-text)]" : ""}`;
   const body = (
     <>
       <p className={`text-xs ${alert ? "text-[var(--ad-red-text)]" : "text-[var(--ad-text-muted)]"}`}>{label}</p>
-      <p className={`mt-1 text-2xl font-semibold tabular-nums ${alert ? "text-[var(--ad-red-text)]" : ""}`}>{value}</p>
+      <p className={`text-xl font-semibold tabular-nums ${alert ? "text-[var(--ad-red-text)]" : ""}`}>{value}</p>
     </>
   );
   if (!onClick) return <div className={className} title={title}>{body}</div>;

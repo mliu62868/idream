@@ -295,9 +295,6 @@ export function CharacterPortfolio({
       <div className="flex flex-col gap-5 border-b border-[var(--ad-border)] pb-6 sm:flex-row sm:items-start sm:justify-between">
         {performanceMode ? (
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">
-              {t("Growth")}
-            </p>
             <h2
               className="mt-1 text-2xl font-semibold"
               id="character-list-title"

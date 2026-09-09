@@ -1,0 +1,10 @@
+@idream/admin test: 
+@idream/admin test:  RUN  v4.1.9 /Users/kk/code/idream/packages/admin
+@idream/admin test: 
+@idream/admin test: 
+@idream/admin test:  Test Files  1 passed (1)
+@idream/admin test:       Tests  19 passed (19)
+@idream/admin test:    Start at  06:25:44
+@idream/admin test:    Duration  1.07s (transform 279ms, setup 0ms, import 517ms, tests 395ms, environment 97ms)
+@idream/admin test: 
+@idream/admin test: Exited with code 0

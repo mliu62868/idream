@@ -1,0 +1,67 @@
+@idream/admin test: 
+@idream/admin test:  RUN  v4.1.9 /Users/kk/code/idream/packages/admin
+@idream/admin test: 
+@idream/admin test:  ❯ src/features/characters/CharacterVoicePanel.test.tsx (19 tests | 3 failed) 348ms
+@idream/admin test:      × requires a new review when the candidate or live authority changes 13ms
+@idream/admin test:      × preserves an edited default draft on refresh and requires explicit reload 10ms
+@idream/admin test:      × pins the confirmed mapping and retry key even when refreshed defaults arrive 13ms
+@idream/admin test: 
+@idream/admin test: ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+@idream/admin test: 
+@idream/admin test:  FAIL  src/features/characters/CharacterVoicePanel.test.tsx > CharacterVoicePanel voice identity controls > requires a new review when the candidate or live authority changes
+@idream/admin test: AssertionError: expected 'Reviewed the original candidate' to be '' // Object.is equality
+@idream/admin test: 
+@idream/admin test: - Expected
+@idream/admin test: + Received
+@idream/admin test: 
+@idream/admin test: + Reviewed the original candidate
+@idream/admin test: 
+@idream/admin test:  ❯ src/features/characters/CharacterVoicePanel.test.tsx:619:100
+@idream/admin test:     617|     changed.voice.candidateProfile = { ...candidateProfile, id: "repla…
+@idream/admin test:     618|     await render(changed);
+@idream/admin test:     619|     expect(container.querySelector<HTMLInputElement>("#character-voice…
+@idream/admin test:        |                                                                                                    ^
+@idream/admin test:     620|     expect(button("Activate voice")?.disabled).toBe(true);
+@idream/admin test:     621|
+@idream/admin test: 
+@idream/admin test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯
+@idream/admin test: 
+@idream/admin test:  FAIL  src/features/characters/CharacterVoicePanel.test.tsx > CharacterVoicePanel voice identity controls > preserves an edited default draft on refresh and requires explicit reload
+@idream/admin test: AssertionError: expected 'fish-female-default' to be 'another' // Object.is equality
+@idream/admin test: 
+@idream/admin test: Expected: "another"
+@idream/admin test: Received: "fish-female-default"
+@idream/admin test: 
+@idream/admin test:  ❯ src/features/characters/CharacterVoicePanel.test.tsx:640:95
+@idream/admin test:     638|     });
+@idream/admin test:     639|     await render({ ...data, voice: { ...data.voice, systemDefaults: { …
+@idream/admin test:     640|     expect(container.querySelector<HTMLSelectElement>("#system-voice-d…
+@idream/admin test:        |                                                                                               ^
+@idream/admin test:     641|     expect(container.textContent).toContain("System defaults changed w…
+@idream/admin test:     642|     expect(button("Save system defaults")?.disabled).toBe(true);
+@idream/admin test: 
+@idream/admin test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯
+@idream/admin test: 
+@idream/admin test:  FAIL  src/features/characters/CharacterVoicePanel.test.tsx > CharacterVoicePanel voice identity controls > pins the confirmed mapping and retry key even when refreshed defaults arrive
+@idream/admin test: AssertionError: expected 'Save system voice defaultsThis is a p…' to contain 'System fallback identity'
+@idream/admin test: 
+@idream/admin test: Expected: "System fallback identity"
+@idream/admin test: Received: "Save system voice defaultsThis is a platform-wide setting. It changes new speech for every character that has no voice override, not just this one.Characters with an activated voice keep it. Already generated audio is not replaced.This action did not complete.The cause is not identified — copy the technical details and send them to engineering.No error code was returnedmessage: Acknowledgement lostCopy for engineeringCancelSave system defaults"
+@idream/admin test: 
+@idream/admin test:  ❯ src/features/characters/CharacterVoicePanel.test.tsx:658:68
+@idream/admin test:     656|     const firstOptions = adminV2Request.mock.calls[0]?.[1];
+@idream/admin test:     657|     await render({ ...data, voice: { ...data.voice, systemDefaults: { …
+@idream/admin test:     658|     expect(document.querySelector('[role="dialog"]')?.textContent).toC…
+@idream/admin test:        |                                                                    ^
+@idream/admin test:     659|     adminV2Request.mockResolvedValueOnce({ replayed: true });
+@idream/admin test:     660|     await act(async () => submit().click());
+@idream/admin test: 
+@idream/admin test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/3]⎯
+@idream/admin test: 
+@idream/admin test: 
+@idream/admin test:  Test Files  1 failed (1)
+@idream/admin test:       Tests  3 failed | 16 passed (19)
+@idream/admin test:    Start at  06:24:32
+@idream/admin test:    Duration  945ms (transform 234ms, setup 0ms, import 440ms, tests 348ms, environment 93ms)
+@idream/admin test: 
+@idream/admin test: Exited with code 1

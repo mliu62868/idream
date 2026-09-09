@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { translateAdmin } from "@/components/admin/i18n-dictionary";
 import {
+  hasMetricQualityReason,
   metricQualityBlocked,
   primaryMetricQualityReason,
   resolveMetricQualityReason,
@@ -43,10 +45,40 @@ describe("metric certification reasons", () => {
   });
 
   it("falls back without inventing a cause", () => {
-    expect(resolveMetricQualityReason("priced_invocations=0/0")).toMatchObject({
+    expect(resolveMetricQualityReason("future_certification_rule")).toMatchObject({
       title: "Unrecognised certification failure",
       hint: "Hand the raw code to engineering",
     });
+  });
+
+  it("explains the actual blocked provider cost evidence and its next action in Chinese", () => {
+    const empty = primaryMetricQualityReason([
+      "priced_invocations=0/0", "Cash revenue is not inferred from provider cost.",
+    ]);
+    expect(empty).toMatchObject({ title: "No eligible provider invocations in this window" });
+    expect(translateAdmin("zh", empty!.title)).toBe("当前窗口没有符合口径的模型调用");
+    expect(translateAdmin("zh", empty!.hint)).toBe("最近七天尚无符合生产环境、客户和权威事实口径的调用，暂时没有可报告的成本");
+
+    const partial = primaryMetricQualityReason([
+      "priced_invocations=2/3", "Cash revenue is not inferred from provider cost.",
+    ]);
+    expect(partial).toMatchObject({ title: "Provider pricing coverage is incomplete" });
+    expect(translateAdmin("zh", partial!.hint)).toBe("为每次符合口径的调用补齐经核实的价格，再使用成本总额");
+    expect(summariseMetricQualityReasons([{ qualityEvidence: ["priced_invocations=0/0", "Cash revenue is not inferred from provider cost."] }])).toMatchObject([
+      { title: "No eligible provider invocations in this window", cardCount: 1 },
+    ]);
+  });
+
+  it("recognises unsafe totals without treating complete pricing coverage as a failure", () => {
+    expect(hasMetricQualityReason("priced_invocations=3/3")).toBe(false);
+    expect(hasMetricQualityReason("priced_invocations=2/3")).toBe(true);
+    expect(hasMetricQualityReason("priced_invocations=3/2")).toBe(false);
+    const overflow = primaryMetricQualityReason([
+      "priced_invocations=3/3", "provider_cost_total_exceeds_safe_numeric_range",
+      "Cash revenue is not inferred from provider cost.",
+    ]);
+    expect(overflow).toMatchObject({ title: "Provider cost total exceeds the supported numeric range" });
+    expect(translateAdmin("zh", overflow!.title)).toBe("模型成本总额超出支持的数值范围");
   });
 
   // SPEC: 卡面那一条要是最靠近根因的，不是数组第一条。

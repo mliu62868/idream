@@ -485,6 +485,30 @@ describe("Chat embedded companion runtime", () => {
     });
   });
 
+  it.each([
+    { scene: "It is night.", request: "Take a fully clothed photo the next morning.", prompt: "A fully clothed morning portrait." },
+    { scene: "It is a rainy morning.", request: "Take a fully clothed photo.", prompt: "A fully clothed portrait on a rainy morning." },
+    { scene: "The book is left of the cup; the lamp is right of the vase.", request: "Take a fully clothed photo.", prompt: "A fully clothed portrait. The book is left of the cup; the lamp is right of the vase." },
+  ])("preserves authorized scene direction without inferring contradictions from isolated words: $scene", async ({ scene, request, prompt }) => {
+    const value = requiredImageInvocation();
+    value.preparedTurn.requiredAction!.requestedNudity = "none";
+    value.preparedTurn.messages.splice(1, 0, {
+      id: "user:scene", sourceKind: "replay", role: "user", content: scene,
+    });
+    value.preparedTurn.messages.at(-1)!.content = request;
+    const calls: CompanionToolCall[] = [];
+    const runtime = await engine(new ToolThenTextAdapter(prompt));
+    const connection = port({ executeTool: async (call) => {
+      calls.push(call);
+      return { attemptId: call.attemptId, callId: call.callId, name: call.name,
+        outcome: "succeeded", output: { generationJobId: "authorized-scene" } };
+    } });
+    await runtime.run(value, connection.runtimePort);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.arguments).toMatchObject({ prompt });
+    expect(connection.candidates).toHaveLength(1);
+  });
+
   it("forwards structured nudity intent even when the Agent prompt drops it", async () => {
     const runtime = await engine(new ToolThenTextAdapter(
       "Mira wearing a silk robe at the blue-lit observatory tonight",

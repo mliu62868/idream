@@ -1,0 +1,30 @@
+@idream/main test: 
+@idream/main test:  RUN  v4.1.9 /Users/kk/code/idream/packages/main
+@idream/main test: 
+@idream/main test: Loaded Prisma config from prisma.config.ts.
+@idream/main test: 
+@idream/main test: Prisma schema loaded from prisma/schema.prisma.
+@idream/main test: Datasource "db": PostgreSQL database "idream_test", schema "public" at "localhost:5433"
+@idream/main test: 
+@idream/main test: 🚀  Your database is now in sync with your Prisma schema. Done in 2.56s
+@idream/main test: 
+@idream/main test: Loaded Prisma config from prisma.config.ts.
+@idream/main test: 
+@idream/main test: Prisma schema loaded from prisma/schema.prisma.
+@idream/main test: 
+@idream/main test: ✔ Generated Prisma Client (v7.6.0) to ./../../node_modules/.bun/@prisma+client@7.6.0+7eee423ab090712c/node_modules/@prisma/client in 424ms
+@idream/main test: 
+@idream/main test: Start by importing your Prisma Client (See: https://pris.ly/d/importing-client)
+@idream/main test: 
+@idream/main test: 
+@idream/main test: [seed] complete
+@idream/main test: {"level":50,"time":1788690836488,"service":"idream","env":"test","err":{"type":"Error","message":"simulated worker crash","stack":"Error: simulated worker crash\n    at MockVoiceModel.<anonymous> (/Users/kk/code/idream/packages/main/src/server/modules/ourdream/voice-generation-service.test.ts:403:38)\n    at MockVoiceModel.synthesize (file:///Users/kk/code/idream/node_modules/.bun/@vitest+spy@4.1.9/node_modules/@vitest/spy/dist/index.js:332:34)\n    at executeOwnedVoiceClaim (/Users/kk/code/idream/packages/main/src/server/modules/ourdream/voice-clip.ts:557:34)\n    at processTicksAndRejections (node:internal/process/task_queues:105:5)\n    at dispatchV1 (/Users/kk/code/idream/packages/main/src/server/modules/ourdream/service.ts:421:22)\n    at api (/Users/kk/code/idream/packages/main/src/server/test/helpers.ts:157:20)\n    at /Users/kk/code/idream/packages/main/src/server/modules/ourdream/voice-generation-service.test.ts:421:23\n    at file:///Users/kk/code/idream/node_modules/.bun/@vitest+runner@4.1.9/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"},"method":"POST","path":"/api/v1/generation/voice","msg":"Unhandled v1 route error"}
+@idream/main test: {"level":50,"time":1788690836511,"service":"idream","env":"test","err":{"type":"Error","message":"simulated worker crash","stack":"Error: simulated worker crash\n    at MockVoiceModel.<anonymous> (/Users/kk/code/idream/packages/main/src/server/modules/ourdream/voice-generation-service.test.ts:403:38)\n    at MockVoiceModel.synthesize (file:///Users/kk/code/idream/node_modules/.bun/@vitest+spy@4.1.9/node_modules/@vitest/spy/dist/index.js:332:34)\n    at executeOwnedVoiceClaim (/Users/kk/code/idream/packages/main/src/server/modules/ourdream/voice-clip.ts:557:34)\n    at processTicksAndRejections (node:internal/process/task_queues:105:5)\n    at dispatchV1 (/Users/kk/code/idream/packages/main/src/server/modules/ourdream/service.ts:421:22)\n    at api (/Users/kk/code/idream/packages/main/src/server/test/helpers.ts:157:20)\n    at /Users/kk/code/idream/packages/main/src/server/modules/ourdream/voice-generation-service.test.ts:445:20\n    at file:///Users/kk/code/idream/node_modules/.bun/@vitest+runner@4.1.9/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"},"method":"POST","path":"/api/v1/generation/voice","msg":"Unhandled v1 route error"}
+@idream/main test: {"level":50,"time":1788690841210,"service":"idream","env":"test","err":{"type":"Error","message":"Voice binding confirmation failed","stack":"Error: Voice binding confirmation failed\n    at /Users/kk/code/idream/packages/main/src/server/modules/ourdream/character-draft-authoring.integration.test.ts:257:120\n    at processTicksAndRejections (node:internal/process/task_queues:105:5)"},"method":"POST","path":"/api/v1/character-drafts/cmtpoce3r000z1hl7z55cv61a/submit","msg":"Unhandled v1 route error"}
+@idream/main test: 
+@idream/main test:  Test Files  6 passed (6)
+@idream/main test:       Tests  72 passed (72)
+@idream/main test:    Start at  06:33:48
+@idream/main test:    Duration  15.10s (transform 827ms, setup 0ms, import 3.39s, tests 4.93s, environment 0ms)
+@idream/main test: 
+@idream/main test: Exited with code 0

@@ -12,6 +12,7 @@ import { prisma } from "@/server/lib/db";
 import { logger } from "@/server/lib/logger";
 import { dispatchPendingChatEvents } from "./chat-outbox";
 import { projectCanonicalMetricEvent } from "@/server/modules/admin-v2/metrics/projector";
+import { startMetricSnapshotRefresh } from "@/server/modules/admin-v2/metrics/refresh";
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
 import {
   acceptChatAccountErasureCompletion,
@@ -321,11 +322,13 @@ export function startEventConsumer(): { close(): Promise<void> } {
     reconcile().catch((err) => logger.error({ err }, "durable event reconciliation failed"));
   }, 5_000);
   reconcile().catch((err) => logger.error({ err }, "initial durable event reconciliation failed"));
+  // Snapshot scans run independently so analytics cannot stall product delivery.
+  const metricRefresh = startMetricSnapshotRefresh();
   logger.info("main durable event projector ready");
   return {
     async close() {
       clearInterval(projectionTimer);
-      await inFlight;
+      await Promise.all([inFlight, metricRefresh.close()]);
     },
   };
 }

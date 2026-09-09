@@ -190,6 +190,12 @@ export const characterVoiceWorkspaceSchema = z
     runtimeVersion: z.string().trim().min(1).nullable(),
     runtimeLanguage: z.string().trim().min(1),
     catalogVoiceIds: z.array(z.string().trim().min(1)).readonly(),
+    presetRuntime: z.object({
+      provider: z.literal("pocket_tts"),
+      runtimeStatus: z.enum(["ready", "unavailable", "inactive"]),
+      catalogVoiceIds: z.array(z.string().trim().min(1)).readonly(),
+    }).strict(),
+    candidateRuntimeStatus: z.enum(["ready", "unavailable", "inactive"]).nullable(),
     currentVoiceId: z.string().nullable(),
     effectiveVoiceId: z.string().trim().min(1),
     authoritySource: z.enum(["system_default", "character_clone"]),

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   characterWorkspaceDetailSchema,
 } from "@idream/shared/admin";
@@ -1428,4 +1428,77 @@ describe("Character operator workspace", () => {
     );
     expect(response.status).toBe(403);
   });
+  it("retains active voice authority beyond the latest twenty history entries", async () => {
+    const referenceId = `workspace-voice-reference-${suffix}`;
+    const voicePrefix = `workspace-history-voice-${suffix}`;
+    await prisma.mediaAsset.create({ data: {
+      id: referenceId, ownerId: readOnlyActorId, characterId, type: "voice",
+      url: `/user-content/${referenceId}/content.wav`, contentType: "audio/wav",
+      visibility: "private", metadata: { filename: "voice.wav", sizeBytes: 2048 },
+    } });
+    await prisma.characterVoiceProfile.createMany({ data: Array.from({ length: 22 }, (_, index) => ({
+      characterId, version: index + 1, provider: "pocket_tts",
+      providerVoiceId: `${voicePrefix}-${index}`, model: "pocket-tts", language: "english",
+      status: index === 0 ? "active" : "archived", referenceAssetId: referenceId,
+      sampleText: "The active voice remains authoritative.", createdById: readOnlyActorId,
+    })) });
+    await prisma.character.update({ where: { id: characterId }, data: { voiceId: `${voicePrefix}-0` } });
+    try {
+      const workspace = await getCharacterWorkspace(characterId);
+      expect(workspace.voice.history).toHaveLength(20);
+      expect(workspace.voice.history.every((profile) => profile.status !== "active")).toBe(true);
+      expect(workspace.voice).toMatchObject({
+        authoritySource: "character_clone", effectiveVoiceId: `${voicePrefix}-0`,
+        activeProfile: { version: 1, providerVoiceId: `${voicePrefix}-0` },
+      });
+      // Legacy data has no unique-active index. A newer stray active row must
+      // not override the profile explicitly selected by Character.voiceId.
+      await prisma.characterVoiceProfile.update({
+        where: { providerVoiceId: `${voicePrefix}-21` }, data: { status: "active" },
+      });
+      const withStrayActive = await getCharacterWorkspace(characterId);
+      expect(withStrayActive.voice).toMatchObject({
+        authoritySource: "character_clone", effectiveVoiceId: `${voicePrefix}-0`,
+        activeProfile: { version: 1, providerVoiceId: `${voicePrefix}-0` },
+      });
+    } finally {
+      await prisma.character.update({ where: { id: characterId }, data: { voiceId: null } });
+      await prisma.characterVoiceProfile.deleteMany({ where: { characterId, providerVoiceId: { startsWith: voicePrefix } } });
+      await prisma.mediaAsset.delete({ where: { id: referenceId } });
+    }
+  });
+
+  it("does not offer a stale candidate that the authority snapshot already marks active", async () => {
+    const referenceId = `workspace-race-reference-${suffix}`;
+    const providerVoiceId = `workspace-race-voice-${suffix}`;
+    await prisma.mediaAsset.create({ data: {
+      id: referenceId, ownerId: readOnlyActorId, characterId, type: "voice",
+      url: `/user-content/${referenceId}/content.wav`, contentType: "audio/wav",
+      visibility: "private", metadata: { filename: "voice.wav", sizeBytes: 2048 },
+    } });
+    const candidate = await prisma.characterVoiceProfile.create({ data: {
+      characterId, version: 1, provider: "pocket_tts", providerVoiceId,
+      model: "pocket-tts", language: "english", status: "candidate", referenceAssetId: referenceId,
+      sampleText: "The candidate becomes active during the workspace read.", createdById: readOnlyActorId,
+    }, include: { referenceAsset: true, previewAsset: true } });
+    await prisma.$transaction([
+      prisma.characterVoiceProfile.update({ where: { id: candidate.id }, data: { status: "active" } }),
+      prisma.character.update({ where: { id: characterId }, data: { voiceId: providerVoiceId } }),
+    ]);
+    // Simulate the candidate query completing with its earlier database snapshot.
+    const oldCandidateRead = vi.spyOn(prisma.characterVoiceProfile, "findFirst").mockResolvedValueOnce(candidate);
+    try {
+      const workspace = await getCharacterWorkspace(characterId);
+      expect(workspace.voice).toMatchObject({
+        currentVoiceId: providerVoiceId, activeProfile: { id: candidate.id, status: "active" },
+        candidateProfile: null, candidateRuntimeStatus: null,
+      });
+    } finally {
+      oldCandidateRead.mockRestore();
+      await prisma.character.update({ where: { id: characterId }, data: { voiceId: null } });
+      await prisma.characterVoiceProfile.delete({ where: { id: candidate.id } });
+      await prisma.mediaAsset.delete({ where: { id: referenceId } });
+    }
+  });
+
 });

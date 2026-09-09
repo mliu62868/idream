@@ -442,7 +442,7 @@ describe("processImageGenerate", () => {
           },
           invocation: {
             providerRequestId: "provider-request-image-1",
-            usage: { images: 2 },
+            usage: { images: 2, performance: { resourceWaitMs: 40, requests: [{ providerRequestId: "provider-request-image-1", providerExecutionMs: 1500 }] } },
             costMicros: 125_000,
             pricingVersion: "mock-image-v2",
           },
@@ -471,7 +471,11 @@ describe("processImageGenerate", () => {
         providerInvoked: true,
         providerRequestId: "provider-request-image-1",
         accounting: {
-          usage: { images: 2 },
+          usage: { images: 2, performance: {
+            resourceWaitMs: 40,
+            requests: [{ providerRequestId: "provider-request-image-1", providerExecutionMs: 1500 }],
+            artifactPersistenceMs: expect.any(Number),
+          } },
           latencyMs: expect.any(Number),
           costMicros: 125_000,
           pricingVersion: "mock-image-v2",

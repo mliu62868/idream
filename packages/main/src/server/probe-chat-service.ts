@@ -223,6 +223,29 @@ export async function fetchProbeCompanionAttemptEvidence(
     sleep?: (ms: number) => Promise<void>;
   },
 ): Promise<DshCompanionProbeEvidence> {
+  if (input.userId !== CHAT_PROBE_USER_ID || !input.internalToken?.trim()) {
+    throw new Error("content-free DSH attempt evidence requires the dedicated audit actor and INTERNAL_TOKEN");
+  }
+  return waitForCompanionAttemptEvidence(input);
+}
+
+/** Local quality samples may use the existing private Character's audit owner. */
+export async function fetchAuditCompanionAttemptEvidence(input: CompanionAttemptEvidenceInput): Promise<DshCompanionProbeEvidence> {
+  const actor = await prisma.user.findUnique({
+    where: { id: input.userId },
+    select: { role: true, status: true, dataClass: true, deletedAt: true },
+  });
+  if (!input.internalToken?.trim() || actor?.role !== "user" || actor.status !== "active" || actor.dataClass !== "audit" || actor.deletedAt !== null) {
+    throw new Error("Quality attempt evidence requires an active audit user and INTERNAL_TOKEN");
+  }
+  return waitForCompanionAttemptEvidence(input);
+}
+
+async function waitForCompanionAttemptEvidence(input: CompanionAttemptEvidenceInput & {
+  awaitProjection?: boolean;
+  settleTimeoutMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+}): Promise<DshCompanionProbeEvidence> {
   const deadline = Date.now() + (input.settleTimeoutMs ?? COMPANION_MEMORY_SETTLE_TIMEOUT_MS);
   const sleep = input.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   for (;;) {
@@ -239,9 +262,6 @@ export async function fetchProbeCompanionAttemptEvidence(
 async function fetchProbeCompanionAttemptEvidenceOnce(
   input: CompanionAttemptEvidenceInput,
 ): Promise<DshCompanionProbeEvidence> {
-  if (input.userId !== CHAT_PROBE_USER_ID || !input.internalToken?.trim()) {
-    throw new Error("content-free DSH attempt evidence requires the dedicated audit actor and INTERNAL_TOKEN");
-  }
   const turn = await prisma.chatTurn.findUnique({
     where: { assistantMessageId: input.messageId },
     select: {
@@ -443,6 +463,11 @@ export async function runProbe(input: {
     baseReport.actorDataClass = actorAuthority.actorDataClass;
     baseReport.dedicatedActor = actorAuthority.dedicatedActor;
 
+    const character = await resolveProbeCharacter(input.characterId);
+    // Resolve the destructive scope before even creating a short auth Session.
+    // A Quality or unknown-purpose conversation blocks this whole preflight.
+    if (character.id) await readProbeCleanupSessions({ userId: input.userId, characterId: character.id });
+
     authToken = createSessionToken();
     await prisma.session.create({
       data: {
@@ -462,7 +487,6 @@ export async function runProbe(input: {
       userId: input.userId,
     });
     unsignedRequest = await probeUnsignedRuntimeAuthority(input.serviceUrl);
-    const character = await resolveProbeCharacter(input.characterId);
     if (!character.id) {
       conversation = skippedConversation(character.error ?? "no probe character available");
     } else {
@@ -632,6 +656,7 @@ export async function productFetch(input: {
   query?: string;
   body?: string;
   idempotencyKey?: string;
+  signal?: AbortSignal;
 }): Promise<Response> {
   const body = input.body ?? "";
   const url = new URL(input.path.replace(/^\//, ""), normalizedBase(input.mainWebUrl));
@@ -647,6 +672,7 @@ export async function productFetch(input: {
         : {}),
     },
     body: body || undefined,
+    signal: input.signal,
   });
 }
 
@@ -677,8 +703,7 @@ async function probeConversation(input: {
   let sessionId: string | null = null;
   const createdSessionIds: string[] = [];
   try {
-    // A failed prior probe may have left an active audit session. Remove only
-    // this dedicated actor's visible state before creating a fresh run.
+    // Only explicitly named Probe sessions on this Character are eligible.
     evidence.preflightCleanup = await cleanupExistingProbeState(input);
     if (!evidence.preflightCleanup.ok) {
       throw new Error(
@@ -689,7 +714,7 @@ async function probeConversation(input: {
     // 1) create a fresh audit-only session
     const createRes = await productFetch({
       ...input, method: "POST", path: "/api/v1/chat/sessions",
-      body: JSON.stringify({ characterId: input.characterId }),
+      body: JSON.stringify({ characterId: input.characterId, title: `Probe ${input.runId} first` }),
     });
     const session = productSessionRecord(await createRes.json().catch(() => ({}))) as { id?: string };
     evidence.createSession = { ok: createRes.status === 201 && Boolean(session.id), status: createRes.status };
@@ -796,7 +821,7 @@ async function probeConversation(input: {
     }
     const recallCreateRes = await productFetch({
       ...input, method: "POST", path: "/api/v1/chat/sessions",
-      body: JSON.stringify({ characterId: input.characterId }),
+      body: JSON.stringify({ characterId: input.characterId, title: `Probe ${input.runId} recall` }),
     });
     const recallSession = productSessionRecord(await recallCreateRes.json().catch(() => ({}))) as { id?: string };
     if (recallSession.id) createdSessionIds.push(recallSession.id);
@@ -1112,6 +1137,29 @@ type ProbeSessionMessage = {
   scene?: unknown;
 };
 
+async function readProbeCleanupSessions(input: { userId: string; characterId: string }) {
+  const actor = await prisma.user.findUnique({
+    where: { id: input.userId },
+    select: { id: true, role: true, status: true, dataClass: true, deletedAt: true },
+  });
+  assertDedicatedChatProbeActor(actor, input.userId);
+  const sessions = await prisma.recentChat.findMany({
+    where: { userId: input.userId, characterId: input.characterId },
+    select: { sessionId: true, userId: true, characterId: true, title: true },
+    orderBy: { createdAt: "asc" },
+  });
+  // Older probes had default titles, indistinguishable from other audit work.
+  // Clean those only through cleanupCompletedProbeState with known report IDs.
+  const restricted = sessions.filter((session) =>
+    session.userId !== input.userId || session.characterId !== input.characterId ||
+    !/^Probe [a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12} (first|recall)$/iu.test(session.title ?? "")
+  );
+  if (restricted.length) {
+    throw new Error(`Probe preflight refuses Quality or unknown-purpose sessions on ${input.characterId}: ${restricted.map((session) => session.sessionId).join(", ")}; preserve them or use their original report's exact cleanup IDs`);
+  }
+  return sessions;
+}
+
 export async function cleanupExistingProbeState(input: {
   serviceUrl: string;
   mainWebUrl: string;
@@ -1121,58 +1169,45 @@ export async function cleanupExistingProbeState(input: {
   characterId: string;
 }): Promise<OperationEvidence> {
   try {
-    const list = await productFetch({
-      ...input,
-      method: "GET",
-      path: "/api/v1/chat/sessions",
-    });
-    const sessions = (await list.json().catch(() => [])) as Array<{
-      id?: string;
-    }>;
-    if (list.status !== 200 || !Array.isArray(sessions)) {
-      return { ok: false, status: list.status, error: "could not list prior audit sessions" };
-    }
+    // Main PG is the ownership/Character authority, including archived rows.
+    // Inspect every target row before the first mutation; never infer scope
+    // from the account-wide public session listing or its display fields.
+    const sessions = await readProbeCleanupSessions(input);
     let lastDeletedSessionId: string | null = null;
     for (const session of sessions) {
-      if (!session.id) continue;
       if (!await waitForProbeMemoryMaintenance(input)) {
-        return { ok: false, error: `companion memory did not settle before deleting session ${session.id}` };
+        return { ok: false, error: `companion memory did not settle before deleting session ${session.sessionId}` };
       }
+      const current = await readProbeCleanupSessions(input);
+      if (!current.some((entry) => entry.sessionId === session.sessionId)) continue;
       const deleted = await productFetch({
         ...input,
         method: "DELETE",
-        path: `/api/v1/chat/sessions/${session.id}`,
+        path: `/api/v1/chat/sessions/${session.sessionId}`,
       });
       if (deleted.status !== 200) {
         return {
           ok: false,
           status: deleted.status,
-          error: `could not delete prior audit session ${session.id}`,
+          error: `could not delete prior audit session ${session.sessionId}`,
         };
       }
-      lastDeletedSessionId = session.id;
+      lastDeletedSessionId = session.sessionId;
     }
     if (!await waitForProbeMemoryMaintenance(input)) {
       return { ok: false, error: `companion memory did not settle after deleting session ${lastDeletedSessionId ?? "none"}` };
     }
+    const remaining = await readProbeCleanupSessions(input);
+    if (remaining.length) return { ok: false, error: `Target Probe sessions remain; memory was not cleared: ${remaining.map((session) => session.sessionId).join(", ")}` };
     const fileAuthority = await clearProbeFileAuthority(input);
-    const verify = await productFetch({
-      ...input,
-      method: "GET",
-      path: "/api/v1/chat/sessions",
-    });
-    const remaining = (await verify.json().catch(() => [])) as unknown;
-    const ok =
-      fileAuthority.ok &&
-      verify.status === 200 &&
-      Array.isArray(remaining) &&
-      remaining.length === 0;
+    const verified = await readProbeCleanupSessions(input);
+    const ok = fileAuthority.ok && verified.length === 0;
     return {
       ok,
-      status: verify.status,
+      status: fileAuthority.status,
       error: ok
         ? null
-        : `fileAuthority=${fileAuthority.error ?? fileAuthority.ok}; verify=${verify.status}; remaining=${Array.isArray(remaining) ? remaining.length : "invalid"}`,
+        : `fileAuthority=${fileAuthority.error ?? fileAuthority.ok}; targetRemaining=${verified.length}`,
     };
   } catch (error) {
     return {
@@ -1316,13 +1351,15 @@ async function clearProbeFileAuthority(input: {
   }
 }
 
-async function waitForProbeMemoryMaintenance(input: {
+export async function waitForProbeMemoryMaintenance(input: {
   userId: string;
   characterId: string;
 }): Promise<boolean> {
   const deadline = Date.now() + chatServiceProbeSettleTimeoutMs();
   const aggregateId = companionRelationshipAggregateId(input.userId, input.characterId);
-  while (Date.now() < deadline) {
+  // Always observe once, including when a short probe budget crosses a clock
+  // tick before the first read. An already-idle projection is still evidence.
+  for (;;) {
     const pending = await prisma.mainOutboxEvent.findFirst({
       where: {
         eventType: {
@@ -1338,9 +1375,9 @@ async function waitForProbeMemoryMaintenance(input: {
       select: { id: true },
     });
     if (!pending) return true;
+    if (Date.now() >= deadline) return false;
     await delay(100);
   }
-  return false;
 }
 
 async function waitForSessionMessage(input: {

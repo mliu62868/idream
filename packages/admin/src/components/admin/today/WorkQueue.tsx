@@ -1,9 +1,9 @@
 "use client";
 
 import { operationalWorkPreferenceSchema, type TodayProjection, type TodayWorkItem } from "@idream/shared/admin";
-import { ArrowRight, Bell, Eye, MoreHorizontal, Pin, UserPlus } from "lucide-react";
+import { ArrowLeft, ArrowRight, Bell, Eye, MoreHorizontal, Pin, UserPlus } from "lucide-react";
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { adminV2Request } from "@/lib/admin-v2-api";
 import { formatDateTime, formatRelativeTime } from "@/components/admin/ui/format";
@@ -34,7 +34,7 @@ type Translate = (key: string, values?: Record<string, string | number>) => stri
 export function todayWorkItemTitle(item: TodayWorkItem, t: Translate) {
   if (item.sourceType === "ops_incident") {
     const incident = /^(?:critical|high|medium|low) incident:\s*(.+)$/i.exec(item.title);
-    if (incident) return t("Incident: {signature}", { signature: incident[1] });
+    if (incident) return /^[a-f0-9]{32,}$/i.test(incident[1]) ? t("Operational incident") : t("Incident: {signature}", { signature: incident[1] });
   }
   return t(item.title);
 }
@@ -85,6 +85,20 @@ export function WorkQueue({
 }) {
   const { locale, t } = useAdminI18n();
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  const [previewKey, setPreviewKey] = useState<string | null>(null);
+  const [mobilePreview, setMobilePreview] = useState(false);
+  const previewRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (mobilePreview && window.matchMedia("(max-width: 1023px)").matches) {
+      previewRef.current?.focus({ preventScroll: true });
+      previewRef.current?.scrollIntoView({ block: "start" });
+    }
+  }, [mobilePreview, previewKey]);
+  const preview = queue.items.find((item) => workItemKey(item) === previewKey) ?? queue.items[0];
+  function openPreview(item: TodayWorkItem) {
+    setPreviewKey(workItemKey(item));
+    setMobilePreview(true);
+  }
   const [busy, setBusy] = useState(false);
   const now = new Date();
   const groups = groupRelatedCreativeRuns
@@ -135,10 +149,13 @@ export function WorkQueue({
     onFeedback,
     onPreferenceChanged,
     watchedQueue,
+    onPreview: openPreview,
+    previewKey: preview ? workItemKey(preview) : null,
   };
 
   return (
-    <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]" data-testid={`today-queue-${queueName.toLowerCase().replaceAll(" ", "-")}`}>
+    <section className="min-w-0 grid items-start gap-3 lg:grid-cols-[minmax(280px,0.85fr)_minmax(320px,1fr)]" data-testid={`today-queue-${queueName.toLowerCase().replaceAll(" ", "-")}`}>
+      <div className={`${mobilePreview && preview ? "hidden lg:block" : ""} min-w-0 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]`}>
       {/* 空队列压成一行：它的说明文字对"这里没有活"没有增量，却要在首屏占掉一条工作项的位置。 */}
       <div className={`px-4 py-3 ${queue.items.length > 0 ? "border-b border-[var(--ad-border)]" : ""}`}>
         <div className="flex items-center gap-2">
@@ -184,7 +201,7 @@ export function WorkQueue({
         </div>
       ) : null}
       {queue.items.length === 0 ? null : (
-        <div className="divide-y divide-[var(--ad-border)]">
+        <div className="divide-y divide-[var(--ad-border)] lg:max-h-[calc(100dvh-360px)] lg:overflow-y-auto">
           {groups.map((group) => group.items.length === 1 ? (
             <WorkItem
               {...itemProps}
@@ -209,6 +226,11 @@ export function WorkQueue({
           {t("Showing {shown} of {total}", { shown: queue.items.length, total: queue.totalCount })}
         </p>
       ) : null}
+      </div>
+      {preview ? <div className={`${mobilePreview ? "" : "hidden lg:block"} min-w-0 scroll-mt-28 outline-none lg:sticky lg:top-4`} ref={previewRef} tabIndex={-1}>
+        <button className="mb-3 inline-flex min-h-10 items-center gap-2 text-sm lg:hidden" onClick={() => { setMobilePreview(false); requestAnimationFrame(() => document.querySelector<HTMLButtonElement>('[data-today-preview][aria-pressed="true"]')?.focus()); }} type="button"><ArrowLeft className="h-4 w-4" />{t("Back to work list")}</button>
+        <WorkItem {...itemProps} detail item={preview} key={workItemKey(preview)} onToggleSelected={actionable ? toggle : undefined} selected={false} />
+      </div> : <div className="hidden min-h-96 items-center justify-center rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-8 text-sm text-[var(--ad-text-muted)] lg:flex">{t("Select a work item to preview its details.")}</div>}
     </section>
   );
 }
@@ -252,6 +274,9 @@ export function groupTodayQueueItems(items: readonly TodayWorkItem[]): TodayQueu
 
 type WorkItemProps = {
   density: WorkDensity;
+  detail?: boolean;
+  onPreview?: (item: TodayWorkItem) => void;
+  previewKey?: string | null;
   item: TodayWorkItem;
   locale: "en" | "zh";
   now: Date;
@@ -292,7 +317,7 @@ function RelatedCreativeRuns({
   );
 }
 
-function WorkItem({ density, item, locale, now, onFeedback, onPreferenceChanged, onToggleSelected, selected, watchedQueue }: WorkItemProps) {
+function WorkItem({ density, detail, onPreview, previewKey, item, locale, now, onFeedback, onPreferenceChanged, onToggleSelected, selected, watchedQueue }: WorkItemProps) {
   const { t } = useAdminI18n();
   const title = todayWorkItemTitle(item, t);
   const [busy, setBusy] = useState(false);
@@ -386,76 +411,46 @@ function WorkItem({ density, item, locale, now, onFeedback, onPreferenceChanged,
     </div>
   ) : null;
 
-  if (density === "compact") {
-    return (
-      <div className={`flex items-center gap-2 px-3 py-1.5 transition-colors hover:bg-black/[0.025] ${selected ? "bg-[var(--ad-blue-bg)]" : ""}`}>
-        {onToggleSelected ? (
-          <input
-            aria-label={t("Select {title}", { title })}
-            checked={selected}
-            className="h-4 w-4 shrink-0"
-            onChange={(event) => onToggleSelected(item, event.target.checked)}
-            type="checkbox"
-          />
-        ) : null}
+  if (detail) {
+    const facts = [
+      [t("Record ID"), item.sourceId],
+      [t("Domain"), t(item.sourceType)],
+      [t("Owner"), item.ownerId ?? t("Unassigned")],
+      [t("Opened"), formatDateTime(item.openedAt, locale)],
+      [t("Last changed"), formatDateTime(item.lastChangedAt, locale)],
+      [t("SLA"), item.slaDueAt ? formatDateTime(item.slaDueAt, locale) : t("No deadline")],
+      [t("Verification"), t(item.verificationState)],
+    ];
+    return <article className="flex min-h-[650px] flex-col rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-6 xl:p-8" data-testid="today-preview" aria-label={t("Work preview")}>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <h2 className="min-w-0 break-words text-xl font-semibold leading-snug text-[var(--ad-ink)]">{title}</h2>
         <SeverityChip severity={item.severity} />
-        <Link className="max-w-[36%] shrink-0 truncate text-sm font-medium hover:underline" href={item.deepLink}>
-          {item.pinned ? <Pin aria-hidden className="mr-1 inline h-3 w-3" /> : null}
-          {title}
-        </Link>
-        <span className="hidden min-w-0 flex-1 truncate text-xs text-[var(--ad-text-muted)] sm:block">
-          {todayOperationalText(item.summary, locale)}
-        </span>
-        <SlaChip item={item} locale={locale} now={now} />
-        <span className="hidden shrink-0 text-[11px] text-[var(--ad-text-muted)] lg:block">
-          {item.ownerId ?? t("Unassigned")}
-        </span>
+      </div>
+      <div className="mt-4 flex flex-wrap items-center gap-3 text-sm"><span>{t(item.sourceStatus)}</span><SlaChip item={item} locale={locale} now={now} /></div>
+      <p className="mt-5 break-words text-sm leading-6 text-[var(--ad-text-muted)]">{todayOperationalText(item.summary, locale)}</p>
+      <div className="mt-5 flex flex-wrap items-center gap-3">
+        {onToggleSelected ? <button className="inline-flex min-h-10 items-center gap-2 text-sm disabled:opacity-40" disabled={busy} onClick={() => void setPreference({ watching: !watchedQueue }, watchedQueue ? "Removed from Watching" : "Added to Watching")} type="button"><Eye className="h-4 w-4" />{t(watchedQueue ? "Unwatch" : "Watch")}</button> : null}
         {actions}
       </div>
-    );
+      <div className="my-6 border-t border-[var(--ad-border)]" />
+      <h3 className="text-sm font-semibold">{t("Work details")}</h3>
+      <dl className="mt-5 grid grid-cols-[auto_minmax(0,1fr)] gap-x-5 gap-y-4 text-sm leading-6">{facts.map(([label, value]) => <div className="contents" key={label}><dt className="text-[var(--ad-text-muted)]">{label}</dt><dd className="break-words [overflow-wrap:anywhere]">{value}</dd></div>)}</dl>
+      <div className="mt-auto pt-8">
+        <p className="mb-4 text-sm leading-6 text-[var(--ad-text-muted)]">{todayOperationalText(item.recommendedAction, locale)}</p>
+        <Link className="flex min-h-12 items-center justify-center gap-2 rounded-md bg-[var(--ad-ink)] px-5 text-sm font-semibold text-white focus-visible:outline-2 focus-visible:outline-offset-4" href={item.deepLink}>{t("Open source record")}<ArrowRight className="h-4 w-4" /></Link>
+        <p className="mt-3 text-center text-xs text-[var(--ad-text-muted)]">{t("Continue in the original workspace.")}</p>
+      </div>
+    </article>;
   }
 
-  return (
-    <div className={`px-4 py-3 transition-colors hover:bg-black/[0.025] ${selected ? "bg-[var(--ad-blue-bg)]" : ""}`}>
-      <div className="flex items-start gap-2">
-        {onToggleSelected ? (
-          <input
-            aria-label={t("Select {title}", { title })}
-            checked={selected}
-            className="mt-1 h-4 w-4 shrink-0"
-            onChange={(event) => onToggleSelected(item, event.target.checked)}
-            type="checkbox"
-          />
-        ) : null}
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <SeverityChip severity={item.severity} />
-            <span className="text-[10px] uppercase text-[var(--ad-text-muted)]">{t(item.sourceType.replaceAll("_", " "))}</span>
-            <SlaChip item={item} locale={locale} now={now} />
-            {item.pinned ? <span className="text-[10px] font-semibold uppercase">{t("Pinned")}</span> : null}
-          </div>
-          <Link className="group mt-2 flex items-center gap-2 text-sm font-semibold" href={item.deepLink}>
-            <span className="truncate">{title}</span>
-            <ArrowRight aria-hidden className="h-4 w-4 shrink-0 text-[var(--ad-text-muted)] transition-transform group-hover:translate-x-0.5" />
-          </Link>
-          <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">{todayOperationalText(item.summary, locale)}</p>
-          <p className="mt-2 text-xs">{todayOperationalText(item.recommendedAction, locale)}</p>
-          {/* SPEC: 每条事实只出现一次。
-              INTENT: 这一行曾印过第二遍严重度（上面已有色标）、第二遍 SLA（一次 ISO 一次
-              本地格式），外加每张卡都一样的 environment · dataClass —— 同屏重复三十遍，
-              却没有一条能改变运营的下一步。留下的是：归谁、什么时候到期、开了多久，
-              以及只有出结果时才有意义的验证态。 */}
-          <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-[var(--ad-text-muted)]">
-            <span>{t("Owner")}: {item.ownerId ?? t("Unassigned")}</span>
-            <span>{t("SLA")}: {item.slaDueAt ? formatDateTime(item.slaDueAt, locale) : t("No deadline")}</span>
-            <span>{t("Opened")} {formatRelativeTime(item.openedAt, now.toISOString(), locale)}</span>
-            {item.verificationState === "pending" ? null : <span>{t("Verification")}: {t(item.verificationState)}</span>}
-          </div>
-        </div>
-        {actions}
-      </div>
-    </div>
-  );
+  return <div className={`flex items-start gap-3 px-4 ${density === "compact" ? "py-4" : "py-6"} ${previewKey === workItemKey(item) ? "bg-[var(--ad-red-bg)]/50" : "hover:bg-black/[0.025]"}`}>
+    {onToggleSelected ? <input aria-label={t("Select {title}", { title })} checked={selected} className="mt-1 h-4 w-4 shrink-0" onChange={(event) => onToggleSelected(item, event.target.checked)} type="checkbox" /> : null}
+    <button data-today-preview aria-pressed={previewKey === workItemKey(item)} aria-label={t("Preview {title}", { title })} className="min-w-0 flex-1 text-left focus-visible:outline-2 focus-visible:outline-offset-4" onClick={() => onPreview?.(item)} type="button">
+      <span className="flex items-start gap-2"><SeverityChip severity={item.severity} /><span className="min-w-0 break-words text-sm font-semibold leading-5">{item.pinned ? <Pin aria-hidden className="mr-1 inline h-3 w-3" /> : null}{title}</span></span>
+      <span className="mt-3 block truncate text-sm text-[var(--ad-text-muted)]">{todayOperationalText(item.summary, locale)}</span>
+      <span className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--ad-text-muted)]"><span className="max-w-full truncate">{item.ownerId ?? t("Unassigned")}{item.sourceType === "ops_incident" ? ` · ${item.sourceId.slice(-8)}` : ""}</span><SlaChip item={item} locale={locale} now={now} /></span>
+    </button>
+  </div>;
 }
 
 function MenuAction({ disabled, icon: Icon, label, onClick }: { disabled: boolean; icon: typeof Eye; label: string; onClick: () => void }) {
@@ -502,7 +497,7 @@ function SnoozeMenu({ busy, label, now, onSelect }: { busy: boolean; label: stri
 function SeverityChip({ severity }: { severity: TodayWorkItem["severity"] }) {
   const { t } = useAdminI18n();
   return (
-    <span className={`inline-flex w-[68px] shrink-0 justify-center rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.04em] ${TONE_CLASSES[severityTone(severity)]}`}>
+    <span className={`inline-flex min-w-9 shrink-0 justify-center rounded px-1.5 py-0.5 text-xs font-semibold ${TONE_CLASSES[severityTone(severity)]}`}>
       {t(severity)}
     </span>
   );

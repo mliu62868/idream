@@ -1,0 +1,18 @@
+@idream/admin lint: 
+@idream/admin lint: /Users/kk/code/idream/packages/admin/scripts/start-development.test.cjs
+@idream/admin lint:   7:3  warning  'nextCli' is assigned a value but never used  @typescript-eslint/no-unused-vars
+@idream/admin lint: 
+@idream/admin lint: /Users/kk/code/idream/packages/admin/src/components/admin/ExperimentsView.mounted.test.tsx
+@idream/admin lint:   51:67  warning  'init' is defined but never used  @typescript-eslint/no-unused-vars
+@idream/admin lint: 
+@idream/admin lint: /Users/kk/code/idream/packages/admin/src/components/admin/InsightsView.tsx
+@idream/admin lint:    85:36  warning  'reportFailure' is assigned a value but never used                                                           @typescript-eslint/no-unused-vars
+@idream/admin lint:   103:6   warning  React Hook useCallback has an unnecessary dependency: 't'. Either exclude it or remove the dependency array  react-hooks/exhaustive-deps
+@idream/admin lint: 
+@idream/admin lint: /Users/kk/code/idream/packages/admin/src/components/admin/TagsView.tsx
+@idream/admin lint:   93:9  warning  The 'tags' logical expression could make the dependencies of useMemo Hook (at line 99) change on every render. To fix this, wrap the initialization of 'tags' in its own useMemo() Hook   react-hooks/exhaustive-deps
+@idream/admin lint:   93:9  warning  The 'tags' logical expression could make the dependencies of useMemo Hook (at line 108) change on every render. To fix this, wrap the initialization of 'tags' in its own useMemo() Hook  react-hooks/exhaustive-deps
+@idream/admin lint: 
+@idream/admin lint: ✖ 6 problems (0 errors, 6 warnings)
+@idream/admin lint: 
+@idream/admin lint: Exited with code 0

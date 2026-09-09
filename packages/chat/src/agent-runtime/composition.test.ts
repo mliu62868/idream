@@ -38,7 +38,7 @@ describe("companion composition identity", () => {
           commit: 1,
         },
         executionPolicy: {
-          version: 3,
+          version: 8,
           maxSteps: 8,
           maxParallelToolCalls: 1,
           effectfulToolConcurrency: 1,

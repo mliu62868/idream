@@ -1,7 +1,7 @@
 import type { TodayAllWorkQuery, TodaySourceStatus, TodaySourceType } from "@idream/shared/admin";
 
 export type TodayTab = "summary" | "all";
-export type TodayUrlState = Omit<Partial<TodayAllWorkQuery>, "limit"> & { tab: TodayTab; limit: number };
+export type TodayUrlState = Omit<Partial<TodayAllWorkQuery>, "limit"> & { tab: TodayTab; queue?: "priority" | "mine" | "unassigned" | "watching" | "resolved"; limit: number };
 
 export const TODAY_FILTER_KEYS = ["domain", "severity", "sla", "owner", "ownerId", "status", "environment"] as const;
 export type TodayFilterKey = typeof TODAY_FILTER_KEYS[number];
@@ -43,6 +43,7 @@ export function withoutTodayFilters(state: TodayUrlState): TodayUrlState {
 
 export function parseTodayUrl(params: URLSearchParams): TodayUrlState {
   return {
+    queue: (["priority", "mine", "unassigned", "watching", "resolved"].includes(params.get("queue") ?? "") ? params.get("queue") : undefined) as TodayUrlState["queue"],
     tab: params.get("todayTab") === "all" ? "all" : "summary",
     domain: optional(params.get("domain")) as TodayUrlState["domain"],
     severity: optional(params.get("severity")) as TodayUrlState["severity"],
@@ -68,6 +69,7 @@ export function todayAllWorkPath(state: TodayUrlState, workMode: string) {
 export function todayBrowserPath(state: TodayUrlState) {
   const params = new URLSearchParams();
   if (state.tab === "all") params.set("todayTab", "all");
+  else if (state.queue && state.queue !== "priority") params.set("queue", state.queue);
   for (const key of ["domain", "severity", "sla", "owner", "ownerId", "status", "environment", "cursor"] as const) {
     const value = state[key];
     if (value) params.set(key, String(value));

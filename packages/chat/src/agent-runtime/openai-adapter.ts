@@ -14,6 +14,7 @@ import { parseImageAgentToolCall } from "@idream/shared/chat/image-action";
 import { createHash } from "node:crypto";
 import { logger } from "../logger.js";
 import type { CompanionModelRequestEvidence, CompanionToolCall, PreparedTurnProfile } from "./contracts";
+import { estimateModelRequestInputTokens, formatModelRequestInput, type ModelInputMessage } from "./model-request-format";
 
 export interface OpenAiCompatibleAdapterOptions {
   profile: PreparedTurnProfile;
@@ -21,6 +22,8 @@ export interface OpenAiCompatibleAdapterOptions {
   openRouterProviderOnly?: readonly string[];
   requiredToolName?: CompanionToolCall["name"];
   maxInputTokens?: number;
+  /** Factual turns use the profile's structured temperature without changing the configured roleplay default. */
+  samplingTemperature?: number;
   observeRequest?: (evidence: CompanionModelRequestEvidence) => void;
   fetch?: typeof globalThis.fetch;
 }
@@ -75,15 +78,21 @@ function textOf(blocks: readonly ContentBlock[]): string {
     .join("\n");
 }
 
-function openAiMessages(system: string | undefined, messages: readonly Message[]): unknown[] {
-  const output: unknown[] = [];
-  if (system) output.push({ role: "system", content: system });
+function modelInputMessages(system: string | undefined, messages: readonly Message[]): ModelInputMessage[] {
+  const output: ModelInputMessage[] = [];
+  if (system) output.push({ id: "system", sourceKind: "plugin", role: "system", content: system });
   for (const message of messages) {
+    const sourceKind = message.source.kind === "user" ? "current_user"
+      : message.source.kind === "plugin" && "form" in message.source
+        && ["snapshot", "recall", "context"].includes(String(message.source.form))
+        ? "plugin" : "replay";
     const toolResult = message.content.find(
       (block): block is Extract<ContentBlock, { type: "tool-result" }> => block.type === "tool-result",
     );
     if (toolResult) {
       output.push({
+        id: String(message.id),
+        sourceKind,
         role: "tool",
         tool_call_id: String(toolResult.toolCallId),
         content: textOf(toolResult.content),
@@ -94,53 +103,20 @@ function openAiMessages(system: string | undefined, messages: readonly Message[]
       .filter((block): block is Extract<ContentBlock, { type: "tool-call" }> => block.type === "tool-call")
       .map((block) => ({
         id: String(block.id),
-        type: "function",
+        type: "function" as const,
         function: { name: block.name, arguments: block.arguments },
       }));
     const content = textOf(message.content);
     output.push({
+      id: String(message.id),
+      sourceKind,
       role: message.role,
-      content: content || null,
-      ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+      toolSource: message.source.kind === "tool",
+      content,
+      ...(message.role === "assistant" && toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
     });
   }
   return output;
-}
-
-function requiredToolMessages(
-  system: string | undefined,
-  messages: readonly Message[],
-  jsonCompatibilityMode = false,
-): unknown[] {
-  const currentIndex = messages.findLastIndex(
-    (message) => message.role === "user" && message.source.kind === "user",
-  );
-  if (currentIndex < 0) return openAiMessages(system, messages);
-  const current = messages[currentIndex];
-  const state = messages
-    .slice(0, currentIndex)
-    .findLast((message) => String(message.id).startsWith("state:"));
-  const currentText = textOf(current.content);
-  if (!currentText) return openAiMessages(system, messages);
-  const stateText = state ? textOf(state.content) : "";
-  return [
-    ...(system ? [{ role: "system", content: system }] : []),
-    {
-      role: "user",
-      content: [
-        stateText,
-        stateText ? "Latest user request (authoritative):" : "",
-        currentText,
-        jsonCompatibilityMode
-          ? [
-              "Provider compatibility mode: do not answer the user yet.",
-              "Return exactly one JSON object containing only the required function arguments.",
-              "Match the offered tool schema. Do not use Markdown, a function wrapper, or commentary.",
-            ].join(" ")
-          : "",
-      ].filter(Boolean).join("\n\n"),
-    },
-  ];
 }
 
 function requiredToolArgumentsJson(
@@ -185,10 +161,10 @@ function requiredToolOnlyChunks(
   });
 }
 
-function isRequiredToolOmission(error: unknown): boolean {
-  return error instanceof LlmError
-    && error.code === "INVALID_RESPONSE"
-    && error.message === REQUIRED_TOOL_OMITTED_MESSAGE;
+class RequiredToolOmission extends LlmError {
+  constructor(readonly replayState: Extract<StreamChunk, { type: "finish" }>["replayState"]) {
+    super(REQUIRED_TOOL_OMITTED_MESSAGE, "INVALID_RESPONSE");
+  }
 }
 
 function finishReason(value: string | undefined): FinishReason {
@@ -308,6 +284,7 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
   private readonly requiredToolName: CompanionToolCall["name"] | undefined;
   private requiredToolCompleted: boolean;
   private readonly maxInputTokens: number | undefined;
+  private readonly samplingTemperature: number | undefined;
   private readonly observeRequest: OpenAiCompatibleAdapterOptions["observeRequest"];
 
   constructor(options: OpenAiCompatibleAdapterOptions) {
@@ -319,6 +296,7 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
     this.request = options.fetch ?? globalThis.fetch;
     this.requiredToolName = options.requiredToolName;
     this.maxInputTokens = options.maxInputTokens;
+    this.samplingTemperature = options.samplingTemperature;
     this.observeRequest = options.observeRequest;
     this.requiredToolCompleted = !options.requiredToolName;
     if (!this.apiKey) throw new Error("OpenAI-compatible API key is required");
@@ -362,7 +340,7 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
         }
         return;
       } catch (error) {
-        if (!isRequiredToolOmission(error)) throw error;
+        if (!(error instanceof RequiredToolOmission)) throw error;
         omission = error;
         if (!jsonCompatibilityMode) continue;
 
@@ -401,7 +379,7 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
           },
         };
         if (totalUsage) yield { type: "usage", usage: totalUsage };
-        yield { type: "finish", reason: { kind: "tool-calls" } };
+        yield { type: "finish", reason: { kind: "tool-calls" }, replayState: error.replayState };
         return;
       }
     }
@@ -431,23 +409,28 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
       )),
       this.profile.timeout.firstTokenMs,
     );
+    const modelInput = formatModelRequestInput({
+      messages: modelInputMessages(options.system, options.messages),
+      tools: options.tools,
+      requiredTool: forceRequiredTool,
+      jsonCompatibilityMode,
+    });
     const body = {
       model: options.model,
-      // SPEC: the image-direction skill receives only Character/runtime system
-      // authority, the current Scene state and the latest user request. Stale
-      // assistant photo acknowledgements are not visual-direction evidence and
-      // must not compete with the required native tool call. Chat supplies the
-      // confirmation locally after Main accepts this tool's effect.
-      messages: forceRequiredTool
-        ? requiredToolMessages(options.system, options.messages, jsonCompatibilityMode)
-        : openAiMessages(options.system, options.messages),
+      // SPEC: the latest user request authorizes one image action. Preserve
+      // prepared Scene, dialogue and recall as quoted continuity evidence;
+      // earlier requests and tool protocol cannot become new actions. Chat
+      // confirms the request locally only after Main accepts the effect.
+      messages: modelInput.messages,
       stream: true,
       stream_options: { include_usage: true },
       // INTENT: one sampling profile for the whole streamed turn. DSH always
       // exposes memory tools in normal mode, so a "structured" temperature
       // keyed on `tools.length` would flatten every companion reply to the
       // planner setting (0.2) — the voice must not depend on tool exposure.
-      temperature: jsonCompatibilityMode ? 0 : this.profile.sampling.temperature,
+      temperature: jsonCompatibilityMode
+        ? 0
+        : this.samplingTemperature ?? this.profile.sampling.temperature,
       top_p: this.profile.sampling.topP,
       repetition_penalty: this.profile.sampling.repetitionPenalty,
       // A response-length preference must not truncate native/JSON tool arguments.
@@ -462,14 +445,7 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
       chat_template_kwargs: { enable_thinking: false },
       ...(options.stop?.length ? { stop: options.stop } : {}),
       ...(options.tools?.length ? {
-        tools: options.tools.map((tool) => ({
-          type: "function",
-          function: {
-            name: tool.name,
-            description: tool.description,
-            parameters: tool.parameters,
-          },
-        })),
+        tools: modelInput.tools,
         // SPEC: OpenAI-compatible servers must enter the native function-call
         // path when tools are present; never rely on a server-specific default
         // that may render a tool plan as ordinary assistant JSON.
@@ -496,10 +472,7 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
       // Apply the same character estimate as PreparedTurn, now
       // including DSH guidance, resident memory, tool results and wire schemas.
       // This is an input estimate, not a claim about a provider's tokenizer.
-      const estimatedInputTokens = Math.max(1, Math.ceil(JSON.stringify({
-        messages: body.messages,
-        tools: body.tools ?? [],
-      }).length / 4));
+      const estimatedInputTokens = estimateModelRequestInputTokens(body);
       if (this.maxInputTokens !== undefined && estimatedInputTokens > this.maxInputTokens) {
         throw new LlmError("assembled model request exceeds the prepared input budget", "INPUT_BUDGET_EXCEEDED");
       }
@@ -646,6 +619,26 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
         throw new LlmError("provider stream ended without a finish reason", "INVALID_RESPONSE");
       }
       const resolvedFinish = finishReason(nativeFinish);
+      // Attribution belongs to the actual provider response, including a JSON
+      // compatibility completion. Validate it before accepting either path.
+      if (this.openRouter) {
+        if (!responseId || !actualProvider) {
+          throw new LlmError("OpenRouter stream omitted request/provider attribution", "INVALID_RESPONSE");
+        }
+        const attributed = actualProvider.trim().toLocaleLowerCase();
+        if (!this.providerOnly?.some((provider) => provider.toLocaleLowerCase() === attributed)) {
+          throw new LlmError(
+            `OpenRouter attributed the response to unpinned provider ${actualProvider}`,
+            "INVALID_RESPONSE",
+          );
+        }
+      }
+      const replayState = {
+        response: {
+          ...(responseId ? { id: responseId } : {}),
+          ...(actualProvider ? { provider: actualProvider } : {}),
+        },
+      };
       // A completed request spent tokens even if it omitted its required tool.
       // The compatibility wrapper accounts for both requests before returning
       // one validated DSH completion anchor.
@@ -664,7 +657,7 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
               .map((state) => state.name)
               .filter(Boolean),
           }, "provider omitted required companion tool");
-          throw new LlmError(REQUIRED_TOOL_OMITTED_MESSAGE, "INVALID_RESPONSE");
+          throw new RequiredToolOmission(replayState);
         }
         // INVARIANT: transport retries and abandoned streams must keep forcing
         // the action. Only a validated native tool call advances the adapter to
@@ -690,27 +683,10 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
               };
         yield { type: "block-end", index: state.index, block };
       }
-      if (this.openRouter) {
-        if (!responseId || !actualProvider) {
-          throw new LlmError("OpenRouter stream omitted request/provider attribution", "INVALID_RESPONSE");
-        }
-        const attributed = actualProvider.trim().toLocaleLowerCase();
-        if (!this.providerOnly?.some((provider) => provider.toLocaleLowerCase() === attributed)) {
-          throw new LlmError(
-            `OpenRouter attributed the response to unpinned provider ${actualProvider}`,
-            "INVALID_RESPONSE",
-          );
-        }
-      }
       yield {
         type: "finish",
         reason: resolvedFinish,
-        replayState: {
-          response: {
-            ...(responseId ? { id: responseId } : {}),
-            ...(actualProvider ? { provider: actualProvider } : {}),
-          },
-        },
+        replayState,
       };
     } finally {
       clearTimeout(firstTokenTimer);

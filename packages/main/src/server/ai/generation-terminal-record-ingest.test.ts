@@ -18,6 +18,7 @@ import { recordGenerationAttemptEvent } from "./generation-attempt-events";
 import { recordGenerationTransportExecution } from "./generation-transport-execution";
 import { reserveInitialGenerationAttempt } from "@/server/modules/generation/generation-attempt-authority";
 import { redriveFailedGenerationTerminalRelays } from "./generation-terminal-relay";
+import { generationInvocationUsageFactConflicts, recordGenerationInvocationUsageFact } from "./generation-invocation-usage";
 
 const attemptId = "durable_terminal_record_attempt_1";
 const outboxId = `generation_terminal_record_${attemptId}`;
@@ -103,6 +104,65 @@ afterAll(async () => {
 });
 
 describe("generation terminal record durable ingest", () => {
+  it("attributes terminal invocation usage to the Main audit actor and Character", async () => {
+    const character = await prisma.character.create({ data: {
+      id: `usage-provenance-character-${crypto.randomUUID()}`,
+      name: "Audit invocation provenance", age: 27,
+      description: "Dedicated test database provenance regression", appearance: {}, advancedDetails: {},
+    } });
+    try {
+      await reserveAttempt();
+      await prisma.user.update({ where: { id: authorityUserId }, data: { dataClass: "audit" } });
+      await prisma.generationJob.update({ where: { id: terminalRecord.generationJobId }, data: { characterId: character.id } });
+      const performance = { resourceWaitMs: 24, runnerPreparationMs: 31, totalMs: 640, requests: [{ waitMs: 503, providerExecutionMs: null }] };
+      const record = { ...terminalRecord, accounting: { ...terminalRecord.accounting, usage: { ...terminalRecord.accounting.usage, performance } } };
+      const input = {
+        terminalRecordRef: `gen/terminal-records/${attemptId}/terminal.json`,
+        terminalRecordChecksum: generationTerminalRecordChecksum(record), terminalRecord: record,
+      };
+      await expect(ingestGenerationTerminalRecord(input)).resolves.toMatchObject({ acknowledged: true, status: "persisted" });
+      const facts = await prisma.aiUsageFact.findMany({ where: { attemptId } });
+      expect(facts).toEqual([expect.objectContaining({
+        userId: authorityUserId, characterId: character.id, dataClass: "audit",
+        actorIsInternal: true, environment: "test", trustClass: "canonical",
+        usage: { ...terminalRecord.accounting.usage, performance },
+      })]);
+      await expect(ingestGenerationTerminalRecord(input)).resolves.toMatchObject({ status: "duplicate" });
+      expect(await prisma.aiUsageFact.findMany({ where: { attemptId } })).toEqual(facts);
+    } finally {
+      await prisma.character.delete({ where: { id: character.id } });
+    }
+  });
+
+  it("preserves accepted historical attribution on exact accounting replay while rejecting changed cost", async () => {
+    await reserveAttempt();
+    const input = {
+      terminalRecordRef: `gen/terminal-records/${attemptId}/terminal.json`,
+      terminalRecordChecksum: generationTerminalRecordChecksum(terminalRecord), terminalRecord,
+    };
+    await ingestGenerationTerminalRecord(input);
+    const fact = await prisma.aiUsageFact.findFirstOrThrow({ where: { attemptId } });
+    // Simulate the previously deployed writer's metadata, then a later actor
+    // reclassification. Replaying provider evidence is not a data repair.
+    const historical = await prisma.aiUsageFact.update({ where: { id: fact.id }, data: {
+      characterId: null, environment: "local", dataClass: "customer", actorIsInternal: false,
+    } });
+    await prisma.user.update({ where: { id: authorityUserId }, data: { dataClass: "audit" } });
+    const accounting = {
+      attemptId, generationJobId: terminalRecord.generationJobId, transportAttemptNo: terminalRecord.transportAttemptNo,
+      transportExecutionId: fact.transportExecutionId!, provider: terminalRecord.provider, model: terminalRecord.model,
+      usage: terminalRecord.accounting.usage, latencyMs: terminalRecord.accounting.latencyMs,
+      costMicros: terminalRecord.accounting.costMicros, pricingVersion: terminalRecord.accounting.pricingVersion,
+      occurredAt: new Date(terminalRecord.completedAt),
+    };
+    await expect(prisma.$transaction(tx => generationInvocationUsageFactConflicts(tx, accounting))).resolves.toBe(false);
+    await expect(prisma.$transaction(tx => recordGenerationInvocationUsageFact(tx, accounting))).resolves.toEqual(historical);
+    const changed = { ...accounting, costMicros: accounting.costMicros + 1 };
+    await expect(prisma.$transaction(tx => generationInvocationUsageFactConflicts(tx, changed))).resolves.toBe(true);
+    await expect(prisma.$transaction(tx => recordGenerationInvocationUsageFact(tx, changed))).rejects.toThrow("different accounting");
+    expect(await prisma.aiUsageFact.findMany({ where: { attemptId } })).toEqual([historical]);
+  });
+
   it("atomically records receipt, transport, artifact and finalize outbox for a reserved Attempt", async () => {
     resetMetricsForTests();
     await reserveAttempt();

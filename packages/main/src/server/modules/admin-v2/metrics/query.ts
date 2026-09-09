@@ -7,7 +7,7 @@ import {
   type MetricCard,
   type MetricDefinition,
 } from "@idream/shared/admin";
-import type { PrismaClient } from "@prisma/client";
+import { Prisma, type MetricSnapshot, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { AppError } from "@/server/lib/errors";
 import { fail, ok } from "@/server/lib/http";
@@ -25,6 +25,7 @@ const CANONICAL_DEFINITIONS = ADMIN_METRIC_REGISTRY.filter((definition) =>
   !definition.key.startsWith("legacy.") && definition.key !== "flag_monitoring.exposure",
 );
 const DEFINITION_BY_KEY = new Map(CANONICAL_DEFINITIONS.map((definition) => [definition.key, definition]));
+type MetricDb = PrismaClient | Prisma.TransactionClient;
 
 /** The three metric reads, each of which declares its own `asOf` contract in the manifest. */
 type MetricReadOperationId =
@@ -147,15 +148,14 @@ export function selectQualityChecksForMetric<T extends MetricQualityCheckRow>(
   return selected;
 }
 
-async function qualityReport(db: PrismaClient, asOf: Date) {
+async function qualityReport(db: MetricDb, asOf: Date) {
   const completenessWindowStart = new Date(asOf.getTime() - OUTCOME_COMPLETENESS_WINDOW_MS);
-  const [report, eligibleSignups, eligibleExchanges, eligibleDeliveries, eligibleSubscriptions] = await Promise.all([
-    reconcileCanonicalMetricFacts(db, { asOf, windowStart: completenessWindowStart }),
-    db.customerSignupFact.count({ where: { eligible: true, occurredAt: { lte: asOf } } }),
-    db.chatExchangeFact.count({ where: { eligible: true, occurredAt: { lte: asOf } } }),
-    db.generationFulfillmentFact.count({ where: { eligible: true, occurredAt: { lte: asOf } } }),
-    db.subscriptionLifecycleFact.count({ where: { eligible: true, activeAt: { lte: asOf } } }),
-  ]);
+  // A materialization transaction owns one pg client; keep its reads serial.
+  const report = await reconcileCanonicalMetricFacts(db, { asOf, windowStart: completenessWindowStart });
+  const eligibleSignups = await db.customerSignupFact.count({ where: { eligible: true, occurredAt: { lte: asOf } } });
+  const eligibleExchanges = await db.chatExchangeFact.count({ where: { eligible: true, occurredAt: { lte: asOf } } });
+  const eligibleDeliveries = await db.generationFulfillmentFact.count({ where: { eligible: true, occurredAt: { lte: asOf } } });
+  const eligibleSubscriptions = await db.subscriptionLifecycleFact.count({ where: { eligible: true, activeAt: { lte: asOf } } });
   const eligibleFactCount = eligibleSignups + eligibleExchanges + eligibleDeliveries + eligibleSubscriptions;
   const freshnessFailed = report.eventLagP95Ms === null || report.eventLagP95Ms > FRESHNESS_SLO_MS;
   const qualityState = report.qualityState === "certified" && !freshnessFailed && eligibleFactCount > 0 ? "certified" as const : "invalid" as const;
@@ -182,7 +182,7 @@ async function qualityReport(db: PrismaClient, asOf: Date) {
 }
 
 async function buildCards(input: {
-  db: PrismaClient;
+  db: MetricDb;
   dataset: CanonicalMetricDataset;
   asOf: Date;
   requireMetricSnapshot?: boolean;
@@ -196,36 +196,39 @@ async function buildCards(input: {
   const nonCompletenessChecks = REQUIRED_METRIC_QUALITY_CHECKS.filter(
     (checkKey) => checkKey !== "metrics.server_outcome_completeness",
   );
-  const [definitionSnapshots, qualityChecks, metricSnapshots] = await Promise.all([
-    input.db.metricDefinitionSnapshot.findMany({
-      where: { OR: metricKeys.map((key) => ({ key, version: DEFINITION_BY_KEY.get(key)?.version ?? 1 })) },
-    }),
-    input.db.dataQualityCheck.findMany({
-      where: {
-        checkedAt: { lte: input.asOf },
-        OR: [
-          {
-            checkKey: "metrics.server_outcome_completeness",
-            windowEnd: { gte: completenessWindowStart },
-          },
-          {
-            checkKey: { in: nonCompletenessChecks },
-            checkedAt: { gte: new Date(input.asOf.getTime() - maxQualityCheckAgeMs) },
-          },
-        ],
-      },
-      orderBy: { checkedAt: "desc" },
-    }),
-    input.db.metricSnapshot.findMany({
-      where: { metricKey: { in: metricKeys }, asOf: { lte: input.asOf } },
-      orderBy: { asOf: "desc" },
-    }),
-  ]);
+  const definitionSnapshots = await input.db.metricDefinitionSnapshot.findMany({
+    where: { OR: metricKeys.map((key) => ({ key, version: DEFINITION_BY_KEY.get(key)?.version ?? 1 })) },
+  });
+  const qualityChecks = await input.db.dataQualityCheck.findMany({
+    where: {
+      checkedAt: { lte: input.asOf },
+      OR: [
+        {
+          checkKey: "metrics.server_outcome_completeness",
+          windowEnd: { gte: completenessWindowStart },
+        },
+        {
+          checkKey: { in: nonCompletenessChecks },
+          checkedAt: { gte: new Date(input.asOf.getTime() - maxQualityCheckAgeMs) },
+        },
+      ],
+    },
+    orderBy: { checkedAt: "desc" },
+  });
   const definitionSnapshotByKey = new Map(definitionSnapshots.map((row) => [`${row.key}@${row.version}`, row]));
-  const latestMetricSnapshot = new Map<string, (typeof metricSnapshots)[number]>();
-  for (const snapshot of metricSnapshots) {
-    const key = `${snapshot.metricKey}@${snapshot.definitionVersion}`;
-    if (!latestMetricSnapshot.has(key)) latestMetricSnapshot.set(key, snapshot);
+  const latestMetricSnapshot = new Map<string, MetricSnapshot>();
+  if (input.requireMetricSnapshot !== false) {
+    for (const key of metricKeys) {
+      const snapshot = await input.db.metricSnapshot.findFirst({
+        where: {
+          metricKey: key,
+          definitionVersion: DEFINITION_BY_KEY.get(key)?.version ?? 1,
+          asOf: { lte: input.asOf },
+        },
+        orderBy: { asOf: "desc" },
+      });
+      if (snapshot) latestMetricSnapshot.set(`${key}@${snapshot.definitionVersion}`, snapshot);
+    }
   }
   const sources = sourceFactEvidence(input.dataset, input.asOf);
   return Object.entries(evaluation.metrics).map(([key, result]) => {
@@ -233,7 +236,9 @@ async function buildCards(input: {
     if (!definition) throw new Error(`Missing canonical metric definition for ${key}`);
     const identity = `${definition.key}@${definition.version}`;
     const definitionSnapshot = definitionSnapshotByKey.get(identity);
-    const snapshot = latestMetricSnapshot.get(identity);
+    // Materialization evaluates the current facts. A prior snapshot is only
+    // read authority; reusing it here freezes values and launders old evidence.
+    const snapshot = input.requireMetricSnapshot === false ? undefined : latestMetricSnapshot.get(identity);
     const metricQualityChecks = selectQualityChecksForMetric(qualityChecks, definition.key);
     const certification = evaluateMetricCertification({
       definition,
@@ -271,7 +276,9 @@ async function buildCards(input: {
       definitionVersion: definition.version,
       publicationStatus: definition.publicationStatus,
       name: definition.name,
-      value: usableSnapshot?.value ?? null,
+      value: certification.decisionUse === "blocked"
+        ? null
+        : input.requireMetricSnapshot === false ? result.value : usableSnapshot?.value ?? null,
       unit: result.denominator === null ? "users" : "ratio",
       numeratorLabel: definition.numerator,
       denominatorLabel: definition.denominator,
@@ -293,7 +300,7 @@ async function buildCards(input: {
   });
 }
 
-async function buildMetricDashboardData(db: PrismaClient, asOf: Date) {
+async function buildMetricDashboardData(db: MetricDb, asOf: Date) {
   const rawDataset = await loadCanonicalMetricDataset(db);
   const dataset = filterDatasetFrom(rawDataset, factsValidFrom());
   const liveQuality = await qualityReport(db, asOf);
@@ -317,7 +324,7 @@ async function buildMetricDashboardData(db: PrismaClient, asOf: Date) {
   });
 }
 
-async function buildBusinessFactCards(db: PrismaClient, asOf: Date): Promise<MetricCard[]> {
+async function buildBusinessFactCards(db: MetricDb, asOf: Date): Promise<MetricCard[]> {
   const windowStart = new Date(asOf.getTime() - 7 * 24 * 60 * 60 * 1_000);
   const usage = await db.aiUsageFact.findMany({
     where: {
@@ -395,7 +402,7 @@ async function buildBusinessFactCards(db: PrismaClient, asOf: Date): Promise<Met
   ].map((card) => metricCardSchema.parse(card));
 }
 
-export async function publishMetricRegistrySnapshots(db: PrismaClient) {
+export async function publishMetricRegistrySnapshots(db: MetricDb) {
   let created = 0;
   let existingCount = 0;
   for (const definition of ADMIN_METRIC_REGISTRY) {
@@ -427,6 +434,22 @@ export async function publishMetricRegistrySnapshots(db: PrismaClient) {
 }
 
 export async function materializeMetricSnapshots(db: PrismaClient, asOf = new Date()) {
+  // Facts, checks and values must describe one database view while the event
+  // consumer continues projecting. A failed run must not leave partial checks.
+  return db.$transaction((tx) => materializeMetricSnapshotsInTransaction(tx, asOf), {
+    isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+    timeout: 60_000,
+  });
+}
+
+export async function readMetricDashboard(db: PrismaClient, asOf = new Date()) {
+  return db.$transaction((tx) => buildMetricDashboardData(tx, asOf), {
+    isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+    timeout: 60_000,
+  });
+}
+
+async function materializeMetricSnapshotsInTransaction(db: Prisma.TransactionClient, asOf: Date) {
   await publishMetricRegistrySnapshots(db);
   const rawDataset = await loadCanonicalMetricDataset(db);
   const dataset = filterDatasetFrom(rawDataset, factsValidFrom());
@@ -445,27 +468,25 @@ export async function materializeMetricSnapshots(db: PrismaClient, asOf = new Da
   const affectedCompletenessMetrics = CANONICAL_DEFINITIONS
     .filter((definition) => definition.sourceEvents.some((eventType) => quarantinedEventTypes.has(eventType)))
     .map((definition) => definition.key);
-  await db.$transaction(async (tx) => {
-    for (const check of quality.checks) {
-      await tx.dataQualityCheck.create({
-        data: {
-          checkKey: `metrics.${check.key}`,
-          status: check.status,
-          metricKeys: check.key === "server_outcome_completeness" && check.status !== "passed"
-            ? affectedCompletenessMetrics
-            : CANONICAL_DEFINITIONS.map((definition) => definition.key),
-          observed: toInputJson({ value: check.observed }),
-          threshold: toInputJson({ expression: check.threshold }),
-          evidence: toInputJson({ asOf: asOf.toISOString(), observed: check.observed, threshold: check.threshold }),
-          windowStart: check.key === "server_outcome_completeness"
-            ? completenessWindowStart
-            : qualityWindowStart,
-          windowEnd: asOf,
-          checkedAt: asOf,
-        },
-      });
-    }
-  });
+  for (const check of quality.checks) {
+    await db.dataQualityCheck.create({
+      data: {
+        checkKey: `metrics.${check.key}`,
+        status: check.status,
+        metricKeys: check.key === "server_outcome_completeness" && check.status !== "passed"
+          ? affectedCompletenessMetrics
+          : CANONICAL_DEFINITIONS.map((definition) => definition.key),
+        observed: toInputJson({ value: check.observed }),
+        threshold: toInputJson({ expression: check.threshold }),
+        evidence: toInputJson({ asOf: asOf.toISOString(), observed: check.observed, threshold: check.threshold }),
+        windowStart: check.key === "server_outcome_completeness"
+          ? completenessWindowStart
+          : qualityWindowStart,
+        windowEnd: asOf,
+        checkedAt: asOf,
+      },
+    });
+  }
   const cards = [
     ...await buildCards({ db, dataset, asOf, requireMetricSnapshot: false }),
     ...await buildBusinessFactCards(db, asOf),
@@ -477,61 +498,59 @@ export async function materializeMetricSnapshots(db: PrismaClient, asOf = new Da
     asOf: asOf.toISOString(),
     freshness: quality.qualityState === "invalid" ? "degraded" : "fresh",
   });
-  await db.$transaction(async (tx) => {
-    for (const card of cards) {
-      const definition = DEFINITION_BY_KEY.get(card.key) as MetricDefinition;
-      const windowStart = metricWindowStart(definition, asOf);
-      await tx.metricSnapshot.upsert({
-        where: {
-          metricKey_definitionVersion_windowStart_windowEnd_asOf: {
-            metricKey: card.key,
-            definitionVersion: card.definitionVersion,
-            windowStart,
-            windowEnd: asOf,
-            asOf,
-          },
-        },
-        create: {
+  for (const card of cards) {
+    const definition = DEFINITION_BY_KEY.get(card.key) as MetricDefinition;
+    const windowStart = metricWindowStart(definition, asOf);
+    await db.metricSnapshot.upsert({
+      where: {
+        metricKey_definitionVersion_windowStart_windowEnd_asOf: {
           metricKey: card.key,
           definitionVersion: card.definitionVersion,
           windowStart,
           windowEnd: asOf,
           asOf,
-          numeratorValue: card.numeratorValue,
-          denominatorValue: card.denominatorValue,
-          value: typeof card.value === "number" ? card.value : null,
-          sampleSize: card.sampleSize,
-          matureSampleSize: card.matureSampleSize,
-          immatureSampleSize: card.immatureSampleSize,
-          maturity: card.maturity,
-          qualityState: card.qualityState,
-          publicationStatus: card.publicationStatus,
-          latestDataAt: card.latestDataAt ? new Date(card.latestDataAt) : null,
-          definitionQueryHash: definition.queryHash,
-          qualityEvidence: toInputJson(card.qualityEvidence),
         },
-        update: {
-          numeratorValue: card.numeratorValue,
-          denominatorValue: card.denominatorValue,
-          value: typeof card.value === "number" ? card.value : null,
-          sampleSize: card.sampleSize,
-          matureSampleSize: card.matureSampleSize,
-          immatureSampleSize: card.immatureSampleSize,
-          maturity: card.maturity,
-          qualityState: card.qualityState,
-          latestDataAt: card.latestDataAt ? new Date(card.latestDataAt) : null,
-          qualityEvidence: toInputJson(card.qualityEvidence),
-        },
-      });
-    }
-  });
+      },
+      create: {
+        metricKey: card.key,
+        definitionVersion: card.definitionVersion,
+        windowStart,
+        windowEnd: asOf,
+        asOf,
+        numeratorValue: card.numeratorValue,
+        denominatorValue: card.denominatorValue,
+        value: typeof card.value === "number" ? card.value : null,
+        sampleSize: card.sampleSize,
+        matureSampleSize: card.matureSampleSize,
+        immatureSampleSize: card.immatureSampleSize,
+        maturity: card.maturity,
+        qualityState: card.qualityState,
+        publicationStatus: card.publicationStatus,
+        latestDataAt: card.latestDataAt ? new Date(card.latestDataAt) : null,
+        definitionQueryHash: definition.queryHash,
+        qualityEvidence: toInputJson(card.qualityEvidence),
+      },
+      update: {
+        numeratorValue: card.numeratorValue,
+        denominatorValue: card.denominatorValue,
+        value: typeof card.value === "number" ? card.value : null,
+        sampleSize: card.sampleSize,
+        matureSampleSize: card.matureSampleSize,
+        immatureSampleSize: card.immatureSampleSize,
+        maturity: card.maturity,
+        qualityState: card.qualityState,
+        latestDataAt: card.latestDataAt ? new Date(card.latestDataAt) : null,
+        qualityEvidence: toInputJson(card.qualityEvidence),
+      },
+    });
+  }
   return dashboard;
 }
 
 export async function getMetricDashboard(request: Request) {
   try {
     const actor = await actorWithPermission(request, "analytics.metric.read");
-    const data = await buildMetricDashboardData(prisma, parseAsOf(request, "GET /api/v2/admin/metrics"));
+    const data = await readMetricDashboard(prisma, parseAsOf(request, "GET /api/v2/admin/metrics"));
     const scope = await effectivePermissionScope(actor.id, actor.role, "analytics.metric.read");
     return ok(scope === "technical_metrics"
       ? { ...data, definitions: [], cards: [] }

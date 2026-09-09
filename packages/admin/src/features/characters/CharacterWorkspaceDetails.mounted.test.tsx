@@ -363,7 +363,7 @@ describe("Character workspace details", () => {
     )).toBe(false);
   });
 
-  it.each([false, true])("uses generation config read for both system voice preview buttons: %s", async (canPreview) => {
+  it.each([false, true])("gates the live voice and all four default previews on generation config read: %s", async (canPreview) => {
     window.history.replaceState(null, "", "/admin/characters/character-detail?tab=voice");
     const voicePermissions = new Set<AdminPermissionKey>([
       "character.project.read",
@@ -390,9 +390,12 @@ describe("Character workspace details", () => {
     const previewButtons = () => [...container.querySelectorAll("button")].filter(
       (button) => button.textContent === "Preview",
     );
-    await waitUntil(() => previewButtons().length === 2, "both system voice preview buttons");
+    await waitUntil(() => previewButtons().length === 5, "live voice and four system default previews");
 
     expect(previewButtons().map((button) => button.disabled)).toEqual([
+      !canPreview,
+      !canPreview,
+      !canPreview,
       !canPreview,
       !canPreview,
     ]);
@@ -411,7 +414,7 @@ describe("Character workspace details", () => {
       }
       expect(adminV2Request.mock.calls.filter(([path]) =>
         path === "/api/v2/admin/voice-defaults/preview",
-      )).toHaveLength(2);
+      )).toHaveLength(5);
       expect(container.querySelector('audio[aria-label="System voice preview"]')?.getAttribute("src"))
         .toBe("data:audio/wav;base64,dGVzdA==");
     }

@@ -31,10 +31,13 @@ describe("admin destination search", () => {
   });
 
   it("matches a whole group by its name", () => {
-    expect(ids("Character Studio")).toEqual(
+    expect(ids("Characters")).toEqual(
       expect.arrayContaining(["content/official", "content/tags", "content/templates"]),
     );
-    expect(ids("角色工作室").length).toBeGreaterThan(1);
+    expect(ids("角色").length).toBeGreaterThan(1);
+    expect(ids("内容运营")).toEqual(expect.arrayContaining(["content/assets", "content/placements", "content", "announcements", "cms"]));
+    expect(ids("收入与营销")).toEqual(["billing", "pricing", "promo"]);
+    expect(ids("数据分析")).toEqual(["analytics", "growth/characters", "experiments"]);
   });
 
   // SPEC: 命中页名排在命中分组名/URL 之前；页名前缀命中又排在页名包含命中之前。
@@ -44,7 +47,7 @@ describe("admin destination search", () => {
 
     const ranked = matchAdminDestinations("character", everything, 20)
       .map((destination) => destination.id);
-    // "Characters" 前缀命中，排最前；"Taxonomy" 只因为分组叫 Character Studio 才入选，排最后。
+    // "Characters" 前缀命中，排最前；"Taxonomy" 只因为分组叫 Characters 才入选，排最后。
     expect(ranked[0]).toBe("content/official");
     expect(ranked.indexOf("content/tags")).toBeGreaterThan(ranked.indexOf("content/official"));
   });

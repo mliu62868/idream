@@ -9,6 +9,7 @@ import {
   fitPreparedTurnBudget,
 } from "./prepared-turn.js";
 import { resolvePolicy } from "./policy.js";
+import { OpenAiCompatibleAdapter } from "./agent-runtime/openai-adapter.js";
 
 function context(): BuiltContext {
   const policy = {
@@ -18,7 +19,10 @@ function context(): BuiltContext {
       voiceEnabled: false,
       imageToolEnabled: false,
     }),
-    maxContextChars: 5_000,
+    // The request formatter measures quoted continuity and the tool schema.
+    // Leave enough fixed-context headroom so this case still exercises
+    // transcript exchange dropping rather than fixed-context rejection.
+    maxContextChars: 5_500,
     imageToolEnabled: false,
   };
   return {
@@ -209,6 +213,87 @@ describe("PreparedTurn budget", () => {
     expect(result.context.recentMessages.length % 2).toBe(1);
   });
 
+  it.each([
+    { mode: "native", priorChars: 3_010 },
+    { mode: "json", priorChars: 3_010 },
+    // The native request alone fits here; its JSON retry needs the same trim.
+    { mode: "json", priorChars: 2_930 },
+  ])("fits a full free-tier image conversation through the actual $mode adapter path ($priorChars history chars)", async ({ mode, priorChars }) => {
+    const source = context();
+    source.policy = {
+      ...resolvePolicy({ modelTier: "free", unlimitedMessages: false, voiceEnabled: false, imageToolEnabled: true }),
+      memoryEnabled: false,
+      modelProfile: { ...source.policy.modelProfile, supportsTools: true },
+    };
+    source.recentMessages = Array.from({ length: 7 }, (_, index) => ({
+      id: `message-${index}`,
+      role: index % 2 === 0 ? "user" as const : "assistant" as const,
+      content: index === 6
+        ? "Generate one fully clothed image of yourself in our current rainy scene."
+        : `Earlier established scene ${index}: ${"Rain taps the window. ".repeat(200).slice(0, priorChars)}`,
+    }));
+    const prepared = compilePreparedTurn(source, "message-6", new Date("2026-09-07T00:00:00Z"));
+    const requests: Array<{ messages: Array<{ content: string }>; tools: unknown[] }> = [];
+    const profile = { ...prepared.profile, provider: "openai", baseUrl: "https://provider.example/v1", model: "test" };
+    const adapter = new OpenAiCompatibleAdapter({
+      profile, apiKey: "test-secret", requiredToolName: prepared.requiredAction!.name,
+      maxInputTokens: prepared.budget.maxInputTokens,
+      fetch: async (_url, init) => {
+        requests.push(JSON.parse(String(init?.body)));
+        const args = JSON.stringify({ prompt: "A clothed portrait in the rainy library" });
+        const delta = mode === "native"
+          ? { tool_calls: [{ index: 0, id: "image-call", function: { name: GENERATE_IMAGE_ASYNC_TOOL, arguments: args } }] }
+          : { content: requests.length === 1 ? "I will make the image." : args };
+        return new Response(`data: ${JSON.stringify({ choices: [{ delta, finish_reason: mode === "native" ? "tool_calls" : "stop" }] })}\n\ndata: [DONE]\n\n`);
+      },
+    });
+    const chunks = [];
+    for await (const chunk of adapter.stream({
+      provider: profile.provider, model: profile.model,
+      system: prepared.messages.find(message => message.role === "system")!.content,
+      messages: prepared.messages.filter(message => message.role !== "system").map(message => ({
+        id: message.id as never,
+        role: message.role === "assistant" ? "assistant" as const : "user" as const,
+        source: message.sourceKind === "current_user"
+          ? { kind: "user" as const }
+          : message.role === "assistant"
+            ? { kind: "model" as const, provider: profile.provider, model: profile.model }
+            : { kind: "plugin", plugin: "idream", form: "context" } as never,
+        content: [{ type: "text" as const, text: message.content }],
+      })),
+      tools: prepared.tools,
+    })) chunks.push(chunk);
+
+    expect(requests).toHaveLength(mode === "native" ? 1 : 2);
+    expect(chunks.filter(chunk => chunk.type === "block-end" && chunk.block.type === "tool-call")).toHaveLength(1);
+    expect(prepared.budget.maxInputTokens).toBe(6_000);
+    expect(prepared.budget.dropped).toEqual(["transcript"]);
+    expect(prepared.context.recentMessages.map(message => message.id)).toEqual([
+      "message-2", "message-3", "message-4", "message-5", "message-6",
+    ]);
+    expect(source.recentMessages).toHaveLength(7);
+    for (const request of requests) {
+      const wire = JSON.stringify(request.messages);
+      expect(wire).not.toContain("Earlier established scene 0:");
+      expect(wire).not.toContain("Earlier established scene 1:");
+      expect(wire).toContain("Earlier established scene 4:");
+      expect(wire).toContain("Earlier established scene 5:");
+      expect(wire).toContain("the library");
+      expect(wire).toContain(source.recentMessages.at(-1)!.content);
+      const actualInputTokens = Math.ceil(JSON.stringify({ messages: request.messages, tools: request.tools }).length / 4);
+      expect(actualInputTokens).toBeLessThanOrEqual(prepared.budget.usedInputTokens);
+    }
+  });
+
+  it("rejects oversized fixed image context after exhausting complete history exchanges", () => {
+    const source = context();
+    source.policy = resolvePolicy({ modelTier: "free", unlimitedMessages: false, voiceEnabled: false, imageToolEnabled: true });
+    source.persona.systemPrompt = "Pinned character facts. ".repeat(1_200);
+    source.recentMessages.push({ id: "current", role: "user", content: "Generate a fully clothed portrait." });
+    expect(() => compilePreparedTurn(source, "current")).toThrow(/fixed context requires \d+ tokens but tier free allows 6000/);
+    expect(source.recentMessages).toHaveLength(8);
+  });
+
   it("serializes stable replay/current ids and a credential-free pinned profile", () => {
     const source = context();
     source.recentMessages = [
@@ -276,6 +361,7 @@ describe("PreparedTurn budget", () => {
     const source = context();
     source.policy = {
       ...source.policy,
+      maxContextChars: 24_000,
       imageToolEnabled: true,
       modelProfile: { ...source.policy.modelProfile, supportsTools: true },
     };
@@ -305,6 +391,7 @@ describe("PreparedTurn budget", () => {
     const source = context();
     source.policy = {
       ...source.policy,
+      maxContextChars: 24_000,
       imageToolEnabled: true,
       modelProfile: { ...source.policy.modelProfile, supportsTools: true },
     };

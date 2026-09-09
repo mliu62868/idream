@@ -4,8 +4,7 @@ import { Errors } from "@/server/lib/errors";
 import { isMediaAssetOperationalForAuthority } from "@/server/lib/media-asset-authority";
 import { operationalCharacterWhere } from "@/server/modules/metric-data-scope";
 import {
-  getVoiceDefaultSettings,
-  voiceIdForGender,
+  resolveCharacterVoiceAuthority,
 } from "@/server/modules/voice-defaults";
 import { ACTIVE_CONTROL_PLANE_COMMAND_STATUSES } from "../shared/control-plane-command";
 import { loadCharacterMediaOperationsProjection } from "./character-media-operations";
@@ -17,7 +16,7 @@ import { projectDto } from "./project-draft";
 import { characterSoulWorkspaceProjection } from "./soul-workspace";
 import {
   characterVoiceProfileDto,
-  inspectConfiguredVoiceIdentityRuntime,
+  inspectCharacterVoiceRuntimes,
 } from "./voice-identity";
 import {
   previewAssetPackDto,
@@ -46,6 +45,7 @@ export async function getCharacterWorkspace(characterId: string) {
     activeCommand,
     activeLooks,
     voiceProfiles,
+    candidateVoiceProfile,
     contentVersions,
   ] = await Promise.all([
     prisma.character.findFirst({
@@ -96,6 +96,11 @@ export async function getCharacterWorkspace(characterId: string) {
       },
       orderBy: [{ version: "desc" }, { id: "desc" }],
       take: 20,
+    }),
+    prisma.characterVoiceProfile.findFirst({
+      where: { characterId, status: "candidate" },
+      include: { referenceAsset: true, previewAsset: true },
+      orderBy: [{ version: "desc" }, { id: "desc" }],
     }),
     prisma.characterContentVersion.findMany({
       where: { characterId },
@@ -148,20 +153,12 @@ export async function getCharacterWorkspace(characterId: string) {
     contentVersions,
     servingContentVersion,
   );
-  const activeVoiceProfile =
-    voiceProfiles.find((profile) => profile.status === "active") ?? null;
-  const candidateVoiceProfile =
-    voiceProfiles.find((profile) => profile.status === "candidate") ?? null;
-  const usableActiveVoiceProfile =
-    (activeVoiceProfile?.provider === "fish_audio" ||
-      activeVoiceProfile?.provider === "pocket_tts") &&
-    activeVoiceProfile.providerVoiceId === character.voiceId
-      ? activeVoiceProfile
-      : null;
-  const [voiceRuntime, voiceDefaults] = await Promise.all([
-    inspectConfiguredVoiceIdentityRuntime(),
-    getVoiceDefaultSettings(),
-  ]);
+  const voiceAuthority = await resolveCharacterVoiceAuthority({ characterId });
+  // The independent candidate read may have completed before this activation.
+  // Never offer the now-active profile as a still-actionable candidate.
+  const reviewableCandidate = candidateVoiceProfile?.id === voiceAuthority.activeProfile?.id
+    ? null : candidateVoiceProfile;
+  const voiceRuntime = await inspectCharacterVoiceRuntimes(reviewableCandidate?.provider ?? null);
   const releases = await prisma.characterRelease.findMany({
     where: { projectId: project.id },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
@@ -321,19 +318,13 @@ export async function getCharacterWorkspace(characterId: string) {
     visual,
     voice: {
       ...voiceRuntime,
-      currentVoiceId: character.voiceId,
-      effectiveVoiceId:
-        usableActiveVoiceProfile?.providerVoiceId ??
-        voiceIdForGender(voiceDefaults, character.gender),
-      authoritySource: usableActiveVoiceProfile
-        ? "character_clone"
-        : "system_default",
-      systemDefaults: voiceDefaults,
-      activeProfile: usableActiveVoiceProfile
-        ? characterVoiceProfileDto(usableActiveVoiceProfile)
-        : null,
-      candidateProfile: candidateVoiceProfile
-        ? characterVoiceProfileDto(candidateVoiceProfile)
+      currentVoiceId: voiceAuthority.currentVoiceId,
+      effectiveVoiceId: voiceAuthority.voiceId,
+      authoritySource: voiceAuthority.source,
+      systemDefaults: voiceAuthority.systemDefaults,
+      activeProfile: voiceAuthority.activeProfile,
+      candidateProfile: reviewableCandidate
+        ? characterVoiceProfileDto(reviewableCandidate)
         : null,
       history: voiceProfiles.map(characterVoiceProfileDto),
     },

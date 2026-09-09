@@ -1,0 +1,145 @@
+{
+  "tag": "default",
+  "calls": [
+    {
+      "status": 201,
+      "elapsedMs": 416,
+      "body": {
+        "ok": true,
+        "data": {
+          "assetId": "media_voice_dbdafad1-02bc-44d1-b31d-78f0a1ae1e32",
+          "contentUrl": "/api/v1/media/media_voice_dbdafad1-02bc-44d1-b31d-78f0a1ae1e32/content",
+          "durationMs": 3040,
+          "messageId": "voice-audit-user-20260906-default"
+        }
+      }
+    },
+    {
+      "status": 200,
+      "elapsedMs": 48,
+      "body": {
+        "ok": true,
+        "data": {
+          "assetId": "media_voice_dbdafad1-02bc-44d1-b31d-78f0a1ae1e32",
+          "contentUrl": "/api/v1/media/media_voice_dbdafad1-02bc-44d1-b31d-78f0a1ae1e32/content",
+          "durationMs": 3040,
+          "messageId": "voice-audit-user-20260906-default"
+        }
+      }
+    }
+  ],
+  "request": {
+    "id": "voice_clip_request_09acad1fcba3f96ab1b290096ce8d31606fb470a92f305ed0ad8b16f3bb797b3",
+    "userId": "voice-audit-user-20260906",
+    "characterId": "c4f97ea8-418f-44af-999a-9dc02975e2d7",
+    "messageId": "voice-audit-user-20260906-default",
+    "requestFingerprint": "49c0f48db6afe294c9cf5edab616e313dcf66ef5b64d887f587c419150733726",
+    "synthesisPayload": {
+      "text": "Hello. This is a short voice delivery test.",
+      "scene": null,
+      "intent": "play",
+      "version": 1,
+      "sessionId": "voice-audit-session-20260906",
+      "sceneVersion": 0
+    },
+    "providerPayload": {
+      "tone": "Speak as Voice Audit Iris 20260906. Warm, expressive realistic delivery consistent with the Character Soul.",
+      "voiceId": "alba",
+      "delivery": {
+        "topK": 30,
+        "topP": 0.75,
+        "speed": 0.94,
+        "preset": "sensual",
+        "intensity": 75,
+        "temperature": 0.72,
+        "repetitionPenalty": 1.2
+      },
+      "providerKey": "pocket_tts",
+      "voiceAuthority": "system_default",
+      "systemVoiceSettingVersion": 2,
+      "characterVoiceProfileVersion": null
+    },
+    "status": "succeeded",
+    "attemptNo": 1,
+    "leaseOwner": null,
+    "leaseExpiresAt": null,
+    "mediaAssetId": "media_voice_dbdafad1-02bc-44d1-b31d-78f0a1ae1e32",
+    "provider": "pocket_tts",
+    "providerRequestId": "voice:voice_clip_request_09acad1fcba3f96ab1b290096ce8d31606fb470a92f305ed0ad8b16f3bb797b3:provider",
+    "errorCode": null,
+    "error": null,
+    "startedAt": "2026-09-06T10:10:34.240Z",
+    "completedAt": "2026-09-06T10:10:34.580Z",
+    "createdAt": "2026-09-06T10:10:34.240Z",
+    "updatedAt": "2026-09-06T10:10:34.580Z",
+    "usageFacts": [
+      {
+        "id": "voice_usage_voice_clip_request_09acad1fcba3f96ab1b290096ce8d31606fb470a92f305ed0ad8b16f3bb797b3_1",
+        "requestId": "voice_clip_request_09acad1fcba3f96ab1b290096ce8d31606fb470a92f305ed0ad8b16f3bb797b3",
+        "attemptNo": 1,
+        "userId": "voice-audit-user-20260906",
+        "characterId": "c4f97ea8-418f-44af-999a-9dc02975e2d7",
+        "mediaAssetId": "media_voice_dbdafad1-02bc-44d1-b31d-78f0a1ae1e32",
+        "durationMs": 3040,
+        "costDreamcoins": 0,
+        "intent": "play",
+        "occurredAt": "2026-09-06T10:10:34.579Z"
+      }
+    ],
+    "mediaAsset": {
+      "id": "media_voice_dbdafad1-02bc-44d1-b31d-78f0a1ae1e32",
+      "ownerId": "voice-audit-user-20260906",
+      "sourceJobId": null,
+      "characterId": "c4f97ea8-418f-44af-999a-9dc02975e2d7",
+      "type": "voice",
+      "url": "/api/v1/media/media_voice_dbdafad1-02bc-44d1-b31d-78f0a1ae1e32/content",
+      "thumbnailUrl": null,
+      "storageKey": "voice/414103f795411bed34160e5b48ec6779f3273cef0be1cc8b40d7708606db13aa.wav",
+      "contentType": "audio/wav",
+      "width": null,
+      "height": null,
+      "providerAssetId": "voice/414103f795411bed34160e5b48ec6779f3273cef0be1cc8b40d7708606db13aa.wav",
+      "sourcePromptHash": null,
+      "prompt": "Hello. This is a short voice delivery test.",
+      "visibility": "private",
+      "safetyStatus": "passed",
+      "metadata": {
+        "tone": "Speak as Voice Audit Iris 20260906. Warm, expressive realistic delivery consistent with the Character Soul.",
+        "scene": null,
+        "voiceId": "alba",
+        "delivery": {
+          "topK": 30,
+          "topP": 0.75,
+          "speed": 0.94,
+          "preset": "sensual",
+          "intensity": 75,
+          "temperature": 0.72,
+          "repetitionPenalty": 1.2
+        },
+        "provider": "pocket_tts",
+        "attemptNo": 1,
+        "messageId": "voice-audit-user-20260906-default",
+        "requestId": "voice_clip_request_09acad1fcba3f96ab1b290096ce8d31606fb470a92f305ed0ad8b16f3bb797b3",
+        "sessionId": "voice-audit-session-20260906",
+        "durationMs": 3040,
+        "providerKey": "voice/414103f795411bed34160e5b48ec6779f3273cef0be1cc8b40d7708606db13aa.wav",
+        "cacheVersion": 8,
+        "sceneAdapter": "pocket-tts-reference-state-1",
+        "sceneApplied": false,
+        "sceneVersion": 0,
+        "costDreamcoins": 0,
+        "voiceAuthority": "system_default",
+        "generationIntent": "requested",
+        "replacedAssetIds": [],
+        "providerIdempotencyKey": "voice:voice_clip_request_09acad1fcba3f96ab1b290096ce8d31606fb470a92f305ed0ad8b16f3bb797b3:provider",
+        "systemVoiceSettingVersion": 2,
+        "characterVoiceProfileVersion": null
+      },
+      "liked": false,
+      "createdAt": "2026-09-06T10:10:34.577Z",
+      "deletedAt": null
+    }
+  },
+  "allowanceRemainingMs": 49972,
+  "totalCostDreamcoins": 0
+}

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, stat, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { CompanionWorkspaceRebuild } from "@idream/shared/chat/companion-runtime";
@@ -11,12 +11,33 @@ import {
   runJsonCommand,
   type JsonCommandOptions,
 } from "./igrep";
+import { AttemptWorkspaceStore, relationshipWorkspacePath } from "./workspace";
 
 const temporary: string[] = [];
 
 afterEach(async () => {
   await Promise.all(temporary.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
+
+async function fixtureIngest(options: JsonCommandOptions) {
+  const argument = (name: string) => options.args[options.args.indexOf(name) + 1]!;
+  const workspace = argument("--workspace");
+  const sessionId = argument("--session-id");
+  const transcript = await readFile(argument("--transcript"), "utf8");
+  const rows = transcript.trim().split("\n").map((line) => JSON.parse(line));
+  const dialoguePath = `.igrep/mem/memory/dialogues/deepseek-harness-${sessionId}.jsonl`;
+  await mkdir(dirname(join(workspace, dialoguePath)), { recursive: true });
+  await writeFile(join(workspace, dialoguePath), rows.map((row, index) => JSON.stringify({
+    schema: "igrep.mem.dialogue/1",
+    id: `fixture-${sessionId}-${index}`,
+    session_id: sessionId,
+    turn_index: index + 1,
+    role: row.role,
+    content: row.content,
+    source_at: { instant_utc: row.source_at },
+  })).join("\n") + "\n");
+  return { events: rows.length, dialoguePath };
+}
 
 describe("igrep subprocess bounds", () => {
   it("kills an unbounded stderr producer and returns only a stable failure code", async () => {
@@ -140,17 +161,34 @@ describe("official igrep pre-recall", () => {
       async () => ({ error: { code: "RUNTIME_ERROR", message: "PRIVATE_SENTINEL" } }),
     )).rejects.toThrow("unverifiable evidence");
   });
+
+  it("keeps the complete user fact after an earlier assistant passage", async () => {
+    const label = "idreamrecall_0123456789abcdef0123456789abcdef";
+    const snippet = `L2: [assistant @ 2026-09-07] ${"The boat approaches the harbor. ".repeat(12)}\nL3: [user @ 2026-09-07] My blue notebook is beside the window. Its exact label is ${label}.`;
+    const recall = await recallIgrepMemory("igrep", "/w", "What is my notebook label?", {}, async () => ({
+      results: [{ citation: "memory/dialogues/x.jsonl#L2-L3", snippet, sourceClass: "dialogue" }],
+    }));
+    expect(recall.notes[0]).toContain(`[user @ 2026-09-07] My blue notebook is beside the window. Its exact label is ${label}.`);
+  });
+
+  it("marks bounded excerpts as incomplete without fabricating a partial identifier", async () => {
+    const prefix = `[user @ 2026-09-07] ${"Earlier context. ".repeat(123)}`;
+    const identifier = "full_identifier_".repeat(30);
+    const recall = await recallIgrepMemory("igrep", "/w", "What is the exact identifier?", {}, async () => ({
+      results: [{ citation: "memory/dialogues/x.jsonl#L1", snippet: `L1: ${prefix}${identifier}`, sourceClass: "dialogue" }],
+    }));
+    expect(recall.notes[0]?.length).toBeLessThanOrEqual(2000);
+    expect(recall.notes[0]).not.toContain("full_identifier_");
+    expect(recall.notes[0]).toContain("Excerpt incomplete; use memory_search for the complete original fact.");
+  });
 });
 
 describe("official igrep canonical rebuild", () => {
   it("ingests strict Chat transcripts, rebuilds maintenance and verifies the public status seam", async () => {
     const root = await mkdtemp(join(tmpdir(), "chat-runtime-igrep-rebuild-"));
     temporary.push(root);
-    const memory = join(root, "memory-version");
     const workspace = join(root, "workspace");
-    await mkdir(memory);
-    await mkdir(workspace);
-    await symlink(memory, join(workspace, ".igrep"), "dir");
+    await mkdir(join(workspace, ".igrep"), { recursive: true });
     const commands: JsonCommandOptions[] = [];
     let ingests = 0;
     const run = async (options: JsonCommandOptions): Promise<unknown> => {
@@ -171,7 +209,7 @@ describe("official igrep canonical rebuild", () => {
           const parsed = JSON.parse(row) as Record<string, string>;
           return [parsed.role, parsed.content, parsed.source_at];
         })).toEqual(expected);
-        return { events: rows.length, dialoguePath: ".igrep/mem/memory/dialogues/rebuilt.jsonl" };
+        return fixtureIngest(options);
       }
       return { ok: true };
     };
@@ -227,6 +265,8 @@ describe("official igrep canonical rebuild", () => {
     await expect(builder.build(workspace, request)).resolves.toEqual({
       sessions: 2,
       messages: 4,
+      sourceReady: true,
+      derivation: "accepted",
     });
     expect(commands.map((command) => command.args.slice(0, 2))).toEqual([
       ["mem", "ingest"],
@@ -262,7 +302,7 @@ describe("official igrep canonical rebuild", () => {
       characterId: "character-1",
       mode: "rebuild",
       messages: [],
-    })).resolves.toEqual({ sessions: 0, messages: 0 });
+    })).resolves.toEqual({ sessions: 0, messages: 0, sourceReady: true, derivation: "accepted" });
   });
 
   it("maintains an ordinary projection without re-deriving canonical memory", async () => {
@@ -345,6 +385,198 @@ describe("official igrep canonical rebuild", () => {
     expect(thrown).toBeInstanceOf(Error);
     expect((thrown as Error).message).toContain("got invalid_type");
     expect((thrown as Error).message).not.toContain("PRIVATE_SENTINEL");
+  });
+});
+
+describe("igrep Main source admission", () => {
+  const request: CompanionWorkspaceRebuild = {
+    scope: "relationship", userId: "user-1", characterId: "character-1", mode: "project",
+    messages: [
+      { id: "u1", sessionId: "session-1", role: "user", content: "My notebook is blue. Do not invent a replacement.", createdAt: "2026-09-07T09:00:00.000Z" },
+      { id: "a1", sessionId: "session-1", role: "assistant", content: "Your notebook is blue.", createdAt: "2026-09-07T09:00:01.000Z" },
+      { id: "u2", sessionId: "session-1", role: "user", content: "Correction: my notebook is now green, beside the window.", createdAt: "2026-09-07T09:01:00.000Z" },
+      { id: "a2", sessionId: "session-1", role: "assistant", content: "I will remember the green notebook beside the window.", createdAt: "2026-09-07T09:01:01.000Z" },
+    ],
+  };
+  const dialogue = ".igrep/mem/memory/dialogues/deepseek-harness-session-1.jsonl";
+  const retractions = ".igrep/mem/.state/retractions.jsonl";
+  async function fixture() {
+    const workspace = await mkdtemp(join(tmpdir(), "chat-igrep-admission-"));
+    temporary.push(workspace);
+    await mkdir(join(workspace, ".igrep"));
+    return workspace;
+  }
+  const sourceOnlyStatus = { status: async () => ({
+    dialogueFiles: 1, pendingProfileRows: 4, processedProfileRows: 0, lastMaintainAt: null,
+  }) };
+  async function retract(workspace: string) {
+    await mkdir(dirname(join(workspace, retractions)), { recursive: true });
+    await writeFile(join(workspace, retractions), JSON.stringify({
+      schema: "igrep.mem.retraction/1", annotation: "[RETRACTED by user request]",
+    }) + "\n");
+  }
+  async function expectSources(workspace: string, input: CompanionWorkspaceRebuild) {
+    const rows = (await readFile(join(workspace, dialogue), "utf8")).trim().split("\n").map((row) => JSON.parse(row));
+    expect(rows.map((row) => [row.role, row.content, row.source_at.instant_utc])).toEqual(
+      input.messages.map((message) => [message.role, message.content, message.createdAt]),
+    );
+    await expect(readFile(join(workspace, retractions))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readdir(join(workspace, ".igrep/mem/memory/dialogues"))).toEqual(["deepseek-harness-session-1.jsonl"]);
+  }
+
+  it.each(["project", "rebuild"] as const)("recovers a rejected %s from the current Main source, retaining explicit correction", async (mode) => {
+    const workspace = await fixture();
+    const calls: string[] = [];
+    // A destructive rebuild supplies only the surviving Main messages.
+    const input = { ...request, mode, messages: mode === "rebuild" ? request.messages.slice(2) : request.messages };
+    const builder = new IgrepMemoryBuilder("igrep", sourceOnlyStatus, async (options) => {
+      calls.push(options.args[1]!);
+      if (options.args[1] === "ingest") return fixtureIngest(options);
+      if (options.args[1] === "maintain") {
+        await retract(workspace);
+        await writeFile(join(workspace, ".igrep", "untrusted-profile.txt"), "The notebook was forgotten.");
+      }
+      return { ok: true };
+    });
+    await expect(builder.build(workspace, input)).resolves.toEqual({
+      sessions: 1, messages: input.messages.length, sourceReady: true,
+      derivation: "rejected", rejectionReason: "retractions_present",
+    });
+    await expectSources(workspace, input);
+    await expect(readFile(join(workspace, ".igrep", "untrusted-profile.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(calls).toEqual(["ingest", "maintain", "ingest", "doctor"]);
+  });
+
+  it.each(["retraction", "unknown-dialogue"] as const)("discards an already contaminated canonical seed (%s) before maintenance", async (fault) => {
+    const workspace = await fixture();
+    if (fault === "retraction") await retract(workspace);
+    else {
+      await mkdir(dirname(join(workspace, dialogue)), { recursive: true });
+      await writeFile(join(workspace, dirname(dialogue), "unknown.jsonl"), '{"content":"not a Main source"}\n');
+    }
+    const calls: string[] = [];
+    const builder = new IgrepMemoryBuilder("igrep", sourceOnlyStatus, async (options) => {
+      calls.push(options.args[1]!);
+      return options.args[1] === "ingest" ? fixtureIngest(options) : { ok: true };
+    });
+    await expect(builder.build(workspace, request)).resolves.toMatchObject({ sourceReady: true, derivation: "rejected" });
+    await expectSources(workspace, request);
+    expect(calls).toEqual(["ingest", "ingest", "doctor"]);
+  });
+
+  it.each(["content", "delete", "provenance"] as const)("rejects maintenance that changes source %s", async (fault) => {
+    const workspace = await fixture();
+    const builder = new IgrepMemoryBuilder("igrep", sourceOnlyStatus, async (options) => {
+      if (options.args[1] === "ingest") return fixtureIngest(options);
+      if (options.args[1] === "maintain") {
+        const path = join(workspace, dialogue);
+        if (fault === "delete") await rm(path);
+        else {
+          const text = await readFile(path, "utf8");
+          await writeFile(path, fault === "content"
+            ? text.replace("My notebook is blue.", "The user forgot their notebook.")
+            : text.replace("fixture-session-1-0", "rewritten-provenance"));
+        }
+      }
+      return { ok: true };
+    });
+    await expect(builder.build(workspace, request)).resolves.toMatchObject({ sourceReady: true, derivation: "rejected" });
+    await expectSources(workspace, request);
+  });
+
+  it("fails closed after one unsuccessful source-only recovery", async () => {
+    const workspace = await fixture();
+    const identity = { userId: request.userId, characterId: request.characterId };
+    const canonicalRoot = join(workspace, "canonical");
+    const store = new AttemptWorkspaceStore({ canonicalRoot, privateRoot: join(workspace, "private") });
+    const oldFence = { mutationId: "old", authorityVersion: "1", claimToken: "11111111-1111-4111-8111-111111111111" };
+    const old = await store.prepareRelationshipRebuild(identity, oldFence, { seed: "empty" }, async (candidate) => {
+      await writeFile(join(candidate, ".igrep", "existing-canonical.txt"), "last admitted source");
+      return { sessions: 0, messages: 0 };
+    });
+    await store.promoteRelationshipRebuild({ ...identity, rebuildId: old.rebuildId, fence: oldFence });
+    const calls: string[] = [];
+    let ingests = 0;
+    const builder = new IgrepMemoryBuilder("igrep", sourceOnlyStatus, async (options) => {
+      calls.push(options.args[1]!);
+      const candidate = options.args[options.args.indexOf("--workspace") + 1]!;
+      if (options.args[1] === "ingest") {
+        const result = await fixtureIngest(options);
+        if (++ingests === 2) await rm(join(candidate, result.dialoguePath));
+        return result;
+      }
+      if (options.args[1] === "maintain") await retract(candidate);
+      return { ok: true };
+    });
+    await expect(store.prepareRelationshipRebuild(identity, {
+      mutationId: "new", authorityVersion: "2", claimToken: "22222222-2222-4222-8222-222222222222",
+    }, { seed: "canonical" }, (candidate) => builder.build(candidate, request)))
+      .rejects.toThrow("dialogue_inventory_mismatch");
+    expect(calls).toEqual(["ingest", "maintain", "ingest"]);
+    const relationship = relationshipWorkspacePath(canonicalRoot, identity.userId, identity.characterId);
+    expect(await readFile(join(relationship, ".igrep", "existing-canonical.txt"), "utf8")).toBe("last admitted source");
+    expect(await readdir(join(relationship, ".rebuild-candidates"))).toEqual([]);
+  });
+
+  it("honors cancellation before scanning or recovering a rejected candidate", async () => {
+    const workspace = await fixture();
+    const controller = new AbortController();
+    const calls: string[] = [];
+    const builder = new IgrepMemoryBuilder("igrep", sourceOnlyStatus, async (options) => {
+      calls.push(options.args[1]!);
+      if (options.args[1] === "ingest") return fixtureIngest(options);
+      if (options.args[1] === "maintain") {
+        await retract(workspace);
+        controller.abort(new Error("Main claim cancelled"));
+      }
+      return { ok: true };
+    });
+    await expect(builder.build(workspace, request, controller.signal)).rejects.toThrow("Main claim cancelled");
+    expect(calls).toEqual(["ingest", "maintain"]);
+  });
+
+  it("does not ingest through a linked candidate memory root", async () => {
+    const workspace = await fixture();
+    const outside = await fixture();
+    await rm(join(workspace, ".igrep"), { recursive: true });
+    await symlink(join(outside, ".igrep"), join(workspace, ".igrep"));
+    let calls = 0;
+    const builder = new IgrepMemoryBuilder("igrep", sourceOnlyStatus, async () => { calls++; return {}; });
+    await expect(builder.build(workspace, request)).rejects.toThrow("dialogue_format_invalid");
+    expect(calls).toBe(0);
+    expect(await readdir(join(outside, ".igrep"))).toEqual([]);
+  });
+
+  it.each(["mem", "mem/memory", "mem/memory/dialogues", "mem/.state"])("rejects linked source directory %s before the first CLI write", async (directory) => {
+    const workspace = await fixture();
+    const outside = await fixture();
+    const target = join(outside, ".igrep");
+    await writeFile(join(target, "existing.txt"), "untouched");
+    await mkdir(dirname(join(workspace, ".igrep", directory)), { recursive: true });
+    await symlink(target, join(workspace, ".igrep", directory));
+    const calls: string[] = [];
+    const builder = new IgrepMemoryBuilder("igrep", sourceOnlyStatus, async (options) => {
+      calls.push(options.args[1]!);
+      return fixtureIngest(options);
+    });
+    await expect(builder.build(workspace, request)).rejects.toThrow("dialogue_format_invalid");
+    expect(calls).toEqual([]);
+    expect(await readdir(target)).toEqual(["existing.txt"]);
+    expect(await readFile(join(target, "existing.txt"), "utf8")).toBe("untouched");
+  });
+
+  it("also rejects a linked empty dialogue directory for an empty relationship", async () => {
+    const workspace = await fixture();
+    const outside = await fixture();
+    await mkdir(join(workspace, ".igrep/mem/memory"), { recursive: true });
+    await symlink(join(outside, ".igrep"), join(workspace, ".igrep/mem/memory/dialogues"));
+    const calls: string[] = [];
+    const builder = new IgrepMemoryBuilder("igrep", { status: async () => ({
+      dialogueFiles: 0, pendingProfileRows: 0, processedProfileRows: 0, lastMaintainAt: null,
+    }) }, async (options) => { calls.push(options.args[1]!); return { ok: true }; });
+    await expect(builder.build(workspace, { ...request, messages: [] })).rejects.toThrow("dialogue_format_invalid");
+    expect(calls).toEqual([]);
+    expect(await readdir(join(outside, ".igrep"))).toEqual([]);
   });
 });
 

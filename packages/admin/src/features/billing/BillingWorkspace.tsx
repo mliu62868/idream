@@ -540,7 +540,7 @@ export function BillingWorkspace({
       <div id="billing-workspace-title">
         <PageHeader
           purpose={t("Reconcile subscription and Dreamcoin authority, then make tightly audited ledger corrections.")}
-          title={t("Billing Operations")}
+          title={t("Orders & Billing")}
         />
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--ad-text-muted)]" role="status">

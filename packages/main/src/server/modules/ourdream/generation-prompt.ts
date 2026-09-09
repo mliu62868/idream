@@ -18,13 +18,17 @@ import type {
 const MUTABLE_CLOTHING_TRAIT = /(?:\b(?:jacket|hoodie|coat|shirt|t-?shirt|tank top|crop(?:ped)? top|off-shoulder top|sweater|robe|dress|skirt|shorts|jeans|pants|trousers|blouse|lingerie|bra|panties|underwear|swimsuit|bikini)\b|(?:外套|上衣|衬衫|毛衣|长袍|睡袍|裙|短裤|牛仔裤|内衣|泳装))/i;
 
 /**
- * SPEC: Chat Agent owns the mutable visual moment, never Character identity.
+ * SPEC: Chat Agent supplies new-image scene directions; Main freezes explicit
+ * user edits from the authorized Turn text. Neither owns Character identity.
  * Main removes accidental age / hair-colour / eye-colour / skin-tone claims
  * before the direction enters prompt compilation; the pinned Visual Profile
  * and reference set remain the only identity authority.
  */
-export function sanitizeChatImageDirection(value: string): string {
-  return cleanPromptText(value, 1_200)
+export function sanitizeChatImageDirection(
+  value: string,
+  options: { rejectTruncation?: boolean } = {},
+): string {
+  return chatDirectionText(value, 1_200, options.rejectTruncation)
     .replace(
       /\b(?:young\s+)?(?:woman|man|person)\s+(?:around|aged?)\s+\d{1,3}\s+years?\s+old\b/gi,
       "adult character",
@@ -74,8 +78,9 @@ export function sanitizeChatImageDirection(value: string): string {
 export function compileChatImagePrompt(
   agentScene: string,
   requestedNudity: "unspecified" | "none" | "full",
+  options: { rejectTruncation?: boolean } = {},
 ): string {
-  let scene = sanitizeChatImageDirection(agentScene || "candid in-character photo");
+  let scene = sanitizeChatImageDirection(agentScene || "candid in-character photo", options);
   if (requestedNudity === "full") {
     scene = scene
       .replace(
@@ -85,9 +90,10 @@ export function compileChatImagePrompt(
       .replace(/\b(?:silk|satin|lace)\s+(?:robe|dress|lingerie|underwear)\b/gi, "")
       .replace(/\s{2,}/g, " ")
       .trim();
-    return cleanPromptText(
+    return chatDirectionText(
       `Adult scene requirement: depict the adult character fully nude, with no clothing or robe. Requested scene: ${scene}`,
       900,
+      options.rejectTruncation,
     );
   }
   if (requestedNudity === "none") {
@@ -97,12 +103,23 @@ export function compileChatImagePrompt(
       .replace(/(?:裸照|裸体|全裸|赤裸|一丝不挂|脱光)/gu, "")
       .replace(/\s{2,}/g, " ")
       .trim();
-    return cleanPromptText(
+    return chatDirectionText(
       `Wardrobe requirement: keep the adult character clothed; no nudity. Requested scene: ${scene}`,
       900,
+      options.rejectTruncation,
     );
   }
-  return cleanPromptText(scene || "candid in-character photo", 900);
+  return chatDirectionText(scene || "candid in-character photo", 900, options.rejectTruncation);
+}
+
+function chatDirectionText(value: string, max: number, rejectTruncation = false): string {
+  // Validate the complete normalized text, including structural wardrobe
+  // prefixes. Truncating first can silently drop a user's final constraint.
+  const normalized = cleanPromptText(value, Infinity);
+  if (rejectTruncation && normalized.length > max) {
+    throw new RangeError(`Image edit instructions exceed the ${max}-character generation direction budget. Shorten the request while retaining all required changes and preservation constraints.`);
+  }
+  return clampPrompt(normalized, max);
 }
 
 // SPEC: 把一次生成请求（角色身份 + 用户意图 + 预设/Look 片段）编译成投给 runner 的

@@ -18,7 +18,7 @@ import { env } from "@/server/lib/env";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { providers } from "@/server/providers";
-import { previewConfiguredVoiceIdentity } from "@/server/modules/admin-v2/characters/voice-identity";
+import { characterVoiceProfileDto, previewConfiguredVoiceIdentity } from "@/server/modules/admin-v2/characters/voice-identity";
 import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
@@ -65,44 +65,62 @@ export async function getVoiceDefaultSettings(): Promise<VoiceDefaultSettings> {
   return voiceDefaultSettingsDto(setting, providers.voice.clip.providerKey);
 }
 
-export async function resolveCharacterVoiceAuthority(input: {
-  characterId: string;
-  voiceId: string | null;
-  gender: string;
-}) {
-  if (input.voiceId?.trim()) {
-    const profile = await prisma.characterVoiceProfile.findFirst({
-      where: {
-        characterId: input.characterId,
-        providerVoiceId: input.voiceId.trim(),
-        status: "active",
-      },
-      orderBy: [{ version: "desc" }, { id: "desc" }],
-      select: { deliverySettings: true, provider: true, version: true },
-    });
-    if (
-      profile?.provider === "fish_audio" ||
-      profile?.provider === "pocket_tts"
-    ) {
+// A permission read may predate an Admin activation. Resolve the pointer,
+// profile and defaults from one database snapshot, never from caller-held fields.
+export async function resolveCharacterVoiceAuthority(input: { characterId: string }) {
+  return prisma.$transaction(async (tx) => {
+    const character = await tx.character.findFirst({
+        where: { id: input.characterId, deletedAt: null },
+        select: {
+          voiceId: true,
+          gender: true,
+        },
+      });
+    const setting = await tx.appSetting.findUnique({ where: { key: VOICE_DEFAULTS_SETTING_KEY } });
+    if (!character) throw Errors.notFound("Character not found");
+    const defaults = voiceDefaultSettingsDto(setting, providers.voice.clip.providerKey);
+    const profile = character.voiceId?.trim()
+      ? await tx.characterVoiceProfile.findFirst({
+          where: { characterId: input.characterId, providerVoiceId: character.voiceId.trim(), status: "active" },
+          orderBy: [{ version: "desc" }, { id: "desc" }],
+          include: {
+            referenceAsset: { select: { id: true, metadata: true, contentType: true } },
+            previewAsset: { select: { id: true, metadata: true, url: true } },
+          },
+        })
+      : null;
+    // Legacy or dangling pointers have always inherited the system default.
+    // Keep that contract, but evaluate both sides from the same snapshot.
+    const activeProfile = profile &&
+      (profile.provider === "fish_audio" || profile.provider === "pocket_tts") &&
+      profile.providerVoiceId === character.voiceId?.trim()
+        ? characterVoiceProfileDto(profile) : null;
+    const workspace = {
+      currentVoiceId: character.voiceId,
+      activeProfile,
+      systemDefaults: defaults,
+    };
+    if (activeProfile) {
       return {
-        providerKey: profile.provider,
-        voiceId: input.voiceId.trim(),
+        ...workspace,
+        providerKey: activeProfile.provider,
+        voiceId: activeProfile.providerVoiceId,
         source: "character_clone" as const,
         settingVersion: null,
-        characterVoiceProfileVersion: profile.version,
-        delivery: deliverySettings(profile.deliverySettings),
+        characterVoiceProfileVersion: activeProfile.version,
+        delivery: activeProfile.delivery,
       };
     }
-  }
-  const defaults = await getVoiceDefaultSettings();
-  return {
-    providerKey: providers.voice.clip.providerKey,
-    voiceId: voiceIdForGender(defaults, input.gender),
-    source: "system_default" as const,
-    settingVersion: defaults.settingVersion,
-    characterVoiceProfileVersion: null,
-    delivery: defaults.delivery,
-  };
+    return {
+      ...workspace,
+      providerKey: defaults.provider,
+      voiceId: voiceIdForGender(defaults, character.gender),
+      source: "system_default" as const,
+      settingVersion: defaults.settingVersion,
+      characterVoiceProfileVersion: null,
+      delivery: defaults.delivery,
+    };
+  }, { isolationLevel: "RepeatableRead" });
 }
 
 export async function updateVoiceDefaultSettings(input: {
@@ -112,14 +130,6 @@ export async function updateVoiceDefaultSettings(input: {
   request: unknown;
 }) {
   const request = voiceDefaultSettingsUpdateRequestSchema.parse(input.request);
-  const providerKey = providers.voice.clip.providerKey;
-  if (request.provider !== providerKey) {
-    throw Errors.conflict("System voice provider changed before this save", {
-      expectedProvider: request.provider,
-      currentProvider: providerKey,
-    });
-  }
-  assertCatalogVoiceIds(request, systemVoiceCatalog(providerKey));
   const result = await executeAtomicIdempotentMutation({
     environment: env.APP_ENV,
     actor: input.actor,
@@ -130,6 +140,14 @@ export async function updateVoiceDefaultSettings(input: {
     expectedVersion: request.expectedVersion,
     payload: request,
     mutate: async (tx) => {
+      const providerKey = providers.voice.clip.providerKey;
+      if (request.provider !== providerKey) {
+        throw Errors.conflict("System voice provider changed before this save", {
+          expectedProvider: request.provider,
+          currentProvider: providerKey,
+        });
+      }
+      assertCatalogVoiceIds(request, systemVoiceCatalog(providerKey));
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`app-setting:${VOICE_DEFAULTS_SETTING_KEY}`}))`;
       const before = await tx.appSetting.findUnique({
         where: { key: VOICE_DEFAULTS_SETTING_KEY },
@@ -381,11 +399,6 @@ function catalogVoiceLabel(voiceId: string) {
   return voiceId
     .replaceAll("_", " ")
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
-
-function deliverySettings(value: unknown) {
-  const parsed = fishAudioDeliverySettingsSchema.safeParse(value);
-  return parsed.success ? parsed.data : DEFAULT_FISH_AUDIO_DELIVERY;
 }
 
 function voiceDefaultVersionConflict(

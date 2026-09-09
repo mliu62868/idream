@@ -165,6 +165,11 @@ const TABLE: Record<string, ReasonEntry> = {
     hint: "Revenue cannot be attributed until it is back — needs engineering",
     rank: 2,
   },
+  provider_cost_total_exceeds_safe_numeric_range: {
+    title: "Provider cost total exceeds the supported numeric range",
+    hint: "Engineering must support this total without losing precision before it can be reported",
+    rank: 2,
+  },
 };
 
 const FALLBACK: ReasonEntry = {
@@ -174,9 +179,30 @@ const FALLBACK: ReasonEntry = {
   rank: 99,
 };
 
+function providerPricingReason(code: string): ReasonEntry | null {
+  // Main reports observed pricing coverage in both usable and blocked cards.
+  // Only empty or incomplete coverage explains a failure; 3/3 does not.
+  const match = /^priced_invocations=(\d+)\/(\d+)$/.exec(code);
+  if (!match) return null;
+  const priced = Number(match[1]);
+  const total = Number(match[2]);
+  if (!Number.isSafeInteger(priced) || !Number.isSafeInteger(total) || priced > total) return null;
+  if (total === 0) return {
+    title: "No eligible provider invocations in this window",
+    hint: "No production customer canonical invocations were recorded in the last seven days, so there is no cost total to report",
+    rank: 1,
+  };
+  if (priced < total) return {
+    title: "Provider pricing coverage is incomplete",
+    hint: "Record verified prices for every eligible invocation before using the cost total",
+    rank: 2,
+  };
+  return null;
+}
+
 export function resolveMetricQualityReason(code: string): MetricQualityReason {
   const prefix = code.split(":")[0] ?? code;
-  return { code, ...(TABLE[code] ?? TABLE[prefix] ?? FALLBACK) };
+  return { code, ...(TABLE[code] ?? TABLE[prefix] ?? providerPricingReason(code) ?? FALLBACK) };
 }
 
 /**
@@ -188,7 +214,7 @@ export function resolveMetricQualityReason(code: string): MetricQualityReason {
  */
 export function hasMetricQualityReason(code: string) {
   const prefix = code.split(":")[0] ?? code;
-  return code in TABLE || prefix in TABLE;
+  return code in TABLE || prefix in TABLE || providerPricingReason(code) !== null;
 }
 
 /**

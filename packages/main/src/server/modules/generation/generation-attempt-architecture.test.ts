@@ -9,7 +9,9 @@ async function productionTypescriptFiles(root: string): Promise<string[]> {
     // Never follow symlinks or descend into dot/build directories: generated
     // trees carry pre-move copies of this very code and would be read as drift.
     if (entry.isSymbolicLink() || entry.name.startsWith(".")) return [];
-    if (entry.isDirectory()) return productionTypescriptFiles(filePath);
+    // Test-only projection fixtures deliberately construct historical states;
+    // the production authority rule does not apply to this isolated helper tree.
+    if (entry.isDirectory()) return ["test", "e2e"].includes(entry.name) ? [] : productionTypescriptFiles(filePath);
     if (!/\.tsx?$/.test(entry.name) || /(?:\.test|\.integration\.test|\.e2e)\.tsx?$/.test(entry.name)) {
       return [];
     }
@@ -52,6 +54,10 @@ describe("GenerationAttempt write authority boundary", () => {
     const writers: string[] = [];
     for (const file of files) {
       const source = await readFile(file, "utf8");
+      // A runtime caller must not gain a fourth writer by importing a fixture.
+      expect(source, path.relative(process.cwd(), file)).not.toMatch(
+        /(?:from\s*|import\s*\(|require\s*\()\s*["'][^"']*(?:server\/test\/|\/test\/recovered-generation-fixture)/,
+      );
       if (/generationAttempt\.(?:create|upsert|update|updateMany)\s*\(/.test(source)) {
         writers.push(path.relative(process.cwd(), file));
       }

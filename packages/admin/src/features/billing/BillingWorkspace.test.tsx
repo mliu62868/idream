@@ -8,7 +8,7 @@ describe("Billing workspace permission surface", () => {
       <BillingWorkspace canAdjust={false} canReconcile={false} canRefund={false} />,
     );
 
-    expect(html).toContain("Billing Operations");
+    expect(html).toContain("Orders &amp; Billing");
     expect(html).toContain("Search billing records");
     expect(html).toContain("Adjusting customer Dreamcoin balances is unavailable");
     expect(html).toContain("Reconciling checkout exceptions is unavailable");

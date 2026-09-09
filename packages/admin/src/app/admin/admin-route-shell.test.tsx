@@ -120,7 +120,7 @@ describe("canonical Admin route shell", () => {
     expect(markup).toContain("Characters");
   });
 
-  // SPEC: 服务端第一帧使用运营的语言与工作模式；已授权的低频入口由关闭的工作区目录承载。
+  // SPEC: 服务端第一帧使用运营的语言与工作模式；业务分组在首帧直接可见。
   it("renders the operator's stored language and minimal primary navigation in the first server frame", () => {
     const markup = renderToString(
       <AdminConsoleClient
@@ -142,9 +142,9 @@ describe("canonical Admin route shell", () => {
 
     expect(markup).toContain("今日工作");
     expect(markup).not.toContain(">Today<");
-    expect(markup).toContain('href="/admin/characters"');
     expect(markup).toContain(">角色<");
-    expect(markup).toContain(">工作区<");
+    expect(markup).not.toContain(">工作区<");
+    expect(markup).toContain(">内容运营<");
     expect(markup).toContain('aria-expanded="false"');
     expect(markup).not.toContain(">分类体系<");
   });
@@ -159,7 +159,7 @@ describe("canonical Admin route shell", () => {
     expect(source).not.toContain("requestAnimationFrame");
   });
 
-  // SPEC: 角色生产模式的侧栏直接暴露核心对象，其他能力从「工作区」进入。
+  // SPEC: 角色生产模式的侧栏直接暴露业务分组，具体页面就地展开。
   it("keeps the cold-start navigation focused without deleting destinations", () => {
     const permissions = [
       "dashboard.read",
@@ -178,7 +178,8 @@ describe("canonical Admin route shell", () => {
 
     expect(markup).toContain(">Today<");
     expect(markup).toContain(">Characters<");
-    expect(markup).toContain(">Workspaces<");
+    expect(markup).not.toContain(">Workspaces<");
+    expect(markup).toContain(">Content Operations<");
     expect(markup).not.toContain(">Character Review<");
     expect(markup).not.toContain(">Character Starters<");
     expect(markup).not.toContain(">Taxonomy<");

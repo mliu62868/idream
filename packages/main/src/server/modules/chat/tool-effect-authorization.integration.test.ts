@@ -62,7 +62,74 @@ async function complete(snapshot: NonNullable<Awaited<ReturnType<typeof beginCha
   return commitChatTerminal({ version: 1, turnId: snapshot.turnId, sessionId: snapshot.sessionId, assistantMessageId: snapshot.assistantMessageId, attempt: snapshot.attempt, status: "sent", content, model: "test", promptTokens: 1, completionTokens: 1, sceneVersion: 0, scene: null, terminalEvidence: evidence });
 }
 
+async function editFixture(text: string) {
+  const fixtureData = await fixture();
+  const first = await fixtureData.begin("Let's sit beside the window.");
+  if (!first.snapshot) throw new Error("Missing source Turn");
+  const asset = await prisma.mediaAsset.create({ data: {
+    id: `${fixtureData.userId}-source`, ownerId: fixtureData.userId, characterId: fixtureData.characterId,
+    type: "image", url: "/test-source.png", safetyStatus: "passed", metadata: {},
+  } });
+  await prisma.chatTurnAttachment.create({ data: {
+    id: `${fixtureData.userId}-source-attachment`, turnId: first.snapshot.turnId,
+    kind: "generated_image", status: "completed", mediaAssetId: asset.id,
+  } });
+  await complete(first.snapshot);
+  const next = await fixtureData.begin(text);
+  if (!next.snapshot) throw new Error("Missing edit Turn");
+  expect(next.snapshot.hasRecentImageContext).toBe(true);
+  const call: ChatToolEffect = { ...effect(next.snapshot), name: "edit_last_image", arguments: {
+    instruction: "Change blue to green. Preserve her curly updo, grey cardigan, kitchen background and standing pose.",
+  } };
+  return { ...fixtureData, snapshot: next.snapshot, call, asset };
+}
+
 describe("Main image action authorization", () => {
+  it.each([
+    "Edit the picture you just sent: change only the notebook from blue to green. Preserve the same face, hairstyle, clothes, pose, background and camera framing. Make the edited picture now.",
+    "Edit this image: move the notebook to the left and turn its cover green; make the curtains yellow and brighten the window. Preserve the face, clothing and text on every page.",
+    "Edit this image: replace the sweater with a green jacket, turn her body toward the window, and move the scene to a kitchen. Keep the same face and the text on the notebook.",
+    "编辑这张图片：把笔记本改为绿色、窗帘改为黄色，保留脸、衣服、姿势和最后一页的文字。",
+  ])("freezes the complete user's edit instead of invented source details: %s", async text => {
+    const { snapshot, call, generated, asset } = await editFixture(text);
+    expect(await applyChatToolEffect(call)).toMatchObject({ accepted: true });
+    expect(generated).toHaveBeenCalledTimes(1);
+    expect(generated.mock.calls[0]?.[0]).toMatchObject({ promptHint: text, controls: { sourceImageAssetId: asset.id } });
+    expect(await prisma.chatTurnAttachment.findFirstOrThrow({ where: { turnId: snapshot.turnId } })).toMatchObject({ promptHint: text });
+    await complete(snapshot);
+    expect(await applyChatToolEffect({ ...call, callId: randomUUID(), arguments: { instruction: "Replace the room again" } })).toMatchObject({ accepted: true, duplicate: true });
+    expect(generated).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [950, "unspecified"], [1_250, "unspecified"], [850, "none"], [850, "full"],
+  ] as const)("rejects oversized frozen edits before attachments or billing (%s, %s)", async (length, nudity) => {
+    const prefix = nudity === "none" ? "Edit this image with no nudity: " : nudity === "full" ? "Edit this image fully nude: " : "Edit this image: ";
+    const text = `${prefix}${"retain detail; ".repeat(100)}`.slice(0, length) + " Preserve the last page.";
+    const { snapshot, call, generated, userId } = await editFixture(text);
+    call.intent = { requestedNudity: nudity };
+    await expect(applyChatToolEffect(call)).rejects.toMatchObject({ code: "bad_request", message: expect.stringContaining("Shorten the request") });
+    expect(generated).not.toHaveBeenCalled();
+    expect(await prisma.chatTurnAttachment.count({ where: { turnId: snapshot.turnId } })).toBe(0);
+    expect(await prisma.generationJob.count({ where: { userId } })).toBe(0);
+    expect(await dreamcoinBalance(userId)).toBe(40);
+  });
+
+  it.each(["requesting", "accepted"] as const)("preserves the frozen historical %s edit even when the user text exceeds the new budget", async status => {
+    const text = `Edit this image: ${"retain detail; ".repeat(100)} Preserve the last page.`;
+    const { snapshot, call, generated } = await editFixture(text);
+    const attachmentId = `chatfx_${createHash("sha256").update(`${call.turnId}:${call.name}`).digest("hex").slice(0, 48)}`;
+    const historicalHint = "Change only the notebook to green.";
+    await prisma.chatTurnAttachment.create({ data: {
+      id: attachmentId, turnId: snapshot.turnId, kind: "generated_image", status, promptHint: historicalHint,
+      metadata: { attempt: call.attempt, effect: { effectScope: "turn_action", intent: call.intent }, request: { name: "edit_last_image" } },
+    } });
+    expect(await applyChatToolEffect(call)).toMatchObject({ accepted: true, duplicate: status === "accepted" });
+    expect(generated).toHaveBeenCalledTimes(status === "accepted" ? 0 : 1);
+    if (status === "requesting") expect(generated.mock.calls[0]?.[0].promptHint).toBe(historicalHint);
+    expect(await prisma.chatTurnAttachment.findUniqueOrThrow({ where: { id: attachmentId } })).toMatchObject({ promptHint: historicalHint });
+  });
+
   it("projects an unknown image result in the real session without retaining it after operator settlement or retry", async () => {
     const { userId, characterId, begin, generated } = await fixture();
     const visualProfile = await prisma.characterVisualProfile.create({ data: {

@@ -230,18 +230,21 @@ function editDecision(
 
 function negatesImageAction(value: string): boolean {
   const english = value.toLowerCase();
+  // A preservation constraint ("do not change anything else") must not consume
+  // an image noun from a later sentence or independent semicolon clause.
+  // Genuine image cancellation in any clause still vetoes the whole request.
   return new RegExp(
-      `(?:不要|别|不用|不必)(?:再)?(?:给我|给|发给我|发|拍|生成|创建|做|改|换|看).{0,12}${CHINESE_NON_NUDE_IMAGE_NOUN}`,
+      `(?:不要|别|不用|不必)(?:再)?(?:给我|给|发给我|发|拍|生成|创建|做|改|换|看)[^.!?;。！？；]{0,12}${CHINESE_NON_NUDE_IMAGE_NOUN}`,
     "u",
   ).test(value) ||
-    new RegExp(`(?:不要|别|不用|不必|不想)(?:看|要).{0,8}${CHINESE_NON_NUDE_IMAGE_NOUN}`, "u")
+    new RegExp(`(?:不要|别|不用|不必|不想)(?:看|要)[^.!?;。！？；]{0,8}${CHINESE_NON_NUDE_IMAGE_NOUN}`, "u")
       .test(value) ||
     /(?:不要|别|不用|不必)(?:给我)?看(?:你现在|你的样子|你穿什么|你的身材)/u.test(value) ||
     new RegExp(
-      `\\b(?:don['’]?t|do not|never|no need to|stop)\\s+(?:send|show|give|make|generate|create|take|edit|change)\\b.{0,40}\\b${ENGLISH_NON_NUDE_IMAGE_NOUN}s?\\b`,
+      `\\b(?:don['’]?t|do not|never|no need to|stop)\\s+(?:send|show|give|make|generate|create|take|edit|change)\\b[^.!?;。！？；]{0,40}\\b${ENGLISH_NON_NUDE_IMAGE_NOUN}s?\\b`,
       "i",
     ).test(english) ||
-    new RegExp(`\\b(?:don['’]?t|do not)\\s+want\\b.{0,30}\\b${ENGLISH_NON_NUDE_IMAGE_NOUN}s?\\b`, "i")
+    new RegExp(`\\b(?:don['’]?t|do not)\\s+want\\b[^.!?;。！？；]{0,30}\\b${ENGLISH_NON_NUDE_IMAGE_NOUN}s?\\b`, "i")
       .test(english);
 }
 
@@ -251,6 +254,12 @@ function explicitLastImageEdit(value: string): boolean {
   const chineseEdit = "(?:改|换|重做|重新做|加上|加个|去掉|删掉|移除)";
   return new RegExp(`${chineseTarget}.{0,36}${chineseEdit}`, "u").test(value) ||
     new RegExp(`${chineseEdit}.{0,24}${chineseTarget}`, "u").test(value) ||
+    // A delivered image may be identified by a relative clause, not just
+    // "last/this photo". Discussion and negation are filtered before this seam.
+    new RegExp(
+      `\\b(?:edit|change|redo|remake|modify)\\s+(?:the\\s+)?${ENGLISH_IMAGE_NOUN}\\s+(?:that\\s+)?you\\s+(?:just\\s+)?(?:sent|generated|created|made)\\b`,
+      "i",
+    ).test(english) ||
     new RegExp(
       `\\b(?:edit|change|redo|remake|modify|add|remove)\\b.{0,40}\\b(?:last|previous|this|that)\\b.{0,24}\\b${ENGLISH_IMAGE_NOUN}\\b`,
       "i",

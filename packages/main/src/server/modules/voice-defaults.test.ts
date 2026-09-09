@@ -1,9 +1,14 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_FISH_AUDIO_DELIVERY } from "@idream/shared/admin";
 
 const voiceProfileState = vi.hoisted(() => ({
+  voiceId: null as string | null,
+  gender: "female",
+  systemProvider: "mock",
+  setting: null as unknown,
   profile: null as {
     provider: string;
+    providerVoiceId: string;
     deliverySettings: unknown;
     version: number;
   } | null,
@@ -11,23 +16,31 @@ const voiceProfileState = vi.hoisted(() => ({
 
 vi.mock("@/server/lib/db", () => ({
   prisma: {
-    appSetting: {
-      async findUnique() {
-        return null;
-      },
+    async $transaction<T>(read: (tx: unknown) => Promise<T>) {
+      return read({
+        character: { async findFirst() {
+          return { voiceId: voiceProfileState.voiceId, gender: voiceProfileState.gender };
+        } },
+        characterVoiceProfile: { async findFirst() {
+          const profile = voiceProfileState.profile;
+          return profile ? {
+            ...profile, id: "voice-profile-test", model: "test-model", language: "english", status: "active",
+            referenceAsset: { id: "reference-test", metadata: {}, contentType: "audio/wav" },
+            previewAsset: null, sampleText: "A voice sample", createdById: "actor-test",
+            createdAt: new Date("2026-09-06T00:00:00Z"), archivedAt: null,
+          } : null;
+        } },
+        appSetting: { async findUnique() { return voiceProfileState.setting; } },
+      });
     },
-    characterVoiceProfile: {
-      async findFirst() {
-        return voiceProfileState.profile;
-      },
-    },
+    appSetting: { async findUnique() { return voiceProfileState.setting; } },
   },
 }));
 
 vi.mock("@/server/providers", () => ({
   providers: {
     voice: {
-      clip: { providerKey: "mock" },
+      clip: { get providerKey() { return voiceProfileState.systemProvider; } },
       identity: null,
     },
   },
@@ -42,6 +55,13 @@ import {
 } from "./voice-defaults";
 
 describe("system voice defaults", () => {
+  beforeEach(() => {
+    voiceProfileState.profile = null;
+    voiceProfileState.voiceId = null;
+    voiceProfileState.gender = "female";
+    voiceProfileState.systemProvider = "mock";
+    voiceProfileState.setting = null;
+  });
   it("uses the official English Pocket catalog for the Pocket system provider", () => {
     const settings = voiceDefaultSettingsDto(null, "pocket_tts");
 
@@ -76,8 +96,6 @@ describe("system voice defaults", () => {
     await expect(
       resolveCharacterVoiceAuthority({
         characterId: "character-system-default",
-        voiceId: null,
-        gender: "female",
       }),
     ).resolves.toMatchObject({
       providerKey: "mock",
@@ -155,8 +173,10 @@ describe("system voice defaults", () => {
   });
 
   it("pins an activated Pocket profile to the Pocket runtime", async () => {
+    voiceProfileState.voiceId = "idream-pocket-voice";
     voiceProfileState.profile = {
       provider: "pocket_tts",
+      providerVoiceId: "idream-pocket-voice",
       deliverySettings: {},
       version: 1,
     };
@@ -164,8 +184,6 @@ describe("system voice defaults", () => {
     await expect(
       resolveCharacterVoiceAuthority({
         characterId: "character-1",
-        voiceId: "idream-pocket-voice",
-        gender: "male",
       }),
     ).resolves.toMatchObject({
       providerKey: "pocket_tts",
@@ -177,8 +195,10 @@ describe("system voice defaults", () => {
   });
 
   it("uses the activated Fish profile delivery for character speech", async () => {
+    voiceProfileState.voiceId = "idream-fish-voice";
     voiceProfileState.profile = {
       provider: "fish_audio",
+      providerVoiceId: "idream-fish-voice",
       deliverySettings: {
         ...DEFAULT_FISH_AUDIO_DELIVERY,
         preset: "intimate",
@@ -190,8 +210,6 @@ describe("system voice defaults", () => {
     await expect(
       resolveCharacterVoiceAuthority({
         characterId: "character-1",
-        voiceId: "idream-fish-voice",
-        gender: "female",
       }),
     ).resolves.toMatchObject({
       providerKey: "fish_audio",
@@ -205,4 +223,27 @@ describe("system voice defaults", () => {
       },
     });
   });
+  it("preserves the system fallback contract for legacy pointers without an active profile", async () => {
+    voiceProfileState.voiceId = "legacy-unowned-voice";
+    await expect(resolveCharacterVoiceAuthority({ characterId: "legacy-character" })).resolves.toMatchObject({
+      currentVoiceId: "legacy-unowned-voice", activeProfile: null,
+      source: "system_default", voiceId: "default", characterVoiceProfileVersion: null,
+    });
+  });
+
+  it("selects the gender default from the current Character snapshot", async () => {
+    voiceProfileState.gender = "male";
+    voiceProfileState.systemProvider = "pocket_tts";
+    voiceProfileState.setting = {
+      version: 7, updatedAt: new Date("2026-09-06T00:00:00Z"), value: {
+        schemaVersion: 3, provider: "pocket_tts", defaultVoiceId: "alba",
+        genderVoiceIds: { female: "anna", male: "marius", trans: "cosette" },
+        delivery: DEFAULT_FISH_AUDIO_DELIVERY,
+      },
+    };
+    await expect(resolveCharacterVoiceAuthority({ characterId: "gender-edited-character" })).resolves.toMatchObject({
+      source: "system_default", voiceId: "marius", settingVersion: 7,
+    });
+  });
+
 });

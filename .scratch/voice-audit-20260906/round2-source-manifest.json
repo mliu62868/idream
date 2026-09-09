@@ -1,0 +1,21 @@
+{
+  "checkedAt": "2026-09-06T10:36:20.284937+00:00",
+  "gitHead": "cbf0499728be84a19d8b9b9ca13b679ce16babe4",
+  "runtime": "Next development compilation from working tree; no immutable deployment certification",
+  "files": {
+    "packages/admin/src/components/admin/i18n-zh-characters.ts": "6c24e6367c28febfa25d06d6deda9d97a300c50cfb7ab89b354b9476c9aec03f",
+    "packages/admin/src/features/characters/CharacterVoicePanel.test.tsx": "93f8b5049f8dd2d9cd373b7ca7f2f22420dd5bc7989e5ddf5df6ba660f189bbe",
+    "packages/admin/src/features/characters/CharacterVoicePanel.tsx": "37f52fcab013f2ef0203ea097bae876121cc0a64fd8e236447b21cec9292a44d",
+    "packages/admin/src/features/characters/character-workspace-fixture.ts": "c6a28824573237b74be7ad51745f6812ef6eb7c9e50b21b9a879d9852c3ee9d4",
+    "packages/main/src/server/modules/admin-v2/characters/voice-identity.integration.test.ts": "a627ac34c6dee14350e6efd526627caf0a649d7b8fb583d6b7024c47dffa80ce",
+    "packages/main/src/server/modules/admin-v2/characters/voice-identity.ts": "ece89fd2e295ccc602a0644512d2bf0219a867060274017d89ea468966495d5e",
+    "packages/main/src/server/modules/admin-v2/characters/workspace.integration.test.ts": "db85437d0a33405f4bd34d2c584e5c092f18cc3507a9b14626e0008470699153",
+    "packages/main/src/server/modules/admin-v2/characters/workspace.ts": "86b295dcc474765a1bbb807a243e909475532eb2da1fb41348a19c935f9729a6",
+    "packages/main/src/server/modules/ourdream/character-draft-authoring.integration.test.ts": "9b3ca1320d346370ae68f7bc70b56a5df3e8b3e81758b7a467d1ac37d4c6e454",
+    "packages/main/src/server/modules/ourdream/voice-clip.ts": "9f05719336eca0e75a3c3206ee0ff89df347a06edbdb54ba04059cde738f80ef",
+    "packages/main/src/server/modules/ourdream/voice-generation-service.test.ts": "86c7143d928903899ed0af8dab4d53e9a6bcca5dc079c931fe2b4906e91424e0",
+    "packages/main/src/server/modules/voice-defaults.test.ts": "8fbeaaefd587784b73bcd5a295d922ed0af0acaf81915e0cab52a71829bfcf7d",
+    "packages/main/src/server/modules/voice-defaults.ts": "b9e37a4fc19a9a5331fe518bdc9f54a711e3e651b0bf247b975ba7e4f5e4a408",
+    "packages/shared/src/admin/contracts/characters-media-operations.ts": "42393486fcaf5ad7bcce79a624a867bb5ec9beb33d1bd248516c4c1e617e0879"
+  }
+}

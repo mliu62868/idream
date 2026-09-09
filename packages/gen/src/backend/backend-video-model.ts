@@ -19,7 +19,7 @@ import {
   type BackendRegistry,
   type ComfyUiRunner,
 } from "./registry";
-import { BackendInvocationError, type BackendAsset } from "./types";
+import { BackendInvocationError, type BackendAsset, type BackendPerformance } from "./types";
 import { assertCharacterVideoProductionDescriptor } from "./production-video-descriptor";
 
 type GenerateInput = Parameters<VideoModel["generate"]>[0];
@@ -111,13 +111,21 @@ export class BackendVideoModel implements VideoModel {
       seed,
     });
     let providerRequestId: string | null = null;
+    const requests: (BackendPerformance & { providerRequestId: string })[] = [];
+    const startedAt = performance.now();
+    let resourceWaitMs: number | null = null;
+    let runnerPreparationMs: number | null = null;
+    const invocationPerformance = () => ({ resourceWaitMs, runnerPreparationMs, totalMs: performance.now() - startedAt, requests });
     try {
       const result = await this.runWithAcceleratorLease(async () => {
+        resourceWaitMs = performance.now() - startedAt;
+        const preparationStartedAt = performance.now();
         if (descriptor.backendKind === "comfyui") {
           await this.prepareComfyUiRunner(
             comfyUiRunnerForDescriptor(descriptor),
           );
         }
+        runnerPreparationMs = performance.now() - preparationStartedAt;
         await input.executionBoundary?.beforeProviderInvocation();
         const handle = await backend.submit({
           descriptor,
@@ -127,7 +135,9 @@ export class BackendVideoModel implements VideoModel {
           timeoutMs: env.VIDEO_TIMEOUT_MS,
         });
         providerRequestId = handle.id;
-        return backend.poll(handle);
+        const result = await backend.poll(handle);
+        if (result.performance) requests.push({ providerRequestId: handle.id, ...result.performance });
+        return result;
       }, { onWait: input.executionBoundary?.onResourceWait });
       const asset = result.assets.find(
         (candidate) => candidate.contentType === "video/mp4",
@@ -138,6 +148,8 @@ export class BackendVideoModel implements VideoModel {
           `Workflow ${descriptor.workflowKey} completed without an MP4 asset`,
           false,
           providerRequestId,
+          "definitive",
+          invocationPerformance(),
         );
       }
       const mediaError = validateProductionVideoOutput(
@@ -152,6 +164,7 @@ export class BackendVideoModel implements VideoModel {
           false,
           providerRequestId,
           "definitive",
+          invocationPerformance(),
         );
       }
       return {
@@ -164,7 +177,7 @@ export class BackendVideoModel implements VideoModel {
             body: asset.body,
           },
         },
-        invocation: invocation(providerRequestId),
+        invocation: invocation(providerRequestId, invocationPerformance()),
       };
     } catch (error) {
       const classified = backendFailure(
@@ -178,6 +191,7 @@ export class BackendVideoModel implements VideoModel {
           classified.phase === "pre_submit",
         providerRequestId,
         classified.outcome,
+        invocationPerformance(),
       );
     }
   }
@@ -299,11 +313,12 @@ function numericControl(
     : undefined;
 }
 
-function invocation(providerRequestId: string | null) {
+function invocation(providerRequestId: string | null, performance?: Record<string, unknown>) {
   return {
     providerRequestId,
     usage: {
       providerRequestIds: providerRequestId ? [providerRequestId] : [],
+      ...(performance ? { performance } : {}),
     },
     costMicros: null,
     pricingVersion: null,
@@ -316,6 +331,7 @@ function failure(
   retryable: boolean,
   providerRequestId: string | null = null,
   outcome?: "definitive" | "ambiguous",
+  performance?: Record<string, unknown>,
 ): GenerateResult {
   return {
     ok: false,
@@ -325,8 +341,8 @@ function failure(
       retryable,
       ...(outcome ? { outcome } : {}),
     },
-    ...(providerRequestId
-      ? { invocation: invocation(providerRequestId) }
+    ...(providerRequestId || performance
+      ? { invocation: invocation(providerRequestId, performance) }
       : {}),
   };
 }

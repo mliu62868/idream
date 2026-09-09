@@ -38,6 +38,26 @@ function prompt(
 }
 
 describe("image generation prompt", () => {
+  it("preserves the final constraint of a supported multi-part edit after normalization", () => {
+    const instruction = "Edit this image: move the notebook to the left,\n change its cover to green, and brighten the window.  Preserve all faces and the writing on every page.";
+    const compiled = compileChatImagePrompt(instruction, "unspecified", { rejectTruncation: true });
+    expect(compiled).toBe(instruction.replace(/\s+/g, " ").trim());
+    expect(compileChatImagePrompt("编辑这张图片：把笔记本改为绿色、窗帘改为黄色，保留脸、衣服、姿势和最后一页的文字。", "unspecified", { rejectTruncation: true })).toBe("编辑这张图片：把笔记本改为绿色、窗帘改为黄色，保留脸、衣服、姿势和最后一页的文字。");
+  });
+
+  it.each([950, 1_250])("rejects an edit with a final constraint beyond the %s-character input instead of dropping it", length => {
+    const instruction = `Edit this image: ${"retain detail; ".repeat(100)}`.slice(0, length) + " Preserve the final page exactly.";
+    expect(() => compileChatImagePrompt(instruction, "unspecified", { rejectTruncation: true })).toThrow(/Shorten the request/);
+    // Existing generation callers keep their established truncating contract.
+    expect(compileChatImagePrompt(instruction, "unspecified").length).toBeLessThanOrEqual(900);
+  });
+
+  it.each(["none", "full"] as const)("includes the %s wardrobe prefix in the edit budget", nudity => {
+    const instruction = `Edit this image: ${"retain detail; ".repeat(100)}`.slice(0, 850);
+    expect(instruction.length).toBeLessThan(900);
+    expect(() => compileChatImagePrompt(instruction, nudity, { rejectTruncation: true })).toThrow(/900-character/);
+  });
+
   it("compiles a source-image edit without replacing its composition with a new portrait", () => {
     const text = buildGenerationPrompt({
       mode: "image", character, visualProfile: null, consistencyMode: "strict",

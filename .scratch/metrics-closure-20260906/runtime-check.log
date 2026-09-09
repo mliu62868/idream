@@ -1,0 +1,476 @@
+@idream/main metrics:refresh: {
+@idream/main metrics:refresh:   "mode": "check",
+@idream/main metrics:refresh:   "environment": "development",
+@idream/main metrics:refresh:   "database": {
+@idream/main metrics:refresh:     "host": "localhost",
+@idream/main metrics:refresh:     "port": "5433",
+@idream/main metrics:refresh:     "name": "idream_runtime_20260812"
+@idream/main metrics:refresh:   },
+@idream/main metrics:refresh:   "asOf": "2026-09-06T23:46:33.185Z",
+@idream/main metrics:refresh:   "quality": {
+@idream/main metrics:refresh:     "asOf": "2026-09-06T23:46:33.185Z",
+@idream/main metrics:refresh:     "qualityState": "invalid",
+@idream/main metrics:refresh:     "incompleteOutcomeCount": 0,
+@idream/main metrics:refresh:     "duplicateEffectCount": 0,
+@idream/main metrics:refresh:     "impossibleStateCount": 0,
+@idream/main metrics:refresh:     "fixtureInternalLeakageCount": 0,
+@idream/main metrics:refresh:     "joinCoverage": 1,
+@idream/main metrics:refresh:     "userJoinCoverage": 1,
+@idream/main metrics:refresh:     "characterJoinCoverage": 1,
+@idream/main metrics:refresh:     "contentVersionJoinCoverage": 1,
+@idream/main metrics:refresh:     "releaseJoinCoverage": 1,
+@idream/main metrics:refresh:     "eventLagP95Ms": 20203,
+@idream/main metrics:refresh:     "freshnessSloMs": 3600000,
+@idream/main metrics:refresh:     "scannedFactCount": 0,
+@idream/main metrics:refresh:     "checks": [
+@idream/main metrics:refresh:       {
+@idream/main metrics:refresh:         "key": "server_outcome_completeness",
+@idream/main metrics:refresh:         "status": "passed",
+@idream/main metrics:refresh:         "observed": 0,
+@idream/main metrics:refresh:         "threshold": "= 0"
+@idream/main metrics:refresh:       },
+@idream/main metrics:refresh:       {
+@idream/main metrics:refresh:         "key": "duplicate_effect",
+@idream/main metrics:refresh:         "status": "passed",
+@idream/main metrics:refresh:         "observed": 0,
+@idream/main metrics:refresh:         "threshold": "= 0"
+@idream/main metrics:refresh:       },
+@idream/main metrics:refresh:       {
+@idream/main metrics:refresh:         "key": "impossible_state",
+@idream/main metrics:refresh:         "status": "passed",
+@idream/main metrics:refresh:         "observed": 0,
+@idream/main metrics:refresh:         "threshold": "= 0"
+@idream/main metrics:refresh:       },
+@idream/main metrics:refresh:       {
+@idream/main metrics:refresh:         "key": "fixture_internal_leakage",
+@idream/main metrics:refresh:         "status": "passed",
+@idream/main metrics:refresh:         "observed": 0,
+@idream/main metrics:refresh:         "threshold": "= 0"
+@idream/main metrics:refresh:       },
+@idream/main metrics:refresh:       {
+@idream/main metrics:refresh:         "key": "authoritative_join_coverage",
+@idream/main metrics:refresh:         "status": "passed",
+@idream/main metrics:refresh:         "observed": 1,
+@idream/main metrics:refresh:         "threshold": ">= 0.99"
+@idream/main metrics:refresh:       },
+@idream/main metrics:refresh:       {
+@idream/main metrics:refresh:         "key": "event_lag_p95",
+@idream/main metrics:refresh:         "status": "passed",
+@idream/main metrics:refresh:         "observed": 20203,
+@idream/main metrics:refresh:         "threshold": "<= 3600000ms"
+@idream/main metrics:refresh:       },
+@idream/main metrics:refresh:       {
+@idream/main metrics:refresh:         "key": "eligible_fact_presence",
+@idream/main metrics:refresh:         "status": "failed",
+@idream/main metrics:refresh:         "observed": 0,
+@idream/main metrics:refresh:         "threshold": "> 0"
+@idream/main metrics:refresh:       }
+@idream/main metrics:refresh:     ]
+@idream/main metrics:refresh:   },
+@idream/main metrics:refresh:   "snapshots": 15,
+@idream/main metrics:refresh:   "decisionReady": false,
+@idream/main metrics:refresh:   "blockedMetrics": [
+@idream/main metrics:refresh:     {
+@idream/main metrics:refresh:       "key": "north_star.wpcu",
+@idream/main metrics:refresh:       "publicationStatus": "official",
+@idream/main metrics:refresh:       "qualityState": "invalid",
+@idream/main metrics:refresh:       "reasons": [
+@idream/main metrics:refresh:         "definition_not_certified",
+@idream/main metrics:refresh:         "definition_validation_timestamp_missing",
+@idream/main metrics:refresh:         "definition_validation_evidence_missing",
+@idream/main metrics:refresh:         "quality_check_failed:metrics.eligible_fact_presence",
+@idream/main metrics:refresh:         "source_fact_missing:chat_exchange_fact",
+@idream/main metrics:refresh:         "source_fact_missing:generation_fulfillment_fact",
+@idream/main metrics:refresh:         "source_fact_missing:subscription_lifecycle_fact",
+@idream/main metrics:refresh:         "metric_snapshot_not_certified",
+@idream/main metrics:refresh:         "metric_snapshot_latest_data_missing"
+@idream/main metrics:refresh:       ]
+@idream/main metrics:refresh:     },
+@idream/main metrics:refresh:     {
+@idream/main metrics:refresh:       "key": "north_star.wscu",
+@idream/main metrics:refresh:       "publicationStatus": "shadow",
+@idream/main metrics:refresh:       "qualityState": "invalid",
+@idream/main metrics:refresh:       "reasons": [
+@idream/main metrics:refresh:         "definition_validation_timestamp_missing",
+@idream/main metrics:refresh:         "definition_validation_evidence_missing",
+@idream/main metrics:refresh:         "quality_check_failed:metrics.eligible_fact_presence",
+@idream/main metrics:refresh:         "source_fact_missing:chat_exchange_fact",
+@idream/main metrics:refresh:         "metric_snapshot_not_certified",
+@idream/main metrics:refresh:         "metric_snapshot_latest_data_missing"
+@idream/main metrics:refresh:       ]
+@idream/main metrics:refresh:     },
+@idream/main metrics:refresh:     {
+@idream/main metrics:refresh:       "key": "diagnostic.wsr",
+@idream/main metrics:refresh:       "publicationStatus": "diagnostic",
+@idream/main metrics:refresh:       "qualityState": "invalid",
+@idream/main metrics:refresh:       "reasons": [
+@idream/main metrics:refresh:         "definition_validation_timestamp_missing",
+@idream/main metrics:refresh:         "definition_validation_evidence_missing",
+@idream/main metrics:refresh:         "quality_check_failed:metrics.eligible_fact_presence",
+@idream/main metrics:refresh:         "source_fact_missing:chat_exchange_fact",
+@idream/main metrics:refresh:         "metric_snapshot_not_certified",
+@idream/main metrics:refresh:         "metric_snapshot_latest_data_missing"
+@idream/main metrics:refresh:       ]
+@idream/main metrics:refresh:     },
+@idream/main metrics:refresh:     {
+@idream/main metrics:refresh:       "key": "guardrail.wscru",
+@idream/main metrics:refresh:       "publicationStatus": "shadow",
+@idream/main metrics:refresh:       "qualityState": "invalid",
+@idream/main metrics:refresh:       "reasons": [
+@idream/main metrics:refresh:         "definition_validation_timestamp_missing",
+@idream/main metrics:refresh:         "definition_validation_evidence_missing",
+@idream/main metrics:refresh:         "quality_check_failed:metrics.eligible_fact_presence",
+@idream/main metrics:refresh:         "source_fact_missing:generation_fulfillment_fact",
+@idream/main metrics:refresh:         "metric_snapshot_not_certified",
+@idream/main metrics:refresh:         "metric_snapshot_latest_data_missing"
+@idream/main metrics:refresh:       ]
+@idream/main metrics:refresh:     },
+@idream/main metrics:refresh:     {
+@idream/main metrics:refresh:       "key": "business.wpscu",
+@idream/main metrics:refresh:       "publicationStatus": "shadow",
+@idream/main metrics:refresh:       "qualityState": "invalid",
+@idream/main metrics:refresh:       "reasons": [
+@idream/main metrics:refresh:         "definition_validation_timestamp_missing",
+@idream/main metrics:refresh:         "definition_validation_evidence_missing",
+@idream/main metrics:refresh:         "quality_check_failed:metrics.eligible_fact_presence",
+@idream/main metrics:refresh:         "source_fact_missing:chat_exchange_fact",
+@idream/main metrics:refresh:         "source_fact_missing:subscription_lifecycle_fact",
+@idream/main metrics:refresh:         "metric_snapshot_not_certified",
+@idream/main metrics:refresh:         "metric_snapshot_latest_data_missing"
+@idream/main metrics:refresh:       ]
+@idream/main metrics:refresh:     },
+@idream/main metrics:refresh:     {
+@idream/main metrics:refresh:       "key": "activation.chat_24h",
+@idream/main metrics:refresh:       "publicationStatus": "diagnostic",
+@idream/main metrics:refresh:       "qualityState": "invalid",
+@idream/main metrics:refresh:       "reasons": [
+@idream/main metrics:refresh:         "definition_not_certified",
+@idream/main metrics:refresh:         "definition_validation_timestamp_missing",
+@idream/main metrics:refresh:         "definition_validation_evidence_missing",
+@idream/main metrics:refresh:         "quality_check_failed:metrics.eligible_fact_presence",
+@idream/main metrics:refresh:         "source_fact_missing:customer_signup_fact",
+@idream/main metrics:refresh:         "source_fact_missing:chat_exchange_fact",
+@idream/main metrics:refresh:         "metric_snapshot_not_certified",
+@idream/main metrics:refresh:         "metric_snapshot_latest_data_missing"
+@idream/main metrics:refresh:       ]
+@idream/main metrics:refresh:     },
+@idream/main metrics:refresh:     {
+@idream/main metrics:refresh:       "key": "activation.relationship_7d",
+@idream/main metrics:refresh:       "publicationStatus": "diagnostic",
+@idream/main metrics:refresh:       "qualityState": "invalid",
+@idream/main metrics:refresh:       "reasons": [
+@idream/main metrics:refresh:         "definition_not_certified",
+@idream/main metrics:refresh:         "definition_validation_timestamp_missing",
+@idream/main metrics:refresh:         "definition_validation_evidence_missing",
+@idream/main metrics:refresh:         "quality_check_failed:metrics.eligible_fact_presence",
+@idream/main metrics:refresh:         "source_fact_missing:customer_signup_fact",
+@idream/main metrics:refresh:         "source_fact_missing:chat_exchange_fact",
+@idream/main metrics:refresh:         "metric_snapshot_not_certified",
+@idream/main metrics:refresh:         "metric_snapshot_latest_data_missing"
+@idream/main metrics:refresh:       ]
+@idream/main metrics:refresh:     },
+@idream/main metrics:refresh:     {
+@idream/main metrics:refresh:       "key": "activation.generation_7d",
+@idream/main metrics:refresh:       "publicationStatus": "diagnostic",
+@idream/main metrics:refresh:       "qualityState": "invalid",
+@idream/main metrics:refresh:       "reasons": [
+@idream/main metrics:refresh:         "definition_not_certified",
+@idream/main metrics:refresh:         "definition_validation_timestamp_missing",
+@idream/main metrics:refresh:         "definition_validation_evidence_missing",
+@idream/main metrics:refresh:         "quality_check_failed:metrics.eligible_fact_presence",
+@idream/main metrics:refresh:         "source_fact_missing:customer_signup_fact",
+@idream/main metrics:refresh:         "source_fact_missing:generation_fulfillment_fact",
+@idream/main metrics:refresh:         "metric_snapshot_not_certified",
+@idream/main metrics:refresh:         "metric_snapshot_latest_data_missing"
+@idream/main metrics:refresh:       ]
+@idream/main metrics:refresh:     },
+@idream/main metrics:refresh:     {
+@idream/main metrics:refresh:       "key": "retention.same_character_d1",
+@idream/main metrics:refresh:       "publicationStatus": "diagnostic",
+@idream/main metrics:refresh:       "qualityState": "invalid",
+@idream/main metrics:refresh:       "reasons": [
+@idream/main metrics:refresh:         "definition_not_certified",
+@idream/main metrics:refresh:         "definition_validation_timestamp_missing",
+@idream/main metrics:refresh:         "definition_validation_evidence_missing",
+@idream/main metrics:refresh:         "quality_check_failed:metrics.eligible_fact_presence",
+@idream/main metrics:refresh:         "source_fact_missing:chat_exchange_fact",
+@idream/main metrics:refresh:         "metric_snapshot_not_certified",
+@idream/main metrics:refresh:         "metric_snapshot_latest_data_missing"
+@idream/main metrics:refresh:       ]
+@idream/main metrics:refresh:     },
+@idream/main metrics:refresh:     {
+@idream/main metrics:refresh:       "key": "retention.same_character_d7",
+@idream/main metrics:refresh:       "publicationStatus": "diagnostic",
+@idream/main metrics:refresh:       "qualityState": "invalid",
+@idream/main metrics:refresh:       "reasons": [
+@idream/main metrics:refresh:         "definition_not_certified",
+@idream/main metrics:refresh:         "definition_validation_timestamp_missing",
+@idream/main metrics:refresh:         "definition_validation_evidence_missing",
+@idream/main metrics:refresh:         "quality_check_failed:metrics.eligible_fact_presence",
+@idream/main metrics:refresh:         "source_fact_missing:chat_exchange_fact",
+@idream/main metrics:refresh:         "metric_snapshot_not_certified",
+@idream/main metrics:refresh:         "metric_snapshot_latest_data_missing"
+@idream/main metrics:refresh:       ]
+@idream/main metrics:refresh:     },
+@idream/main metrics:refresh:     {
+@idream/main metrics:refresh:       "key": "retention.same_character_w1",
+@idream/main metrics:refresh:       "publicationStatus": "diagnostic",
+@idream/main metrics:refresh:       "qualityState": "invalid",
+@idream/main metrics:refresh:       "reasons": [
+@idream/main metrics:refresh:         "definition_not_certified",
+@idream/main metrics:refresh:         "definition_validation_timestamp_missing",
+@idream/main metrics:refresh:         "definition_validation_evidence_missing",
+@idream/main metrics:refresh:         "quality_check_failed:metrics.eligible_fact_presence",
+@idream/main metrics:refresh:         "source_fact_missing:chat_exchange_fact",
+@idream/main metrics:refresh:         "metric_snapshot_not_certified",
+@idream/main metrics:refresh:         "metric_snapshot_latest_data_missing"
+@idream/main metrics:refresh:       ]
+@idream/main metrics:refresh:     },
+@idream/main metrics:refresh:     {
+@idream/main metrics:refresh:       "key": "conversion.paid_d7",
+@idream/main metrics:refresh:       "publicationStatus": "diagnostic",
+@idream/main metrics:refresh:       "qualityState": "invalid",
+@idream/main metrics:refresh:       "reasons": [
+@idream/main metrics:refresh:         "definition_not_certified",
+@idream/main metrics:refresh:         "definition_validation_timestamp_missing",
+@idream/main metrics:refresh:         "definition_validation_evidence_missing",
+@idream/main metrics:refresh:         "quality_check_failed:metrics.eligible_fact_presence",
+@idream/main metrics:refresh:         "source_fact_missing:customer_signup_fact",
+@idream/main metrics:refresh:         "source_fact_missing:subscription_lifecycle_fact",
+@idream/main metrics:refresh:         "metric_snapshot_not_certified",
+@idream/main metrics:refresh:         "metric_snapshot_latest_data_missing"
+@idream/main metrics:refresh:       ]
+@idream/main metrics:refresh:     },
+@idream/main metrics:refresh:     {
+@idream/main metrics:refresh:       "key": "conversion.paid_d30",
+@idream/main metrics:refresh:       "publicationStatus": "diagnostic",
+@idream/main metrics:refresh:       "qualityState": "invalid",
+@idream/main metrics:refresh:       "reasons": [
+@idream/main metrics:refresh:         "definition_not_certified",
+@idream/main metrics:refresh:         "definition_validation_timestamp_missing",
+@idream/main metrics:refresh:         "definition_validation_evidence_missing",
+@idream/main metrics:refresh:         "quality_check_failed:metrics.eligible_fact_presence",
+@idream/main metrics:refresh:         "source_fact_missing:customer_signup_fact",
+@idream/main metrics:refresh:         "source_fact_missing:subscription_lifecycle_fact",
+@idream/main metrics:refresh:         "metric_snapshot_not_certified",
+@idream/main metrics:refresh:         "metric_snapshot_latest_data_missing"
+@idream/main metrics:refresh:       ]
+@idream/main metrics:refresh:     },
+@idream/main metrics:refresh:     {
+@idream/main metrics:refresh:       "key": "cost.provider_variable_7d",
+@idream/main metrics:refresh:       "publicationStatus": "diagnostic",
+@idream/main metrics:refresh:       "qualityState": "invalid",
+@idream/main metrics:refresh:       "reasons": [
+@idream/main metrics:refresh:         "priced_invocations=0/0",
+@idream/main metrics:refresh:         "Cash revenue is not inferred from provider cost."
+@idream/main metrics:refresh:       ]
+@idream/main metrics:refresh:     },
+@idream/main metrics:refresh:     {
+@idream/main metrics:refresh:       "key": "margin.character_contribution_7d",
+@idream/main metrics:refresh:       "publicationStatus": "diagnostic",
+@idream/main metrics:refresh:       "qualityState": "invalid",
+@idream/main metrics:refresh:       "reasons": [
+@idream/main metrics:refresh:         "cash_attribution_authority_unavailable",
+@idream/main metrics:refresh:         "Dreamcoin consumption is not cash revenue."
+@idream/main metrics:refresh:       ]
+@idream/main metrics:refresh:     }
+@idream/main metrics:refresh:   ],
+@idream/main metrics:refresh:   "metrics": [
+@idream/main metrics:refresh:     {
+@idream/main metrics:refresh:       "key": "north_star.wpcu",
+@idream/main metrics:refresh:       "definitionVersion": 2,
+@idream/main metrics:refresh:       "publicationStatus": "official",
+@idream/main metrics:refresh:       "qualityState": "invalid",
+@idream/main metrics:refresh:       "decisionUse": "blocked",
+@idream/main metrics:refresh:       "value": null,
+@idream/main metrics:refresh:       "sampleSize": 0,
+@idream/main metrics:refresh:       "matureSampleSize": 0,
+@idream/main metrics:refresh:       "immatureSampleSize": 0,
+@idream/main metrics:refresh:       "maturity": "insufficient_data",
+@idream/main metrics:refresh:       "latestDataAt": null
+@idream/main metrics:refresh:     },
+@idream/main metrics:refresh:     {
+@idream/main metrics:refresh:       "key": "north_star.wscu",
+@idream/main metrics:refresh:       "definitionVersion": 1,
+@idream/main metrics:refresh:       "publicationStatus": "shadow",
+@idream/main metrics:refresh:       "qualityState": "invalid",
+@idream/main metrics:refresh:       "decisionUse": "blocked",
+@idream/main metrics:refresh:       "value": null,
+@idream/main metrics:refresh:       "sampleSize": 0,
+@idream/main metrics:refresh:       "matureSampleSize": 0,
+@idream/main metrics:refresh:       "immatureSampleSize": 0,
+@idream/main metrics:refresh:       "maturity": "insufficient_data",
+@idream/main metrics:refresh:       "latestDataAt": null
+@idream/main metrics:refresh:     },
+@idream/main metrics:refresh:     {
+@idream/main metrics:refresh:       "key": "diagnostic.wsr",
+@idream/main metrics:refresh:       "definitionVersion": 1,
+@idream/main metrics:refresh:       "publicationStatus": "diagnostic",
+@idream/main metrics:refresh:       "qualityState": "invalid",
+@idream/main metrics:refresh:       "decisionUse": "blocked",
+@idream/main metrics:refresh:       "value": null,
+@idream/main metrics:refresh:       "sampleSize": 0,
+@idream/main metrics:refresh:       "matureSampleSize": 0,
+@idream/main metrics:refresh:       "immatureSampleSize": 0,
+@idream/main metrics:refresh:       "maturity": "insufficient_data",
+@idream/main metrics:refresh:       "latestDataAt": null
+@idream/main metrics:refresh:     },
+@idream/main metrics:refresh:     {
+@idream/main metrics:refresh:       "key": "guardrail.wscru",
+@idream/main metrics:refresh:       "definitionVersion": 1,
+@idream/main metrics:refresh:       "publicationStatus": "shadow",
+@idream/main metrics:refresh:       "qualityState": "invalid",
+@idream/main metrics:refresh:       "decisionUse": "blocked",
+@idream/main metrics:refresh:       "value": null,
+@idream/main metrics:refresh:       "sampleSize": 0,
+@idream/main metrics:refresh:       "matureSampleSize": 0,
+@idream/main metrics:refresh:       "immatureSampleSize": 0,
+@idream/main metrics:refresh:       "maturity": "insufficient_data",
+@idream/main metrics:refresh:       "latestDataAt": null
+@idream/main metrics:refresh:     },
+@idream/main metrics:refresh:     {
+@idream/main metrics:refresh:       "key": "business.wpscu",
+@idream/main metrics:refresh:       "definitionVersion": 1,
+@idream/main metrics:refresh:       "publicationStatus": "shadow",
+@idream/main metrics:refresh:       "qualityState": "invalid",
+@idream/main metrics:refresh:       "decisionUse": "blocked",
+@idream/main metrics:refresh:       "value": null,
+@idream/main metrics:refresh:       "sampleSize": 0,
+@idream/main metrics:refresh:       "matureSampleSize": 0,
+@idream/main metrics:refresh:       "immatureSampleSize": 0,
+@idream/main metrics:refresh:       "maturity": "insufficient_data",
+@idream/main metrics:refresh:       "latestDataAt": null
+@idream/main metrics:refresh:     },
+@idream/main metrics:refresh:     {
+@idream/main metrics:refresh:       "key": "activation.chat_24h",
+@idream/main metrics:refresh:       "definitionVersion": 1,
+@idream/main metrics:refresh:       "publicationStatus": "diagnostic",
+@idream/main metrics:refresh:       "qualityState": "invalid",
+@idream/main metrics:refresh:       "decisionUse": "blocked",
+@idream/main metrics:refresh:       "value": null,
+@idream/main metrics:refresh:       "sampleSize": 0,
+@idream/main metrics:refresh:       "matureSampleSize": 0,
+@idream/main metrics:refresh:       "immatureSampleSize": 0,
+@idream/main metrics:refresh:       "maturity": "insufficient_data",
+@idream/main metrics:refresh:       "latestDataAt": null
+@idream/main metrics:refresh:     },
+@idream/main metrics:refresh:     {
+@idream/main metrics:refresh:       "key": "activation.relationship_7d",
+@idream/main metrics:refresh:       "definitionVersion": 1,
+@idream/main metrics:refresh:       "publicationStatus": "diagnostic",
+@idream/main metrics:refresh:       "qualityState": "invalid",
+@idream/main metrics:refresh:       "decisionUse": "blocked",
+@idream/main metrics:refresh:       "value": null,
+@idream/main metrics:refresh:       "sampleSize": 0,
+@idream/main metrics:refresh:       "matureSampleSize": 0,
+@idream/main metrics:refresh:       "immatureSampleSize": 0,
+@idream/main metrics:refresh:       "maturity": "insufficient_data",
+@idream/main metrics:refresh:       "latestDataAt": null
+@idream/main metrics:refresh:     },
+@idream/main metrics:refresh:     {
+@idream/main metrics:refresh:       "key": "activation.generation_7d",
+@idream/main metrics:refresh:       "definitionVersion": 1,
+@idream/main metrics:refresh:       "publicationStatus": "diagnostic",
+@idream/main metrics:refresh:       "qualityState": "invalid",
+@idream/main metrics:refresh:       "decisionUse": "blocked",
+@idream/main metrics:refresh:       "value": null,
+@idream/main metrics:refresh:       "sampleSize": 0,
+@idream/main metrics:refresh:       "matureSampleSize": 0,
+@idream/main metrics:refresh:       "immatureSampleSize": 0,
+@idream/main metrics:refresh:       "maturity": "insufficient_data",
+@idream/main metrics:refresh:       "latestDataAt": null
+@idream/main metrics:refresh:     },
+@idream/main metrics:refresh:     {
+@idream/main metrics:refresh:       "key": "retention.same_character_d1",
+@idream/main metrics:refresh:       "definitionVersion": 1,
+@idream/main metrics:refresh:       "publicationStatus": "diagnostic",
+@idream/main metrics:refresh:       "qualityState": "invalid",
+@idream/main metrics:refresh:       "decisionUse": "blocked",
+@idream/main metrics:refresh:       "value": null,
+@idream/main metrics:refresh:       "sampleSize": 0,
+@idream/main metrics:refresh:       "matureSampleSize": 0,
+@idream/main metrics:refresh:       "immatureSampleSize": 0,
+@idream/main metrics:refresh:       "maturity": "insufficient_data",
+@idream/main metrics:refresh:       "latestDataAt": null
+@idream/main metrics:refresh:     },
+@idream/main metrics:refresh:     {
+@idream/main metrics:refresh:       "key": "retention.same_character_d7",
+@idream/main metrics:refresh:       "definitionVersion": 1,
+@idream/main metrics:refresh:       "publicationStatus": "diagnostic",
+@idream/main metrics:refresh:       "qualityState": "invalid",
+@idream/main metrics:refresh:       "decisionUse": "blocked",
+@idream/main metrics:refresh:       "value": null,
+@idream/main metrics:refresh:       "sampleSize": 0,
+@idream/main metrics:refresh:       "matureSampleSize": 0,
+@idream/main metrics:refresh:       "immatureSampleSize": 0,
+@idream/main metrics:refresh:       "maturity": "insufficient_data",
+@idream/main metrics:refresh:       "latestDataAt": null
+@idream/main metrics:refresh:     },
+@idream/main metrics:refresh:     {
+@idream/main metrics:refresh:       "key": "retention.same_character_w1",
+@idream/main metrics:refresh:       "definitionVersion": 1,
+@idream/main metrics:refresh:       "publicationStatus": "diagnostic",
+@idream/main metrics:refresh:       "qualityState": "invalid",
+@idream/main metrics:refresh:       "decisionUse": "blocked",
+@idream/main metrics:refresh:       "value": null,
+@idream/main metrics:refresh:       "sampleSize": 0,
+@idream/main metrics:refresh:       "matureSampleSize": 0,
+@idream/main metrics:refresh:       "immatureSampleSize": 0,
+@idream/main metrics:refresh:       "maturity": "insufficient_data",
+@idream/main metrics:refresh:       "latestDataAt": null
+@idream/main metrics:refresh:     },
+@idream/main metrics:refresh:     {
+@idream/main metrics:refresh:       "key": "conversion.paid_d7",
+@idream/main metrics:refresh:       "definitionVersion": 1,
+@idream/main metrics:refresh:       "publicationStatus": "diagnostic",
+@idream/main metrics:refresh:       "qualityState": "invalid",
+@idream/main metrics:refresh:       "decisionUse": "blocked",
+@idream/main metrics:refresh:       "value": null,
+@idream/main metrics:refresh:       "sampleSize": 0,
+@idream/main metrics:refresh:       "matureSampleSize": 0,
+@idream/main metrics:refresh:       "immatureSampleSize": 0,
+@idream/main metrics:refresh:       "maturity": "insufficient_data",
+@idream/main metrics:refresh:       "latestDataAt": null
+@idream/main metrics:refresh:     },
+@idream/main metrics:refresh:     {
+@idream/main metrics:refresh:       "key": "conversion.paid_d30",
+@idream/main metrics:refresh:       "definitionVersion": 1,
+@idream/main metrics:refresh:       "publicationStatus": "diagnostic",
+@idream/main metrics:refresh:       "qualityState": "invalid",
+@idream/main metrics:refresh:       "decisionUse": "blocked",
+@idream/main metrics:refresh:       "value": null,
+@idream/main metrics:refresh:       "sampleSize": 0,
+@idream/main metrics:refresh:       "matureSampleSize": 0,
+@idream/main metrics:refresh:       "immatureSampleSize": 0,
+@idream/main metrics:refresh:       "maturity": "insufficient_data",
+@idream/main metrics:refresh:       "latestDataAt": null
+@idream/main metrics:refresh:     },
+@idream/main metrics:refresh:     {
+@idream/main metrics:refresh:       "key": "cost.provider_variable_7d",
+@idream/main metrics:refresh:       "definitionVersion": 1,
+@idream/main metrics:refresh:       "publicationStatus": "diagnostic",
+@idream/main metrics:refresh:       "qualityState": "invalid",
+@idream/main metrics:refresh:       "decisionUse": "blocked",
+@idream/main metrics:refresh:       "value": null,
+@idream/main metrics:refresh:       "sampleSize": 0,
+@idream/main metrics:refresh:       "matureSampleSize": 0,
+@idream/main metrics:refresh:       "immatureSampleSize": 0,
+@idream/main metrics:refresh:       "maturity": "insufficient_data",
+@idream/main metrics:refresh:       "latestDataAt": null
+@idream/main metrics:refresh:     },
+@idream/main metrics:refresh:     {
+@idream/main metrics:refresh:       "key": "margin.character_contribution_7d",
+@idream/main metrics:refresh:       "definitionVersion": 1,
+@idream/main metrics:refresh:       "publicationStatus": "diagnostic",
+@idream/main metrics:refresh:       "qualityState": "invalid",
+@idream/main metrics:refresh:       "decisionUse": "blocked",
+@idream/main metrics:refresh:       "value": null,
+@idream/main metrics:refresh:       "sampleSize": 0,
+@idream/main metrics:refresh:       "matureSampleSize": 0,
+@idream/main metrics:refresh:       "immatureSampleSize": 0,
+@idream/main metrics:refresh:       "maturity": "insufficient_data",
+@idream/main metrics:refresh:       "latestDataAt": null
+@idream/main metrics:refresh:     }
+@idream/main metrics:refresh:   ]
+@idream/main metrics:refresh: }
+@idream/main metrics:refresh: Exited with code 2

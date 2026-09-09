@@ -408,6 +408,24 @@ export async function inspectGenerationPersistence(
   return evaluateGenerationPersistenceSnapshot(snapshot);
 }
 
+/** Re-observe the same job while asynchronous Main delivery evidence settles. */
+export async function waitForGenerationPersistence(
+  jobId: string,
+  options: {
+    timeoutMs?: number;
+    pollMs?: number;
+    inspect?: typeof inspectGenerationPersistence;
+  } = {},
+): Promise<GenerationPersistenceReport> {
+  const deadline = Date.now() + (options.timeoutMs ?? 30_000);
+  const inspect = options.inspect ?? inspectGenerationPersistence;
+  for (;;) {
+    const evidence = await inspect(jobId);
+    if (evidence.ok || Date.now() >= deadline) return evidence;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(options.pollMs ?? 500, Math.max(0, deadline - Date.now()))));
+  }
+}
+
 async function main() {
   const generationJobId =
     probeCliArg("job-id") ??

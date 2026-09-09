@@ -98,7 +98,7 @@ describe("Today authoritative projection", () => {
     expect(html).not.toContain("today-ranking-v1");
     expect(html).toContain("href=\"/admin/cases/case-1\"");
     expect(html).toContain("Showing 1 of 12");
-    expect(html).toContain("aria-selected:bg-[var(--ad-ink)]");
+    expect(html).toContain("aria-current=\"page\"");
     expect(html).not.toContain("Unavailable");
     expect(html).not.toContain("Degraded Today projection");
   });
@@ -110,13 +110,14 @@ describe("Today authoritative projection", () => {
     // 队列里躺着一条超期三周的工作，横幅不许再说"已是最新"。
     expect(html).not.toContain("Today&#x27;s queue is up to date");
     expect(banner).toContain("items are past their SLA");
-    expect(banner).toContain("var(--ad-red-bg)");
-    expect(banner).not.toContain("var(--ad-green-bg)");
+    expect(banner).toContain("var(--ad-red-text)");
+    expect(banner).not.toContain("var(--ad-green-text)");
     // 数据新鲜度保留，但只是新鲜度，不冒充队列健康。
     expect(banner).toContain("Fresh as of");
-    // 排在最前的那条直接给出去，省掉"往下滚动找第一件事"。
-    expect(banner).toContain("Start here");
-    expect(banner).toContain("support request case");
+    // The first ranked item now opens in the adjacent preview, rather than duplicating it in the banner.
+    expect(banner).not.toContain("Start here");
+    expect(html).toContain("data-testid=\"today-preview\"");
+    expect(html).toContain("href=\"/admin/cases/case-1\"");
   });
 
   it("stays calm only when nothing is overdue and nothing is unowned", () => {
@@ -127,7 +128,7 @@ describe("Today authoritative projection", () => {
     });
 
     expect(banner).toContain("Nothing overdue.");
-    expect(banner).toContain("var(--ad-green-bg)");
+    expect(banner).toContain("var(--ad-green-text)");
     expect(banner).not.toContain("items are past their SLA");
   });
 
@@ -147,7 +148,7 @@ describe("Today authoritative projection", () => {
 
   it("exposes the five counts and marks the overdue count as a floor until the authority answers", () => {
     const html = render({ unassigned: { totalCount: 3, items: [] }, recentlyResolved: { totalCount: 7, items: [] } });
-    const kpis = html.slice(html.indexOf("today-kpis"), html.indexOf("role=\"tablist\""));
+    const kpis = html.slice(html.indexOf("today-kpis"), html.indexOf("<nav"));
 
     expect(kpis).toContain("Open work");
     expect(kpis).toContain(">12<");
@@ -162,8 +163,8 @@ describe("Today authoritative projection", () => {
   it("encodes severity and SLA urgency instead of rendering every item in the same grey", () => {
     const critical = { ...item, sourceId: "case-2", severity: "critical" as const, title: "critical case" };
     const low = { ...item, sourceId: "case-3", severity: "low" as const, slaDueAt: null, title: "low case" };
-    const html = render({ myShift: { totalCount: 2, items: [critical, low] }, nextBestActions: emptyQueue });
-    const shift = html.slice(html.indexOf("today-queue-my-shift"), html.indexOf("today-queue-next-best-actions"));
+    const html = render({ myShift: emptyQueue, nextBestActions: { totalCount: 2, items: [critical, low] } });
+    const shift = html.slice(html.indexOf("today-queue-next-best-actions"), html.indexOf('data-testid="today-preview"'));
 
     expect(shift).toContain("var(--ad-red-bg)");
     expect(shift).toContain("bg-black/[0.05]");
@@ -174,16 +175,16 @@ describe("Today authoritative projection", () => {
 
   it("defaults to one scannable row per item and only offers actions on live work", () => {
     const html = render({ recentlyResolved: { totalCount: 1, items: [{ ...item, sourceId: "case-9" }] } });
-    const shift = html.slice(html.indexOf("today-queue-my-shift"), html.indexOf("today-queue-next-best-actions"));
-    const resolved = html.slice(html.indexOf("today-queue-recently-resolved"));
+    const shift = html.slice(html.indexOf("today-queue-next-best-actions"), html.indexOf('data-testid="today-preview"'));
+
 
     expect(shift).toContain("aria-label=\"Select support request case\"");
     expect(shift).toContain("customer user-1 is waiting");
-    // recommendedAction 是舒适视图才展开的第二层，紧凑列表里不占一行。
+    // 操作建议只在右侧详情展开，列表保持可扫读。
     expect(shift).not.toContain("Review and advance the case");
     expect(shift).not.toContain("test · customer");
-    expect(resolved).not.toContain("type=\"checkbox\"");
-    expect(resolved).not.toContain("More actions");
+    expect(html).not.toContain("today-queue-recently-resolved");
+    expect(html.match(/aria-label="Select support request case"/g)).toHaveLength(1);
   });
 
   it("surfaces verification only once it has an outcome", () => {
@@ -203,7 +204,7 @@ describe("Today authoritative projection", () => {
 
   it("offers a direct Claim action only when the server returns a claim version", () => {
     const claimable = { ...item, ownerId: null, claim: { entityVersion: 4 } };
-    const html = render({ unassigned: { totalCount: 1, items: [claimable] } });
+    const html = render({ nextBestActions: { totalCount: 1, items: [claimable] }, unassigned: { totalCount: 1, items: [claimable] } });
 
     expect(html).toContain(">Claim</button>");
     expect(html).toContain("bg-[var(--ad-ink)]");

@@ -32,7 +32,7 @@ import {
   type BackendRegistry,
   type ComfyUiRunner,
 } from "./registry";
-import { BackendInvocationError } from "./types";
+import { BackendInvocationError, type BackendPerformance } from "./types";
 
 type GenerateInput = Parameters<ImageModel["generate"]>[0];
 type GenerateResult = Awaited<ReturnType<ImageModel["generate"]>>;
@@ -188,15 +188,23 @@ export class BackendImageModel implements ImageModel {
     });
 
     const providerRequestIds: string[] = [];
+    const requests: (BackendPerformance & { providerRequestId: string })[] = [];
+    const startedAt = performance.now();
+    let resourceWaitMs: number | null = null;
+    let runnerPreparationMs: number | null = null;
+    const invocationPerformance = () => ({ resourceWaitMs, runnerPreparationMs, totalMs: performance.now() - startedAt, requests });
     let failurePhase: "pre_submit" | "post_submit" = "pre_submit";
     try {
       const assets: ImageAsset[] = [];
       await this.runWithAcceleratorLease(async () => {
+        resourceWaitMs = performance.now() - startedAt;
+        const preparationStartedAt = performance.now();
         if (descriptor.backendKind === "comfyui") {
           await this.prepareComfyUiRunner(
             comfyUiRunnerForDescriptor(descriptor),
           );
         }
+        runnerPreparationMs = performance.now() - preparationStartedAt;
         await input.executionBoundary?.beforeProviderInvocation();
         for (let index = 0; index < count; index += 1) {
           failurePhase = "pre_submit";
@@ -219,6 +227,7 @@ export class BackendImageModel implements ImageModel {
           providerRequestIds.push(handle.id);
           failurePhase = "post_submit";
           const result = await backend.poll(handle);
+          if (result.performance) requests.push({ providerRequestId: handle.id, ...result.performance });
           for (const asset of result.assets) {
             assets.push({
               width: asset.width,
@@ -234,7 +243,7 @@ export class BackendImageModel implements ImageModel {
         data: { assets },
         invocation: {
           providerRequestId: providerRequestIds[0] ?? null,
-          usage: { providerRequestIds },
+          usage: { providerRequestIds, performance: invocationPerformance() },
           costMicros: null,
           pricingVersion: null,
         },
@@ -253,7 +262,7 @@ export class BackendImageModel implements ImageModel {
         },
         invocation: {
           providerRequestId: providerRequestIds[0] ?? null,
-          usage: { providerRequestIds },
+          usage: { providerRequestIds, performance: invocationPerformance() },
           costMicros: null,
           pricingVersion: null,
         },

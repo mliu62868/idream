@@ -1,7 +1,9 @@
 import { Prisma, type AiUsageFact } from "@prisma/client";
 import { Errors } from "@/server/lib/errors";
+import { env } from "@/server/lib/env";
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
+import { classifyExistingCustomerMetricActor } from "@/server/modules/admin-v2/metrics/event-classification";
 
 export type GenerationInvocationUsageFactInput = {
   readonly attemptId: string;
@@ -22,11 +24,15 @@ export async function recordGenerationInvocationUsageFact(
   input: GenerationInvocationUsageFactInput,
 ) {
   const sourceEventId = `${input.attemptId}:transport:${input.transportAttemptNo}:usage`;
-  const job = await tx.generationJob.findUnique({
+  const job = await tx.generationJob.findUniqueOrThrow({
     where: { id: input.generationJobId },
-    select: { userId: true },
+    select: {
+      userId: true,
+      characterId: true,
+      user: { select: { id: true, email: true, role: true, status: true, deletedAt: true, dataClass: true } },
+    },
   });
-  const desired = canonicalUsageFact(input, job?.userId ?? null);
+  const desired = canonicalUsageFact(input, job.userId);
   const where = {
     sourceService_sourceEventId: { sourceService: "gen", sourceEventId },
   } as const;
@@ -35,10 +41,18 @@ export async function recordGenerationInvocationUsageFact(
     assertCanonicalUsageFact(existing, desired);
     return existing;
   }
+  const classification = classifyExistingCustomerMetricActor(job.user);
   try {
     return await tx.aiUsageFact.create({
       data: {
         ...desired,
+        // Main owns product attribution. Gen supplies invocation accounting,
+        // never the actor class or Character scope of a business fact.
+        characterId: job.characterId,
+        environment: env.APP_ENV,
+        dataClass: classification.dataClass,
+        actorIsInternal: classification.actor.isInternal,
+        trustClass: "canonical",
         usage: toInputJson(input.usage),
         costMicros:
           input.costMicros === null ? null : BigInt(input.costMicros),
@@ -65,12 +79,12 @@ export async function generationInvocationUsageFactConflicts(
     },
   });
   if (!existing) return false;
-  const job = await tx.generationJob.findUnique({
+  const job = await tx.generationJob.findUniqueOrThrow({
     where: { id: input.generationJobId },
     select: { userId: true },
   });
   return usageFactHash(existing) !==
-    canonicalSha256(canonicalUsageFact(input, job?.userId ?? null));
+    canonicalSha256(canonicalUsageFact(input, job.userId));
 }
 
 function canonicalUsageFact(
@@ -96,6 +110,9 @@ function canonicalUsageFact(
 }
 
 function usageFactHash(fact: AiUsageFact) {
+  // Attribution is a first-write snapshot, not provider replay identity.
+  // Reclassification or a new writer version must neither quarantine exact
+  // accounting replays nor silently rewrite previously accepted facts.
   return canonicalSha256({
     source: fact.source,
     sourceService: fact.sourceService,

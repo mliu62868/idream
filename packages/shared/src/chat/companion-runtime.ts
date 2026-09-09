@@ -216,7 +216,8 @@ export function companionWorkspaceRebuildMetrics(input: {
 
 /**
  * The outer request budget must dominate every embedded runtime child deadline:
- * size-aware ingest + 300s maintain + 30s doctor + 10s status + 30s transport.
+ * Two size-aware ingest passes (initial plus one source-only recovery),
+ * 300s maintain, 30s doctor, 10s status, and 30s transport.
  * Six bytes per UTF-16 code unit covers the worst JSON escape expansion.
  */
 export function companionWorkspaceRebuildBudget(input: {
@@ -226,11 +227,11 @@ export function companionWorkspaceRebuildBudget(input: {
 }): { totalIngestTimeoutMs: number; totalTimeoutMs: number } {
   const totalIngestTimeoutMs = input.messageCount === 0
     ? 0
-    : COMPANION_WORKSPACE_REBUILD_INGEST_BASE_TIMEOUT_MS * input.sessionCount
+    : 2 * (COMPANION_WORKSPACE_REBUILD_INGEST_BASE_TIMEOUT_MS * input.sessionCount
       + COMPANION_WORKSPACE_REBUILD_INGEST_PER_MIB_MS * (
         input.sessionCount
         + Math.ceil(Math.max(0, input.estimatedBytes) / 1_048_576)
-      );
+      ));
   return {
     totalIngestTimeoutMs,
     totalTimeoutMs: Math.min(
@@ -444,6 +445,12 @@ const probeToolReservationSchema = z.object({
   callId: nonEmptyStringSchema,
   name: z.enum(["generate_image_async", "edit_last_image"]),
   argumentsDigest: sha256Schema,
+  // Current runtime reservations bind both action scope and user intent.
+  // Missing authority in historical evidence cannot certify a current run.
+  effectScope: z.enum(["attempt", "turn_action"]),
+  intent: z.object({
+    requestedNudity: z.enum(["unspecified", "none", "full"]),
+  }).strict(),
 }).strict();
 
 const protocolVersionSchema = z.literal(COMPANION_RUNTIME_PROTOCOL_VERSION);

@@ -28,7 +28,21 @@ export interface BackendAsset {
   contentType: string;
   verifiedVideo?: VerifiedVideoMedia;
 }
-export interface BackendResult { assets: BackendAsset[] }
+export interface BackendPerformance {
+  prepareMs: number;
+  submitMs: number;
+  // Includes provider queueing, execution and polling; do not add executionMs to it.
+  waitMs: number;
+  downloadMs: number;
+  validationMs: number;
+  // Provider-local timestamps include model loading. Missing evidence stays null.
+  providerExecutionMs: number | null;
+  cachedNodeCount: number | null;
+}
+export interface BackendResult {
+  assets: BackendAsset[];
+  performance?: BackendPerformance;
+}
 export type BackendHandle = { id: string };
 export interface BackendHealth { ok: boolean; detail?: string }
 

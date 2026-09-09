@@ -108,6 +108,7 @@ function withCandidate() {
       authoritySource: "character_clone",
       activeProfile,
       candidateProfile,
+      candidateRuntimeStatus: "ready",
       history: [activeProfile, candidateProfile],
       systemDefaults: {
         catalog: [
@@ -259,6 +260,8 @@ describe("CharacterVoicePanel voice identity controls", () => {
           runtimeVersion: "3.0.2",
           runtimeLanguage: "english",
           catalogVoiceIds: ["alba", "anna"],
+          presetRuntime: { provider: "pocket_tts", runtimeStatus: "ready", catalogVoiceIds: ["alba", "anna"] },
+          candidateRuntimeStatus: "ready",
           cloningAvailable: false,
           currentVoiceId: null,
           effectiveVoiceId: "alba",
@@ -328,6 +331,8 @@ describe("CharacterVoicePanel voice identity controls", () => {
           runtimeVersion: "3.0.2",
           runtimeLanguage: "english",
           catalogVoiceIds: ["alba", "anna"],
+          presetRuntime: { provider: "pocket_tts", runtimeStatus: "ready", catalogVoiceIds: ["alba", "anna"] },
+          candidateRuntimeStatus: "ready",
           cloningAvailable: false,
           currentVoiceId: null,
           authoritySource: "system_default",
@@ -378,9 +383,9 @@ describe("CharacterVoicePanel voice identity controls", () => {
     });
     await render();
 
-    // SPEC: 建候选不改 Character.voiceId——这句话必须写在运营看得到的地方。
+    // SPEC: 运营文案必须说明候选不改当前音色，避免暴露内部字段名。
     expect(container.textContent).toContain(
-      "Creating a candidate never changes Character.voiceId",
+      "Creating a candidate keeps the current voice unchanged.",
     );
     const activate = button("Activate voice");
     expect(activate?.disabled).toBe(true);
@@ -432,6 +437,7 @@ describe("CharacterVoicePanel voice identity controls", () => {
         character: { id: "character-voice-1", name: "Mira" },
         voice: {
           runtimeStatus: "unavailable",
+          candidateRuntimeStatus: "unavailable",
           cloningAvailable: false,
           currentVoiceId: "fish-active-1",
           activeProfile,
@@ -521,6 +527,161 @@ describe("CharacterVoicePanel voice identity controls", () => {
         }),
       }),
     );
+  });
+
+  it("preserves gender mappings when editing only the global fallback", async () => {
+    const data = withCandidate();
+    data.voice.systemDefaults.catalog = ["fish-female-default", "another"].map((id) => ({
+      id, label: id, presentation: "unspecified", description: "Voice",
+    }));
+    await render(data);
+    const select = container.querySelector<HTMLSelectElement>("#system-voice-default-global")!;
+    await act(async () => {
+      select.value = "another";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      button("Save system defaults")?.click();
+    });
+    await typeInto('input[aria-label="System default change reason"]', "Change only the fallback");
+    adminV2Request.mockResolvedValue({ replayed: false });
+    await act(async () => {
+      document.querySelector<HTMLDivElement>('[role="dialog"]')?.querySelector<HTMLButtonElement>('button:last-child')?.click();
+    });
+    expect(adminV2Request).toHaveBeenCalledWith("/api/v2/admin/voice-defaults", expect.objectContaining({
+      body: expect.objectContaining({ defaultVoiceId: "another", genderVoiceIds: data.voice.systemDefaults.genderVoiceIds }),
+    }));
+  });
+
+  it("previews the live default with saved delivery even while the draft is edited", async () => {
+    await render(characterWorkspaceDetail());
+    const system = container.querySelector('[data-testid="system-voice-defaults"]')!;
+    const natural = [...system.querySelectorAll("button")].find((item) => item.textContent?.includes("Natural"))!;
+    await act(async () => natural.click());
+    adminV2Request.mockResolvedValue({ contentType: "audio/wav", audioBase64: "AAAA" });
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="voice-control-room"] button')?.click());
+    expect(adminV2Request).toHaveBeenCalledWith("/api/v2/admin/voice-defaults/preview", expect.objectContaining({
+      body: expect.objectContaining({ delivery: expect.objectContaining({ preset: "sensual" }) }),
+    }));
+    expect(container.querySelectorAll("audio[autoplay]")).toHaveLength(1);
+  });
+
+  it("keeps a failed system save dialog and its reason for an idempotent retry", async () => {
+    await render();
+    await act(async () => button("Save system defaults")?.click());
+    await typeInto('input[aria-label="System default change reason"]', "Keep this retry reason");
+    adminV2Request.mockRejectedValueOnce(new Error("Network interrupted"));
+    const submit = () => [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find((item) => item.textContent?.includes("Save system defaults"))!;
+    await act(async () => submit().click());
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(document.querySelector<HTMLInputElement>('input[aria-label="System default change reason"]')?.value).toBe("Keep this retry reason");
+    const firstKey = adminV2Request.mock.calls[0]?.[1].idempotencyKey;
+    adminV2Request.mockResolvedValueOnce({ replayed: true });
+    await act(async () => submit().click());
+    expect(adminV2Request.mock.calls[1]?.[1].idempotencyKey).toBe(firstKey);
+  });
+
+  it("does not label Pocket speech with unused Fish performance controls", async () => {
+    const data = characterWorkspaceDetail({ voice: { systemDefaults: { provider: "pocket_tts" }, effectiveVoiceId: "alba" } });
+    await render(data);
+    expect(container.querySelector('[data-testid="voice-control-room"]')?.textContent).not.toContain("Sensual");
+    expect(container.querySelector('[data-testid="live-voice-configuration"]')?.textContent).not.toContain("Sensual");
+  });
+
+  it("offers official presets alongside Fish cloning and activates a Pocket candidate independently", async () => {
+    const data = withCandidate();
+    data.voice.presetRuntime = { provider: "pocket_tts", runtimeStatus: "ready", catalogVoiceIds: ["alba", "anna"] };
+    data.voice.candidateProfile = { ...candidateProfile, provider: "pocket_tts" };
+    data.voice.runtimeStatus = "unavailable";
+    data.voice.cloningAvailable = false;
+    data.voice.candidateRuntimeStatus = "ready";
+    await render(data);
+    expect(container.querySelector('[data-testid="voice-preset-builder"]')).not.toBeNull();
+    expect(container.querySelector('#voice-candidate-builder')).not.toBeNull();
+    expect(container.querySelector<HTMLSelectElement>('#character-pocket-preset-voice')?.disabled).toBe(false);
+    await typeInto("#character-voice-activation-reason", "Listen to the official candidate");
+    expect(button("Activate voice")?.disabled).toBe(false);
+    expect(container.querySelector<HTMLTextAreaElement>("#character-pocket-preset-preview-script")?.value).toContain("Hello");
+  });
+
+  it("keeps system mapping fields read-only without generation config permission", async () => {
+    await render(withCandidate(), { canManageDefaults: false });
+    const fields = [...container.querySelectorAll<HTMLSelectElement>('[data-testid="system-voice-defaults"] select')];
+    expect(fields).toHaveLength(4);
+    expect(fields.every((field) => field.disabled)).toBe(true);
+  });
+
+  it("requires a new review when the candidate or live authority changes", async () => {
+    await render();
+    await typeInto("#character-voice-activation-reason", "Reviewed the original candidate");
+    expect(button("Activate voice")?.disabled).toBe(false);
+    const changed = withCandidate();
+    changed.voice.candidateProfile = { ...candidateProfile, id: "replacement-candidate", version: 4 };
+    await render(changed);
+    expect(container.querySelector<HTMLInputElement>("#character-voice-activation-reason")?.value).toBe("");
+    expect(button("Activate voice")?.disabled).toBe(true);
+
+    await typeInto("#character-voice-activation-reason", "Reviewed the replacement candidate");
+    await render({ ...changed, voice: { ...changed.voice, currentVoiceId: "new-live-pointer" } });
+    expect(button("Activate voice")?.disabled).toBe(true);
+    expect(adminV2Request).not.toHaveBeenCalled();
+  });
+
+  it("preserves an edited default draft on refresh and requires explicit reload", async () => {
+    const data = withCandidate();
+    data.voice.systemDefaults.catalog = ["fish-female-default", "another"].map((id) => ({
+      id, label: id, presentation: "unspecified", description: "Voice",
+    }));
+    await render(data);
+    await act(async () => {
+      const select = container.querySelector<HTMLSelectElement>("#system-voice-default-global")!;
+      select.value = "another";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await render({ ...data, voice: { ...data.voice, systemDefaults: { ...data.voice.systemDefaults, settingVersion: 9 } } });
+    expect(container.querySelector<HTMLSelectElement>("#system-voice-default-global")?.value).toBe("another");
+    expect(container.textContent).toContain("System defaults changed while you were editing.");
+    expect(button("Save system defaults")?.disabled).toBe(true);
+    await act(async () => button("Discard draft and load current defaults")?.click());
+    expect(container.querySelector<HTMLSelectElement>("#system-voice-default-global")?.value).toBe("fish-female-default");
+    expect(button("Save system defaults")?.disabled).toBe(false);
+  });
+
+  it("pins the confirmed mapping and retry key even when refreshed defaults arrive", async () => {
+    const data = withCandidate();
+    await render(data);
+    await act(async () => button("Save system defaults")?.click());
+    await typeInto('input[aria-label="System default change reason"]', "Keep the reviewed mapping");
+    const submit = () => [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find((item) => item.textContent?.includes("Save system defaults"))!;
+    adminV2Request.mockRejectedValueOnce(new Error("Acknowledgement lost"));
+    await act(async () => submit().click());
+    const firstOptions = adminV2Request.mock.calls[0]?.[1];
+    await render({ ...data, voice: { ...data.voice, systemDefaults: { ...data.voice.systemDefaults, settingVersion: 9, defaultVoiceId: "another" } } });
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("System fallback identity");
+    adminV2Request.mockResolvedValueOnce({ replayed: true });
+    await act(async () => submit().click());
+    expect(adminV2Request.mock.calls[1]?.[1]).toEqual(firstOptions);
+  });
+
+  it("invalidates a reset review when the default it would inherit changes", async () => {
+    await render();
+    const resetInput = () => container.querySelector<HTMLInputElement>('[data-testid="live-voice-configuration"] input')!;
+    await act(async () => setInputValue(resetInput(), "Restore the reviewed default"));
+    expect(resetInput().value).toBe("Restore the reviewed default");
+    const data = withCandidate();
+    data.voice.systemDefaults.settingVersion += 1;
+    await render(data);
+    expect(resetInput().value).toBe("");
+    expect(adminV2Request).not.toHaveBeenCalled();
+  });
+
+  it("keeps a confirmation open with an error when write permission is revoked", async () => {
+    await render();
+    await act(async () => button("Save system defaults")?.click());
+    await typeInto('input[aria-label="System default change reason"]', "Save the reviewed default");
+    await render(withCandidate(), { canManageDefaults: false });
+    await act(async () => [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find((item) => item.textContent?.includes("Save system defaults"))?.click());
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(document.querySelector('[role="dialog"] [role="alert"]')?.textContent).toContain("You no longer have permission");
+    expect(adminV2Request).not.toHaveBeenCalled();
   });
 
   it("uses a localized file picker instead of browser-native English copy", async () => {

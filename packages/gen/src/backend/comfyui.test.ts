@@ -1,8 +1,26 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { ComfyUIBackend } from "./comfyui";
+import { ComfyUIBackend, comfyExecutionEvidence } from "./comfyui";
 import { BackendInvocationError } from "./types";
 import { workflowDescriptorSchema } from "./workflow";
 import type { VideoMediaProbe } from "./video-media-probe";
+
+describe("ComfyUI execution evidence", () => {
+  it("uses only provider timestamps and deduplicates cached node evidence", () => {
+    expect(comfyExecutionEvidence([
+      ["execution_start", { timestamp: 1000 }],
+      ["execution_cached", { nodes: ["1", "2", "1"] }],
+      ["execution_success", { timestamp: 4500 }],
+    ])).toEqual({ providerExecutionMs: 3500, cachedNodeCount: 2 });
+  });
+  it.each([
+    undefined,
+    [["execution_start", { timestamp: 1000 }]],
+    [["execution_start", { timestamp: 1000 }], ["execution_success", { timestamp: 999 }]],
+    [["execution_start", { timestamp: "1000" }], ["execution_success", { timestamp: 2000 }]],
+  ])("keeps missing or invalid measurements unknown (%j)", (messages) => {
+    expect(comfyExecutionEvidence(messages)).toEqual({ providerExecutionMs: null, cachedNodeCount: null });
+  });
+});
 
 const descriptor = workflowDescriptorSchema.parse({
   workflowKey: "t2i", modelId: "redcraft-krea2-redmix3-fp8", backendKind: "comfyui",
@@ -523,6 +541,39 @@ describe("ComfyUIBackend", () => {
     // prompt body's LoadImage slot is bound to the uploaded name
     const promptBody = JSON.parse((g.mock.calls[1][1] as RequestInit).body as string);
     expect(promptBody.prompt["8"].inputs.image).toBe("up.png");
+  });
+  it("keeps identical reference inputs stable across requests without aliasing different bytes", async () => {
+    const referenceInputs: string[] = [];
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).endsWith("/upload/image")) {
+        const form = init?.body as FormData;
+        const file = form.get("image") as File;
+        return Response.json({ name: file.name, subfolder: "", type: "input" });
+      }
+      const body = JSON.parse(String(init?.body));
+      referenceInputs.push(body.prompt["8"].inputs.image);
+      return Response.json({ prompt_id: `reference-${referenceInputs.length}` });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const backend = makeBackend();
+    for (const [requestId, bytes] of [
+      ["first-request", PNG_B64],
+      ["second-request", PNG_B64],
+      ["first-request", Buffer.concat([Buffer.from(PNG), Buffer.from([0])]).toString("base64")],
+    ]) {
+      await backend.submit({
+        descriptor: editDescriptor,
+        slots: { edit_prompt: "Keep the same adult identity in a new scene" },
+        referenceImages: [{ assetId: "same-authority-id", role: "source_image", b64Json: bytes }],
+        requestId,
+        timeoutMs: 5000,
+      });
+    }
+    // LoadImage's input is part of ComfyUI's graph cache key. A fresh product
+    // request must not invalidate the unchanged reference conditioning.
+    expect(referenceInputs[1]).toBe(referenceInputs[0]);
+    expect(referenceInputs[2]).not.toBe(referenceInputs[0]);
+    expect(referenceInputs).toHaveLength(3);
   });
   it("throws when a required image slot has no reference image", async () => {
     vi.stubGlobal("fetch", vi.fn());

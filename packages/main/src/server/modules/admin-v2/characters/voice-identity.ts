@@ -16,6 +16,7 @@ import type { CharacterVoiceProfile as CharacterVoiceProfileRecord, MediaAsset, 
 import { env } from "@/server/lib/env";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
+import { logger } from "@/server/lib/logger";
 import { providers } from "@/server/providers";
 import { createVoicePortsForKey } from "@/server/providers/voice/factory";
 import type {
@@ -42,8 +43,8 @@ const ALLOWED_AUDIO_TYPES = new Set([
 ]);
 
 type VoiceProfileWithAssets = CharacterVoiceProfileRecord & {
-  referenceAsset: MediaAsset;
-  previewAsset: MediaAsset | null;
+  referenceAsset: Pick<MediaAsset, "id" | "metadata" | "contentType">;
+  previewAsset: Pick<MediaAsset, "id" | "metadata" | "url"> | null;
 };
 
 type CharacterVoiceProviderKey = Extract<
@@ -79,6 +80,38 @@ export async function inspectConfiguredVoiceIdentityRuntime(): Promise<Configure
     };
   }
   return inspectVoiceIdentityProviderRuntime(configuredProvider);
+}
+
+// Catalog selection follows the system clip route; cloning may use a separate
+// provider. Candidate activation always inspects its persisted provider.
+export async function inspectCharacterVoiceRuntimes(candidateProvider: string | null) {
+  const configuredProvider = configuredVoiceIdentityProviderKey();
+  const inspections = new Map<CharacterVoiceProviderKey, Promise<ConfiguredVoiceIdentityRuntime>>();
+  const inspect = (provider: CharacterVoiceProviderKey) => {
+    let inspection = inspections.get(provider);
+    if (!inspection) {
+      inspection = inspectVoiceIdentityProviderRuntime(provider);
+      inspections.set(provider, inspection);
+    }
+    return inspection;
+  };
+  const [cloning, preset, candidate] = await Promise.all([
+    isCharacterVoiceProviderKey(configuredProvider)
+      ? inspect(configuredProvider)
+      : inspectConfiguredVoiceIdentityRuntime(),
+    providers.voice.clip.providerKey === "pocket_tts" ? inspect("pocket_tts") : null,
+    candidateProvider && isCharacterVoiceProviderKey(candidateProvider)
+      ? inspect(candidateProvider) : null,
+  ]);
+  return {
+    ...cloning,
+    presetRuntime: {
+      provider: "pocket_tts" as const,
+      runtimeStatus: preset?.runtimeStatus ?? "inactive" as const,
+      catalogVoiceIds: preset?.catalogVoiceIds ?? [],
+    },
+    candidateRuntimeStatus: candidate?.runtimeStatus ?? null,
+  };
 }
 
 async function inspectVoiceIdentityProviderRuntime(
@@ -213,22 +246,18 @@ export async function createCharacterVoiceClone(input: {
   requestId: string;
   form: ParsedVoiceCloneForm;
 }) {
-  const { providerKey, voice } = configuredCharacterVoiceIdentity();
-  const character = await prisma.character.findFirst({
-    where: operationalCharacterWhere({
-      id: input.characterId,
-      deletedAt: null,
-    }),
-    select: { id: true },
+  // A committed receipt owns its provider even after the configured route changes.
+  const receipt = await prisma.controlPlaneCommand.findUnique({
+    where: { scope_idempotencyKey: {
+      scope: `${env.APP_ENV}:${input.actor.id}`, idempotencyKey: input.idempotencyKey,
+    } },
+    select: { commandType: true, targetId: true, requestPayload: true },
   });
-  if (!character) throw Errors.notFound("Character not found");
-  const runtime = await inspectVoiceIdentityProviderRuntime(providerKey);
-  if (!runtime.cloningAvailable || runtime.runtimeStatus !== "ready") {
-    throw Errors.unavailable(
-      `${voiceProviderLabel(providerKey)} voice cloning is unavailable`,
-      runtime,
-    );
-  }
+  const savedProvider = receipt?.commandType === "character.voice.clone" &&
+    receipt.targetId === input.characterId ? jsonObject(receipt.requestPayload).provider : null;
+  const { providerKey, voice } = typeof savedProvider === "string" && isCharacterVoiceProviderKey(savedProvider)
+    ? { providerKey: savedProvider, voice: voiceIdentityPortForKey(savedProvider) }
+    : configuredCharacterVoiceIdentity();
 
   // Every external preparation attempt owns a distinct provider voice. The
   // idempotency receipt decides which attempt wins; losing attempts can then be
@@ -272,6 +301,13 @@ export async function createCharacterVoiceClone(input: {
         referenceSha256: input.form.reference.sha256,
       },
       prepare: async () => {
+        await assertOperationalVoiceCharacter(input.characterId);
+        const runtime = await inspectVoiceIdentityProviderRuntime(providerKey);
+        if (!runtime.cloningAvailable || runtime.runtimeStatus !== "ready") {
+          throw Errors.unavailable(`${voiceProviderLabel(providerKey)} voice cloning is unavailable`, runtime);
+        }
+        // Own the requested alias before dispatch, including a lost create response.
+        preparedArtifacts.voiceId = voiceId;
         const cloned = await voice.cloneVoice({
           voiceId,
           audio: input.form.reference.body,
@@ -286,7 +322,9 @@ export async function createCharacterVoiceClone(input: {
             cloned.error,
           );
         }
-        preparedArtifacts.voiceId = cloned.data.voiceId;
+        if (cloned.data.voiceId !== voiceId) {
+          throw Errors.unavailable("Voice provider returned a different clone identity");
+        }
         const preview = await voice.previewVoice({
           text: input.form.sampleText,
           voiceId: cloned.data.voiceId,
@@ -467,6 +505,7 @@ export async function createCharacterVoiceClone(input: {
     if (parsed.replayed && preparedArtifacts.previewKey) {
       await cleanupPreparedArtifacts({
         voice,
+        characterId: input.characterId,
         preparedArtifacts,
         referenceKey,
       });
@@ -476,6 +515,7 @@ export async function createCharacterVoiceClone(input: {
     if (!mutationCompleted && preparedArtifacts.voiceId) {
       await cleanupPreparedArtifacts({
         voice,
+        characterId: input.characterId,
         preparedArtifacts,
         referenceKey,
       });
@@ -495,34 +535,8 @@ export async function createCharacterVoicePreset(input: {
   requestId: string;
   request: VoicePresetRequest;
 }) {
-  const { providerKey, voice } = configuredCharacterVoiceIdentity();
-  if (providerKey !== "pocket_tts" || !voice.createPresetVoice) {
-    throw Errors.unavailable(
-      "Official voice presets require VOICE_IDENTITY_PROVIDER=pocket-tts",
-      { providerKey },
-    );
-  }
-  const character = await prisma.character.findFirst({
-    where: operationalCharacterWhere({
-      id: input.characterId,
-      deletedAt: null,
-    }),
-    select: { id: true },
-  });
-  if (!character) throw Errors.notFound("Character not found");
-  const runtime = await inspectVoiceIdentityProviderRuntime(providerKey);
-  if (
-    runtime.runtimeStatus !== "ready" ||
-    !runtime.catalogVoiceIds.includes(input.request.presetVoiceId)
-  ) {
-    throw Errors.unavailable(
-      "The requested Pocket TTS English catalog voice is unavailable",
-      {
-        requestedVoiceId: input.request.presetVoiceId,
-        runtime,
-      },
-    );
-  }
+  const providerKey = "pocket_tts" as const;
+  const voice = voiceIdentityPortForKey(providerKey);
 
   // INVARIANT: every Character candidate owns a distinct durable alias even
   // when several Characters select the same official Pocket catalog voice.
@@ -555,7 +569,18 @@ export async function createCharacterVoicePreset(input: {
         reason: input.request.reason,
       },
       prepare: async () => {
-        const created = await voice.createPresetVoice!({
+        if (providers.voice.clip.providerKey !== providerKey || !voice.createPresetVoice) {
+          throw Errors.unavailable("Official voice presets require the Pocket TTS system voice provider");
+        }
+        await assertOperationalVoiceCharacter(input.characterId);
+        const runtime = await inspectVoiceIdentityProviderRuntime(providerKey);
+        if (runtime.runtimeStatus !== "ready" || !runtime.catalogVoiceIds.includes(input.request.presetVoiceId)) {
+          throw Errors.unavailable("The requested Pocket TTS English catalog voice is unavailable", {
+            requestedVoiceId: input.request.presetVoiceId, runtime,
+          });
+        }
+        preparedArtifacts.voiceId = voiceId;
+        const created = await voice.createPresetVoice({
           voiceId,
           presetVoiceId: input.request.presetVoiceId,
           language: runtime.runtimeLanguage,
@@ -566,7 +591,9 @@ export async function createCharacterVoicePreset(input: {
             created.error,
           );
         }
-        preparedArtifacts.voiceId = created.data.voiceId;
+        if (created.data.voiceId !== voiceId || created.data.presetVoiceId !== input.request.presetVoiceId) {
+          throw Errors.unavailable("Voice provider returned a different catalog identity");
+        }
         const preview = await voice.previewVoice({
           text: input.request.sampleText,
           voiceId: created.data.voiceId,
@@ -761,6 +788,7 @@ export async function createCharacterVoicePreset(input: {
     if (parsed.replayed && preparedArtifacts.previewKey) {
       await cleanupPreparedArtifacts({
         voice,
+        characterId: input.characterId,
         preparedArtifacts,
         referenceKey,
       });
@@ -770,6 +798,7 @@ export async function createCharacterVoicePreset(input: {
     if (!mutationCompleted && preparedArtifacts.voiceId) {
       await cleanupPreparedArtifacts({
         voice,
+        characterId: input.characterId,
         preparedArtifacts,
         referenceKey,
       });
@@ -1132,6 +1161,7 @@ export function characterVoiceProfileDto(profile: VoiceProfileWithAssets): Chara
 
 async function cleanupPreparedArtifacts(input: {
   voice: VoiceIdentityPort;
+  characterId: string;
   preparedArtifacts: {
     voiceId: string | null;
     previewKey: string | null;
@@ -1139,6 +1169,31 @@ async function cleanupPreparedArtifacts(input: {
   };
   referenceKey: string;
 }) {
+  if (input.preparedArtifacts.voiceId) {
+    // Both creation mutations lock this Character before committing a profile.
+    // Wait for that transaction to settle, then read at ReadCommitted; a direct
+    // snapshot read could miss a COMMIT still in flight after connection loss.
+    try {
+      const committed = await prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT "id" FROM "characters" WHERE "id" = ${input.characterId} FOR UPDATE`;
+        return tx.characterVoiceProfile.findUnique({
+          where: { providerVoiceId: input.preparedArtifacts.voiceId! },
+          select: { id: true },
+        });
+      }, { isolationLevel: "ReadCommitted" });
+      if (committed) return;
+    } catch (error) {
+      // Preserve the caller's original failure and the recoverable artifacts.
+      logger.warn({
+        err: error,
+        characterId: input.characterId,
+        providerVoiceId: input.preparedArtifacts.voiceId,
+        referenceKey: input.referenceKey,
+        previewKey: input.preparedArtifacts.previewKey,
+      }, "Voice cleanup deferred because commit authority could not be verified");
+      return;
+    }
+  }
   const cleanup: Promise<unknown>[] = [];
   if (input.preparedArtifacts.voiceId) {
     const voiceCleanup = input.voice.deleteVoice({
@@ -1153,6 +1208,14 @@ async function cleanupPreparedArtifacts(input: {
     cleanup.push(providers.blob.delete({ key: input.referenceKey }));
   }
   await Promise.allSettled(cleanup);
+}
+
+async function assertOperationalVoiceCharacter(characterId: string) {
+  const character = await prisma.character.findFirst({
+    where: operationalCharacterWhere({ id: characterId, deletedAt: null }),
+    select: { id: true },
+  });
+  if (!character) throw Errors.notFound("Character not found");
 }
 
 // SPEC: Character voice identity can canary independently from the system voice
