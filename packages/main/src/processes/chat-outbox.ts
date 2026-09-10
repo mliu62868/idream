@@ -21,6 +21,19 @@ type Db = PrismaClient | Prisma.TransactionClient;
 export type MainToChatEventType =
   (typeof MAIN_TO_CHAT_EVENTS)[keyof typeof MAIN_TO_CHAT_EVENTS];
 
+export type ChatEventLane = "memory" | "lifecycle";
+const CHAT_EVENT_TYPES_BY_LANE = {
+  memory: [
+    MAIN_TO_CHAT_EVENTS.companionMemoryProjectRequestedV1,
+    MAIN_TO_CHAT_EVENTS.companionMemoryRebuildRequestedV1,
+  ],
+  lifecycle: [
+    MAIN_TO_CHAT_EVENTS.agentRunCancelRequestedV1,
+    MAIN_TO_CHAT_EVENTS.companionMemoryPurgeRequestedV1,
+    MAIN_TO_CHAT_EVENTS.accountDeletionRequestedV2,
+  ],
+} satisfies Record<ChatEventLane, MainToChatEventType[]>;
+
 export async function recordMainToChatEvent(input: {
   eventId: string;
   eventType: MainToChatEventType;
@@ -56,12 +69,16 @@ export async function recordMainToChatEvent(input: {
   });
 }
 
-export async function dispatchPendingChatEvents(
-  batch = 100,
-  deliver: (event: DurableEventEnvelope) => Promise<void> = deliverToChat,
-): Promise<{ delivered: number; failed: number }> {
+export async function dispatchPendingChatEvents(input: {
+  readonly lane: ChatEventLane;
+  readonly batch?: number;
+  readonly deliver?: (event: DurableEventEnvelope) => Promise<void>;
+  readonly signal?: AbortSignal;
+}): Promise<{ delivered: number; failed: number }> {
+  const { lane, batch = 100, deliver = deliverToChat, signal } = input;
+  if (signal?.aborted) return { delivered: 0, failed: 0 };
   const now = new Date();
-  const eventTypes = Object.values(MAIN_TO_CHAT_EVENTS);
+  const eventTypes = CHAT_EVENT_TYPES_BY_LANE[lane];
   const due = {
     OR: [
       { status: "pending", nextRunAt: { lte: now } },
@@ -71,13 +88,13 @@ export async function dispatchPendingChatEvents(
   } satisfies Prisma.MainOutboxEventWhereInput;
   const [oldestPending, rows] = await Promise.all([
     prisma.mainOutboxEvent.findFirst({
-      where: due,
+      where: { ...due, eventType: { in: Object.values(MAIN_TO_CHAT_EVENTS) } },
       orderBy: { createdAt: "asc" },
       select: { createdAt: true },
     }),
     prisma.mainOutboxEvent.findMany({
       where: due,
-      orderBy: { createdAt: "asc" },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
       take: batch,
     }),
   ]);
@@ -90,23 +107,45 @@ export async function dispatchPendingChatEvents(
   let delivered = 0;
   let failed = 0;
   for (const row of rows) {
+    if (signal?.aborted) break;
     const leaseToken = randomUUID();
     const leaseExpiresAt = new Date(Date.now() + 30_000);
-    const claimed = await prisma.mainOutboxEvent.updateMany({
-      where: {
-        id: row.id,
-        attempts: row.attempts,
-        OR: [
-          { status: "pending", nextRunAt: { lte: now } },
-          { status: "processing", leaseExpiresAt: { lte: now } },
-        ],
-      },
-      data: {
-        status: "processing",
-        attempts: { increment: 1 },
-        leaseToken,
-        leaseExpiresAt,
-      },
+    const claimed = await prisma.$transaction(async (tx) => {
+      // Serialize only the claim, never remote delivery. A competing scanner
+      // must not overtake an earlier live lease or retry for this aggregate.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(
+        ${JSON.stringify(["main_chat_outbox", lane, row.aggregateType, row.aggregateId])}, 0
+      ))`;
+      const predecessor = await tx.mainOutboxEvent.findFirst({
+        where: {
+          aggregateType: row.aggregateType,
+          aggregateId: row.aggregateId,
+          eventType: { in: eventTypes },
+          status: { in: ["pending", "processing"] },
+          OR: [
+            { createdAt: { lt: row.createdAt } },
+            { createdAt: row.createdAt, id: { lt: row.id } },
+          ],
+        },
+        select: { id: true },
+      });
+      if (predecessor || signal?.aborted) return { count: 0 };
+      return tx.mainOutboxEvent.updateMany({
+        where: {
+          id: row.id,
+          attempts: row.attempts,
+          OR: [
+            { status: "pending", nextRunAt: { lte: now } },
+            { status: "processing", leaseExpiresAt: { lte: now } },
+          ],
+        },
+        data: {
+          status: "processing",
+          attempts: { increment: 1 },
+          leaseToken,
+          leaseExpiresAt,
+        },
+      });
     });
     if (claimed.count !== 1) continue;
     const attempts = row.attempts + 1;

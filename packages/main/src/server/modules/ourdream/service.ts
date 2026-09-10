@@ -142,7 +142,7 @@ import {
   metricExposureSubject,
   verifyExposureContext,
 } from "./exposure-context";
-import { createVoiceClip as createDurableVoiceClip } from "./voice-clip";
+import { createVoiceClip as createDurableVoiceClip, quoteVoiceClip } from "./voice-clip";
 import { getCharacterDraftVoiceCatalog, previewCharacterDraftVoice } from "./character-draft-voice";
 import { trackEvent, trackEventBestEffort } from "./product-events";
 import { enforceRateLimit } from "@/server/lib/rate-limit";
@@ -418,6 +418,11 @@ const experimentExposureClientSchema = z.object({
 
 export async function dispatchV1(request: Request, segments: string[]) {
   try {
+    // An expected owner is a constraint, never authentication. Check it before
+    // any route reads private data, replays an intent or mutates an account.
+    if (request.headers.has("x-idream-viewer-scope")) {
+      requireExpectedViewer(request, requireUser(await getAuthCtx(request)).id);
+    }
     const response = await dispatchV1Unsafe(request, segments);
     return withPrivateNoStoreHeaders(response);
   } catch (error) {
@@ -553,7 +558,7 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
     requireAgeGate(ctx);
     if (!id && method === "GET") return ok(await getCharacterDraftVoiceCatalog());
     if (id === "preview" && !action && method === "POST") {
-      requireGeneratorViewer(request, requireUser(ctx).id);
+      requireUser(ctx);
       requireAgeVerified(ctx);
       const selection = characterDraftVoiceSelectionSchema.parse(await jsonBody(request));
       return ok(await previewCharacterDraftVoice({
@@ -564,11 +569,6 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
   }
 
   if (resource === "character-drafts") {
-    // Bind retained browser input to its original account before any read,
-    // write, idempotency replay, or preview dispatch can use the current cookie.
-    if (request.headers.has("x-idream-viewer-scope")) {
-      requireGeneratorViewer(request, requireUser(await getAuthCtx(request)).id);
-    }
     if (!id && method === "POST") return createDraft(request);
     if (id === "current" && !action && method === "GET") return currentDraft(request);
     if (id && !action && method === "PATCH") return updateDraft(request, id);
@@ -590,6 +590,9 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
     if (id === "config" && !action && method === "GET") return generationConfig(request);
     if (id === "quote" && !action && method === "POST") return generationQuote(request);
     if (id === "jobs" && !action && method === "POST") return createGenerationJob(request);
+    if (id === "voice" && action === "quote" && !child && method === "POST") {
+      return quoteVoiceClip(request, { entitlementMap, readableCharacter });
+    }
     if (id === "voice" && !action && method === "POST") {
       return createDurableVoiceClip(request, {
         entitlementMap,
@@ -1857,7 +1860,8 @@ async function submitDraft(request: Request, id: string) {
     visibility: body.visibility,
   });
   // Input moderation already ran synchronously inside the submit action; no async pass.
-  await trackEvent("character_created", { characterId: character.id }, ctx);
+  // A committed Character remains a successful save when optional telemetry is unavailable.
+  await trackEventBestEffort("character_created", { characterId: character.id }, ctx);
   return ok({ character });
 }
 
@@ -2073,7 +2077,6 @@ async function generationQuoteForUser(
 async function createGenerationJob(request: Request) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
-  requireGeneratorViewer(request, user.id);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const body = generationJobSchema.parse(await jsonBody(request));
@@ -2109,7 +2112,7 @@ async function createGenerationJob(request: Request) {
 
 // The expected viewer binds private reads and retained forms to their account. It is
 // never authentication: the current session remains the only user authority.
-function requireGeneratorViewer(request: Request, userId: string) {
+function requireExpectedViewer(request: Request, userId: string) {
   const expected = request.headers.get("x-idream-viewer-scope");
   if (expected !== null && expected !== `user:${userId}`) {
     throw Errors.conflict("Your account changed. Reload this page, or sign in to the original account to check its request.");
@@ -2288,7 +2291,6 @@ async function chatReleaseGenerationPin(payload: ChatImageRequestedPayload) {
 async function listGenerationJobs(request: Request) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
-  requireGeneratorViewer(request, user.id);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const url = new URL(request.url);
@@ -2370,7 +2372,6 @@ async function generationRetryQuote(request: Request, id: string) {
 async function retryGenerationJob(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
-  requireGeneratorViewer(request, user.id);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const retryIdempotencyKey = requireGenerationRetryIdempotencyKey(request);
@@ -2406,7 +2407,6 @@ async function listPresets(request: Request) {
   const category = url.searchParams.get("category");
   const q = url.searchParams.get("q");
   const ctx = await getAuthCtx(request);
-  if (request.headers.has("x-idream-viewer-scope")) requireGeneratorViewer(request, requireUser(ctx).id);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const items = await prisma.generationPreset.findMany({
@@ -2431,7 +2431,6 @@ async function listPresets(request: Request) {
 async function createPreset(request: Request) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
-  requireGeneratorViewer(request, user.id);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const body = presetCreateSchema.parse(await jsonBody(request));
@@ -2452,7 +2451,6 @@ async function createPreset(request: Request) {
 async function archivePreset(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
-  requireGeneratorViewer(request, user.id);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   await prisma.generationPreset.updateMany({
@@ -2465,7 +2463,6 @@ async function archivePreset(request: Request, id: string) {
 async function updatePreset(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
-  requireGeneratorViewer(request, user.id);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const body = z
@@ -2496,7 +2493,6 @@ async function updatePreset(request: Request, id: string) {
 async function listMedia(request: Request) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
-  requireGeneratorViewer(request, user.id);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const url = new URL(request.url);
@@ -3254,7 +3250,6 @@ async function resolveMediaVariationGenerationInput(
 async function mediaEnhancement(request: Request, id: string, quoteOnly: boolean) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
-  if (!quoteOnly) requireGeneratorViewer(request, user.id);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const raw = await jsonBody(request);
@@ -3307,7 +3302,6 @@ async function mediaVariationQuote(request: Request, id: string) {
 async function createMediaVariation(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
-  requireGeneratorViewer(request, user.id);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const body = z

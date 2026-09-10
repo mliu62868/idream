@@ -4,6 +4,8 @@
 状态：已实施，供产品、运营、设计、研发联合验收  
 关联事实来源：[角色图片生成系统](./CHARACTER_IMAGE_GENERATION_SYSTEM.md) · [运营手册](./CHARACTER_ASSET_STUDIO_OPERATIONS_GUIDE.md) · [Authority 技术参考](../architecture/16-character-asset-studio-authority.md)
 
+> 本文保留 2026-07-16 的联合评审方案与当时验收证据。当前流程已由 2026-09-05 的取消日常人工审核决策，以及 2026-09-09 的角色图片库与产品槽位解耦决策修订：生成用途只记录创作请求，合格生成/上传图片均可用于任一合适的展示位，仍要求三张不同图片并保留精确来源。当前操作和不变量以以上运营手册及 ADR-12 为准，不再执行本文历史的逐图批准关卡或同用途采用限制。
+
 ## 1. 建议结论
 
 采用 **Decision-first Character Asset Studio（以决策为中心的角色资产工作台）** 作为运营创建角色图片资产的默认流程。

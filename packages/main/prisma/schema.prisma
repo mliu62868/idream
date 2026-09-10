@@ -314,6 +314,7 @@ model VoiceClipRequest {
   messageId          String
   requestFingerprint String
   synthesisPayload   Json?
+  billingAuthority   Json?
   providerPayload    Json
   status             String           @default("running") // enum: running | succeeded | failed | skipped
   attemptNo          Int              @default(1)

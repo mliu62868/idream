@@ -1,6 +1,6 @@
-# ADR-12：Character Asset Studio 的草稿与发布权威
+# ADR-12：Character Asset Studio 的角色图片库、草稿与发布权威
 
-更新日期：2026-09-05
+更新日期：2026-09-09
 状态：Accepted / Implemented
 产品说明：[联合评审方案](../product/CHARACTER_ASSET_STUDIO_REVIEW.md)
 运营流程：[Character Asset Studio 运营手册](../product/CHARACTER_ASSET_STUDIO_OPERATIONS_GUIDE.md)
@@ -8,6 +8,8 @@
 ## 1. 决策
 
 2026-09-05 产品决策取消日常人工审核关卡，替代本文此前的逐图批准要求。Character Asset Studio 复用 Creative Run 作为生成 authority、Character Project 作为草稿选择 authority、Character Release/Serving 作为发布 authority。历史 Creative Review Decision 只保留为记录；模型评估的实验评分继续使用该存储。基础自动拦截、举报和申诉处理不变。
+
+2026-09-09 依据 [领域语言](../../CONTEXT.md) 修订生成用途与产品槽位的关系：图片先进入同角色图片库，发布运营再决定它出现在哪个产品槽位。生成时的 `purpose` 记录创作请求与历史来源，不再限制合格图片只能用于同名槽位。此前上传图可用于三个槽位、生成图只能用于其生成用途的差异取消；生成和上传仍各自保留完整来源证据。
 
 任何单一 UI 状态、Asset ID 或 Character image 字段都不能跨越这些边界代替完整发布事实。
 
@@ -18,7 +20,7 @@
 | 角色视觉身份 | active `CharacterVisualProfile` | immutable version、identity prompt、traits、anchors |
 | 身份参考集 | active sealed `ReferenceSetRevision` | 精确 reference snapshot |
 | 运行生成路线 | active `GenerationModelProfile` + pinned `GenerationRouteQualification` | 兼容的 profile/workflow version、单图策略、精确 lineage |
-| Creative Run | `ContentProductionBatch` | purpose、targetType/targetId、profile/workflow、brief、count |
+| Creative Run | `ContentProductionBatch` | 创作 purpose、targetType/targetId、profile/workflow、brief、count；不决定最终产品槽位 |
 | Run Item | `ContentProductionItem` | ordinal、Job、Asset、status、version、direction lineage |
 | 历史决策与模型实验评分 | `CreativeReviewDecision` | 保留历史事实，不作为日常采用和发布的前置条件 |
 | 草稿资产包 | `CharacterProject.draftAssetPack` | purpose 到 exact lineage 的内部映射 |
@@ -33,7 +35,7 @@
 ### 3.1 生成前
 
 - Run 必须绑定 `targetType=character` 与精确 `targetId`；
-- purpose 只能是 `character_cover`、`character_hero`、`character_chat` 之一；
+- 当前 `character_cover`、`character_hero`、`character_chat` purpose 保留为创作构图模板和不可变请求来源；它们不授予或限制最终产品槽位资格；
 - 使用 active Visual Profile、active Reference Set 与当前兼容、非 stale route；
 - 额外 reference 必须是可用图片，且属于同一个 Character；
 - 角色运营 Run 每次必须且只能生成 1 个 Item；旧的模型评测矩阵不是正式生图前置门槛；
@@ -43,7 +45,8 @@
 
 - 已完成且通过基础自动检查的素材可直接采用，不创建虚假的评分或人工批准；
 - Asset 必须存在、可用，并精确属于所提交的 Run Item；
-- Run 的 target/purpose 必须和 Character/selection purpose 完全一致；
+- Run 的 target 必须属于同一 Character；生成图片可以被选择到任一产品槽位，不要求 generation purpose 等于 selection purpose；
+- 采用固定原 Run/Item/Job lineage，不改写生成请求或伪造一个与新槽位同名的 Run。发布重验 Job 的 source metadata 与原 Run 相符；
 - Character Project 更新使用 `If-Match` + body `entityVersion` 做 compare-and-swap；
 - 采用只更新草稿，不直接修改 live Character；
 - 待发布 candidate Release 存在时禁止改写草稿资产包；可通过有审计的 withdraw 放弃候选后编辑。
@@ -56,7 +59,8 @@
   - `character_avatar` → `character_cover`
   - `character_hero` → `character_hero`
   - `character_chat` → `character_chat`
-- 发布 validation 重新检查素材可用性、角色归属、Run/Item/purpose 与 provider/attempt 来源；
+- 发布 validation 重新检查素材可用性、角色归属、原 Run/Item/Job 的来源一致性与 provider/attempt，不用最终槽位反推历史生成用途；
+- 建立视觉身份的首张生成图可以用于任一槽位，但仍须精确证明它建立了快照所固定的 Visual Profile 与 Reference Set；`bootstrapIdentity` 不能绕过这份来源核验；
 - 历史评分和决策变化不改变图片资格；文件、安全状态和来源失效仍阻止发布；
 - 只有 publish command 成功后才更新 Serving/live projection。
 
@@ -71,10 +75,10 @@ sequenceDiagram
     participant R as Release authority
     participant S as Serving projection
 
-    O->>A: Generate one purpose image
+    O->>A: Generate one image from a creative brief
     A->>C: POST Creative Run count=1 (idempotent)
     C-->>A: Run + one Item + one Job
-    O->>A: Select candidate
+    O->>A: Select an existing library image for a product placement
     A->>P: CAS update draftAssetPack
     P-->>A: New project version
     O->>A: Propose Release
@@ -129,7 +133,8 @@ sequenceDiagram
 API manifest 与 Zod 契约的单一事实来源：
 
 - `packages/shared/src/admin/api-manifest.ts`
-- `packages/shared/src/admin/contracts/characters.ts`
+- `packages/shared/src/admin/contracts/characters-release.ts`
+- `packages/shared/src/admin/contracts/characters-visual-workspace.ts`
 - `packages/shared/src/admin/contracts/creative.ts`
 
 ## 7. 写入副作用
@@ -147,7 +152,7 @@ API manifest 与 Zod 契约的单一事实来源：
 
 | 条件 | 结果 |
 | --- | --- |
-| Run target/purpose 不匹配 | fail closed |
+| Run target 或原生成来源不匹配 | fail closed |
 | Asset 不属于 Item 或不可用 | fail closed |
 | Character Project version 过期 | conflict，客户端刷新后重试 |
 | active candidate Release 已存在 | conflict，先处理 Release |
@@ -161,7 +166,7 @@ API manifest 与 Zod 契约的单一事实来源：
 - 草稿采用 authority：`packages/main/src/server/modules/admin-v2/characters/asset-studio.ts`
 - Release proposal：`packages/main/src/server/modules/admin-v2/characters/release-lifecycle.ts`
 - 发布校验与执行：`packages/main/src/server/modules/admin-v2/characters/release-executor.ts`
-- Shared contracts：`packages/shared/src/admin/contracts/characters.ts`、`creative.ts`
+- Shared contracts：`packages/shared/src/admin/contracts/characters-release.ts`、`characters-visual-workspace.ts`、`creative.ts`
 - Schema：`packages/main/prisma/schema.prisma`
 - Migration：`packages/main/prisma/migrations/20260713010000_character_asset_studio/`
 
@@ -173,6 +178,8 @@ API manifest 与 Zod 契约的单一事实来源：
 bun run --filter @idream/admin test src/features/characters/CharacterAssetStudio.test.ts
 bun run --filter @idream/shared test src/admin/contracts/characters-asset-studio.test.ts
 bun run --filter @idream/main test src/server/modules/admin-v2/characters/asset-studio.integration.test.ts
+bun run --filter @idream/main test:pure src/server/modules/admin-v2/characters/image-qualification.test.ts
+bun run --filter @idream/main test src/server/modules/admin-v2/characters/release-historical-image-authority.integration.test.ts
 bun run --filter @idream/main test src/server/modules/admin-v2/characters/release-recovery.integration.test.ts
 ```
 

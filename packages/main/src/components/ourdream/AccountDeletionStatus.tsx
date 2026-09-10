@@ -35,6 +35,13 @@ export function AccountDeletionStatus({ receipt }: { receipt: string }) {
     {deletion && <div className="mt-4 space-y-3 text-sm leading-6 text-white/70"><p>Receipt: <span className="break-all">{deletion.id}</span></p><p>Requested: {new Date(deletion.requestedAt).toLocaleString()}</p><p>Erasure due after: {new Date(deletion.graceEndsAt).toLocaleString()}</p><p>{deletion.status === "completed" ? `Completed: ${new Date(deletion.completedAt!).toLocaleString()}. Account content was erased; minimal retained records follow the deletion policy.` : "Account access has ended. The deletion service keeps retrying interrupted work automatically, without creating duplicate requests. Required retention can delay erasure. This page will show completion when all required stages finish."}</p><p>Keep this private status link to check after signing out. It expires on {new Date(deletion.expiresAt).toLocaleDateString()} and cannot restore or access your account.</p></div>}
     {loaded && !deletion && <p className="mt-4 text-sm leading-6">Deletion has not been accepted. If your submission lost its connection, refresh to check again. You can log in and repeat the password-confirmed request if no request appears.</p>}
     {error && <p role="alert" className="mt-4 text-sm">{error}</p>}
-    <div className="mt-5 flex flex-wrap gap-4"><button className="rounded-full bg-white/10 px-5 py-2 disabled:opacity-40" disabled={pending} onClick={() => void refresh()} type="button">{pending ? "Checking..." : "Refresh status"}</button><Link href={`/login#deletion=${encodeURIComponent(receipt)}`} className="py-2 text-sm underline">Private status link — bookmark this page</Link><Link href="/login" className="py-2 text-sm underline">Back to login</Link></div>
+    <div className="mt-5 flex flex-wrap gap-4">
+      <button className="rounded-full bg-white/10 px-5 py-2 disabled:opacity-40" disabled={pending} onClick={() => void refresh()} type="button">{pending ? "Checking..." : "Refresh status"}</button>
+      <Link href={`/login#deletion=${encodeURIComponent(receipt)}`} className="py-2 text-sm underline">Private status link — bookmark this page</Link>
+      {/* Leave the receipt-bound view with a fresh document. A same-path Next
+          transition changes history without notifying the hash subscriber. */}
+      {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- This account boundary intentionally requires document navigation. */}
+      <a href="/login" className="py-2 text-sm underline">Back to login</a>
+    </div>
   </section>;
 }

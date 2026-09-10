@@ -222,6 +222,11 @@ async function installInvariantAuthorityConstraints(url: string) {
   await client.connect();
   try {
     await client.query(sql);
+    await client.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+    await client.query(await readFile(new URL(
+      "../../../prisma/migrations/20260909090500_voice_clip_billing_authority/migration.sql",
+      import.meta.url,
+    ), "utf8"));
   } finally {
     await client.end();
   }

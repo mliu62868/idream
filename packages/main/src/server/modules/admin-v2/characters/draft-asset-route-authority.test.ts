@@ -39,4 +39,14 @@ describe("Character draft placement authority", () => {
     ]);
     expect(result.releaseBlockers).toEqual(["draft_asset_pack_incomplete"]);
   });
+
+  it("does not bind an established identity image to the cover placement", () => {
+    const result = evaluateDraftAssetRouteAuthority({
+      character_cover: { assetId: "new-cover" },
+      character_hero: { assetId: "identity-image", bootstrapIdentity: true },
+      character_chat: { assetId: "chat" },
+    }, "current-route");
+
+    expect(result).toMatchObject({ releaseReady: true, missingPurposes: [], releaseBlockers: [] });
+  });
 });

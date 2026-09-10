@@ -88,6 +88,15 @@ export async function api(
   const testAnonymousId = await materializeAgeGateAuthority(options);
   let requestBody = options.body;
   const requestBodyObject = isJsonObject(requestBody) ? requestBody : {};
+  if (method === "POST" && path === "generation/voice" &&
+    options.autoGenerationQuote !== false && isJsonObject(requestBody) &&
+    requestBody.intent !== "prewarm" && !requestBody.quoteToken) {
+    const quote = await api("POST", "generation/voice/quote", {
+      ...options, autoGenerationQuote: false, body: requestBody,
+    });
+    if (!quote.ok) return quote;
+    requestBody = { ...requestBody, quoteToken: quote.data.quote.quoteToken };
+  }
   if (
     method === "POST" &&
     options.autoGenerationQuote !== false &&

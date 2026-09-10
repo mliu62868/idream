@@ -7,7 +7,7 @@ import type {
   ChatExperiencePreference,
   UserChatPersona,
 } from "@idream/shared/contracts";
-import { chatContextDirectivesSchema, chatExecutionSnapshotSchema, chatExperiencePreferenceSchema, DEFAULT_CHAT_EXPERIENCE, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
+import { chatContextDirectivesSchema, chatExecutionSnapshotSchema, chatExperiencePreferenceSchema, chatTerminalCommitSchema, DEFAULT_CHAT_EXPERIENCE, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
@@ -17,6 +17,7 @@ import { updateGenerationRequestSourceMeta } from "@/server/ai/generation-reques
 import { recordMainToChatEvent } from "@/processes/chat-outbox";
 import { isReusablePlatformAssetWhere } from "@/server/modules/ourdream/chat-image-reuse";
 import { generationExecutionErrorCode, latestGenerationAttemptStatuses } from "@/server/modules/ourdream/generation-job-read-model";
+import { entitlementMap } from "@/server/modules/ourdream/subscription-lifecycle";
 import {
   assertNoPendingCompanionMemoryRebuild,
   hasPendingCompanionMemoryMutation,
@@ -157,6 +158,7 @@ export async function getChatSession(userId: string, sessionId: string) {
   const messages = await enrichAttachmentMedia(publicMessages(session), userId);
   return {
     ...publicSession(session),
+    ownerScope: `user:${userId}`,
     character: {
       name: session.character.name,
       canUpdateIdentity: session.character.creatorId === userId,
@@ -414,6 +416,10 @@ export async function editChatTurn(userId: string, messageId: string, nextConten
 }
 
 export async function commitChatTerminal(input: ChatTerminalCommit) {
+  // The service is also called in-process; HTTP decoding is not its authority boundary.
+  const parsed = chatTerminalCommitSchema.safeParse(input);
+  if (!parsed.success) throw Errors.badRequest("Invalid Chat terminal contract");
+  input = parsed.data;
   const now = new Date();
   const updated = await prisma.$transaction(async (tx) => {
     const owner = await tx.recentChat.findUnique({
@@ -425,6 +431,28 @@ export async function commitChatTerminal(input: ChatTerminalCommit) {
     // the Turn first deadlocks with a user-first mutation during memory commit.
     await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${owner.userId} FOR UPDATE`;
     await tx.$queryRaw`SELECT "sessionId" FROM "recent_chats" WHERE "sessionId" = ${input.sessionId} FOR UPDATE`;
+    const accepted = await tx.chatTurn.findUnique({ where: { id: input.turnId } });
+    if (!accepted) throw Errors.notFound("Chat turn not found");
+    if (
+      accepted.sessionId === input.sessionId && accepted.assistantMessageId === input.assistantMessageId &&
+      accepted.attempt === input.attempt && ACTIVE_ASSISTANT_STATES.includes(accepted.assistantStatus)
+    ) {
+      // A completed terminal is replayed below without advancing again. A new
+      // selection must derive from this attempt's immutable, pre-Turn anchor,
+      // including edits/regenerations which discarded a previously sent Scene.
+      const anchor = chatExecutionSnapshotSchema.safeParse(accepted.executionSnapshot);
+      if (!anchor.success || anchor.data.turnId !== input.turnId || anchor.data.sessionId !== input.sessionId ||
+        anchor.data.assistantMessageId !== input.assistantMessageId || anchor.data.attempt !== input.attempt) {
+        throw Errors.conflict("Chat terminal has no matching frozen Scene anchor");
+      }
+      if (input.status === "sent") {
+        if (input.sceneVersion !== anchor.data.sceneVersion + 1) {
+          throw Errors.conflict("A sent Scene must advance exactly once from its frozen anchor");
+        }
+      } else if (input.sceneVersion !== anchor.data.sceneVersion || !jsonEqual(input.scene, anchor.data.scene)) {
+        throw Errors.conflict("An unsuccessful terminal must preserve its complete frozen Scene");
+      }
+    }
     const changed = await tx.chatTurn.updateMany({
       where: {
         id: input.turnId,
@@ -727,7 +755,7 @@ async function frozenExecutionSnapshot(
   const experience = experienceRow
     ? chatExperiencePreferenceSchema.parse(experienceRow)
     : preservedExperience === undefined ? DEFAULT_CHAT_EXPERIENCE : null;
-  const snapshot: ChatExecutionSnapshot = {
+  const snapshot = chatExecutionSnapshotSchema.parse({
     version: 1,
     turnId: turn.id,
     sessionId: turn.sessionId,
@@ -766,7 +794,7 @@ async function frozenExecutionSnapshot(
     })),
     sceneVersion: turn.sceneVersion,
     scene: turn.scene,
-  };
+  });
   await tx.chatTurn.update({
     where: { id: turn.id },
     data: { executionSnapshot: toJson(snapshot) },
@@ -847,15 +875,8 @@ async function requireTurn(userId: string, messageId: string) {
 }
 
 async function assertChatQuota(tx: Prisma.TransactionClient, userId: string) {
-  const entitlement = await tx.entitlement.findUnique({
-    where: { userId_key: { userId, key: "unlimited_messages" } },
-  });
-  if (entitlement && entitlement.expiresAt && entitlement.expiresAt <= new Date()) {
-    // expired rows do not grant access
-  } else if (entitlement?.value === true) {
-    return;
-  }
   const now = new Date();
+  if ((await entitlementMap(userId, tx, now)).unlimited_messages === true) return;
   const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
   const used = await tx.chatTurnUsageFact.count({
     where: { userId, productDay: start },
@@ -929,6 +950,9 @@ async function redactChatImageSourceText(
   for (const job of jobs) {
     await updateGenerationRequestSourceMeta(tx, {
       requestId: job.id,
+      // MomentSpec also contains the Turn's private scene text. Remove that
+      // projection with its source; generated media remains available.
+      redactMomentSpec: true,
       sourceMeta: toJson({
         ...jsonRecord(job.sourceMeta),
         promptHint: null,

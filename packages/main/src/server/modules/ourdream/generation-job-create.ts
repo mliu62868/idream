@@ -3,12 +3,11 @@ import {
   loadLockedLiveEditorialLegacyGenerationAuthority,
   type LegacyCharacterGenerationAuthority,
 } from "@/server/modules/generation/attempt-dispatch";
-import { dispatchGenerationAttemptOutbox } from "@/server/modules/generation/generation-attempt-authority";
 import {
   lockCharacterGenerationAuthority,
   lockCharacterMediaAssetAuthorities,
 } from "@/server/modules/admin-v2/characters/generation-authority-lock";
-import { dreamcoinBalance, postDreamcoinEntry } from "@/server/modules/billing/ledger";
+import { dreamcoinBalance } from "@/server/modules/billing/ledger";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import {
@@ -20,7 +19,7 @@ import {
   isMediaAssetOperationalForAuthority,
 } from "@/server/lib/media-asset-authority";
 import { isRecord, toInputJson } from "@/server/lib/request-json";
-import { jsonRecord, jsonStringArray, pruneUndefined } from "./json-values";
+import { jsonStringArray, pruneUndefined } from "./json-values";
 import { dimensionsForImageOrientation } from "./generation-dimensions";
 import {
   resolveGenerationVisualProfile,
@@ -39,7 +38,6 @@ import {
   resolveGenerationPlan,
   type GenerationProfileSelectionAuthority,
 } from "./generation-quote";
-import { lockUserLedger } from "./subscription-lifecycle";
 import {
   buildGenerationPrompt,
   buildMomentSpec,
@@ -48,14 +46,9 @@ import {
 } from "./generation-prompt";
 import { loadLockedGenerationReferenceAuthority } from "./generation-reference-set";
 import {
-  activeGenerationStatuses,
-  appendGenerationEvent,
-  assertGenerationJobRequestFingerprint,
+  acceptGenerationJobForUser,
   assertGenerationSourceImageAuthorityInTx,
   findExistingGenerationJob,
-  isUniqueConstraintError,
-  maxInflightJobs,
-  reserveInitialGenerationAttempt,
   wakeQueuedGenerationDispatch,
 } from "./generation-job-authority";
 import type {
@@ -260,351 +253,227 @@ export async function createGenerationJobForUser(
         )
       : (body.negativePrompt ?? null);
 
-  // Create in a tx; if a concurrent writer (or a redelivered chat.image.requested for the
-  // same attachment) committed the same idempotencyKey / (sourceType,sourceId) first, the
-  // unique constraint throws P2002 — resolve to that existing job rather than a 500 / a
-  // spurious chat.image.failed (handled below).
-  const runCreateTx = () => prisma.$transaction(async (tx) => {
-    let legacyReleaseAuthority:
-      LegacyCharacterGenerationAuthority | null = null;
-    if (options.source) {
-      const existing = await tx.generationJob.findFirst({
-        where: { sourceType: options.source.sourceType, sourceId: options.source.sourceId },
-      });
-      if (existing) {
-        assertGenerationJobRequestFingerprint(
-          existing,
-          options.requestFingerprint,
-        );
-        const reservation = existing.status === "queued"
-          ? await reserveInitialGenerationAttempt(tx, existing)
+  return acceptGenerationJobForUser({
+    userId,
+    identity: options,
+    chatAttachment: options.chatAttachment,
+    prepare: async (tx) => {
+      let legacyReleaseAuthority:
+        LegacyCharacterGenerationAuthority | null = null;
+      if (character) {
+        await lockCharacterGenerationAuthority(tx, character.id);
+        const lockedCharacter = await tx.character.findFirst({
+          where: {
+            AND: [
+              {
+                id: character.id,
+                deletedAt: null,
+                age: { gte: 18 },
+                status: "approved",
+              },
+              {
+                OR: [
+                  { creatorId: userId },
+                  directCharacterAudienceWhere,
+                ],
+              },
+            ],
+          },
+          select: { id: true, imageAssetId: true },
+        });
+        if (!lockedCharacter) {
+          throw Errors.conflict(
+            "Character changed before generation authority could be reserved",
+            { characterId: character.id },
+          );
+        }
+        if (
+          body.mode === "video" &&
+          lockedCharacter.imageAssetId !== requestedSourceImageAssetId
+        ) {
+          throw Errors.conflict(
+            "Character primary image changed before video authority could be reserved",
+            {
+              characterId: character.id,
+              pinnedSourceImageAssetId: requestedSourceImageAssetId,
+              currentSourceImageAssetId: lockedCharacter.imageAssetId,
+            },
+          );
+        }
+        if (body.mode === "image") {
+          const lockedLegacyReleaseAuthority =
+            await loadLockedLiveEditorialLegacyGenerationAuthority(
+              tx,
+              character.id,
+            );
+          if (
+            lockedLegacyReleaseAuthority &&
+            visualProfile &&
+            !isEditorialLegacyVisualProfileProjection(
+              visualProfile,
+              lockedLegacyReleaseAuthority,
+            )
+          ) {
+            throw Errors.conflict(
+              "Character Release authority changed after generation identity was selected",
+              { characterId: character.id },
+            );
+          }
+          if (!lockedLegacyReleaseAuthority && !visualProfile) {
+            throw Errors.conflict(
+              "Legacy Character generation authority changed before the job could be queued",
+              { characterId: character.id },
+            );
+          }
+          legacyReleaseAuthority = lockedLegacyReleaseAuthority;
+        }
+      }
+      const sourceImageAssetId =
+        typeof requestedSourceImageAssetId === "string"
+          ? requestedSourceImageAssetId
           : null;
-        return {
-          job: existing,
-          outboxId: reservation?.outbox.id ?? null,
-        };
+      const additionalMediaAssetIds = [
+        sourceImageAssetId,
+        requestedLookReferenceAssetId,
+      ].filter((assetId): assetId is string => Boolean(assetId));
+      const referenceAuthority =
+        visualProfile && character
+          ? await loadLockedGenerationReferenceAuthority(
+              tx,
+              character.id,
+              visualProfile,
+              consistencyMode,
+              additionalMediaAssetIds,
+              options.expectedReferenceSetRevisionId,
+            )
+          : null;
+      if (!referenceAuthority) {
+        await lockCharacterMediaAssetAuthorities(tx, additionalMediaAssetIds);
       }
-    }
-    if (character) {
-      await lockCharacterGenerationAuthority(tx, character.id);
-      const lockedCharacter = await tx.character.findFirst({
-        where: {
-          AND: [
-            {
-              id: character.id,
-              deletedAt: null,
-              age: { gte: 18 },
-              status: "approved",
-            },
-            {
-              OR: [
-                { creatorId: userId },
-                directCharacterAudienceWhere,
-              ],
-            },
-          ],
-        },
-        select: { id: true, imageAssetId: true },
-      });
-      if (!lockedCharacter) {
-        throw Errors.conflict(
-          "Character changed before generation authority could be reserved",
-          { characterId: character.id },
-        );
+      if (sourceImageAssetId) {
+        await assertGenerationSourceImageAuthorityInTx(tx, {
+          sourceImageAssetId,
+          userId,
+          characterId: character?.id ?? null,
+        });
       }
+      const referenceAssetIds =
+        referenceAuthority?.referenceAssetIds ?? [];
+      const referenceSetRevision = referenceAuthority?.referenceSetRevision ?? null;
+      const referenceManifest =
+        referenceAuthority?.referenceManifest ?? [];
       if (
-        body.mode === "video" &&
-        lockedCharacter.imageAssetId !== requestedSourceImageAssetId
+        legacyReleaseAuthority &&
+        visualProfile &&
+        (
+          !legacyReleaseAuthority.sourceAssetId ||
+          referenceManifest.length !== 1 ||
+          referenceManifest[0]?.mediaAssetId !==
+            legacyReleaseAuthority.sourceAssetId ||
+          normalizedGenerationReferenceRole(
+            referenceManifest[0]?.role ?? "",
+          ) !== "identity_anchor"
+        )
       ) {
         throw Errors.conflict(
-          "Character primary image changed before video authority could be reserved",
+          "Legacy editorial Character identity must use its exact canonical portrait",
           {
-            characterId: character.id,
-            pinnedSourceImageAssetId: requestedSourceImageAssetId,
-            currentSourceImageAssetId: lockedCharacter.imageAssetId,
+            characterId: character?.id ?? null,
+            visualProfileId: visualProfile.id,
+            sourceAssetId: legacyReleaseAuthority.sourceAssetId ?? null,
           },
         );
       }
-      if (body.mode === "image") {
-        const lockedLegacyReleaseAuthority =
-          await loadLockedLiveEditorialLegacyGenerationAuthority(
-            tx,
-            character.id,
-          );
-        if (
-          lockedLegacyReleaseAuthority &&
-          visualProfile &&
-          !isEditorialLegacyVisualProfileProjection(
-            visualProfile,
-            lockedLegacyReleaseAuthority,
-          )
-        ) {
-          throw Errors.conflict(
-            "Character Release authority changed after generation identity was selected",
-            { characterId: character.id },
-          );
-        }
-        if (!lockedLegacyReleaseAuthority && !visualProfile) {
-          throw Errors.conflict(
-            "Legacy Character generation authority changed before the job could be queued",
-            { characterId: character.id },
-          );
-        }
-        legacyReleaseAuthority = lockedLegacyReleaseAuthority;
+      if (
+        referenceAssetIds.length > 0 ||
+        sourceImageAssetId ||
+        requestedLookReferenceAssetId
+      ) {
+        assertGenerationProfileCanDispatchReferences({
+          profile,
+          workflowDescriptor,
+          pinnedReferences: referenceManifest.map((reference) => ({
+            assetId: reference.mediaAssetId,
+            role: normalizedGenerationReferenceRole(reference.role),
+          })),
+          sourceImageAssetId,
+          lookReferenceAssetId: requestedLookReferenceAssetId,
+        });
       }
-    }
-    const sourceImageAssetId =
-      typeof requestedSourceImageAssetId === "string"
-        ? requestedSourceImageAssetId
-        : null;
-    const additionalMediaAssetIds = [
-      sourceImageAssetId,
-      requestedLookReferenceAssetId,
-    ].filter((assetId): assetId is string => Boolean(assetId));
-    const referenceAuthority =
-      visualProfile && character
-        ? await loadLockedGenerationReferenceAuthority(
-            tx,
-            character.id,
-            visualProfile,
-            consistencyMode,
-            additionalMediaAssetIds,
-            options.expectedReferenceSetRevisionId,
-          )
-        : null;
-    if (!referenceAuthority) {
-      await lockCharacterMediaAssetAuthorities(tx, additionalMediaAssetIds);
-    }
-    if (sourceImageAssetId) {
-      await assertGenerationSourceImageAuthorityInTx(tx, {
-        sourceImageAssetId,
-        userId,
-        characterId: character?.id ?? null,
-      });
-    }
-    const referenceAssetIds =
-      referenceAuthority?.referenceAssetIds ?? [];
-    const referenceSetRevision = referenceAuthority?.referenceSetRevision ?? null;
-    const referenceManifest =
-      referenceAuthority?.referenceManifest ?? [];
-    if (
-      legacyReleaseAuthority &&
-      visualProfile &&
-      (
-        !legacyReleaseAuthority.sourceAssetId ||
-        referenceManifest.length !== 1 ||
-        referenceManifest[0]?.mediaAssetId !==
-          legacyReleaseAuthority.sourceAssetId ||
-        normalizedGenerationReferenceRole(
-          referenceManifest[0]?.role ?? "",
-        ) !== "identity_anchor"
-      )
-    ) {
-      throw Errors.conflict(
-        "Legacy editorial Character identity must use its exact canonical portrait",
-        {
-          characterId: character?.id ?? null,
+      if (selectedLook && character && visualProfile) {
+        await assertGenerationLookAuthorityInTx(tx, {
+          look: selectedLook,
+          userId,
+          characterId: character.id,
           visualProfileId: visualProfile.id,
-          sourceAssetId: legacyReleaseAuthority.sourceAssetId ?? null,
-        },
-      );
-    }
-    if (
-      referenceAssetIds.length > 0 ||
-      sourceImageAssetId ||
-      requestedLookReferenceAssetId
-    ) {
-      assertGenerationProfileCanDispatchReferences({
-        profile,
-        workflowDescriptor,
-        pinnedReferences: referenceManifest.map((reference) => ({
-          assetId: reference.mediaAssetId,
-          role: normalizedGenerationReferenceRole(reference.role),
-        })),
-        sourceImageAssetId,
-        lookReferenceAssetId: requestedLookReferenceAssetId,
-      });
-    }
-    if (selectedLook && character && visualProfile) {
-      await assertGenerationLookAuthorityInTx(tx, {
-        look: selectedLook,
-        userId,
-        characterId: character.id,
-        visualProfileId: visualProfile.id,
-      });
-    }
-    const controls = pruneUndefined({
-      ...body.controls,
-      seconds: videoRecipe?.durationSeconds ?? body.controls.seconds,
-      orientation,
-      model: profile.profileKey,
-      profileId: profile.profileKey,
-      generationProfileKey: profile.profileKey,
-      generationProfileVersion: profile.version,
-      workflowKey: workflowDescriptor?.workflowKey,
-      workflowVersion: workflowDescriptor?.version,
-      width: dimensions.width,
-      height: dimensions.height,
-      sourceImageAssetId: sourceImageAssetId ?? undefined,
-      lookReferenceAssetId: requestedLookReferenceAssetId ?? undefined,
-      workflowIdentity: workflowDescriptor?.identity,
-      consistencyMode: visualProfile ? consistencyMode : undefined,
-      generationQuoteAuthority: acceptedQuoteAuthority ?? undefined,
-      legacyReleaseAuthority: legacyReleaseAuthority ?? undefined,
-      visualIdentity: visualProfile
-        ? {
-            visualProfileId: visualProfile.id,
-            visualProfileVersion: visualProfile.version,
-            consistencyMode,
-            referenceAssetIds,
-            referenceSetRevisionId: referenceSetRevision?.id,
-            referenceManifest,
-            anchorAssetIds: referenceAuthority?.anchorAssetIds ?? [],
-            seed,
-          }
-        : undefined,
-    });
-    await lockUserLedger(tx, userId);
-    let chatAttachment: Awaited<ReturnType<typeof tx.chatTurnAttachment.findUnique>> = null;
-    if (options.chatAttachment) {
-      const binding = options.chatAttachment;
-      const attachmentId = options.source?.sourceId;
-      if (options.source?.sourceType !== "chat_image" || !attachmentId) {
-        throw Errors.badRequest("Chat attachment binding requires its image action source");
+        });
       }
-      // Another invocation may have accepted this exact action while this one
-      // waited for the user lock. Replay before checking its depleted balance.
-      const existing = await tx.generationJob.findFirst({ where: { userId, sourceType: "chat_image", sourceId: attachmentId } });
-      if (existing) {
-        // Terminal settlement locks Job before user. Wake only after releasing
-        // this user lock, so an exact duplicate cannot invert that lock order.
-        return { job: existing, outboxId: null };
-      }
-      // Match Chat mutation / retry order: user → session → Turn → attachment.
-      await tx.$queryRaw`SELECT "sessionId" FROM "recent_chats" WHERE "sessionId" = ${binding.sessionId} FOR UPDATE`;
-      await tx.$queryRaw`SELECT id FROM "chat_turns" WHERE id = ${binding.turnId} FOR UPDATE`;
-      await tx.$queryRaw`SELECT id FROM "chat_turn_attachments" WHERE id = ${attachmentId} FOR UPDATE`;
-      const current = await tx.chatTurnAttachment.findUnique({ where: { id: attachmentId }, include: { turn: { include: { session: true } } } });
-      if (!current || current.kind !== "generated_image" || current.status !== "requesting" ||
-        current.generationJobId !== null || current.turnId !== binding.turnId ||
-        current.turn.sessionId !== binding.sessionId || current.turn.session.userId !== userId ||
-        current.turn.session.characterId !== body.characterId || current.turn.session.status === "deleted" ||
-        current.turn.attempt !== binding.attempt || jsonRecord(current.metadata).attempt !== binding.attempt ||
-        !["pending", "generating"].includes(current.turn.assistantStatus)) {
-        throw Errors.conflict("The Chat image changed before its request could be reserved");
-      }
-      chatAttachment = current;
-    }
-    const balance = await dreamcoinBalance(userId, tx);
-    if (balance < cost) {
-      throw Errors.paymentRequired("Insufficient dreamcoins", {
-        balance,
-        cost,
-        required: cost,
-      });
-    }
-    const active = await tx.generationJob.count({
-      where: { userId, status: { in: activeGenerationStatuses() } },
-    });
-    const max = maxInflightJobs(entitlements);
-    if (active >= max) {
-      throw Errors.rateLimited("Too many active generation jobs", { active, max });
-    }
-
-    const created = await tx.generationJob.create({
-      data: {
-        userId,
-        characterId: body.characterId,
-        visualProfileId: visualProfile?.id,
-        visualProfileVersion: visualProfile?.version,
-        consistencyMode: visualProfile ? consistencyMode : null,
-        seed,
-        referenceAssetIds: visualProfile ? toInputJson(referenceAssetIds) : undefined,
-        referenceSetRevisionId: referenceSetRevision?.id,
-        referenceManifest: referenceSetRevision ? toInputJson(referenceManifest) : undefined,
-        momentSpec: toInputJson(momentSpec),
-        lookId: selectedLook?.id,
-        lookSnapshot: lookSnapshot ? toInputJson(lookSnapshot) : undefined,
-        idempotencyKey: options.idempotencyKey,
-        mode: body.mode,
-        prompt,
-        negativePrompt,
-        controls: toInputJson(controls),
-        presetIds: toInputJson(body.presetIds),
-        model: profile.workflowKey ?? profile.pipelineModel,
-        profileId: profile.profileKey,
-        profileVersion: profile.version,
-        recipeId: recipe.recipeKey,
-        recipeVersion: recipe.version,
+      const controls = pruneUndefined({
+        ...body.controls,
+        seconds: videoRecipe?.durationSeconds ?? body.controls.seconds,
         orientation,
-        outputCount: body.outputCount,
-        status: "queued",
-        costDreamcoins: cost,
-        provider: profile.runner,
-        sourceType: options.source?.sourceType ?? "generator",
-        sourceId: options.source?.sourceId,
-        sourceMeta: options.source?.sourceMeta,
-      },
-    });
-    if (chatAttachment) {
-      // The delivery pointer commits with the debit and outbox. Even an
-      // immediate provider terminal must find this attachment before its ACK.
-      await tx.chatTurnAttachment.update({ where: { id: chatAttachment.id }, data: {
-        generationJobId: created.id, status: "accepted", errorCode: null,
-        metadata: toInputJson({ ...jsonRecord(chatAttachment.metadata), costDreamcoins: cost }),
-      } });
-    }
-    await appendGenerationEvent(tx, created.id, "created", "Generation job accepted", {
-      mode: created.mode,
-      profileId: created.profileId,
-      recipeId: created.recipeId,
-      visualProfileId: created.visualProfileId,
-      visualProfileVersion: created.visualProfileVersion,
-      referenceSetRevisionId: created.referenceSetRevisionId,
-      consistencyMode: created.consistencyMode,
-      idempotencyKey: options.idempotencyKey ?? null,
-      sourceType: created.sourceType,
-      sourceId: created.sourceId,
-    });
-    await postDreamcoinEntry(tx, {
-      kind: "generation_spend",
-      userId,
-      amount: cost,
-      sourceId: created.id,
-      idempotencyKey: `generation:${created.id}:reserve`,
-    });
-    await appendGenerationEvent(tx, created.id, "reserved", "Dreamcoins reserved", {
-      amount: cost,
-    });
-    await appendGenerationEvent(tx, created.id, "queued", "Generation job queued", {});
-    const reservation = await reserveInitialGenerationAttempt(tx, created);
-    return { job: created, outboxId: reservation.outbox.id };
+        model: profile.profileKey,
+        profileId: profile.profileKey,
+        generationProfileKey: profile.profileKey,
+        generationProfileVersion: profile.version,
+        workflowKey: workflowDescriptor?.workflowKey,
+        workflowVersion: workflowDescriptor?.version,
+        width: dimensions.width,
+        height: dimensions.height,
+        sourceImageAssetId: sourceImageAssetId ?? undefined,
+        lookReferenceAssetId: requestedLookReferenceAssetId ?? undefined,
+        workflowIdentity: workflowDescriptor?.identity,
+        consistencyMode: visualProfile ? consistencyMode : undefined,
+        generationQuoteAuthority: acceptedQuoteAuthority ?? undefined,
+        legacyReleaseAuthority: legacyReleaseAuthority ?? undefined,
+        visualIdentity: visualProfile
+          ? {
+              visualProfileId: visualProfile.id,
+              visualProfileVersion: visualProfile.version,
+              consistencyMode,
+              referenceAssetIds,
+              referenceSetRevisionId: referenceSetRevision?.id,
+              referenceManifest,
+              anchorAssetIds: referenceAuthority?.anchorAssetIds ?? [],
+              seed,
+            }
+          : undefined,
+      });
+      return {
+        entitlements,
+        data: {
+          characterId: body.characterId,
+          visualProfileId: visualProfile?.id,
+          visualProfileVersion: visualProfile?.version,
+          consistencyMode: visualProfile ? consistencyMode : null,
+          seed,
+          referenceAssetIds: visualProfile ? toInputJson(referenceAssetIds) : undefined,
+          referenceSetRevisionId: referenceSetRevision?.id,
+          referenceManifest: referenceSetRevision ? toInputJson(referenceManifest) : undefined,
+          momentSpec: toInputJson(momentSpec),
+          lookId: selectedLook?.id,
+          lookSnapshot: lookSnapshot ? toInputJson(lookSnapshot) : undefined,
+          mode: body.mode,
+          prompt,
+          negativePrompt,
+          controls: toInputJson(controls),
+          presetIds: toInputJson(body.presetIds),
+          model: profile.workflowKey ?? profile.pipelineModel,
+          profileId: profile.profileKey,
+          profileVersion: profile.version,
+          recipeId: recipe.recipeKey,
+          recipeVersion: recipe.version,
+          orientation,
+          outputCount: body.outputCount,
+          costDreamcoins: cost,
+          provider: profile.runner,
+          sourceType: options.source?.sourceType ?? "generator",
+          sourceId: options.source?.sourceId,
+          sourceMeta: options.source?.sourceMeta,
+        },
+      };
+    },
   });
-
-  let reservation: Awaited<ReturnType<typeof runCreateTx>>;
-  try {
-    reservation = await runCreateTx();
-  } catch (error) {
-    if (isUniqueConstraintError(error)) {
-      const existing = await findExistingGenerationJob(userId, options);
-      if (existing) {
-        await wakeQueuedGenerationDispatch(existing);
-        return existing;
-      }
-    }
-    throw error;
-  }
-  const job = reservation.job;
-
-  if (job.status !== "queued") return job;
-  if (reservation.outboxId) {
-    await dispatchGenerationAttemptOutbox(prisma, {
-      outboxIds: [reservation.outboxId],
-    });
-  } else {
-    await wakeQueuedGenerationDispatch(job);
-  }
-  return job;
 }
 
 function characterLookSnapshot(look: {

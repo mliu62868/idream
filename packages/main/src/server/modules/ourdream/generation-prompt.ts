@@ -80,6 +80,7 @@ export function compileChatImagePrompt(
   requestedNudity: "unspecified" | "none" | "full",
   options: { rejectTruncation?: boolean } = {},
 ): string {
+  options = { rejectTruncation: true, ...options };
   let scene = sanitizeChatImageDirection(agentScene || "candid in-character photo", options);
   if (requestedNudity === "full") {
     scene = scene
@@ -112,12 +113,17 @@ export function compileChatImagePrompt(
   return chatDirectionText(scene || "candid in-character photo", 900, options.rejectTruncation);
 }
 
+function requirePromptBudget(text: string, max: number): string {
+  if (text.length > max) throw new RangeError(`The complete image facts exceed the ${max}-character generation budget; shorten the scene without dropping required facts`);
+  return text;
+}
+
 function chatDirectionText(value: string, max: number, rejectTruncation = false): string {
   // Validate the complete normalized text, including structural wardrobe
   // prefixes. Truncating first can silently drop a user's final constraint.
   const normalized = cleanPromptText(value, Infinity);
   if (rejectTruncation && normalized.length > max) {
-    throw new RangeError(`Image edit instructions exceed the ${max}-character generation direction budget. Shorten the request while retaining all required changes and preservation constraints.`);
+    throw new RangeError(`Image instructions exceed the ${max}-character generation direction budget. Shorten the request while retaining all required facts and changes.`);
   }
   return clampPrompt(normalized, max);
 }
@@ -139,7 +145,10 @@ export function buildGenerationPrompt(input: {
   sourceType?: string;
   sourceImageAssetId?: string;
 }) {
-  const userPrompt = cleanPromptText(input.userPrompt, 900);
+  const chat = input.sourceType === "chat_image";
+  const userPrompt = chat
+    ? requirePromptBudget(input.userPrompt?.trim() ?? "", 900)
+    : cleanPromptText(input.userPrompt, 900);
   const base =
     input.mode === "image"
       ? buildImageGenerationPrompt({
@@ -153,12 +162,10 @@ export function buildGenerationPrompt(input: {
       : buildVideoGenerationPrompt(input.character, userPrompt);
   const preset = cleanPromptText(input.presetFragment, 500);
   const look = cleanPromptText(input.lookFragment, 500);
-  return clampPrompt(
-    [base, look ? `Active look: ${look}` : null, preset ? `Scene details: ${preset}` : null]
-      .filter(Boolean)
-      .join(". "),
-    2_000,
-  );
+  const compiled = [base, look ? `Active look: ${look}` : null, preset ? `Scene details: ${preset}` : null]
+    .filter(Boolean).join(". ");
+  if (chat && compiled.length > 2_000) throw new RangeError("The complete Chat image facts and pinned identity exceed the 2000-character generation budget");
+  return chat ? compiled : clampPrompt(compiled, 2_000);
 }
 
 function buildImageGenerationPrompt(input: {
@@ -218,8 +225,7 @@ function buildImageGenerationPrompt(input: {
     : assembleIdentityPrompt(direction.traits).identityPrompt;
   const identityLabel = visualProfile ? "Locked identity" : "Character identity";
 
-  return clampPrompt(
-    [
+  const mandatory = [
       `High quality in-character portrait photo of ${cleanPromptText(character.name, 120)}`,
       presentation.length ? `Subject: ${presentation.join(", ")}` : null,
       identityPrompt ? `${identityLabel}: ${identityPrompt}` : null,
@@ -228,16 +234,26 @@ function buildImageGenerationPrompt(input: {
         ? `Stable visual traits: ${direction.stableTraits.join(", ")}`
         : null,
       consistencyPromptFragment(input.consistencyMode),
-      cleanPromptText(character.description, 500)
+      input.sourceType !== "chat_image" && cleanPromptText(character.description, 500)
         ? `Character notes: ${cleanPromptText(character.description, 500)}`
         : null,
       `Requested scene: ${request}`,
-      "single coherent subject, face and body matching the character, expressive eyes, natural pose, well-lit visible face, properly exposed, sharp focus, detailed skin and hair, clean photographic composition",
     ]
       .filter(Boolean)
-      .join(". "),
-    2_000,
-  );
+      .join(". ");
+  const finish = "single coherent subject, face and body matching the character, expressive eyes, natural pose, well-lit visible face, properly exposed, sharp focus, detailed skin and hair, clean photographic composition";
+  if (input.sourceType === "chat_image") {
+    if (mandatory.length > 2_000) throw new RangeError("The complete Chat image facts and pinned identity exceed the 2000-character generation budget");
+    let compiled = mandatory;
+    const notes = cleanPromptText(character.description, 500);
+    // Keep ordinary biography and style when they fit. Budget pressure may
+    // omit those optional pieces, never part of the requested scene.
+    for (const optional of [notes ? `Character notes: ${notes}` : "", finish]) {
+      if (optional && compiled.length + optional.length + 2 <= 2_000) compiled += `. ${optional}`;
+    }
+    return compiled;
+  }
+  return clampPrompt(`${mandatory}. ${finish}`, 2_000);
 }
 
 /**
@@ -364,7 +380,8 @@ export function buildMomentSpec(
     camera: typeof controls.camera === "string" ? controls.camera : undefined,
     lighting: typeof controls.lighting === "string" ? controls.lighting : undefined,
     styleDelta: typeof controls.styleDelta === "string" ? controls.styleDelta : undefined,
-    confidence: 1,
+    // Input provenance is not semantic understanding or pixel verification.
+    verification: "direct_input",
     continuitySources,
     createdAt: new Date().toISOString(),
   });

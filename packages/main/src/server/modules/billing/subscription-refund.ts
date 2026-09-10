@@ -6,6 +6,7 @@ import { postDreamcoinEntry } from "@/server/modules/billing/ledger";
 import {
   activeSubscriptionWhere,
   lockUserLedger,
+  resolveSubscriptionOfferAuthority,
   syncSubscriptionEntitlements,
 } from "@/server/modules/ourdream/subscription-lifecycle";
 import type { PaymentRefund } from "@/server/providers/types";
@@ -170,7 +171,6 @@ export async function projectSubscriptionRefundInTx(
   );
   const subscription = await tx.subscription.findUniqueOrThrow({
     where: { id: current.subscriptionId },
-    include: { plan: true },
   });
 
   if (evidence.state === "canceled") {
@@ -205,10 +205,11 @@ export async function projectSubscriptionRefundInTx(
       originalPeriodEnd && originalPeriodEnd.getTime() > now.getTime(),
     );
     if (accessActive) {
+      const { offer } = await resolveSubscriptionOfferAuthority(tx, subscription);
       await syncSubscriptionEntitlements(
         tx,
         subscription.userId,
-        subscription.plan,
+        { slug: offer.slug, billingPeriod: offer.billingPeriod, features: offer.features as Prisma.JsonValue },
         originalPeriodEnd,
       );
     }

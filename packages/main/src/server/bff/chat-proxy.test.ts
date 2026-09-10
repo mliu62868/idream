@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { compileCharacterSoul } from "@idream/shared";
 import { FREE_DAILY_MESSAGES } from "@idream/shared/chat/limits";
 import { verifyBffContext, type BffContext } from "@idream/shared/bff";
-import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
+import { chatSceneStateSchema, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { Prisma } from "@prisma/client";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/server/lib/db";
@@ -693,7 +693,7 @@ describe("Main-owned Chat façade", () => {
       version: 1, turnId: begun.snapshot!.turnId, sessionId,
       assistantMessageId: begun.assistant.id, attempt: 1, status: "sent",
       content: "I’m here.", model: "test-model", promptTokens: 10, completionTokens: 3,
-      sceneVersion: 0, scene: null, terminalEvidence: TEST_TERMINAL_EVIDENCE,
+      ...nextSceneFixture(begun.snapshot!), terminalEvidence: TEST_TERMINAL_EVIDENCE,
     });
     // Attach rejection handlers before deliberately creating contention.
     const settled = Promise.allSettled([mutation, terminal]);
@@ -858,7 +858,7 @@ describe("Main-owned Chat façade", () => {
 
     fetchMock.mockClear();
     fetchMock.mockResolvedValue(Response.json({ ok: true, active: false }));
-    await expect(dispatchPendingChatEvents()).resolves.toEqual({ delivered: 1, failed: 0 });
+    await expect(dispatchPendingChatEvents({ lane: "lifecycle" })).resolves.toEqual({ delivered: 1, failed: 0 });
     expect(fetchMock).toHaveBeenCalledWith(
       `${env.CHAT_SERVICE_URL}/internal/agent-runs/${begun.snapshot!.turnId}/1/cancel`,
       expect.objectContaining({ method: "POST" }),
@@ -970,7 +970,7 @@ describe("Main-owned Chat façade", () => {
       return Response.json({ ok: true }, { status: 202 });
     });
 
-    await expect(dispatchPendingChatEvents()).resolves.toEqual({ delivered: 1, failed: 0 });
+    await expect(dispatchPendingChatEvents({ lane: "memory" })).resolves.toEqual({ delivered: 1, failed: 0 });
     expect(uploaded).toContain(retained.userMessageId);
     expect(uploaded).toContain("Retain me");
     expect(uploaded).toContain('"mode":"rebuild"');
@@ -1002,8 +1002,7 @@ describe("Main-owned Chat façade", () => {
       model: "test-model",
       promptTokens: 3,
       completionTokens: 4,
-      sceneVersion: turn.sceneVersion,
-      scene: null,
+      ...nextSceneFixture(turn),
       terminalEvidence: TEST_TERMINAL_EVIDENCE,
     };
     await commitChatTerminal(terminal);
@@ -1029,7 +1028,7 @@ describe("Main-owned Chat façade", () => {
       archived: true,
       purgeQueued: true,
     });
-    await expect(dispatchPendingChatEvents()).resolves.toEqual({ delivered: 1, failed: 0 });
+    await expect(dispatchPendingChatEvents({ lane: "lifecycle" })).resolves.toEqual({ delivered: 1, failed: 0 });
     await expect(prisma.recentChat.findUniqueOrThrow({ where: { sessionId } }))
       .resolves.toMatchObject({ status: "archived", activeKey: null, memoryEnabled: false });
     await expect(prisma.chatTurn.findUniqueOrThrow({ where: { id: turn.id } }))
@@ -1066,8 +1065,8 @@ describe("Main-owned Chat façade", () => {
       model: "test-model",
       promptTokens: 1,
       completionTokens: 1,
-      sceneVersion: original.sceneVersion,
-      scene: original.scene,
+      sceneVersion: edited.snapshot!.sceneVersion,
+      scene: edited.snapshot!.scene,
       terminalEvidence: TEST_TERMINAL_EVIDENCE,
     });
     await expect(prisma.mainOutboxEvent.findFirst({
@@ -1154,8 +1153,7 @@ describe("Main-owned Chat façade", () => {
       model: "test-model",
       promptTokens: 2,
       completionTokens: 3,
-      sceneVersion: 0,
-      scene: null,
+      ...nextSceneFixture(turn),
       terminalEvidence: TEST_TERMINAL_EVIDENCE,
     });
     await prisma.chatTurnAttachment.create({
@@ -1213,8 +1211,7 @@ describe("Main-owned Chat façade", () => {
       model: null,
       promptTokens: null,
       completionTokens: null,
-      sceneVersion: 0,
-      scene: null,
+      ...nextSceneFixture(first.snapshot),
       terminalEvidence: TEST_TERMINAL_EVIDENCE,
     });
     await prisma.chatTurnAttachment.create({
@@ -1261,8 +1258,7 @@ describe("Main-owned Chat façade", () => {
       model: "test-model",
       promptTokens: 4,
       completionTokens: 8,
-      sceneVersion: 0,
-      scene: null,
+      ...nextSceneFixture(turn),
       terminalEvidence: TEST_TERMINAL_EVIDENCE,
     });
     const callId = "tool-call-1";
@@ -1372,8 +1368,7 @@ describe("Main-owned Chat façade", () => {
       model: null,
       promptTokens: null,
       completionTokens: null,
-      sceneVersion: 0,
-      scene: null,
+      ...nextSceneFixture(turn),
       terminalEvidence: TEST_TERMINAL_EVIDENCE,
     });
     await regenerateChatTurn(USER_ID, turn.assistantMessageId);
@@ -1471,8 +1466,7 @@ describe("Main-owned Chat façade", () => {
       model: "test-model",
       promptTokens: 2,
       completionTokens: 2,
-      sceneVersion: 0,
-      scene: null,
+      ...nextSceneFixture(turn),
       terminalEvidence: TEST_TERMINAL_EVIDENCE,
     });
 
@@ -1486,6 +1480,7 @@ describe("Main-owned Chat façade", () => {
         presetIds: [],
         sourceType: "chat_image",
         sourceId: `chat-privacy-source-${randomUUID()}`,
+        momentSpec: { scene: "private scene before edit" },
         sourceMeta: {
           sessionId,
           exchangeId: turn.id,
@@ -1498,6 +1493,7 @@ describe("Main-owned Chat façade", () => {
     await editChatTurn(USER_ID, turn.userMessageId, "Use the revised description.");
     expect(await prisma.generationJob.findUniqueOrThrow({ where: { id: editedJobId } }))
       .toMatchObject({
+        momentSpec: null,
         sourceMeta: {
           promptHint: null,
           conversationContext: null,
@@ -1531,6 +1527,7 @@ describe("Main-owned Chat façade", () => {
         presetIds: [],
         sourceType: "chat_image",
         sourceId: `chat-privacy-source-${randomUUID()}`,
+        momentSpec: { scene: "private scene before session deletion" },
         sourceMeta: {
           sessionId,
           promptHint: "session prompt",
@@ -1541,6 +1538,7 @@ describe("Main-owned Chat façade", () => {
     await deleteChatSession(USER_ID, sessionId);
     expect(await prisma.generationJob.findUniqueOrThrow({ where: { id: deletedJobId } }))
       .toMatchObject({
+        momentSpec: null,
         sourceMeta: {
           promptHint: null,
           conversationContext: null,
@@ -1597,11 +1595,21 @@ async function sendAndCommit(
     model: "test-model",
     promptTokens: 1,
     completionTokens: 1,
-    sceneVersion: turn.sceneVersion,
-    scene: turn.scene,
+    ...nextSceneFixture(turn),
     terminalEvidence: TEST_TERMINAL_EVIDENCE,
   });
   return turn;
+}
+
+function nextSceneFixture(anchor: { sceneVersion: number; scene: unknown }) {
+  const previous = chatSceneStateSchema.nullable().parse(anchor.scene);
+  return {
+    sceneVersion: anchor.sceneVersion + 1,
+    scene: {
+      schemaVersion: 1 as const, location: null, time: null, participants: [], emotionalBeat: null, unresolvedThreads: [],
+      ...previous, version: anchor.sceneVersion + 1,
+    },
+  };
 }
 
 async function settleMemoryRebuildAndTurn(turnId: string): Promise<void> {

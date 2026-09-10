@@ -3,10 +3,19 @@ import {
   applySceneDelta,
   deriveSceneDelta,
   emptySceneState,
+  parseSceneState,
   sceneForReply,
 } from "./scene.js";
 
 describe("typed Scene State", () => {
+  it("accepts only the canonical cross-service Scene without dropping unknown fields", () => {
+    const scene = emptySceneState();
+    expect(parseSceneState(scene)).toEqual(scene);
+    for (const malformed of [null, { ...scene, location: 42 }, { ...scene, version: 1.5 }, { ...scene, source: "invented" }]) {
+      expect(parseSceneState(malformed)).toBeNull();
+    }
+  });
+
   it("derives and applies session-local continuity without creating user memory", () => {
     const delta = deriveSceneDelta({
       userText: "Tonight we're in the rooftop garden with Mina. I feel nervous, and we still need to choose the train.",

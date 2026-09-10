@@ -38,6 +38,26 @@ function prompt(
 }
 
 describe("image generation prompt", () => {
+  it("keeps the complete Chat moment when optional character notes would exhaust the final budget", () => {
+    const required = `A closed blue notebook rests flat on the wooden windowsill to the left of a white cup. ${"Rain falls in the dark night. ".repeat(18)}`.trim();
+    const text = buildGenerationPrompt({
+      mode: "image", character: { ...character, description: "Optional biography. ".repeat(40) },
+      visualProfile: { identityPrompt: "Sealed adult visual identity. ".repeat(22) } as GenerationVisualProfile,
+      consistencyMode: "strict", userPrompt: required,
+      presetFragment: "", lookFragment: "", sourceType: "chat_image",
+    });
+    expect(text).toContain(required);
+    expect(text.length).toBeLessThanOrEqual(2_000);
+  });
+
+  it("rejects an oversized Chat direction before the final assembler can discard the required tail", () => {
+    const direction = "Small detail. ".repeat(72) + "The only notebook stays to the left of the cup.";
+    expect(() => buildGenerationPrompt({
+      mode: "image", character, visualProfile: null, consistencyMode: "strict",
+      userPrompt: direction, presetFragment: "", lookFragment: "", sourceType: "chat_image",
+    })).toThrow(/budget/);
+  });
+
   it("preserves the final constraint of a supported multi-part edit after normalization", () => {
     const instruction = "Edit this image: move the notebook to the left,\n change its cover to green, and brighten the window.  Preserve all faces and the writing on every page.";
     const compiled = compileChatImagePrompt(instruction, "unspecified", { rejectTruncation: true });
@@ -48,8 +68,7 @@ describe("image generation prompt", () => {
   it.each([950, 1_250])("rejects an edit with a final constraint beyond the %s-character input instead of dropping it", length => {
     const instruction = `Edit this image: ${"retain detail; ".repeat(100)}`.slice(0, length) + " Preserve the final page exactly.";
     expect(() => compileChatImagePrompt(instruction, "unspecified", { rejectTruncation: true })).toThrow(/Shorten the request/);
-    // Existing generation callers keep their established truncating contract.
-    expect(compileChatImagePrompt(instruction, "unspecified").length).toBeLessThanOrEqual(900);
+    expect(() => compileChatImagePrompt(instruction, "unspecified")).toThrow(/Shorten the request/);
   });
 
   it.each(["none", "full"] as const)("includes the %s wardrobe prefix in the edit budget", nudity => {
@@ -121,6 +140,20 @@ describe("image generation prompt", () => {
     expect(compiled).toContain("At the bedroom window");
     expect(compiled).not.toContain("silk robe");
     expect(compiled.length).toBeLessThanOrEqual(900);
+  });
+
+  it("rejects long new-image directions when structural nudity requirements exceed the complete budget", () => {
+    const direction = (repetitions: number) => [
+      "sitting beside a rain-streaked window, soft evening light",
+      "soft rain reflections and warm practical light, ".repeat(repetitions),
+      "fully clothed in a silk robe",
+    ].join(" ");
+    expect(() => compileChatImagePrompt(direction(18), "full")).toThrow(/900-character/);
+    const accepted = compileChatImagePrompt(direction(15), "full");
+    expect(accepted).toContain("Adult scene requirement: depict the adult character fully nude");
+    expect(accepted).toContain("rain-streaked window");
+    expect(accepted).not.toContain("silk robe");
+    expect(accepted.length).toBeLessThanOrEqual(900);
   });
 
   it("compiles an explicit no-nudity constraint without trusting Agent wording", () => {

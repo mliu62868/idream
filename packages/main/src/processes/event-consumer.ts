@@ -175,12 +175,14 @@ function normalizedEventOccurredAt(value: string | undefined): string | null {
 
 export interface ProductEventDispatchOptions {
   readonly outboxIds?: readonly string[];
+  readonly signal?: AbortSignal;
 }
 
 export async function dispatchPendingProductEvents(
   batch = 100,
   options: ProductEventDispatchOptions = {},
 ): Promise<{ delivered: number; failed: number }> {
+  if (options.signal?.aborted) return { delivered: 0, failed: 0 };
   const now = new Date();
   const pendingWhere: Prisma.MainOutboxEventWhereInput = {
     eventType: "product.event.persisted.v2",
@@ -208,7 +210,9 @@ export async function dispatchPendingProductEvents(
   let delivered = 0;
   let failed = 0;
   for (const row of rows) {
+    if (options.signal?.aborted) break;
     const event = await prisma.analyticsEvent.findUnique({ where: { id: row.aggregateId } });
+    if (options.signal?.aborted) break;
     if (!event) {
       await prisma.mainOutboxEvent.update({
         where: { id: row.id },
@@ -304,31 +308,65 @@ function jsonRecord(value: Prisma.JsonValue | null): Record<string, unknown> {
     : {};
 }
 
+const EVENT_CONSUMER_CLOSE_TIMEOUT_MS = 30_000;
+
 export function startEventConsumer(): { close(): Promise<void> } {
-  let inFlight: Promise<void> | null = null;
+  const stopping = new AbortController();
+  // These fixed responsibilities have different latency requirements. Each
+  // owns its next poll; awaiting all of them behind one promise would still
+  // let a slow memory upload block later admission and erasure intents.
+  const lanes = [
+    { name: "product_events", run: () => dispatchPendingProductEvents(100, { signal: stopping.signal }) },
+    { name: "chat_memory", run: () => dispatchPendingChatEvents({ lane: "memory", batch: 50, signal: stopping.signal }) },
+    { name: "chat_lifecycle", run: () => dispatchPendingChatEvents({ lane: "lifecycle", batch: 50, signal: stopping.signal }) },
+    { name: "chat_admission", run: () => dispatchPendingChatAgentRuns(50, stopping.signal) },
+    { name: "account_blob_deletion", run: () => dispatchPendingAccountDeletionBlobDeletes({ signal: stopping.signal }) },
+  ].map((lane) => ({ ...lane, inFlight: null as Promise<void> | null }));
   const reconcile = () => {
-    if (inFlight) return inFlight;
-    inFlight = (async () => {
-      await dispatchPendingProductEvents();
-      await dispatchPendingChatEvents();
-      await dispatchPendingChatAgentRuns();
-      await dispatchPendingAccountDeletionBlobDeletes();
-    })().finally(() => {
-      inFlight = null;
-    });
-    return inFlight;
+    if (stopping.signal.aborted) return;
+    for (const lane of lanes) {
+      if (lane.inFlight) continue;
+      lane.inFlight = lane.run()
+        .then(() => undefined)
+        .catch((err) => logger.error({ err, lane: lane.name }, "durable event reconciliation failed"))
+        .finally(() => { lane.inFlight = null; });
+    }
   };
-  const projectionTimer = setInterval(() => {
-    reconcile().catch((err) => logger.error({ err }, "durable event reconciliation failed"));
-  }, 5_000);
-  reconcile().catch((err) => logger.error({ err }, "initial durable event reconciliation failed"));
+  const projectionTimer = setInterval(reconcile, 5_000);
+  reconcile();
   // Snapshot scans run independently so analytics cannot stall product delivery.
   const metricRefresh = startMetricSnapshotRefresh();
+  let closePromise: Promise<void> | null = null;
   logger.info("main durable event projector ready");
   return {
-    async close() {
+    close() {
+      if (closePromise) return closePromise;
+      // Abort means no new claim, not cancellation of an accepted delivery.
+      // Live attempts retain their heartbeat and exact lease/CAS ownership.
+      stopping.abort();
       clearInterval(projectionTimer);
-      await Promise.all([inFlight, metricRefresh.close()]);
+      let metricClosing = true;
+      const metricClosed = metricRefresh.close().finally(() => { metricClosing = false; });
+      closePromise = (async () => {
+        let deadline: ReturnType<typeof setTimeout> | undefined;
+        try {
+          const drained = await Promise.race([
+            Promise.all([...lanes.map((lane) => lane.inFlight), metricClosed]).then(() => true),
+            new Promise<false>((resolve) => {
+              deadline = setTimeout(() => resolve(false), EVENT_CONSUMER_CLOSE_TIMEOUT_MS);
+            }),
+          ]);
+          if (!drained) {
+            const pending = lanes.filter((lane) => lane.inFlight).map((lane) => lane.name);
+            if (metricClosing) pending.push("metric_snapshots");
+            logger.error({ pending, timeoutMs: EVENT_CONSUMER_CLOSE_TIMEOUT_MS }, "durable event drain timed out; pending work retains its lease");
+            throw new Error("Durable event drain timed out with pending work");
+          }
+        } finally {
+          clearTimeout(deadline);
+        }
+      })();
+      return closePromise;
     },
   };
 }
@@ -336,9 +374,11 @@ export function startEventConsumer(): { close(): Promise<void> } {
 // Entry when run directly or through PM2's Bun wrapper: start + graceful shutdown.
 if (isProcessEntrypoint(["event-consumer.ts", "event-consumer.js"])) {
   const worker = startEventConsumer();
-  const shutdown = async () => {
-    await worker.close();
-    process.exit(0);
+  const shutdown = () => {
+    void worker.close().then(
+      () => process.exit(0),
+      () => process.exit(1),
+    );
   };
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);

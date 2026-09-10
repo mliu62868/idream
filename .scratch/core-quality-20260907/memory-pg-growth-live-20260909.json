@@ -1,0 +1,424 @@
+{
+  "sourceRevision": "idream-worktree-a8b3ad22975381a254bfb842e60d8f228294059489922f232451ddd871c783b8",
+  "completedAt": "2026-09-09T11:30:46.609Z",
+  "method": "Real isolated Main PostgreSQL, actual dispatch leases and coalescing, Main NDJSON stream, Chat decoder, workspace promotion, installed igrep ingest/doctor/status/wake. In-process HTTP Request transport excludes network latency. Synthetic 1000-character content across interleaved sessions. One sample per phase; not a throughput SLA.",
+  "limitations": "Only the 100-message bootstrap performs real maintenance (one CLI pass, short repeated facts). Other maintenance calls and their completion timestamp are intercepted; at most 3 real fast recalls. All model/embedding/rerank HTTP is routed through a task-local forwarding counter with a combined 4-request ceiling; failures stop the run. No conversational model or user-visible first-token measurement.",
+  "measurements": [
+    {
+      "phase": "outbox-head-of-line",
+      "injectedMemoryHoldMs": 122.15,
+      "cancellationBlocked": true,
+      "cancelStartedMs": 132.49,
+      "cancelAfterReleaseMs": 10.34,
+      "method": "Real PostgreSQL claims; owned transport gate; no Chat/model call. Both events were due in the same dispatch batch."
+    },
+    {
+      "baseMessages": 100,
+      "phase": "bootstrap",
+      "commands": [
+        {
+          "operation": "mem ingest",
+          "ms": 245.04,
+          "events": 50,
+          "newEvents": 50
+        },
+        {
+          "operation": "mem ingest",
+          "ms": 244.73,
+          "events": 50,
+          "newEvents": 50
+        },
+        {
+          "operation": "mem maintain",
+          "ms": 5507.05
+        },
+        {
+          "operation": "mem doctor",
+          "ms": 266.94
+        }
+      ],
+      "coalescedPendingProjection": true,
+      "exportAndStageMs": 27.66,
+      "transcriptBytes": 16400,
+      "messages": 100,
+      "sessions": 2,
+      "maintenanceResult": {
+        "provider": "igrep",
+        "action": "maintain",
+        "workspaceRoot": "/private/var/folders/_4/mr98ysw14k96srzc09x55q640000gn/T/idream-memory-pg-growth-914rrl/canonical/user-db463776222c49288ab9ab920ea85499bd21c2f6db561a5f2ee50431d78cdd0d/relationship-034e8f3a35c27d64336f7fbd70ed3fa76f8e40505ecbebaa03a3314685e3afe2/.rebuild-candidates/39095450-09d7-45fb-9a49-98c956cab50a/workspace",
+        "outcome": "success",
+        "reason": null,
+        "pendingRows": 100,
+        "processedRows": 100,
+        "observations": 2,
+        "llmCalls": 2,
+        "cost": {
+          "llmCalls": 2,
+          "tokenReportedCalls": 2,
+          "inputTokens": 7267,
+          "outputTokens": 31,
+          "elapsedMs": 5264,
+          "lanes": {
+            "dream": {
+              "llmCalls": 1,
+              "tokenReportedCalls": 1,
+              "inputTokens": 541,
+              "outputTokens": 17,
+              "transportElapsedMs": 639
+            },
+            "extract": {
+              "llmCalls": 1,
+              "tokenReportedCalls": 1,
+              "inputTokens": 6726,
+              "outputTokens": 14,
+              "transportElapsedMs": 4592
+            }
+          }
+        },
+        "profilePath": ".igrep/mem/bank/cards/profile.md",
+        "profileDeleted": false,
+        "written": 1,
+        "condensedLines": 0
+      },
+      "memoryStatus": {
+        "dialogueFiles": 2,
+        "pendingProfileRows": 0,
+        "processedProfileRows": 100,
+        "lastMaintainAt": "2026-09-09T11:30:33Z"
+      },
+      "workspaceBuildMs": 6557.36,
+      "ndjsonBytes": 46880,
+      "promoteMs": 1.92,
+      "dispatchMs": 6623.6,
+      "eventLoopMaxMs": 15.04,
+      "eventLoopP99Ms": 12.12,
+      "canonicalBytes": 194791,
+      "concurrentAttempts": {
+        "count": 4,
+        "wallMs": 298.75,
+        "samples": [
+          {
+            "prepareMs": 4.61,
+            "wakeMs": 285.54,
+            "wakeOutcome": "hit"
+          },
+          {
+            "prepareMs": 10.74,
+            "wakeMs": 273.2,
+            "wakeOutcome": "hit"
+          },
+          {
+            "prepareMs": 16.89,
+            "wakeMs": 280.64,
+            "wakeOutcome": "hit"
+          },
+          {
+            "prepareMs": 22.54,
+            "wakeMs": 267.65,
+            "wakeOutcome": "hit"
+          }
+        ]
+      }
+    },
+    {
+      "baseMessages": 100,
+      "phase": "incremental",
+      "commands": [
+        {
+          "operation": "mem ingest",
+          "ms": 276.95,
+          "events": 52,
+          "newEvents": 2
+        },
+        {
+          "operation": "mem doctor",
+          "ms": 263.2
+        }
+      ],
+      "coalescedPendingProjection": true,
+      "exportAndStageMs": 24.8,
+      "transcriptBytes": 16728,
+      "messages": 102,
+      "sessions": 2,
+      "maintenanceIntercepted": true,
+      "memoryStatus": {
+        "dialogueFiles": 2,
+        "pendingProfileRows": 2,
+        "processedProfileRows": 100,
+        "lastMaintainAt": "2026-09-09T11:30:33Z"
+      },
+      "workspaceBuildMs": 815.89,
+      "ndjsonBytes": 47809,
+      "promoteMs": 1.5,
+      "dispatchMs": 861.11,
+      "eventLoopMaxMs": 12.3,
+      "eventLoopP99Ms": 12.03,
+      "canonicalBytes": 198629,
+      "concurrentAttempts": {
+        "count": 4,
+        "wallMs": 300.94,
+        "samples": [
+          {
+            "prepareMs": 4.46,
+            "wakeMs": 286.45,
+            "wakeOutcome": "hit"
+          },
+          {
+            "prepareMs": 9.87,
+            "wakeMs": 284.04,
+            "wakeOutcome": "hit"
+          },
+          {
+            "prepareMs": 16.33,
+            "wakeMs": 283.42,
+            "wakeOutcome": "hit"
+          },
+          {
+            "prepareMs": 22.46,
+            "wakeMs": 247.66,
+            "wakeOutcome": "hit"
+          }
+        ]
+      },
+      "recall": {
+        "ms": 4185.24,
+        "outcome": "hit",
+        "results": 6
+      }
+    },
+    {
+      "baseMessages": 1000,
+      "phase": "bootstrap",
+      "commands": [
+        {
+          "operation": "mem ingest",
+          "ms": 443.5,
+          "events": 250,
+          "newEvents": 250
+        },
+        {
+          "operation": "mem ingest",
+          "ms": 531.21,
+          "events": 250,
+          "newEvents": 250
+        },
+        {
+          "operation": "mem ingest",
+          "ms": 599.4,
+          "events": 250,
+          "newEvents": 250
+        },
+        {
+          "operation": "mem ingest",
+          "ms": 672.73,
+          "events": 250,
+          "newEvents": 250
+        },
+        {
+          "operation": "mem doctor",
+          "ms": 267.62
+        }
+      ],
+      "coalescedPendingProjection": true,
+      "exportAndStageMs": 104.71,
+      "transcriptBytes": 1094500,
+      "messages": 1000,
+      "sessions": 4,
+      "maintenanceIntercepted": true,
+      "memoryStatus": {
+        "dialogueFiles": 4,
+        "pendingProfileRows": 1000,
+        "processedProfileRows": 0,
+        "lastMaintainAt": null
+      },
+      "workspaceBuildMs": 2828.79,
+      "ndjsonBytes": 1400234,
+      "promoteMs": 1.32,
+      "dispatchMs": 2960.05,
+      "eventLoopMaxMs": 12.43,
+      "eventLoopP99Ms": 12.04,
+      "canonicalBytes": 3788472,
+      "concurrentAttempts": {
+        "count": 4,
+        "wallMs": 317.28,
+        "samples": [
+          {
+            "prepareMs": 5.85,
+            "wakeMs": 288.28,
+            "wakeOutcome": "empty"
+          },
+          {
+            "prepareMs": 13.9,
+            "wakeMs": 262.97,
+            "wakeOutcome": "empty"
+          },
+          {
+            "prepareMs": 21.14,
+            "wakeMs": 290.88,
+            "wakeOutcome": "empty"
+          },
+          {
+            "prepareMs": 28.95,
+            "wakeMs": 287.25,
+            "wakeOutcome": "empty"
+          }
+        ]
+      }
+    },
+    {
+      "baseMessages": 1000,
+      "phase": "incremental",
+      "commands": [
+        {
+          "operation": "mem ingest",
+          "ms": 593.82,
+          "events": 252,
+          "newEvents": 2
+        },
+        {
+          "operation": "mem doctor",
+          "ms": 281.35
+        }
+      ],
+      "coalescedPendingProjection": true,
+      "exportAndStageMs": 98.87,
+      "transcriptBytes": 1096689,
+      "messages": 1002,
+      "sessions": 4,
+      "maintenanceIntercepted": true,
+      "memoryStatus": {
+        "dialogueFiles": 4,
+        "pendingProfileRows": 1002,
+        "processedProfileRows": 0,
+        "lastMaintainAt": null
+      },
+      "workspaceBuildMs": 1194.5,
+      "ndjsonBytes": 1403034,
+      "promoteMs": 1.38,
+      "dispatchMs": 1325.11,
+      "eventLoopMaxMs": 12.98,
+      "eventLoopP99Ms": 12.44,
+      "canonicalBytes": 3796044,
+      "concurrentAttempts": {
+        "count": 4,
+        "wallMs": 314.13,
+        "samples": [
+          {
+            "prepareMs": 5.1,
+            "wakeMs": 291.81,
+            "wakeOutcome": "empty"
+          },
+          {
+            "prepareMs": 12.69,
+            "wakeMs": 277.97,
+            "wakeOutcome": "empty"
+          },
+          {
+            "prepareMs": 20.12,
+            "wakeMs": 270.57,
+            "wakeOutcome": "empty"
+          },
+          {
+            "prepareMs": 27.89,
+            "wakeMs": 284.92,
+            "wakeOutcome": "empty"
+          }
+        ]
+      }
+    }
+  ],
+  "providerRequests": [
+    {
+      "ordinal": 1,
+      "path": "/v1/chat/completions",
+      "model": "Qwen3.5-4B-MLX-4bit",
+      "requestDigest": "b51b5863e8bce2c1f93e9a7b829346e883ddaf05dbe9498199883165f41f8c61",
+      "requestBytes": 23849,
+      "headersMs": 2056.13,
+      "status": 200,
+      "ms": 4585.85,
+      "responseBytes": 433,
+      "requestId": "chatcmpl-13bfdc47",
+      "actualModel": "Qwen3.5-4B-MLX-4bit",
+      "usage": {
+        "prompt_tokens": 6726,
+        "completion_tokens": 14,
+        "total_tokens": 6740,
+        "input_tokens": 6726,
+        "output_tokens": 14,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_time": 4.54
+      },
+      "responseDigest": "d52a2f8557b6f72a22d8feb4f4d27d09385bbd8acdb72ce01a19edaa445ad38e"
+    },
+    {
+      "ordinal": 2,
+      "path": "/v1/chat/completions",
+      "model": "Qwen3.5-4B-MLX-4bit",
+      "requestDigest": "5d50e41de97ff91fdef3d19c30890877a8275055d265f4d5e3ccb2050e6e92b1",
+      "requestBytes": 2756,
+      "headersMs": 635.54,
+      "status": 200,
+      "ms": 636.27,
+      "responseBytes": 439,
+      "requestId": "chatcmpl-a76e5aed",
+      "actualModel": "Qwen3.5-4B-MLX-4bit",
+      "usage": {
+        "prompt_tokens": 541,
+        "completion_tokens": 17,
+        "total_tokens": 558,
+        "input_tokens": 541,
+        "output_tokens": 17,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_time": 0.63
+      },
+      "responseDigest": "bc1518910f53154b74f8029eb1e1199d5a9826fbfaa9338218123f1621ac9413"
+    },
+    {
+      "ordinal": 3,
+      "path": "/v1/embeddings",
+      "model": "harrier-oss-v1-0.6b-MLX-8bit",
+      "requestDigest": "e16714de75ff5fcd1b577e7b24cadb787566d69181d19a42957fbb5c0e091ca9",
+      "requestBytes": 605,
+      "headersMs": 270.22,
+      "status": 200,
+      "ms": 271.03,
+      "responseBytes": 97187,
+      "actualModel": "harrier-oss-v1-0.6b-MLX-8bit",
+      "usage": {
+        "prompt_tokens": 113,
+        "total_tokens": 113
+      },
+      "responseDigest": "85b89cbc631d22651ac440619c6c1ef62e119aa339abdfb2f4a34488b8bae295"
+    },
+    {
+      "ordinal": 4,
+      "path": "/v1/rerank",
+      "model": "Qwen3-Reranker-0.6B-mlx-4Bit",
+      "requestDigest": "76672cd31119410cba3f6e624cdb4dbd0c8686a655835a83eae202ef95fa1ef3",
+      "requestBytes": 46972,
+      "headersMs": 3379.26,
+      "status": 200,
+      "ms": 3381.35,
+      "responseBytes": 2424,
+      "requestId": "rerank-3614d9fe",
+      "actualModel": "Qwen3-Reranker-0.6B-mlx-4Bit",
+      "usage": {
+        "total_tokens": 27066
+      },
+      "responseDigest": "ad8295a17f050646a424b70a51a54a2d8318b731ed907672caa1c92f06beea43"
+    },
+    {
+      "ordinal": 5,
+      "path": "/v1/rerank",
+      "model": "Qwen3-Reranker-0.6B-mlx-4Bit",
+      "requestDigest": "f3babdf29a4088ea10cc41c665c99044609d1e06b762d3a48d95528823099ad0",
+      "requestBytes": 83817,
+      "blocked": true
+    }
+  ]
+}

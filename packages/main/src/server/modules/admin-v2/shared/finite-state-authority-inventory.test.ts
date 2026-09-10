@@ -2,8 +2,14 @@ import { globSync, readFileSync } from "node:fs";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
+const sourceCache = new Map<string, string>();
+
 function source(path: string) {
-  return readFileSync(path, "utf8");
+  const cached = sourceCache.get(path);
+  if (cached !== undefined) return cached;
+  const contents = readFileSync(path, "utf8");
+  sourceCache.set(path, contents);
+  return contents;
 }
 
 const prismaModelDelegates = new Set(
@@ -134,8 +140,8 @@ function rootBinding(
 function mutatedBindings(
   sourceFile: ts.SourceFile,
   bindings: BindingInitializers,
-  model: string,
   field: string,
+  prismaMutationCalls: ReadonlySet<ts.CallExpression>,
 ) {
   const mutated = new Set<BindingKey>();
   const expandedEscapes = new Set<BindingKey>();
@@ -248,7 +254,7 @@ function mutatedBindings(
       mark(node.arguments[0]);
     } else if (
       ts.isCallExpression(node) &&
-      !isPrismaMutationMethod(node.expression, bindings)
+      !prismaMutationCalls.has(node)
     ) {
       for (const argument of node.arguments) markEscaped(argument);
     } else if (ts.isNewExpression(node)) {
@@ -387,15 +393,6 @@ function staticObject(
     unknown = true;
   }
   return { properties, unknown };
-}
-
-function isModelDelegate(
-  expression: ts.Expression,
-  model: string,
-  bindings: BindingInitializers,
-  resolving: ReadonlySet<BindingKey> = new Set(),
-): boolean {
-  return staticModelDelegateName(expression, bindings, resolving) === model;
 }
 
 function staticModelDelegateName(
@@ -556,69 +553,40 @@ function isKnownPrismaClient(
   return false;
 }
 
-function isKnownPrismaDelegate(
+function knownPrismaDelegateModel(
   expression: ts.Expression,
   bindings: BindingInitializers,
-) {
+): string | null {
   const model = staticModelDelegateName(expression, bindings);
   const client = staticModelDelegateClient(expression, bindings);
   return model !== null && prismaModelDelegates.has(model) && client !== null &&
-    isKnownPrismaClient(client, bindings);
+    isKnownPrismaClient(client, bindings) ? model : null;
 }
 
-function isPrismaMutationMethod(
+function prismaMutationModel(
   expression: ts.Expression,
   bindings: BindingInitializers,
   resolving: ReadonlySet<BindingKey> = new Set(),
-): boolean {
+): string | null {
   const current = unwrapExpression(expression);
   if (ts.isPropertyAccessExpression(current)) {
-    return ["update", "updateMany"].includes(current.name.text) &&
-      isKnownPrismaDelegate(current.expression, bindings);
+    return ["update", "updateMany"].includes(current.name.text)
+      ? knownPrismaDelegateModel(current.expression, bindings)
+      : null;
   }
   if (ts.isElementAccessExpression(current) && current.argumentExpression) {
     const method = staticString(current.argumentExpression, bindings);
-    return (method === "update" || method === "updateMany") &&
-      isKnownPrismaDelegate(current.expression, bindings);
+    return method === "update" || method === "updateMany"
+      ? knownPrismaDelegateModel(current.expression, bindings)
+      : null;
   }
-  if (!ts.isIdentifier(current)) return false;
+  if (!ts.isIdentifier(current)) return null;
   const key = bindingKey(current, bindings);
-  if (resolving.has(key)) return false;
+  if (resolving.has(key)) return null;
   const initializer = initializerFor(current, bindings);
-  if (!initializer) return false;
-  return isPrismaMutationMethod(
+  if (!initializer) return null;
+  return prismaMutationModel(
     initializer,
-    bindings,
-    new Set([...resolving, key]),
-  );
-}
-
-function isModelMutationMethod(
-  expression: ts.Expression,
-  model: string,
-  bindings: BindingInitializers,
-  resolving: ReadonlySet<BindingKey> = new Set(),
-): boolean {
-  const current = unwrapExpression(expression);
-  if (ts.isPropertyAccessExpression(current)) {
-    return ["update", "updateMany"].includes(current.name.text) &&
-      isModelDelegate(current.expression, model, bindings) &&
-      isKnownPrismaDelegate(current.expression, bindings);
-  }
-  if (ts.isElementAccessExpression(current) && current.argumentExpression) {
-    const method = staticString(current.argumentExpression, bindings);
-    return (method === "update" || method === "updateMany") &&
-      isModelDelegate(current.expression, model, bindings) &&
-      isKnownPrismaDelegate(current.expression, bindings);
-  }
-  if (!ts.isIdentifier(current)) return false;
-  const key = bindingKey(current, bindings);
-  if (resolving.has(key)) return false;
-  const initializer = initializerFor(current, bindings);
-  if (!initializer) return false;
-  return isModelMutationMethod(
-    initializer,
-    model,
     bindings,
     new Set([...resolving, key]),
   );
@@ -627,6 +595,9 @@ function isModelMutationMethod(
 const parsedMutationSourceCache = new Map<string, {
   readonly sourceFile: ts.SourceFile;
   readonly bindings: BindingInitializers;
+  readonly mutationCallsByModel: ReadonlyMap<string, readonly ts.CallExpression[]>;
+  readonly prismaMutationCalls: ReadonlySet<ts.CallExpression>;
+  readonly mutatedBindingsByField: Map<string, ReadonlySet<BindingKey>>;
 }>();
 
 function parsedMutationSource(contents: string) {
@@ -653,28 +624,35 @@ function parsedMutationSource(contents: string) {
   const program = ts.createProgram([fileName], compilerOptions, host);
   const boundSourceFile = program.getSourceFile(fileName);
   if (!boundSourceFile) throw new Error("Mutation detector source did not bind");
+  const bindings = constInitializers(boundSourceFile, program.getTypeChecker());
+  const mutationCallsByModel = new Map<string, ts.CallExpression[]>();
+  const prismaMutationCalls = new Set<ts.CallExpression>();
+  const indexMutationCalls = (node: ts.Node) => {
+    if (ts.isCallExpression(node)) {
+      const model = prismaMutationModel(node.expression, bindings);
+      if (model !== null) {
+        const calls = mutationCallsByModel.get(model) ?? [];
+        calls.push(node);
+        mutationCallsByModel.set(model, calls);
+        prismaMutationCalls.add(node);
+      }
+    }
+    ts.forEachChild(node, indexMutationCalls);
+  };
+  indexMutationCalls(boundSourceFile);
   const parsed = {
     sourceFile: boundSourceFile,
-    bindings: constInitializers(boundSourceFile, program.getTypeChecker()),
+    bindings,
+    mutationCallsByModel,
+    prismaMutationCalls,
+    mutatedBindingsByField: new Map<string, ReadonlySet<BindingKey>>(),
   } as const;
   parsedMutationSourceCache.set(contents, parsed);
   return parsed;
 }
 
 function mutationSourceTargetsModel(contents: string, model: string) {
-  const { sourceFile, bindings } = parsedMutationSource(contents);
-  let targetsModel = false;
-  const visit = (node: ts.Node) => {
-    if (
-      ts.isCallExpression(node) &&
-      isModelMutationMethod(node.expression, model, bindings)
-    ) {
-      targetsModel = true;
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(sourceFile);
-  return targetsModel;
+  return parsedMutationSource(contents).mutationCallsByModel.has(model);
 }
 
 function mutationSourceWritesField(
@@ -682,34 +660,26 @@ function mutationSourceWritesField(
   model: string,
   field: string,
 ) {
-  const { sourceFile, bindings } = parsedMutationSource(contents);
-  const mutated = mutatedBindings(sourceFile, bindings, model, field);
-  let writesField = false;
-
-  const visit = (node: ts.Node) => {
-    if (
-      ts.isCallExpression(node) &&
-      isModelMutationMethod(node.expression, model, bindings)
-    ) {
-      const input = node.arguments[0];
-      const staticInput = input ? staticObject(input, bindings, mutated) : null;
-      if (!staticInput || staticInput.unknown) {
-        writesField = true;
-      } else if (staticInput.properties.has("data")) {
-        const data = staticInput.properties.get("data");
-        const staticData = data ? staticObject(data, bindings, mutated) : null;
-        if (
-          !staticData ||
-          staticData.unknown ||
-          staticData.properties.has(field)
-        ) writesField = true;
-      }
-    }
-    ts.forEachChild(node, visit);
-  };
-
-  visit(sourceFile);
-  return writesField;
+  const parsed = parsedMutationSource(contents);
+  const calls = parsed.mutationCallsByModel.get(model);
+  if (!calls) return false;
+  const { sourceFile, bindings, prismaMutationCalls, mutatedBindingsByField } = parsed;
+  // Every production file is indexed. Escape analysis is needed only when the
+  // model has a write, and depends on the field, not on the target model.
+  let mutated = mutatedBindingsByField.get(field);
+  if (!mutated) {
+    mutated = mutatedBindings(sourceFile, bindings, field, prismaMutationCalls);
+    mutatedBindingsByField.set(field, mutated);
+  }
+  return calls.some((node) => {
+    const input = node.arguments[0];
+    const staticInput = input ? staticObject(input, bindings, mutated) : null;
+    if (!staticInput || staticInput.unknown) return true;
+    if (!staticInput.properties.has("data")) return false;
+    const data = staticInput.properties.get("data");
+    const staticData = data ? staticObject(data, bindings, mutated) : null;
+    return !staticData || staticData.unknown || staticData.properties.has(field);
+  });
 }
 
 function mutationWritesField(path: string, model: string, field: string) {
@@ -841,6 +811,22 @@ describe("Admin v2 finite-state authority inventory", () => {
     it("keeps a statically proven unrelated property mutation out of the status inventory", () => {
       const contents = 'const data = { jobId: "job" }; data.jobId = "job-2"; db.generationJob.update({ data });';
       expect(mutationSourceWritesField(contents, "generationJob", "status")).toBe(false);
+    });
+
+    it("keeps field analysis and writer results independent across cached model queries", () => {
+      const contents = [
+        'const data = { jobId: "job" }; data.workflowStage = "ready";',
+        'db.contentProductionBatch.update({ data });',
+        'db.generationJob.update({ data: { status: "queued" } });',
+        'db.adminCase.update({ data });',
+      ].join("\n");
+      expect(mutationSourceWritesField(contents, "contentProductionBatch", "workflowStage")).toBe(true);
+      expect(mutationSourceWritesField(contents, "contentProductionBatch", "verificationState")).toBe(false);
+      expect(mutationSourceWritesField(contents, "generationJob", "status")).toBe(true);
+      expect(mutationSourceWritesField(contents, "adminCase", "status")).toBe(false);
+      expect(mutationSourceWritesField(contents, "generationJob", "workflowStage")).toBe(false);
+      expect(mutationSourceTargetsModel(contents, "opsIncident")).toBe(false);
+      expect(mutationSourceWritesField(contents, "contentProductionBatch", "workflowStage")).toBe(true);
     });
   });
 

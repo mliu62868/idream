@@ -361,9 +361,19 @@ describe.sequential("Admin v2 completed subscription refund authority", () => {
     const cancelInvoiceId = `${P}${suffix}-invoice`;
     const cancelSubscriptionId = `${P}${suffix}-subscription`;
     await createUser({ id: cancelCustomerId, dataClass: "customer" });
+    const planId = `${P}${suffix}-plan`;
+    const purchasedPlan = await createPlan({
+      id: planId, slug: `${P}${suffix}-premium`, priceCents: 1_999, includedDreamcoins: 1_500,
+      features: { unlimitedMessages: true, imageGeneration: true, videoGeneration: false, voiceEnabled: true },
+    });
     await prisma.checkoutSession.create({
       data: {
         id: cancelCheckoutId,
+        offerSnapshot: {
+          version: 1, planId, slug: purchasedPlan.slug, name: purchasedPlan.name,
+          billingPeriod: purchasedPlan.billingPeriod, priceCents: 1_999, currency: "usd",
+          includedDreamcoins: 1_500, features: purchasedPlan.features!,
+        },
         userId: cancelCustomerId,
         planId,
         provider: "mock",
@@ -558,6 +568,9 @@ describe.sequential("Admin v2 completed subscription refund authority", () => {
     await prisma.subscription.delete({
       where: { id: competingSubscriptionId },
     });
+    await prisma.plan.update({ where: { id: planId }, data: {
+      features: { unlimitedMessages: false, imageGeneration: false, videoGeneration: true, voiceEnabled: false },
+    } });
     const converged = await api("POST", "billing/webhooks/mock", {
       body: webhookBody,
     });
@@ -587,6 +600,14 @@ describe.sequential("Admin v2 completed subscription refund authority", () => {
         where: { userId: cancelCustomerId, source: "subscription" },
       }),
     ).resolves.toBe(6);
+    expect(await prisma.entitlement.findMany({
+      where: { userId: cancelCustomerId, key: { in: ["unlimited_messages", "voice_enabled", "video_generation"] } },
+      select: { key: true, value: true }, orderBy: { key: "asc" },
+    })).toEqual([
+      { key: "unlimited_messages", value: true },
+      { key: "video_generation", value: false },
+      { key: "voice_enabled", value: true },
+    ]);
     await expect(
       prisma.dreamcoinLedger.findMany({
         where: {

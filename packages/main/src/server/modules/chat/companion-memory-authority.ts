@@ -124,7 +124,7 @@ export async function scheduleCompanionMemoryRebuild(
   const aggregateId = companionRelationshipAggregateId(input.userId, input.characterId);
   // INVARIANT: every destructive mutation carries its own exact purge fence.
   // A pending rebuild may already be processing and cannot be safely widened.
-  await supersedePendingMemoryProjections(tx, aggregateId, "destructive_memory_rebuild");
+  await supersedeMemoryProjections(tx, aggregateId, "destructive_memory_rebuild");
   const authority = await tx.companionMemoryAuthority.upsert({
     where: { aggregateId },
     create: { aggregateId, version: BigInt(1) },
@@ -337,7 +337,7 @@ export async function clearCompanionMemory(userId: string, characterId: string) 
       },
     });
     const aggregateId = companionRelationshipAggregateId(userId, characterId);
-    await supersedePendingMemoryProjections(tx, aggregateId, "durable_memory_purge");
+    await supersedeMemoryProjections(tx, aggregateId, "durable_memory_purge");
     await tx.mainOutboxEvent.updateMany({
       where: {
         eventType: MAIN_TO_CHAT_EVENTS.companionMemoryRebuildRequestedV1,
@@ -451,7 +451,10 @@ async function* memorySourceMessages(
         assistantStatus: "sent",
         memoryEnabled: true,
       },
-      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      // The stream decoder writes one complete session at a time. Global
+      // chronology interleaves sessions when a user returns to an older chat;
+      // retain chronology within each session, including across database pages.
+      orderBy: [{ sessionId: "asc" }, { createdAt: "asc" }, { id: "asc" }],
       take: PAGE_SIZE,
       ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
       select: {
@@ -538,7 +541,7 @@ function memoryRebuildPayload(event: DurableEventEnvelope): {
   };
 }
 
-async function supersedePendingMemoryProjections(
+async function supersedeMemoryProjections(
   tx: Prisma.TransactionClient,
   aggregateId: string,
   reason: string,
@@ -548,7 +551,10 @@ async function supersedePendingMemoryProjections(
       eventType: MAIN_TO_CHAT_EVENTS.companionMemoryProjectRequestedV1,
       aggregateType: "chat_relationship",
       aggregateId,
-      status: "pending",
+      // A processing projection may already have exported the pre-deletion
+      // transcript. Revoke its live lease too: the final promotion check under
+      // the same user lock must reject it after a destructive mutation.
+      status: { in: ["pending", "processing"] },
     },
     data: {
       status: "delivered",

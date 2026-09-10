@@ -19,7 +19,7 @@ import { GET as chatUsageRoute } from "@/app/api/v2/admin/chat/usage/route";
 import { GET as chatModerationEventsRoute } from "@/app/api/v2/admin/chat/moderation-events/route";
 import { prisma } from "@/server/lib/db";
 import { callAdminV2, expectAdminV2Ok } from "@/server/test/admin-v2-client";
-import { createUser, purgeTestData } from "@/server/test/helpers";
+import { createPlan, createUser, purgeTestData } from "@/server/test/helpers";
 import { encodeAdminListCursor } from "@/server/modules/admin-v2/shared/list-cursor";
 
 const P = "zt-v2chatops-";
@@ -210,6 +210,46 @@ describe("Admin v2 Main-owned Chat operations", () => {
       actor: analyst,
     });
     expect(denied.status).toBe(403);
+  });
+
+  it("reports purchased access rather than stale subscription cache values", async () => {
+    const planId = `${P}purchased-plan`;
+    const invoiceId = `${P}purchased-invoice`;
+    const subscriptionId = `${P}purchased-subscription`;
+    const plan = await createPlan({ id: planId, slug: `${P}premium`, features: { unlimitedMessages: false, voiceEnabled: false } });
+    await prisma.checkoutSession.create({ data: {
+      id: `${P}purchased-checkout`, userId: customerId, planId, provider: "mock", providerSessionId: invoiceId,
+      amountCents: plan.priceCents, currency: plan.currency, status: "completed",
+      offerSnapshot: {
+        version: 1, planId, slug: plan.slug, name: plan.name, billingPeriod: plan.billingPeriod,
+        priceCents: plan.priceCents, currency: plan.currency, includedDreamcoins: plan.includedDreamcoins,
+        features: { unlimitedMessages: true, voiceEnabled: true },
+      },
+    } });
+    await prisma.subscription.create({ data: {
+      id: subscriptionId, userId: customerId, planId, provider: "mock", providerSubscriptionId: invoiceId,
+      status: "active", currentPeriodEnd: new Date(Date.now() + 86_400_000),
+    } });
+    const before = expectAdminV2Ok(await callAdminV2(chatOverviewRoute, {
+      url: "/api/v2/admin/chat/overview", actor: admin,
+    }));
+    try {
+      await prisma.entitlement.updateMany({ where: { userId: customerId }, data: { source: "subscription", value: false } });
+      const usage = expectAdminV2Ok(await callAdminV2(chatUsageRoute, {
+        url: "/api/v2/admin/chat/usage", actor: admin, query: { userId: customerId },
+      }));
+      expect(usage.data.items).toEqual([expect.objectContaining({
+        userId: customerId, modelTier: "premium", unlimitedMessages: true, voiceEnabled: true,
+        freeRemaining: null, quotaStatus: "unlimited",
+      })]);
+      const overview = expectAdminV2Ok(await callAdminV2(chatOverviewRoute, {
+        url: "/api/v2/admin/chat/overview", actor: admin,
+      }));
+      expect(overview.data.overview.unlimitedEntitlements).toBe(before.data.overview.unlimitedEntitlements);
+    } finally {
+      await prisma.entitlement.updateMany({ where: { userId: customerId }, data: { source: "test", value: true } });
+      await prisma.subscription.delete({ where: { id: subscriptionId } });
+    }
   });
 
   it("reads sessions, usage, moderation and overview from Main without calling Chat", async () => {

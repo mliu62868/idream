@@ -35,11 +35,12 @@ export function updateGenerationRequestSourceMeta(
   input: {
     readonly requestId: string;
     readonly sourceMeta: Prisma.InputJsonValue;
+    readonly redactMomentSpec?: boolean;
   },
 ): Promise<GenerationJob> {
   return tx.generationJob.update({
     where: { id: input.requestId },
-    data: { sourceMeta: input.sourceMeta },
+    data: { sourceMeta: input.sourceMeta, ...(input.redactMomentSpec ? { momentSpec: Prisma.JsonNull } : {}) },
   });
 }
 

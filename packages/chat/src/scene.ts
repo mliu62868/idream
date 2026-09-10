@@ -1,12 +1,6 @@
-export interface SceneState {
-  schemaVersion: 1;
-  version: number;
-  location: string | null;
-  time: string | null;
-  participants: string[];
-  emotionalBeat: string | null;
-  unresolvedThreads: string[];
-}
+import { chatSceneStateSchema, type ChatSceneState } from "@idream/shared/contracts";
+
+export type SceneState = ChatSceneState;
 
 export interface SceneDelta {
   location: string | null;
@@ -30,21 +24,8 @@ export function emptySceneState(): SceneState {
 }
 
 export function parseSceneState(value: unknown): SceneState | null {
-  if (!record(value) || value.schemaVersion !== 1) return null;
-  if (typeof value.version !== "number" || !Number.isInteger(value.version) || value.version < 0) return null;
-  if (!nullableText(value.location) || !nullableText(value.time) || !nullableText(value.emotionalBeat)) return null;
-  const participants = textArray(value.participants);
-  const unresolvedThreads = textArray(value.unresolvedThreads);
-  if (!participants || !unresolvedThreads) return null;
-  return {
-    schemaVersion: 1,
-    version: value.version,
-    location: value.location,
-    time: value.time,
-    participants,
-    emotionalBeat: value.emotionalBeat,
-    unresolvedThreads,
-  };
+  const parsed = chatSceneStateSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
 }
 
 export function applySceneDelta(previous: SceneState, delta: SceneDelta): SceneState {
@@ -181,18 +162,4 @@ function unique(values: string[]): string[] {
 
 function normalize(value: string): string {
   return value.toLowerCase().replace(/\s+/g, " ").trim();
-}
-
-function record(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function nullableText(value: unknown): value is string | null {
-  return value === null || typeof value === "string";
-}
-
-function textArray(value: unknown): string[] | null {
-  return Array.isArray(value) && value.every((item) => typeof item === "string")
-    ? value
-    : null;
 }

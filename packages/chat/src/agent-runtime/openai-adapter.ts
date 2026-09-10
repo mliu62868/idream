@@ -162,7 +162,10 @@ function requiredToolOnlyChunks(
 }
 
 class RequiredToolOmission extends LlmError {
-  constructor(readonly replayState: Extract<StreamChunk, { type: "finish" }>["replayState"]) {
+  constructor(
+    readonly replayState: Extract<StreamChunk, { type: "finish" }>["replayState"],
+    readonly finishReason: FinishReason,
+  ) {
     super(REQUIRED_TOOL_OMITTED_MESSAGE, "INVALID_RESPONSE");
   }
 }
@@ -342,15 +345,23 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
       } catch (error) {
         if (!(error instanceof RequiredToolOmission)) throw error;
         omission = error;
-        if (!jsonCompatibilityMode) continue;
-
         const content = chunks
           .filter((chunk): chunk is Extract<StreamChunk, { type: "text-delta" }> =>
             chunk.type === "text-delta")
           .map((chunk) => chunk.text)
           .join("");
-        const argumentsJson = requiredToolArgumentsJson(this.requiredToolName, content);
-        if (!argumentsJson) break;
+        // Some compatible providers return the exact arguments as text even
+        // for a forced native tool. Validate that completed candidate before
+        // spending another request; length-limited or mixed tool output is not
+        // an alternative complete action, even if its text happens to parse.
+        const argumentsJson = error.finishReason.kind === "stop"
+          && !chunks.some((chunk) => chunk.type === "tool-call-delta")
+          ? requiredToolArgumentsJson(this.requiredToolName, content)
+          : null;
+        if (!argumentsJson) {
+          if (!jsonCompatibilityMode) continue;
+          break;
+        }
         const callId = `compat_${createHash("sha256")
           .update(`${this.requiredToolName}\0${argumentsJson}`)
           .digest("hex")
@@ -580,7 +591,6 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
       };
 
       for await (const text of decodedResponseChunks(response.body, timeout.signal)) {
-        timeout.resetIdle(this.profile.timeout.idleMs);
         responseBytes += Buffer.byteLength(text);
         if (responseBytes > MAX_PROVIDER_STREAM_BYTES) {
           failStreamLimit("provider stream exceeded the configured byte limit");
@@ -604,9 +614,13 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
           const chunks = processPayload(payload);
           if (chunks.some((chunk) => chunk.type === "text-delta"
             || chunk.type === "reasoning-delta"
-            || chunk.type === "tool-call-delta")) {
+            || (chunk.type === "tool-call-delta" && Boolean(chunk.name || chunk.argumentsDelta)))) {
             if (firstToken) clearTimeout(firstTokenTimer);
             firstToken = false;
+            // Prefill owns its full first-token deadline. Once output starts,
+            // only model output renews the idle deadline; socket bytes, SSE
+            // comments and empty metadata cannot disguise a stalled model.
+            timeout.resetIdle(this.profile.timeout.idleMs);
           }
           for (const chunk of chunks) yield chunk;
         }
@@ -657,7 +671,7 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
               .map((state) => state.name)
               .filter(Boolean),
           }, "provider omitted required companion tool");
-          throw new RequiredToolOmission(replayState);
+          throw new RequiredToolOmission(replayState, resolvedFinish);
         }
         // INVARIANT: transport retries and abandoned streams must keep forcing
         // the action. Only a validated native tool call advances the adapter to

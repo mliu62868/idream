@@ -86,6 +86,35 @@ async function expectAppError(promise: Promise<unknown>, status: number) {
   return error as AppError;
 }
 
+async function withRejectedAdmissionOutbox(run: () => Promise<void>) {
+  // Fail the last durable reservation write, after Job/events/debit/Attempt.
+  // Scope the trigger to this suite's owned users and always remove it.
+  await prisma.$executeRawUnsafe(`
+    CREATE FUNCTION test_reject_generation_admission_outbox()
+    RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      IF NEW."eventType" = 'generation.retry.dispatch.v2' AND EXISTS (
+        SELECT 1 FROM generation_jobs WHERE id = NEW."aggregateId" AND "userId" LIKE 'zt-genwrite-%'
+      ) THEN
+        RAISE EXCEPTION 'injected generation admission outbox failure';
+      END IF;
+      RETURN NEW;
+    END
+    $$
+  `);
+  try {
+    await prisma.$executeRawUnsafe(`
+      CREATE TRIGGER test_reject_generation_admission_outbox
+      BEFORE INSERT ON main_outbox_events
+      FOR EACH ROW EXECUTE FUNCTION test_reject_generation_admission_outbox()
+    `);
+    await run();
+  } finally {
+    await prisma.$executeRawUnsafe("DROP TRIGGER IF EXISTS test_reject_generation_admission_outbox ON main_outbox_events");
+    await prisma.$executeRawUnsafe("DROP FUNCTION IF EXISTS test_reject_generation_admission_outbox()");
+  }
+}
+
 beforeAll(async () => {
   await purgeTestData(P);
 });
@@ -96,6 +125,27 @@ afterAll(async () => {
 });
 
 describe("createGenerationJobForUser", () => {
+  it("rolls back the accepted Job and debit if its dispatch outbox cannot commit", async () => {
+    const userId = `${P}create-atomic`;
+    await createUser({ id: userId });
+    await grantPremiumControls(userId);
+    await grantCoins(userId, 200, "seed");
+    const body = await quotedFreeplayBody(userId, "a reading nook with a durable delivery");
+    const openingBalance = await dreamcoinBalance(userId);
+    const options = { idempotencyKey: `${P}create-atomic-key`, profileSelectionAuthority: "public_generator" as const };
+
+    await withRejectedAdmissionOutbox(async () => {
+      await expect(createGenerationJobForUser(userId, body, options)).rejects.toThrow("injected generation admission outbox failure");
+    });
+
+    expect(await prisma.generationJob.count({ where: { userId } })).toBe(0);
+    expect(await prisma.dreamcoinLedger.count({ where: { userId, reason: "generation_spend" } })).toBe(0);
+    expect(await dreamcoinBalance(userId)).toBe(openingBalance);
+    const accepted = await createGenerationJobForUser(userId, body, options);
+    expect(await prisma.generationAttempt.count({ where: { requestId: accepted.id } })).toBe(1);
+    expect(await prisma.dreamcoinLedger.count({ where: { sourceId: accepted.id, reason: "generation_spend" } })).toBe(1);
+  });
+
   it("queues a job, reserves its first attempt, and charges the quoted cost", async () => {
     const userId = `${P}create`;
     await createUser({ id: userId });
@@ -191,6 +241,32 @@ describe("retryGenerationJobForUser", () => {
       },
     });
   }
+
+  it("keeps the failed source and balance intact when a retry's outbox reservation fails", async () => {
+    const userId = `${P}retry-atomic`;
+    await createUser({ id: userId });
+    await grantCoins(userId, 200, "seed");
+    const source = await seedFailedJob(userId, `${P}retry-atomic-job`);
+    const target = await resolveGenerationRetryTarget({ userId, generationJobId: source.id, idempotencyKey: `${P}retry-atomic-key` });
+    if (target.kind !== "retryable") throw new Error("expected a retryable source");
+    const input = {
+      userId, job: target.job, idempotencyKey: `${P}retry-atomic-key`,
+      quoteAuthority: await exactRetryQuote(userId, source.id),
+    };
+    const openingBalance = await dreamcoinBalance(userId);
+
+    await withRejectedAdmissionOutbox(async () => {
+      await expect(retryGenerationJobForUser(input)).rejects.toThrow("injected generation admission outbox failure");
+    });
+
+    expect(await prisma.generationJob.findUniqueOrThrow({ where: { id: source.id } })).toEqual(source);
+    expect(await prisma.generationJob.count({ where: { derivedFromJobId: source.id } })).toBe(0);
+    expect(await dreamcoinBalance(userId)).toBe(openingBalance);
+    const accepted = await retryGenerationJobForUser(input);
+    expect(accepted.derivedFromJobId).toBe(source.id);
+    expect(await prisma.generationAttempt.count({ where: { requestId: accepted.id } })).toBe(1);
+    expect(await prisma.dreamcoinLedger.count({ where: { sourceId: accepted.id, reason: "generation_spend" } })).toBe(1);
+  });
 
   it("derives a queued retry from the failed job and leaves the original failed", async () => {
     const userId = `${P}retry`;

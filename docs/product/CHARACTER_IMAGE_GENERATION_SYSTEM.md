@@ -595,7 +595,7 @@ GenerationJob ── pins ── visualProfileId/version + referenceSetRevisionI
 | CharacterVisualReferenceSnapshot | `id`, `referenceSetRevisionId`, `mediaAssetId`, `role`, `weight`, `crop`, scores, `availableAtSnapshot`；无 mutable status；同 revision/asset 唯一；asset 软删不改历史 snapshot |
 | CharacterLook | `id`, `characterId`, `visualProfileId`, `ownerId`, `label`, `appearanceDelta`, `status`, `rebasedFromLookId?`, timestamps；同 owner/character/label active 唯一；角色删除 cascade，profile 归档不删除 Look |
 | GenerationFeedback | `id`, `actorId`, `generationJobId`, `mediaAssetId`, `characterId?`, `visualProfileId?`, `referenceSetRevisionId?`, `type`, `reason?`, `sourceSurface`, `retryJobId?`, `idempotencyKey`, timestamps；`unique(actorId, idempotencyKey)` |
-| MomentSpec | 作为 Job 的不可变 JSON snapshot 保存：`schemaVersion`, `parserVersion`, `rawInput`, 结构字段, `confidence`, `continuitySources[]`, `createdAt` |
+| MomentSpec | 作为 Job 的不可变 JSON snapshot 保存：`schemaVersion`, `parserVersion`, `rawInput`, 结构字段, 验证状态, `continuitySources[]`, `createdAt`；当前 `moment-direct-v1` 使用 `verification: direct_input`，不以固定置信度宣称语义已验证 |
 
 所有会改变未来身份的动作写 AdminAuditLog 或等价审计事件。Like、feedback 和 display avatar 软删/撤销不删除生成资产。
 

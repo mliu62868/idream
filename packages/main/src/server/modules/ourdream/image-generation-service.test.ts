@@ -3089,9 +3089,11 @@ describe("image generation service contract", () => {
       ],
     });
     await grantCoins(userId, 100, "seed");
+    // This case verifies identity/scene separation for an accepted direction.
+    // Oversized complete directions are rejected, not silently truncated.
     const agentScene = [
       "sitting beside a rain-streaked window, soft evening light",
-      "soft rain reflections and warm practical light, ".repeat(18),
+      "soft rain reflections and warm practical light, ".repeat(15),
       "fully clothed in a silk robe",
     ].join(" ");
 
@@ -5038,7 +5040,7 @@ describe("image generation service contract", () => {
       parserVersion: "moment-direct-v1",
       rawInput,
       scene: rawInput,
-      confidence: 1,
+      verification: "direct_input",
       continuitySources: ["user_prompt"],
     });
   });

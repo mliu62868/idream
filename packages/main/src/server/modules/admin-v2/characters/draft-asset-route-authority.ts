@@ -110,11 +110,6 @@ export function evaluateDraftAssetRouteAuthority(
   const missingPurposes = characterDraftAssetPurposes.filter(
     (purpose) => !entries[purpose],
   );
-  const invalidBootstrapPurposes = selectedPurposes.filter(
-    (purpose) =>
-      purpose !== "character_cover" &&
-      entries[purpose]?.bootstrapIdentity === true,
-  );
   const stalePurposes: CharacterDraftAssetPurpose[] = [];
   const routeCurrentByPurpose = Object.fromEntries(
     selectedPurposes.map((purpose) => [purpose, true]),
@@ -126,16 +121,13 @@ export function evaluateDraftAssetRouteAuthority(
     currentRouteFingerprint,
     stalePurposes,
     missingPurposes,
-    invalidBootstrapPurposes,
     recoveryPurpose: stalePurposes[0] ?? null,
     routeCurrentByPurpose,
-    releaseReady:
-      missingPurposes.length === 0 && invalidBootstrapPurposes.length === 0,
+    // Bootstrap describes how the image established identity. Its exact
+    // identity pins are checked at Release, independently of the selected slot.
+    releaseReady: missingPurposes.length === 0,
     releaseBlockers: [
       ...(missingPurposes.length > 0 ? ["draft_asset_pack_incomplete"] : []),
-      ...(invalidBootstrapPurposes.length > 0
-        ? ["draft_asset_bootstrap_scope_invalid"]
-        : []),
     ],
   };
 }

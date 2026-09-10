@@ -229,7 +229,7 @@ describe.sequential("Character image placement authority", () => {
     await prisma.$disconnect();
   });
 
-  it("rejects synthetic or mock generated images before direct adoption and accepts a real completed output without review", async () => {
+  it("selects a real generated library image across placements while rejecting invalid origins and duplicate placement use", async () => {
     const rollback = new Error("generated image provenance verified");
     await expect(prisma.$transaction(async (tx) => {
       const assetId = `generated-placement-${suffix}`;
@@ -256,7 +256,7 @@ describe.sequential("Character image placement authority", () => {
         items: { create: { id: itemId, itemIndex: 0, status: "generated", mediaAssetId: assetId, jobId, tags: [] } },
       } });
       const selection = {
-        characterId, expectedProjectVersion: 1, purpose: "character_cover" as const, assetId,
+        characterId, expectedProjectVersion: 1, purpose: "character_hero" as const, assetId,
         actor: { id: actorId, role: "admin" as const }, reason: "Directly adopt a real generated image",
         requestId: `generated-adoption-${suffix}`,
       };
@@ -298,7 +298,23 @@ describe.sequential("Character image placement authority", () => {
         await tx.generationJob.update({ where: { id: jobId }, data: { status: "completed" } });
         await tx.mediaAsset.update({ where: { id: assetId }, data: { metadata: recovered.asset.metadata! } });
       }
-      await expect(selectCharacterDraftImage(selection, tx)).resolves.toMatchObject({ selectedAssetId: assetId, projectVersion: 2 });
+      await expect(selectCharacterDraftImage(selection, tx)).resolves.toMatchObject({
+        selectedAssetId: assetId, selectedPurpose: "character_hero", projectVersion: 2,
+        draftImageAssetId: null, draftAssetPack: { character_hero: assetId },
+      });
+      const qualification = (await characterImageQualifications(tx, characterId, [
+        await tx.mediaAsset.findUniqueOrThrow({ where: { id: assetId } }),
+      ])).get(assetId);
+      expect(qualification).toMatchObject({
+        source: "generation", state: "release_qualified",
+        selectablePurposes: ["character_cover", "character_hero", "character_chat"],
+        selectedPurposes: ["character_hero"], releaseQualifiedPurposes: ["character_hero"],
+        authority: { runId, itemId, generationJobId: jobId },
+      });
+      await expect(selectCharacterDraftImage({
+        ...selection, expectedProjectVersion: 2, purpose: "character_cover",
+      }, tx)).rejects.toMatchObject({ status: 409, details: { duplicatePurpose: "character_hero", assetId } });
+      await expect(selectCharacterDraftImage(selection, tx)).rejects.toMatchObject({ status: 409, details: { currentVersion: 2 } });
       expect(await tx.creativeReviewDecision.count({ where: { artifactId: assetId } })).toBe(0);
       throw rollback;
     })).rejects.toBe(rollback);

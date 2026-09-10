@@ -233,8 +233,9 @@ export async function attemptChatAgentRunAdmission(
 
 export async function dispatchPendingChatAgentRuns(
   batch = 50,
+  signal?: AbortSignal,
 ): Promise<{ admitted: number; pending: number }> {
-  if (!env.CHAT_SERVICE_URL || !env.INTERNAL_TOKEN) return { admitted: 0, pending: 0 };
+  if (signal?.aborted || !env.CHAT_SERVICE_URL || !env.INTERNAL_TOKEN) return { admitted: 0, pending: 0 };
   const now = new Date();
   const rows = await prisma.chatTurn.findMany({
     where: {
@@ -250,6 +251,7 @@ export async function dispatchPendingChatAgentRuns(
   });
   let admitted = 0;
   for (const row of rows) {
+    if (signal?.aborted) break;
     const result = await attemptPersistedChatAgentRunAdmission(row.id);
     if (result.admitted) admitted += 1;
   }

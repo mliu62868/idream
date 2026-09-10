@@ -236,7 +236,7 @@ describe("public API runtime contracts", () => {
       parseProfileResponse({
         ok: true,
         data: {
-          user: { email: "customer@example.com", displayName: "Customer" },
+          user: { id: "user-1", email: "customer@example.com", displayName: "Customer" },
           balance: 1500,
           subscription,
           billingAccess,
@@ -260,7 +260,7 @@ describe("public API runtime contracts", () => {
       parseProfileResponse({
         ok: true,
         data: {
-          user: { email: "customer@example.com" },
+          user: { id: "user-1", email: "customer@example.com" },
           balance: 1500,
           subscription,
           billingAccess: {
@@ -277,7 +277,7 @@ describe("public API runtime contracts", () => {
     const payload = {
       ok: true,
       data: {
-        user: { email: "legacy@example.com" },
+        user: { id: "user-legacy", email: "legacy@example.com" },
         balance: 0,
         subscription: {
           id: "subscription-legacy",
@@ -1051,6 +1051,7 @@ describe("public API runtime contracts", () => {
       data: {
         session: {
           id: "session-opening",
+          ownerScope: "user:owner-opening",
           title: "Opening",
           character: { name: "Avery" },
           messages: [

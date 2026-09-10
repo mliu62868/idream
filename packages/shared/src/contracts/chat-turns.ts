@@ -68,6 +68,30 @@ export const DEFAULT_CHAT_EXPERIENCE = {
   responseLength: "auto", interactionIntensity: "balanced", sceneGeneration: "follow", version: 0,
 } as const;
 
+// Main, Chat and voice all exchange the same committed, session-local Scene.
+export const chatSceneStateSchema = z.object({
+  schemaVersion: z.literal(1),
+  version: z.number().int().nonnegative(),
+  location: z.string().nullable(),
+  time: z.string().nullable(),
+  participants: z.array(z.string()),
+  emotionalBeat: z.string().nullable(),
+  unresolvedThreads: z.array(z.string()),
+}).strict();
+export type ChatSceneState = z.infer<typeof chatSceneStateSchema>;
+
+function refineSceneAuthority(
+  value: { sceneVersion: number; scene: ChatSceneState | null },
+  context: z.RefinementCtx,
+) {
+  if (value.sceneVersion !== (value.scene?.version ?? 0)) {
+    context.addIssue({
+      code: "custom", path: ["sceneVersion"],
+      message: "sceneVersion must match the pinned Scene revision; null Scene requires version zero",
+    });
+  }
+}
+
 export const chatExecutionSnapshotSchema = z.object({
   version: z.literal(1),
   turnId: z.string().min(1),
@@ -98,8 +122,9 @@ export const chatExecutionSnapshotSchema = z.object({
     createdAt: z.string().datetime(),
   }).strict()),
   sceneVersion: z.number().int().nonnegative(),
-  scene: z.unknown().nullable(),
+  scene: chatSceneStateSchema.nullable(),
 }).strict().superRefine((snapshot, context) => {
+  refineSceneAuthority(snapshot, context);
   if (
     (snapshot.characterVisualProfileId === null) !==
     (snapshot.characterVisualProfileVersion === null)
@@ -144,9 +169,10 @@ export const chatTerminalCommitSchema = z.object({
   promptTokens: z.number().int().nonnegative().nullable(),
   completionTokens: z.number().int().nonnegative().nullable(),
   sceneVersion: z.number().int().nonnegative(),
-  scene: z.unknown().nullable(),
+  scene: chatSceneStateSchema.nullable(),
   terminalEvidence: chatTerminalEvidenceSchema,
 }).strict().superRefine((terminal, context) => {
+  refineSceneAuthority(terminal, context);
   if (
     terminal.status === "sent" &&
     terminal.terminalEvidence.prompt.preparedTurnVersion === null

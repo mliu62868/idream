@@ -38,6 +38,7 @@ export default defineConfig({
       "src/server/modules/admin-v2/shared/finite-state-authority-inventory.test.ts",
       "src/server/modules/ourdream/architecture-boundaries.test.ts",
       "src/server/modules/ourdream/generation-prompt.test.ts",
+      "src/server/modules/ourdream/voice-clip-quote.test.ts",
       "src/server/modules/ourdream/generation-profile-selection.test.ts",
       "src/server/next-standalone-runtime.test.ts",
       "src/server/probe-web-surface-assets.test.ts",

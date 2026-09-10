@@ -10,6 +10,7 @@ import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { actorWithPermission, queryParams } from "@/server/modules/admin-v2/shared/authority";
+import { entitlementMaps } from "@/server/modules/ourdream/subscription-lifecycle";
 import {
   decodeAdminListCursor,
   encodeAdminListCursor,
@@ -100,7 +101,6 @@ export async function chatOpsOverview(request: Request) {
     flaggedModeration24h: number;
     messagesUsedToday: number;
     usersAtDailyLimit: number;
-    unlimitedEntitlements: number;
     activeAuthorityUsers: number;
     excludedActiveSessions: number;
     excludedArchivedSessions: number;
@@ -230,15 +230,6 @@ export async function chatOpsOverview(request: Request) {
       usage_metrics.messages_used_today AS "messagesUsedToday",
       usage_metrics.users_at_daily_limit AS "usersAtDailyLimit",
       (
-        SELECT count(*)::int
-        FROM "entitlements" e
-        JOIN "users" u ON u.id = e."userId"
-        WHERE e.key = 'unlimited_messages'
-          AND e.value = 'true'::jsonb
-          AND (e."expiresAt" IS NULL OR e."expiresAt" > now())
-          AND u.status = 'active' AND u."deletedAt" IS NULL AND u."dataClass" = 'customer'
-      ) AS "unlimitedEntitlements",
-      (
         SELECT count(*)::int FROM "users" u
         WHERE u.status = 'active' AND u."deletedAt" IS NULL AND u."dataClass" = 'customer'
       ) AS "activeAuthorityUsers",
@@ -271,7 +262,7 @@ export async function chatOpsOverview(request: Request) {
       flaggedModeration24h: scoped.flaggedModeration24h,
       messagesUsedToday: scoped.messagesUsedToday,
       usersAtDailyLimit: scoped.usersAtDailyLimit,
-      unlimitedEntitlements: scoped.unlimitedEntitlements,
+      unlimitedEntitlements: await countUnlimitedChatUsers(),
       freeDailyLimit: FREE_DAILY_MESSAGES,
       windowHours: 24,
       dataScope: {
@@ -292,6 +283,34 @@ export async function chatOpsOverview(request: Request) {
       },
     },
   };
+}
+
+async function countUnlimitedChatUsers() {
+  const now = new Date();
+  let afterId: string | undefined;
+  let count = 0;
+  while (true) {
+    // A cache row only nominates a candidate. The purchased-offer projection
+    // below decides whether that user actually has unlimited access.
+    const candidates = await prisma.user.findMany({
+      where: {
+        ...CUSTOMER_USER,
+        OR: [
+          { subscriptions: { some: { status: "active" } } },
+          { entitlements: { some: {
+            key: "unlimited_messages", value: { equals: true },
+            OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+          } } },
+        ],
+      },
+      select: { id: true }, orderBy: { id: "asc" }, take: 500,
+      ...(afterId ? { cursor: { id: afterId }, skip: 1 } : {}),
+    });
+    const values = await entitlementMaps(candidates.map((user) => user.id), prisma, now);
+    for (const entitlements of values.values()) if (entitlements.unlimited_messages === true) count++;
+    if (candidates.length < 500) return count;
+    afterId = candidates.at(-1)!.id;
+  }
 }
 
 export async function chatOpsProviderHealth(request: Request) {
@@ -496,15 +515,9 @@ export async function chatOpsUsage(request: Request) {
   const page = rows.slice(0, query.limit);
   const userIds = page.map((row) => row.userId);
   const [entitlements, sessions] = userIds.length === 0
-    ? [[], []] as const
+    ? [new Map<string, Record<string, Prisma.JsonValue>>(), []] as const
     : await Promise.all([
-        prisma.entitlement.findMany({
-          where: {
-            userId: { in: userIds },
-            OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
-          },
-          orderBy: { createdAt: "asc" },
-        }),
+        entitlementMaps(userIds),
         prisma.recentChat.findMany({
           where: { userId: { in: userIds } },
           select: {
@@ -516,11 +529,9 @@ export async function chatOpsUsage(request: Request) {
           },
         }),
       ]);
-  const entitlementByUser = groupBy(entitlements, (row) => row.userId);
   const sessionsByUser = groupBy(sessions, (row) => row.userId);
   const items = page.map((row) => {
-    const userEntitlements = entitlementByUser.get(row.userId) ?? [];
-    const values = new Map(userEntitlements.map((entry) => [entry.key, entry.value]));
+    const values = new Map(Object.entries(entitlements.get(row.userId) ?? {}));
     const userSessions = sessionsByUser.get(row.userId) ?? [];
     const unlimitedMessages = jsonBoolean(values.get("unlimited_messages"));
     const freeRemaining = unlimitedMessages

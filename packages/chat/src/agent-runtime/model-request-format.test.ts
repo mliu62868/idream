@@ -56,4 +56,20 @@ describe("model request source boundary", () => {
     expect(current.content).toContain("The dusk light warms the cafe.");
     expect(current.content).toContain("It is night; the notebook is left of the cup.");
   });
+
+  it("preserves source identities and cross-speaker event order for an image action", () => {
+    const request = formatModelRequestInput({ requiredTool: true, messages: [
+      { id: "user-arrangement", sourceKind: "replay", role: "user", content: "I put the cup on the table." },
+      { id: "character-action", sourceKind: "replay", role: "assistant", content: "I place a candle beside the cup." },
+      { id: "user-update", sourceKind: "replay", role: "user", content: "I move the cup onto the shelf." },
+      { id: "character-update", sourceKind: "replay", role: "assistant", content: "I light the candle on the table." },
+      { id: "current", sourceKind: "current_user", role: "user", content: "Take a picture of this arrangement." },
+    ] });
+    const content = (request.messages.at(-1) as { content: string }).content;
+    expect(content.indexOf("I place a candle")).toBeLessThan(content.indexOf("I move the cup"));
+    expect(content.indexOf("I move the cup")).toBeLessThan(content.indexOf("I light the candle"));
+    for (const id of ["user-arrangement", "character-action", "user-update", "character-update"]) {
+      expect(content).toContain(JSON.stringify(id));
+    }
+  });
 });

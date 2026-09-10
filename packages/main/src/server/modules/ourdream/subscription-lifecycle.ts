@@ -15,7 +15,7 @@
 //
 // INTENT: 订阅域只依赖 JSON、权益可用性和事件记录等具名模块；路由分发文件不再
 // 反向提供域助手，因此生命周期可以独立测试，也不会与 service 形成循环依赖。
-import { Prisma } from "@prisma/client";
+import { Prisma, type CheckoutSession, type Plan, type Subscription } from "@prisma/client";
 import { z } from "zod";
 import { METRIC_PRODUCT_EVENTS } from "@idream/shared/contracts";
 import { billingPeriodEnd } from "@/lib/billing-period";
@@ -65,42 +65,121 @@ export const checkoutOfferSnapshotSchema = z.object({
   features: z.record(z.string(), z.unknown()),
 });
 
-export async function entitlementMap(userId: string) {
-  const now = new Date();
-  const [entitlements, activeSubscriptions] = await Promise.all([
-    prisma.entitlement.findMany({
-      where: {
-        userId,
-        OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
-      },
-    }),
-    prisma.subscription.findMany({
-      where: {
-        userId,
-        status: "active",
-        OR: [{ currentPeriodEnd: null }, { currentPeriodEnd: { gt: now } }],
-      },
-      include: { plan: true },
-      orderBy: [{ currentPeriodEnd: "desc" }, { createdAt: "desc" }],
-    }),
-  ]);
-  const map: Record<string, Prisma.JsonValue> = {};
+// Reads and recovery share the purchased offer. Entitlement rows are a cache,
+// except explicit non-subscription grants and pre-checkout legacy records.
+export async function entitlementMap(
+  userId: string,
+  db: Prisma.TransactionClient | typeof prisma = prisma,
+  now = new Date(),
+) {
+  return (await entitlementMaps([userId], db, now)).get(userId)!;
+}
 
-  for (const subscription of activeSubscriptions) {
+// Admin lists and aggregate counts need the same authority as single-user
+// admission. Batch the underlying facts instead of introducing an N+1 reader
+// or a second SQL interpretation of purchased features.
+export async function entitlementMaps(
+  userIds: readonly string[],
+  db: Prisma.TransactionClient | typeof prisma = prisma,
+  now = new Date(),
+) {
+  const maps = new Map(userIds.map((userId) => [userId, {} as Record<string, Prisma.JsonValue>]));
+  if (userIds.length === 0) return maps;
+  // A TransactionClient owns one pg connection; all reads stay serial.
+  const entitlements = await db.entitlement.findMany({
+    where: { userId: { in: [...userIds] }, OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] },
+  });
+  const subscriptions = await db.subscription.findMany({
+    where: { userId: { in: [...userIds] } },
+    orderBy: [{ currentPeriodEnd: "desc" }, { createdAt: "desc" }],
+  });
+  const subscriptionUsers = new Set(subscriptions.map((subscription) => subscription.userId));
+  const active = subscriptions.filter((subscription) => subscription.status === "active" &&
+    (!subscription.currentPeriodEnd || subscription.currentPeriodEnd > now));
+  const invoiceBindings = active.flatMap((subscription) => subscription.providerSubscriptionId
+    ? [{ provider: subscription.provider, providerSessionId: subscription.providerSubscriptionId }] : []);
+  const checkouts = invoiceBindings.length > 0
+    ? await db.checkoutSession.findMany({ where: { OR: invoiceBindings } }) : [];
+  const invoiceKey = (provider: string, invoiceId: string | null) => JSON.stringify([provider, invoiceId]);
+  const checkoutByInvoice = new Map(checkouts.map((checkout) => [invoiceKey(checkout.provider, checkout.providerSessionId), checkout]));
+  const purchasedOffers = new Map(active.map((subscription) => [subscription.id,
+    purchasedSubscriptionOffer(subscription, checkoutByInvoice.get(invoiceKey(subscription.provider, subscription.providerSubscriptionId)) ?? null),
+  ]));
+  const legacyPlanIds = [...new Set(active.filter((subscription) => !purchasedOffers.get(subscription.id)).map((subscription) => subscription.planId))];
+  const legacyPlans = legacyPlanIds.length > 0
+    ? await db.plan.findMany({ where: { id: { in: legacyPlanIds } } }) : [];
+  const legacyPlanById = new Map(legacyPlans.map((plan) => [plan.id, plan]));
+
+  for (const subscription of active) {
+    const map = maps.get(subscription.userId)!;
+    const offer = purchasedOffers.get(subscription.id) ?? legacySubscriptionOffer(legacyPlanById.get(subscription.planId));
     if (map.plan === undefined) {
       map.plan = {
-        slug: subscription.plan.slug,
-        billingPeriod: subscription.plan.billingPeriod,
+        slug: offer.slug,
+        billingPeriod: offer.billingPeriod,
       };
     }
     mergeDerivedEntitlement(map, "premium_controls", true);
-    for (const [key, value] of Object.entries(subscription.plan.features as JsonRecord)) {
+    for (const [key, value] of Object.entries(offer.features as JsonRecord)) {
       mergeDerivedEntitlement(map, featureKey(key), value ?? false);
     }
   }
 
-  for (const entitlement of entitlements) map[entitlement.key] = entitlement.value;
-  return map;
+  for (const entitlement of entitlements) {
+    // A subscription cache must not resurrect refunded/expired access or
+    // override a purchased snapshot. Entitlement-only legacy grants predate
+    // durable checkout records and retain their existing expiry semantics.
+    if (entitlement.source !== "subscription" || !subscriptionUsers.has(entitlement.userId)) {
+      maps.get(entitlement.userId)![entitlement.key] = entitlement.value;
+    }
+  }
+  return maps;
+}
+
+type SubscriptionOfferBinding = Pick<Subscription, "userId" | "planId" | "provider" | "providerSubscriptionId">;
+type PurchasedOfferCheckout = Pick<CheckoutSession, "userId" | "planId" | "offerSnapshot" | "amountCents" | "currency">;
+
+export async function resolveSubscriptionOfferAuthority(
+  db: Prisma.TransactionClient | typeof prisma,
+  subscription: SubscriptionOfferBinding,
+) {
+  const checkout = subscription.providerSubscriptionId
+    ? await db.checkoutSession.findUnique({ where: {
+        provider_providerSessionId: { provider: subscription.provider, providerSessionId: subscription.providerSubscriptionId },
+      } })
+    : null;
+  const purchased = purchasedSubscriptionOffer(subscription, checkout);
+  if (purchased) return { authority: "checkout_snapshot" as const, offer: purchased };
+  const plan = await db.plan.findUniqueOrThrow({ where: { id: subscription.planId } });
+  return { authority: "legacy_plan" as const, offer: legacySubscriptionOffer(plan) };
+}
+
+function purchasedSubscriptionOffer(subscription: SubscriptionOfferBinding, checkout: PurchasedOfferCheckout | null) {
+  if (checkout && (checkout.userId !== subscription.userId || checkout.planId !== subscription.planId)) {
+    throw Errors.conflict("Purchased offer does not belong to this subscription");
+  }
+  if (checkout?.offerSnapshot !== null && checkout?.offerSnapshot !== undefined) {
+    const parsed = checkoutOfferSnapshotSchema.safeParse(checkout.offerSnapshot);
+    if (!parsed.success || parsed.data.planId !== subscription.planId ||
+      parsed.data.priceCents !== checkout.amountCents ||
+      parsed.data.currency.toLowerCase() !== checkout.currency?.toLowerCase()) {
+      throw Errors.conflict("Purchased offer authority is invalid; reconciliation is required");
+    }
+    return parsed.data;
+  }
+  return null;
+}
+
+function legacySubscriptionOffer(plan: Plan | undefined) {
+  // Legacy subscriptions without a stored offer used the referenced Plan.
+  // Keep that identified compatibility case; malformed snapshots never fall
+  // through to mutable Plan data.
+  if (!plan) throw Errors.conflict("Legacy subscription plan is unavailable; reconciliation is required");
+  return checkoutOfferSnapshotSchema.parse({
+    version: 1, planId: plan.id, slug: plan.slug, name: plan.name,
+    billingPeriod: plan.billingPeriod, priceCents: plan.priceCents, currency: plan.currency,
+    includedDreamcoins: plan.includedDreamcoins, features: plan.features ?? {},
+  });
 }
 
 type PublicSubscriptionSource = {
@@ -115,26 +194,8 @@ type PublicSubscriptionSource = {
 };
 
 export async function publicSubscriptionDTO(subscription: PublicSubscriptionSource) {
-  const checkout = subscription.providerSubscriptionId
-    ? await prisma.checkoutSession.findUnique({
-        where: {
-          provider_providerSessionId: {
-            provider: subscription.provider,
-            providerSessionId: subscription.providerSubscriptionId,
-          },
-        },
-        select: { offerSnapshot: true, planId: true },
-      })
-    : null;
-  const offerSnapshot = checkoutOfferSnapshotSchema.safeParse(
-    checkout?.offerSnapshot,
-  );
-  const authoritativeOffer =
-    offerSnapshot.success &&
-    offerSnapshot.data.planId === subscription.planId &&
-    checkout?.planId === subscription.planId
-      ? offerSnapshot.data
-      : null;
+  const authority = await resolveSubscriptionOfferAuthority(prisma, subscription);
+  const authoritativeOffer = authority.authority === "checkout_snapshot" ? authority.offer : null;
   const availability = authoritativeOffer
     ? await publicOfferAvailability()
     : null;
@@ -786,13 +847,20 @@ export async function syncSubscriptionEntitlements(
   },
   expiresAt: Date | null,
 ) {
-  await tx.entitlement.upsert({
-    where: { userId_key: { userId, key: "plan" } },
-    update: { value: { slug: plan.slug, billingPeriod: plan.billingPeriod }, source: "subscription", expiresAt },
-    create: { userId, key: "plan", value: { slug: plan.slug, billingPeriod: plan.billingPeriod }, source: "subscription", expiresAt },
-  });
+  const independentGrants = new Set((await tx.entitlement.findMany({
+    where: { userId, source: { not: "subscription" } }, select: { key: true },
+  })).map((row) => row.key));
+  await tx.entitlement.deleteMany({ where: { userId, source: "subscription" } });
+  if (!independentGrants.has("plan")) {
+    await tx.entitlement.upsert({
+      where: { userId_key: { userId, key: "plan" } },
+      update: { value: { slug: plan.slug, billingPeriod: plan.billingPeriod }, source: "subscription", expiresAt },
+      create: { userId, key: "plan", value: { slug: plan.slug, billingPeriod: plan.billingPeriod }, source: "subscription", expiresAt },
+    });
+  }
   const featureEntries = Object.entries(plan.features as JsonRecord);
   for (const [key, value] of featureEntries) {
+    if (independentGrants.has(featureKey(key))) continue;
     const entitlementValue = toInputJson(value ?? false);
     await tx.entitlement.upsert({
       where: { userId_key: { userId, key: featureKey(key) } },
@@ -800,11 +868,13 @@ export async function syncSubscriptionEntitlements(
       create: { userId, key: featureKey(key), value: entitlementValue, source: "subscription", expiresAt },
     });
   }
-  await tx.entitlement.upsert({
-    where: { userId_key: { userId, key: "premium_controls" } },
-    update: { value: true, source: "subscription", expiresAt },
-    create: { userId, key: "premium_controls", value: true, source: "subscription", expiresAt },
-  });
+  if (!independentGrants.has("premium_controls")) {
+    await tx.entitlement.upsert({
+      where: { userId_key: { userId, key: "premium_controls" } },
+      update: { value: true, source: "subscription", expiresAt },
+      create: { userId, key: "premium_controls", value: true, source: "subscription", expiresAt },
+    });
+  }
 }
 
 function featureKey(key: string) {

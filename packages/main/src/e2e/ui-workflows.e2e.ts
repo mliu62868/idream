@@ -11,6 +11,7 @@ import {
   mockVideoMp4Bytes,
 } from "@idream/shared";
 import { FREE_DAILY_MESSAGES } from "@idream/shared/chat/limits";
+import { voiceClipQuoteSchema } from "@idream/shared/contracts";
 import { resolveLocalBlobPath } from "@idream/shared/storage/local-blob";
 import { hasPendingCompanionMemoryMutation } from "@/server/modules/chat/companion-memory-authority";
 import { ACCOUNT_DELETION_GRACE_PERIOD_MS } from "@/server/account-deletion-authority";
@@ -909,13 +910,13 @@ async function grantVoicePlayback(email: string) {
   });
   await prisma.entitlement.upsert({
     where: { userId_key: { userId: user.id, key: "voice_enabled" } },
-    update: { value: true, source: "subscription" },
-    create: { userId: user.id, key: "voice_enabled", value: true, source: "subscription" },
+    update: { value: true, source: "test", expiresAt: null },
+    create: { userId: user.id, key: "voice_enabled", value: true, source: "test" },
   });
   await prisma.entitlement.upsert({
     where: { userId_key: { userId: user.id, key: "voice_minutes" } },
-    update: { value: 30, source: "subscription" },
-    create: { userId: user.id, key: "voice_minutes", value: 30, source: "subscription" },
+    update: { value: 30, source: "test", expiresAt: null },
+    create: { userId: user.id, key: "voice_minutes", value: 30, source: "test" },
   });
   return user.id;
 }
@@ -3964,7 +3965,7 @@ test("chat UI preserves input and shows upgrade path at the free daily limit", a
   // Checkout activation is outside this audit. The retained core boundary is a truthful recovery link and an intact draft.
 });
 
-test("chat UI generates on Play and reuses assistant voice clips for entitled users", async ({ page }) => {
+test("chat UI requires the quoted Voice price confirmation and reuses accepted clips", async ({ page }) => {
   await page.addInitScript(() => {
     const originalPause = window.HTMLMediaElement.prototype.pause;
     window.HTMLMediaElement.prototype.play = function play() {
@@ -3988,11 +3989,19 @@ test("chat UI generates on Play and reuses assistant voice clips for entitled us
     characterId,
   );
   const voiceRequests: unknown[] = [];
+  const voiceQuoteRequests: unknown[] = [];
   page.on("request", (request) => {
-    if (request.method() === "POST" && new URL(request.url()).pathname === "/api/v1/generation/voice") {
-      voiceRequests.push(request.postDataJSON());
-    }
+    if (request.method() !== "POST") return;
+    const pathname = new URL(request.url()).pathname;
+    if (pathname === "/api/v1/generation/voice") voiceRequests.push(request.postDataJSON());
+    if (pathname === "/api/v1/generation/voice/quote") voiceQuoteRequests.push(request.postDataJSON());
   });
+  const sessionResponse = await page.request.get(`/api/v1/chat/sessions/${sessionId}`);
+  expect(sessionResponse.ok()).toBe(true);
+  expect((await sessionResponse.json()).data.session.ownerScope).toBe(`user:${userId}`);
+  const balanceBefore = (await prisma.dreamcoinLedger.aggregate({
+    where: { userId }, _sum: { delta: true },
+  }))._sum.delta ?? 0;
 
   await page.goto(`/chat/${sessionId}`);
   const assistantBubble = page.getByTestId("chat-message-assistant").filter({
@@ -4004,16 +4013,60 @@ test("chat UI generates on Play and reuses assistant voice clips for entitled us
   const playButton = assistantBubble.getByRole("button", { name: "Play voice" });
   await expect(playButton).toBeVisible();
   expect(voiceRequests).toHaveLength(0);
+  expect(voiceQuoteRequests).toHaveLength(0);
   expect(await prisma.mediaAsset.count({ where: { ownerId: userId, type: "voice" } })).toBe(0);
 
+  const quoteResponse = page.waitForResponse((response) =>
+    response.request().method() === "POST"
+    && new URL(response.url()).pathname === "/api/v1/generation/voice/quote",
+  );
+  await playButton.click();
+  const quotedResponse = await quoteResponse;
+  expect(quotedResponse.ok()).toBe(true);
+  const quote = voiceClipQuoteSchema.parse((await quotedResponse.json()).data.quote);
+  expect(quote).toMatchObject({ accepted: false, alreadyDelivered: false, allowanceMinutes: 30 });
+  expect(quote.quoteToken).toEqual(expect.any(String));
+  expect(quote.maxCostDreamcoins).toBe(quote.overflowCostDreamcoins);
+  expect(quote.remainingAllowanceMs).toBeGreaterThan(0);
+  const priceConfirmation = assistantBubble.getByRole("group", { name: "Voice playback price" });
+  await expect(priceConfirmation).toBeVisible();
+  await expect(priceConfirmation).toContainText(quote.maxCostDreamcoins === 0
+    ? "no coin charge" : `up to ${quote.maxCostDreamcoins} Dreamcoins`);
+  await expect(priceConfirmation).toContainText(`Your balance: ${balanceBefore} coins.`);
+  expect(voiceRequests).toHaveLength(0);
+  expect(await prisma.voiceClipRequest.count({ where: { userId } })).toBe(0);
+
+  // Reading a price is not consent. Cancel must leave provider admission,
+  // delivery and the wallet unchanged before a separately confirmed Play.
+  await priceConfirmation.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(priceConfirmation).toHaveCount(0);
+  expect(voiceRequests).toHaveLength(0);
+  expect((await prisma.dreamcoinLedger.aggregate({ where: { userId }, _sum: { delta: true } }))._sum.delta ?? 0).toBe(balanceBefore);
+  const replacementQuoteResponse = page.waitForResponse((response) =>
+    response.request().method() === "POST"
+    && new URL(response.url()).pathname === "/api/v1/generation/voice/quote",
+  );
+  await playButton.click();
+  const replacementResponse = await replacementQuoteResponse;
+  expect(replacementResponse.ok()).toBe(true);
+  const acceptedQuote = voiceClipQuoteSchema.parse((await replacementResponse.json()).data.quote);
+  await expect(priceConfirmation).toBeVisible();
+  await expect(priceConfirmation).toContainText(acceptedQuote.maxCostDreamcoins === 0
+    ? "no coin charge" : `up to ${acceptedQuote.maxCostDreamcoins} Dreamcoins`);
+  expect(voiceRequests).toHaveLength(0);
   const voiceResponse = page.waitForResponse((response) =>
     response.request().method() === "POST"
     && new URL(response.url()).pathname === "/api/v1/generation/voice",
   );
-  await playButton.click();
-  expect((await voiceResponse).ok()).toBe(true);
+  await priceConfirmation.getByRole("button", { name: "Confirm and play", exact: true }).click();
+  const deliveredResponse = await voiceResponse;
+  expect(deliveredResponse.status()).toBe(201);
+  expect(voiceQuoteRequests).toEqual(Array.from({ length: 2 }, () => ({
+    characterId, messageId: assistantMessageId, sessionId, text: assistantText, intent: "play",
+  })));
   expect(voiceRequests).toEqual([{
     characterId, messageId: assistantMessageId, sessionId, text: assistantText, intent: "play",
+    quoteToken: acceptedQuote.quoteToken,
   }]);
   await expect
     .poll(async () => {
@@ -4039,6 +4092,17 @@ test("chat UI generates on Play and reuses assistant voice clips for entitled us
       cost: 0,
       url: expect.stringContaining("/api/v1/media/"),
     });
+  const acceptedRequest = await prisma.voiceClipRequest.findUniqueOrThrow({
+    where: { userId_messageId: { userId, messageId: assistantMessageId } },
+    include: { usageFacts: true },
+  });
+  expect(acceptedRequest.billingAuthority).toMatchObject({
+    userId, intent: "play", maxCostDreamcoins: acceptedQuote.maxCostDreamcoins,
+    overflowCostDreamcoins: acceptedQuote.overflowCostDreamcoins, allowanceMinutes: 30,
+  });
+  expect(acceptedRequest.usageFacts).toHaveLength(1);
+  expect(acceptedRequest.usageFacts[0]).toMatchObject({ costDreamcoins: 0, mediaAssetId: acceptedRequest.mediaAssetId });
+  expect((await prisma.dreamcoinLedger.aggregate({ where: { userId }, _sum: { delta: true } }))._sum.delta ?? 0).toBe(balanceBefore);
   const stopButton = assistantBubble.getByRole("button", { name: "Stop voice" });
   await expect(stopButton).toBeVisible({ timeout: 30_000 });
   await expect(stopButton).toHaveAttribute("data-state", "playing");
@@ -4047,7 +4111,25 @@ test("chat UI generates on Play and reuses assistant voice clips for entitled us
   await playButton.click();
   await expect(stopButton).toHaveAttribute("data-state", "playing");
   expect(voiceRequests).toHaveLength(1);
+  expect(voiceQuoteRequests).toHaveLength(2);
   expect(await prisma.mediaAsset.count({ where: { ownerId: userId, type: "voice" } })).toBe(1);
+
+  await page.reload();
+  await expect(playButton).toBeVisible();
+  const replayQuoteResponse = page.waitForResponse((response) => response.request().method() === "POST"
+    && new URL(response.url()).pathname === "/api/v1/generation/voice/quote");
+  const replayVoiceResponse = page.waitForResponse((response) => response.request().method() === "POST"
+    && new URL(response.url()).pathname === "/api/v1/generation/voice");
+  await playButton.click();
+  const replayQuote = voiceClipQuoteSchema.parse((await (await replayQuoteResponse).json()).data.quote);
+  expect(replayQuote).toMatchObject({ accepted: true, alreadyDelivered: true, maxCostDreamcoins: 0, quoteToken: null });
+  expect((await replayVoiceResponse).status()).toBe(200);
+  await expect(stopButton).toHaveAttribute("data-state", "playing");
+  await expect(priceConfirmation).toHaveCount(0);
+  expect((await prisma.voiceClipRequest.findUniqueOrThrow({
+    where: { id: acceptedRequest.id }, include: { usageFacts: true },
+  })).usageFacts).toEqual(acceptedRequest.usageFacts);
+  expect((await prisma.dreamcoinLedger.aggregate({ where: { userId }, _sum: { delta: true } }))._sum.delta ?? 0).toBe(balanceBefore);
 });
 
 // P1-A management controls (plan §10.3): edit latest user turn, regenerate,
@@ -6214,12 +6296,17 @@ test("profile account management signs out sessions and deletes the account", as
   await expect(deleteButton).toBeDisabled();
   await page.getByLabel("Current account password").fill("password123");
   await expect(deleteButton).toBeEnabled();
-  const deletionResponsePromise = page.waitForResponse((response) =>
-    response.request().method() === "POST" &&
-    new URL(response.url()).pathname === "/api/v1/account/delete-request"
-  ).then(async (response) => ({ status: response.status(), payload: await response.json() }));
+  const deletionResponses: Array<{ status: number; payload: { data: { receipt: string } } }> = [];
+  await page.route("**/api/v1/account/delete-request", async (route) => {
+    // The successful response triggers a full navigation. Capture the real
+    // server body before delivery so Chromium cannot evict it during redirect.
+    const response = await route.fetch();
+    deletionResponses.push({ status: response.status(), payload: await response.json() });
+    await route.fulfill({ response });
+  });
   await deleteButton.click();
-  const deletionResponse = await deletionResponsePromise;
+  await expect.poll(() => deletionResponses.length).toBe(1);
+  const deletionResponse = deletionResponses[0]!;
   expect(deletionResponse.status).toBe(200);
   expect(deletionResponse.payload.data.receipt).toEqual(expect.any(String));
   const statusPath = `/login#deletion=${encodeURIComponent(deletionResponse.payload.data.receipt)}`;

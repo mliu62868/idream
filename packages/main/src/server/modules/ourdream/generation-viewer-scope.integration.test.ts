@@ -31,6 +31,27 @@ async function writeFacts() {
 
 describe("generation writes bind retained UI authority to its expected account", () => {
   it.each([
+    ["GET", "profile"],
+    ["GET", "profile/preferences"],
+    ["GET", "library/media"],
+    ["GET", "media/collections"],
+    ["PATCH", "profile"],
+    ["PATCH", "profile/preferences"],
+    ["POST", "referrals/invite"],
+    ["POST", "account/sign-out-all"],
+  ] as const)("rejects retained profile authority at %s %s before reading or mutating the new account", async (method, path) => {
+    const before = await prisma.user.findUniqueOrThrow({ where: { id: other } });
+    const response = await api(method, path, {
+      userId: other, ageGate: true,
+      headers: { "x-idream-viewer-scope": `user:${owner}` },
+      ...(method === "GET" ? {} : { body: { displayName: "Old account draft" } }),
+    });
+    expectError(response, 409);
+    expect(response.error?.message).toContain("Your account changed");
+    expect(await prisma.user.findUniqueOrThrow({ where: { id: other } })).toEqual(before);
+  });
+
+  it.each([
     "generation/jobs",
     `generation/jobs/${prefix}failed/retry`,
     `media/${prefix}image/variation`,

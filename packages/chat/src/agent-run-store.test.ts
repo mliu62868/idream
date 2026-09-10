@@ -309,7 +309,7 @@ describe("AgentRun local authority", () => {
         hasRecentImageContext: false,
         recentTurns: [],
         sceneVersion: 1,
-        scene: { version: 1 },
+        scene: { schemaVersion: 1 as const, version: 1, location: null, time: null, participants: [], emotionalBeat: null, unresolvedThreads: [] },
       },
       authority: {
         version: 1 as const,

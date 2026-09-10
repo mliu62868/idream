@@ -17,6 +17,7 @@ import {
   X,
 } from "lucide-react";
 import { FormEvent, useEffect, useRef, useState } from "react";
+import { voiceClipQuoteSchema, type VoiceClipQuote } from "@idream/shared/contracts";
 import {
   parseChatSendResponse,
   parseChatSessionDetailResponse,
@@ -26,6 +27,7 @@ import {
   type RuntimeChatSession as ChatSession,
 } from "@/lib/public-api-contracts";
 import { useAgeGateAccess } from "./AgeGateBoundary";
+import { useGenerationReceipts } from "@/hooks/useGenerationReceipts";
 import { AppSidebar } from "./AppSidebar";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { ChatHeaderControls } from "./chat/ChatHeaderControls";
@@ -58,6 +60,8 @@ import {
   hasUnconfirmedGenerationRetry,
   requestGenerationRetryWithExactAuthority,
   requestMediaVariationWithExactQuote,
+  type GenerationReceipt,
+  type GenerationQuoteAuthority,
 } from "@/lib/generation-write-client";
 
 type ChatLoadState = "loading" | "ready" | "signed-out" | "error";
@@ -65,12 +69,15 @@ type ChatUpgradeReason = "dreamcoins" | "messages" | "voice";
 
 type VoiceClipRequestResult = {
   url: string | null;
+  quote?: VoiceClipQuote;
+  errorMessage?: string;
   reason:
     | "allowance_exhausted"
     | "disabled"
     | "failed"
     | "insufficient_balance"
     | "not_entitled"
+    | "confirmation_required"
     | null;
 };
 
@@ -192,6 +199,11 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     () => new Set(),
   );
   const [voicePlayingId, setVoicePlayingId] = useState<string | null>(null);
+  const [voiceConfirmation, setVoiceConfirmation] = useState<{
+    messageId: string;
+    text: string;
+    quote: VoiceClipQuote;
+  } | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingContent, setEditingContent] = useState("");
   const [editingPending, setEditingPending] = useState(false);
@@ -200,6 +212,17 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   const [variationPendingMediaId, setVariationPendingMediaId] =
     useState<string | null>(null);
   const [retryingImageIds, setRetryingImageIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [receiptOwnerScope, setReceiptOwnerScope] = useState<string | null>(null);
+  const [receiptWarning, setReceiptWarning] = useState("");
+  const {
+    receipts: generationReceipts,
+    checkingKeys: checkingReceiptKeys,
+    context: generationReceiptContext,
+    refresh: refreshGenerationReceipts,
+    recover: recoverGenerationReceipt,
+    suspend: suspendGenerationReceipts,
+    resume: resumeGenerationReceipts,
+  } = useGenerationReceipts({ ownerScope: receiptOwnerScope, onWarning: setReceiptWarning });
   const [jumpToLatestVisible, setJumpToLatestVisible] = useState(false);
   const localStreamStateRef = useRef<Map<string, LocalStreamState>>(new Map());
   const pinnedToBottomRef = useRef(true);
@@ -208,9 +231,6 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     content: string;
     idempotencyKey: string;
   } | null>(null);
-  const variationIdempotencyKeysRef =
-    useRef<Map<string, string>>(new Map());
-  const imageRetryKeysRef = useRef<Map<string, string>>(new Map());
   const imageRetryPendingRef = useRef(new Set<string>());
   const streamSources = useRef<Map<string, EventSource>>(new Map());
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -277,8 +297,9 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
       setVoicePreparingIds(new Set());
       setVoicePlayingId(null);
       sessionMutationEpochRef.current += 1;
-      variationIdempotencyKeysRef.current.clear();
-      imageRetryKeysRef.current.clear();
+      setReceiptOwnerScope(null);
+      suspendGenerationReceipts(true);
+      setReceiptWarning("");
       imageRetryPendingRef.current.clear();
       setRetryingImageIds(new Set());
       setVariationPendingMediaId(null);
@@ -288,15 +309,16 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
       setStatus(null);
       setCharacterId(null);
       setCanUpdateIdentity(false);
+      const epoch = sessionMutationEpochRef.current;
       fetchSession(controller.signal)
         .then((session) => {
-          if (cancelled || session.id !== id) return;
+          if (cancelled || epoch !== sessionMutationEpochRef.current || session.id !== id) return;
           applySession(session);
           resumePendingStreams(session.messages);
           setLoadState("ready");
         })
         .catch((error: unknown) => {
-          if (cancelled) return;
+          if (cancelled || epoch !== sessionMutationEpochRef.current) return;
           setLoadState(isChatAuthError(error) ? "signed-out" : "error");
           setStatus(null);
         });
@@ -310,6 +332,35 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     // The loader intentionally reruns only when the route session id changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ageGateAccepted, id]);
+
+  useEffect(() => {
+    if (!ageGateAccepted) return;
+    let controller: AbortController | null = null;
+    const focus = () => {
+      controller?.abort();
+      controller = new AbortController();
+      const signal = controller.signal;
+      const epoch = ++sessionMutationEpochRef.current;
+      suspendGenerationReceipts(true);
+      setReceiptOwnerScope(null);
+      stopVoice();
+      setLoadState("loading");
+      void fetchSession(signal).then((session) => {
+        if (signal.aborted || epoch !== sessionMutationEpochRef.current) return;
+        applySession(session);
+        setLoadState("ready");
+        resumePendingStreams(session.messages);
+      }).catch((error: unknown) => {
+        if (signal.aborted || epoch !== sessionMutationEpochRef.current) return;
+        setTitle("Chat");
+        setLoadState(isChatAuthError(error) ? "signed-out" : "error");
+      });
+    };
+    window.addEventListener("focus", focus);
+    return () => { controller?.abort(); window.removeEventListener("focus", focus); };
+    // Revalidate the same session's owner, never the cached viewer from /me.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ageGateAccepted, id, suspendGenerationReceipts]);
 
   useEffect(() => {
     const sources = streamSources.current;
@@ -411,12 +462,15 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     }
     audioRef.current = null;
     setVoicePlayingId(null);
+    setVoiceConfirmation(null);
   }
 
   async function requestVoiceClip(
     messageId: string,
     text: string,
+    acceptedQuoteToken?: string,
   ): Promise<VoiceClipRequestResult> {
+    const receiptContext = generationReceiptContext();
     // INVARIANT: a regenerated Turn keeps its message id but changes its text
     // and attempt. Its audio must never come from the discarded reply.
     const key = JSON.stringify([id, messages.find((message) => message.id === messageId)?.attempt, text]);
@@ -428,28 +482,40 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     setVoicePreparingIds((current) => new Set(current).add(messageId));
     const request = (async (): Promise<VoiceClipRequestResult> => {
       try {
+        const body = { characterId, messageId, sessionId: id, text, intent: "play" };
+        const headers = { "content-type": "application/json", "x-idream-viewer-scope": receiptContext.persistence.ownerScope };
+        if (!acceptedQuoteToken) {
+          const quoted = await fetch("/api/v1/generation/voice/quote", {
+            method: "POST", headers, cache: "no-store", body: JSON.stringify(body),
+          });
+          const payload = await quoted.json().catch(() => null);
+          if (!receiptContext.isCurrent()) return { url: null, reason: "failed" };
+          if (quoted.status === 402) return { url: null, reason: voicePaymentRequiredReason(payload) };
+          if (!quoted.ok) return { url: null, reason: "failed", errorMessage: chatFailureCopy(payload, "Voice price could not load. Press Play to check again.") };
+          const quote = voiceClipQuoteSchema.parse(payload?.data?.quote);
+          if (!quote.accepted && !quote.alreadyDelivered) {
+            if (!quote.quoteToken) return { url: null, reason: "failed", errorMessage: "Voice price could not be confirmed. Press Play to check again." };
+            return { url: null, reason: "confirmation_required", quote };
+          }
+          acceptedQuoteToken = quote.quoteToken ?? undefined;
+        }
         const response = await fetch("/api/v1/generation/voice", {
           method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            characterId,
-            messageId,
-            sessionId: id,
-            text,
-            intent: "play",
-          }),
+          headers,
+          body: JSON.stringify({ ...body, quoteToken: acceptedQuoteToken }),
         });
         if (response.status === 402) {
           const payload = await response.json().catch(() => null);
           return { url: null, reason: voicePaymentRequiredReason(payload) };
         }
-        if (!response.ok) return { url: null, reason: "failed" };
+        if (!response.ok) return { url: null, reason: "failed", errorMessage: chatFailureCopy(await response.json().catch(() => null), "Voice playback could not be confirmed. Press Play to check the original request.") };
         const payload = (await response.json()) as {
           data?: {
             contentUrl?: string;
             reason?: "allowance_exhausted" | "disabled" | "not_entitled";
           };
         };
+        if (!receiptContext.isCurrent()) return { url: null, reason: "failed" };
         const url = payload.data?.contentUrl;
         if (url) {
           if (voiceClipRequestsRef.current.get(messageId)?.key === key) {
@@ -479,7 +545,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
 
   // SPEC: Voice synthesis starts only after the reader presses Play. Repeated
   // plays of the same selected reply reuse its clip.
-  async function playMessage(messageId: string, text: string) {
+  async function playMessage(messageId: string, text: string, acceptedQuoteToken?: string) {
     if (!characterId || !text.trim()) return;
     if (voicePlayingId === messageId) {
       stopVoice();
@@ -490,8 +556,12 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     setStatus(null);
     setUpgradeReason(null);
     try {
-      const result = await requestVoiceClip(messageId, text);
+      const result = await requestVoiceClip(messageId, text, acceptedQuoteToken);
       if (playbackIntent !== voicePlaybackIntentRef.current) return;
+      if (result.reason === "confirmation_required" && result.quote) {
+        setVoiceConfirmation({ messageId, text, quote: result.quote });
+        return;
+      }
       if (result.reason === "not_entitled") {
         setUpgradeReason("voice");
         setStatus("Voice playback needs a plan with voice enabled.");
@@ -503,7 +573,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
         return;
       }
       if (!result.url) {
-        setStatus("Voice playback failed. Please try again.");
+        setStatus(result.errorMessage ?? "Voice playback failed. Please try again.");
         return;
       }
       const clipKey = voiceClipUrlsRef.current.get(messageId)?.key;
@@ -720,6 +790,8 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
 
   function applySession(session: ChatSession) {
     if (session.id !== id) return;
+    resumeGenerationReceipts(session.ownerScope);
+    setReceiptOwnerScope(session.ownerScope);
     let recoveredStream = false;
     for (const message of session.messages) {
       if (!chatStreamMessageIsTerminal(message)) continue;
@@ -824,18 +896,21 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     setStatus(null);
     setDeleteConfirmMessageId(null);
     const epoch = ++sessionMutationEpochRef.current;
+    let receiptContext: ReturnType<typeof generationReceiptContext> | undefined;
     try {
+      receiptContext = generationReceiptContext();
+      const current = () => epoch === sessionMutationEpochRef.current && receiptContext!.isCurrent();
       let quoteAuthority;
-      if (!hasUnconfirmedGenerationRetry(jobId, imageRetryKeysRef.current)) {
-        const response = await fetch(`/api/v1/generation/jobs/${encodeURIComponent(jobId)}/retry/quote`, { method: "POST", cache: "no-store" });
+      if (!hasUnconfirmedGenerationRetry(jobId, receiptContext.keys.retry)) {
+        const response = await fetch(`/api/v1/generation/jobs/${encodeURIComponent(jobId)}/retry/quote`, { method: "POST", cache: "no-store", headers: { "x-idream-viewer-scope": receiptContext.persistence.ownerScope } });
         const payload: unknown = await response.json().catch(() => null);
         if (!response.ok) throw new GenerationRequestError(chatFailureCopy(payload, "Couldn't check the image retry price."), response.status);
         const { quote } = parseGenerationRetryQuoteResponse(payload);
         quoteAuthority = { profileId: quote.profileId, profileVersion: quote.profileVersion, routeFingerprint: quote.routeFingerprint, pricingFingerprint: quote.pricing.fingerprint, outputCount: quote.outputCount, costDreamcoins: quote.costDreamcoins };
       }
-      if (epoch !== sessionMutationEpochRef.current) return;
-      const job = await requestGenerationRetryWithExactAuthority({ jobId, quoteAuthority, idempotencyKeys: imageRetryKeysRef.current });
-      if (epoch !== sessionMutationEpochRef.current) return;
+      if (!current()) return;
+      const job = await requestGenerationRetryWithExactAuthority({ jobId, quoteAuthority, idempotencyKeys: receiptContext.keys.retry, persistence: receiptContext.persistence, isCurrent: current });
+      if (!current()) return;
       setMessages(current => current.map(message => ({ ...message, attachments: message.attachments?.map(item => item.id === attachment.id
         ? { ...item, generationJobId: job.id, status: "accepted", errorCode: null, costDreamcoins: job.costDreamcoins }
         : item) })));
@@ -846,6 +921,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
       if (error instanceof GenerationRequestError && error.status === 402) setUpgradeReason("dreamcoins");
       setStatus(error instanceof GenerationRequestError ? error.message : "Couldn't confirm the image request. Try again to check the same request.");
     } finally {
+      if (receiptContext?.isCurrent()) refreshGenerationReceipts();
       imageRetryPendingRef.current.delete(attachment.id);
       setRetryingImageIds(new Set(imageRetryPendingRef.current));
     }
@@ -894,24 +970,45 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     setVariationPendingMediaId(mediaAssetId);
     setStatus("Checking the exact variation price…");
     setDeleteConfirmMessageId(null);
+    let receiptContext: ReturnType<typeof generationReceiptContext> | undefined;
     try {
+      receiptContext = generationReceiptContext();
       await requestMediaVariationWithExactQuote({
         mediaId: mediaAssetId,
         outputCount: 1,
         consistencyMode: "balanced",
-        idempotencyKeys: variationIdempotencyKeysRef.current,
+        idempotencyKeys: receiptContext.keys.variation,
+        persistence: receiptContext.persistence,
+        isCurrent: receiptContext.isCurrent,
       });
+      if (!receiptContext.isCurrent()) return;
       setStatus("Variation queued. It will appear in Generate and Gallery.");
     } catch (error) {
+      if (receiptContext && !receiptContext.isCurrent()) return;
       setStatus(
         error instanceof GenerationRequestError
           ? error.message
           : "Couldn't queue variation. Check your connection and try again.",
       );
     } finally {
+      if (receiptContext?.isCurrent()) refreshGenerationReceipts();
       setVariationPendingMediaId((current) =>
         current === mediaAssetId ? null : current,
       );
+    }
+  }
+
+  async function checkGenerationReceipt(receipt: GenerationReceipt) {
+    const epoch = sessionMutationEpochRef.current;
+    try {
+      const result = await recoverGenerationReceipt(receipt);
+      if (!result || epoch !== sessionMutationEpochRef.current) return;
+      setStatus("Original request confirmed. Its progress is available in Generate and Gallery.");
+      const session = await fetchSession();
+      if (epoch === sessionMutationEpochRef.current) applySession(session);
+    } catch (error) {
+      if (epoch !== sessionMutationEpochRef.current) return;
+      setStatus(`${error instanceof Error ? error.message : "The request could not be confirmed."} Your original request is kept; check again or contact support.`);
     }
   }
 
@@ -1188,6 +1285,27 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
                 onOpenMemory={() => setMemoryOpen(true)}
               />
               <ConversationPreferences key={id} sessionId={id} />
+              {receiptWarning ? <p role="status" className="mt-3 text-sm text-white/80">{receiptWarning}</p> : null}
+              {generationReceipts.length > 0 ? (
+                <section className="mt-4 rounded-xl border border-white/15 p-4" aria-label="Unconfirmed generation requests">
+                  <h2 className="font-bold">Check your original requests</h2>
+                  <p className="mt-1 text-sm text-white/80">A response was interrupted. Checking keeps the original request and price; it does not start another job.</p>
+                  <ul className="mt-3 space-y-3">
+                    {generationReceipts.map((receipt) => {
+                      const quote = receipt.body.quoteAuthority as GenerationQuoteAuthority;
+                      const checking = checkingReceiptKeys.has(receipt.key);
+                      return <li key={receipt.key} data-pending-request-key={receipt.key} className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold">{receipt.kind === "generation_retry" ? "Image retry" : receipt.kind === "media_variation" ? "Image variation" : receipt.kind === "media_enhancement" ? "Image enhancement" : "Generation"} · {quote.costDreamcoins} coins</p>
+                          <p className="mt-1 break-all text-xs text-white/65">Request {receipt.key}</p>
+                        </div>
+                        <button type="button" className="min-h-11 rounded-full bg-white px-4 py-2 text-sm font-bold text-[rgb(13,13,13)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white disabled:opacity-50"
+                          disabled={checking} onClick={() => void checkGenerationReceipt(receipt)}>{checking ? "Checking…" : "Check original request"}</button>
+                      </li>;
+                    })}
+                  </ul>
+                </section>
+              ) : null}
               <div className="mt-6 flex min-h-[55vh] flex-1 flex-col gap-3 rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-4">
                 {messages.map((message) => {
                   const isUser = message.role === "user";
@@ -1364,6 +1482,19 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
                               : undefined
                           }
                         />
+                      ) : null}
+                      {voiceConfirmation?.messageId === message.id ? (
+                        <div role="group" aria-label="Voice playback price" className="mt-3 border-t border-white/15 pt-3 text-sm leading-6">
+                          <p className="font-semibold">{voiceConfirmation.quote.maxCostDreamcoins === 0
+                            ? "Play using your included voice minutes · no coin charge"
+                            : `Play voice · up to ${voiceConfirmation.quote.maxCostDreamcoins} Dreamcoins`}</p>
+                          <p className="mt-1 text-white/80">Included minutes are used first. If they do not cover this clip, the charge will not exceed this amount. Your balance: {voiceConfirmation.quote.balance} coins.</p>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <button type="button" data-testid="chat-confirm-voice" className="min-h-11 rounded-full bg-white px-4 py-2 font-bold text-[rgb(13,13,13)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                              onClick={() => void playMessage(voiceConfirmation.messageId, voiceConfirmation.text, voiceConfirmation.quote.quoteToken!)}>Confirm and play</button>
+                            <button type="button" className="min-h-11 rounded-full bg-white/10 px-4 py-2 font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white" onClick={() => setVoiceConfirmation(null)}>Cancel</button>
+                          </div>
+                        </div>
                       ) : null}
                     </div>
                   );

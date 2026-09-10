@@ -81,13 +81,11 @@ import {
 } from "@/lib/generation-request";
 import { readCurrentGenerationJob, saveCurrentGenerationJob } from "@/lib/generation-current-job";
 import { useGenerationRequest } from "@/hooks/useGenerationRequest";
+import { useGenerationReceipts } from "@/hooks/useGenerationReceipts";
 import {
   exactGenerationQuoteForCount,
   GenerationRequestError,
   hasUnconfirmedMediaEnhancement,
-  listGenerationReceipts,
-  readGenerationReceipts,
-  requestGenerationReceipt,
   requestMediaEnhancementWithExactQuote,
   type GenerationReceipt,
   type GenerationQuoteAuthority,
@@ -572,37 +570,15 @@ export function GeneratorWorkspace() {
   const enhancementSerialRef = useRef(0);
   const enhancementPendingRef = useRef(false);
   const enhancementQuoteControllerRef = useRef<AbortController | null>(null);
-  const enhancementKeysRef = useRef({ scope: "", keys: new Map<string, string>() });
   const [receiptStorageWarning, setReceiptStorageWarning] = useState("");
-  const [enhancementReceipts, setEnhancementReceipts] = useState<GenerationReceipt[]>([]);
-  const [enhancementCheckKey, setEnhancementCheckKey] = useState<string | null>(null);
-  const enhancementCheckRef = useRef<string | null>(null);
   const receiptOwnerScope = config?.viewer.authenticated ? config.viewer.scope : null;
+  const enhancementReceiptBook = useGenerationReceipts({ ownerScope: receiptOwnerScope, onWarning: setReceiptStorageWarning });
+  const { suspend: suspendEnhancementReceipts, resume: resumeEnhancementReceipts } = enhancementReceiptBook;
+  const enhancementReceipts = enhancementReceiptBook.receipts.filter((receipt) => receipt.kind === "media_enhancement");
   const generationKeysScopeRef = useRef<string | null>(null);
   const unconfirmedFormRef = useRef(false);
-  const enhancementUnconfirmed = Boolean(enhancement && enhancementKeysRef.current.scope === config?.viewer.scope &&
-    hasUnconfirmedMediaEnhancement(enhancement.source.id, enhancementKeysRef.current.keys));
-
-  useEffect(() => {
-    enhancementCheckRef.current = null;
-    setEnhancementCheckKey(null);
-    if (!receiptOwnerScope) { setEnhancementReceipts([]); return; }
-    setReceiptStorageWarning("");
-    if (enhancementKeysRef.current.scope !== receiptOwnerScope) {
-      enhancementKeysRef.current = { scope: receiptOwnerScope, keys: new Map() };
-    }
-    const restore = () => {
-      for (const receipt of readGenerationReceipts({ ownerScope: receiptOwnerScope, onWarning: setReceiptStorageWarning })) {
-        if (receipt.kind === "media_enhancement" && !enhancementKeysRef.current.keys.has(receipt.record)) {
-          enhancementKeysRef.current.keys.set(receipt.record, receipt.key);
-        }
-      }
-      setEnhancementReceipts(listGenerationReceipts(enhancementKeysRef.current.keys));
-    };
-    restore();
-    window.addEventListener("storage", restore);
-    return () => window.removeEventListener("storage", restore);
-  }, [receiptOwnerScope]);
+  const enhancementUnconfirmed = Boolean(enhancement && enhancementReceiptBook.hasPending((keys) =>
+    hasUnconfirmedMediaEnhancement(enhancement.source.id, keys.enhancement)));
 
   const {
     data: mediaPage,
@@ -820,14 +796,14 @@ export function GeneratorWorkspace() {
   const {
     balanceChanged: generationBalanceChanged,
     resetViewerScope: resetGenerationRequestScope,
+    resumeViewerScope: resumeGenerationRequestScope,
     retryQuotes,
     retryQuoteFailures,
     retryingJobIds,
     variationPendingMediaIds: variationPendingIds,
     hasUnconfirmedVariations,
   } = generationRequest;
-  const pendingReceipts = receiptOwnerScope ? [...generationRequest.receipts,
-    ...(enhancementKeysRef.current.scope === receiptOwnerScope ? enhancementReceipts : [])] : [];
+  const pendingReceipts = receiptOwnerScope ? [...generationRequest.receipts, ...enhancementReceipts] : [];
   const {
     canSubmit,
     hasSubmissionAuthority,
@@ -983,6 +959,7 @@ export function GeneratorWorkspace() {
 
   const clearPrivateViewerProjections = useCallback(() => {
     abortPrivateViewerRequests();
+    suspendEnhancementReceipts(true);
     enhancementSerialRef.current += 1;
     enhancementPendingRef.current = false;
     setEnhancement(null);
@@ -1012,6 +989,7 @@ export function GeneratorWorkspace() {
     resetJobs,
     resetMedia,
     resetUserPresets,
+    suspendEnhancementReceipts,
   ]);
 
   const resetPrivateViewerData = useCallback(() => {
@@ -1188,7 +1166,11 @@ export function GeneratorWorkspace() {
         invalidateViewerRelativeCharacterAuthority(true);
       }
       viewerAuthenticatedRef.current = data.viewer.authenticated;
-      if (!data.viewer.authenticated) resetPrivateViewerData();
+      if (!data.viewer.authenticated || !nextScope) resetPrivateViewerData();
+      else {
+        resumeGenerationRequestScope(nextScope);
+        resumeEnhancementReceipts(nextScope);
+      }
       const suspendedSource = suspendedEditSourceRef.current;
       suspendedEditSourceRef.current = null;
       if (data.viewer.authenticated && suspendedSource?.scope === nextScope) {
@@ -1261,6 +1243,8 @@ export function GeneratorWorkspace() {
     invalidateViewerRelativeCharacterAuthority,
     resetPrivateViewerData,
     resetGenerationRequestScope,
+    resumeGenerationRequestScope,
+    resumeEnhancementReceipts,
   ]);
 
   const refreshBalanceAndQuoteAuthority = useCallback(() => {
@@ -1766,17 +1750,14 @@ export function GeneratorWorkspace() {
       !ticket.controller.signal.aborted && privateViewerRequestIsCurrent(ticket);
     enhancementPendingRef.current = true;
     setEnhancement({ ...enhancement, submitting: true, error: "" });
-    // Keep an ambiguous request's key through a same-viewer reconnect; another viewer gets a fresh map.
-    if (enhancementKeysRef.current.scope !== ticket.scope) {
-      enhancementKeysRef.current = { scope: ticket.scope, keys: new Map() };
-    }
     try {
+      const receiptContext = enhancementReceiptBook.context();
       const result = await requestMediaEnhancementWithExactQuote({
         mediaId: enhancement.source.id,
         quote: enhancement.quote?.quote ?? null,
-        idempotencyKeys: enhancementKeysRef.current.keys,
-        isCurrent: current,
-        persistence: { ownerScope: ticket.scope, onWarning: setReceiptStorageWarning },
+        idempotencyKeys: receiptContext.keys.enhancement,
+        isCurrent: () => current() && receiptContext.isCurrent(),
+        persistence: receiptContext.persistence,
       }, async (url, init) => {
         const response = await fetch(url, { ...init, signal: ticket.controller.signal });
         if (!current()) throw new DOMException("Viewer changed", "AbortError");
@@ -1792,7 +1773,7 @@ export function GeneratorWorkspace() {
       setEnhancement(null);
     } catch (error) {
       if (!current()) return;
-      const stillUnconfirmed = hasUnconfirmedMediaEnhancement(enhancement.source.id, enhancementKeysRef.current.keys);
+      const stillUnconfirmed = enhancementReceiptBook.hasPending((keys) => hasUnconfirmedMediaEnhancement(enhancement.source.id, keys.enhancement));
       const needsQuote = !stillUnconfirmed && error instanceof GenerationRequestError && (error.status === 409 || error.status === 402);
       setEnhancement({ ...enhancement, submitting: false,
         quote: needsQuote ? null : enhancement.quote,
@@ -1802,25 +1783,19 @@ export function GeneratorWorkspace() {
       if (needsQuote) { generationBalanceChanged(); void refreshConfig(); }
       else if (error instanceof GenerationRequestError && error.status === 401) void refreshConfig();
     } finally {
-      if (current()) setEnhancementReceipts(listGenerationReceipts(enhancementKeysRef.current.keys));
+      if (current()) enhancementReceiptBook.refresh();
       if (serial === enhancementSerialRef.current) enhancementPendingRef.current = false;
       finishPrivateViewerRequest(ticket);
     }
   }
 
   async function recoverEnhancementReceipt(receipt: GenerationReceipt) {
-    if (enhancementCheckRef.current) return;
     const ticket = beginPrivateViewerRequest();
-    if (!ticket || enhancementKeysRef.current.scope !== ticket.scope) return;
+    if (!ticket) return;
     const current = () => !ticket.controller.signal.aborted && privateViewerRequestIsCurrent(ticket);
-    enhancementCheckRef.current = receipt.key;
-    setEnhancementCheckKey(receipt.key);
     try {
-      const result = await requestGenerationReceipt(receipt, {
-        idempotencyKeys: enhancementKeysRef.current.keys, isCurrent: current,
-        persistence: { ownerScope: ticket.scope, onWarning: setReceiptStorageWarning },
-      }, (url, init) => fetch(url, { ...init, signal: ticket.controller.signal }));
-      if (!current()) return;
+      const result = await enhancementReceiptBook.recover(receipt);
+      if (!result || !current()) return;
       generationRequestEffects.applyJob(result.job);
       generationRequestEffects.revealJobs();
       generationRequestEffects.trackJob(result.job.id);
@@ -1833,11 +1808,6 @@ export function GeneratorWorkspace() {
         ? "Sign in to the same account to check this request. Your pending request is kept."
         : `${error instanceof Error ? error.message : "The request could not be confirmed."} Your original request is kept; check again or contact support.`);
     } finally {
-      if (enhancementCheckRef.current === receipt.key) enhancementCheckRef.current = null;
-      if (current()) {
-        setEnhancementCheckKey(null);
-        setEnhancementReceipts(listGenerationReceipts(enhancementKeysRef.current.keys));
-      }
       finishPrivateViewerRequest(ticket);
     }
   }
@@ -3530,7 +3500,7 @@ export function GeneratorWorkspace() {
                       const quote = receipt.body.quoteAuthority as GenerationQuoteAuthority;
                       const controls = isRecord(receipt.body.controls) ? receipt.body.controls : {};
                       const orientation = receipt.body.orientation ?? controls.orientation;
-                      const busy = generationRequest.recoveringReceiptKeys.has(receipt.key) || enhancementCheckKey === receipt.key;
+                      const busy = generationRequest.recoveringReceiptKeys.has(receipt.key) || enhancementReceiptBook.checkingKeys.has(receipt.key);
                       return <div className="mt-3 rounded-lg bg-black/20 p-3" data-pending-request-key={receipt.key} key={receipt.key}>
                         <p className="text-[13px] font-bold text-white">{receipt.kind === "media_enhancement" ? "Enhance 2×" : receipt.kind === "generation_retry" ? "Generation retry" : receipt.kind === "media_variation" ? "Image edit" : receipt.body.mode === "video" ? "Video" : "Image"} · {quote.outputCount} output{quote.outputCount === 1 ? "" : "s"}{orientation ? ` · ${String(orientation)}` : ""} · {quote.costDreamcoins} coins</p>
                         {typeof receipt.body.prompt === "string" && receipt.body.prompt && <p className="mt-1 break-words text-[12px] text-white/70">{receipt.body.prompt.slice(0, 180)}</p>}

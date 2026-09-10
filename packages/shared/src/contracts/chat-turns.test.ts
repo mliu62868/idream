@@ -4,6 +4,7 @@ import {
   chatTerminalCommitSchema,
   chatToolEffectSchema,
   chatContextDirectivesSchema,
+  chatSceneStateSchema,
   userChatPersonaResponseSchema,
   DEFAULT_CHAT_EXPERIENCE,
 } from "./chat-turns";
@@ -30,6 +31,33 @@ const snapshot = {
 } as const;
 
 describe("Chat execution snapshot", () => {
+  it("shares the exact Scene shape and pins its revision in snapshots and terminals", () => {
+    const scene = { schemaVersion: 1, version: 2, location: "the cafe", time: null, participants: ["Mira"], emotionalBeat: null, unresolvedThreads: [] };
+    const terminal = {
+      version: 1, turnId: "turn-1", sessionId: "session-1", assistantMessageId: "assistant-message-1",
+      attempt: 1, status: "sent", content: "Hello", model: "test", promptTokens: 2, completionTokens: 2,
+      terminalEvidence: { authority: "test", prompt: {
+        productPromptVersion: "companion-product-1", preparedTurnVersion: 5,
+        systemPromptDigest: "a".repeat(64), soulFingerprint: "b".repeat(64),
+      } },
+    };
+    for (const [base, schema] of [[snapshot, chatExecutionSnapshotSchema], [terminal, chatTerminalCommitSchema]] as const) {
+      for (const fields of [{ sceneVersion: 0, scene: null }, { sceneVersion: 2, scene }, { sceneVersion: 0, scene: { ...scene, version: 0 } }]) {
+        expect(schema.safeParse({ ...base, ...fields }).success).toBe(true);
+      }
+      for (const fields of [
+        { sceneVersion: 999, scene: null }, { sceneVersion: 999, scene },
+        { sceneVersion: 2, scene: { ...scene, location: 42 } },
+        { sceneVersion: 2, scene: { ...scene, participants: [42] } },
+        { sceneVersion: 2, scene: { ...scene, projectedBy: "invented" } },
+        { sceneVersion: 2, scene: { ...scene, schemaVersion: 2 } },
+        { sceneVersion: 2 },
+      ]) expect(schema.safeParse({ ...base, ...fields }).success).toBe(false);
+    }
+    expect(chatSceneStateSchema.safeParse({ ...scene, version: 1.5 }).success).toBe(false);
+    expect(chatSceneStateSchema.safeParse({ ...scene, version: -1 }).success).toBe(false);
+  });
+
   it("keeps historical reply defaults implicit and accepts only versioned expression preferences", () => {
     expect(chatExecutionSnapshotSchema.parse(snapshot)).not.toHaveProperty("experience");
     expect(chatExecutionSnapshotSchema.parse({ ...snapshot, experience: DEFAULT_CHAT_EXPERIENCE }).experience).toEqual(DEFAULT_CHAT_EXPERIENCE);

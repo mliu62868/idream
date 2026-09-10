@@ -617,6 +617,12 @@ test("generation workers have bounded graceful-stop windows", () => {
   assert.equal(byName(config, "gen-finalizer").kill_timeout, 5 * 60 * 1_000);
 });
 
+test("the durable event consumer can finish its bounded drain before PM2 forces termination", () => {
+  for (const mode of ["development", "production"]) {
+    assert.equal(byName(loadConfig(mode), "main-event-consumer").kill_timeout, 35_000);
+  }
+});
+
 test("production readiness requires every process instance and service probe", () => {
   const calls = [];
   const status = verifyProductionRuntime({

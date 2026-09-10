@@ -1,0 +1,375 @@
+{
+  "sourceRevision": "idream-worktree-775c47dd171266037fe10d0a2f50e5a721a76a20324f6411fdd621432409c2d5",
+  "igrepVersion": "igrep 0.1.137",
+  "python": "/Users/kk/.local/share/uv/tools/igrep-tme/bin/python3",
+  "igrep": "/Users/kk/.local/bin/igrep",
+  "samples": [
+    {
+      "phase": "bootstrap",
+      "session": 0,
+      "messagesInCorpus": 2500,
+      "ms": 1390.6670840000002,
+      "events": 2500,
+      "newEvents": 2500
+    },
+    {
+      "phase": "bootstrap",
+      "session": 1,
+      "messagesInCorpus": 5000,
+      "ms": 1931.264542,
+      "events": 2500,
+      "newEvents": 2500
+    },
+    {
+      "phase": "bootstrap",
+      "session": 2,
+      "messagesInCorpus": 7500,
+      "ms": 2457.1974579999996,
+      "events": 2500,
+      "newEvents": 2500
+    },
+    {
+      "phase": "bootstrap",
+      "session": 3,
+      "messagesInCorpus": 10000,
+      "ms": 3012.037041999999,
+      "events": 2500,
+      "newEvents": 2500
+    },
+    {
+      "phase": "unprofiled-replay",
+      "ms": 2422.220874999999,
+      "events": 2500,
+      "newEvents": 0
+    },
+    {
+      "phase": "profiled-replay",
+      "ms": 2600.0000420000015,
+      "events": 2500,
+      "newEvents": 0,
+      "profile": {
+        "totalCalls": 717729,
+        "totalSeconds": 2.4888542869999988,
+        "top": [
+          {
+            "file": "~",
+            "line": 0,
+            "name": "<built-in method builtins.exec>",
+            "primitiveCalls": 1,
+            "calls": 574,
+            "selfSeconds": 0.037444787,
+            "cumulativeSeconds": 2.48916575
+          },
+          {
+            "file": "/Users/kk/.local/bin/igrep",
+            "line": 1,
+            "name": "<module>",
+            "primitiveCalls": 1,
+            "calls": 1,
+            "selfSeconds": 0.000011042,
+            "cumulativeSeconds": 2.489153792
+          },
+          {
+            "file": "src/igrep/cli/_main.py",
+            "line": 62,
+            "name": "main",
+            "primitiveCalls": 1,
+            "calls": 1,
+            "selfSeconds": 0.000042667,
+            "cumulativeSeconds": 2.3871831660000002
+          },
+          {
+            "file": "src/igrep/cli/setup.py",
+            "line": 1214,
+            "name": "cmd_mem",
+            "primitiveCalls": 1,
+            "calls": 1,
+            "selfSeconds": 0.000011458000000000001,
+            "cumulativeSeconds": 2.362907083
+          },
+          {
+            "file": "src/igrep/mem.py",
+            "line": 321,
+            "name": "ingest",
+            "primitiveCalls": 1,
+            "calls": 1,
+            "selfSeconds": 0.0000095,
+            "cumulativeSeconds": 2.174161917
+          },
+          {
+            "file": "src/igrep/mem_store.py",
+            "line": 1114,
+            "name": "ingest",
+            "primitiveCalls": 1,
+            "calls": 1,
+            "selfSeconds": 0.00006191700000000001,
+            "cumulativeSeconds": 2.174152417
+          },
+          {
+            "file": "src/igrep/mem_store.py",
+            "line": 759,
+            "name": "_ensure_derived_secret_shield_locked",
+            "primitiveCalls": 1,
+            "calls": 1,
+            "selfSeconds": 0.000003541,
+            "cumulativeSeconds": 2.1728683330000003
+          },
+          {
+            "file": "src/igrep/mem_store.py",
+            "line": 746,
+            "name": "_unsafe_derived_source_classes",
+            "primitiveCalls": 1,
+            "calls": 1,
+            "selfSeconds": 0.000031664,
+            "cumulativeSeconds": 2.172864583
+          },
+          {
+            "file": "src/igrep/mem_secrets.py",
+            "line": 97,
+            "name": "contains_secret_value",
+            "primitiveCalls": 4,
+            "calls": 4,
+            "selfSeconds": 0.000009291000000000001,
+            "cumulativeSeconds": 2.17010375
+          },
+          {
+            "file": "src/igrep/mem_secrets.py",
+            "line": 68,
+            "name": "redact_secret_values",
+            "primitiveCalls": 4,
+            "calls": 4,
+            "selfSeconds": 0.000099337,
+            "cumulativeSeconds": 2.170094459
+          },
+          {
+            "file": "~",
+            "line": 0,
+            "name": "<method 'sub' of 're.Pattern' objects>",
+            "primitiveCalls": 170,
+            "calls": 170,
+            "selfSeconds": 2.17004945,
+            "cumulativeSeconds": 2.17004945
+          },
+          {
+            "file": "<frozen importlib._bootstrap>",
+            "line": 1360,
+            "name": "_find_and_load",
+            "primitiveCalls": 2,
+            "calls": 474,
+            "selfSeconds": 0.0009504860000000001,
+            "cumulativeSeconds": 0.290523125
+          },
+          {
+            "file": "<frozen importlib._bootstrap>",
+            "line": 1308,
+            "name": "_find_and_load_unlocked",
+            "primitiveCalls": 2,
+            "calls": 473,
+            "selfSeconds": 0.0010365770000000001,
+            "cumulativeSeconds": 0.290473333
+          },
+          {
+            "file": "<frozen importlib._bootstrap>",
+            "line": 483,
+            "name": "_call_with_frames_removed",
+            "primitiveCalls": 4,
+            "calls": 1201,
+            "selfSeconds": 0.000516342,
+            "cumulativeSeconds": 0.29024675
+          },
+          {
+            "file": "<frozen importlib._bootstrap>",
+            "line": 914,
+            "name": "_load_unlocked",
+            "primitiveCalls": 3,
+            "calls": 442,
+            "selfSeconds": 0.0006588970000000001,
+            "cumulativeSeconds": 0.29002775000000003
+          },
+          {
+            "file": "<frozen importlib._bootstrap_external>",
+            "line": 753,
+            "name": "exec_module",
+            "primitiveCalls": 3,
+            "calls": 396,
+            "selfSeconds": 0.000404833,
+            "cumulativeSeconds": 0.28998554200000004
+          },
+          {
+            "file": "~",
+            "line": 0,
+            "name": "<built-in method builtins.__import__>",
+            "primitiveCalls": 4,
+            "calls": 250,
+            "selfSeconds": 0.00015000700000000002,
+            "cumulativeSeconds": 0.289829334
+          },
+          {
+            "file": "<frozen importlib._bootstrap>",
+            "line": 1401,
+            "name": "_handle_fromlist",
+            "primitiveCalls": 31,
+            "calls": 287,
+            "selfSeconds": 0.00016653700000000002,
+            "cumulativeSeconds": 0.27661629000000004
+          },
+          {
+            "file": "src/igrep/mem.py",
+            "line": 1,
+            "name": "<module>",
+            "primitiveCalls": 1,
+            "calls": 1,
+            "selfSeconds": 0.000044917000000000004,
+            "cumulativeSeconds": 0.18823666700000002
+          },
+          {
+            "file": "src/igrep/mem_store.py",
+            "line": 1,
+            "name": "<module>",
+            "primitiveCalls": 1,
+            "calls": 1,
+            "selfSeconds": 0.00007537800000000001,
+            "cumulativeSeconds": 0.106150166
+          },
+          {
+            "file": "/Users/kk/.local/share/uv/tools/igrep-tme/lib/python3.14/site-packages/igrep/cli/__init__.py",
+            "line": 1,
+            "name": "<module>",
+            "primitiveCalls": 1,
+            "calls": 1,
+            "selfSeconds": 0.000197631,
+            "cumulativeSeconds": 0.079166584
+          },
+          {
+            "file": "src/igrep/search.py",
+            "line": 1,
+            "name": "<module>",
+            "primitiveCalls": 1,
+            "calls": 1,
+            "selfSeconds": 0.00005479200000000001,
+            "cumulativeSeconds": 0.07874925
+          },
+          {
+            "file": "/opt/homebrew/Cellar/python@3.14/3.14.3_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/re/__init__.py",
+            "line": 330,
+            "name": "_compile",
+            "primitiveCalls": 1357,
+            "calls": 1357,
+            "selfSeconds": 0.0018960130000000002,
+            "cumulativeSeconds": 0.07233288900000001
+          },
+          {
+            "file": "/opt/homebrew/Cellar/python@3.14/3.14.3_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/re/__init__.py",
+            "line": 287,
+            "name": "compile",
+            "primitiveCalls": 1235,
+            "calls": 1235,
+            "selfSeconds": 0.000259443,
+            "cumulativeSeconds": 0.072066506
+          },
+          {
+            "file": "/opt/homebrew/Cellar/python@3.14/3.14.3_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/re/_compiler.py",
+            "line": 757,
+            "name": "compile",
+            "primitiveCalls": 469,
+            "calls": 469,
+            "selfSeconds": 0.0007785400000000001,
+            "cumulativeSeconds": 0.068652012
+          },
+          {
+            "file": "/opt/homebrew/Cellar/python@3.14/3.14.3_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/dataclasses.py",
+            "line": 1431,
+            "name": "wrap",
+            "primitiveCalls": 176,
+            "calls": 176,
+            "selfSeconds": 0.000224426,
+            "cumulativeSeconds": 0.06639708600000001
+          },
+          {
+            "file": "/opt/homebrew/Cellar/python@3.14/3.14.3_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/dataclasses.py",
+            "line": 986,
+            "name": "_process_class",
+            "primitiveCalls": 176,
+            "calls": 176,
+            "selfSeconds": 0.004133989,
+            "cumulativeSeconds": 0.06617266000000001
+          },
+          {
+            "file": "/Users/kk/.local/share/uv/tools/igrep-tme/lib/python3.14/site-packages/aiohttp/__init__.py",
+            "line": 1,
+            "name": "<module>",
+            "primitiveCalls": 1,
+            "calls": 1,
+            "selfSeconds": 0.000026791,
+            "cumulativeSeconds": 0.058096916000000005
+          },
+          {
+            "file": "src/igrep/cli/_main.py",
+            "line": 1,
+            "name": "<module>",
+            "primitiveCalls": 1,
+            "calls": 1,
+            "selfSeconds": 0.000013709,
+            "cumulativeSeconds": 0.057767833000000005
+          },
+          {
+            "file": "src/igrep/cli/parser.py",
+            "line": 1,
+            "name": "<module>",
+            "primitiveCalls": 1,
+            "calls": 1,
+            "selfSeconds": 0.000028497000000000002,
+            "cumulativeSeconds": 0.057341750000000004
+          },
+          {
+            "file": "/Users/kk/.local/share/uv/tools/igrep-tme/lib/python3.14/site-packages/aiohttp/client.py",
+            "line": 1,
+            "name": "<module>",
+            "primitiveCalls": 1,
+            "calls": 1,
+            "selfSeconds": 0.000056955000000000006,
+            "cumulativeSeconds": 0.05515900000000001
+          },
+          {
+            "file": "/opt/homebrew/Cellar/python@3.14/3.14.3_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/dataclasses.py",
+            "line": 478,
+            "name": "add_fns_to_class",
+            "primitiveCalls": 176,
+            "calls": 176,
+            "selfSeconds": 0.001337578,
+            "cumulativeSeconds": 0.039334306
+          },
+          {
+            "file": "src/igrep/local_search/search.py",
+            "line": 1,
+            "name": "<module>",
+            "primitiveCalls": 1,
+            "calls": 1,
+            "selfSeconds": 0.000224627,
+            "cumulativeSeconds": 0.03865525
+          },
+          {
+            "file": "src/igrep/cli/command_source.py",
+            "line": 1,
+            "name": "<module>",
+            "primitiveCalls": 1,
+            "calls": 1,
+            "selfSeconds": 0.000009833,
+            "cumulativeSeconds": 0.0374795
+          },
+          {
+            "file": "src/igrep/internal_sources/command.py",
+            "line": 1,
+            "name": "<module>",
+            "primitiveCalls": 1,
+            "calls": 1,
+            "selfSeconds": 0.000051419000000000004,
+            "cumulativeSeconds": 0.037056083000000004
+          }
+        ]
+      }
+    }
+  ],
+  "method": "Real unchanged installed CLI; cProfile on final no-change replay only; synthetic 1000-character visible messages. No PG, maintenance, recall, embedding, rerank, or network request. Profiling time is diagnostic overhead, not user latency.",
+  "completedAt": "2026-09-09T12:35:43.738Z"
+}

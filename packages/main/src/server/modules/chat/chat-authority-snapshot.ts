@@ -1,6 +1,7 @@
 import type { ChatAuthoritySnapshot } from "@idream/shared/bff";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
+import { entitlementMap } from "@/server/modules/ourdream/subscription-lifecycle";
 
 /** Main is the sole reader and compiler of facts admitted into one Agent run. */
 export async function loadChatAuthoritySnapshot(
@@ -14,14 +15,11 @@ export async function loadChatAuthoritySnapshot(
   },
 ): Promise<ChatAuthoritySnapshot> {
   const now = new Date();
-  const [user, ageGate, ageVerification, entitlementRows, character, contentVersion, release] = await Promise.all([
+  const [user, ageGate, ageVerification, entitlementValues, character, contentVersion, release] = await Promise.all([
     prisma.user.findUnique({ where: { id: userId }, include: { preferences: true } }),
     prisma.ageGateAcceptance.findFirst({ where: { userId }, orderBy: { acceptedAt: "desc" } }),
     prisma.ageVerification.findFirst({ where: { userId }, orderBy: { createdAt: "desc" } }),
-    prisma.entitlement.findMany({
-      where: { userId, OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] },
-      orderBy: { createdAt: "asc" },
-    }),
+    entitlementMap(userId, prisma, now),
     prisma.character.findUnique({
       where: { id: pin.characterId },
       include: {
@@ -46,7 +44,7 @@ export async function loadChatAuthoritySnapshot(
   )) {
     throw Errors.gone("Pinned Character visual identity does not belong to the Release");
   }
-  const entitlements = new Map(entitlementRows.map((row) => [row.key, row.value]));
+  const entitlements = new Map(Object.entries(entitlementValues));
   const visual = character.visualProfiles[0] ?? null;
   if (pin.visualProfileId && !visual) {
     throw Errors.gone("Pinned Character visual identity is unavailable");

@@ -16,7 +16,7 @@ afterAll(async () => { await purgeTestData(P); await prisma.$disconnect(); });
 
 // These candidates isolate image authority. Soul/revision validation is covered
 // separately; no persisted Release or live Serving is needed to judge images.
-async function imageCandidate(suffix: string, attemptVersion = 1) {
+async function imageCandidate(suffix: string, attemptVersion = 1, bootstrapIdentity = false) {
   const id = `${P}${suffix}`;
   const ownerId = `${id}-owner`;
   await createUser({ id: ownerId });
@@ -26,10 +26,14 @@ async function imageCandidate(suffix: string, attemptVersion = 1) {
     id: `${id}-anchor`, ownerId, characterId: id, type: "image", safetyStatus: "passed",
     url: `/user-content/${id}-anchor.webp`, storageKey: `${id}/anchor.webp`, metadata: { synthetic: false },
   } });
+  const bootstrapJobId = `${id}-character_cover-job`;
   const visual = {
     characterId: id, version: 3, status: "active", style: "realistic", identityPrompt: "Stable adult portrait identity",
     faceTraits: {}, hairTraits: {}, bodyTraits: {}, signatureTraits: {}, styleTraits: {},
-    negativeIdentityPrompt: null, anchorAssetIds: [anchor.id], adapterRefs: {}, createdFrom: "test", evidenceState: "qualified",
+    negativeIdentityPrompt: null, anchorAssetIds: [anchor.id],
+    adapterRefs: bootstrapIdentity ? { bootstrapIdentity: true, generationJobId: bootstrapJobId } : {},
+    createdFrom: bootstrapIdentity ? `identity_bootstrap:${bootstrapJobId}` : "test",
+    evidenceState: bootstrapIdentity ? "reviewed_bootstrap" : "qualified",
   };
   const profile = await prisma.characterVisualProfile.create({ data: { ...visual, immutableHash: characterVisualProfileSnapshotHash(visual) } });
   const referenceHash = referenceSetSnapshotHash({
@@ -37,7 +41,8 @@ async function imageCandidate(suffix: string, attemptVersion = 1) {
     references: [{ mediaAssetId: anchor.id, position: 0, role: "identity_anchor", weight: 1 }],
   });
   const referenceSet = await prisma.referenceSetRevision.create({ data: {
-    visualProfileId: profile.id, revision: 1, status: "active", createdFrom: "test", snapshotHash: referenceHash,
+    visualProfileId: profile.id, revision: 1, status: "active",
+    createdFrom: bootstrapIdentity ? `identity_bootstrap:${bootstrapJobId}` : "test", snapshotHash: referenceHash,
     references: { create: { mediaAssetId: anchor.id, position: 0, role: "identity_anchor", selectionReason: "Test identity", weight: 1 } },
   } });
   const workflowKey = "redcraft-krea2-identity-edit";
@@ -64,16 +69,21 @@ async function imageCandidate(suffix: string, attemptVersion = 1) {
       title: `${id}-${purpose}`, purpose: purpose!, targetType: "character", targetId: id, createdById: ownerId, presetIds: [],
     } });
     const itemId = `${id}-${purpose}-item`;
-    const manifest = [{ mediaAssetId: anchor.id, referenceSetRevisionId: referenceSet.id, snapshotHash: referenceHash, role: "identity_anchor" }];
+    const establishesIdentity = bootstrapIdentity && purpose === "character_cover";
+    const manifest = establishesIdentity ? [] : [{ mediaAssetId: anchor.id, referenceSetRevisionId: referenceSet.id, snapshotHash: referenceHash, role: "identity_anchor" }];
     const job = await prisma.generationJob.create({ data: {
-      userId: ownerId, characterId: id, mode: "image", provider: "comfyui", profileId: `${id}-historical-qwen`, profileVersion: 1,
+      id: `${id}-${purpose}-job`, userId: ownerId, characterId: id, mode: "image", provider: "comfyui", profileId: `${id}-historical-qwen`, profileVersion: 1,
       model: "qwen-image-edit-img2img", controls: {}, presetIds: [], status: "completed", deliveredOutputCount: 1,
-      visualProfileId: profile.id, visualProfileVersion: profile.version, referenceSetRevisionId: referenceSet.id,
-      referenceAssetIds: [anchor.id], referenceManifest: manifest, sourceType: "content_production_item", sourceId: itemId,
-      sourceMeta: { batchId: batch.id, purpose, targetType: "character", targetId: id, bootstrapIdentity: false, referenceSetRevisionId: referenceSet.id },
+      visualProfileId: establishesIdentity ? null : profile.id,
+      visualProfileVersion: establishesIdentity ? null : profile.version,
+      referenceSetRevisionId: establishesIdentity ? null : referenceSet.id,
+      referenceAssetIds: establishesIdentity ? [] : [anchor.id], referenceManifest: manifest, sourceType: "content_production_item", sourceId: itemId,
+      sourceMeta: { batchId: batch.id, purpose, targetType: "character", targetId: id, bootstrapIdentity: establishesIdentity, referenceSetRevisionId: establishesIdentity ? null : referenceSet.id },
       completedAt: new Date(),
     } });
-    const asset = await prisma.mediaAsset.create({ data: {
+    const asset = establishesIdentity ? await prisma.mediaAsset.update({
+      where: { id: anchor.id }, data: { sourceJobId: job.id, metadata: { synthetic: false, provider: "comfyui" } },
+    }) : await prisma.mediaAsset.create({ data: {
       id: `${id}-${purpose}-asset`, ownerId, characterId: id, type: "image", sourceJobId: job.id, safetyStatus: "passed",
       url: `/user-content/${id}-${purpose}.webp`, storageKey: `${id}/${purpose}.webp`, metadata: { synthetic: false, provider: "comfyui" },
     } });
@@ -94,12 +104,12 @@ async function imageCandidate(suffix: string, attemptVersion = 1) {
       reason: "Approved stable identity", reviewerId: ownerId,
       evidence: { artifactFree: true, singleSubject: true, intentMatch: true, noVisibleText: true },
     } });
-    placements.push({ slotKey: slotKey!, assetId: asset.id, slotVersion: 1, runId: batch.id, itemId: item.id, generationJobId: job.id, reviewDecisionId: review.id });
+    placements.push({ slotKey: slotKey!, assetId: asset.id, slotVersion: 1, runId: batch.id, itemId: item.id, generationJobId: job.id, reviewDecisionId: review.id, bootstrapIdentity: establishesIdentity });
     provenance.push({
-      slotKey: slotKey!, assetId: asset.id, generationJobId: job.id, bootstrapIdentity: false, provider: job.provider,
+      slotKey: slotKey!, assetId: asset.id, generationJobId: job.id, bootstrapIdentity: establishesIdentity, provider: job.provider,
       attemptId: attempt.id, attemptNo: attempt.attemptNo, generationProfileKey: job.profileId, generationProfileVersion: job.profileVersion,
-      workflowKey: job.model, workflowVersion: 1, visualProfileId: profile.id, visualProfileVersion: profile.version,
-      referenceSetRevisionId: referenceSet.id, referenceManifestHash: canonicalSha256(manifest),
+      workflowKey: job.model, workflowVersion: 1, visualProfileId: job.visualProfileId, visualProfileVersion: job.visualProfileVersion,
+      referenceSetRevisionId: job.referenceSetRevisionId, referenceManifestHash: canonicalSha256(manifest),
     });
   }
   const snapshot = {
@@ -116,7 +126,59 @@ function evaluate(candidate: CharacterReleaseSnapshotCandidate) {
   return prisma.$transaction((tx) => evaluateCharacterReleaseSnapshot(tx, candidate, CHARACTER_RELEASE_POLICY_VERSION, new Date()));
 }
 
+function candidateSnapshotHash(candidate: CharacterReleaseSnapshotCandidate) {
+  // Hash only the immutable snapshot payload, never its existing hash or
+  // Release lifecycle flags, matching the actual proposal/validation contract.
+  return characterReleaseSnapshotHash({
+    projectId: candidate.projectId, revisionId: candidate.revisionId,
+    characterContentVersionId: candidate.characterContentVersionId,
+    visualProfileId: candidate.visualProfileId, visualProfileVersion: candidate.visualProfileVersion,
+    referenceSetRevisionId: candidate.referenceSetRevisionId,
+    generationProvenance: candidate.generationProvenance,
+    releasePlacementManifest: candidate.releasePlacementManifest,
+  });
+}
+
 describe("Release historical image authority", () => {
+  it.each([false, true])("validates placements chosen after generation while retaining exact origins (bootstrap: %s)", async (bootstrap) => {
+    const candidate = await imageCandidate(`cross-placement-${bootstrap}`, 1, bootstrap);
+    const placementSlots = ["character_hero", "character_chat", "character_avatar"];
+    candidate.releasePlacementManifest.placements.forEach((placement, index) => {
+      placement.slotKey = placementSlots[index]!;
+    });
+    candidate.generationProvenance.placements.forEach((placement, index) => {
+      placement.slotKey = placementSlots[index]!;
+    });
+    candidate.snapshotHash = candidateSnapshotHash(candidate);
+
+    const result = await evaluate(candidate);
+    for (const key of ["release_avatar_manifest_available", "release_asset_manifest_available", "release_assets_customer_publishable", "release_asset_source_authority", "release_asset_generation_authority", "snapshot_hash_matches"]) {
+      expect(result.checks.find((check) => check.key === key), key).toMatchObject({ passed: true });
+    }
+  });
+
+  it("rejects a generated image whose Job purpose no longer matches its actual Run", async () => {
+    const candidate = await imageCandidate("purpose-tamper");
+    const placement = candidate.releasePlacementManifest.placements[0]!;
+    const job = await prisma.generationJob.findUniqueOrThrow({ where: { id: placement.generationJobId } });
+    await prisma.generationJob.update({ where: { id: job.id }, data: {
+      sourceMeta: {
+        batchId: placement.runId, purpose: "character_hero", targetType: "character", targetId: job.characterId,
+        bootstrapIdentity: false, referenceSetRevisionId: job.referenceSetRevisionId,
+      },
+    } });
+    const result = await evaluate(candidate);
+    expect(result.checks.find((check) => check.key === "release_asset_generation_authority")).toMatchObject({ passed: false });
+  });
+
+  it("rejects a manifest Run substituted independently of the generated image", async () => {
+    const candidate = await imageCandidate("run-tamper");
+    candidate.releasePlacementManifest.placements[0]!.runId = candidate.releasePlacementManifest.placements[1]!.runId;
+    candidate.snapshotHash = candidateSnapshotHash(candidate);
+    const result = await evaluate(candidate);
+    expect(result.checks.find((check) => check.key === "release_asset_generation_authority")).toMatchObject({ passed: false });
+  });
+
   it("keeps reviewed images valid after the production route moves from Qwen to RedCraft", async () => {
     const result = await evaluate(await imageCandidate("route-upgrade"));
     for (const key of ["generation_route_qualified", "visual_identity_exact_version", "reference_set_published_snapshot", "release_asset_manifest_available", "release_assets_customer_publishable", "release_asset_source_authority", "release_asset_generation_authority"]) {

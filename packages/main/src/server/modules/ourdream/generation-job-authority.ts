@@ -11,19 +11,42 @@ import {
 } from "@/server/lib/media-asset-authority";
 import { isRecord, toInputJson } from "@/server/lib/request-json";
 import { canonicalJsonHash } from "@/server/modules/admin-v2/shared/idempotency";
+import { dreamcoinBalance, postDreamcoinEntry } from "@/server/modules/billing/ledger";
 import {
   dispatchGenerationAttemptOutbox,
   reserveInitialGenerationAttempt as reserveInitialGenerationAttemptAuthority,
 } from "@/server/modules/generation/generation-attempt-authority";
-import { jsonRecord } from "./json-values";
+import { jsonRecord, numberFromRecord } from "./json-values";
 import type { GenerationSource } from "./generation-request-schema";
+import { lockUserLedger } from "./subscription-lifecycle";
 
-// SPEC: 每一次用户侧生成写入（下单 / 重试 / 建角色预览 / 图片变体）共用的耐久性原语：
-// 幂等去重、首次 Attempt 预留与唤醒、事件追加、在飞数量上限、源图权威校验。
-//
-// INTENT: 这些原语此前只存在于 service.ts 内部，于是「谁能发起一次生成」等价于
-// 「谁在 dispatchV1 的路由表里」。抽出来之后它们成了显式契约：新的生成入口必须走
-// 同一套幂等与预留协议，而不是各写一遍。
+// SPEC: 用户侧付费生成的接纳 authority。入口只准备各自的历史 PIN；幂等重放、
+// 余额与在飞上限、Job/附件/扣费/事件/Attempt/outbox 的原子提交在这里收敛。
+// 建角色预览仍复用下方原语，其独立预览配额与草稿事务不属于付费接纳协议。
+
+type GenerationJobIdentity = {
+  idempotencyKey?: string | null;
+  requestFingerprint?: string;
+  source?: GenerationSource;
+};
+
+type GenerationAdmissionData = Omit<
+  Prisma.GenerationJobUncheckedCreateInput,
+  "userId" | "status" | "idempotencyKey" | "derivedFromJobId" | "costDreamcoins"
+> & { costDreamcoins: number };
+
+type GenerationAdmission = {
+  userId: string;
+  identity: GenerationJobIdentity;
+  retryOf?: Pick<GenerationJobRow, "id" | "version">;
+  chatAttachment?: { sessionId: string; turnId: string; attempt: number };
+  // This is the only varying step: lock and revalidate the entry's Character,
+  // references or source image, then return its exact immutable request pins.
+  prepare(tx: Prisma.TransactionClient): Promise<{
+    data: GenerationAdmissionData;
+    entitlements: Record<string, Prisma.JsonValue>;
+  }>;
+};
 
 export function generationWriteRequestFingerprint(
   commandType:
@@ -47,7 +70,7 @@ export function generationWriteRequestFingerprint(
   });
 }
 
-export function assertGenerationJobRequestFingerprint(
+function assertGenerationJobRequestFingerprint(
   job: Pick<GenerationJobRow, "id" | "momentSpec">,
   requestFingerprint?: string,
 ) {
@@ -71,14 +94,11 @@ export function assertGenerationJobRequestFingerprint(
 // a duplicate request to the SAME existing job.
 export async function findExistingGenerationJob(
   userId: string,
-  options: {
-    idempotencyKey?: string | null;
-    requestFingerprint?: string;
-    source?: GenerationSource;
-  },
+  options: GenerationJobIdentity,
+  db: Prisma.TransactionClient = prisma,
 ) {
   if (options.idempotencyKey) {
-    const existing = await prisma.generationJob.findFirst({
+    const existing = await db.generationJob.findFirst({
       where: { userId, idempotencyKey: options.idempotencyKey },
     });
     if (existing) {
@@ -90,7 +110,7 @@ export async function findExistingGenerationJob(
     }
   }
   if (options.source) {
-    const existing = await prisma.generationJob.findFirst({
+    const existing = await db.generationJob.findFirst({
       where: { sourceType: options.source.sourceType, sourceId: options.source.sourceId },
     });
     if (existing) {
@@ -102,6 +122,174 @@ export async function findExistingGenerationJob(
     }
   }
   return null;
+}
+
+async function findAdmissionReplay(
+  tx: Prisma.TransactionClient,
+  input: GenerationAdmission,
+) {
+  const existing = await findExistingGenerationJob(input.userId, input.identity, tx);
+  if (existing && input.retryOf && existing.derivedFromJobId !== input.retryOf.id) {
+    throw Errors.conflict(
+      "Idempotency-Key was already used for a different generation request",
+    );
+  }
+  return existing;
+}
+
+export async function acceptGenerationJobForUser(input: GenerationAdmission) {
+  let reservation: { job: GenerationJobRow; outboxId: string | null };
+  try {
+    reservation = await prisma.$transaction(async (tx) => {
+      let retrySource: GenerationJobRow | null = null;
+      if (input.retryOf) {
+        // Keep retry intent and source serialization before Character/media
+        // locks. Retrying never mutates the original failed request.
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`generation-retry-idempotency:${input.userId}:${input.identity.idempotencyKey}`}))`;
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`generation-retry-authority:${input.retryOf.id}`}))`;
+        retrySource = await tx.generationJob.findFirst({
+          where: { id: input.retryOf.id, userId: input.userId },
+        });
+        if (!retrySource || retrySource.status !== "failed" || retrySource.version !== input.retryOf.version) {
+          throw Errors.conflict(
+            "Generation job changed before retry authority could be reserved",
+            { generationJobId: input.retryOf.id },
+          );
+        }
+      }
+      const replay = await findAdmissionReplay(tx, input);
+      if (replay) return { job: replay, outboxId: null };
+      if (retrySource) {
+        const retries = await tx.generationJob.count({ where: { derivedFromJobId: retrySource.id } });
+        if (retries >= 3) {
+          throw Errors.rateLimited("Retry limit reached for this generation job", { retries, max: 3 });
+        }
+      }
+
+      const { data, entitlements } = await input.prepare(tx);
+      await lockUserLedger(tx, input.userId);
+      // A competing request may have spent the last coins while this one waited
+      // for the user lock. Exact replay precedes both charging and attachment checks.
+      const accepted = await findAdmissionReplay(tx, input);
+      if (accepted) return { job: accepted, outboxId: null };
+      const chatAttachment = await lockGenerationChatAttachment(tx, input, data, retrySource);
+      const balance = await dreamcoinBalance(input.userId, tx);
+      if (balance < data.costDreamcoins) {
+        if (!retrySource && data.sourceType === "media_enhance") {
+          throw Errors.paymentRequired("Insufficient DreamCoins", { required: data.costDreamcoins, available: balance });
+        }
+        throw Errors.paymentRequired("Insufficient dreamcoins", { balance, cost: data.costDreamcoins, required: data.costDreamcoins });
+      }
+      const active = await tx.generationJob.count({
+        where: { userId: input.userId, status: { in: activeGenerationStatuses() } },
+      });
+      const max = maxInflightJobs(entitlements);
+      if (active >= max) throw Errors.rateLimited("Too many active generation jobs", { active, max });
+
+      const job = await tx.generationJob.create({ data: {
+        ...data,
+        userId: input.userId,
+        idempotencyKey: input.identity.idempotencyKey,
+        derivedFromJobId: input.retryOf?.id,
+        status: "queued",
+      } });
+      if (chatAttachment) {
+        // The exact delivery pointer commits with debit and outbox, so even an
+        // immediate provider terminal observes the accepted attachment.
+        await tx.chatTurnAttachment.update({ where: { id: chatAttachment.id }, data: {
+          generationJobId: job.id, status: "accepted", errorCode: null,
+          ...(retrySource ? { mediaAssetId: null, width: null, height: null } : {}),
+          // Keep effect identity/attempt so regenerate ACKs this replacement.
+          metadata: toInputJson({ ...jsonRecord(chatAttachment.metadata), costDreamcoins: job.costDreamcoins }),
+        } });
+      }
+      const enhancement = !retrySource && job.sourceType === "media_enhance";
+      await appendGenerationEvent(tx, job.id, "created",
+        retrySource ? "Retry generation job accepted" : enhancement ? "Image enhancement accepted" : "Generation job accepted",
+        retrySource ? { derivedFromJobId: retrySource.id } : enhancement ? {
+          sourceMediaId: jsonRecord(job.controls).sourceImageAssetId, scale: 2,
+        } : {
+          mode: job.mode, profileId: job.profileId, recipeId: job.recipeId,
+          visualProfileId: job.visualProfileId, visualProfileVersion: job.visualProfileVersion,
+          referenceSetRevisionId: job.referenceSetRevisionId, consistencyMode: job.consistencyMode,
+          idempotencyKey: input.identity.idempotencyKey ?? null, sourceType: job.sourceType, sourceId: job.sourceId,
+        });
+      await postDreamcoinEntry(tx, {
+        kind: "generation_spend", userId: input.userId, amount: job.costDreamcoins,
+        sourceId: job.id, idempotencyKey: `generation:${job.id}:reserve`,
+      });
+      await appendGenerationEvent(tx, job.id, "reserved", "Dreamcoins reserved", { amount: job.costDreamcoins });
+      await appendGenerationEvent(tx, job.id, "queued",
+        retrySource ? "Retry generation job queued" : enhancement ? "Image enhancement queued" : "Generation job queued", {});
+      const dispatch = await reserveInitialGenerationAttempt(tx, job);
+      return { job, outboxId: dispatch.outbox.id };
+    });
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) throw error;
+    const existing = await findAdmissionReplay(prisma, input);
+    if (!existing) throw error;
+    reservation = { job: existing, outboxId: null };
+  }
+
+  // Never reserve or dispatch a replay while holding the user lock: terminal
+  // settlement locks Job before user. Wake only after the transaction commits.
+  if (reservation.outboxId) {
+    await dispatchGenerationAttemptOutbox(prisma, { outboxIds: [reservation.outboxId] });
+  } else {
+    await wakeQueuedGenerationDispatch(reservation.job);
+  }
+  return reservation.job;
+}
+
+async function lockGenerationChatAttachment(
+  tx: Prisma.TransactionClient,
+  input: GenerationAdmission,
+  data: GenerationAdmissionData,
+  retrySource: GenerationJobRow | null,
+) {
+  if (retrySource?.sourceType === "chat_image") {
+    const candidate = await tx.chatTurnAttachment.findFirst({
+      where: { generationJobId: retrySource.id, ...(retrySource.sourceId ? { id: retrySource.sourceId } : {}), turn: { session: { userId: input.userId } } },
+      include: { turn: true },
+    });
+    if (!candidate) throw Errors.conflict("The original Chat image is no longer available to retry");
+    // Match Chat mutation order: user → session → Turn → attachment.
+    await tx.$queryRaw`SELECT "sessionId" FROM "recent_chats" WHERE "sessionId" = ${candidate.turn.sessionId} FOR UPDATE`;
+    await tx.$queryRaw`SELECT id FROM "chat_turns" WHERE id = ${candidate.turnId} FOR UPDATE`;
+    await tx.$queryRaw`SELECT id FROM "chat_turn_attachments" WHERE id = ${candidate.id} FOR UPDATE`;
+    const current = await tx.chatTurnAttachment.findUnique({
+      where: { id: candidate.id }, include: { turn: { include: { session: true } } },
+    });
+    const metadata = jsonRecord(current?.metadata);
+    const effect = jsonRecord(metadata.effect);
+    const attempt = numberFromRecord(metadata, "attempt") ?? numberFromRecord(effect, "attempt") ?? 1;
+    if (!current || current.turn.session.userId !== input.userId ||
+      current.turn.session.characterId !== data.characterId || current.turn.session.status === "deleted" ||
+      current.kind !== "generated_image" || !["failed", "refunded"].includes(current.status) ||
+      current.generationJobId !== retrySource.id || attempt !== current.turn.attempt) {
+      throw Errors.conflict("The Chat image changed before its retry could be reserved");
+    }
+    return current;
+  }
+  if (!input.chatAttachment) return null;
+  const binding = input.chatAttachment;
+  const attachmentId = input.identity.source?.sourceId;
+  if (input.identity.source?.sourceType !== "chat_image" || !attachmentId) {
+    throw Errors.badRequest("Chat attachment binding requires its image action source");
+  }
+  await tx.$queryRaw`SELECT "sessionId" FROM "recent_chats" WHERE "sessionId" = ${binding.sessionId} FOR UPDATE`;
+  await tx.$queryRaw`SELECT id FROM "chat_turns" WHERE id = ${binding.turnId} FOR UPDATE`;
+  await tx.$queryRaw`SELECT id FROM "chat_turn_attachments" WHERE id = ${attachmentId} FOR UPDATE`;
+  const current = await tx.chatTurnAttachment.findUnique({ where: { id: attachmentId }, include: { turn: { include: { session: true } } } });
+  if (!current || current.kind !== "generated_image" || current.status !== "requesting" ||
+    current.generationJobId !== null || current.turnId !== binding.turnId ||
+    current.turn.sessionId !== binding.sessionId || current.turn.session.userId !== input.userId ||
+    current.turn.session.characterId !== data.characterId || current.turn.session.status === "deleted" ||
+    current.turn.attempt !== binding.attempt || jsonRecord(current.metadata).attempt !== binding.attempt ||
+    !["pending", "generating"].includes(current.turn.assistantStatus)) {
+    throw Errors.conflict("The Chat image changed before its request could be reserved");
+  }
+  return current;
 }
 
 export function isUniqueConstraintError(error: unknown): boolean {
@@ -208,7 +396,7 @@ export function activeGenerationStatuses() {
   );
 }
 
-export function maxInflightJobs(entitlements: Record<string, Prisma.JsonValue>) {
+function maxInflightJobs(entitlements: Record<string, Prisma.JsonValue>) {
   const configured = Number.parseInt(process.env.MAX_INFLIGHT_JOBS_PER_USER ?? "3", 10);
   const base = Number.isFinite(configured) && configured > 0 ? configured : 3;
   const plan = entitlements.plan;

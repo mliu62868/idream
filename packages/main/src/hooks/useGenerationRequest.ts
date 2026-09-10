@@ -1,8 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef } from "react";
+import { useGenerationReceipts } from "./useGenerationReceipts";
 import {
-  createGenerationIdempotencyKeys,
   generationQuoteKeyFor,
   initialGenerationRequestState,
   loadGenerationQuote,
@@ -24,12 +24,8 @@ import {
   hasUnconfirmedGenerationRetry,
   hasUnconfirmedGenerationSubmission,
   hasUnconfirmedMediaVariation,
-  listGenerationReceipts,
-  readGenerationReceipts,
-  requestGenerationReceipt,
   GenerationRequestError,
   type GenerationReceipt,
-  type GenerationReceiptPersistence,
 } from "@/lib/generation-write-client";
 
 // SPEC: binds the generation request lifecycle to React — the machine's state,
@@ -42,7 +38,7 @@ import {
 
 export type UseGenerationRequestOptions = {
   /** Only the server-confirmed signed-in viewer may load local receipts. */
-  receiptOwnerScope?: string | null;
+  receiptOwnerScope: string | null;
   onReceiptWarning?: (message: string) => void;
   /** Null while the form does not describe a route the server can price. */
   quoteRequest: GenerationQuoteRequest | null;
@@ -97,6 +93,8 @@ export type GenerationRequestController = {
   balanceChanged: () => void;
   /** Suspend projections; retain receipts only during revalidation of the current viewer. */
   resetViewerScope: (preserveUnconfirmed?: boolean) => void;
+  /** Resume only after a fresh server response confirms this owner. */
+  resumeViewerScope: (confirmedOwnerScope: string) => void;
   isSubmissionUnconfirmed: (body: Record<string, unknown>) => boolean;
   isVariationUnconfirmed: (input: GenerationVariationInput) => boolean;
   hasUnconfirmedVariations: () => boolean;
@@ -130,50 +128,19 @@ export function useGenerationRequest(
     latestRef.current = { options, state, view, quoteKey };
   });
 
-  const keysRef = useRef(createGenerationIdempotencyKeys());
-  const receiptOwnerRef = useRef<GenerationReceiptPersistence | undefined>(undefined);
-  const lastReceiptOwnerRef = useRef<string | null>(null);
-  const [receiptSnapshot, setReceiptSnapshot] = useState<{ ownerScope: string | null; items: GenerationReceipt[] }>({ ownerScope: null, items: [] });
-  const [recoveringReceiptKeys, setRecoveringReceiptKeys] = useState<Set<string>>(new Set());
-  const receiptChecksRef = useRef(new Set<string>());
-  const refreshReceipts = useCallback(() => {
-    const ownerScope = receiptOwnerRef.current?.ownerScope ?? null;
-    setReceiptSnapshot({ ownerScope, items: ownerScope ? Object.values(keysRef.current).flatMap(listGenerationReceipts) : [] });
-  }, []);
+  const {
+    receipts,
+    checkingKeys: recoveringReceiptKeys,
+    context: receiptContext,
+    refresh: refreshReceipts,
+    hasPending,
+    recover,
+    suspend: suspendReceipts,
+    resume: resumeViewerScope,
+  } = useGenerationReceipts({ ownerScope: options.receiptOwnerScope, onWarning: options.onReceiptWarning });
   const viewerEpochRef = useRef(0);
   const quoteControllerRef = useRef<AbortController | null>(null);
   const retryQuoteControllerRef = useRef<AbortController | null>(null);
-
-  useEffect(() => {
-    const scope = options.receiptOwnerScope;
-    receiptOwnerRef.current = scope ? { ownerScope: scope, onWarning: options.onReceiptWarning } : undefined;
-    if (!scope) return;
-    if (lastReceiptOwnerRef.current !== scope) {
-      keysRef.current = createGenerationIdempotencyKeys();
-      lastReceiptOwnerRef.current = scope;
-    }
-    const restore = () => {
-      const owner = receiptOwnerRef.current;
-      if (!owner || owner.ownerScope !== scope) return;
-      for (const receipt of readGenerationReceipts(owner)) {
-        const map = receipt.kind === "generation" ? keysRef.current.generation
-          : receipt.kind === "media_variation" ? keysRef.current.variation
-          : receipt.kind === "generation_retry" ? keysRef.current.retry : null;
-        if (map && !map.has(receipt.record)) map.set(receipt.record, receipt.key);
-      }
-    };
-    // Restore keys before any user event can submit; publish the owner-bound
-    // browser snapshot separately, without deriving rendered authority from a ref.
-    restore();
-    const timer = window.setTimeout(refreshReceipts, 0);
-    const onStorage = () => { restore(); refreshReceipts(); };
-    // This only refreshes the local list; it never submits or chooses a viewer.
-    window.addEventListener("storage", onStorage);
-    return () => {
-      window.clearTimeout(timer);
-      window.removeEventListener("storage", onStorage);
-    };
-  }, [options.receiptOwnerScope, options.onReceiptWarning, refreshReceipts]);
 
   useEffect(
     () => () => {
@@ -255,16 +222,17 @@ export function useGenerationRequest(
   const context = useCallback(
     (effects: GenerationRequestEffects) => {
       const viewerEpoch = viewerEpochRef.current;
+      const receipt = receiptContext();
       return {
         state: latestRef.current.state,
         dispatch,
         effects,
-        keys: keysRef.current,
-        persistence: receiptOwnerRef.current,
-        isCurrent: () => viewerEpochRef.current === viewerEpoch,
+        keys: receipt.keys,
+        persistence: receipt.persistence,
+        isCurrent: () => viewerEpochRef.current === viewerEpoch && receipt.isCurrent(),
       };
     },
-    [],
+    [receiptContext],
   );
 
   const submit = useCallback(
@@ -334,17 +302,9 @@ export function useGenerationRequest(
 
   const recoverReceipt = useCallback(async (receipt: GenerationReceipt, effects: GenerationRequestEffects) => {
     const ctx = context(effects);
-    if (!ctx.persistence || receiptChecksRef.current.has(receipt.key)) return;
-    const map = receipt.kind === "generation" ? ctx.keys.generation
-      : receipt.kind === "media_variation" ? ctx.keys.variation
-      : receipt.kind === "generation_retry" ? ctx.keys.retry : null;
-    if (!map) return;
-    const checks = receiptChecksRef.current;
-    checks.add(receipt.key);
-    setRecoveringReceiptKeys(new Set(checks));
     try {
-      const result = await requestGenerationReceipt(receipt, { idempotencyKeys: map, persistence: ctx.persistence, isCurrent: ctx.isCurrent });
-      if (!ctx.isCurrent()) return;
+      const result = await recover(receipt);
+      if (!result || !ctx.isCurrent()) return;
       effects.applyJob(result.job);
       effects.showStatus("Original request confirmed.");
       effects.revealJobs();
@@ -356,11 +316,8 @@ export function useGenerationRequest(
       effects.showStatus(error instanceof GenerationRequestError && error.status === 401
         ? "Sign in to the same account to check this request. Your pending request is kept."
         : `${error instanceof Error ? error.message : "The request could not be confirmed."} Your original request is kept; check again or contact support.`);
-    } finally {
-      checks.delete(receipt.key);
-      if (ctx.isCurrent()) { setRecoveringReceiptKeys(new Set(checks)); refreshReceipts(); }
     }
-  }, [context, refreshReceipts]);
+  }, [context, recover]);
 
   const requestQuoteRetry = useCallback(
     () => dispatch({ type: "quote_retry_requested" }),
@@ -377,24 +334,21 @@ export function useGenerationRequest(
   const resetViewerScope = useCallback((preserveUnconfirmed = false) => {
     // In-flight requests keep their own keys and cannot project into the next viewer.
     viewerEpochRef.current += 1;
-    receiptChecksRef.current = new Set();
-    setRecoveringReceiptKeys(new Set());
-    setReceiptSnapshot({ ownerScope: null, items: [] });
-    if (!preserveUnconfirmed) keysRef.current = createGenerationIdempotencyKeys();
+    suspendReceipts(preserveUnconfirmed);
     quoteControllerRef.current?.abort();
     retryQuoteControllerRef.current?.abort();
     dispatch({ type: "viewer_scope_reset" });
-  }, []);
+  }, [suspendReceipts]);
   const isSubmissionUnconfirmed = useCallback((body: Record<string, unknown>) =>
-    hasUnconfirmedGenerationSubmission(body, keysRef.current.generation), []);
+    hasPending((keys) => hasUnconfirmedGenerationSubmission(body, keys.generation)), [hasPending]);
   const isVariationUnconfirmed = useCallback((input: GenerationVariationInput) =>
-    hasUnconfirmedMediaVariation({ ...input, outputCount: input.outputCount ?? 1 }, keysRef.current.variation), []);
-  const hasUnconfirmedVariations = useCallback(() => keysRef.current.variation.size > 0, []);
+    hasPending((keys) => hasUnconfirmedMediaVariation({ ...input, outputCount: input.outputCount ?? 1 }, keys.variation)), [hasPending]);
+  const hasUnconfirmedVariations = useCallback(() => hasPending((keys) => keys.variation.size > 0), [hasPending]);
   const isRetryUnconfirmed = useCallback((jobId: string) =>
-    hasUnconfirmedGenerationRetry(jobId, keysRef.current.retry), []);
+    hasPending((keys) => hasUnconfirmedGenerationRetry(jobId, keys.retry)), [hasPending]);
 
   return {
-    receipts: options.receiptOwnerScope && options.receiptOwnerScope === receiptSnapshot.ownerScope ? receiptSnapshot.items : [],
+    receipts: receipts.filter((receipt) => receipt.kind !== "media_enhancement"),
     recoveringReceiptKeys,
     recoverReceipt,
     view,
@@ -409,6 +363,7 @@ export function useGenerationRequest(
     requestRetryQuoteRetry,
     balanceChanged,
     resetViewerScope,
+    resumeViewerScope,
     isSubmissionUnconfirmed,
     isVariationUnconfirmed,
     hasUnconfirmedVariations,

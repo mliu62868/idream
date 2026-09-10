@@ -62,7 +62,10 @@ async function fixture() {
   const accepted = await applyChatToolEffect(effect);
   if (!accepted.accepted || !accepted.generationJobId) throw new Error("Missing original image action");
   await prisma.chatTurnAttachment.update({ where: { id: accepted.attachmentId }, data: { status: "failed", errorCode: "provider_error" } });
-  await commitChatTerminal({ version: 1, turnId: snapshot.turnId, sessionId: snapshot.sessionId, assistantMessageId: snapshot.assistantMessageId, attempt: 1, status: "sent", content: "The image request failed.", model: "test", promptTokens: 1, completionTokens: 1, sceneVersion: 0, scene: null, terminalEvidence: { authority: "test", prompt: { productPromptVersion: "companion-product-1", preparedTurnVersion: 4, systemPromptDigest: "a".repeat(64), soulFingerprint: "b".repeat(64) } } });
+  await commitChatTerminal({ version: 1, turnId: snapshot.turnId, sessionId: snapshot.sessionId, assistantMessageId: snapshot.assistantMessageId, attempt: 1, status: "sent", content: "The image request failed.", model: "test", promptTokens: 1, completionTokens: 1,
+    sceneVersion: snapshot.sceneVersion + 1,
+    scene: { schemaVersion: 1, location: null, time: null, participants: [], emotionalBeat: null, unresolvedThreads: [], ...snapshot.scene, version: snapshot.sceneVersion + 1 },
+    terminalEvidence: { authority: "test", prompt: { productPromptVersion: "companion-product-1", preparedTurnVersion: 4, systemPromptDigest: "a".repeat(64), soulFingerprint: "b".repeat(64) } } });
   const quoteResponse = await api("POST", `generation/jobs/${accepted.generationJobId}/retry/quote`, { userId, ageGate: true });
   expectOk(quoteResponse);
   const { quote } = parseGenerationRetryQuoteResponse(quoteResponse.json);

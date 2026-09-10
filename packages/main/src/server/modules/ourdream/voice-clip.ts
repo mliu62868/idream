@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Prisma, type MediaAsset, type VoiceClipRequest } from "@prisma/client";
 import { z } from "zod";
+import { chatSceneStateSchema, voiceClipBillingAuthoritySchema, type VoiceClipBillingAuthority, type VoiceClipQuote } from "@idream/shared/contracts";
 import { fishAudioDeliverySettingsSchema } from "@idream/shared/admin";
 import {
   getAuthCtx,
@@ -11,7 +12,7 @@ import {
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { env } from "@/server/lib/env";
-import { generationCostDreamcoins } from "@/server/lib/generation-pricing";
+import { generationCostFromAuthority, resolveGenerationPricingAuthority } from "@/server/lib/generation-pricing";
 import { ok } from "@/server/lib/http";
 import { logger } from "@/server/lib/logger";
 import { dreamcoinBalance, postDreamcoinEntry } from "@/server/modules/billing/ledger";
@@ -24,6 +25,7 @@ import {
   type VoiceClipPort,
 } from "@/server/providers/types";
 import { createVoiceClipPortForKey } from "@/server/providers/voice/factory";
+import { acceptVoiceClipQuote, signVoiceClipQuote } from "./voice-clip-quote";
 import {
   fetchChatMessageVoiceAuthority,
   type ChatMessageVoiceAuthority,
@@ -35,6 +37,7 @@ const voiceClipSchema = z.object({
   sessionId: z.string().min(1).optional(),
   text: z.string().trim().min(1).max(2_000),
   intent: z.enum(["play", "prewarm"]).default("play"),
+  quoteToken: z.string().min(1).max(8192).nullish(),
 });
 
 export const voiceClipSynthesisPayloadSchema = z
@@ -44,15 +47,7 @@ export const voiceClipSynthesisPayloadSchema = z
     sessionId: z.string().min(1).nullable(),
     intent: z.enum(["play", "prewarm"]),
     sceneVersion: z.number().int().nonnegative().optional(),
-    scene: z.object({
-      schemaVersion: z.literal(1),
-      version: z.number().int().nonnegative(),
-      location: z.string().nullable(),
-      time: z.string().nullable(),
-      participants: z.array(z.string()),
-      emotionalBeat: z.string().nullable(),
-      unresolvedThreads: z.array(z.string()),
-    }).strict().nullable().optional(),
+    scene: chatSceneStateSchema.nullable().optional(),
   })
   .strict()
   .superRefine((payload, ctx) => {
@@ -158,7 +153,7 @@ export type VoiceClipSuccessCommit = (
   },
 ) => Promise<void>;
 
-export async function createVoiceClip(
+async function resolveVoiceClipInput(
   request: Request,
   deps: VoiceClipDependencies,
 ) {
@@ -192,15 +187,116 @@ export async function createVoiceClip(
     sceneVersion: messageAuthority?.sceneVersion ?? 0,
     scene: authoritativeScene,
   });
-  const prewarming = body.intent === "prewarm";
+  const requestFingerprint = canonicalJsonHash({
+    schemaVersion: "voice-clip-request-v1",
+    userId: user.id,
+    characterId: body.characterId,
+    messageId: body.messageId,
+    sessionId: body.sessionId ?? null,
+    text: authoritativeText,
+    sceneVersion: messageAuthority?.sceneVersion ?? 0,
+    scene: authoritativeScene,
+  });
+  return { user, body, synthesisPayload, requestFingerprint };
+}
 
-  if (!(await featureFlagEnabled("voice_gen"))) {
+async function existingVoiceRequest(input: Awaited<ReturnType<typeof resolveVoiceClipInput>>) {
+  const existing = await prisma.voiceClipRequest.findUnique({
+    where: { userId_messageId: { userId: input.user.id, messageId: input.body.messageId } },
+    include: { mediaAsset: true },
+  });
+  if (existing && (existing.requestFingerprint !== input.requestFingerprint || existing.characterId !== input.body.characterId)) {
+    throw Errors.conflict("Voice message id is bound to a different synthesis request", { requestId: existing.id });
+  }
+  if (existing?.errorCode === "provider_outcome_unknown") {
+    throw Errors.conflict("Voice provider outcome is unknown and automatic replay is forbidden", { requestId: existing.id, errorCode: existing.errorCode });
+  }
+  return existing;
+}
+
+function storedVoiceBilling(request: Pick<VoiceClipRequest, "billingAuthority"> | null) {
+  if (request?.billingAuthority === null || request?.billingAuthority === undefined) return null;
+  return voiceClipBillingAuthoritySchema.parse(request.billingAuthority);
+}
+
+async function newVoiceBilling(input: {
+  userId: string;
+  requestFingerprint: string;
+  intent: "play" | "prewarm";
+  entitlements: Record<string, Prisma.JsonValue>;
+}): Promise<VoiceClipBillingAuthority> {
+  const now = new Date();
+  const pricing = await resolveGenerationPricingAuthority("voice");
+  const overflowCostDreamcoins = generationCostFromAuthority(pricing, 1);
+  return voiceClipBillingAuthoritySchema.parse({
+    version: 1, userId: input.userId, requestFingerprint: input.requestFingerprint, intent: input.intent,
+    pricingFingerprint: canonicalJsonHash({ ...pricing, effectiveFrom: pricing.effectiveFrom?.toISOString() ?? null, updatedAt: pricing.updatedAt.toISOString() }),
+    overflowCostDreamcoins, maxCostDreamcoins: input.intent === "prewarm" ? 0 : overflowCostDreamcoins,
+    allowanceMinutes: typeof input.entitlements.voice_minutes === "number" ? input.entitlements.voice_minutes : 0,
+    allowanceWindowStartsAt: new Date(now.getTime() - 30 * 86_400_000).toISOString(),
+    quotedAt: now.toISOString(), expiresAt: new Date(now.getTime() + 5 * 60_000).toISOString(),
+  });
+}
+
+export async function quoteVoiceClip(request: Request, deps: VoiceClipDependencies) {
+  const input = await resolveVoiceClipInput(request, deps);
+  const existing = await existingVoiceRequest(input);
+  const alreadyDelivered = Boolean(existing && await hasDeliveredVoiceUsage(existing.id));
+  const stored = storedVoiceBilling(existing);
+  const accepted = alreadyDelivered || stored?.intent === "play";
+  const entitlements = accepted
+    ? { voice_enabled: true, voice_minutes: stored?.allowanceMinutes ?? 0 }
+    : await deps.entitlementMap(input.user.id);
+  if (!accepted) {
+    if (!(await featureFlagEnabled("voice_gen"))) throw Errors.forbidden("Voice generation is disabled");
+    if (entitlements.voice_enabled !== true) throw Errors.paymentRequired("Voice playback requires a plan with voice enabled", { entitlement: "voice_enabled" });
+    const character = await deps.readableCharacter(input.body.characterId, input.user.id);
+    if (character.age < 18) throw Errors.badRequest("Character is not eligible for voice", { policyCode: "UNDERAGE" });
+  }
+  const terms = accepted ? stored : await newVoiceBilling({
+    userId: input.user.id, requestFingerprint: input.requestFingerprint, intent: input.body.intent, entitlements,
+  });
+  const quote: VoiceClipQuote = {
+    quoteToken: accepted || !terms ? null : signVoiceClipQuote(terms, env.BETTER_AUTH_SECRET),
+    maxCostDreamcoins: alreadyDelivered ? 0 : terms!.maxCostDreamcoins,
+    overflowCostDreamcoins: terms?.overflowCostDreamcoins ?? 0,
+    allowanceMinutes: terms?.allowanceMinutes ?? 0,
+    remainingAllowanceMs: terms ? await voiceMinutesRemainingMs(input.user.id,
+      { voice_minutes: terms.allowanceMinutes }, prisma, new Date(terms.allowanceWindowStartsAt)) : 0,
+    balance: await dreamcoinBalance(input.user.id), accepted, alreadyDelivered,
+  };
+  return ok({ quote });
+}
+
+export async function createVoiceClip(request: Request, deps: VoiceClipDependencies) {
+  const input = await resolveVoiceClipInput(request, deps);
+  const { user, body, synthesisPayload, requestFingerprint } = input;
+  const existing = await existingVoiceRequest(input);
+  // Playback of an already delivered asset survives plan expiry and a disabled
+  // new-generation capability. The exact selected reply still owns this clip.
+  if (existing?.status === "succeeded" && existing.mediaAsset &&
+    existing.mediaAsset.deletedAt === null && isCurrentVoiceClip(existing.mediaAsset)) {
+    return ok(voiceClipResponse(existing.mediaAsset));
+  }
+  const previouslyDelivered = Boolean(existing && await hasDeliveredVoiceUsage(existing.id));
+  const stored = storedVoiceBilling(existing);
+  const acceptedBilling = stored?.intent === "play" ? stored : null;
+  const prewarming = body.intent === "prewarm";
+  // Automatic playback must never resume a previously accepted paid attempt.
+  // Only another explicit Play can exercise that saved commercial consent.
+  if (prewarming && acceptedBilling) {
+    return ok(voicePrewarmSkipped(body.messageId, "play_required"));
+  }
+
+  if (!acceptedBilling && !previouslyDelivered && !(await featureFlagEnabled("voice_gen"))) {
     if (prewarming) return ok(voicePrewarmSkipped(body.messageId, "disabled"));
     throw Errors.forbidden("Voice generation is disabled");
   }
 
-  const entitlements = await deps.entitlementMap(user.id);
-  if (entitlements.voice_enabled !== true) {
+  const entitlements = acceptedBilling
+    ? { voice_enabled: true, voice_minutes: acceptedBilling.allowanceMinutes }
+    : await deps.entitlementMap(user.id);
+  if (!previouslyDelivered && entitlements.voice_enabled !== true) {
     if (prewarming) return ok(voicePrewarmSkipped(body.messageId, "not_entitled"));
     throw Errors.paymentRequired(
       "Voice playback requires a plan with voice enabled",
@@ -215,10 +311,33 @@ export async function createVoiceClip(
     });
   }
 
-  const overflowCost = await generationCostDreamcoins("voice", 1, 1);
+  let billingAuthority = acceptedBilling;
+  if (!billingAuthority && previouslyDelivered) {
+    const now = new Date();
+    billingAuthority = {
+      version: 1, userId: user.id, requestFingerprint, intent: "play", pricingFingerprint: "previous-delivery",
+      overflowCostDreamcoins: 0, maxCostDreamcoins: 0, allowanceMinutes: 0,
+      allowanceWindowStartsAt: new Date(now.getTime() - 30 * 86_400_000).toISOString(),
+      quotedAt: now.toISOString(), expiresAt: new Date(now.getTime() + 5 * 60_000).toISOString(),
+    };
+  }
+  if (!billingAuthority && prewarming) {
+    billingAuthority = stored ?? await newVoiceBilling({ userId: user.id, requestFingerprint, intent: "prewarm", entitlements });
+  }
+  if (!billingAuthority) {
+    if (!body.quoteToken) throw Errors.conflict("An exact Voice quote is required before playback", { reason: "voice_quote_required" });
+    billingAuthority = acceptVoiceClipQuote({ token: body.quoteToken, secret: env.BETTER_AUTH_SECRET, userId: user.id, requestFingerprint });
+    const allowanceMinutes = typeof entitlements.voice_minutes === "number" ? entitlements.voice_minutes : 0;
+    if (billingAuthority.intent !== "play" || billingAuthority.allowanceMinutes !== allowanceMinutes) {
+      throw Errors.conflict("Voice allowance changed; request another quote", { reason: "voice_quote_stale" });
+    }
+  }
+  const overflowCost = billingAuthority.overflowCostDreamcoins;
   const remainingBeforeSynthesis = await voiceMinutesRemainingMs(
     user.id,
-    entitlements,
+    { voice_minutes: billingAuthority.allowanceMinutes },
+    prisma,
+    new Date(billingAuthority.allowanceWindowStartsAt),
   );
   const staleAssets = await voiceAssetsForMessage(user.id, body.messageId);
   const hasStaleCachedClip = staleAssets.length > 0 || await hasDeliveredVoiceUsage(
@@ -256,22 +375,13 @@ export async function createVoiceClip(
     tone: characterVoiceTone(character),
     delivery: voiceAuthority.delivery,
   });
-  const requestFingerprint = canonicalJsonHash({
-    schemaVersion: "voice-clip-request-v1",
-    userId: user.id,
-    characterId: character.id,
-    messageId: body.messageId,
-    sessionId: body.sessionId ?? null,
-    text: authoritativeText,
-    sceneVersion: messageAuthority?.sceneVersion ?? 0,
-    scene: authoritativeScene,
-  });
   const claim = await claimVoiceRequest({
     userId: user.id,
     characterId: character.id,
     messageId: body.messageId,
     requestFingerprint,
     synthesisPayload,
+    billingAuthority,
     providerPayload: proposedProviderPayload,
   });
   if (claim.kind === "replay") {
@@ -384,7 +494,10 @@ export async function reclaimExpiredVoiceClip(input: {
   if (!(await featureFlagEnabled("voice_gen"))) {
     throw Errors.conflict("Voice generation is disabled; the request was not reclaimed");
   }
-  const entitlements = await input.deps.entitlementMap(existing.userId);
+  const billing = storedVoiceBilling(existing);
+  const entitlements = billing?.intent === "play"
+    ? { voice_enabled: true, voice_minutes: billing.allowanceMinutes }
+    : await input.deps.entitlementMap(existing.userId);
   if (entitlements.voice_enabled !== true) {
     throw Errors.conflict(
       "Voice entitlement is no longer active; the request was not reclaimed",
@@ -446,7 +559,8 @@ export async function reclaimExpiredVoiceClip(input: {
     body: synthesisPayload.data,
     prewarming: synthesisPayload.data.intent === "prewarm",
     entitlements,
-    overflowCost: await generationCostDreamcoins("voice", 1, 1),
+    // A legacy operator reclaim cannot invent consent to a new coin charge.
+    overflowCost: billing?.overflowCostDreamcoins ?? 0,
     onSuccessCommit: input.onSuccessCommit,
     voiceProvider,
   });
@@ -487,10 +601,15 @@ async function executeOwnedVoiceClaim(input: {
     character,
     body,
     prewarming,
-    entitlements,
-    overflowCost,
     onSuccessCommit,
   } = input;
+  const billing = storedVoiceBilling(claim.request);
+  const entitlements = billing
+    ? { voice_enabled: true, voice_minutes: billing.allowanceMinutes }
+    : input.entitlements;
+  const overflowCost = billing?.overflowCostDreamcoins ?? input.overflowCost;
+  const maxCostDreamcoins = billing?.maxCostDreamcoins ?? 0;
+  const allowanceWindowStartsAt = billing ? new Date(billing.allowanceWindowStartsAt) : undefined;
 
   const providerPayload = pinnedVoiceProviderPayloadSchema.parse(
     claim.request.providerPayload,
@@ -517,6 +636,8 @@ async function executeOwnedVoiceClaim(input: {
     prewarming,
     entitlements,
     overflowCost,
+    maxCostDreamcoins,
+    allowanceWindowStartsAt,
     providerKey: providerPayload.providerKey,
   });
   if (budgetDecision.kind === "prewarm_skipped") {
@@ -646,23 +767,23 @@ async function executeOwnedVoiceClaim(input: {
         user.id,
         entitlements,
         tx,
+        allowanceWindowStartsAt,
       );
-      const cost =
-        previouslyDelivered || staleAssetIds.length > 0 || remainingMs >= durationMs
-          ? 0
-          : overflowCost;
-      if (prewarming && cost > 0) {
+      const requiresOverflow = !previouslyDelivered && staleAssetIds.length === 0 && remainingMs < durationMs;
+      const cost = requiresOverflow ? overflowCost : 0;
+      const quoteRequired = !prewarming && !billing && requiresOverflow;
+      if (quoteRequired || (prewarming && requiresOverflow)) {
         // INVARIANT: provider execution is an immutable usage fact even when
         // automatic delivery loses the allowance race. It must not become a
         // billable or user-visible clip after that decision.
         await tx.voiceClipRequest.update({
           where: { id: owned.id },
           data: {
-            status: "skipped",
+            status: quoteRequired ? "failed" : "skipped",
             provider: voiceProvider.providerKey,
             providerRequestId: providerIdempotencyKey,
-            errorCode: "allowance_exhausted",
-            error: toInputJson({ reason: "allowance_exhausted" }),
+            errorCode: quoteRequired ? "voice_quote_required" : "allowance_exhausted",
+            error: toInputJson({ reason: quoteRequired ? "voice_quote_required" : "allowance_exhausted" }),
             leaseOwner: null,
             leaseExpiresAt: null,
             completedAt: new Date(),
@@ -681,7 +802,10 @@ async function executeOwnedVoiceClaim(input: {
             intent: body.intent,
           },
         });
-        return { kind: "prewarm_skipped" } as const;
+        return quoteRequired ? { kind: "quote_required" } as const : { kind: "prewarm_skipped" } as const;
+      }
+      if (cost > maxCostDreamcoins) {
+        throw Errors.conflict("Voice delivery exceeds the accepted cost", { reason: "voice_quote_limit_exceeded", maxCostDreamcoins, required: cost });
       }
       if (cost > 0) {
         const balance = await dreamcoinBalance(user.id, tx);
@@ -761,6 +885,7 @@ async function executeOwnedVoiceClaim(input: {
         sceneAdapter: result.data.sceneAdapter ?? "unreported",
         providerIdempotencyKey,
         costDreamcoins: cost,
+        billingAuthority: billing,
         generationIntent: prewarming ? "automatic" : "requested",
         replacedAssetIds: staleAssetIds,
       });
@@ -838,6 +963,9 @@ async function executeOwnedVoiceClaim(input: {
         voicePrewarmSkipped(claim.request.messageId, "allowance_exhausted"),
       );
     }
+    if (commit.kind === "quote_required") {
+      throw Errors.conflict("Legacy Voice recovery requires the user's accepted quote before a paid delivery", { reason: "voice_quote_required" });
+    }
     if (commit.kind === "payment_required") {
       throw Errors.paymentRequired("Insufficient dreamcoins", {
         balance: commit.balance,
@@ -889,6 +1017,8 @@ async function authorizeVoiceSynthesisTurn(input: {
   prewarming: boolean;
   entitlements: Record<string, Prisma.JsonValue>;
   overflowCost: number;
+  maxCostDreamcoins: number;
+  allowanceWindowStartsAt?: Date;
   providerKey: z.infer<typeof pinnedVoiceProviderPayloadSchema>["providerKey"];
 }): Promise<Exclude<VoiceSynthesisBudgetDecision, { kind: "wait" }>> {
   const deadline = Date.now() + VOICE_CLIP_WAIT_MS;
@@ -949,6 +1079,7 @@ async function authorizeVoiceSynthesisTurn(input: {
         input.userId,
         input.entitlements,
         tx,
+        input.allowanceWindowStartsAt,
       );
       if (input.prewarming && !hasCachedClip && remainingMs <= 0) {
         await tx.voiceClipRequest.update({
@@ -970,6 +1101,9 @@ async function authorizeVoiceSynthesisTurn(input: {
         input.overflowCost > 0 &&
         remainingMs <= 0
       ) {
+        if (input.maxCostDreamcoins < input.overflowCost) {
+          throw Errors.conflict("Voice synthesis exceeds the accepted cost", { reason: "voice_quote_limit_exceeded" });
+        }
         const balance = await dreamcoinBalance(input.userId, tx);
         if (balance < input.overflowCost) {
           await tx.voiceClipRequest.update({
@@ -1011,6 +1145,7 @@ async function claimVoiceRequest(input: {
   messageId: string;
   requestFingerprint: string;
   synthesisPayload: VoiceClipSynthesisPayload;
+  billingAuthority: VoiceClipBillingAuthority;
   providerPayload: z.infer<typeof pinnedVoiceProviderPayloadSchema>;
 }): Promise<VoiceRequestClaim> {
   const requestId = voiceRequestId(input.userId, input.messageId);
@@ -1025,6 +1160,7 @@ async function claimVoiceRequest(input: {
         messageId: input.messageId,
         requestFingerprint: input.requestFingerprint,
         synthesisPayload: toInputJson(input.synthesisPayload),
+        billingAuthority: toInputJson(input.billingAuthority),
         provider: input.providerPayload.providerKey,
         providerPayload: toInputJson(input.providerPayload),
         leaseOwner,
@@ -1107,6 +1243,9 @@ async function claimVoiceRequest(input: {
     const pinnedProviderKey = pinnedVoiceProviderPayloadSchema.parse(
       existing.providerPayload,
     ).providerKey;
+    const existingBilling = storedVoiceBilling(existing);
+    const keepExistingBilling = existingBilling &&
+      (existingBilling.intent === "play" || input.synthesisPayload.intent === "prewarm");
     const claimed = await prisma.voiceClipRequest.updateMany({
       where: {
         id: existing.id,
@@ -1125,7 +1264,10 @@ async function claimVoiceRequest(input: {
       data: {
         status: "running",
         attemptNo: existing.attemptNo + 1,
-        synthesisPayload: toInputJson(input.synthesisPayload),
+        synthesisPayload: toInputJson(existingBilling?.intent === "play" && input.synthesisPayload.intent === "prewarm"
+          ? existing.synthesisPayload : input.synthesisPayload),
+        ...(keepExistingBilling || (!existingBilling && input.synthesisPayload.intent === "prewarm")
+          ? {} : { billingAuthority: toInputJson(input.billingAuthority) }),
         leaseOwner: nextLeaseOwner,
         leaseExpiresAt: new Date(
           claimNow.getTime() + voiceClipLeaseMs(pinnedProviderKey),
@@ -1253,13 +1395,14 @@ async function voiceMinutesRemainingMs(
   userId: string,
   entitlements: Record<string, Prisma.JsonValue>,
   db: Prisma.TransactionClient | typeof prisma = prisma,
+  windowStartsAt?: Date,
 ) {
   const allowanceMinutes =
     typeof entitlements.voice_minutes === "number"
       ? entitlements.voice_minutes
       : 0;
   if (allowanceMinutes <= 0) return 0;
-  const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1_000);
+  const since = windowStartsAt ?? new Date(Date.now() - 30 * 24 * 60 * 60 * 1_000);
   const usage = await db.voiceUsageFact.aggregate({
     where: { userId, occurredAt: { gte: since } },
     _sum: { durationMs: true },
@@ -1355,7 +1498,7 @@ function voiceClipResponse(asset: {
 
 function voicePrewarmSkipped(
   messageId: string,
-  reason: "allowance_exhausted" | "disabled" | "not_entitled",
+  reason: "allowance_exhausted" | "disabled" | "not_entitled" | "play_required",
 ) {
   return { messageId, prewarmed: false as const, reason };
 }

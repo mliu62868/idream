@@ -258,7 +258,7 @@ describe("PreparedTurn budget", () => {
           ? { kind: "user" as const }
           : message.role === "assistant"
             ? { kind: "model" as const, provider: profile.provider, model: profile.model }
-            : { kind: "plugin", plugin: "idream", form: "context" } as never,
+            : { kind: "plugin", plugin: "idream", form: message.sourceKind === "plugin" ? "context" : "replay" } as never,
         content: [{ type: "text" as const, text: message.content }],
       })),
       tools: prepared.tools,
@@ -280,6 +280,12 @@ describe("PreparedTurn budget", () => {
       expect(wire).toContain("Earlier established scene 5:");
       expect(wire).toContain("the library");
       expect(wire).toContain(source.recentMessages.at(-1)!.content);
+      const latestUserRecord = request.messages.at(-1)!.content
+        .split("LATEST USER RECORD (authoritative for user facts when it conflicts with earlier records):\n")[1]!
+        .split("\n")[0]!;
+      expect(JSON.parse(latestUserRecord)).toEqual({
+        id: "message-4", source: "conversation", role: "user", content: source.recentMessages[4]!.content,
+      });
       const actualInputTokens = Math.ceil(JSON.stringify({ messages: request.messages, tools: request.tools }).length / 4);
       expect(actualInputTokens).toBeLessThanOrEqual(prepared.budget.usedInputTokens);
     }

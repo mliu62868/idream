@@ -14,7 +14,11 @@ import {
 } from "@/server/lib/media-asset-authority";
 import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { creativeReviewQuality } from "@/server/modules/admin-v2/shared/creative-review-quality";
-import { draftAssetRouteEntries, type CharacterDraftAssetPurpose } from "./draft-asset-route-authority";
+import {
+  characterDraftAssetPurposes,
+  draftAssetRouteEntries,
+  type CharacterDraftAssetPurpose,
+} from "./draft-asset-route-authority";
 import {
   characterVisualProfileSnapshotHash,
   referenceSetSnapshotHash,
@@ -167,11 +171,7 @@ function sourceFacts(facts: QualificationFacts) {
       source: "operator_upload" as const,
       sourceAuthorityValid:
         facts.item === null && isCharacterLibraryOperatorUpload(facts.asset),
-      purposes: [
-        "character_cover",
-        "character_hero",
-        "character_chat",
-      ] as const,
+      purposes: characterDraftAssetPurposes,
       bootstrapIdentity: false,
     };
   }
@@ -202,7 +202,9 @@ function sourceFacts(facts: QualificationFacts) {
         job.sourceType === "content_production_item" &&
         job.sourceId === item.id,
       ),
-      purposes: characterPurpose ? [characterPurpose] : [],
+      // A generation brief records what was requested, not where its image may
+      // appear. Publishing chooses placements from the qualified image library.
+      purposes: characterPurpose ? characterDraftAssetPurposes : [],
       bootstrapIdentity: generatedBootstrapIdentity(item),
     };
   }

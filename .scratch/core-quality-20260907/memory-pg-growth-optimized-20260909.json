@@ -1,0 +1,416 @@
+{
+  "sourceRevision": "idream-worktree-d917dbbcda1319de9ceb928e9d77c9842ad6fdba8f3604fe41881b5e304392f4",
+  "completedAt": "2026-09-09T11:25:19.974Z",
+  "method": "Real isolated Main PostgreSQL, actual dispatch leases and coalescing, Main NDJSON stream, Chat decoder, workspace promotion, installed igrep ingest/doctor/status/wake. In-process HTTP Request transport excludes network latency. Synthetic 1000-character content across interleaved sessions. One sample per phase; not a throughput SLA.",
+  "limitations": "All maintenance commands and their completion timestamp are intercepted. No recall, embedding or model request. Memory-ready time is not first-token time.",
+  "measurements": [
+    {
+      "baseMessages": 100,
+      "phase": "bootstrap",
+      "commands": [
+        {
+          "operation": "mem ingest",
+          "ms": 263.01,
+          "events": 50,
+          "newEvents": 50
+        },
+        {
+          "operation": "mem ingest",
+          "ms": 272.68,
+          "events": 50,
+          "newEvents": 50
+        },
+        {
+          "operation": "mem doctor",
+          "ms": 230.73
+        }
+      ],
+      "coalescedPendingProjection": true,
+      "exportAndStageMs": 26.36,
+      "transcriptBytes": 109450,
+      "messages": 100,
+      "sessions": 2,
+      "maintenanceIntercepted": true,
+      "memoryStatus": {
+        "dialogueFiles": 2,
+        "pendingProfileRows": 100,
+        "processedProfileRows": 0,
+        "lastMaintainAt": null
+      },
+      "workspaceBuildMs": 1016.45,
+      "ndjsonBytes": 140130,
+      "promoteMs": 1.79,
+      "dispatchMs": 1097.43,
+      "eventLoopMaxMs": 18.81,
+      "eventLoopP99Ms": 12.28,
+      "canonicalBytes": 380080,
+      "concurrentAttempts": {
+        "count": 4,
+        "wallMs": 268.15,
+        "samples": [
+          {
+            "prepareMs": 3.92,
+            "wakeMs": 241.74,
+            "wakeOutcome": "empty"
+          },
+          {
+            "prepareMs": 8.87,
+            "wakeMs": 245.91,
+            "wakeOutcome": "empty"
+          },
+          {
+            "prepareMs": 14.64,
+            "wakeMs": 247.48,
+            "wakeOutcome": "empty"
+          },
+          {
+            "prepareMs": 20.29,
+            "wakeMs": 246.68,
+            "wakeOutcome": "empty"
+          }
+        ]
+      }
+    },
+    {
+      "baseMessages": 100,
+      "phase": "incremental",
+      "commands": [
+        {
+          "operation": "mem ingest",
+          "ms": 262.32,
+          "events": 52,
+          "newEvents": 2
+        },
+        {
+          "operation": "mem doctor",
+          "ms": 231.69
+        }
+      ],
+      "coalescedPendingProjection": true,
+      "exportAndStageMs": 23.12,
+      "transcriptBytes": 111639,
+      "messages": 102,
+      "sessions": 2,
+      "maintenanceIntercepted": true,
+      "memoryStatus": {
+        "dialogueFiles": 2,
+        "pendingProfileRows": 102,
+        "processedProfileRows": 0,
+        "lastMaintainAt": null
+      },
+      "workspaceBuildMs": 748.3,
+      "ndjsonBytes": 142924,
+      "promoteMs": 1.42,
+      "dispatchMs": 797.57,
+      "eventLoopMaxMs": 12.4,
+      "eventLoopP99Ms": 12.05,
+      "canonicalBytes": 387640,
+      "concurrentAttempts": {
+        "count": 4,
+        "wallMs": 272.8,
+        "samples": [
+          {
+            "prepareMs": 3.46,
+            "wakeMs": 256.29,
+            "wakeOutcome": "empty"
+          },
+          {
+            "prepareMs": 8.49,
+            "wakeMs": 247.11,
+            "wakeOutcome": "empty"
+          },
+          {
+            "prepareMs": 13.58,
+            "wakeMs": 251.07,
+            "wakeOutcome": "empty"
+          },
+          {
+            "prepareMs": 19.88,
+            "wakeMs": 251.85,
+            "wakeOutcome": "empty"
+          }
+        ]
+      }
+    },
+    {
+      "baseMessages": 1000,
+      "phase": "bootstrap",
+      "commands": [
+        {
+          "operation": "mem ingest",
+          "ms": 381.25,
+          "events": 250,
+          "newEvents": 250
+        },
+        {
+          "operation": "mem ingest",
+          "ms": 449.73,
+          "events": 250,
+          "newEvents": 250
+        },
+        {
+          "operation": "mem ingest",
+          "ms": 509.74,
+          "events": 250,
+          "newEvents": 250
+        },
+        {
+          "operation": "mem ingest",
+          "ms": 565.77,
+          "events": 250,
+          "newEvents": 250
+        },
+        {
+          "operation": "mem doctor",
+          "ms": 232.84
+        }
+      ],
+      "coalescedPendingProjection": true,
+      "exportAndStageMs": 99.05,
+      "transcriptBytes": 1094500,
+      "messages": 1000,
+      "sessions": 4,
+      "maintenanceIntercepted": true,
+      "memoryStatus": {
+        "dialogueFiles": 4,
+        "pendingProfileRows": 1000,
+        "processedProfileRows": 0,
+        "lastMaintainAt": null
+      },
+      "workspaceBuildMs": 2414.75,
+      "ndjsonBytes": 1400234,
+      "promoteMs": 1.23,
+      "dispatchMs": 2538.35,
+      "eventLoopMaxMs": 12.54,
+      "eventLoopP99Ms": 12.32,
+      "canonicalBytes": 3788472,
+      "concurrentAttempts": {
+        "count": 4,
+        "wallMs": 277.32,
+        "samples": [
+          {
+            "prepareMs": 5.43,
+            "wakeMs": 252.69,
+            "wakeOutcome": "empty"
+          },
+          {
+            "prepareMs": 12.95,
+            "wakeMs": 249.82,
+            "wakeOutcome": "empty"
+          },
+          {
+            "prepareMs": 20.27,
+            "wakeMs": 248.23,
+            "wakeOutcome": "empty"
+          },
+          {
+            "prepareMs": 27.63,
+            "wakeMs": 248.61,
+            "wakeOutcome": "empty"
+          }
+        ]
+      }
+    },
+    {
+      "baseMessages": 1000,
+      "phase": "incremental",
+      "commands": [
+        {
+          "operation": "mem ingest",
+          "ms": 511.49,
+          "events": 252,
+          "newEvents": 2
+        },
+        {
+          "operation": "mem doctor",
+          "ms": 234.7
+        }
+      ],
+      "coalescedPendingProjection": true,
+      "exportAndStageMs": 93.13,
+      "transcriptBytes": 1096689,
+      "messages": 1002,
+      "sessions": 4,
+      "maintenanceIntercepted": true,
+      "memoryStatus": {
+        "dialogueFiles": 4,
+        "pendingProfileRows": 1002,
+        "processedProfileRows": 0,
+        "lastMaintainAt": null
+      },
+      "workspaceBuildMs": 1030.84,
+      "ndjsonBytes": 1403034,
+      "promoteMs": 1.21,
+      "dispatchMs": 1155.94,
+      "eventLoopMaxMs": 12.05,
+      "eventLoopP99Ms": 12.04,
+      "canonicalBytes": 3796044,
+      "concurrentAttempts": {
+        "count": 4,
+        "wallMs": 273.7,
+        "samples": [
+          {
+            "prepareMs": 5.65,
+            "wakeMs": 253.67,
+            "wakeOutcome": "empty"
+          },
+          {
+            "prepareMs": 12.75,
+            "wakeMs": 245.49,
+            "wakeOutcome": "empty"
+          },
+          {
+            "prepareMs": 19.93,
+            "wakeMs": 247.86,
+            "wakeOutcome": "empty"
+          },
+          {
+            "prepareMs": 27.6,
+            "wakeMs": 244.94,
+            "wakeOutcome": "empty"
+          }
+        ]
+      }
+    },
+    {
+      "baseMessages": 10000,
+      "phase": "bootstrap",
+      "commands": [
+        {
+          "operation": "mem ingest",
+          "ms": 1524.68,
+          "events": 2500,
+          "newEvents": 2500
+        },
+        {
+          "operation": "mem ingest",
+          "ms": 2203.77,
+          "events": 2500,
+          "newEvents": 2500
+        },
+        {
+          "operation": "mem ingest",
+          "ms": 2878.61,
+          "events": 2500,
+          "newEvents": 2500
+        },
+        {
+          "operation": "mem ingest",
+          "ms": 3546.75,
+          "events": 2500,
+          "newEvents": 2500
+        },
+        {
+          "operation": "mem doctor",
+          "ms": 230.95
+        }
+      ],
+      "coalescedPendingProjection": true,
+      "exportAndStageMs": 764.89,
+      "transcriptBytes": 10945000,
+      "messages": 10000,
+      "sessions": 4,
+      "maintenanceIntercepted": true,
+      "memoryStatus": {
+        "dialogueFiles": 4,
+        "pendingProfileRows": 10000,
+        "processedProfileRows": 0,
+        "lastMaintainAt": null
+      },
+      "workspaceBuildMs": 10859.3,
+      "ndjsonBytes": 14028238,
+      "promoteMs": 1.27,
+      "dispatchMs": 11659.34,
+      "eventLoopMaxMs": 12.98,
+      "eventLoopP99Ms": 12.17,
+      "canonicalBytes": 37906524,
+      "concurrentAttempts": {
+        "count": 4,
+        "wallMs": 315.58,
+        "samples": [
+          {
+            "prepareMs": 16.74,
+            "wakeMs": 245.79,
+            "wakeOutcome": "empty"
+          },
+          {
+            "prepareMs": 35.56,
+            "wakeMs": 244.67,
+            "wakeOutcome": "empty"
+          },
+          {
+            "prepareMs": 56.14,
+            "wakeMs": 245.94,
+            "wakeOutcome": "empty"
+          },
+          {
+            "prepareMs": 76.34,
+            "wakeMs": 237.73,
+            "wakeOutcome": "empty"
+          }
+        ]
+      }
+    },
+    {
+      "baseMessages": 10000,
+      "phase": "incremental",
+      "commands": [
+        {
+          "operation": "mem ingest",
+          "ms": 2973.07,
+          "events": 2502,
+          "newEvents": 2
+        },
+        {
+          "operation": "mem doctor",
+          "ms": 230.46
+        }
+      ],
+      "coalescedPendingProjection": true,
+      "exportAndStageMs": 793.88,
+      "transcriptBytes": 10947189,
+      "messages": 10002,
+      "sessions": 4,
+      "maintenanceIntercepted": true,
+      "memoryStatus": {
+        "dialogueFiles": 4,
+        "pendingProfileRows": 10002,
+        "processedProfileRows": 0,
+        "lastMaintainAt": null
+      },
+      "workspaceBuildMs": 3788.01,
+      "ndjsonBytes": 14031044,
+      "promoteMs": 1.53,
+      "dispatchMs": 4650.95,
+      "eventLoopMaxMs": 12.94,
+      "eventLoopP99Ms": 12.3,
+      "canonicalBytes": 37914108,
+      "concurrentAttempts": {
+        "count": 4,
+        "wallMs": 324.83,
+        "samples": [
+          {
+            "prepareMs": 20.14,
+            "wakeMs": 247.49,
+            "wakeOutcome": "empty"
+          },
+          {
+            "prepareMs": 38.78,
+            "wakeMs": 246.32,
+            "wakeOutcome": "empty"
+          },
+          {
+            "prepareMs": 58.45,
+            "wakeMs": 241.14,
+            "wakeOutcome": "empty"
+          },
+          {
+            "prepareMs": 78.24,
+            "wakeMs": 245.1,
+            "wakeOutcome": "empty"
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -45,6 +45,9 @@ const CHAT_FAILURE_COPY: Readonly<Record<string, string>> = {
   // —— 图片附件 ——
   attachment_not_found: "That image request no longer exists.",
   attachment_not_confirmable: "That image request can't be confirmed any more.",
+  voice_quote_required: "Press Play to review and confirm the voice price first.",
+  voice_quote_stale: "This voice quote expired or changed. Press Play to review a new price.",
+  voice_quote_limit_exceeded: "This clip would exceed the accepted voice price. It has not been delivered at a higher price.",
 };
 
 /**
@@ -64,6 +67,10 @@ export function chatFailureCode(payload: unknown): string | null {
   if (typeof error === "string" && error.trim()) return error.trim();
   if (error && typeof error === "object") {
     const code = (error as { code?: unknown }).code;
+    if (code === "conflict") {
+      const reason = (error as { details?: { reason?: unknown } }).details?.reason;
+      if (typeof reason === "string" && reason.startsWith("voice_quote_") && reason in CHAT_FAILURE_COPY) return reason;
+    }
     if (typeof code === "string" && code.trim()) return code.trim();
   }
   return null;

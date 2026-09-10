@@ -1,6 +1,6 @@
 # 08 · 计费、权益与 dreamcoin
 
-更新日期：2026-09-01
+更新日期：2026-09-09
 
 落地 `BackendFeatureSpec §3.5/§4.5/§5.8` 与 ADR-4（支付抽象 + **加密货币**）。核心三件事：**一次性预付访问生命周期**、**权益（entitlement）派生**、**dreamcoin append-only ledger**。数据库仍沿用 `Subscription` 等 legacy 物理名，但产品语义不包含自动续订。
 
@@ -99,18 +99,18 @@ await postDreamcoinEntry(tx, {
 
 ## 5. 权益（Entitlement）派生与查询
 
-`entitlements` 表是**派生缓存**（便于快速门控查询），SSoT 是"当前有效的预付访问记录 + 一次性授予（redeem/promo）"：
+`entitlements` 中 `source=subscription` 的行是**派生缓存**，SSoT 是“当前有效的预付访问记录对应的已购买 `CheckoutSession.offerSnapshot` + 独立授予（redeem/promo/admin）”：
 
-- webhook 更新订阅后，service `recomputeEntitlements(userId)`：清空 `source=subscription` 的行 → 按活跃 plan 的 `features` 重新 upsert。
+- 激活及退款取消恢复统一投影已购买 offer 的 `features`，不读后来改写的 `Plan.features`。`resolveSubscriptionOfferAuthority` 校验 provider invoice、用户、plan、金额和币种绑定；非空但损坏的快照 fail closed，不能悄悄退回现价。
+- `entitlementMap(userId, db?, now?)` 与批量 `entitlementMaps(userIds, db?, now?)` 是 Main 门控、Chat 接纳额度、Chat 执行快照与 Admin 有效权益统计的共同读入口；缓存缺失或漂移不改变已购买权益，退款中/已到期的缓存也不能复活访问权限。批量接口串行读取底层事实，兼容事务连接并避免列表逐用户查询。
+- 仅真实缺少购买快照的历史订阅保留原 `Plan` 兼容读取；没有任何 Subscription 的旧 entitlement-only grant 保留原过期语义。独立授予不被订阅缓存重建覆盖。
 - redeem/promo 授予 `source=redeem|promo`（可带 `expiresAt`）。
-- 查询：`entitlements.has(userId, key)`（04 §6 `requireEntitlement`）——**服务端唯一真相**，客户端 plan 不可信（01 §8）。
+- 查询：服务端读取统一投影，客户端 plan 不可信（01 §8）。
 
 ```ts
 async function has(userId: string, key: string): Promise<boolean> {
-  const e = await prisma.entitlement.findUnique({ where: { userId_key: { userId, key } } });
-  if (!e) return false;
-  if (e.expiresAt && e.expiresAt < new Date()) return false;
-  return e.value !== false;
+  const entitlements = await entitlementMap(userId);
+  return entitlements[key] === true;
 }
 ```
 
@@ -123,6 +123,14 @@ async function has(userId: string, key: string): Promise<boolean> {
   - 因此 `Plan.features` 不再设 `image_quota / video_quota` 独立计数；币量在 `Plan.includedDreamcoins` 顶层字段，媒体消耗按 PricingRule 从 ledger 扣。
   - 语音分钟额度仍使用 `Plan.features.voiceMinutes`（滚动窗口），额度用尽后按 clip 兜底扣 coin；`voiceEnabled` 作能力门。
   - 免费聊天额度（每日 messages）仍用 `chat_usage`（ECONOMY §3）——消息免费，只限频，不走 coin。
+
+### Voice Clip 的报价与接受
+
+显式 Play 先调用 `POST /generation/voice/quote`，服务端把所选回复指纹、用户、费率指纹、每 clip 溢出费率、最大扣币数、分钟额度及滚动窗口起点签入 5 分钟有效的 `quoteToken`。初次播放必须提交该 token；开始执行前校验原回复/用户、签名、时效与额度是否仍匹配。时长只有合成后才确定，因此显示的是可能扣除的上限，不能把当前剩余分钟错误表述为本次必定免费。
+
+接受后的条款持久化到 `VoiceClipRequest.billingAuthority`，数据库约束防止跨重试/租约接管改写。结算按冻结的费率与额度依据读取实际 usage，实际扣币不超过接受值；重复播放、删除后恢复已交付 clip 不重复扣币或分钟。Legacy 无条款请求可保留已交付权利，但运营恢复不能凭当前价格创造付费同意。
+
+Chat 当前是 play-only。兼容的 `prewarm` API 上限固定为 0；额度竞争失败仍记不可变 provider usage，但不发布、不扣币，也不能自动恢复一笔已接受的付费 Play。
 
 ## 7. 正常预付访问退款、争议、到期
 

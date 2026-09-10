@@ -59,7 +59,10 @@ function effect(snapshot: NonNullable<Awaited<ReturnType<typeof beginChatTurn>>[
 }
 
 async function complete(snapshot: NonNullable<Awaited<ReturnType<typeof beginChatTurn>>["snapshot"]>, content = "Here you go.") {
-  return commitChatTerminal({ version: 1, turnId: snapshot.turnId, sessionId: snapshot.sessionId, assistantMessageId: snapshot.assistantMessageId, attempt: snapshot.attempt, status: "sent", content, model: "test", promptTokens: 1, completionTokens: 1, sceneVersion: 0, scene: null, terminalEvidence: evidence });
+  return commitChatTerminal({ version: 1, turnId: snapshot.turnId, sessionId: snapshot.sessionId, assistantMessageId: snapshot.assistantMessageId, attempt: snapshot.attempt, status: "sent", content, model: "test", promptTokens: 1, completionTokens: 1,
+    sceneVersion: snapshot.sceneVersion + 1,
+    scene: { schemaVersion: 1, location: null, time: null, participants: [], emotionalBeat: null, unresolvedThreads: [], ...snapshot.scene, version: snapshot.sceneVersion + 1 },
+    terminalEvidence: evidence });
 }
 
 async function editFixture(text: string) {
@@ -85,6 +88,19 @@ async function editFixture(text: string) {
 }
 
 describe("Main image action authorization", () => {
+  it("rejects an oversized new-image direction before attachments, jobs or debit instead of discarding its final relation", async () => {
+    const { begin, generated, userId } = await fixture();
+    const { snapshot } = await begin("Send a picture of our current scene.");
+    if (!snapshot) throw new Error("Missing snapshot");
+    const call = effect(snapshot);
+    call.arguments = { prompt: "Soft light over the wooden windowsill. ".repeat(25) + "The blue notebook must remain to the left of the white cup." };
+    await expect(applyChatToolEffect(call)).rejects.toMatchObject({ code: "bad_request", message: expect.stringContaining("Shorten the request") });
+    expect(generated).not.toHaveBeenCalled();
+    expect(await prisma.chatTurnAttachment.count({ where: { turnId: snapshot.turnId } })).toBe(0);
+    expect(await prisma.generationJob.count({ where: { userId } })).toBe(0);
+    expect(await dreamcoinBalance(userId)).toBe(40);
+  });
+
   it.each([
     "Edit the picture you just sent: change only the notebook from blue to green. Preserve the same face, hairstyle, clothes, pose, background and camera framing. Make the edited picture now.",
     "Edit this image: move the notebook to the left and turn its cover green; make the curtains yellow and brighten the window. Preserve the face, clothing and text on every page.",

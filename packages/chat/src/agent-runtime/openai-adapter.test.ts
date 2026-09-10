@@ -1,8 +1,8 @@
 import { once } from "node:events";
 import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
-import { afterEach, describe, expect, it } from "vitest";
-import type { GenerateOptions } from "@deepseek-ai/dsh-llm";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { GenerateOptions, StreamChunk } from "@deepseek-ai/dsh-llm";
 import { OpenAiCompatibleAdapter, type OpenAiCompatibleAdapterOptions } from "./openai-adapter";
 
 const servers: Server[] = [];
@@ -292,7 +292,7 @@ describe("OpenAI-compatible DSH adapter", () => {
       expect(content).toContain(`"role":"assistant","content":"${assistantFact}"`);
       expect(content).toContain(`"source":"retrieved_memory","role":"user","content":"${recalledFact}"`);
       const latestUserRecord = content.split("LATEST USER RECORD (authoritative for user facts when it conflicts with earlier records):\n")[1]!.split("\n")[0]!;
-      expect(JSON.parse(latestUserRecord)).toEqual({ source: "conversation", role: "user", content: userFact });
+      expect(JSON.parse(latestUserRecord)).toEqual({ id: "prior-user", source: "conversation", role: "user", content: userFact });
     }
   });
 
@@ -421,6 +421,82 @@ describe("OpenAI-compatible DSH adapter", () => {
       message: "provider omitted the required companion tool call",
     });
     expect(requests).toBe(2);
+  });
+
+  it.each([
+    { name: "generate_image_async" as const, args: { prompt: "A clothed portrait beside a closed blue notebook" }, expected: { prompt: "A clothed portrait beside a closed blue notebook", orientation: "4:5", outputCount: 1 } },
+    { name: "edit_last_image" as const, args: { instruction: "Move the closed blue notebook right of the white cup" }, expected: { instruction: "Move the closed blue notebook right of the white cup" } },
+  ])("accepts complete validated $name JSON from the first response without resampling", async ({ name, args, expected }) => {
+    let requests = 0;
+    const adapter = adapterFor("https://provider.example/v1", async () => {
+      requests += 1;
+      return new Response(`data: ${JSON.stringify({
+        id: `first-json-${requests}`, choices: [{ delta: { content: JSON.stringify(args) }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 31, completion_tokens: 17 },
+      })}\n\n`);
+    }, { requiredToolName: name });
+    const chunks: StreamChunk[] = [];
+    for await (const chunk of adapter.stream({
+      provider: "openrouter", model: "deepseek/test", messages: [],
+      tools: [{ name, description: "Reserved image action", parameters: { type: "object", properties: {} } }],
+    })) chunks.push(chunk);
+
+    expect(requests).toBe(1);
+    expect(chunks.filter(chunk => chunk.type === "block-end")).toEqual([expect.objectContaining({
+      block: expect.objectContaining({ type: "tool-call", name, arguments: JSON.stringify(expected) }),
+    })]);
+    expect(chunks.some(chunk => chunk.type === "text-delta")).toBe(false);
+    expect(chunks).toContainEqual({ type: "usage", usage: { inputTokens: 31, outputTokens: 17, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 } });
+    expect(chunks.at(-1)).toEqual({ type: "finish", reason: { kind: "tool-calls" }, replayState: { response: { id: "first-json-1" } } });
+  });
+
+  it("does not turn length-limited JSON into an accepted action even when the JSON parses", async () => {
+    let requests = 0;
+    const adapter = adapterFor("https://provider.example/v1", async () => {
+      requests += 1;
+      return new Response(`data: ${JSON.stringify({ choices: [{
+        delta: { content: JSON.stringify({ instruction: "Move the closed blue notebook right of the white cup" }) },
+        finish_reason: "length",
+      }] })}\n\n`);
+    }, { requiredToolName: "edit_last_image" });
+    const chunks: StreamChunk[] = [];
+    await expect((async () => {
+      for await (const chunk of adapter.stream({
+        provider: "openrouter", model: "deepseek/test", messages: [],
+        tools: [{ name: "edit_last_image", description: "Reserved image edit", parameters: { type: "object", properties: {} } }],
+      })) chunks.push(chunk);
+    })()).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+    expect(requests).toBe(2);
+    expect(chunks).toEqual([]);
+  });
+
+  it.each([
+    { label: "commentary around JSON", content: 'Here is the edit: {"instruction":"Move the notebook right of the cup"}' },
+    { label: "wrong tool wrapper", content: '{"name":"generate_image_async","arguments":{"instruction":"Move the notebook right of the cup"}}' },
+    { label: "unexpected parameter", content: '{"instruction":"Move the notebook right of the cup","unapprovedEffect":"erase history"}' },
+    { label: "missing required parameter", content: '{"caption":"The notebook goes on the right"}' },
+    { label: "mixed native tool", content: '{"instruction":"Move the notebook right of the cup"}', mixedTool: true },
+  ])("rejects $label instead of treating it as the required action", async ({ content, mixedTool }) => {
+    let requests = 0;
+    const adapter = adapterFor("https://provider.example/v1", async () => {
+      requests += 1;
+      return new Response(`data: ${JSON.stringify({ choices: [{
+        delta: {
+          content,
+          ...(mixedTool ? { tool_calls: [{ index: 0, id: "unrelated-call", function: { name: "generate_image_async", arguments: "{}" } }] } : {}),
+        },
+        finish_reason: "stop",
+      }] })}\n\n`);
+    }, { requiredToolName: "edit_last_image" });
+    const chunks: StreamChunk[] = [];
+    await expect((async () => {
+      for await (const chunk of adapter.stream({
+        provider: "openrouter", model: "deepseek/test", messages: [],
+        tools: [{ name: "edit_last_image", description: "Reserved image edit", parameters: { type: "object", properties: {} } }],
+      })) chunks.push(chunk);
+    })()).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+    expect(requests).toBe(2);
+    expect(chunks).toEqual([]);
   });
 
   it("converts a validated Agent-authored JSON fallback into a real required tool call", async () => {
@@ -866,7 +942,7 @@ describe("OpenAI-compatible DSH adapter", () => {
         model: "deepseek/test",
         supportsTools: true,
         maxOutputTokens: 16,
-        timeout: { firstTokenMs: 100, idleMs: 100 },
+        timeout: { firstTokenMs: 100, idleMs: 10 },
         sampling: {
           temperature: 0.9,
           topP: 0.95,
@@ -877,6 +953,9 @@ describe("OpenAI-compatible DSH adapter", () => {
       openRouterProviderOnly: ["DeepSeek"],
       fetch: (async () => new Response(new ReadableStream<Uint8Array>({
         start(controller) {
+          // A provider may send role/metadata immediately, before prefill has
+          // produced a token. This must not start the shorter idle deadline.
+          controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"role":"assistant"},"finish_reason":null}]}\n\n'));
           setTimeout(() => {
             try {
               controller.enqueue(encoder.encode(`data: ${JSON.stringify({
@@ -894,6 +973,87 @@ describe("OpenAI-compatible DSH adapter", () => {
     });
 
     await expect(drain(adapter)).resolves.toBeUndefined();
+  });
+
+  it.each([
+    ": provider heartbeat\n\n",
+    'data: {"choices":[{"delta":{},"finish_reason":null}]}\n\n',
+  ])("does not let non-token keepalives conceal a stalled model: %s", async (heartbeat) => {
+    vi.useFakeTimers();
+    const source = new AbortController();
+    const encoder = new TextEncoder();
+    let keepalive: ReturnType<typeof setInterval> | undefined;
+    let outcome: "pending" | "resolved" | Error = "pending";
+    const adapter = adapterFor("https://provider.example/v1", async () => new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"A"},"finish_reason":null}]}\n\n'));
+        keepalive = setInterval(() => controller.enqueue(encoder.encode(heartbeat)), 5);
+      },
+      cancel() { clearInterval(keepalive); },
+    })), {
+      profile: {
+        tier: "test", adapter: "openai-compatible-v1", provider: "openrouter", baseUrl: "https://provider.example/v1",
+        model: "deepseek/test", supportsTools: true, maxOutputTokens: 16,
+        timeout: { firstTokenMs: 100, idleMs: 10 },
+        sampling: { temperature: 0.9, topP: 0.95, repetitionPenalty: 1.05 },
+      },
+    });
+    const finished = (async () => {
+      try {
+        for await (const _chunk of adapter.stream({ provider: "openrouter", model: "deepseek/test", messages: [], signal: source.signal })) { /* drain */ }
+        outcome = "resolved";
+      } catch (error) { outcome = error as Error; }
+    })();
+    try {
+      await vi.advanceTimersByTimeAsync(20);
+      expect(outcome).toMatchObject({ code: "MODEL_IDLE_TIMEOUT" });
+    } finally {
+      source.abort(new Error("test cleanup"));
+      clearInterval(keepalive);
+      await finished;
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["text", "reasoning", "tool-arguments"])("keeps advancing %s streams alive beyond the first-token window", async (kind) => {
+    vi.useFakeTimers();
+    const encoder = new TextEncoder();
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const adapter = adapterFor("https://provider.example/v1", async () => new Response(new ReadableStream({
+      start(controller) {
+        let part = 0;
+        timer = setInterval(() => {
+          part += 1;
+          const delta = kind === "text" ? { content: "A" }
+            : kind === "reasoning" ? { reasoning_content: "A" }
+              : { tool_calls: [{ index: 0, id: "progress-call", function: {
+                  ...(part === 1 ? { name: "generate_image_async" } : {}),
+                  arguments: part === 1 ? '{"prompt":"' : part === 6 ? '"}' : "visible scene ",
+                } }] };
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{
+            delta, finish_reason: part === 6 ? kind === "tool-arguments" ? "tool_calls" : "stop" : null,
+          }] })}\n\n`));
+          if (part === 6) { clearInterval(timer); controller.close(); }
+        }, 5);
+      },
+      cancel() { clearInterval(timer); },
+    })), {
+      profile: {
+        tier: "test", adapter: "openai-compatible-v1", provider: "openrouter", baseUrl: "https://provider.example/v1",
+        model: "deepseek/test", supportsTools: true, maxOutputTokens: 64,
+        timeout: { firstTokenMs: 10, idleMs: 10 },
+        sampling: { temperature: 0.9, topP: 0.95, repetitionPenalty: 1.05 },
+      },
+    });
+    const completed = drain(adapter);
+    const observed = completed.then(() => "completed", error => error);
+    try {
+      await vi.advanceTimersByTimeAsync(40);
+      expect(await observed).toBe("completed");
+    } finally {
+      clearInterval(timer);
+      vi.useRealTimers();
+    }
   });
 
   it("does not wait for a stalled provider-body cancellation after timeout", async () => {

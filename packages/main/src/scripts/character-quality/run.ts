@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { loadCharacterSoulSnapshot } from "@idream/shared";
+import { voiceClipQuoteSchema } from "@idream/shared/contracts";
 import { prisma } from "../../server/lib/db";
 import { env } from "../../server/lib/env";
 import { createSessionToken } from "../../server/lib/auth";
@@ -273,7 +274,11 @@ async function main() {
         let existing = await prisma.voiceClipRequest.findUnique({ where: { userId_messageId: { userId: actorId, messageId: spoken.assistantMessageId! } } });
         const continuation = qualityVoiceContinuation(existing?.status ?? null);
         if (continuation === "submit") {
-          const synthesis = await call("POST", "/api/v1/generation/voice", body);
+          const quoted = await call("POST", "/api/v1/generation/voice/quote", body);
+          const quoteBody = await quoted.json();
+          if (!quoted.ok) throw new Error(`Voice quote failed ${quoted.status}: ${JSON.stringify(quoteBody)}`);
+          const quote = voiceClipQuoteSchema.parse(data(quoteBody).quote);
+          const synthesis = await call("POST", "/api/v1/generation/voice", { ...body, quoteToken: quote.quoteToken });
           const synthesisBody = await synthesis.json();
           if (![200, 201].includes(synthesis.status)) throw new Error(`Voice failed ${synthesis.status}: ${JSON.stringify(synthesisBody)}`);
         } else if (continuation === "observe") {

@@ -146,6 +146,95 @@ describe("ProfileWorkspace media pagination", () => {
     expect(container.querySelector<HTMLInputElement>('[aria-label="Current account password"]')?.value).toBe("");
   });
 
+  it("replaces the entire private library when focus confirms another owner without remounting the page", async () => {
+    await mountMedia();
+    expect(container.querySelector('[data-media-id="image-1"]')).not.toBeNull();
+    viewer = "viewer-b";
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await settle();
+    expect(container.querySelector('[data-media-id="image-1"]')).toBeNull();
+    expect(container.querySelector('[data-media-id="viewer-b-image"]')).not.toBeNull();
+    expect(requests.filter((path) => path === "/api/v1/profile/preferences")).toHaveLength(2);
+    expect(requests.filter((path) => path === "/api/v1/media/collections")).toHaveLength(2);
+  });
+
+  it("rejects a delayed old-owner page after focus switches the still-mounted workspace", async () => {
+    const pendingPage = deferredResponse();
+    olderPage = () => pendingPage.promise;
+    await mountMedia();
+    await click(button("Next page"));
+    viewer = "viewer-b";
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await settle();
+    await act(async () => pendingPage.resolve(Response.json({ ok: true, data: {
+      items: [mediaItem("viewer-a-private-image")], nextCursor: "viewer-a-cursor",
+    } })));
+    await settle();
+    expect(container.querySelector('[data-media-id="viewer-a-private-image"]')).toBeNull();
+    expect(container.querySelector('[data-media-id="viewer-b-image"]')).not.toBeNull();
+    expect(container.querySelector('nav[aria-label="Library pages"]')).toBeNull();
+  });
+
+  it("hides private data when current-owner confirmation fails", async () => {
+    await mountMedia();
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/v1/profile") return Response.json({ ok: false }, { status: 503 });
+      return originalFetch(input, init);
+    }));
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await settle();
+    expect(container.querySelector('[data-testid="profile-unavailable"]')).not.toBeNull();
+    expect(container.querySelector('[data-media-id]')).toBeNull();
+    expect(container.textContent).not.toContain("viewer-a");
+  });
+
+  it("preserves an unsaved profile name when focus confirms the same owner", async () => {
+    await mountMedia();
+    const name = container.querySelector<HTMLInputElement>('[aria-label="Display name"]')!;
+    expect(name).not.toBeNull();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(name, "My unsaved name");
+      name.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await settle();
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Display name"]')?.value).toBe("My unsaved name");
+  });
+
+  it("binds private reads and form writes to the confirmed account, even before focus notices changed cookies", async () => {
+    await mountMedia();
+    const fetcher = vi.mocked(globalThis.fetch);
+    for (const path of ["/api/v1/library/media", "/api/v1/profile/preferences", "/api/v1/media/collections"]) {
+      const call = fetcher.mock.calls.find(([input]) => String(input) === path)!;
+      expect(new Headers(call[1]?.headers).get("x-idream-viewer-scope"), path).toBe("user:viewer-a");
+    }
+    viewer = "viewer-b";
+    await click(button("Save profile"));
+    const write = fetcher.mock.calls.find(([input, init]) => String(input) === "/api/v1/profile" && init?.method === "PATCH")!;
+    expect(new Headers(write[1]?.headers).get("x-idream-viewer-scope")).toBe("user:viewer-a");
+  });
+
+  it("cannot download an old owner's delayed private URL after switching accounts", async () => {
+    const pendingDownload = deferredResponse();
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/download")) return pendingDownload.promise;
+      return originalFetch(input, init);
+    }));
+    const download = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    await mountMedia();
+    const card = container.querySelector('[data-media-id="image-1"]')!;
+    await click(card.querySelector('[aria-label="Download media"]')!);
+    viewer = "viewer-b";
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await settle();
+    await act(async () => pendingDownload.resolve(Response.json({ ok: true, data: { url: "/private-owner-a.png" } })));
+    await settle();
+    expect(download).not.toHaveBeenCalled();
+    download.mockRestore();
+  });
+
   it("shows and searches saved preset labels and opens the selected preset in Generate", async () => {
     const originalFetch = globalThis.fetch;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

@@ -56,6 +56,40 @@ async function submit(suffix: string, visibility: "public" | "unlisted" | "priva
 }
 
 describe("customer shared Character publication", () => {
+  it("returns the created Character and replays its receipt when optional creation telemetry fails", async () => {
+    await prisma.$executeRawUnsafe(`
+      CREATE FUNCTION test_reject_character_created_telemetry()
+      RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.name = 'character_created' THEN
+          RAISE EXCEPTION 'injected character telemetry failure';
+        END IF;
+        RETURN NEW;
+      END
+      $$
+    `);
+    await prisma.$executeRawUnsafe(`
+      CREATE TRIGGER test_reject_character_created_telemetry
+      BEFORE INSERT ON analytics_events
+      FOR EACH ROW EXECUTE FUNCTION test_reject_character_created_telemetry()
+    `);
+    try {
+      const result = await submit("telemetry-failure", "private");
+      const replay = await api("POST", `character-drafts/${result.draftId}/submit`, {
+        userId: result.userId, ageGate: true, body: { visibility: "private" },
+      });
+      expectOk(replay);
+      expect(replay.data.character.id).toBe(result.characterId);
+      const library = await api("GET", "library/created", { userId: result.userId, ageGate: true });
+      expectOk(library);
+      expect(library.data.items.filter((item: { id: string }) => item.id === result.characterId)).toHaveLength(1);
+      expect(library.data.items).toContainEqual(expect.objectContaining({ id: result.characterId, visibility: "private" }));
+    } finally {
+      await prisma.$executeRawUnsafe("DROP TRIGGER IF EXISTS test_reject_character_created_telemetry ON analytics_events");
+      await prisma.$executeRawUnsafe("DROP FUNCTION IF EXISTS test_reject_character_created_telemetry()");
+    }
+  });
+
   it.each(["public", "unlisted"] as const)("routes %s Create directly to publication preparation after automatic checks", async (visibility) => {
     const result = await submit(visibility, visibility);
     expect(result.character).toMatchObject({ visibility, status: "approved" });

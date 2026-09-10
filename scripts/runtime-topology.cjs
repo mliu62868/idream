@@ -116,6 +116,8 @@ const processSpecs = Object.freeze([
       production: { cwd: "packages/main", script: "dist/event-consumer.js", execMode: "fork" },
     },
     watchPaths: ["packages/main/src/processes", "packages/main/src/server", "packages/shared/src"],
+    // The consumer reports an unfinished durable drain after 30 seconds.
+    killTimeout: 35_000,
   },
   {
     name: "admin-command-worker",

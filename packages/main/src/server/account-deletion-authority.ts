@@ -285,7 +285,9 @@ export async function dispatchPendingAccountDeletionBlobDeletes(input: {
   readonly workerId?: string;
   readonly batch?: number;
   readonly deletionIds?: readonly string[];
+  readonly signal?: AbortSignal;
 } = {}): Promise<{ deleted: number; failed: number; completed: number }> {
+  if (input.signal?.aborted) return { deleted: 0, failed: 0, completed: 0 };
   const db = input.db ?? prisma;
   const blob = input.blob ?? providers.blob;
   const now = input.now ?? new Date();
@@ -330,6 +332,7 @@ export async function dispatchPendingAccountDeletionBlobDeletes(input: {
   let failed = 0;
   const touchedDeletionIds = new Set<string>();
   for (const row of rows) {
+    if (input.signal?.aborted) break;
     const held = await db.$transaction(async (tx) => {
       const deletion = await tx.accountDeletion.findUnique({
         where: { id: row.deletionId },
@@ -355,6 +358,7 @@ export async function dispatchPendingAccountDeletionBlobDeletes(input: {
       touchedDeletionIds.add(row.deletionId);
       continue;
     }
+    if (input.signal?.aborted) break;
     const leaseExpiresAt = new Date(now.getTime() + 60_000);
     const claimed = await db.accountDeletionBlobReceipt.updateMany({
       where: {
@@ -434,6 +438,7 @@ export async function dispatchPendingAccountDeletionBlobDeletes(input: {
   const completed = await finalizeReadyAccountDeletions({
     db,
     now,
+    signal: input.signal,
     ...(finalizationDeletionIds
       ? { deletionIds: finalizationDeletionIds }
       : {}),
@@ -492,7 +497,9 @@ export async function finalizeReadyAccountDeletions(input: {
   readonly db?: AccountDeletionDb;
   readonly now?: Date;
   readonly deletionIds?: readonly string[];
+  readonly signal?: AbortSignal;
 } = {}): Promise<number> {
+  if (input.signal?.aborted) return 0;
   const db = input.db ?? prisma;
   const now = input.now ?? new Date();
   const candidates = await db.accountDeletion.findMany({
@@ -509,6 +516,7 @@ export async function finalizeReadyAccountDeletions(input: {
   });
   let completed = 0;
   for (const candidate of candidates) {
+    if (input.signal?.aborted) break;
     const didComplete = await db.$transaction(async (tx) => {
       await tx.$queryRaw(Prisma.sql`
         SELECT id FROM account_deletions WHERE id = ${candidate.id} FOR UPDATE

@@ -4,14 +4,13 @@ import {
   assertPinnedLegacyCharacterGenerationAuthority,
   legacyCharacterGenerationAuthorityFromControls,
 } from "@/server/modules/generation/attempt-dispatch";
-import { dispatchGenerationAttemptOutbox } from "@/server/modules/generation/generation-attempt-authority";
 import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 import { isProductionVideoProfile } from "@/server/modules/generation/production-video-profile";
 import {
   lockCharacterGenerationAuthority,
   lockCharacterMediaAssetAuthorities,
 } from "@/server/modules/admin-v2/characters/generation-authority-lock";
-import { dreamcoinBalance, postDreamcoinEntry } from "@/server/modules/billing/ledger";
+import { dreamcoinBalance } from "@/server/modules/billing/ledger";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import {
@@ -30,7 +29,7 @@ import {
   pruneUndefined,
   stringFromRecord,
 } from "./json-values";
-import { entitlementMap, lockUserLedger } from "./subscription-lifecycle";
+import { entitlementMap } from "./subscription-lifecycle";
 import { directCharacterAudienceWhere } from "./public-content-audience";
 import { assertMediaEnhancementSource } from "./media-enhancement-source";
 import { isExecutableGenerationProfile } from "./generation-profile-catalog";
@@ -45,11 +44,8 @@ import {
 } from "./generation-quote";
 import type { GenerationQuoteAuthority } from "./generation-quote-contract";
 import {
-  activeGenerationStatuses,
-  appendGenerationEvent,
+  acceptGenerationJobForUser,
   assertGenerationSourceImageAuthorityInTx,
-  maxInflightJobs,
-  reserveInitialGenerationAttempt,
   wakeQueuedGenerationDispatch,
 } from "./generation-job-authority";
 import {
@@ -439,252 +435,130 @@ export async function retryGenerationJobForUser(input: {
     outputCount: job.outputCount,
     costDreamcoins: cost,
   };
-  const reservation = await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`generation-retry-idempotency:${userId}:${retryIdempotencyKey}`}))`;
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`generation-retry-authority:${job.id}`}))`;
-    const lockedJob = await tx.generationJob.findFirst({
-      where: { id: job.id, userId },
-    });
-    if (
-      !lockedJob ||
-      lockedJob.status !== "failed" ||
-      lockedJob.version !== job.version
-    ) {
-      throw Errors.conflict(
-        "Generation job changed before retry authority could be reserved",
-        { generationJobId: job.id },
-      );
-    }
-    const existingRetry = await tx.generationJob.findFirst({
-      where: {
-        userId,
-        idempotencyKey: retryIdempotencyKey,
-      },
-    });
-    if (existingRetry) {
-      if (existingRetry.derivedFromJobId !== job.id) {
-        throw Errors.conflict(
-          "Idempotency-Key was already used for a different generation request",
-        );
-      }
-      const dispatch = existingRetry.status === "queued"
-        ? await reserveInitialGenerationAttempt(tx, existingRetry)
-        : null;
-      return {
-        job: existingRetry,
-        created: false,
-        outboxId: dispatch?.outbox.id ?? null,
-      } as const;
-    }
-    const retryCount = await tx.generationJob.count({
-      where: { derivedFromJobId: job.id },
-    });
-    if (retryCount >= 3) {
-      throw Errors.rateLimited("Retry limit reached for this generation job", {
-        retries: retryCount,
-        max: 3,
-      });
-    }
-    if (job.characterId && job.sourceType !== "media_enhance") {
-      await lockCharacterGenerationAuthority(tx, job.characterId);
-      const character = await tx.character.findFirst({
-        where: {
-          AND: [
-            {
-              id: job.characterId,
-              deletedAt: null,
-              age: { gte: 18 },
-              status: "approved",
-            },
-            {
-              OR: [
-                { creatorId: userId },
-                directCharacterAudienceWhere,
-              ],
-            },
-          ],
-        },
-        select: { id: true, imageAssetId: true },
-      });
-      if (!character) {
-        throw Errors.conflict(
-          "Character changed before retry authority could be reserved",
-          { characterId: job.characterId },
-        );
-      }
-      if (
-        job.mode === "video" &&
-        character.imageAssetId !== retrySourceImageAssetId
-      ) {
-        throw Errors.conflict(
-          "Character primary image changed before video retry authority could be reserved",
-          {
-            characterId: job.characterId,
-            pinnedSourceImageAssetId: retrySourceImageAssetId ?? null,
-            currentSourceImageAssetId: character.imageAssetId,
+  const retry = await acceptGenerationJobForUser({
+    userId,
+    identity: { idempotencyKey: retryIdempotencyKey },
+    retryOf: job,
+    prepare: async (tx) => {
+      const lockedJob = await tx.generationJob.findUniqueOrThrow({ where: { id: job.id } });
+      if (job.characterId && job.sourceType !== "media_enhance") {
+        await lockCharacterGenerationAuthority(tx, job.characterId);
+        const character = await tx.character.findFirst({
+          where: {
+            AND: [
+              {
+                id: job.characterId,
+                deletedAt: null,
+                age: { gte: 18 },
+                status: "approved",
+              },
+              {
+                OR: [
+                  { creatorId: userId },
+                  directCharacterAudienceWhere,
+                ],
+              },
+            ],
           },
-        );
+          select: { id: true, imageAssetId: true },
+        });
+        if (!character) {
+          throw Errors.conflict(
+            "Character changed before retry authority could be reserved",
+            { characterId: job.characterId },
+          );
+        }
+        if (
+          job.mode === "video" &&
+          character.imageAssetId !== retrySourceImageAssetId
+        ) {
+          throw Errors.conflict(
+            "Character primary image changed before video retry authority could be reserved",
+            {
+              characterId: job.characterId,
+              pinnedSourceImageAssetId: retrySourceImageAssetId ?? null,
+              currentSourceImageAssetId: character.imageAssetId,
+            },
+          );
+        }
+        if (generationJobRequiresPinnedLegacyAuthority(lockedJob)) {
+          await assertPinnedLegacyCharacterGenerationAuthority(tx, {
+            generationJobId: lockedJob.id,
+            characterId: lockedJob.characterId!,
+            controls: lockedJob.controls,
+          });
+        }
       }
-      if (generationJobRequiresPinnedLegacyAuthority(lockedJob)) {
-        await assertPinnedLegacyCharacterGenerationAuthority(tx, {
-          generationJobId: lockedJob.id,
-          characterId: lockedJob.characterId!,
-          controls: lockedJob.controls,
+      await lockCharacterMediaAssetAuthorities(tx, [
+        ...retryReferenceAssetIds,
+        ...(retrySourceImageAssetId ? [retrySourceImageAssetId] : []),
+        ...(retryLookReferenceAssetId ? [retryLookReferenceAssetId] : []),
+      ]);
+      if (job.sourceType === "media_enhance") await assertMediaEnhancementSource(job, tx);
+      await assertRetryGenerationReferenceAuthoritiesInTx(tx, {
+        referenceAssetIds: retryReferenceAssetIds,
+        characterId: job.characterId,
+      });
+      if (retrySourceImageAssetId) {
+        await assertGenerationSourceImageAuthorityInTx(tx, {
+          sourceImageAssetId: retrySourceImageAssetId,
+          userId,
+          characterId: job.characterId,
         });
       }
-    }
-    await lockCharacterMediaAssetAuthorities(tx, [
-      ...retryReferenceAssetIds,
-      ...(retrySourceImageAssetId ? [retrySourceImageAssetId] : []),
-      ...(retryLookReferenceAssetId ? [retryLookReferenceAssetId] : []),
-    ]);
-    if (job.sourceType === "media_enhance") await assertMediaEnhancementSource(job, tx);
-    await assertRetryGenerationReferenceAuthoritiesInTx(tx, {
-      referenceAssetIds: retryReferenceAssetIds,
-      characterId: job.characterId,
-    });
-    if (retrySourceImageAssetId) {
-      await assertGenerationSourceImageAuthorityInTx(tx, {
-        sourceImageAssetId: retrySourceImageAssetId,
-        userId,
-        characterId: job.characterId,
-      });
-    }
-    if (retryLookReferenceAssetId) {
-      await assertGenerationSourceImageAuthorityInTx(tx, {
-        sourceImageAssetId: retryLookReferenceAssetId,
-        userId,
-        characterId: job.characterId,
-      });
-    }
-    await lockUserLedger(tx, userId);
-    // Match Chat mutation lock order (user → session → Turn → attachment).
-    // The old Job remains an immutable failed request; only its still-current
-    // attachment may adopt the new retry, before an outbox can dispatch it.
-    let chatAttachment: Awaited<ReturnType<typeof tx.chatTurnAttachment.findUnique>> = null;
-    if (job.sourceType === "chat_image") {
-      const candidate = await tx.chatTurnAttachment.findFirst({
-        where: { generationJobId: job.id, ...(job.sourceId ? { id: job.sourceId } : {}), turn: { session: { userId } } }, include: { turn: true },
-      });
-      if (!candidate) throw Errors.conflict("The original Chat image is no longer available to retry");
-      await tx.$queryRaw`SELECT "sessionId" FROM "recent_chats" WHERE "sessionId" = ${candidate.turn.sessionId} FOR UPDATE`;
-      await tx.$queryRaw`SELECT id FROM "chat_turns" WHERE id = ${candidate.turnId} FOR UPDATE`;
-      await tx.$queryRaw`SELECT id FROM "chat_turn_attachments" WHERE id = ${candidate.id} FOR UPDATE`;
-      const current = await tx.chatTurnAttachment.findUnique({
-        where: { id: candidate.id }, include: { turn: { include: { session: true } } },
-      });
-      const metadata = jsonRecord(current?.metadata);
-      const effect = jsonRecord(metadata.effect);
-      const attempt = numberFromRecord(metadata, "attempt") ?? numberFromRecord(effect, "attempt") ?? 1;
-      if (!current || current.turn.session.userId !== userId ||
-        current.turn.session.characterId !== job.characterId || current.turn.session.status === "deleted" ||
-        current.kind !== "generated_image" || !["failed", "refunded"].includes(current.status) ||
-        current.generationJobId !== job.id || attempt !== current.turn.attempt) {
-        throw Errors.conflict("The Chat image changed before its retry could be reserved");
+      if (retryLookReferenceAssetId) {
+        await assertGenerationSourceImageAuthorityInTx(tx, {
+          sourceImageAssetId: retryLookReferenceAssetId,
+          userId,
+          characterId: job.characterId,
+        });
       }
-      chatAttachment = current;
-    }
-    const balance = await dreamcoinBalance(userId, tx);
-    if (balance < cost) {
-      throw Errors.paymentRequired("Insufficient dreamcoins", {
-        balance,
-        cost,
-        required: cost,
-      });
-    }
-    const active = await tx.generationJob.count({
-      where: { userId, status: { in: activeGenerationStatuses() } },
-    });
-    const max = maxInflightJobs(entitlements);
-    if (active >= max) {
-      throw Errors.rateLimited("Too many active generation jobs", { active, max });
-    }
-    const created = await tx.generationJob.create({
-      data: {
-        userId,
-        characterId: job.characterId,
-        visualProfileId: job.visualProfileId,
-        visualProfileVersion: job.visualProfileVersion,
-        consistencyMode: job.consistencyMode,
-        seed: job.seed,
-        referenceAssetIds: job.referenceAssetIds === null ? undefined : job.referenceAssetIds,
-        referenceSetRevisionId: job.referenceSetRevisionId,
-        referenceManifest: job.referenceManifest === null ? undefined : job.referenceManifest,
-        momentSpec: job.momentSpec === null ? undefined : job.momentSpec,
-        lookId: job.lookId,
-        lookSnapshot: job.lookSnapshot === null ? undefined : job.lookSnapshot,
-        derivedFromJobId: job.id,
-        idempotencyKey: retryIdempotencyKey,
-        mode: job.mode,
-        prompt: job.prompt,
-        negativePrompt: job.negativePrompt,
-        controls: toInputJson(pruneUndefined({
-          ...controls,
-          generationProfileKey: profile.profileKey,
-          generationProfileVersion: profile.version,
-          workflowKey: workflowDescriptor?.workflowKey,
-          workflowVersion: workflowDescriptor?.version,
-          workflowIdentity: workflowDescriptor?.identity,
-          lookReferenceAssetId: retryLookReferenceAssetId,
-          generationRetryQuoteAuthority:
-            acceptedRetryQuoteAuthority,
-        })),
-        presetIds: toInputJson(jsonStringArray(job.presetIds)),
-        model: profile.workflowKey ?? profile.pipelineModel,
-        profileId: profile.profileKey,
-        profileVersion: profile.version,
-        recipeId: job.recipeId,
-        recipeVersion: job.recipeVersion,
-        orientation: job.orientation,
-        outputCount: job.outputCount,
-        status: "queued",
-        costDreamcoins: cost,
-        provider: profile.runner,
-        // sourceId uniquely identifies the original request, not every retry.
-        // derivedFromJobId keeps lineage; the attachment's exact Job pointer
-        // is the delivery authority for the replacement.
-        ...(job.sourceType === "media_enhance" || job.sourceType === "chat_image" ? { sourceType: job.sourceType, sourceMeta: job.sourceMeta === null ? undefined : job.sourceMeta } : {}),
-      },
-    });
-    if (chatAttachment) {
-      await tx.chatTurnAttachment.update({
-        where: { id: chatAttachment.id },
+      return {
+        entitlements,
         data: {
-          generationJobId: created.id, status: "accepted", errorCode: null,
-          mediaAssetId: null, width: null, height: null,
-          // Keep effect identity/attempt: regenerate must ACK this replacement,
-          // rather than replay the failed Job or reserve another paid action.
-          metadata: toInputJson({ ...jsonRecord(chatAttachment.metadata), costDreamcoins: cost }),
+          characterId: job.characterId,
+          visualProfileId: job.visualProfileId,
+          visualProfileVersion: job.visualProfileVersion,
+          consistencyMode: job.consistencyMode,
+          seed: job.seed,
+          referenceAssetIds: job.referenceAssetIds === null ? undefined : job.referenceAssetIds,
+          referenceSetRevisionId: job.referenceSetRevisionId,
+          referenceManifest: job.referenceManifest === null ? undefined : job.referenceManifest,
+          momentSpec: job.momentSpec === null ? undefined : job.momentSpec,
+          lookId: job.lookId,
+          lookSnapshot: job.lookSnapshot === null ? undefined : job.lookSnapshot,
+          mode: job.mode,
+          prompt: job.prompt,
+          negativePrompt: job.negativePrompt,
+          controls: toInputJson(pruneUndefined({
+            ...controls,
+            generationProfileKey: profile.profileKey,
+            generationProfileVersion: profile.version,
+            workflowKey: workflowDescriptor?.workflowKey,
+            workflowVersion: workflowDescriptor?.version,
+            workflowIdentity: workflowDescriptor?.identity,
+            lookReferenceAssetId: retryLookReferenceAssetId,
+            generationRetryQuoteAuthority:
+              acceptedRetryQuoteAuthority,
+          })),
+          presetIds: toInputJson(jsonStringArray(job.presetIds)),
+          model: profile.workflowKey ?? profile.pipelineModel,
+          profileId: profile.profileKey,
+          profileVersion: profile.version,
+          recipeId: job.recipeId,
+          recipeVersion: job.recipeVersion,
+          orientation: job.orientation,
+          outputCount: job.outputCount,
+          costDreamcoins: cost,
+          provider: profile.runner,
+          // sourceId uniquely identifies the original request, not every retry.
+          // derivedFromJobId keeps lineage; the attachment's exact Job pointer
+          // is the delivery authority for the replacement.
+          ...(job.sourceType === "media_enhance" || job.sourceType === "chat_image" ? { sourceType: job.sourceType, sourceMeta: job.sourceMeta === null ? undefined : job.sourceMeta } : {}),
         },
-      });
-    }
-    await appendGenerationEvent(tx, created.id, "created", "Retry generation job accepted", {
-      derivedFromJobId: job.id,
-    });
-    await postDreamcoinEntry(tx, {
-      kind: "generation_spend",
-      userId,
-      amount: cost,
-      sourceId: created.id,
-      idempotencyKey: `generation:${created.id}:reserve`,
-    });
-    await appendGenerationEvent(tx, created.id, "reserved", "Dreamcoins reserved", {
-      amount: cost,
-    });
-    await appendGenerationEvent(tx, created.id, "queued", "Retry generation job queued", {});
-    const dispatch = await reserveInitialGenerationAttempt(tx, created);
-    return {
-      job: created,
-      created: true,
-      outboxId: dispatch.outbox.id,
-    } as const;
+      };
+    },
   });
-  const retry = reservation.job;
-  if (reservation.outboxId) {
-    await dispatchGenerationAttemptOutbox(prisma, {
-      outboxIds: [reservation.outboxId],
-    });
-  }
   return prisma.generationJob.findUniqueOrThrow({
     where: { id: retry.id },
     include: generationJobInclude(),

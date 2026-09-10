@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { PRODUCT_FEEDBACK_CATEGORIES } from "@idream/shared/catalog";
-import { supportConversationResponseSchema, supportReplyResponseSchema } from "@idream/shared/contracts";
+import { chatSceneStateSchema, supportConversationResponseSchema, supportReplyResponseSchema } from "@idream/shared/contracts";
 
 const nonEmptyString = z.string().trim().min(1);
 const nonNegativeInteger = z.number().int().nonnegative();
@@ -264,6 +264,7 @@ const profileResponseSchema = successEnvelope(
     .object({
       user: z
         .object({
+          id: nonEmptyString,
           displayName: z.string().nullable().optional(),
           email: nonEmptyString,
         })
@@ -1315,15 +1316,7 @@ const chatMessageSchema = z
     replyToMessageId: nonEmptyString.nullable().optional(),
     attachments: z.array(chatAttachmentSchema).optional(),
     sceneVersion: z.number().int().nonnegative().optional(),
-    scene: z.object({
-      schemaVersion: z.literal(1),
-      version: z.number().int().nonnegative(),
-      location: z.string().nullable(),
-      time: z.string().nullable(),
-      participants: z.array(z.string()),
-      emotionalBeat: z.string().nullable(),
-      unresolvedThreads: z.array(z.string()),
-    }).nullable().optional(),
+    scene: chatSceneStateSchema.nullable().optional(),
   })
   .superRefine((value, context) => {
     if (Object.hasOwn(value, "runtimeTrace")) {
@@ -1339,6 +1332,7 @@ const chatMessageSchema = z
 const chatSessionDetailSchema = z
   .object({
     id: nonEmptyString,
+    ownerScope: z.string().regex(/^user:.+/).max(240),
     title: z.string().nullable(),
     characterId: z.string().optional(),
     memoryEnabled: z.boolean().optional(),

@@ -16,6 +16,7 @@ import type { WorkspacePurgeRequest } from "./agent-runtime/workspace.js";
 
 const MAX_CONTROL_BODY_BYTES = 1_048_576;
 const MAX_REBUILD_FRAME_BYTES = 256 * 1_024;
+const TRANSCRIPT_BUFFER_BYTES = 64 * 1_024;
 
 async function readJson(request: Request): Promise<unknown> {
   if (!request.body) throw new Error("request body is required");
@@ -101,10 +102,31 @@ async function stageWorkspaceRebuild(request: Request): Promise<StagedWorkspaceR
   } | undefined;
   let activeMessage: { contentLength: number; received: number; createdAt: string } | undefined;
   const seenSessions = new Set<string>();
+  const transcriptBuffer = Buffer.allocUnsafe(TRANSCRIPT_BUFFER_BYTES);
+  let bufferedBytes = 0;
+  const flushTranscript = async () => {
+    if (!transcript) throw new Error("relationship transcript is not open");
+    let offset = 0;
+    while (offset < bufferedBytes) {
+      const { bytesWritten } = await transcript.write(transcriptBuffer, offset, bufferedBytes - offset);
+      if (bytesWritten === 0) throw new Error("relationship transcript write made no progress");
+      offset += bytesWritten;
+    }
+    bufferedBytes = 0;
+  };
   const writeTranscript = async (value: string) => {
     if (!transcript || !currentSession) throw new Error("relationship transcript is not open");
-    await transcript.write(value);
-    const bytes = Buffer.byteLength(value);
+    const encoded = Buffer.from(value);
+    // Bound staging memory while avoiding a filesystem write for every protocol fragment.
+    // Flush before each session's fsync so no buffered bytes can cross session boundaries.
+    let offset = 0;
+    while (offset < encoded.byteLength) {
+      const copied = encoded.copy(transcriptBuffer, bufferedBytes, offset);
+      bufferedBytes += copied;
+      offset += copied;
+      if (bufferedBytes === transcriptBuffer.byteLength) await flushTranscript();
+    }
+    const bytes = encoded.byteLength;
     currentSession.bytes += bytes;
     estimatedBytes += bytes;
   };
@@ -113,6 +135,7 @@ async function stageWorkspaceRebuild(request: Request): Promise<StagedWorkspaceR
     if (activeMessage || currentSession.expectedRole !== "user") {
       throw new Error(`relationship rebuild session ${currentSession.id} has an incomplete exchange`);
     }
+    await flushTranscript();
     await transcript?.sync();
     await transcript?.close();
     transcript = undefined;

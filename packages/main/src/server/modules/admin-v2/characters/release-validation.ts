@@ -14,10 +14,8 @@ import {
 } from "@/server/lib/media-asset-authority";
 import { canonicalSha256 } from "../shared/canonical-json";
 import { toInputJson } from "../shared/prisma-json";
-import {
-  CHARACTER_RELEASE_POLICY_VERSION,
-  characterReleaseAssetPurpose,
-} from "./character-release-contract";
+import { CHARACTER_RELEASE_POLICY_VERSION } from "./character-release-contract";
+import { characterDraftAssetPurposes } from "./draft-asset-route-authority";
 import {
   evaluateEffectiveGenerationRouteAuthority,
   isOperatorSingleImageRoute,
@@ -593,9 +591,14 @@ export async function evaluateCharacterReleaseSnapshot(
         job.characterId === project?.characterId &&
         job.sourceType === "content_production_item" &&
         job.sourceId === item.id &&
+        placement.runId === item.batchId &&
+        item.batch.targetType === "character" &&
+        item.batch.targetId === project?.characterId &&
         sourceMeta.batchId === item.batchId &&
-        sourceMeta.purpose ===
-          characterReleaseAssetPurpose(placement.slotKey) &&
+        // The original brief is provenance, not a product placement. Keep it
+        // bound to its actual Run when an existing image is selected elsewhere.
+        characterDraftAssetPurposes.some((purpose) => purpose === item.batch.purpose) &&
+        sourceMeta.purpose === item.batch.purpose &&
         sourceMeta.targetType === "character" &&
         sourceMeta.targetId === project?.characterId &&
         sourceMeta.bootstrapIdentity === placement.bootstrapIdentity &&
@@ -623,7 +626,6 @@ export async function evaluateCharacterReleaseSnapshot(
       const bootstrapAuthorityMatches = Boolean(
         commonAuthorityMatches &&
         placement.bootstrapIdentity &&
-        placement.slotKey === "character_avatar" &&
         job &&
         profile &&
         referenceSet &&

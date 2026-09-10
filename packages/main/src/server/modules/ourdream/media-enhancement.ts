@@ -5,14 +5,13 @@ import { Errors } from "@/server/lib/errors";
 import { generationCostFromAuthority, resolveGenerationPricingAuthority } from "@/server/lib/generation-pricing";
 import { toInputJson } from "@/server/lib/request-json";
 import { lockCharacterMediaAssetAuthorities } from "@/server/modules/admin-v2/characters/generation-authority-lock";
-import { dreamcoinBalance, postDreamcoinEntry } from "@/server/modules/billing/ledger";
+import { dreamcoinBalance } from "@/server/modules/billing/ledger";
 import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
-import { dispatchGenerationAttemptOutbox } from "@/server/modules/generation/generation-attempt-authority";
-import { activeGenerationStatuses, appendGenerationEvent, assertGenerationJobRequestFingerprint, findExistingGenerationJob, generationWriteRequestFingerprint, isUniqueConstraintError, maxInflightJobs, reserveInitialGenerationAttempt, wakeQueuedGenerationDispatch } from "./generation-job-authority";
+import { acceptGenerationJobForUser, findExistingGenerationJob, generationWriteRequestFingerprint, wakeQueuedGenerationDispatch } from "./generation-job-authority";
 import { generationQuoteAuthoritySchema } from "./generation-quote-contract";
 import { assertQuoteStillValid, generationPricingFingerprint } from "./generation-quote";
 import { assertMediaEnhancementSource, loadMediaEnhancementSource } from "./media-enhancement-source";
-import { entitlementMap, lockUserLedger } from "./subscription-lifecycle";
+import { entitlementMap } from "./subscription-lifecycle";
 import { jsonRecord } from "./json-values";
 
 export const mediaEnhancementQuoteBodySchema = z.object({ scale: z.literal(2) }).strict();
@@ -93,24 +92,13 @@ export async function createMediaEnhancement(userId: string, sourceMediaId: stri
       pricing: { ruleId: plan.pricing.id, ruleKey: plan.pricing.ruleKey, version: plan.pricing.version,
         effectiveFrom: plan.pricing.effectiveFrom?.toISOString() ?? null, fingerprint: plan.authority.pricingFingerprint } },
   };
-  try {
-    const result = await prisma.$transaction(async (tx) => {
+  return acceptGenerationJobForUser({
+    userId,
+    identity: options,
+    prepare: async (tx) => {
       await lockCharacterMediaAssetAuthorities(tx, [sourceMediaId]);
       const lockedSource = await assertMediaEnhancementSource({ userId, characterId: asset.characterId, controls }, tx);
       if (lockedSource.asset.sourceJobId !== asset.sourceJobId) throw Errors.conflict("Source image provenance changed after the quote");
-      await lockUserLedger(tx, userId);
-      // A competing accepted request may have consumed the last coins while
-      // this request waited for the lock. Replay before checking a new charge.
-      const accepted = await tx.generationJob.findFirst({ where: { userId, idempotencyKey } });
-      if (accepted) {
-        assertGenerationJobRequestFingerprint(accepted, options.requestFingerprint);
-        return { job: accepted, outboxId: null };
-      }
-      const balance = await dreamcoinBalance(userId, tx);
-      if (balance < plan.authority.costDreamcoins) throw Errors.paymentRequired("Insufficient DreamCoins", { required: plan.authority.costDreamcoins, available: balance });
-      const active = await tx.generationJob.count({ where: { userId, status: { in: activeGenerationStatuses() } } });
-      const max = maxInflightJobs(plan.entitlements);
-      if (active >= max) throw Errors.rateLimited("Too many active generation jobs", { active, max });
       // Historical identity/Release/recipe evidence belongs to the source. It is
       // preserved here, not reinterpreted as references for a new character render.
       const sourceGeneration = asset.sourceJob ? {
@@ -121,30 +109,15 @@ export async function createMediaEnhancement(userId: string, sourceMediaId: stri
         legacyReleaseAuthority: jsonRecord(asset.sourceJob.controls).legacyReleaseAuthority ?? null,
         sourceType: asset.sourceJob.sourceType, sourceMeta: asset.sourceJob.sourceMeta,
       } : null;
-      const job = await tx.generationJob.create({ data: {
-        userId, characterId: asset.characterId, idempotencyKey, mode: "image", prompt: recipe.body,
+      return { entitlements: plan.entitlements, data: {
+        characterId: asset.characterId, mode: "image", prompt: recipe.body,
         controls: toInputJson(controls), presetIds: [], model: workflow.workflowKey,
         profileId: profile.profileKey, profileVersion: profile.version, recipeId: recipe.recipeKey, recipeVersion: recipe.version,
-        orientation: "original", outputCount: 1, status: "queued", costDreamcoins: plan.authority.costDreamcoins,
+        orientation: "original", outputCount: 1, costDreamcoins: plan.authority.costDreamcoins,
         provider: profile.runner, sourceType: "media_enhance", sourceId: `${userId}:${idempotencyKey}`,
         sourceMeta: toInputJson({ ...pin, sourceJobId: asset.sourceJobId, sourceGeneration }),
         momentSpec: { schemaVersion: "media-enhancement-v1", requestFingerprint: options.requestFingerprint },
-      } });
-      await appendGenerationEvent(tx, job.id, "created", "Image enhancement accepted", { sourceMediaId, scale: 2 });
-      await postDreamcoinEntry(tx, { kind: "generation_spend", userId, amount: job.costDreamcoins, sourceId: job.id, idempotencyKey: `generation:${job.id}:reserve` });
-      await appendGenerationEvent(tx, job.id, "reserved", "Dreamcoins reserved", { amount: job.costDreamcoins });
-      await appendGenerationEvent(tx, job.id, "queued", "Image enhancement queued", {});
-      const reservation = await reserveInitialGenerationAttempt(tx, job);
-      return { job, outboxId: reservation.outbox.id };
-    });
-    if (result.outboxId) await dispatchGenerationAttemptOutbox(prisma, { outboxIds: [result.outboxId] });
-    else await wakeQueuedGenerationDispatch(result.job);
-    return result.job;
-  } catch (error) {
-    if (isUniqueConstraintError(error)) {
-      const replay = await findExistingGenerationJob(userId, options);
-      if (replay) { await wakeQueuedGenerationDispatch(replay); return replay; }
-    }
-    throw error;
-  }
+      } };
+    },
+  });
 }

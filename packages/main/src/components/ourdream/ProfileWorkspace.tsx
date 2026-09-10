@@ -36,9 +36,6 @@ import {
   parseProfileResponse,
   parseProfilePreferencesResponse,
   parseTagListResponse,
-  type PublicBillingAccess,
-  type PublicSubscriptionRefund,
-  type PublicSubscription,
   type RuntimeLibraryItem as LibraryItem,
   type RuntimeMediaCollection as MediaCollection,
 } from "@/lib/public-api-contracts";
@@ -49,6 +46,7 @@ import {
   loadingAuthorityStatus,
   profileAuthorityStateForResponse,
   readyAuthorityStatus,
+  type AuthorityStatus,
 } from "./authority-state";
 import {
   loadViewerResource,
@@ -58,6 +56,7 @@ import { useAgeGateAccess } from "./AgeGateBoundary";
 import { authHrefForTarget, authNextTargetFromPath } from "./authRedirect";
 import {
   fetchProtectedForViewer,
+  invalidateViewerAuthority,
   type ViewerFetcher,
 } from "./viewer-auth";
 import { useReportDialog } from "./ReportDialog";
@@ -265,19 +264,117 @@ function focusProfileDeepLink() {
 
 export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>) {
   const { accepted: ageGateAccepted } = useAgeGateAccess();
-  const [authState, setAuthState] = useState<AuthState>("loading");
+  const [viewer, setViewer] = useState<{
+    profile: ReturnType<typeof parseProfileResponse> | null;
+    authState: AuthState;
+    authority: AuthorityStatus;
+  }>({ profile: null, authState: "loading", authority: initialAuthorityStatus() });
+  const requestSerialRef = useRef(0);
+  const confirmedOwnerRef = useRef<string | null>(null);
+  const isConfirmedOwner = useCallback((ownerId: string) => confirmedOwnerRef.current === ownerId, []);
+
+  const refreshProfile = useCallback(async () => {
+    const serial = ++requestSerialRef.current;
+    confirmedOwnerRef.current = null;
+    // A focus event may follow a sign-in in another tab. The cached /me result
+    // cannot confirm ownership, including an anonymous -> authenticated change.
+    invalidateViewerAuthority();
+    setViewer((current) => ({ ...current, authState: "loading", authority: loadingAuthorityStatus(current.authority) }));
+    try {
+      const result = await loadProfileForViewer();
+      if (serial !== requestSerialRef.current) return;
+      if (result.viewer === "anonymous" || result.response.status === 401) {
+        setViewer({ profile: null, authState: "anonymous", authority: readyAuthorityStatus() });
+        return;
+      }
+      const response = result.response;
+      const raw: unknown = await response.json().catch(() => null);
+      if (serial !== requestSerialRef.current) return;
+      if (profileAuthorityStateForResponse(response) === "error") {
+        throw new Error((raw as ApiErrorPayload | null)?.error?.message ?? "Account data could not load.");
+      }
+      const profile = parseProfileResponse(raw);
+      if (!(profile.user.displayName?.trim() || profile.user.email?.trim())) {
+        throw new Error("Account data was incomplete.");
+      }
+      confirmedOwnerRef.current = profile.user.id;
+      setViewer({ profile, authState: "authenticated", authority: readyAuthorityStatus() });
+    } catch (error) {
+      if (serial !== requestSerialRef.current) return;
+      setViewer((current) => ({
+        ...current,
+        authState: "error",
+        authority: failedAuthorityStatus(current.authority, requestErrorMessage(error, "Account data could not load.")),
+      }));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!ageGateAccepted) return;
+    const timer = window.setTimeout(() => void refreshProfile(), 0);
+    const focus = () => void refreshProfile();
+    window.addEventListener("focus", focus);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("focus", focus);
+      requestSerialRef.current += 1;
+      confirmedOwnerRef.current = null;
+    };
+  }, [ageGateAccepted, refreshProfile]);
+
+  // INVARIANT: every private projection and draft has exactly one owner. React
+  // discards the whole old owner's state, including nested forms and pending
+  // callbacks, when identity changes. Same-owner revalidation keeps drafts.
+  return <ProfileOwnerWorkspace
+    key={viewer.profile?.user.id ?? "unverified"}
+    routePath={routePath}
+    profile={viewer.profile}
+    authState={viewer.authState}
+    profileAuthority={viewer.authority}
+    refreshProfile={refreshProfile}
+    isConfirmedOwner={isConfirmedOwner}
+  />;
+}
+
+function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority, refreshProfile, isConfirmedOwner }: Readonly<ProfileWorkspaceProps & {
+  profile: ReturnType<typeof parseProfileResponse> | null;
+  authState: AuthState;
+  profileAuthority: AuthorityStatus;
+  refreshProfile: () => Promise<void>;
+  isConfirmedOwner: (ownerId: string) => boolean;
+}>) {
+  const { accepted: ageGateAccepted } = useAgeGateAccess();
   const [authTarget, setAuthTarget] = useState("/profile");
-  const [profileAuthority, setProfileAuthority] = useState(initialAuthorityStatus);
-  const [balance, setBalance] = useState<number | null>(null);
-  const [plan, setPlan] = useState<string | null>(null);
-  const [subscription, setSubscription] = useState<PublicSubscription | null>(null);
-  const [billingAccess, setBillingAccess] =
-    useState<PublicBillingAccess | null>(null);
-  const [refund, setRefund] = useState<PublicSubscriptionRefund | null>(null);
-  const [entitlements, setEntitlements] = useState<Record<string, unknown>>({});
-  const [displayName, setDisplayName] = useState("");
-  const [profileName, setProfileName] = useState("");
-  const [profileOwnerScope, setProfileOwnerScope] = useState("");
+  const balance = profile?.balance ?? null;
+  const subscription = profile?.subscription ?? null;
+  const billingAccess = profile?.billingAccess ?? null;
+  const refund = profile?.refund ?? null;
+  const entitlements = profile?.entitlements ?? {};
+  const plan = subscription?.plan
+    ? `${subscription.plan.name} ${subscription.plan.billingPeriod}`
+    : subscription ? "Paid access · purchased offer unavailable" : "Free";
+  const displayName = profile?.user.displayName?.trim() || profile?.user.email?.trim() || "";
+  const [profileNameDraft, setProfileName] = useState<string | null>(null);
+  const profileName = profileNameDraft ?? displayName;
+  const profileOwnerScope = profile ? `user:${profile.user.id}` : "";
+  const ownerId = profile?.user.id;
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+  const ownerRequestIsCurrent = useCallback(() =>
+    mountedRef.current && Boolean(ownerId && isConfirmedOwner(ownerId)), [isConfirmedOwner, ownerId]);
+  // The cookie may change before focus fires. Bind every private read/write to
+  // the server-confirmed owner, and abandon continuations after its subtree ends.
+  const fetchForOwner = useCallback(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (!ownerRequestIsCurrent()) throw new DOMException("Account confirmation changed", "AbortError");
+    const headers = new Headers(init?.headers);
+    headers.set("x-idream-viewer-scope", profileOwnerScope);
+    const response = await fetch(input, { ...init, headers });
+    if (!ownerRequestIsCurrent()) throw new DOMException("Account confirmation changed", "AbortError");
+    return response;
+  }, [ownerRequestIsCurrent, profileOwnerScope]);
   const [tab, setTab] = useState<LibraryTab>(() =>
     typeof window === "undefined" ? "recent" : libraryTabFromSearch(window.location.search),
   );
@@ -315,120 +412,11 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
   const libraryTabRef = useRef<LibraryTab | null>(null);
   const libraryCursorTrailRef = useRef<Array<string | null>>([null]);
   const libraryQueryRef = useRef("");
-  const profileRequestSerialRef = useRef(0);
-  const securityOwnerScopeRef = useRef("");
   const securityRequestSerialRef = useRef(0);
   const libraryRequestSerialRef = useRef(0);
   const mediaCollectionsRequestSerialRef = useRef(0);
   const preferencesRequestSerialRef = useRef(0);
 
-  const showAnonymousProfile = useCallback(() => {
-    securityOwnerScopeRef.current = "";
-    securityRequestSerialRef.current += 1;
-    setSecurityPassword("");
-    setDeleteConfirm("");
-    setSavedRecoveryCode(null);
-    setSecurityPending(false);
-    libraryRequestSerialRef.current += 1;
-    mediaCollectionsRequestSerialRef.current += 1;
-    preferencesRequestSerialRef.current += 1;
-    libraryTabRef.current = null;
-    libraryCursorTrailRef.current = [null];
-    libraryQueryRef.current = "";
-    setLibraryCursorTrail([null]);
-    setNextLibraryCursor(null);
-    setAuthState("anonymous");
-    setProfileAuthority(readyAuthorityStatus());
-    setBalance(null);
-    setPlan(null);
-    setSubscription(null);
-    setBillingAccess(null);
-    setRefund(null);
-    setEntitlements({});
-    setDisplayName("");
-    setProfileName("");
-    setProfileOwnerScope("");
-    setItems([]);
-    setLibraryAuthority(initialAuthorityStatus());
-    setEmailUpdates(null);
-    setMutedTags([]);
-    setPreferencesAuthority(initialAuthorityStatus());
-    setPreferenceTags([]);
-    setPreferenceTagsAuthority(initialAuthorityStatus());
-    setMediaCollections([]);
-    setMediaCollectionsAuthority(initialAuthorityStatus());
-  }, []);
-
-  const refreshProfile = useCallback(async () => {
-    const requestSerial = profileRequestSerialRef.current + 1;
-    profileRequestSerialRef.current = requestSerial;
-    setProfileAuthority(loadingAuthorityStatus);
-    setAuthState((current) =>
-      current === "authenticated" ? "authenticated" : "loading",
-    );
-    try {
-      const result = await loadProfileForViewer();
-      if (requestSerial !== profileRequestSerialRef.current) return;
-      if (result.viewer === "anonymous") {
-        showAnonymousProfile();
-        return;
-      }
-      const response = result.response;
-      const responseState = profileAuthorityStateForResponse(response);
-      if (responseState === "anonymous") {
-        showAnonymousProfile();
-        return;
-      }
-      const rawPayload: unknown = await response.json().catch(() => null);
-      if (requestSerial !== profileRequestSerialRef.current) return;
-      if (responseState === "error") {
-        const errorPayload = rawPayload as ApiErrorPayload | null;
-        throw new Error(
-          errorPayload?.error?.message ?? "Account data could not load.",
-        );
-      }
-      const profileData = parseProfileResponse(rawPayload);
-      const user = profileData.user;
-      const nextName = user?.displayName?.trim() || user?.email?.trim() || "";
-      if (!nextName) {
-        throw new Error("Account data was incomplete.");
-      }
-      setAuthState("authenticated");
-      setDisplayName(nextName);
-      setProfileName(nextName);
-      const ownerScope = `user:${user.id}`;
-      if (securityOwnerScopeRef.current !== ownerScope) {
-        securityRequestSerialRef.current += 1;
-        setSecurityPassword(""); setDeleteConfirm(""); setSavedRecoveryCode(null); setSecurityPending(false);
-        securityOwnerScopeRef.current = ownerScope;
-      }
-      setProfileOwnerScope(ownerScope);
-      setBalance(profileData.balance);
-      setSubscription(profileData.subscription);
-      setBillingAccess(profileData.billingAccess);
-      setRefund(profileData.refund);
-      setEntitlements(profileData.entitlements);
-      setPlan(
-        profileData.subscription?.plan
-          ? `${profileData.subscription.plan.name} ${profileData.subscription.plan.billingPeriod}`
-          : profileData.subscription
-            ? "Paid access · purchased offer unavailable"
-            : "Free",
-      );
-      setProfileAuthority(readyAuthorityStatus());
-    } catch (error) {
-      if (requestSerial !== profileRequestSerialRef.current) return;
-      setProfileAuthority((current) =>
-        failedAuthorityStatus(
-          current,
-          requestErrorMessage(error, "Account data could not load."),
-        ),
-      );
-      setAuthState((current) =>
-        current === "authenticated" ? "authenticated" : "error",
-      );
-    }
-  }, [showAnonymousProfile]);
 
   const refreshLibrary = useCallback(async function loadLibrary(
     nextTab: LibraryTab,
@@ -464,8 +452,8 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
       parse: parseLibraryResponse,
       fallbackError: "Library data could not load.",
       errorFrom: "fallback",
-      isCurrent: () => requestSerial === libraryRequestSerialRef.current,
-    });
+      isCurrent: () => ownerRequestIsCurrent() && requestSerial === libraryRequestSerialRef.current,
+    }, fetchForOwner);
     if (outcome.kind === "discarded") return;
     if (outcome.kind === "failed") {
       setLibraryAuthority((current) =>
@@ -483,11 +471,11 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
     setEmptyCta(outcome.data.emptyCta);
     setNextLibraryCursor(outcome.data.nextCursor ?? null);
     setLibraryAuthority(readyAuthorityStatus());
-  }, []);
+  }, [fetchForOwner, ownerRequestIsCurrent]);
 
   useEffect(() => () => {
     libraryRequestSerialRef.current += 1;
-    profileRequestSerialRef.current += 1;
+    securityRequestSerialRef.current += 1;
     mediaCollectionsRequestSerialRef.current += 1;
     preferencesRequestSerialRef.current += 1;
   }, []);
@@ -501,8 +489,8 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
       parse: (raw) => parseMediaCollectionsResponse(raw).collections,
       fallbackError: "Media collections could not load.",
       isCurrent: () =>
-        requestSerial === mediaCollectionsRequestSerialRef.current,
-    });
+        ownerRequestIsCurrent() && requestSerial === mediaCollectionsRequestSerialRef.current,
+    }, fetchForOwner);
     if (outcome.kind === "discarded") return;
     if (outcome.kind === "failed") {
       setMediaCollectionsAuthority((current) =>
@@ -512,14 +500,14 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
     }
     setMediaCollections(outcome.data);
     setMediaCollectionsAuthority(readyAuthorityStatus());
-  }, []);
+  }, [fetchForOwner, ownerRequestIsCurrent]);
 
   const refreshPreferences = useCallback(async () => {
     const requestSerial = preferencesRequestSerialRef.current + 1;
     preferencesRequestSerialRef.current = requestSerial;
     setPreferencesAuthority(loadingAuthorityStatus);
     const isCurrent = () =>
-      requestSerial === preferencesRequestSerialRef.current;
+      ownerRequestIsCurrent() && requestSerial === preferencesRequestSerialRef.current;
 
     const preferencesOutcome = await loadViewerResource({
       path: "/api/v1/profile/preferences",
@@ -527,7 +515,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
       fallbackError: "Preferences could not load.",
       errorFrom: "fallback",
       isCurrent,
-    });
+    }, fetchForOwner);
     // INVARIANT: a superseded preferences response abandons the whole refresh,
     // tags included — a newer refresh is already loading both.
     if (preferencesOutcome.kind === "discarded") return;
@@ -555,7 +543,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
       fallbackError: "Preference tags could not load.",
       errorFrom: "fallback",
       isCurrent,
-    });
+    }, fetchForOwner);
     if (tagsOutcome.kind === "discarded") return;
     if (tagsOutcome.kind === "failed") {
       setPreferenceTagsAuthority((current) =>
@@ -565,29 +553,17 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
     }
     setPreferenceTags(tagsOutcome.data);
     setPreferenceTagsAuthority(readyAuthorityStatus());
-  }, []);
-
-  // Defer initial loads to a macrotask so the first render commits before any setState
-  // (matches ExploreWorkspace/FeedWorkspace; avoids react-hooks/set-state-in-effect).
-  useEffect(() => {
-    if (!ageGateAccepted) return;
-    const timer = window.setTimeout(() => {
-      void refreshProfile();
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [ageGateAccepted, refreshProfile]);
+  }, [fetchForOwner, ownerRequestIsCurrent]);
 
   useEffect(() => {
     if (!ageGateAccepted) return;
-    const focus = () => void refreshProfile();
     const blur = () => {
       securityRequestSerialRef.current += 1;
       setSecurityPassword(""); setDeleteConfirm(""); setSecurityPending(false);
     };
-    window.addEventListener("focus", focus);
     window.addEventListener("blur", blur);
-    return () => { window.removeEventListener("focus", focus); window.removeEventListener("blur", blur); };
-  }, [ageGateAccepted, refreshProfile]);
+    return () => window.removeEventListener("blur", blur);
+  }, [ageGateAccepted]);
 
   useEffect(() => {
     function syncAuthTarget() {
@@ -606,36 +582,36 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
   }, []);
 
   useEffect(() => {
-    if (!ageGateAccepted || authState !== "authenticated") return;
+    if (!ageGateAccepted || !profileOwnerScope) return;
     const timer = window.setTimeout(() => void refreshPreferences(), 0);
     return () => window.clearTimeout(timer);
-  }, [ageGateAccepted, authState, refreshPreferences]);
+  }, [ageGateAccepted, profileOwnerScope, refreshPreferences]);
 
   useEffect(() => {
-    if (!ageGateAccepted || authState !== "authenticated") return;
+    if (!ageGateAccepted || !profileOwnerScope) return;
     focusProfileDeepLink();
-  }, [ageGateAccepted, authState]);
+  }, [ageGateAccepted, profileOwnerScope]);
 
   useEffect(() => {
-    if (!ageGateAccepted || authState !== "authenticated") return;
+    if (!ageGateAccepted || !profileOwnerScope) return;
     const timer = window.setTimeout(
       () => void refreshLibrary(tab, [null], mediaSearchQuery),
       mediaSearchQuery ? 250 : 0,
     );
     return () => window.clearTimeout(timer);
-  }, [ageGateAccepted, authState, mediaSearchQuery, refreshLibrary, tab]);
+  }, [ageGateAccepted, profileOwnerScope, mediaSearchQuery, refreshLibrary, tab]);
 
   useEffect(() => {
     if (
       !ageGateAccepted ||
-      authState !== "authenticated" ||
+      !profileOwnerScope ||
       tab !== "media"
     ) {
       return;
     }
     const timer = window.setTimeout(() => void refreshMediaCollections(), 0);
     return () => window.clearTimeout(timer);
-  }, [ageGateAccepted, authState, refreshMediaCollections, tab]);
+  }, [ageGateAccepted, profileOwnerScope, refreshMediaCollections, tab]);
 
   async function redeem() {
     setStatus("");
@@ -645,12 +621,13 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
       return;
     }
     try {
-      const response = await fetch("/api/v1/redeem-codes/redeem", {
+      const response = await fetchForOwner("/api/v1/redeem-codes/redeem", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ code }),
       });
       const payload = (await response.json()) as ApiErrorPayload;
+      if (!ownerRequestIsCurrent()) return;
       if (!response.ok || payload.ok === false) {
         setStatus(payload.error?.message ?? "Redeem failed");
         return;
@@ -665,7 +642,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
   async function invite() {
     setStatus("");
     try {
-      const response = await fetch("/api/v1/referrals/invite", { method: "POST" });
+      const response = await fetchForOwner("/api/v1/referrals/invite", { method: "POST" });
       const payload = (await response.json()) as {
         ok?: boolean;
         error?: { message?: string };
@@ -701,19 +678,20 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
       return;
     }
     try {
-      const response = await fetch("/api/v1/profile", {
+      const response = await fetchForOwner("/api/v1/profile", {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ displayName: nextName }),
       });
       const payload = (await response.json()) as ProfileMutationPayload;
+      if (!ownerRequestIsCurrent()) return;
       if (!response.ok || payload.ok === false) {
         setStatus(payload.error?.message ?? "Profile update failed.");
         return;
       }
-      setDisplayName(payload.data?.user?.displayName ?? nextName);
       setProfileName(payload.data?.user?.displayName ?? nextName);
       setStatus("Profile updated.");
+      await refreshProfile();
     } catch {
       setStatus("Network error. Please try again.");
     }
@@ -725,7 +703,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
       return;
     }
     try {
-      const response = await fetch("/api/v1/profile/preferences", {
+      const response = await fetchForOwner("/api/v1/profile/preferences", {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -749,7 +727,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
 
   async function signOutEverywhere() {
     try {
-      const response = await fetch("/api/v1/account/sign-out-all", { method: "POST" });
+      const response = await fetchForOwner("/api/v1/account/sign-out-all", { method: "POST" });
       if (response.ok) {
         window.location.href = "/login";
         return;
@@ -771,21 +749,21 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
     let receipt: string | null = null;
     try {
       const body = { password: securityPassword, confirmation: deleteConfirm, expectedUserId: profileOwnerScope.replace(/^user:/, "") };
-      const prepared = await fetch("/api/v1/account/deletion-receipt", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      const prepared = await fetchForOwner("/api/v1/account/deletion-receipt", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
       const preparation = await prepared.json();
-      if (serial !== securityRequestSerialRef.current) return;
+      if (!ownerRequestIsCurrent() || serial !== securityRequestSerialRef.current) return;
       if (!prepared.ok || !preparation.ok) { setStatus(preparation.error?.message ?? "Password verification failed."); return; }
       receipt = preparation.data.receipt;
-      const response = await fetch("/api/v1/account/delete-request", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      const response = await fetchForOwner("/api/v1/account/delete-request", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
       const payload = await response.json().catch(() => null);
-      if (serial !== securityRequestSerialRef.current) return;
+      if (!ownerRequestIsCurrent() || serial !== securityRequestSerialRef.current) return;
       if (response.ok || response.status >= 500) {
         window.location.href = accountDeletionLoginHref({ data: { receipt: payload?.data?.receipt ?? receipt } });
         return;
       }
       setStatus(payload?.error?.message ?? "Account deletion failed. You can retry after correcting the error.");
     } catch {
-      if (serial !== securityRequestSerialRef.current) return;
+      if (!ownerRequestIsCurrent() || serial !== securityRequestSerialRef.current) return;
       if (receipt) { window.location.href = `/login#deletion=${encodeURIComponent(receipt)}`; return; }
       setStatus("Password verification could not finish. Check your connection and try again.");
     } finally {
@@ -798,9 +776,9 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
     setSecurityPending(true); setSavedRecoveryCode(null);
     const serial = ++securityRequestSerialRef.current;
     try {
-      const response = await fetch("/api/v1/account/recovery-code", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: securityPassword, expectedUserId: profileOwnerScope.replace(/^user:/, "") }) });
+      const response = await fetchForOwner("/api/v1/account/recovery-code", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: securityPassword, expectedUserId: profileOwnerScope.replace(/^user:/, "") }) });
       const payload = await response.json();
-      if (serial !== securityRequestSerialRef.current) return;
+      if (!ownerRequestIsCurrent() || serial !== securityRequestSerialRef.current) return;
       if (!response.ok || !payload.ok) { setStatus(payload.error?.message ?? "Could not create a recovery code."); return; }
       setSavedRecoveryCode({ code: payload.data.recoveryCode, ownerId: profileOwnerScope.replace(/^user:/, "") });
       setStatus("New recovery code created. Save it now; the previous code no longer works.");
@@ -816,7 +794,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
       return;
     }
     try {
-      const response = await fetch(`/api/v1/media/${id}`, { method: "DELETE" });
+      const response = await fetchForOwner(`/api/v1/media/${id}`, { method: "DELETE" });
       if (!response.ok) {
         setStatus("Delete failed.");
         return;
@@ -832,12 +810,13 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
   async function downloadMedia(id: string) {
     setStatus("");
     try {
-      const response = await fetch(`/api/v1/media/${id}/download`);
+      const response = await fetchForOwner(`/api/v1/media/${id}/download`);
       if (!response.ok) {
         setStatus("Download failed.");
         return;
       }
       const payload = (await response.json()) as { data?: { url?: string } };
+      if (!ownerRequestIsCurrent()) return;
       if (payload.data?.url) {
         triggerDownload(payload.data.url);
         setStatus("Download started.");
@@ -853,7 +832,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
     setStatus("");
     setDeleteConfirmCharacterId(null);
     try {
-      const response = await fetch(`/api/v1/characters/${id}/duplicate`, { method: "POST" });
+      const response = await fetchForOwner(`/api/v1/characters/${id}/duplicate`, { method: "POST" });
       if (!response.ok) {
         setStatus("Duplicate failed.");
         return;
@@ -878,7 +857,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
       return false;
     }
     try {
-      const response = await fetch(`/api/v1/characters/${id}`, {
+      const response = await fetchForOwner(`/api/v1/characters/${id}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ name, description }),
@@ -908,7 +887,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
       return;
     }
     try {
-      const response = await fetch(`/api/v1/characters/${id}`, { method: "DELETE" });
+      const response = await fetchForOwner(`/api/v1/characters/${id}`, { method: "DELETE" });
       if (!response.ok) {
         setStatus("Delete failed.");
         return;
@@ -927,7 +906,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
     setDeleteConfirmCharacterId(null);
     const next = current === "public" || current === "unlisted" ? "private" : "public";
     try {
-      const response = await fetch(`/api/v1/characters/${id}`, {
+      const response = await fetchForOwner(`/api/v1/characters/${id}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ visibility: next }),
@@ -959,7 +938,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
       return;
     }
     try {
-      const response = await fetch("/api/v1/media/collections", {
+      const response = await fetchForOwner("/api/v1/media/collections", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -998,7 +977,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
       return;
     }
     try {
-      const response = await fetch(`/api/v1/media/collections/${collectionId}/items`, {
+      const response = await fetchForOwner(`/api/v1/media/collections/${collectionId}/items`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ mediaAssetId }),
@@ -1102,7 +1081,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
     setLibraryAuthority(loadingAuthorityStatus(initialAuthorityStatus()));
   }
 
-  if (authState === "loading") {
+  if (authState === "loading" && !profile) {
     return (
       <section className="px-4 py-10 md:px-[60px]">
         <div className="mx-auto max-w-5xl">
@@ -1195,7 +1174,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
   }
 
   return (
-    <section className="px-4 py-10 md:px-[60px]">
+    <section className="px-4 py-10 md:px-[60px]" hidden={authState !== "authenticated"}>
       <div className="mx-auto max-w-5xl">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>

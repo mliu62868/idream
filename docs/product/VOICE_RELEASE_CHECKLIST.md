@@ -6,17 +6,22 @@ to take it from `mock` to a **publishable production** state.
 
 ## What ships in code (already done)
 
-- **API** — `POST /api/v1/generation/voice`
-  `{characterId, messageId, sessionId?, text, intent: "prewarm" | "play"}`
+- **API** — `POST /api/v1/generation/voice/quote` accepts the selected reply and
+  returns a signed `quoteToken` plus its maximum Dreamcoin cost. Explicit Play sends
+  it to `POST /api/v1/generation/voice`
+  `{characterId, messageId, sessionId?, text, intent: "play", quoteToken}`
   → `{assetId, contentUrl, durationMs}`. Auth + age-gate + `voice_gen` flag +
   `voice_enabled` entitlement gated. Per-message cached (one clip per `messageId`).
-- **Chat delivery** — each completed assistant turn prewarms its clip in the
-  background without delaying text. Prewarm uses included `voice_minutes` only and
-  never spends Dreamcoins automatically; explicit Play reuses the cache and retains
-  the existing overflow-price path when the allowance is exhausted.
+- **Chat delivery** — play-only: completed assistant turns do not automatically
+  synthesize audio. A new Play displays and accepts the quoted upper bound before
+  synthesis; accepted recovery and previously delivered clips reuse their durable
+  authority. The compatibility `prewarm` API uses included minutes only and never
+  spends Dreamcoins or automatically resumes a paid Play.
 - **Billing** — plan `voice_minutes` allowance is spent first (rolling 30-day window);
   overflow falls back to a per-clip Dreamcoin charge (`PricingRule` mode `voice`,
-  default 2). Debit + asset write are atomic; concurrent double-clicks are de-duped.
+  default 2). Accepted rate, maximum cost, allowance and window are persisted on
+  `VoiceClipRequest` across retries/reclaim; actual cost never exceeds acceptance.
+  Debit + asset write are atomic; concurrent double-clicks are de-duped.
 - **Delivery / tone** — the `VoiceClipPort.synthesize` authority carries the character tone plus a
   persisted delivery contract. Fish applies its sampling controls; Pocket 3.0.2 deliberately uses
   each official voice's native English delivery and reports those controls as not applied.
@@ -84,8 +89,10 @@ to take it from `mock` to a **publishable production** state.
 5. **Seed / migrate data** — deploy Prisma migrations and run `db:seed` (or apply
    equivalently in prod) so `CharacterVoiceProfile`, the
    `voice_gen` feature flag, the `mode=voice` `PricingRule`, and the `voiceEnabled` /
-   `voiceMinutes` plan features exist. Existing subscribers only gain voice after their
-   plan features include `voiceEnabled` — reseed plans or edit them in the admin console.
+   `voiceMinutes` plan features exist. Existing purchases use their immutable checkout
+   offer: changing the catalog Plan does not rewrite purchased access. Any additional
+   benefit must be an explicit independent grant; only historical subscriptions without
+   a stored purchase snapshot retain the legacy Plan lookup.
 6. **Create and verify one character voice** — use Admin Character Workspace → Voice
    to select an official Pocket English voice (or upload a Fish reference), create a
    candidate, and confirm its preview plays while `Character.voiceId` remains unchanged.

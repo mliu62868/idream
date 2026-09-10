@@ -79,6 +79,17 @@ describe("ChatSessionClient streaming composer", () => {
   let releaseSend: ((response: Response) => void) | undefined;
 
   beforeEach(() => {
+    // Use run-owned browser storage, never Node's ambient localStorage shim.
+    // It survives component remounts in a test, just like a real browser tab.
+    const stored = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      get length() { return stored.size; },
+      key: (index: number) => [...stored.keys()][index] ?? null,
+      getItem: (key: string) => stored.get(key) ?? null,
+      setItem: (key: string, value: string) => { stored.set(key, value); },
+      removeItem: (key: string) => { stored.delete(key); },
+      clear: () => stored.clear(),
+    });
     FakeEventSource.instances = [];
     sessionMessages = [opening];
     sessionReads = 0;
@@ -100,6 +111,13 @@ describe("ChatSessionClient streaming composer", () => {
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
+        // These existing playback/cache cases model an already accepted clip;
+        // first-time price acceptance has its own explicit test below.
+        if (url === "/api/v1/generation/voice/quote") return Response.json({ ok: true, data: { quote: {
+          quoteToken: null, maxCostDreamcoins: 2, overflowCostDreamcoins: 2,
+          allowanceMinutes: 30, remainingAllowanceMs: 60_000, balance: 100,
+          accepted: true, alreadyDelivered: false,
+        } } });
         if (url.endsWith("/messages") && init?.method === "POST") {
           return sendResponse;
         }
@@ -110,6 +128,7 @@ describe("ChatSessionClient streaming composer", () => {
             data: {
               session: {
                 id: "session-1",
+                ownerScope: "user:viewer-a",
                 title: "Test chat",
                 characterId: "character-1",
                 memoryEnabled: true,
@@ -327,7 +346,7 @@ describe("ChatSessionClient streaming composer", () => {
     await act(async () => releaseRecovery?.(Response.json({
       ok: true,
       data: { session: {
-        id: "session-1", title: "Test chat", characterId: "character-1",
+        id: "session-1", ownerScope: "user:viewer-a", title: "Test chat", characterId: "character-1",
         character: { name: "Avery" },
         messages: [opening, userTurn, { ...streamingReply, attempt: 1, status: "cancelled" }],
       } },
@@ -398,10 +417,17 @@ describe("ChatSessionClient streaming composer", () => {
     await act(async () => retry()!.click());
     expect(writes).toHaveLength(1);
     expect(retry()).toBeDefined();
-    await act(async () => retry()!.click());
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await mountSession();
+    await waitUntil(() => Boolean(container.querySelector('[data-pending-request-key]')));
+    const originalRequest = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Check original request");
+    expect(originalRequest).toBeDefined();
+    await act(async () => originalRequest!.click());
     expect(writes).toHaveLength(2);
     expect(quotes).toBe(1);
     expect(new Headers(writes[0]?.headers).get("idempotency-key")).toBeTruthy();
+    expect(new Headers(writes[0]?.headers).get("x-idream-viewer-scope")).toBe("user:viewer-a");
     expect(new Headers(writes[0]?.headers).get("idempotency-key")).toBe(new Headers(writes[1]?.headers).get("idempotency-key"));
     expect(JSON.parse(String(writes[0]?.body)).quoteAuthority).toMatchObject({ profileId: "image-profile", profileVersion: 2, costDreamcoins: 5 });
     await waitUntil(() => Boolean(container.querySelector('img[data-asset-id="new-image"]')));
@@ -534,6 +560,86 @@ describe("ChatSessionClient streaming composer", () => {
       sessionId: "session-1",
       text: "Hey there.",
     });
+  });
+
+  it("shows the accepted voice price ceiling and sends no synthesis before confirmation", async () => {
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) === "/api/v1/generation/voice/quote") return Response.json({ ok: true, data: { quote: {
+        quoteToken: "signed-quote-for-this-reply", maxCostDreamcoins: 2, overflowCostDreamcoins: 2,
+        allowanceMinutes: 30, remainingAllowanceMs: 45_000, balance: 100,
+        accepted: false, alreadyDelivered: false,
+      } } });
+      return originalFetch(input, init);
+    });
+    await mountSession();
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="chat-play-voice"]')!.click());
+    expect(voiceRequests()).toHaveLength(0);
+    expect(container.textContent).toContain("up to 2 Dreamcoins");
+    expect(container.textContent).toContain("Included minutes are used first");
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="chat-confirm-voice"]')!.click());
+    expect(voiceRequests()).toHaveLength(1);
+    const init = voiceRequests()[0]![1]!;
+    expect(JSON.parse(String(init.body)).quoteToken).toBe("signed-quote-for-this-reply");
+    expect(new Headers(init.headers).get("x-idream-viewer-scope")).toBe("user:viewer-a");
+    expect(container.querySelector('[data-testid="chat-confirm-voice"]')).toBeNull();
+  });
+
+  it("cancels a new voice quote without synthesizing or spending it", async () => {
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) === "/api/v1/generation/voice/quote") return Response.json({ ok: true, data: { quote: {
+        quoteToken: "cancelled-quote", maxCostDreamcoins: 2, overflowCostDreamcoins: 2,
+        allowanceMinutes: 0, remainingAllowanceMs: 0, balance: 100, accepted: false, alreadyDelivered: false,
+      } } });
+      return originalFetch(input, init);
+    });
+    await mountSession();
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="chat-play-voice"]')!.click());
+    const confirm = container.querySelector('[data-testid="chat-confirm-voice"]')!;
+    await act(async () => [...confirm.parentElement!.querySelectorAll("button")].find(button => button.textContent === "Cancel")!.click());
+    expect(container.querySelector('[data-testid="chat-confirm-voice"]')).toBeNull();
+    expect(voiceRequests()).toHaveLength(0);
+  });
+
+  it("drops a delayed accepted voice quote once focus revokes the session owner", async () => {
+    let releaseQuote!: (response: Response) => void;
+    const quote = new Promise<Response>(resolve => { releaseQuote = resolve; });
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    let switched = false;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) === "/api/v1/generation/voice/quote") return quote;
+      if (switched && String(input) === "/api/v1/chat/sessions/session-1") return Response.json({ ok: false }, { status: 403 });
+      return originalFetch(input, init);
+    });
+    await mountSession();
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="chat-play-voice"]')!.click());
+    switched = true;
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await act(async () => releaseQuote(Response.json({ ok: true, data: { quote: {
+      quoteToken: null, maxCostDreamcoins: 2, overflowCostDreamcoins: 2,
+      allowanceMinutes: 0, remainingAllowanceMs: 0, balance: 100, accepted: true, alreadyDelivered: false,
+    } } })));
+    expect(voiceRequests()).toHaveLength(0);
+    expect(container.querySelector('[data-testid="chat-confirm-voice"]')).toBeNull();
+  });
+
+  it("reports an expired voice quote without silently accepting a new price", async () => {
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) === "/api/v1/generation/voice/quote") return Response.json({ ok: true, data: { quote: {
+        quoteToken: "expired-quote", maxCostDreamcoins: 2, overflowCostDreamcoins: 2,
+        allowanceMinutes: 0, remainingAllowanceMs: 0, balance: 100, accepted: false, alreadyDelivered: false,
+      } } });
+      if (String(input) === "/api/v1/generation/voice") return Response.json({ ok: false, error: { code: "conflict", message: "Voice quote expired; request another quote", details: { reason: "voice_quote_stale" } } }, { status: 409 });
+      return originalFetch(input, init);
+    });
+    await mountSession();
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="chat-play-voice"]')!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="chat-confirm-voice"]')!.click());
+    expect(voiceRequests()).toHaveLength(1);
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith("/voice/quote"))).toHaveLength(1);
+    expect(container.textContent).toContain("voice quote expired");
   });
 
   it("requests a fresh voice clip when the same reply id is regenerated", async () => {

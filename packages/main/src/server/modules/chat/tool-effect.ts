@@ -101,6 +101,17 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
     assertTurnActionIntent(prior, effect.intent);
     call = persistedTurnActionCall(prior, call);
   } else {
+    if (call.name === "generate_image_async") {
+      // A valid 1200-character tool argument may exceed the 900-character
+      // generation direction after wardrobe constraints. Reject before any
+      // attachment or paid reservation rather than losing the final fact.
+      try {
+        compileChatImagePrompt(call.arguments.prompt, effect.intent.requestedNudity);
+      } catch (error) {
+        if (error instanceof RangeError) throw Errors.badRequest(error.message);
+        throw error;
+      }
+    }
     if (call.name === "edit_last_image") {
       // assertFrozenImageAction verified this exact Main-owned userContent.
       // Chat has no source pixels: its invented preservation details must never
