@@ -57,6 +57,7 @@ function openAiMessages(messages: readonly ModelInputMessage[]): unknown[] {
       .filter((message) => message.role !== "system" && message.content)
       .map((message) => ({
         source: contextSource(message) ?? (message.role === "assistant" ? "character" : "user"),
+        ...(message.role === "assistant" && message.speaker ? { speaker: message.speaker } : {}),
         content: message.content,
       }));
     return [
@@ -83,7 +84,8 @@ function openAiMessages(messages: readonly ModelInputMessage[]): unknown[] {
     };
     return {
       role: message.role,
-      content: message.content || null,
+      content: message.role === "assistant" && message.speaker
+        ? JSON.stringify({ speaker: message.speaker, content: message.content }) : message.content || null,
       ...(message.role === "assistant" && message.tool_calls?.length
         ? { tool_calls: message.tool_calls }
         : {}),
@@ -111,6 +113,7 @@ function requiredToolMessages(
       id: message.id,
       source: contextSource(message) ?? "conversation",
       role: message.role,
+      ...(message.role === "assistant" && message.speaker ? { speaker: message.speaker } : {}),
       content: message.content,
     }];
   });

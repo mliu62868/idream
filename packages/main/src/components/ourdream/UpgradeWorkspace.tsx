@@ -278,6 +278,12 @@ export function UpgradeWorkspace() {
       <p className="mx-auto mb-4 max-w-5xl text-[13px] font-semibold text-[rgb(170,170,170)]">
         {FREE_CHAT_SUMMARY}
       </p>
+      <p className="mx-auto mb-6 max-w-5xl text-sm text-neutral-300">
+        Need more dreamcoins?{" "}
+        <Link className="underline underline-offset-4" href={`/coins?returnTo=${encodeURIComponent(returnTarget)}`}>
+          Visit the Dreamcoin Store
+        </Link>
+      </p>
       {plansState === "loading" && (
         <p
           aria-live="polite"

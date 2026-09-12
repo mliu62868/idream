@@ -1,4 +1,5 @@
-import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { randomBytes } from "node:crypto";
+export { hashPassword, verifyPassword } from "./password";
 import type { User } from "@prisma/client";
 import { auth } from "@/server/lib/better-auth";
 import { prisma } from "@/server/lib/db";
@@ -21,7 +22,6 @@ export const SESSION_COOKIE = "idream_session";
 export const ADMIN_SESSION_COOKIE = "idream_admin_session";
 export const ANONYMOUS_COOKIE = "idream_anonymous_id";
 export const AGE_GATE_COOKIE = "AdultContentAcceptedOD";
-const passwordPrefix = "scrypt";
 
 export function parseCookieHeader(header: string | null) {
   const cookies = new Map<string, string>();
@@ -102,22 +102,6 @@ export function anonymousCookie(anonymousId: string) {
     secure: env.APP_ENV === "production",
     path: "/",
   });
-}
-
-export function hashPassword(password: string) {
-  const salt = randomBytes(16).toString("hex");
-  const hash = scryptSync(password, salt, 64).toString("hex");
-  return `${passwordPrefix}$${salt}$${hash}`;
-}
-
-export function verifyPassword(password: string, stored: string | null | undefined) {
-  if (!stored) return false;
-  const [prefix, salt, hash] = stored.split("$");
-  if (prefix !== passwordPrefix || !salt || !hash) return false;
-
-  const expected = Buffer.from(hash, "hex");
-  const actual = scryptSync(password, salt, expected.length);
-  return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
 
 export async function getAuthCtx(request?: Request): Promise<AuthCtx> {

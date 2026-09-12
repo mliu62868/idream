@@ -491,6 +491,8 @@ export type GenerationQuoteRequest = {
       characterId?: string;
       freeplay: boolean;
       lookId?: string;
+      generationContextToken?: string;
+      prompt?: string;
     }
 );
 
@@ -512,6 +514,10 @@ export function generationQuoteKeyFor(request: GenerationQuoteRequest): string {
     consistencyMode: request.consistencyMode,
     lookId: variation ? null : (request.lookId ?? null),
     explicitModelId: request.model ?? null,
+    ...(variation || !request.generationContextToken ? {} : {
+      generationContextToken: request.generationContextToken,
+      prompt: request.prompt ?? null,
+    }),
   });
 }
 
@@ -554,6 +560,8 @@ export async function loadGenerationQuote(
           characterId: request.freeplay ? undefined : request.characterId,
           freeplay: request.freeplay,
           consistencyMode: request.consistencyMode,
+          generationContextToken: request.generationContextToken,
+          prompt: request.generationContextToken ? request.prompt : undefined,
           // Priced per output elsewhere; one is enough to resolve the route.
           outputCount: 1,
           controls: { model: request.model, lookId: request.lookId },
@@ -562,7 +570,7 @@ export async function loadGenerationQuote(
   try {
     const response = await fetcher(url, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...(request.viewerScope ? { "x-idream-viewer-scope": request.viewerScope } : {}) },
       cache: "no-store",
       signal: deps.signal,
       body: JSON.stringify(body),

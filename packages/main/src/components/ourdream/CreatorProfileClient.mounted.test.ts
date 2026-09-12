@@ -108,6 +108,8 @@ describe("CreatorProfileClient pagination", () => {
   it("restarts from the first page when the server rejects a stale view cursor", async () => {
     let firstPages = 0;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      // The profile also lists this creator's Comics; only character pages are counted.
+      if (String(input).startsWith("/api/v1/comics")) return Response.json({ ok: true, data: { items: [], nextCursor: null } });
       if (String(input).includes("cursor=")) return Response.json({ error: { message: "Viewer filters changed" } }, { status: 400 });
       firstPages += 1;
       return page("creator-a", [firstPages === 1 ? "old-view" : "new-view"], firstPages === 1 ? "old-cursor" : null);

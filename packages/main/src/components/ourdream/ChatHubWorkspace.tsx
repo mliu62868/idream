@@ -103,6 +103,7 @@ export function ChatHubWorkspace() {
           </Link>
         </div>
 
+        <Link className="mt-5 inline-flex min-h-11 items-center rounded-full border border-white/20 px-5 text-sm font-bold hover:bg-white/10" href="/chat/groups">Create or open a group chat</Link>
         <div className="mt-6 grid gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
           <div className="rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-4 md:p-6">
             {state === "loading" && (

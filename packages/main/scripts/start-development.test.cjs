@@ -76,6 +76,10 @@ test("development startup generates Prisma Client before spawning Next", async (
   ]);
   assert.equal(runtime.env.IDREAM_NEXT_DEVELOPMENT, "1");
   assert.equal(runtime.env.IDREAM_NEXT_DIST_DIR, ".next-development");
+  assert.match(
+    runtime.env.NODE_OPTIONS,
+    /^--require \S+\/scripts\/bound-react-async-debug\.cjs$/,
+  );
 });
 
 test("development startup fails closed when Prisma generation fails", async () => {

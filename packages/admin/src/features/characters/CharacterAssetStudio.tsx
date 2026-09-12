@@ -1221,7 +1221,8 @@ export function CharacterAssetStudio({
                   snapshot.body.assetId &&
                 selection?.runId === snapshot.body.runId &&
                 selection?.itemId === snapshot.body.itemId &&
-                selection?.reviewDecisionId === snapshot.body.reviewDecisionId
+                (selection?.reviewDecisionId ?? null) ===
+                  (snapshot.body.reviewDecisionId ?? null)
               );
             })()
         : false;

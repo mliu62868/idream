@@ -47,7 +47,7 @@
     "comfyui:status": "pm2 status comfyui-video comfyui-image",
     "comfyui:logs": "pm2 logs comfyui-video comfyui-image",
     "source:revision": "node scripts/source-revision.cjs",
-    "test:pm2-config": "node --test scripts/source-revision.test.cjs scripts/build-bun-service.test.cjs scripts/build-next-standalone.test.mjs scripts/ecosystem-config.test.cjs scripts/check-gen-image-worker-ownership.test.cjs scripts/recover-gen-worker-orphans.test.cjs scripts/start-comfyui-idream.test.cjs scripts/cutover-embedded-chat-runtime.test.mjs scripts/launch-operator-docs.test.cjs packages/main/scripts/start-development.test.cjs packages/admin/scripts/start-development.test.cjs",
+    "test:pm2-config": "node --test scripts/bound-react-async-debug.test.cjs scripts/source-revision.test.cjs scripts/build-bun-service.test.cjs scripts/build-next-standalone.test.mjs scripts/ecosystem-config.test.cjs scripts/check-gen-image-worker-ownership.test.cjs scripts/recover-gen-worker-orphans.test.cjs scripts/start-comfyui-idream.test.cjs scripts/cutover-embedded-chat-runtime.test.mjs scripts/launch-operator-docs.test.cjs scripts/development-process-exit.test.cjs packages/main/scripts/start-development.test.cjs packages/admin/scripts/start-development.test.cjs",
     "test:dsh-gate-t": "node scripts/run-dsh-gate-t.mjs",
     "probe:gen-image-ownership": "node scripts/check-gen-image-worker-ownership.cjs --mode steady",
     "generation:quiesce-for-orphan-recovery": "bun scripts/start-pm2-ecosystem.cjs current quiesce",

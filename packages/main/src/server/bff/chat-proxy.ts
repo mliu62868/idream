@@ -15,6 +15,7 @@ import {
   createChatSession,
   deleteChatMessage,
   deleteChatSession,
+  deleteGroupChatConversation,
   getChatSession,
   listChatSessions,
   renameChatSession,
@@ -29,6 +30,7 @@ import {
 import { clearCompanionMemory } from "@/server/modules/chat/companion-memory-authority";
 import { createChatContextDirective, deleteChatContextDirective, listChatContextDirectives, updateChatContextDirective } from "@/server/modules/chat/context-directives";
 import { getChatExperiencePreference, updateChatExperiencePreference } from "@/server/modules/chat/experience-preferences";
+import { createGroupConversation, getGroupConversation, groupSpeakerSession, listGroupCandidates, listGroupConversations, updateGroupConversation } from "@/server/modules/chat/group-conversations";
 
 const PRIVATE_HEADERS = {
   "cache-control": "private, no-store, max-age=0",
@@ -79,6 +81,37 @@ async function routeMainChat(request: Request, segments: string[], userId: strin
   const body = method === "GET" || method === "HEAD" ? {} : await jsonBody(request);
   const root = segments[0];
   const path = root === "chat" ? segments.slice(1) : segments;
+
+  if (root === "chat" && path[0] === "groups") {
+    if (path.length === 1) {
+      if (method === "GET") return json({ ownerScope: `user:${userId}`, groups: await listGroupConversations(userId) });
+      if (method === "POST") {
+        if (request.headers.get("x-idream-viewer-scope") !== `user:${userId}`) throw Errors.conflict("Your account changed. Reload before creating a group");
+        return envelope({ group: await createGroupConversation(userId, body) }, 201);
+      }
+    }
+    if (path[1] === "candidates" && path.length === 2 && method === "GET") {
+      const query = new URL(request.url).searchParams;
+      return json(await listGroupCandidates(userId, query.get("q") ?? "", query.get("cursor") ?? undefined));
+    }
+    const groupId = path[1];
+    if (groupId && path.length === 2) {
+      if (method === "GET") return envelope({ session: await getGroupConversation(userId, groupId, new URL(request.url).searchParams.get("speaker") ?? undefined) });
+      if (method === "PATCH") return json(await updateGroupConversation(userId, groupId, body));
+      if (method === "DELETE") {
+        await deleteGroupChatConversation(userId, groupId);
+        return json({ ok: true });
+      }
+    }
+    if (groupId && path.length === 3 && path[2] === "messages" && method === "POST") {
+      const idempotencyKey = request.headers.get("idempotency-key")?.trim();
+      if (!idempotencyKey) throw Errors.badRequest("Idempotency-Key is required");
+      const speaker = await groupSpeakerSession(userId, groupId, text(body.characterId));
+      const result = await beginAdmittedChatTurn({ userId, sessionId: speaker.sessionId, content: text(body.content), idempotencyKey });
+      return envelope({ ...result, userMessage: { ...result.userMessage, ...speaker }, assistant: { ...result.assistant, ...speaker } }, 202);
+    }
+    throw Errors.notFound("Group chat route not found");
+  }
 
   if (root === "chat" && path[0] === "memory" && path[1] && path.length === 2) {
     if (method === "DELETE") {

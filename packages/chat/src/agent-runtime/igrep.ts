@@ -534,6 +534,44 @@ interface IngestedMemorySource {
   expectedDigest: string;
 }
 
+function dialogueSourceContent(row: Record<string, unknown>): string {
+  const content = row.content as string;
+  if (row.source_content === undefined && row.temporal_annotations === undefined) return content;
+  if (typeof row.source_content !== "string" || !Array.isArray(row.temporal_annotations)) {
+    throw new MemorySourceIntegrityError("dialogue_format_invalid");
+  }
+  // Official dialogue/1 is a searchable view: relative-time annotations are
+  // insertions into source_content. Check that exact representation before
+  // comparing the original text with Main; source_content alone cannot excuse
+  // arbitrary rewrites. Python's spans count Unicode code points, not UTF-16.
+  const source = Array.from(row.source_content);
+  const view: string[] = [];
+  let cursor = 0;
+  for (const value of row.temporal_annotations) {
+    const annotation = objectRecord(value);
+    const span = objectRecord(annotation?.span);
+    const start = span?.start;
+    const end = span?.end;
+    const absolute = annotation?.absolute_text;
+    if (typeof start !== "number" || !Number.isSafeInteger(start)
+      || typeof end !== "number" || !Number.isSafeInteger(end)
+      || start < cursor || end <= start || end > source.length
+      || typeof annotation?.surface !== "string"
+      || source.slice(start, end).join("") !== annotation.surface
+      || typeof absolute !== "string"
+      || !/^\d{4}(?:-\d{2}(?:-\d{2}(?:T\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2}))?)?)?$/u.test(absolute)
+      || annotation.anchor_ref !== "message.source_at" || annotation.method !== "rule"
+      || annotation.authority !== (row.role === "user" ? "user_assertion" : "context")) {
+      throw new MemorySourceIntegrityError("dialogue_format_invalid");
+    }
+    view.push(source.slice(cursor, end).join(""), `（${absolute}）`);
+    cursor = end;
+  }
+  view.push(source.slice(cursor).join(""));
+  if (view.join("") !== content) throw new MemorySourceIntegrityError("dialogue_source_mismatch");
+  return row.source_content;
+}
+
 async function memorySourceFingerprint(path: string, kind: "transcript" | "dialogue", sessionId: string, signal?: AbortSignal) {
   throwIfAborted(signal);
   const digest = createHash("sha256");
@@ -558,7 +596,8 @@ async function memorySourceFingerprint(path: string, kind: "transcript" | "dialo
       const fraction = /\.(\d+)/u.exec(sourceAt)?.[1] ?? "";
       const extraPrecision = fraction.slice(3).replace(/0+$/u, "");
       const instant = new Date(sourceAt).toISOString().replace(/Z$/u, `${extraPrecision}Z`);
-      digest.update(JSON.stringify([row.role, row.content, instant])).update("\n");
+      const sourceContent = kind === "dialogue" ? dialogueSourceContent(row) : row.content;
+      digest.update(JSON.stringify([row.role, sourceContent, instant])).update("\n");
       rows += 1;
     }
   } finally {
@@ -570,8 +609,9 @@ async function memorySourceFingerprint(path: string, kind: "transcript" | "dialo
 
 /**
  * Versioned private-file admission check for the installed igrep dialogue/1
- * format. It verifies Main's source and rejects derived retractions; it does
- * not validate Dream's profile semantics or grant natural-language deletion.
+ * format. It verifies Main's source and the shape of its annotated view, and
+ * rejects derived retractions. It does not validate the meaning of relative
+ * dates or Dream's profile semantics, or grant natural-language deletion.
  */
 async function verifyMemorySourceCorpus(workspace: string, sessions: readonly IngestedMemorySource[], signal?: AbortSignal) {
   throwIfAborted(signal);

@@ -256,7 +256,7 @@ export async function reconcileUnknownGenerationRequest(input: {
         refundAmount = refundedAmount;
       }
       await markProductionItemFailed(tx, request.id);
-      if (request.sourceType === "chat_image") {
+      if (request.sourceType === "chat_image" || request.sourceType === "chat_video") {
         await tx.chatTurnAttachment.updateMany({
           where: { generationJobId: request.id },
           data: {
@@ -762,7 +762,7 @@ async function adoptRecoveredSuccess(
   }
   if (
     firstAsset &&
-    input.request.sourceType === "chat_image"
+    (input.request.sourceType === "chat_image" || input.request.sourceType === "chat_video")
   ) {
     await tx.chatTurnAttachment.updateMany({
       where: { generationJobId: input.request.id },

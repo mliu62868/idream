@@ -3,6 +3,23 @@ import { z } from "zod";
 export const CHAT_PIN_LIMIT = 8;
 export const CHAT_PIN_MAX_CHARS = 500;
 export const CHAT_INSTRUCTION_MAX_CHARS = 1_500;
+export const GROUP_CHAT_MIN_MEMBERS = 2;
+export const GROUP_CHAT_MAX_MEMBERS = 12;
+
+export const groupChatMemberSchema = z.object({
+  characterId: z.string().min(1).max(160),
+  sessionId: z.string().min(1).max(160),
+  name: z.string().min(1).max(120),
+}).strict();
+export const groupChatContextSchema = z.object({
+  id: z.string().min(1).max(160),
+  ordinal: z.number().int().positive(),
+  members: z.array(groupChatMemberSchema).min(GROUP_CHAT_MIN_MEMBERS).max(GROUP_CHAT_MAX_MEMBERS),
+}).strict().refine(value => new Set(value.members.map(member => member.characterId)).size === value.members.length
+  && new Set(value.members.map(member => member.sessionId)).size === value.members.length, {
+  message: "Group members must have distinct Characters and execution sessions",
+});
+export type GroupChatMember = z.infer<typeof groupChatMemberSchema>;
 
 // Explicit user-authored context, not an automatic memory extract or a system rule.
 export const chatContextDirectiveSchema = z.object({
@@ -112,6 +129,7 @@ export const chatExecutionSnapshotSchema = z.object({
   userPersona: userChatPersonaSchema.nullable().optional(),
   contextRevision: z.number().int().nonnegative(),
   userContent: z.string(),
+  group: groupChatContextSchema.optional(),
   hasRecentImageContext: z.boolean().default(false),
   recentTurns: z.array(z.object({
     turnId: z.string().min(1),
@@ -120,11 +138,23 @@ export const chatExecutionSnapshotSchema = z.object({
     userContent: z.string(),
     assistantContent: z.string(),
     createdAt: z.string().datetime(),
+    speaker: groupChatMemberSchema.optional(),
   }).strict()),
   sceneVersion: z.number().int().nonnegative(),
   scene: chatSceneStateSchema.nullable(),
 }).strict().superRefine((snapshot, context) => {
   refineSceneAuthority(snapshot, context);
+  if (snapshot.group) {
+    const members = new Map(snapshot.group.members.map(member => [member.characterId, member]));
+    if (members.get(snapshot.characterId)?.sessionId !== snapshot.sessionId
+      || snapshot.recentTurns.some(turn => !turn.speaker
+        || members.get(turn.speaker.characterId)?.sessionId !== turn.speaker.sessionId
+        || members.get(turn.speaker.characterId)?.name !== turn.speaker.name)) {
+      context.addIssue({ code: "custom", path: ["group"], message: "Group transcript speakers must match the pinned membership and current Character" });
+    }
+  } else if (snapshot.recentTurns.some(turn => turn.speaker)) {
+    context.addIssue({ code: "custom", path: ["recentTurns"], message: "A single-character transcript cannot import group speakers" });
+  }
   if (
     (snapshot.characterVisualProfileId === null) !==
     (snapshot.characterVisualProfileVersion === null)

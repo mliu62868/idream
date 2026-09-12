@@ -27,9 +27,13 @@ import {
   billingWebhook,
   cancelSubscription,
   checkout,
+  checkoutCoinOffer,
+  coinPurchaseHistory,
+  reconcileCoinPurchase,
   listPlans,
   resumeSubscription,
 } from "./billing-checkout";
+import { listCoinOffers } from "@/server/modules/billing/coin-offers";
 import {
   characterDraftDetailsWriteSchema,
   characterDraftVoiceSelectionSchema,
@@ -54,6 +58,7 @@ import {
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import { listActiveTemplates } from "./character-templates";
 import { isReusablePlatformAssetWhere } from "@/server/modules/ourdream/chat-image-reuse";
+import { generationContextSelectorSchema, generationContextToken, generationContextSource, loadGenerationContext, resolveGenerationContext, signGenerationContext } from "./generation-context";
 import {
   lockCharacterGenerationAuthority,
   lockCharacterMediaAssetAuthorities,
@@ -61,6 +66,7 @@ import {
 } from "@/server/modules/admin-v2/characters/generation-authority-lock";
 import { invalidateCharacterDraftAssetPack } from "@/server/modules/admin-v2/characters/draft-asset-authority";
 import { getUserChatPersona, updateUserChatPersona, clearUserChatPersona } from "@/server/modules/chat/user-persona";
+import { listGroupConversations } from "@/server/modules/chat/group-conversations";
 import { proxyChatRequest } from "@/server/bff/chat-proxy";
 import {
   METRIC_PRODUCT_EVENTS,
@@ -128,6 +134,9 @@ import { isPublicRouteDiscoverable } from "@/lib/public-route-authority";
 import { activeAnnouncements, readAnnouncements } from "@/server/announcements/store";
 import { logger } from "@/server/lib/logger";
 import { dispatchAccountAccess, newRecoveryCode, storeRecoveryCode } from "./account-access";
+import { passwordAccountForUser } from "@/server/lib/auth/password-account";
+import { dispatchChatVideo } from "@/server/modules/chat/video-action";
+import { dispatchComics } from "./comics";
 import {
   redeemCodeDreamcoins,
   redeemCodeHashCandidates,
@@ -478,6 +487,10 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
 
   const accountAccessResponse = await dispatchAccountAccess(request, segments);
   if (accountAccessResponse) return accountAccessResponse;
+  const videoResponse = await dispatchChatVideo(request, segments, generationJobResponse);
+  if (videoResponse) return videoResponse;
+  const comicResponse = await dispatchComics(request, segments);
+  if (comicResponse) return comicResponse;
 
 
   if (resource === "auth") {
@@ -587,6 +600,7 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
   }
 
   if (resource === "generation") {
+    if (id === "context" && !action && method === "GET") return generationContextRead(request);
     if (id === "config" && !action && method === "GET") return generationConfig(request);
     if (id === "quote" && !action && method === "POST") return generationQuote(request);
     if (id === "jobs" && !action && method === "POST") return createGenerationJob(request);
@@ -666,6 +680,10 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
 
   if (resource === "plans" && !id && method === "GET") return listPlans();
   if (resource === "billing") {
+    if (id === "coin-offers" && !action && method === "GET") return listCoinOffers(request);
+    if (id === "coin-checkout" && !action && method === "POST") return checkoutCoinOffer(request);
+    if (id === "coin-purchases" && !action && method === "GET") return coinPurchaseHistory(request);
+    if (id === "coin-purchases" && action && child === "reconcile" && method === "POST") return reconcileCoinPurchase(request, action);
     if (id === "checkout" && method === "POST") return checkout(request);
     if (id === "portal" && method === "POST") return billingPortal(request);
     if (id === "cancel" && method === "POST") return cancelSubscription(request);
@@ -877,15 +895,8 @@ async function claimableAnonymousId(
 
 async function login(request: Request) {
   const body = loginSchema.parse(await jsonBody(request));
-  const account = await prisma.account.findUnique({
-    where: {
-      providerId_accountId: {
-        providerId: credentialProvider,
-        accountId: body.email,
-      },
-    },
-    include: { user: true },
-  });
+  const candidate = await prisma.user.findUnique({ where: { email: body.email }, select: { id: true } });
+  const account = candidate ? await passwordAccountForUser(prisma, candidate.id) : null;
 
   if (!account || !verifyPassword(body.password, account.password)) {
     throw Errors.unauthorized("Invalid email or password");
@@ -904,8 +915,8 @@ async function login(request: Request) {
     if (!user || user.status !== "active" || user.deletedAt) {
       throw Errors.forbidden("Account is not active");
     }
-    const currentAccount = await tx.account.findUnique({ where: { id: account.id } });
-    if (!currentAccount || !verifyPassword(body.password, currentAccount.password)) {
+    const currentAccount = await passwordAccountForUser(tx, account.userId);
+    if (!currentAccount || currentAccount.id !== account.id || !verifyPassword(body.password, currentAccount.password)) {
       throw Errors.unauthorized("Invalid email or password");
     }
     await tx.session.create({
@@ -2048,11 +2059,28 @@ async function generationConfig(request: Request) {
   });
 }
 
+async function generationContextRead(request: Request) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
+  requireExpectedViewer(request, user.id);
+  const source = generationContextSelectorSchema.parse(Object.fromEntries(new URL(request.url).searchParams));
+  const context = await loadGenerationContext(user.id, source);
+  const token = signGenerationContext({ version: 2, userId: user.id, source, digest: context.digest,
+    ...(source.kind === "comic" && context.sourceMedia ? { comicGrant: { mediaAssetId: context.sourceMedia.id, allowRemix: true as const } } : {}) });
+  return ok({ context: { token, source: context.source, identityMode: context.identityMode,
+    characterId: context.characterId, characterName: context.characterName, prompt: context.prompt,
+    scene: context.scene, sourceMedia: context.sourceMedia, pins: context.pins,
+    returnHref: context.returnHref, sourceLabel: context.sourceLabel } }, { headers: { "cache-control": "private, no-store, max-age=0" } });
+}
+
 async function generationQuote(request: Request) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
+  requireExpectedViewer(request, user.id);
   const body = generationJobSchema.parse(await jsonBody(request));
   return generationQuoteForUser(user.id, body, "public_generator");
 }
@@ -2079,6 +2107,7 @@ async function createGenerationJob(request: Request) {
   const user = requireUser(ctx);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
+  requireExpectedViewer(request, user.id);
   const body = generationJobSchema.parse(await jsonBody(request));
   const idempotencyKey = requireGenerationWriteIdempotencyKey(request);
   const requestFingerprint = generationWriteRequestFingerprint(
@@ -2091,7 +2120,10 @@ async function createGenerationJob(request: Request) {
   });
   if (existing) await wakeQueuedGenerationDispatch(existing);
   const job = existing ?? await (async () => {
-    const source = await resolveFeedRemixGenerationSource(
+    const contextToken = generationContextToken(body);
+    const source = contextToken
+      ? generationContextSource(await resolveGenerationContext(user.id, contextToken), contextToken, idempotencyKey)
+      : await resolveFeedRemixGenerationSource(
       user.id,
       body,
       idempotencyKey,
@@ -3722,7 +3754,7 @@ async function assertCustomerMediaAuthorityMutationAllowed(
   const dependencies = await mediaAssetAuthorityDependencies(tx, assetId);
   if (dependencies.length === 0) return;
   throw Errors.conflict(
-    "This image is in use. Replace or withdraw it from the linked Character or campaign before making it private or deleting it.",
+    "This image is in use. Replace or withdraw it from the linked Character, campaign, or Comic before making it private or deleting it.",
     {
       code: "media_asset_authority_dependency_active",
       mediaAssetId: assetId,
@@ -3757,7 +3789,7 @@ async function library(request: Request, tab: string) {
     // still feel populated if the event-fed recent_chats projection lags.
     const [sessions, likedCharacters, createdCharacters, media] = await Promise.all([
       prisma.recentChat.findMany({
-        where: { userId: user.id, status: { not: "deleted" } },
+        where: { userId: user.id, status: { not: "deleted" }, groupId: null },
         include: { character: { include: characterInclude(user.id) } },
         orderBy: [{ lastMessageAt: "desc" }, { createdAt: "desc" }],
         take: 12,
@@ -3861,7 +3893,11 @@ async function library(request: Request, tab: string) {
   }
 
   if (tab === "media") return listMedia(request);
-  if (tab === "group-chats" || tab === "packs") {
+  if (tab === "group-chats") {
+    const groups = await listGroupConversations(user.id);
+    return ok({ items: groups.map(group => ({ id: group.id, type: "group_chat", title: group.title, status: group.status, description: group.members.map(member => member.name).join(" · ") })), emptyCta: "/chat/groups" });
+  }
+  if (tab === "packs") {
     return ok({ items: [], emptyCta: null });
   }
 
@@ -4468,6 +4504,15 @@ function mediaProvenanceDTO(sourceJob?: {
     };
   }
 
+  if (sourceJob.sourceType === "comic_remix") {
+    const comicId = stringFromRecord(meta, "comicId");
+    return { sourceType: sourceJob.sourceType, sourceId: sourceJob.sourceId,
+      label: "Remixed from Comic", comicId: comicId ?? null,
+      comicVersion: typeof meta.comicVersion === "number" ? meta.comicVersion : null,
+      comicPageId: stringFromRecord(meta, "comicPageId") ?? null,
+      href: comicId ? `/comics/${encodeURIComponent(comicId)}` : null };
+  }
+
   if (sourceJob.sourceType === "media_variation") {
     return {
       sourceType: sourceJob.sourceType,
@@ -4478,7 +4523,7 @@ function mediaProvenanceDTO(sourceJob?: {
     };
   }
 
-  if (sourceJob.sourceType === "chat_image") {
+  if (sourceJob.sourceType === "chat_image" || sourceJob.sourceType === "chat_handoff" || sourceJob.sourceType === "chat_video") {
     return {
       sourceType: sourceJob.sourceType,
       sourceId: sourceJob.sourceId,

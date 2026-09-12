@@ -3,10 +3,7 @@ const assert = require("node:assert/strict");
 const { EventEmitter } = require("node:events");
 const test = require("node:test");
 
-const {
-  nextCli,
-  runDevelopment,
-} = require("./start-development.cjs");
+const { runDevelopment } = require("./start-development.cjs");
 
 test("development startup remains the parent authority for the Next lifecycle", async () => {
   const child = new EventEmitter();
@@ -32,7 +29,7 @@ test("Bun bootstrap starts Next on Node so cold Turbopack externals resolve", as
   const runtime = new EventEmitter();
   Object.assign(runtime, {
     argv: ["/runtime/bun", "start-development.cjs"],
-    env: {},
+    env: { NODE_OPTIONS: "--enable-source-maps" },
     execPath: "/runtime/bun",
   });
   const commands = [];
@@ -47,6 +44,10 @@ test("Bun bootstrap starts Next on Node so cold Turbopack externals resolve", as
 
   assert.equal(await lifecycle, 0);
   assert.deepEqual(commands, ["node"]);
+  assert.match(
+    runtime.env.NODE_OPTIONS,
+    /^--enable-source-maps --require \S+\/scripts\/bound-react-async-debug\.cjs$/,
+  );
 });
 
 test("development startup preserves Playwright-owned Next directories", async () => {

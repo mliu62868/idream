@@ -121,6 +121,7 @@ function buildPreparedMessages(
       id: message.id,
       sourceKind: isCurrent ? "current_user" : "replay",
       role: message.role,
+      ...(message.speaker && message.role === "assistant" ? { speaker: message.speaker } : {}),
       content: message.photoSummary
         ? `${message.content}\n[You sent a photo: ${message.photoSummary}]`
         : message.content,

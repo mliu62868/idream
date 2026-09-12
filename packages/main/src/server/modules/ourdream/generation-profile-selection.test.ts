@@ -12,6 +12,7 @@ vi.mock("@/server/modules/generation/generation-catalog", () => ({
 
 import {
   filterPublicTextToImageGenerationProfiles,
+  filterPublicCharacterImageGenerationProfiles,
   generationProfileDeclaresTextToImage,
   projectPublicImageEditGenerationProfiles,
 } from "./generation-profile-selection";
@@ -103,6 +104,18 @@ describe("public text-to-image generation profiles", () => {
 });
 
 describe("public image-edit workflow authority", () => {
+  it("allows already published Character routes but excludes experimental, stale and text-only choices", async () => {
+    const workflow = JSON.parse(await readFile(path.resolve(process.cwd(), "../gen/workflows/qwen-image-edit-multi-identity.json"), "utf8"));
+    catalog.generationWorkflowDescriptor.mockResolvedValue(workflow);
+    const identityProfile = { ...profile, runnerConfig: { workflowVersion: workflow.version, capabilities: { referenceImages: true } } };
+    const explicitPublished = { ...identityProfile, runnerConfig: { ...identityProfile.runnerConfig, publicSelection: { explicitOnly: true, surface: "generator_character_image" } } };
+    const experimental = { ...identityProfile, runnerConfig: { ...identityProfile.runnerConfig, publicSelection: { explicitOnly: true } } };
+    const stale = { ...identityProfile, runnerConfig: { ...identityProfile.runnerConfig, workflowVersion: workflow.version + 1 } };
+    await expect(filterPublicCharacterImageGenerationProfiles([identityProfile, explicitPublished, experimental, stale, profile,
+      { ...identityProfile, rolloutPercent: 0 },
+    ])).resolves.toEqual([identityProfile, explicitPublished]);
+  });
+
   it("offers the shipped source-only and identity+source graphs, excluding stale pins and identity-only graphs", async () => {
     const workflowKeys = [
       "qwen-image-edit-img2img",

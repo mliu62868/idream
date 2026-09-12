@@ -909,7 +909,10 @@ export async function followUser(request: Request, targetId: string) {
     where: {
       id: targetId,
       ...activeCustomerUserWhere,
-      charactersCreated: { some: publicCharacterAudienceWhere },
+      OR: [
+        { charactersCreated: { some: publicCharacterAudienceWhere } },
+        { comics: { some: { status: "published", visibility: { in: ["public", "unlisted"] } } } },
+      ],
     },
   });
   if (!target) throw Errors.notFound("User not found");
@@ -972,7 +975,11 @@ export async function creatorProfile(request: Request, creatorId: string) {
     where: {
       id: creatorId,
       ...activeCustomerUserWhere,
-      charactersCreated: { some: publicCharacterAudienceWhere },
+      OR: [
+        ...(ctx.userId === creatorId ? [{ id: creatorId }] : []),
+        { charactersCreated: { some: publicCharacterAudienceWhere } },
+        { comics: { some: { status: "published", visibility: { in: ["public", "unlisted"] } } } },
+      ],
     },
     select: { id: true, displayName: true, name: true, image: true, createdAt: true },
   });

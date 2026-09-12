@@ -1,6 +1,6 @@
 # 10 · 运行与发布
 
-更新日期：2026-09-02
+更新日期：2026-09-10
 
 ## 1. 运行拓扑
 
@@ -20,7 +20,9 @@
 | `fish-audio` | 可选的参考音频克隆与 Fish 角色声音进程 |
 | `pocket-tts` | 默认英语语音与 Pocket 角色声音进程 |
 
-PM2 是生命周期管理器，Bun 是所有一方 JavaScript/TypeScript/Next 进程的解释器。Docker Compose 只提供本地 PostgreSQL/Redis。
+PM2 是生命周期管理器；一方服务和 Web 启动器使用 Bun，Main/Admin 的 Next 开发子进程使用 Node，以支持冷启动时的 Turbopack 外部包解析。Docker Compose 只提供本地 PostgreSQL/Redis。
+
+Main/Admin 开发启动器必须等到其 Next 子进程结束，再显式以该退出码退出。仅设置 `process.exitCode` 会被 PM2 宿主的 IPC 保活，导致端口已经消失但 PM2 仍显示 online，不能触发故障恢复。`scripts/development-process-exit.test.cjs` 用真实 Node/Bun 子进程和仍被引用的 IPC 验证此边界。浏览器拒绝连接时核对实际 HTTP readiness 与子进程；恢复仍使用仓库 wrapper，不以 PM2 online 单独判定成功。
 
 ```bash
 bun run pm2:start

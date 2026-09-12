@@ -134,6 +134,10 @@ function chatDirectionText(value: string, max: number, rejectTruncation = false)
 // INTENT: prompt 拼装是纯函数 —— 没有库、没有事务、没有 HTTP。把它和写库的那段分开，
 // 是为了让"这段文字为什么长这样"能被单独读懂、单独改，而不必先读懂 447 行的下单事务。
 
+function isChatContinuitySource(sourceType: string | undefined) {
+  return sourceType === "chat_image" || sourceType === "chat_handoff" || sourceType === "chat_video";
+}
+
 export function buildGenerationPrompt(input: {
   mode: "image" | "video";
   character: GenerationPromptCharacter | null;
@@ -145,7 +149,7 @@ export function buildGenerationPrompt(input: {
   sourceType?: string;
   sourceImageAssetId?: string;
 }) {
-  const chat = input.sourceType === "chat_image";
+  const chat = isChatContinuitySource(input.sourceType);
   const userPrompt = chat
     ? requirePromptBudget(input.userPrompt?.trim() ?? "", 900)
     : cleanPromptText(input.userPrompt, 900);
@@ -178,7 +182,7 @@ function buildImageGenerationPrompt(input: {
 }) {
   const request =
     input.userPrompt ||
-    (input.sourceType === "chat_image"
+    (isChatContinuitySource(input.sourceType)
       ? "candid in-character portrait shared from the current moment"
       : "natural in-character portrait");
 
@@ -234,7 +238,7 @@ function buildImageGenerationPrompt(input: {
         ? `Stable visual traits: ${direction.stableTraits.join(", ")}`
         : null,
       consistencyPromptFragment(input.consistencyMode),
-      input.sourceType !== "chat_image" && cleanPromptText(character.description, 500)
+      !isChatContinuitySource(input.sourceType) && cleanPromptText(character.description, 500)
         ? `Character notes: ${cleanPromptText(character.description, 500)}`
         : null,
       `Requested scene: ${request}`,
@@ -242,7 +246,7 @@ function buildImageGenerationPrompt(input: {
       .filter(Boolean)
       .join(". ");
   const finish = "single coherent subject, face and body matching the character, expressive eyes, natural pose, well-lit visible face, properly exposed, sharp focus, detailed skin and hair, clean photographic composition";
-  if (input.sourceType === "chat_image") {
+  if (isChatContinuitySource(input.sourceType)) {
     if (mandatory.length > 2_000) throw new RangeError("The complete Chat image facts and pinned identity exceed the 2000-character generation budget");
     let compiled = mandatory;
     const notes = cleanPromptText(character.description, 500);
@@ -359,7 +363,7 @@ export function buildMomentSpec(
   const controls = body.controls as Record<string, unknown>;
   const rawInput = cleanPromptText(body.prompt, 2_000) || "A natural in-character moment";
   const continuitySources: string[] = [];
-  if (source?.sourceType === "chat_image") continuitySources.push("chat_context");
+  if (isChatContinuitySource(source?.sourceType)) continuitySources.push("chat_context");
   if (body.prompt) continuitySources.push("user_prompt");
   if (typeof controls.lookId === "string") continuitySources.push("character_look");
   if (typeof controls.sourceImageAssetId === "string") continuitySources.push("source_image");
@@ -376,7 +380,7 @@ export function buildMomentSpec(
     outfitIntent: typeof controls.outfitPresetId === "string" ? "change" : "unspecified",
     outfit: typeof controls.outfit === "string" ? controls.outfit : undefined,
     locationContinuity:
-      source?.sourceType === "chat_image" ? "continue" : "unspecified",
+      isChatContinuitySource(source?.sourceType) ? "continue" : "unspecified",
     camera: typeof controls.camera === "string" ? controls.camera : undefined,
     lighting: typeof controls.lighting === "string" ? controls.lighting : undefined,
     styleDelta: typeof controls.styleDelta === "string" ? controls.styleDelta : undefined,

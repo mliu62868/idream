@@ -12,6 +12,7 @@
 // INTENT: JSON、事件、权益和订阅助手都来自具名模块；结算域保持单向依赖，
 // service 只负责把匹配到的 HTTP 请求分发到这里。
 import { Prisma } from "@prisma/client";
+import { coinCheckoutRequestSchema } from "@idream/shared/coins";
 import { createHash, randomUUID } from "node:crypto";
 import { getAuthCtx, requireUser } from "@/server/lib/auth";
 import { prisma } from "@/server/lib/db";
@@ -27,6 +28,8 @@ import {
   toInputJson,
 } from "@/server/lib/request-json";
 import { createClassifiedAnalyticsEvent } from "@/server/modules/admin-v2/metrics/classified-event-writer";
+import { coinOfferEligible, coinOfferFingerprint, coinOfferSnapshot, readCoinPurchase, settleCoinPurchaseInTx } from "@/server/modules/billing/coin-offers";
+import { dreamcoinBalance } from "@/server/modules/billing/ledger";
 import {
   parseSubscriptionRefundEvidence,
   projectSubscriptionRefundInTx,
@@ -144,7 +147,9 @@ export async function checkout(request: Request) {
   const body = checkoutSchema.parse(await jsonBody(request));
   const mode = checkoutMode();
   const autoConfirm = body.autoConfirm && mode.autoConfirmAvailable;
-  const requestHash = checkoutRequestHash({
+  // A replay after a provider configuration change is still this request: hash
+  // it with the provider frozen on the checkout, whose invoice path keeps the key.
+  const requestHashFor = (frozenProvider: string) => checkoutRequestHash({
     selector: body.planId
       ? { planId: body.planId }
       : {
@@ -152,9 +157,10 @@ export async function checkout(request: Request) {
           billingPeriod: body.billingPeriod,
         },
     returnPath: body.returnPath,
-    autoConfirm,
-    provider: mode.provider,
+    autoConfirm: body.autoConfirm && frozenProvider === "mock",
+    provider: frozenProvider,
   });
+  const requestHash = requestHashFor(mode.provider);
   const preexisting = await prisma.checkoutSession.findUnique({
     where: {
       userId_idempotencyKey: {
@@ -176,7 +182,7 @@ export async function checkout(request: Request) {
       },
     });
     if (existing) {
-      if (existing.requestHash !== requestHash) {
+      if (existing.requestHash !== requestHashFor(existing.provider)) {
         throw Errors.conflict(
           "Idempotency-Key was already used for a different checkout request",
           { idempotencyAction: "new_key" },
@@ -362,6 +368,69 @@ function requireCheckoutIdempotencyKey(request: Request) {
   return value;
 }
 
+export async function checkoutCoinOffer(request: Request) {
+  const user = requireUser(await getAuthCtx(request));
+  const idempotencyKey = requireCheckoutIdempotencyKey(request);
+  const body = coinCheckoutRequestSchema.parse(await jsonBody(request));
+  const provider = env.PAYMENT_PROVIDER;
+  const requestHashFor = (frozenProvider: string) => createHash("sha256").update(JSON.stringify({ kind: "coin_topup", ...body, provider: frozenProvider })).digest("hex");
+  const requestHash = requestHashFor(provider);
+  const intent = await prisma.$transaction(async (tx) => {
+    await lockUserLedger(tx, user.id);
+    const existing = await tx.checkoutSession.findUnique({ where: { userId_idempotencyKey: { userId: user.id, idempotencyKey } } });
+    if (existing) {
+      // A replay after a provider configuration change is still this request;
+      // the invoice path then keeps the key bound to its original provider.
+      if (existing.requestHash !== requestHashFor(existing.provider) || !existing.coinOfferId) {
+        throw Errors.conflict("Idempotency-Key was already used for a different checkout request", { idempotencyAction: "new_key" });
+      }
+      readCoinPurchase(existing);
+      return existing;
+    }
+    const identity = await tx.coinOffer.findUnique({ where: { id: body.offerId }, select: { offerKey: true } });
+    if (!identity) throw Errors.notFound("Coin offer is unavailable", { idempotencyAction: "new_key" });
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`coin-offer:${identity.offerKey}`}))`;
+    const offer = await tx.coinOffer.findUniqueOrThrow({ where: { id: body.offerId } });
+    if (offer.status !== "published" || coinOfferFingerprint(offer) !== body.offerFingerprint) {
+      throw Errors.conflict("The coin offer changed. Review the current price and terms before continuing.", { idempotencyAction: "new_key" });
+    }
+    if (!(await coinOfferEligible(user.id, offer.eligibility, tx))) {
+      throw Errors.forbidden("This coin offer requires active paid access", { idempotencyAction: "new_key" });
+    }
+    return tx.checkoutSession.create({ data: { userId: user.id, coinOfferId: offer.id, provider, idempotencyKey, requestHash,
+      amountCents: offer.priceCents, currency: offer.currency, offerSnapshot: toInputJson(coinOfferSnapshot(offer)),
+      autoConfirm: false, returnPath: body.returnPath, status: "provider_pending" } });
+  });
+  const purchase = readCoinPurchase(intent);
+  let current = await ensureCheckoutInvoice(intent.id, { userId: user.id, planId: null, coinOfferId: purchase.offer.id,
+    amountCents: purchase.offer.priceCents, currency: purchase.offer.currency });
+  if (current.status === "provider_settled") current = (await completeCheckoutIntent(current.id, "checkout")).checkout;
+  return ok({ purchase: readCoinPurchase(current), balance: await dreamcoinBalance(user.id) }, { headers: { "cache-control": "private, no-store" } });
+}
+
+export async function coinPurchaseHistory(request: Request) {
+  const user = requireUser(await getAuthCtx(request));
+  const cursorId = new URL(request.url).searchParams.get("cursor");
+  const cursor = cursorId ? await prisma.checkoutSession.findFirst({ where: { id: cursorId, userId: user.id, coinOfferId: { not: null } }, select: { id: true, createdAt: true } }) : null;
+  if (cursorId && !cursor) throw Errors.badRequest("Purchase history cursor is unavailable");
+  const rows = await prisma.checkoutSession.findMany({ where: { userId: user.id, coinOfferId: { not: null },
+    ...(cursor ? { OR: [{ createdAt: { lt: cursor.createdAt } }, { createdAt: cursor.createdAt, id: { lt: cursor.id } }] } : {}) },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 51 });
+  return ok({ items: rows.slice(0, 50).map(readCoinPurchase), nextCursor: rows.length > 50 ? rows[49]!.id : null },
+    { headers: { "cache-control": "private, no-store" } });
+}
+
+export async function reconcileCoinPurchase(request: Request, id: string) {
+  const user = requireUser(await getAuthCtx(request));
+  const existing = await prisma.checkoutSession.findFirst({ where: { id, userId: user.id, coinOfferId: { not: null } } });
+  if (!existing) throw Errors.notFound("Coin purchase not found");
+  const purchase = readCoinPurchase(existing);
+  let current = await ensureCheckoutInvoice(id, { userId: user.id, planId: null, coinOfferId: purchase.offer.id,
+    amountCents: purchase.offer.priceCents, currency: purchase.offer.currency });
+  if (current.status === "provider_settled") current = (await completeCheckoutIntent(id, "checkout")).checkout;
+  return ok({ purchase: readCoinPurchase(current), balance: await dreamcoinBalance(user.id) }, { headers: { "cache-control": "private, no-store" } });
+}
+
 function checkoutRequestHash(input: {
   selector:
     | { planId: string }
@@ -544,7 +613,8 @@ async function ensureCheckoutInvoice(
   checkoutId: string,
   plan: {
     userId: string;
-    planId: string;
+    planId: string | null;
+    coinOfferId?: string;
     amountCents: number;
     currency: string;
   },
@@ -588,6 +658,16 @@ async function ensureCheckoutInvoice(
         { checkoutId, idempotencyAction: "same_key" },
       );
     }
+  }
+  // INVARIANT: an invoice is looked up or created only through the provider
+  // frozen on its checkout. After a configuration change the original invoice
+  // may still be payable, so neither a lookup miss from another provider nor a
+  // new key is safe; keep the same key until that provider is reachable again.
+  if (current.provider !== env.PAYMENT_PROVIDER) {
+    throw Errors.unavailable(
+      "This checkout's original payment provider is unavailable. Keep this checkout and retry later with the same Idempotency-Key.",
+      { checkoutId, idempotencyAction: "same_key" },
+    );
   }
   if (
     current.providerAttemptedAt ||
@@ -636,7 +716,8 @@ async function dispatchCheckoutInvoiceWithAccessExclusion(
   checkoutId: string,
   plan: {
     userId: string;
-    planId: string;
+    planId: string | null;
+    coinOfferId?: string;
     amountCents: number;
     currency: string;
   },
@@ -659,29 +740,33 @@ async function dispatchCheckoutInvoiceWithAccessExclusion(
     if (!claimable) return { kind: "busy" } as const;
 
     await lockUserLedger(tx, plan.userId);
-    await assertNoSubscriptionRefundPendingInTx(tx, plan.userId);
-    await assertNoActiveSamePlanAccessInTx(
-      tx,
-      plan.userId,
-      plan.planId,
-      now,
-    );
-    const competingDispatch = await activeSamePlanProviderDispatchInTx(
-      tx,
-      plan.userId,
-      plan.planId,
-      checkoutId,
-      now,
-    );
-    if (competingDispatch) {
-      throw Errors.conflict(
-        "Another checkout for this plan is already contacting the payment provider.",
-        {
-          checkoutId,
-          competingCheckoutId: competingDispatch.id,
-          idempotencyAction: "same_key",
-        },
+    if (plan.planId) {
+      await assertNoSubscriptionRefundPendingInTx(tx, plan.userId);
+      await assertNoActiveSamePlanAccessInTx(
+        tx,
+        plan.userId,
+        plan.planId,
+        now,
       );
+      const competingDispatch = await activeSamePlanProviderDispatchInTx(
+        tx,
+        plan.userId,
+        plan.planId,
+        checkoutId,
+        now,
+      );
+      if (competingDispatch) {
+        throw Errors.conflict(
+          "Another checkout for this plan is already contacting the payment provider.",
+          {
+            checkoutId,
+            competingCheckoutId: competingDispatch.id,
+            idempotencyAction: "same_key",
+          },
+        );
+      }
+    } else if (!plan.coinOfferId || current.coinOfferId !== plan.coinOfferId) {
+      throw Errors.conflict("Checkout is missing its product authority");
     }
 
     // This marker commits before any provider network call. From this point on,
@@ -746,7 +831,7 @@ async function dispatchCheckoutInvoiceWithAccessExclusion(
         userId: plan.userId,
         amountCents: plan.amountCents,
         currency: plan.currency,
-        metadata: { planId: plan.planId },
+        metadata: plan.planId ? { planId: plan.planId } : { coinOfferId: plan.coinOfferId! },
         signal,
       }),
   );
@@ -1182,6 +1267,10 @@ async function completeCheckoutIntent(
     const current = await tx.checkoutSession.findUniqueOrThrow({
       where: { id: checkoutId },
     });
+    if (current.coinOfferId) {
+      return { checkout: await settleCoinPurchaseInTx(tx, current), subscription: null, created: current.status !== "completed",
+        reconciliationRequired: false, settlementDeferred: false } as const;
+    }
     if (!current.planId || !current.providerSessionId) {
       throw Errors.conflict("Checkout is missing its local plan or provider invoice", {
         checkoutId,
@@ -1754,6 +1843,19 @@ export async function billingWebhook(request: Request, provider: string) {
         data: { processedAt: new Date() },
       });
       return { processed: true, idempotent: true };
+    }
+    if (checkoutSession.coinOfferId) {
+      const settled = await tx.checkoutSession.update({ where: { id: checkoutSession.id }, data: {
+        status: "provider_settled", providerInvoiceStatus: "settled",
+        providerInvoiceAdditionalStatus: verifiedOrderInvoice?.additionalStatus ?? checkoutSession.providerInvoiceAdditionalStatus ?? "none",
+        // A verified settled lookup of this exact invoice resolves an earlier
+        // ambiguous state (for example expired + paid_late); without it, keep
+        // the reconciliation flag so settlement still refuses.
+        ...(verifiedOrderInvoice ? { needsReconciliation: false, failureCode: null } : {}),
+      } });
+      await settleCoinPurchaseInTx(tx, settled);
+      await tx.providerEvent.update({ where: { id: event.id }, data: { processedAt: new Date() } });
+      return { processed: true };
     }
     if (!checkoutSession.planId) {
       return { processed: false, deferred: true };

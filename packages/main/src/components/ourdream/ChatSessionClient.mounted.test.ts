@@ -434,6 +434,35 @@ describe("ChatSessionClient streaming composer", () => {
     expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/attachments/"))).toBe(false);
   });
 
+  it("clears another tab's generation warning once that original request is accepted", async () => {
+    await mountSession();
+    const requestKey = "other-tab-generation-key";
+    const ownerScope = "user:viewer-a";
+    const storageKey = `idream:generation-receipt:v1:${encodeURIComponent(ownerScope)}:${requestKey}`;
+    const record = JSON.stringify({
+      kind: "generation", url: "/api/v1/generation/jobs", requestKey,
+      body: { mode: "image", outputCount: 1, quoteAuthority: {
+        profileId: "image", profileVersion: 1, routeFingerprint: "a".repeat(64),
+        pricingFingerprint: "b".repeat(64), outputCount: 1, costDreamcoins: 8,
+      } },
+    });
+    const saved = JSON.stringify({ version: 1, ownerScope, record, idempotencyKey: requestKey });
+    window.localStorage.setItem(storageKey, saved);
+    await act(async () => window.dispatchEvent(new StorageEvent("storage", {
+      key: storageKey, oldValue: null, newValue: saved, storageArea: window.localStorage,
+    })));
+    expect(container.querySelector(`[data-pending-request-key="${requestKey}"]`)).not.toBeNull();
+
+    window.localStorage.removeItem(storageKey);
+    await act(async () => window.dispatchEvent(new StorageEvent("storage", {
+      key: storageKey, oldValue: saved, newValue: null, storageArea: window.localStorage,
+    })));
+
+    expect(container.querySelector('[aria-label="Unconfirmed generation requests"]')).toBeNull();
+    expect(container.textContent).not.toContain("A response was interrupted");
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
   it("does not offer a dead retry for an image that never reserved a generation job", async () => {
     sessionMessages = [{ ...opening, attachments: [{ id: "no-job", kind: "generated_image", status: "failed", errorCode: "generation_unavailable" }] }];
     await mountSession();
@@ -793,6 +822,76 @@ describe("ChatSessionClient streaming composer", () => {
     expect(replyBubble()).toBeNull();
     expect(pause).toHaveBeenCalledOnce();
   });
+
+  it("selects a group speaker through @ and sends one canonical request with that Character while preserving other speakers", async () => {
+    await mountGroupSession();
+    await act(async () => typeMessage("@Briar Hello from the garden"));
+    await waitUntil(() => container.querySelector<HTMLSelectElement>('[aria-label="Group speaker"]')?.value === "character-2");
+    expect(container.textContent).toContain("Avery");
+    expect(container.textContent).toContain("No-memory");
+    await act(async () => submitComposer());
+    const sent = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input) === "/api/v1/chat/groups/group-1/messages" && init?.method === "POST");
+    expect(JSON.parse(String(sent?.[1]?.body))).toEqual({ content: "@Briar Hello from the garden", characterId: "character-2" });
+    await act(async () => releaseSend?.(Response.json({ ok: true, data: {
+      userMessage: { ...userTurn, content: "@Briar Hello from the garden", characterId: "character-2", sessionId: "member-2", speakerName: "Briar" },
+      assistant: { ...streamingReply, characterId: "character-2", sessionId: "member-2", speakerName: "Briar" },
+      streamUrl: "/api/v1/messages/assistant-1/stream?attempt=1",
+    } })));
+    await waitUntil(() => FakeEventSource.instances.length === 1);
+    await act(async () => FakeEventSource.instances[0].emit("delta", { delta: "Briar speaking." }));
+    expect(replyBubble()?.textContent).toContain("Briar");
+    expect(replyBubble()?.textContent).toContain("Briar speaking.");
+    expect(container.querySelector('[data-message-id="group-old-assistant"]')?.textContent).toContain("Avery");
+    expect(container.querySelector<HTMLSelectElement>('[aria-label="Group speaker"]')?.disabled).toBe(true);
+  });
+
+  it("quotes an old group reply's voice using its original Character and session after the selected speaker changes", async () => {
+    await mountGroupSession();
+    await act(async () => {
+      const select = container.querySelector<HTMLSelectElement>('[aria-label="Group speaker"]')!;
+      select.value = "character-2";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await waitUntil(() => container.querySelector<HTMLSelectElement>('[aria-label="Group speaker"]')?.value === "character-2");
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-message-id="group-old-assistant"] [data-testid="chat-play-voice"]')?.click());
+    const quoted = vi.mocked(fetch).mock.calls.find(([input]) => String(input) === "/api/v1/generation/voice/quote");
+    expect(JSON.parse(String(quoted?.[1]?.body))).toMatchObject({ characterId: "character-1", sessionId: "member-1", messageId: "group-old-assistant" });
+  });
+
+  it("keeps archived group history readable and deletable without exposing edit or regenerate", async () => {
+    await mountGroupSession("archived");
+    expect(container.textContent).toContain("This conversation is archived");
+    expect(container.textContent).toContain("I brought the blue notebook.");
+    expect(messageInput()?.disabled).toBe(true);
+    expect(container.querySelector('[data-testid="chat-edit-message"]')).toBeNull();
+    expect(container.querySelector('[data-testid="chat-regenerate"]')).toBeNull();
+    expect(container.querySelector('[data-testid="chat-delete-message"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="chat-play-voice"]')).not.toBeNull();
+    expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === "POST" || init?.method === "PATCH")).toBe(false);
+  });
+
+  async function mountGroupSession(status: "active" | "archived" = "active") {
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    const members = [{ characterId: "character-1", sessionId: "member-1", name: "Avery" }, { characterId: "character-2", sessionId: "member-2", name: "Briar" }];
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.startsWith("/api/v1/chat/groups/group-1") && !init?.method) {
+        const selected = new URL(url, "http://localhost").searchParams.get("speaker") === "character-2" ? members[1] : members[0];
+        return Response.json({ ok: true, data: { session: {
+          id: "group-1", ownerScope: "user:viewer-a", title: "Garden companions", status,
+          characterId: selected.characterId, memoryEnabled: selected.characterId === "character-1",
+          character: { name: selected.name, canUpdateIdentity: false }, group: { members, selectedSessionId: selected.sessionId },
+          messages: [
+            { id: "group-old-user", role: "user", content: "Avery, come to the garden.", status: "sent", characterId: "character-1", sessionId: "member-1", speakerName: "Avery" },
+            { id: "group-old-assistant", turnId: "group-old-turn", role: "assistant", content: "I brought the blue notebook.", status: "sent", attempt: 1, replyToMessageId: "group-old-user", characterId: "character-1", sessionId: "member-1", speakerName: "Avery" },
+          ],
+        } } });
+      }
+      return originalFetch(input, init);
+    });
+    await act(async () => root.render(createElement(ChatSessionClient, { id: "group-1", groupMode: true })));
+    await waitUntil(() => Boolean(container.querySelector('[aria-label="Group speaker"]')));
+  }
 
   async function mountSession() {
     await act(async () => {

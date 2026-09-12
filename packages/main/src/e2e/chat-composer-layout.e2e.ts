@@ -16,9 +16,10 @@ for (const viewport of [{ width: 1291, height: 745 }, { width: 390, height: 844 
       const pathname = new URL(request.url()).pathname;
       let body: unknown = { ok: true, data: {} };
       let status = 200;
-      if (pathname === "/api/v1/me") body = { ok: true, data: { user: { id: "layout-user", email: "layout@example.invalid", displayName: "Layout" }, ageGate: { accepted: true }, entitlements: {}, balance: 0 } };
-      if (pathname === "/api/v1/chat/sessions/layout-proof") body = { ok: true, data: { session: { id: "layout-proof", title: "Layout proof", characterId: "layout-character", memoryEnabled: false, messages, character: { name: "Mira", canUpdateIdentity: false } } } };
-      if (pathname === "/api/v1/chat/sessions/layout-proof/experience") body = { settings: { responseLength: "short", interactionIntensity: "gentle", version: 1 }, editable: true };
+      if (pathname === "/api/v1/me") body = { ok: true, data: { user: { id: "layout-user", email: "layout@example.invalid", displayName: "Layout", image: null }, ageGate: { accepted: true }, entitlements: {}, dreamcoins: { balance: 0 } } };
+      if (pathname === "/api/v1/announcements") body = { ok: true, data: { items: [] } };
+      if (pathname === "/api/v1/chat/sessions/layout-proof") body = { ok: true, data: { session: { id: "layout-proof", ownerScope: "user:layout-user", title: "Layout proof", characterId: "layout-character", memoryEnabled: false, messages, character: { name: "Mira", canUpdateIdentity: false } } } };
+      if (pathname === "/api/v1/chat/sessions/layout-proof/experience") body = { settings: { responseLength: "short", interactionIntensity: "gentle", sceneGeneration: "follow", version: 1 }, editable: true };
       if (pathname === "/api/v1/chat/sessions/layout-proof/messages" && request.method() === "POST") {
         const userMessage = { id: "user-new", role: "user", content: "Another quiet moment?", status: "sent" };
         const assistant = { id: "assistant-new", role: "assistant", content: "Only the soft patter of rain.", status: "sent", replyToMessageId: "user-new", attempt: 1, attachments: [] };
@@ -35,6 +36,7 @@ for (const viewport of [{ width: 1291, height: 745 }, { width: 390, height: 844 
     });
     await page.goto("/chat/layout-proof");
     await page.getByText("Conversation preferences", { exact: true }).click();
+    await expect(page.getByRole("combobox", { name: "Reply length" })).toBeEnabled();
     // A reader returns to the latest exchange before sending. Opening settings
     // alone must not force-scroll them away from the controls they are editing.
     await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));

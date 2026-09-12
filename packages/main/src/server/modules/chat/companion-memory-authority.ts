@@ -292,7 +292,7 @@ export async function clearCompanionMemory(userId: string, characterId: string) 
     await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${userId} FOR UPDATE`;
     const sessions = await tx.recentChat.findMany({
       where: { userId, characterId },
-      select: { sessionId: true },
+      select: { sessionId: true, groupId: true },
     });
     if (sessions.length === 0) throw Errors.notFound("Chat relationship not found");
     // Clear includes explicitly pinned facts. Saved interaction preferences are
@@ -302,9 +302,16 @@ export async function clearCompanionMemory(userId: string, characterId: string) 
       data: { status: "archived", content: "", version: { increment: 1 } },
     });
     const sessionIds = sessions.map((session) => session.sessionId);
+    const groupIds = [...new Set(sessions.flatMap(session => session.groupId ? [session.groupId] : []))];
+    // Clear ends conversations containing this Character. A group cannot keep
+    // replaying that conversation through a different member after the reset.
+    const affectedGroupSessions = groupIds.length ? await tx.recentChat.findMany({
+      where: { userId, groupId: { in: groupIds } }, select: { sessionId: true },
+    }) : [];
+    const endingSessionIds = [...new Set([...sessionIds, ...affectedGroupSessions.map(session => session.sessionId)])];
     const active = await tx.chatTurn.findMany({
       where: {
-        sessionId: { in: sessionIds },
+        sessionId: { in: endingSessionIds },
         assistantStatus: { in: ["pending", "generating"] },
       },
       select: { id: true, attempt: true },
@@ -336,6 +343,10 @@ export async function clearCompanionMemory(userId: string, characterId: string) 
         contextRevision: { increment: 1 },
       },
     });
+    if (groupIds.length) {
+      await tx.groupConversation.updateMany({ where: { id: { in: groupIds }, userId }, data: { status: "archived" } });
+      await tx.recentChat.updateMany({ where: { userId, groupId: { in: groupIds } }, data: { status: "archived", contextRevision: { increment: 1 } } });
+    }
     const aggregateId = companionRelationshipAggregateId(userId, characterId);
     await supersedeMemoryProjections(tx, aggregateId, "durable_memory_purge");
     await tx.mainOutboxEvent.updateMany({

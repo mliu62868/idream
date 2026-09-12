@@ -31,6 +31,16 @@ const snapshot = {
 } as const;
 
 describe("Chat execution snapshot", () => {
+  it("binds every group replay speaker to the pinned membership and the selected execution session", () => {
+    const members = [{ characterId: "character-1", sessionId: "session-1", name: "Mira" }, { characterId: "character-2", sessionId: "session-2", name: "Briar" }];
+    const grouped = { ...snapshot, group: { id: "group-1", ordinal: 2, members }, recentTurns: [{ turnId: "earlier", userMessageId: "old-user", assistantMessageId: "old-assistant", userContent: "Hi", assistantContent: "Briar here", createdAt: "2026-09-10T00:00:00.000Z", speaker: members[1] }] };
+    expect(chatExecutionSnapshotSchema.safeParse(grouped).success).toBe(true);
+    expect(chatExecutionSnapshotSchema.safeParse({ ...grouped, sessionId: "session-2" }).success).toBe(false);
+    expect(chatExecutionSnapshotSchema.safeParse({ ...grouped, recentTurns: [{ ...grouped.recentTurns[0], speaker: { ...members[1], characterId: "uninvited" } }] }).success).toBe(false);
+    expect(chatExecutionSnapshotSchema.safeParse({ ...grouped, recentTurns: [{ ...grouped.recentTurns[0], speaker: { ...members[1], name: "Mira" } }] }).success).toBe(false);
+    expect(chatExecutionSnapshotSchema.safeParse({ ...grouped, group: undefined }).success).toBe(false);
+  });
+
   it("shares the exact Scene shape and pins its revision in snapshots and terminals", () => {
     const scene = { schemaVersion: 1, version: 2, location: "the cafe", time: null, participants: ["Mira"], emotionalBeat: null, unresolvedThreads: [] };
     const terminal = {

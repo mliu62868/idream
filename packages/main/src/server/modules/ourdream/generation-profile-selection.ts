@@ -180,6 +180,7 @@ export function assertGenerationProfileCanDispatchReferences(input: {
 export type GenerationProfileCatalogScope =
   | "executable"
   | "public_text_to_image"
+  | "public_character_image"
   | "public_image_edit";
 
 type GenerationProfileSelectionCommon = {
@@ -249,6 +250,8 @@ export async function selectGenerationProfile(
         )
       : catalogScope === "public_text_to_image"
         ? await filterPublicTextToImageGenerationProfiles(automaticCandidates)
+        : catalogScope === "public_character_image"
+          ? await filterPublicCharacterImageGenerationProfiles(automaticCandidates)
         : catalogScope === "public_image_edit"
           ? (
               await projectPublicImageEditGenerationProfiles(
@@ -409,6 +412,49 @@ export async function filterPublicTextToImageGenerationProfiles<
   return eligibility.flatMap(({ profile, eligible }) =>
     eligible ? [profile] : [],
   );
+}
+
+/** Public choices can use routes already eligible for automatic Character
+ * generation, or routes explicitly published for image editing. Experimental
+ * explicit-only routes still need their own public publication authority. */
+export async function filterPublicCharacterImageGenerationProfiles<
+  T extends PublicTextToImageGenerationProfile,
+>(profiles: readonly T[]): Promise<T[]> {
+  const results = await Promise.all(profiles.map(async (profile) => {
+    const publication = generationProfilePublicSelection(profile);
+    if (profile.mode !== "image" || !isExecutableGenerationProfile(profile) ||
+      !generationModelCapabilities(profile.runnerConfig ?? {}).referenceImages ||
+      publication.surface === "gallery_enhance" ||
+      (publication.explicitOnly === true && !["generator_character_image", "generator_image_edit"].includes(String(publication.surface)))) return false;
+    const workflow = await generationWorkflowDescriptor(profile.workflowKey ?? profile.pipelineModel);
+    return workflow && workflow.version === jsonRecord(profile.runnerConfig).workflowVersion &&
+      workflow.capabilities.includes("referenceImages") && workflow.identity.mode !== "none"
+      ? true : false;
+  }));
+  return profiles.filter((_, index) => results[index]);
+}
+
+export async function selectableCharacterGenerationProfiles(input: {
+  pinnedReferences: readonly GenerationReferenceRouteRequirement[];
+  sourceImageAssetId: string | null;
+  lookReferenceAssetId: string | null;
+  entitlements: Readonly<Record<string, Prisma.JsonValue>>;
+}) {
+  const profiles = await filterPublicCharacterImageGenerationProfiles(await prisma.generationModelProfile.findMany({
+    where: { mode: "image", status: "active", enabled: true },
+    orderBy: [{ costMultiplier: "asc" }, { label: "asc" }, { version: "desc" }],
+  }));
+  const choices = await Promise.all(profiles.map(async (profile) => {
+    if (profile.requiredEntitlement && !input.entitlements[profile.requiredEntitlement]) return null;
+    const workflowDescriptor = await generationWorkflowDescriptor(profile.workflowKey ?? profile.pipelineModel);
+    return generationProfileReferenceIncompatibilities({ profile, workflowDescriptor, ...input }).length === 0 ? profile : null;
+  }));
+  const seen = new Set<string>();
+  return choices.filter((profile): profile is NonNullable<typeof profile> => {
+    if (!profile || seen.has(profile.profileKey)) return false;
+    seen.add(profile.profileKey);
+    return true;
+  });
 }
 
 export type PublicImageEditReferenceMode =

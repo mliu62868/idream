@@ -111,6 +111,8 @@ export async function imageReferenceInputsForGenerationJob(input: {
   referenceAssetIds?: Prisma.JsonValue | null;
   referenceManifest?: Prisma.JsonValue | null;
   maxReferences?: number;
+  /** Exact source_image granted by the accepted job; never a caller-supplied control. */
+  authorizedSourceImageAssetId?: string;
   db?: Pick<Prisma.TransactionClient, "mediaAsset"> | typeof prisma;
 }): Promise<ImageReferenceInput[]> {
   const controls = jsonRecord(input.controls);
@@ -146,11 +148,12 @@ export async function imageReferenceInputsForGenerationJob(input: {
       safetyStatus: "passed",
       OR: [
         { ownerId: input.userId },
+        ...(sourceImageAssetId && input.authorizedSourceImageAssetId === sourceImageAssetId ? [{ id: sourceImageAssetId }] : []),
         ...(input.characterId ? [{ characterId: input.characterId }] : []),
       ],
     },
     select: {
-      id: true,
+      id: true, ownerId: true, characterId: true,
       storageKey: true,
       url: true,
       contentType: true,
@@ -170,6 +173,9 @@ export async function imageReferenceInputsForGenerationJob(input: {
   return orderedReferences.flatMap((reference) => {
     const asset = byId.get(reference.mediaAssetId);
     if (!asset) return [];
+    const ordinarilyReadable = asset.ownerId === input.userId || Boolean(input.characterId && asset.characterId === input.characterId);
+    const grantedSource = reference.role === "source_image" && asset.id === sourceImageAssetId && asset.id === input.authorizedSourceImageAssetId;
+    if (!ordinarilyReadable && !grantedSource) return [];
     const role = reference.role;
     const blobLocator = resolveMediaAssetBlobLocator(asset);
     return [

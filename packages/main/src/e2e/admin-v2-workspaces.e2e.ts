@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import type { Prisma } from "@prisma/client";
 import {
+  characterProjectCreateResponseSchema,
   characterReleaseAssetPlacement,
   parseCharacterReleaseAssetManifest,
 } from "@idream/shared/admin";
@@ -249,15 +250,10 @@ async function generateCharacterAssetRun(
   return runId;
 }
 
-function currentCandidateActions(page: Page) {
-  return page.getByRole("region", { name: "Current candidate actions" });
-}
-
 type SelectedAssetLineage = {
   assetId: string;
   runId: string;
   itemId: string;
-  reviewDecisionId: string;
   generationJobId: string;
   attemptId: string;
   attemptNo: number;
@@ -277,9 +273,9 @@ async function selectedAssetLineage(input: {
     where: {
       batchId: input.runId,
       mediaAssetId: input.assetId,
-      status: { in: ["approved", "published"] },
+      status: "generated",
     },
-    include: { batch: true, job: true },
+    include: { batch: true, job: true, mediaAsset: true },
   });
   expect(item.batch).toMatchObject({
     id: input.runId,
@@ -288,14 +284,16 @@ async function selectedAssetLineage(input: {
     targetId: wizardCharacterId,
   });
   expect(item.job).not.toBeNull();
-  const decision = await prisma.creativeReviewDecision.findFirstOrThrow({
-    where: { runItemId: item.id },
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+  expect(item.mediaAsset).toMatchObject({
+    id: input.assetId,
+    characterId: wizardCharacterId,
+    sourceJobId: item.jobId,
+    safetyStatus: "passed",
+    deletedAt: null,
   });
-  expect(decision).toMatchObject({
-    artifactId: input.assetId,
-    decision: "approved",
-  });
+  expect(
+    await prisma.creativeReviewDecision.count({ where: { runItemId: item.id } }),
+  ).toBe(0);
   const attempt = await prisma.generationAttempt.findFirstOrThrow({
     where: {
       requestId: item.jobId!,
@@ -321,7 +319,6 @@ async function selectedAssetLineage(input: {
     assetId: input.assetId,
     runId: input.runId,
     itemId: item.id,
-    reviewDecisionId: decision.id,
     generationJobId: item.jobId!,
     attemptId: attempt.id,
     attemptNo: attempt.attemptNo,
@@ -331,54 +328,6 @@ async function selectedAssetLineage(input: {
     workflowKey: attempt.workflowKey,
     workflowVersion: attempt.workflowVersion,
   } satisfies SelectedAssetLineage;
-}
-
-async function approveCurrentCharacterCandidate(
-  page: Page,
-  score: number,
-  reason: string,
-) {
-  const reviewRegion = page.getByRole("region", {
-    name: "Record the visible review evidence",
-  });
-  await reviewRegion.getByLabel("No visible artifacts").check();
-  await reviewRegion.getByLabel("Exactly one intended subject").check();
-  await reviewRegion
-    .getByLabel("Composition matches the customer intent")
-    .check();
-  await reviewRegion
-    .getByLabel("No visible text, watermark, or contact sheet")
-    .check();
-  await reviewRegion.getByLabel(/^Identity match score/).fill(String(score));
-  await reviewRegion.getByLabel("Evidence and reason").fill(reason);
-  await currentCandidateActions(page)
-    .getByRole("button", {
-      name: "Approve current candidate",
-    })
-    .click();
-}
-
-async function completeGenericCreativeReview(
-  page: Page,
-  input: {
-    readonly score: number;
-    readonly reason: string;
-    readonly keyboard?: boolean;
-  },
-) {
-  await page.getByLabel("Score", { exact: true }).fill(String(input.score));
-  await expect(page.getByLabel("Identity consistency")).toHaveValue("unscored");
-  await page.getByLabel("Evidence and reason").fill(input.reason);
-  const approve = page.getByRole("button", { name: "Approve" });
-  await expect(approve).toBeEnabled();
-  if (input.keyboard) {
-    await approve.focus();
-    await expect(approve).toBeFocused();
-    await approve.press("Enter");
-  } else {
-    await approve.click();
-  }
-  await expect(page.getByText("approved · unscored")).toBeVisible();
 }
 
 async function completeGenericCreativePlacement(
@@ -391,6 +340,8 @@ async function completeGenericCreativePlacement(
     readonly keyboard?: boolean;
   },
 ) {
+  await expect(page.getByRole("button", { name: "Approve", exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("Score", { exact: true })).toHaveCount(0);
   await expect(page.getByLabel("Destination", { exact: true })).toHaveValue(
     "Campaign collection",
   );
@@ -797,7 +748,7 @@ async function completeResponsiveCoreFlows(
 
   await page.goto(`${adminBaseURL()}/admin/creative/runs`);
   await expect(
-    page.getByRole("heading", { level: 2, name: "Creative Runs" }),
+    page.getByRole("heading", { level: 1, name: "Generation History", exact: true }),
   ).toBeVisible();
   await expect(
     page.getByRole("heading", { level: 2, name: "Create images" }),
@@ -808,9 +759,11 @@ async function completeResponsiveCoreFlows(
 
   await page.goto(`${adminBaseURL()}/admin/content/assets`);
   await expect(
-    page.getByRole("heading", { name: "Library", level: 2, exact: true }),
+    page.getByRole("heading", { name: "Operational Assets", level: 1, exact: true }),
   ).toBeVisible();
-  const uploadImages = page.getByRole("button", { name: "Upload images" }).first();
+  const uploadImages = page
+    .getByRole("region", { name: "Upload operational images", exact: true })
+    .getByRole("button", { name: "Upload images", exact: true });
   await expect(uploadImages).toBeVisible();
   await uploadImages.focus();
   await expect(uploadImages).toBeFocused();
@@ -911,16 +864,11 @@ async function completeResponsiveCoreFlows(
   ).toBeVisible();
   await expectNoHorizontalOverflow(page);
   await expectWcag22AA(page);
-  await completeGenericCreativeReview(page, {
-    score: 90,
-    reason: `Reviewed the ${fixture.label} campaign image against the intended composition and distribution use.`,
-    keyboard: true,
-  });
   await completeGenericCreativePlacement(page, {
     targetId: `campaign-${fixture.label}-${suffix}`,
     eyebrow: `E2E ${fixture.label} feature`,
-    title: `Reviewed ${fixture.label} campaign ${suffix}`,
-    reason: `Stage the reviewed ${fixture.label} candidate for authoritative campaign verification.`,
+    title: `Selected ${fixture.label} campaign ${suffix}`,
+    reason: `Stage the selected ${fixture.label} candidate for authoritative campaign verification.`,
     keyboard: true,
   });
   const verifyPlacement = page.getByRole("button", {
@@ -941,10 +889,10 @@ async function completeResponsiveCoreFlows(
   await expect
     .poll(async () =>
       prisma.creativeReviewDecision.count({
-        where: { runItemId: fixture.creativeItemId, decision: "approved" },
+        where: { runItemId: fixture.creativeItemId },
       }),
     )
-    .toBe(1);
+    .toBe(0);
   await expect
     .poll(async () =>
       prisma.mediaAssetPlacement.count({
@@ -1072,8 +1020,9 @@ async function completeResponsiveCoreFlows(
     page.getByRole("heading", { level: 4, name: "Evidence" }),
   ).toBeVisible();
   await expect(
-    page.getByText(
+    page.getByRole("region", { name: "Evidence", exact: true }).getByText(
       `Customer supplied immutable ${fixture.label} reproduction evidence.`,
+      { exact: true },
     ),
   ).toBeVisible();
   await expectNoHorizontalOverflow(page);
@@ -2050,7 +1999,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await prisma.$disconnect();
   });
 
-  test("takes one blank Character through identity, a complete image pack, QA, and a verified Release", async ({
+  test("takes one blank Character through automatic checks, identity, a complete image pack, and a verified Release", async ({
     page,
   }) => {
     test.setTimeout(180_000);
@@ -2095,8 +2044,14 @@ test.describe.serial("Admin v2 operator workspaces", () => {
         name: "Save character",
       })
       .click();
-    expect((await characterCreateResponse).status()).toBe(201);
-    await expect(page).toHaveURL(/\/admin\/characters\/(?!new(?:[/?]|$))[^/?]+$/);
+    const createdResponse = await characterCreateResponse;
+    expect(createdResponse.status()).toBe(201);
+    const createdCharacter = characterProjectCreateResponseSchema.parse(
+      (await createdResponse.json()).data,
+    );
+    await expect(page).toHaveURL(
+      `${adminBaseURL()}/admin/characters/${createdCharacter.characterId}?tab=assets`,
+    );
     expect(createRequests).toHaveLength(1);
     expect(
       await page.evaluate(
@@ -2122,7 +2077,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
         name: "Establish the face customers will recognize",
       }),
     ).toBeVisible();
-    await expect(page.getByText(/no reference input/i)).toBeVisible();
+    await expect(page.getByText(/No reference image is needed\./)).toBeVisible();
     await expect(
       page.getByRole("button", {
         name: "Generate 1 portrait",
@@ -2135,7 +2090,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     }
     await expect(
       page.getByText(
-        "Establish a reviewed portrait anchor in Character Assets before creating later identity versions.",
+        "Choose the first identity portrait in the image library before creating later identity versions.",
       ),
     ).toBeVisible();
     await expect(
@@ -2147,7 +2102,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
         name: "Establish the face customers will recognize",
       }),
     ).toBeVisible();
-    await expect(page.getByText(/no reference input/i)).toBeVisible();
+    await expect(page.getByText(/No reference image is needed\./)).toBeVisible();
 
     const createResponsePromise = page.waitForResponse(
       (response) =>
@@ -2237,36 +2192,16 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       }),
     ).toEqual({ version: initialProject.version });
 
-    const reviewRegion = page.getByRole("region", {
+    // Daily selection is the operator's decision; automated safety and exact
+    // generation lineage remain required without manufacturing a review receipt.
+    await expect(page.getByRole("region", {
       name: "Record the visible review evidence",
-    });
-    await reviewRegion.getByLabel("No visible artifacts").check();
-    await reviewRegion.getByLabel("Exactly one intended subject").check();
-    await reviewRegion
-      .getByLabel("Composition matches the customer intent")
-      .check();
-    await reviewRegion
-      .getByLabel("No visible text, watermark, or contact sheet")
-      .check();
-    await reviewRegion.getByLabel("Quality score", { exact: true }).fill("92");
-    await expect(reviewRegion.getByLabel("Identity consistency")).toHaveValue(
-      "unscored",
-    );
+    })).toHaveCount(0);
+    await expect(page.getByRole("button", {
+      name: "Approve current candidate",
+    })).toHaveCount(0);
     await expect(
-      reviewRegion.getByLabel("Identity consistency"),
-    ).toBeDisabled();
-    await reviewRegion
-      .getByLabel("Evidence and reason")
-      .fill(
-        "Single intended subject, clean face and hands, no visible text, and a clear primary portrait composition.",
-      );
-    await currentCandidateActions(page)
-      .getByRole("button", {
-        name: "Approve current candidate",
-      })
-      .click();
-    await expect(
-      page.getByRole("button", { name: "Set as identity anchor" }),
+      page.getByRole("button", { name: "Set as identity", exact: true }),
     ).toBeEnabled();
 
     await prisma.generationRouteQualification.create({
@@ -2296,30 +2231,13 @@ test.describe.serial("Admin v2 operator workspaces", () => {
         new URL(response.url()).pathname ===
           `/api/v2/admin/characters/${wizardCharacterId}/identity-bootstrap`,
     );
-    await page.getByRole("button", { name: "Set as identity anchor" }).click();
+    await page.getByRole("button", { name: "Set as identity", exact: true }).click();
     const bootstrapResponse = await bootstrapResponsePromise;
     expect(bootstrapResponse.ok(), await bootstrapResponse.text()).toBeTruthy();
 
     const selectedItem = await prisma.contentProductionItem.findFirstOrThrow({
-      where: { batchId: wizardBootstrapRunId, status: "approved" },
+      where: { batchId: wizardBootstrapRunId, status: "generated" },
       include: { job: true, mediaAsset: true },
-    });
-    const decision = await prisma.creativeReviewDecision.findFirstOrThrow({
-      where: { runItemId: selectedItem.id },
-      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    });
-    expect(decision).toMatchObject({
-      decision: "approved",
-      identityConsistency: "unscored",
-      score: 92,
-      evidence: {
-        quality: {
-          artifactFree: true,
-          singleSubject: true,
-          intentMatch: true,
-          noVisibleText: true,
-        },
-      },
     });
     const coverLineage = await selectedAssetLineage({
       runId: wizardBootstrapRunId,
@@ -2347,7 +2265,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       expect.objectContaining({
         mediaAssetId: selectedItem.mediaAssetId,
         role: "primary_face",
-        qualityScore: 92,
+        qualityScore: null,
       }),
     ]);
     expect(referenceSet.snapshotHash).toBe(
@@ -2363,7 +2281,6 @@ test.describe.serial("Admin v2 operator workspaces", () => {
         assetId: selectedItem.mediaAssetId,
         runId: wizardBootstrapRunId,
         itemId: selectedItem.id,
-        reviewDecisionId: decision.id,
         generationJobId: selectedItem.jobId,
         bootstrapIdentity: true,
       },
@@ -2384,12 +2301,6 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       page,
       "Generate 1 hero image",
       1,
-    );
-    await expect(page.getByLabel("Identity consistency")).toHaveValue("passed");
-    await approveCurrentCharacterCandidate(
-      page,
-      91,
-      "Identity is preserved, the single subject reads clearly, and the wide composition is suitable for the character hero.",
     );
     const selectHero = page.getByRole("button", {
       name: "Select hero · next asset",
@@ -2423,12 +2334,6 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       page,
       "Generate 1 chat image",
       1,
-    );
-    await expect(page.getByLabel("Identity consistency")).toHaveValue("passed");
-    await approveCurrentCharacterCandidate(
-      page,
-      93,
-      "Identity remains stable, the expression feels conversational, and the portrait is clean enough for a chat moment.",
     );
     const selectChat = page.getByRole("button", {
       name: "Select chat asset · preview",
@@ -2582,7 +2487,6 @@ test.describe.serial("Admin v2 operator workspaces", () => {
         assetId: string;
         runId: string;
         itemId: string;
-        reviewDecisionId: string;
         generationJobId: string;
         bootstrapIdentity?: boolean;
       }
@@ -2592,7 +2496,6 @@ test.describe.serial("Admin v2 operator workspaces", () => {
         assetId: coverLineage.assetId,
         runId: coverLineage.runId,
         itemId: coverLineage.itemId,
-        reviewDecisionId: coverLineage.reviewDecisionId,
         generationJobId: coverLineage.generationJobId,
         bootstrapIdentity: true,
       },
@@ -2600,14 +2503,12 @@ test.describe.serial("Admin v2 operator workspaces", () => {
         assetId: heroLineage.assetId,
         runId: heroLineage.runId,
         itemId: heroLineage.itemId,
-        reviewDecisionId: heroLineage.reviewDecisionId,
         generationJobId: heroLineage.generationJobId,
       },
       character_chat: {
         assetId: chatLineage.assetId,
         runId: chatLineage.runId,
         itemId: chatLineage.itemId,
-        reviewDecisionId: chatLineage.reviewDecisionId,
         generationJobId: chatLineage.generationJobId,
       },
     });
@@ -2630,7 +2531,6 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       assetId: coverLineage.assetId,
       runId: coverLineage.runId,
       itemId: coverLineage.itemId,
-      reviewDecisionId: coverLineage.reviewDecisionId,
       generationJobId: coverLineage.generationJobId,
       bootstrapIdentity: true,
     });
@@ -2641,7 +2541,6 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       assetId: heroLineage.assetId,
       runId: heroLineage.runId,
       itemId: heroLineage.itemId,
-      reviewDecisionId: heroLineage.reviewDecisionId,
       generationJobId: heroLineage.generationJobId,
     });
     expect(
@@ -2651,7 +2550,6 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       assetId: chatLineage.assetId,
       runId: chatLineage.runId,
       itemId: chatLineage.itemId,
-      reviewDecisionId: chatLineage.reviewDecisionId,
       generationJobId: chatLineage.generationJobId,
     });
     expect(finalRelease.generationProvenance).toMatchObject({
@@ -2679,7 +2577,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
         assetId: lineage.assetId,
         runId: lineage.runId,
         itemId: lineage.itemId,
-        reviewDecisionId: lineage.reviewDecisionId,
+        reviewDecisionId: null,
         generationJobId: lineage.generationJobId,
         attemptId: lineage.attemptId,
         attemptNo: lineage.attemptNo,
@@ -2689,6 +2587,11 @@ test.describe.serial("Admin v2 operator workspaces", () => {
         workflowKey: lineage.workflowKey,
         workflowVersion: lineage.workflowVersion,
       });
+      expect(characterReleaseAssetPlacement(releaseManifest, slotKey))
+        .not.toHaveProperty("reviewDecisionId");
+    }
+    for (const entry of Object.values(draftAssetPack)) {
+      expect(entry).not.toHaveProperty("reviewDecisionId");
     }
     await expect(
       prisma.mediaAsset.findMany({
@@ -3098,7 +3001,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       }),
     ).toBeVisible();
     await openCharacterTab(page, "release");
-    await page.getByText("Rollback and live operations", { exact: true }).click();
+    await page.getByText("Character availability and rollback", { exact: true }).click();
     await page.getByLabel("I confirm this release action").check();
     await page.getByRole("button", { name: "Roll back" }).click();
     await expect
@@ -3165,7 +3068,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await login(page);
     await page.setViewportSize({ width: 1366, height: 900 });
 
-    const dynamicTitle = `E2E existing campaign review ${suffix}`;
+    const dynamicTitle = `E2E existing campaign placement ${suffix}`;
     const dynamicBrief =
       "One cinematic editorial campaign image with a clear subject, quiet confidence, warm practical lighting, and generous negative space for launch copy.";
     const createResponse = await page.request.post(
@@ -3226,7 +3129,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       timeout: 10_000,
     });
     const reviewContext = page.getByRole("region", {
-      name: "Review against the brief",
+      name: "Generation brief",
     });
     await expect(reviewContext).toContainText(dynamicBrief);
     await expect(reviewContext).toContainText("campaign");
@@ -3251,40 +3154,22 @@ test.describe.serial("Admin v2 operator workspaces", () => {
         safetyStatus: "passed",
       },
     });
-    const dynamicReviewReason =
-      "Reviewed the campaign image against the intended composition and distribution use.";
+    const beforePlacement = await prisma.contentProductionBatch.findUniqueOrThrow({
+      where: { id: dynamicCreativeRunId },
+      select: { version: true },
+    });
     const dynamicStagingReason =
-      "Stage this reviewed candidate for authoritative campaign verification.";
+      "Stage this selected candidate for authoritative campaign verification.";
     const dynamicStagedWithdrawalReason =
       "Withdraw the staged campaign candidate because the launch direction was retired before activation.";
-    const dynamicApprovalWithdrawalReason =
-      "Retire the approval because the campaign direction was cancelled after the staged candidate was withdrawn.";
     const dynamicCampaignEyebrow = "E2E operator feature";
-    const dynamicCampaignTitle = `Reviewed campaign ${suffix}`;
-    await completeGenericCreativeReview(page, {
-      score: 90,
-      reason: dynamicReviewReason,
-    });
+    const dynamicCampaignTitle = `Selected campaign ${suffix}`;
     await completeGenericCreativePlacement(page, {
       targetId: `campaign-${suffix}`,
       eyebrow: dynamicCampaignEyebrow,
       title: dynamicCampaignTitle,
       reason: dynamicStagingReason,
     });
-    await expect(
-      page.getByText(
-        "Use Withdraw staged placement below before superseding this approval.",
-      ),
-    ).toBeVisible();
-    const dynamicApprovedDecision =
-      await prisma.creativeReviewDecision.findFirstOrThrow({
-        where: {
-          runItemId: dynamicItem.id,
-          artifactId: dynamicItem.mediaAssetId!,
-          decision: "approved",
-        },
-        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-      });
     const dynamicStagedPlacement =
       await prisma.mediaAssetPlacement.findFirstOrThrow({
         where: {
@@ -3315,7 +3200,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     ).toHaveValue("");
     await expect(
       page.getByRole("heading", { level: 4, name: "Terminal disposition" }),
-    ).toBeVisible();
+    ).toHaveCount(0);
     await page.reload();
     await expect(
       page.getByRole("heading", { level: 2, name: dynamicTitle }),
@@ -3324,7 +3209,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       page.getByRole("button", { name: "Stage campaign candidate" }),
     ).toBeVisible();
     await expect(
-      page.getByLabel("Withdrawal reason", { exact: true }),
+      page.getByLabel("Staging reason", { exact: true }),
     ).toHaveValue("");
 
     await expect
@@ -3343,33 +3228,15 @@ test.describe.serial("Admin v2 operator workspaces", () => {
         lifecycleState: "active",
         workflowStage: "placement",
         verificationState: "pending",
-        version: 4,
+        version: beforePlacement.version + 2,
       });
     await expect
       .poll(async () =>
-        prisma.creativeReviewDecision.findFirst({
-          where: {
-            runItemId: dynamicItem.id,
-            artifactId: dynamicItem.mediaAssetId!,
-            decision: "approved",
-            score: 90,
-          },
-          select: {
-            artifactId: true,
-            decision: true,
-            identityConsistency: true,
-            score: true,
-            reason: true,
-          },
+        prisma.creativeReviewDecision.count({
+          where: { runItemId: dynamicItem.id },
         }),
       )
-      .toEqual({
-        artifactId: dynamicItem.mediaAssetId!,
-        decision: "approved",
-        identityConsistency: "unscored",
-        score: 90,
-        reason: dynamicReviewReason,
-      });
+      .toBe(0);
     await expect
       .poll(async () =>
         prisma.mediaAssetPlacement.findUnique({
@@ -3434,17 +3301,31 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       }),
     ).resolves.toBe(0);
 
-    await page
-      .getByLabel("Withdrawal reason", { exact: true })
-      .fill(dynamicApprovalWithdrawalReason);
-    await page.getByRole("button", { name: "Withdraw approval" }).click();
-    await expect(page.getByText(dynamicApprovalWithdrawalReason)).toBeVisible();
+    // A withdrawn staging remains available to select again. Daily campaign
+    // publication closes only after the actual runtime verifies the new placement.
+    await completeGenericCreativePlacement(page, {
+      targetId: `campaign-${suffix}`,
+      eyebrow: dynamicCampaignEyebrow,
+      title: dynamicCampaignTitle,
+      reason: "Stage the same image again after confirming the campaign direction.",
+    });
+    const restagedPlacement = await prisma.mediaAssetPlacement.findFirstOrThrow({
+      where: {
+        mediaAssetId: dynamicItem.mediaAssetId!,
+        status: "scheduled",
+        verificationState: "verifying",
+        metadata: { path: ["creativeRunId"], equals: dynamicCreativeRunId },
+      },
+    });
+    expect(restagedPlacement.id).not.toBe(dynamicStagedPlacement.id);
+    await page.getByRole("button", { name: "Verify & activate" }).click();
+    await expect(page.getByText("campaign · passed")).toBeVisible();
     await expect(
       page.getByRole("button", { name: "Withdraw approval" }),
     ).toHaveCount(0);
     await expect(
       page.getByRole("button", { name: "Stage campaign candidate" }),
-    ).toBeDisabled();
+    ).toHaveCount(0);
     await expect
       .poll(async () =>
         prisma.contentProductionBatch.findUnique({
@@ -3461,33 +3342,39 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       .toEqual({
         lifecycleState: "closed",
         status: "completed",
-        workflowStage: "review",
-        verificationState: "pending",
-        version: 5,
+        workflowStage: "verification",
+        verificationState: "passed",
+        version: beforePlacement.version + 4,
       });
     await expect(
       prisma.contentProductionItem.findUniqueOrThrow({
         where: { id: dynamicItem.id },
         select: { status: true },
       }),
-    ).resolves.toEqual({ status: "rejected" });
-    const dynamicDecisions = await prisma.creativeReviewDecision.findMany({
+    ).resolves.toEqual({ status: "published" });
+    await expect(prisma.creativeReviewDecision.count({
       where: { runItemId: dynamicItem.id },
-      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-      select: {
-        id: true,
-        decision: true,
-        supersedesDecisionId: true,
-        reason: true,
+    })).resolves.toBe(0);
+    await expect(prisma.mediaAssetPlacement.findUniqueOrThrow({
+      where: { id: restagedPlacement.id },
+      select: { status: true, verificationState: true },
+    })).resolves.toEqual({ status: "published", verificationState: "passed" });
+    await expect(prisma.mediaAssetPlacement.findUniqueOrThrow({
+      where: { id: dynamicStagedPlacement.id },
+      select: { status: true, verificationState: true },
+    })).resolves.toEqual({ status: "archived", verificationState: "overridden" });
+    await expect(prisma.adminAuditLog.count({
+      where: {
+        targetId: restagedPlacement.id,
+        action: "creative.placement.verified",
       },
-    });
-    expect(dynamicDecisions).toHaveLength(2);
-    expect(dynamicDecisions.at(-1)).toEqual({
-      id: expect.any(String),
-      decision: "rejected",
-      supersedesDecisionId: dynamicApprovedDecision.id,
-      reason: dynamicApprovalWithdrawalReason,
-    });
+    })).resolves.toBe(1);
+    await expect(prisma.mainOutboxEvent.count({
+      where: {
+        aggregateId: dynamicCreativeRunId,
+        eventType: "creative.placement.verified.v2",
+      },
+    })).resolves.toBe(1);
 
     await page.goto(
       `${adminBaseURL()}/admin/ops/incidents?search=${encodeURIComponent(suffix)}`,
@@ -3588,7 +3475,10 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       page.getByRole("heading", { level: 4, name: "Evidence" }),
     ).toBeVisible();
     await expect(
-      page.getByText("Customer supplied immutable reproduction evidence."),
+      page.getByRole("region", { name: "Evidence", exact: true }).getByText(
+        "Customer supplied immutable reproduction evidence.",
+        { exact: true },
+      ),
     ).toBeVisible();
     await page.getByLabel("Owner ID").fill(actorId);
     await page.getByLabel("Audit reason", { exact: true }).fill("Assign the verified incident follow-up");
@@ -3652,7 +3542,13 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await expect
       .poll(async () =>
         prisma.adminAuditLog.count({
-          where: { targetId: { in: [dynamicItem.id, incidentId, caseId] } },
+          where: { targetId: { in: [
+            dynamicItem.id,
+            dynamicStagedPlacement.id,
+            restagedPlacement.id,
+            incidentId,
+            caseId,
+          ] } },
         }),
       )
       .toBeGreaterThanOrEqual(8);
@@ -3672,27 +3568,43 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await expect(
       page.getByRole("status", { name: "Queue health" }),
     ).toContainText("Fresh as of");
-    await page.getByRole("button", { name: "Comfortable", exact: true }).click();
-    await expect(page.getByRole("button", { name: "Comfortable", exact: true })).toHaveAttribute("aria-pressed", "true");
+    const todayNavigation = page.getByRole("navigation", { name: "Today view", exact: true });
+    await todayNavigation.getByText("Row density", { exact: true }).click();
+    const comfortableDensity = todayNavigation.getByRole("button", { name: "Comfortable", exact: true });
+    await comfortableDensity.click();
+    await expect(comfortableDensity).toHaveAttribute("aria-pressed", "true");
+    const recentlyResolved = todayNavigation.getByRole("button", { name: /^Recently resolved\b/ });
+    await recentlyResolved.click();
+    await expect(recentlyResolved).toHaveAttribute("aria-current", "page");
 
     const resolved = page.getByTestId("today-queue-recently-resolved");
-    await expect(
-      resolved.getByText(`user ${caseTargetId} is closed`),
-    ).toBeVisible();
-    await expect(
-      resolved.getByText(`E2E provider regression ${suffix}`),
-    ).toBeVisible();
-    await resolved.locator(`a[href="/admin/cases/${caseId}"]`).click();
+    const casePreview = resolved
+      .getByRole("button", { name: "Preview support request case", exact: true })
+      .filter({ hasText: `user ${caseTargetId} is closed` });
+    const incidentPreview = resolved.getByRole("button", {
+      name: `Preview Incident: provider:profile:e2e-${suffix}`,
+      exact: true,
+    });
+    await expect(casePreview.getByText(`user ${caseTargetId} is closed`, { exact: true })).toBeVisible();
+    await expect(incidentPreview.getByText(`E2E provider regression ${suffix}`, { exact: true })).toBeVisible();
+    await casePreview.click();
+    await expect(casePreview).toHaveAttribute("aria-pressed", "true");
+    const openSourceRecord = resolved
+      .getByTestId("today-preview")
+      .getByRole("link", { name: "Open source record", exact: true });
+    await expect(openSourceRecord).toHaveAttribute("href", `/admin/cases/${caseId}`);
+    await openSourceRecord.click();
     await expect(page).toHaveURL(new RegExp(`/admin/cases/${caseId}$`));
     await expect(
       page.getByRole("heading", { level: 4, name: "Evidence" }),
     ).toBeVisible();
 
     await page.goto(`${adminBaseURL()}/admin/today`);
-    await page
-      .getByTestId("today-queue-recently-resolved")
-      .locator(`a[href="/admin/ops/incidents/${incidentId}"]`)
-      .click();
+    await recentlyResolved.click();
+    await incidentPreview.click();
+    await expect(incidentPreview).toHaveAttribute("aria-pressed", "true");
+    await expect(openSourceRecord).toHaveAttribute("href", `/admin/ops/incidents/${incidentId}`);
+    await openSourceRecord.click();
     await expect(page).toHaveURL(
       new RegExp(`/admin/ops/incidents/${incidentId}$`),
     );
@@ -3716,7 +3628,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await expect(page).toHaveURL(new RegExp(`job=${incidentRequestId}`));
     await expect(page.getByText("Generation Request authority")).toBeVisible();
     await expect(page.getByText("Immutable Attempt events")).toBeVisible();
-    await page.getByRole("button", { name: "Close" }).click();
+    await page.getByRole("button", { name: "Close", exact: true }).click();
     await expect(page).not.toHaveURL(/(?:\?|&)job=/);
     await expect(page.getByText("Generation Request authority")).toHaveCount(0);
     expect(failures).toEqual([]);

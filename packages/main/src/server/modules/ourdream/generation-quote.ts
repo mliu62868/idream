@@ -37,11 +37,13 @@ import {
   generationReferenceRouteRequirements,
   selectGenerationProfile,
   selectRecipe,
+  selectableCharacterGenerationProfiles,
 } from "./generation-profile-selection";
 import { entitlementMap } from "./subscription-lifecycle";
 import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 import { productionVideoRecipeForProfile } from "@/server/modules/generation/production-video-profile";
 import type { GenerationQuoteAuthority } from "./generation-quote-contract";
+import { applyGenerationContext, generationContextToken, resolveGenerationContext } from "./generation-context";
 
 export {
   generationQuoteAuthoritySchema,
@@ -86,6 +88,10 @@ export async function resolveGenerationPlan(
     expectedReferenceSetRevisionId?: string;
   } = {},
 ) {
+  const contextToken = generationContextToken(body);
+  const context = contextToken ? await resolveGenerationContext(userId, contextToken) : null;
+  if (context) body = applyGenerationContext(body, context, { allowVideo: options.source?.sourceType === "chat_video" });
+  const expectedReferenceSetRevisionId = context?.pins?.referenceSetRevisionId ?? options.expectedReferenceSetRevisionId;
   const entitlements = await entitlementMap(userId);
   const selectedModel = body.model ?? body.controls.model;
   if (body.mode === "video" && !entitlements.video_generation) {
@@ -110,9 +116,9 @@ export async function resolveGenerationPlan(
     body.mode,
     body.characterId ? "character" : "freeplay",
   );
-  const character = body.characterId
+  const character = context?.character ?? (body.characterId
     ? await generationCharacter(body.characterId, userId)
-    : null;
+    : null);
   const consistencyMode = body.consistencyMode ?? "balanced";
   const visualProfile =
     body.mode === "image" && character
@@ -120,8 +126,8 @@ export async function resolveGenerationPlan(
           fallbackToActiveOnStale:
             options.fallbackToActiveOnStaleVisualProfile,
           bootstrapIfMissing: options.bootstrapVisualProfile !== false,
-          expectedVersion: options.expectedVisualProfileVersion,
-          allowArchivedPinned: options.expectedReferenceSetRevisionId !== undefined,
+          expectedVersion: context?.pins?.visualProfileVersion ?? options.expectedVisualProfileVersion,
+          allowArchivedPinned: expectedReferenceSetRevisionId !== undefined,
         })
       : null;
   if (
@@ -156,7 +162,7 @@ export async function resolveGenerationPlan(
     body.mode === "image" && character && visualProfile
       ? await generationReferenceRouteRequirements(
           visualProfile.id,
-          options.expectedReferenceSetRevisionId,
+          expectedReferenceSetRevisionId,
         )
       : [];
   const hasRequestedSourceImage =
@@ -179,19 +185,17 @@ export async function resolveGenerationPlan(
     (body.mode === "video" && hasRequestedSourceImage);
   const requirePublicTextToImageProfile =
     body.mode === "image" &&
-    (
-      !requiresReferenceRouting ||
-      (
-        options.profileSelectionAuthority === "public_generator" &&
-        Boolean(selectedModel)
-      )
-    );
+    !requiresReferenceRouting;
+  const requirePublicCharacterImageProfile = body.mode === "image" &&
+    requiresReferenceRouting && Boolean(character) &&
+    options.profileSelectionAuthority === "public_generator" && Boolean(selectedModel);
   const requirePublicImageEditProfile =
     body.mode === "image" &&
-    options.profileSelectionAuthority === "public_image_edit" &&
-    Boolean(selectedModel);
+    ((options.profileSelectionAuthority === "public_image_edit" && Boolean(selectedModel)) || context?.identityMode === "source_only");
   const catalogScope = requirePublicTextToImageProfile
     ? "public_text_to_image"
+    : requirePublicCharacterImageProfile
+      ? "public_character_image"
     : requirePublicImageEditProfile
       ? "public_image_edit"
       : "executable";
@@ -294,6 +298,8 @@ export async function resolveGenerationPlan(
   }
 
   return {
+    body,
+    context,
     character,
     consistencyMode,
     entitlements,
@@ -329,6 +335,7 @@ export function generationPlanRouteFingerprint(plan: GenerationPlan) {
   return createHash("sha256")
     .update(JSON.stringify({
       schemaVersion: "generation-plan-v1",
+      chatHandoffDigest: plan.context?.digest ?? null,
       mode: plan.profile.mode,
       profileId: plan.profile.profileKey,
       profileVersion: plan.profile.version,
@@ -399,6 +406,10 @@ export interface GenerationQuotePayload {
   readonly balance: number;
   /** 这一单会不会带着角色的身份参考去生成。见构造处的 SPEC。 */
   readonly identityLocked: boolean;
+  readonly models?: readonly {
+    id: string; label: string; maxCount: number; costMultiplier: number;
+    entitlement: string | null; orientations: string[];
+  }[];
   /** Result envelope from the exact selected production recipe, not UI defaults. */
   readonly video?: {
     readonly durationSeconds: number;
@@ -451,6 +462,13 @@ export async function quoteGeneration(input: {
     },
   );
   const balance = await dreamcoinBalance(input.userId);
+  const models = input.profileSelectionAuthority === "public_generator" && plan.referenceRequirements.length > 0
+    ? await selectableCharacterGenerationProfiles({
+      pinnedReferences: plan.referenceRequirements,
+      sourceImageAssetId: typeof plan.requestedSourceImageAssetId === "string" ? plan.requestedSourceImageAssetId : null,
+      lookReferenceAssetId: plan.requestedLookReferenceAssetId,
+      entitlements: plan.entitlements,
+    }) : null;
   const orientations = jsonStringArray(plan.profile.allowedOrientations);
   const defaultOrientation = orientations[0];
   if (!defaultOrientation) {
@@ -482,6 +500,11 @@ export async function quoteGeneration(input: {
       maxCount: plan.profile.maxCount,
       costs,
       balance,
+      ...(models ? { models: models.map((profile) => ({
+        id: profile.profileKey, label: profile.label, maxCount: profile.maxCount,
+        costMultiplier: profile.costMultiplier, entitlement: profile.requiredEntitlement,
+        orientations: jsonStringArray(profile.allowedOrientations),
+      })) } : {}),
       // SPEC: 这一单到底会不会带着角色的身份参考去生成。
       // INTENT: 界面过去用「这个角色有没有 visual profile 行」来决定要不要说
       //   「Identity locked · We keep them recognizable」。那个判据是错的 ——

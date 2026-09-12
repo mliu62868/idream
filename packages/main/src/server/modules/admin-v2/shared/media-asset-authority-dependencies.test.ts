@@ -10,6 +10,7 @@ describe("mediaAssetAuthorityDependenciesBatch", () => {
     const db = {
       $queryRaw: vi.fn(async () => []),
       character: emptyDelegate(),
+      comicPage: emptyDelegate(),
       mediaAssetPlacement: emptyDelegate(),
       characterVisualProfile: emptyDelegate(),
       characterVisualReferenceSnapshot: emptyDelegate(),
@@ -29,6 +30,7 @@ describe("mediaAssetAuthorityDependenciesBatch", () => {
     expect([...dependencies.values()].every((items) => items.length === 0)).toBe(true);
     const querySpies = [
       db.character.findMany,
+      db.comicPage.findMany,
       db.mediaAssetPlacement.findMany,
       db.$queryRaw,
       db.characterVisualProfile.findMany,
@@ -38,7 +40,7 @@ describe("mediaAssetAuthorityDependenciesBatch", () => {
       db.contentProductionItem.findMany,
       db.characterServing.findMany,
     ];
-    expect(querySpies).toHaveLength(9);
+    expect(querySpies).toHaveLength(10);
     for (const query of querySpies) {
       expect(query).toHaveBeenCalledTimes(1);
     }
@@ -74,6 +76,7 @@ describe("mediaAssetAuthorityDependenciesBatch", () => {
     const db = {
       $queryRaw: vi.fn(async () => []),
       character: emptyDelegate(),
+      comicPage: emptyDelegate(),
       mediaAssetPlacement: emptyDelegate(),
       characterVisualProfile: emptyDelegate(),
       characterVisualReferenceSnapshot: emptyDelegate(),
@@ -116,6 +119,7 @@ describe("mediaAssetAuthorityDependenciesBatch", () => {
     const db = {
       $queryRaw: vi.fn(async () => []),
       character: emptyDelegate(),
+      comicPage: emptyDelegate(),
       mediaAssetPlacement: emptyDelegate(),
       characterVisualProfile,
       characterVisualReferenceSnapshot: emptyDelegate(),

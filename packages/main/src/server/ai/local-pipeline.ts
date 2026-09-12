@@ -224,6 +224,8 @@ type StaleGenerationDecision =
   | { readonly kind: "none" }
   | {
       readonly kind: "redispatch";
+      readonly generationJobId: string;
+      readonly attemptId: string;
       readonly outboxId: string;
       readonly outboxStatus: string;
       readonly outboxUpdatedAt: Date;
@@ -380,6 +382,8 @@ async function inspectAndQuarantineStaleGeneration(input: {
       return dispatch && queue
         ? {
             kind: "redispatch",
+            generationJobId: job.id,
+            attemptId: attempt.id,
             outboxId: dispatch.id,
             outboxStatus: dispatch.status,
             outboxUpdatedAt: dispatch.updatedAt,
@@ -559,7 +563,12 @@ async function hasRecoverableTerminalEvidence(input: {
     } else if (await hasExactBlobTerminal(envelope)) {
       return { defer: true, sourceDispatchRecoverable: false, sourceExhausted: false };
     } else {
-      sourceExhausted = source.attemptsMade >= source.maxAttempts;
+      // A failed source already replaced once is not replaced again.
+      sourceExhausted = source.attemptsMade >= source.maxAttempts ||
+        Boolean(await prisma.generationJobEvent.findUnique({
+          where: { id: failedSourceReplacementEventId(input.attempt.id) },
+          select: { id: true },
+        }));
     }
   }
 
@@ -619,9 +628,13 @@ async function recoverStaleGenerationDispatch(
     decision.queue.dedupeKey,
   );
   if (queued) {
-    if (queued.state !== "completed") return 0;
+    // A redispatch decision exists only without a transport, so Gen never
+    // reached the provider. A completed or failed source row (for example one
+    // that stalled past its limit while the host slept) has stopped running.
+    if (queued.state !== "completed" && queued.state !== "failed") return 0;
     const finishedAt = queued.finishedOn ? new Date(queued.finishedOn) : null;
     if (finishedAt && finishedAt >= decision.staleCutoff) return 0;
+    if (queued.state === "failed" && !(await claimFailedSourceReplacement(decision))) return 0;
     const removed = await jobQueue.removeByDedupeKey(
       decision.queue.queue,
       decision.queue.dedupeKey,
@@ -648,6 +661,36 @@ async function recoverStaleGenerationDispatch(
     now,
   });
   return recovered.delivered;
+}
+
+const FAILED_SOURCE_REPLACED_EVENT = "failed_source_replaced";
+
+// INVARIANT: a failed source row is replaced at most once per Attempt. The
+// unique event is written before the row is removed; if the replacement fails
+// again, the recovery probe treats the source as exhausted so the Request is
+// settled through unknown-outcome reconciliation instead of looping.
+async function claimFailedSourceReplacement(
+  decision: Extract<StaleGenerationDecision, { kind: "redispatch" }>,
+) {
+  try {
+    await prisma.generationJobEvent.create({
+      data: {
+        id: failedSourceReplacementEventId(decision.attemptId),
+        jobId: decision.generationJobId,
+        type: FAILED_SOURCE_REPLACED_EVENT,
+        message: "A failed Generation source that never reached the provider was replaced once",
+        metadata: toInputJson({ attemptId: decision.attemptId, queue: decision.queue.queue }),
+      },
+    });
+    return true;
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") return false;
+    throw error;
+  }
+}
+
+function failedSourceReplacementEventId(attemptId: string) {
+  return `generation_request_failed_source_replaced_${attemptId}`;
 }
 
 function isTerminalAttempt(status: string) {
@@ -976,7 +1019,7 @@ async function finalizeGenerationCompleted(
       });
     }
     const chatAsset = deliveredAssets[0];
-    if (chatAsset && job.sourceType === "chat_image") {
+    if (chatAsset && (job.sourceType === "chat_image" || job.sourceType === "chat_video")) {
       // Main owns both the Generation Request and the user-visible Turn. The
       // delivery transaction projects the attachment directly; no callback to
       // Chat and no second product-state machine are involved.
@@ -1304,7 +1347,7 @@ async function refundGeneration(
       onConflict: "return-null",
     });
     if (!transitioned) return false;
-    if (sourceType === "chat_image") {
+    if (sourceType === "chat_image" || sourceType === "chat_video") {
       await tx.chatTurnAttachment.updateMany({
         where: { generationJobId: jobId },
         data: { status, errorCode },

@@ -33,6 +33,7 @@ model User {
   charactersCreated  Character[]              @relation("CharacterCreator")
   characterDrafts    CharacterDraft[]
   recentChats        RecentChat[]
+  groupConversations GroupConversation[]
   chatTurnUsageFacts ChatTurnUsageFact[]
   chatContextDirectives ChatContextDirective[]
   generationJobs     GenerationJob[]
@@ -44,6 +45,7 @@ model User {
   mediaLikes         MediaLike[]
   characterLikes     CharacterLike[]
   mediaCollections   MediaCollection[]
+  comics             Comic[]
   presets            GenerationPreset[]
   subscriptions      Subscription[]
   entitlements       Entitlement[]
@@ -618,10 +620,41 @@ model CharacterTemplate {
 
 // Main-owned Companion Chat product authority. Chat's local files contain only
 // AgentRun execution evidence and may be rebuilt from these committed Turns.
+// Members retain their own immutable Character session. Only this aggregate
+// controls the shared transcript order; message bodies remain in ChatTurn.
+model GroupConversation {
+  id            String   @id
+  userId        String
+  title         String
+  status        String   @default("active")
+  nextOrdinal   Int      @default(1)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  members       RecentChat[]
+  turns         GroupChatTurn[]
+
+  @@index([userId, updatedAt])
+  @@map("group_conversations")
+}
+
+model GroupChatTurn {
+  groupId       String
+  ordinal       Int
+  turnId        String @unique
+  group         GroupConversation @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  turn          ChatTurn @relation(fields: [turnId], references: [id], onDelete: Cascade)
+
+  @@id([groupId, ordinal])
+  @@map("group_chat_turns")
+}
+
 model RecentChat {
   sessionId                     String     @id
   userId                        String
   characterId                   String
+  groupId                       String?
+  groupPosition                 Int?
   title                         String?
   status                        String     @default("active") // active | archived
   activeKey                     String?    @unique
@@ -641,11 +674,14 @@ model RecentChat {
   updatedAt                     DateTime   @updatedAt
   user                          User       @relation(fields: [userId], references: [id], onDelete: Cascade)
   character                     Character  @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  group                         GroupConversation? @relation(fields: [groupId], references: [id], onDelete: Cascade)
   turns                         ChatTurn[]
   experiencePreference          ChatExperiencePreference?
 
   @@index([userId, lastMessageAt])
   @@index([characterId])
+  @@unique([groupId, characterId])
+  @@unique([groupId, groupPosition])
   @@map("recent_chats")
 }
 
@@ -701,6 +737,7 @@ model ChatTurn {
   terminalAt                    DateTime?
   session                       RecentChat           @relation(fields: [sessionId], references: [sessionId], onDelete: Cascade)
   attachments                   ChatTurnAttachment[]
+  groupTurn                     GroupChatTurn?
 
   @@unique([sessionId, idempotencyKey])
   @@index([sessionId, createdAt])
@@ -923,6 +960,7 @@ model MediaAsset {
   character              Character?                         @relation("CharacterAssets", fields: [characterId], references: [id], onDelete: SetNull)
   likes                  MediaLike[]
   collections            MediaCollectionItem[]
+  comicPages             ComicPage[]
   productionItems        ContentProductionItem[]
   placements             MediaAssetPlacement[]
   characterImageOf       Character[]                        @relation("CharacterImage")
@@ -1098,6 +1136,27 @@ model MediaCollectionItem {
   @@map("media_collection_items")
 }
 
+model CoinOffer {
+  id               String            @id @default(cuid())
+  offerKey         String
+  version          Int
+  name             String
+  dreamcoins       Int
+  priceCents       Int
+  currency         String            @default("usd")
+  eligibility      String            @default("all") // all | paid_access
+  terms            String
+  status           String            @default("draft") // draft | published | retired
+  publishedAt      DateTime?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  checkoutSessions CheckoutSession[]
+
+  @@unique([offerKey, version])
+  @@index([status, offerKey])
+  @@map("coin_offers")
+}
+
 model Plan {
   id                 String            @id @default(cuid())
   slug               String // enum: premium | deluxe
@@ -1170,6 +1229,7 @@ model CheckoutSession {
   id                              String    @id @default(cuid())
   userId                          String
   planId                          String?
+  coinOfferId                     String?
   provider                        String
   providerSessionId               String?
   providerInvoiceStatus           String?
@@ -1195,6 +1255,7 @@ model CheckoutSession {
   updatedAt                       DateTime  @default(now()) @updatedAt
   user                            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   plan                            Plan?     @relation(fields: [planId], references: [id], onDelete: Restrict)
+  coinOffer                       CoinOffer? @relation(fields: [coinOfferId], references: [id], onDelete: Restrict)
 
   @@unique([userId, idempotencyKey])
   @@unique([provider, providerSessionId])
@@ -1202,6 +1263,7 @@ model CheckoutSession {
   @@index([status, dispatchLeaseUntil])
   @@index([needsReconciliation, updatedAt])
   @@index([planId, createdAt])
+  @@index([coinOfferId, createdAt])
   @@map("checkout_sessions")
 }
 
@@ -2804,4 +2866,53 @@ model AiUsageFact {
   @@index([provider, model, occurredAt])
   @@index([characterId, releaseId, occurredAt])
   @@map("ai_usage_facts")
+}
+
+model Comic {
+  id           String   @id @default(cuid())
+  creatorId    String
+  title        String
+  description  String   @default("")
+  visibility   String   @default("private") // private | unlisted | public
+  allowRemix   Boolean  @default(false)
+  status       String   @default("draft") // draft | pending_review | published | withdrawn
+  version      Int      @default(1)
+  reviewNote   String?
+  submittedAt  DateTime?
+  publishedAt  DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  creator      User     @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  episodes     ComicEpisode[]
+
+  @@index([creatorId, updatedAt, id])
+  @@index([status, visibility, publishedAt, id])
+  @@map("comics")
+}
+
+model ComicEpisode {
+  id        String @id @default(cuid())
+  comicId   String
+  ordinal   Int
+  title     String
+  comic     Comic @relation(fields: [comicId], references: [id], onDelete: Cascade)
+  pages     ComicPage[]
+
+  @@unique([comicId, ordinal])
+  @@map("comic_episodes")
+}
+
+model ComicPage {
+  id               String @id @default(cuid())
+  episodeId        String
+  mediaAssetId     String?
+  ordinal          Int
+  caption          String @default("")
+  sourceProvenance  Json
+  episode          ComicEpisode @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+  mediaAsset       MediaAsset? @relation(fields: [mediaAssetId], references: [id], onDelete: SetNull)
+
+  @@unique([episodeId, ordinal])
+  @@index([mediaAssetId])
+  @@map("comic_pages")
 }

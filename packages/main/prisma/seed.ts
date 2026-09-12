@@ -807,6 +807,12 @@ async function ensureDefaultPricingRule(input: {
 
 async function seedAdminControlPlane() {
   await prisma.featureFlag.upsert({
+    where: { key: "chat_video" },
+    update: { label: "Chat video", description: "Explicit quoted video requests from delivered chat images." },
+    create: { key: "chat_video", label: "Chat video", description: "Explicit quoted video requests from delivered chat images.", enabled: false, rolloutPercent: 100, targetRoles: [], targetPlans: ["deluxe"], hardPolicy: false },
+  });
+
+  await prisma.featureFlag.upsert({
     where: { key: "video_gen" },
     update: {
       label: "Video generation",

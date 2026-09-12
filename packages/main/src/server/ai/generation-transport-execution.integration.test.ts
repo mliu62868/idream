@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
+import { UnrecoverableError, Worker } from "bullmq";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
+import { env } from "@/server/lib/env";
+import { dispatchGenerationAttemptOutbox } from "@/server/modules/generation/generation-attempt-authority";
 import { reconcileStaleGenerationJobs } from "./local-pipeline";
 import { recordGenerationTransportExecution } from "./generation-transport-execution";
 
@@ -349,6 +353,67 @@ describe("Generation TransportExecution authority", () => {
       await prisma.mainOutboxEvent.deleteMany({ where: { id: `transport-dispatch-${waitingAttemptId}` } });
     }
   });
+
+  it("replaces a failed source that never reached the provider once, then settles a repeated failure as exhausted", async () => {
+    const jobId = `transport-failed-source-job-${suffix}`;
+    const sourceAttemptId = `transport-failed-source-${suffix}`;
+    const dedupeKey = `generation:${jobId}:attempt:1`;
+    // Scan with a clock past the image stale timeout of every real write below.
+    const scanAt = () => new Date(Date.now() + 60 * 60_000);
+    await prisma.generationJob.create({ data: { id: jobId, userId, mode: "image", status: "queued", provider: base.provider, model: base.model, controls: {}, presetIds: [], outputCount: 1 } });
+    await prisma.generationAttempt.create({ data: { id: sourceAttemptId, requestId: jobId, attemptNo: 1, provider: base.provider, workflowKey: base.model, workflowVersion: 1, status: "queued" } });
+    await createDispatchAuthority(sourceAttemptId, 1, jobId);
+    // BullMQ fails a job that stalled past its limit without a retry or a Gen terminal record.
+    const failSourceLikeStall = async () => {
+      const source = await jobQueue.getByDedupeKey("ai.image.generate", dedupeKey);
+      const worker = new Worker("ai.image.generate", null, { autorun: false, connection: workerConnection(), prefix: env.BULLMQ_PREFIX });
+      worker.on("error", () => undefined);
+      const token = `stalled-${randomUUID()}`;
+      try {
+        const claimed = await worker.getNextJob(token, { block: false });
+        expect(claimed?.id).toBe(source?.id);
+        await claimed!.moveToFailed(new UnrecoverableError("job stalled more than allowable limit"), token, false);
+      } finally {
+        await worker.close(true);
+      }
+      await expect(jobQueue.getByDedupeKey("ai.image.generate", dedupeKey)).resolves.toMatchObject({ state: "failed", attemptsMade: 1 });
+    };
+    try {
+      await expect(dispatchGenerationAttemptOutbox(prisma, { outboxIds: [`transport-dispatch-${sourceAttemptId}`], limit: 1 })).resolves.toMatchObject({ delivered: 1 });
+      await failSourceLikeStall();
+
+      await expect(reconcileStaleGenerationJobs({ now: scanAt(), timeoutMs: 60_000, generationJobIds: [jobId] })).resolves.toMatchObject({ enqueued: 1, quarantined: 0 });
+      await expect(jobQueue.getByDedupeKey("ai.image.generate", dedupeKey)).resolves.toMatchObject({ state: "waiting" });
+      await expect(prisma.generationJobEvent.count({ where: { jobId, type: "failed_source_replaced" } })).resolves.toBe(1);
+      await expect(prisma.generationAttempt.findUniqueOrThrow({ where: { id: sourceAttemptId } })).resolves.toMatchObject({ status: "queued" });
+
+      await failSourceLikeStall();
+      await expect(reconcileStaleGenerationJobs({ now: scanAt(), timeoutMs: 60_000, generationJobIds: [jobId] })).resolves.toMatchObject({ enqueued: 0, quarantined: 1 });
+      await expect(prisma.generationAttempt.findUniqueOrThrow({ where: { id: sourceAttemptId } })).resolves.toMatchObject({ status: "unknown", errorCode: "generation_source_exhausted" });
+      await expect(jobQueue.getByDedupeKey("ai.image.generate", dedupeKey)).resolves.toMatchObject({ state: "failed" });
+      await expect(prisma.generationJobEvent.count({ where: { jobId, type: "failed_source_replaced" } })).resolves.toBe(1);
+    } finally {
+      await jobQueue.removeByDedupeKey("ai.image.generate", dedupeKey);
+      await prisma.aiUsageFact.deleteMany({ where: { attemptId: sourceAttemptId } });
+      await prisma.generationJobEvent.deleteMany({ where: { jobId } });
+      await prisma.generationAttemptEvent.deleteMany({ where: { attemptId: sourceAttemptId } });
+      await prisma.generationAttempt.deleteMany({ where: { id: sourceAttemptId } });
+      await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: jobId } });
+      await prisma.generationJob.deleteMany({ where: { id: jobId } });
+    }
+  });
+
+  function workerConnection() {
+    const url = new URL(env.REDIS_URL);
+    return {
+      host: url.hostname,
+      port: url.port ? Number.parseInt(url.port, 10) : 6379,
+      username: url.username ? decodeURIComponent(url.username) : undefined,
+      password: url.password ? decodeURIComponent(url.password) : undefined,
+      db: url.pathname && url.pathname !== "/" ? Number.parseInt(url.pathname.slice(1), 10) : 0,
+      maxRetriesPerRequest: null,
+    };
+  }
 
   async function createDispatchAuthority(
     reservedAttemptId: string,

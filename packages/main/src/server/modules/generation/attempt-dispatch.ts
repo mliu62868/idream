@@ -1,3 +1,4 @@
+import { readGenerationContextToken } from "@/server/modules/ourdream/generation-context";
 import type { Prisma } from "@prisma/client";
 import {
   generationDispatchRequestId,
@@ -73,6 +74,7 @@ export type ExistingGenerationJob = {
   outputCount: number;
   seed?: string | null;
   sourceType?: string | null;
+  sourceMeta?: Prisma.JsonValue | null;
   referenceAssetIds?: Prisma.JsonValue | null;
   referenceSetRevisionId?: string | null;
   referenceManifest?: Prisma.JsonValue | null;
@@ -364,12 +366,30 @@ export async function buildGenerationAttemptQueueInput(
     controls,
     "lookReferenceAssetId",
   );
+  let authorizedComicSourceImageAssetId: string | undefined;
+  if (job.sourceType === "comic_remix") {
+    const metadata = jsonRecord(job.sourceMeta);
+    const token = stringFromRecord(metadata, "generationContextToken");
+    if (!token) throw Errors.conflict("Comic dispatch is missing its accepted source grant");
+    const grant = readGenerationContextToken(token, job.userId);
+    // The accepted job carries the exact publication grant that admission checked
+    // under Comic/media locks. Withdrawal stops new consumption, not this accepted
+    // attempt. Only the signed source_image is granted; identity refs stay scoped.
+    if (grant.source.kind !== "comic" || !grant.comicGrant ||
+      grant.source.comicId !== metadata.comicId || grant.source.comicVersion !== metadata.comicVersion ||
+      grant.source.pageId !== metadata.comicPageId || grant.digest !== metadata.generationContextDigest ||
+      grant.comicGrant.mediaAssetId !== requestedSourceImageAssetId || grant.comicGrant.mediaAssetId !== metadata.sourceMediaId) {
+      throw Errors.conflict("Comic dispatch does not match its accepted source grant");
+    }
+    authorizedComicSourceImageAssetId = grant.comicGrant.mediaAssetId;
+  }
   const resolvedReferenceImages =
     job.mode === "image" || job.mode === "video"
       ? await imageReferenceInputsForGenerationJob({
           userId: job.userId,
           characterId: job.characterId,
           controls,
+          authorizedSourceImageAssetId: authorizedComicSourceImageAssetId,
           referenceAssetIds: job.referenceAssetIds,
           referenceManifest: job.referenceManifest,
           maxReferences: Number.MAX_SAFE_INTEGER,
@@ -779,6 +799,7 @@ async function assertGenerationCharacterDispatchable(
     | "controls"
     | "mode"
     | "sourceType"
+    | "sourceMeta"
     | "visualProfileId"
   >,
 ) {
@@ -823,9 +844,25 @@ async function assertGenerationCharacterDispatchable(
     jsonRecord(job.controls),
     "sourceImageAssetId",
   );
+  let acceptedChatImage = false;
+  if (job.sourceType === "chat_video") {
+    const metadata = jsonRecord(job.sourceMeta);
+    const token = stringFromRecord(metadata, "generationContextToken");
+    if (!token) throw Errors.conflict("Chat video dispatch is missing its accepted source grant");
+    const grant = readGenerationContextToken(token, job.userId);
+    if (grant.source.kind !== "chat" || !grant.source.mediaAssetId ||
+      grant.source.sessionId !== metadata.sessionId || grant.source.turnId !== metadata.exchangeId ||
+      grant.source.attempt !== metadata.attempt || grant.digest !== metadata.generationContextDigest ||
+      grant.source.mediaAssetId !== metadata.sourceMediaId || grant.source.mediaAssetId !== pinnedSourceImageAssetId) {
+      throw Errors.conflict("Chat video dispatch does not match its accepted source grant");
+    }
+    // Admission already locked this Turn and accepted its exact image. Later
+    // portrait or Turn edits cannot substitute or invalidate that paid receipt.
+    acceptedChatImage = true;
+  }
   if (
     job.mode === "video" &&
-    !contentProduction &&
+    !contentProduction && !acceptedChatImage &&
     (
       !pinnedSourceImageAssetId ||
       character.imageAssetId !== pinnedSourceImageAssetId
@@ -842,7 +879,8 @@ async function assertGenerationCharacterDispatchable(
     );
   }
   // SPEC: Admin 角色视频可固定任意一张仍可用的角色图片；引用解析随后会重新校验
-  // 归属、可读取性和 source_image 角色。只有用户侧视频必须继续绑定当前公开主图。
+  // 归属、可读取性和 source_image 角色。公开 Generator 视频继续绑定当前主图；
+  // 已接纳的 Chat 视频使用其签名冻结源图。
   const pinnedLegacyAuthority =
     legacyCharacterGenerationAuthorityFromControls(job.controls);
   if (

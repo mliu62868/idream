@@ -8,6 +8,16 @@ const messages = [
 ];
 
 describe("model request source boundary", () => {
+  it.each([false, true])("preserves stable group speaker identity in the actual provider request (image=%s)", (requiredTool) => {
+    const speaker = { characterId: "briar", sessionId: "briar-session", name: "Briar" };
+    const input = [messages[0], { ...messages[1], speaker }, messages[2]];
+    const request = formatModelRequestInput({ requiredTool, messages: input });
+    const content = (request.messages.at(-1) as { content: string }).content;
+    expect(content).toContain(JSON.stringify(speaker));
+    expect(content.indexOf("I chose basil")).toBeLessThan(content.indexOf("I will plant"));
+    expect(content).not.toContain('"source":"user","speaker"');
+  });
+
   it.each([false, true])("does not promote plugin context or recall to user authority (image=%s)", (requiredTool) => {
     const request = formatModelRequestInput({ requiredTool, messages: [
       messages[0]!,

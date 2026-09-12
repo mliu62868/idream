@@ -1,0 +1,1 @@
+ALTER TABLE "comics" ADD COLUMN "allowRemix" BOOLEAN NOT NULL DEFAULT false;

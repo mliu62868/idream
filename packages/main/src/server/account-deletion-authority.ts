@@ -12,6 +12,7 @@ import { providers } from "@/server/providers";
 import { prisma } from "@/server/lib/db";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { updateCharacterProjectMetadata } from "@/server/modules/admin-v2/characters/transition";
+import { revokeAccountEmailCodes } from "@/server/modules/ourdream/account-email-challenges";
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 
@@ -67,11 +68,12 @@ export async function requestAccountDeletion(
     };
   }
 
-  await tx.user.update({
+  const user = await tx.user.update({
     where: { id: input.userId },
     data: { status: "deleted", deletedAt: now },
   });
   await tx.session.deleteMany({ where: { userId: input.userId } });
+  await revokeAccountEmailCodes(tx, user.email);
   const deletion = await tx.accountDeletion.create({
     data: {
       id,
@@ -1130,6 +1132,7 @@ async function hardDeleteMainAccountAuthority(
     where: { subjectType: "user", subjectId: input.userId },
   });
   await tx.verification.deleteMany({ where: { identifier: { in: [user.email, `account-recovery:${input.userId}`] } } });
+  await revokeAccountEmailCodes(tx, user.email);
 
   // JSON payloads and loose operational rows have no User FK. Parameterized
   // SQL closes the exact-id projections without scanning or interpolating.

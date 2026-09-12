@@ -1,8 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
 
 const publicRoutes = [
-  { path: "/", title: /ourdream\.ai/i },
-  { path: "/explore", title: /ourdream\.ai/i },
+  { path: "/", title: /^iDream\b/i },
+  { path: "/explore", title: /^iDream\b/i },
   { path: "/create", title: /create/i },
   { path: "/generate", title: /ai image generator/i },
   { path: "/chat", title: /chat/i },

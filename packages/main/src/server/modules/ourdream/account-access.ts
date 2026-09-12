@@ -9,6 +9,9 @@ import { jsonBody } from "@/server/lib/request-json";
 import { enforceRateLimit } from "@/server/lib/rate-limit";
 import { clearSessionCookie, createSessionToken, getAuthCtx, hashPassword, requireUser, sessionCookie, verifyPassword } from "@/server/lib/auth";
 import { accountDeletionPublicState, accountDeletionSubjectHash, requestAccountDeletion } from "@/server/account-deletion-authority";
+import { passwordAccountForUser } from "@/server/lib/auth/password-account";
+import { accountMailAvailable } from "@/server/providers/account-mail";
+import { accountEmailAddressSchema, accountEmailProofSchema, consumeAccountEmailCode, requestAccountEmailCode, revokeAccountEmailCodes } from "./account-email-challenges";
 
 const YEAR_MS = 365 * 24 * 60 * 60 * 1_000;
 const passwordSchema = z.string().min(8).max(1024);
@@ -50,7 +53,7 @@ async function lockActiveUser(tx: Prisma.TransactionClient, userId: string) {
 
 async function verifyCurrentPassword(tx: Prisma.TransactionClient, userId: string, password: string) {
   const user = await lockActiveUser(tx, userId);
-  const account = await tx.account.findFirst({ where: { userId, providerId: "credential" } });
+  const account = await passwordAccountForUser(tx, userId);
   if (!account || !verifyPassword(password, account.password)) throw Errors.unauthorized("Current password is incorrect. Try again or use account recovery.");
   return user;
 }
@@ -80,15 +83,17 @@ async function recoverAccess(request: Request) {
   const token = createSessionToken();
   const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1_000);
   const userId = await prisma.$transaction(async (tx) => {
-    const account = await tx.account.findUnique({ where: { providerId_accountId: { providerId: "credential", accountId: body.email } } });
+    const candidate = await tx.user.findUnique({ where: { email: body.email }, select: { id: true } });
+    if (candidate) await lockActiveUser(tx, candidate.id);
+    const account = candidate ? await passwordAccountForUser(tx, candidate.id) : null;
     const invalid = () => Errors.unauthorized("Email or recovery code is incorrect, expired, or already used. Check your saved code; if you can still log in, generate a new code in Account management.");
     if (!account) throw invalid();
-    await lockActiveUser(tx, account.userId);
     const proof = await tx.verification.findFirst({ where: { identifier: recoveryIdentifier(account.userId), value: recoveryHash(body.recoveryCode), expiresAt: { gt: new Date() } } });
     if (!proof) throw invalid();
     await tx.verification.delete({ where: { id: proof.id } });
     await tx.account.update({ where: { id: account.id }, data: { password: hashPassword(body.password) } });
     await tx.session.deleteMany({ where: { userId: account.userId } });
+    await revokeAccountEmailCodes(tx, body.email);
     await storeRecoveryCode(tx, account.userId, code);
     await tx.session.create({ data: { userId: account.userId, token, expiresAt } });
     return account.userId;
@@ -100,6 +105,8 @@ async function recoverAccess(request: Request) {
 
 export async function dispatchAccountAccess(request: Request, segments: string[]): Promise<Response | null> {
   const [resource, action] = segments;
+  const emailAccess = await dispatchEmailAccess(request, segments);
+  if (emailAccess) return emailAccess;
   if (resource === "auth" && action === "recover" && request.method === "POST") return recoverAccess(request);
   if (resource !== "account") return null;
   if (action === "deletion-status" && request.method === "GET") {
@@ -120,7 +127,8 @@ export async function dispatchAccountAccess(request: Request, segments: string[]
   if (action === "recovery-code") {
     const code = newRecoveryCode();
     const expiresAt = await prisma.$transaction(async (tx) => {
-      await verifyCurrentPassword(tx, user.id, body.password);
+      const active = await verifyCurrentPassword(tx, user.id, body.password);
+      await revokeAccountEmailCodes(tx, active.email);
       return storeRecoveryCode(tx, user.id, code);
     });
     return ok({ recoveryCode: code, recoveryCodeExpiresAt: expiresAt.toISOString() });
@@ -138,5 +146,57 @@ export async function dispatchAccountAccess(request: Request, segments: string[]
   });
   const response = ok({ requested: true, deletion: accountDeletionPublicState(deletion), receipt: deletionReceipt(deletion.id) });
   response.headers.append("set-cookie", clearSessionCookie());
+  return response;
+}
+
+async function dispatchEmailAccess(request: Request, segments: string[]): Promise<Response | null> {
+  const [resource, action, operation] = segments;
+  const reset = resource === "auth" && action === "password-reset";
+  const verification = resource === "account" && action === "email-verification";
+  if (!reset && !verification) return null;
+  if (verification && segments.length === 2 && request.method === "GET") {
+    const current = requireUser(await getAuthCtx(request));
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: current.id } });
+    return ok({ userId: user.id, email: user.email, verified: user.emailVerified, available: accountMailAvailable() });
+  }
+  if (segments.length !== 3 || request.method !== "POST" || !["request", "confirm"].includes(operation)) return null;
+  const payload = await jsonBody(request);
+  const email = reset
+    ? z.object({ email: accountEmailAddressSchema }).parse(payload).email
+    : null;
+  const viewer = verification ? requireUser(await getAuthCtx(request)) : null;
+  const expectedUserId = verification ? z.object({ expectedUserId: z.string().min(1) }).parse(payload).expectedUserId : undefined;
+  if (viewer && expectedUserId !== viewer.id) throw Errors.conflict("Your account changed. Reload before verifying your email.");
+  const current = viewer ? await prisma.user.findUniqueOrThrow({ where: { id: viewer.id } }) : null;
+  const address = email ?? current!.email;
+  const purpose = verification ? "verify_email" as const : "reset_password" as const;
+  if (operation === "request") {
+    const challenge = await requestAccountEmailCode({ request, email: address, purpose, expectedUserId });
+    return ok({ ...challenge, message: "Check the requested mailbox. A code can only verify or recover an eligible account; this response does not confirm that one exists." }, { status: 202 });
+  }
+  const proof = accountEmailProofSchema.parse(payload);
+  if (verification) {
+    return ok(await consumeAccountEmailCode({ request, email: address, purpose, expectedUserId, ...proof }, async (tx, user) => {
+      await tx.user.update({ where: { id: user.id }, data: { emailVerified: true } });
+      return { userId: user.id, verified: true };
+    }));
+  }
+  const { password } = z.object({ password: passwordSchema }).parse(payload);
+  const recoveryCode = newRecoveryCode();
+  const token = createSessionToken();
+  const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1_000);
+  const result = await consumeAccountEmailCode({ request, email: address, purpose, ...proof }, async (tx, user) => {
+    const account = await passwordAccountForUser(tx, user.id);
+    if (!account || account.userId !== user.id) throw Errors.unauthorized("Email or code is incorrect, expired, or already used. Request a new code after the cooldown.");
+    await tx.account.update({ where: { id: account.id }, data: { password: hashPassword(password) } });
+    await tx.user.update({ where: { id: user.id }, data: { emailVerified: true } });
+    await tx.session.deleteMany({ where: { userId: user.id } });
+    await revokeAccountEmailCodes(tx, address);
+    const recoveryCodeExpiresAt = await storeRecoveryCode(tx, user.id, recoveryCode);
+    await tx.session.create({ data: { userId: user.id, token, expiresAt } });
+    return { recovered: true, userId: user.id, recoveryCode, recoveryCodeExpiresAt: recoveryCodeExpiresAt.toISOString() };
+  });
+  const response = ok(result);
+  response.headers.append("set-cookie", sessionCookie(token, expiresAt));
   return response;
 }

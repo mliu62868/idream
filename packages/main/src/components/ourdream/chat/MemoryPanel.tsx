@@ -16,6 +16,7 @@ export function MemoryPanel({
   memoryEnabled,
   memoryPending,
   onToggleMemory,
+  groupConversation = false,
 }: Readonly<{
   open: boolean;
   onClose: () => void;
@@ -24,6 +25,7 @@ export function MemoryPanel({
   memoryEnabled: boolean;
   memoryPending: boolean;
   onToggleMemory: () => void;
+  groupConversation?: boolean;
 }>) {
   const [resetting, setResetting] = useState(false);
   const [resetConfirm, setResetConfirm] = useState(false);
@@ -51,6 +53,10 @@ export function MemoryPanel({
         return;
       }
       setResetConfirm(false);
+      if (groupConversation) {
+        window.location.href = "/chat/groups";
+        return;
+      }
       const started = await fetch("/api/v1/chat/sessions", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -126,6 +132,7 @@ export function MemoryPanel({
           <h3 className="mb-1 text-[12px] font-bold uppercase tracking-wide text-[rgb(170,170,170)]">
             Clear memory
           </h3>
+          {groupConversation ? <p className="mb-3 text-xs leading-5 text-white/70">Clearing this Character&apos;s memory also archives group conversations they belong to. Other Characters keep their own memories.</p> : null}
           <p className="mb-3 text-[12px] leading-4 text-[rgb(114,113,112)]">
             {resetConfirm
               ? "This clears learned memories and your pinned facts, and moves your current chats with this character to the archive. You'll start a new conversation. Your old chats stay readable. Custom instructions stay until you remove them."

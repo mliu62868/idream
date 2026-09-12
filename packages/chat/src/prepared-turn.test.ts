@@ -73,6 +73,25 @@ function context(): BuiltContext {
 }
 
 describe("PreparedTurn budget", () => {
+  it("keeps another group member's reply as labelled replay and exposes only the selected Soul and memory policy", () => {
+    const source = context();
+    source.policy = { ...source.policy, maxContextChars: 24_000, memoryEnabled: false };
+    source.group = { id: "group-1", ordinal: 2, members: [{ characterId: "character-1", sessionId: "session-1", name: "Mara" }, { characterId: "character-2", sessionId: "session-2", name: "Briar" }] };
+    source.recentMessages = [
+      { id: "old-user", role: "user", content: "Who brought the notebook?" },
+      { id: "briar-reply", role: "assistant", content: "I brought it.", speaker: source.group.members[1] },
+      { id: "current", role: "user", content: "Mara, who brought the notebook?" },
+    ];
+    const prepared = compilePreparedTurn(source, "current");
+    expect(prepared.messages.find(message => message.id === "briar-reply")).toMatchObject({ role: "assistant", sourceKind: "replay", speaker: source.group.members[1], content: "I brought it." });
+    expect(prepared.messages[0].content).toContain("never write their next reply");
+    expect(prepared.messages[0].content).toContain("long-term memory is disabled");
+    expect(prepared.characterName).toBe("Mara");
+    expect(prepared.context.persona.characterId).toBe("character-1");
+    expect(prepared.messages.filter(message => message.sourceKind === "current_user")).toEqual([{ id: "current", role: "user", sourceKind: "current_user", content: "Mara, who brought the notebook?" }]);
+    expect(prepared.trace.soulFingerprint).toBe(source.persona.soulFingerprint);
+  });
+
   it("uses the enabled global persona and Scene choice as Turn data without granting tools or changing memory, model or Soul", () => {
     const source = context();
     source.policy = { ...source.policy, maxContextChars: 20_000, imageToolEnabled: true, memoryEnabled: false, modelProfile: { ...source.policy.modelProfile, supportsTools: true } };

@@ -102,7 +102,7 @@ export function AgeGate({
           </Link>
         </p>
         <button
-          className="mt-6 min-h-10 w-full rounded-full bg-[linear-gradient(0deg,#ff1cac,#fd5fc2_50%,#ff79d1)] px-4 py-3 text-[14px] font-bold leading-[14px] text-white disabled:opacity-70"
+          className="mt-6 min-h-10 w-full rounded-full bg-[linear-gradient(0deg,#ff1cac,#fd5fc2_50%,#ff79d1)] px-4 py-3 text-[14px] font-bold leading-[14px] text-neutral-900 disabled:opacity-70"
           disabled={pending}
           onClick={accept}
           ref={enterButtonRef}
@@ -121,7 +121,7 @@ export function AgeGate({
           </p>
         )}
         <a
-          className="mt-4 text-[12px] font-medium leading-4 text-[rgb(114,113,112)]"
+          className="mt-4 text-[12px] font-medium leading-4 text-[rgb(170,170,170)]"
           href="https://www.google.com/"
           rel="noreferrer"
         >

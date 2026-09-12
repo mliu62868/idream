@@ -5,6 +5,7 @@ import { createGenerationIdempotencyKeys } from "@/lib/generation-request";
 import {
   GenerationRequestError,
   listGenerationReceipts,
+  parseStoredGenerationReceipt,
   readGenerationReceipts,
   requestGenerationReceipt,
   type GenerationReceipt,
@@ -18,7 +19,7 @@ function createKeys() {
 type ReceiptKeys = ReturnType<typeof createKeys>;
 
 function mapForReceipt(keys: ReceiptKeys, receipt: GenerationReceipt) {
-  return receipt.kind === "generation" ? keys.generation
+  return receipt.kind === "generation" || receipt.kind === "chat_video" ? keys.generation
     : receipt.kind === "media_variation" ? keys.variation
     : receipt.kind === "generation_retry" ? keys.retry : keys.enhancement;
 }
@@ -87,7 +88,22 @@ export function useGenerationReceipts({ ownerScope, onWarning }: {
   useEffect(() => {
     confirmOwner(ownerScope);
     const timer = window.setTimeout(() => { setCheckingKeys(new Set(checksRef.current)); refresh(); }, 0);
-    const onStorage = () => { restore(); refresh(); };
+    const onStorage = (event: StorageEvent) => {
+      // The retained book keeps its owner during revalidation. Consuming an
+      // exact removal does not grant the suspended context permission to write.
+      const retainedOwnerScope = bookRef.current.ownerScope;
+      if (retainedOwnerScope && event.storageArea === window.localStorage && event.key && event.newValue === null) {
+        const removed = parseStoredGenerationReceipt({ ownerScope: retainedOwnerScope, storageKey: event.key, value: event.oldValue });
+        if (removed) {
+          const map = mapForReceipt(bookRef.current.keys, removed);
+          // Consume the exact cross-tab removal, without dropping requests that
+          // only exist in memory because browser persistence failed.
+          if (map.get(removed.record) === removed.key) map.delete(removed.record);
+        }
+      }
+      restore();
+      refresh();
+    };
     window.addEventListener("storage", onStorage);
     return () => {
       window.clearTimeout(timer);

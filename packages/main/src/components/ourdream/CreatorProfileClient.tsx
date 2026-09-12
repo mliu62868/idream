@@ -13,6 +13,7 @@ import type { CharacterCardData } from "@/types/ourdream";
 import { AppSidebar } from "./AppSidebar";
 import { useAgeGateAccess } from "./AgeGateBoundary";
 import { CharacterCard } from "./CharacterCard";
+import { ComicDiscovery } from "./ComicCatalog";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { SiteFooter } from "./SiteFooter";
 import { authHrefForTarget } from "./authRedirect";
@@ -258,6 +259,7 @@ function CreatorProfileContent({ id }: Readonly<{ id: string }>) {
                   This creator has no public characters yet.
                 </p>
               )}
+              <ComicDiscovery creatorId={id} />
             </>
           ) : (
             <p

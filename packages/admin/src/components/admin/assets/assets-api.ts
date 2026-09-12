@@ -23,6 +23,8 @@ export function assetAuthorityDependencyView(
   dependency: AssetAuthorityDependency,
 ): { detail: string; key: string; title: string } {
   switch (dependency.kind) {
+    case "comic_publication":
+      return { detail: dependency.comicId, key: `${dependency.kind}:${dependency.comicId}`, title: "Submitted or published Comic" };
     case "character_primary_image":
       return {
         detail: dependency.characterId,

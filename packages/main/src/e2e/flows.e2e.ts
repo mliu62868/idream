@@ -395,10 +395,13 @@ test("auth UI handles invalid login, duplicate signup recovery, logout, returnin
   await expect(page.getByText("Invalid email or password")).toBeVisible();
   await expect(page.getByTestId("auth-status")).toHaveAttribute("role", "alert");
   await expect(page.getByTestId("auth-status")).toHaveAttribute("aria-live", "assertive");
-  await expect(page.getByRole("link", { name: "Contact Help Desk" })).toHaveAttribute(
-    "href",
-    "/helpdesk",
-  );
+  await page.getByRole("button", { name: "Forgot password? Recover access" }).click();
+  await expect(page.getByRole("heading", { name: "Recover account access" })).toBeVisible();
+  await expect(page.getByLabel("Recovery code", { exact: true })).toBeVisible();
+  await page.getByText("Lost or expired recovery code?", { exact: true }).click();
+  await expect(page.getByText("Without your password, mailbox access, or a valid recovery code", { exact: false })).toBeVisible();
+  await page.getByRole("button", { name: "Back to login", exact: true }).click();
+  await waitForAuthWorkspaceReady(page);
   await expect(page).toHaveURL(/\/login$/);
 
   await page.goto("/signup");

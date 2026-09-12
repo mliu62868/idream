@@ -194,7 +194,7 @@ export function AuthWorkspace({
               </p>
               {mode === "login" && (
                 <p className="text-[13px] font-medium text-[rgb(170,170,170)]">
-                  Use your saved recovery code if you cannot log in. Open Recover access above for lost or expired code guidance.
+                  Use email recovery or a saved recovery code if you cannot log in. Open Recover access above to choose a method.
                 </p>
               )}
               {shouldShowSignupLoginRecovery && (

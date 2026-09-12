@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { PRODUCT_FEEDBACK_CATEGORIES } from "@idream/shared/catalog";
-import { chatSceneStateSchema, supportConversationResponseSchema, supportReplyResponseSchema } from "@idream/shared/contracts";
+import { chatSceneStateSchema, groupChatMemberSchema, supportConversationResponseSchema, supportReplyResponseSchema } from "@idream/shared/contracts";
 
 const nonEmptyString = z.string().trim().min(1);
 const nonNegativeInteger = z.number().int().nonnegative();
@@ -999,8 +999,28 @@ function hasCharacterRecipe(
 
 const generationConfigResponseSchema = successEnvelope(generationConfigSchema);
 
+const generationContextSchema = z.object({
+  token: z.string().min(1).max(4096),
+  source: z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("chat"), sessionId: nonEmptyString, turnId: nonEmptyString, attempt: z.number().int().positive(), mediaAssetId: nonEmptyString.optional() }).strict(),
+    z.object({ kind: z.literal("comic"), comicId: nonEmptyString, comicVersion: z.number().int().positive(), pageId: nonEmptyString }).strict(),
+  ]),
+  identityMode: z.enum(["character", "source_only"]),
+  characterId: nonEmptyString.nullable(), characterName: nonEmptyString.nullable(),
+  prompt: z.string(), scene: chatSceneStateSchema.nullable(),
+  sourceMedia: z.object({ id: nonEmptyString, url: renderableMediaSourceSchema, thumbnailUrl: renderableMediaSourceSchema }).strict().nullable(),
+  pins: z.object({
+    characterContentVersionId: nonEmptyString, characterReleaseId: nonEmptyString.nullable(),
+    releaseSnapshotHash: nonEmptyString.nullable(), visualProfileId: nonEmptyString,
+    visualProfileVersion: z.number().int().positive(), referenceSetRevisionId: nonEmptyString,
+  }).strict().nullable(),
+  returnHref: nonEmptyString, sourceLabel: nonEmptyString,
+}).strict();
+const generationContextResponseSchema = successEnvelope(z.object({ context: generationContextSchema }).strict());
+
 const generationQuoteSchema = z
   .object({
+    models: z.array(generationModelSchema).optional(),
     mode: z.enum(["image", "video"]),
     profileId: nonEmptyString,
     profileVersion: z.number().int().positive(),
@@ -1317,6 +1337,12 @@ const chatMessageSchema = z
     attachments: z.array(chatAttachmentSchema).optional(),
     sceneVersion: z.number().int().nonnegative().optional(),
     scene: chatSceneStateSchema.nullable().optional(),
+    turnId: nonEmptyString.optional(),
+    attempt: z.number().int().positive().optional(),
+    sessionId: nonEmptyString.optional(),
+    characterId: nonEmptyString.optional(),
+    speakerName: nonEmptyString.optional(),
+    requestKey: nonEmptyString.optional(),
   })
   .superRefine((value, context) => {
     if (Object.hasOwn(value, "runtimeTrace")) {
@@ -1336,6 +1362,8 @@ const chatSessionDetailSchema = z
     title: z.string().nullable(),
     characterId: z.string().optional(),
     memoryEnabled: z.boolean().optional(),
+    status: z.string().optional(),
+    group: z.object({ members: z.array(groupChatMemberSchema).min(2).max(12), selectedSessionId: nonEmptyString }).strict().optional(),
     messages: z.array(chatMessageSchema),
     character: z
       .object({
@@ -1381,6 +1409,7 @@ export type CommunityCampaign = z.infer<typeof communityCampaignSchema>;
 export type RankingExperiment = z.infer<typeof rankingExperimentSchema>;
 export type RuntimeGenerationConfig = z.infer<typeof generationConfigSchema>;
 export type RuntimeGenerationQuote = z.infer<typeof generationQuoteSchema>;
+export type RuntimeGenerationContext = z.infer<typeof generationContextSchema>;
 export type RuntimeGenerationRetryQuote = z.infer<
   typeof generationRetryQuoteSchema
 >;
@@ -1644,6 +1673,10 @@ export function parseGenerationQuoteResponse(payload: unknown) {
     payload,
     "generation quote",
   ).data;
+}
+
+export function parseGenerationContextResponse(payload: unknown): RuntimeGenerationContext {
+  return parseContract(generationContextResponseSchema, payload, "generation context").data.context;
 }
 
 export function parseMediaEnhancementQuoteResponse(payload: unknown) {

@@ -252,6 +252,107 @@ describe("Character Asset Studio bootstrap route projection", () => {
     vi.restoreAllMocks();
   });
 
+  it("unlocks the chat composer after directly selecting a hero without a historical review", async () => {
+    const actorId = "operator-direct-selection";
+    const runId = "direct-hero-run";
+    const itemId = "direct-hero-item";
+    const assetId = "direct-hero-asset";
+    const readyData = withCharacterWorkspaceDetail(data, {
+      journey: journeyFor(["character_cover"]),
+      project: {
+        draftImageAssetId: "portrait-asset",
+        draftAssetPack: { character_cover: "portrait-asset" },
+      },
+      visual: {
+        activeIdentity: { id: "direct-identity", version: 1, immutableHash: "identity-hash" },
+        activeReferenceSet: {
+          id: "direct-references",
+          references: [{ mediaAssetId: "portrait-asset", role: "primary_face", available: true, url: "/portrait.png", thumbnailUrl: null, qualityScore: null, identityScore: null }],
+        },
+        routeQualifications: [routeQualification()],
+        identityBootstrap: { allowed: false, state: "blocked_existing_authority" },
+        readiness: { ready: true, blockers: [] },
+      },
+    });
+    const selectedData = withCharacterWorkspaceDetail(readyData, {
+      journey: journeyFor(["character_cover", "character_hero"]),
+      project: {
+        version: readyData.project.version + 1,
+        draftAssetPack: { character_cover: "portrait-asset", character_hero: assetId },
+        draftAssetSelections: {
+          character_hero: {
+            assetId,
+            runId,
+            itemId,
+            // Main's read contract exposes absent historical review as null;
+            // the selection request correctly leaves the optional field out.
+            reviewDecisionId: null,
+            generationJobId: "direct-hero-job",
+            bootstrapIdentity: false,
+            generationRouteFingerprint: "route-fingerprint",
+            routeCurrent: true,
+          },
+        },
+      },
+    });
+    const run = {
+      id: runId,
+      purpose: "character_hero",
+      executionOutcome: "succeeded",
+      reviewState: "complete",
+      counts: { total: 1, generated: 1, reviewed: 0, approved: 0, placed: 0, failed: 0 },
+      updatedAt: "2026-09-10T01:00:00.000Z",
+    };
+    adminV2Request.mockImplementation(async (path, options) => {
+      if (path.includes("/api/v2/admin/creative/runs?")) {
+        return { items: [run], pageInfo: { endCursor: null, hasNextPage: false } };
+      }
+      if (path === `/api/v2/admin/creative/runs/${runId}`) {
+        return { ...run, version: 1, items: [{
+          id: itemId, ordinal: 0, status: "generated", executionState: "ready", version: 1,
+          asset: { id: assetId, url: "/hero.png", thumbnailUrl: "/hero.png" },
+          review: null,
+          lineage: { requestId: "direct-hero-job" },
+        }] };
+      }
+      if (path.endsWith("/draft-image") && options?.method === "PATCH") {
+        expect(options.body).toMatchObject({ purpose: "character_hero", assetId, runId, itemId });
+        expect(options.body).not.toHaveProperty("reviewDecisionId");
+        return { selectedAssetId: assetId };
+      }
+      throw new Error(`Unexpected Admin request: ${path}`);
+    });
+    function SelectionJourney() {
+      const [current, setCurrent] = useState(readyData);
+      return <CharacterAssetStudio
+        actorId={actorId}
+        data={current}
+        permissions={{ read: true, create: true, review: false, selectDraft: true }}
+        onContinue={() => undefined}
+        onProjectReload={async () => undefined}
+        commitProjectMutation={async ({ commit, afterRefresh }) => {
+          const result = await commit();
+          setCurrent(selectedData);
+          afterRefresh?.();
+          return { result, refreshed: true };
+        }}
+      />;
+    }
+    await act(async () => root.render(<SelectionJourney />));
+    await waitUntil(() => container.querySelector('[aria-label="View candidate 1"]') !== null);
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="View candidate 1"]')?.click());
+    const selectHero = [...container.querySelectorAll("button")].find((button) => button.textContent === "Select hero · next asset");
+    expect(selectHero?.disabled).toBe(false);
+    await act(async () => selectHero?.click());
+    await waitUntil(() => container.textContent?.includes("The exact draft asset selection is verified") === true);
+    expect(readActiveDurableMutationIntent({ scope: `character-asset:selection:${actorId}:${data.character.id}` })).toBeNull();
+    const generateChat = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Generate 1 chat image"));
+    expect(generateChat).toBeDefined();
+    expect(generateChat?.disabled).toBe(false);
+    expect(adminV2Request.mock.calls.filter(([, options]) => options?.method === "PATCH")).toHaveLength(1);
+    expect(adminV2Request.mock.calls.some(([path]) => path.endsWith("/decisions"))).toBe(false);
+  });
+
   it("opens the hero composer immediately after committing the first identity portrait", async () => {
     const runId = "bootstrap-to-hero-run";
     const assetId = "bootstrap-to-hero-asset";

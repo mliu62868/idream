@@ -47,7 +47,7 @@ type DraftPayload = {
   error?: { message?: string };
   data?: {
     draft?: ServerCharacterDraft | null;
-    character?: { id: string; name: string; status?: string };
+    character?: { id: string; name: string; visibility: string };
     asset?: { id?: string; url: string; isSynthetic?: boolean };
     previewJob?: { id: string; status: string; errorCode?: string | null };
   };
@@ -229,7 +229,7 @@ export function CreateWorkspace() {
   const [selectedPreviewJobId, setSelectedPreviewJobId] = useState("");
   const [status, setStatus] = useState("");
   const [createdCharacterId, setCreatedCharacterId] = useState("");
-  const [createdStatus, setCreatedStatus] = useState("");
+  const [createdVisibility, setCreatedVisibility] = useState("");
   const [pending, setPending] = useState(false);
   const [hydrated, setHydrated] = useState(false);
   const [viewerScope, setViewerScope] = useState<string | null>(null);
@@ -928,7 +928,7 @@ export function CreateWorkspace() {
     setPending(true);
     setStatus("");
     setCreatedCharacterId("");
-    setCreatedStatus("");
+    setCreatedVisibility("");
     try {
       const draftId = await ensureDraft();
       await saveStep(STEPS.length);
@@ -941,11 +941,11 @@ export function CreateWorkspace() {
       const character = submitted.data?.character;
       if (character?.id) {
         setCreatedCharacterId(character.id);
-        setCreatedStatus(character.status ?? "");
+        setCreatedVisibility(character.visibility);
       }
       setStatus(
         character
-          ? character.status === "pending_review"
+          ? character.visibility !== "private"
             ? `${character.name} is saved and awaiting publication preparation. Sharing starts after publication.`
             : `Saved ${character.name} to My AI.`
           : "Character submitted.",
@@ -1355,7 +1355,7 @@ export function CreateWorkspace() {
                 <p className="text-[13px] font-medium text-[rgb(170,170,170)]">
                   {state.restoredPreviewCandidate && !state.previewBatch
                     ? "Your saved preview is ready. Confirm this identity or generate new candidates."
-                    : `Generate four identity candidates, then choose the image that should define how ${state.name} looks.`}
+                    : `Generate up to four identity candidates and choose the image that should define how ${state.name} looks.`}
                 </p>
                 {state.previewBatch && (
                   <p
@@ -1397,14 +1397,21 @@ export function CreateWorkspace() {
                       : "Generate preview candidates"}
                 </button>
                 {previewStatus === "generating" && state.previewBatch && (
-                  <button type="button" className="min-h-11 text-sm text-white underline" onClick={() => {
-                    previewRunRef.current = 0;
-                    const batch = stateRef.current.previewBatch;
-                    if (batch) persistPreviewBatch({ ...batch, phase: "paused", failureReason: "user_paused", errorMessage: "Checking paused. Any queued image keeps running; check its status to continue." });
-                    setPending(false);
-                    setPreviewStatus("paused");
-                    setStatus("Checking paused. You can confirm an available image or check the saved request again.");
-                  }}>Pause checking</button>
+                  <>
+                    <button type="button" className="min-h-11 text-sm text-white underline" onClick={() => {
+                      previewRunRef.current = 0;
+                      const batch = stateRef.current.previewBatch;
+                      if (batch) persistPreviewBatch({ ...batch, phase: "paused", failureReason: "user_paused", errorMessage: "Checking paused. Any queued image keeps running; check its status to continue." });
+                      setPending(false);
+                      setPreviewStatus("paused");
+                      setStatus("Checking paused. You can confirm an available image or check the saved request again.");
+                    }}>{previewCandidates.length > 0 ? "Choose a ready image" : "Pause checking"}</button>
+                    {previewCandidates.length > 0 && (
+                      <p className="text-[13px] leading-6 text-neutral-300">
+                        This pauses checking and prevents further image requests. Images already requested will keep generating.
+                      </p>
+                    )}
+                  </>
                 )}
                 {(restoredPreviewReviewId || state.previewBatch?.failureReason === "outcome_unknown") && (
                   <Link className="text-[13px] text-white underline" href="/helpdesk">Contact support</Link>
@@ -1605,7 +1612,7 @@ export function CreateWorkspace() {
                 {status}
               </p>
             )}
-            {createdCharacterId && createdStatus !== "pending_review" && (
+            {createdCharacterId && createdVisibility === "private" && (
               <div className="mt-4 flex flex-wrap gap-2">
                 <Link
                   className="inline-flex h-10 items-center justify-center gap-2 rounded-full bg-white px-4 text-[13px] font-black text-[rgb(13,13,13)]"
@@ -1622,7 +1629,7 @@ export function CreateWorkspace() {
                 </Link>
               </div>
             )}
-            {createdCharacterId && createdStatus === "pending_review" && (
+            {createdCharacterId && createdVisibility !== "private" && (
               <Link
                 className="mt-4 inline-flex h-10 items-center justify-center rounded-full bg-[rgb(36,36,36)] px-4 text-[13px] font-bold text-white"
                 href="/custom"

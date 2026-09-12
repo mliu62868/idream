@@ -1,5 +1,7 @@
 "use client";
 
+import { ComicDiscovery } from "./ComicCatalog";
+
 import Image from "next/image";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
@@ -855,6 +857,7 @@ export function CommunityWorkspace() {
           ) : null}
         </section>
       </div>
+      <div className="mx-auto max-w-6xl"><ComicDiscovery compact /></div>
       {reportDialog}
     </section>
   );

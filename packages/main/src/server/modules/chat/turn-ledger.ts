@@ -41,24 +41,20 @@ export interface BegunChatTurn {
 
 export async function listChatSessions(userId: string) {
   const rows = await prisma.recentChat.findMany({
-    where: { userId },
+    where: { userId, groupId: null },
     orderBy: [{ lastMessageAt: "desc" }, { createdAt: "desc" }],
   });
   return rows.map(publicSession);
 }
 
-export async function createChatSession(
+// A group member and a single-character session use exactly the same audience
+// and immutable Release pinning rules.
+export async function chatSessionCharacterPin(
   userId: string,
-  input: {
-    characterId: string;
-    title?: string;
-    entryExposureId?: string;
-    entryJourneyId?: string;
-    entryPlacementId?: string;
-  },
+  characterId: string,
+  tx: Prisma.TransactionClient = prisma,
 ) {
-  const characterId = requiredText(input.characterId, "characterId", 160);
-  const character = await prisma.character.findFirst({
+  const character = await tx.character.findFirst({
     where: {
       id: characterId,
       age: { gte: 18 },
@@ -86,13 +82,34 @@ export async function createChatSession(
   }
   const release = servingRelease;
   const content = release
-    ? await prisma.characterContentVersion.findUnique({
+    ? await tx.characterContentVersion.findUnique({
         where: { id: release.characterContentVersionId },
       })
     : character.currentContentVersion;
   if (!content) {
     throw Errors.gone("Character has no immutable Chat content version");
   }
+  const openingMessage = firstMessage(content.openingSnapshot) ?? null;
+  const visual = release
+    ? { id: release.visualProfileId, version: release.visualProfileVersion }
+    : character.visualProfiles[0]
+      ? { id: character.visualProfiles[0].id, version: character.visualProfiles[0].version }
+      : null;
+  return { character, owner, release, content, visual, openingMessage };
+}
+
+export async function createChatSession(
+  userId: string,
+  input: {
+    characterId: string;
+    title?: string;
+    entryExposureId?: string;
+    entryJourneyId?: string;
+    entryPlacementId?: string;
+  },
+) {
+  const characterId = requiredText(input.characterId, "characterId", 160);
+  const { character, owner, release, content, visual, openingMessage } = await chatSessionCharacterPin(userId, characterId);
   const activeKey = `${userId}:${characterId}`;
   const existing = await prisma.recentChat.findUnique({ where: { activeKey } });
   if (existing) {
@@ -107,12 +124,6 @@ export async function createChatSession(
     });
   }
 
-  const openingMessage = firstMessage(content?.openingSnapshot) ?? null;
-  const visual = release
-    ? { id: release.visualProfileId, version: release.visualProfileVersion }
-    : character.visualProfiles[0]
-      ? { id: character.visualProfiles[0].id, version: character.visualProfiles[0].version }
-      : null;
   try {
     const created = await prisma.recentChat.create({
       data: {
@@ -184,8 +195,13 @@ export async function beginChatTurn(input: {
   const created = await prisma.$transaction(async (tx) => {
     // INVARIANT: the user lock serializes the daily quota across all of their
     // sessions; the session lock serializes product ordering inside one chat.
-    if (!blocked) {
+    if (!blocked || session.groupId) {
       await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${input.userId} FOR UPDATE`;
+    }
+    if (session.groupId) {
+      await tx.$queryRaw`SELECT id FROM "group_conversations" WHERE id = ${session.groupId} FOR UPDATE`;
+      const group = await tx.groupConversation.findFirst({ where: { id: session.groupId, userId: input.userId, status: "active" } });
+      if (!group) throw Errors.gone("Group conversation is unavailable or archived");
     }
     await tx.$queryRaw`SELECT "sessionId" FROM "recent_chats" WHERE "sessionId" = ${session.sessionId} FOR UPDATE`;
     const lockedSession = await tx.recentChat.findFirst({
@@ -194,9 +210,9 @@ export async function beginChatTurn(input: {
     if (!lockedSession) throw Errors.notFound("Chat session not found");
     if (lockedSession.status !== "active") throw Errors.gone("Chat session is archived");
     await assertChatSessionServingAuthority(tx, input.userId, lockedSession);
-    const duplicate = await tx.chatTurn.findUnique({
-      where: { sessionId_idempotencyKey: { sessionId: session.sessionId, idempotencyKey } },
-    });
+    const duplicate = lockedSession.groupId
+      ? await tx.chatTurn.findFirst({ where: { groupTurn: { groupId: lockedSession.groupId }, idempotencyKey } })
+      : await tx.chatTurn.findUnique({ where: { sessionId_idempotencyKey: { sessionId: session.sessionId, idempotencyKey } } });
     const memoryIsolated = await hasPendingCompanionMemoryMutation(
       tx,
       input.userId,
@@ -221,7 +237,7 @@ export async function beginChatTurn(input: {
     if (!blocked) {
       const active = await tx.chatTurn.findFirst({
         where: {
-          sessionId: session.sessionId,
+          ...(lockedSession.groupId ? { groupTurn: { groupId: lockedSession.groupId } } : { sessionId: session.sessionId }),
           assistantStatus: { in: ACTIVE_ASSISTANT_STATES },
         },
         select: { id: true },
@@ -230,8 +246,8 @@ export async function beginChatTurn(input: {
       await assertChatQuota(tx, input.userId);
     }
     const previous = await tx.chatTurn.findFirst({
-      where: { sessionId: session.sessionId, assistantStatus: "sent" },
-      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      where: { ...(lockedSession.groupId ? { groupTurn: { groupId: lockedSession.groupId } } : { sessionId: session.sessionId }), assistantStatus: "sent" },
+      orderBy: lockedSession.groupId ? { groupTurn: { ordinal: "desc" } } : [{ createdAt: "desc" }, { id: "desc" }],
       select: { sceneVersion: true, scene: true },
     });
     const now = new Date();
@@ -264,6 +280,12 @@ export async function beginChatTurn(input: {
       where: { sessionId: session.sessionId },
       data: { lastMessageAt: now },
     });
+    if (lockedSession.groupId) {
+      const group = await tx.groupConversation.update({
+        where: { id: lockedSession.groupId }, data: { nextOrdinal: { increment: 1 } }, select: { nextOrdinal: true },
+      });
+      await tx.groupChatTurn.create({ data: { groupId: lockedSession.groupId, ordinal: group.nextOrdinal - 1, turnId: turn.id } });
+    }
     if (!blocked) {
       await tx.chatTurnUsageFact.create({
         data: { turnId: turn.id, userId: input.userId, productDay: productDay(now) },
@@ -287,7 +309,7 @@ export async function beginChatTurn(input: {
 export async function regenerateChatTurn(userId: string, messageId: string) {
   const turn = await requireTurn(userId, messageId);
   const updated = await prisma.$transaction(async (tx) => {
-    const current = await lockLatestTurn(tx, userId, turn);
+    const current = await lockLatestTurn(tx, userId, turn, "revise");
     if (current.userStatus !== "sent") {
       throw Errors.conflict("A blocked user message cannot be regenerated");
     }
@@ -349,7 +371,7 @@ export async function editChatTurn(userId: string, messageId: string, nextConten
   const blocked = moderation.status === "blocked";
   const now = new Date();
   const updated = await prisma.$transaction(async (tx) => {
-    const current = await lockLatestTurn(tx, userId, turn);
+    const current = await lockLatestTurn(tx, userId, turn, "revise");
     if (current.userMessageId !== messageId) {
       throw Errors.badRequest("Only user messages can be edited");
     }
@@ -571,7 +593,7 @@ export async function cancelChatTurn(userId: string, messageId: string) {
 export async function deleteChatMessage(userId: string, messageId: string) {
   const turn = await requireTurn(userId, messageId);
   await prisma.$transaction(async (tx) => {
-    const current = await lockLatestTurn(tx, userId, turn);
+    const current = await lockLatestTurn(tx, userId, turn, "delete");
     if (ACTIVE_ASSISTANT_STATES.includes(current.assistantStatus)) {
       throw Errors.conflict("Cancel the active reply before deleting this chat turn");
     }
@@ -594,9 +616,26 @@ export async function deleteChatMessage(userId: string, messageId: string) {
 export async function deleteChatSession(userId: string, sessionId: string) {
   await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${userId} FOR UPDATE`;
+    await deleteSessionTranscript(tx, userId, sessionId, null);
+  });
+}
+
+export async function deleteGroupChatConversation(userId: string, groupId: string) {
+  await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${userId} FOR UPDATE`;
+    await tx.$queryRaw`SELECT id FROM "group_conversations" WHERE id = ${groupId} FOR UPDATE`;
+    const group = await tx.groupConversation.findFirst({ where: { id: groupId, userId }, include: { members: { orderBy: { groupPosition: "asc" } } } });
+    if (!group) throw Errors.notFound("Group conversation not found");
+    for (const member of group.members) await deleteSessionTranscript(tx, userId, member.sessionId, groupId);
+    await tx.groupConversation.delete({ where: { id: groupId } });
+  });
+}
+
+async function deleteSessionTranscript(tx: Prisma.TransactionClient, userId: string, sessionId: string, groupId: string | null) {
     await tx.$queryRaw`SELECT "sessionId" FROM "recent_chats" WHERE "sessionId" = ${sessionId} FOR UPDATE`;
     const session = await tx.recentChat.findFirst({ where: { sessionId, userId } });
     if (!session) throw Errors.notFound("Chat session not found");
+    if (session.groupId !== groupId) throw Errors.conflict("Delete this conversation from its group chat");
     await assertNoPendingCompanionMemoryRebuild(tx, userId, session.characterId);
     const active = await tx.chatTurn.findFirst({
       where: { sessionId, assistantStatus: { in: ACTIVE_ASSISTANT_STATES } },
@@ -619,11 +658,11 @@ export async function deleteChatSession(userId: string, sessionId: string) {
       characterId: session.characterId,
       purgeTurnIds: turnIds.map((turn) => turn.id),
     });
-  });
 }
 
 export async function archiveChatSession(userId: string, sessionId: string) {
   const session = await requireSession(userId, sessionId);
+  if (session.groupId) throw Errors.conflict("Archive this conversation from its group chat");
   return publicSession(await prisma.recentChat.update({
     where: { sessionId: session.sessionId },
     data: { status: "archived", activeKey: null },
@@ -632,6 +671,7 @@ export async function archiveChatSession(userId: string, sessionId: string) {
 
 export async function renameChatSession(userId: string, sessionId: string, title: string) {
   const session = await requireSession(userId, sessionId);
+  if (session.groupId) throw Errors.conflict("Rename this conversation from its group chat");
   return publicSession(await prisma.recentChat.update({
     where: { sessionId: session.sessionId },
     data: { title: requiredText(title, "title", 120) },
@@ -710,7 +750,7 @@ async function frozenExecutionSnapshot(
   preservedExperience?: ChatExperiencePreference | null,
   preservedUserPersona?: UserChatPersona | null,
 ): Promise<ChatExecutionSnapshot> {
-  const turn = await tx.chatTurn.findUnique({ where: { id: turnId }, include: { session: true } });
+  const turn = await tx.chatTurn.findUnique({ where: { id: turnId }, include: { session: true, groupTurn: true } });
   if (!turn) throw Errors.notFound("Chat turn not found");
   const persisted = turn.executionSnapshot;
   if (persisted) {
@@ -720,19 +760,25 @@ async function frozenExecutionSnapshot(
   }
   const recent = await tx.chatTurn.findMany({
     where: {
-      sessionId: turn.sessionId,
+      ...(turn.groupTurn
+        ? { groupTurn: { groupId: turn.groupTurn.groupId, ordinal: { lt: turn.groupTurn.ordinal } } }
+        : { sessionId: turn.sessionId, createdAt: { lt: turn.createdAt } }),
       assistantStatus: "sent",
-      createdAt: { lt: turn.createdAt },
     },
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    orderBy: turn.groupTurn ? { groupTurn: { ordinal: "desc" } } : [{ createdAt: "desc" }, { id: "desc" }],
     take: 24,
     include: {
+      session: { select: { sessionId: true, characterId: true, title: true } },
       attachments: {
         select: { status: true, mediaAssetId: true, metadata: true },
       },
     },
   });
   recent.reverse();
+  const groupMembers = turn.groupTurn ? await tx.recentChat.findMany({
+    where: { groupId: turn.groupTurn.groupId, userId: turn.session.userId },
+    orderBy: { groupPosition: "asc" }, select: { sessionId: true, characterId: true, title: true },
+  }) : null;
   // Explicit settings are copied once, not ingested as synthetic chat messages.
   // Revisions of the same Turn retain its original user context, including an
   // empty historical snapshot; temporary igrep rebuild isolation does not erase it.
@@ -777,8 +823,13 @@ async function frozenExecutionSnapshot(
       : preservedUserPersona,
     contextRevision: turn.session.contextRevision,
     userContent: turn.userContent,
+    ...(turn.groupTurn && groupMembers ? { group: {
+      id: turn.groupTurn.groupId,
+      ordinal: turn.groupTurn.ordinal,
+      members: groupMembers.map(member => ({ sessionId: member.sessionId, characterId: member.characterId, name: member.title ?? "Character" })),
+    } } : {}),
     hasRecentImageContext: recent.some((item) =>
-      item.attachments.some((attachment) =>
+      item.sessionId === turn.sessionId && item.attachments.some((attachment) =>
         attachment.status === "completed" &&
         attachment.mediaAssetId !== null &&
         attachmentAttempt(attachment.metadata) === item.attempt
@@ -791,6 +842,7 @@ async function frozenExecutionSnapshot(
       userContent: item.userContent,
       assistantContent: item.assistantContent,
       createdAt: item.createdAt.toISOString(),
+      ...(turn.groupTurn ? { speaker: { sessionId: item.session.sessionId, characterId: item.session.characterId, name: item.session.title ?? "Character" } } : {}),
     })),
     sceneVersion: turn.sceneVersion,
     scene: turn.scene,
@@ -806,13 +858,14 @@ async function previousCommittedScene(
   tx: Prisma.TransactionClient,
   turn: { id: string; sessionId: string },
 ) {
+  const groupTurn = await tx.groupChatTurn.findUnique({ where: { turnId: turn.id } });
   return tx.chatTurn.findFirst({
     where: {
-      sessionId: turn.sessionId,
+      ...(groupTurn ? { groupTurn: { groupId: groupTurn.groupId, ordinal: { lt: groupTurn.ordinal } } } : { sessionId: turn.sessionId }),
       id: { not: turn.id },
       assistantStatus: "sent",
     },
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    orderBy: groupTurn ? { groupTurn: { ordinal: "desc" } } : [{ createdAt: "desc" }, { id: "desc" }],
     select: { sceneVersion: true, scene: true },
   });
 }
@@ -892,21 +945,34 @@ async function lockLatestTurn(
   tx: Prisma.TransactionClient,
   userId: string,
   turn: { id: string; sessionId: string },
+  operation: "revise" | "delete",
 ) {
   await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${userId} FOR UPDATE`;
-  await tx.$queryRaw`SELECT "sessionId" FROM "recent_chats" WHERE "sessionId" = ${turn.sessionId} FOR UPDATE`;
   const session = await tx.recentChat.findFirst({
     where: { sessionId: turn.sessionId, userId },
-    select: { sessionId: true, characterId: true },
+    select: { sessionId: true, characterId: true, groupId: true },
   });
   if (!session) throw Errors.notFound("Chat session not found");
+  if (session.groupId) await tx.$queryRaw`SELECT id FROM "group_conversations" WHERE id = ${session.groupId} FOR UPDATE`;
+  await tx.$queryRaw`SELECT "sessionId" FROM "recent_chats" WHERE "sessionId" = ${turn.sessionId} FOR UPDATE`;
+  if (operation === "revise") {
+    const lockedSession = await tx.recentChat.findUnique({
+      where: { sessionId: turn.sessionId },
+      select: { status: true, group: { select: { status: true } } },
+    });
+    // Archived history can be deleted, but admission cannot execute a new
+    // attempt there. Reject before replacing its saved reply or memory state.
+    if (lockedSession?.status !== "active" || (lockedSession.group && lockedSession.group.status !== "active")) {
+      throw Errors.gone("This conversation is archived. Its replies cannot be edited or regenerated");
+    }
+  }
   await assertNoPendingCompanionMemoryRebuild(tx, userId, session.characterId);
   await tx.$queryRaw`SELECT id FROM "chat_turns" WHERE id = ${turn.id} FOR UPDATE`;
   const current = await tx.chatTurn.findUnique({ where: { id: turn.id } });
   if (!current) throw Errors.notFound("Chat message not found");
   const latest = await tx.chatTurn.findFirst({
-    where: { sessionId: turn.sessionId },
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    where: session.groupId ? { groupTurn: { groupId: session.groupId } } : { sessionId: turn.sessionId },
+    orderBy: session.groupId ? { groupTurn: { ordinal: "desc" } } : [{ createdAt: "desc" }, { id: "desc" }],
     select: { id: true },
   });
   if (latest?.id !== current.id) {
@@ -944,7 +1010,7 @@ async function redactChatImageSourceText(
   ];
   if (selectors.length === 0) return;
   const jobs = await tx.generationJob.findMany({
-    where: { userId: input.userId, sourceType: "chat_image", OR: selectors },
+    where: { userId: input.userId, sourceType: { in: ["chat_image", "chat_handoff", "chat_video"] }, OR: selectors },
     select: { id: true, sourceMeta: true },
   });
   for (const job of jobs) {
@@ -963,6 +1029,14 @@ async function redactChatImageSourceText(
           redactedAt: input.redactedAt.toISOString(),
         },
       }),
+    });
+  }
+  // The attachment repeats the private prompt text (for Chat video, the user's
+  // own motion request); it follows the same redaction as its source request.
+  if (jobs.length > 0) {
+    await tx.chatTurnAttachment.updateMany({
+      where: { generationJobId: { in: jobs.map((job) => job.id) }, promptHint: { not: null } },
+      data: { promptHint: null },
     });
   }
 }
@@ -1066,6 +1140,10 @@ function publicMessages(session: {
   return messages;
 }
 
+export async function chatTurnMessagesForOwner(userId: string, turns: Parameters<typeof publicMessages>[0]["turns"]): Promise<Array<Record<string, unknown>>> {
+  return enrichAttachmentMedia(publicMessages({ sessionId: "", openingMessage: null, createdAt: new Date(0), turns }), userId);
+}
+
 function publicUserMessage(turn: {
   userMessageId: string;
   userContent: string;
@@ -1083,6 +1161,7 @@ function publicUserMessage(turn: {
 }
 
 function publicAssistantMessage(turn: {
+  id: string;
   assistantMessageId: string;
   userMessageId: string;
   assistantContent: string;
@@ -1106,6 +1185,7 @@ function publicAssistantMessage(turn: {
 }) {
   return {
     id: turn.assistantMessageId,
+    turnId: turn.id,
     role: "assistant" as const,
     content: turn.assistantContent,
     status: turn.assistantStatus,

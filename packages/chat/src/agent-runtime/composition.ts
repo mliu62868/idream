@@ -55,7 +55,7 @@ const IDREAM_COMPOSITION_IDENTITY = Object.freeze({
     commit: 1,
   }),
 });
-const EXECUTION_POLICY_VERSION = 8;
+const EXECUTION_POLICY_VERSION = 9;
 const EFFECTFUL_TOOL_CONCURRENCY = 1;
 export const FORBIDDEN_COMPANION_EXECUTION_SERVICES = [
   "shell",

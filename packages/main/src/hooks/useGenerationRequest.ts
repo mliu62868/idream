@@ -140,6 +140,7 @@ export function useGenerationRequest(
   } = useGenerationReceipts({ ownerScope: options.receiptOwnerScope, onWarning: options.onReceiptWarning });
   const viewerEpochRef = useRef(0);
   const quoteControllerRef = useRef<AbortController | null>(null);
+  const previousQuoteRequestRef = useRef<GenerationQuoteRequest | null>(null);
   const retryQuoteControllerRef = useRef<AbortController | null>(null);
 
   useEffect(
@@ -157,15 +158,20 @@ export function useGenerationRequest(
   // render from re-firing a settled price read.
   useEffect(() => {
     quoteControllerRef.current?.abort();
-    if (!quoteKey) return;
+    const request = latestRef.current.options.quoteRequest;
+    const previousRequest = previousQuoteRequestRef.current;
+    previousQuoteRequestRef.current = request;
+    if (!quoteKey || !request) return;
 
     const controller = new AbortController();
     quoteControllerRef.current = controller;
     dispatch({ type: "quote_pending" });
 
-    void (async () => {
-      const request = latestRef.current.options.quoteRequest;
-      if (!request) return;
+    // A source-bound description is part of quote authority. Invalidate the old
+    // price immediately, but wait for typing to pause before pricing the new one.
+    const descriptionChanged = request.target === "generation" &&
+      previousRequest?.target === "generation" && request.prompt !== previousRequest.prompt;
+    const loadQuote = async () => {
       const outcome = await loadGenerationQuote(request, {
         signal: controller.signal,
       });
@@ -187,9 +193,14 @@ export function useGenerationRequest(
         quote: outcome.quote,
       });
       latestRef.current.options.onQuoteResolved(outcome.quote);
-    })();
+    };
+    const timer = descriptionChanged ? setTimeout(() => { void loadQuote(); }, 300) : null;
+    if (timer === null) void loadQuote();
 
-    return () => controller.abort();
+    return () => {
+      if (timer !== null) clearTimeout(timer);
+      controller.abort();
+    };
   }, [quoteKey, state.quoteNonce]);
 
   const retryQuoteScopeKey = options.retryQuoteScopeKey;

@@ -42,6 +42,20 @@ export const ADMIN_V2_PENDING_CONTRACTS = {} as const satisfies Record<
 
 const bindingCache = new Map<string, ExecutableAdminV2Contract>();
 const fixtureOverrides: Readonly<Record<string, unknown>> = {
+  adminCoinOfferListSchema: { items: [] },
+  adminCoinOfferCreateRequestSchema: {
+    offerKey: "fixture-coins", name: "Fixture coins", dreamcoins: 100,
+    priceCents: 100, currency: "usd", eligibility: "all",
+    terms: "Fixture terms for a controlled checkout test.", reason: "Verify coin offer contract",
+  },
+  adminCoinOfferMutationSchema: {
+    offer: {
+      id: "fixture-coin-offer", offerKey: "fixture-coins", name: "Fixture coins", dreamcoins: 100,
+      priceCents: 100, currency: "usd", eligibility: "all",
+      terms: "Fixture terms for a controlled checkout test.", version: 1, status: "draft",
+      publishedAt: null, createdAt: "2026-09-10T00:00:00.000Z", fingerprint: "a".repeat(64),
+    },
+  },
   // Approval requires evidence across fields; structural defaults cannot express it.
   characterImageReviewRequestSchema: {
     decision: "approved",

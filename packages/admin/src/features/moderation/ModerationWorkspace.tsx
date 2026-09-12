@@ -1,6 +1,7 @@
 "use client";
 
 import { useAdminI18n } from "@/components/admin/i18n";
+import { ComicReviewPanel } from "./ComicReviewPanel";
 import Image from "next/image";
 import type { FormEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -75,7 +76,7 @@ const emptyState = (): AuthorityState => ({
   refreshedAt: null,
 });
 
-export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
+export function ModerationWorkspace({ canDecide, canReadComics = false, canReviewComics = false }: { canDecide: boolean; canReadComics?: boolean; canReviewComics?: boolean }) {
   const { t, value } = useAdminI18n();
   const format = useAdminFormat();
   const { toast } = useToast();
@@ -261,6 +262,7 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
         purpose={t("Review reports, independently pending Character images, blocked media, and appeals from separate authority snapshots; every decision is confirmed, audited, and propagated.")}
         title={t("Moderation Cases")}
       />
+      {canReadComics && <ComicReviewPanel canReview={canReviewComics} />}
       <div
         className="flex flex-wrap justify-between gap-2 text-xs text-[var(--ad-text-muted)]"
         role="status"

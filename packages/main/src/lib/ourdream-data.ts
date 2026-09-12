@@ -307,7 +307,7 @@ const routeOverrides: Record<
   "/custom": {
     title: "Manage Your Dream AI Characters",
     description:
-      "Personal AI library shell for recent characters, media, presets, created companions, and clearly labeled deferred group-chat and pack tabs.",
+      "Your characters, saved media, presets, group conversations, and published Comics in one personal library.",
     template: "profile",
   },
   "/profile": {

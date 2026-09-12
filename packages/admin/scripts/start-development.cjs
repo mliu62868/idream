@@ -25,6 +25,13 @@ async function runDevelopment(options = {}) {
     runtime.env.IDREAM_NEXT_DIST_DIR = ".next-development";
   }
 
+  // INVARIANT: React's development async debug hook has to be bounded before
+  // Next's dev runtime registers it, so the bound travels on NODE_OPTIONS, where
+  // it also reaches whatever Next spawns. See scripts/bound-react-async-debug.cjs
+  // for the crash it prevents.
+  const asyncDebugBound = path.resolve(__dirname, "../../../scripts/bound-react-async-debug.cjs");
+  runtime.env.NODE_OPTIONS = `${runtime.env.NODE_OPTIONS ? `${runtime.env.NODE_OPTIONS} ` : ""}--require ${asyncDebugBound}`;
+
   // INVARIANT: this wrapper remains PM2's parent authority until Next exits. Requiring Next's CLI lets its asynchronous dev bootstrap outlive this
   // process during a restart, leaving an unowned listener on the product port.
   // Next 16.2 creates external-package symlinks during cold compilation. Bun
@@ -90,11 +97,12 @@ if (
 ) {
   void runDevelopment()
     .then((status) => {
-      process.exitCode = status;
+      // PM2's host IPC can remain referenced after Next exits. exitCode alone
+      // leaves a dead web service reported online and prevents its restart.
+      process.exit(status);
     })
     .catch((error) => {
-      process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`);
-      process.exitCode = 1;
+      process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`, () => process.exit(1));
     });
 }
 

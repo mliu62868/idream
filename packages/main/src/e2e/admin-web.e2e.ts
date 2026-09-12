@@ -174,17 +174,17 @@ test("admin web loads all control-plane sections and filters users", async ({ pa
     { path: "/admin/moderation", heading: "Moderation Cases", evidence: "Reports" },
     { path: "/admin/content", heading: "Featured Merchandising", evidence: "Featured curation" },
     { path: "/admin/content/production", heading: "Generation History", evidence: "Creative Runs" },
-    { path: "/admin/content/assets", heading: "Library", evidence: "Purpose" },
+    { path: "/admin/content/assets", heading: "Operational Assets", evidence: "Purpose" },
     { path: "/admin/content/placements", heading: "Placements", evidence: "Slot" },
-    { path: "/admin/content/official", heading: "Characters", evidence: "Create official character" },
+    { path: "/admin/content/official", heading: "Characters", evidence: "Create Character" },
     { path: "/admin/content/templates", heading: "Character Starters", evidence: "Create character template" },
     { path: "/admin/content/tags", heading: "Taxonomy", evidence: "Merge tags" },
-    { path: "/admin/content/review-queue", heading: "Character Review", evidence: "Pending submissions" },
-    { path: "/admin/cms", heading: "CMS & SEO", evidence: "Create new page draft" },
+    { path: "/admin/content/review-queue", heading: "Characters", evidence: "Shared characters awaiting preparation" },
+    { path: "/admin/cms", heading: "Site Content & SEO", evidence: "Create new page draft" },
     { path: "/admin/chat", heading: "Chat Operations", evidence: "CHAT_SERVICE_URL" },
     { path: "/admin/support", heading: "Support Cases", evidence: "Support Requests" },
     { path: "/admin/users", heading: "Customers", evidence: admin.email },
-    { path: "/admin/billing", heading: "Billing Operations", evidence: "Subscriptions" },
+    { path: "/admin/billing", heading: "Orders & Billing", evidence: "Subscriptions" },
     { path: "/admin/pricing", heading: "Pricing", evidence: "Pricing Rules" },
     { path: "/admin/promo", heading: "Promotions", evidence: "Create redeem code" },
     { path: "/admin/announcements", heading: "Announcements", evidence: "Create announcement" },
@@ -390,7 +390,7 @@ test("admin content ops requires confirmation for standalone draft placement and
     });
 
     await page.goto(`${adminURL}/admin/content/assets`);
-    await expectAdminShellReady(page, "Library");
+    await expectAdminShellReady(page, "Operational Assets");
     await page.getByRole("textbox", { name: "Search by tag, description, or asset ID" }).fill(archiveAssetId);
     const archiveCard = page.locator(`a[href="/admin/content/assets/${archiveAssetId}"]`);
     await expect(archiveCard).toBeVisible({ timeout: 10_000 });
@@ -605,7 +605,7 @@ test("admin users and billing actions write audit trail and clear adjustment for
     await expect(targetRow.getByText("active", { exact: true })).toBeVisible();
 
     await page.goto(`${adminURL}/admin/billing`);
-    await expectAdminShellReady(page, "Billing Operations");
+    await expectAdminShellReady(page, "Orders & Billing");
     await page.getByLabel("Adjustment user ID").fill(targetId);
     await page.getByLabel("Adjustment delta").fill("37");
     await page.getByRole("button", { name: "Adjust" }).click();
@@ -1240,12 +1240,11 @@ test("admin approval decisions require request-id confirmation", async ({ page }
   }
 });
 
-test("admin review queue saves and applies moderation views", async ({ page }) => {
+test("admin discovers and searches historical shared characters awaiting preparation", async ({ page }) => {
   const consoleFailures = collectConsoleFailures(page);
 
-  const admin = await startRoleSession(page, "admin");
+  await startRoleSession(page, "admin");
   const suffix = Date.now().toString();
-  const viewLabel = `E2E reported ${suffix}`;
   const reportedCharacterId = `e2e-review-reported-${suffix}`;
   const cleanCharacterId = `e2e-review-clean-${suffix}`;
   const reportedName = `Reported Queue ${suffix}`;
@@ -1275,7 +1274,7 @@ test("admin review queue saves and applies moderation views", async ({ page }) =
           creatorId: submitter.id,
           name: reportedName,
           age: 24,
-          description: "A reported queue submission seeded for saved-view testing.",
+          description: "A reported historical submission awaiting publication preparation.",
           visibility: "public",
           status: "pending_review",
           style: "realistic",
@@ -1288,7 +1287,7 @@ test("admin review queue saves and applies moderation views", async ({ page }) =
           creatorId: submitter.id,
           name: cleanName,
           age: 24,
-          description: "A clean queue submission seeded for saved-view testing.",
+          description: "A clean historical submission awaiting publication preparation.",
           visibility: "public",
           status: "pending_review",
           style: "anime",
@@ -1310,57 +1309,32 @@ test("admin review queue saves and applies moderation views", async ({ page }) =
         targetType: "character",
         targetId: reportedCharacterId,
         category: "quality",
-        description: "Seeded report for review queue saved-view E2E.",
+        description: "Seeded report must not hide a historical submission from operators.",
       },
     });
 
     const adminURL = adminBaseURL();
     await page.goto(`${adminURL}/admin/content/review-queue`);
-    await expectAdminShellReady(page, "Character Review");
-    await expect(page.getByRole("row").filter({ hasText: reportedName })).toHaveCount(1, {
-      timeout: 10_000,
-    });
-    await expect(page.getByRole("row").filter({ hasText: cleanName })).toHaveCount(1);
-
-    await page.getByRole("button", { name: "Reported", exact: true }).click();
-    await page.getByRole("textbox", { name: "Search review queue" }).fill(reportedName);
-    await page.getByRole("textbox", { name: "Saved view label" }).fill(viewLabel);
-    await page.getByRole("button", { name: "Save view" }).click();
-    await expect(page.getByRole("button", { name: viewLabel, exact: true })).toBeVisible({
-      timeout: 10_000,
-    });
-
-    await page.reload();
-    await expectAdminShellReady(page, "Character Review");
-    await page.getByRole("button", { name: viewLabel, exact: true }).click();
-    await expect(page.getByRole("row").filter({ hasText: reportedName })).toHaveCount(1);
-    await expect(page.getByRole("row").filter({ hasText: cleanName })).toHaveCount(0);
-    const storedView = await prisma.adminSavedView.findFirst({
-      where: { ownerId: admin.id, scope: "moderation_review_queue", label: viewLabel },
-    });
-    expect(storedView?.queryState).toEqual({
-      search: reportedName,
-      filters: { reportFilter: "reported" },
-      sort: { field: "created_at", direction: "asc" },
-      pageSize: 25,
-    });
-
-    await page.getByRole("button", { name: `Delete saved view ${viewLabel}`, exact: true }).click();
-    const deleteViewDialog = page.getByRole("dialog", { name: `Delete saved view ${viewLabel}`, exact: true });
-    await expect(deleteViewDialog.getByRole("button", { name: "Delete", exact: true })).toBeDisabled();
-    await deleteViewDialog.getByRole("textbox", { name: "Type the name to confirm", exact: true }).fill(viewLabel);
-    await deleteViewDialog.getByRole("button", { name: "Delete", exact: true }).click();
-    await expect(deleteViewDialog).toHaveCount(0);
-    await expect(page.getByRole("button", { name: viewLabel, exact: true })).toHaveCount(0);
-    const deletedView = await prisma.adminSavedView.findFirst({
-      where: { ownerId: admin.id, scope: "moderation_review_queue", label: viewLabel },
-    });
-    expect(deletedView).toBeNull();
+    await expectAdminShellReady(page, "Characters");
+    const toggle = page.getByRole("button", { name: "Shared characters awaiting preparation" });
+    await toggle.click();
+    const historical = toggle.locator("xpath=..");
+    await expect(historical.getByRole("listitem").filter({ hasText: reportedName })).toHaveCount(1);
+    await expect(historical.getByRole("listitem").filter({ hasText: cleanName })).toHaveCount(1);
+    await historical.getByRole("textbox", { name: "Search characters awaiting preparation" }).fill(reportedName);
+    await historical.getByRole("button", { name: "Search", exact: true }).click();
+    const reported = historical.getByRole("listitem").filter({ hasText: reportedName });
+    await expect(reported).toHaveCount(1);
+    await expect(historical.getByRole("listitem").filter({ hasText: cleanName })).toHaveCount(0);
+    await expect(reported.getByRole("link", { name: "Prepare publication workspace" }))
+      .toHaveAttribute("href", `/admin/characters/${reportedCharacterId}`);
+    expect(await prisma.characterSubmission.count({
+      where: { characterId: { in: [reportedCharacterId, cleanCharacterId] }, status: "pending", reviewerId: null },
+    })).toBe(2);
+    expect(await prisma.characterProject.count({ where: { characterId: { in: [reportedCharacterId, cleanCharacterId] } } })).toBe(0);
+    expect(await prisma.characterServing.count({ where: { characterId: { in: [reportedCharacterId, cleanCharacterId] } } })).toBe(0);
     expect(consoleFailures).toEqual([]);
   } finally {
-    await prisma.adminSavedView.deleteMany({
-      where: { ownerId: admin.id, scope: "moderation_review_queue", label: viewLabel },
-    });
     await prisma.contentReport.deleteMany({
       where: { targetType: "character", targetId: { in: [reportedCharacterId, cleanCharacterId] } },
     });
@@ -1372,13 +1346,16 @@ test("admin review queue saves and applies moderation views", async ({ page }) =
   }
 });
 
-test("admin review queue approves a pending character submission", async ({ page }) => {
+test("admin prepares a historical shared character without manual approval or publication", async ({ page }) => {
   const consoleFailures = collectConsoleFailures(page);
 
   const admin = await startRoleSession(page, "admin");
   const suffix = Date.now().toString();
   const characterId = `e2e-review-approve-${suffix}`;
   const characterName = `Approve Queue ${suffix}`;
+  const assetId = `e2e-publication-image-${suffix}`;
+  const storageKey = `e2e/admin/${assetId}.png`;
+  const target = resolveLocalBlobPath(storageKey);
   const submitter = await prisma.user.create({
     data: {
       email: uniqueEmail("review-approve-submitter"),
@@ -1389,6 +1366,10 @@ test("admin review queue approves a pending character submission", async ({ page
   });
 
   try {
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/ak9zP8AAAAASUVORK5CYII=", "base64",
+    ));
     const pendingCharacter = await prisma.character.create({
       data: {
         id: characterId,
@@ -1420,49 +1401,69 @@ test("admin review queue approves a pending character submission", async ({ page
         data: { currentContentVersionId: contentVersion.id },
       });
     });
+    const mediaUrl = `/user-content/${Buffer.from(assetId).toString("base64url")}/content.png`;
+    await prisma.mediaAsset.create({ data: {
+      id: assetId, ownerId: submitter.id, characterId, type: "image", url: mediaUrl, thumbnailUrl: mediaUrl,
+      storageKey, contentType: "image/png", width: 1, height: 1, visibility: "private", safetyStatus: "passed",
+      metadata: { source: "operator_upload", e2e: true },
+    } });
+    await prisma.character.update({ where: { id: characterId }, data: { imageAssetId: assetId } });
 
     const adminURL = adminBaseURL();
-    await page.goto(`${adminURL}/admin/content/review-queue`);
-    await expectAdminShellReady(page, "Character Review");
-    await page.getByRole("textbox", { name: "Search review queue" }).fill(characterName);
-    const row = page.getByRole("row").filter({ hasText: characterName });
-    await expect(row).toHaveCount(1, { timeout: 10_000 });
-    await row.getByRole("button", { name: "Approve", exact: true }).click();
-
-    await expect(page.getByRole("heading", { name: `Approve ${characterName}` })).toBeVisible({
-      timeout: 10_000,
-    });
-    await page.getByPlaceholder("Review note (optional, shown to creator)").fill("Approved by E2E review queue.");
-    await page.getByPlaceholder("Audit reason (≥3)").fill("e2e approval");
-    await page.getByPlaceholder(`Type ${seededSubmission.id} to confirm`).fill("REVIEW");
-    await expect(page.getByRole("button", { name: "Confirm", exact: true })).toBeDisabled();
-    await page.getByPlaceholder(`Type ${seededSubmission.id} to confirm`).fill(seededSubmission.id);
-    await page.getByRole("button", { name: "Confirm", exact: true }).click();
-
-    await expect(row).toHaveCount(0, { timeout: 10_000 });
-    await expect(page.getByText("No submissions match filters")).toBeVisible();
+    const recoveryResponse = page.waitForResponse((response) => response.request().method() === "GET"
+      && new URL(response.url()).pathname === `/api/v2/admin/characters/${characterId}`);
+    await page.goto(`${adminURL}/admin/characters/${characterId}`);
+    const recovery = await recoveryResponse;
+    expect(recovery.status()).toBe(404);
+    expect(await recovery.json()).toMatchObject({ error: { details: { reason: "customer_publication_prep_missing", submissionId: seededSubmission.id } } });
+    await expect(page.getByText("Awaiting publication preparation", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Prepare publication workspace", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Prepare publication workspace", exact: true });
+    await dialog.getByRole("textbox", { name: "Operational reason (≥3)" }).fill("Recover historical publication preparation");
+    const confirmation = dialog.getByRole("textbox", { name: "Type the publication preparation confirmation" });
+    await confirmation.fill("PREPARE");
+    await expect(dialog.getByRole("button", { name: "Prepare publication workspace", exact: true })).toBeDisabled();
+    await confirmation.fill(`PREPARE PUBLICATION ${characterId}`);
+    const prepared = page.waitForResponse((response) => response.request().method() === "POST"
+      && new URL(response.url()).pathname === `/api/v2/admin/characters/${characterId}/project`);
+    await dialog.getByRole("button", { name: "Prepare publication workspace", exact: true }).click();
+    expect((await prepared).status()).toBe(200);
+    await expect(dialog).toHaveCount(0);
+    await expect(page).toHaveURL(`${adminURL}/admin/characters/${characterId}?tab=assets`);
 
     const character = await prisma.character.findUniqueOrThrow({ where: { id: characterId } });
     expect(character.status).toBe("approved");
     expect(character.visibility).toBe("public");
     const submission = await prisma.characterSubmission.findFirstOrThrow({ where: { characterId } });
     expect(submission.status).toBe("approved");
-    expect(submission.reviewerId).toBe(admin.id);
-    expect(submission.reviewReason).toBe("Approved by E2E review queue.");
+    expect(submission.reviewerId).toBeNull();
+    expect(submission.reviewedAt).toBeNull();
     expect(await prisma.characterProject.count({ where: { characterId } })).toBe(1);
     expect(await prisma.characterServing.findUnique({
       where: { characterId }, select: { state: true, currentReleaseId: true },
     })).toEqual({ state: "inactive", currentReleaseId: null });
+    const project = await prisma.characterProject.findFirstOrThrow({ where: { characterId } });
+    expect(await prisma.characterRelease.count({ where: { projectId: project.id } })).toBe(0);
+    expect(await prisma.moderationEvent.findFirst({ where: { targetId: characterId, layer: "publication_preparation" } }))
+      .toMatchObject({ status: "passed" });
     const audit = await prisma.adminAuditLog.findFirst({
-      where: { actorId: admin.id, action: "content.submission.review", targetId: characterId },
+      where: { actorId: admin.id, action: "character.publication_prepared", targetType: "character_project", targetId: project.id },
     });
     expect(audit).not.toBeNull();
-    expect(consoleFailures).toEqual([]);
+    expect(consoleFailures.filter((failure) => !(failure.includes("status of 404")
+      && failure.endsWith(`(${adminURL}/api/v2/admin/characters/${characterId})`)))).toEqual([]);
   } finally {
-    await prisma.adminAuditLog.deleteMany({ where: { targetId: characterId } });
+    const projects = await prisma.characterProject.findMany({ where: { characterId }, select: { id: true } });
+    await prisma.adminAuditLog.deleteMany({ where: { targetId: { in: [characterId, ...projects.map((project) => project.id)] } } });
     await prisma.characterSubmission.deleteMany({ where: { characterId } });
+    await prisma.characterRevision.deleteMany({ where: { projectId: { in: projects.map((project) => project.id) } } });
+    await prisma.characterProject.deleteMany({ where: { characterId } });
     await prisma.character.deleteMany({ where: { id: characterId } });
+    await prisma.characterContentVersion.deleteMany({ where: { characterId } });
+    await prisma.moderationEvent.deleteMany({ where: { targetId: characterId } });
+    await prisma.mediaAsset.deleteMany({ where: { id: assetId } });
     await prisma.user.deleteMany({ where: { id: submitter.id } });
+    await rm(target, { force: true });
   }
 });
 
@@ -2087,7 +2088,7 @@ test("admin CMS UI requires confirmation and updates Resources Hub discovery", a
     expect(create.status(), await create.text()).toBe(200);
 
     await page.goto(`${adminURL}/admin/cms`);
-    await expectAdminShellReady(page, "CMS & SEO");
+    await expectAdminShellReady(page, "Site Content & SEO");
 
     const row = page.getByRole("row").filter({ hasText: routePath });
     await expect(row).toBeVisible({ timeout: 10_000 });
@@ -2112,7 +2113,7 @@ test("admin CMS UI requires confirmation and updates Resources Hub discovery", a
     await resourceLink.click();
     await expect(page.getByRole("heading", { level: 1, name: "Confirmation page" })).toBeVisible();
     await page.goto(`${adminURL}/admin/cms`);
-    await expectAdminShellReady(page, "CMS & SEO");
+    await expectAdminShellReady(page, "Site Content & SEO");
 
     await row.getByRole("button", { name: "Unpublish" }).click();
     await expect(confirmPublish).toBeDisabled();
@@ -2266,8 +2267,13 @@ test("admin compliance UI requires typed confirmations for destructive actions",
     await expect(confirmErase).toBeDisabled();
     await page.getByRole("textbox", { name: "Erase confirmation" }).fill(targetId);
     await expect(confirmErase).toBeEnabled();
+    const erased = page.waitForResponse((response) => response.request().method() === "POST"
+      && new URL(response.url()).pathname === `/api/v2/admin/compliance/users/${targetId}/erase`);
     await confirmErase.click();
-    await expect(page.getByText("Erasure requested.")).toBeVisible();
+    expect((await erased).status()).toBe(200);
+    await expect(page.getByRole("status").filter({ hasText: targetId })).toContainText(
+      `Erasure requested for ${targetId}. The cross-service flow reports completion in the audit log.`,
+    );
     await expect(prisma.user.findUnique({ where: { id: targetId } })).resolves.toMatchObject({
       status: "deleted",
     });
@@ -2291,7 +2297,9 @@ test("admin compliance UI requires typed confirmations for destructive actions",
     );
     await confirmOverride.click();
     await expect.poll(async () => (await overrideResponse).status()).toBe(200);
-    await expect(page.getByText("Age verification updated.")).toBeVisible();
+    await expect(page.getByRole("status").filter({ hasText: ageVerification.id })).toContainText(
+      `${ageVerification.id} is now verified. The queue below reflects the new state.`,
+    );
     await expect(page.getByText("Unauthorized")).toHaveCount(0);
     await expect
       .poll(async () => {

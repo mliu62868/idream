@@ -1,0 +1,48 @@
+// Add `comics Comic[]` to User; add `comicPages ComicPage[]` to MediaAsset.
+model Comic {
+  id           String   @id @default(cuid())
+  creatorId    String
+  title        String
+  description  String   @default("")
+  visibility   String   @default("private") // private | unlisted | public
+  status       String   @default("draft") // draft | pending_review | published | withdrawn
+  version      Int      @default(1)
+  reviewNote   String?
+  submittedAt  DateTime?
+  publishedAt  DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  creator      User     @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  episodes     ComicEpisode[]
+
+  @@index([creatorId, updatedAt, id])
+  @@index([status, visibility, publishedAt, id])
+  @@map("comics")
+}
+
+model ComicEpisode {
+  id        String @id @default(cuid())
+  comicId   String
+  ordinal   Int
+  title     String
+  comic     Comic @relation(fields: [comicId], references: [id], onDelete: Cascade)
+  pages     ComicPage[]
+
+  @@unique([comicId, ordinal])
+  @@map("comic_episodes")
+}
+
+model ComicPage {
+  id               String @id @default(cuid())
+  episodeId        String
+  mediaAssetId     String?
+  ordinal          Int
+  caption          String @default("")
+  sourceProvenance  Json
+  episode          ComicEpisode @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+  mediaAsset       MediaAsset? @relation(fields: [mediaAssetId], references: [id], onDelete: SetNull)
+
+  @@unique([episodeId, ordinal])
+  @@index([mediaAssetId])
+  @@map("comic_pages")
+}

@@ -29,7 +29,14 @@ function ReceiptView() {
       book.resume(owner);
       setOwnerScope(owner);
     } }, "Revalidate same account"),
-    createElement("button", { onClick: () => book.resume(owner) }, "Confirm current account"),
+    createElement("button", { onClick: () => {
+      book.suspend(true);
+      setOwnerScope(null);
+    } }, "Suspend account confirmation"),
+    createElement("button", { onClick: () => {
+      book.resume(owner);
+      setOwnerScope(owner);
+    } }, "Confirm current account"),
     createElement("button", { onClick: async () => {
       try {
         const receipt = book.receipts[0];
@@ -108,6 +115,61 @@ describe("generation receipt suspension and confirmation", () => {
     expect(new Headers(init?.headers).get("x-idream-viewer-scope")).toBe(owner);
     expect(JSON.parse(String(init?.body))).toEqual(JSON.parse(record).body);
     expect(stored.size).toBe(0);
+  });
+
+  it("removes a receipt acknowledged in another tab without replaying its request", async () => {
+    await mount();
+    expect(container.querySelector('[data-testid="receipts"]')?.textContent).toBe(requestKey);
+    const storageKey = [...stored.keys()][0]!;
+    const oldValue = stored.get(storageKey)!;
+    stored.delete(storageKey);
+    await act(async () => window.dispatchEvent(new StorageEvent("storage", {
+      key: storageKey, oldValue, newValue: null, storageArea: window.localStorage,
+    })));
+
+    expect(container.querySelector('[data-testid="receipts"]')?.textContent).toBe("");
+    expect(fetch).not.toHaveBeenCalled();
+    await click("Check original request");
+    expect(container.querySelector('[data-testid="status"]')?.textContent).toBe("Original request unavailable");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("does not restore a receipt acknowledged by another tab while account confirmation is suspended", async () => {
+    await mount();
+    await click("Suspend account confirmation");
+    expect(container.querySelector('[data-testid="receipts"]')?.textContent).toBe("");
+    const storageKey = [...stored.keys()][0]!;
+    const oldValue = stored.get(storageKey)!;
+    stored.delete(storageKey);
+    await act(async () => window.dispatchEvent(new StorageEvent("storage", {
+      key: storageKey, oldValue, newValue: null, storageArea: window.localStorage,
+    })));
+    await click("Confirm current account");
+    await act(async () => { vi.runOnlyPendingTimers(); });
+
+    expect(container.querySelector('[data-testid="receipts"]')?.textContent).toBe("");
+    await click("Check original request");
+    expect(container.querySelector('[data-testid="status"]')?.textContent).toBe("Original request unavailable");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("retains in-memory authority when an unrelated storage event cannot restore pending requests (suspended=%s)", async (suspended) => {
+    await mount();
+    if (suspended) await click("Suspend account confirmation");
+    const storageKey = [...stored.keys()][0]!;
+    const oldValue = stored.get(storageKey)!;
+    vi.spyOn(window.localStorage, "getItem").mockImplementation(() => { throw new Error("Storage unavailable"); });
+    await act(async () => window.dispatchEvent(new StorageEvent("storage", {
+      key: storageKey.replace(encodeURIComponent(owner), encodeURIComponent("user:another-owner")),
+      oldValue, newValue: null, storageArea: window.localStorage,
+    })));
+    if (suspended) {
+      await click("Confirm current account");
+      await act(async () => { vi.runOnlyPendingTimers(); });
+    }
+
+    expect(container.querySelector('[data-testid="receipts"]')?.textContent).toBe(requestKey);
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("keeps a late recovery ACK unconfirmed across synchronous suspension and same-owner confirmation", async () => {

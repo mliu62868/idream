@@ -25,6 +25,7 @@ import {
   listGenerationReceipts,
   readGenerationReceipts,
   requestGenerationReceipt,
+  requestChatVideoWithExactAuthority,
   requestGenerationJobWithExactAuthority,
   requestGenerationRetryWithExactAuthority,
   requestMediaEnhancementWithExactQuote,
@@ -1123,6 +1124,17 @@ describe("generation quote key", () => {
 });
 
 describe("generation quote transport", () => {
+  it("keeps a Chat source and edited direction in its own quote key and request", async () => {
+    const request: GenerationQuoteRequest = { viewerScope: "user:original", target: "generation", mode: "image", characterId: "character-1", freeplay: false, consistencyMode: "strict", generationContextToken: "stable-source-token", prompt: "Raise the left hand only." };
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => Response.json({ ok: true, data: { quote } }));
+    await expect(loadGenerationQuote(request, { fetcher })).resolves.toMatchObject({ kind: "resolved", key: generationQuoteKeyFor(request) });
+    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toMatchObject({ generationContextToken: "stable-source-token", prompt: "Raise the left hand only." });
+    expect(new Headers(fetcher.mock.calls[0]?.[1]?.headers).get("x-idream-viewer-scope")).toBe("user:original");
+    expect(generationQuoteKeyFor({ ...request, generationContextToken: "another-source" })).not.toBe(generationQuoteKeyFor(request));
+    expect(generationQuoteKeyFor({ ...request, prompt: "Turn right instead." })).not.toBe(generationQuoteKeyFor(request));
+    expect(generationQuoteKeyFor({ ...request })).toBe(generationQuoteKeyFor(request));
+  });
+
   it("prices the resolved route for a character image request", async () => {
     const seen: Array<{ url: string; body: unknown }> = [];
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -1368,10 +1380,11 @@ describe("generation receipts across page lifetimes", () => {
     routeFingerprint: quote.routeFingerprint, pricingFingerprint: quote.pricing.fingerprint,
     outputCount: 1, costDreamcoins: 7,
   };
-  const kinds = ["generation", "variation", "retry", "enhancement"] as const;
+  const kinds = ["generation", "variation", "retry", "enhancement", "chat_video"] as const;
   function send(kind: typeof kinds[number], keys: Map<string, string>, persistence: GenerationReceiptPersistence,
     fetcher: Parameters<typeof requestGenerationJobWithExactAuthority>[1]) {
     const common = { idempotencyKeys: keys, persistence, createIdempotencyKey: () => `${kind}-original-key` };
+    if (kind === "chat_video") return requestChatVideoWithExactAuthority({ ...common, sessionId: "original-speaker", body: { generationContextToken: "original-context", prompt: "Turn toward the window.", quoteAuthority: authority } }, fetcher);
     if (kind === "generation") return requestGenerationJobWithExactAuthority({ ...common, body: {
       mode: "image", freeplay: true, prompt: "User portrait", outputCount: 1,
       controls: { orientation: "4:5" }, quoteAuthority: authority,

@@ -33,6 +33,8 @@ import { entitlementMap } from "./subscription-lifecycle";
 import { directCharacterAudienceWhere } from "./public-content-audience";
 import { assertMediaEnhancementSource } from "./media-enhancement-source";
 import { isExecutableGenerationProfile } from "./generation-profile-catalog";
+import { assertChatVideoAvailable } from "@/server/modules/chat/video-availability";
+import { generationContextSourceToken, lockGenerationContext, resolveGenerationContext } from "./generation-context";
 import {
   assertGenerationProfileCanDispatchReferences,
   generationRequirementsFromManifest,
@@ -127,7 +129,7 @@ export async function quoteGenerationRetry(input: {
   });
   if (!job) throw Errors.notFound("Generation job not found");
   assertGenerationJobIsRetryable(job);
-  if (job.sourceType === "chat_image") {
+  if (job.sourceType === "chat_image" || job.sourceType === "chat_video") {
     // A failed Job remains history after its attachment adopts a replacement.
     // Do not advertise another paid retry; reservation still rechecks this
     // binding under locks, and an accepted key bypasses quotes when replayed.
@@ -135,7 +137,7 @@ export async function quoteGenerationRetry(input: {
       where: {
         generationJobId: job.id,
         ...(job.sourceId ? { id: job.sourceId } : {}),
-        kind: "generated_image",
+        kind: job.sourceType === "chat_video" ? "generated_video" : "generated_image",
         status: { in: ["failed", "refunded"] },
         turn: { session: { userId: input.userId, characterId: job.characterId, status: { not: "deleted" } } },
       },
@@ -176,8 +178,11 @@ async function resolveGenerationRetryAuthority(
   userId: string,
   job: RetryableGenerationJob,
 ) {
+  if (job.sourceType === "chat_video") await assertChatVideoAvailable(userId);
   const entitlements = await entitlementMap(userId);
   const controls = jsonRecord(job.controls);
+  const contextToken = generationContextSourceToken(job);
+  if (contextToken) await resolveGenerationContext(userId, contextToken);
   if (job.sourceType === "media_enhance") await assertMediaEnhancementSource(job);
   const retrySourceImageAssetId = stringFromRecord(
     controls,
@@ -441,6 +446,8 @@ export async function retryGenerationJobForUser(input: {
     retryOf: job,
     prepare: async (tx) => {
       const lockedJob = await tx.generationJob.findUniqueOrThrow({ where: { id: job.id } });
+      const contextToken = generationContextSourceToken(lockedJob);
+      const lockedContext = contextToken ? await lockGenerationContext(tx, userId, contextToken) : null;
       if (job.characterId && job.sourceType !== "media_enhance") {
         await lockCharacterGenerationAuthority(tx, job.characterId);
         const character = await tx.character.findFirst({
@@ -469,7 +476,7 @@ export async function retryGenerationJobForUser(input: {
           );
         }
         if (
-          job.mode === "video" &&
+          job.mode === "video" && !lockedContext &&
           character.imageAssetId !== retrySourceImageAssetId
         ) {
           throw Errors.conflict(
@@ -493,17 +500,20 @@ export async function retryGenerationJobForUser(input: {
         ...retryReferenceAssetIds,
         ...(retrySourceImageAssetId ? [retrySourceImageAssetId] : []),
         ...(retryLookReferenceAssetId ? [retryLookReferenceAssetId] : []),
+        ...(lockedContext?.authorityMediaAssetIds ?? []),
       ]);
       if (job.sourceType === "media_enhance") await assertMediaEnhancementSource(job, tx);
       await assertRetryGenerationReferenceAuthoritiesInTx(tx, {
         referenceAssetIds: retryReferenceAssetIds,
         characterId: job.characterId,
       });
+      if (contextToken) await resolveGenerationContext(userId, contextToken, tx);
       if (retrySourceImageAssetId) {
         await assertGenerationSourceImageAuthorityInTx(tx, {
           sourceImageAssetId: retrySourceImageAssetId,
           userId,
           characterId: job.characterId,
+          authorizedComicSourceMediaId: lockedContext?.source.kind === "comic" ? lockedContext.sourceMedia?.id : undefined,
         });
       }
       if (retryLookReferenceAssetId) {
@@ -554,7 +564,7 @@ export async function retryGenerationJobForUser(input: {
           // sourceId uniquely identifies the original request, not every retry.
           // derivedFromJobId keeps lineage; the attachment's exact Job pointer
           // is the delivery authority for the replacement.
-          ...(job.sourceType === "media_enhance" || job.sourceType === "chat_image" ? { sourceType: job.sourceType, sourceMeta: job.sourceMeta === null ? undefined : job.sourceMeta } : {}),
+          ...(job.sourceType === "media_enhance" || job.sourceType === "chat_image" || job.sourceType === "chat_video" || (job.sourceType === "chat_handoff" || job.sourceType === "comic_remix") ? { sourceType: job.sourceType, sourceMeta: job.sourceMeta === null ? undefined : job.sourceMeta } : {}),
         },
       };
     },

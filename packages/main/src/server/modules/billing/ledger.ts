@@ -6,6 +6,7 @@ import { Errors } from "@/server/lib/errors";
 type PositiveLedgerIntentKind =
   | "signup_bonus"
   | "subscription_grant"
+  | "topup"
   | "generation_spend"
   | "refund"
   | "redeem";

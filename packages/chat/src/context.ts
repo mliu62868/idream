@@ -22,6 +22,7 @@ export interface BuiltContext {
   contextDirectives?: ChatContextDirective[];
   experience?: ChatExperiencePreference;
   userPersona?: UserChatPersona | null;
+  group?: ChatExecutionSnapshot["group"];
   persona: ResolvedChatPersona;
   policy: ChatPolicy;
   recentMessages: Array<{
@@ -30,6 +31,7 @@ export interface BuiltContext {
     content: string;
     photoSummary?: string;
     opening?: true;
+    speaker?: NonNullable<ChatExecutionSnapshot["group"]>["members"][number];
   }>;
   scene: SceneState;
   sceneVersion: number;
@@ -75,7 +77,7 @@ export async function buildContext(input: BuildContextInput): Promise<BuiltConte
     characterImageToolEnabled: persona.imageToolEnabled,
   });
   const openingMessage = immutableOpeningMessage(character.contentVersion.openingSnapshot);
-  const transcript: BuiltContext["recentMessages"] = openingMessage
+  const transcript: BuiltContext["recentMessages"] = openingMessage && !snapshot.group
     ? [{
         id: `opening:${snapshot.sessionId}`,
         role: "assistant",
@@ -85,7 +87,7 @@ export async function buildContext(input: BuildContextInput): Promise<BuiltConte
     : [];
   transcript.push(...snapshot.recentTurns.flatMap((turn) => [
     { id: turn.userMessageId, role: "user" as const, content: turn.userContent },
-    { id: turn.assistantMessageId, role: "assistant" as const, content: turn.assistantContent },
+    { id: turn.assistantMessageId, role: "assistant" as const, content: turn.assistantContent, ...(turn.speaker ? { speaker: turn.speaker } : {}) },
   ]));
   transcript.push({
     id: snapshot.userMessageId,
@@ -105,10 +107,12 @@ export async function buildContext(input: BuildContextInput): Promise<BuiltConte
   return {
     userLocale: authority.user.locale,
     hasRecentImageContext: snapshot.hasRecentImageContext,
-    previousAssistantText: snapshot.recentTurns.at(-1)?.assistantContent,
+    previousAssistantText: !snapshot.group || snapshot.recentTurns.at(-1)?.speaker?.characterId === snapshot.characterId
+      ? snapshot.recentTurns.at(-1)?.assistantContent : undefined,
     contextDirectives: snapshot.contextDirectives ?? [],
     experience: snapshot.experience,
     userPersona: snapshot.userPersona,
+    group: snapshot.group,
     persona,
     policy,
     recentMessages: fitted.messages,

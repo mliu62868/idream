@@ -14,6 +14,7 @@ import {
   Send,
   Square,
   WandSparkles,
+  Video,
   X,
 } from "lucide-react";
 import { FormEvent, useEffect, useRef, useState } from "react";
@@ -39,6 +40,10 @@ import { authHrefForTarget } from "./authRedirect";
 import { LegacyTestAssetBadge } from "./LegacyTestAssetBadge";
 import { useReportDialog } from "./ReportDialog";
 import { chatFailureCopy } from "@/lib/chat-failure-copy";
+import { chatGenerationHref } from "@/lib/chat-generation-link";
+import { chatVideoSources, isExplicitChatVideoRequest } from "@/lib/chat-video";
+import { ChatVideoComposer, type ChatVideoSubmission } from "./chat/ChatVideoComposer";
+import { ChatVideoAttachmentCard } from "./chat/ChatVideoAttachmentCard";
 import {
   chatStreamErrorDisposition,
   chatStreamLatestReplyFailed,
@@ -57,12 +62,15 @@ import {
 } from "./chat-message-actions";
 import {
   GenerationRequestError,
+  apiPayloadErrorMessage,
   hasUnconfirmedGenerationRetry,
   requestGenerationRetryWithExactAuthority,
+  requestChatVideoWithExactAuthority,
   requestMediaVariationWithExactQuote,
   type GenerationReceipt,
   type GenerationQuoteAuthority,
 } from "@/lib/generation-write-client";
+import { GroupSpeakerControls, mentionedGroupCharacter } from "./chat/GroupSpeakerControls";
 
 type ChatLoadState = "loading" | "ready" | "signed-out" | "error";
 type ChatUpgradeReason = "dreamcoins" | "messages" | "voice";
@@ -109,8 +117,8 @@ export function voicePaymentRequiredReason(payload: unknown) {
     : ("insufficient_balance" as const);
 }
 
-function upgradeHrefForChatSession(sessionId: string) {
-  return `/upgrade?returnTo=${encodeURIComponent(`/chat/${encodeURIComponent(sessionId)}`)}`;
+function upgradeHrefForChatSession(sessionId: string, groupMode = false) {
+  return `/upgrade?returnTo=${encodeURIComponent(`/chat/${groupMode ? "groups/" : ""}${encodeURIComponent(sessionId)}`)}`;
 }
 
 function mergeCanonicalMessages(
@@ -179,7 +187,7 @@ export function chatAttachmentIsActive(status: string, errorCode?: string | null
   return ACTIVE_CHAT_ATTACHMENT_STATUSES.has(status) && errorCode !== "provider_outcome_unknown";
 }
 
-export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
+export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: string; groupMode?: boolean }>) {
   const { accepted: ageGateAccepted } = useAgeGateAccess();
   const [title, setTitle] = useState("Chat");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -190,6 +198,13 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   const { openReport, reportDialog } = useReportDialog(setStatus);
   const [upgradeReason, setUpgradeReason] = useState<ChatUpgradeReason | null>(null);
   const [characterId, setCharacterId] = useState<string | null>(null);
+  const [group, setGroup] = useState<ChatSession["group"]>(undefined);
+  const [conversationArchived, setConversationArchived] = useState(false);
+  const [speakerPending, setSpeakerPending] = useState(false);
+  const [sendOutcomeUnknown, setSendOutcomeUnknown] = useState(false);
+  const selectedSpeakerRef = useRef<string | null>(null);
+  const executionSessionId = group?.selectedSessionId ?? id;
+  const sessionPath = `/api/v1/chat/${groupMode ? "groups" : "sessions"}/${encodeURIComponent(id)}`;
   const [canUpdateIdentity, setCanUpdateIdentity] = useState(false);
   const [memoryEnabled, setMemoryEnabled] = useState(true);
   const [memoryPending, setMemoryPending] = useState(false);
@@ -214,6 +229,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   const [retryingImageIds, setRetryingImageIds] = useState<ReadonlySet<string>>(() => new Set());
   const [receiptOwnerScope, setReceiptOwnerScope] = useState<string | null>(null);
   const [receiptWarning, setReceiptWarning] = useState("");
+  const [videoForm, setVideoForm] = useState<{ conversationId: string; ownerScope: string; sourceId?: string; prompt?: string; characterId: string | null } | null>(null);
   const {
     receipts: generationReceipts,
     checkingKeys: checkingReceiptKeys,
@@ -230,6 +246,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     sessionId: string;
     content: string;
     idempotencyKey: string;
+    characterId: string | null;
   } | null>(null);
   const imageRetryPendingRef = useRef(new Set<string>());
   const streamSources = useRef<Map<string, EventSource>>(new Map());
@@ -248,7 +265,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   const hasGeneratingReply = chatStreamMessagesNeedReconciliation(messages);
   const canSend = canSubmitChatMessage(
     content,
-    pending || stoppingReply,
+    pending || stoppingReply || speakerPending || conversationArchived,
     hasGeneratingReply,
   );
 
@@ -308,6 +325,10 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
       setLoadState("loading");
       setStatus(null);
       setCharacterId(null);
+      setGroup(undefined);
+      selectedSpeakerRef.current = null;
+      setConversationArchived(false);
+      setSendOutcomeUnknown(false);
       setCanUpdateIdentity(false);
       const epoch = sessionMutationEpochRef.current;
       fetchSession(controller.signal)
@@ -331,7 +352,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     };
     // The loader intentionally reruns only when the route session id changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ageGateAccepted, id]);
+  }, [ageGateAccepted, id, groupMode]);
 
   useEffect(() => {
     if (!ageGateAccepted) return;
@@ -473,7 +494,10 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     const receiptContext = generationReceiptContext();
     // INVARIANT: a regenerated Turn keeps its message id but changes its text
     // and attempt. Its audio must never come from the discarded reply.
-    const key = JSON.stringify([id, messages.find((message) => message.id === messageId)?.attempt, text]);
+    const message = messages.find((message) => message.id === messageId);
+    const sourceSessionId = message?.sessionId ?? executionSessionId;
+    const sourceCharacterId = message?.characterId ?? characterId;
+    const key = JSON.stringify([sourceSessionId, message?.attempt, text]);
     const cachedClip = voiceClipUrlsRef.current.get(messageId);
     if (cachedClip?.key === key) return { url: cachedClip.url, reason: null };
     const existingRequest = voiceClipRequestsRef.current.get(messageId);
@@ -482,7 +506,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     setVoicePreparingIds((current) => new Set(current).add(messageId));
     const request = (async (): Promise<VoiceClipRequestResult> => {
       try {
-        const body = { characterId, messageId, sessionId: id, text, intent: "play" };
+        const body = { characterId: sourceCharacterId, messageId, sessionId: sourceSessionId, text, intent: "play" };
         const headers = { "content-type": "application/json", "x-idream-viewer-scope": receiptContext.persistence.ownerScope };
         if (!acceptedQuoteToken) {
           const quoted = await fetch("/api/v1/generation/voice/quote", {
@@ -606,7 +630,19 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const text = content.trim();
-    if (!canSubmitChatMessage(text, pending, hasGeneratingReply)) return;
+    if (!canSubmitChatMessage(text, pending || speakerPending || conversationArchived, hasGeneratingReply)) return;
+    const mentioned = group ? mentionedGroupCharacter(text, group.members) : null;
+    if (mentioned && mentioned !== characterId) {
+      await changeSpeaker(mentioned);
+      setStatus("Speaker selected. Review the recipient, then send your message.");
+      return;
+    }
+    const mentionedName = group?.members.find(member => member.characterId === mentioned)?.name;
+    const videoText = mentionedName ? text.slice(mentionedName.length + 1).replace(/^[,:]\s*/, "").trim() : text;
+    if (isExplicitChatVideoRequest(videoText) && receiptOwnerScope) {
+      openVideoRequest(undefined, videoText);
+      return;
+    }
     setStatus(null);
     setUpgradeReason(null);
     setContent("");
@@ -624,25 +660,27 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     ]);
     const previousIntent = sendIntentRef.current;
     const intent =
-      previousIntent?.sessionId === id && previousIntent.content === text
+      previousIntent?.sessionId === id && previousIntent.content === text && previousIntent.characterId === characterId
         ? previousIntent
         : {
             sessionId: id,
             content: text,
             idempotencyKey: crypto.randomUUID(),
+            characterId,
           };
     sendIntentRef.current = intent;
     try {
-      const response = await fetch(`/api/v1/chat/sessions/${id}/messages`, {
+      const response = await fetch(`${sessionPath}/messages`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
           "idempotency-key": intent.idempotencyKey,
         },
-        body: JSON.stringify({ content: text }),
+        body: JSON.stringify({ content: text, ...(groupMode ? { characterId: intent.characterId } : {}) }),
       });
       // Quota exhausted: keep the user's input and surface the upgrade path (P0-C).
       if (response.status === 402) {
+        setSendOutcomeUnknown(false);
         setUpgradeReason("messages");
         setStatus("Daily free message limit reached.");
         setContent(text);
@@ -650,6 +688,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
         return;
       }
       if (!response.ok) {
+        setSendOutcomeUnknown(response.status >= 500);
         setStatus(chatFailureCopy(
           await response.json().catch(() => null),
           "Message failed to send. Please try again.",
@@ -663,6 +702,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
       const assistant = payload.assistant;
       const streamUrl = payload.streamUrl;
       sendIntentRef.current = null;
+      setSendOutcomeUnknown(false);
 
       // Blocked input (P0-B): the assistant turn is a terminal safety notice with no
       // stream. Render it in place; do NOT open an EventSource that would never fill.
@@ -691,6 +731,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
       // Network/parse failure: surface the error and restore the typed text so the
       // user's message is never silently lost (P0 — silent message loss).
       setStatus("Message failed to send. Please try again.");
+      setSendOutcomeUnknown(true);
       setContent(text);
       setMessages(dropOptimisticMessage);
     } finally {
@@ -775,7 +816,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   }
 
   async function fetchSession(signal?: AbortSignal): Promise<ChatSession> {
-    const response = await fetch(`/api/v1/chat/sessions/${id}`, {
+    const response = await fetch(`${sessionPath}${groupMode && selectedSpeakerRef.current ? `?speaker=${encodeURIComponent(selectedSpeakerRef.current)}` : ""}`, {
       cache: "no-store",
       signal,
     });
@@ -785,11 +826,18 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
       await response.json(),
     ).session;
     if (session.id !== id) throw new Error("Chat unavailable");
+    if (groupMode !== Boolean(session.group)) throw new Error("Chat unavailable");
     return session;
   }
 
   function applySession(session: ChatSession) {
     if (session.id !== id) return;
+    const intent = sendIntentRef.current;
+    if (session.group && intent && session.messages.some(message => message.requestKey === intent.idempotencyKey)) {
+      sendIntentRef.current = null;
+      setSendOutcomeUnknown(false);
+      setContent(current => current.trim() === intent.content ? "" : current);
+    }
     resumeGenerationReceipts(session.ownerScope);
     setReceiptOwnerScope(session.ownerScope);
     let recoveredStream = false;
@@ -814,8 +862,33 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     ]);
     setDeleteConfirmMessageId(null);
     if (session.characterId) setCharacterId(session.characterId);
+    selectedSpeakerRef.current = session.characterId ?? null;
+    setGroup(session.group);
+    setConversationArchived(session.status === "archived");
+    if (session.status === "archived") cancelEdit();
     setCanUpdateIdentity(Boolean(session.character.canUpdateIdentity));
     if (typeof session.memoryEnabled === "boolean") setMemoryEnabled(session.memoryEnabled);
+  }
+
+  async function changeSpeaker(nextCharacterId: string) {
+    if (!group || !group.members.some(member => member.characterId === nextCharacterId) || nextCharacterId === characterId
+      || pending || hasGeneratingReply || speakerPending || sendOutcomeUnknown) return;
+    const prior = selectedSpeakerRef.current;
+    const epoch = ++sessionMutationEpochRef.current;
+    selectedSpeakerRef.current = nextCharacterId;
+    setSpeakerPending(true);
+    stopVoice();
+    try {
+      const session = await fetchSession();
+      if (epoch !== sessionMutationEpochRef.current) return;
+      applySession(session);
+      setStatus(null);
+    } catch {
+      if (epoch === sessionMutationEpochRef.current) {
+        selectedSpeakerRef.current = prior;
+        setStatus("Couldn't select that Character. Try again.");
+      }
+    } finally { setSpeakerPending(false); }
   }
 
   // SPEC: Flip long-term memory for this session; optimistic, reconciled from the
@@ -828,7 +901,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     setMemoryPending(true);
     sessionMutationEpochRef.current += 1;
     try {
-      const response = await fetch(`/api/v1/chat/sessions/${id}/memory`, {
+      const response = await fetch(`/api/v1/chat/sessions/${encodeURIComponent(executionSessionId)}/memory`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ memoryEnabled: next }),
@@ -888,7 +961,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     }
   }
 
-  async function retryImageAttachment(attachment: ChatAttachment) {
+  async function retryImageAttachment(attachment: ChatAttachment, confirmedQuote?: GenerationQuoteAuthority) {
     const jobId = attachment.generationJobId;
     if (!jobId || imageRetryPendingRef.current.has(attachment.id)) return;
     imageRetryPendingRef.current.add(attachment.id);
@@ -900,11 +973,11 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     try {
       receiptContext = generationReceiptContext();
       const current = () => epoch === sessionMutationEpochRef.current && receiptContext!.isCurrent();
-      let quoteAuthority;
-      if (!hasUnconfirmedGenerationRetry(jobId, receiptContext.keys.retry)) {
+      let quoteAuthority = confirmedQuote;
+      if (!quoteAuthority && !hasUnconfirmedGenerationRetry(jobId, receiptContext.keys.retry)) {
         const response = await fetch(`/api/v1/generation/jobs/${encodeURIComponent(jobId)}/retry/quote`, { method: "POST", cache: "no-store", headers: { "x-idream-viewer-scope": receiptContext.persistence.ownerScope } });
         const payload: unknown = await response.json().catch(() => null);
-        if (!response.ok) throw new GenerationRequestError(chatFailureCopy(payload, "Couldn't check the image retry price."), response.status);
+        if (!response.ok) throw new GenerationRequestError(apiPayloadErrorMessage(payload) ?? "Couldn't check the media retry price.", response.status);
         const { quote } = parseGenerationRetryQuoteResponse(payload);
         quoteAuthority = { profileId: quote.profileId, profileVersion: quote.profileVersion, routeFingerprint: quote.routeFingerprint, pricingFingerprint: quote.pricing.fingerprint, outputCount: quote.outputCount, costDreamcoins: quote.costDreamcoins };
       }
@@ -919,7 +992,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     } catch (error) {
       if (epoch !== sessionMutationEpochRef.current) return;
       if (error instanceof GenerationRequestError && error.status === 402) setUpgradeReason("dreamcoins");
-      setStatus(error instanceof GenerationRequestError ? error.message : "Couldn't confirm the image request. Try again to check the same request.");
+      setStatus(error instanceof GenerationRequestError ? error.message : "Couldn't confirm the media request. Try again to check the same request.");
     } finally {
       if (receiptContext?.isCurrent()) refreshGenerationReceipts();
       imageRetryPendingRef.current.delete(attachment.id);
@@ -927,14 +1000,47 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     }
   }
 
-  async function addAttachmentToIdentity(mediaAssetId: string) {
+  function openVideoRequest(sourceId?: string, prompt?: string, sourceCharacterId = characterId) {
+    if (!receiptOwnerScope) return;
+    setVideoForm({ conversationId: id, ownerScope: receiptOwnerScope, sourceId, prompt, characterId: sourceCharacterId });
+    setStatus(null);
+  }
+
+  async function submitVideoRequest(submission: ChatVideoSubmission) {
+    const context = generationReceiptContext();
+    const epoch = sessionMutationEpochRef.current;
+    const current = () => context.isCurrent() && epoch === sessionMutationEpochRef.current;
+    try {
+      await requestChatVideoWithExactAuthority({ ...submission, idempotencyKeys: context.keys.generation, persistence: context.persistence, isCurrent: current });
+      if (!current()) return false;
+      const session = await fetchSession();
+      if (!current()) return false;
+      applySession(session);
+      setContent("");
+      setStatus("Video requested. You can keep chatting while it finishes.");
+      return true;
+    } catch (error) {
+      if (!current()) return false;
+      setStatus(error instanceof GenerationRequestError ? error.message : "The video request is unconfirmed. Check the original request below before creating another.");
+      return false;
+    } finally { if (context.isCurrent()) refreshGenerationReceipts(); }
+  }
+
+  async function refreshAfterVideoCancellation() {
+    const context = generationReceiptContext();
+    const epoch = sessionMutationEpochRef.current;
+    const session = await fetchSession();
+    if (context.isCurrent() && epoch === sessionMutationEpochRef.current) applySession(session);
+  }
+
+  async function addAttachmentToIdentity(mediaAssetId: string, sourceCharacterId = characterId) {
     setStatus(null);
     setDeleteConfirmMessageId(null);
     try {
       const response = await fetch(`/api/v1/media/${encodeURIComponent(mediaAssetId)}/add-to-identity`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(characterId ? { characterId } : {}),
+        body: JSON.stringify(sourceCharacterId ? { characterId: sourceCharacterId } : {}),
       });
       setStatus(response.ok ? "Added image to this character's identity." : "Couldn't update identity.");
     } catch {
@@ -1260,6 +1366,8 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
 
   const latestUserMessageId = newestUserMessageId(messages);
   const latestReplyInProgress = replyAfterLatestUserInProgress(messages);
+  const latestCompletedReply = [...messages].reverse().find(message => message.role === "assistant" && message.status === "sent" && message.turnId && (!group || message.characterId === characterId));
+  const videoSources = chatVideoSources(messages, { sessionId: executionSessionId, characterId });
 
   return (
     <main className="min-h-screen bg-[rgb(13,13,13)] text-white">
@@ -1268,23 +1376,34 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
         <section className="flex min-w-0 flex-1 flex-col px-4 py-6 pb-24 md:px-[60px]">
           <Link
             className="mb-5 inline-flex items-center gap-2 text-[13px] font-bold text-[rgb(170,170,170)] hover:text-white"
-            href="/"
+            href={groupMode ? "/chat/groups" : "/"}
           >
             <ArrowLeft className="h-4 w-4" />
-            Explore
+            {groupMode ? "Your group chats" : "Explore"}
           </Link>
           <h1 className="text-[32px] font-black uppercase leading-9">{title}</h1>
           {loadState === "ready" ? (
             <>
+              {group ? <GroupSpeakerControls members={group.members} selectedCharacterId={characterId} disabled={pending || hasGeneratingReply || speakerPending || conversationArchived || sendOutcomeUnknown} onSelect={next => void changeSpeaker(next)} /> : null}
+              {group && sendOutcomeUnknown ? <p role="status" className="mt-3 text-sm text-white/80">The last request is unconfirmed. Retry the same message to check it before choosing another speaker.</p> : null}
+              {conversationArchived ? <p className="mt-3 text-sm text-white/80">This conversation is archived. Its history stays readable.</p> : null}
               <ChatHeaderControls
-                characterId={characterId}
+                generateHref={chatGenerationHref({ characterId, sessionId: executionSessionId, message: latestCompletedReply })}
                 memoryEnabled={memoryEnabled}
                 memoryPending={memoryPending}
                 onToggleMemory={toggleMemory}
-                onOpenSessions={() => setSessionsOpen(true)}
+                onOpenSessions={() => groupMode ? window.location.assign("/chat/groups") : setSessionsOpen(true)}
                 onOpenMemory={() => setMemoryOpen(true)}
               />
-              <ConversationPreferences key={id} sessionId={id} />
+              <ConversationPreferences key={executionSessionId} sessionId={executionSessionId} />
+              <button type="button" className="mt-3 inline-flex min-h-11 items-center gap-2 self-start rounded-full border border-white/20 px-4 py-2 text-sm font-bold disabled:opacity-50" disabled={!receiptOwnerScope} onClick={() => openVideoRequest()}>
+                <Video className="size-4" />Video
+              </button>
+              {videoForm && videoForm.conversationId === id && videoForm.ownerScope === receiptOwnerScope ? <ChatVideoComposer
+                key={`${videoForm.ownerScope}:${videoForm.characterId}:${videoForm.sourceId ?? ""}:${videoForm.prompt ?? ""}`}
+                sources={videoSources.filter(source => source.characterId === videoForm.characterId)} initialSourceId={videoForm.sourceId} initialPrompt={videoForm.prompt}
+                ownerScope={videoForm.ownerScope} onClose={() => setVideoForm(null)} onSubmit={submitVideoRequest}
+              /> : null}
               {receiptWarning ? <p role="status" className="mt-3 text-sm text-white/80">{receiptWarning}</p> : null}
               {generationReceipts.length > 0 ? (
                 <section className="mt-4 rounded-xl border border-white/15 p-4" aria-label="Unconfirmed generation requests">
@@ -1296,7 +1415,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
                       const checking = checkingReceiptKeys.has(receipt.key);
                       return <li key={receipt.key} data-pending-request-key={receipt.key} className="flex flex-wrap items-center justify-between gap-3">
                         <div className="min-w-0">
-                          <p className="text-sm font-semibold">{receipt.kind === "generation_retry" ? "Image retry" : receipt.kind === "media_variation" ? "Image variation" : receipt.kind === "media_enhancement" ? "Image enhancement" : "Generation"} · {quote.costDreamcoins} coins</p>
+                          <p className="text-sm font-semibold">{receipt.kind === "generation_retry" ? "Media retry" : receipt.kind === "chat_video" ? "Chat video" : receipt.kind === "media_variation" ? "Image variation" : receipt.kind === "media_enhancement" ? "Image enhancement" : "Generation"} · {quote.costDreamcoins} coins</p>
                           <p className="mt-1 break-all text-xs text-white/65">Request {receipt.key}</p>
                         </div>
                         <button type="button" className="min-h-11 rounded-full bg-white px-4 py-2 text-sm font-bold text-[rgb(13,13,13)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white disabled:opacity-50"
@@ -1318,10 +1437,12 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
                     !replyInProgress &&
                     !isLocalChatMessageId(message.id);
                   const canEditMessage =
+                    !conversationArchived &&
                     isUser &&
                     message.id === latestUserMessageId &&
                     !latestReplyInProgress;
                   const canRegenerateMessage =
+                    !conversationArchived &&
                     !immutableOpening &&
                     message.replyToMessageId === latestUserMessageId &&
                     canRegenerateChatMessage(message, hasGeneratingReply);
@@ -1344,6 +1465,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
                       data-testid={`chat-message-${message.role}`}
                       key={message.id}
                     >
+                      {group && message.speakerName ? <p className="mb-1 text-xs font-bold opacity-75">{isUser ? `You → ${message.speakerName}` : message.speakerName}</p> : null}
                       {isEditing ? (
                         <form
                           className="space-y-2"
@@ -1415,19 +1537,25 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
                       )}
                       {(message.attachments ?? []).length > 0 ? (
                         <div className="mt-3 space-y-2">
-                          {message.attachments?.map((attachment) => (
+                          {message.attachments?.map((attachment) => attachment.kind === "generated_video" ? <ChatVideoAttachmentCard
+                              attachment={attachment} key={attachment.id} ownerScope={receiptOwnerScope}
+                              retryPending={retryingImageIds.has(attachment.id)} onRetry={authority => retryImageAttachment(attachment, authority)} onCancelled={refreshAfterVideoCancellation}
+                            /> : (
                             <ChatImageAttachmentCard
                               attachment={attachment}
                               canAddToIdentity={canUpdateIdentity}
-                              characterId={characterId}
+                              characterId={message.characterId ?? characterId}
+                              generateHref={chatGenerationHref({ characterId: message.characterId ?? characterId, sessionId: message.sessionId ?? executionSessionId, message, mediaAssetId: attachment.mediaAssetId })}
                               key={attachment.id}
                               paymentHref={upgradeHrefForChatSession(id)}
                               onAddToIdentity={
                                 attachment.mediaAssetId
-                                  ? () => addAttachmentToIdentity(attachment.mediaAssetId as string)
+                                  ? () => addAttachmentToIdentity(attachment.mediaAssetId as string, message.characterId ?? characterId)
                                   : undefined
                               }
                               onRetry={() => retryImageAttachment(attachment)}
+                              onAnimate={attachment.status === "completed" && attachment.mediaAssetId && receiptOwnerScope
+                                ? () => openVideoRequest(attachment.mediaAssetId!, undefined, message.characterId ?? characterId) : undefined}
                               retryPending={retryingImageIds.has(attachment.id)}
                               onIdentityMatch={
                                 attachment.mediaAssetId
@@ -1521,9 +1649,16 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
                   aria-label="Message"
                   className="h-12 min-w-0 flex-1 rounded-full bg-[rgb(36,36,36)] px-5 text-[14px] font-medium outline-none placeholder:text-[rgb(114,113,112)]"
                   id={`chat-message-${id}`}
-                  onChange={(event) => setContent(event.target.value)}
+                  onChange={(event) => {
+                    const next = event.target.value;
+                    setContent(next);
+                    const mentioned = group ? mentionedGroupCharacter(next, group.members) : null;
+                    if (mentioned) void changeSpeaker(mentioned);
+                  }}
                   name="message"
-                  placeholder="Message..."
+                  placeholder={group ? "Message, or @ a Character…" : "Message..."}
+                  disabled={conversationArchived}
+                  readOnly={groupMode && sendOutcomeUnknown}
                   value={content}
                 />
                 {hasGeneratingReply ? (
@@ -1562,7 +1697,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
                   {upgradeReason ? (
                     <>
                       {" "}
-                      <Link className="underline hover:text-white" href={upgradeHrefForChatSession(id)}>
+                      <Link className="underline hover:text-white" href={upgradeHrefForChatSession(id, groupMode)}>
                         {chatUpgradeLinkLabel(upgradeReason)}
                       </Link>
                       .
@@ -1572,7 +1707,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
               ) : null}
             </>
           ) : (
-            <ChatSessionUnavailablePanel loadState={loadState} sessionId={id} />
+            <ChatSessionUnavailablePanel loadState={loadState} sessionId={id} groupMode={groupMode} />
           )}
         </section>
       </div>
@@ -1583,11 +1718,12 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
         currentSessionId={id}
       />
       <MemoryPanel
-        key={id}
+        key={executionSessionId}
         open={memoryOpen}
         onClose={() => setMemoryOpen(false)}
         characterId={characterId}
-        sessionId={id}
+        sessionId={executionSessionId}
+        groupConversation={Boolean(group)}
         memoryEnabled={memoryEnabled}
         memoryPending={memoryPending}
         onToggleMemory={toggleMemory}
@@ -1600,8 +1736,9 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
 function ChatSessionUnavailablePanel({
   loadState,
   sessionId,
-}: Readonly<{ loadState: Exclude<ChatLoadState, "ready">; sessionId: string }>) {
-  const loginTarget = `/chat/${encodeURIComponent(sessionId)}`;
+  groupMode = false,
+}: Readonly<{ loadState: Exclude<ChatLoadState, "ready">; sessionId: string; groupMode?: boolean }>) {
+  const loginTarget = `/chat/${groupMode ? "groups/" : ""}${encodeURIComponent(sessionId)}`;
 
   if (loadState === "loading") {
     return (
@@ -1729,7 +1866,9 @@ function ChatImageAttachmentCard({
   attachment,
   canAddToIdentity,
   characterId,
+  generateHref,
   onRetry,
+  onAnimate,
   retryPending,
   onAddToIdentity,
   onIdentityMatch,
@@ -1741,7 +1880,9 @@ function ChatImageAttachmentCard({
   attachment: ChatAttachment;
   canAddToIdentity: boolean;
   characterId: string | null;
+  generateHref: string | null;
   onRetry: () => void;
+  onAnimate?: () => void;
   retryPending: boolean;
   onAddToIdentity?: () => void;
   onIdentityMatch?: () => void;
@@ -1781,6 +1922,8 @@ function ChatImageAttachmentCard({
           <ChatImageAttachmentActions
             canAddToIdentity={canAddToIdentity}
             characterId={characterId}
+            generateHref={generateHref}
+            onAnimate={onAnimate}
             onAddToIdentity={onAddToIdentity}
             onIdentityMatch={onIdentityMatch}
             onIdentityMismatch={onIdentityMismatch}
@@ -1867,6 +2010,8 @@ function ChatImageAttachmentCard({
         <ChatImageAttachmentActions
           canAddToIdentity={canAddToIdentity}
           characterId={characterId}
+          generateHref={generateHref}
+          onAnimate={onAnimate}
           onAddToIdentity={onAddToIdentity}
           onIdentityMatch={onIdentityMatch}
           onIdentityMismatch={onIdentityMismatch}
@@ -1880,7 +2025,8 @@ function ChatImageAttachmentCard({
 
 function ChatImageAttachmentActions({
   canAddToIdentity,
-  characterId,
+  generateHref,
+  onAnimate,
   onAddToIdentity,
   onIdentityMatch,
   onIdentityMismatch,
@@ -1889,6 +2035,8 @@ function ChatImageAttachmentActions({
 }: Readonly<{
   canAddToIdentity: boolean;
   characterId: string | null;
+  generateHref: string | null;
+  onAnimate?: () => void;
   onAddToIdentity?: () => void;
   onIdentityMatch?: () => void;
   onIdentityMismatch?: () => void;
@@ -1917,8 +2065,9 @@ function ChatImageAttachmentActions({
         </button>
       </div>
       <div className={`grid gap-2 ${canAddToIdentity ? "grid-cols-2" : "grid-cols-1"}`}>
+        {/* Two narrow columns wrap these labels; grow instead of clipping them. */}
         <button
-          className="inline-flex h-8 items-center justify-center gap-1.5 rounded-full bg-white px-3 text-[11px] font-black text-[rgb(13,13,13)]"
+          className="inline-flex min-h-8 items-center justify-center gap-1.5 rounded-full bg-white px-3 py-1.5 text-center text-[11px] leading-tight font-black text-[rgb(13,13,13)]"
           disabled={moreLikeThisPending}
           onClick={onMoreLikeThis}
           type="button"
@@ -1934,7 +2083,7 @@ function ChatImageAttachmentActions({
         </button>
         {canAddToIdentity && (
           <button
-            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-full bg-white/10 px-3 text-[11px] font-bold text-white"
+            className="inline-flex min-h-8 items-center justify-center gap-1.5 rounded-full bg-white/10 px-3 py-1.5 text-center text-[11px] leading-tight font-bold text-white"
             onClick={onAddToIdentity}
             type="button"
           >
@@ -1943,13 +2092,14 @@ function ChatImageAttachmentActions({
           </button>
         )}
       </div>
-      <Link
+      {generateHref ? <Link
         className="inline-flex h-8 items-center justify-center gap-1.5 rounded-full bg-black/30 px-3 text-[11px] font-bold text-white"
-        href={characterId ? `/generate?characterId=${encodeURIComponent(characterId)}` : "/generate"}
+        href={generateHref}
       >
         <ExternalLink className="h-3.5 w-3.5" />
         Open in Generate
-      </Link>
+      </Link> : null}
+      {onAnimate ? <button type="button" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-white/10 px-3 text-xs font-bold text-white" onClick={onAnimate}><Video className="size-4" />Animate</button> : null}
     </div>
   );
 }

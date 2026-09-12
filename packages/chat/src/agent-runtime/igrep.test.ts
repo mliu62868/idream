@@ -424,6 +424,121 @@ describe("igrep Main source admission", () => {
     expect(await readdir(join(workspace, ".igrep/mem/memory/dialogues"))).toEqual(["deepseek-harness-session-1.jsonl"]);
   }
 
+  // Captured dialogue/1 shapes from official igrep 0.1.137 ingest. The
+  // searchable content includes dates; source_content remains Main's text.
+  const annotatedSamples = [
+    {
+      source: "What is today's agenda?",
+      content: "What is today（2026-09-10）'s agenda?",
+      annotations: [{ span: { start: 8, end: 13 }, surface: "today", absolute_text: "2026-09-10" }],
+    },
+    {
+      source: "🌿 今天给Cedar浇水，明天再检查。",
+      content: "🌿 今天（2026-09-10）给Cedar浇水，明天（2026-09-11）再检查。",
+      annotations: [
+        { span: { start: 2, end: 4 }, surface: "今天", absolute_text: "2026-09-10" },
+        { span: { start: 13, end: 15 }, surface: "明天", absolute_text: "2026-09-11" },
+      ],
+    },
+    {
+      source: "Call me in 3 hours and next week.",
+      content: "Call me in 3 hours（2026-09-10T04:07+00:00） and next week（2026-09-17）.",
+      annotations: [
+        { span: { start: 8, end: 18 }, surface: "in 3 hours", absolute_text: "2026-09-10T04:07+00:00" },
+        { span: { start: 23, end: 32 }, surface: "next week", absolute_text: "2026-09-17" },
+      ],
+    },
+  ];
+
+  function annotatedRequest(source: string): CompanionWorkspaceRebuild {
+    return { ...request, messages: [
+      { ...request.messages[0]!, content: source, createdAt: "2026-09-10T01:07:23.469Z" },
+      { ...request.messages[1]!, content: "Noted.", createdAt: "2026-09-10T01:07:55.036Z" },
+    ] };
+  }
+
+  async function annotatedIngest(options: JsonCommandOptions, sample: typeof annotatedSamples[number]) {
+    const result = await fixtureIngest(options);
+    const workspace = options.args[options.args.indexOf("--workspace") + 1]!;
+    const path = join(workspace, result.dialoguePath);
+    const rows = (await readFile(path, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    Object.assign(rows[0], {
+      source_content: sample.source,
+      content: sample.content,
+      temporal_annotations: sample.annotations.map((annotation) => ({
+        ...annotation, anchor_ref: "message.source_at", authority: "user_assertion", method: "rule",
+      })),
+    });
+    await writeFile(path, rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
+    return result;
+  }
+
+  it.each(annotatedSamples)("accepts official temporal views without losing the Main source: $source", async (sample) => {
+    const workspace = await fixture();
+    const calls: string[] = [];
+    const builder = new IgrepMemoryBuilder("igrep", { status: async () => ({
+      dialogueFiles: 1, pendingProfileRows: 0, processedProfileRows: 2, lastMaintainAt: "2026-09-10T01:08:00Z",
+    }) }, async (options) => {
+      calls.push(options.args[1]!);
+      return options.args[1] === "ingest" ? annotatedIngest(options, sample) : { ok: true };
+    });
+    await expect(builder.build(workspace, annotatedRequest(sample.source))).resolves.toMatchObject({
+      sourceReady: true, derivation: "accepted", sessions: 1, messages: 2,
+    });
+    expect(calls).toEqual(["ingest", "maintain", "doctor"]);
+  });
+
+  it.each(["changed-source", "unannotated-rewrite", "forged-surface", "overlapping-spans", "non-date-insertion"])(
+    "rejects a temporal view with %s even when it supplies source_content", async (fault) => {
+      const workspace = await fixture();
+      const sample = structuredClone(annotatedSamples[0]!);
+      const source = sample.source;
+      if (fault === "changed-source") {
+        sample.source = sample.source.replace("agenda", "schedule");
+        sample.content = sample.content.replace("agenda", "schedule");
+      }
+      if (fault === "unannotated-rewrite") sample.content = "The user forgot Cedar.";
+      if (fault === "forged-surface") sample.annotations[0]!.surface = "agenda";
+      if (fault === "overlapping-spans") sample.annotations.push(sample.annotations[0]!);
+      if (fault === "non-date-insertion") {
+        sample.annotations[0]!.absolute_text = "The user forgot Cedar";
+        sample.content = "What is today（The user forgot Cedar）'s agenda?";
+      }
+      const calls: string[] = [];
+      const builder = new IgrepMemoryBuilder("igrep", sourceOnlyStatus, async (options) => {
+        calls.push(options.args[1]!);
+        return options.args[1] === "ingest" ? annotatedIngest(options, sample) : { ok: true };
+      });
+      await expect(builder.build(workspace, annotatedRequest(source))).rejects.toThrow("igrep source integrity rejected");
+      expect(calls).toEqual(["ingest", "ingest"]);
+    },
+  );
+
+  it("rejects maintenance changes to an otherwise valid temporal annotation", async () => {
+    const workspace = await fixture();
+    const sample = annotatedSamples[0]!;
+    const calls: string[] = [];
+    const builder = new IgrepMemoryBuilder("igrep", sourceOnlyStatus, async (options) => {
+      calls.push(options.args[1]!);
+      if (options.args[1] === "ingest") return annotatedIngest(options, sample);
+      if (options.args[1] === "maintain") {
+        const path = join(workspace, dialogue);
+        const rows = (await readFile(path, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+        rows[0].content = sample.content.replace("2026-09-10", "2026-09-11");
+        rows[0].temporal_annotations[0].absolute_text = "2026-09-11";
+        await writeFile(path, rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
+      }
+      return { ok: true };
+    });
+    await expect(builder.build(workspace, annotatedRequest(sample.source))).resolves.toMatchObject({
+      sourceReady: true, derivation: "rejected", rejectionReason: "dialogue_changed_during_maintenance",
+    });
+    expect(calls).toEqual(["ingest", "maintain", "ingest", "doctor"]);
+    const restored = JSON.parse((await readFile(join(workspace, dialogue), "utf8")).split("\n")[0]!);
+    expect(restored.content).toBe(sample.content);
+    expect(restored.source_content).toBe(sample.source);
+  });
+
   it.each(["project", "rebuild"] as const)("recovers a rejected %s from the current Main source, retaining explicit correction", async (mode) => {
     const workspace = await fixture();
     const calls: string[] = [];

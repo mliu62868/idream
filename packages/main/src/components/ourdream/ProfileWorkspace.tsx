@@ -25,6 +25,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { UserPersonaPanel } from "./UserPersonaPanel";
 import { RecoveryCodeCard } from "./AccountRecovery";
+import { AccountEmailVerification } from "./AccountEmailVerification";
 import {
   isBlankImagePreview,
   isBuiltInMediaPlaceholderUrl,
@@ -205,7 +206,7 @@ function emptyStateForTab(tab: LibraryTab, emptyCta: string | null) {
     },
     created: {
       title: "No created characters",
-      copy: "Build a private companion or submit a public character for review.",
+      copy: "Build a private companion or prepare a character for public sharing.",
       ctaHref: "/create",
       ctaLabel: "Create",
     },
@@ -222,10 +223,10 @@ function emptyStateForTab(tab: LibraryTab, emptyCta: string | null) {
       ctaLabel: "Generate",
     },
     "group-chats": {
-      title: "Group chats are not in this beta",
-      copy: "One-on-one companion chat is available now. This tab stays empty until group chat launches.",
-      ctaHref: null,
-      ctaLabel: "",
+      title: "No group chats yet",
+      copy: "Bring 2–12 Characters into a conversation and choose who replies each time.",
+      ctaHref: "/chat/groups",
+      ctaLabel: "Create a group chat",
     },
     packs: {
       title: "Packs are not in this beta",
@@ -255,11 +256,12 @@ const profileDeepLinkTargets: Record<string, { selector: string; focusSelector: 
 function focusProfileDeepLink() {
   const target = profileDeepLinkTargets[window.location.pathname];
   if (!target) return;
-  window.setTimeout(() => {
+  const timer = window.setTimeout(() => {
     const panel = document.querySelector<HTMLElement>(target.selector);
     panel?.scrollIntoView({ block: "center" });
     document.querySelector<HTMLElement>(target.focusSelector)?.focus({ preventScroll: true });
   }, 50);
+  return () => window.clearTimeout(timer);
 }
 
 export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>) {
@@ -587,10 +589,13 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
     return () => window.clearTimeout(timer);
   }, [ageGateAccepted, profileOwnerScope, refreshPreferences]);
 
+  const deepLinkFocusReady = routePath !== "/profile/notifications" || emailUpdates !== null;
   useEffect(() => {
     if (!ageGateAccepted || !profileOwnerScope) return;
-    focusProfileDeepLink();
-  }, [ageGateAccepted, profileOwnerScope]);
+    // The notification input cannot receive focus before its saved value loads.
+    if (!deepLinkFocusReady) return;
+    return focusProfileDeepLink();
+  }, [ageGateAccepted, profileOwnerScope, routePath, deepLinkFocusReady]);
 
   useEffect(() => {
     if (!ageGateAccepted || !profileOwnerScope) return;
@@ -901,7 +906,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
   }
 
   async function toggleCharacterVisibility(id: string, current?: string) {
-    // Withdraw either kind of shared Character; private characters enter review on publish.
+    // Withdraw either kind of shared Character; private characters enter publication preparation.
     setStatus("");
     setDeleteConfirmCharacterId(null);
     const next = current === "public" || current === "unlisted" ? "private" : "public";
@@ -917,7 +922,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
       }
       setStatus(
         next === "public"
-          ? "Submitted for review. Approval starts publication preparation; the character goes live after Release is published."
+          ? "Character is saved and awaiting publication preparation. Sharing starts after publication."
           : "Character set to private.",
       );
       await refreshLibrary(tab);
@@ -1204,12 +1209,12 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
               </p>
             ) : null}
           </div>
-          <Link
+          <div className="flex flex-wrap gap-3"><Link className="inline-flex h-10 items-center justify-center rounded-full border border-white/20 px-5 text-[13px] font-bold text-white" href="/coins?returnTo=%2Fprofile">Dreamcoin Store</Link><Link
             className="inline-flex h-10 items-center justify-center rounded-full bg-white px-5 text-[13px] font-black text-[rgb(13,13,13)]"
             href="/upgrade"
           >
             Upgrade
-          </Link>
+          </Link></div>
         </div>
         {/* Surface only entitlements returned by the account authority. */}
         <div className="mt-6 rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-4">
@@ -1500,6 +1505,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
             <p className="mt-2 text-sm leading-6 text-white/60">Confirm your password to replace a recovery code or delete your account.</p>
             <button className="mt-3 rounded-full bg-[rgb(36,36,36)] px-4 py-3 text-sm font-bold disabled:opacity-40" type="button" disabled={securityPending || !securityPassword || !profileOwnerScope} onClick={generateRecoveryCode}>Generate new recovery code</button>
             {savedRecoveryCode && savedRecoveryCode.ownerId === profileOwnerScope.replace(/^user:/, "") && <div className="mt-4"><RecoveryCodeCard key={savedRecoveryCode.code} code={savedRecoveryCode.code} ownerId={savedRecoveryCode.ownerId} /></div>}
+            {ownerId && <AccountEmailVerification key={ownerId} ownerId={ownerId} fetcher={fetchForOwner} />}
             <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
               Delete account
               <span className="mt-1 block text-[11px] font-medium normal-case leading-5 text-[rgb(154,153,152)]">
@@ -1547,6 +1553,8 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
             </button>
           )}
         </div>
+        {tab === "group-chats" && <Link className="mt-4 inline-flex min-h-11 items-center rounded-full border border-white/20 px-5 text-sm font-bold hover:bg-white/10" href="/chat/groups">Create and manage group chats</Link>}
+        {tab === "media" && <Link className="mt-4 inline-flex min-h-11 items-center rounded-full border border-white/20 px-5 text-sm font-bold hover:bg-white/10" href="/creator-studio/comics">Create and manage your Comics</Link>}
         {tab === "media" && mediaCollections.length > 0 && <section aria-label="Your collections" className="mt-4 rounded-xl border border-white/10 p-4">
           <h2 className="mb-3 font-bold">Your collections</h2>
           <ul className="grid gap-2 sm:grid-cols-2">
@@ -1791,7 +1799,9 @@ function LibraryCard({
     (isVisualMediaItem && source ? isBuiltInMediaPlaceholderUrl(source) : false) ||
     (isMediaItem && !source);
   const href =
-    item.type === "chat"
+    item.type === "group_chat"
+      ? `/chat/groups/${encodeURIComponent(item.id)}`
+      : item.type === "chat"
       ? `/chat/${encodeURIComponent(item.id)}`
       : isPreset
         ? `/generate?presetId=${encodeURIComponent(item.id)}`

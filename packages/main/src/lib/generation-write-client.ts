@@ -71,7 +71,7 @@ export class GenerationRequestError extends Error {
   }
 }
 
-type GenerationReceiptKind = "generation" | "media_variation" | "generation_retry" | "media_enhancement";
+type GenerationReceiptKind = "generation" | "media_variation" | "generation_retry" | "media_enhancement" | "chat_video";
 export type GenerationReceipt = {
   record: string;
   key: string;
@@ -118,6 +118,11 @@ function parseGenerationReceipt(record: string, key: string): GenerationReceipt 
     if (!new RegExp(`^/api/v1/generation/jobs/${localId}/retry$`).test(value.url)) return null;
   } else if (value.kind === "media_enhancement") {
     if (!new RegExp(`^/api/v1/media/${localId}/enhance$`).test(value.url) || value.body.scale !== 2) return null;
+  } else if (value.kind === "chat_video") {
+    if (!new RegExp(`^/api/v1/chat/${localId}/video$`).test(value.url) ||
+      typeof value.body.generationContextToken !== "string" || !value.body.generationContextToken || value.body.generationContextToken.length > 4096 ||
+      typeof value.body.prompt !== "string" || !value.body.prompt.trim() || value.body.prompt.length > 900 ||
+      receiptQuoteSchema.parse(value.body.quoteAuthority).outputCount !== 1) return null;
   } else return null;
   // Stored IDs must stay a single local path segment, including after decoding.
   try {
@@ -136,6 +141,20 @@ export function listGenerationReceipts(keys: ReadonlyMap<string, string>): Gener
   });
 }
 
+export function parseStoredGenerationReceipt(input: {
+  ownerScope: string;
+  storageKey: string;
+  value: string | null;
+}): GenerationReceipt | null {
+  try {
+    const saved = receiptRecordSchema.parse(JSON.parse(input.value ?? "null"));
+    if (saved.ownerScope === input.ownerScope && input.storageKey === receiptStorageKey(input.ownerScope, saved.idempotencyKey)) {
+      return parseGenerationReceipt(saved.record, saved.idempotencyKey);
+    }
+  } catch { /* An invalid local record never becomes a callable URL. */ }
+  return null;
+}
+
 export function readGenerationReceipts(input: GenerationReceiptPersistence): GenerationReceipt[] {
   const receipts: GenerationReceipt[] = [];
   try {
@@ -144,14 +163,7 @@ export function readGenerationReceipts(input: GenerationReceiptPersistence): Gen
     for (let index = 0; index < storage.length; index += 1) {
       const name = storage.key(index);
       if (!name?.startsWith(ownerPrefix)) continue;
-      const raw = storage.getItem(name);
-      let receipt: GenerationReceipt | null = null;
-      try {
-        const saved = receiptRecordSchema.parse(JSON.parse(raw ?? "null"));
-        if (saved.ownerScope === input.ownerScope && name === receiptStorageKey(input.ownerScope, saved.idempotencyKey)) {
-          receipt = parseGenerationReceipt(saved.record, saved.idempotencyKey);
-        }
-      } catch { /* An invalid local record never becomes a callable URL. */ }
+      const receipt = parseStoredGenerationReceipt({ ownerScope: input.ownerScope, storageKey: name, value: storage.getItem(name) });
       if (receipt) receipts.push(receipt);
       else input.onWarning?.("A saved request could not be restored. Check Jobs or contact support before repeating it.");
     }
@@ -295,7 +307,7 @@ async function requestIdempotentGenerationWrite(
     isCurrent?: () => boolean;
     persistence?: GenerationReceiptPersistence;
     replayReceipt?: GenerationReceipt;
-    intentKind: "generation" | "media_variation" | "media_enhancement" | "generation_retry";
+    intentKind: GenerationReceiptKind;
     url: string;
   },
   fetcher: GenerationFetcher,
@@ -370,6 +382,18 @@ export function requestGenerationJobWithExactAuthority(
     },
     fetcher,
   );
+}
+
+export function requestChatVideoWithExactAuthority(
+  input: GenerationSubmissionRequest & { sessionId: string },
+  fetcher: GenerationFetcher = fetch,
+) {
+  return requestIdempotentGenerationWrite({
+    ...input,
+    fallbackMessage: "The Chat video request could not be confirmed. Check the original request before creating another.",
+    intentKind: "chat_video",
+    url: `/api/v1/chat/${encodeURIComponent(input.sessionId)}/video`,
+  }, fetcher);
 }
 
 /**

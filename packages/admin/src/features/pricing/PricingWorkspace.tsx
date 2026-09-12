@@ -16,6 +16,7 @@ import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
+import { CoinOffersPanel } from "./CoinOffersPanel";
 import {
   canCreatePricingRule,
   defaultPricingDraft,
@@ -197,6 +198,7 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
   return (
     <section aria-labelledby="pricing-workspace-title" className="space-y-5">
       <div id="pricing-workspace-title"><PageHeader purpose={t("Version, publish, and roll back customer-facing generation prices while keeping every decision auditable.")} title={t("Pricing")} /></div>
+      <CoinOffersPanel canWrite={canWrite} />
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--ad-text-muted)]" role="status"><span>{refreshedAt ? <>{t("Refreshed")} <time dateTime={refreshedAt}>{format.time(refreshedAt)}</time></> : null}</span>{!canWrite ? <PermissionNotice permission="config.pricing.write" /> : null}</div>
 
       <form className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 md:grid-cols-2 xl:grid-cols-[minmax(240px,1fr)_180px_180px_auto]" onSubmit={apply}>

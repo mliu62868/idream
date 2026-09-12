@@ -1,5 +1,5 @@
 import { completeSignupRecoveryCode } from "./signup-recovery";
-import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { expect, test, type APIRequestContext, type Locator, type Page } from "@playwright/test";
 import type { Prisma } from "@prisma/client";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { deflateSync } from "node:zlib";
@@ -406,7 +406,13 @@ async function seedCreatedCharacterForStatus(email: string, status: "removed" | 
     },
   });
   await prisma.characterStats.create({ data: { characterId } });
-  return { characterId, characterName, userId: user.id };
+  const report = await prisma.contentReport.create({
+    data: { reporterId: user.id, targetType: "character", targetId: characterId, category: "quality", status: "resolved" },
+  });
+  const decision = await prisma.moderationReview.create({
+    data: { reportId: report.id, reviewerId: "seed-admin-user", decision: status === "removed" ? "remove" : "reject", notes: "Existing creator decision for appeal recovery." },
+  });
+  return { characterId, characterName, userId: user.id, decisionId: decision.id };
 }
 
 async function seedRedeemCode(code: string, dreamcoins: number) {
@@ -2453,9 +2459,9 @@ async function expectGenerationAccepted(page: Page, timeout = 10_000) {
   await expect(status).toHaveText(/Generation (?:queued|complete)\./, { timeout });
 }
 
-async function generateAndConfirmCharacterIdentity(page: Page) {
+async function generateAndConfirmCharacterIdentity(page: Page, resume = false) {
   await page
-    .getByRole("button", { name: /^(Generate|Retry) preview candidates$/ })
+    .getByRole("button", { name: resume ? "Check preview status" : /^(Generate|Retry) preview candidates$/ })
     .click();
   const progress = page.getByTestId("create-preview-progress");
   await expect(progress).toHaveAttribute("role", "status");
@@ -2494,6 +2500,32 @@ async function expectAssistantReplyVisible(page: Page) {
     })
     .toBeGreaterThan(0);
   return assistantMessages;
+}
+
+async function expectMessageActionsBelowContent(bubble: Locator) {
+  const geometry = await bubble.evaluate((element) => {
+    const contentRects = Array.from(element.childNodes).flatMap((node) => {
+      if (node.nodeType !== Node.TEXT_NODE || !node.textContent?.trim()) return [];
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      return Array.from(range.getClientRects(), (rect) => ({ bottom: rect.bottom }));
+    });
+    const bounds = element.getBoundingClientRect();
+    const actions = Array.from(element.querySelectorAll("button"), (button) => {
+      const rect = button.getBoundingClientRect();
+      return { top: rect.top, left: rect.left, right: rect.right, bottom: rect.bottom };
+    });
+    return { contentRects, actions, bounds: { left: bounds.left, right: bounds.right, bottom: bounds.bottom } };
+  });
+  expect(geometry.contentRects.length).toBeGreaterThan(0);
+  expect(geometry.actions.length).toBeGreaterThan(0);
+  const textBottom = Math.max(...geometry.contentRects.map((rect) => rect.bottom));
+  for (const action of geometry.actions) {
+    expect(action.top).toBeGreaterThanOrEqual(textBottom - 1);
+    expect(action.left).toBeGreaterThanOrEqual(geometry.bounds.left - 1);
+    expect(action.right).toBeLessThanOrEqual(geometry.bounds.right + 1);
+    expect(action.bottom).toBeLessThanOrEqual(geometry.bounds.bottom + 1);
+  }
 }
 
 test("explore UI syncs filters to URL and paginates results", async ({ page }) => {
@@ -3265,11 +3297,16 @@ test("create UI walks the multi-step builder and shows the character in My AI", 
 
   await originalShell.getByRole("button", { name: "Publish" }).click();
   await expect(
-    page.getByText("Submitted for review. Approval starts publication preparation; the character goes live after Release is published."),
+    page.getByText("Character is saved and awaiting publication preparation. Sharing starts after publication."),
   ).toBeVisible({ timeout: 10_000 });
-  await expect(originalShell.getByText("pending review", { exact: true })).toBeVisible({
+  await expect(originalShell.getByText("awaiting publication", { exact: true })).toBeVisible({
     timeout: 10_000,
   });
+  const sharedCharacterId = originalHref!.split("/").at(-1)!;
+  expect(await prisma.character.findUnique({ where: { id: sharedCharacterId }, select: { status: true, visibility: true } }))
+    .toEqual({ status: "approved", visibility: "public" });
+  expect(await prisma.characterServing.findUnique({ where: { characterId: sharedCharacterId }, select: { state: true, currentReleaseId: true } }))
+    .toEqual({ state: "inactive", currentReleaseId: null });
 
   await originalShell.getByRole("button", { name: "Delete character" }).click();
   await expect(page.getByText("Press Confirm delete to remove this character.")).toBeVisible({
@@ -3284,7 +3321,7 @@ test("create UI walks the multi-step builder and shows the character in My AI", 
 
 test("created removed character links to a prefilled Help Desk appeal", async ({ page }) => {
   const { email } = await startSignedInAdultSession(page, "created-appeal");
-  const { characterId, characterName, userId } = await seedCreatedCharacterForStatus(email, "removed");
+  const { characterId, characterName, userId, decisionId } = await seedCreatedCharacterForStatus(email, "removed");
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
   page.on("console", (message) => {
@@ -3331,12 +3368,13 @@ test("created removed character links to a prefilled Help Desk appeal", async ({
   expect(appeal).toMatchObject({
     appealText: `Please review this character decision again. Character: ${characterName}.`,
     status: "open",
+    originalDecisionId: decisionId,
   });
   expect(pageErrors).toEqual([]);
   expect(consoleErrors.filter((message) => !message.includes("favicon"))).toEqual([]);
 });
 
-test("create UI resumes a draft and submits public characters for review", async ({ page }) => {
+test("create UI resumes a draft and prepares public characters for publication", async ({ page }) => {
   test.setTimeout(120_000);
   await startSignedInAdultSession(page, "create-review");
   const characterName = uniqueName("Create review");
@@ -3387,7 +3425,7 @@ test("create UI resumes a draft and submits public characters for review", async
     });
   });
   await page.getByRole("button", { name: "Generate preview candidates", exact: true }).click();
-  await expect(page.getByText("Preview failed. Your draft is saved; retry before publishing.")).toBeVisible({
+  await expect(page.getByText("Checking is paused. This does not cancel queued work or mean generation failed. Check the saved request again, or confirm an available identity.")).toBeVisible({
     timeout: 10_000,
   });
   await expect(page.getByText("Preview service unavailable.")).toBeVisible();
@@ -3395,14 +3433,14 @@ test("create UI resumes a draft and submits public characters for review", async
   await expect(page.getByTestId("create-step-publish")).toHaveCount(0);
 
   await page.unroute("**/api/v1/character-drafts/**/preview");
-  await generateAndConfirmCharacterIdentity(page);
+  await generateAndConfirmCharacterIdentity(page, true);
   await page.getByTestId("create-next").click();
   const publishStep = page.getByTestId("create-step-publish");
   await expect(publishStep).toBeVisible({ timeout: 10_000 });
   await publishStep.getByRole("button", { name: "public" }).click();
   await page.getByTestId("create-submit").click();
   await expect(
-    page.getByText(`${characterName} submitted for review. Approval starts publication preparation; the character goes live after Release is published.`),
+    page.getByText(`${characterName} is saved and awaiting publication preparation. Sharing starts after publication.`),
   ).toBeVisible({ timeout: 20_000 });
 
   await page.getByRole("link", { name: "View in My AI" }).click();
@@ -3410,7 +3448,13 @@ test("create UI resumes a draft and submits public characters for review", async
   await page.getByRole("button", { name: "created" }).click();
   const createdCard = page.locator('a[href^="/characters/"]').filter({ hasText: characterName });
   await expect(createdCard).toBeVisible({ timeout: 10_000 });
-  await expect(createdCard.locator("xpath=..").getByText("pending review", { exact: true })).toBeVisible();
+  await expect(createdCard.locator("xpath=..").getByText("awaiting publication", { exact: true })).toBeVisible();
+  const character = await prisma.character.findFirstOrThrow({ where: { name: characterName } });
+  expect(character).toMatchObject({ status: "approved", visibility: "public" });
+  expect(await prisma.characterSubmission.findFirstOrThrow({ where: { characterId: character.id } }))
+    .toMatchObject({ status: "approved", reviewerId: null, reviewedAt: null });
+  expect(await prisma.characterServing.findUnique({ where: { characterId: character.id }, select: { state: true, currentReleaseId: true } }))
+    .toEqual({ state: "inactive", currentReleaseId: null });
 });
 
 test("character detail signup redirect returns anonymous chat intent to the character", async ({
@@ -3588,7 +3632,7 @@ test("chat UI starts from character detail, sends a message, and persists histor
   await expect(openingBubble.getByTestId("chat-play-voice")).toBeVisible();
   await expect(openingBubble.getByRole("button", { name: "Report message" })).toBeVisible();
   await expect(openingBubble.getByRole("button")).toHaveCount(2);
-  await expect(openingBubble).toHaveClass(/pr-\[76px\]/);
+  await expectMessageActionsBelowContent(openingBubble);
 
   const messageInput = page.getByRole("textbox", { name: "Message", exact: true });
   const sendButton = page.getByRole("button", { name: "Send message" });
@@ -3616,8 +3660,8 @@ test("chat UI starts from character detail, sends a message, and persists histor
     description: "E2E: chat message report note.",
   });
   const assistantReply = await expectAssistantReplyVisible(page);
-  await expect(reportedMessage).toHaveClass(/pr-\[108px\]/);
-  await expect(assistantReply).toHaveClass(/pr-\[140px\]/);
+  await expectMessageActionsBelowContent(reportedMessage);
+  await expectMessageActionsBelowContent(assistantReply);
 
   await page.reload();
   await expect(page.getByTestId("chat-message-user").filter({ hasText: message })).toBeVisible({
@@ -4216,7 +4260,7 @@ test("chat UI exposes edit, regenerate, delete, memory toggle, and the session l
     .getByTestId("chat-message-user")
     .filter({ hasText: editedMessage });
   await editedBubbleBeforeConfirm.getByTestId("chat-delete-message").click();
-  await expect(editedBubbleBeforeConfirm).toHaveClass(/pr-\[144px\]/);
+  await expectMessageActionsBelowContent(editedBubbleBeforeConfirm);
   await expect(page.getByText("Press Confirm delete to remove your message and the reply.")).toBeVisible({
     timeout: 10_000,
   });
@@ -6208,14 +6252,29 @@ test("profile subroutes deep-link to the matching account panels", async ({ page
   ] as const;
 
   for (const profileRoute of cases) {
+    let releasePreferences: (() => void) | undefined;
+    if (profileRoute.path === "/profile/notifications") {
+      const ready = new Promise<void>((resolve) => { releasePreferences = resolve; });
+      await page.route("**/api/v1/profile/preferences", async (route) => {
+        await ready;
+        await route.continue();
+      });
+    }
     await page.goto(profileRoute.path);
     await expect(page.getByRole("heading", { name: "Profile" })).toBeVisible({
       timeout: 10_000,
     });
     await expect(page.getByTestId(profileRoute.testId)).toBeVisible();
-    await expect.poll(() =>
-      page.evaluate(() => document.activeElement?.getAttribute("aria-label") ?? ""),
-    ).toBe(profileRoute.activeLabel);
+    const target = page.getByLabel(profileRoute.activeLabel, { exact: true });
+    if (releasePreferences) {
+      await expect(target).toBeDisabled();
+      // Reproduce preferences arriving after the original 50 ms focus timer.
+      await page.waitForTimeout(150);
+      releasePreferences();
+    }
+    await expect(target).toBeEnabled();
+    await expect(target).toBeFocused();
+    if (releasePreferences) await page.unroute("**/api/v1/profile/preferences");
   }
 });
 

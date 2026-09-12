@@ -21,6 +21,9 @@ describe("auth redirect helpers", () => {
   });
 
   it("allows first-party product, support, and content routes used by the app shell", () => {
+    expect(safeInternalAuthRedirect("/coins?returnTo=%2Fgenerate", origin)).toBe("/coins?returnTo=%2Fgenerate");
+    expect(safeInternalAuthRedirect("/comics/fixture", origin)).toBe("/comics/fixture");
+    expect(safeInternalAuthRedirect("/creator-studio", origin)).toBe("/creator-studio");
     expect(authNextTargetFromPath("/safety/contact", "")).toBe("/safety/contact");
     expect(authNextTargetFromPath("/resources-hub", "")).toBe("/resources-hub");
     expect(authNextTargetFromPath("/comparison/ai-girlfriend-alternatives", "")).toBe(

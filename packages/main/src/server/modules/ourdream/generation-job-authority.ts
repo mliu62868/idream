@@ -71,11 +71,13 @@ export function generationWriteRequestFingerprint(
 }
 
 function assertGenerationJobRequestFingerprint(
-  job: Pick<GenerationJobRow, "id" | "momentSpec">,
+  job: Pick<GenerationJobRow, "id" | "momentSpec" | "controls">,
   requestFingerprint?: string,
 ) {
   if (!requestFingerprint) return;
-  const storedFingerprint = jsonRecord(job.momentSpec).requestFingerprint;
+  // Privacy edits erase MomentSpec text; the content-free request identity must
+  // survive so an old receipt cannot be replayed with a different body afterward.
+  const storedFingerprint = jsonRecord(job.controls).generationRequestFingerprint ?? jsonRecord(job.momentSpec).requestFingerprint;
   // Jobs created before fingerprint binding remain replayable by their durable
   // user/idempotency tuple. Every new public generation write pins the hash.
   if (
@@ -141,6 +143,9 @@ export async function acceptGenerationJobForUser(input: GenerationAdmission) {
   let reservation: { job: GenerationJobRow; outboxId: string | null };
   try {
     reservation = await prisma.$transaction(async (tx) => {
+      // Source Turns can be edited/deleted under this same user lock. Own it
+      // before source/Character/media locks so admission cannot invert their order.
+      await lockUserLedger(tx, input.userId);
       let retrySource: GenerationJobRow | null = null;
       if (input.retryOf) {
         // Keep retry intent and source serialization before Character/media
@@ -167,9 +172,7 @@ export async function acceptGenerationJobForUser(input: GenerationAdmission) {
       }
 
       const { data, entitlements } = await input.prepare(tx);
-      await lockUserLedger(tx, input.userId);
-      // A competing request may have spent the last coins while this one waited
-      // for the user lock. Exact replay precedes both charging and attachment checks.
+      // Exact replay precedes both charging and attachment checks.
       const accepted = await findAdmissionReplay(tx, input);
       if (accepted) return { job: accepted, outboxId: null };
       const chatAttachment = await lockGenerationChatAttachment(tx, input, data, retrySource);
@@ -247,7 +250,7 @@ async function lockGenerationChatAttachment(
   data: GenerationAdmissionData,
   retrySource: GenerationJobRow | null,
 ) {
-  if (retrySource?.sourceType === "chat_image") {
+  if (retrySource && ["chat_image", "chat_video"].includes(retrySource.sourceType)) {
     const candidate = await tx.chatTurnAttachment.findFirst({
       where: { generationJobId: retrySource.id, ...(retrySource.sourceId ? { id: retrySource.sourceId } : {}), turn: { session: { userId: input.userId } } },
       include: { turn: true },
@@ -265,7 +268,7 @@ async function lockGenerationChatAttachment(
     const attempt = numberFromRecord(metadata, "attempt") ?? numberFromRecord(effect, "attempt") ?? 1;
     if (!current || current.turn.session.userId !== input.userId ||
       current.turn.session.characterId !== data.characterId || current.turn.session.status === "deleted" ||
-      current.kind !== "generated_image" || !["failed", "refunded"].includes(current.status) ||
+      current.kind !== (retrySource.sourceType === "chat_video" ? "generated_video" : "generated_image") || !["failed", "refunded"].includes(current.status) ||
       current.generationJobId !== retrySource.id || attempt !== current.turn.attempt) {
       throw Errors.conflict("The Chat image changed before its retry could be reserved");
     }
@@ -274,6 +277,23 @@ async function lockGenerationChatAttachment(
   if (!input.chatAttachment) return null;
   const binding = input.chatAttachment;
   const attachmentId = input.identity.source?.sourceId;
+  if (input.identity.source?.sourceType === "chat_video" && attachmentId) {
+    await tx.$queryRaw`SELECT "sessionId" FROM "recent_chats" WHERE "sessionId" = ${binding.sessionId} FOR UPDATE`;
+    await tx.$queryRaw`SELECT id FROM "chat_turns" WHERE id = ${binding.turnId} FOR UPDATE`;
+    const turn = await tx.chatTurn.findUnique({ where: { id: binding.turnId }, include: { session: true } });
+    if (!turn || turn.sessionId !== binding.sessionId || turn.session.userId !== input.userId ||
+      turn.session.characterId !== data.characterId || turn.session.status === "deleted" ||
+      turn.attempt !== binding.attempt || turn.assistantStatus !== "sent") {
+      throw Errors.conflict("The original Chat reply changed before its video could be reserved");
+    }
+    // The video is a separate, explicitly priced action on an accepted reply.
+    // Creating it inside admission preserves the original Turn text and terminal.
+    return tx.chatTurnAttachment.create({ data: {
+      id: attachmentId, turnId: turn.id, kind: "generated_video", status: "requesting",
+      promptHint: typeof jsonRecord(data.momentSpec).rawInput === "string" ? String(jsonRecord(data.momentSpec).rawInput) : null,
+      metadata: toInputJson({ attempt: binding.attempt, sourceMediaId: jsonRecord(data.sourceMeta).sourceMediaId }),
+    } });
+  }
   if (input.identity.source?.sourceType !== "chat_image" || !attachmentId) {
     throw Errors.badRequest("Chat attachment binding requires its image action source");
   }
@@ -302,6 +322,8 @@ export async function assertGenerationSourceImageAuthorityInTx(
     readonly sourceImageAssetId: string;
     readonly userId: string;
     readonly characterId: string | null;
+    /** Granted only by a locked, freshly resolved Comic context. Never a request field. */
+    readonly authorizedComicSourceMediaId?: string;
   },
 ) {
   const source = await tx.mediaAsset.findFirst({
@@ -312,6 +334,7 @@ export async function assertGenerationSourceImageAuthorityInTx(
       safetyStatus: "passed",
       OR: [
         { ownerId: input.userId },
+        ...(input.authorizedComicSourceMediaId === input.sourceImageAssetId ? [{ id: input.sourceImageAssetId }] : []),
         ...(input.characterId ? [{ characterId: input.characterId }] : []),
       ],
     },

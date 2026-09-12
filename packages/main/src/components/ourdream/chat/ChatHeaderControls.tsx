@@ -8,22 +8,20 @@ import { MemoryToggle } from "./MemoryToggle";
 //       to the session list + memory panel.
 // INTENT: mobile-first; wraps cleanly at 390px so nothing is occluded.
 export function ChatHeaderControls({
-  characterId,
+  generateHref,
   memoryEnabled,
   memoryPending,
   onToggleMemory,
   onOpenSessions,
   onOpenMemory,
 }: Readonly<{
-  characterId: string | null;
+  generateHref: string | null;
   memoryEnabled: boolean;
   memoryPending: boolean;
   onToggleMemory: () => void;
   onOpenSessions: () => void;
   onOpenMemory: () => void;
 }>) {
-  const generateHref = characterId ? `/generate?characterId=${encodeURIComponent(characterId)}` : null;
-
   return (
     <div className="mt-4">
       <div className="flex flex-wrap items-center gap-2">

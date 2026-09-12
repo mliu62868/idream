@@ -117,12 +117,12 @@ describe("generator video product contract", () => {
     });
   });
 
-  it("explains queued and durable rendering states without an unmeasured time promise", () => {
+  it("uses stage-neutral video progress when the public status has no native or legacy stage evidence", () => {
     expect(generatorJobStatusLabel("video", "queued", null)).toBe(
       "Waiting for a rendering slot",
     );
     expect(generatorJobStatusLabel("video", "running", null)).toBe(
-      "Rendering source image · you can return later",
+      "Generating video · you can return later",
     );
     expect(generatorJobStatusLabel("video", "completed", null)).toBe("Completed");
     expect(generatorJobStatusLabel("image", "running", null)).toBe("Generating");

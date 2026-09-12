@@ -15,6 +15,7 @@ import { authHrefForTarget } from "./authRedirect";
 import { countLabel } from "./workspace-helpers";
 import { feedLoadFailure, shouldApplyFeedResponse } from "./feed-load-state";
 import { useReportDialog } from "./ReportDialog";
+import { ComicDiscovery } from "./ComicCatalog";
 
 type FeedCharacterItem = Extract<PublicFeedItem, { type: "character" }>;
 type FeedCollectionItem = Extract<PublicFeedItem, { type: "collection" }>;
@@ -400,6 +401,7 @@ export function FeedWorkspace() {
           </div>
         )}
       </div>
+      <div className="mx-auto max-w-5xl"><ComicDiscovery compact /></div>
       {reportDialog}
     </section>
   );

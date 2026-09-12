@@ -82,6 +82,7 @@ import {
 import { readCurrentGenerationJob, saveCurrentGenerationJob } from "@/lib/generation-current-job";
 import { useGenerationRequest } from "@/hooks/useGenerationRequest";
 import { useGenerationReceipts } from "@/hooks/useGenerationReceipts";
+import { useGenerationContext } from "@/hooks/useGenerationContext";
 import {
   exactGenerationQuoteForCount,
   GenerationRequestError,
@@ -435,6 +436,11 @@ export function removeGeneratorCharacterViewerAuthority(
 export function GeneratorWorkspace() {
   const { accepted: ageGateAccepted } = useAgeGateAccess();
   const [config, setConfig] = useState<RuntimeGenerationConfig | null>(null);
+  const generationContext = useGenerationContext(config?.viewer.authenticated ? config.viewer.scope : null);
+  const [appliedContextToken, setAppliedContextToken] = useState<string | null>(null);
+  const [characterModelCatalog, setCharacterModelCatalog] = useState<{
+    scope: string; models: RuntimeGenerationConfig["image"]["models"];
+  } | null>(null);
   const [characters, setCharacters] = useState<CharacterCardData[]>([]);
   const [charactersAuthority, setCharactersAuthority] = useState(initialAuthorityStatus);
   const [charactersRefreshNonce, setCharactersRefreshNonce] = useState(0);
@@ -444,6 +450,7 @@ export function GeneratorWorkspace() {
   const [imageWorkflow, setImageWorkflow] = useState<ImageWorkflow>("presets");
   const [prompt, setPrompt] = useState("");
   const [negativePrompt, setNegativePrompt] = useState("");
+  const [seed, setSeed] = useState("");
   const [orientation, setOrientation] = useState("4:5");
   const [count, setCount] = useState(1);
   const [modelSelection, setModelSelection] = useState({
@@ -690,10 +697,40 @@ export function GeneratorWorkspace() {
   const videoModeEnabled =
     config?.video.availability.state === "available" &&
     config.video.models.length > 0;
+  const contextReady = generationContext.initialized && (!generationContext.required ||
+    Boolean(generationContext.data && appliedContextToken === generationContext.data.token));
+  useEffect(() => {
+    const context = generationContext.data;
+    if (!context || appliedContextToken === context.token) return;
+    setMode("image");
+    setImageWorkflow("presets");
+    setFreeplay(context.identityMode === "source_only");
+    setCharacterId(context.characterId ?? "");
+    setPrompt(context.prompt);
+    setNegativePrompt("");
+    setSeed("");
+    setSelectedLookId("");
+    setModePresetId("");
+    setBackgroundPresetId("");
+    setPosePresetId("");
+    setOutfitPresetId("");
+    setModelSelection({ id: "", explicit: false });
+    setAppliedContextToken(context.token);
+  }, [appliedContextToken, generationContext.data]);
+  function leaveGenerationContext() {
+    generationContext.clear();
+    setAppliedContextToken(null);
+    setPrompt("");
+    setNegativePrompt("");
+    setSeed("");
+  }
+  const contextSourceOnly = generationContext.data?.identityMode === "source_only";
   const imageEditMode =
-    mode === "image" && imageWorkflow === "image-edit";
+    !generationContext.required && mode === "image" && imageWorkflow === "image-edit";
   const characterImageMode =
-    mode === "image" && !freeplay && !imageEditMode;
+    mode === "image" && (generationContext.required ? Boolean(generationContext.data?.characterId) : !freeplay && !imageEditMode);
+  const characterModelScope = JSON.stringify([receiptOwnerScope, generationContext.data ? generationContext.data.characterId ?? undefined : characterId,
+    selectedLookId, consistencyMode, generationContext.data?.token ?? null]);
   const imageEditCandidates = useMemo(
     () => generatorImageEditSources(imageEditSources, selectedEditSource),
     [imageEditSources, selectedEditSource],
@@ -703,19 +740,24 @@ export function GeneratorWorkspace() {
       if (mode === "video" && videoModeEnabled) {
         return config?.video.models ?? [];
       }
-      if (imageEditMode) {
+      if (imageEditMode || contextSourceOnly) {
         return generatorImageEditModelOptions(
           config?.image.editModels ?? [],
-          selectedEditSource
+          !contextSourceOnly && selectedEditSource
             ? (selectedEditSource.imageEditModelIds ?? [])
             : null,
         );
       }
+      if (characterImageMode) return characterModelCatalog?.scope === characterModelScope ? characterModelCatalog.models : [];
       return config?.image.models ?? [];
     },
     [
       config,
       imageEditMode,
+      contextSourceOnly,
+      characterImageMode,
+      characterModelCatalog,
+      characterModelScope,
       mode,
       selectedEditSource,
       videoModeEnabled,
@@ -731,17 +773,19 @@ export function GeneratorWorkspace() {
     [availableModels, mode, modelSelection],
   );
   const modeAvailable =
-    mode === "image"
+    generationContext.required
+      ? Boolean(generationContext.data)
+      : mode === "image"
       ? generatorImageWorkflowAvailable(config?.image, imageWorkflow)
       : videoModeEnabled;
   // Null while the form does not describe a route the server can price.
   const generationQuoteRequest: GenerationQuoteRequest | null =
-    modeAvailable &&
+    contextReady && modeAvailable &&
     config?.viewer.authenticated === true &&
     (
       imageEditMode
         ? Boolean(editSourceMediaId)
-        : freeplay || Boolean(characterId)
+        : generationContext.data || freeplay || Boolean(characterId)
     )
       ? imageEditMode
         ? {
@@ -758,8 +802,10 @@ export function GeneratorWorkspace() {
             consistencyMode,
             model: modelSelectionProjection.requestModelId,
             target: "generation",
-            characterId,
-            freeplay,
+            characterId: generationContext.data ? generationContext.data.characterId ?? undefined : characterId,
+            freeplay: generationContext.required ? contextSourceOnly : freeplay,
+            generationContextToken: generationContext.data?.token,
+            prompt: generationContext.data ? prompt : undefined,
             lookId:
               characterImageMode && selectedLookId ? selectedLookId : undefined,
           }
@@ -789,6 +835,7 @@ export function GeneratorWorkspace() {
     },
     onQuoteResolved: (quote) => {
       if (unconfirmedFormRef.current) return;
+      if (characterImageMode) setCharacterModelCatalog({ scope: characterModelScope, models: quote.models ?? [] });
       setCount((current) => countWithinQuote(current, quote));
       setOrientation((current) => orientationWithinQuote(current, quote));
     },
@@ -821,13 +868,15 @@ export function GeneratorWorkspace() {
   const canDescribeMoment = canUsePrompt || characterImageMode;
   const generationBody = {
     mode,
-    characterId: freeplay ? undefined : characterId,
-    freeplay,
+    characterId: generationContext.data ? generationContext.data.characterId ?? undefined : (freeplay ? undefined : characterId),
+    freeplay: generationContext.required ? contextSourceOnly : freeplay,
     consistencyMode,
+    seed: seed.trim() || undefined,
+    generationContextToken: generationContext.data?.token,
     outputCount: mode === "video" ? 1 : count,
     prompt: (canDescribeMoment || unconfirmedFormRef.current) && prompt ? prompt : undefined,
     negativePrompt: (canUsePrompt || unconfirmedFormRef.current) && negativePrompt ? negativePrompt : undefined,
-    remixFeedItemId: remixFeedItemId || undefined,
+    remixFeedItemId: generationContext.required ? undefined : remixFeedItemId || undefined,
     controls: {
       orientation,
       model: modelSelection.explicit ? modelSelection.id : undefined,
@@ -852,14 +901,15 @@ export function GeneratorWorkspace() {
       setOrientation((current) => orientationWithinQuote(current, generationQuote));
     }
   }, [config?.viewer.authenticated, formUnconfirmed, generationQuote]);
-  const formCanSubmit = (canSubmit || (hasSubmissionAuthority && formUnconfirmed)) &&
+  const formCanSubmit = contextReady && (!generationContext.required || prompt.trim().length > 0) &&
+    (canSubmit || (hasSubmissionAuthority && formUnconfirmed)) &&
     (!imageEditMode || prompt.trim().length > 0);
   const anonymousViewer = config?.viewer?.authenticated === false;
   const configAuthorityUnavailable = Boolean(configError && !config);
   const upgradeHref = upgradeHrefForTarget(authReturnTarget);
   const insufficientBalanceHref = anonymousViewer
     ? authHrefForTarget("/signup", authReturnTarget)
-    : upgradeHref;
+    : `/coins?returnTo=${encodeURIComponent(authReturnTarget)}`;
   const selectedCharacter = useMemo(
     () => characters.find((character) => character.id === characterId) ?? null,
     [characterId, characters],
@@ -1016,6 +1066,9 @@ export function GeneratorWorkspace() {
     setOutfitPresetId("");
     setPrompt("");
     setNegativePrompt("");
+    setSeed("");
+    setAppliedContextToken(null);
+    setCharacterModelCatalog(null);
   }, [clearPrivateViewerProjections]);
 
   const showJobsView = useCallback(() => {
@@ -1425,6 +1478,9 @@ export function GeneratorWorkspace() {
       const items = desiredCharacter ? [desiredCharacter, ...listedItems] : listedItems;
       setCharacters(items);
       setCharactersAuthority(readyAuthorityStatus());
+      // A Chat handoff resolves its target from the owned Turn, never a catalog
+      // fallback (including when the old Character version is no longer listed).
+      if (searchParams.has("chatSessionId") || searchParams.has("comicId")) return;
       if (items.length === 0) {
         invalidateLookScope();
         setCharacterId("");
@@ -1910,6 +1966,7 @@ export function GeneratorWorkspace() {
   }
 
   function startNewMomentFromResult(item: MediaItem) {
+    if (generationContext.required) leaveGenerationContext();
     clearRemixIntent(
       item.characterId ?? (freeplay ? null : characterId || null),
     );
@@ -2052,6 +2109,7 @@ export function GeneratorWorkspace() {
   }
 
   function editGalleryImage(item: MediaItem) {
+    if (generationContext.required) leaveGenerationContext();
     setMode("image");
     setImageWorkflow("image-edit");
     setSelectedEditSource(item);
@@ -2430,7 +2488,36 @@ export function GeneratorWorkspace() {
               </div>
             </div>
 
-            {videoModeEnabled && (
+            {generationContext.required && (
+              <section aria-label="Generation source" className="mt-4 rounded-[12px] border border-white/15 bg-black/25 p-4" data-testid="generator-context">
+                <p className="text-sm font-bold text-white">From {generationContext.data?.sourceLabel ?? "your source"}{generationContext.data?.characterName ? ` · ${generationContext.data.characterName}` : ""}</p>
+                {generationContext.data ? (
+                  <>
+                    <p className="mt-2 text-sm leading-5 text-white/70">The original source and its available character identity are attached. Review the description and price before generating.</p>
+                    {!generationContext.data.prompt && <p className="mt-2 text-sm leading-5 text-white/70">This source has no saved image direction. Describe the image you want below.</p>}
+                    {generationContext.data.sourceMedia && (
+                      <div className="mt-3 flex items-center gap-3">
+                        <div className="relative h-28 w-24 shrink-0 overflow-hidden rounded-lg bg-white/5">
+                          <Image alt="Original source image" fill sizes="96px" src={generationContext.data.sourceMedia.thumbnailUrl} unoptimized />
+                        </div>
+                        <p className="text-sm text-white/70">This image is the source for your edit. Describe what should change below.</p>
+                      </div>
+                    )}
+                    <Link className="mt-3 inline-block text-sm font-semibold text-white underline underline-offset-4" href={generationContext.data.returnHref}>Return to source</Link>
+                  </>
+                ) : (
+                  <p className="mt-2 text-sm leading-5 text-white/70" role={generationContext.error ? "alert" : "status"}>
+                    {generationContext.error || (config?.viewer.authenticated === false ? "Sign in to restore this generation context." : "Loading the original generation context…")}
+                  </p>
+                )}
+                <div className="mt-3 flex flex-wrap gap-3">
+                  {generationContext.error && <button className="min-h-10 rounded-full border border-white/20 px-4 text-sm font-semibold text-white" onClick={generationContext.retry} type="button">Retry generation context</button>}
+                  <button className="min-h-10 rounded-full border border-white/20 px-4 text-sm font-semibold text-white" onClick={leaveGenerationContext} type="button">Start a new generation</button>
+                </div>
+              </section>
+            )}
+
+            {!generationContext.required && videoModeEnabled && (
               <div className="mt-4 grid grid-cols-2 rounded-full bg-[rgb(36,36,36)] p-1">
                 <button
                   className={`h-10 rounded-full text-[13px] font-bold ${
@@ -2480,7 +2567,7 @@ export function GeneratorWorkspace() {
               </div>
             )}
 
-            {mode === "image" && (
+            {!generationContext.required && mode === "image" && (
               <div className="mt-4 grid grid-cols-2 rounded-full bg-[rgb(36,36,36)] p-1">
                 {(["presets", "image-edit"] as const).map((item) => (
                   <button
@@ -2601,7 +2688,7 @@ export function GeneratorWorkspace() {
               </div>
             )}
 
-            {!imageEditMode && (
+            {!generationContext.required && !imageEditMode && (
               <>
                 <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
                   Character
@@ -2682,7 +2769,7 @@ export function GeneratorWorkspace() {
               </>
             )}
 
-            {selectedCharacter && characterImageMode && (
+            {!generationContext.required && selectedCharacter && characterImageMode && (
               <div className="mt-4">
                 <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
                   Character identity
@@ -2876,7 +2963,7 @@ export function GeneratorWorkspace() {
               </label>
             )}
 
-            {!characterImageMode && (
+            {(!characterImageMode || (advancedOpen && availableModels.length > 0)) && (
               <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
                 Model
                 <select
@@ -2915,7 +3002,7 @@ export function GeneratorWorkspace() {
                 </select>
               </label>
             )}
-            {characterImageMode && advancedOpen && (
+            {characterImageMode && advancedOpen && availableModels.length === 0 && (
               <div className="mt-4 rounded-[10px] bg-[rgb(36,36,36)] px-3 py-3">
                 <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
                   Model
@@ -2930,7 +3017,26 @@ export function GeneratorWorkspace() {
               </div>
             )}
 
-            {mode === "image" &&
+            {!imageEditMode && (!characterImageMode || advancedOpen) && (
+              <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(170,170,170)]">
+                Seed (optional)
+                <input
+                  aria-describedby="generator-seed-description"
+                  className="mt-2 h-11 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 text-base font-semibold text-white outline-none"
+                  id="generator-seed"
+                  maxLength={120}
+                  name="seed"
+                  onChange={(event) => setSeed(event.target.value)}
+                  placeholder="Number or short text"
+                  value={seed}
+                />
+                <span className="mt-2 block text-[12px] font-medium normal-case leading-5 text-[rgb(170,170,170)]" id="generator-seed-description">
+                  Use the same seed and settings to compare results. Leave blank for the character default or a new seed. Results can still vary.
+                </span>
+              </label>
+            )}
+
+            {!generationContext.required && mode === "image" &&
               !imageEditMode &&
               (!characterImageMode || advancedOpen) &&
               (presetCatalog.length > 0 || userPresets.length > 0) && (
@@ -3193,7 +3299,7 @@ export function GeneratorWorkspace() {
                         Loading identity references…
                       </p>
                     ) : null}
-                    {!anonymousViewer && identityTimeline.length > 0 && (
+                    {!generationContext.required && !anonymousViewer && identityTimeline.length > 0 && (
                       <div data-testid="identity-timeline">
                         <div className="mb-2 flex items-center justify-between gap-2">
                           <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
@@ -3230,7 +3336,7 @@ export function GeneratorWorkspace() {
                         </div>
                       </div>
                     )}
-                    {!anonymousViewer && authorityShowsEmpty(
+                    {!generationContext.required && !anonymousViewer && authorityShowsEmpty(
                       identityMediaAuthority,
                       identityTimeline.length,
                     ) ? (
@@ -3250,7 +3356,7 @@ export function GeneratorWorkspace() {
               >
                 <span>
                   {characterImageMode
-                    ? "Model selection and negative prompts are Premium controls."
+                    ? "Negative prompts are a Premium control."
                     : "Custom freeplay prompts and advanced controls are Premium features."}
                 </span>
                 <span className="rounded-full bg-[rgb(255,48,170)] px-3 py-1 text-[11px] font-black text-white">
@@ -4588,7 +4694,7 @@ export function generatorJobStatusLabel(
     return "Waiting for a rendering slot";
   }
   if (mode === "video" && status === "running") {
-    return "Rendering source image · you can return later";
+    return "Generating video · you can return later";
   }
   const label = jobStatusLabels[status];
   const reason = generationFailureCopy(errorCode);

@@ -145,6 +145,8 @@ export default defineConfig({
         "../shared/src/observability/sentry-canary.ts",
         import.meta.url,
       ).pathname,
+      "@idream/shared/comics": new URL("../shared/src/comics.ts", import.meta.url).pathname,
+      "@idream/shared/coins": new URL("../shared/src/coins.ts", import.meta.url).pathname,
       "@idream/shared": new URL("../shared/src/index.ts", import.meta.url).pathname,
     },
   },

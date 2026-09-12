@@ -134,6 +134,11 @@ export const contentAssetAuthorityDependencySchema = z.discriminatedUnion("kind"
     targetId: adminIdSchema,
     repairPath: z.string().trim().min(1),
   }).strict(),
+  z.object({
+    kind: z.literal("comic_publication"),
+    comicId: adminIdSchema,
+    repairPath: z.string().trim().min(1),
+  }).strict(),
 ]);
 
 const contentAssetSourceJobSchema = z.object({

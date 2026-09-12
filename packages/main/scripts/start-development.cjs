@@ -36,6 +36,13 @@ async function runDevelopment(options = {}) {
     runtime.env.IDREAM_NEXT_DIST_DIR = ".next-development";
   }
 
+  // INVARIANT: React's development async debug hook has to be bounded before
+  // Next's dev runtime registers it, so the bound travels on NODE_OPTIONS, where
+  // it also reaches whatever Next spawns. See scripts/bound-react-async-debug.cjs
+  // for the crash it prevents.
+  const asyncDebugBound = path.resolve(__dirname, "../../../scripts/bound-react-async-debug.cjs");
+  runtime.env.NODE_OPTIONS = `${runtime.env.NODE_OPTIONS ? `${runtime.env.NODE_OPTIONS} ` : ""}--require ${asyncDebugBound}`;
+
   // INVARIANT: Next starts only after Prisma Client matches the checked-out
   // schema, and this wrapper remains PM2's parent authority until the exact CLI
   // exits. Requiring Next's CLI lets its asynchronous dev bootstrap outlive this
@@ -103,11 +110,12 @@ if (
 ) {
   void runDevelopment()
     .then((status) => {
-      process.exitCode = status;
+      // PM2's host IPC can remain referenced after Next exits. exitCode alone
+      // leaves a dead web service reported online and prevents its restart.
+      process.exit(status);
     })
     .catch((error) => {
-      process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`);
-      process.exitCode = 1;
+      process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`, () => process.exit(1));
     });
 }
 

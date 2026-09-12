@@ -6,6 +6,11 @@ import { operationalMediaAssetPlacementWhere } from "@/server/modules/metric-dat
 
 export type MediaAssetAuthorityDependency =
   | {
+      kind: "comic_publication";
+      comicId: string;
+      repairPath: string;
+    }
+  | {
       kind: "character_primary_image";
       characterId: string;
       repairPath: string;
@@ -511,6 +516,17 @@ export async function mediaAssetAuthorityDependenciesBatch(
       kind: "character_primary_image",
       characterId: character.id,
       repairPath: `/admin/characters/${character.id}?tab=assets`,
+    });
+  }
+  const comicPages = await db.comicPage.findMany({
+    where: { mediaAssetId: { in: assetIds }, episode: { comic: { status: { in: ["pending_review", "published"] } } } },
+    select: { mediaAssetId: true, episode: { select: { comicId: true } } },
+  });
+  for (const page of comicPages) {
+    if (!page.mediaAssetId) continue;
+    pushDependency(dependenciesByAssetId, page.mediaAssetId, {
+      kind: "comic_publication", comicId: page.episode.comicId,
+      repairPath: `/admin/moderation?comic=${encodeURIComponent(page.episode.comicId)}`,
     });
   }
   return dependenciesByAssetId;

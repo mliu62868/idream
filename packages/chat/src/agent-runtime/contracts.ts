@@ -6,6 +6,7 @@ import {
   generateImageAsyncArgsSchema,
 } from "@idream/shared/chat/image-action";
 import { companionMemoryModeSchema } from "@idream/shared/chat/companion-runtime";
+import { groupChatMemberSchema } from "@idream/shared/contracts";
 
 const nonEmptyString = z.string().trim().min(1);
 const isoDateTime = z.string().datetime({ offset: true });
@@ -42,6 +43,7 @@ export const preparedTurnMessageSchema = z.discriminatedUnion("role", [
   z.object({
     ...preparedMessageBase,
     role: z.literal("assistant"),
+    speaker: groupChatMemberSchema.optional(),
     tool_calls: z.array(modelFunctionCall).min(1).optional(),
   }).strict(),
   z.object({

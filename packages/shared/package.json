@@ -10,6 +10,8 @@
     ".": "./src/index.ts",
     "./catalog": "./src/catalog/index.ts",
     "./contracts": "./src/contracts/index.ts",
+    "./comics": "./src/comics.ts",
+    "./coins": "./src/coins.ts",
     "./env": "./src/contracts/env.ts",
     "./admin": "./src/admin/index.ts",
     "./admin/contracts": "./src/admin/contracts/index.ts",

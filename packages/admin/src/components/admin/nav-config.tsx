@@ -408,7 +408,7 @@ export function navGroupsForPermissions(
 // Production traffic telemetry decides their eventual sunset.
 const COMPATIBILITY_ITEMS: NavItem[] = [
   item({ id: "moderation", label: "Moderation Cases", href: "/admin/moderation", icon: ShieldAlert, group: "Customers & Support", read: read("safety.review.read"), navigation: "tool",
-    render: (ctx) => <ModerationWorkspace canDecide={ctx.permissions.has("safety.review.write")} /> }),
+    render: (ctx) => <ModerationWorkspace canDecide={ctx.permissions.has("safety.review.write")} canReadComics={ctx.permissions.has("content.asset.read")} canReviewComics={ctx.permissions.has("safety.review.write")} /> }),
   item({ id: "support", label: "Support Cases", href: "/admin/support", icon: Ticket, group: "Customers & Support", read: read("support.request.read"), navigation: "tool",
     render: (ctx) => <SupportWorkspace
       canViewPlaintext={ctx.permissions.has("support.plaintext.view")}

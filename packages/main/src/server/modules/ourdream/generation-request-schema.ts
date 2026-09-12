@@ -45,9 +45,13 @@ export const generationJobSchema = z
     outputCount: z.number().int().min(1).max(8).default(1),
     model: z.string().max(80).optional(),
     remixFeedItemId: z.string().max(180).optional(),
+    generationContextToken: z.string().min(1).max(4096).optional(),
+    // Persisted v1 receipts must retain their original request fingerprint.
+    chatHandoffToken: z.string().min(1).max(4096).optional(),
     quoteAuthority: generationQuoteAuthoritySchema.optional(),
   })
   .superRefine((value, ctx) => {
+    if (value.chatHandoffToken && value.generationContextToken) ctx.addIssue({ code: "custom", path: ["generationContextToken"], message: "Use one generation context token" });
     if (Boolean(value.characterId) === value.freeplay) {
       ctx.addIssue({
         code: "custom",

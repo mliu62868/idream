@@ -55,6 +55,7 @@ import type {
   GenerationCreateBody,
   GenerationSource,
 } from "./generation-request-schema";
+import { generationContextToken, lockGenerationContext, resolveGenerationContext } from "./generation-context";
 
 // SPEC: 用户侧「发起一次生成」的完整业务动作 —— 定路线、验报价、锁身份与素材权威、
 // 扣币、落 Generation Job、预留首个 Attempt 并唤醒投递。
@@ -114,6 +115,11 @@ export async function createGenerationJobForUser(
       options.profileSelectionAuthority !== "public_generator" &&
       !options.requireQuoteAuthority,
   });
+  body = plan.body;
+  if (plan.context && !body.prompt?.trim()) {
+    throw Errors.badRequest("Describe the image you want before generating from this source. The original content has no accepted visual direction.");
+  }
+  const expectedReferenceSetRevisionId = plan.context?.pins?.referenceSetRevisionId ?? options.expectedReferenceSetRevisionId;
   const {
     character,
     consistencyMode,
@@ -258,6 +264,8 @@ export async function createGenerationJobForUser(
     identity: options,
     chatAttachment: options.chatAttachment,
     prepare: async (tx) => {
+      const contextToken = generationContextToken(body);
+      const lockedContext = contextToken ? await lockGenerationContext(tx, userId, contextToken) : null;
       let legacyReleaseAuthority:
         LegacyCharacterGenerationAuthority | null = null;
       if (character) {
@@ -288,7 +296,7 @@ export async function createGenerationJobForUser(
           );
         }
         if (
-          body.mode === "video" &&
+          body.mode === "video" && !lockedContext &&
           lockedCharacter.imageAssetId !== requestedSourceImageAssetId
         ) {
           throw Errors.conflict(
@@ -301,11 +309,14 @@ export async function createGenerationJobForUser(
           );
         }
         if (body.mode === "image") {
-          const lockedLegacyReleaseAuthority =
-            await loadLockedLiveEditorialLegacyGenerationAuthority(
+          const lockedLegacyReleaseAuthority = plan.context && !plan.context.legacyRelease
+            ? null : await loadLockedLiveEditorialLegacyGenerationAuthority(
               tx,
               character.id,
             );
+          if (plan.context?.legacyRelease && lockedLegacyReleaseAuthority?.releaseId !== plan.context.pins?.characterReleaseId) {
+            throw Errors.conflict("The original editorial Character Release is no longer qualified for generation.");
+          }
           if (
             lockedLegacyReleaseAuthority &&
             visualProfile &&
@@ -333,6 +344,7 @@ export async function createGenerationJobForUser(
           ? requestedSourceImageAssetId
           : null;
       const additionalMediaAssetIds = [
+        ...(lockedContext?.authorityMediaAssetIds ?? []),
         sourceImageAssetId,
         requestedLookReferenceAssetId,
       ].filter((assetId): assetId is string => Boolean(assetId));
@@ -344,17 +356,20 @@ export async function createGenerationJobForUser(
               visualProfile,
               consistencyMode,
               additionalMediaAssetIds,
-              options.expectedReferenceSetRevisionId,
+              expectedReferenceSetRevisionId,
             )
           : null;
       if (!referenceAuthority) {
         await lockCharacterMediaAssetAuthorities(tx, additionalMediaAssetIds);
       }
+      // Re-read the complete grant after all identity and Comic page locks are held.
+      if (contextToken) await resolveGenerationContext(userId, contextToken, tx);
       if (sourceImageAssetId) {
         await assertGenerationSourceImageAuthorityInTx(tx, {
           sourceImageAssetId,
           userId,
           characterId: character?.id ?? null,
+          authorizedComicSourceMediaId: lockedContext?.source.kind === "comic" ? lockedContext.sourceMedia?.id : undefined,
         });
       }
       const referenceAssetIds =
@@ -425,6 +440,7 @@ export async function createGenerationJobForUser(
         workflowIdentity: workflowDescriptor?.identity,
         consistencyMode: visualProfile ? consistencyMode : undefined,
         generationQuoteAuthority: acceptedQuoteAuthority ?? undefined,
+        generationRequestFingerprint: options.requestFingerprint,
         legacyReleaseAuthority: legacyReleaseAuthority ?? undefined,
         visualIdentity: visualProfile
           ? {

@@ -58,6 +58,16 @@ function deferredResponse() {
   return { promise, resolve };
 }
 
+const chatHandoff = {
+  token: "owned-turn-context", characterId: "character", characterName: "Mira",
+  source: { kind: "chat", sessionId: "chat-session", turnId: "chat-turn", attempt: 1 },
+  identityMode: "character", returnHref: "/chat/chat-session", sourceLabel: "your chat",
+  prompt: "Mira holds a blue cup in the greenhouse.", scene: null, sourceMedia: null,
+  pins: { characterContentVersionId: "content-v1", characterReleaseId: "release-v1",
+    releaseSnapshotHash: "a".repeat(64), visualProfileId: "visual-v1", visualProfileVersion: 1,
+    referenceSetRevisionId: "references-v1" },
+};
+
 describe("GeneratorWorkspace media journeys", () => {
   let root: Root;
   let container: HTMLDivElement;
@@ -133,6 +143,122 @@ describe("GeneratorWorkspace media journeys", () => {
     await settle();
     expect(container.textContent).toContain("100 coins");
   }
+
+  it.each([false, true])("restores an owned Chat context (source image: %s), requotes edits and never generates on arrival", async (withImage) => {
+    window.history.replaceState(null, "", "/generate?characterId=character&chatSessionId=chat-session&chatTurnId=chat-turn&chatAttempt=1" + (withImage ? "&chatMediaAssetId=chat-image" : ""));
+    const originalFetch = globalThis.fetch;
+    const quotes: Record<string, unknown>[] = [];
+    const writes: Record<string, unknown>[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.startsWith("/api/v1/generation/context?")) return Response.json({ ok: true, data: { context: {
+        ...chatHandoff, sourceMedia: withImage ? { id: "chat-image", url: "/user-content/chat-image.png", thumbnailUrl: "/user-content/chat-image.png" } : null,
+      } } });
+      if (path === "/api/v1/generation/quote") {
+        quotes.push(JSON.parse(String(init?.body)));
+        return Response.json({ ok: true, data: { quote } });
+      }
+      if (path === "/api/v1/generation/jobs" && init?.method === "POST") {
+        writes.push(JSON.parse(String(init.body)));
+        return Response.json({ ok: true, data: { job: { id: "handoff-job", mode: "image", status: "queued", costDreamcoins: 5, outputCount: 1, errorCode: null, createdAt: new Date().toISOString() }, assets: [] } }, { status: 202 });
+      }
+      return originalFetch(input, init);
+    }));
+    await mount();
+    expect(writes).toHaveLength(0);
+    expect(quotes.length).toBeGreaterThan(0);
+    expect(quotes.every((body) => body.generationContextToken === chatHandoff.token && body.characterId === "character" && body.freeplay === false)).toBe(true);
+    expect(container.querySelector('[data-testid="generator-context"]')?.textContent).toContain("Mira");
+    expect(Boolean(container.querySelector('img[alt="Original source image"]'))).toBe(withImage);
+    const prompt = container.querySelector<HTMLTextAreaElement>('#generator-prompt')!;
+    expect(prompt.value).toBe(chatHandoff.prompt);
+    expect(container.querySelector('#generator-character')).toBeNull();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(prompt, "Keep the same greenhouse. Change the cup to yellow.");
+      prompt.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 350)); });
+    await settle();
+    expect(quotes.at(-1)?.prompt).toBe("Keep the same greenhouse. Change the cup to yellow.");
+    await click(button("Generate this moment · 5 coins"));
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({ generationContextToken: chatHandoff.token, characterId: "character", freeplay: false, prompt: "Keep the same greenhouse. Change the cup to yellow." });
+    expect(writes[0]).not.toHaveProperty("visualProfileId");
+    await click(button("Start a new generation"));
+    expect(window.location.search).not.toContain("chatTurnId");
+    expect(container.querySelector('[data-testid="generator-context"]')).toBeNull();
+    expect(prompt.value).toBe("");
+  });
+
+  it.each(["&chatAttempt=0", "&chatAttempt=1"]) ("never falls back to a new generation when a Chat source cannot be resolved (%s)", async (attempt) => {
+    window.history.replaceState(null, "", `/generate?chatSessionId=chat-session&chatTurnId=chat-turn${attempt}`);
+    const originalFetch = globalThis.fetch;
+    const quoteWrites: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.startsWith("/api/v1/generation/context?")) return Response.json({ ok: false }, { status: 404 });
+      if (path === "/api/v1/generation/quote" || path === "/api/v1/generation/jobs") quoteWrites.push(path);
+      return originalFetch(input, init);
+    }));
+    await mount();
+    expect(container.querySelector('[data-testid="generator-context"] [role="alert"]')).not.toBeNull();
+    expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true);
+    expect(quoteWrites).toEqual([]);
+  });
+
+  it("quotes and submits Comic source-only edits without choosing a different Character or Gallery image", async () => {
+    window.history.replaceState({}, "", "/generate?comicId=public-comic&comicVersion=4&comicPageId=page-original");
+    const context = { token: "comic-page-token", source: { kind: "comic", comicId: "public-comic", comicVersion: 4, pageId: "page-original" },
+      identityMode: "source_only", characterId: null, characterName: null, pins: null, scene: null,
+      prompt: "Keep the room. Change the lamp to red.", sourceMedia: { id: "other-authors-image", url: "/api/v1/comics/public-comic/pages/page-original/content", thumbnailUrl: "/api/v1/comics/public-comic/pages/page-original/content" },
+      returnHref: "/comics/public-comic", sourceLabel: "A night journey" };
+    const originalFetch = globalThis.fetch;
+    const quotes: Record<string, unknown>[] = [], writes: Record<string, unknown>[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.startsWith("/api/v1/generation/context?")) return Response.json({ ok: true, data: { context } });
+      if (path === "/api/v1/generation/quote") { quotes.push(JSON.parse(String(init?.body))); return Response.json({ ok: true, data: { quote } }); }
+      if (path === "/api/v1/generation/jobs" && init?.method === "POST") {
+        writes.push(JSON.parse(String(init.body)));
+        return Response.json({ ok: true, data: { job: { id: "comic-remix-job", mode: "image", status: "queued", costDreamcoins: 5, outputCount: 1, errorCode: null, createdAt: new Date().toISOString() }, assets: [] } }, { status: 202 });
+      }
+      return originalFetch(input, init);
+    }));
+    await mount();
+    expect(quotes.length).toBeGreaterThan(0);
+    expect(quotes.every(body => body.generationContextToken === context.token && body.freeplay === true && body.characterId === undefined)).toBe(true);
+    expect(container.querySelector('[data-testid="generator-context"]')?.textContent).toContain("A night journey");
+    expect(container.querySelector('#generator-character')).toBeNull();
+    expect(container.querySelector('img[alt="Original source image"]')?.getAttribute("src")).toBe(context.sourceMedia.url);
+    expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(false);
+    await act(async () => container.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({ freeplay: true, generationContextToken: context.token, prompt: context.prompt });
+    expect(writes[0]).not.toHaveProperty("characterId");
+  });
+
+  it("discards an old viewer's delayed handoff and hides its private prompt on account change", async () => {
+    window.history.replaceState(null, "", "/generate?chatSessionId=chat-session&chatTurnId=chat-turn&chatAttempt=1");
+    const originalFetch = globalThis.fetch;
+    const delayed = deferredResponse();
+    let newViewer = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/generation/config") return Response.json({ ok: true, data: { ...config, viewer: newViewer ? { authenticated: true, scope: "user:second-viewer" } : config.viewer } });
+      if (path.startsWith("/api/v1/generation/context?")) return newViewer ? Response.json({ ok: false }, { status: 404 }) : delayed.promise;
+      return originalFetch(input, init);
+    }));
+    await mount();
+    newViewer = true;
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await settle();
+    delayed.resolve(Response.json({ ok: true, data: { context: chatHandoff } }));
+    await settle();
+    expect(container.textContent).not.toContain(chatHandoff.characterName);
+    expect(container.querySelector<HTMLTextAreaElement>('#generator-prompt')?.value).toBe("");
+    expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true);
+  });
 
   it("keeps the restored video active when an unrelated candidate completes, then delivers that video", async () => {
     saveCurrentGenerationJob(window.sessionStorage, config.viewer.scope, "my-video");
@@ -737,14 +863,24 @@ describe("GeneratorWorkspace media journeys", () => {
         count.dispatchEvent(new Event("input", { bubbles: true }));
       });
     }
+    if (kind === "generation") {
+      const seed = container.querySelector<HTMLInputElement>('#generator-seed');
+      expect(seed, "A supported seed must be selectable before submission").not.toBeNull();
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(seed, "sunlit-garden-42");
+        seed!.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    }
     await click(button(kind === "gallery-variation" ? "Create variation" : kind === "generation" ? "Generate · 10 coins" : "Create edit · 10 coins"));
     expect(writes).toHaveLength(1);
+    if (kind === "generation") expect(writes[0].body.seed).toBe("sunlit-garden-42");
     expect(kind === "generation" ? (writes[0].body.controls as { model: string }).model : writes[0].body.model).toBe("edit-model");
     await act(async () => window.dispatchEvent(new Event("focus")));
     await settle();
     if (kind !== "gallery-variation") {
       expect(container.querySelector<HTMLInputElement>('#generator-output-count')?.value).toBe("2");
       if (kind === "generation") expect(container.querySelector<HTMLSelectElement>('#generator-orientation')?.value).toBe("4:5");
+      if (kind === "generation") expect(container.querySelector<HTMLInputElement>('#generator-seed')?.value).toBe("sunlit-garden-42");
       expect(container.querySelector<HTMLSelectElement>('#generator-model')?.value).toBe("edit-model");
     }
     const check = button(kind === "gallery-variation" ? "Create variation" : "Check generation request");
@@ -922,6 +1058,40 @@ describe("GeneratorWorkspace media journeys", () => {
     expect(quoteBodies.length).toBeGreaterThan(quotesBeforeAuto);
     expect(quoteBodies.at(-1)).toMatchObject({ mode });
     expect(quoteBodies.at(-1)?.controls).not.toHaveProperty("model");
+  });
+
+  it("offers only the current Character quote's compatible models and requotes an explicit choice", async () => {
+    const originalFetch = globalThis.fetch;
+    const quoteBodies: Array<{ controls: { model?: string } }> = [];
+    const genericModel = { id: "text-only", label: "Text only", maxCount: 1, costMultiplier: 1, entitlement: null };
+    const identityModel = { ...genericModel, id: "identity-model", label: "Identity compatible" };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/generation/config") return Response.json({ ok: true, data: {
+        ...config, pricing: { ...config.pricing, image: { baseCost: 5, maxCount: 1 } },
+        image: { ...config.image, availability: { state: "available" }, models: [genericModel], orientations: ["4:5"],
+          recipes: ["character", "freeplay"].map((useCase) => ({ id: `image-${useCase}`, rowId: `image-${useCase}-v1`, label: "Image", mode: "image", useCase, version: 1 })) },
+      } });
+      if (path.startsWith("/api/v1/characters?")) return Response.json({ ok: true, data: { items: [{
+        id: "character", title: "Mira", age: "28", description: "Photographer", likes: "0", chats: "0", creator: "iDream", image: "/user-content/portrait.png",
+      }], nextCursor: null } });
+      if (path === "/api/v1/generation/quote") {
+        const body = JSON.parse(String(init?.body));
+        quoteBodies.push(body);
+        return Response.json({ ok: true, data: { quote: { ...quote, identityLocked: true, models: [identityModel] } } });
+      }
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(button("Advanced settingsShow"));
+    const model = container.querySelector<HTMLSelectElement>('#generator-model')!;
+    expect([...model.options].map((option) => option.value)).toEqual(["", "identity-model"]);
+    await act(async () => {
+      model.value = "identity-model";
+      model.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await settle();
+    expect(quoteBodies.at(-1)?.controls.model).toBe("identity-model");
   });
 
   it("shows an unconfirmed job with support access instead of queue or retry promises", async () => {

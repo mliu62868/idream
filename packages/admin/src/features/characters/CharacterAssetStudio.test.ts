@@ -630,7 +630,7 @@ describe("Character Asset Studio flow", () => {
       "clearDurableMutationIntent(selectionMutationIntent)",
     );
     expect(source).toContain(
-      "selection?.reviewDecisionId ===",
+      "(selection?.reviewDecisionId ?? null) ===",
     );
     const afterRefreshFlow = selectionFlow.slice(
       afterRefreshIndex,

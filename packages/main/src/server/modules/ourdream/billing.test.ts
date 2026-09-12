@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
+import { env } from "@/server/lib/env";
 import { providers } from "@/server/providers";
 import { activateSubscriptionInTx } from "@/server/modules/ourdream/subscription-lifecycle";
 import {
@@ -662,6 +663,63 @@ describe("checkout (auto-confirm) activates entitlements + grants coins", () => 
       expect(lookup).toHaveBeenCalledTimes(3);
       expect(await dreamcoinBalance(userId)).toBe(640);
     } finally {
+      createInvoice.mockRestore();
+      lookup.mockRestore();
+    }
+  });
+
+  it("keeps an unknown checkout on its original provider after a configuration change", async () => {
+    const userId = await setupUser("provider-switch");
+    const planId = await setupPlan("provider-switch", 640);
+    const idempotencyKey = `${P}provider-switch-key`;
+    const createInvoice = vi
+      .spyOn(providers.payment, "createInvoice")
+      .mockResolvedValue({
+        ok: false,
+        error: {
+          code: "invoice_create_timeout",
+          message: "provider response was lost",
+          retryable: true,
+        },
+      });
+    const lookup = vi
+      .spyOn(providers.payment, "findInvoiceByOrderId")
+      .mockResolvedValue({ ok: true, data: null });
+    const configuredProvider = env.PAYMENT_PROVIDER;
+
+    try {
+      const ambiguous = await checkoutApi(userId, { planId, autoConfirm: true }, idempotencyKey);
+      expect(ambiguous.status).toBe(503);
+      const intent = await prisma.checkoutSession.findFirstOrThrow({
+        where: { userId, idempotencyKey },
+      });
+      expect(intent).toMatchObject({ provider: "mock", autoConfirm: true, status: "provider_unknown" });
+      const lookups = lookup.mock.calls.length;
+
+      // The replay hashes with the frozen provider, so it is not a "different
+      // request"; the new provider is never asked about the old order.
+      env.PAYMENT_PROVIDER = "btcpay";
+      const replay = await checkoutApi(userId, { planId, autoConfirm: true }, idempotencyKey);
+      expect(replay.status).toBe(503);
+      expect(replay.error?.details).toBeUndefined();
+      expect(lookup).toHaveBeenCalledTimes(lookups);
+      expect(
+        await prisma.checkoutSession.findUniqueOrThrow({ where: { id: intent.id } }),
+      ).toMatchObject({
+        provider: "mock",
+        status: "provider_unknown",
+        needsReconciliation: true,
+        requestHash: intent.requestHash,
+      });
+
+      env.PAYMENT_PROVIDER = configuredProvider;
+      const different = await checkoutApi(userId, { planId, autoConfirm: false }, idempotencyKey);
+      expect(different.status).toBe(409);
+      expect(different.error?.details?.idempotencyAction).toBe("new_key");
+      expect(createInvoice).toHaveBeenCalledTimes(1);
+      expect(await prisma.checkoutSession.count({ where: { userId } })).toBe(1);
+    } finally {
+      env.PAYMENT_PROVIDER = configuredProvider;
       createInvoice.mockRestore();
       lookup.mockRestore();
     }
