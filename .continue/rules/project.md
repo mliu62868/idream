@@ -12,7 +12,7 @@ alwaysApply: true
 ## 按任务定位
 
 - 产品范围：全面对标 [OurDream.ai](https://ourdream.ai/) 的 18+ AI 角色扮演 / 伴侣平台。涉及功能取舍时读 [PRD](docs/product/PRD.md) 及相关产品契约；对标其公开功能和用户旅程，不复制内部实现，也不因当前实现缺口缩减明确需求。
-- 评估完成度时从 [当前覆盖](docs/product/CURRENT_FUNCTIONAL_COVERAGE.md) 和 [剩余工作](docs/product/REMAINING_WORK_EXECUTION_PLAN.md) 入手；架构问题按 [架构索引](docs/architecture/README.md) 定位相关 ADR。文档记录需求与决策，代码及同一 source revision 的运行证据证明实际状态；冲突须说明，不凭代码现状废除业务要求。
+- 评估完成度时从 [当前覆盖](docs/product/CURRENT_FUNCTIONAL_COVERAGE.md) 和 [剩余工作](docs/product/REMAINING_WORK_EXECUTION_PLAN.md) 入手；架构问题按 [架构索引](docs/architecture/README.md) 定位相关 ADR。文档记录需求与决策，代码及同一 source revision 的运行证据证明实际状态；冲突须说明，不凭代码现状废除业务要求。接到「全面检查」「全面审查」类任务时按 [检查任务书](docs/agents/audit-brief.md) 拆解起点、切面与证据口径，不要直接通读产品文档写总结。
 - Main 的 PostgreSQL 是产品 Turn、交付与计费权威，经 BFF 向 Chat 交付不可变 Turn 快照；Chat 无数据库，本地 AgentRun 仅承载执行与恢复证据，DSH/igrep 内嵌于 Chat。跨包契约放在 `packages/shared`，Chat 内部执行协议留在 `packages/chat`；改动这些边界时读 [ADR-21](docs/architecture/21-companion-chat-deep-runtime.md)。
 - Chat 使用自托管开源 OpenAI-compatible 模型；图片/视频使用 Gen workflow-native backend；支付走加密货币。legacy external pipeline adapter 已于 2026-09-12 删除（零调用方，其保留理由所引的回滚 runbook 经核实不存在），`pipeline` / `mlx` / `external` 三个 runner 取值同时退役，不要再把它当兼容面保留或恢复。
 - 创建或维护 issue / PRD 时使用 `.scratch/` 本地 Markdown，遵循 [事项追踪](docs/agents/issue-tracker.md) 和 [分诊状态](docs/agents/triage-labels.md)，不要把 Skill 的“发布到 tracker”默认解释为外部发帖。涉及领域术语或 ADR 时才读 [领域文档约定](docs/agents/domain.md)。

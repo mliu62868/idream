@@ -41,6 +41,7 @@ export async function beginAdmittedChatTurn(input: {
   sessionId: string;
   content: string;
   idempotencyKey: string;
+  origin?: "user" | "proactive";
 }) {
   assertAgentRuntimeConfigured();
   const begun = await beginChatTurn(input);

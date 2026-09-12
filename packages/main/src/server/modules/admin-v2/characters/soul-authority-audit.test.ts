@@ -32,6 +32,7 @@ describe("Character Soul authority audit", () => {
       parityMismatches: 0,
       invalidSnapshots: 0,
       nullPinSessions: 271,
+      legacyPinnedSessions: 0,
       legacyServingSnapshots: 15,
       legacyCurrentPointers: 0,
     })).toBe(false);
@@ -40,14 +41,25 @@ describe("Character Soul authority audit", () => {
       parityMismatches: 0,
       invalidSnapshots: 0,
       nullPinSessions: 0,
+      legacyPinnedSessions: 0,
       legacyServingSnapshots: 0,
       legacyCurrentPointers: 0,
     })).toBe(true);
     expect(characterSoulAuthorityIsLaunchSafe({
       topologyMode: "main_turn_ledger",
       parityMismatches: 0,
+      invalidSnapshots: 0,
+      nullPinSessions: 0,
+      legacyPinnedSessions: 1,
+      legacyServingSnapshots: 0,
+      legacyCurrentPointers: 0,
+    })).toBe(false);
+    expect(characterSoulAuthorityIsLaunchSafe({
+      topologyMode: "main_turn_ledger",
+      parityMismatches: 0,
       invalidSnapshots: 1,
       nullPinSessions: 0,
+      legacyPinnedSessions: 0,
       legacyServingSnapshots: 0,
       legacyCurrentPointers: 0,
     })).toBe(false);
@@ -56,6 +68,7 @@ describe("Character Soul authority audit", () => {
       parityMismatches: 0,
       invalidSnapshots: 0,
       nullPinSessions: -1,
+      legacyPinnedSessions: 0,
       legacyServingSnapshots: 0,
       legacyCurrentPointers: 0,
     })).toBe(false);

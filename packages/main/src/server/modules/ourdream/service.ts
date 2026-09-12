@@ -153,6 +153,7 @@ import {
 } from "./exposure-context";
 import { createVoiceClip as createDurableVoiceClip, quoteVoiceClip } from "./voice-clip";
 import { getCharacterDraftVoiceCatalog, previewCharacterDraftVoice } from "./character-draft-voice";
+import { applyAffiliate, affiliateDashboard, recordAffiliateClick } from "./affiliate";
 import { trackEvent, trackEventBestEffort } from "./product-events";
 import { enforceRateLimit } from "@/server/lib/rate-limit";
 import { submitReport } from "./reports";
@@ -560,6 +561,28 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
   }
 
   if (resource === "tags" && !id && method === "GET") return listTags(request);
+
+  // Affiliate creator economy: applications/dashboard require an authenticated
+  // user; click attribution is intentionally public and deduplicated by visitor key.
+  if (resource === "affiliate") {
+    if (id === "application" && !action && method === "POST") {
+      const ctx = await getAuthCtx(request);
+      const user = requireUser(ctx);
+      return ok(await applyAffiliate(prisma, user.id, await jsonBody(request)), { status: 201 });
+    }
+    if (id === "dashboard" && !action && method === "GET") {
+      const ctx = await getAuthCtx(request);
+      const user = requireUser(ctx);
+      return ok(await affiliateDashboard(prisma, user.id));
+    }
+    if (id === "click" && !action && method === "POST") {
+      const body = z.record(z.string(), z.unknown()).parse(await jsonBody(request));
+      const code = z.string().trim().min(1).max(120).parse(body.code);
+      const visitorKey = z.string().trim().min(8).max(200).parse(body.visitorKey);
+      const landingPath = z.string().trim().min(1).max(500).parse(body.landingPath ?? "/");
+      return ok(await recordAffiliateClick(prisma, code, visitorKey, landingPath), { status: 201 });
+    }
+  }
   // 前台创建页拉取可用角色模板（仅 isActive，公开只读，见 CHARACTER_MANAGEMENT_PLAN §B）。
   if (resource === "character-templates" && !id && method === "GET") {
     return listActiveTemplates();
@@ -1693,7 +1716,11 @@ async function updateDraft(request: Request, id: string) {
     (body.age !== undefined && body.age !== currentDetails.age) ||
     jsonFieldChanged(body.appearance, currentDraft.appearance) ||
     jsonFieldChanged(body.hair, currentDraft.hair) ||
-    jsonFieldChanged(body.body, currentDraft.body);
+    jsonFieldChanged(body.body, currentDraft.body) ||
+    // The preview prompt includes the visual persona fields from advancedDetails.
+    // Keep the confirmed image only when those fields are unchanged; otherwise a
+    // later submit could pair an old face with newly edited appearance text.
+    visualAdvancedDetailsChanged(body.advancedDetails, currentDraft.advancedDetails);
   const nextAdvancedDetails =
     body.advancedDetails !== undefined || body.age !== undefined
       ? mergeCurrentCharacterDraftDetails({
@@ -1727,6 +1754,28 @@ async function updateDraft(request: Request, id: string) {
 function jsonFieldChanged(next: Record<string, unknown> | undefined, current: unknown) {
   // PostgreSQL JSONB reorders object keys; saving unchanged traits must retain the confirmed identity.
   return next !== undefined && !canonicalJsonEqual(next, current ?? {});
+}
+
+function visualAdvancedDetailsChanged(
+  next: Record<string, unknown> | undefined,
+  current: unknown,
+) {
+  if (!next) return false;
+  const visual = (value: unknown) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    const record = { ...(value as Record<string, unknown>) };
+    // These fields affect delivery/persona presentation but not the identity image.
+    delete record.firstMessage;
+    delete record.voiceSelection;
+    delete record.detailsMarkdown;
+    return record;
+  };
+  const currentRecord = current && typeof current === "object" && !Array.isArray(current)
+    ? current as Record<string, unknown>
+    : {};
+  // PATCH carries a partial details object; compare the post-merge visual
+  // projection so a voice-only update does not invalidate an identity.
+  return !canonicalJsonEqual(visual({ ...currentRecord, ...next }), visual(currentRecord));
 }
 
 async function currentDraft(request: Request) {

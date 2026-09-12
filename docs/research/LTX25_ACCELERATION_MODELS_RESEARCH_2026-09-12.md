@@ -16,7 +16,7 @@
 
 6. **iDream 本机已经有一组更直接的 M4 Max A/B/A 证据：保留同一个 RedGraft 混合量化文件，只把采样期 Linear 计算改成 BF16，完整工作流从 732.7/773.8 秒降到 588.0 秒，约快 12.7%–20.0%。** 但候选的最终视频与基线逐帧平均 SSIM 为 0.875、最差帧 0.772，眨眼、表情和头部轨迹发生变化；因此这是独立候选路线，不是无损替换。DiffSynth 本身无法识别当前 W4A8/ Gemma4 契约，本轮没有产出新 INT4 文件。[本地验证归档摘要](.DIFFSYNTH_LTX25_INT4_VALIDATION_2026-09-05.pdf.igrep.md)
 
-7. **2026-09-12 在同一 M4 Max 做了 RedGraft 真实 SDPA 对照：只把 ComfyUI runner 从 `--use-split-cross-attention` 换成独立 8190 的 `--use-pytorch-cross-attention`，模型、Gemma4 INT8 encoder、prompt、seed、分辨率和两阶段图保持一致。** SDPA 端到端耗时 `820.656s`；现有 split 路线的同规格历史基线为 `841.614/864.129/890.340s`，相对中位数快 `5.03%`（范围 `2.49%–7.83%`）。产物为 `768×1152`、`121` 帧、`5.041667s`，含音频，`ffmpeg -v error` 全量解码通过；prompt `e3614e3b-73c7-493f-a6ad-cd725e1ba53a`，SHA-256 `8bac2e48ae837d0e84e46fee9cc21393cb76ae917d5bf7478bda584e45068130`。[本地报告](../.tmp/redgraft-sdpa-probe.json)
+7. **2026-09-12 在同一 M4 Max 做了 RedGraft 真实 SDPA 对照：只把 ComfyUI runner 从 `--use-split-cross-attention` 换成独立 8190 的 `--use-pytorch-cross-attention`，模型、Gemma4 INT8 encoder、prompt、seed、分辨率和两阶段图保持一致。** SDPA 端到端耗时 `820.656s`；现有 split 路线的同规格历史基线为 `841.614/864.129/890.340s`，相对中位数快 `5.03%`（范围 `2.49%–7.83%`）。产物为 `768×1152`、`121` 帧、`5.041667s`，含音频，`ffmpeg -v error` 全量解码通过；prompt `e3614e3b-73c7-493f-a6ad-cd725e1ba53a`，SHA-256 `8bac2e48ae837d0e84e46fee9cc21393cb76ae917d5bf7478bda584e45068130`。本地 JSON 证据位于未纳入版本控制的 `.tmp/redgraft-sdpa-probe.json`。
 
 ## 模型与路径清单
 

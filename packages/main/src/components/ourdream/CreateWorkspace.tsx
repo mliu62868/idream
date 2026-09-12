@@ -424,10 +424,17 @@ export function CreateWorkspace() {
       // Another device has no batch count or request key. Keep only the known
       // job and check it without inventing a replacement four-image batch.
       setRestoredPreviewReviewId("");
-      if (!next.previewBatch && serverPreviewJob?.errorCode === "provider_outcome_unknown") {
+      // A different device has no local batch envelope. Keep observing the
+      // exact durable job for every non-terminal state (including ordinary
+      // queued/running), rather than offering a fresh four-job submission.
+      if (!next.previewBatch && serverPreviewJob &&
+        (serverPreviewJob.status === "queued" || serverPreviewJob.status === "running" ||
+          serverPreviewJob.errorCode === "provider_outcome_unknown")) {
         setRestoredPreviewReviewId(serverPreviewJob.id);
         setPreviewStatus("paused");
-        setStatus(`The preview result needs review. Contact support with request ${serverPreviewJob.id}.`);
+        setStatus(serverPreviewJob.errorCode === "provider_outcome_unknown"
+          ? `The preview result needs review. Contact support with request ${serverPreviewJob.id}.`
+          : `Your saved preview is still processing. Check request ${serverPreviewJob.id} again later.`);
       }
       const applied = restored;
       if (!applied) return;

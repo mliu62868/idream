@@ -112,7 +112,7 @@ RedMix3 文件名明确为 `fp8-scaled`，文件大小也与旧 FP8 同级，因
 
 ## 三、与当前默认的差异
 
-当前 canonical descriptor：[`packages/gen/workflows/redcraft-krea2-txt2img.json`](../../packages/gen/workflows/redcraft-krea2-txt2img.json)。
+当前 canonical descriptor：[`redcraft-krea2-redmix3-txt2img.json`](../../packages/gen/workflows/redcraft-krea2-redmix3-txt2img.json)。
 
 | 项目 | 当前默认 | RedMix3 候选 |
 | --- | --- | --- |

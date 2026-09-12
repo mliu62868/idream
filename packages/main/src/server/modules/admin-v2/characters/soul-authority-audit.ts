@@ -79,6 +79,7 @@ export function characterSoulAuthorityIsLaunchSafe(input: {
   parityMismatches: number;
   invalidSnapshots: number;
   nullPinSessions: number;
+  legacyPinnedSessions: number;
   legacyServingSnapshots: number;
   legacyCurrentPointers: number;
 }) {
@@ -89,6 +90,7 @@ export function characterSoulAuthorityIsLaunchSafe(input: {
     input.parityMismatches === 0 &&
     input.invalidSnapshots === 0 &&
     input.nullPinSessions === 0 &&
+    input.legacyPinnedSessions === 0 &&
     input.legacyServingSnapshots === 0 &&
     input.legacyCurrentPointers === 0;
 }
@@ -178,6 +180,7 @@ export async function auditCharacterSoulAuthority(
     parityMismatches: parityRows.length,
     invalidSnapshots: snapshotAudit.invalid.length,
     nullPinSessions,
+    legacyPinnedSessions,
     legacyServingSnapshots,
     legacyCurrentPointers,
   });

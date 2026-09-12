@@ -235,7 +235,7 @@ review。人工 review 的 `sampleCount`、`consistencyPassCount`、`consistency
 
 `redcraft-krea2-comfyui-text.json` 是专用历史 probe 使用的 legacy non-conforming 文件，
 backend registry 对它记录 warn 并跳过是预期行为；当前可被 registry 与 ComfyUI UI 消费的
-canonical descriptor 是 `redcraft-krea2-txt2img.json`。两者不能混写成同一 serving
+canonical descriptor 是 `redcraft-krea2-redmix3-txt2img.json`。两者不能混写成同一 serving
 workflow。Qwen 的三条当前真机 smoke 证明 semantic reference transport 可执行，但仍不替代
 角色 route 的样本、identity match、review、expiry 与生产 runner Gate。
 

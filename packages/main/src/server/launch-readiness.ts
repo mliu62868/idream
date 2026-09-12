@@ -3424,12 +3424,12 @@ async function addCharacterSoulAuthorityPreflight(
         area: "Chat",
         status:
           audit.drain.nullPinSessions === 0 &&
-          audit.drain.legacyPinnedSessions >= 0
+          audit.drain.legacyPinnedSessions === 0
             ? "pass"
             : "fail",
         message: `${audit.drain.activeSessions} active sessions; ${audit.drain.nullPinSessions} null pins; ${audit.drain.legacyPinnedSessions} legacy pins.`,
         remediation:
-          "Backfill every active null pin from the Character read view before starting Chat.",
+          "Migrate every active legacy or null session pin through the Admin release migration command before starting Chat.",
       },
     );
   } catch (error) {

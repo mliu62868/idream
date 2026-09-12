@@ -183,6 +183,7 @@ export async function beginChatTurn(input: {
   sessionId: string;
   content: string;
   idempotencyKey: string;
+  origin?: "user" | "proactive";
 }): Promise<BegunChatTurn> {
   const content = requiredText(input.content, "content", 20_000);
   const idempotencyKey = requiredText(input.idempotencyKey, "Idempotency-Key", 160);
@@ -298,6 +299,9 @@ export async function beginChatTurn(input: {
         : await frozenExecutionSnapshot(tx, turn.id, turn.memoryEnabled && !memoryIsolated),
     };
   });
+  if (input.origin === "proactive") {
+    await prisma.$executeRaw`UPDATE "chat_turns" SET "origin" = 'proactive' WHERE "id" = ${created.turn.id}`;
+  }
   return begunResult(
     created.turn,
     created.turn.id !== turnId,

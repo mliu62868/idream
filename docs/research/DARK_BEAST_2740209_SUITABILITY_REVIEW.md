@@ -36,7 +36,7 @@ Civitai 版本 `2740209` 适合作为 iDream 的**身份保持 / 换脸专用候
    - 输出通过图片完整性检查和人工视觉检查
 
 3. **已完成项目侧候选接入**
-   - 工作流：`packages/gen/workflows/darkbeast-flux2-klein-9b-multi-reference.json`
+   - 工作流：`darkbeast-flux2-klein-9b-multi-reference.json`（历史候选，当前仓库已移除）
    - `modelId`：`darkbeast-flux2-klein-9b-bfs`
    - `workflowKey`：`darkbeast-flux2-klein-9b-multi-reference`
    - 当前发布状态：draft、disabled、0% rollout

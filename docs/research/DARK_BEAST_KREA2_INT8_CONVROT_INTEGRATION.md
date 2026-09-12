@@ -36,7 +36,7 @@ Civitai API 给出的精确文件如下：
 4. `CLIPTextEncode` → `ConditioningZeroOut` → `KSampler` → `VAEDecode` → `SaveImage`；
 5. 示例统一为 10 steps、CFG 1、`er_sde` / `simple`、denoise 1。
 
-部分示例额外使用 `Krea2/Detailer-KREA2.safetensors`、strength 3，另一些没有，因此该 LoRA 是可选增强，不是基础运行依赖。我们的 `redcraft-krea2-txt2img.json` 已具有同构的核心图和同一组文本编码器/VAE；新增 descriptor 不需要修改 `ComfyUIBackend`。
+部分示例额外使用 `Krea2/Detailer-KREA2.safetensors`、strength 3，另一些没有，因此该 LoRA 是可选增强，不是基础运行依赖。当前 `redcraft-krea2-redmix3-txt2img.json` 已具有同构的核心图和同一组文本编码器/VAE；新增 descriptor 不需要修改 `ComfyUIBackend`。
 
 ## 速度、显存与质量判断
 
@@ -91,6 +91,6 @@ ConvRot 通过旋转权重/激活抑制量化 outlier，INT8-Fast 的跨模型 l
 
 ## 仓库 / 本机证据
 
-- `packages/gen/workflows/redcraft-krea2-txt2img.json`：当前生产 descriptor 明确加载 RedCraft BF16 diffusion 和 Qwen BF16 text encoder。
+- `packages/gen/workflows/redcraft-krea2-redmix3-txt2img.json`：当前生产 descriptor 明确加载 RedCraft BF16 diffusion 和 Qwen BF16 text encoder。
 - `docs/superpowers/specs/2026-07-07-image-generation-redesign-design.md`：记录旧 FP8 → BF16 的正确反量化过程及 MPS 实测闭环。
 - 本机 ComfyUI commit `69ea58697bb2f05124f5dc7e00ad111f7cfff645`（`v0.27.0-55`）包含官方 INT8/ConvRot code；本机 `comfy-kitchen 0.1.0` 仅 eager backend 可用，CUDA/Triton 不可用。

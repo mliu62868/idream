@@ -64,6 +64,9 @@ model User {
   following          Follow[]                 @relation("Follower")
   characterLooks     CharacterLook[]
   generationFeedback GenerationFeedback[]
+  affiliateApplication AffiliateApplication?
+  affiliateClicks     AffiliateClick[]
+  creatorLevelFacts   CreatorLevelFact[]
 
   @@index([dataClass, status, deletedAt])
   @@map("users")
@@ -665,6 +668,9 @@ model RecentChat {
   characterVisualProfileId      String?
   characterVisualProfileVersion Int?
   releasePinnedAt               DateTime?
+  proactiveEnabled              Boolean    @default(false)
+  proactiveIntervalHours        Int        @default(24)
+  proactiveNextAt               DateTime?
   entryExposureId               String?
   entryJourneyId                String?
   entryPlacementId              String?
@@ -698,6 +704,51 @@ model ChatExperiencePreference {
   @@map("chat_experience_preferences")
 }
 
+model AffiliateApplication {
+  id          String   @id
+  userId      String   @unique
+  status      String   @default("pending")
+  termsVersion String
+  channels    Json     @default("[]")
+  reviewNote  String?
+  reviewedAt  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  clicks      AffiliateClick[]
+  @@map("AffiliateApplication")
+}
+
+model AffiliateClick {
+  id             String   @id
+  affiliateUserId String
+  code           String
+  visitorKey     String
+  landingPath    String
+  convertedAt    DateTime?
+  createdAt      DateTime @default(now())
+  affiliateUser  User     @relation(fields: [affiliateUserId], references: [id], onDelete: Cascade)
+  application    AffiliateApplication? @relation(fields: [code], references: [id], onDelete: Cascade)
+  @@unique([code, visitorKey])
+  @@index([code, createdAt])
+  @@map("AffiliateClick")
+}
+
+model CreatorLevelFact {
+  id                  String   @id
+  userId              String
+  level               String
+  version             Int
+  publishedCharacters Int      @default(0)
+  publishedComics     Int      @default(0)
+  followers           Int      @default(0)
+  effectiveAt         DateTime @default(now())
+  createdAt           DateTime @default(now())
+  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@unique([userId, version])
+  @@map("CreatorLevelFact")
+}
+
 // One row is exactly what the product displays: one user message and its one
 // selected final assistant reply. Main retains content-free terminal evidence;
 // Chat deletes successful local execution files after Main's durable ACK.
@@ -713,6 +764,7 @@ model ChatTurn {
   userStatus                    String               @default("sent")
   assistantContent              String               @default("")
   assistantStatus               String               @default("pending") // pending | generating | sent | blocked | failed | cancelled
+  origin                        String               @default("user") // user | proactive
   model                         String?
   promptTokens                  Int?
   completionTokens              Int?
