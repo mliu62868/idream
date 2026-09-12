@@ -727,8 +727,15 @@ type TestGenPipeline = {
 async function loadTestGenPipeline(): Promise<TestGenPipeline> {
   // INTENT: exercise the real Gen owner in integration tests without making
   // Main production code import Gen internals or reintroducing provider work.
-  const modulePath = new URL("../../../../gen/src/pipeline.ts", import.meta.url).href;
-  return await import(modulePath) as TestGenPipeline;
+  // The two entry points and the runner→adapter mapper live in different Gen
+  // modules — the mapper moved to the vocabulary it maps onto when the
+  // lifecycle collapsed into generation-execution.ts — so the owner is
+  // assembled from both rather than assuming one file exports everything.
+  const [pipeline, vocabulary] = await Promise.all([
+    import(new URL("../../../../gen/src/pipeline.ts", import.meta.url).href),
+    import(new URL("../../../../gen/src/provider-vocabulary.ts", import.meta.url).href),
+  ]);
+  return { ...pipeline, ...vocabulary } as TestGenPipeline;
 }
 
 let stableTestGenProviders: TestGenProviders | undefined;

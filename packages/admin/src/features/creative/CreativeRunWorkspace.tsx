@@ -418,24 +418,15 @@ function ModelEvaluationForm({ run, itemIndex, permissions, reload, onAdvance }:
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
-  const idempotencyKeys = useRef<Record<string, string>>({});
   if (!item) return null;
   const decide = async (decision: "approved" | "rejected") => {
     const numericScore = Number(score);
     if (!score.trim() || !Number.isInteger(numericScore) || numericScore < 0 || numericScore > 100 || reason.trim().length < 3) return;
     const body = { entityVersion: run.version, decision, identityConsistency, score: numericScore, reason: reason.trim() };
-    const requestSignature = JSON.stringify({
-      runId: run.id,
-      itemId: item.id,
-      body,
-    });
-    const idempotencyKey = idempotencyKeys.current[requestSignature] ?? crypto.randomUUID();
-    idempotencyKeys.current[requestSignature] = idempotencyKey;
     setBusy(true); setError(null); setWarning(null);
     try {
-      await adminV2Request(`/api/v2/admin/creative/runs/${run.id}/items/${item.id}/decisions`, {
-        method: "POST",
-        idempotencyKey,
+      await adminV2Operation("POST /api/v2/admin/creative/runs/:id/items/:itemId/decisions", {
+        path: { id: run.id, itemId: item.id },
         body,
       });
     } catch (cause) {
@@ -445,7 +436,6 @@ function ModelEvaluationForm({ run, itemIndex, permissions, reload, onAdvance }:
     }
     try {
       await reload();
-      delete idempotencyKeys.current[requestSignature];
       setReason("");
       setScore("");
       {
@@ -510,7 +500,6 @@ function PlacementForm({ run, itemIndex, permissions, reload }: { run: CreativeR
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
-  const idempotencyKeys = useRef<Record<string, string>>({});
   const hasPartialCampaignCta = Boolean(ctaLabel.trim()) !==
     Boolean(campaignHref.trim());
   if (!item) return <div className="mt-4"><CollaborationPanel canWrite={permissions.write} targetId={run.id} targetType="creative_run" targetVersion={run.version} /></div>;
@@ -541,14 +530,10 @@ function PlacementForm({ run, itemIndex, permissions, reload }: { run: CreativeR
       }),
       reason: stageReason.trim(),
     };
-    const requestSignature = JSON.stringify({ action: "stage", runId: run.id, body });
-    const idempotencyKey = idempotencyKeys.current[requestSignature] ?? crypto.randomUUID();
-    idempotencyKeys.current[requestSignature] = idempotencyKey;
     setBusy(true); setError(null); setWarning(null);
     try {
-      await adminV2Request(`/api/v2/admin/creative/runs/${run.id}/placements`, {
-        method: "POST",
-        idempotencyKey,
+      await adminV2Operation("POST /api/v2/admin/creative/runs/:id/placements", {
+        path: { id: run.id },
         body,
       });
     } catch (cause) {
@@ -558,7 +543,6 @@ function PlacementForm({ run, itemIndex, permissions, reload }: { run: CreativeR
     }
     try {
       await reload();
-      delete idempotencyKeys.current[requestSignature];
       setStageReason("");
     } catch (cause) {
       setWarning(committedProjectionWarning("Placement staging", cause));
@@ -573,19 +557,10 @@ function PlacementForm({ run, itemIndex, permissions, reload }: { run: CreativeR
       entityVersion: run.version,
       reason: "Verify the authoritative distribution slot and atomically activate the staged asset",
     };
-    const requestSignature = JSON.stringify({
-      action: "verify",
-      runId: run.id,
-      placementId: placement.id,
-      body,
-    });
-    const idempotencyKey = idempotencyKeys.current[requestSignature] ?? crypto.randomUUID();
-    idempotencyKeys.current[requestSignature] = idempotencyKey;
     setBusy(true); setError(null); setWarning(null);
     try {
-      await adminV2Request(`/api/v2/admin/creative/runs/${run.id}/placements/${placement.id}/verification`, {
-        method: "POST",
-        idempotencyKey,
+      await adminV2Operation("POST /api/v2/admin/creative/runs/:id/placements/:placementId/verification", {
+        path: { id: run.id, placementId: placement.id },
         body,
       });
     } catch (cause) {
@@ -595,7 +570,6 @@ function PlacementForm({ run, itemIndex, permissions, reload }: { run: CreativeR
     }
     try {
       await reload();
-      delete idempotencyKeys.current[requestSignature];
     } catch (cause) {
       setWarning(committedProjectionWarning("Placement activation", cause));
     } finally {
@@ -609,19 +583,10 @@ function PlacementForm({ run, itemIndex, permissions, reload }: { run: CreativeR
       entityVersion: run.version,
       reason: withdrawalReason.trim(),
     };
-    const requestSignature = JSON.stringify({
-      action: "withdraw",
-      runId: run.id,
-      placementId: placement.id,
-      body,
-    });
-    const idempotencyKey = idempotencyKeys.current[requestSignature] ?? crypto.randomUUID();
-    idempotencyKeys.current[requestSignature] = idempotencyKey;
     setBusy(true); setError(null); setWarning(null);
     try {
-      await adminV2Request(`/api/v2/admin/creative/runs/${run.id}/placements/${placement.id}/withdrawal`, {
-        method: "POST",
-        idempotencyKey,
+      await adminV2Operation("POST /api/v2/admin/creative/runs/:id/placements/:placementId/withdrawal", {
+        path: { id: run.id, placementId: placement.id },
         body,
       });
     } catch (cause) {
@@ -631,7 +596,6 @@ function PlacementForm({ run, itemIndex, permissions, reload }: { run: CreativeR
     }
     try {
       await reload();
-      delete idempotencyKeys.current[requestSignature];
       setWithdrawalReason("");
     } catch (cause) {
       setWarning(committedProjectionWarning("Placement withdrawal", cause));
@@ -750,13 +714,11 @@ function IncidentAttachment({ run, permissions, reload }: { run: CreativeRunDeta
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
-  const [idempotencyKey, setIdempotencyKey] = useState(() => crypto.randomUUID());
   const attach = async () => {
     setBusy(true); setError(null); setWarning(null);
     try {
-      await adminV2Request(`/api/v2/admin/creative/runs/${run.id}/commands/attach-incident`, {
-        method: "POST",
-        idempotencyKey,
+      await adminV2Operation("POST /api/v2/admin/creative/runs/:id/commands/attach-incident", {
+        path: { id: run.id },
         body: {
           entityVersion: run.version,
           incidentId: incidentId.trim(),
@@ -770,7 +732,6 @@ function IncidentAttachment({ run, permissions, reload }: { run: CreativeRunDeta
     }
     try {
       await reload();
-      setIdempotencyKey(crypto.randomUUID());
       setIncidentId("");
     } catch (cause) {
       setWarning(committedProjectionWarning("Incident attachment", cause));

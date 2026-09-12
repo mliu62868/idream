@@ -272,7 +272,12 @@ export async function resolveGenerationPlan(
   const workflowDescriptor = await generationWorkflowDescriptor(
     profile.workflowKey ?? profile.pipelineModel,
   );
-  if (profile.runner === "comfyui" && !workflowDescriptor) {
+  // INVARIANT: no descriptor, no quote. The `runner === "comfyui"` qualifier
+  // this carried existed for the legacy gateway runners, which took a bare model
+  // name and had no workflow to describe. They retired with that adapter on
+  // 2026-09-12, so every surviving runner needs a descriptor — quoting without
+  // one would price an execution the worker cannot dispatch.
+  if (!workflowDescriptor) {
     throw Errors.unavailable(
       "Configured generation workflow descriptor is unavailable",
       {

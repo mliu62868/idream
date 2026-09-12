@@ -41,7 +41,7 @@ describe("Creative Run v2 brief and launch", () => {
         profileKey,
         label: "Creative create integration",
         mode: "image",
-        runner: "pipeline",
+        runner: "comfyui",
         pipelineModel: "redcraft-krea2-redmix3-txt2img",
         workflowKey: "redcraft-krea2-redmix3-txt2img",
         runnerConfig: {

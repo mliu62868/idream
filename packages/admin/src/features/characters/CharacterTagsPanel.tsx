@@ -111,7 +111,6 @@ export function CharacterTagsPanel({
           `/api/v2/admin/content/characters/${encodeURIComponent(characterId)}/tags`,
           "PUT",
           { tagIds: draft, reason, confirmation: `${characterId}:tags` },
-          { "idempotency-key": crypto.randomUUID() },
         );
         await load();
       },

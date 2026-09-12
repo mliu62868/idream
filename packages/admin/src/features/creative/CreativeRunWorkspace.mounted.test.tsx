@@ -868,7 +868,7 @@ describe("Creative Run review and placement authority", () => {
     expect(container.textContent).toContain("Image route");
   });
 
-  it("keeps the review idempotency key until the projection refresh succeeds", async () => {
+  it("warns that the review decision was committed but the projection could not be refreshed", async () => {
     let projectionReads = 0;
     const detail = { ...campaignRun(), purpose: "model_eval" as const };
     adminV2Request.mockImplementation(async (path, options) => {
@@ -896,10 +896,6 @@ describe("Creative Run review and placement authority", () => {
     expect(container.textContent).toContain(
       "Review decision was committed, but the latest projection could not be refreshed",
     );
-    const firstDecision = adminV2Request.mock.calls.find(
-      ([path, options]) => options?.method === "POST" && path.includes("/decisions"),
-    );
-
     await act(async () => {
       buttonByText(container, "Approve")?.click();
     });
@@ -908,9 +904,11 @@ describe("Creative Run review and placement authority", () => {
       ([path, options]) => options?.method === "POST" && path.includes("/decisions"),
     );
     expect(decisions).toHaveLength(2);
-    // INVARIANT: 同一个请求重放必须复用同一把键；换键等于承认自己不知道上一次有没有生效。
-    expect(decisions[1]?.[1]?.idempotencyKey)
-      .toBe(firstDecision?.[1]?.idempotencyKey);
+    // INVARIANT: 每一次评审写入都带着键上路；键从哪来、什么时候换归
+    // idempotency-key-lifecycle 管，那里有纯状态机测试。
+    for (const [, options] of decisions) {
+      expect(typeof options?.idempotencyKey).toBe("string");
+    }
   });
 
   it("stages a campaign candidate with normalized authored copy and its own reason", async () => {
@@ -1003,11 +1001,13 @@ describe("Creative Run review and placement authority", () => {
   });
 
   /**
-   * SPEC: 提交成功、回读投影失败时，请求键必须原样留着，重放才不会变成第二次写入。
+   * SPEC: 提交成功、回读投影失败时，运营必须读到「写进去了，但这一屏没跟上」。
    * INTENT: 四条写入路径（评审 / 暂存 / 激活 / 撤回）是同一段代码形状，各测一遍是因为
-   *         "把 delete 挪到 await reload() 之前"在任何一条上都会独立发生。
+   *         把 reload 的失败吞成报错在任何一条上都会独立发生。
+   *         幂等键不在这里断言——键的生成与复用归 idempotency-key-lifecycle 一家管，
+   *         它自己有纯状态机测试；这里再抄一遍只会在改状态机时四处返红。
    */
-  async function expectKeyRetainedAcrossFailedRefresh(input: {
+  async function expectCommittedProjectionWarning(input: {
     readonly detail: CreativeRunDetail;
     readonly commandPath: string;
     readonly warning: string;
@@ -1032,12 +1032,14 @@ describe("Creative Run review and placement authority", () => {
         options?.method === "POST" && path.includes(input.commandPath),
     );
     expect(commands).toHaveLength(2);
-    expect(commands[1]?.[1]?.idempotencyKey).toBe(commands[0]?.[1]?.idempotencyKey);
+    for (const [, options] of commands) {
+      expect(typeof options?.idempotencyKey).toBe("string");
+    }
   }
 
-  it("keeps the staging idempotency key until the projection refresh succeeds", async () => {
+  it("warns that staging was committed but the projection could not be refreshed", async () => {
     const detail = campaignRun({ review: approvedReview });
-    await expectKeyRetainedAcrossFailedRefresh({
+    await expectCommittedProjectionWarning({
       detail,
       commandPath: "/placements",
       warning: "Placement staging was committed, but the latest projection could not be refreshed",
@@ -1054,12 +1056,12 @@ describe("Creative Run review and placement authority", () => {
     });
   });
 
-  it("keeps the activation idempotency key until the projection refresh succeeds", async () => {
+  it("warns that activation was committed but the projection could not be refreshed", async () => {
     const detail = campaignRun({
       review: approvedReview,
       placement: stagedPlacement,
     });
-    await expectKeyRetainedAcrossFailedRefresh({
+    await expectCommittedProjectionWarning({
       detail,
       commandPath: "/verification",
       warning: "Placement activation was committed, but the latest projection could not be refreshed",
@@ -1072,12 +1074,12 @@ describe("Creative Run review and placement authority", () => {
     });
   });
 
-  it("keeps the withdrawal idempotency key until the projection refresh succeeds", async () => {
+  it("warns that withdrawal was committed but the projection could not be refreshed", async () => {
     const detail = campaignRun({
       review: approvedReview,
       placement: stagedPlacement,
     });
-    await expectKeyRetainedAcrossFailedRefresh({
+    await expectCommittedProjectionWarning({
       detail,
       commandPath: "/withdrawal",
       warning: "Placement withdrawal was committed, but the latest projection could not be refreshed",

@@ -1,12 +1,12 @@
 "use client";
 
-// SPEC: 公告/banner 后台面板（ADMIN_PHASE4_DESIGN §3）。新建 / 启停 / 删除，写后 refetch。
+// SPEC: 公告/banner 后台面板（ADMIN_CONSOLE_PLAN §3）。新建 / 启停 / 删除，写后 refetch。
 // INTENT: 自取数、无 props；样式对齐 TagsView。启停/删除经 inline typed confirmation。
 import { useCallback, useEffect, useState } from "react";
 import { Loader2, Plus, RefreshCcw, Search, Trash2 } from "lucide-react";
 import type { AdminPageInfo } from "@idream/shared/admin";
 import { apiGet, apiWrite } from "@/components/admin/api";
-import { adminV2Request } from "@/lib/admin-v2-api";
+import { adminV2Operation } from "@/lib/admin-v2-operation";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
@@ -48,11 +48,6 @@ type AnnouncementActionDraft = {
 
 const inputClass =
   "rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]";
-
-// SPEC: 删除带确认体，走与其余后台请求同一个信封解码与错误类。
-function apiDelete(path: string, body: Record<string, unknown>) {
-  return adminV2Request<{ deleted: true }>(path, { method: "DELETE", body });
-}
 
 export function AnnouncementsView() {
   const { t, value: valueLabel } = useAdminI18n();
@@ -123,9 +118,12 @@ export function AnnouncementsView() {
           confirmation: actionDraft.confirmation.trim(),
         });
       } else {
-        await apiDelete(`/api/v2/admin/announcements/${actionDraft.item.id}`, {
-          reason: actionDraft.reason.trim(),
-          confirmation: actionDraft.confirmation.trim(),
+        await adminV2Operation("DELETE /api/v2/admin/announcements/:id", {
+          path: { id: actionDraft.item.id },
+          body: {
+            reason: actionDraft.reason.trim(),
+            confirmation: actionDraft.confirmation.trim(),
+          },
         });
       }
       const { kind, item } = actionDraft;

@@ -38,6 +38,13 @@ describe("production Incident and Case backfill runner", () => {
         status: "open",
       })),
     });
+    // The FK added on 2026-09-12 makes an orphan Attempt unwritable, so the
+    // Requests these attempts belong to are created first.
+    await prisma.generationJob.createMany({
+      data: [attemptIds.stable, attemptIds.crash, attemptIds.incomplete].map((attemptId) => ({
+        id: `request-${attemptId}`, userId, mode: "image", controls: {}, presetIds: [],
+      })),
+    });
     await prisma.generationAttempt.createMany({
       data: [
         {

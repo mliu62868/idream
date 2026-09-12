@@ -145,8 +145,13 @@ function envelopeError(raw: unknown, fallback: string): string {
  * INVARIANT: matches the `error instanceof DOMException && error.name === "AbortError"`
  * test the workspaces used, rather than a looser name-only check — an ordinary
  * `Error` that happens to be named "AbortError" stays a real failure.
+ *
+ * INTENT: exported for the callers this module's own lifecycle cannot serve — a
+ * write, or a paged append the component owns. They still have to tell "the
+ * answer stopped mattering" apart from "the request failed", and a second
+ * hand-written copy of this test is exactly how the two drifted apart before.
  */
-function isAbortError(error: unknown): boolean {
+export function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === "AbortError";
 }
 

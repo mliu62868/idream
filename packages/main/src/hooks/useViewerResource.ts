@@ -36,6 +36,26 @@ export type ViewerRequestGate<Ticket = unknown> = {
   finish: (ticket: Ticket) => void;
   /** Abort signal for the ticket, when the gate tracks controllers. */
   signal?: (ticket: Ticket) => AbortSignal | undefined;
+  /**
+   * Headers the gate puts on every request it admits — `x-idream-viewer-scope`
+   * in practice.
+   *
+   * INTENT: the header lived at 22 call sites, hand-written next to the owner id
+   * each of them had resolved separately. Moving it inside the gate means a
+   * caller cannot bind a request to an owner and then forget to tell the server
+   * which owner it meant; the ticket already knows.
+   */
+  headers?: (ticket: Ticket) => Record<string, string> | undefined;
+  /**
+   * Registers this resource's `reset` with the gate, which calls it when the
+   * confirmed owner changes. Returns the unsubscribe.
+   *
+   * INTENT: `useViewerResource` subscribes on the caller's behalf, so "clear the
+   * previous account's projection" is bought by passing `gate` rather than by
+   * remembering to write an effect. Every open-coded copy of that effect kept
+   * its own list of what to clear, and the lists disagreed.
+   */
+  onOwnerChange?: (reset: () => void) => () => void;
 };
 
 export type ViewerResourceOptions<T, A, Ticket> = {
@@ -132,7 +152,10 @@ export async function runViewerResourceRefresh<T, A, Ticket>(
       path,
       parse: config.parse,
       fallbackError: config.fallbackError,
-      init: signal ? { ...init, signal } : init,
+      init: withGateHeaders(
+        signal ? { ...init, signal } : init,
+        gate?.headers?.(ticket as Ticket),
+      ),
       isCurrent,
     });
 
@@ -147,6 +170,21 @@ export async function runViewerResourceRefresh<T, A, Ticket>(
   } finally {
     if (gate) gate.finish(ticket as Ticket);
   }
+}
+
+/**
+ * INVARIANT: the gate's headers win over the caller's. The caller states what it
+ * wants to read; the gate states whose read it is, and only one of those two is
+ * allowed to be wrong.
+ */
+function withGateHeaders(
+  init: RequestInit | undefined,
+  extra: Record<string, string> | undefined,
+): RequestInit | undefined {
+  if (!extra) return init;
+  const headers = new Headers(init?.headers);
+  for (const [name, value] of Object.entries(extra)) headers.set(name, value);
+  return { ...init, headers };
 }
 
 export function useViewerResource<T, A = void, Ticket = unknown>(
@@ -195,6 +233,15 @@ export function useViewerResource<T, A = void, Ticket = unknown>(
       }),
     [],
   );
+
+  // INVARIANT: subscribed here, not by the caller. Passing `gate` is what buys
+  // "the previous account's projection is dropped"; there is no second step to
+  // forget, because forgetting it was the bug this module exists to remove.
+  const gate = options.gate;
+  useEffect(() => {
+    if (!gate?.onOwnerChange) return;
+    return gate.onOwnerChange(reset);
+  }, [gate, reset]);
 
   return { data, status, setData, reset, refresh };
 }

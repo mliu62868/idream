@@ -9,7 +9,11 @@ import {
   type AdminV2DeclaredResponseRefFor,
   type AdminV2DeclaredRouteFor,
 } from "@idream/shared/admin";
-import { adminV2Request } from "./admin-v2-api";
+import { AdminV2RequestError, adminV2Request } from "./admin-v2-api";
+import {
+  adminIdempotencyKeyLedger,
+  idempotencyOutcomeOfStatus,
+} from "./idempotency-key-lifecycle";
 
 // SPEC: 按 manifest 声明的 operation id 寻址一次请求；信封解码仍然只有 admin-v2-api 一份。
 // INTENT: 单独一个模块而不是塞回 admin-v2-api，是因为它必须**经过** `adminV2Request` 的模块
@@ -40,10 +44,30 @@ type RequiresIdempotencyKey<Ref extends string> =
 type RequiresIfMatch<Ref extends string> =
   Ref extends `${string}+if-match` | "if-match" ? true : false;
 
+/**
+ * SPEC: 需要幂等键的 operation 只接受「这次要写什么」，键由 `idempotency-key-lifecycle`
+ *       的账本生成、复用和回收；不需要键的 operation 连这两个字段都写不出来。
+ * INTENT: 调用方自己造键时，「每次点击 `crypto.randomUUID()`」和「按签名复用」长得一模一样，
+ *         编译器分不出对错，运营点两下就是两次真实写入。键不再经过调用方之后，错的那种写法
+ *         没有地方可写。
+ */
 type TransportArgument<Ref extends string> =
   & (RequiresIdempotencyKey<Ref> extends true
-      ? { readonly idempotencyKey: string }
-      : { readonly idempotencyKey?: string })
+      ? {
+          /**
+           * 覆盖默认的意图签名（默认按请求体派生）。只有当同一个目标上「相同请求体却是两次
+           * 不同意图」时才需要它。
+           */
+          readonly intent?: string;
+          /**
+           * SPEC: 已经被持久化下来的键，原样重放。
+           * INTENT: `durable-mutation-intent` / `character-command-journal` 要跨页面刷新
+           *         认账，键得自己落盘；它们重放时这个键就是账本之外的权威。ADR-13 §3.2
+           *         说了恢复策略不合并，所以这个口子留着，但只有那两个模块该用。
+           */
+          readonly replayIdempotencyKey?: string;
+        }
+      : { readonly intent?: never; readonly replayIdempotencyKey?: never })
   & (RequiresIfMatch<Ref> extends true
       ? { readonly ifMatch: number }
       : { readonly ifMatch?: number });
@@ -134,7 +158,7 @@ export function adminV2OperationPath(
  *         另一个端点的，编译期都不报，要等运营在生产里点到才知道。id 是唯一入口之后，
  *         这两类错误都成了编译错，而 server 侧本来就已经由同一份 manifest 收口。
  */
-export function adminV2Operation<Id extends AdminV2DeclaredOperationId>(
+export async function adminV2Operation<Id extends AdminV2DeclaredOperationId>(
   id: Id,
   options: AdminV2OperationOptions<Id>,
 ): Promise<AdminV2OperationResponse<Id>> {
@@ -142,16 +166,72 @@ export function adminV2Operation<Id extends AdminV2DeclaredOperationId>(
   const query = options.query
     ? `?${typeof options.query === "string" ? options.query.replace(/^\?/, "") : options.query.toString()}`
     : "";
-  return adminV2Request(
-    `${adminV2OperationPath(operation.route, options.path)}${query}`,
-    {
-      method: operation.method,
-      schema: requireAdminV2ContractSchema(operation.contract.response),
-      ...(options.body === undefined ? {} : { body: options.body }),
-      ...(options.form ? { form: options.form } : {}),
-      ...(options.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : {}),
-      ...(options.ifMatch === undefined ? {} : { ifMatch: options.ifMatch }),
-      ...(options.signal ? { signal: options.signal } : {}),
-    },
-  ) as Promise<AdminV2OperationResponse<Id>>;
+  const path = adminV2OperationPath(operation.route, options.path);
+  const transport = options as {
+    readonly intent?: string;
+    readonly replayIdempotencyKey?: string;
+    readonly idempotencyKey?: string;
+  };
+  const ledgered = needsIdempotencyKey(operation) &&
+    !transport.replayIdempotencyKey &&
+    !transport.idempotencyKey;
+  // SPEC: 账本按「写哪个目标」分格，按「这次写什么」决定换不换键。
+  // INTENT: scope 用解析后的路径而不是路由模板 —— 同一个按钮打在两个 incident 上是两次
+  //         互不相干的写入，共一格会让第二行拿到第一行的键，被服务端当重复请求丢掉。
+  const scope = `${operation.method} ${path}`;
+  const key = ledgered
+    ? adminIdempotencyKeyLedger.claim(scope, operationIntentSignature(options, transport.intent))
+    : transport.replayIdempotencyKey ?? transport.idempotencyKey;
+  try {
+    const response = await adminV2Request(
+      `${path}${query}`,
+      {
+        method: operation.method,
+        schema: requireAdminV2ContractSchema(operation.contract.response),
+        ...(options.body === undefined ? {} : { body: options.body }),
+        ...(options.form ? { form: options.form } : {}),
+        ...(key ? { idempotencyKey: key } : {}),
+        ...(options.ifMatch === undefined ? {} : { ifMatch: options.ifMatch }),
+        ...(options.signal ? { signal: options.signal } : {}),
+      },
+    );
+    if (ledgered && key) adminIdempotencyKeyLedger.settle(scope, key, "answered");
+    return response as AdminV2OperationResponse<Id>;
+  } catch (error) {
+    if (ledgered && key) {
+      // INVARIANT: 只有服务端确实答复过，键才回收。网络断、请求被取消、网关 5xx 一律留键，
+      //            下一次点击带着同一把键去问服务端，写不进第二条。
+      adminIdempotencyKeyLedger.settle(
+        scope,
+        key,
+        idempotencyOutcomeOfStatus(
+          error instanceof AdminV2RequestError ? error.status : undefined,
+        ),
+      );
+    }
+    throw error;
+  }
+}
+
+function needsIdempotencyKey(operation: AdminV2ApiOperation) {
+  const transport = operation.mutation?.transport;
+  return transport === "idempotency_key" ||
+    transport === "idempotency_key_and_if_match";
+}
+
+/**
+ * SPEC: 「这次要写什么」的指纹。指纹没变的重试复用同一把键；运营改了输入再点，指纹变了就换键。
+ * INTENT: 默认按请求体派生，调用方因此一个字都不用写。序列化不了时退回一个常量——宁可把两次
+ *         写当成同一次去重，也不能把一次写发成两次。
+ */
+function operationIntentSignature(
+  options: { readonly body?: unknown; readonly ifMatch?: number },
+  intent: string | undefined,
+) {
+  if (intent !== undefined) return intent;
+  try {
+    return `${options.ifMatch ?? ""}:${JSON.stringify(options.body) ?? ""}`;
+  } catch {
+    return "unserializable";
+  }
 }

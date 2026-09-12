@@ -46,6 +46,7 @@ packages/main/prisma/schema.prisma + packages/*/src ← 代码（最终事实来
 | 10 | [10-operations.md](./10-operations.md) | 环境、env 变量目录、pm2 部署、连接池、迁移 runbook、CI、可观测性 | DevOps |
 | 11 | [11-testing.md](./11-testing.md) | L1–L4 测试策略与工具 | 所有工程 |
 | 12 | [12-roadmap.md](./12-roadmap.md) | 实施路线图与暂缓项 | PM、Lead |
+| 13 | — | 已退役；相关路线图已并入当前覆盖与剩余工作 | — |
 | 14 | [14-chat-service-tech-design.md](./14-chat-service-tech-design.md) | Chat Service 技术架构（服务拆分、权限边界、热路径、存储/记忆、服务目录/协议/pm2） | Lead、后端 |
 | 15 | [15-admin-operating-system-authority-adr.md](./15-admin-operating-system-authority-adr.md) | Admin v2 authority、命令/事件可靠性、渐进切换与回滚 ADR | Product、架构、后端、运营 |
 | 16 | [16-character-asset-studio-authority.md](./16-character-asset-studio-authority.md) | Character Asset Studio 的生成、审核、草稿采用与 Release 发布权威 | Product、架构、后端、运营 |
@@ -72,7 +73,7 @@ packages/main/prisma/schema.prisma + packages/*/src ← 代码（最终事实来
 | UI | shadcn/ui + @base-ui/react + Tailwind v4 | 既有，前端不在本目录范围 |
 | 支付 | 抽象 `PaymentProvider`；**生产用加密货币**（推荐自托管 BTCPay Server，非托管/无 AUP 风险） | 见 02-ADR-4 |
 | 异步 | Main/Gen 使用 Redis/BullMQ；Chat 是有界 HTTP AgentRun，Redis 只缓存 SSE；跨服务删除等命令使用 durable event/receipt | 见 06、14、17 |
-| AI | 抽象 `ChatModel`/`ImageModel`/`VideoModel`/`Voice`/`Moderation` | Chat 使用自托管 OpenAI-compatible endpoint；Image/Video 使用 Gen workflow-native BackendRegistry（ComfyUI/Sdcpp/DrawThings），legacy external pipeline 已 deprecated，见 02-ADR-6 |
+| AI | 抽象 `ChatModel`/`ImageModel`/`VideoModel`/`Voice`/`Moderation` | Chat 使用自托管 OpenAI-compatible endpoint；Image/Video 使用 Gen workflow-native BackendRegistry（ComfyUI/Sdcpp/DrawThings），legacy external pipeline adapter 已于 2026-09-12 删除，见 02-ADR-6 |
 | 管理后台 | 独立 `@idream/admin` web/BFF + main `/api/v2/admin/*` authority；v1 仅兼容观测 | Today、Character、Creative、Incident、Case、Metrics、系统控制面，见 ADR-11 |
 | 对象存储 | 抽象 `BlobStore`；S3 兼容（R2）/ 本地 fs（dev） | 签名 URL，见 02-ADR-8 |
 | 限流 | DB 令牌桶 / Redis（prod 推荐） | 见 02-ADR-9 |

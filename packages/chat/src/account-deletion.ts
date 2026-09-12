@@ -12,13 +12,11 @@ import {
   durableEnvelopeHash,
   durableEventEnvelopeSchema,
 } from "@idream/shared/contracts";
-import {
-  fenceAgentRunsForUser,
-  purgeAgentRunsForUser,
-} from "./agent-run-store.js";
+import { purgeAgentRunsForUser } from "./agent-run-store.js";
 import { cancelAgentRunsForUser } from "./agent-runner.js";
 import { purgeCompanionWorkspace } from "./agent-runtime/runtime.js";
 import { env } from "./env.js";
+import { fenceUser } from "./fence.js";
 
 interface LocalDeletionReceipt {
   version: 1;
@@ -55,15 +53,7 @@ export async function consumeAccountDeletionRequest(raw: unknown) {
     throw new Error("account deletion request identity was reused with different authority");
   }
 
-  // INVARIANT: retries repeat every idempotent purge before Main advances.
-  // Fence new admission, then wait for every in-process writer before removing
-  // its files. Otherwise a cancelled model callback could recreate a purged
-  // proposal or attempt workspace after Main accepted erasure completion.
-  await fenceAgentRunsForUser(payload.userId);
-  await cancelAgentRunsForUser(payload.userId);
-  await purgeAgentRunsForUser(payload.userId);
-  await purgeCompanionWorkspace({ scope: "user", userId: payload.userId });
-  await purgeRetiredUserFiles(payload.userId);
+  await eraseLocalUserEvidence(payload.userId);
 
   const receipt: LocalDeletionReceipt = existing ?? {
     version: 1,
@@ -115,6 +105,19 @@ export async function consumeAccountDeletionRequest(raw: unknown) {
     status: existing ? "duplicate" : "persisted",
     receiptId: `main:${event.sourceEventId}`,
   });
+}
+
+// SPEC: 账号擦除只有三步 —— fence、drain、purge，顺序不可换。
+// INTENT: fence 必须先落盘：它之后 admission、事件追加、proposal 与工作区准备全部
+//   被拒，drain 才有意义。drain 等的是「已经在跑的写入方」退出；先 purge 后 drain
+//   的话，一个还没返回的模型回调会把刚删掉的 proposal 或 attempt workspace 重新写
+//   出来，而 Main 那边已经接受了擦除完成。三步都幂等，Main 重试只是重放。
+async function eraseLocalUserEvidence(userId: string): Promise<void> {
+  await fenceUser(userId);
+  await cancelAgentRunsForUser(userId);
+  await purgeAgentRunsForUser(userId);
+  await purgeCompanionWorkspace({ scope: "user", userId });
+  await purgeRetiredUserFiles(userId);
 }
 
 function localReceiptFile(sourceEventId: string): string {

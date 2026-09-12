@@ -13,7 +13,6 @@ import {
   videoGeneratePayloadSchema,
 } from "@idream/shared/contracts";
 import { env } from "./env";
-import type { GenAdapter } from "./provider-vocabulary";
 import {
   assertGeneratedImageSanity,
   GeneratedImageSanityError,
@@ -25,7 +24,7 @@ import {
 } from "./providers";
 import {
   GenerationArtifactError,
-  GenerationExecution,
+  runGeneration,
   type GenerationExecutionPorts,
 } from "./generation-execution";
 import { hydratedImageReferenceInputs } from "./reference-images";
@@ -82,50 +81,21 @@ export async function processImageGenerate(
 ): Promise<void> {
   const payload = imageGeneratePayloadSchema.parse(rawPayload);
   const providers = deps.providers ?? defaultProviders;
-  const execution = new GenerationExecution({
-    payload,
-    provider: payload.provider,
-    blob: providers.blob,
-    attemptsMade: deps.attemptsMade,
-    maxAttempts: deps.maxAttempts,
-    acknowledgeTerminalRecord: deps.acknowledgeTerminalRecord,
-    recordTransportExecution: deps.recordTransportExecution,
-  });
-  if (await execution.resumeTerminalRecord()) return;
-  let inputModeration;
-  let referenceImages;
-  let enhancement;
-  try {
-    assertWorkerAdapterMatchesRecordedProvider(payload.provider, env.IMAGE_PROVIDER, "image");
-    inputModeration = await providers.moderation.check({
-      targetType: "text",
-      content: `${payload.prompt} ${payload.negativePrompt ?? ""}`,
-    });
-    if (!inputModeration.ok) {
-      throw new Error(`Input moderation failed (${inputModeration.error.code}): ${inputModeration.error.message}`);
-    }
-    referenceImages = inputModeration.data.status === "blocked"
-      ? []
-      : await hydratedImageReferenceInputs(payload.referenceImages, providers.blob);
-    enhancement = inputModeration.data.status === "blocked" ? null : await prepareImageEnhancement(payload, referenceImages);
-    if (enhancement) referenceImages = [enhancement.reference];
-  } catch (error) {
-    await execution.failPreparation(error);
-    return;
-  }
-  if (inputModeration.data.status === "blocked") {
-    await execution.block(
-      inputModeration.data.policyCode ?? "PROHIBITED_OTHER",
-      "Input moderation blocked the generation request",
-      "input",
-    );
-    return;
-  }
-
   const imageModel = providers.image;
-  await execution.execute({
+  await runGeneration(payload, {
+    mode: "image",
+    configuredAdapter: env.IMAGE_PROVIDER,
     model: imageModel,
-    invoke: ({ providerIdempotencyKey, executionBoundary }) => imageModel.generate({
+    // Enhance replaces the reference set with its own pinned source, so it has
+    // to resolve before the provider call and travel with it.
+    prepare: async ({ referenceImages }) => {
+      const enhancement = await prepareImageEnhancement(payload, referenceImages);
+      return {
+        enhancement,
+        referenceImages: enhancement ? [enhancement.reference] : referenceImages,
+      };
+    },
+    invoke: ({ prepared, providerIdempotencyKey, executionBoundary }) => imageModel.generate({
       executionBoundary,
       prompt: payload.prompt,
       count: payload.count,
@@ -135,9 +105,10 @@ export async function processImageGenerate(
       controls: payload.controls,
       requestId: providerIdempotencyKey,
       orientation: payload.orientation,
-      ...(referenceImages.length > 0 ? { referenceImages } : {}),
+      ...(prepared.referenceImages.length > 0 ? { referenceImages: prepared.referenceImages } : {}),
     }),
-    normalizeArtifacts: async (output) => {
+    normalizeArtifacts: async ({ prepared, output }) => {
+      const enhancement = prepared.enhancement;
       if (enhancement && output.assets.length !== 1) {
         throw new GenerationArtifactError("enhancement_output_invalid", "Enhance must return exactly one image", false);
       }
@@ -213,6 +184,13 @@ export async function processImageGenerate(
         );
       }
     },
+  }, {
+    blob: providers.blob,
+    moderation: providers.moderation,
+    attemptsMade: deps.attemptsMade,
+    maxAttempts: deps.maxAttempts,
+    acknowledgeTerminalRecord: deps.acknowledgeTerminalRecord,
+    recordTransportExecution: deps.recordTransportExecution,
   });
 }
 
@@ -250,47 +228,15 @@ export async function processVideoGenerate(
 ): Promise<void> {
   const payload = videoGeneratePayloadSchema.parse(rawPayload);
   const providers = deps.providers ?? defaultProviders;
-  const execution = new GenerationExecution({
-    payload,
-    provider: payload.provider,
-    blob: providers.blob,
-    attemptsMade: deps.attemptsMade,
-    maxAttempts: deps.maxAttempts,
-    acknowledgeTerminalRecord: deps.acknowledgeTerminalRecord,
-    recordTransportExecution: deps.recordTransportExecution,
-  });
-  if (await execution.resumeTerminalRecord()) return;
-  let inputModeration;
-  let referenceImages;
-  try {
-    assertWorkerAdapterMatchesRecordedProvider(payload.provider, env.VIDEO_PROVIDER, "video");
-    inputModeration = await providers.moderation.check({
-      targetType: "text",
-      content: `${payload.prompt} ${payload.negativePrompt ?? ""}`,
-    });
-    if (!inputModeration.ok) {
-      throw new Error(`Input moderation failed (${inputModeration.error.code}): ${inputModeration.error.message}`);
-    }
-    referenceImages = inputModeration.data.status === "blocked"
-      ? []
-      : await hydratedImageReferenceInputs(payload.referenceImages, providers.blob);
-  } catch (error) {
-    await execution.failPreparation(error);
-    return;
-  }
-  if (inputModeration.data.status === "blocked") {
-    await execution.block(
-      inputModeration.data.policyCode ?? "PROHIBITED_OTHER",
-      "Input moderation blocked the generation request",
-      "input",
-    );
-    return;
-  }
-
   const videoModel = providers.video;
-  await execution.execute({
+  await runGeneration(payload, {
+    mode: "video",
+    configuredAdapter: env.VIDEO_PROVIDER,
     model: videoModel,
-    invoke: ({ providerIdempotencyKey, executionBoundary }) => videoModel.generate({
+    // Video takes its references straight through; nothing modality-specific
+    // happens between moderation and the provider call.
+    prepare: async ({ referenceImages }) => ({ referenceImages }),
+    invoke: ({ prepared, providerIdempotencyKey, executionBoundary }) => videoModel.generate({
       executionBoundary,
       prompt: payload.prompt,
       seconds: payload.seconds,
@@ -299,9 +245,9 @@ export async function processVideoGenerate(
       model: payload.model,
       controls: payload.controls,
       requestId: providerIdempotencyKey,
-      ...(referenceImages.length > 0 ? { referenceImages } : {}),
+      ...(prepared.referenceImages.length > 0 ? { referenceImages: prepared.referenceImages } : {}),
     }),
-    normalizeArtifacts: async (output) => {
+    normalizeArtifacts: async ({ output }) => {
       const contentType = output.asset.contentType ?? "video/mp4";
       const assetKey = generatedAssetStorageKey(
         payload.outputPrefix,
@@ -341,58 +287,17 @@ export async function processVideoGenerate(
         usage: { gpuSeconds: payload.seconds * 2, model: payload.model },
       };
     },
+  }, {
+    blob: providers.blob,
+    moderation: providers.moderation,
+    attemptsMade: deps.attemptsMade,
+    maxAttempts: deps.maxAttempts,
+    acknowledgeTerminalRecord: deps.acknowledgeTerminalRecord,
+    recordTransportExecution: deps.recordTransportExecution,
   });
 }
 
-// SPEC: deployment self-check, NOT backend selection. `payload.provider` is
-// Main's `GenerationModelProfile.runner` copied onto the Attempt — an accounting
-// field that ends up verbatim in the terminal record. It never chooses an
-// execution body: the backend is decided by
-// `registry.resolveForModel(payload.model).descriptor.backendKind`, admitted by
-// the workflowKey@workflowVersion pin (backend/registry.ts validateWorkflowPin).
-// INTENT: this only asserts the worker's own GEN_*_PROVIDER adapter is the one
-// Main assumed when it recorded that runner — i.e. a `mock`-provisioned attempt
-// cannot land on a real-backend worker and vice versa. The two vocabularies are
-// deliberately many-to-one (Main's runner names ⇒ gen's adapter names), so
-// matching here proves nothing about which backend actually runs.
-function assertWorkerAdapterMatchesRecordedProvider(
-  recordedProvider: string,
-  configuredAdapter: string,
-  mode: "image" | "video",
-) {
-  const requiredAdapter = workerAdapterForRecordedProvider(recordedProvider);
-  if (requiredAdapter !== configuredAdapter) {
-    throw new Error(
-      `Pinned ${mode} provider ${recordedProvider} requires GEN_${mode.toUpperCase()}_PROVIDER=${requiredAdapter}; configured=${configuredAdapter}`,
-    );
-  }
-}
 
-// SPEC: Main runner name -> gen adapter name. Many-to-one by construction.
-// NOTE: named for what it does. It does NOT pin a backend — `payload.provider`
-// is an accounting field; `descriptor.backendKind` is what selects the backend.
-// The old name (`providerAdapterForPinnedAuthority`) claimed an authority it
-// never had.
-// INVARIANT: the runner names accepted here must stay a superset of the enum on
-// GenerationModelProfile.runner (see packages/main/prisma/schema.prisma). `sd_cpp`
-// was retired once db/sql/2026-08-03-generation-model-profile-runner-retire-sd-cpp.sql
-// rewrote the surviving rows to `comfyui` — the same adapter, so nothing changed
-// but the vocabulary. Whatever the runner says, the descriptor decides.
-export function workerAdapterForRecordedProvider(provider: string): GenAdapter {
-  switch (provider) {
-    case "mock":
-    case "backend":
-    case "pipeline":
-      return provider;
-    case "comfyui":
-      return "backend";
-    case "mlx":
-    case "external":
-      return "pipeline";
-    default:
-      throw new Error(`Unsupported pinned generation provider: ${provider}`);
-  }
-}
 
 async function videoAssetBody(
   asset: { body?: Uint8Array; sourceUrl?: string },

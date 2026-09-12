@@ -36,7 +36,7 @@
 
 表中参数、蒸馏、能力和许可来自 [BFL 官方仓库模型矩阵](https://github.com/black-forest-labs/flux2)；步数、RTX 5090 时间和 VRAM 来自 [BFL 官方模型页](https://bfl.ai/models/flux-2-klein)；Klein 最多 4 个参考图来自 [BFL FLUX.2 官方概览](https://docs.bfl.ai/flux_2/flux2_overview)。
 
-`9B KV` 不是普通 9B 自动开启的开关，而是独立权重 / 推理路径。BFL 官方参考实现给出的相对标准 9B 加速，在 1024×1024 输出时为 1 ref `1.40×`、2 refs `1.77×`、4 refs `2.22×`；BFL 因此称它在多参考编辑中甚至可能快于 4B。当前 iDream descriptor 加载的是 Dark Beast 普通 9B checkpoint，ComfyUI 官方指南也只列普通 / Base 4B、9B workflow，不能把这个 KV 数字算作现有线路能力。来源：[BFL 9B KV 官方说明](https://github.com/black-forest-labs/flux2/blob/main/docs/flux2_klein_kv_cache.md)、[`darkbeast-flux2-klein-9b-multi-reference.json`](../../packages/gen/workflows/darkbeast-flux2-klein-9b-multi-reference.json)、[ComfyUI Klein 官方指南](https://docs.comfy.org/tutorials/flux/flux-2-klein)。
+`9B KV` 不是普通 9B 自动开启的开关，而是独立权重 / 推理路径。BFL 官方参考实现给出的相对标准 9B 加速，在 1024×1024 输出时为 1 ref `1.40×`、2 refs `1.77×`、4 refs `2.22×`；BFL 因此称它在多参考编辑中甚至可能快于 4B。当前 iDream descriptor 加载的是 Dark Beast 普通 9B checkpoint，ComfyUI 官方指南也只列普通 / Base 4B、9B workflow，不能把这个 KV 数字算作现有线路能力。来源：[BFL 9B KV 官方说明](https://github.com/black-forest-labs/flux2/blob/main/docs/flux2_klein_kv_cache.md)、[`darkbeast-flux2-klein-9b-multi-reference.json`（历史候选，当前仓库已移除）](../../packages/gen/workflows/darkbeast-flux2-klein-9b-multi-reference.json)、[ComfyUI Klein 官方指南](https://docs.comfy.org/tutorials/flux/flux-2-klein)。
 
 ## 为什么官方“1 秒级”不能直接回答这台 Mac
 

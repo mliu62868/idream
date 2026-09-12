@@ -16,7 +16,12 @@ import {
   dispatchGenerationAttemptOutbox,
   reserveInitialGenerationAttempt as reserveInitialGenerationAttemptAuthority,
 } from "@/server/modules/generation/generation-attempt-authority";
-import { jsonRecord, numberFromRecord } from "./json-values";
+import {
+  createToolEffectAttachment,
+  transitionToolEffectAttachment,
+} from "@/server/modules/chat/tool-effect-attachment";
+import { lockChatScope, type LockedChatTurnAttachment } from "@/server/modules/chat/turn-scope";
+import { jsonRecord } from "./json-values";
 import type { GenerationSource } from "./generation-request-schema";
 import { lockUserLedger } from "./subscription-lifecycle";
 
@@ -199,12 +204,14 @@ export async function acceptGenerationJobForUser(input: GenerationAdmission) {
       if (chatAttachment) {
         // The exact delivery pointer commits with debit and outbox, so even an
         // immediate provider terminal observes the accepted attachment.
-        await tx.chatTurnAttachment.update({ where: { id: chatAttachment.id }, data: {
-          generationJobId: job.id, status: "accepted", errorCode: null,
+        await transitionToolEffectAttachment(tx, chatAttachment, {
+          to: "accepted",
+          generationJobId: job.id,
+          errorCode: null,
           ...(retrySource ? { mediaAssetId: null, width: null, height: null } : {}),
           // Keep effect identity/attempt so regenerate ACKs this replacement.
-          metadata: toInputJson({ ...jsonRecord(chatAttachment.metadata), costDreamcoins: job.costDreamcoins }),
-        } });
+          metadata: { ...jsonRecord(chatAttachment.metadata), costDreamcoins: job.costDreamcoins },
+        });
       }
       const enhancement = !retrySource && job.sourceType === "media_enhance";
       await appendGenerationEvent(tx, job.id, "created",
@@ -244,33 +251,43 @@ export async function acceptGenerationJobForUser(input: GenerationAdmission) {
   return reservation.job;
 }
 
+// SPEC: 把聊天侧的效果附件锁进本次生成接纳。Turn 所有权、attempt 匹配、
+// assistantStatus 判定与锁序全部由 modules/chat 的 lockChatScope 回答——本文件以前
+// 把那套规则抄了一遍，抄件不会随产品 Turn 权威一起演进。
 async function lockGenerationChatAttachment(
   tx: Prisma.TransactionClient,
   input: GenerationAdmission,
   data: GenerationAdmissionData,
   retrySource: GenerationJobRow | null,
-) {
+): Promise<LockedChatTurnAttachment | null> {
   if (retrySource && ["chat_image", "chat_video"].includes(retrySource.sourceType)) {
     const candidate = await tx.chatTurnAttachment.findFirst({
-      where: { generationJobId: retrySource.id, ...(retrySource.sourceId ? { id: retrySource.sourceId } : {}), turn: { session: { userId: input.userId } } },
-      include: { turn: true },
+      where: {
+        generationJobId: retrySource.id,
+        ...(retrySource.sourceId ? { id: retrySource.sourceId } : {}),
+        turn: { session: { userId: input.userId } },
+      },
+      select: { id: true },
     });
     if (!candidate) throw Errors.conflict("The original Chat image is no longer available to retry");
-    // Match Chat mutation order: user → session → Turn → attachment.
-    await tx.$queryRaw`SELECT "sessionId" FROM "recent_chats" WHERE "sessionId" = ${candidate.turn.sessionId} FOR UPDATE`;
-    await tx.$queryRaw`SELECT id FROM "chat_turns" WHERE id = ${candidate.turnId} FOR UPDATE`;
-    await tx.$queryRaw`SELECT id FROM "chat_turn_attachments" WHERE id = ${candidate.id} FOR UPDATE`;
-    const current = await tx.chatTurnAttachment.findUnique({
-      where: { id: candidate.id }, include: { turn: { include: { session: true } } },
+    const retryConflict = "The Chat image changed before its retry could be reserved";
+    const scope = await lockChatScope(tx, {
+      userId: input.userId,
+      at: { attachment: candidate.id },
+      expect: {
+        characterId: data.characterId ?? null,
+        attachmentAttemptMatchesTurn: true,
+        conflictMessage: retryConflict,
+      },
     });
-    const metadata = jsonRecord(current?.metadata);
-    const effect = jsonRecord(metadata.effect);
-    const attempt = numberFromRecord(metadata, "attempt") ?? numberFromRecord(effect, "attempt") ?? 1;
-    if (!current || current.turn.session.userId !== input.userId ||
-      current.turn.session.characterId !== data.characterId || current.turn.session.status === "deleted" ||
-      current.kind !== (retrySource.sourceType === "chat_video" ? "generated_video" : "generated_image") || !["failed", "refunded"].includes(current.status) ||
-      current.generationJobId !== retrySource.id || attempt !== current.turn.attempt) {
-      throw Errors.conflict("The Chat image changed before its retry could be reserved");
+    const current = scope.attachment;
+    if (
+      !current ||
+      current.kind !== (retrySource.sourceType === "chat_video" ? "generated_video" : "generated_image") ||
+      !["failed", "refunded"].includes(current.status) ||
+      current.generationJobId !== retrySource.id
+    ) {
+      throw Errors.conflict(retryConflict);
     }
     return current;
   }
@@ -278,36 +295,56 @@ async function lockGenerationChatAttachment(
   const binding = input.chatAttachment;
   const attachmentId = input.identity.source?.sourceId;
   if (input.identity.source?.sourceType === "chat_video" && attachmentId) {
-    await tx.$queryRaw`SELECT "sessionId" FROM "recent_chats" WHERE "sessionId" = ${binding.sessionId} FOR UPDATE`;
-    await tx.$queryRaw`SELECT id FROM "chat_turns" WHERE id = ${binding.turnId} FOR UPDATE`;
-    const turn = await tx.chatTurn.findUnique({ where: { id: binding.turnId }, include: { session: true } });
-    if (!turn || turn.sessionId !== binding.sessionId || turn.session.userId !== input.userId ||
-      turn.session.characterId !== data.characterId || turn.session.status === "deleted" ||
-      turn.attempt !== binding.attempt || turn.assistantStatus !== "sent") {
-      throw Errors.conflict("The original Chat reply changed before its video could be reserved");
-    }
+    const videoConflict = "The original Chat reply changed before its video could be reserved";
+    const scope = await lockChatScope(tx, {
+      userId: input.userId,
+      at: { turn: binding.turnId },
+      expect: {
+        characterId: data.characterId ?? null,
+        attempt: binding.attempt,
+        assistantStatus: ["sent"],
+        conflictMessage: videoConflict,
+      },
+    });
+    if (!scope.turn || scope.session.sessionId !== binding.sessionId) throw Errors.conflict(videoConflict);
     // The video is a separate, explicitly priced action on an accepted reply.
     // Creating it inside admission preserves the original Turn text and terminal.
-    return tx.chatTurnAttachment.create({ data: {
-      id: attachmentId, turnId: turn.id, kind: "generated_video", status: "requesting",
-      promptHint: typeof jsonRecord(data.momentSpec).rawInput === "string" ? String(jsonRecord(data.momentSpec).rawInput) : null,
-      metadata: toInputJson({ attempt: binding.attempt, sourceMediaId: jsonRecord(data.sourceMeta).sourceMediaId }),
-    } });
+    return createToolEffectAttachment(tx, {
+      id: attachmentId,
+      turn: scope.turn,
+      kind: "generated_video",
+      attempt: binding.attempt,
+      promptHint: typeof jsonRecord(data.momentSpec).rawInput === "string"
+        ? String(jsonRecord(data.momentSpec).rawInput)
+        : null,
+      metadata: { sourceMediaId: jsonRecord(data.sourceMeta).sourceMediaId },
+    });
   }
   if (input.identity.source?.sourceType !== "chat_image" || !attachmentId) {
     throw Errors.badRequest("Chat attachment binding requires its image action source");
   }
-  await tx.$queryRaw`SELECT "sessionId" FROM "recent_chats" WHERE "sessionId" = ${binding.sessionId} FOR UPDATE`;
-  await tx.$queryRaw`SELECT id FROM "chat_turns" WHERE id = ${binding.turnId} FOR UPDATE`;
-  await tx.$queryRaw`SELECT id FROM "chat_turn_attachments" WHERE id = ${attachmentId} FOR UPDATE`;
-  const current = await tx.chatTurnAttachment.findUnique({ where: { id: attachmentId }, include: { turn: { include: { session: true } } } });
-  if (!current || current.kind !== "generated_image" || current.status !== "requesting" ||
-    current.generationJobId !== null || current.turnId !== binding.turnId ||
-    current.turn.sessionId !== binding.sessionId || current.turn.session.userId !== input.userId ||
-    current.turn.session.characterId !== data.characterId || current.turn.session.status === "deleted" ||
-    current.turn.attempt !== binding.attempt || jsonRecord(current.metadata).attempt !== binding.attempt ||
-    !["pending", "generating"].includes(current.turn.assistantStatus)) {
-    throw Errors.conflict("The Chat image changed before its request could be reserved");
+  const imageConflict = "The Chat image changed before its request could be reserved";
+  const scope = await lockChatScope(tx, {
+    userId: input.userId,
+    at: { attachment: attachmentId },
+    expect: {
+      characterId: data.characterId ?? null,
+      attempt: binding.attempt,
+      assistantStatus: ["pending", "generating"],
+      attachmentAttemptMatchesTurn: true,
+      conflictMessage: imageConflict,
+    },
+  });
+  const current = scope.attachment;
+  if (
+    !current ||
+    current.kind !== "generated_image" ||
+    current.status !== "requesting" ||
+    current.generationJobId !== null ||
+    current.turnId !== binding.turnId ||
+    scope.session.sessionId !== binding.sessionId
+  ) {
+    throw Errors.conflict(imageConflict);
   }
   return current;
 }

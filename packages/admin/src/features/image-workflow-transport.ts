@@ -38,7 +38,8 @@ export function characterIdentityBootstrapMutation(
   assetId: string,
   reviewDecisionId: string | undefined,
   reason: string,
-  idempotencyKey: string,
+  /** 来自 durable mutation intent 的落盘键——刷新后要认同一笔账，只能原样重放。 */
+  replayIdempotencyKey: string,
 ): AdminV2OperationRequest<"POST /api/v2/admin/characters/:id/identity-bootstrap"> {
   const body: CharacterIdentityBootstrapRequest = {
     entityVersion,
@@ -53,7 +54,7 @@ export function characterIdentityBootstrapMutation(
     operationId: "POST /api/v2/admin/characters/:id/identity-bootstrap",
     options: {
       path: { id: characterId },
-      idempotencyKey,
+      replayIdempotencyKey,
       ifMatch: entityVersion,
       body,
     },
@@ -65,7 +66,6 @@ export function characterReleaseCreateMutation(
   entityVersion: number,
   reason: string,
   confirmation: string,
-  idempotencyKey: string,
 ): AdminV2OperationRequest<"POST /api/v2/admin/characters/:id/releases"> {
   const body: CharacterReleaseCreateRequest = {
     entityVersion,
@@ -76,7 +76,6 @@ export function characterReleaseCreateMutation(
     operationId: "POST /api/v2/admin/characters/:id/releases",
     options: {
       path: { id: characterId },
-      idempotencyKey,
       ifMatch: entityVersion,
       body,
     },
@@ -86,7 +85,8 @@ export function characterReleaseCreateMutation(
 export function creativeRetryFailedMutation(
   runId: string,
   entityVersion: number,
-  idempotencyKey: string,
+  /** 来自本地落盘的重试命令状态——刷新后继续认同一笔账，只能原样重放。 */
+  replayIdempotencyKey: string,
 ): AdminV2OperationRequest<"POST /api/v2/admin/creative/runs/:id/commands/retry-failed"> {
   const body: CreativeRunRetryFailedCommandRequest = {
     entityVersion,
@@ -100,7 +100,7 @@ export function creativeRetryFailedMutation(
     operationId: "POST /api/v2/admin/creative/runs/:id/commands/retry-failed",
     options: {
       path: { id: runId },
-      idempotencyKey,
+      replayIdempotencyKey,
       body,
     },
   };

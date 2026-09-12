@@ -152,7 +152,6 @@ export function IncidentCorrelationOutbox({
   function requestReplay() {
     if (!canReplay || selectedRows.length === 0) return;
     const exactRevision = [...selectedRows];
-    const idempotencyKey = crypto.randomUUID();
     setConfirmation({
       title: t("Replay incident correlation failed events ({count})", {
         count: exactRevision.length,
@@ -174,7 +173,6 @@ export function IncidentCorrelationOutbox({
           "POST /api/v2/admin/incidents/correlation-outbox/commands/replay",
           {
             body: incidentCorrelationReplayPayload(exactRevision, reason),
-            idempotencyKey,
           },
         );
         toast({
@@ -199,7 +197,6 @@ export function IncidentCorrelationOutbox({
       !row.attemptId
     ) return;
     const exactRevision = row;
-    const idempotencyKey = crypto.randomUUID();
     setConfirmation({
       title: t("Record source authority missing"),
       consequence: {
@@ -223,7 +220,6 @@ export function IncidentCorrelationOutbox({
               exactRevision,
               reason,
             ),
-            idempotencyKey,
           },
         );
         toast({

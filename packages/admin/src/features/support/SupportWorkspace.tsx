@@ -16,9 +16,7 @@ import {
 import type { FormEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  savedViewDeleteSchema,
   savedViewListResponseSchema,
-  savedViewMutationResponseSchema,
   supportConversationResponseSchema,
   type SavedView,
 } from "@idream/shared/admin";
@@ -27,6 +25,7 @@ import { apiGet, apiWrite } from "@/components/admin/api";
 import { GhostButton } from "@/components/admin/ui/buttons";
 import { StatusPill } from "@/components/admin/ui/StatusPill";
 import { adminV2Request } from "@/lib/admin-v2-api";
+import { adminV2Operation } from "@/lib/admin-v2-operation";
 import {
   ConfirmDialog,
   type ConfirmSpec,
@@ -106,7 +105,6 @@ export function SupportWorkspace({
   //         所以第一页时 hasPrevious 为假 —— 置灰，而不是给一个点了会报错的按钮。
   const [cursorTrail, setCursorTrail] = useState<string[]>([]);
   const gate = useRef(createLatestRequestGate());
-  const savedViewCreateKey = useRef<string | null>(null);
 
   const load = useCallback(async (next: SupportQuery) => {
     const request = gate.current.begin();
@@ -219,14 +217,9 @@ export function SupportWorkspace({
     setSavedViewError(null);
     setSavingView(true);
     try {
-      savedViewCreateKey.current ??= crypto.randomUUID();
-      await adminV2Request("/api/v2/admin/saved-views", {
-        method: "POST",
-        idempotencyKey: savedViewCreateKey.current,
+      await adminV2Operation("POST /api/v2/admin/saved-views", {
         body: { scope: savedViewScope, label, queryState: supportSavedState(draft) },
-        schema: savedViewMutationResponseSchema,
       });
-      savedViewCreateKey.current = null;
       setSavedViewLabel("");
       toast({ tone: "success", title: t("Saved view {label} created", { label }) });
       await loadSavedViews();
@@ -252,11 +245,10 @@ export function SupportWorkspace({
       requireReason: false,
       submitLabel: t("Delete saved view"),
       onSubmit: async () => {
-        await adminV2Request(`/api/v2/admin/saved-views/${encodeURIComponent(view.id)}`, {
-          method: "DELETE",
-          // SPEC: 删除按版本号删 —— 服务端 If-Match 不匹配就 409。
+        // SPEC: 删除按版本号删 —— 服务端 If-Match 不匹配就 409。
+        await adminV2Operation("DELETE /api/v2/admin/saved-views/:id", {
+          path: { id: view.id },
           ifMatch: view.version,
-          schema: savedViewDeleteSchema,
         });
         setSavedViews((items) => items.filter((item) => item.id !== view.id));
         toast({ tone: "success", title: t("Saved view {label} deleted", { label: view.label }) });
@@ -279,7 +271,6 @@ export function SupportWorkspace({
     if (!canWrite) return;
     const publicMessage = { value: "" };
     const needsMessage = input.status === "waiting_on_user" || input.status === "resolved";
-    const attempt = { signature: "", idempotencyKey: crypto.randomUUID() };
     setConfirmation({
       title: t("{action} support request {id}", { action: t(input.label), id: input.id }),
       summary: needsMessage ? <label className="grid gap-2 font-medium">{t("Message to customer")}
@@ -305,15 +296,7 @@ export function SupportWorkspace({
           customerMessage: needsMessage ? publicMessage.value.trim() : undefined,
           status: input.status,
         };
-        const signature = JSON.stringify(body);
-        if (attempt.signature && attempt.signature !== signature) attempt.idempotencyKey = crypto.randomUUID();
-        attempt.signature = signature;
-        await apiWrite(
-          input.endpoint,
-          input.method,
-          body,
-          { "idempotency-key": attempt.idempotencyKey },
-        );
+        await apiWrite(input.endpoint, input.method, body);
         toast({ tone: "success", title: t("{action} applied to {id}", { action: t(input.label), id: input.id }) });
         setConversationRevision((revision) => revision + 1);
         navigate({ ...query, cursor: "" }, "replace");
@@ -401,10 +384,7 @@ export function SupportWorkspace({
               <input
                 aria-label={t("Support saved view label")}
                 className="min-h-10 min-w-0 flex-1 rounded-md border px-3 text-sm"
-                onChange={(event) => {
-                  setSavedViewLabel(event.target.value);
-                  savedViewCreateKey.current = null;
-                }}
+                onChange={(event) => setSavedViewLabel(event.target.value)}
                 value={savedViewLabel}
               />
               <button
@@ -617,18 +597,15 @@ function SupportConversationPanel({ ticketId, canWrite, refreshRevision, onClose
   function reply() {
     const customerMessage = draft.trim();
     if (!customerMessage || !canWrite) return;
-    const attempt = { reason: "", key: crypto.randomUUID() };
     setConfirmation({
       title: t("Reply to support request {id}", { id: ticketId }),
       summary: <p className="whitespace-pre-wrap break-words">{customerMessage}</p>,
       destructive: { expectedName: ticketId, inputLabel: "Confirmation" },
       reasonLabel: "Reason", submitLabel: "Send reply",
       onSubmit: async (reason) => {
-        if (attempt.reason && attempt.reason !== reason) attempt.key = crypto.randomUUID();
-        attempt.reason = reason;
         await apiWrite(`/api/v2/admin/support/requests/${encodeURIComponent(ticketId)}`, "PATCH", {
           customerMessage, reason, confirmation: ticketId,
-        }, { "idempotency-key": attempt.key });
+        });
         setDraft(""); await load(); onUpdated();
       },
     });
@@ -693,7 +670,6 @@ function PlaintextAccessPanel() {
           reason: reason.trim(),
           confirmation: confirmation.trim(),
         },
-        { "idempotency-key": crypto.randomUUID() },
       );
       setResult(response);
       toast({ tone: "success", title: t("Plaintext access logged.") });

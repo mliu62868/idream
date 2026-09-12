@@ -5,7 +5,7 @@ import type {
   CompanionWorkspaceRebuildFence,
 } from "@idream/shared/chat/companion-runtime";
 import type { CompanionInvocation } from "./contracts";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   AttemptWorkspaceStore,
   relationshipWorkspacePath,
@@ -13,7 +13,16 @@ import {
 
 const temporary: string[] = [];
 
+// A fence is a Chat-wide durable fact under CHAT_FS_ROOT. Give every test its
+// own root so one test's fenced user cannot reject another test's invocation.
+beforeEach(async () => {
+  const root = await mkdtemp(join(tmpdir(), "chat-fence-workspace-"));
+  temporary.push(root);
+  process.env.CHAT_FS_ROOT = root;
+});
+
 afterEach(async () => {
+  delete process.env.CHAT_FS_ROOT;
   await Promise.all(temporary.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
@@ -342,13 +351,13 @@ describe("Chat companion workspace", () => {
       ...identity,
       rebuildId: prepared.rebuildId,
       fence: rebuildFence,
-    })).rejects.toThrow(/deleted user/);
+    })).rejects.toThrow(/Chat user is fenced/);
     await expect(store.prepareRelationshipRebuild(
       identity,
       fence("2"),
       { seed: "empty" },
       async () => ({ sessions: 0, messages: 0 }),
-    )).rejects.toThrow(/deleted user/);
+    )).rejects.toThrow(/Chat user is fenced/);
     await expect(lstat(relationshipWorkspacePath(
       canonicalRoot,
       identity.userId,

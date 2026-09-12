@@ -34,7 +34,6 @@ export async function POST(
         params: { id, assetId },
         resource: { characterId: id },
         target: () => ({ type: "media_asset", id: assetId }),
-        reason: (body) => body.reason,
         mutate: (tx, { actor, body, requestId }) =>
           reviewImportedCharacterImage(
             {

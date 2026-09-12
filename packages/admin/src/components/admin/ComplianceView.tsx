@@ -1,6 +1,6 @@
 "use client";
 
-// SPEC: 合规运营面板（ADMIN_PHASE3_DESIGN §4）。DSAR 数据导出/账号擦除 + 年龄验证人工复核。
+// SPEC: 合规运营面板（ADMIN_CONSOLE_PLAN §4）。DSAR 数据导出/账号擦除 + 年龄验证人工复核。
 // INTENT: 自取数、无 props；样式对齐 TagsView。导出展示脱敏 JSON；擦除/override 需 reason+typed。
 // INVARIANTS: erase confirmation=userId、override confirmation=verificationId，均 reason≥3。
 import { useCallback, useEffect, useId, useRef, useState } from "react";

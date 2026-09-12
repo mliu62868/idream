@@ -2,7 +2,6 @@
 
 import { useAdminI18n } from "@/components/admin/i18n";
 import {
-  savedViewUpdateResponseSchema,
   type CollaborationTargetType,
   type SavedViewQueryState,
 } from "@idream/shared/admin";
@@ -13,10 +12,10 @@ import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDi
 import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
 import { WorkspaceButton, fieldClass } from "@/features/operations/WorkspaceUi";
 import { AdminV2RequestError, adminV2Request, setWorkspaceUrl } from "@/lib/admin-v2-api";
+import { adminV2Operation } from "@/lib/admin-v2-operation";
 import {
   applySavedView,
   savedViewListSchema,
-  savedViewMutationSchema,
   type SavedViewRecord,
   withoutSavedViewParam,
 } from "./saved-views";
@@ -87,11 +86,8 @@ export function SavedViewsControl({
     if (!label.trim()) return;
     setBusy(true);
     try {
-      const response = await adminV2Request(`/api/v2/admin/saved-views`, {
-        method: "POST",
-        idempotencyKey: crypto.randomUUID(),
+      const response = await adminV2Operation("POST /api/v2/admin/saved-views", {
         body: { scope, label: label.trim(), queryState: currentState },
-        schema: savedViewMutationSchema,
       });
       await load();
       applySavedView(response.view, onSelectedChange, onApply);
@@ -108,14 +104,13 @@ export function SavedViewsControl({
     if (!label.trim()) return;
     setBusy(true);
     try {
-      const response = await adminV2Request(`/api/v2/admin/saved-views/${encodeURIComponent(current.id)}`, {
-        method: "PATCH",
-        // INTENT: manifest 声明这个操作要 if-match，此前客户端不发、服务端也不读，
-        // 只有 body 里的 expectedVersion 在挡陈旧写入 —— 集成测试却是发头的，所以
-        // CI 全绿而浏览器里没人发现。先补齐客户端，服务端的 transport 断言才能打开。
+      // INTENT: manifest 声明这个操作要 if-match，此前客户端不发、服务端也不读，
+      // 只有 body 里的 expectedVersion 在挡陈旧写入 —— 集成测试却是发头的，所以
+      // CI 全绿而浏览器里没人发现。走 operation id 之后 if-match 是编译期必填。
+      const response = await adminV2Operation("PATCH /api/v2/admin/saved-views/:id", {
+        path: { id: current.id },
         ifMatch: current.version,
         body: { expectedVersion: current.version, label: label.trim(), queryState: currentState },
-        schema: savedViewUpdateResponseSchema,
       });
       setViews((items) => items.map((item) => item.id === response.view.id ? response.view : item));
       applySavedView(response.view, onSelectedChange, onApply);

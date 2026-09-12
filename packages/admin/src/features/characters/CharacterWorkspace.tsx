@@ -124,10 +124,6 @@ type CustomerPublicationPrepRecovery = {
   submissionId: string;
 };
 
-type PendingPublicationPrep = CustomerPublicationPrepRecovery & {
-  idempotencyKey: string;
-};
-
 export function customerPublicationPrepRecoveryFromError(
   cause: unknown,
   characterId: string,
@@ -243,9 +239,8 @@ function CharacterDetail({
   const [error, setError] = useState<string | null>(null);
   const [publicationPrepRecovery, setPublicationPrepRecovery] =
     useState<CustomerPublicationPrepRecovery | null>(null);
-  const [pendingPublicationPrep, setPendingPublicationPrep] =
-    useState<PendingPublicationPrep | null>(null);
-  const publicationPrepIdempotencyKey = useRef<string | null>(null);
+  const [pendingPublicationPrep, setCustomerPublicationPrepRecovery] =
+    useState<CustomerPublicationPrepRecovery | null>(null);
   const [reclaimingVoiceRequestId, setReclaimingVoiceRequestId] = useState<
     string | null
   >(null);
@@ -299,12 +294,11 @@ function CharacterDetail({
     }
   }, [id]);
   const preparePublicationWorkspace = useCallback(
-    async (pending: PendingPublicationPrep, reason: string) => {
+    async (pending: CustomerPublicationPrepRecovery, reason: string) => {
       setError(null);
       try {
         await adminV2Operation("POST /api/v2/admin/characters/:id/project", {
           path: { id },
-          idempotencyKey: pending.idempotencyKey,
           body: {
             submissionId: pending.submissionId,
             reason,
@@ -319,8 +313,7 @@ function CharacterDetail({
         setError(failure.message);
         throw failure;
       }
-      publicationPrepIdempotencyKey.current = null;
-      setPendingPublicationPrep(null);
+      setCustomerPublicationPrepRecovery(null);
       setTab("assets");
       setWorkspaceUrl(new URLSearchParams({ tab: "assets" }), {
         mode: "replace",
@@ -427,7 +420,7 @@ function CharacterDetail({
               "POST /api/v2/admin/characters/:id/voice-clips/:requestId/commands/reclaim",
               {
                 path: { id, requestId: input.requestId },
-                idempotencyKey,
+                replayIdempotencyKey: idempotencyKey,
                 body: {
                   requestId: input.requestId,
                   confirmation: input.confirmation,
@@ -716,11 +709,7 @@ function CharacterDetail({
             <button
               className="mt-3 font-semibold underline"
               onClick={() => {
-                publicationPrepIdempotencyKey.current ??= crypto.randomUUID();
-                setPendingPublicationPrep({
-                  ...publicationPrepRecovery,
-                  idempotencyKey: publicationPrepIdempotencyKey.current,
-                });
+                setCustomerPublicationPrepRecovery(publicationPrepRecovery);
               }}
               type="button"
             >
@@ -745,7 +734,7 @@ function CharacterDetail({
         )}
         {pendingPublicationPrep ? (
           <ConfirmDialog
-            onClose={() => setPendingPublicationPrep(null)}
+            onClose={() => setCustomerPublicationPrepRecovery(null)}
             spec={{
               title: t("Prepare publication workspace"),
               summary: (

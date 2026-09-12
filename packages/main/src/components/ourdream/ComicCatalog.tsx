@@ -2,11 +2,15 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { comicListSchema, type ComicSummary } from "@idream/shared/comics";
+import { useViewerGate } from "@/hooks/useViewerGate";
+import { loadViewerResource } from "@/lib/viewer-resource-client";
 import { useAgeGateAccess } from "./AgeGateBoundary";
-import { comicButton, comicRequest } from "./comic-client";
+import { comicButton, comicPayload } from "./comic-client";
 import { ComicShell } from "./ComicShell";
+
+const parseComicList = comicPayload(comicListSchema);
 
 export function ComicCatalog({ mine = false }: { mine?: boolean }) {
   return <ComicShell><h1 className="sr-only">{mine ? "Your Comics" : "Comics"}</h1><ComicDiscovery mine={mine} /></ComicShell>;
@@ -18,32 +22,48 @@ export function ComicDiscovery({ creatorId, mine = false, compact = false }: { c
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const controller = useRef<AbortController | null>(null);
+  // A published Comic list is public, but `scope=mine` and the per-item manage
+  // links make the answer depend on who is asking — gated, anonymous admitted.
+  const viewer = useViewerGate({ require: "any" });
+  // SPEC: the running list belongs to this component, so the read goes through
+  // `loadViewerResource` directly rather than `useViewerResource`.
+  // INTENT: a page append cannot use the hook, which replaces the projection.
+  // Passing `viewer.fetch` as the fetcher still buys the whole gate: the scope
+  // header, the abort when the owner moves, and — because the gate's refusal is
+  // an AbortError — a `discarded` outcome instead of an error banner for an
+  // answer the previous account asked for.
+  const gatedFetch = viewer.fetch;
   const load = useCallback(async (cursor?: string) => {
-    controller.current?.abort();
-    const next = new AbortController();
-    controller.current = next;
     setLoading(true); setError("");
     if (!cursor) { setItems([]); setNextCursor(null); }
     const query = new URLSearchParams({ limit: compact ? "4" : "12" });
     if (mine) query.set("scope", "mine");
     if (creatorId) query.set("creatorId", creatorId);
     if (cursor) query.set("cursor", cursor);
-    try {
-      const result = await comicRequest(`/api/v1/comics?${query}`, comicListSchema, { signal: next.signal });
-      if (next.signal.aborted) return;
-      setItems((current) => cursor ? [...current, ...result.items.filter((item) => !current.some((old) => old.id === item.id))] : result.items);
-      setNextCursor(result.nextCursor);
-    } catch (cause) {
-      if (!next.signal.aborted) setError(cause instanceof Error ? cause.message : "Comics could not load.");
-    } finally { if (!next.signal.aborted) setLoading(false); }
-  }, [compact, creatorId, mine]);
+    const outcome = await loadViewerResource({
+      path: `/api/v1/comics?${query}`,
+      parse: parseComicList,
+      fallbackError: "Comics could not load.",
+      init: { cache: "no-store" },
+    }, gatedFetch);
+    if (outcome.kind === "discarded") return;
+    setLoading(false);
+    if (outcome.kind === "failed") { setError(outcome.error); return; }
+    setItems((current) => cursor
+      ? [...current, ...outcome.data.items.filter((item) => !current.some((old) => old.id === item.id))]
+      : outcome.data.items);
+    setNextCursor(outcome.data.nextCursor);
+  }, [compact, creatorId, gatedFetch, mine]);
+  // INVARIANT: `viewer.revalidation` is the dependency that replaces the focus
+  // listener this component used to register. The gate owns the one listener for
+  // the page and only bumps this when admitted reads must run again.
+  // The read starts on the next task: `load` sets loading state on its way out,
+  // and setting state synchronously from an effect cascades renders.
   useEffect(() => {
-    const initialLoad = window.setTimeout(() => { if (accepted) void load(); }, 0);
-    const refresh = () => { if (accepted) void load(); };
-    window.addEventListener("focus", refresh);
-    return () => { window.clearTimeout(initialLoad); controller.current?.abort(); window.removeEventListener("focus", refresh); };
-  }, [accepted, load]);
+    if (!accepted) return;
+    const start = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(start);
+  }, [accepted, load, viewer.revalidation]);
   return <section aria-label={mine ? "Your Comics" : "Comics"} className="my-8">
     <header className="mb-5 flex flex-wrap items-center justify-between gap-4">
       <div><h2 className={`${compact ? "text-2xl" : "text-4xl"} font-black`}>{mine ? "Your Comics" : "Comics"}</h2>

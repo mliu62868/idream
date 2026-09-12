@@ -611,7 +611,6 @@ function MainToChatFailedOutboxPanel({
       replayRows.length !== selectedRows.length
     ) return;
     const replayRevision = [...replayRows];
-    const idempotencyKey = crypto.randomUUID();
     setConfirmation({
       title: t("Replay Main → Chat failed events ({count})", {
         count: replayRevision.length,
@@ -634,7 +633,6 @@ function MainToChatFailedOutboxPanel({
           "POST /api/v2/admin/chat/main-outbox-events/commands/replay",
           {
             body: mainToChatReplayPayload(replayRevision, reason),
-            idempotencyKey,
           },
         );
         toast({
@@ -657,7 +655,6 @@ function MainToChatFailedOutboxPanel({
       targetMissingRows.length !== selectedRows.length
     ) return;
     const missingRows = [...targetMissingRows];
-    const idempotencyKey = crypto.randomUUID();
     setConfirmation({
       title: t("Record expected target missing ({count})", {
         count: missingRows.length,
@@ -680,7 +677,6 @@ function MainToChatFailedOutboxPanel({
           "POST /api/v2/admin/chat/main-outbox-events/commands/discard-target-missing",
           {
             body: mainToChatTargetMissingPayload(missingRows, reason),
-            idempotencyKey,
           },
         );
         toast({

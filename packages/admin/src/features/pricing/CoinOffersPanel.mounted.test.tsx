@@ -61,7 +61,6 @@ describe("coin offer operator actions", () => {
     expect(apiWrite.mock.calls[0]).toEqual([
       `/api/v2/admin/billing/coin-offers/${offer.id}/state`, "POST",
       { version: 2, action: "publish", confirmation: `${offer.id}:publish`, reason: "Controlled publication review" },
-      { "idempotency-key": expect.any(String) },
     ]);
     expect(document.querySelector('[role="dialog"]')).toBeNull();
   });

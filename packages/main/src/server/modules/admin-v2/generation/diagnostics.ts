@@ -7,6 +7,7 @@
 // INVARIANT: the workflow list never carries `apiPrompt` — it is large and internal, and only
 //            the detail route expands it for engineering triage.
 import { resolveExecutable } from "@idream/shared";
+import { comfyUiEndpoint, type ComfyUiModality } from "@idream/shared/env";
 import type { WorkflowDescriptor } from "@idream/shared/gen-workflow";
 import { Errors } from "@/server/lib/errors";
 import { listWorkflowDescriptors } from "@/server/modules/generation/generation-catalog";
@@ -53,14 +54,20 @@ async function executableHealth(command: string): Promise<BackendHealth> {
   }
 }
 
-/** 当前请求真正依赖的生成后端就绪度；写入口用它在创建任何权威记录前失败关闭。 */
+// SPEC: 当前请求真正依赖的生成后端就绪度；写入口用它在创建任何权威记录前失败关闭。
+//
+// INTENT: `modality` 是必填的。此前这里固定读 `COMFYUI_API_URL ?? 8188` —— 那是
+// video 的监听端口，而唯一的写入口调用方是角色身份图（image，8189）。真实部署把
+// image 和 video 跑成两个进程并配置 `COMFYUI_IMAGE_API_URL` /
+// `COMFYUI_VIDEO_API_URL`，此时 `COMFYUI_API_URL` 往往没设，于是这次「失败关闭」
+// 检查的是另一台机器的健康。端点解析改走 `comfyUiEndpoint` 之后，模态就不能再
+// 靠默认值猜。
 export function generationBackendHealth(
   backendKind: string,
+  modality: ComfyUiModality,
 ): Promise<BackendHealth> {
   if (backendKind === "comfyui") {
-    return comfyuiHealth(
-      process.env.COMFYUI_API_URL ?? "http://127.0.0.1:8188",
-    );
+    return comfyuiHealth(comfyUiEndpoint(process.env, modality));
   }
   if (backendKind === "drawthings") {
     return executableHealth(
@@ -77,12 +84,13 @@ export function generationBackendHealth(
 // COMFYUI_API_URL / DRAWTHINGS_CLI after importing this module.
 export async function listGenerationBackends(request: Request) {
   await actorWithPermission(request, "generation.config.read");
-  const comfyuiEndpoint = process.env.COMFYUI_API_URL ?? "http://127.0.0.1:8188";
+  // 后台这张表是图片生成诊断面；视频有自己的 readiness 检查。
+  const comfyuiEndpoint = comfyUiEndpoint(process.env, "image");
   const drawThingsCli = process.env.DRAWTHINGS_CLI ?? "draw-things-cli";
   const drawThingsModelsDir = process.env.DRAWTHINGS_MODELS_DIR;
   const [comfyui, drawthings] = await Promise.all([
-    generationBackendHealth("comfyui"),
-    generationBackendHealth("drawthings"),
+    generationBackendHealth("comfyui", "image"),
+    generationBackendHealth("drawthings", "image"),
   ]);
   return {
     items: [

@@ -54,7 +54,7 @@ export function reconcileDurableMutationIntent(
         }
       : { commandType: input.commandType };
   return adminV2Operation("POST /api/v2/admin/mutation-receipts/reconcile", {
-    idempotencyKey: input.intent.idempotencyKey,
+    replayIdempotencyKey: input.intent.idempotencyKey,
     body,
   });
 }

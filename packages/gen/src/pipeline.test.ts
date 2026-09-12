@@ -518,10 +518,10 @@ describe("processImageGenerate", () => {
     const deps = makePipelineDeps(providers, { attemptsMade: 0, maxAttempts: 3 });
 
     await expect(processImageGenerate(
-      imagePayload({ provider: "pipeline" }),
+      imagePayload({ provider: "mock" }),
       deps,
     )).rejects.toThrow(
-      "Pinned image provider pipeline requires GEN_IMAGE_PROVIDER=pipeline; configured=backend",
+      "Pinned image provider mock requires GEN_IMAGE_PROVIDER=mock; configured=backend",
     );
 
     expect(providers.moderation.check).not.toHaveBeenCalled();
@@ -530,7 +530,7 @@ describe("processImageGenerate", () => {
   });
 
   it.each(["image", "video"] as const)("persists an exhausted %s preparation failure before provider entry and replays its terminal", async (mode) => {
-    process.env[mode === "image" ? "GEN_IMAGE_PROVIDER" : "GEN_VIDEO_PROVIDER"] = "pipeline";
+    process.env[mode === "image" ? "GEN_IMAGE_PROVIDER" : "GEN_VIDEO_PROVIDER"] = "mock";
     const providers = makeProviders({ blob: makeMemoryBlob() });
     const payload = mode === "image"
       ? imagePayload({ provider: "comfyui" })
@@ -557,7 +557,7 @@ describe("processImageGenerate", () => {
   });
 
   it.each(["image", "video"] as const)("keeps a prior non-replayable %s invocation unknown when retry preparation fails", async (mode) => {
-    process.env[mode === "image" ? "GEN_IMAGE_PROVIDER" : "GEN_VIDEO_PROVIDER"] = "pipeline";
+    process.env[mode === "image" ? "GEN_IMAGE_PROVIDER" : "GEN_VIDEO_PROVIDER"] = "mock";
     const providers = makeProviders({ blob: makeMemoryBlob() });
     const payload = mode === "image"
       ? imagePayload({ provider: "comfyui" })
@@ -618,13 +618,16 @@ describe("processImageGenerate", () => {
   });
 
   it("replays a persisted terminal record before checking a drifted adapter", async () => {
-    process.env.GEN_IMAGE_PROVIDER = "pipeline";
+    // The first pass must match the pinned adapter (comfyui resolves to backend)
+    // so it reaches the provider and persists a terminal record; only then does
+    // the configuration drift, which is what the replay has to survive.
+    process.env.GEN_IMAGE_PROVIDER = "backend";
     const providers = makeProviders({ blob: makeMemoryBlob() });
     const acknowledgeTerminalRecord = vi.fn()
       .mockRejectedValueOnce(new Error("terminal relay unavailable"))
       .mockResolvedValue(undefined);
     const payload = imagePayload({
-      provider: "pipeline",
+      provider: "comfyui",
       attemptId: "attempt_img_adapter_drift",
       attemptNo: 1,
     });
@@ -633,7 +636,7 @@ describe("processImageGenerate", () => {
       payload,
       makePipelineDeps(providers, { acknowledgeTerminalRecord }),
     )).rejects.toThrow("terminal relay unavailable");
-    process.env.GEN_IMAGE_PROVIDER = "backend";
+    process.env.GEN_IMAGE_PROVIDER = "mock";
     await processImageGenerate(
       payload,
       makePipelineDeps(providers, {

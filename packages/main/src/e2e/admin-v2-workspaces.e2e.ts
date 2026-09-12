@@ -1127,7 +1127,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
           profileKey: wizardBootstrapProfileKey,
           label: "E2E pipeline identity bootstrap",
           mode: "image",
-          runner: "pipeline",
+          runner: "comfyui",
           pipelineModel: "redcraft-krea2-redmix3-fp8",
           workflowKey: "redcraft-krea2-redmix3-txt2img",
           runnerConfig: {
@@ -1153,7 +1153,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
           profileKey: wizardIdentityProfileKey,
           label: "E2E pipeline identity route",
           mode: "image",
-          runner: "pipeline",
+          runner: "comfyui",
           pipelineModel: "qwen-image-edit",
           workflowKey: "qwen-image-edit-img2img",
           runnerConfig: {

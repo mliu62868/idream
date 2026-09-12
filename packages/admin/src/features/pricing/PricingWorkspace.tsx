@@ -128,7 +128,6 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
         "/api/v2/admin/pricing/rules",
         "POST",
         pricingDraftPayload(pricingDraft),
-        { "idempotency-key": crypto.randomUUID() },
       );
       setPricingDraft((current) => ({ ...current, reason: "", confirmation: "" }));
       toast({ tone: "success", title: t("Pricing draft {key} created", { key: pricingDraft.ruleKey }) });
@@ -146,7 +145,6 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
   function confirmVersionAction(row: PricingRecord, action: "publish" | "rollback") {
     const id = text(row.id);
     const name = text(row.label) || text(row.ruleKey) || id;
-    const idempotencyKey = crypto.randomUUID();
     setConfirmation({
       title: action === "publish" ? t("Publish pricing rule") : t("Rollback pricing rule"),
       // INTENT: 这个框原来只写「名字 · 版本 N」——运营点「发布」的时候看不到自己要发布的价格
@@ -179,7 +177,6 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
           `/api/v2/admin/pricing/rules/${encodeURIComponent(id)}/${action}`,
           "POST",
           { reason, confirmation: id },
-          { "idempotency-key": idempotencyKey },
         );
         toast({
           tone: "success",

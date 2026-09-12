@@ -29,7 +29,6 @@ export function PUT(request: Request) {
     executeAdminMutation<Body>("PUT /api/v2/admin/content/featured", request, {
       params: {},
       target: () => ({ type: "app_setting", id: FEATURED_SETTING_KEY }),
-      reason: (body) => body.reason,
       mutate: (tx, { actor, body, requestId }) =>
         putFeaturedCharacters({ tx, request, actor, requestId, body }),
       decorateResult: (result, replayed) => ({ ...(result as object), replayed }),

@@ -6,7 +6,7 @@ import {
   type CharacterWorkspaceDetail,
 } from "@idream/shared/admin";
 import { compileCharacterSoul } from "@idream/shared/chat/persona";
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { ConfirmDialog } from "@/components/admin/ui/ConfirmDialog";
 import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
@@ -44,7 +44,6 @@ export function CharacterSoulPanel({
   const [error, setError] = useState<string | null>(() =>
     initialPersona ? null : t("Character Soul could not be loaded"),
   );
-  const mutationKey = useRef<{ readonly signature: string; readonly key: string } | null>(null);
 
   if (!persona) {
     return error ? (
@@ -66,22 +65,12 @@ export function CharacterSoulPanel({
     setBusy(true);
     setError(null);
     try {
-      const signature = JSON.stringify({
-        contentVersionId: data.soul.current.contentVersionId,
-        persona,
-        reason,
-      });
-      const idempotencyKey = mutationKey.current?.signature === signature
-        ? mutationKey.current.key
-        : crypto.randomUUID();
-      mutationKey.current = { signature, key: idempotencyKey };
       await runCommittedMutation({
         action: t("Create Character Soul version"),
         commit: () => adminV2Operation(
           "POST /api/v2/admin/characters/:id/soul/versions",
           {
             path: { id: data.character.id },
-            idempotencyKey,
             ifMatch: data.project.version,
             body: {
               entityVersion: data.project.version,
@@ -92,7 +81,6 @@ export function CharacterSoulPanel({
           },
         ),
       });
-      mutationKey.current = null;
     } catch (cause) {
       setError(
         cause instanceof AdminV2RequestError && cause.status === 409

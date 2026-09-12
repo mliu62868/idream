@@ -351,7 +351,6 @@ describe("ChatOpsWorkspace Main to Chat failed-delivery operations", () => {
           },
           confirmation: MAIN_TO_CHAT_REPLAY_CONFIRMATION,
         },
-        idempotencyKey,
       },
     );
     // 命令结果落在 toast 里（挂在 document.body 上），面板顶部不再有横幅。
@@ -437,7 +436,6 @@ describe("ChatOpsWorkspace Main to Chat failed-delivery operations", () => {
           },
           confirmation: MAIN_TO_CHAT_TARGET_MISSING_CONFIRMATION,
         },
-        idempotencyKey,
       },
     );
     expect(document.body.textContent).toContain("discarded_target_missing: 1");

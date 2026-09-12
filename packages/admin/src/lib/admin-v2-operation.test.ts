@@ -34,7 +34,6 @@ describe("admin v2 operation adapter", () => {
       "POST /api/v2/admin/characters/:id/commands/pause",
       {
         path: { id: "character 1" },
-        idempotencyKey: "pause-1",
         body: {
           entityVersion: 3,
           reason: "pause",
@@ -55,13 +54,12 @@ describe("admin v2 operation adapter", () => {
     await expect(
       adminV2Operation("POST /api/v2/admin/characters/:id/commands/resume", {
         path: { id: "character-1" },
-        idempotencyKey: "resume-1",
         body: {},
       }),
     ).rejects.toThrow();
   });
 
-  it("forwards the idempotency key and If-Match the manifest declares", async () => {
+  it("attaches an idempotency key and the If-Match the manifest declares, without the caller naming either", async () => {
     const fetchMock = stubFetch({
       ok: true,
       data: {
@@ -76,7 +74,6 @@ describe("admin v2 operation adapter", () => {
 
     await adminV2Operation("POST /api/v2/admin/characters/:id/releases", {
       path: { id: "character-1" },
-      idempotencyKey: "release-1",
       ifMatch: 7,
       body: {
         entityVersion: 7,
@@ -87,8 +84,56 @@ describe("admin v2 operation adapter", () => {
 
     const [, init] = fetchMock.mock.calls[0] ?? [];
     const headers = new Headers(init?.headers);
-    expect(headers.get("idempotency-key")).toBe("release-1");
+    expect(headers.get("idempotency-key")).toMatch(/.{8,}/);
     expect(headers.get("if-match")).toBe('"7"');
+  });
+
+  /**
+   * SPEC: 同一个目标、同一份请求体重试，键不变；请求体变了，键换。
+   * INVARIANT: 这是运营「点一次写两次」不可表达的那半条保证在传输层的落点 ——
+   *            状态机本身在 idempotency-key-lifecycle.test.ts 里单独测。
+   */
+  it("reuses one key while the request body stays the same and mints a new one when it changes", async () => {
+    const fetchMock = stubFetch({ ok: true, data: ACCEPTED_COMMAND });
+    const pause = (reason: string) =>
+      adminV2Operation("POST /api/v2/admin/characters/:id/commands/pause", {
+        path: { id: "character-key-reuse" },
+        body: { entityVersion: 3, reason, confirmation: "PAUSE" },
+      }).catch(() => undefined);
+
+    await pause("network flake");
+    await pause("network flake");
+    await pause("actually a policy hold");
+
+    const keys = fetchMock.mock.calls.map(
+      ([, init]) => new Headers(init?.headers).get("idempotency-key"),
+    );
+    expect(keys[1]).not.toBe(keys[0]);
+    expect(keys[2]).not.toBe(keys[1]);
+  });
+
+  it("keeps the key across a retry when the response never arrived", async () => {
+    const fetchMock = vi.fn(
+      async (input: string | URL | Request, requestInit?: RequestInit): Promise<Response> => {
+        void input;
+        void requestInit;
+        throw new TypeError("Failed to fetch");
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const withdraw = () =>
+      adminV2Operation("POST /api/v2/admin/characters/:id/commands/retire", {
+        path: { id: "character-lost-response" },
+        body: { entityVersion: 2, reason: "retire", confirmation: "RETIRE" },
+      }).catch(() => undefined);
+
+    await withdraw();
+    await withdraw();
+
+    const keys = fetchMock.mock.calls.map(
+      ([, init]) => new Headers(init?.headers).get("idempotency-key"),
+    );
+    expect(keys[1]).toBe(keys[0]);
   });
 
   it("appends a query string to the declared route", async () => {
@@ -129,7 +174,7 @@ describe("admin v2 operation adapter", () => {
 
     const operationError = await adminV2Operation(
       "POST /api/v2/admin/characters/:id/commands/retire",
-      { path: { id: "character-1" }, idempotencyKey: "retire-1", body: {} },
+      { path: { id: "character-1" }, body: {} },
     ).catch((cause: unknown) => cause);
     const legacyError = await apiWrite(
       "/api/v2/admin/content/featured",

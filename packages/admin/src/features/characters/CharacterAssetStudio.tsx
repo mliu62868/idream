@@ -162,7 +162,6 @@ export function CharacterAssetStudio({
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [refreshWarning, setRefreshWarning] = useState<string | null>(null);
-  const readinessRepairKeys = useRef<Record<string, string>>({});
   const [, setReviewDrafts] = useState<Record<string, ReviewDraft>>(
     {},
   );
@@ -592,10 +591,6 @@ export function CharacterAssetStudio({
     setBusy("prepare");
     setError(null);
     setMessage(null);
-    const signature = readiness.fingerprint;
-    const idempotencyKey =
-      readinessRepairKeys.current[signature] ?? crypto.randomUUID();
-    readinessRepairKeys.current[signature] = idempotencyKey;
     try {
       const committed = await commitProjectMutation({
         action: "Character image-production preparation",
@@ -604,7 +599,6 @@ export function CharacterAssetStudio({
             "POST /api/v2/admin/characters/:id/image-readiness/repair",
             {
               path: { id: data.character.id },
-              idempotencyKey,
               ifMatch: data.project.version,
               body: {
                 entityVersion: data.project.version,
@@ -616,9 +610,6 @@ export function CharacterAssetStudio({
             },
           ),
       });
-      if (committed.refreshed) {
-        delete readinessRepairKeys.current[signature];
-      }
       setMessage(
         committed.result.state === "ready"
           ? "The live portrait is now the sealed identity reference. Image production is ready."
@@ -914,7 +905,7 @@ export function CharacterAssetStudio({
     };
     try {
       result = await adminV2Operation("POST /api/v2/admin/creative/runs", {
-        idempotencyKey: intent.idempotencyKey,
+        replayIdempotencyKey: intent.idempotencyKey,
         body,
       });
     } catch (cause) {
@@ -1132,7 +1123,7 @@ export function CharacterAssetStudio({
         "POST /api/v2/admin/creative/runs/:id/items/:itemId/decisions",
         {
           path: { id: snapshot.runId, itemId: snapshot.itemId },
-          idempotencyKey: reviewMutationIntent.idempotencyKey,
+          replayIdempotencyKey: reviewMutationIntent.idempotencyKey,
           body: snapshot.body,
         },
       );
@@ -1393,7 +1384,7 @@ export function CharacterAssetStudio({
               "POST /api/v2/admin/characters/:id/identity-bootstrap",
               {
                 path: { id: data.character.id },
-                idempotencyKey: currentIntent.idempotencyKey,
+                replayIdempotencyKey: currentIntent.idempotencyKey,
                 ifMatch: snapshot.body.entityVersion,
                 body: snapshot.body,
               },
@@ -1409,7 +1400,7 @@ export function CharacterAssetStudio({
             "PATCH /api/v2/admin/characters/:id/draft-image",
             {
               path: { id: data.character.id },
-              idempotencyKey: currentIntent.idempotencyKey,
+              replayIdempotencyKey: currentIntent.idempotencyKey,
               ifMatch: snapshot.body.entityVersion,
               body: snapshot.body,
             },
@@ -1570,7 +1561,7 @@ export function CharacterAssetStudio({
             "PATCH /api/v2/admin/characters/:id/draft-image",
             {
               path: { id: data.character.id },
-              idempotencyKey: intent.idempotencyKey,
+              replayIdempotencyKey: intent.idempotencyKey,
               ifMatch: data.project.version,
               body: draftSelectionBody,
             },

@@ -1,5 +1,5 @@
 "use client";
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { Loader2, Sparkles } from "lucide-react";
 import { apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
@@ -26,7 +26,6 @@ export function StartersNewPage() {
   const [creating, setCreating] = useState(false);
   const [assistError, setAssistError] = useState<string | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
-  const createKey = useRef<string | null>(null);
 
   function patch(partial: Partial<StarterDraft>) {
     setDraft((current) => ({ ...current, ...partial }));
@@ -43,7 +42,6 @@ export function StartersNewPage() {
         advancedDetails: { detailsMarkdown: string; firstMessage: string; visualBrief: string };
       }>(
         "/api/v2/admin/content/character-assist", "POST", { seed: seed.trim() },
-        { "idempotency-key": crypto.randomUUID() },
       );
       const summary = data.description.slice(0, 200);
       const existing = tagsFromText(draft.tags);
@@ -63,15 +61,14 @@ export function StartersNewPage() {
 
   const canSubmit = !creating && draft.name.trim().length >= 1;
 
-  // INVARIANT: 创建的幂等键存在 ref 里跨重试复用——网络失败后再点一次不能建出第二份模板。
+  // INVARIANT: 网络失败后再点一次不能建出第二份模板 —— 键由 idempotency-key-lifecycle
+  // 的账本按「同一份草稿」复用，这一页自己不持有键。
   async function create() {
     setCreating(true);
     setCreateError(null);
     try {
-      createKey.current ??= crypto.randomUUID();
       const created = await apiWrite<{ template?: { id?: string } }>(
         STARTERS_LIST, "POST", starterPayload({ ...draft, reason: EMPTY_DRAFT.reason }),
-        { "idempotency-key": createKey.current },
       );
       const newId = created.template?.id;
       window.location.href = newId

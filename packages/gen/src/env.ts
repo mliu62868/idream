@@ -14,6 +14,7 @@ import {
   DEFAULT_MODERATION_TIMEOUT_MS,
   DEFAULT_REDIS_URL,
   defaultBullmqPrefix,
+  comfyUiEndpoint,
   mainWebUrlOrigin,
   resolveAlias,
 } from "@idream/shared/env";
@@ -159,23 +160,14 @@ export const env = {
     );
     return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_MODERATION_TIMEOUT_MS;
   },
-  get PIPELINE_API_URL(): string | undefined {
-    return process.env.PIPELINE_API_URL;
-  },
-  get PIPELINE_API_TOKEN(): string | undefined {
-    return process.env.PIPELINE_API_TOKEN;
-  },
+  // INTENT: these three outlived the legacy gateway adapter (deleted 2026-09-12).
+  // They are read by the image/video probes and by the asset download budget, so
+  // the names stayed rather than churning every operator .env for cosmetics.
   get PIPELINE_IMAGE_MODEL_DEFAULT(): string {
     return process.env.PIPELINE_IMAGE_MODEL_DEFAULT ?? "image-default";
   },
   get PIPELINE_VIDEO_MODEL_DEFAULT(): string {
     return process.env.PIPELINE_VIDEO_MODEL_DEFAULT ?? "video-default";
-  },
-  get PIPELINE_IMAGE_SIZE_DEFAULT(): string | undefined {
-    return process.env.PIPELINE_IMAGE_SIZE_DEFAULT;
-  },
-  get PIPELINE_PROFILE_DEFAULT(): string | undefined {
-    return process.env.PIPELINE_PROFILE_DEFAULT;
   },
   get PIPELINE_TIMEOUT_MS(): number {
     const parsed = Number.parseInt(process.env.PIPELINE_TIMEOUT_MS ?? "60000", 10);
@@ -189,25 +181,28 @@ export const env = {
   get VIDEO_TIMEOUT_MS(): number {
     return positiveIntegerEnv("GEN_VIDEO_TIMEOUT_MS", 1_800_000);
   },
-  /** Shared explicit override. Prefer the modality-specific authorities below. */
-  get COMFYUI_API_URL(): string {
-    return process.env.COMFYUI_API_URL ?? "http://127.0.0.1:8188";
+  /**
+   * Shared explicit override. Prefer the modality-specific authorities below.
+   *
+   * INVARIANT: no default. This is an *input* to the fallback chain, not an
+   * endpoint in its own right — defaulting it to the video port made
+   * `COMFYUI_API_URL` look configured to every reader and gave video's listener
+   * a second name.
+   */
+  get COMFYUI_API_URL(): string | undefined {
+    return process.env.COMFYUI_API_URL;
   },
   /** Image-only ComfyUI runner: PyTorch attention on the isolated 8189 process. */
   get COMFYUI_IMAGE_API_URL(): string {
-    return process.env.COMFYUI_IMAGE_API_URL ??
-      process.env.COMFYUI_API_URL ??
-      "http://127.0.0.1:8189";
+    return comfyUiEndpoint(process.env, "image");
   },
   /** Video-only ComfyUI runner: RedGraft-safe split attention on 8188. */
   get COMFYUI_VIDEO_API_URL(): string {
-    return process.env.COMFYUI_VIDEO_API_URL ??
-      process.env.COMFYUI_API_URL ??
-      "http://127.0.0.1:8188";
+    return comfyUiEndpoint(process.env, "video");
   },
   /** MiniMax H3-only runner: exact PyTorch SDPA, isolated from RedGraft. */
   get COMFYUI_H3_API_URL(): string {
-    return process.env.COMFYUI_H3_API_URL ?? "http://127.0.0.1:8190";
+    return comfyUiEndpoint(process.env, "h3");
   },
   /** Cross-worker file lease; one Apple GPU/unified-memory job runs at a time. */
   get ACCELERATOR_LOCK_PATH(): string {

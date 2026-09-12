@@ -16,7 +16,10 @@
 //   也保持了 env.ts 的约定：**import 该模块永不抛错**，只有读取才可能抛。
 
 /** 图/视频生成的适配器。runner 词表（main 侧）经 workerAdapterForRecordedProvider 落到这里。 */
-export const GEN_ADAPTERS = ["mock", "backend", "pipeline"] as const;
+// INTENT: `pipeline`（legacy OpenAI-compatible 网关）已于 2026-09-12 删除 —— 零调用方，
+//   且它被保留的唯一理由（10-operations.md 的回滚 runbook）经核实不存在。词表少一项，
+//   `GEN_IMAGE_PROVIDER=pipeline` 就在读取 env 的那一刻失败，而不是启动后才发现没有适配器。
+export const GEN_ADAPTERS = ["mock", "backend"] as const;
 export type GenAdapter = (typeof GEN_ADAPTERS)[number];
 
 /** 生成产物的私有对象存储。 */
@@ -36,4 +39,30 @@ export function parseGenAdapter(kind: "image" | "video", raw: string): GenAdapte
 export function parseGenBlobAdapter(raw: string): GenBlobAdapter {
   if (isMember(GEN_BLOB_ADAPTERS, raw)) return raw;
   throw new Error(`Unsupported blob provider: ${raw}`);
+}
+
+// SPEC: Main runner name -> gen adapter name. Many-to-one by construction.
+// NOTE: named for what it does. It does NOT pin a backend — `payload.provider`
+// is an accounting field; `descriptor.backendKind` is what selects the backend.
+// The old name (`providerAdapterForPinnedAuthority`) claimed an authority it
+// never had.
+// INVARIANT: the runner names accepted here must stay a superset of the enum on
+// GenerationModelProfile.runner (see packages/main/prisma/schema.prisma). `sd_cpp`
+// was retired once db/sql/2026-08-03-generation-model-profile-runner-retire-sd-cpp.sql
+// rewrote the surviving rows to `comfyui` — the same adapter, so nothing changed
+// but the vocabulary. Whatever the runner says, the descriptor decides.
+export function workerAdapterForRecordedProvider(provider: string): GenAdapter {
+  switch (provider) {
+    case "mock":
+    case "backend":
+      return provider;
+    case "comfyui":
+      return "backend";
+    default:
+      // `pipeline`, `mlx` and `external` all resolved to the legacy
+      // OpenAI-compatible gateway adapter, deleted 2026-09-12 for having zero
+      // callers. They now fail here rather than mapping to an adapter that no
+      // longer exists — the same way `sd_cpp` fails.
+      throw new Error(`Unsupported pinned generation provider: ${provider}`);
+  }
 }

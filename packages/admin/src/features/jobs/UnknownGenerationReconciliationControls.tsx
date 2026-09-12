@@ -4,7 +4,6 @@ import { AlertTriangle, CheckCircle2, Clock3, RefreshCcw } from "lucide-react";
 import { useState } from "react";
 import {
   unknownGenerationReconciliationCommandSchema,
-  unknownGenerationReconciliationResultSchema,
   type GenerationJobDetailResponse,
   type UnknownGenerationReconciliationCommand,
   type UnknownGenerationReconciliationResult,
@@ -12,7 +11,8 @@ import {
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { useAdminFormat } from "@/components/admin/ui/format";
-import { AdminV2RequestError, adminV2Request } from "@/lib/admin-v2-api";
+import { AdminV2RequestError } from "@/lib/admin-v2-api";
+import { adminV2Operation } from "@/lib/admin-v2-operation";
 import {
   claimDurableMutationIntent,
   clearDurableMutationIntent,
@@ -95,12 +95,11 @@ export function UnknownGenerationReconciliationControls({
     setMessage(null);
     let active = current;
     try {
-      const result = await adminV2Request(
-        `/api/v2/admin/jobs/${encodeURIComponent(request.id)}/commands/reconcile-unknown`,
+      const result = await adminV2Operation(
+        "POST /api/v2/admin/jobs/:id/commands/reconcile-unknown",
         {
-          method: "POST",
-          idempotencyKey: active.idempotencyKey,
-          schema: unknownGenerationReconciliationResultSchema,
+          path: { id: request.id },
+          replayIdempotencyKey: active.idempotencyKey,
           body: saved,
         },
       );

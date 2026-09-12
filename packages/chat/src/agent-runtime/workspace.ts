@@ -21,6 +21,7 @@ import {
   type CompanionWorkspaceRebuildFence,
 } from "@idream/shared/chat/companion-runtime";
 import type { CompanionInvocation } from "./contracts";
+import { assertNotFenced, fenceUser } from "../fence.js";
 
 export interface MemoryStatus {
   dialogueFiles: number;
@@ -103,10 +104,6 @@ function privateRelationshipWorkspacePath(
   );
 }
 
-function userDeletionMarker(canonicalRoot: string, userId: string): string {
-  return join(resolve(canonicalRoot), ".user-tombstones", `${safeKey(userId)}.json`);
-}
-
 function assertWithin(parent: string, child: string): void {
   const path = relative(resolve(parent), resolve(child));
   if (path === "" || (!path.startsWith(`..${sep}`) && path !== ".." && !path.startsWith(sep))) return;
@@ -148,7 +145,14 @@ export class AttemptWorkspaceStore {
     signal?: AbortSignal,
   ): Promise<AttemptWorkspace> {
     signal?.throwIfAborted();
-    await this.assertUserActive(invocation.userId);
+    await assertNotFenced([
+      { scope: "user", userId: invocation.userId },
+      {
+        scope: "relationship",
+        userId: invocation.userId,
+        characterId: invocation.characterId,
+      },
+    ]);
     if (invocation.memoryMode === "private") return this.preparePrivate(invocation);
     return this.prepareNormal(invocation, signal);
   }
@@ -193,7 +197,10 @@ export class AttemptWorkspaceStore {
     }
     const releaseUser = await this.acquireUser(request.userId);
     try {
-      await this.fenceDeletedUser(request.userId);
+      // INVARIANT: a user-scope workspace purge is account erasure. Fence the
+      // user durably before removing bytes, so no later admission, event append
+      // or workspace prepare can recreate what this purge is deleting.
+      await fenceUser(request.userId);
       const canonicalTarget = userWorkspacePath(this.options.canonicalRoot, request.userId);
       const privateTarget = privateUserWorkspacePath(this.options.privateRoot, request.userId);
       assertWithin(this.options.canonicalRoot, canonicalTarget);
@@ -229,7 +236,7 @@ export class AttemptWorkspaceStore {
     const releaseUser = await this.acquireUser(identity.userId, signal);
     let candidateRoot: string | undefined;
     try {
-      await this.assertUserActive(identity.userId);
+      await assertNotFenced([{ scope: "user", userId: identity.userId }]);
       const relationshipRoot = await this.ensurePrivateRelationshipDirectory(
         this.options.canonicalRoot,
         identity.userId,
@@ -312,7 +319,7 @@ export class AttemptWorkspaceStore {
     let candidateMemory: string | undefined;
     let candidateVersion: string | undefined;
     try {
-      await this.assertUserActive(input.userId);
+      await assertNotFenced([{ scope: "user", userId: input.userId }]);
       releaseRelationship = await this.acquireRelationship(
         input.userId,
         input.characterId,
@@ -765,29 +772,6 @@ export class AttemptWorkspaceStore {
       mine.release();
       if (this.locks.get(key) === queued) this.locks.delete(key);
     };
-  }
-
-  private async assertUserActive(userId: string): Promise<void> {
-    if (await exists(userDeletionMarker(this.options.canonicalRoot, userId))) {
-      throw new Error("companion workspace belongs to a deleted user");
-    }
-  }
-
-  private async fenceDeletedUser(userId: string): Promise<void> {
-    const marker = userDeletionMarker(this.options.canonicalRoot, userId);
-    const root = dirname(marker);
-    assertWithin(this.options.canonicalRoot, marker);
-    await mkdir(root, { recursive: true, mode: 0o700 });
-    await chmod(root, 0o700);
-    const temporary = `${marker}.tmp-${randomUUID()}`;
-    const handle = await open(temporary, "wx", 0o600);
-    try {
-      await handle.writeFile(`${JSON.stringify({ deletedAt: new Date().toISOString() })}\n`, "utf8");
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    await rename(temporary, marker);
   }
 
   private async ensurePrivateRelationshipDirectory(

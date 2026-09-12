@@ -115,17 +115,20 @@ describe("generation quote workflow authority", () => {
     });
   });
 
-  it("allows a descriptor-less remote pipeline profile", async () => {
+  // SPEC: 没有 workflow descriptor 就不报价。
+  // INTENT: 这条此前断言相反 —— legacy 网关 runner 只吃一个模型名，没有 workflow
+  // 可描述，所以允许 descriptor 为空。那个 adapter 与它的 runner 取值已于
+  // 2026-09-12 一并退役；给一个 worker 派发不了的执行报价，等于先收钱再发现做不了。
+  it("refuses to quote a descriptor-less profile", async () => {
     authority.selectGenerationProfile.mockResolvedValue({
       ...profile,
-      runner: "pipeline",
+      runner: "comfyui",
       pipelineModel: "remote-image-provider",
       workflowKey: null,
     });
 
-    await expect(resolveGenerationPlan("user-1", request)).resolves.toMatchObject({
-      workflowDescriptor: null,
-      profile: { runner: "pipeline" },
-    });
+    await expect(resolveGenerationPlan("user-1", request)).rejects.toThrow(
+      /workflow descriptor is unavailable/i,
+    );
   });
 });

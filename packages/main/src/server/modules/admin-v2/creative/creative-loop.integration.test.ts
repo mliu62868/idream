@@ -57,7 +57,7 @@ describe("Creative retry through verified placement", () => {
         profileKey: profileId,
         label: "Healthy creative test profile",
         mode: "image",
-        runner: "pipeline",
+        runner: "comfyui",
         pipelineModel: "mock-image",
         runnerConfig: { verificationStatus: "passed" },
         allowedOrientations: ["portrait"],

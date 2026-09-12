@@ -99,7 +99,7 @@ export function PresetsDetailPage({ id }: { id: string }) {
     setError(null);
     try {
       const payload = presetPayload(draft);
-      await apiWrite(`${PRESETS_LIST}/${id}`, "PATCH", payload, { "idempotency-key": crypto.randomUUID() });
+      await apiWrite(`${PRESETS_LIST}/${id}`, "PATCH", payload);
       await reload();
       setMode("view");
       setDraft(null);
@@ -116,7 +116,7 @@ export function PresetsDetailPage({ id }: { id: string }) {
     setRestoring(true);
     setError(null);
     try {
-      await apiWrite(`${PRESETS_LIST}/${id}`, "PATCH", { status: "active" }, { "idempotency-key": crypto.randomUUID() });
+      await apiWrite(`${PRESETS_LIST}/${id}`, "PATCH", { status: "active" });
       await reload();
       reportSuccess(t("Restored. This preset is selectable again."));
     } catch (restoreError) {
@@ -134,7 +134,7 @@ export function PresetsDetailPage({ id }: { id: string }) {
       requireReason: false,
       submitLabel: t("Archive preset"),
       onSubmit: async () => {
-        await apiWrite(`${PRESETS_LIST}/${id}`, "PATCH", { status: "archived" }, { "idempotency-key": crypto.randomUUID() });
+        await apiWrite(`${PRESETS_LIST}/${id}`, "PATCH", { status: "archived" });
         await reload();
         reportSuccess(t("Archived. {label} is no longer offered to users.", { label: row.label }));
       },

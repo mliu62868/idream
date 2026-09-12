@@ -108,9 +108,8 @@ describe("publishableApprovedAssets", () => {
     );
 
     expect(createSource).toContain("publishableApprovedAssets(data.items)");
-    expect(createSource).toContain('"idempotency-key": idempotencyKey');
-    expect(detailSource).toContain('"idempotency-key": idempotencyKey');
-    expect(detailSource).toContain('"if-match": `"${row.version}"`');
+    // SPEC: 版本冲突守卫仍然要写出来；幂等键不再由这两页表达（账本管了），所以不在这里断言。
+    expect(detailSource).toContain("ifMatch: row.version");
     expect(createSource).toContain("generation authority is incomplete or untrusted");
     expect(detailSource).toContain("Placement pause was committed, but the latest projection could not be refreshed");
     expect(detailSource).toContain("Placement archival was committed, but the latest projection could not be refreshed");

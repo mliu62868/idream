@@ -2,7 +2,7 @@
 
 iDream is an 18+ AI roleplay and AI companion platform built for complete product parity with [OurDream.ai](https://ourdream.ai/). The target covers Explore, the full multi-step creator, Chat, image/video/voice generation, My AI/Profile, Feed/Community/creator economy, paid access, Affiliate, support, and public content surfaces. This monorepo contains the public web app, admin console, Chat execution service, generation workers, shared contracts, provider adapters, launch probes, and product documentation. OurDream defines the product-completeness benchmark; [the PRD](docs/product/PRD.md), iDream source code, and same-revision evidence define our exact contract and current state.
 
-Current launch status: **not public-launch ready yet**. Existing local journeys have controlled evidence, but complete OurDream parity still requires a dated feature-by-feature matrix and closure of real gaps such as Group Chats/Packs, an independently published Chat Video capability, full public-content coverage, and production-grade provider/storage/capacity/observability evidence. The complete multi-step Create flow and all My AI core tabs remain first-class targets; Quick Start is only an optional prefill. WPCU remains the official North Star, so no WSCU Metric Registry cutover is pending. See:
+Current launch status: **not public-launch ready yet**. Existing local journeys have controlled evidence, but complete OurDream parity still requires a dated feature-by-feature matrix and closure of real gaps such as Group Chats/Packs, an independently published Chat Video capability, full public-content coverage, and production-grade provider/storage/capacity/observability evidence. The complete multi-step Create flow and all My AI core tabs remain first-class targets; Quick Start is only an optional prefill. WPCU remains the official North Star, so no WSCU Metric Registry cutover is pending. 文档总入口见 [`docs/README.md`](docs/README.md)。See:
 
 - [Current functional coverage](docs/product/CURRENT_FUNCTIONAL_COVERAGE.md)
 - [OurDream public parity snapshot (2026-09-01)](docs/research/OURDREAM_PRODUCT_PARITY_SNAPSHOT_2026-09-01.md)
@@ -27,7 +27,7 @@ Current launch status: **not public-launch ready yet**. Existing local journeys 
 | `packages/main` | Public product app, API/BFF, auth, billing, admin API, finalizer |
 | `packages/admin` | Admin web console on port 3001 |
 | `packages/chat` | AgentRun execution/SSE service with local recovery evidence; no product database |
-| `packages/gen` | Image/video workers, workflow-native backends, and the deprecated external pipeline adapter |
+| `packages/gen` | Image/video workers and workflow-native backends |
 | `packages/shared` | Cross-service contracts, media/storage/moderation helpers |
 
 ## Common Commands
@@ -164,7 +164,7 @@ main-web / packages/gen
 
 Each workflow descriptor (`packages/gen/workflows/*.json`) declares its `backendKind` (`comfyui`, `sdcpp`, or `drawthings`), the model files it binds, and its input slots — adding a model is "drop a descriptor," not new wiring code. For a local end-to-end smoke against a selected live backend, run `bun run --filter @idream/gen smoke:backend`.
 
-`GEN_IMAGE_PROVIDER=pipeline` (an external OpenAI-compatible gateway reached via `PIPELINE_API_URL`) still exists but is deprecated in favor of `backend`.
+The retired `pipeline`, `mlx`, and `external` runner values are invalid. Use `GEN_IMAGE_PROVIDER=backend` with a workflow-native backend.
 
 ## Launch Checks
 

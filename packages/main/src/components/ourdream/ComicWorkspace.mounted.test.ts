@@ -45,9 +45,13 @@ async function click(target: HTMLButtonElement) { expect(target).toBeTruthy(); a
 describe("Comic workspace authority and saved order", () => {
   it("reads pages in manifest order and drops revoked content when the reader regains focus", async () => {
     let withdrawn = false;
-    vi.stubGlobal("fetch", vi.fn(async () => withdrawn
-      ? Response.json({ ok: false, error: { code: "not_found", message: "Comic is no longer available" } }, { status: 404 })
-      : envelope(comic(false))));
+    // The reader is gated too: `canManage` makes this a public read whose answer
+    // depends on who is asking, so the viewer is resolved before it runs.
+    vi.stubGlobal("fetch", vi.fn(async (url: RequestInfo | URL) => String(url) === "/api/v1/me"
+      ? viewer()
+      : withdrawn
+        ? Response.json({ ok: false, error: { code: "not_found", message: "Comic is no longer available" } }, { status: 404 })
+        : envelope(comic(false))));
     await act(async () => root.render(createElement(ComicReader, { id: "comic-a" })));
     await until(() => container.querySelectorAll("figure").length === 2);
     expect([...container.querySelectorAll("figcaption")].map((item) => item.textContent)).toEqual(["At the station", "On the train"]);

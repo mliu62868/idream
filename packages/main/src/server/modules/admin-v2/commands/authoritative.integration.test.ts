@@ -66,6 +66,14 @@ describe("Admin API v2 authoritative command routes", () => {
         { id: supportId, email: `${supportId}@example.test`, role: "support", status: "active" },
       ],
     });
+    // The FK added on 2026-09-12 makes an orphan Project unwritable, so this
+    // fixture now creates the Character it points at.
+    await prisma.character.create({
+      data: {
+        id: characterId, name: "Fixture character", age: 24,
+        description: "Dedicated test database only", appearance: {}, advancedDetails: {},
+      },
+    });
     await prisma.characterProject.create({
       data: {
         id: projectId,
@@ -94,7 +102,7 @@ describe("Admin API v2 authoritative command routes", () => {
         profileKey: creativeProfileId,
         label: "Command test creative profile",
         mode: "image",
-        runner: "pipeline",
+        runner: "comfyui",
         pipelineModel: "mock-image",
         runnerConfig: { verificationStatus: "passed" },
         allowedOrientations: ["portrait"],

@@ -38,7 +38,6 @@ export function RecipesNewPage() {
         RECIPES_LIST,
         "POST",
         recipeDraftPayload(draft),
-        { "idempotency-key": crypto.randomUUID() },
       );
       const newId = created.recipe?.id;
       window.location.href = newId ? `/admin/generation/recipes/${newId}` : "/admin/generation/recipes";

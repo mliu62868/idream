@@ -6,8 +6,6 @@ const store = vi.hoisted(() => ({
   admitAgentRun: vi.fn(async () => ({ duplicate: false, terminal: false })),
   appendAgentRunEvent: vi.fn(async () => undefined),
   completeAgentRun: vi.fn(async () => undefined),
-  fenceAgentRunAttempt: vi.fn(async () => undefined),
-  isAgentRunTombstoned: vi.fn(async () => false),
   listIncompleteAgentRuns: vi.fn<() => Promise<AgentRunRecoveryScan>>(
     async () => ({ runs: [], failures: [] }),
   ),
@@ -15,6 +13,10 @@ const store = vi.hoisted(() => ({
   readAgentRunInput: vi.fn(),
   readAgentRunProposal: vi.fn<() => Promise<AgentRunProposal | null>>(async () => null),
   writeAgentRunProposal: vi.fn(async () => undefined),
+}));
+const fence = vi.hoisted(() => ({
+  fenceAttemptsThrough: vi.fn(async () => undefined),
+  isFenced: vi.fn(async () => false),
 }));
 const runtime = vi.hoisted(() => ({
   runCompanion: vi.fn(),
@@ -33,6 +35,7 @@ const stream = vi.hoisted(() => ({
 }));
 
 vi.mock("./agent-run-store.js", () => store);
+vi.mock("./fence.js", () => fence);
 vi.mock("./agent-runtime/runtime.js", () => ({
   agentRuntimeProfileDigest: vi.fn(async () => "profile-digest"),
   agentRuntimeVersions: vi.fn(async () => ({

@@ -1,0 +1,29 @@
+{
+  "v": 1,
+  "schema": "igrep-image-context-v1",
+  "source_type": "pdf",
+  "source_path": "../../DIFFSYNTH_LTX25_INT4_VALIDATION_2026-09-05.pdf",
+  "images": {
+    "p7_img1.png": {
+      "image_name": "p7_img1.png",
+      "context_before": "本轮生成的同一场景，未挑选不同 seed。",
+      "context_after": "均匀抽帧及第 84 帧（最低 SSIM）人工复查：人物脸部外观与海边构图延续，未见明显脸部结构崩坏；候",
+      "heading_path": [],
+      "page": 7,
+      "bbox": [
+        58.13779830932617,
+        151.59991455078125,
+        537.1378173828125,
+        540.7999267578125
+      ],
+      "page_text_len": 411,
+      "paragraph_index": null,
+      "slide_index": null,
+      "slide_title": null,
+      "extra": {
+        "width": 1536,
+        "height": 1248
+      }
+    }
+  }
+}

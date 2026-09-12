@@ -276,3 +276,48 @@ export const CROSS_SERVICE_ENV_KEYS = [
   "PIPELINE_API_URL",
   "PIPELINE_API_TOKEN",
 ] as const;
+
+/**
+ * SPEC: where each generation modality's ComfyUI listener lives, given a set of
+ * environment variables.
+ *
+ * INTENT: this fallback chain existed three times — gen's own `env.ts`, Main's
+ * `recovery-service-environment.ts`, and the launch gate's `genComfyUiAuthority`.
+ * Main cannot import gen (deliberately: the web tier does not depend on the
+ * worker), so "keep them in sync" was the whole mechanism, and the recovery copy
+ * says so out loud: `INVARIANT: match Gen's modality-specific runtime fallbacks`.
+ * An invariant a person has to uphold by remembering is the shape this repo has
+ * already been bitten by twice, both times as a probe that resolved a different
+ * endpoint than the worker it was vouching for.
+ *
+ * INVARIANT: H3 never inherits `COMFYUI_API_URL`. That variable is the legacy
+ * shared image+video endpoint; H3 runs its own listener, and letting it fall
+ * back would point a launch check at a process that is not serving H3.
+ *
+ * Takes an env map rather than reading `process.env`, so the same function
+ * answers for the current process, for a parsed `.env` file, and for a test.
+ */
+export const COMFYUI_MODALITY_DEFAULT_ENDPOINTS = {
+  image: "http://127.0.0.1:8189",
+  video: "http://127.0.0.1:8188",
+  h3: "http://127.0.0.1:8190",
+} as const;
+
+export type ComfyUiModality = keyof typeof COMFYUI_MODALITY_DEFAULT_ENDPOINTS;
+
+export function comfyUiEndpoint(
+  env: Readonly<Record<string, string | undefined>>,
+  modality: ComfyUiModality,
+): string {
+  // INVARIANT: `??`, not a truthiness test. Setting `COMFYUI_IMAGE_API_URL=` to
+  // the empty string is an explicit "this modality has no endpoint", and it must
+  // survive rather than silently fall back to the shared legacy URL — an
+  // operator who cleared it would otherwise get a launch check that passes
+  // against a listener they deliberately took out of the topology.
+  const specific = env[`COMFYUI_${modality.toUpperCase()}_API_URL`];
+  if (specific !== undefined) return specific;
+  if (modality !== "h3" && env.COMFYUI_API_URL !== undefined) {
+    return env.COMFYUI_API_URL;
+  }
+  return COMFYUI_MODALITY_DEFAULT_ENDPOINTS[modality];
+}

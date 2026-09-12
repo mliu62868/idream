@@ -21,7 +21,6 @@ export function POST(request: Request) {
           type: "media_asset_batch",
           id: body.assetIds.join(","),
         }),
-        reason: (body) => body.reason,
         mutate: (tx, { actor, body, requestId }) => bulkPatchContentAssets({
           request,
           actor,

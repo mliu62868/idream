@@ -6,6 +6,16 @@ import path from "node:path";
 import type { ChatAuthoritySnapshot } from "@idream/shared/bff";
 import type { ChatExecutionSnapshot, ChatTerminalCommit } from "@idream/shared/contracts";
 import { env } from "./env.js";
+import {
+  assertNotFenced,
+  fenceAttemptsThrough,
+  fenceKey,
+  fenceTurn,
+  fenceUser,
+  isFenced,
+  withFenceLock,
+  writeTurnFence,
+} from "./fence.js";
 
 export interface AgentRunInput {
   schemaVersion: 1;
@@ -54,12 +64,6 @@ export interface AgentRunRecoveryScan {
   failures: AgentRunRecoveryFailure[];
 }
 
-interface AgentRunTombstone {
-  schemaVersion: 1;
-  throughAttempt: number | null;
-  updatedAt: string;
-}
-
 interface AgentRunIndex {
   schemaVersion: 1;
   turnId: string;
@@ -71,8 +75,6 @@ interface AgentRunIndex {
 }
 
 const FAILED_TRACE_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
-
-const admissionTails = new Map<string, Promise<void>>();
 
 function safeSegment(value: string): string {
   if (!value || !/^[A-Za-z0-9._:-]+$/u.test(value) || value.includes("..")) {
@@ -109,23 +111,13 @@ function assistantIndexFile(assistantMessageId: string): string {
   return path.join(root, "run-index", "assistant", `${safeSegment(assistantMessageId)}.json`);
 }
 
-function tombstoneFile(turnId: string): string {
-  const root = path.resolve(env.CHAT_FS_ROOT);
-  return path.join(root, "run-tombstones", `${safeSegment(turnId)}.json`);
-}
-
-function userTombstoneFile(userId: string): string {
-  const root = path.resolve(env.CHAT_FS_ROOT);
-  return path.join(root, "user-tombstones", `${sha256(userId)}.json`);
-}
-
 export async function admitAgentRun(
   input: AgentRunInput,
 ): Promise<{ duplicate: boolean; terminal: boolean; tombstoned?: true }> {
-  return withAdmissionLock(
-    `user:${input.snapshot.userId}`,
-    () => withAdmissionLock(
-      `turn:${input.snapshot.turnId}`,
+  return withFenceLock(
+    fenceKey({ scope: "user", userId: input.snapshot.userId }),
+    () => withFenceLock(
+      fenceKey({ scope: "turn", turnId: input.snapshot.turnId }),
       () => admitAgentRunUnlocked(input),
     ),
   );
@@ -135,8 +127,12 @@ async function admitAgentRunUnlocked(
   input: AgentRunInput,
 ): Promise<{ duplicate: boolean; terminal: boolean; tombstoned?: true }> {
   if (
-    await isUserTombstoned(input.snapshot.userId) ||
-    await isAgentRunTombstoned(input.snapshot.turnId, input.snapshot.attempt)
+    await isFenced({ scope: "user", userId: input.snapshot.userId }) ||
+    await isFenced({
+      scope: "attempt",
+      turnId: input.snapshot.turnId,
+      attempt: input.snapshot.attempt,
+    })
   ) {
     return { duplicate: false, terminal: false, tombstoned: true };
   }
@@ -210,8 +206,8 @@ export async function appendAgentRunEvent(
   kind: string,
   payload: unknown,
 ): Promise<AgentRunEvent> {
-  return withAdmissionLock(`turn:${turnId}`, async () => {
-    assertNotTombstoned(turnId, attempt, await readAgentRunTombstone(turnId));
+  return withFenceLock(fenceKey({ scope: "turn", turnId }), async () => {
+    await assertRunWritable(turnId, attempt);
     return appendAgentRunEventUnlocked(turnId, attempt, kind, payload);
   });
 }
@@ -247,8 +243,8 @@ export async function completeAgentRun(
   attempt: number,
   completion: Omit<AgentRunCompletion, "schemaVersion" | "expiresAt">,
 ): Promise<void> {
-  return withAdmissionLock(`turn:${turnId}`, async () => {
-    assertNotTombstoned(turnId, attempt, await readAgentRunTombstone(turnId));
+  return withFenceLock(fenceKey({ scope: "turn", turnId }), async () => {
+    await assertRunWritable(turnId, attempt);
     const input = await readAgentRunInput(turnId, attempt);
     if (!input) throw new Error("AgentRun input is missing at completion");
     const expiresAt = new Date(
@@ -279,8 +275,8 @@ export async function writeAgentRunProposal(
   attempt: number,
   proposal: AgentRunProposal,
 ): Promise<void> {
-  return withAdmissionLock(`turn:${turnId}`, async () => {
-    assertNotTombstoned(turnId, attempt, await readAgentRunTombstone(turnId));
+  return withFenceLock(fenceKey({ scope: "turn", turnId }), async () => {
+    await assertRunWritable(turnId, attempt);
     await writeAgentRunProposalUnlocked(turnId, attempt, proposal);
   });
 }
@@ -351,9 +347,12 @@ export async function listIncompleteAgentRuns(): Promise<AgentRunRecoveryScan> {
       }
       if (!input) continue;
       try {
+        // A fenced user's leftover input must never be recovered into a live
+        // run; that is the one path that can recreate erased bytes at boot.
         if (
           !await exists(completionFile(turn, attempt))
-          && !await isAgentRunTombstoned(turn, attempt)
+          && !await isFenced({ scope: "attempt", turnId: turn, attempt })
+          && !await isFenced({ scope: "user", userId: input.snapshot.userId })
         ) {
           runs.push({ turnId: turn, attempt, userId: input.snapshot.userId });
         }
@@ -412,22 +411,11 @@ async function cleanupExpiredAgentRuns(now = Date.now()): Promise<AgentRunRecove
 
 /** Account erasure removes only local execution evidence for the exact user. */
 export async function purgeAgentRunsForUser(userId: string): Promise<number> {
-  return withAdmissionLock(`user:${userId}`, async () => {
-    await writeUserTombstone(userId);
-    return purgeAgentRunsForUserUnlocked(userId);
-  });
-}
-
-/** Permanently reject new admissions before account erasure drains active work. */
-export async function fenceAgentRunsForUser(userId: string): Promise<void> {
-  await withAdmissionLock(`user:${userId}`, () => writeUserTombstone(userId));
-}
-
-async function writeUserTombstone(userId: string): Promise<void> {
-  await atomicWrite(userTombstoneFile(userId), `${JSON.stringify({
-    schemaVersion: 1,
-    deletedAt: new Date().toISOString(),
-  })}\n`);
+  await fenceUser(userId);
+  return withFenceLock(
+    fenceKey({ scope: "user", userId }),
+    () => purgeAgentRunsForUserUnlocked(userId),
+  );
 }
 
 async function purgeAgentRunsForUserUnlocked(userId: string): Promise<number> {
@@ -452,10 +440,11 @@ async function purgeAgentRunsForUserUnlocked(userId: string): Promise<number> {
 
 /** Product correction erases every local attempt and index for one exact Turn. */
 export async function purgeAgentRunsForTurn(turnId: string): Promise<number> {
-  return withAdmissionLock(`turn:${turnId}`, async () => {
-    await writeAgentRunTombstoneUnlocked(turnId, null);
-    return purgeAgentRunDirectoriesUnlocked(turnId, null);
-  });
+  await fenceTurn(turnId);
+  return withFenceLock(
+    fenceKey({ scope: "turn", turnId }),
+    () => purgeAgentRunDirectoriesUnlocked(turnId, null),
+  );
 }
 
 /** Regeneration erases only superseded attempts and leaves the new attempt legal. */
@@ -463,29 +452,22 @@ export async function purgeAgentRunsThroughAttempt(
   turnId: string,
   throughAttempt: number,
 ): Promise<number> {
-  if (!Number.isSafeInteger(throughAttempt) || throughAttempt < 1) {
-    throw new Error("AgentRun purge fence requires a positive attempt");
-  }
-  return withAdmissionLock(`turn:${turnId}`, async () => {
-    await writeAgentRunTombstoneUnlocked(turnId, throughAttempt);
-    return purgeAgentRunDirectoriesUnlocked(turnId, throughAttempt);
-  });
-}
-
-export async function fenceAgentRunAttempt(turnId: string, attempt: number): Promise<void> {
-  await withAdmissionLock(
-    `turn:${turnId}`,
-    () => writeAgentRunTombstoneUnlocked(turnId, attempt),
+  await fenceAttemptsThrough(turnId, throughAttempt);
+  return withFenceLock(
+    fenceKey({ scope: "turn", turnId }),
+    () => purgeAgentRunDirectoriesUnlocked(turnId, throughAttempt),
   );
 }
 
-export async function isAgentRunTombstoned(turnId: string, attempt: number): Promise<boolean> {
-  const tombstone = await readAgentRunTombstone(turnId);
-  return Boolean(tombstone && (tombstone.throughAttempt === null || attempt <= tombstone.throughAttempt));
-}
-
-export async function isUserTombstoned(userId: string): Promise<boolean> {
-  return exists(userTombstoneFile(userId));
+// INVARIANT: 一次写入要同时过 attempt fence 和「这条 run 属于谁」的用户 fence。
+// 只查 attempt 的话，账号擦除已经 fence 掉该用户、却仍在跑的那一轮，还能把
+// proposal 和 completion 写回刚被清空的目录里。
+async function assertRunWritable(turnId: string, attempt: number): Promise<void> {
+  const input = await readAgentRunInput(turnId, attempt);
+  await assertNotFenced([
+    { scope: "attempt", turnId, attempt },
+    ...(input ? [{ scope: "user", userId: input.snapshot.userId } as const] : []),
+  ]);
 }
 
 async function purgeAgentRunDirectoriesUnlocked(
@@ -522,41 +504,6 @@ async function purgeAgentRunIndexes(
     const target = path.join(root, name);
     const index = await readJsonFile<AgentRunIndex>(target);
     if (index && matches(index)) await rm(target, { force: true });
-  }
-}
-
-async function readAgentRunTombstone(turnId: string): Promise<AgentRunTombstone | null> {
-  try {
-    return JSON.parse(await readFile(tombstoneFile(turnId), "utf8")) as AgentRunTombstone;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
-  }
-}
-
-async function writeAgentRunTombstoneUnlocked(
-  turnId: string,
-  throughAttempt: number | null,
-): Promise<void> {
-  const prior = await readAgentRunTombstone(turnId);
-  const nextAttempt = prior?.throughAttempt === null || throughAttempt === null
-    ? null
-    : Math.max(prior?.throughAttempt ?? 0, throughAttempt);
-  if (prior && prior.throughAttempt === nextAttempt) return;
-  await atomicWrite(tombstoneFile(turnId), `${JSON.stringify({
-    schemaVersion: 1,
-    throughAttempt: nextAttempt,
-    updatedAt: new Date().toISOString(),
-  } satisfies AgentRunTombstone)}\n`);
-}
-
-function assertNotTombstoned(
-  turnId: string,
-  attempt: number,
-  tombstone: AgentRunTombstone | null,
-): void {
-  if (tombstone && (tombstone.throughAttempt === null || attempt <= tombstone.throughAttempt)) {
-    throw new Error(`AgentRun ${turnId}:${attempt} is fenced`);
   }
 }
 
@@ -734,19 +681,3 @@ function isDateString(value: unknown): value is string {
   return typeof value === "string" && Number.isFinite(Date.parse(value));
 }
 
-async function withAdmissionLock<T>(key: string, action: () => Promise<T>): Promise<T> {
-  const previous = admissionTails.get(key) ?? Promise.resolve();
-  let release!: () => void;
-  const gate = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const tail = previous.then(() => gate);
-  admissionTails.set(key, tail);
-  await previous;
-  try {
-    return await action();
-  } finally {
-    release();
-    if (admissionTails.get(key) === tail) admissionTails.delete(key);
-  }
-}

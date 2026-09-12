@@ -279,7 +279,6 @@ export function VisualIdentityExperimentWorkbench({
     useState("");
   const [activationReason, setActivationReason] = useState("");
   const [activationConfirmed, setActivationConfirmed] = useState(false);
-  const idempotencyKeys = useRef(new Map<string, string>());
   const sourceFileInput = useRef<HTMLInputElement>(null);
   const resolvedOrientation = selectedProfile?.allowedOrientations.includes(
     orientation,
@@ -537,7 +536,8 @@ export function VisualIdentityExperimentWorkbench({
         "POST /api/v2/admin/characters/:id/image-sources",
         {
           path: { id: data.character.id },
-          idempotencyKey: crypto.randomUUID(),
+          // SPEC: 上传的意图由「哪个文件」定义 —— form 不进签名，没有它两次不同的上传会共用一把键。
+          intent: `${file.name}:${file.size}:${file.lastModified}`,
           form,
         },
       );
@@ -599,19 +599,13 @@ export function VisualIdentityExperimentWorkbench({
       );
       return;
     }
-    const signature = JSON.stringify(parsed.data);
-    const idempotencyKey =
-      idempotencyKeys.current.get(signature) ?? crypto.randomUUID();
-    idempotencyKeys.current.set(signature, idempotencyKey);
     setBusy("generate");
     setError(null);
     setNotice(null);
     try {
       const result = await adminV2Operation("POST /api/v2/admin/creative/runs", {
-        idempotencyKey,
         body: parsed.data,
       });
-      idempotencyKeys.current.delete(signature);
       const detail = await loadRun(result.batch.id);
       await loadRuns();
       setResultOpen(true);
@@ -691,10 +685,6 @@ export function VisualIdentityExperimentWorkbench({
       },
       reason: "已确认候选图为单人单画面并符合视觉身份要求",
     };
-    const signature = `${selectedRun.id}:${selectedItem.id}:${JSON.stringify(body)}`;
-    const idempotencyKey =
-      idempotencyKeys.current.get(signature) ?? crypto.randomUUID();
-    idempotencyKeys.current.set(signature, idempotencyKey);
     setBusy("review");
     setError(null);
     try {
@@ -702,11 +692,9 @@ export function VisualIdentityExperimentWorkbench({
         "POST /api/v2/admin/creative/runs/:id/items/:itemId/decisions",
         {
           path: { id: selectedRun.id, itemId: selectedItem.id },
-          idempotencyKey,
           body,
         },
       );
-      idempotencyKeys.current.delete(signature);
       await loadRun(selectedRun.id);
       await loadRuns();
       setCandidateQualityConfirmed(false);

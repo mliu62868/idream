@@ -1,7 +1,8 @@
 "use client";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { apiGet, apiWrite } from "@/components/admin/api";
+import { apiGet } from "@/components/admin/api";
+import { adminV2Operation } from "@/lib/admin-v2-operation";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { useAdminFormat } from "@/components/admin/ui/format";
 import { DetailPage, DetailSection } from "@/components/admin/ui/DetailPage";
@@ -35,7 +36,6 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
   const [error, setError] = useState<string | null>(null);
   const [refreshWarning, setRefreshWarning] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingAction>(null);
-  const [transitionKeys, setTransitionKeys] = useState<Record<string, string>>({});
   const { feedback, reportSuccess, clearFeedback } = useWriteFeedback();
 
   const reload = useCallback(async (propagateError = false) => {
@@ -69,25 +69,10 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
         title: t("Pause"),
         submitLabel: t("Pause"),
         onSubmit: async (reason) => {
-          const signature = `${id}:${row.version}:paused`;
-          const idempotencyKey = transitionKeys[signature] ?? crypto.randomUUID();
-          setTransitionKeys((current) => ({
-            ...current,
-            [signature]: current[signature] ?? idempotencyKey,
-          }));
-          await apiWrite(
-            `${PLACEMENTS_BASE}/${id}`,
-            "PATCH",
-            placementPatchPayload(id, "paused", reason),
-            {
-              "idempotency-key": idempotencyKey,
-              "if-match": `"${row.version}"`,
-            },
-          );
-          setTransitionKeys((current) => {
-            const next = { ...current };
-            delete next[signature];
-            return next;
+          await adminV2Operation("PATCH /api/v2/admin/content/placements/:id", {
+            path: { id },
+            ifMatch: row.version,
+            body: placementPatchPayload(id, "paused", reason),
           });
           reportSuccess(t("Paused. {slot} stops serving immediately.", { slot: value(row.slot) }));
           try {
@@ -108,25 +93,10 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
       destructive: { expectedName: row.slot },
       submitLabel: t("Archive"),
       onSubmit: async (reason) => {
-        const signature = `${id}:${row.version}:archived`;
-        const idempotencyKey = transitionKeys[signature] ?? crypto.randomUUID();
-        setTransitionKeys((current) => ({
-          ...current,
-          [signature]: current[signature] ?? idempotencyKey,
-        }));
-        await apiWrite(
-          `${PLACEMENTS_BASE}/${id}`,
-          "PATCH",
-          placementPatchPayload(id, "archived", reason),
-          {
-            "idempotency-key": idempotencyKey,
-            "if-match": `"${row.version}"`,
-            },
-          );
-        setTransitionKeys((current) => {
-          const next = { ...current };
-          delete next[signature];
-          return next;
+        await adminV2Operation("PATCH /api/v2/admin/content/placements/:id", {
+          path: { id },
+          ifMatch: row.version,
+          body: placementPatchPayload(id, "archived", reason),
         });
         reportSuccess(t("Archived. {slot} is retired and will not serve again.", { slot: value(row.slot) }));
         try {
@@ -141,7 +111,7 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
         }
       },
     };
-  }, [pending, row, id, t, value, reload, reportSuccess, transitionKeys]);
+  }, [pending, row, id, t, value, reload, reportSuccess]);
 
   if (loading) {
     return <LoadingWorkspace label="Loading…" />;

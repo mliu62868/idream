@@ -16,6 +16,7 @@ import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestErr
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
 import { adminV2Request, setWorkspaceUrl } from "@/lib/admin-v2-api";
+import { adminV2Operation } from "@/lib/admin-v2-operation";
 import { createWorkspaceHistoryController, observeWorkspacePopState, workspaceDetailId } from "@/lib/workspace-history";
 import { CollaborationPanel } from "@/features/collaboration/CollaborationPanel";
 import { SavedViewsControl } from "@/features/collaboration/SavedViewsControl";
@@ -338,10 +339,6 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
   const [reason, setReason] = useState("");
   const [action, setAction] = useState<PlanAction>("retry_eligible");
   const [targetVersion, setTargetVersion] = useState(incident.rollbackTarget ?? "");
-  const [resolveIdempotencyKey] = useState(() => crypto.randomUUID());
-  const [verificationIdempotencyKey, setVerificationIdempotencyKey] = useState(() => crypto.randomUUID());
-  const [verificationOverrideIdempotencyKey, setVerificationOverrideIdempotencyKey] = useState(() => crypto.randomUUID());
-  const [closeIdempotencyKey] = useState(() => crypto.randomUUID());
   const [evidence, setEvidence] = useState("");
   const [verificationOverrideReason, setVerificationOverrideReason] = useState("");
   const [selectedOccurrenceIds, setSelectedOccurrenceIds] = useState<string[]>([]);
@@ -375,7 +372,6 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
   ].filter((item): item is string => item !== null);
 
   function executePlan(plan: IncidentActionPlan) {
-    const idempotencyKey = crypto.randomUUID();
     const expected = `${incident.id}:${plan.id}:${plan.action}`;
     setConfirm({
       title: t("Execute frozen {action} plan", { action: t(plan.action.replaceAll("_", " ")) }),
@@ -384,15 +380,17 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
       // 契约 incidentActionPlanExecuteRequestSchema 只收 entityVersion + confirmation，没有 reason 字段。
       requireReason: false,
       submitLabel: t("Execute frozen plan"),
-      onSubmit: () => onCommand("Mitigation plan executed", () => adminV2Request(
-        `/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/action-plans/${encodeURIComponent(plan.id)}/execute`,
-        { method: "POST", idempotencyKey, body: { entityVersion: incident.version, confirmation: expected } },
+      onSubmit: () => onCommand("Mitigation plan executed", () => adminV2Operation(
+        "POST /api/v2/admin/incidents/:id/action-plans/:planId/execute",
+        {
+          path: { id: incident.id, planId: plan.id },
+          body: { entityVersion: incident.version, confirmation: expected },
+        },
       )),
     });
   }
 
   function splitOccurrences() {
-    const idempotencyKey = crypto.randomUUID();
     const expected = `${incident.id}:split:${splitIds.join(",")}`;
     setConfirm({
       title: t("Split {count} occurrences into a new Incident", { count: splitIds.length }),
@@ -403,15 +401,17 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
       destructive: { expectedName: expected, inputLabel: t("Split confirmation") },
       reasonLabel: t("Split reason (≥3)"),
       submitLabel: t("Split selected"),
-      onSubmit: (splitReason) => onCommand("Selected occurrences split into a new Incident", () => adminV2Request(
-        `/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/commands/split`,
-        { method: "POST", idempotencyKey, body: { entityVersion: incident.version, occurrenceIds: splitIds, reason: splitReason, confirmation: expected } },
+      onSubmit: (splitReason) => onCommand("Selected occurrences split into a new Incident", () => adminV2Operation(
+        "POST /api/v2/admin/incidents/:id/commands/split",
+        {
+          path: { id: incident.id },
+          body: { entityVersion: incident.version, occurrenceIds: splitIds, reason: splitReason, confirmation: expected },
+        },
       )),
     });
   }
 
   function mergeIncidents() {
-    const idempotencyKey = crypto.randomUUID();
     const expected = `${incident.id}:merge:${mergeSourceIds.join(",")}`;
     setConfirm({
       title: t("Merge {count} Incidents into this one", { count: mergeSourceIds.length }),
@@ -422,9 +422,12 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
       destructive: { expectedName: expected, inputLabel: t("Merge confirmation") },
       reasonLabel: t("Merge reason (≥3)"),
       submitLabel: t("Merge sources"),
-      onSubmit: (mergeReason) => onCommand("Incidents merged with assignment history", () => adminV2Request(
-        `/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/commands/merge`,
-        { method: "POST", idempotencyKey, body: { entityVersion: incident.version, sources: mergeSourceRecords, reason: mergeReason, confirmation: expected } },
+      onSubmit: (mergeReason) => onCommand("Incidents merged with assignment history", () => adminV2Operation(
+        "POST /api/v2/admin/incidents/:id/commands/merge",
+        {
+          path: { id: incident.id },
+          body: { entityVersion: incident.version, sources: mergeSourceRecords, reason: mergeReason, confirmation: expected },
+        },
       )),
     });
   }
@@ -541,7 +544,10 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
 
         {canManage ? (
           <>
-            <form className="space-y-3 border-t border-[var(--ad-border)] pt-5" onSubmit={(event) => { event.preventDefault(); void onMutate("Incident triage saved", () => adminV2Request(`/api/v2/admin/incidents/${encodeURIComponent(incident.id)}`, { method: "PATCH", body: { entityVersion: incident.version, ownerId: ownerId.trim() || null, severity, suspectedCause: cause.trim() || undefined, reason: reason.trim() } })); }}>
+            {/* INTENT: 这个表单以前手写路由发 PATCH，没带 if-match —— 服务端 requireMatchingIfMatch
+                一律 400，「保存分诊」从来没成功过一次。走 operation id 之后 manifest 的
+                `+if-match` 变成编译期必填，漏传写不出来。 */}
+            <form className="space-y-3 border-t border-[var(--ad-border)] pt-5" onSubmit={(event) => { event.preventDefault(); void onMutate("Incident triage saved", () => adminV2Operation("PATCH /api/v2/admin/incidents/:id", { path: { id: incident.id }, ifMatch: incident.version, body: { entityVersion: incident.version, ownerId: ownerId.trim() || null, severity, suspectedCause: cause.trim() || undefined, reason: reason.trim() } })); }}>
               <h4 className="text-sm font-semibold">{t("Triage")}</h4>
               <div className="grid gap-3 sm:grid-cols-2"><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Owner ID")}<input className={fieldClass} onChange={(event) => setOwnerId(event.target.value)} value={ownerId} /></label><Select label="Severity" onChange={(value) => setSeverity(value as OpsIncident["severity"])} options={["critical", "high", "medium", "low"]} value={severity} /></div>
               <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Suspected cause")}<textarea className={textAreaClass} onChange={(event) => setCause(event.target.value)} value={cause} /></label>
@@ -558,9 +564,12 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
               {/* 预览是一次写操作（冻结一份 eligibility 快照），后端强制 idempotency-key。 */}
               <WorkspaceButton
                 disabled={busy || (action === "rollback" && !targetVersion.trim())}
-                onClick={() => void onMutate("Frozen mitigation preview created", () => adminV2Request(
-                  `/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/action-plans/preview`,
-                  { method: "POST", idempotencyKey: crypto.randomUUID(), body: { action, targetVersion: action === "rollback" ? targetVersion : undefined } },
+                onClick={() => void onMutate("Frozen mitigation preview created", () => adminV2Operation(
+                  "POST /api/v2/admin/incidents/:id/action-plans/preview",
+                  {
+                    path: { id: incident.id },
+                    body: { action, targetVersion: action === "rollback" ? targetVersion : undefined },
+                  },
                 ))}
               >{t("Preview eligible scope")}</WorkspaceButton>
 
@@ -635,19 +644,14 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
                   disabled={busy || !canVerify}
                   onClick={() => void onMutate(
                     "Authority recovery verification evaluated",
-                    async () => {
-                      const result = await adminV2Request(`/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/verification`, {
-                        method: "POST",
-                        idempotencyKey: verificationIdempotencyKey,
-                        body: {
-                          entityVersion: incident.version,
-                          mode: "derive",
-                          evidenceRefs: evidence.trim() ? [evidence.trim()] : [],
-                        },
-                      });
-                      setVerificationIdempotencyKey(crypto.randomUUID());
-                      return result;
-                    },
+                    () => adminV2Operation("POST /api/v2/admin/incidents/:id/verification", {
+                      path: { id: incident.id },
+                      body: {
+                        entityVersion: incident.version,
+                        mode: "derive",
+                        evidenceRefs: evidence.trim() ? [evidence.trim()] : [],
+                      },
+                    }),
                   )}
                 >
                   <CheckCircle2 className="h-4 w-4" />{t("Run authority verification")}
@@ -656,9 +660,8 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
                   disabled={busy || !canResolve || reason.trim().length < 3}
                   onClick={() => void onMutate(
                     "Incident resolve command accepted",
-                    () => adminV2Request(`/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/commands/resolve`, {
-                      method: "POST",
-                      idempotencyKey: resolveIdempotencyKey,
+                    () => adminV2Operation("POST /api/v2/admin/incidents/:id/commands/resolve", {
+                      path: { id: incident.id },
                       body: {
                         entityVersion: incident.version,
                         reason: { code: "recovery_verified", summary: reason.trim() },
@@ -679,7 +682,7 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
                 <summary className="cursor-pointer text-xs font-semibold">{t("Exceptional override")}</summary>
                 <p className="mt-2 text-xs leading-5 text-[var(--ad-text-muted)]">{t("Override does not change any derived check. It requires durable evidence and an audited reason.")}</p>
                 <label className="mt-3 grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Override reason")}<textarea className={textAreaClass} onChange={(event) => setVerificationOverrideReason(event.target.value)} value={verificationOverrideReason} /></label>
-                <div className="mt-3"><WorkspaceButton disabled={busy || !canVerify || !evidence.trim() || verificationOverrideReason.trim().length < 10} tone="danger" onClick={() => void onMutate("Recovery verification explicitly overridden", async () => { const result = await adminV2Request(`/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/verification`, { method: "POST", idempotencyKey: verificationOverrideIdempotencyKey, body: { entityVersion: incident.version, mode: "override", evidenceRefs: [evidence.trim()], overrideReason: verificationOverrideReason.trim() } }); setVerificationOverrideIdempotencyKey(crypto.randomUUID()); return result; })}>{t("Override with audit")}</WorkspaceButton></div>
+                <div className="mt-3"><WorkspaceButton disabled={busy || !canVerify || !evidence.trim() || verificationOverrideReason.trim().length < 10} tone="danger" onClick={() => void onMutate("Recovery verification explicitly overridden", () => adminV2Operation("POST /api/v2/admin/incidents/:id/verification", { path: { id: incident.id }, body: { entityVersion: incident.version, mode: "override", evidenceRefs: [evidence.trim()], overrideReason: verificationOverrideReason.trim() } }))}>{t("Override with audit")}</WorkspaceButton></div>
               </details>
               {!canVerify ? (
                 <p className="text-xs text-[var(--ad-yellow-text)]">
@@ -706,7 +709,7 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
                 ) : null}
                 <WorkspaceButton
                   disabled={busy || closeBlockers.length > 0}
-                  onClick={() => void onMutate("Postmortem recorded and Incident closed", () => adminV2Request(`/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/commands/close`, { method: "POST", idempotencyKey: closeIdempotencyKey, body: { entityVersion: incident.version, summary: postmortemSummary.trim(), rootCause: rootCause.trim(), contributingFactors: contributingFactors.split("\n").map((item) => item.trim()).filter(Boolean), correctiveActions: correctiveActions.split("\n").map((item) => item.trim()).filter(Boolean), evidenceRefs: [evidence.trim()], reason: closeReason.trim(), confirmation: closeConfirmation } }))}
+                  onClick={() => void onMutate("Postmortem recorded and Incident closed", () => adminV2Operation("POST /api/v2/admin/incidents/:id/commands/close", { path: { id: incident.id }, body: { entityVersion: incident.version, summary: postmortemSummary.trim(), rootCause: rootCause.trim(), contributingFactors: contributingFactors.split("\n").map((item) => item.trim()).filter(Boolean), correctiveActions: correctiveActions.split("\n").map((item) => item.trim()).filter(Boolean), evidenceRefs: [evidence.trim()], reason: closeReason.trim(), confirmation: closeConfirmation } }))}
                   tone="primary"
                 >{t("Record postmortem and close")}</WorkspaceButton>
               </section>

@@ -5,11 +5,15 @@ import Link from "next/link";
 import { ArrowDown, ArrowUp, Plus, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { comicDetailSchema, comicManifestSchema, type ComicDetail, type ComicManifest } from "@idream/shared/comics";
-import { parseAuthMeResponse, parsePublicApiError, parseWorkspaceMediaResponse, type RuntimeWorkspaceMediaItem } from "@/lib/public-api-contracts";
+import { parsePublicApiError, parseWorkspaceMediaResponse, type RuntimeWorkspaceMediaItem } from "@/lib/public-api-contracts";
+import { useViewerGate } from "@/hooks/useViewerGate";
+import { isAbortError, loadViewerResource } from "@/lib/viewer-resource-client";
 import { useAgeGateAccess } from "./AgeGateBoundary";
-import { comicButton, comicInput, comicRequest } from "./comic-client";
+import { comicButton, comicInput, comicPayload } from "./comic-client";
 import { ComicShell } from "./ComicShell";
 import { authHrefForTarget } from "./authRedirect";
+
+const parseComic = comicPayload(comicDetailSchema);
 
 const emptyManifest: ComicManifest = { title: "", description: "", visibility: "private", allowRemix: false, episodes: [{ title: "Chapter 1", pages: [] }] };
 function manifestFromComic(comic: ComicDetail): ComicManifest {
@@ -34,14 +38,15 @@ export function ComicStudio({ id }: { id?: string }) {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [chapter, setChapter] = useState(0);
-  const [checkingViewer, setCheckingViewer] = useState(false);
   const [viewerChanged, setViewerChanged] = useState(false);
+  // SPEC: the editor is locked, not reloaded, when the signed-in account moves.
+  // INTENT: every other gated surface answers an account change by re-reading.
+  // This one holds an unsaved draft, so re-reading would either discard the
+  // author's work or, worse, leave it on screen for whoever is signed in now to
+  // submit. The gate supplies the one fact — who the server says is looking —
+  // and this surface keeps its own, stricter answer to it.
+  const viewer = useViewerGate();
   const authorId = useRef<string | null>(null);
-  const viewerEpoch = useRef(0);
-  const viewerController = useRef<AbortController | null>(null);
-  const galleryController = useRef<AbortController | null>(null);
-  const writeController = useRef<AbortController | null>(null);
-  const loadController = useRef<AbortController | null>(null);
   const dirtyRef = useRef(false);
   const editable = (!id || Boolean(comic?.canManage)) && (!comic || ["draft", "withdrawn"].includes(comic.status));
   const disabled = loading || writing || viewerChanged || !editable;
@@ -49,75 +54,82 @@ export function ComicStudio({ id }: { id?: string }) {
   // synchronously after saving, before React can re-register a clean listener.
   const markDirty = useCallback((value: boolean) => { dirtyRef.current = value; setDirty(value); }, []);
 
+  const gatedFetch = viewer.fetch;
   const load = useCallback(async () => {
     if (!id) return;
-    loadController.current?.abort();
-    const controller = new AbortController(); loadController.current = controller;
     setComic(null); setManifest(emptyManifest); setLoading(true); setError(""); markDirty(false);
-    try {
-      const result = await comicRequest(`/api/v1/comics/${encodeURIComponent(id)}`, comicDetailSchema, { signal: controller.signal });
-      if (controller.signal.aborted) return;
-      if (!result.canManage) throw new Error("Only this Comic’s creator can edit it.");
-      authorId.current = result.creator.id;
-      setComic(result); setManifest(manifestFromComic(result));
-    } catch (cause) { if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : "Comic could not load."); }
-    finally { if (!controller.signal.aborted) setLoading(false); }
-  }, [id, markDirty]);
+    const outcome = await loadViewerResource({
+      path: `/api/v1/comics/${encodeURIComponent(id)}`,
+      parse: parseComic,
+      fallbackError: "Comic could not load.",
+      init: { cache: "no-store" },
+    }, gatedFetch);
+    if (outcome.kind === "discarded") return;
+    setLoading(false);
+    if (outcome.kind === "failed") { setError(outcome.error); return; }
+    if (!outcome.data.canManage) { setError("Only this Comic’s creator can edit it."); return; }
+    authorId.current = outcome.data.creator.id;
+    setComic(outcome.data); setManifest(manifestFromComic(outcome.data));
+  }, [gatedFetch, id, markDirty]);
 
   const loadGallery = useCallback(async (cursor?: string) => {
-    galleryController.current?.abort();
-    const controller = new AbortController(); galleryController.current = controller;
     setGalleryLoading(true); setGalleryError("");
-    try {
-      if (!authorId.current) {
-        const authority = await fetch("/api/v1/me", { cache: "no-store", signal: controller.signal });
-        if (!authority.ok) throw new Error("Your account could not be verified. Reload the editor.");
-        const viewer = parseAuthMeResponse(await authority.json());
-        if (controller.signal.aborted) return;
-        authorId.current = viewer.user?.id ?? null;
+    const query = new URLSearchParams({ type: "image", limit: "24" });
+    if (cursor) query.set("cursor", cursor);
+    const outcome = await loadViewerResource({
+      path: `/api/v1/media?${query}`,
+      parse: parseWorkspaceMediaResponse,
+      fallbackError: "Gallery could not load.",
+      init: { cache: "no-store" },
+    }, async (input, init) => {
+      const response = await gatedFetch(input, init);
+      // INVARIANT: 401 is a navigation, not an error banner — the editor cannot
+      // do anything useful for a signed-out viewer, and the sign-in target has
+      // to carry this draft's own return path.
+      if (response.status === 401) {
+        window.location.assign(authHrefForTarget("/login", id ? `/creator-studio/comics/${encodeURIComponent(id)}` : "/creator-studio/comics/new"));
       }
-      const query = new URLSearchParams({ type: "image", limit: "24" });
-      if (cursor) query.set("cursor", cursor);
-      const response = await fetch(`/api/v1/media?${query}`, { signal: controller.signal, cache: "no-store" });
-      const raw: unknown = await response.json();
-      if (!response.ok) {
-        if (response.status === 401) {
-          window.location.assign(authHrefForTarget("/login", id ? `/creator-studio/comics/${encodeURIComponent(id)}` : "/creator-studio/comics/new")); return;
-        }
-        throw new Error(parsePublicApiError(raw)?.message ?? "Gallery could not load.");
-      }
-      const result = parseWorkspaceMediaResponse(raw);
-      if (controller.signal.aborted) return;
-      setGallery((current) => cursor ? [...current, ...result.items.filter((item) => !current.some((old) => old.id === item.id))] : result.items);
-      setGalleryCursor(result.nextCursor ?? null);
-    } catch (cause) { if (!controller.signal.aborted) setGalleryError(cause instanceof Error ? cause.message : "Gallery could not load."); }
-    finally { if (!controller.signal.aborted) setGalleryLoading(false); }
-  }, [id]);
+      return response;
+    });
+    if (outcome.kind === "discarded") return;
+    setGalleryLoading(false);
+    if (outcome.kind === "failed") { setGalleryError(outcome.error); return; }
+    setGallery((current) => cursor ? [...current, ...outcome.data.items.filter((item) => !current.some((old) => old.id === item.id))] : outcome.data.items);
+    setGalleryCursor(outcome.data.nextCursor ?? null);
+  }, [gatedFetch, id]);
 
+  // SPEC: the reads run once the server has named the viewer, and not again on
+  // re-validation.
+  // INTENT: the read-only surfaces depend on `viewer.revalidation` so a focus
+  // re-reads them. An editor must not: re-reading would overwrite the ordering
+  // and captions the author has typed but not saved. `confirmed` flips once,
+  // when the gate first has an identity to issue tickets against — and stays
+  // stable across a focus that confirms the same account, because the gate
+  // hands back the identity object it already had.
+  // The reads start on the next task: both set loading state on their way out,
+  // and setting state synchronously from an effect cascades renders.
+  const confirmed = viewer.identity !== null;
   useEffect(() => {
-    const initialLoad = window.setTimeout(() => { if (accepted) { void load(); void loadGallery(); } }, 0);
-    const verifyViewer = async () => {
-      viewerController.current?.abort();
-      const controller = new AbortController(); viewerController.current = controller;
-      setCheckingViewer(true);
-      try {
-        const response = await fetch("/api/v1/me", { cache: "no-store", signal: controller.signal });
-        if (!response.ok) throw new Error("Your account could not be verified. Reload the editor.");
-        const viewer = parseAuthMeResponse(await response.json());
-        if (controller.signal.aborted) return;
-        if (!viewer.user || viewer.user.id !== authorId.current) throw new Error("The signed-in account changed. Reload the editor for your current account.");
-      } catch (cause) {
-        if (controller.signal.aborted) return;
-        // A cookie change must not expose or submit the previous author's local draft.
-        viewerEpoch.current += 1;
-        loadController.current?.abort(); galleryController.current?.abort();
-        setComic(null); setManifest(emptyManifest); setGallery([]); markDirty(false); setViewerChanged(true);
-        setError(cause instanceof Error ? cause.message : "Your account could not be verified. Reload the editor.");
-      } finally { if (!controller.signal.aborted) setCheckingViewer(false); }
-    };
-    window.addEventListener("focus", verifyViewer);
-    return () => { window.clearTimeout(initialLoad); window.removeEventListener("focus", verifyViewer); viewerController.current?.abort(); loadController.current?.abort(); galleryController.current?.abort(); writeController.current?.abort(); };
-  }, [accepted, load, loadGallery, markDirty]);
+    if (!accepted || !confirmed) return;
+    const start = window.setTimeout(() => { void load(); void loadGallery(); }, 0);
+    return () => window.clearTimeout(start);
+  }, [accepted, confirmed, load, loadGallery]);
+
+  const identity = viewer.identity;
+  const seenIdentity = useRef(identity);
+  useEffect(() => {
+    const previous = seenIdentity.current;
+    seenIdentity.current = identity;
+    // The first confirmation is not a change, and `load` has not named an author
+    // yet on the very first pass.
+    if (identity === null || previous === null || previous === identity) return;
+    if (identity.kind === "user" && identity.userId === authorId.current) return;
+    // INVARIANT: a cookie change must not expose or submit the previous author's
+    // local draft. The gate has already aborted this surface's in-flight reads
+    // and bumped its generation, so what remains is dropping what is on screen.
+    setComic(null); setManifest(emptyManifest); setGallery([]); markDirty(false); setViewerChanged(true);
+    setError("The signed-in account changed. Reload the editor for your current account.");
+  }, [identity, markDirty]);
   useEffect(() => {
     const guard = (event: BeforeUnloadEvent) => { if (dirtyRef.current) event.preventDefault(); };
     window.addEventListener("beforeunload", guard);
@@ -136,26 +148,38 @@ export function ComicStudio({ id }: { id?: string }) {
       if (!result.success) { setError(result.error.issues[0]?.message ?? "Check your Comic details."); return; }
     }
     if (action !== "save" && !comic) return;
-    const controller = new AbortController(); writeController.current = controller; setWriting(true);
-    const epoch = viewerEpoch.current;
+    setWriting(true);
     try {
       const base = `/api/v1/comics${id ? `/${encodeURIComponent(id)}` : ""}`;
-      const result = await comicRequest(action === "save" ? base : `${base}/${action}`, comicDetailSchema, {
-        method: action === "save" && id ? "PATCH" : "POST", signal: controller.signal,
+      // INVARIANT: the gate re-checks the owner after the reply lands, so a save
+      // that was in the air while the account changed throws here instead of
+      // painting the previous author's saved draft for whoever is signed in now.
+      const response = await gatedFetch(action === "save" ? base : `${base}/${action}`, {
+        method: action === "save" && id ? "PATCH" : "POST",
+        headers: { "content-type": "application/json" },
         body: JSON.stringify(action === "save" ? id ? { version: comic!.version, manifest } : manifest : { version: comic!.version }),
       });
-      if (controller.signal.aborted || epoch !== viewerEpoch.current) return;
+      const raw: unknown = await response.json();
+      if (!response.ok) throw new Error(parsePublicApiError(raw)?.message ?? "Could not save. Try again.");
+      const result = parseComic(raw);
       markDirty(false); setComic(result); setManifest(manifestFromComic(result));
+      setWriting(false);
       if (!id) { window.location.assign(`/creator-studio/comics/${encodeURIComponent(result.id)}`); return; }
       setMessage(action === "save" ? "Draft saved." : action === "submit" ? "Submitted for review. This version stays locked until a decision or withdrawal." : "Comic withdrawn. Readers can no longer open it; you can edit the draft now.");
-    } catch (cause) { if (!controller.signal.aborted && epoch === viewerEpoch.current) setError(cause instanceof Error ? cause.message : "Could not save. Try again."); }
-    finally { if (!controller.signal.aborted) setWriting(false); }
+    } catch (cause) {
+      if (isAbortError(cause)) return;
+      setWriting(false);
+      setError(cause instanceof Error ? cause.message : "Could not save. Try again.");
+    }
   }
   const previews = new Map(gallery.map((item) => [item.id, item.thumbnailUrl || item.url]));
   for (const episode of comic?.episodes ?? []) for (const page of episode.pages) if (page.mediaAssetId && page.url) previews.set(page.mediaAssetId, page.url);
   const pageCount = manifest.episodes.reduce((total, episode) => total + episode.pages.length, 0);
 
-  if (checkingViewer) return <ComicShell><p role="status">Checking your account…</p></ComicShell>;
+  // INTENT: there is no "Checking your account…" screen any more. Re-confirming
+  // the viewer used to replace the whole editor on every focus; the gate does it
+  // in the background and only this surface's own verdict — the account actually
+  // moved — still takes over the page.
   if (viewerChanged) return <ComicShell><p role="alert">{error}</p><button className={`${comicButton} mt-5`} onClick={() => window.location.reload()} type="button">Reload editor</button></ComicShell>;
 
   return <ComicShell><div className="mx-auto max-w-6xl">

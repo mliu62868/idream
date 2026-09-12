@@ -175,4 +175,4 @@ Phr00t 自己的结论是 v19 倾向最佳 edit consistency、v23 倾向最佳 p
 - [`qwen-image-edit-img2img.json`](../../packages/gen/workflows/qwen-image-edit-img2img.json)
 - [`qwen-image-edit-multi-reference.json`](../../packages/gen/workflows/qwen-image-edit-multi-reference.json)
 - [`drawthings.ts`](../../packages/gen/src/backend/drawthings.ts)
-- [`sdcpp-reference-images.ts`](../../packages/gen/src/sdcpp-reference-images.ts)
+- `sdcpp-reference-images.ts`（历史实现，当前仓库已移除）

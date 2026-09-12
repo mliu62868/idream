@@ -85,7 +85,6 @@ export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: st
             `${ASSETS_LIST}/${id}`,
             "PATCH",
             assetPatchPayload({ id, draft, reason }),
-            { "idempotency-key": crypto.randomUUID() },
           );
           reportSuccess(t("Saved. Tags and description are searchable for chat reuse now."));
           try {
@@ -111,7 +110,6 @@ export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: st
           `${ASSETS_LIST}/${id}`,
           "PATCH",
           assetPatchPayload({ id, draft, reason, status: "archived" }),
-          { "idempotency-key": crypto.randomUUID() },
         );
         reportSuccess(t("Archived. {id} is out of the library and cannot be placed.", { id: shortId }));
         try {

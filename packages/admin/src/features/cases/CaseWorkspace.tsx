@@ -21,6 +21,7 @@ import { useAdminFormat } from "@/components/admin/ui/format";
 import { Pagination } from "@/components/admin/ui/Pagination";
 import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
 import { adminV2Request, setWorkspaceUrl } from "@/lib/admin-v2-api";
+import { adminV2Operation } from "@/lib/admin-v2-operation";
 import { createWorkspaceHistoryController, observeWorkspacePopState, workspaceDetailId } from "@/lib/workspace-history";
 import { CollaborationPanel } from "@/features/collaboration/CollaborationPanel";
 import { SavedViewsControl } from "@/features/collaboration/SavedViewsControl";
@@ -312,6 +313,19 @@ export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { 
 //         筛选造成的空仍旧走原来的清除筛选出口，两种空不能混为一谈。
 const BROADER_VIEW: Record<string, string> = { mine: "unassigned" };
 
+/**
+ * SPEC: 三个生命周期命令各是 manifest 里独立的一条 operation。
+ * INTENT: 以前按 `commands/${command}` 拼路由，路由拼得出来、键却要自己记得发 —— wait / reopen
+ *         就是这么漏掉的，后端一律 400「Idempotency-Key header is required」，这两个按钮
+ *         从来没成功过一次。改成查表拿 operation id 之后，键由 adminV2Operation 附带，
+ *         漏发在这里写不出来。
+ */
+const caseCommandOperationId = {
+  wait: "POST /api/v2/admin/cases/:id/commands/wait",
+  reopen: "POST /api/v2/admin/cases/:id/commands/reopen",
+  close: "POST /api/v2/admin/cases/:id/commands/close",
+} as const;
+
 function CaseQueueEmpty({
   filtered,
   onClear,
@@ -392,10 +406,6 @@ function CaseInspector({ busy, canAssign, canDecide, detail, onClose, onConfirme
   const [evidenceRefs, setEvidenceRefs] = useState(defaultEvidence);
   const [verificationOverrideReason, setVerificationOverrideReason] = useState("");
   const [resumeAt, setResumeAt] = useState("");
-  const [decisionIdempotencyKey, setDecisionIdempotencyKey] = useState(() => crypto.randomUUID());
-  const [verificationIdempotencyKey, setVerificationIdempotencyKey] = useState(() => crypto.randomUUID());
-  const [verificationOverrideIdempotencyKey, setVerificationOverrideIdempotencyKey] = useState(() => crypto.randomUUID());
-  const assignmentRequest = useRef<{ signature: string; key: string } | null>(null);
   const [mobileStep, setMobileStep] = useState<CaseMobileStep>("summary");
   const refs = evidenceRefs.filter((id) => detail.evidence.some((item) => item.id === id));
   const canRecordDecision = Boolean(
@@ -415,20 +425,11 @@ function CaseInspector({ busy, canAssign, canDecide, detail, onClose, onConfirme
     ? t("Close needs a recorded decision first — this case is {status}, not resolved.", { status: value(adminCase.status) })
     : t("Close needs downstream verification to pass or be explicitly overridden first.");
 
-  async function saveAssignment() {
-    const body = { entityVersion: adminCase.version, ownerId: ownerId.trim() || null, priority, reason: reason.trim() };
-    const signature = JSON.stringify(body);
-    // A lost response must replay the same assignment; an edited request is a new intent.
-    if (assignmentRequest.current?.signature !== signature) {
-      assignmentRequest.current = { signature, key: crypto.randomUUID() };
-    }
-    const result = await adminV2Request(`/api/v2/admin/cases/${encodeURIComponent(adminCase.id)}/assignment`, {
-      method: "POST",
-      idempotencyKey: assignmentRequest.current.key,
-      body,
+  function saveAssignment() {
+    return adminV2Operation("POST /api/v2/admin/cases/:id/assignment", {
+      path: { id: adminCase.id },
+      body: { entityVersion: adminCase.version, ownerId: ownerId.trim() || null, priority, reason: reason.trim() },
     });
-    assignmentRequest.current = null;
-    return result;
   }
 
   // SPEC: 生命周期与关闭走全站统一的 ConfirmDialog（确认串 + reason 都在框里收）。
@@ -437,10 +438,6 @@ function CaseInspector({ busy, canAssign, canDecide, detail, onClose, onConfirme
   // 于是关闭按钮永远是灰的且没有任何提示。ConfirmDialog 自带 reason≥3，一并修掉。
   function confirmCommand(input: { command: "wait" | "reopen" | "close"; title: string; effect: string; submitLabel: string; notice: string; body: (reason: string) => Record<string, unknown> }) {
     const expectedName = `${adminCase.id}:${input.command}`;
-    // INVARIANT: 三个 command 端点都要 Idempotency-Key —— wait / reopen 此前根本没发，
-    // 后端一律 400「Idempotency-Key header is required」，也就是说这两个按钮从来没成功过。
-    // 键在开框时生成：同一个框里重试复用同一个键（重试不重复执行），取消再开则换新键。
-    const idempotencyKey = crypto.randomUUID();
     setConfirmSpec({
       title: input.title,
       // SPEC: 后果以常驻横幅出现在敲确认串之前，不再混在 summary 里被当成说明文字读过去。
@@ -449,9 +446,8 @@ function CaseInspector({ busy, canAssign, canDecide, detail, onClose, onConfirme
       destructive: { expectedName, inputLabel: t("Type confirmation") },
       submitLabel: input.submitLabel,
       onSubmit: async (confirmationReason) => {
-        await adminV2Request(`/api/v2/admin/cases/${encodeURIComponent(adminCase.id)}/commands/${input.command}`, {
-          method: "POST",
-          idempotencyKey,
+        await adminV2Operation(caseCommandOperationId[input.command], {
+          path: { id: adminCase.id },
           body: { entityVersion: adminCase.version, confirmation: expectedName, ...input.body(confirmationReason) },
         });
         await onConfirmed(input.notice);
@@ -463,30 +459,27 @@ function CaseInspector({ busy, canAssign, canDecide, detail, onClose, onConfirme
     return mobileStep === step ? "" : "max-md:hidden";
   }
 
-  async function recordDecision() {
-    const result = await adminV2Request(
-      `/api/v2/admin/cases/${encodeURIComponent(adminCase.id)}/${customerCase ? "actions" : "decisions"}`,
-      {
-        method: "POST",
-        idempotencyKey: decisionIdempotencyKey,
-        body: customerCase
-          ? {
-              entityVersion: adminCase.version,
-              action: decision,
-              summary: summary.trim(),
-              evidenceRefs: refs,
-              outcomeRef: outcomeRef.trim(),
-            }
-          : {
-              entityVersion: adminCase.version,
-              decision,
-              summary: summary.trim(),
-              evidenceRefs: refs,
-            },
-      },
-    );
-    setDecisionIdempotencyKey(crypto.randomUUID());
-    return result;
+  function recordDecision() {
+    return customerCase
+      ? adminV2Operation("POST /api/v2/admin/cases/:id/actions", {
+          path: { id: adminCase.id },
+          body: {
+            entityVersion: adminCase.version,
+            action: decision,
+            summary: summary.trim(),
+            evidenceRefs: refs,
+            outcomeRef: outcomeRef.trim(),
+          },
+        })
+      : adminV2Operation("POST /api/v2/admin/cases/:id/decisions", {
+          path: { id: adminCase.id },
+          body: {
+            entityVersion: adminCase.version,
+            decision,
+            summary: summary.trim(),
+            evidenceRefs: refs,
+          },
+        });
   }
 
   return <aside aria-labelledby="case-detail-title" className="rounded-xl bg-[var(--ad-surface)] shadow-[0_18px_50px_rgb(45_42_34/0.08)] lg:sticky lg:top-40"><header className="flex items-start justify-between gap-4 border-b border-[var(--ad-border)] p-5"><div className="min-w-0"><p className="text-xs font-semibold text-[var(--ad-text-muted)]">{value(adminCase.type)} · <span className="font-mono font-normal">{adminCase.caseKey}</span></p><h3 className="mt-1 truncate font-mono text-lg font-semibold" id="case-detail-title">{adminCase.target.id}</h3>
@@ -507,7 +500,7 @@ function CaseInspector({ busy, canAssign, canDecide, detail, onClose, onConfirme
 
       {canAssign || canDecide ? <section className="space-y-3 border-t border-[var(--ad-border)] pt-5"><h4 className="text-sm font-semibold">{t("Lifecycle")}</h4>{canAssign && ["new", "triaged", "in_progress", "reopened"].includes(adminCase.status) ? <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Resume after (optional)")}<input className={fieldClass} onChange={(event) => setResumeAt(event.target.value)} type="datetime-local" value={resumeAt} /></label> : null}<div className="flex flex-wrap gap-2">{canAssign && ["new", "triaged", "in_progress", "reopened"].includes(adminCase.status) ? <WorkspaceButton disabled={busy} onClick={() => confirmCommand({ command: "wait", title: t("Park this case on a dependency"), effect: t("The case leaves the active queue until someone resumes it. SLA keeps running."), submitLabel: t("Wait for dependency"), notice: "Case moved to waiting", body: (waitReason) => ({ reason: waitReason, resumeAt: resumeAt ? new Date(resumeAt).toISOString() : undefined }) })}>{t("Wait for dependency")}</WorkspaceButton> : null}{canDecide && ["resolved", "closed"].includes(adminCase.status) ? <WorkspaceButton disabled={busy} onClick={() => confirmCommand({ command: "reopen", title: t("Reopen this case"), effect: t("A resolved case goes back to the active queue, or a recurrence is filed against it."), submitLabel: t("Reopen / create recurrence"), notice: "Case reopened or recurrence created", body: (reopenReason) => ({ reason: reopenReason }) })}>{t("Reopen / create recurrence")}</WorkspaceButton> : null}</div></section> : null}
 
-      {canDecide ? <section className="space-y-4 border-t border-[var(--ad-border)] pt-5" aria-labelledby="case-decision-title"><h4 className="text-sm font-semibold" id="case-decision-title">{t("Decision and verification")}</h4><Select label={customerCase ? "Customer action" : "Decision"} onChange={setDecision} options={operationOptions} value={decision} />{customerCase ? <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Outcome reference")}<input className={fieldClass} onChange={(event) => setOutcomeRef(event.target.value)} placeholder={adminCase.type === "billing_dispute" ? "ledger:<id>, refund:<id>, subscription:<id>:<status>" : "incident:<id>"} value={outcomeRef} /></label> : null}<label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Resolution summary")}<textarea className={textAreaClass} onChange={(event) => setSummary(event.target.value)} value={summary} /></label><fieldset className="space-y-2"><legend className="mb-2 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Select supporting evidence")}</legend>{detail.evidence.length === 0 ? <p className="text-sm text-[var(--ad-text-muted)]">{t("No evidence is available for this decision.")}</p> : detail.evidence.map((item) => <label className="flex min-h-11 items-start gap-3 rounded-md bg-[var(--ad-surface-subtle)] p-3 text-sm" key={item.id}><input className="mt-1 h-4 w-4 shrink-0 accent-[var(--ad-ink)]" checked={refs.includes(item.id)} onChange={(event) => setEvidenceRefs((current) => event.target.checked ? [...current, item.id] : current.filter((id) => id !== item.id))} type="checkbox" /><span className="min-w-0"><span className="block text-xs font-semibold">{value(item.evidenceType)}</span><span className="mt-1 block whitespace-pre-wrap break-words leading-6">{item.summary}</span></span></label>)}</fieldset><div className="flex flex-wrap gap-2"><WorkspaceButton disabled={busy || !decision || !summary.trim() || refs.length === 0 || (customerCase && !outcomeRef.trim())} onClick={() => void onMutate(customerCase ? "Customer Case action recorded" : "Case decision recorded", async () => { const result = await adminV2Request(`/api/v2/admin/cases/${encodeURIComponent(adminCase.id)}/${customerCase ? "actions" : "decisions"}`, { method: "POST", idempotencyKey: decisionIdempotencyKey, body: customerCase ? { entityVersion: adminCase.version, action: decision, summary: summary.trim(), evidenceRefs: refs, outcomeRef: outcomeRef.trim() } : { entityVersion: adminCase.version, decision, summary: summary.trim(), evidenceRefs: refs } }); setDecisionIdempotencyKey(crypto.randomUUID()); return result; })}><ClipboardCheck className="h-4 w-4" />{customerCase ? t("Record action") : t("Record decision")}</WorkspaceButton><WorkspaceButton disabled={busy || !adminCase.resolutionSummary || refs.length === 0} onClick={() => void onMutate("Downstream outcome verified", async () => { const result = await adminV2Request(`/api/v2/admin/cases/${encodeURIComponent(adminCase.id)}/verification`, { method: "POST", idempotencyKey: verificationIdempotencyKey, body: { entityVersion: adminCase.version, state: "passed", evidenceRefs: refs } }); setVerificationIdempotencyKey(crypto.randomUUID()); return result; })}><CheckCircle2 className="h-4 w-4" />{t("Verify from authority")}</WorkspaceButton></div><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Override reason (only when automatic verification is unavailable)")}<textarea className={textAreaClass} onChange={(event) => setVerificationOverrideReason(event.target.value)} value={verificationOverrideReason} /></label><WorkspaceButton disabled={busy || !adminCase.resolutionSummary || refs.length === 0 || verificationOverrideReason.trim().length < 3} onClick={() => void onMutate("Case verification explicitly overridden", async () => { const result = await adminV2Request(`/api/v2/admin/cases/${encodeURIComponent(adminCase.id)}/verification`, { method: "POST", idempotencyKey: verificationOverrideIdempotencyKey, body: { entityVersion: adminCase.version, state: "overridden", evidenceRefs: refs, overrideReason: verificationOverrideReason.trim() } }); setVerificationOverrideIdempotencyKey(crypto.randomUUID()); return result; })}>{t("Override verification")}</WorkspaceButton>
+      {canDecide ? <section className="space-y-4 border-t border-[var(--ad-border)] pt-5" aria-labelledby="case-decision-title"><h4 className="text-sm font-semibold" id="case-decision-title">{t("Decision and verification")}</h4><Select label={customerCase ? "Customer action" : "Decision"} onChange={setDecision} options={operationOptions} value={decision} />{customerCase ? <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Outcome reference")}<input className={fieldClass} onChange={(event) => setOutcomeRef(event.target.value)} placeholder={adminCase.type === "billing_dispute" ? "ledger:<id>, refund:<id>, subscription:<id>:<status>" : "incident:<id>"} value={outcomeRef} /></label> : null}<label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Resolution summary")}<textarea className={textAreaClass} onChange={(event) => setSummary(event.target.value)} value={summary} /></label><fieldset className="space-y-2"><legend className="mb-2 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Select supporting evidence")}</legend>{detail.evidence.length === 0 ? <p className="text-sm text-[var(--ad-text-muted)]">{t("No evidence is available for this decision.")}</p> : detail.evidence.map((item) => <label className="flex min-h-11 items-start gap-3 rounded-md bg-[var(--ad-surface-subtle)] p-3 text-sm" key={item.id}><input className="mt-1 h-4 w-4 shrink-0 accent-[var(--ad-ink)]" checked={refs.includes(item.id)} onChange={(event) => setEvidenceRefs((current) => event.target.checked ? [...current, item.id] : current.filter((id) => id !== item.id))} type="checkbox" /><span className="min-w-0"><span className="block text-xs font-semibold">{value(item.evidenceType)}</span><span className="mt-1 block whitespace-pre-wrap break-words leading-6">{item.summary}</span></span></label>)}</fieldset><div className="flex flex-wrap gap-2"><WorkspaceButton disabled={busy || !decision || !summary.trim() || refs.length === 0 || (customerCase && !outcomeRef.trim())} onClick={() => void onMutate(customerCase ? "Customer Case action recorded" : "Case decision recorded", recordDecision)}><ClipboardCheck className="h-4 w-4" />{customerCase ? t("Record action") : t("Record decision")}</WorkspaceButton><WorkspaceButton disabled={busy || !adminCase.resolutionSummary || refs.length === 0} onClick={() => void onMutate("Downstream outcome verified", () => adminV2Operation("POST /api/v2/admin/cases/:id/verification", { path: { id: adminCase.id }, body: { entityVersion: adminCase.version, state: "passed", evidenceRefs: refs } }))}><CheckCircle2 className="h-4 w-4" />{t("Verify from authority")}</WorkspaceButton></div><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Override reason (only when automatic verification is unavailable)")}<textarea className={textAreaClass} onChange={(event) => setVerificationOverrideReason(event.target.value)} value={verificationOverrideReason} /></label><WorkspaceButton disabled={busy || !adminCase.resolutionSummary || refs.length === 0 || verificationOverrideReason.trim().length < 3} onClick={() => void onMutate("Case verification explicitly overridden", () => adminV2Operation("POST /api/v2/admin/cases/:id/verification", { path: { id: adminCase.id }, body: { entityVersion: adminCase.version, state: "overridden", evidenceRefs: refs, overrideReason: verificationOverrideReason.trim() } }))}>{t("Override verification")}</WorkspaceButton>
         <div className="rounded-md bg-[var(--ad-surface-subtle)] p-3">{closeBlockedBy ? <p className="text-xs text-[var(--ad-text-muted)]">{closeBlockedBy}</p> : null}<div className={closeBlockedBy ? "mt-3" : undefined}><WorkspaceButton disabled={busy || !canClose} tone="danger" onClick={() => confirmCommand({ command: "close", title: t("Close case"), effect: t("Closing is the end of this customer problem. Reopening it later files a new lifecycle entry."), submitLabel: t("Close case"), notice: "Case close command accepted", body: (closeReason) => ({ reason: { code: "outcome_verified", summary: closeReason } }) })}>{t("Close case")}</WorkspaceButton></div></div>
       </section> : <p className="rounded-md bg-[var(--ad-surface-subtle)] p-3 text-sm text-[var(--ad-text-muted)]">{t("Read access only. Decisions require")} <code>{t("case.decide")}</code>.</p>}
       </div>

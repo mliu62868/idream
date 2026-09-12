@@ -1431,37 +1431,14 @@ describe("Character Portfolio authority/read model", () => {
     });
   });
 
-  it("keeps the Portfolio usable but degraded when reconciliation finds an orphan Project", async () => {
-    const orphanProjectId = `portfolio-orphan-${suffix}`;
-    await prisma.characterProject.create({
-      data: {
-        id: orphanProjectId,
-        characterId: `missing-character-${suffix}`,
-      },
-    });
-    try {
-      const data = await listCharacterPortfolioData(
-        prisma,
-        characterPortfolioQuerySchema.parse({
-          limit: 20,
-        }),
-        {
-          asOf,
-          authorizedCharacterIds: [`missing-character-${suffix}`],
-        },
-      );
-      expect(data.items).toEqual([]);
-      expect(data.freshness).toBe("degraded");
-      expect(data.dataQuality).toContainEqual(
-        expect.objectContaining({
-          code: "character_project_orphan",
-          severity: "error",
-        }),
-      );
-    } finally {
-      await prisma.characterProject.deleteMany({
-        where: { id: orphanProjectId },
-      });
-    }
-  });
+  // SPEC: there is no orphan-Project case left to test.
+  //
+  // INTENT: this asserted that the Portfolio degraded gracefully around a
+  // CharacterProject whose Character no longer existed. Constructing that state
+  // is now impossible — `character_projects_characterId_fkey` (2026-09-12)
+  // rejects the write, which is exactly what the reconciliation scan asked for
+  // and could only ever report after the fact. The `character_project_orphan`
+  // data-quality branch is kept in the read model as a belt for databases that
+  // have not taken the constraint yet; a test that cannot reach it would only
+  // pin the fixture, not the behaviour.
 });

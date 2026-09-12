@@ -20,7 +20,6 @@ export async function POST(request: Request, context: Context) {
       {
         params: { id },
         target: () => ({ type: "character_submission", id }),
-        reason: (body) => body.reason,
         mutate: (tx, { actor, body, requestId }) =>
           reviewSubmission({ tx, actor, requestId, id, body }),
         decorateResult: (result, replayed) => ({ ...(result as object), replayed }),

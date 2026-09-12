@@ -135,7 +135,8 @@ export function CharacterImageLibrary({
         "POST /api/v2/admin/characters/:id/image-sources",
         {
           path: { id: data.character.id },
-          idempotencyKey: crypto.randomUUID(),
+          // SPEC: 上传的意图由「哪个文件」定义 —— form 不进签名，没有它两次不同的上传会共用一把键。
+          intent: `${file.name}:${file.size}:${file.lastModified}`,
           form,
         },
       );

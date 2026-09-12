@@ -15,6 +15,10 @@ import { Errors } from "@/server/lib/errors";
 import { compileChatImagePrompt, sanitizeChatImageDirection } from "@/server/modules/ourdream/generation-prompt";
 import { createChatImageGenerationJob } from "@/server/modules/ourdream/service";
 import { loadChatAuthoritySnapshot } from "./chat-authority-snapshot";
+import {
+  abandonRequestedToolEffectAttachment,
+  createToolEffectAttachment,
+} from "./tool-effect-attachment";
 import { chatTurnForEffect } from "./turn-ledger";
 
 export type ChatToolEffectResult =
@@ -127,26 +131,23 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
       }
     }
     try {
-      await prisma.chatTurnAttachment.create({
-        data: {
-          id: attachmentId,
-          turnId: turn.id,
-          kind: "generated_image",
-          status: "requesting",
-          promptHint: promptHint(call),
-          metadata: toJson({
+      await createToolEffectAttachment(prisma, {
+        id: attachmentId,
+        turn,
+        kind: "generated_image",
+        attempt: effect.attempt,
+        promptHint: promptHint(call),
+        metadata: {
+          effect: {
+            turnId: effect.turnId,
             attempt: effect.attempt,
-            effect: {
-              turnId: effect.turnId,
-              attempt: effect.attempt,
-              callId: effect.callId,
-              name: effect.name,
-              effectScope: effect.effectScope,
-              intent: effect.intent,
-              requestDigest,
-            },
-            request: effectRequestSnapshot(call),
-          }),
+            callId: effect.callId,
+            name: effect.name,
+            effectScope: effect.effectScope,
+            intent: effect.intent,
+            requestDigest,
+          },
+          request: effectRequestSnapshot(call),
         },
       });
     } catch (error) {
@@ -224,11 +225,12 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
     };
   } catch (error) {
     const failure = publicFailure(error);
-    const failed = await prisma.chatTurnAttachment.updateMany({
-      where: { id: attachmentId, status: "requesting", generationJobId: null, metadata: { path: ["attempt"], equals: effect.attempt } },
-      data: { status: "failed", errorCode: failure.code },
+    const abandoned = await abandonRequestedToolEffectAttachment(prisma, {
+      id: attachmentId,
+      attempt: effect.attempt,
+      errorCode: failure.code,
     });
-    if (failed.count === 0) {
+    if (!abandoned) {
       const current = await prisma.chatTurnAttachment.findUnique({ where: { id: attachmentId } });
       if (current) return existingEffect(current, requestDigest, effect.effectScope);
     }

@@ -2920,7 +2920,7 @@ describe("image generation service contract", () => {
         profileKey: modelKey,
         label: "Text-only identity model",
         mode: "image",
-        runner: "pipeline",
+        runner: "comfyui",
         pipelineModel: "mock-image",
         runnerConfig: {
           capabilities: {
@@ -4702,7 +4702,7 @@ describe("image generation service contract", () => {
         profileKey,
         label: "Source variation dispatch profile",
         mode: "image",
-        runner: "pipeline",
+        runner: "comfyui",
         pipelineModel: "qwen-image-edit",
         workflowKey: "qwen-image-edit-img2img",
         runnerConfig: {

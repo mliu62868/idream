@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { productFeedbackListResponseSchema, productFeedbackMutationResponseSchema, type ProductFeedback } from "@idream/shared/admin";
+import { productFeedbackListResponseSchema, type ProductFeedback } from "@idream/shared/admin";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { GhostButton } from "@/components/admin/ui/buttons";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
@@ -9,6 +9,7 @@ import { DataTable } from "@/components/admin/ui/DataTable";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { Pagination } from "@/components/admin/ui/Pagination";
 import { adminV2Request } from "@/lib/admin-v2-api";
+import { adminV2Operation } from "@/lib/admin-v2-operation";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 
 const statusLabels = { under_review: "Under review", planned: "Planned", shipped: "Shipped" } as const;
@@ -62,14 +63,13 @@ export function FeedbackQueue({ canWrite }: { canWrite: boolean }) {
   }, [load, open]);
 
   function updateStatus(item: ProductFeedback, nextStatus: FeedbackStatus) {
-    const key = crypto.randomUUID();
     setConfirmation({
       title: "Update product feedback",
       summary: `${item.title} → ${t(statusLabels[nextStatus])}`,
       submitLabel: "Save feedback status",
       onSubmit: async (reason) => {
-        await adminV2Request(`/api/v2/admin/support/feedback/${encodeURIComponent(item.id)}`, {
-          method: "PATCH", idempotencyKey: key, schema: productFeedbackMutationResponseSchema,
+        await adminV2Operation("PATCH /api/v2/admin/support/feedback/:id", {
+          path: { id: item.id },
           body: { status: nextStatus, expectedUpdatedAt: item.updatedAt, reason },
         });
         await load();

@@ -148,7 +148,6 @@ describe("ModerationWorkspace media-review interaction", () => {
           reason: `${actionLabel} after independent image review`,
           confirmation: mediaId,
         },
-        { "idempotency-key": idempotencyKey },
       );
       expect(actionToast()?.textContent).toContain(
         `Decision recorded for ${mediaId}`,
@@ -223,7 +222,6 @@ describe("ModerationWorkspace media-review interaction", () => {
         reason: "Block after independent image review",
         confirmation: mediaId,
       },
-      { "idempotency-key": idempotencyKey },
     );
     expect(mediaReads).toBe(1);
     expect(mediaPreview()).not.toBeNull();

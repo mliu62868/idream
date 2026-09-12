@@ -1,11 +1,11 @@
 "use client";
 
-import { operationalWorkPreferenceSchema, type TodayProjection, type TodayWorkItem } from "@idream/shared/admin";
+import type { TodayProjection, TodayWorkItem } from "@idream/shared/admin";
 import { ArrowLeft, ArrowRight, Bell, Eye, MoreHorizontal, Pin, UserPlus } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useAdminI18n } from "@/components/admin/i18n";
-import { adminV2Request } from "@/lib/admin-v2-api";
+import { adminV2Operation } from "@/lib/admin-v2-operation";
 import { formatDateTime, formatRelativeTime } from "@/components/admin/ui/format";
 import { failureFeedback, type ActionFeedback } from "./feedback";
 import { formatTime, todayOperationalText } from "./format";
@@ -40,19 +40,15 @@ export function todayWorkItemTitle(item: TodayWorkItem, t: Translate) {
 }
 
 function writePreference(item: TodayWorkItem, patch: PreferencePatch, expectedVersion: number) {
-  return adminV2Request("/api/v2/admin/today/preferences", {
-    method: "PUT",
+  return adminV2Operation("PUT /api/v2/admin/today/preferences", {
     ifMatch: expectedVersion,
     body: { sourceType: item.sourceType, sourceId: item.sourceId, ...patch },
-    schema: operationalWorkPreferenceSchema,
   });
 }
 
 function claimWorkItem(item: TodayWorkItem) {
   if (!item.claim) throw new Error("Work item is not claimable");
-  return adminV2Request("/api/v2/admin/today/claim", {
-    method: "POST",
-    idempotencyKey: `today-claim:${item.sourceType}:${item.sourceId}:${item.claim.entityVersion}`,
+  return adminV2Operation("POST /api/v2/admin/today/claim", {
     body: { sourceType: item.sourceType, sourceId: item.sourceId, entityVersion: item.claim.entityVersion },
   });
 }

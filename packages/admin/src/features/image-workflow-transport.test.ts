@@ -16,7 +16,7 @@ describe("image workflow browser transport", () => {
     expect(characterWorkspaceTabFromSearch("")).toBe("project");
   });
 
-  it("supplies idempotency for identity bootstrap and Release creation mutations", () => {
+  it("replays the durable key for identity bootstrap and leaves Release creation to the key ledger", () => {
     expect(
       characterIdentityBootstrapMutation(
         "character-1",
@@ -32,7 +32,7 @@ describe("image workflow browser transport", () => {
       operationId: "POST /api/v2/admin/characters/:id/identity-bootstrap",
       options: {
         path: { id: "character-1" },
-        idempotencyKey: "bootstrap-key",
+        replayIdempotencyKey: "bootstrap-key",
         ifMatch: 2,
         body: {
           entityVersion: 2,
@@ -50,13 +50,11 @@ describe("image workflow browser transport", () => {
         8,
         "release reason",
         "character-1:publish",
-        "release-key",
       ),
     ).toMatchObject({
       operationId: "POST /api/v2/admin/characters/:id/releases",
       options: {
         path: { id: "character-1" },
-        idempotencyKey: "release-key",
         ifMatch: 8,
         body: {
           entityVersion: 8,
@@ -72,7 +70,7 @@ describe("image workflow browser transport", () => {
       operationId: "POST /api/v2/admin/creative/runs/:id/commands/retry-failed",
       options: {
         path: { id: "run-1" },
-        idempotencyKey: "retry-key",
+        replayIdempotencyKey: "retry-key",
         body: {
           entityVersion: 4,
           confirmation: "run-1:retry-failed",

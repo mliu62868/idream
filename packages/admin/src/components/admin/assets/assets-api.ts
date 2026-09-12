@@ -1,6 +1,5 @@
 import {
   contentAssetReviewStatusSchema,
-  contentAssetUploadResponseSchema,
   creativeRunPurposeSchema,
   platformAssetUploadPurposeSchema,
   type ContentAsset as SharedContentAsset,
@@ -11,7 +10,11 @@ import {
   type PlatformAssetUploadPurpose,
 } from "@idream/shared/admin";
 import type { ApiEnvelope } from "../api";
-import { adminV2Request } from "@/lib/admin-v2-api";
+import { adminV2Operation } from "@/lib/admin-v2-operation";
+import {
+  adminIdempotencyKeyLedger,
+  idempotencyOutcomeOfStatus,
+} from "@/lib/idempotency-key-lifecycle";
 
 // SPEC: 图片库列表、详情和批量归档只消费 shared manifest 声明的 v2 Asset 契约；
 // 页面本地只保留展示与交互类型，不复制跨包协议。
@@ -112,11 +115,11 @@ export async function uploadPlatformAsset(params: {
   form.set("purpose", params.purpose);
   form.set("image", params.file);
   try {
-    return await adminV2Request(ASSETS_LIST, {
-      method: "POST",
-      idempotencyKey: crypto.randomUUID(),
+    return await adminV2Operation("POST /api/v2/admin/assets", {
+      // SPEC: 上传的意图由「哪个文件、做什么用」定义 —— form 不进签名，没有它两次不同的
+      //       上传会共用一把键。
+      intent: `${params.purpose}:${params.file.name}:${params.file.size}:${params.file.lastModified}`,
       form,
-      schema: contentAssetUploadResponseSchema,
     });
   } catch (cause) {
     if (cause instanceof Error) throw cause;
@@ -274,14 +277,25 @@ export async function bulkArchiveAssets(params: {
   reason: string;
   fallbackMessage?: string;
 }): Promise<{ updatedIds: string[] }> {
+  // INTENT: 这一条刻意不走 adminV2Request —— 批量归档要把 error.details 原样交给
+  //         AssetBulkArchiveError（调用方按它列出被拒的资产）。键仍然出自同一本账本：
+  //         裸 fetch 不是自己造 UUID 的理由。
+  const payloadBody = assetBulkArchivePayload(params);
+  const bulkScope = `POST ${ASSETS_BULK}`;
+  const bulkKey = adminIdempotencyKeyLedger.claim(bulkScope, JSON.stringify(payloadBody));
   const response = await fetch(ASSETS_BULK, {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      "idempotency-key": crypto.randomUUID(),
+      "idempotency-key": bulkKey,
     },
-    body: JSON.stringify(assetBulkArchivePayload(params)),
+    body: JSON.stringify(payloadBody),
   });
+  adminIdempotencyKeyLedger.settle(
+    bulkScope,
+    bulkKey,
+    idempotencyOutcomeOfStatus(response.status),
+  );
   const payload = await response.json() as ApiEnvelope<ContentAssetBulkMutationResponse>;
   if (!payload.ok) {
     throw new AssetBulkArchiveError(

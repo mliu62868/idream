@@ -89,7 +89,6 @@ export function CharacterChatToolsPanel({
           `/api/v2/admin/content/characters/${encodeURIComponent(characterId)}/chat-tools`,
           "POST",
           { imageToolEnabled: next, reason },
-          { "idempotency-key": crypto.randomUUID() },
         );
         await load();
       },

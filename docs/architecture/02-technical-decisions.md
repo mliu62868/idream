@@ -138,7 +138,7 @@
 **决策细化**：生产实现按执行语义分两条接口：
 - 文本：自托管开源模型暴露 **OpenAI-compatible** chat completions（流式），由 Chat Agent runtime 调用。
 - 图像/视频：`GEN_IMAGE_PROVIDER=backend` / `GEN_VIDEO_PROVIDER=backend` 进入 `packages/gen/src/backend/` 的 `BackendRegistry`；workflow descriptor 固定 `backendKind`、模型文件、输入 slots 与版本，再由 `ComfyUIBackend`、`SdcppBackend` 或 `DrawThingsBackend` 执行。
-- `GEN_IMAGE_PROVIDER=pipeline` / `PIPELINE_API_URL` 只保留 legacy compatibility，已 deprecated，不是当前媒体运行权威，也不能作为新模型默认接入路径。
+- `pipeline`、`mlx`、`external` runner 已退役；媒体生成只使用 workflow-native `backend` provider。
 
 **优势**：规避公有 API（OpenAI/Anthropic/Google）对露骨内容的禁令；prompt/产物**不出内网**，数据保留/训练授权自主可控（天然满足 07 §6）；成本/吞吐自控。
 

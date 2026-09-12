@@ -62,6 +62,7 @@ Gen
 - Main 只做 dispatch、terminal-record ingest、settlement 和 finalization；
 - provider outcome 不明确且 provider 不支持确定性幂等时，不自动重放 provider invocation。
 - 图片与视频共用 `GenerationExecution` 的 resume → transport → invoke → retry decision → terminal persist + relay admission 生命周期；modality adapter 只负责调用与产物归一化。
+  - 2026-09-12 兑现：入口是 `runGeneration(payload, modality, ports)`，`GenerationExecution` 类不再导出。此前这条承诺只做了一半 —— 生命周期确实在类里，但**调用顺序**留给了调用方，图片与视频各拼一遍（归一化后两段 preamble 只差三行），且四条约束（resume 返回 true 要提前 return、prepare 抛错必走 `failPreparation`、blocked 走 `block("input")`、`execute` 前不得碰 provider）只写在代码里、没写在任何文档或头注释里，只能靠 diff 两条路径反推。modality 现在只声明 `{configuredAdapter, model, prepare, invoke, normalizeArtifacts}`，说不出顺序，也就无法说错。收口后 288 个 gen 测试零改动通过。
 
 未来若部署到 serverless，不恢复 Main 内执行路径；单独部署 Gen adapter。
 

@@ -79,7 +79,11 @@ Chat 没有独立 moderation provider。输入/输出产品策略属于 Main。
 ### Gen
 
 - `GEN_REDIS_URL` / `BULLMQ_PREFIX`
-- `GEN_IMAGE_PROVIDER` / `GEN_VIDEO_PROVIDER`
+- `GEN_IMAGE_PROVIDER` / `GEN_VIDEO_PROVIDER`：取值为 `mock` 或 `backend`。legacy `pipeline` adapter 已于 2026-09-12 删除。
+- ComfyUI 端点：`COMFYUI_IMAGE_API_URL`（默认 8189）/ `COMFYUI_VIDEO_API_URL`（默认 8188）/ `COMFYUI_H3_API_URL`（默认 8190）。
+  `COMFYUI_API_URL` 是 image 与 video 的共享回退，**H3 不继承它**（H3 是独立 listener）。
+  回退链只在 `packages/shared/src/contracts/env.ts` 的 `comfyUiEndpoint` 定义一处；gen 运行时、launch gate 与恢复演练环境都调用它，
+  由 `comfyui-endpoint-authority.test.ts` 守住"字面量只有一处"。把某个模态显式设为空字符串表示"该模态没有端点"，不会回退。
 - provider/model/workflow exact pins
 - Blob 与 Main terminal ingest credentials
 

@@ -3,6 +3,21 @@
 // allowed only when the model explicitly guarantees deterministic idempotency.
 // INTENT: Keep lifecycle authority here; modality adapters invoke providers and
 // normalize persisted artifacts without knowing ACK/retry/transport mechanics.
+//
+// SPEC: `runGeneration` is the entry point. A modality supplies only what
+// differs — which configured adapter it must match, how to prepare its inputs,
+// which model to invoke, and how to normalize what comes back.
+//
+// INTENT: the order used to be the caller's problem, and both callers had to get
+// four unwritten rules right: a resumed terminal record means return immediately;
+// anything thrown while preparing must go through `failPreparation` (which reads
+// the invocation guard to decide unknown vs preparation_failed); blocked
+// moderation goes through `block("input")`; nothing may touch the provider before
+// `execute`. None of that was in this file's header — it could only be recovered
+// by reading the image path and the video path and diffing them. They were
+// diffable: normalised for the image/video literals, the two preambles differed
+// by three lines. Now the sequence exists once, and a modality cannot express a
+// wrong order because it never states one.
 import { generationProviderIdempotencyKey } from "@idream/shared/contracts";
 import type {
   GenerationTerminalRecord,
@@ -17,9 +32,12 @@ import type {
   GenerationInvocationBoundary,
   ProviderFailure,
   ProviderInvocationMetadata,
+  ModerationProvider,
   ProviderResult,
   VideoModel,
 } from "./providers";
+import { hydratedImageReferenceInputs } from "./reference-images";
+import { workerAdapterForRecordedProvider } from "./provider-vocabulary";
 import {
   loadPersistedTerminalRecord,
   loadGenerationInvocationGuard,
@@ -92,7 +110,12 @@ export class GenerationArtifactError extends Error {
   }
 }
 
-export class GenerationExecution {
+// INTENT: not exported. Every one of its methods has to be called in a fixed
+// order, and both call sites used to know that order. `runGeneration` below is
+// now the only thing that can construct one, so the order is a property of this
+// file rather than a rule the next caller has to rediscover from the diff
+// between the image path and the video path.
+class GenerationExecution {
   readonly #identity;
 
   constructor(private readonly options: GenerationExecutionOptions) {
@@ -536,4 +559,146 @@ function invocationAccounting(
     costMicros,
     pricingVersion,
   };
+}
+
+/**
+ * What one modality has to say for itself. Everything absent here — resume,
+ * moderation, the guard, transport, retry decisions, terminal persistence,
+ * relay admission — belongs to `runGeneration` and is not a modality's concern.
+ */
+export type GenerationModality<TPrepared, TProviderOutput> = {
+  readonly mode: "image" | "video";
+  /** `GEN_IMAGE_PROVIDER` / `GEN_VIDEO_PROVIDER`, reconciled against the pinned provider. */
+  readonly configuredAdapter: string;
+  readonly model: GenerationModel;
+  /**
+   * Runs after moderation passes. Throwing is a supported outcome: it lands on
+   * `failPreparation`, which decides unknown vs preparation_failed from the
+   * invocation guard. Implementations must not reach the provider.
+   */
+  readonly prepare: (input: {
+    readonly referenceImages: HydratedReferenceImages;
+  }) => Promise<TPrepared>;
+  readonly invoke: (input: {
+    readonly prepared: TPrepared;
+    readonly providerIdempotencyKey: string;
+    readonly executionBoundary?: GenerationInvocationBoundary;
+  }) => Promise<ProviderResult<TProviderOutput>>;
+  readonly normalizeArtifacts: (input: {
+    readonly prepared: TPrepared;
+    readonly output: TProviderOutput;
+  }) => Promise<NormalizedGeneration>;
+};
+
+type HydratedReferenceImages = Awaited<
+  ReturnType<typeof hydratedImageReferenceInputs>
+>;
+
+export type GenerationRunPorts = GenerationExecutionPorts & {
+  readonly blob: BlobStore;
+  readonly moderation: ModerationProvider;
+};
+
+/**
+ * SPEC: one attempt, start to finish.
+ *
+ * INVARIANT: the steps below are the whole contract, and a modality states none
+ * of them. Callers used to re-express this sequence per mode, which is how the
+ * image path grew a reference-hydration guard the video path had in a different
+ * place, and how each one separately had to remember that a resumed record ends
+ * the attempt.
+ */
+export async function runGeneration<TPrepared, TProviderOutput>(
+  payload: GenerationPayload,
+  modality: GenerationModality<TPrepared, TProviderOutput>,
+  ports: GenerationRunPorts & { readonly attemptsMade?: number; readonly maxAttempts?: number },
+): Promise<void> {
+  const execution = new GenerationExecution({
+    payload,
+    provider: payload.provider,
+    blob: ports.blob,
+    attemptsMade: ports.attemptsMade,
+    maxAttempts: ports.maxAttempts,
+    acknowledgeTerminalRecord: ports.acknowledgeTerminalRecord,
+    recordTransportExecution: ports.recordTransportExecution,
+  });
+
+  // A record that survived a relay interruption is replayed as-is; the provider
+  // is never asked again for an attempt that already has a terminal outcome.
+  if (await execution.resumeTerminalRecord()) return;
+
+  let prepared: TPrepared;
+  let blockedPolicyCode: string | undefined;
+  try {
+    assertRecordedProviderMatchesConfiguredAdapter(
+      payload.provider,
+      modality.configuredAdapter,
+      modality.mode,
+    );
+    const moderation = await ports.moderation.check({
+      targetType: "text",
+      content: `${payload.prompt} ${payload.negativePrompt ?? ""}`,
+    });
+    if (!moderation.ok) {
+      throw new Error(
+        `Input moderation failed (${moderation.error.code}): ${moderation.error.message}`,
+      );
+    }
+    if (moderation.data.status === "blocked") {
+      blockedPolicyCode = moderation.data.policyCode ?? "PROHIBITED_OTHER";
+      prepared = undefined as TPrepared;
+    } else {
+      prepared = await modality.prepare({
+        referenceImages: await hydratedImageReferenceInputs(
+          payload.referenceImages,
+          ports.blob,
+        ),
+      });
+    }
+  } catch (error) {
+    await execution.failPreparation(error);
+    return;
+  }
+
+  if (blockedPolicyCode !== undefined) {
+    await execution.block(
+      blockedPolicyCode,
+      "Input moderation blocked the generation request",
+      "input",
+    );
+    return;
+  }
+
+  await execution.execute({
+    model: modality.model,
+    invoke: ({ providerIdempotencyKey, executionBoundary }) =>
+      modality.invoke({ prepared, providerIdempotencyKey, executionBoundary }),
+    normalizeArtifacts: (output) =>
+      modality.normalizeArtifacts({ prepared, output }),
+  });
+}
+
+// SPEC: deployment self-check, NOT backend selection. `payload.provider` is
+// Main's `GenerationModelProfile.runner` copied onto the Attempt — an accounting
+// field that ends up verbatim in the terminal record. It never chooses an
+// execution body: the backend is decided by
+// `registry.resolveForModel(payload.model).descriptor.backendKind`, admitted by
+// the workflowKey@workflowVersion pin (backend/registry.ts validateWorkflowPin).
+// INTENT: this only asserts the worker's own GEN_*_PROVIDER adapter is the one
+// Main assumed when it recorded that runner — i.e. a `mock`-provisioned attempt
+// cannot land on a real-backend worker and vice versa. The two vocabularies are
+// deliberately many-to-one (Main's runner names ⇒ gen's adapter names), so
+// matching here proves nothing about which backend actually runs. It runs before
+// moderation, so a misconfigured worker fails before anything costs money.
+function assertRecordedProviderMatchesConfiguredAdapter(
+  recordedProvider: string,
+  configuredAdapter: string,
+  mode: "image" | "video",
+) {
+  const requiredAdapter = workerAdapterForRecordedProvider(recordedProvider);
+  if (requiredAdapter !== configuredAdapter) {
+    throw new Error(
+      `Pinned ${mode} provider ${recordedProvider} requires GEN_${mode.toUpperCase()}_PROVIDER=${requiredAdapter}; configured=${configuredAdapter}`,
+    );
+  }
 }

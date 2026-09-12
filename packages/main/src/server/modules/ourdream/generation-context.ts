@@ -9,6 +9,7 @@ import { hasHydratableMediaBlobAuthority, isMediaAssetOperationalForAuthority } 
 import { canonicalJsonHash } from "@/server/modules/admin-v2/shared/idempotency";
 import { characterContentHash } from "@/server/modules/admin-v2/shared/character-content-identity";
 import { lockCharacterGenerationAuthority } from "@/server/modules/admin-v2/characters/generation-authority-lock";
+import { lockChatScope } from "@/server/modules/chat/turn-scope";
 import type { GenerationPromptCharacter } from "./generation-character-authority";
 import type { GenerationCreateBody, GenerationSource } from "./generation-request-schema";
 import { loadReadableComic, comicContentUrl } from "./comic-authority";
@@ -289,11 +290,14 @@ export async function lockGenerationContext(tx: Prisma.TransactionClient, userId
   // Admission owns User first. Both source kinds lock their authority before
   // Character, then the caller locks all source and identity media in sorted order.
   if (source.kind === "chat") {
-    await tx.$queryRaw`SELECT "sessionId" FROM "recent_chats" WHERE "sessionId" = ${source.sessionId} FOR UPDATE`;
-    await tx.$queryRaw`SELECT id FROM "chat_turns" WHERE id = ${source.turnId} FOR UPDATE`;
-    const session = await tx.recentChat.findFirst({ where: { sessionId: source.sessionId, userId }, select: { characterId: true } });
-    if (!session) throw Errors.notFound("The original chat is no longer available.");
-    await lockCharacterGenerationAuthority(tx, session.characterId);
+    // 聊天侧的锁序由产品 Turn 权威回答，本文件不再自带一份 recent_chats → chat_turns。
+    const scope = await lockChatScope(tx, {
+      userId,
+      at: { turn: source.turnId },
+      expect: { conflictMessage: "The original chat is no longer available." },
+    });
+    if (scope.session.sessionId !== source.sessionId) throw Errors.notFound("The original chat is no longer available.");
+    await lockCharacterGenerationAuthority(tx, scope.session.characterId);
   } else {
     await tx.$queryRaw`SELECT id FROM comics WHERE id = ${source.comicId} FOR UPDATE`;
     const page = await tx.comicPage.findFirst({ where: { id: source.pageId, episode: { comicId: source.comicId } }, select: { mediaAsset: { select: { characterId: true } } } });

@@ -155,7 +155,6 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
 
   function confirmDisable(id: string) {
     if (!canWrite) return;
-    const idempotencyKey = crypto.randomUUID();
     setConfirmation({
       title: t("Disable redeem code {id}", { id }),
       destructive: { expectedName: id, inputLabel: t("Confirmation") },
@@ -171,7 +170,6 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
           `/api/v2/admin/promo/redeem-codes/${id}/disable`,
           "POST",
           { reason, confirmation: id },
-          { "idempotency-key": idempotencyKey },
         );
         toast({ tone: "success", title: t("Redeem code {id} disabled", { id }) });
         navigate({ ...query, codeCursor: "" }, "replace");
@@ -318,7 +316,6 @@ function RedeemCodeForm({ onCreated }: { onCreated: () => void }) {
   const [reason, setReason] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [busy, setBusy] = useState(false);
-  const idempotencyKey = useRef<string | null>(null);
   const trimmedCode = code.trim();
   const dreamcoinValue = strictIntegerFromText(coins, 1, 1_000_000);
   const maxRedemptionsValue = maxRedemptions.trim()
@@ -336,7 +333,6 @@ function RedeemCodeForm({ onCreated }: { onCreated: () => void }) {
   async function create() {
     if (!ready || busy) return;
     setBusy(true);
-    idempotencyKey.current ??= crypto.randomUUID();
     try {
       await apiWrite(
         "/api/v2/admin/promo/redeem-codes",
@@ -349,7 +345,6 @@ function RedeemCodeForm({ onCreated }: { onCreated: () => void }) {
           reason: reason.trim(),
           confirmation: confirmation.trim(),
         },
-        { "idempotency-key": idempotencyKey.current },
       );
       setCode("");
       setCoins("");
@@ -357,7 +352,6 @@ function RedeemCodeForm({ onCreated }: { onCreated: () => void }) {
       setExpiresAt("");
       setReason("");
       setConfirmation("");
-      idempotencyKey.current = null;
       toast({ tone: "success", title: t("Redeem code {code} created", { code: trimmedCode }) });
       onCreated();
     } catch (cause) {

@@ -3,6 +3,7 @@ import path from "node:path";
 import { parse as parseDotenv } from "dotenv";
 import { resolveChatFsRoot, resolveChatModelProfile } from "@idream/shared";
 import {
+  comfyUiEndpoint,
   DEFAULT_APP_ENV,
   DEFAULT_REDIS_URL,
   defaultBullmqPrefix,
@@ -215,19 +216,12 @@ export function loadRecoveryServiceEnvironment(input: {
       gen.BULLMQ_PREFIX ?? defaultBullmqPrefix(genAppEnv),
     GEN_IMAGE_PROVIDER: gen.GEN_IMAGE_PROVIDER ?? "mock",
     GEN_VIDEO_PROVIDER: gen.GEN_VIDEO_PROVIDER ?? "mock",
-    // Main and Gen intentionally share legacy variable names in their own
-    // processes. Sanitized aliases preserve both authorities in one launch
-    // inspection without allowing Gen to replace Main's chat pipeline config.
-    IDREAM_GEN_PIPELINE_API_URL: gen.PIPELINE_API_URL ?? "",
-    IDREAM_GEN_PIPELINE_API_TOKEN: gen.PIPELINE_API_TOKEN ?? "",
-    // INVARIANT: match Gen's modality-specific runtime fallbacks. H3 owns its
-    // listener and must never inherit the legacy image/video shared endpoint.
-    IDREAM_GEN_COMFYUI_IMAGE_API_URL:
-      gen.COMFYUI_IMAGE_API_URL ?? gen.COMFYUI_API_URL ?? "http://127.0.0.1:8189",
-    IDREAM_GEN_COMFYUI_VIDEO_API_URL:
-      gen.COMFYUI_VIDEO_API_URL ?? gen.COMFYUI_API_URL ?? "http://127.0.0.1:8188",
-    IDREAM_GEN_COMFYUI_H3_API_URL:
-      gen.COMFYUI_H3_API_URL ?? "http://127.0.0.1:8190",
+    // INVARIANT: the same function gen's own env getters call. This used to
+    // restate the chain and carry a comment asking the next reader to keep it
+    // matching gen by hand.
+    IDREAM_GEN_COMFYUI_IMAGE_API_URL: comfyUiEndpoint(gen, "image"),
+    IDREAM_GEN_COMFYUI_VIDEO_API_URL: comfyUiEndpoint(gen, "video"),
+    IDREAM_GEN_COMFYUI_H3_API_URL: comfyUiEndpoint(gen, "h3"),
     IDREAM_GEN_DRAWTHINGS_CLI: gen.DRAWTHINGS_CLI ?? "",
     IDREAM_GEN_PIPELINE_IMAGE_MODEL_DEFAULT:
       gen.PIPELINE_IMAGE_MODEL_DEFAULT ?? "",

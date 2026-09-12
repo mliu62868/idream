@@ -145,7 +145,6 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
   }) {
     if (!input.allowed || input.ids.length === 0) return;
     const expected = deadLetterConfirmation(input.ids);
-    const idempotencyKey = crypto.randomUUID();
     setConfirmation({
       title: input.title,
       consequence: { effect: input.effect, reversible: false },
@@ -157,9 +156,7 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
         const isBatch = input.endpoint.includes("/dead-letter/commands/");
         const result = await apiWrite<unknown>(input.endpoint, "POST", isBatch
           ? { jobIds: input.ids, reason, confirmation: expected }
-          : { ...(reason ? { reason } : {}), confirmation: expected }, {
-          "idempotency-key": idempotencyKey,
-        });
+          : { ...(reason ? { reason } : {}), confirmation: expected });
         toast(describeOutcome(t, input.kind, input.ids, result));
         setSelected([]);
         await load({ ...query, cursor: "" });

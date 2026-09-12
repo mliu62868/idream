@@ -503,7 +503,7 @@ export function CharacterCreateWizard({
           const created = await adminV2Operation(
             "POST /api/v2/admin/characters",
             {
-              idempotencyKey: intent.idempotencyKey,
+              replayIdempotencyKey: intent.idempotencyKey,
               body,
             },
           );

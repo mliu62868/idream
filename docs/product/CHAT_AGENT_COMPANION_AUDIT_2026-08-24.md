@@ -1,5 +1,7 @@
 # Chat Agent Companion Audit — 2026-08-24
 
+> **历史审计证据（非当前规范）**：本文记录 2026-08-24 的代码与运行结果。当前 Chat 产品契约以 [`CHAT_SERVICE_PRD.md`](CHAT_SERVICE_PRD.md) 为准，执行边界以 [`../architecture/21-companion-chat-deep-runtime.md`](../architecture/21-companion-chat-deep-runtime.md) 为准。
+
 > 范围：`packages/chat-agent`（DSH sidecar）、`packages/chat` 的 PreparedTurn / prompt / generate 收尾、igrep 记忆链路。
 > 方法：读源码 + 抓取模型真实收到的 prompt（真实 igrep 插件 + 假 adapter）+ 直接实测 igrep / oMLX + 查 `chat.messages.runtime_trace` 近 3 天遥测 + 真实 signed probe。
 > 出发点：陪伴产品。一个"陪伴"要成立，agent 必须：记得对的事并主动带出、有时间感、人格稳定且有变化、首 token 快、不出戏。下面每条发现都对着这五件事。

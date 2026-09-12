@@ -54,18 +54,25 @@ describe("public text-to-image generation profiles", () => {
     ).resolves.toEqual([profile]);
   });
 
-  it("keeps descriptor-less pipeline profiles available when they declare text-to-image", async () => {
+  // SPEC: a profile with no workflow descriptor is not a public route.
+  // INTENT: this used to assert the opposite for a non-comfyui runner, because
+  // the legacy OpenAI-compatible gateway took a bare model name and had no
+  // workflow to describe. That adapter and its runner values retired on
+  // 2026-09-12; with `comfyui` the only runner left, a descriptor-less profile
+  // names something no backend can execute, so offering it would be a promise
+  // the generator cannot keep.
+  it("drops descriptor-less profiles even when they declare text-to-image", async () => {
     catalog.generationWorkflowDescriptor.mockResolvedValue(null);
-    const pipelineProfile = {
+    const descriptorless = {
       ...profile,
-      runner: "pipeline",
+      runner: "comfyui",
       workflowKey: null,
       pipelineModel: "remote-image-provider",
     };
 
     await expect(
-      filterPublicTextToImageGenerationProfiles([pipelineProfile]),
-    ).resolves.toEqual([pipelineProfile]);
+      filterPublicTextToImageGenerationProfiles([descriptorless]),
+    ).resolves.toEqual([]);
   });
 
   it("rejects active profiles that cannot serve the full public catalog", async () => {

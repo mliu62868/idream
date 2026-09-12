@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { CompanionWorkspaceRebuild } from "@idream/shared/chat/companion-runtime";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   IgrepMemoryBuilder,
   observeIgrepWake,
@@ -15,7 +15,16 @@ import { AttemptWorkspaceStore, relationshipWorkspacePath } from "./workspace";
 
 const temporary: string[] = [];
 
+// A fence is a Chat-wide durable fact under CHAT_FS_ROOT. Give every test its
+// own root so one test's fenced user cannot reject another test's invocation.
+beforeEach(async () => {
+  const root = await mkdtemp(join(tmpdir(), "chat-fence-igrep-"));
+  temporary.push(root);
+  process.env.CHAT_FS_ROOT = root;
+});
+
 afterEach(async () => {
+  delete process.env.CHAT_FS_ROOT;
   await Promise.all(temporary.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 

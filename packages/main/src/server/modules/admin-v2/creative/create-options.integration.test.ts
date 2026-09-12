@@ -44,7 +44,7 @@ describe("Creative Run create options projection", () => {
           profileKey: `${profilePrefix}-compatible`,
           label: "Compatible text to image",
           mode: "image",
-          runner: "pipeline",
+          runner: "comfyui",
           pipelineModel: "redcraft-krea2-redmix3-txt2img",
           workflowKey: "redcraft-krea2-redmix3-txt2img",
           runnerConfig: {
@@ -63,7 +63,7 @@ describe("Creative Run create options projection", () => {
           profileKey: `${profilePrefix}-rollout-zero`,
           label: "Rollout zero",
           mode: "image",
-          runner: "pipeline",
+          runner: "comfyui",
           pipelineModel: "redcraft-krea2-redmix3-txt2img",
           workflowKey: "redcraft-krea2-redmix3-txt2img",
           runnerConfig: {
@@ -82,7 +82,7 @@ describe("Creative Run create options projection", () => {
           profileKey: `${profilePrefix}-reference-only`,
           label: "Reference only",
           mode: "image",
-          runner: "pipeline",
+          runner: "comfyui",
           pipelineModel: "qwen-image-edit",
           workflowKey: "qwen-image-edit-img2img",
           runnerConfig: {

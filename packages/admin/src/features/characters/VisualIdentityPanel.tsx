@@ -4,7 +4,7 @@ import { useAdminI18n } from "@/components/admin/i18n";
 import Link from "next/link";
 import Image from "next/image";
 import type { CharacterWorkspaceDetail } from "@idream/shared/admin";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { apiWrite } from "@/components/admin/api";
 import { characterAssetReadinessAction } from "@/features/characters/character-asset-studio-authority";
 import {
@@ -192,7 +192,6 @@ export function VisualIdentityPanel({
     null,
   );
   const [error, setError] = useState<string | null>(null);
-  const idempotencyKeys = useRef<Record<string, string>>({});
   const removedReferenceIds = referenceIdsRemovedFromPublishedSet(
     activeReferenceIds,
     selectedReferenceIds,
@@ -232,13 +231,6 @@ export function VisualIdentityPanel({
     data.visual.activeReferenceSet,
     referenceCandidates,
   ]);
-  const stableIdempotencyKey = (scope: string, payload: unknown) => {
-    const signature = `${scope}:${JSON.stringify(payload)}`;
-    const key = idempotencyKeys.current[signature] ?? crypto.randomUUID();
-    idempotencyKeys.current[signature] = key;
-    return { key, signature };
-  };
-
   const createIdentityVersion = async () => {
     setBusy("identity");
     setError(null);
@@ -252,7 +244,6 @@ export function VisualIdentityPanel({
         ? `${data.character.id}:visual-profile`
         : "",
     };
-    const requestIdentity = stableIdempotencyKey("visual-profile", body);
     try {
       await runCommittedMutation({
         action: "Visual Identity version",
@@ -261,13 +252,8 @@ export function VisualIdentityPanel({
             `/api/v2/admin/content/characters/${data.character.id}/visual-profiles`,
             "POST",
             body,
-            {
-              "idempotency-key": requestIdentity.key,
-              "x-request-id": crypto.randomUUID(),
-            },
           ),
         afterRefresh: () => {
-          delete idempotencyKeys.current[requestIdentity.signature];
           setIdentityReason("");
           setIdentityConfirmed(false);
         },
@@ -286,10 +272,6 @@ export function VisualIdentityPanel({
   const activateIdentityCandidate = async (
     body: ActivateIdentityCandidateInput,
   ) => {
-    const requestIdentity = stableIdempotencyKey(
-      "activate-identity-candidate",
-      body,
-    );
     await runCommittedMutation({
       action: "Identity candidate activation",
       commit: () =>
@@ -297,14 +279,7 @@ export function VisualIdentityPanel({
           `/api/v2/admin/content/characters/${data.character.id}/visual-profiles`,
           "POST",
           body,
-          {
-            "idempotency-key": requestIdentity.key,
-            "x-request-id": crypto.randomUUID(),
-          },
         ),
-      afterRefresh: () => {
-        delete idempotencyKeys.current[requestIdentity.signature];
-      },
     });
   };
 
@@ -335,18 +310,15 @@ export function VisualIdentityPanel({
         ? `PUBLISH REFERENCES ${data.character.id}`
         : "",
     };
-    const requestIdentity = stableIdempotencyKey("reference-set", body);
     try {
       await runCommittedMutation({
         action: "Reference Set publication",
         commit: () =>
           adminV2Operation("POST /api/v2/admin/characters/:id/reference-sets", {
             path: { id: data.character.id },
-            idempotencyKey: requestIdentity.key,
             body,
           }),
         afterRefresh: () => {
-          delete idempotencyKeys.current[requestIdentity.signature];
           setReferenceReason("");
           setReferenceConfirmed(false);
         },
@@ -378,21 +350,15 @@ export function VisualIdentityPanel({
       },
       confirmation: `ARCHIVE LOOK ${look.id}`,
     };
-    const requestIdentity = stableIdempotencyKey(
-      `archive-look:${look.id}`,
-      body,
-    );
     try {
       await runCommittedMutation({
         action: "Character Look archive",
         commit: () =>
           adminV2Operation("PATCH /api/v2/admin/characters/:id/looks/:lookId", {
             path: { id: data.character.id, lookId: look.id },
-            idempotencyKey: requestIdentity.key,
             body,
           }),
         afterRefresh: () => {
-          delete idempotencyKeys.current[requestIdentity.signature];
           setSelectedLookId(null);
           setLookArchiveReason("");
         },

@@ -71,6 +71,7 @@ const discardAttemptMissingResponse =
     payloadHash: missingAttempt.payloadHash,
     replayed: false,
   });
+// INTENT: 这一屏一把键都不该造 —— 钉住 randomUUID 只为让「造了几把」可数。
 const idempotencyKey = "22222222-2222-4222-8222-222222222222";
 
 describe("IncidentCorrelationOutbox mounted operator flow", () => {
@@ -154,7 +155,6 @@ describe("IncidentCorrelationOutbox mounted operator flow", () => {
           reason: { code: "operator_replay", summary: "Postgres recovered" },
           confirmation: INCIDENT_CORRELATION_REPLAY_CONFIRMATION,
         },
-        idempotencyKey,
       },
     );
     // 命令结果落在 toast 里（挂在 document.body 上），表格上方不再有横幅。
@@ -257,14 +257,10 @@ describe("IncidentCorrelationOutbox mounted operator flow", () => {
           },
           confirmation: INCIDENT_CORRELATION_ATTEMPT_MISSING_DISCARD_CONFIRMATION,
         },
-        idempotencyKey,
       },
     );
-    expect(adminV2Operation).toHaveBeenNthCalledWith(
-      3,
-      "POST /api/v2/admin/incidents/correlation-outbox/commands/discard-attempt-missing",
-      expect.objectContaining({ idempotencyKey }),
-    );
+    // INVARIANT: 就地重试发的是逐字相同的命令 —— 同一把键因此由账本复用（纯状态机那边测）。
+    expect(adminV2Operation.mock.calls[2]).toEqual(adminV2Operation.mock.calls[1]);
     expect(document.body.textContent).toContain(
       "discarded_target_missing",
     );

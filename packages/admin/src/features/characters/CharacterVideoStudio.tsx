@@ -572,7 +572,7 @@ export function CharacterVideoStudio({
         action: "Create Character video",
         commit: async () => {
           const result = await adminV2Operation("POST /api/v2/admin/creative/runs", {
-            idempotencyKey: currentIntent.idempotencyKey,
+            replayIdempotencyKey: currentIntent.idempotencyKey,
             body,
           });
           currentIntent = updateDurableMutationIntent(currentIntent, {

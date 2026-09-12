@@ -5,9 +5,7 @@ import { type MouseEvent, type ReactNode, useCallback, useEffect, useRef, useSta
 import {
   generationJobDetailResponseSchema,
   generationJobListResponseSchema,
-  generationRequestCancelResultSchema,
   isGenerationRequestCancellableStatus,
-  retryGenerationRequestResultSchema,
   type GenerationJobDetailResponse,
   type GenerationJobListItem,
   type GenerationJobListResponse,
@@ -23,7 +21,7 @@ import { FilterBar, type FilterChip } from "@/components/admin/ui/FilterBar";
 import { useAdminFormat } from "@/components/admin/ui/format";
 import { Pagination } from "@/components/admin/ui/Pagination";
 import { useUrlFilters } from "@/components/admin/ui/useUrlFilters";
-import { adminV2Request } from "@/lib/admin-v2-api";
+import { adminV2Operation } from "@/lib/admin-v2-operation";
 import {
   authorityRequestFailed,
   authorityRequestStarted,
@@ -226,15 +224,13 @@ export function JobsView() {
               destructive: { expectedName: `${item.id}:retry` },
               submitLabel: t("Create retry attempt"),
               onSubmit: async (reason) => {
-                await adminV2Request(`/api/v2/admin/jobs/${encodeURIComponent(item.id)}/commands/retry`, {
-                  method: "POST",
-                  idempotencyKey: crypto.randomUUID(),
+                await adminV2Operation("POST /api/v2/admin/jobs/:id/commands/retry", {
+                  path: { id: item.id },
                   body: {
                     entityVersion: item.version,
                     reason,
                     confirmation: `${item.id}:retry`,
                   },
-                  schema: retryGenerationRequestResultSchema,
                 });
                 await loadJobs(query);
               },
@@ -267,15 +263,13 @@ export function JobsView() {
               destructive: { expectedName: `${item.id}:cancel` },
               submitLabel: t("Cancel request"),
               onSubmit: async (reason) => {
-                const result = await adminV2Request(`/api/v2/admin/generation/requests/${encodeURIComponent(item.id)}/commands/cancel`, {
-                  method: "POST",
-                  idempotencyKey: crypto.randomUUID(),
+                const result = await adminV2Operation("POST /api/v2/admin/generation/requests/:id/commands/cancel", {
+                  path: { id: item.id },
                   body: {
                     entityVersion: item.version,
                     reason,
                     confirmation: `${item.id}:cancel`,
                   },
-                  schema: generationRequestCancelResultSchema,
                 });
                 toast({
                   tone: "success",

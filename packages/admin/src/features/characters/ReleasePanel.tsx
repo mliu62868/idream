@@ -5,7 +5,7 @@ import { EmptyState } from "@/components/admin/ui/EmptyState";
 import Link from "next/link";
 import type { CharacterWorkspaceDetail } from "@idream/shared/admin";
 import { Rocket, RotateCcw } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { characterReleaseCreateMutation } from "@/features/image-workflow-transport";
 import {
   StatusBadge,
@@ -278,7 +278,6 @@ export function ReleasePanel({
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [authorityBlockers, setAuthorityBlockers] = useState<string[]>([]);
-  const createIdempotencyKeys = useRef<Record<string, string>>({});
 
   const submitCommand = async (
     kind: "publish" | "rollback" | "withdraw",
@@ -329,27 +328,17 @@ export function ReleasePanel({
         : undefined;
       if (!releaseRef) {
         const publishReason = reason.trim() || t("Publish current Character");
-        const signature = JSON.stringify({
-          characterId: data.character.id,
-          entityVersion: data.project.version,
-          reason: publishReason,
-        });
-        const idempotencyKey =
-          createIdempotencyKeys.current[signature] ?? crypto.randomUUID();
-        createIdempotencyKeys.current[signature] = idempotencyKey;
         const mutation = characterReleaseCreateMutation(
           data.character.id,
           data.project.version,
           publishReason,
           `${data.character.id}:publish`,
-          idempotencyKey,
         );
         const created = await adminV2Operation(
           mutation.operationId,
           mutation.options,
         );
         releaseRef = { id: created.id, version: created.version };
-        delete createIdempotencyKeys.current[signature];
       }
       await submitCommand("publish", releaseRef.id, releaseRef.version);
     } catch (cause) {
@@ -426,20 +415,16 @@ export function ReleasePanel({
     if (!data.serving || data.serving.state !== "live" || !permissions.manageCatalogVisibility || writesLocked || busy) return;
     const visibility = data.character.visibility === "unlisted" ? "public" : "unlisted";
     const action = visibility === "public" ? "Show in Explore" : "Hide from Explore";
-    const signature = `catalog:${data.character.id}:${data.serving.version}:${visibility}`;
-    const idempotencyKey = createIdempotencyKeys.current[signature] ?? crypto.randomUUID();
-    createIdempotencyKeys.current[signature] = idempotencyKey;
     setBusy("visibility");
     setError(null);
     try {
       await runCommittedMutation({
         action,
         commit: () => adminV2Operation("POST /api/v2/admin/content/characters/:id/visibility", {
-          path: { id: data.character.id }, idempotencyKey,
+          path: { id: data.character.id },
           body: { visibility, entityVersion: data.serving!.version, reason: action, confirmation: `${data.character.id}:visibility:${visibility}` },
         }),
       });
-      delete createIdempotencyKeys.current[signature];
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t("Could not update Explore visibility"));
     } finally {

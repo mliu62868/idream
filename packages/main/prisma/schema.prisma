@@ -1619,7 +1619,7 @@ model GenerationModelProfile {
   // 不决定具体后端 —— 后端由 workflow 描述符的 backendKind 决定（comfyui / drawthings）。
   // INVARIANT: 这行注释里的 enum 就是合法取值的唯一清单，且必须全部能被 gen 的
   // workerAdapterForRecordedProvider 映射；由 generation-runner-vocabulary.test.ts 断言集合相等。
-  runner              String    @default("comfyui") // enum: pipeline | mlx | comfyui | external
+  runner              String    @default("comfyui") // enum: comfyui
   pipelineModel       String
   workflowKey         String?
   sourceModelPath     String?
@@ -2256,6 +2256,7 @@ model AdminCase {
   version           Int       @default(1)
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
+  evidence          CaseEvidence[]
 
   @@index([type, targetType, targetId, caseKey])
   @@index([status, slaDueAt])
@@ -2266,6 +2267,7 @@ model AdminCase {
 model CaseEvidence {
   id         String   @id @default(cuid())
   caseId     String
+  case       AdminCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
   sourceType String
   sourceId   String
   snapshot   Json

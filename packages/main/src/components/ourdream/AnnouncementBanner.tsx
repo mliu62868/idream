@@ -1,6 +1,6 @@
 "use client";
 
-// SPEC: 站内公告 banner（ADMIN_PHASE4_DESIGN §3）。读公开 /api/v1/announcements，
+// SPEC: 站内公告 banner（ADMIN_CONSOLE_PLAN §3）。读公开 /api/v1/announcements，
 //       显示最靠前一条；可关闭（localStorage 记 dismissed id）；无公告 → null。
 import { useEffect, useState } from "react";
 import Link from "next/link";

@@ -194,6 +194,8 @@ export async function createCreativeRun(
   if (body.bootstrapIdentity && workflow) {
     const backendHealth = await generationBackendHealth(
       workflow.backendKind,
+      // 身份图引导走图片链路；错误文案也说 image-generation runtime。
+      "image",
     );
     if (!backendHealth.ok) {
       throw Errors.unavailable(

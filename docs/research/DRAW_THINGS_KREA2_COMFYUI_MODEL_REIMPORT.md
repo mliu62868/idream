@@ -92,7 +92,7 @@ iDream 当前 RedCraft workflow 是 split 结构，而不是 AIO checkpoint：
 | VAE | `qwen_image_vae.safetensors` | **不直接复用**；使用 Draw Things companion |
 | Krea2 LoRA | 如 `Detailer-KREA2.safetensors` | 在 LoRA 页面**单独导入并转换** |
 
-仓库中的 [`redcraft-krea2-txt2img.json`](../../packages/gen/workflows/redcraft-krea2-txt2img.json)
+仓库中的 [`redcraft-krea2-redmix3-txt2img.json`](../../packages/gen/workflows/redcraft-krea2-redmix3-txt2img.json)
 明确由 `UNETLoader`、`CLIPLoader(type=krea2)`、`VAELoader` 三个节点分别加载这些
 组件。Draw Things 没有执行这份 ComfyUI workflow JSON；它执行自己的模型规格和采样配置。
 

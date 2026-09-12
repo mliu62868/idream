@@ -1255,6 +1255,10 @@ describe("generation terminal record durable ingest", () => {
   });
 
   it("fails closed instead of overwriting pinned Attempt provider authority", async () => {
+    // The Request has to exist: `generation_attempts_requestId_fkey` (2026-09-12)
+    // makes an orphan Attempt unwritable, and this test is about provider
+    // authority, not about what happens without a parent.
+    await ensureDispatchAuthority(terminalRecord);
     await prisma.generationAttempt.create({
       data: {
         id: attemptId,

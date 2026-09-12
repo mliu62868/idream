@@ -303,7 +303,6 @@ export function AccessWorkspace({
   }
 
   function confirmCommand(input: AccessCommand) {
-    const idempotencyKey = crypto.randomUUID();
     setConfirmation({
       title: input.title,
       destructive: { expectedName: input.expected, inputLabel: t("Confirmation") },
@@ -315,7 +314,6 @@ export function AccessWorkspace({
           input.endpoint,
           input.method ?? "POST",
           { ...input.payload(reason), confirmation: input.expected },
-          { "idempotency-key": idempotencyKey },
         );
         toast({ tone: "success", title: input.completed });
         setCommandNonce((value) => value + 1);

@@ -129,7 +129,6 @@ export function ContentMerchandisingWorkspace({
   const [cursorTrail, setCursorTrail] = useState<string[]>([]);
   const characterGate = useRef(createLatestRequestGate());
   const featuredGate = useRef(createLatestRequestGate());
-  const featuredKey = useRef<string | null>(null);
 
   const loadCharacters = useCallback(async (next: ContentQuery) => {
     const queryKey = contentListPath(next);
@@ -228,7 +227,6 @@ export function ContentMerchandisingWorkspace({
 
   const expectedConfirmation = parseCsv(featuredInput).join(",") || "CLEAR";
   async function saveFeatured() {
-    featuredKey.current ??= crypto.randomUUID();
     setSaving(true);
     setSaveConflict(null);
     setSaveResult(null);
@@ -242,17 +240,14 @@ export function ContentMerchandisingWorkspace({
           reason: reason.trim(),
           confirmation: confirmation.trim(),
         },
-        { "idempotency-key": featuredKey.current },
       );
       setSaveResult(result);
-      featuredKey.current = null;
       setReason("");
       setConfirmation("");
       await loadFeatured();
     } catch (cause) {
       const conflict = featuredVersionConflictFromError(cause);
       if (conflict) {
-        featuredKey.current = null;
         setSaveConflict(conflict);
         await loadFeatured({ preserveInput: true });
       } else {
@@ -265,7 +260,6 @@ export function ContentMerchandisingWorkspace({
 
   function command(id: string, field: "visibility" | "status", value: string) {
     const expected = `${id}:${field}:${value}`;
-    const key = crypto.randomUUID();
     setConfirmSpec({
       title: field === "visibility"
         ? t("{action} character {id}", { action: t(contentCommandLabel(field, value)), id })
@@ -289,7 +283,6 @@ export function ContentMerchandisingWorkspace({
           `/api/v2/admin/content/characters/${encodeURIComponent(id)}/${field}`,
           "POST",
           { [field]: value, reason: commandReason, confirmation: expected },
-          { "idempotency-key": key },
         );
         toast({
           tone: "success",
@@ -473,7 +466,6 @@ export function ContentMerchandisingWorkspace({
               setConfirmation("");
               setSaveResult(null);
               setSaveConflict(null);
-              featuredKey.current = null;
             }}
             placeholder={t("char_a, char_b")}
             value={featuredInput}
@@ -485,7 +477,6 @@ export function ContentMerchandisingWorkspace({
               setReason(event.target.value);
               setSaveResult(null);
               setSaveConflict(null);
-              featuredKey.current = null;
             }}
             placeholder={t("Reason (≥3 chars)")}
             value={reason}
@@ -498,7 +489,6 @@ export function ContentMerchandisingWorkspace({
               setConfirmation(event.target.value);
               setSaveResult(null);
               setSaveConflict(null);
-              featuredKey.current = null;
             }}
             placeholder={
               expectedConfirmation === "CLEAR"

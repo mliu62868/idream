@@ -19,7 +19,6 @@ import {
   requireActorPermission,
   type AdminActor,
 } from "./authority";
-import { acceptControlPlaneCommand } from "./control-plane-command";
 
 export type AdminMutationOperationDefinition = {
   // INTENT: the declared union, not the widened operation — it keeps `contract.request` a ref
@@ -38,6 +37,18 @@ export function requireAdminMutationOperation(
   if (!operation) throw Errors.internal("Unknown Admin mutation operation", { operationId });
   if (!operation.mutation) {
     throw Errors.internal("Admin operation is not a mutation", { operationId });
+  }
+  // SPEC: 只有 atomic 执行模式的操作走这条入口。
+  // INTENT: durable 命令的受理协议（accept → 队列 → executor → 回执）只有
+  // `commands/authoritative.ts` 一份实现，它返回 `adminCommandAcceptedSchema` 要求的受理回执。
+  // 这里曾经有第二份 durable 分支，返回 `{commandId, status, replayed}`——那个形状过不了
+  // `.strict()` 的受理回执契约，任何 durable 操作接到这条入口上都会「命令已受理但响应永远 500」。
+  // 与其修好一条没人用的第二实现，不如让它接不上。
+  if (operation.mutation.executionMode !== "atomic") {
+    throw Errors.internal("Durable Admin command must be accepted by the control-plane handler", {
+      operationId,
+      executionMode: operation.mutation.executionMode,
+    });
   }
   const request = requireExecutableAdminV2Contract(operation.contract.request);
   const response = requireExecutableAdminV2Contract(operation.contract.response);
@@ -80,20 +91,15 @@ export async function executeAdminMutation<Body, Prepared = undefined>(
       context: AdminMutationContext<Body>,
     ) => { readonly type: string; readonly id: string };
     readonly expectedVersion?: (body: Body) => number;
-    readonly reason?: (body: Body) => string;
     readonly prepare?: (
       context: AdminMutationContext<Body>,
     ) => Promise<Prepared>;
-    readonly mutate?: (
+    readonly mutate: (
       tx: Prisma.TransactionClient,
       context: AdminMutationContext<Body>,
       prepared: Prepared,
     ) => Promise<unknown>;
     readonly decorateResult?: (result: unknown, replayed: boolean) => unknown;
-    readonly coordinationKey?: (
-      context: AdminMutationContext<Body>,
-    ) => string | undefined;
-    readonly maxAttempts?: number;
   },
 ) {
   const definition = requireAdminMutationOperation(operationId);
@@ -136,29 +142,15 @@ export async function executeAdminMutation<Body, Prepared = undefined>(
   const target = options.target(context);
   const metadata = definition.operation.mutation;
 
-  let result: unknown;
-  if (metadata.executionMode === "durable") {
-    if (!idempotencyKey) {
-      throw Errors.internal("Durable Admin mutation is missing idempotency transport");
-    }
-    result = await acceptControlPlaneCommand(prisma, {
-      environment: env.APP_ENV,
-      actor,
-      idempotencyKey,
-      commandType: metadata.commandType,
-      target,
-      expectedVersion,
-      payload: body,
-      reason: options.reason?.(body) ?? requiredReason(body),
-      requestId,
-      coordinationKey: options.coordinationKey?.(context),
-      maxAttempts: options.maxAttempts,
-    });
-  } else if (idempotencyKey) {
-    if (!options.mutate) {
-      throw Errors.internal("Atomic Admin mutation is missing its domain callback");
-    }
-    result = await executeAtomicIdempotentMutation({
+  // SPEC: 响应契约在事务内校验，校验失败连同领域写入一起回滚。
+  // INTENT: 校验曾经写在这个函数的最后一行，也就是事务提交之后。admin-v2 的响应契约是
+  // `.strict()` 且列名与 Prisma 行不同，service 直接 return Prisma 行时：写已提交 → 这里抛
+  // → 500；用户重试 → 同一个幂等键取回那条未经校验的 result → 再 500，永远好不了。把校验
+  // 交给事务内的 `validateResult`，「写已提交但响应不可表达」这个状态就不存在。
+  const validateResult = (value: unknown) => definition.response.schema.parse(value);
+
+  if (idempotencyKey) {
+    return await executeAtomicIdempotentMutation({
       environment: env.APP_ENV,
       actor,
       idempotencyKey,
@@ -168,22 +160,18 @@ export async function executeAdminMutation<Body, Prepared = undefined>(
       expectedVersion,
       payload: body,
       prepare: options.prepare ? () => options.prepare!(context) : undefined,
-      mutate: (tx, prepared) => options.mutate!(tx, context, prepared),
+      mutate: (tx, prepared) => options.mutate(tx, context, prepared),
       decorateResult: options.decorateResult,
+      validateResult,
     });
-  } else {
-    if (!options.mutate) {
-      throw Errors.internal("Atomic Admin mutation is missing its domain callback");
-    }
-    const prepared = options.prepare
-      ? await options.prepare(context)
-      : undefined as Prepared;
-    result = await prisma.$transaction(
-      (tx) => options.mutate!(tx, context, prepared),
-      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-    );
   }
-  return definition.response.schema.parse(result);
+  const prepared = options.prepare
+    ? await options.prepare(context)
+    : undefined as Prepared;
+  return await prisma.$transaction(
+    async (tx) => validateResult(await options.mutate(tx, context, prepared)),
+    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+  );
 }
 
 function transportFromRequirements(
@@ -229,14 +217,4 @@ function requiredIfMatch(request: Request) {
     throw Errors.badRequest("If-Match must contain an authority version");
   }
   return Number(value);
-}
-
-function requiredReason(body: unknown) {
-  const reason = body && typeof body === "object" && "reason" in body
-    ? (body as { reason?: unknown }).reason
-    : undefined;
-  if (typeof reason !== "string" || !reason.trim()) {
-    throw Errors.badRequest("Durable Admin mutation requires a reason");
-  }
-  return reason.trim();
 }

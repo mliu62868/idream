@@ -15,11 +15,7 @@ import {
 } from "@deepseek-ai/dsh-llm";
 import { Session, SessionId, type SessionEvent, type TurnEndReason } from "@deepseek-ai/dsh-session";
 import { type JsonValue, type ToolDefinition } from "@deepseek-ai/dsh-tools";
-import {
-  hasUnexecutedMemorySearchPayload,
-  type CompanionReadiness,
-} from "@idream/shared/chat/companion-runtime";
-import { requiredImageReplyMatchesUserScript } from "@idream/shared/chat/image-action";
+import { type CompanionReadiness } from "@idream/shared/chat/companion-runtime";
 import {
   companionEventSchema,
   companionToolReservationSchema,
@@ -35,6 +31,10 @@ import {
   type PreparedTurnProfile,
 } from "./contracts";
 import {
+  evaluateTerminalCandidate,
+  type TerminalValidationCode,
+} from "./terminal-candidate";
+import {
   applyCompanionComposition,
   createCompanionCompositionPlan,
   resolvedCompanionIgrepConfig,
@@ -44,11 +44,17 @@ import type {
   AttemptWorkspaceStore,
   WorkspacePurgeRequest,
 } from "./workspace";
-import { observeIgrepWake, recallIgrepMemory, type IgrepPluginModule } from "./igrep";
+import {
+  observeIgrepWake,
+  recallIgrepMemory,
+  type IgrepPluginModule,
+  type RunJsonCommand,
+} from "./igrep";
 import type {
   CompanionWorkspaceRebuildPromotion,
   CompanionWorkspaceRebuildSource,
 } from "./rebuild-source";
+import { assertNotFenced, withDrainFence, type FenceScope } from "../fence.js";
 import { stableJson } from "../stable-json";
 import { imageAcknowledgement } from "../image-acknowledgement";
 type EventPayload = CompanionEvent extends infer Event
@@ -67,8 +73,13 @@ export interface CompanionEngineOptions {
     samplingTemperature?: number;
   }): LlmAdapter;
   igrepCommand: string;
-  observeWake?: typeof observeIgrepWake;
-  recallMemory?: typeof recallIgrepMemory;
+  /**
+   * SPEC: 覆盖 igrep 子进程的执行方式。生产留空走真实 igrep。
+   * INTENT: 这里曾经是 observeWake / recallMemory 两个函数级钩子 —— 测试替掉整个
+   *   wake / recall 协议，于是解析、note 截断和证据计数在 engine 测试里从没被跑
+   *   过。换成 igrep 自己的 RunJsonCommand 之后，注入点落在真实的进程边界上。
+   */
+  runIgrep?: RunJsonCommand;
   igrepLlm: { url: string; model: string };
   memoryBuilder?: {
     build(
@@ -178,41 +189,6 @@ function assistantText(message: AssistantMessage): string {
     if (block.type === "text") parts.push(block.text);
   }
   return parts.join("");
-}
-
-function isUnexecutedImageToolPayload(
-  content: string,
-  tools: CompanionInvocation["preparedTurn"]["tools"],
-): boolean {
-  if (!tools.some((tool) =>
-    tool.name === "generate_image_async" || tool.name === "edit_last_image"
-  )) return false;
-  let candidate = content.trim();
-  if (/(?:^|\n)\s*(?:\[image\s*:[^\]\n]+\]|【图片\s*[：:][^】\n]+】)\s*(?:$|\n)/iu.test(candidate)) {
-    return true;
-  }
-  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/iu.exec(candidate);
-  if (fenced) candidate = fenced[1] ?? "";
-  if (!candidate.startsWith("{") || !candidate.endsWith("}")) return false;
-  try {
-    const parsed = JSON.parse(candidate) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
-    const row = parsed as Record<string, unknown>;
-    if (typeof row.image === "string" && row.image.trim()) return true;
-    const nested = row.function && typeof row.function === "object" && !Array.isArray(row.function)
-      ? row.function as Record<string, unknown>
-      : null;
-    const name = typeof row.name === "string"
-      ? row.name
-      : typeof row.tool === "string"
-        ? row.tool
-        : typeof nested?.name === "string"
-          ? nested.name
-          : "";
-    return name === "generate_image_async" || name === "edit_last_image";
-  } catch {
-    return false;
-  }
 }
 
 function wireAttribution(finish: StreamChunk & { type: "finish" }) {
@@ -625,8 +601,6 @@ export async function probeCompanionBridges(invocation: CompanionInvocation): Pr
 
 export class CompanionEngine {
   private readonly active = new Map<string, ActiveInvocation>();
-  private readonly purgingUsers = new Map<string, number>();
-  private readonly purgingRelationships = new Map<string, number>();
   private maintenanceTail = Promise.resolve();
   private closing = false;
 
@@ -644,8 +618,17 @@ export class CompanionEngine {
     port: CompanionRuntimePort,
     signal?: AbortSignal,
   ): Promise<void> {
+    // The fence read is the only await before the admission bookkeeping below,
+    // which stays synchronous so two concurrent runs cannot claim one id.
+    await assertNotFenced([
+      { scope: "user", userId: invocation.userId },
+      {
+        scope: "relationship",
+        userId: invocation.userId,
+        characterId: invocation.characterId,
+      },
+    ]);
     if (this.closing) throw new Error("Agent runtime is shutting down");
-    if (this.isPurging(invocation)) throw new Error("invocation workspace is being purged");
     if (this.active.has(invocation.invocationId)) throw new Error("invocation id is already active");
     const pool = invocation.memoryMode === "private" ? "private" : "normal";
     const limit = this.options.maxConcurrentAgents?.[pool] ?? Number.POSITIVE_INFINITY;
@@ -667,13 +650,7 @@ export class CompanionEngine {
     let turnFailure: LlmFailure | undefined;
     let igrepFailure: "wake" | "search" | "memory" | undefined;
     let preflightCode: string | undefined;
-    let terminalValidationCode:
-      | "unexecuted_tool_payload"
-      | "required_image_reply_language_mismatch"
-      | "required_image_reply_exposed_process"
-      | "required_image_tool_missing"
-      | "required_image_tool_mismatch"
-      | undefined;
+    let terminalValidationCode: TerminalValidationCode | undefined;
     let eventTail = Promise.resolve();
     const event = (payload: EventPayload): Promise<void> => {
       const value = companionEventSchema.parse({
@@ -862,17 +839,19 @@ export class CompanionEngine {
         // message) are independent igrep processes; run them side by side so
         // the turn pays for the slower one, not the sum.
         const [wake, recall] = await Promise.all([
-          timed(() => (this.options.observeWake ?? observeIgrepWake)(
+          timed(() => observeIgrepWake(
             this.options.igrepCommand,
             workspacePath,
             signal,
+            this.options.runIgrep,
           )),
           shouldPreRecall(recallQuery)
-            ? timed(() => (this.options.recallMemory ?? recallIgrepMemory)(
+            ? timed(() => recallIgrepMemory(
                 this.options.igrepCommand,
                 workspacePath,
                 recallQuery,
                 { signal },
+                this.options.runIgrep,
               ))
             : Promise.resolve(null),
         ]);
@@ -1015,68 +994,40 @@ export class CompanionEngine {
             return next();
           }, { prepend: true });
 
-          agentCtx.on("agent/turn-stopping", async ({ signal }) => {
-            if (!latestAssistant || !latestFinish) throw new Error("turn stopped without a terminal assistant candidate");
-            const content = assistantText(latestAssistant);
-            if (!content) throw new Error("terminal assistant candidate is empty");
-            if (
-              hasUnexecutedMemorySearchPayload(content) ||
-              isUnexecutedImageToolPayload(content, invocation.preparedTurn.tools)
-            ) {
-              terminalValidationCode = "unexecuted_tool_payload";
-              if (currentStepText) {
-                currentStepText = "";
-                event({ type: "text_reset" });
-              }
-              throw new Error("terminal assistant candidate contained an unexecuted tool payload");
-            }
+          agentCtx.on("agent/turn-stopping", async () => {
             const requiredAction = invocation.preparedTurn.requiredAction;
-            if (
-              requiredAction &&
-              !requiredImageReplyMatchesUserScript(current.content, content)
-            ) {
-              terminalValidationCode = "required_image_reply_language_mismatch";
-              throw new Error("required image reply did not match the user's writing system");
-            }
-            if (
-              requiredAction &&
-              /\b(?:prompt|tool call|image generation process|translation)\b|(?:提示词|工具调用|生图流程|翻译)/iu.test(content)
-            ) {
-              terminalValidationCode = "required_image_reply_exposed_process";
-              throw new Error("required image reply exposed the generation process");
-            }
-            if (requiredAction && bridge.callCount === 0) {
-              terminalValidationCode = "required_image_tool_missing";
-              throw new Error("required image action ended without a tool call");
-            }
-            if (
-              requiredAction &&
-              (bridge.callCount !== 1 || bridge.reservations[0]?.name !== requiredAction.name)
-            ) {
-              terminalValidationCode = "required_image_tool_mismatch";
-              throw new Error("required image action executed the wrong tool sequence");
-            }
-            if (latestFinish.reason.kind !== "stop" && latestFinish.reason.kind !== "max-tokens") {
-              throw new Error(`non-terminal finish reason ${latestFinish.reason.kind}`);
-            }
-            const attribution = providerAttribution;
-            const candidate: CompanionTerminalCandidate = {
+            const decision = evaluateTerminalCandidate({
               attemptId: invocation.attemptId,
-              content,
-              finishReason: latestFinish.reason.kind === "max-tokens" ? "length" : "stop",
-              provider: invocation.preparedTurn.profile.provider,
-              model: invocation.preparedTurn.profile.model,
+              assistantContent: latestAssistant ? assistantText(latestAssistant) : undefined,
+              finishReasonKind: latestFinish?.reason.kind,
+              currentUserText: current.content,
+              requiredAction,
+              tools: invocation.preparedTurn.tools,
+              toolCalls: bridge.callCount,
+              reservations: bridge.reservations,
+              profile: invocation.preparedTurn.profile,
               usage: { ...totalUsage },
-              execution: { steps: stepCount, toolCalls: bridge.callCount },
-              tools: bridge.reservations,
+              steps: stepCount,
               completedAt: new Date().toISOString(),
-              ...(modelRequests.length ? { modelRequests } : {}),
+              modelRequests,
               ...(acknowledgement ? { acknowledgement: {
                 version: acknowledgement.version,
                 locale: acknowledgement.locale,
               } } : {}),
-              ...(attribution ? { attribution } : {}),
-            };
+              ...(providerAttribution ? { attribution: providerAttribution } : {}),
+            });
+            if (!decision.accepted) {
+              if (decision.code) terminalValidationCode = decision.code;
+              // An unexecuted tool payload already reached the stream as
+              // provisional text; retract it before the attempt fails.
+              if (decision.code === "unexecuted_tool_payload" && currentStepText) {
+                currentStepText = "";
+                event({ type: "text_reset" });
+              }
+              throw new Error(decision.message);
+            }
+            const candidate = decision.candidate;
+            const content = candidate.content;
             // Some adapters only expose the assembled assistant message. Keep a
             // terminal fallback, but never duplicate text already streamed.
             if (!currentStepText) {
@@ -1189,25 +1140,24 @@ export class CompanionEngine {
   }
 
   async purge(request: WorkspacePurgeRequest): Promise<number> {
-    const userKey = request.userId;
-    const relationshipKey = request.scope === "relationship"
-      ? `${request.userId}\0${request.characterId}`
-      : undefined;
-    if (request.scope === "user") this.addFence(this.purgingUsers, userKey);
-    else this.addFence(this.purgingRelationships, relationshipKey!);
-    try {
-      return await this.withMaintenance(async () => {
-        const matches = () => [...this.active.values()].filter(({ invocation }) =>
-          invocation.userId === request.userId
-          && (request.scope === "user" || invocation.characterId === request.characterId));
-        for (const active of matches()) active.cancel("user");
-        while (matches().length > 0) await new Promise((resolve) => setTimeout(resolve, 10));
-        return this.options.workspaces.purge(request);
-      });
-    } finally {
-      if (request.scope === "user") this.removeFence(this.purgingUsers, userKey);
-      else this.removeFence(this.purgingRelationships, relationshipKey!);
-    }
+    const scope: FenceScope = request.scope === "user"
+      ? { scope: "user", userId: request.userId }
+      : {
+          scope: "relationship",
+          userId: request.userId,
+          characterId: request.characterId,
+        };
+    // The drain fence rejects new invocations for exactly this scope while the
+    // bytes are being removed; the store writes the durable fence when the
+    // purge is permanent.
+    return withDrainFence(scope, () => this.withMaintenance(async () => {
+      const matches = () => [...this.active.values()].filter(({ invocation }) =>
+        invocation.userId === request.userId
+        && (request.scope === "user" || invocation.characterId === request.characterId));
+      for (const active of matches()) active.cancel("user");
+      while (matches().length > 0) await new Promise((resolve) => setTimeout(resolve, 10));
+      return this.options.workspaces.purge(request);
+    }));
   }
 
   async prepareRebuild(
@@ -1239,28 +1189,6 @@ export class CompanionEngine {
 
   async discardRebuild(request: CompanionWorkspaceRebuildPromotion): Promise<void> {
     await this.options.workspaces.discardRelationshipRebuild(request);
-  }
-
-  private isPurging(invocation: CompanionInvocation): boolean {
-    return this.hasFence(this.purgingUsers, invocation.userId)
-      || this.hasFence(
-        this.purgingRelationships,
-        `${invocation.userId}\0${invocation.characterId}`,
-      );
-  }
-
-  private addFence(fences: Map<string, number>, key: string): void {
-    fences.set(key, (fences.get(key) ?? 0) + 1);
-  }
-
-  private removeFence(fences: Map<string, number>, key: string): void {
-    const count = fences.get(key) ?? 0;
-    if (count <= 1) fences.delete(key);
-    else fences.set(key, count - 1);
-  }
-
-  private hasFence(fences: Map<string, number>, key: string): boolean {
-    return (fences.get(key) ?? 0) > 0;
   }
 
   /** Maintenance is rare; one process-wide queue makes purge/rebuild ordering explicit. */

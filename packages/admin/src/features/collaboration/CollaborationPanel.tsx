@@ -3,11 +3,8 @@
 import { useAdminI18n } from "@/components/admin/i18n";
 import {
   collaborationActivityListResponseSchema,
-  collaborationActivityMutationSchema,
   collaborationActivitySchema,
-  collaborationWatchResponseSchema,
   type CollaborationActivityListResponse,
-  type CollaborationActivityMutation,
   type CollaborationTargetType,
 } from "@idream/shared/admin";
 import { Bell, BellOff, MessageCircle, RefreshCcw, Send } from "lucide-react";
@@ -16,6 +13,7 @@ import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestErr
 import { useAdminFormat } from "@/components/admin/ui/format";
 import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
 import { AdminV2RequestError, adminV2Request } from "@/lib/admin-v2-api";
+import { adminV2Operation } from "@/lib/admin-v2-operation";
 import { WorkspaceButton, fieldClass, textAreaClass } from "@/features/operations/WorkspaceUi";
 
 type Activity = ReturnType<typeof collaborationActivitySchema.parse>;
@@ -143,13 +141,11 @@ export function CollaborationPanel({
     const next = !watching;
     setSubmitting(true);
     try {
-      const response = await adminV2Request<{ watching: boolean }>(
-        `/api/v2/admin/collaboration/${targetType}/${encodeURIComponent(targetId)}/watch`,
+      const response = await adminV2Operation(
+        "PUT /api/v2/admin/collaboration/:targetType/:targetId/watch",
         {
-          method: "PUT",
-          idempotencyKey: crypto.randomUUID(),
+          path: { targetType, targetId },
           body: { watching: next },
-          schema: collaborationWatchResponseSchema,
         },
       );
       setWatching(response.watching);
@@ -171,11 +167,10 @@ export function CollaborationPanel({
     setSubmitting(true);
     try {
       const checklistItems = parseChecklist(checklist);
-      const response = await adminV2Request<CollaborationActivityMutation>(
-        `/api/v2/admin/collaboration/${targetType}/${encodeURIComponent(targetId)}/activity`,
+      const response = await adminV2Operation(
+        "POST /api/v2/admin/collaboration/:targetType/:targetId/activity",
         {
-          method: "POST",
-          idempotencyKey: crypto.randomUUID(),
+          path: { targetType, targetId },
           body: {
             kind,
             ...(kind === "handoff" ? { expectedVersion: authorityVersion } : {}),
@@ -187,7 +182,6 @@ export function CollaborationPanel({
               checklistItems: kind === "checklist" ? checklistItems : [],
             },
           },
-          schema: collaborationActivityMutationSchema,
         },
       );
       if (response.authority) {

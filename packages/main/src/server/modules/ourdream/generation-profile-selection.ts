@@ -391,9 +391,13 @@ async function isPublicTextToImageGenerationProfile(
   const workflow = await generationWorkflowDescriptor(
     profile.workflowKey ?? profile.pipelineModel,
   );
-  if (!workflow) {
-    return profile.runner !== "comfyui" && configuredTextToImage === true;
-  }
+  // INVARIANT: no descriptor, no public route. This used to admit a profile
+  // whose runner was anything but `comfyui` — the legacy OpenAI-compatible
+  // gateway took a bare model name and had no workflow to describe. That adapter
+  // and its runner values retired on 2026-09-12, so `comfyui` is the only runner
+  // left and the exception could never fire again; leaving it in would only
+  // promise a route that nothing can execute.
+  if (!workflow) return false;
   return (
     workflow.capabilities.includes("textToImage") &&
     !workflow.inputs.some((input) => input.type === "image")

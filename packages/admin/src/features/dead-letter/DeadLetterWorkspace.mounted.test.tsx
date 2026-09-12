@@ -115,7 +115,6 @@ describe("DeadLetterWorkspace retry authority", () => {
       "/api/v2/admin/generation/dead-letter/commands/requeue",
       "POST",
       { jobIds: [retryable.id], reason: "Provider recovered", confirmation: retryable.id },
-      { "idempotency-key": idempotencyKey },
     );
     // 结果落在 toast 里（挂在 document.body 上），不再是表格上方那条会滚出视口的横幅。
     await waitUntil(() => document.body.textContent?.includes("Requeued 0 of 1 requests.") ?? false);
@@ -142,7 +141,7 @@ describe("DeadLetterWorkspace retry authority", () => {
     expect(container.textContent).not.toContain("2 selected");
     expect(rowCheckbox(container, retryable.id)?.checked).toBe(false);
   });
-  it("reuses one idempotency key when the operator retries a failed command in place", async () => {
+  it("mints no idempotency key of its own when the operator retries a failed command in place", async () => {
     // 确认框向运营承诺「就地重试不会重复执行」——那这条就必须是真的：
     // 幂等键在打开对话框时生成一次，失败后的重试走的是同一个闭包。
     // 让 randomUUID 每次都吐不同的值，否则这条断言会因为公共 mock 恒等而空过。
@@ -170,10 +169,9 @@ describe("DeadLetterWorkspace retry authority", () => {
     await click(findButton("Confirm", dialog));
     await waitUntil(() => apiWrite.mock.calls.length === 2);
 
-    const keys = apiWrite.mock.calls.map(([, , , headers]) => (headers as Record<string, string>)["idempotency-key"]);
-    expect(keys[0]).toBe(keys[1]);
-    // 两次提交只生成过一个键：不是 mock 恒等，是代码真的没有重新生成。
-    expect(issued).toBe(1);
+    // INVARIANT: 这一屏一把键都不造 —— 键的生成与复用归 idempotency-key-lifecycle 一家管。
+    // 回到「每次点击 crypto.randomUUID()」的那种写法，这一行立刻返红。
+    expect(issued).toBe(0);
     await waitUntil(() => document.body.textContent?.includes("Requeued 1 of 1 requests.") ?? false);
   });
 

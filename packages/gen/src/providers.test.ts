@@ -13,7 +13,6 @@ import {
 const oldEnv = { ...process.env };
 
 beforeEach(() => {
-  delete process.env.PIPELINE_IMAGE_SIZE_DEFAULT;
 });
 
 afterEach(() => {
@@ -21,315 +20,17 @@ afterEach(() => {
   process.env = { ...oldEnv };
 });
 
-describe("PipelineImageModel", () => {
-  it("does not advertise replay safety without a durable gateway contract", () => {
-    process.env.GEN_IMAGE_PROVIDER = "pipeline";
-    process.env.PIPELINE_API_URL = "https://pipeline.test";
-
-    expect(providers.image.retryCapabilities).toBeUndefined();
-  });
-
-  it("parses OpenAI-compatible base64 image responses for blob persistence", async () => {
-    process.env.GEN_IMAGE_PROVIDER = "pipeline";
-    process.env.PIPELINE_API_URL = "https://pipeline.test";
-    const fetchMock = vi.fn(async () =>
-      Response.json({
-        data: [
-          {
-            b64_json: Buffer.from("image-bytes", "utf8").toString("base64"),
-            width: 768,
-            height: 1024,
-            contentType: "image/png",
-          },
-        ],
-      }),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-
-    const result = await providers.image.generate({
-      prompt: "portrait",
-      count: 1,
-      model: "profile_image_default_v1",
-      orientation: "4:5",
-      seed: "seed_1",
-    });
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      new URL("https://pipeline.test/images/generations"),
-      expect.objectContaining({
-        body: expect.stringContaining('"count":1'),
-      }),
-    );
-    const firstCall = fetchMock.mock.calls[0] as unknown as
-      | [Parameters<typeof fetch>[0], Parameters<typeof fetch>[1]]
-      | undefined;
-    if (!firstCall) throw new Error("fetch was not called");
-    const [, init] = firstCall;
-    const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
-    expect(requestBody).toMatchObject({
-      model: "profile_image_default_v1",
-      count: 1,
-      n: 1,
-      size: "1024x1280",
-      response_format: "b64_json",
-      controls: { idreamSeed: "seed_1" },
-    });
-    expect(typeof requestBody.seed).toBe("number");
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.data.assets[0]).toMatchObject({
-      key: "pipeline/asset-1",
-      width: 768,
-      height: 1024,
-      contentType: "image/png",
-    });
-    expect(new TextDecoder().decode(result.data.assets[0].body)).toBe("image-bytes");
-  });
-
-  it("sends hydrated reference images to the pipeline image endpoint", async () => {
-    process.env.GEN_IMAGE_PROVIDER = "pipeline";
-    process.env.PIPELINE_API_URL = "https://pipeline.test";
-    const fetchMock = vi.fn(async () =>
-      Response.json({
-        data: [{ b64_json: Buffer.from("image-bytes", "utf8").toString("base64") }],
-      }),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-
-    const result = await providers.image.generate({
-      prompt: "portrait",
-      count: 1,
-      model: "profile_image_default_v1",
-      referenceImages: [
-        {
-          assetId: "anchor-1",
-          role: "identity_anchor",
-          contentType: "image/webp",
-          width: 1024,
-          height: 1280,
-          weight: 1.25,
-          b64Json: Buffer.from("reference-image", "utf8").toString("base64"),
-        },
-      ],
-    });
-
-    const firstCall = fetchMock.mock.calls[0] as unknown as
-      | [Parameters<typeof fetch>[0], Parameters<typeof fetch>[1]]
-      | undefined;
-    if (!firstCall) throw new Error("fetch was not called");
-    const [, init] = firstCall;
-    const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
-    expect(requestBody.reference_images).toEqual([
-      expect.objectContaining({
-        assetId: "anchor-1",
-        asset_id: "anchor-1",
-        role: "identity_anchor",
-        weight: 1.25,
-        contentType: "image/webp",
-        content_type: "image/webp",
-        b64_json: Buffer.from("reference-image", "utf8").toString("base64"),
-      }),
-    ]);
-    expect(result.ok).toBe(true);
-  });
-
-  it("parses pipeline asset URLs and clamps assets to the requested count", async () => {
-    process.env.GEN_IMAGE_PROVIDER = "pipeline";
-    process.env.PIPELINE_API_URL = "https://pipeline.test/custom-endpoint";
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        Response.json({
-          assets: [
-            {
-              key: "pipeline/a.webp",
-              url: "https://files.test/a.webp",
-              width: 832,
-              height: 1216,
-              mime_type: "image/webp",
-            },
-            {
-              key: "pipeline/unpaid-extra.webp",
-              url: "https://files.test/extra.webp",
-            },
-          ],
-        }),
-      ),
-    );
-
-    const result = await providers.image.generate({
-      prompt: "portrait",
-      count: 1,
-      model: "profile_image_default_v1",
-    });
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.data.assets).toHaveLength(1);
-    expect(result.data.assets[0]).toMatchObject({
-      key: "pipeline/a.webp",
-      width: 832,
-      height: 1216,
-      contentType: "image/webp",
-      sourceUrl: "https://files.test/a.webp",
-    });
-  });
-
-  it("uses model-profile dimensions for OpenAI-compatible size when provided", async () => {
-    process.env.GEN_IMAGE_PROVIDER = "pipeline";
-    process.env.PIPELINE_API_URL = "https://pipeline.test";
-    const fetchMock = vi.fn(async () =>
-      Response.json({
-        data: [{ b64_json: Buffer.from("image-bytes", "utf8").toString("base64") }],
-      }),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-
-    const result = await providers.image.generate({
-      prompt: "portrait",
-      count: 1,
-      controls: { width: 512, height: 512, profileId: "profile_image_default_v1" },
-    });
-
-    expect(result.ok).toBe(true);
-    const firstCall = fetchMock.mock.calls[0] as unknown as
-      | [Parameters<typeof fetch>[0], Parameters<typeof fetch>[1]]
-      | undefined;
-    if (!firstCall) throw new Error("fetch was not called");
-    const [, init] = firstCall;
-    const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
-    expect(requestBody).toMatchObject({
-      profileId: "profile_image_default_v1",
-      size: "512x512",
-    });
-  });
-
-  it("infers PNG content type from base64 bytes when the pipeline omits metadata", async () => {
-    process.env.GEN_IMAGE_PROVIDER = "pipeline";
-    process.env.PIPELINE_API_URL = "https://pipeline.test";
-    const pngBytes = Buffer.from([
-      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
-    ]);
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        Response.json({
-          data: [{ b64_json: pngBytes.toString("base64") }],
-        }),
-      ),
-    );
-
-    const result = await providers.image.generate({
-      prompt: "portrait",
-      count: 1,
-      model: "profile_image_default_v1",
-    });
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.data.assets[0]?.contentType).toBe("image/png");
-  });
-
-  it("treats empty success responses as retryable internal failures", async () => {
-    process.env.GEN_IMAGE_PROVIDER = "pipeline";
-    process.env.PIPELINE_API_URL = "https://pipeline.test";
-    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ data: [] })));
-
-    const result = await providers.image.generate({
-      prompt: "portrait",
-      count: 1,
-      model: "profile_image_default_v1",
-    });
-
-    expect(result).toEqual({
-      ok: false,
-      error: {
-        code: "internal",
-        message: "Pipeline response did not include any assets",
-        retryable: true,
-      },
-    });
-  });
-
-  it("treats success assets without bytes or URLs as retryable internal failures", async () => {
-    process.env.GEN_IMAGE_PROVIDER = "pipeline";
-    process.env.PIPELINE_API_URL = "https://pipeline.test";
-    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ assets: [{ key: "bare-key" }] })));
-
-    const result = await providers.image.generate({
-      prompt: "portrait",
-      count: 1,
-      model: "profile_image_default_v1",
-    });
-
-    expect(result).toEqual({
-      ok: false,
-      error: {
-        code: "internal",
-        message: "Pipeline asset 1 is missing image bytes or URL",
-        retryable: true,
-      },
-    });
-  });
-
-  it("maps structured transient errors to retryable provider failures", async () => {
-    process.env.GEN_IMAGE_PROVIDER = "pipeline";
-    process.env.PIPELINE_API_URL = "https://pipeline.test";
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        Response.json(
-          { error: { category: "overloaded", message: "GPU busy" } },
-          { status: 503 },
-        ),
-      ),
-    );
-
-    const result = await providers.image.generate({
-      prompt: "portrait",
-      count: 1,
-      model: "profile_image_default_v1",
-    });
-
-    expect(result).toEqual({
-      ok: false,
-      error: { code: "overloaded", message: "GPU busy", retryable: true },
-      invocation: {
-        providerRequestId: null,
-        usage: {},
-        costMicros: null,
-        pricingVersion: null,
-      },
-    });
-  });
-
-  it("maps terminal invalid params errors to non-retryable failures", async () => {
-    process.env.GEN_IMAGE_PROVIDER = "pipeline";
-    process.env.PIPELINE_API_URL = "https://pipeline.test";
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        Response.json(
-          { error: { category: "invalid_params", message: "bad size" } },
-          { status: 400 },
-        ),
-      ),
-    );
-
-    const result = await providers.image.generate({ prompt: "portrait", count: 1 });
-
-    expect(result).toEqual({
-      ok: false,
-      error: { code: "invalid_params", message: "bad size", retryable: false },
-      invocation: {
-        providerRequestId: null,
-        usage: {},
-        costMicros: null,
-        pricingVersion: null,
-      },
-    });
-  });
-
+describe("generation provider assembly", () => {
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
   it("wires GEN_IMAGE_PROVIDER=backend to a BackendImageModel that rejects unknown models", async () => {
     process.env.GEN_IMAGE_PROVIDER = "backend";
     process.env.GEN_WORKFLOW_DIR = "workflows"; // no descriptor declares this modelId
@@ -364,93 +65,20 @@ describe("PipelineImageModel", () => {
   // video may not, because only BackendVideoModel enforces the LTX production
   // envelope. Pinned so "make the two modes consistent" cannot quietly delete
   // either the rollback or the guard.
-  it("admits the legacy pipeline rollback for production image generation", () => {
-    process.env.APP_ENV = "production";
-    process.env.GEN_IMAGE_PROVIDER = "pipeline";
-    process.env.PIPELINE_API_URL = "https://pipeline.test";
-
-    expect(() => assertProductionProviderReady("image")).not.toThrow();
-  });
-
-  it("rejects production image pipeline startup without a pipeline URL", () => {
-    process.env.APP_ENV = "production";
-    process.env.GEN_IMAGE_PROVIDER = "pipeline";
-    delete process.env.PIPELINE_API_URL;
-
-    expect(() => assertProductionProviderReady("image")).toThrow(
-      "Production image generation requires PIPELINE_API_URL",
-    );
-  });
-
-  it("parses OpenAI-compatible video URL responses for blob persistence", async () => {
-    process.env.GEN_VIDEO_PROVIDER = "pipeline";
-    process.env.PIPELINE_API_URL = "https://pipeline.test";
-    process.env.PIPELINE_VIDEO_MODEL_DEFAULT = "video-real";
-    const fetchMock = vi.fn(async () =>
-      Response.json({
-        asset: {
-          key: "pipeline/videos/req_vid_1.mp4",
-          url: "https://pipeline-assets.test/req_vid_1.mp4",
-          seconds: 8,
-          mime_type: "video/mp4",
-        },
-      }),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-
-    const result = await providers.video.generate({
-      prompt: "slow cinematic pan",
-      seconds: 8,
-      requestId: "req_vid_1",
-      seed: "seed_v1",
-    });
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      new URL("https://pipeline.test/videos/generations"),
-      expect.objectContaining({
-        body: expect.stringContaining('"seconds":8'),
-      }),
-    );
-    const firstCall = fetchMock.mock.calls[0] as unknown as
-      | [Parameters<typeof fetch>[0], Parameters<typeof fetch>[1]]
-      | undefined;
-    if (!firstCall) throw new Error("fetch was not called");
-    const [, init] = firstCall;
-    const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
-    expect(requestBody).toMatchObject({
-      model: "video-real",
-      seconds: 8,
-      duration: 8,
-      response_format: "url",
-      controls: { idreamSeed: "seed_v1" },
-    });
-    expect(typeof requestBody.seed).toBe("number");
-    expect(result).toMatchObject({
-      ok: true,
-      data: {
-        asset: {
-          key: "pipeline/videos/req_vid_1.mp4",
-          seconds: 8,
-          contentType: "video/mp4",
-          sourceUrl: "https://pipeline-assets.test/req_vid_1.mp4",
-        },
-      },
-      invocation: {
-        providerRequestId: null,
-        usage: {},
-        costMicros: null,
-        pricingVersion: null,
-      },
-    });
-  });
-
-  it("rejects the generic pipeline provider for production video", () => {
+ 
+ 
+ 
+  // SPEC: `pipeline` is no longer an adapter at all, so it is refused when the
+  // env getter parses the vocabulary — one stage earlier than the production
+  // policy that used to catch it, and in every environment rather than only
+  // production. Pinned so deleting the adapter cannot quietly widen what a
+  // misconfigured worker will start under.
+  it("refuses the retired pipeline adapter at vocabulary parse", () => {
     process.env.APP_ENV = "production";
     process.env.GEN_VIDEO_PROVIDER = "pipeline";
-    process.env.PIPELINE_API_URL = "https://pipeline.test";
 
     expect(() => assertProductionProviderReady("video")).toThrow(
-      "Production video generation requires GEN_VIDEO_PROVIDER=backend",
+      "Unsupported video provider: pipeline",
     );
   });
 

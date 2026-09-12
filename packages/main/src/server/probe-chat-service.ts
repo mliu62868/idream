@@ -7,6 +7,7 @@ import {
   signBffContext,
 } from "@idream/shared/bff";
 import { loadCharacterSoulSnapshot } from "@idream/shared";
+import { mainWebUrlOrigin } from "@idream/shared/env";
 import { createSessionToken, SESSION_COOKIE } from "./lib/auth";
 import {
   companionProbeDshEvidenceSchema,
@@ -315,11 +316,13 @@ function readOptions(): ProbeOptions {
   return {
     report: probeReportPath("chatServiceProbe"),
     serviceUrl: probeCliArg("service-url") ?? process.env.CHAT_SERVICE_URL ?? null,
-    mainWebUrl:
-      probeCliArg("main-web-url") ??
-      process.env.MAIN_WEB_URL ??
-      process.env.BETTER_AUTH_URL ??
-      "http://127.0.0.1:3000",
+    // INVARIANT: resolved exactly the way the running code resolves it. This
+    // used to carry an extra `BETTER_AUTH_URL` fallback, so the probe could
+    // reach a Main that production configuration could not — a green probe
+    // vouching for a deployment that would not start.
+    mainWebUrl: mainWebUrlOrigin(
+      probeCliArg("main-web-url") ?? process.env.MAIN_WEB_URL,
+    ),
     internalToken: process.env.INTERNAL_TOKEN ?? null,
     userId: probeCliArg("user-id") ?? process.env.CHAT_SERVICE_PROBE_USER_ID ?? CHAT_PROBE_USER_ID,
     characterId: probeCliArg("character-id") ?? process.env.CHAT_SERVICE_PROBE_CHARACTER_ID ?? null,

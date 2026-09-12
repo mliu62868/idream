@@ -217,7 +217,8 @@ describe("IncidentWorkspace mitigation safety", () => {
       adminV2Request.mock.calls.some(([path]) => String(path).includes("/execute")),
     );
     const executeCall = adminV2Request.mock.calls.find(([path]) => String(path).includes("/execute"));
-    expect(executeCall?.[1]).toEqual({
+    // 键本身归 idempotency-key-lifecycle 管（那里有纯状态机测试），这里只问「带了没」。
+    expect(executeCall?.[1]).toMatchObject({
       method: "POST",
       idempotencyKey,
       body: { entityVersion: incident.version, confirmation: `${incident.id}:${plan.id}:refund` },

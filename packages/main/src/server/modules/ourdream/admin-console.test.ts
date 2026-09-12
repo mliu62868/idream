@@ -2143,7 +2143,7 @@ describe("generation config control plane", () => {
         profileKey: `${P}production-profile`,
         label: "Production profile",
         mode: "image",
-        runner: "pipeline",
+        runner: "comfyui",
         pipelineModel: "qwen-image-edit",
         workflowKey: "qwen-image-edit-img2img",
         runnerConfig: {
@@ -2501,7 +2501,7 @@ describe("generation config control plane", () => {
         profileKey: `${P}production-refund-profile`,
         label: "Production refund profile",
         mode: "image",
-        runner: "pipeline",
+        runner: "comfyui",
         pipelineModel: "redcraft-krea2-redmix3-txt2img",
         workflowKey: "redcraft-krea2-redmix3-txt2img",
         runnerConfig: {
@@ -4237,7 +4237,7 @@ describe("admin dual-approval (F5)", () => {
   });
 });
 
-// ───────────────────────── Phase 3: CMS · 合规 · 生成质量/流程 (ADMIN_PHASE3_DESIGN) ─────────────────────────
+// ───────────────────────── Phase 3: CMS · 合规 · 生成质量/流程 (ADMIN_CONSOLE_PLAN) ─────────────────────────
 
 describe("admin compliance: DSAR + age verification (T2)", () => {
   it("exports/erases users and overrides age verification with gating", async () => {

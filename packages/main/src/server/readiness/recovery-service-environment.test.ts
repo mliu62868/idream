@@ -82,7 +82,7 @@ describe("recovery service environment", () => {
       const gen = path.join(workspaceRoot, "gen.env");
       writeFileSync(main, "APP_ENV=production\n");
       writeFileSync(chat, "CHAT_MODEL_PROVIDER=openai\n");
-      writeFileSync(gen, "GEN_IMAGE_PROVIDER=pipeline\n");
+      writeFileSync(gen, "GEN_IMAGE_PROVIDER=backend\n");
 
       const env = loadRecoveryServiceEnvironment({
         workspaceRoot,
@@ -114,7 +114,10 @@ describe("recovery service environment", () => {
       expect(env.DATABASE_URL).toBeUndefined();
       expect(env.PAYMENT_PROVIDER_PROBE_REPORT).toBeUndefined();
       expect(env.CHAT_MODEL_API_KEY).toBe("");
-      expect(env.IDREAM_GEN_PIPELINE_API_TOKEN).toBe("");
+      // The Gen gateway aliases retired 2026-09-12 with the adapter they
+      // configured; nothing may reintroduce them into a recovery bundle.
+      expect(env.IDREAM_GEN_PIPELINE_API_URL).toBeUndefined();
+      expect(env.IDREAM_GEN_PIPELINE_API_TOKEN).toBeUndefined();
     } finally {
       rmSync(workspaceRoot, { force: true, recursive: true });
     }
@@ -151,7 +154,7 @@ describe("recovery service environment", () => {
           APP_ENV: "production",
           DATABASE_URL: "postgresql://shell@db.internal/idream",
           CHAT_MODEL_PROVIDER: "openai",
-          GEN_IMAGE_PROVIDER: "pipeline",
+          GEN_IMAGE_PROVIDER: "backend",
         },
       });
 
@@ -159,7 +162,7 @@ describe("recovery service environment", () => {
         APP_ENV: "production",
         DATABASE_URL: "postgresql://shell@db.internal/idream",
         CHAT_MODEL_PROVIDER: "openai",
-        GEN_IMAGE_PROVIDER: "pipeline",
+        GEN_IMAGE_PROVIDER: "backend",
       });
     } finally {
       rmSync(workspaceRoot, { force: true, recursive: true });
@@ -221,7 +224,7 @@ describe("recovery service environment", () => {
         "BLOB_PROVIDER=s3",
         "BLOB_ENDPOINT=https://gen-live.example.com",
         "BLOB_BUCKET=gen-live",
-        "GEN_IMAGE_PROVIDER=pipeline",
+        "GEN_IMAGE_PROVIDER=backend",
         "GEN_VIDEO_PROVIDER=backend",
         "PIPELINE_API_URL=https://gen-image.example.com/v1",
         "PIPELINE_API_TOKEN=gen-pipeline-token",
@@ -269,12 +272,10 @@ describe("recovery service environment", () => {
         CHAT_MODEL_BASE_URL: "https://chat-model.example.com/v1",
         CHAT_MODEL_NAME: "chat-runtime-model",
         CHAT_MODEL_API_KEY: "chat-runtime-key",
-        GEN_IMAGE_PROVIDER: "pipeline",
+        GEN_IMAGE_PROVIDER: "backend",
         GEN_VIDEO_PROVIDER: "backend",
         PIPELINE_API_URL: "https://main-chat.example.com/v1",
         PIPELINE_API_TOKEN: "main-pipeline-token",
-        IDREAM_GEN_PIPELINE_API_URL: "https://gen-image.example.com/v1",
-        IDREAM_GEN_PIPELINE_API_TOKEN: "gen-pipeline-token",
         IDREAM_GEN_COMFYUI_IMAGE_API_URL: "https://gen-comfy.example.com",
         IDREAM_GEN_COMFYUI_VIDEO_API_URL: "https://gen-comfy.example.com",
         IDREAM_GEN_COMFYUI_H3_API_URL: "http://127.0.0.1:8190",

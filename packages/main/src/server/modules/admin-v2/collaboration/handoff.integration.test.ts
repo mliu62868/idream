@@ -61,6 +61,14 @@ describe("collaboration handoff authority transfer", () => {
         { id: nextOwnerId, email: `${nextOwnerId}@example.test`, role: "admin", status: "active" },
       ],
     });
+    // The FK added on 2026-09-12 makes an orphan Project unwritable, so this
+    // fixture now creates the Character it points at.
+    await prisma.character.create({
+      data: {
+        id: `handoff-character-${suffix}`, name: "Fixture character", age: 24,
+        description: "Dedicated test database only", appearance: {}, advancedDetails: {},
+      },
+    });
     await prisma.characterProject.create({
       data: {
         id: projectId,

@@ -226,7 +226,6 @@ export function ModerationWorkspace({ canDecide, canReadComics = false, canRevie
   }) {
     if (!canDecide) return;
     const expected = moderationDecisionConfirmation(input.kind, input.id);
-    const idempotencyKey = crypto.randomUUID();
     setConfirmation({
       title: input.title,
       destructive: { expectedName: expected, inputLabel: "Confirmation" },
@@ -238,7 +237,6 @@ export function ModerationWorkspace({ canDecide, canReadComics = false, canRevie
           input.endpoint,
           input.method,
           { ...input.payload(reason), reason, confirmation: expected },
-          { "idempotency-key": idempotencyKey },
         );
         toast({ tone: "success", title: t("Decision recorded for {id}", { id: input.id }) });
         navigate(

@@ -15,7 +15,6 @@ import {
   S3CompatibleBlobStore,
   SafetyGatewayModerationProvider,
 } from "@idream/shared";
-import { pipelineEndpoint } from "@idream/shared/env";
 import { BackendImageModel } from "./backend/backend-image-model";
 import { BackendVideoModel } from "./backend/backend-video-model";
 import { prepareComfyUiRunnerMemory } from "./backend/comfyui-memory-transition";
@@ -253,260 +252,6 @@ class MockModerationProvider implements ModerationProvider {
   }
 }
 
-const pipelineResponseSchema = {
-  parse(value: unknown, requestedCount: number) {
-    if (typeof value !== "object" || value === null) {
-      throw new Error("Pipeline response must be an object");
-    }
-    const record = value as Record<string, unknown>;
-    const rawAssets = Array.isArray(record.assets)
-      ? record.assets
-      : Array.isArray(record.data)
-        ? record.data
-        : undefined;
-    if (!rawAssets?.length) {
-      throw new Error("Pipeline response did not include any assets");
-    }
-
-    const limit = Math.max(1, Math.min(requestedCount, 4));
-    const assets = rawAssets.slice(0, limit).map((item, index) => {
-      if (typeof item !== "object" || item === null) {
-        throw new Error(`Pipeline asset ${index + 1} must be an object`);
-      }
-      const recordItem = item as Record<string, unknown>;
-      const body =
-        typeof recordItem.b64_json === "string"
-          ? new Uint8Array(Buffer.from(recordItem.b64_json, "base64"))
-          : typeof recordItem.base64 === "string"
-            ? new Uint8Array(Buffer.from(recordItem.base64, "base64"))
-            : undefined;
-      const sourceUrl = typeof recordItem.url === "string" ? recordItem.url : undefined;
-      if (!body && !sourceUrl) {
-        throw new Error(`Pipeline asset ${index + 1} is missing image bytes or URL`);
-      }
-      return {
-        key: typeof recordItem.key === "string" ? recordItem.key : `pipeline/asset-${index + 1}`,
-        width: typeof recordItem.width === "number" ? recordItem.width : 1024,
-        height: typeof recordItem.height === "number" ? recordItem.height : 1024,
-        contentType: imageContentType(recordItem, body),
-        body,
-        sourceUrl,
-      };
-    });
-    return { assets };
-  },
-};
-
-class PipelineImageModel implements ImageModel {
-  // INTENT: requestId is correlation only. The legacy gateway has no durable
-  // same-key result contract, so a timeout must become unknown, never Bull retry.
-  async generate(input: Parameters<ImageModel["generate"]>[0]) {
-    const endpoint = pipelineEndpointOrUndefined("/images/generations");
-    if (!endpoint) {
-      return {
-        ok: false as const,
-        error: {
-          code: "invalid_params",
-          message: "PIPELINE_API_URL is required for pipeline image provider",
-          retryable: false,
-        },
-      };
-    }
-
-    const count = Math.max(1, Math.min(input.count, 4));
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), env.PIPELINE_TIMEOUT_MS);
-    const referenceImages = pipelineReferenceImages(input.referenceImages);
-    try {
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          ...(env.PIPELINE_API_TOKEN
-            ? { authorization: `Bearer ${env.PIPELINE_API_TOKEN}` }
-            : {}),
-        },
-        body: JSON.stringify({
-          requestId: input.requestId,
-          prompt: input.prompt,
-          negativePrompt: input.negativePrompt,
-          negative_prompt: input.negativePrompt,
-          model: input.model ?? env.PIPELINE_IMAGE_MODEL_DEFAULT,
-          profileId: input.controls?.profileId ?? env.PIPELINE_PROFILE_DEFAULT,
-          orientation: input.orientation,
-          size: imageSize(input.controls, input.orientation),
-          count,
-          n: count,
-          response_format: "b64_json",
-          seed: stableNumericSeed(input.seed),
-          ...(referenceImages.length > 0 ? { reference_images: referenceImages } : {}),
-          controls: { ...(input.controls ?? {}), idreamSeed: input.seed },
-        }),
-        signal: controller.signal,
-      });
-      const json = (await response.json().catch(() => ({}))) as unknown;
-      if (!response.ok) return pipelineFailure(json, response.status);
-      const parsed = pipelineResponseSchema.parse(json, count);
-      return { ok: true as const, data: parsed, invocation: pipelineInvocationMetadata(json) };
-    } catch (error) {
-      const aborted = error instanceof Error && error.name === "AbortError";
-      return {
-        ok: false as const,
-        error: {
-          code: aborted ? "timeout" : "internal",
-          message: aborted
-            ? "Pipeline request timed out"
-            : error instanceof Error
-              ? error.message
-              : "Pipeline request failed",
-          retryable: true,
-        },
-      };
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
-}
-
-function pipelineReferenceImages(
-  images: Parameters<ImageModel["generate"]>[0]["referenceImages"],
-) {
-  return (images ?? []).map((image) => {
-    const reference: Record<string, unknown> = {
-      role: image.role,
-      assetId: image.assetId,
-      asset_id: image.assetId,
-      weight: image.weight,
-      contentType: image.contentType,
-      content_type: image.contentType,
-      width: image.width,
-      height: image.height,
-      storageKey: image.storageKey,
-      storage_key: image.storageKey,
-      url: image.url,
-      b64_json: image.b64Json,
-    };
-    for (const key of Object.keys(reference)) {
-      if (reference[key] === undefined || reference[key] === null || reference[key] === "") {
-        delete reference[key];
-      }
-    }
-    return reference;
-  });
-}
-
-const pipelineVideoResponseSchema = {
-  parse(value: unknown, input: Parameters<VideoModel["generate"]>[0]) {
-    if (typeof value !== "object" || value === null) {
-      throw new Error("Pipeline response must be an object");
-    }
-    const record = value as Record<string, unknown>;
-    const rawAsset = firstVideoAsset(record);
-    if (!rawAsset) {
-      throw new Error("Pipeline response did not include a video asset");
-    }
-
-    const body =
-      typeof rawAsset.b64_json === "string"
-        ? new Uint8Array(Buffer.from(rawAsset.b64_json, "base64"))
-        : typeof rawAsset.base64 === "string"
-          ? new Uint8Array(Buffer.from(rawAsset.base64, "base64"))
-          : undefined;
-    const sourceUrl = typeof rawAsset.url === "string" ? rawAsset.url : undefined;
-    if (!body && !sourceUrl) {
-      throw new Error("Pipeline video asset is missing video bytes or URL");
-    }
-
-    return {
-      asset: {
-        key:
-          typeof rawAsset.key === "string"
-            ? rawAsset.key
-            : `pipeline/videos/${input.requestId ?? "video"}.mp4`,
-        seconds:
-          numberField(rawAsset, "seconds") ??
-          numberField(rawAsset, "duration") ??
-          numberField(rawAsset, "duration_seconds") ??
-          input.seconds,
-        contentType:
-          typeof rawAsset.contentType === "string"
-            ? rawAsset.contentType
-            : typeof rawAsset.mime_type === "string"
-              ? rawAsset.mime_type
-              : "video/mp4",
-        body,
-        sourceUrl,
-      },
-    };
-  },
-};
-
-class PipelineVideoModel implements VideoModel {
-  // INTENT: keep this rollback adapter non-replayable until its gateway proves
-  // concurrent and post-restart same-key result reuse with payload conflicts.
-  async generate(input: Parameters<VideoModel["generate"]>[0]) {
-    const endpoint = pipelineEndpointOrUndefined("/videos/generations");
-    if (!endpoint) {
-      return {
-        ok: false as const,
-        error: {
-          code: "invalid_params",
-          message: "PIPELINE_API_URL is required for pipeline video provider",
-          retryable: false,
-        },
-      };
-    }
-
-    const seconds = Math.max(1, Math.min(input.seconds, 30));
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), env.PIPELINE_TIMEOUT_MS);
-    try {
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          ...(env.PIPELINE_API_TOKEN
-            ? { authorization: `Bearer ${env.PIPELINE_API_TOKEN}` }
-            : {}),
-        },
-        body: JSON.stringify({
-          requestId: input.requestId,
-          prompt: input.prompt,
-          negativePrompt: input.negativePrompt,
-          negative_prompt: input.negativePrompt,
-          model: input.model ?? env.PIPELINE_VIDEO_MODEL_DEFAULT,
-          seconds,
-          duration: seconds,
-          response_format: "url",
-          seed: stableNumericSeed(input.seed),
-          controls: { ...(input.controls ?? {}), idreamSeed: input.seed },
-        }),
-        signal: controller.signal,
-      });
-      const json = (await response.json().catch(() => ({}))) as unknown;
-      if (!response.ok) return pipelineFailure(json, response.status);
-      const parsed = pipelineVideoResponseSchema.parse(json, input);
-      return { ok: true as const, data: parsed, invocation: pipelineInvocationMetadata(json) };
-    } catch (error) {
-      const aborted = error instanceof Error && error.name === "AbortError";
-      return {
-        ok: false as const,
-        error: {
-          code: aborted ? "timeout" : "internal",
-          message: aborted
-            ? "Pipeline request timed out"
-            : error instanceof Error
-              ? error.message
-              : "Pipeline request failed",
-          retryable: true,
-        },
-      };
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
-}
-
 // SPEC: Mock blob store. Persists bytes under BLOB_ROOT (real fs write so the
 // "gen writes the blob" boundary is actually exercised), keyed by the asset key.
 class MockBlobStore implements BlobStore {
@@ -645,12 +390,6 @@ function buildImageModel(): ImageModel {
       return new MockImageModel();
     case "backend":
       return buildBackendImageModel();
-    // Legacy external OpenAI-compatible gateway (self-hosted models behind a
-    // separate pipeline service). Retained as the documented production rollback —
-    // see PRODUCTION_ADAPTERS below. GEN_IMAGE_PROVIDER=backend instead talks to
-    // ComfyUI/Draw Things directly via the workflow-native GenBackend abstraction.
-    case "pipeline":
-      return new PipelineImageModel();
   }
 }
 
@@ -665,8 +404,6 @@ function buildVideoModel(): VideoModel {
         (run, options) => withGenerationAcceleratorLease("video", run, options),
         prepareComfyUiRunnerMemory,
       );
-    case "pipeline":
-      return new PipelineVideoModel();
   }
 }
 
@@ -713,19 +450,18 @@ function buildModerationProvider(): ModerationProvider {
   throw new Error(`Unsupported moderation provider: ${env.MODERATION_PROVIDER}`);
 }
 
-// SPEC: adapters each mode is allowed to run under APP_ENV=production. The
-// asymmetry is deliberate, not an oversight, and is declared here rather than
-// buried in a mode-specific `if`.
-// INTENT: image keeps `pipeline` because the legacy OpenAI-compatible 8091
-// gateway is still the documented rollback route (see the runbook in
-// docs/architecture/10-operations.md and PIPELINE_API_URL in
-// .env.production.example) — deleting it would remove a rollback that operations
-// still relies on. Video is backend-only because its production routes are
-// RedGraft LTX 2.5 and MiniMax H3, and only BackendVideoModel enforces each
-// pinned runtime envelope plus ffprobe/ffmpeg-verified decode. A generic gateway
-// cannot, so admitting one would let unverified media settle as succeeded.
+// SPEC: adapters each mode is allowed to run under APP_ENV=production.
+// INTENT: both modes are backend-only. Image used to also admit `pipeline`, the
+// legacy OpenAI-compatible gateway, on the grounds that it was the documented
+// production rollback — but the runbook that claim pointed at does not exist
+// (docs/architecture/10-operations.md has no pipeline rollback), both
+// architecture documents already called the adapter deprecated, and it had zero
+// callers. Keeping a rollback nobody could execute only widened what production
+// was allowed to run. Video was backend-only all along because its production
+// routes are RedGraft LTX 2.5 and MiniMax H3, and only BackendVideoModel
+// enforces each pinned runtime envelope plus ffprobe/ffmpeg-verified decode.
 const PRODUCTION_ADAPTERS: Record<"image" | "video", readonly GenAdapter[]> = {
-  image: ["backend", "pipeline"],
+  image: ["backend"],
   video: ["backend"],
 };
 
@@ -748,10 +484,6 @@ export function assertProductionProviderReady(kind: "image" | "video") {
     throw new Error(
       `Production ${kind} generation requires GEN_${kind.toUpperCase()}_PROVIDER=${PRODUCTION_ADAPTERS[kind].join(" or ")}`,
     );
-  }
-
-  if (provider === "pipeline" && !env.PIPELINE_API_URL) {
-    throw new Error(`Production ${kind} generation requires PIPELINE_API_URL`);
   }
 
   const comfyUiApiUrl = kind === "image"
@@ -845,42 +577,9 @@ export const providers: GenProviders = {
   },
 };
 
-// The route is what distinguishes the image endpoint from the video one, so it
-// is never optional. See pipelineEndpoint in @idream/shared/env for what the
-// local copy of this used to drop.
-function pipelineEndpointOrUndefined(route: string) {
-  if (!env.PIPELINE_API_URL) return undefined;
-  return pipelineEndpoint(env.PIPELINE_API_URL, route);
-}
 
-function imageContentType(record: Record<string, unknown>, body: Uint8Array | undefined) {
-  if (typeof record.contentType === "string") return record.contentType;
-  if (typeof record.mime_type === "string") return record.mime_type;
-  if (!body) return "image/webp";
-  if (hasSignature(body, [0x89, 0x50, 0x4e, 0x47])) return "image/png";
-  if (hasSignature(body, [0xff, 0xd8, 0xff])) return "image/jpeg";
-  if (
-    body.byteLength >= 12 &&
-    asciiEquals(body, 0, "RIFF") &&
-    asciiEquals(body, 8, "WEBP")
-  ) {
-    return "image/webp";
-  }
-  return "image/png";
-}
 
-function hasSignature(body: Uint8Array, signature: number[]) {
-  if (body.byteLength < signature.length) return false;
-  return signature.every((byte, index) => body[index] === byte);
-}
 
-function asciiEquals(body: Uint8Array, offset: number, expected: string) {
-  if (body.byteLength < offset + expected.length) return false;
-  for (let index = 0; index < expected.length; index += 1) {
-    if (body[offset + index] !== expected.charCodeAt(index)) return false;
-  }
-  return true;
-}
 
 // Exported so BackendImageModel (backend/backend-image-model.ts) can reuse the same
 // FNV hashing for non-numeric wire seeds instead of duplicating it — see that file's
@@ -898,126 +597,11 @@ export function stableNumericSeed(seed: string | undefined) {
   return hash >>> 0;
 }
 
-function imageSize(controls: Record<string, unknown> | undefined, orientation: string | undefined) {
-  const explicit = stringControl(controls, "size");
-  if (explicit) return explicit;
 
-  const width = numericControl(controls, "width");
-  const height = numericControl(controls, "height");
-  if (width && height) return `${width}x${height}`;
 
-  return env.PIPELINE_IMAGE_SIZE_DEFAULT ?? orientationToOpenAiSize(orientation);
-}
 
-function stringControl(controls: Record<string, unknown> | undefined, key: string) {
-  const value = controls?.[key];
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
 
-function numericControl(controls: Record<string, unknown> | undefined, key: string) {
-  const value = controls?.[key];
-  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
-}
 
-function firstVideoAsset(record: Record<string, unknown>) {
-  const direct = record.asset;
-  if (typeof direct === "object" && direct !== null && !Array.isArray(direct)) {
-    return direct as Record<string, unknown>;
-  }
-  if (
-    typeof record.url === "string" ||
-    typeof record.b64_json === "string" ||
-    typeof record.base64 === "string"
-  ) {
-    return record;
-  }
-  const rawAssets = Array.isArray(record.assets)
-    ? record.assets
-    : Array.isArray(record.data)
-      ? record.data
-      : undefined;
-  const first = rawAssets?.[0];
-  if (typeof first === "object" && first !== null && !Array.isArray(first)) {
-    return first as Record<string, unknown>;
-  }
-  return undefined;
-}
 
-function numberField(record: Record<string, unknown>, key: string) {
-  const value = record[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
 
-function orientationToOpenAiSize(orientation: string | undefined) {
-  switch (orientation) {
-    case "4:5":
-    case "portrait":
-      return "1024x1280";
-    case "3:4":
-      return "1024x1365";
-    case "9:16":
-      return "1024x1792";
-    case "16:9":
-    case "landscape":
-      return "1792x1024";
-    case "1:1":
-    case "square":
-    default:
-      return "1024x1024";
-  }
-}
 
-function pipelineFailure(value: unknown, status: number): ProviderResult<never> {
-  const record =
-    typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
-  const nested =
-    typeof record.error === "object" && record.error !== null
-      ? (record.error as Record<string, unknown>)
-      : record;
-  const rawCategory = nested.category ?? nested.code;
-  const category = typeof rawCategory === "string" ? rawCategory : statusToCategory(status);
-  const rawMessage = nested.message;
-  const message = typeof rawMessage === "string" ? rawMessage : "Pipeline image generation failed";
-  return {
-    ok: false,
-    error: {
-      code: category,
-      message,
-      retryable: retryablePipelineCategories.has(category),
-    },
-    invocation: pipelineInvocationMetadata(record),
-  };
-}
-
-function pipelineInvocationMetadata(value: unknown): ProviderInvocationMetadata {
-  const record = typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {};
-  const usage = typeof record.usage === "object" && record.usage !== null && !Array.isArray(record.usage)
-    ? record.usage as Record<string, unknown>
-    : {};
-  const rawCost = record.costMicros ?? record.cost_micros;
-  const rawPricingVersion = record.pricingVersion ?? record.pricing_version;
-  const pricingVersion = typeof rawPricingVersion === "string" && rawPricingVersion.trim().length > 0
-    ? rawPricingVersion.trim()
-    : null;
-  const costMicros = pricingVersion !== null && typeof rawCost === "number" && Number.isSafeInteger(rawCost) && rawCost >= 0
-    ? rawCost
-    : null;
-  const rawProviderRequestId = record.providerRequestId ?? record.provider_request_id ?? record.id;
-  return {
-    providerRequestId: typeof rawProviderRequestId === "string" && rawProviderRequestId.length > 0
-      ? rawProviderRequestId
-      : null,
-    usage,
-    costMicros,
-    pricingVersion,
-  };
-}
-
-function statusToCategory(status: number) {
-  if (status === 429) return "rate_limited";
-  if (status === 408 || status === 504) return "timeout";
-  if (status >= 500) return "internal";
-  return "invalid_params";
-}

@@ -32,7 +32,6 @@ export async function PATCH(request: Request, context: Context) {
     executeAdminMutation<Body>("PATCH /api/v2/admin/content/placements/:id", request, {
       params: { id },
       target: () => ({ type: "media_asset_placement", id }),
-      reason: (body) => body.reason,
       mutate: (tx, { actor, body, expectedVersion }) => {
         if (expectedVersion === undefined) {
           throw Errors.badRequest("If-Match must contain the current Placement version");

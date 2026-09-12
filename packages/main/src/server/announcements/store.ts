@@ -1,4 +1,4 @@
-// SPEC: 站内公告存储（ADMIN_PHASE4_DESIGN §3）。零迁移：存 AppSetting key=announcements 的数组。
+// SPEC: 站内公告存储（ADMIN_CONSOLE_PLAN §3）。零迁移：存 AppSetting key=announcements 的数组。
 // INTENT: 共享层——admin CRUD 与公开读都经此，避免 admin↔ourdream 循环依赖。
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";

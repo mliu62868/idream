@@ -1,6 +1,6 @@
 "use client";
 
-// SPEC: 生成质量 + 增长洞察面板（ADMIN_PHASE3_DESIGN §5.1/§5.3 的 UI）。
+// SPEC: 生成质量 + 增长洞察面板（ADMIN_CONSOLE_PLAN §5.1/§5.3 的 UI）。
 //   - Phase 0 hides invalid legacy retention values and export.
 //   - 按 profile 查健康度 + 跑不调用 provider 的配置检查（兼容既有 dry-run API）。
 // INTENT: 自取数、无 props；样式对齐 TagsView。
@@ -146,7 +146,6 @@ function ProfileHealthSection() {
             `/api/v2/admin/generation/model-profiles/${encodeURIComponent(selected.id)}/commands/dry-run`,
             "POST",
             { reason, confirmation: selected.id },
-            { "idempotency-key": crypto.randomUUID() },
           );
           reportSuccess(
             t("Configuration check {status}: {passed}/{total} configuration cases passed. No provider call was made.", {

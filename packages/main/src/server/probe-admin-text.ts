@@ -6,6 +6,7 @@ import {
   probeReportPath,
   writeProbeReport,
 } from "./readiness/probe-report";
+import { env } from "./lib/env";
 import type { AdminTextRuntimeIdentity } from "./modules/admin-v2/content/text-generation";
 
 type FetchLike = (input: URL, init: RequestInit) => Promise<Response>;
@@ -468,7 +469,11 @@ async function main() {
     authorization: process.env.ADMIN_TEXT_PROBE_AUTHORIZATION ?? null,
     provider: process.env.CHAT_PROVIDER ?? null,
     pipelineUrl: process.env.PIPELINE_API_URL ?? null,
-    model: process.env.PIPELINE_CHAT_MODEL_DEFAULT ?? null,
+    // INVARIANT: same default the production env schema applies. Reading this
+    // raw made the probe fail closed on a deployment that would have started
+    // fine, which is the opposite of what a launch probe is for: it must fail
+    // when production would fail, and only then.
+    model: env.PIPELINE_CHAT_MODEL_DEFAULT,
     allowImmutableAudit: process.argv.includes("--allow-immutable-audit"),
   });
   const reportPath = probeReportPath("adminTextProbe");

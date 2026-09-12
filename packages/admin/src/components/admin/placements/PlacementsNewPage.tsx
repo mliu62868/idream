@@ -31,7 +31,6 @@ export function PlacementsNewPage() {
   const [loadingAssets, setLoadingAssets] = useState(true);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [idempotencyKey, setIdempotencyKey] = useState(() => crypto.randomUUID());
 
   const loadAssets = useCallback(async () => {
     setLoadingAssets(true);
@@ -71,7 +70,6 @@ export function PlacementsNewPage() {
 
   function patch(partial: Partial<PlacementDraft>) {
     setDraft((current) => ({ ...current, ...partial }));
-    setIdempotencyKey(crypto.randomUUID());
   }
 
   function selectAsset(assetId: string) {
@@ -93,7 +91,6 @@ export function PlacementsNewPage() {
         PLACEMENTS_BASE,
         "POST",
         placementCreatePayload(draft),
-        { "idempotency-key": idempotencyKey },
       );
       const newId = created.placement?.id;
       window.location.href = newId ? `/admin/content/placements/${newId}` : "/admin/content/placements";

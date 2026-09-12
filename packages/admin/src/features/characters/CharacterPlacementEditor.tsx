@@ -39,7 +39,6 @@ export function CharacterPlacementEditor({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const pendingSelection = useRef<{ signature: string; key: string } | null>(null);
 
   const loadAssets = useCallback(async (cursor: string | null = null) => {
     const version = ++requestVersion.current;
@@ -87,12 +86,6 @@ export function CharacterPlacementEditor({
         ? { reviewDecisionId: asset.qualification.authority.reviewDecisionId } : {}),
       reason: `Selected from ${data.character.name}'s image library`,
     };
-    const signature = JSON.stringify([data.character.id, body]);
-    // A lost response must replay the committed selection before checking its old version.
-    if (pendingSelection.current?.signature !== signature) {
-      pendingSelection.current = { signature, key: crypto.randomUUID() };
-    }
-    const idempotencyKey = pendingSelection.current.key;
     try {
       await runCommittedMutation({
         action: `${purpose} image selection`,
@@ -101,14 +94,10 @@ export function CharacterPlacementEditor({
           {
             path: { id: data.character.id },
             ifMatch: data.project.version,
-            idempotencyKey,
             body,
           },
         ),
-        afterRefresh: () => {
-          pendingSelection.current = null;
-          setChoosing(null);
-        },
+        afterRefresh: () => setChoosing(null),
       });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t("Image placement could not be saved"));

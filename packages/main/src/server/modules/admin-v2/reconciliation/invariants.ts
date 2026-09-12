@@ -52,12 +52,20 @@ const sqlChecks: readonly SqlInvariant[] = [
   {
     key: "character_project_orphan",
     description: "Every CharacterProject must resolve to its Character authority",
-    evidence: "character_projects.characterId joined to characters.id",
+    evidence: "character_projects.characterId joined to characters.id, excluding erased anonymisations",
+    // INTENT: `erased:<sha256>` 不是孤儿，是账号擦除**故意**写入的匿名化值 ——
+    //   已发布角色的 Project 带着不可变资质证据必须留存，但要与被删用户切断关联
+    //   （account-deletion-authority.ts）。此前这条扫描不排除它，于是每完成一次
+    //   带已发布角色的擦除，就报出一条永远修不掉的"违规"。
+    // INVARIANT: 判据只排除这一个前缀。任何别的悬空 characterId 仍然是真孤儿 ——
+    //   本表没有外键（2026-09-12 试加后撤回：外键会让上面那次匿名化写入失败），
+    //   所以这条扫描是唯一的发现机制。
     query: Prisma.sql`
       SELECT p.id, count(*) OVER()::int AS total
       FROM character_projects p
       LEFT JOIN characters c ON c.id = p."characterId"
       WHERE c.id IS NULL
+        AND p."characterId" NOT LIKE 'erased:%'
       ORDER BY p.id LIMIT 20
     `,
   },

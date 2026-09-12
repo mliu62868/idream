@@ -39,7 +39,7 @@ async function writeLegacyVideoBetaProfile(costMultiplier = 1) {
     profileKey: "profile_video_beta_v1",
     label: "Video beta",
     mode: "video",
-    runner: "external",
+    runner: "comfyui",
     pipelineModel: "mock-video",
     workflowKey: null,
     sourceModelPath: null,
@@ -641,7 +641,7 @@ describe("seed data provenance", () => {
           },
         }),
       ).resolves.toMatchObject({
-        runner: "external",
+        runner: "comfyui",
         pipelineModel: "mock-video",
         workflowKey: null,
         costMultiplier: 1.25,

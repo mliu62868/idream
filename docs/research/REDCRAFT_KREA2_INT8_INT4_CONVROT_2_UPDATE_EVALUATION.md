@@ -44,7 +44,7 @@ size   = 13,141,783,440 bytes
 sha256 = 92e8d4eecbf4f89b30140dc231e377118823be3a30c5c04342bcf394fe27e73b
 ```
 
-它与 Civitai `3066243` 的 FP8 文件完全一致。当前 [`redcraft-krea2-txt2img.json`](../../packages/gen/workflows/redcraft-krea2-txt2img.json) 加载的是其 BF16 反量化产物 `redcraftKREA2RedMix_krea2Edition-bf16.safetensors`，默认仍为 10 steps；反量化过程及 MPS 闭环记录在 [`2026-07-07-image-generation-redesign-design.md`](../superpowers/specs/2026-07-07-image-generation-redesign-design.md)。
+它与 Civitai `3066243` 的 FP8 文件完全一致。当前 [`redcraft-krea2-redmix3-txt2img.json`](../../packages/gen/workflows/redcraft-krea2-redmix3-txt2img.json) 加载的是其 BF16 反量化产物 `redcraftKREA2RedMix_krea2Edition-bf16.safetensors`，默认仍为 10 steps；反量化过程及 MPS 闭环记录在 [`2026-07-07-image-generation-redesign-design.md`](../superpowers/specs/2026-07-07-image-generation-redesign-design.md)。
 
 因此，问题不是“我们是否已在使用目标文件”：**没有。我们当前是 RedMix 1.1 FP8 的 BF16 派生物；目标是另一组 RedMix2/2.1 INT8 ConvRot 权重。**
 
@@ -245,4 +245,4 @@ scheduler:    simple
 - 对未来 NVIDIA CUDA runner：将 `3086841` 作为独立 RedMix2 INT8 ConvRot 候选接入。它比此前评估的 Dark Beast 更适合作为“RedCraft 家族升级”候选，但仍须用我们的角色资产数据集验证。
 - 不要删旧文件、改原 workflow 或把新文件直接路由到 MPS；也不要依据模型标题中的“2倍速”直接做生产切换。
 
-相关本地基线：[`DARK_BEAST_KREA2_INT8_CONVROT_INTEGRATION.md`](./DARK_BEAST_KREA2_INT8_CONVROT_INTEGRATION.md)、[`redcraft-krea2-txt2img.json`](../../packages/gen/workflows/redcraft-krea2-txt2img.json)。
+相关本地基线：[`DARK_BEAST_KREA2_INT8_CONVROT_INTEGRATION.md`](./DARK_BEAST_KREA2_INT8_CONVROT_INTEGRATION.md)、[`redcraft-krea2-redmix3-txt2img.json`](../../packages/gen/workflows/redcraft-krea2-redmix3-txt2img.json)。

@@ -219,7 +219,7 @@ RedMix3 比 RedMix2.1 更适合继续研究 Mac 路线的原因，不是它能�
 
 ### 当前不变
 
-保留现有 [`redcraft-krea2-txt2img.json`](../../packages/gen/workflows/redcraft-krea2-txt2img.json) 与 `redcraftKREA2RedMix_krea2Edition-bf16.safetensors` 作为 Mac 默认/回滚路径；不要用 RedMix3 FP8/NF4/INT8 文件直接覆盖。
+保留现有 [`redcraft-krea2-redmix3-txt2img.json`](../../packages/gen/workflows/redcraft-krea2-redmix3-txt2img.json) 与 `redcraftKREA2RedMix_krea2Edition-bf16.safetensors` 作为 Mac 默认/回滚路径；不要用 RedMix3 FP8/NF4/INT8 文件直接覆盖。
 
 ### 下一步候选顺序
 

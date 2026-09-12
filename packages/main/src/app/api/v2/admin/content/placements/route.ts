@@ -29,7 +29,6 @@ export function POST(request: Request) {
     executeAdminMutation<Body>("POST /api/v2/admin/content/placements", request, {
       params: {},
       target: ({ body }) => ({ type: "media_asset", id: body.mediaAssetId }),
-      reason: (body) => body.reason,
       mutate: (tx, { actor, body }) => createPlacement({ tx, request, actor, body }),
       decorateResult: (result, replayed) => ({ ...(result as object), replayed }),
     })

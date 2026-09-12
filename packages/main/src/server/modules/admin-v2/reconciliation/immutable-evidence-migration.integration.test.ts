@@ -80,6 +80,15 @@ describe("immutable admin evidence database guards", () => {
 
   it("allows one TransportExecution terminal resolution and rejects history rewrites", async () => {
     const attemptId = `${suffix}:attempt`;
+    // The FK added on 2026-09-12 makes an orphan Attempt unwritable; these
+    // Requests exist so the transport-execution assertions stay the subject.
+    const jobUserId = `${suffix}:user`;
+    await prisma.user.create({ data: { id: jobUserId, email: `${jobUserId}@example.test` } });
+    await prisma.generationJob.createMany({
+      data: [`${suffix}:request`, `${suffix}:succeeded-request`].map((id) => ({
+        id, userId: jobUserId, mode: "image", controls: {}, presetIds: [],
+      })),
+    });
     await prisma.generationAttempt.create({ data: { id: attemptId, requestId: `${suffix}:request`, attemptNo: 1 } });
     await prisma.generationTransportExecution.create({ data: { attemptId, transportAttemptNo: 1, idempotencyKey: `${suffix}:key`, status: "running" } });
     await expect(prisma.generationTransportExecution.update({ where: { attemptId_transportAttemptNo: { attemptId, transportAttemptNo: 1 } }, data: { status: "failed", finishedAt: new Date() } })).resolves.toMatchObject({ status: "failed" });

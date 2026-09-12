@@ -97,8 +97,9 @@ const productionEnv = {
   PRODUCT_CONFIG_PROBE_REPORT: ".tmp/launch-product-config-probe.json",
   PUBLIC_CATALOG_PROBE_REPORT: ".tmp/public-catalog-probe.json",
   WEB_SURFACE_PROBE_REPORT: ".tmp/launch-web-surface-probe.json",
-  GEN_IMAGE_PROVIDER: "pipeline",
+  GEN_IMAGE_PROVIDER: "backend",
   GEN_VIDEO_PROVIDER: "backend",
+  COMFYUI_IMAGE_API_URL: "https://comfyui.ourdream.internal",
   PIPELINE_API_URL: "https://pipeline.ourdream.internal",
   PIPELINE_VOICE_API_URL: "https://voice.ourdream.internal/v1",
   PIPELINE_API_TOKEN: "production-pipeline-token-0123456789",
@@ -164,17 +165,17 @@ function passingImageProbe(
     ok: true,
     checkedAt: "2026-06-24T23:55:00.000Z",
     durationMs: 12_345,
-    provider: "pipeline",
-    pipelineUrl: productionEnv.PIPELINE_API_URL,
-    model: productionEnv.PIPELINE_IMAGE_MODEL_DEFAULT,
+    provider: "backend",
+    pipelineUrl: null,
+    model: "redcraft-krea2-redmix3-txt2img",
     orientation: "1:1",
     count: 1,
     blobRoot: "/var/lib/idream/blob",
     generationJobId: "probe_123",
-    backendKind: null,
-    backendTarget: null,
-    workflowKey: null,
-    workflowVersion: null,
+    backendKind: "comfyui",
+    backendTarget: "https://comfyui.ourdream.internal",
+    workflowKey: "redcraft-krea2-redmix3-txt2img",
+    workflowVersion: 1,
     blobAuthority: {
       provider: productionEnv.BLOB_PROVIDER,
       endpoint: productionEnv.BLOB_ENDPOINT,
@@ -190,21 +191,6 @@ function passingImageProbe(
     },
     ...override,
   };
-}
-
-function passingBackendImageProbe(
-  override: Partial<ImagePipelineProbeEvidence> = {},
-): ImagePipelineProbeEvidence {
-  return passingImageProbe({
-    provider: "backend",
-    pipelineUrl: null,
-    backendKind: "comfyui",
-    backendTarget: "https://comfyui.ourdream.internal",
-    model: "redcraft-krea2-redmix3-txt2img",
-    workflowKey: "redcraft-krea2-redmix3-txt2img",
-    workflowVersion: 1,
-    ...override,
-  });
 }
 
 function passingVideoProbe(
@@ -641,11 +627,11 @@ function passingProductConfigProbe(
     activeImageProfiles: 1,
     activeImageExecutionBindings: [
       {
-        profileId: "profile-image-pipeline-v1",
-        runner: "pipeline",
-        model: productionEnv.PIPELINE_IMAGE_MODEL_DEFAULT,
-        workflowKey: null,
-        workflowVersion: null,
+        profileId: "profile-image-backend-v1",
+        runner: "comfyui",
+        model: "redcraft-krea2-redmix3-txt2img",
+        workflowKey: "redcraft-krea2-redmix3-txt2img",
+        workflowVersion: 1,
       },
     ],
     invalidActiveImageProfileIds: [],
@@ -685,23 +671,6 @@ function passingVideoEnabledProductConfigProbe(
     invalidActiveVideoProfileIds: [],
     activeVideoCharacterTemplates: 1,
     activeVideoPricingRules: 1,
-    ...override,
-  });
-}
-
-function passingBackendProductConfigProbe(
-  override: Partial<ProductConfigProbeEvidence> = {},
-): ProductConfigProbeEvidence {
-  return passingProductConfigProbe({
-    activeImageExecutionBindings: [
-      {
-        profileId: "profile-image-backend-v1",
-        runner: "comfyui",
-        model: "redcraft-krea2-redmix3-txt2img",
-        workflowKey: "redcraft-krea2-redmix3-txt2img",
-        workflowVersion: 1,
-      },
-    ],
     ...override,
   });
 }
@@ -1528,7 +1497,7 @@ describe("launch readiness", () => {
         GEN_IMAGE_PROVIDER: "backend",
         COMFYUI_API_URL: "https://comfyui.ourdream.internal",
       },
-      imagePipelineProbe: passingBackendImageProbe(),
+      imagePipelineProbe: passingImageProbe(),
       ageVerificationProbe: passingAgeProbe(),
       blobStorageProbe: passingBlobProbe(),
       chatModelProbe: passingChatProbe(),
@@ -1536,7 +1505,7 @@ describe("launch readiness", () => {
       chatServiceProbe: passingChatServiceProbe(),
       paymentProviderProbe: passingPaymentProbe(),
       safetyGatewayProbe: passingSafetyProbe(),
-      productConfigProbe: passingBackendProductConfigProbe(),
+      productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
       publicCatalogProbe: passingPublicCatalogProbe(),
       now,
@@ -1567,7 +1536,7 @@ describe("launch readiness", () => {
         GEN_IMAGE_PROVIDER: "backend",
         COMFYUI_API_URL: "https://comfyui.ourdream.internal",
       },
-      imagePipelineProbe: passingBackendImageProbe({
+      imagePipelineProbe: passingImageProbe({
         model: "unrelated-model",
         workflowKey: "unrelated-workflow",
         workflowVersion: 9,
@@ -1579,7 +1548,7 @@ describe("launch readiness", () => {
       chatServiceProbe: passingChatServiceProbe(),
       paymentProviderProbe: passingPaymentProbe(),
       safetyGatewayProbe: passingSafetyProbe(),
-      productConfigProbe: passingBackendProductConfigProbe(),
+      productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
       publicCatalogProbe: passingPublicCatalogProbe(),
       now,
@@ -1716,7 +1685,7 @@ describe("launch readiness", () => {
         COMFYUI_API_URL: "https://main-comfy.ourdream.internal",
         IDREAM_GEN_COMFYUI_IMAGE_API_URL: "https://gen-comfy.ourdream.internal",
       },
-      imagePipelineProbe: passingBackendImageProbe({
+      imagePipelineProbe: passingImageProbe({
         backendTarget: "https://main-comfy.ourdream.internal",
       }),
       now,
@@ -1727,62 +1696,7 @@ describe("launch readiness", () => {
     );
   });
 
-  it("binds pipeline image checks, model, and evidence to Gen without replacing Main's pipeline", () => {
-    const report = assessLaunchReadiness({
-      env: {
-        ...productionEnv,
-        PIPELINE_API_URL: "https://main-chat.ourdream.internal/v1",
-        PIPELINE_API_TOKEN: "main-chat-pipeline-token",
-        PIPELINE_IMAGE_MODEL_DEFAULT: "wrong-main-model",
-        IDREAM_GEN_PIPELINE_API_URL: "https://gen-image.ourdream.internal/v1",
-        IDREAM_GEN_PIPELINE_API_TOKEN: "gen-image-pipeline-token",
-        IDREAM_GEN_PIPELINE_IMAGE_MODEL_DEFAULT: "gen-image-model",
-      },
-      imagePipelineProbe: passingImageProbe({
-        pipelineUrl: "https://main-chat.ourdream.internal/v1",
-        model: "wrong-main-model",
-      }),
-      now,
-    });
 
-    expect(checkById(report, "pipeline-image-live-probe")?.message).toContain(
-      "Gen pipeline URL",
-    );
-    expect(checkById(report, "pipeline-image-live-probe")?.message).toContain(
-      "Gen image model",
-    );
-    expect(checkById(report, "pipeline-api-url")).toMatchObject({
-      status: "pass",
-    });
-    expect(checkById(report, "main-chat-pipeline-api-url")).toMatchObject({
-      status: "pass",
-    });
-  });
-
-  it("does not let Main's pipeline values hide missing Gen pipeline config", () => {
-    const report = assessLaunchReadiness({
-      env: {
-        ...productionEnv,
-        PIPELINE_API_URL: "https://main-chat.ourdream.internal/v1",
-        PIPELINE_API_TOKEN: "main-chat-pipeline-token",
-        PIPELINE_IMAGE_MODEL_DEFAULT: "main-image-model",
-        IDREAM_GEN_PIPELINE_API_URL: "",
-        IDREAM_GEN_PIPELINE_API_TOKEN: "",
-        IDREAM_GEN_PIPELINE_IMAGE_MODEL_DEFAULT: "",
-      },
-      now,
-    });
-
-    expect(checkById(report, "pipeline-api-url")).toMatchObject({
-      status: "fail",
-    });
-    expect(checkById(report, "pipeline-api-token")).toMatchObject({
-      status: "fail",
-    });
-    expect(checkById(report, "pipeline-image-model")).toMatchObject({
-      status: "warn",
-    });
-  });
 
   it("accepts a Draw Things-only backend deploy without requiring ComfyUI", () => {
     const report = assessLaunchReadiness({
@@ -3539,9 +3453,6 @@ describe("launch readiness", () => {
     expect(report.summary.fail).toBe(0);
     expect(report.summary.warn).toBe(0);
     expect(report.checks.map((check) => check.id)).toContain(
-      "pipeline-image-model",
-    );
-    expect(report.checks.map((check) => check.id)).toContain(
       "pipeline-image-live-probe",
     );
     expect(report.checks.map((check) => check.id)).toContain(
@@ -3640,7 +3551,7 @@ describe("launch readiness", () => {
         CHAT_MODEL_BASE_URL: "https://split-chat.ourdream.internal",
         CHAT_MODEL_API_KEY: "split-chat-model-token-0123456789",
       },
-      imagePipelineProbe: passingBackendImageProbe(),
+      imagePipelineProbe: passingImageProbe(),
       chatModelProbe: passingChatProbe({
         baseUrl: "https://split-chat.ourdream.internal",
       }),
@@ -4292,6 +4203,7 @@ describe("launch readiness", () => {
       name: "the legacy image/video endpoint and independent H3 default",
       env: {
         COMFYUI_API_URL: "https://legacy.ourdream.internal",
+        COMFYUI_IMAGE_API_URL: undefined,
         COMFYUI_H3_API_URL: undefined,
       },
       image: "https://legacy.ourdream.internal",
@@ -4300,7 +4212,11 @@ describe("launch readiness", () => {
     },
     {
       name: "the exact local Gen defaults",
-      env: { COMFYUI_API_URL: undefined, COMFYUI_H3_API_URL: undefined },
+      env: {
+        COMFYUI_API_URL: undefined,
+        COMFYUI_IMAGE_API_URL: undefined,
+        COMFYUI_H3_API_URL: undefined,
+      },
       image: "http://127.0.0.1:8189",
       video: "http://127.0.0.1:8188",
       h3: "http://127.0.0.1:8190",
@@ -4308,12 +4224,12 @@ describe("launch readiness", () => {
   ])("binds all generation probes to $name", ({ env, image, video, h3 }) => {
     const report = assessLaunchReadiness({
       env: { ...productionEnv, GEN_IMAGE_PROVIDER: "backend", ...env },
-      imagePipelineProbe: passingBackendImageProbe({ backendTarget: image }),
+      imagePipelineProbe: passingImageProbe({ backendTarget: image }),
       videoGenerationProbe: passingVideoProbe({ backendTarget: video }),
       videoH3GenerationProbe: passingH3VideoProbe({ backendTarget: h3 }),
       productConfigProbe: passingVideoEnabledProductConfigProbe({
         activeImageExecutionBindings:
-          passingBackendProductConfigProbe().activeImageExecutionBindings,
+          passingProductConfigProbe().activeImageExecutionBindings,
       }),
       now,
     });
@@ -4342,7 +4258,7 @@ describe("launch readiness", () => {
         IDREAM_GEN_COMFYUI_VIDEO_API_URL: "https://video.ourdream.internal",
         IDREAM_GEN_COMFYUI_H3_API_URL: "https://h3.ourdream.internal",
       },
-      imagePipelineProbe: passingBackendImageProbe({
+      imagePipelineProbe: passingImageProbe({
         backendTarget: kind === "image"
           ? "https://video.ourdream.internal"
           : "https://image.ourdream.internal",
@@ -4359,7 +4275,7 @@ describe("launch readiness", () => {
       }),
       productConfigProbe: passingVideoEnabledProductConfigProbe({
         activeImageExecutionBindings:
-          passingBackendProductConfigProbe().activeImageExecutionBindings,
+          passingProductConfigProbe().activeImageExecutionBindings,
       }),
       now,
     });
@@ -4705,7 +4621,7 @@ describe("launch readiness", () => {
     expect(failedIds(report)).toContain("video-generation-live-probe");
   });
 
-  it("rejects the generic pipeline provider for production video", () => {
+  it("rejects the retired pipeline adapter for production video", () => {
     const report = assessLaunchReadiness({
       env: {
         ...productionEnv,

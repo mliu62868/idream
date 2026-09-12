@@ -172,7 +172,6 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
   function confirmDecision(entry: ApprovalCase, decision: "approve" | "reject") {
     if (!canReview) return;
     const id = entry.id;
-    const idempotencyKey = crypto.randomUUID();
     const label = decision === "approve" ? "Approve" : "Reject";
     setConfirmation({
       title: t("{action} request {id}", { action: t(label), id }),
@@ -195,7 +194,6 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
           `/api/v2/admin/approvals/${id}/${decision}`,
           "POST",
           { reason, confirmation: id },
-          { "idempotency-key": idempotencyKey },
         );
         toast({
           tone: "success",

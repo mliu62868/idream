@@ -21,7 +21,6 @@ export function ComicReviewPanel({ canReview }: { canReview: boolean }) {
   const serial = useRef(0);
   const detailSerial = useRef(0);
   const alive = useRef(true);
-  const writes = useRef(new Map<string, string>());
   const load = useCallback(async (nextCursor?: string) => {
     const ticket = ++serial.current; setLoading(true); setError("");
     if (!nextCursor) { setItems([]); setCursor(null); }
@@ -54,11 +53,7 @@ export function ComicReviewPanel({ canReview }: { canReview: boolean }) {
     const current = selected; setBusy(true); setError("");
     try {
       const body = { version: current.version, reason: reason.trim(), decision, confirmation: current.id };
-      const fingerprint = JSON.stringify([current.id, body]);
-      let key = writes.current.get(fingerprint);
-      if (!key) { key = crypto.randomUUID(); writes.current.set(fingerprint, key); }
-      const result = comicDetailSchema.parse(await apiWrite(`/api/v2/admin/comics/${encodeURIComponent(current.id)}/decision`, "POST", body, { "idempotency-key": key }));
-      writes.current.delete(fingerprint);
+      const result = comicDetailSchema.parse(await apiWrite(`/api/v2/admin/comics/${encodeURIComponent(current.id)}/decision`, "POST", body));
       if (!alive.current) return;
       setSelected(result); setReason(""); await load();
     } catch (cause) { if (alive.current) setError(cause instanceof Error ? cause.message : "Review failed. Reload this Comic."); }

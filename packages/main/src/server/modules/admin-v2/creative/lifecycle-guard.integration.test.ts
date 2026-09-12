@@ -28,7 +28,7 @@ describe("Creative Run lifecycle guards", () => {
         profileKey: profileId,
         label: "Creative lifecycle guard profile",
         mode: "image",
-        runner: "pipeline",
+        runner: "comfyui",
         pipelineModel: "mock-image",
         runnerConfig: { verificationStatus: "passed" },
         allowedOrientations: ["portrait"],

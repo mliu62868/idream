@@ -19,7 +19,7 @@ import {
   publicRouteRenderDecision,
 } from "@/lib/public-route-render-decision";
 
-// CMS override（ADMIN_PHASE3_DESIGN §3.2）：已发布 RoutePage 优先；ISR 让编辑无需发版即生效，
+// CMS override（ADMIN_CONSOLE_PLAN §3.2）：已发布 RoutePage 优先；ISR 让编辑无需发版即生效，
 // 同时保留静态页性能。未在静态集合的纯 DB 页按需 SSR。
 export const dynamicParams = true;
 export const revalidate = 60;

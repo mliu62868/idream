@@ -10,7 +10,7 @@ import type {
   CompanionToolCall,
   CompanionToolResult,
 } from "./contracts";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { companionCompositionDigest, companionIgrepConfig } from "./composition";
 import {
   CompanionEngine,
@@ -22,7 +22,16 @@ import { AttemptWorkspaceStore } from "./workspace";
 const IGREP_LLM = { url: "https://maintenance.example/v1", model: "maintenance-model" };
 const temporary: string[] = [];
 
+// A fence is a Chat-wide durable fact under CHAT_FS_ROOT. Give every test its
+// own root so one test's fenced user cannot reject another test's invocation.
+beforeEach(async () => {
+  const root = await mkdtemp(join(tmpdir(), "chat-fence-engine-"));
+  temporary.push(root);
+  process.env.CHAT_FS_ROOT = root;
+});
+
 afterEach(async () => {
+  delete process.env.CHAT_FS_ROOT;
   await Promise.all(temporary.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
@@ -253,11 +262,18 @@ class MemoryReplyAdapter extends LlmAdapter {
 }
 
 const recallMarker = "idreamrecall_08a47391c06ac75d765597abfd2af7c5";
+// The engine speaks the real igrep protocol; only the subprocess is replaced,
+// so wake/recall parsing and note rendering stay under test here.
 const memoryPorts: Partial<CompanionEngineOptions> = {
-  observeWake: async () => ({ outcome: "empty", resultCount: 0, profile: "" }),
-  recallMemory: async () => ({ outcome: "hit", resultCount: 1,
-    results: [{ citation: "dialogue:1", snippet: recallMarker, sourceClass: "dialogue" }],
-    notes: [`The rooftop code word is ${recallMarker}.`] }),
+  runIgrep: async ({ args }) => args.includes("wake")
+    ? { markdownContext: "" }
+    : {
+        results: [{
+          citation: "dialogue:1",
+          snippet: `The rooftop code word is ${recallMarker}.`,
+          sourceClass: "dialogue",
+        }],
+      },
 };
 
 function port(input?: {

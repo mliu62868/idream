@@ -32,7 +32,6 @@ export async function PATCH(request: Request, context: Context) {
       {
         params: { id },
         target: () => ({ type: "media_asset", id }),
-        reason: (body) => body.reason,
         mutate: (tx, { actor, body, requestId }) => patchContentAsset({
           request,
           id,

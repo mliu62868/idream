@@ -171,7 +171,6 @@ describe("ApprovalsWorkspace decision evidence", () => {
       `/api/v2/admin/approvals/${approvalId}/approve`,
       "POST",
       { reason: "Second reviewer checked the delta", confirmation: approvalId },
-      { "idempotency-key": idempotencyKey },
     );
     await waitUntil(
       () =>

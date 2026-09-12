@@ -11,6 +11,7 @@ import {
   type CharacterVideoProductionRecipe,
 } from "@idream/shared";
 import {
+  comfyUiEndpoint,
   defaultBullmqPrefix,
   mainProviderKeysForLaunchScope,
   requiredNonMockMainProviderKeysForLaunchScope,
@@ -162,8 +163,8 @@ export const currentLaunchCapabilities: LaunchReadinessCapabilities = {
     BLOB_PROVIDER: ["mock", "r2", "s3"],
     AGE_VERIFICATION_PROVIDER: ["mock", "gocam"],
   },
-  genImageProviders: ["mock", "pipeline", "backend"],
-  genVideoProviders: ["mock", "pipeline", "backend"],
+  genImageProviders: ["mock", "backend"],
+  genVideoProviders: ["mock", "backend"],
 };
 
 const developmentSecret = "development-only-secret-change-before-production";
@@ -268,15 +269,11 @@ function genComfyUiAuthority(env: EnvLike, targetKind: "image" | "video" | "h3")
     `IDREAM_GEN_COMFYUI_${suffix}_API_URL`,
     `COMFYUI_${suffix}_API_URL`,
   );
-  // INVARIANT: mirror Gen's endpoint resolution even for direct gate callers.
-  // H3 is an independent runner; only image/video inherit the legacy URL.
-  return endpoint ?? (targetKind === "h3"
-    ? "http://127.0.0.1:8190"
-    : env.COMFYUI_API_URL ?? (
-        targetKind === "image"
-          ? "http://127.0.0.1:8189"
-          : "http://127.0.0.1:8188"
-      ));
+  // INVARIANT: the gate resolves the endpoint with the same function gen runs,
+  // so a probe can never be reconciled against a URL the worker would not use.
+  // This branch used to restate the chain; the two disagreeing is exactly the
+  // failure this check exists to catch.
+  return endpoint ?? comfyUiEndpoint(env, targetKind);
 }
 
 function isPlaceholderValue(value: string | undefined) {
@@ -1444,33 +1441,17 @@ function addImagePipelineChecks(
   now: Date,
 ) {
   const configured = env.GEN_IMAGE_PROVIDER ?? "mock";
-  const genPipelineApiUrl = genAuthorityValue(
-    env,
-    "IDREAM_GEN_PIPELINE_API_URL",
-    "PIPELINE_API_URL",
-  );
-  const genPipelineApiToken = genAuthorityValue(
-    env,
-    "IDREAM_GEN_PIPELINE_API_TOKEN",
-    "PIPELINE_API_TOKEN",
-  );
   const genComfyuiApiUrl = genComfyUiAuthority(env, "image");
   const genDrawThingsCli = genAuthorityValue(
     env,
     "IDREAM_GEN_DRAWTHINGS_CLI",
     "DRAWTHINGS_CLI",
   );
-  const genImageModel = genAuthorityValue(
-    env,
-    "IDREAM_GEN_PIPELINE_IMAGE_MODEL_DEFAULT",
-    "PIPELINE_IMAGE_MODEL_DEFAULT",
-  );
   const supported = capabilities.genImageProviders.includes(configured);
-  // "pipeline" (legacy OpenAI-compat gateway) and "backend" (P1: gen worker calls
-  // ComfyUI/sd-cli directly via GenBackend) are both valid non-mock production
-  // image providers — see packages/gen/src/providers.ts and docs/architecture.
-  const isNonMockImageProvider =
-    configured === "pipeline" || configured === "backend";
+  // `backend` is the only non-mock image adapter gen builds. `pipeline`, the
+  // legacy OpenAI-compatible gateway, was deleted 2026-09-12 — it had zero
+  // callers and the rollback runbook its retention cited does not exist.
+  const isNonMockImageProvider = configured === "backend";
 
   addCheck(checks, {
     id: "gen-image-provider",
@@ -1483,7 +1464,7 @@ function addImagePipelineChecks(
     remediation:
       isNonMockImageProvider && supported
         ? undefined
-        : "Set GEN_IMAGE_PROVIDER=pipeline or GEN_IMAGE_PROVIDER=backend (matching a supported build) and run the matching live probe against the real service.",
+        : "Set GEN_IMAGE_PROVIDER=backend and run the matching live probe against the real service.",
   });
 
   if (configured === "backend") {
@@ -1512,38 +1493,6 @@ function addImagePipelineChecks(
           "Set COMFYUI_IMAGE_API_URL (or legacy COMFYUI_API_URL), or configure DRAWTHINGS_CLI for the backend workflows in use.",
       });
     }
-  } else if (configured === "pipeline") {
-    addValueCheck(checks, {
-      id: "pipeline-api-url",
-      area: "Generation",
-      label: "Gen pipeline API URL",
-      value: genPipelineApiUrl,
-      url: true,
-      remediation:
-        "Set PIPELINE_API_URL in Gen's production environment to the internal ComfyUI/Z-Image gateway.",
-    });
-    addValueCheck(checks, {
-      id: "pipeline-api-token",
-      area: "Generation",
-      label: "Gen pipeline API token",
-      value: genPipelineApiToken,
-      minLength: 16,
-      remediation:
-        "Set PIPELINE_API_TOKEN in Gen's production environment so its worker authenticates to the pipeline.",
-    });
-
-    const model = genImageModel;
-    addCheck(checks, {
-      id: "pipeline-image-model",
-      area: "Generation",
-      status: hasMinLength(model, 1) ? "pass" : "warn",
-      message: hasMinLength(model, 1)
-        ? "Default image model is documented for the pipeline."
-        : "Default image model is not set in product env.",
-      remediation: hasMinLength(model, 1)
-        ? undefined
-        : "Set PIPELINE_IMAGE_MODEL_DEFAULT in Gen's production environment or document the default model in the pipeline service.",
-    });
   }
 
   // INVARIANT: every production image adapter must prove one real execution.
@@ -2284,21 +2233,11 @@ function addImagePipelineProbeCheck(
   const problems: string[] = [];
   const probeName: ProbeName = "imagePipelineProbe";
   const configuredProvider = env.GEN_IMAGE_PROVIDER ?? "mock";
-  const genPipelineApiUrl = genAuthorityValue(
-    env,
-    "IDREAM_GEN_PIPELINE_API_URL",
-    "PIPELINE_API_URL",
-  );
   const genComfyuiApiUrl = genComfyUiAuthority(env, "image");
   const genDrawThingsCli = genAuthorityValue(
     env,
     "IDREAM_GEN_DRAWTHINGS_CLI",
     "DRAWTHINGS_CLI",
-  );
-  const genImageModel = genAuthorityValue(
-    env,
-    "IDREAM_GEN_PIPELINE_IMAGE_MODEL_DEFAULT",
-    "PIPELINE_IMAGE_MODEL_DEFAULT",
   );
 
   addMissingProbeReportProblem(problems, env, probeName);
@@ -2313,11 +2252,7 @@ function addImagePipelineProbeCheck(
         `probe provider is ${probe.provider ?? "unknown"}, not ${configuredProvider}`,
       );
     }
-    if (configuredProvider === "pipeline") {
-      if (!sameUrl(probe.pipelineUrl, genPipelineApiUrl)) {
-        problems.push("probe pipeline URL does not match Gen pipeline URL");
-      }
-    } else if (configuredProvider === "backend") {
+    if (configuredProvider === "backend") {
       if (probe.backendKind === "comfyui") {
         if (!sameUrl(probe.backendTarget, genComfyuiApiUrl)) {
           problems.push(
@@ -2343,13 +2278,6 @@ function addImagePipelineProbeCheck(
       ) {
         problems.push("probe does not bind an exact workflow key and version");
       }
-    }
-    if (
-      configuredProvider === "pipeline" &&
-      hasMinLength(genImageModel, 1) &&
-      probe.model !== genImageModel
-    ) {
-      problems.push("probe model does not match Gen image model");
     }
     const executionBindings = productConfigProbe?.activeImageExecutionBindings;
     if (
@@ -2492,16 +2420,11 @@ function addGenBlobAuthorityProblems(
   );
 }
 
+// INVARIANT: mirrors gen's workerAdapterForRecordedProvider. `mlx` and `external`
+// mapped to the legacy gateway adapter and retired with it on 2026-09-12, so a
+// profile still pinned to one no longer projects onto a buildable adapter.
 function imageAdapterForProfileRunner(runner: string | undefined) {
-  switch (runner) {
-    case "comfyui":
-      return "backend";
-    case "mlx":
-    case "external":
-      return "pipeline";
-    default:
-      return runner;
-  }
+  return runner === "comfyui" ? "backend" : runner;
 }
 
 function addBlobStorageProbeCheck(

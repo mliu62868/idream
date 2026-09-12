@@ -185,7 +185,7 @@ export function CharacterVoicePanel({
         commit: () =>
           adminV2Operation("POST /api/v2/admin/characters/:id/voice-clones", {
             path: { id: data.character.id },
-            idempotencyKey: takeIdempotencyKey(signature),
+            replayIdempotencyKey: takeIdempotencyKey(signature),
             form,
           }),
         afterRefresh: () => {
@@ -226,7 +226,7 @@ export function CharacterVoicePanel({
         commit: () =>
           adminV2Operation("POST /api/v2/admin/characters/:id/voice-presets", {
             path: { id: data.character.id },
-            idempotencyKey: takeIdempotencyKey(signature),
+            replayIdempotencyKey: takeIdempotencyKey(signature),
             body,
           }),
         afterRefresh: () => {
@@ -269,7 +269,7 @@ export function CharacterVoicePanel({
             "POST /api/v2/admin/characters/:id/voice-profiles/:profileId/activate",
             {
               path: { id: data.character.id, profileId: candidate.id },
-              idempotencyKey: takeIdempotencyKey(signature),
+              replayIdempotencyKey: takeIdempotencyKey(signature),
               body,
             },
           ),
@@ -314,7 +314,7 @@ export function CharacterVoicePanel({
         action: "Update system voice defaults",
         commit: () =>
           adminV2Operation("PUT /api/v2/admin/voice-defaults", {
-            idempotencyKey: takeIdempotencyKey(signature),
+            replayIdempotencyKey: takeIdempotencyKey(signature),
             body,
           }),
         afterRefresh: () => {
@@ -364,7 +364,7 @@ export function CharacterVoicePanel({
             "POST /api/v2/admin/characters/:id/voice-defaults/reset",
             {
               path: { id: data.character.id },
-              idempotencyKey: takeIdempotencyKey(signature),
+              replayIdempotencyKey: takeIdempotencyKey(signature),
               body,
             },
           ),

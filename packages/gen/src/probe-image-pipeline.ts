@@ -117,7 +117,6 @@ async function main() {
     checkedAt: new Date().toISOString(),
     durationMs: Date.now() - startedAt,
     provider: env.IMAGE_PROVIDER,
-    pipelineUrl: env.PIPELINE_API_URL ?? null,
     backendKind: backendBinding.backendKind,
     backendTarget: backendBinding.backendTarget,
     workflowKey: backendBinding.workflowKey,

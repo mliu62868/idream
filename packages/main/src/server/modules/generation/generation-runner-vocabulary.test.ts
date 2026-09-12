@@ -17,14 +17,17 @@ import { GENERATION_PROFILE_RUNNERS } from "./runner-vocabulary";
 // maps every member, and no literal anywhere in main assigns a runner outside it.
 
 const SCHEMA_PATH = path.join(process.cwd(), "prisma/schema.prisma");
-const GEN_PIPELINE_URL = new URL(
-  "../../../../../gen/src/pipeline.ts",
+// The mapper lives with the vocabulary it maps onto; it moved out of
+// pipeline.ts on 2026-09-12 when the lifecycle collapsed into
+// generation-execution.ts and importing it from there would have been circular.
+const GEN_ADAPTER_MAPPER_URL = new URL(
+  "../../../../../gen/src/provider-vocabulary.ts",
   import.meta.url,
 ).href;
 
 // The adapters gen is willing to hand back. A runner that maps outside this set
 // means the mapper grew a case the queue cannot route.
-const GEN_ADAPTERS = ["mock", "backend", "pipeline"];
+const GEN_ADAPTERS = ["mock", "backend"];
 
 async function schemaRunnerLine() {
   const schema = await readFile(SCHEMA_PATH, "utf8");
@@ -44,12 +47,17 @@ function parseEnumComment(line: string) {
     .split("|")
     .map((value) => value.trim())
     .filter(Boolean);
-  expect(values.length, "enum comment parsed to fewer than 2 values").toBeGreaterThan(1);
+  // Guard self-check: the split must yield something. It used to demand two or
+  // more, which only held while the vocabulary was plural — retiring `pipeline`,
+  // `mlx` and `external` left one legal runner, and a self-check that fails on a
+  // correctly collapsed vocabulary is checking the wrong thing.
+  expect(values.length, "enum comment parsed to nothing").toBeGreaterThan(0);
+  expect(values, "enum comment lost its only known-good runner").toContain("comfyui");
   return values;
 }
 
 async function loadGenAdapterMapper() {
-  const genPipeline = (await import(GEN_PIPELINE_URL)) as {
+  const genPipeline = (await import(GEN_ADAPTER_MAPPER_URL)) as {
     workerAdapterForRecordedProvider(provider: string): string;
   };
   expect(typeof genPipeline.workerAdapterForRecordedProvider).toBe("function");
@@ -101,12 +109,17 @@ describe("GenerationModelProfile.runner vocabulary", () => {
     // Guard self-check: without this, "gen maps every runner" would also pass
     // against a mapper that returned a default for anything at all.
     const workerAdapterForRecordedProvider = await loadGenAdapterMapper();
-    const retired = ["sd", "cpp"].join("_");
+    // `sd_cpp` retired with gen's sd.cpp backend; `pipeline`, `mlx` and
+    // `external` retired together on 2026-09-12 with the legacy
+    // OpenAI-compatible gateway adapter they all resolved to.
+    const retired = [["sd", "cpp"].join("_"), "pipeline", "mlx", "external"];
 
-    expect(GENERATION_PROFILE_RUNNERS).not.toContain(retired);
-    expect(() => workerAdapterForRecordedProvider(retired)).toThrow(
-      /Unsupported pinned generation provider/,
-    );
+    for (const runner of retired) {
+      expect(GENERATION_PROFILE_RUNNERS).not.toContain(runner);
+      expect(() => workerAdapterForRecordedProvider(runner)).toThrow(
+        /Unsupported pinned generation provider/,
+      );
+    }
   });
 
   it("never assigns a runner literal outside the vocabulary anywhere in main", async () => {

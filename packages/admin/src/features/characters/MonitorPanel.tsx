@@ -3,7 +3,7 @@
 import { useAdminI18n } from "@/components/admin/i18n";
 import type { CharacterWorkspaceDetail } from "@idream/shared/admin";
 import { RefreshCcw } from "lucide-react";
-import { useRef, useState } from "react";
+import { useState } from "react";
 import {
   EmptyWorkspace,
   StatusBadge,
@@ -45,15 +45,10 @@ export function MonitorPanel({
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const refreshIdempotencyKeys = useRef<Record<string, string>>({});
   const refresh = async (window: "24h" | "72h") => {
     if (!current) return;
     setBusy(true);
     setError(null);
-    const signature = `${current.release.id}:${current.release.version}:${window}`;
-    const idempotencyKey =
-      refreshIdempotencyKeys.current[signature] ?? crypto.randomUUID();
-    refreshIdempotencyKeys.current[signature] = idempotencyKey;
     try {
       await runCommittedMutation({
         action: `${window} Release monitor refresh`,
@@ -66,13 +61,9 @@ export function MonitorPanel({
                 releaseId: current.release.id,
                 window,
               },
-              idempotencyKey,
               body: { entityVersion: current.release.version },
             },
           ),
-        afterRefresh: () => {
-          delete refreshIdempotencyKeys.current[signature];
-        },
       });
     } catch (cause) {
       setError(

@@ -1,4 +1,6 @@
 import "dotenv/config";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { defineConfig } from "vitest/config";
 
 // Chat has no database test harness. Tests use temporary AgentRun directories;
@@ -12,6 +14,10 @@ export default defineConfig({
       NODE_ENV: "test",
       CHAT_BFF_SIGNING_SECRET: "test-bff-secret-0123456789abcdef",
       CHAT_MODEL_PROVIDER: "mock",
+      // Fences are durable facts under CHAT_FS_ROOT. Without this a test that
+      // fences "user-1" would permanently fence that id in the developer's
+      // local Chat data root; files needing isolation override it per test.
+      CHAT_FS_ROOT: join(tmpdir(), `idream-chat-vitest-${process.pid}`),
     },
   },
   resolve: {

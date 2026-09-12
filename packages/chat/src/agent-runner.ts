@@ -19,8 +19,6 @@ import {
   admitAgentRun,
   appendAgentRunEvent,
   completeAgentRun,
-  fenceAgentRunAttempt,
-  isAgentRunTombstoned,
   listIncompleteAgentRuns,
   readAgentRunInput,
   readAgentRunCompletion,
@@ -31,6 +29,7 @@ import {
   type AgentRunRecoveryCandidate,
 } from "./agent-run-store.js";
 import { env } from "./env.js";
+import { fenceAttemptsThrough, isFenced } from "./fence.js";
 import { logger } from "./logger.js";
 import {
   prepareCompanionTurn,
@@ -100,7 +99,7 @@ function startAgentRun(run: AgentRunRecoveryCandidate): boolean {
 }
 
 export async function cancelAgentRun(turnId: string, attempt: number): Promise<boolean> {
-  await fenceAgentRunAttempt(turnId, attempt);
+  await fenceAttemptsThrough(turnId, attempt);
   const key = runKey(turnId, attempt);
   const active = activeRuns.get(key);
   if (!active) return false;
@@ -117,7 +116,7 @@ export async function cancelAgentRunsForUser(userId: string): Promise<number> {
 }
 
 async function executeAgentRun(turnId: string, attempt: number, signal: AbortSignal): Promise<void> {
-  if (await isAgentRunTombstoned(turnId, attempt)) return;
+  if (await isFenced({ scope: "attempt", turnId, attempt })) return;
   const input = await readAgentRunInput(turnId, attempt);
   if (!input) throw new Error("AgentRun input is missing");
   if (await readAgentRunCompletion(turnId, attempt)) return;
@@ -135,7 +134,9 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
     await finalizeAcceptedProposal(existingProposal, replay);
     return;
   }
-  let committed = false;
+  // SPEC: 「这一轮已经提交」只由证据本身表示 —— Main 接受的 ack 和它对应的
+  // proposal。这里原先还并列一个 committed 布尔量，于是同一个事实存了两份，还得
+  // 多一条「committed 了却没有证据」的分支去描述一个构造上不可能的状态。
   let committedProposal: AgentRunProposal | null = null;
   let committedAck: Extract<CompanionCommitAck, { accepted: true }> | null = null;
   let runtimeFailure: Extract<CompanionEvent, { type: "failed" }>["error"] | undefined;
@@ -235,7 +236,6 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
         await writeAgentRunProposal(turnId, attempt, proposal);
         const ack = await settleTerminalProposal(proposal, key, false);
         if (ack.accepted) {
-          committed = true;
           committedProposal = proposal;
           committedAck = ack;
         }
@@ -243,16 +243,15 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
       },
     };
     await runCompanion(invocation, port, signal);
-    if (!committed) throw new Error("DSH ended without a terminal commit");
     if (!committedProposal || !committedAck) {
-      throw new Error("DSH committed without durable terminal evidence");
+      throw new Error("DSH ended without a terminal commit");
     }
     // INVARIANT: local terminal is downstream of Main's durable ACK. A crash
     // before this write replays the exact immutable proposal without rerunning
     // the model or any tool effect.
     await finalizeAcceptedProposal(committedProposal, committedAck);
   } catch (error) {
-    if (committed) throw error;
+    if (committedAck) throw error;
     if (await readAgentRunCompletion(turnId, attempt)) return;
     // Once a candidate is durable, recovery may only replay it. Replacing it
     // with a generic failure would destroy exact Main CAS identity.

@@ -24,8 +24,6 @@ type SmokeOptions = {
   seed: string;
   seedMode: SeedMode;
   providerOverride: string | null;
-  pipelineUrlOverride: string | null;
-  pipelineTokenOverride: string | null;
 };
 
 type SmokeReference = {
@@ -126,8 +124,6 @@ function readOptions(): SmokeOptions {
     seed: readArg("seed") ?? `consistency-${Date.now()}`,
     seedMode: seedMode === "vary" ? "vary" : "locked",
     providerOverride,
-    pipelineUrlOverride: readArg("pipeline-url") ?? null,
-    pipelineTokenOverride: readArg("pipeline-token") ?? null,
   };
 }
 
@@ -216,9 +212,7 @@ async function main() {
       seed: options.seed,
       seedMode: options.seedMode,
       provider: env.IMAGE_PROVIDER,
-      pipelineUrl: env.IMAGE_PROVIDER === "pipeline" ? env.PIPELINE_API_URL ?? null : null,
       providerOverride: options.providerOverride,
-      pipelineUrlOverride: options.pipelineUrlOverride,
     },
     references: references.reviewReferences,
     samples,
@@ -236,8 +230,6 @@ function seedForSample(options: SmokeOptions, index: number) {
 
 function applyRuntimeOverrides(options: SmokeOptions) {
   if (options.providerOverride) process.env.GEN_IMAGE_PROVIDER = options.providerOverride;
-  if (options.pipelineUrlOverride) process.env.PIPELINE_API_URL = options.pipelineUrlOverride;
-  if (options.pipelineTokenOverride) process.env.PIPELINE_API_TOKEN = options.pipelineTokenOverride;
 }
 
 function buildPrompt(options: SmokeOptions, scene: string) {

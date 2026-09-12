@@ -21,7 +21,6 @@ export function CoinOffersPanel({ canWrite }: { canWrite: boolean }) {
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
   const mounted = useRef(false);
   const serial = useRef(0);
-  const writes = useRef(new Map<string, string>());
 
   const load = useCallback(async () => {
     const ticket = ++serial.current; setLoading(true); setError("");
@@ -38,11 +37,7 @@ export function CoinOffersPanel({ canWrite }: { canWrite: boolean }) {
   }, [load]);
 
   async function write(path: string, body: Record<string, unknown>) {
-    const fingerprint = JSON.stringify([path, body]);
-    let key = writes.current.get(fingerprint);
-    if (!key) { key = crypto.randomUUID(); writes.current.set(fingerprint, key); }
-    const result = adminCoinOfferMutationSchema.parse(await apiWrite(path, "POST", body, { "idempotency-key": key }));
-    writes.current.delete(fingerprint);
+    const result = adminCoinOfferMutationSchema.parse(await apiWrite(path, "POST", body));
     return result.offer;
   }
   async function create(event: FormEvent) {

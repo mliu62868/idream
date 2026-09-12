@@ -127,6 +127,7 @@ export function BillingWorkspace({
       if (request.isCurrent()) {
         setLedgerState((current) => ({
           ...current,
+          data: null,
           error: cause instanceof Error ? cause.message : "Ledger authority request failed",
           cause,
           loading: false,
@@ -148,6 +149,7 @@ export function BillingWorkspace({
       if (request.isCurrent()) {
         setSubscriptionState((current) => ({
           ...current,
+          data: null,
           error: cause instanceof Error ? cause.message : "Subscription authority request failed",
           cause,
           loading: false,
@@ -167,6 +169,7 @@ export function BillingWorkspace({
       if (request.isCurrent()) {
         setReconciliationState((current) => ({
           ...current,
+          data: null,
           error: cause instanceof Error ? cause.message : "Reconciliation authority request failed",
           cause,
           loading: false,
@@ -242,7 +245,6 @@ export function BillingWorkspace({
     const delta = parseLedgerAdjustmentDelta(adjustment.delta);
     if (!userId || delta === null) return;
     const confirmationTarget = billingAdjustmentConfirmation(userId, delta);
-    const idempotencyKey = crypto.randomUUID();
     setConfirmation({
       title: t("Adjust ledger for {user}", { user: userId }),
       summary: <span>{t("User")} {userId}  {t("· signed delta")} {delta}</span>,
@@ -260,7 +262,6 @@ export function BillingWorkspace({
           "/api/v2/admin/billing/adjustments",
           "POST",
           { userId, delta, reason, confirmation: confirmationTarget },
-          { "idempotency-key": idempotencyKey },
         );
         setAdjustment(emptyAdjustment);
         toast({ tone: "success", title: t("Ledger adjusted for {user}", { user: userId }) });
@@ -278,7 +279,6 @@ export function BillingWorkspace({
     if (!checkoutId || !providerInvoiceId || !authorityReference) return;
     const confirmationTarget =
       billingRefundAcknowledgementConfirmation(checkoutId);
-    const idempotencyKey = crypto.randomUUID();
     setConfirmation({
       title: t("Acknowledge provider refund for {id}", { id: checkoutId }),
       summary: (
@@ -307,7 +307,6 @@ export function BillingWorkspace({
             reason,
             confirmation: confirmationTarget,
           },
-          { "idempotency-key": idempotencyKey },
         );
         setRefundReference("");
         toast({
@@ -328,7 +327,6 @@ export function BillingWorkspace({
       billingSubscriptionRefundConfirmation(subscriptionId);
     const amountCents = subscription.amountCents ?? 0;
     const includedDreamcoins = subscription.includedDreamcoins;
-    const idempotencyKey = crypto.randomUUID();
     setConfirmation({
       title: t("Refund subscription {id}", { id: subscriptionId }),
       summary: (
@@ -363,7 +361,6 @@ export function BillingWorkspace({
             `/api/v2/admin/billing/subscriptions/${encodeURIComponent(subscriptionId)}/refund`,
             "POST",
             { reason, confirmation: confirmationTarget },
-            { "idempotency-key": idempotencyKey },
           ),
         );
         setRefundOutcome(result);
@@ -387,7 +384,6 @@ export function BillingWorkspace({
     if (!subscriptionId) return;
     const confirmationTarget =
       billingSubscriptionRefundReconcileConfirmation(subscriptionId);
-    const idempotencyKey = crypto.randomUUID();
     setConfirmation({
       title: t("Reconcile refund {id}", { id: subscriptionId }),
       summary: (
@@ -412,7 +408,6 @@ export function BillingWorkspace({
             `/api/v2/admin/billing/subscriptions/${encodeURIComponent(subscriptionId)}/refund/reconcile`,
             "POST",
             { reason, confirmation: confirmationTarget },
-            { "idempotency-key": idempotencyKey },
           ),
         );
         setRefundOutcome(result);

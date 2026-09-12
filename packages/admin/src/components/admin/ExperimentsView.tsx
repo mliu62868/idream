@@ -21,7 +21,7 @@ type Analysis = ExperimentAnalysisResponse;
 type FlagRow = { key: string; enabled: boolean; rolloutPercent: number };
 type LifecycleCommand = "start" | "stop";
 
-function idempotencyKey() {
+function randomToken() {
   return typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
 }
 
@@ -77,9 +77,9 @@ export function ExperimentsView() {
         variants: isCommunityRanking
           ? [{ key: "control", allocationBps: 5_000 }, { key: "relationship_first", allocationBps: 5_000 }]
           : [{ key: "control", allocationBps: 5_000 }, { key: "treatment", allocationBps: 5_000 }],
-        salt: `${idempotencyKey()}-${idempotencyKey()}`,
+        salt: `${randomToken()}-${randomToken()}`,
         metrics: { primary: "relationship.qce_activation.v1", controlVariant: "control", minimumMaturePerArm: 100, guardrails: [{ metricKey: "guardrail.support_contact_rate.v1", maxAbsoluteRegression: 0.02 }] },
-      }, { "idempotency-key": idempotencyKey() });
+      });
       const createdKey = key;
       setKey("");
       setHypothesis("");
@@ -113,7 +113,6 @@ export function ExperimentsView() {
             `/api/v2/admin/experiments/${row.id}/commands/${command}`,
             "POST",
             { expectedStateVersion: row.stateVersion, reason },
-            { "idempotency-key": idempotencyKey() },
           );
           await load();
           reportSuccess(

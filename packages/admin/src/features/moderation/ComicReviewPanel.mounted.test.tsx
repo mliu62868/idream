@@ -55,7 +55,6 @@ describe("Comic review authority UI", () => {
     expect(apiWrite.mock.calls[0]).toEqual([
       "/api/v2/admin/comics/comic-fixture/decision", "POST",
       { version: 3, reason: "Reviewed every submitted page", decision: "approve", confirmation: "comic-fixture" },
-      { "idempotency-key": expect.any(String) },
     ]);
     expect(container.textContent).toContain("Remove published version 3");
   });

@@ -155,7 +155,6 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
   const selectedId = text(selectedProfile?.id);
 
   function confirmWrite(input: ConfigCommand) {
-    const idempotencyKey = crypto.randomUUID();
     setConfirmation({
       title: input.title,
       destructive: { expectedName: input.expected, inputLabel: "Confirmation" },
@@ -163,7 +162,7 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
       reasonLabel: "Reason",
       submitLabel: "Confirm",
       onSubmit: async (reason) => {
-        await apiWrite(input.endpoint, input.method, { ...input.payload(reason), confirmation: input.expected }, { "idempotency-key": idempotencyKey });
+        await apiWrite(input.endpoint, input.method, { ...input.payload(reason), confirmation: input.expected });
         toast({ tone: "success", title: input.completed });
         load(query);
       },
@@ -178,7 +177,6 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
   function confirmTestImage() {
     if (!permissions.manageProfiles || !selectedId) return;
     const profileId = selectedId;
-    const idempotencyKey = crypto.randomUUID();
     setConfirmation({
       title: t("Generate test image on {id}", { id: profileId }),
       consequence: {
@@ -200,7 +198,7 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
             outputCount: TEST_IMAGE_OUTPUT_COUNT,
             reason,
             confirmation: profileId,
-          }, { "idempotency-key": idempotencyKey });
+          });
           // INTENT: 排队成功是 info 不是 success —— 图还没出来，运营要等下面的 recent jobs。
           toast({ tone: "info", title: t("Test image queued as {id}", { id: text(response.job.id) || t("an unnamed job") }) });
           await loadJobs();

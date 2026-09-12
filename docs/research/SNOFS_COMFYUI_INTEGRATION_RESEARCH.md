@@ -124,7 +124,7 @@ Civitai API 同时返回 `allowDerivatives=false` 和一个不透明的 `allowCo
 
 ## 7. iDream 候选接入建议
 
-仓库已有 [`darkbeast-flux2-klein-9b-multi-reference.json`](../../packages/gen/workflows/darkbeast-flux2-klein-9b-multi-reference.json)，其 `VAEEncode → ReferenceLatent`、语义 image slot 和 `ComfyUIBackend` 绑定结构可以直接复用。SNOFS 无需改 backend；应新增独立 descriptor，而不是改现有 Qwen 或 Dark Beast：
+仓库已有 [`darkbeast-flux2-klein-9b-multi-reference.json`（历史候选，当前仓库已移除）](../../packages/gen/workflows/darkbeast-flux2-klein-9b-multi-reference.json)，其 `VAEEncode → ReferenceLatent`、语义 image slot 和 `ComfyUIBackend` 绑定结构可以直接复用。SNOFS 无需改 backend；应新增独立 descriptor，而不是改现有 Qwen 或 Dark Beast：
 
 - 独立 `modelId` / `workflowKey`，例如 `snofs-flux2-klein-9b-img2img-candidate`
 - 本地 workflow / disabled / `0%` 流量，只允许显式 smoke

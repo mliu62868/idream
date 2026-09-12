@@ -107,7 +107,6 @@ export function StartersDetailPage({ id }: { id: string }) {
             `${STARTERS_LIST}/${id}`,
             "PATCH",
             starterPayload({ ...draft, reason }),
-            { "idempotency-key": crypto.randomUUID() },
           );
           await reload();
           setMode("view");
@@ -126,7 +125,6 @@ export function StartersDetailPage({ id }: { id: string }) {
             `${STARTERS_LIST}/${id}/active`,
             "POST",
             { active: true, reason, confirmation: id },
-            { "idempotency-key": crypto.randomUUID() },
           );
           await reload();
           reportSuccess(t("{name} is published and offered in character creation.", { name: row.name }));
@@ -142,7 +140,6 @@ export function StartersDetailPage({ id }: { id: string }) {
           `${STARTERS_LIST}/${id}/active`,
           "POST",
           { active: false, reason, confirmation: id },
-          { "idempotency-key": crypto.randomUUID() },
         );
         await reload();
         reportSuccess(t("{name} is offline and no longer offered in character creation.", { name: row.name }));

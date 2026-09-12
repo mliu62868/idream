@@ -34,7 +34,6 @@ export async function POST(request: Request, context: Context) {
       {
         params: { id },
         target: () => ({ type: "character", id }),
-        reason: (body) => body.reason,
         mutate: (tx, { actor, body }) =>
           createCharacterVisualProfile({ tx, request, actor, characterId: id, body }),
         decorateResult: (result, replayed) => ({ ...(result as object), replayed }),

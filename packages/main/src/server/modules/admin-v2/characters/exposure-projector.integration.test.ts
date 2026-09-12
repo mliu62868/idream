@@ -72,6 +72,14 @@ describe("Character exposure v2 attribution projector", () => {
     await prisma.characterContentVersion.create({
       data: { id: contentId, characterId, version: 1, contentHash: `exposure-hash-${suffix}`, personaSnapshot: {}, openingSnapshot: {}, appearanceSnapshot: {}, sourceType: "test" },
     });
+    // The FK added on 2026-09-12 makes an orphan Project unwritable, so this
+    // fixture now creates the Character it points at.
+    await prisma.character.create({
+      data: {
+        id: characterId, name: "Fixture character", age: 24,
+        description: "Dedicated test database only", appearance: {}, advancedDetails: {},
+      },
+    });
     await prisma.characterProject.create({
       data: { id: projectId, characterId },
     });
