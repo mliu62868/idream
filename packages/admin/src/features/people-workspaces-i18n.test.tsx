@@ -20,8 +20,8 @@ describe("people workspaces render Chinese under the zh locale", () => {
   it("translates the support workspace purpose and filter enums", () => {
     const html = zh(<SupportWorkspace canViewPlaintext={false} canWrite={false} />);
 
-    expect(html).toContain("分诊完整客服请求权威数据");
-    expect(html).not.toContain("Triage the complete support request authority");
+    expect(html).toContain("查看工单、回复客户并跟进处理");
+    expect(html).not.toContain("Review requests, reply to customers, and track resolution.");
     // <option> 走 value()（zhValues 下划线键）。"waiting_on_user" 是多词枚举，
     // 正是旧的 t(空格形态) 查不中、于是吐英文的那一类。
     expect(html).toContain("等待用户");

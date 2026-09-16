@@ -6,7 +6,8 @@ import {
   type CharacterWorkspaceDetail,
 } from "@idream/shared/admin";
 import { compileCharacterSoul } from "@idream/shared/chat/persona";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { clearSoulDraft, readSoulDraft, writeSoulDraft, type SoulDraft } from "./soul-drafts";
 import { ConfirmDialog } from "@/components/admin/ui/ConfirmDialog";
 import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
@@ -24,26 +25,61 @@ type RunCommittedMutation = <T>(input: {
   readonly afterRefresh?: () => void;
 }) => Promise<{ readonly result: T; readonly refreshed: boolean }>;
 
-export function CharacterSoulPanel({
+export function CharacterSoulPanel(props: Parameters<typeof SoulEditor>[0]) {
+  return <SoulEditor key={`${props.actorId}:${props.data.character.id}`} {...props} />;
+}
+
+function SoulEditor({
   data,
+  actorId,
   canWrite,
   runCommittedMutation,
 }: {
   data: CharacterWorkspaceDetail;
+  actorId: string;
   canWrite: boolean;
   runCommittedMutation: RunCommittedMutation;
 }) {
   const { t } = useAdminI18n();
-  const initialPersona = soulDraftFromWorkspace(data);
-  const [persona, setPersonaDraft] = useState<CharacterDraftPersona | null>(initialPersona);
+  const storageKey = `idream.admin.soul-draft:${actorId}:${data.character.id}`;
+  const [draft, setDraft] = useState<SoulDraft | null>(null);
+  const persona = draft?.persona ?? soulDraftFromWorkspace(data);
+  const baseVersion = draft?.projectVersion ?? data.project.version;
+  const baseContentId = draft?.contentVersionId ?? data.soul.current.contentVersionId;
+  const [discardOpen, setDiscardOpen] = useState(false);
+  const stale = baseVersion !== data.project.version || baseContentId !== data.soul.current.contentVersionId;
+  const dirty = draft !== null;
   // SPEC: 新建 Soul 版本会成为角色人格的权威快照，确认走 ConfirmDialog（它自己收 reason ≥3）。
   // INTENT: 原先只有一个 reason 输入框加一个按钮 —— 与同一工作台里"改个标签都要走对话框"
   //         的门槛完全倒置。
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(() =>
-    initialPersona ? null : t("Character Soul could not be loaded"),
+    persona ? null : t("Character Soul could not be loaded"),
   );
+
+  // Restore after hydration only once per editor identity; an edit made meanwhile wins.
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const restored = readSoulDraft(storageKey);
+      setDraft((current) => current ?? restored.draft);
+      if (restored.error) setError(t(restored.error));
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [storageKey, t]);
+
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
+
+  function discardDraft() {
+    const persisted = clearSoulDraft(storageKey);
+    setDraft(null);
+    setError(persisted ? null : t("Draft cleared for this tab. Browser storage is unavailable."));
+  }
 
   if (!persona) {
     return error ? (
@@ -55,10 +91,13 @@ export function CharacterSoulPanel({
     );
   }
 
-  const setPersona = (patch: Partial<CharacterDraftPersona>) =>
-    setPersonaDraft((current) => current
-      ? { ...current, ...patch }
-      : current);
+  const setPersona = (patch: Partial<CharacterDraftPersona>) => {
+    const next = { persona: { ...persona, ...patch }, projectVersion: baseVersion, contentVersionId: baseContentId };
+    setDraft(next);
+    if (!writeSoulDraft(storageKey, next)) {
+      setError(t("Draft kept until this tab reloads. Browser storage is unavailable."));
+    }
+  };
   const draftPreview = compileSoulDraftPreview(persona);
 
   const createVersion = async (reason: string) => {
@@ -67,19 +106,25 @@ export function CharacterSoulPanel({
     try {
       await runCommittedMutation({
         action: t("Create Character Soul version"),
-        commit: () => adminV2Operation(
-          "POST /api/v2/admin/characters/:id/soul/versions",
-          {
-            path: { id: data.character.id },
-            ifMatch: data.project.version,
-            body: {
-              entityVersion: data.project.version,
-              expectedContentVersionId: data.soul.current.contentVersionId,
-              persona,
-              reason,
+        commit: async () => {
+          const result = await adminV2Operation(
+            "POST /api/v2/admin/characters/:id/soul/versions",
+            {
+              path: { id: data.character.id },
+              ifMatch: baseVersion,
+              body: {
+                entityVersion: baseVersion,
+                expectedContentVersionId: baseContentId,
+                persona,
+                reason,
+              },
             },
-          },
-        ),
+          );
+          // 清理先于权威刷新，避免新面板恢复刚提交的旧草稿。
+          if (!clearSoulDraft(storageKey)) setError(t("Version saved. Local draft could not be cleared."));
+          setDraft(null);
+          return result;
+        },
       });
     } catch (cause) {
       setError(
@@ -89,6 +134,7 @@ export function CharacterSoulPanel({
             ? cause.message
             : t("Character Soul version could not be created"),
       );
+      throw cause;
     } finally {
       setBusy(false);
     }
@@ -96,6 +142,10 @@ export function CharacterSoulPanel({
 
   return (
     <div className="space-y-5">
+      {dirty ? <div className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-[var(--ad-yellow-bg)] px-4 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">
+        <span>{t(stale ? "Draft is based on an older version. Copy or discard it." : "Unsaved draft · kept in this tab")}</span>
+        <button className="min-h-9 underline" disabled={busy} onClick={() => setDiscardOpen(true)} type="button">{t("Discard draft")}</button>
+      </div> : null}
       <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
@@ -114,7 +164,7 @@ export function CharacterSoulPanel({
             <p className="text-sm font-semibold">{t("Changed from Serving version")} {data.soul.previous?.version}</p>
             <div className="mt-2 flex flex-wrap gap-2">
               {data.soul.changedFields.map((field) => (
-                <code className="rounded bg-[var(--ad-muted)] px-2 py-1 text-xs" key={field}>{field}</code>
+                <code className="rounded bg-[var(--ad-surface-subtle)] px-2 py-1 text-xs" key={field}>{field}</code>
               ))}
             </div>
           </div>
@@ -122,7 +172,7 @@ export function CharacterSoulPanel({
       </section>
 
       {data.soul.current.diagnostics.length > 0 ? (
-        <section className="rounded-lg border border-[var(--ad-yellow-border)] bg-[var(--ad-yellow-bg)] p-4">
+        <section className="rounded-lg border border-[var(--ad-yellow-text)] bg-[var(--ad-yellow-bg)] p-4">
           <h3 className="font-semibold text-[var(--ad-yellow-text)]">{t("Compiler diagnostics")}</h3>
           <ul className="mt-2 space-y-2 text-sm text-[var(--ad-yellow-text)]">
             {data.soul.current.diagnostics.map((item) => (
@@ -134,7 +184,7 @@ export function CharacterSoulPanel({
         </section>
       ) : null}
 
-      <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5">
+      <fieldset disabled={!canWrite || busy} className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5">
         <h3 className="text-lg font-semibold">{t("Soul editor")}</h3>
         <p className="mt-1 text-sm text-[var(--ad-text-muted)]">{t("Keep the basics clear. Put anything else in Markdown. Creating a version is explicit, and existing sessions keep their pinned bytes.")}</p>
         <div className="mt-5 grid gap-5 lg:grid-cols-2">
@@ -156,11 +206,11 @@ export function CharacterSoulPanel({
         </div>
         {error ? <p className="mt-3 text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}
         <div className="mt-5">
-          <WorkspaceButton disabled={!canWrite || busy} onClick={() => setConfirmOpen(true)} tone="primary">
+          <WorkspaceButton disabled={!canWrite || busy || stale} onClick={() => setConfirmOpen(true)} tone="primary">
             {busy ? t("Creating version…") : t("Create Soul version")}
           </WorkspaceButton>
         </div>
-      </section>
+      </fieldset>
 
       <details className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5">
         <summary className="cursor-pointer text-sm font-semibold">{t("Technical details")}</summary>
@@ -171,6 +221,10 @@ export function CharacterSoulPanel({
           <ReadOnlyArtifact title={t("Compiled system prompt")} unavailableLabel={t("Unavailable until the Soul compiles.")} value={draftPreview?.systemPrompt ?? ""} />
         </div>
       </details>
+      {discardOpen ? <ConfirmDialog onClose={() => setDiscardOpen(false)} spec={{
+        title: t("Discard draft?"), requireReason: false, submitLabel: t("Discard draft"),
+        onSubmit: async () => { discardDraft(); setDiscardOpen(false); },
+      }} /> : null}
       {confirmOpen ? (
         <ConfirmDialog
           onClose={() => setConfirmOpen(false)}

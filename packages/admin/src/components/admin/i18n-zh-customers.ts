@@ -3,6 +3,9 @@
 // INVARIANT: key 在所有 i18n-zh-*.ts 之间互斥——同一个 key 只能有一个域文件持有；
 // 由 i18n-zh-exclusivity.test.ts 强制。新增文案放它所属的域文件，不要另开「杂项」文件。
 export const adminZhCustomers: Record<string, string> = {
+  "Customer detail request failed": "用户详情加载失败",
+  "Review requests, reply to customers, and track resolution.": "查看工单、回复客户并跟进处理。",
+
   "Source details": "来源详情",
   "Select supporting evidence": "选择本次处理依据",
   "No evidence is available for this decision.": "当前没有可选依据，请先补充相关来源。",

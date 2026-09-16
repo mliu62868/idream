@@ -157,6 +157,7 @@ export function SupportWorkspace({
       setQuery(next);
       setDraft(next);
       setCursorTrail([]);
+      setConversationTicket(new URLSearchParams(window.location.search).get("ticket") || null);
       void load(next);
     };
     const timer = window.setTimeout(() => {
@@ -204,6 +205,14 @@ export function SupportWorkspace({
     setDraft(next);
     setCursorTrail(trail);
     void load(next);
+  }
+
+  function selectConversation(ticketId: string | null) {
+    const url = new URL(window.location.href);
+    if (ticketId) url.searchParams.set("ticket", ticketId);
+    else url.searchParams.delete("ticket");
+    window.history.pushState(null, "", `${url.pathname}${url.search}${url.hash}`);
+    setConversationTicket(ticketId);
   }
 
   function updateDraft(updates: Partial<SupportQuery>) {
@@ -315,10 +324,9 @@ export function SupportWorkspace({
   return (
     <section className="space-y-5">
       <PageHeader
-        purpose={t("Triage the complete support request authority with server filters, SLA state, saved views, and audited resolution commands.")}
+        purpose={t("Review requests, reply to customers, and track resolution.")}
         title={t("Support Cases")}
       />
-      <FeedbackQueue canWrite={canWrite} />
       <div
         className="flex flex-wrap justify-between gap-2 text-xs text-[var(--ad-text-muted)]"
         role="status"
@@ -334,7 +342,7 @@ export function SupportWorkspace({
         </span>
       </div>
       <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-        <div className="grid gap-3 xl:grid-cols-[1fr_160px_160px_160px_300px] xl:items-end">
+        <div className="grid min-w-0 gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <Field
             label="Support search"
             onChange={(search) => updateDraft({ search })}
@@ -373,14 +381,14 @@ export function SupportWorkspace({
             value={draft.category}
           />
           <form
-            className="grid gap-1"
+            className="grid min-w-0 gap-1 sm:col-span-2"
             onSubmit={(event) => void saveCurrentView(event)}
           >
             <span className="text-xs font-semibold text-[var(--ad-text-muted)]">
 
               {t("Saved view")}
             </span>
-            <div className="flex gap-2">
+            <div className="flex min-w-0 flex-wrap gap-2">
               <input
                 aria-label={t("Support saved view label")}
                 className="min-h-10 min-w-0 flex-1 rounded-md border px-3 text-sm"
@@ -388,7 +396,7 @@ export function SupportWorkspace({
                 value={savedViewLabel}
               />
               <button
-                className="inline-flex min-h-10 items-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white"
+                className="inline-flex min-h-10 shrink-0 items-center gap-2 rounded-md bg-[var(--ad-ink)] px-3 text-sm font-semibold whitespace-nowrap text-white disabled:opacity-50"
                 disabled={savingView || !savedViewLabel.trim()}
                 type="submit"
               >
@@ -455,7 +463,6 @@ export function SupportWorkspace({
           </div>
         ) : null}
       </section>
-      {canViewPlaintext ? <PlaintextAccessPanel /> : null}
       {error ? (
         <AuthorityRequestError
           cause={errorCause}
@@ -467,7 +474,8 @@ export function SupportWorkspace({
       {conversationTicket ? <SupportConversationPanel
         key={conversationTicket} ticketId={conversationTicket} canWrite={canWrite}
         refreshRevision={conversationRevision}
-        onClose={() => setConversationTicket(null)} onUpdated={() => void load(query)}
+        onClose={() => selectConversation(null)} onUpdated={() => void load(query)}
+        canViewPlaintext={canViewPlaintext}
       /> : null}
       {!data && loading ? (
         <div className="rounded-lg border p-4" role="status">
@@ -498,37 +506,16 @@ export function SupportWorkspace({
       ) : data ? (
         <DataTable
           caption="Support Requests"
-          // SPEC: width 是**文本盒**宽度，单元格左右还各有 1rem 内边距，真实列宽 ≈ width + 2rem；
-          //       十四列合计 ~2688px，就是下面的 minimumWidthClassName。
-          // INTENT: 原来十四列全传字符串，2000px 由浏览器按内容自由分配：邮箱一列 421px、
-          //         处理结论 239px，而「分类」只剩 58px——中文竖排成「技/术/问/题」，行高 141px。
-          //         列宽定死之后每列各得其所，代价是横向多滚 ~700px；十四列的表这笔账划算。
           headers={[
-            // 工单号 / 邮箱 / 主题 / 处理结论：钳在宽度内出省略号，完整值走 title 悬停。
-            { label: "Ticket", truncate: true, width: "9rem" },
-            { label: "User", truncate: true, width: "11rem" },
-            // 枚举列：中文最长四字（技术问题 / 账务争议），truncate 保证它不竖排。
-            { label: "Category", truncate: true, width: "5rem" },
-            { label: "Subject", truncate: true, width: "11rem" },
-            // 不 truncate：CaseText 自己管折叠（>90 字收进 details），钳死会把展开后的正文也截掉。
-            // 宽度与 CaseText 的 max-w-[12rem] 对齐——不对齐时正文会溢出单元格，被右侧 sticky 列压住。
-            { label: "Description", width: "12rem" },
-            { label: "Status", truncate: true, width: "5rem" },
-            { label: "Priority", truncate: true, width: "5rem" },
-            // SLA / 升级记录 / 最近更新是多行单元格，truncate 会把第二三行吞掉，只给宽度。
-            { label: "SLA", width: "9rem" },
-            { label: "Escalation", width: "10rem" },
-            { label: "Assigned", truncate: true, width: "10rem" },
-            { label: "Last update", width: "9.5rem" },
-            { label: "Resolution", truncate: true, width: "11rem" },
-            { label: "Created", truncate: true, width: "9.5rem" },
-            // 最多五个动作按钮（升级 / 打开 / 等待用户 / 解决 / 关闭）实测 365px；给够一行的量，
-            // 否则按钮换行成 2×2，把行高撑成三倍。这一列是 sticky 的，宽度就是常驻遮挡面积。
-            { label: "Actions", width: "23rem" },
+            { label: "Ticket", width: "10rem" },
+            { label: "Subject", width: "15rem" },
+            { label: "Status", width: "6rem" },
+            { label: "SLA", width: "8rem" },
+            { label: "Assigned", width: "9rem" },
           ]}
-          minimumWidthClassName="min-w-[2688px]"
-          rows={supportRows(rows, canWrite, confirmAction, t, value, format, refreshedAt ?? "", setConversationTicket)}
-          stickyLastColumn
+          density="compact"
+          minimumWidthClassName="min-w-[640px]"
+          rows={supportRows(rows, canWrite, confirmAction, t, value, format, refreshedAt ?? "", selectConversation)}
         />
       ) : null}
       {data && rows.length > 0 ? (
@@ -548,6 +535,14 @@ export function SupportWorkspace({
           rowCount={rows.length}
         />
       ) : null}
+      {canViewPlaintext ? <details className="rounded-lg border border-[var(--ad-border)] p-4">
+        <summary className="cursor-pointer text-sm font-semibold">{t("Plaintext access")}</summary>
+        <PlaintextAccessPanel />
+      </details> : null}
+      <details className="rounded-lg border border-[var(--ad-border)] p-4">
+        <summary className="cursor-pointer text-sm font-semibold">{t("Product feedback")}</summary>
+        <FeedbackQueue canWrite={canWrite} />
+      </details>
       {confirmation ? (
         <ConfirmDialog
           onClose={() => setConfirmation(null)}
@@ -558,8 +553,8 @@ export function SupportWorkspace({
   );
 }
 
-function SupportConversationPanel({ ticketId, canWrite, refreshRevision, onClose, onUpdated }: {
-  ticketId: string; canWrite: boolean; refreshRevision: number; onClose: () => void; onUpdated: () => void;
+function SupportConversationPanel({ ticketId, canWrite, canViewPlaintext, refreshRevision, onClose, onUpdated }: {
+  ticketId: string; canWrite: boolean; canViewPlaintext: boolean; refreshRevision: number; onClose: () => void; onUpdated: () => void;
 }) {
   const { t, value } = useAdminI18n();
   const format = useAdminFormat();
@@ -629,19 +624,23 @@ function SupportConversationPanel({ ticketId, canWrite, refreshRevision, onClose
         <GhostButton disabled={!draft.trim() || loading} type="submit">{t("Send reply")}</GhostButton>
       </form> : null}
       <GhostButton disabled={loading} onClick={() => void load()}>{t("Refresh conversation")}</GhostButton>
+      {canViewPlaintext ? <details className="rounded-md border border-[var(--ad-border)] p-3">
+        <summary className="cursor-pointer text-sm font-semibold">{t("Plaintext access")}</summary>
+        <PlaintextAccessPanel initialTicketId={ticketId} />
+      </details> : null}
     </> : null}
     {confirmation ? <ConfirmDialog onClose={() => setConfirmation(null)} spec={confirmation} /> : null}
   </section>;
 }
 
-function PlaintextAccessPanel() {
+function PlaintextAccessPanel({ initialTicketId = "" }: { initialTicketId?: string }) {
   const { t } = useAdminI18n();
   const { toast } = useToast();
   const failureToast = useFailureToast();
   const [targetType, setTargetType] =
     useState<PlaintextTargetType>("generation_job");
   const [targetId, setTargetId] = useState("");
-  const [ticketId, setTicketId] = useState("");
+  const [ticketId, setTicketId] = useState(initialTicketId);
   const [legalHoldId, setLegalHoldId] = useState("");
   const [reason, setReason] = useState("");
   const [confirmation, setConfirmation] = useState("");
@@ -672,6 +671,13 @@ function PlaintextAccessPanel() {
   //   SupportConsentGrant 的写入全在测试文件里，于是下面的「查看明文」永远 403。
   // INTENT: 服务端强制三条边界（目标属于工单提交者、用户已勾 diagnosticConsent、
   //   字段范围 + 24h 时限），前端不重复判断，失败时把权威的理由原样呈现。
+  function changeContext(update: () => void) {
+    update();
+    setResult(null);
+    setConfirmation("");
+    setReason("");
+  }
+
   async function grantConsent() {
     if (!grantReady || granting) return;
     setGranting(true);
@@ -732,7 +738,8 @@ function PlaintextAccessPanel() {
 
   return (
     <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-      <form className="space-y-4" onSubmit={(event) => void submit(event)}>
+      <form onSubmit={(event) => void submit(event)}>
+        <fieldset className="space-y-4" disabled={loading || granting}>
         <div className="flex flex-wrap justify-between gap-3">
           <div>
             <h2 className="text-base font-semibold">{t("Plaintext access")}</h2>
@@ -750,23 +757,23 @@ function PlaintextAccessPanel() {
         <div className="grid gap-3 lg:grid-cols-3">
           <Select
             label="Target type"
-            onChange={(value) => setTargetType(value as PlaintextTargetType)}
+            onChange={(value) => changeContext(() => setTargetType(value as PlaintextTargetType))}
             options={["generation_job", "media"]}
             value={targetType}
           />
           <Field
             label="Plaintext target ID"
-            onChange={setTargetId}
+            onChange={(value) => changeContext(() => setTargetId(value))}
             value={targetId}
           />
           <Field
             label="Consent ticket ID"
-            onChange={setTicketId}
+            onChange={(value) => changeContext(() => setTicketId(value))}
             value={ticketId}
           />
           <Field
             label="Legal hold ID"
-            onChange={setLegalHoldId}
+            onChange={(value) => changeContext(() => setLegalHoldId(value))}
             value={legalHoldId}
           />
           <Field
@@ -822,6 +829,7 @@ function PlaintextAccessPanel() {
 
           {t("View plaintext")}
         </button>
+        </fieldset>
       </form>
       {result ? (
         <div
@@ -920,41 +928,8 @@ function supportRows(
         next: "closed",
         resolution: true,
       });
-    return {
-      id: id || `support-${index}`,
-      cells: [
-        <button className="font-semibold underline underline-offset-4" key="ticket" onClick={() => openConversation(id)} type="button">{id}</button>,
-        format.display(row.userEmail),
-        value(format.text(row.category)) || "—",
-        format.display(row.subject),
-        <CaseText key="description" value={format.text(row.description)} />,
-        status ? value(status) : "—",
-        format.display(row.priority),
-        <SlaCell
-          dueAt={format.text(row.slaDueAt)}
-          hoursRemaining={
-            typeof row.slaHoursRemaining === "number"
-              ? row.slaHoursRemaining
-              : null
-          }
-          key="sla"
-          state={sla}
-        />,
-        <EscalationCell
-          at={format.text(row.slaEscalatedAt)}
-          key="escalation"
-          reason={format.text(row.slaEscalationReason)}
-        />,
-        format.display(row.assignedToEmail),
-        // SPEC: 工单上一次动过是什么时候。
-        // INTENT: 「卡了多久」是客服排队的首要依据，而权威接口一直返回 updatedAt，
-        //         工作台以前只画 createdAt——于是一条刚回过的工单和一条躺了两周的长得一样。
-        <LastUpdateCell key="updated" referenceTime={referenceTime} value={format.text(row.updatedAt)} />,
-        format.display(row.resolutionNotes),
-        format.dateTime(row.createdAt),
-        canWrite ? (
-          // 列宽已按五个按钮一行留足；这里禁掉换行，免得窄一像素就退回 2×2 网格。
-          <div className="flex flex-nowrap gap-1">
+    const actionControls = canWrite ? (
+          <div className="flex flex-wrap gap-2">
             {actions.map((action) => (
               <TicketAction
                 icon={action.icon}
@@ -976,7 +951,28 @@ function supportRows(
           </div>
         ) : (
           t("Read only")
-        ),
+        );
+    return {
+      id: id || `support-${index}`,
+      cells: [
+        <div className="space-y-1 break-all" key="ticket"><button className="font-semibold underline underline-offset-4" onClick={() => openConversation(id)} type="button">{id}</button><p className="text-xs text-[var(--ad-text-muted)]">{format.display(row.userEmail)}</p></div>,
+        <div className="min-w-0 break-words" key="subject">
+          <p className="font-medium">{format.display(row.subject)}</p>
+          <p className="text-xs text-[var(--ad-text-muted)]">{value(format.text(row.category)) || "—"}</p>
+          <details className="mt-2">
+            <summary className="cursor-pointer rounded text-xs font-semibold focus-visible:outline focus-visible:outline-2">{t("Details")} · {t("Actions")}</summary>
+            <div className="mt-3">{actionControls}</div>
+            <dl className="mt-3 space-y-3 text-xs">
+              <div><dt className="text-[var(--ad-text-muted)]">{t("Description")}</dt><dd className="mt-1 whitespace-pre-wrap break-words">{format.text(row.description) || t("Nothing written")}</dd></div>
+              <div><dt className="text-[var(--ad-text-muted)]">{t("Escalation")}</dt><dd className="mt-1"><EscalationCell at={format.text(row.slaEscalatedAt)} reason={format.text(row.slaEscalationReason)} /></dd></div>
+              <div><dt className="text-[var(--ad-text-muted)]">{t("Resolution")}</dt><dd className="mt-1 whitespace-pre-wrap break-words">{format.display(row.resolutionNotes)}</dd></div>
+              <div><dt className="text-[var(--ad-text-muted)]">{t("Created")}</dt><dd className="mt-1">{format.dateTime(row.createdAt)}</dd></div>
+            </dl>
+          </details>
+        </div>,
+        <div className="space-y-1" key="status">{status ? value(status) : "—"}<p className="text-xs text-[var(--ad-text-muted)]">{t("Priority")} · {format.display(row.priority)}</p></div>,
+        <SlaCell key="sla" dueAt={format.text(row.slaDueAt)} hoursRemaining={typeof row.slaHoursRemaining === "number" ? row.slaHoursRemaining : null} state={sla} />,
+        <div className="space-y-1 break-all" key="assigned">{format.display(row.assignedToEmail)}<div className="text-xs text-[var(--ad-text-muted)]"><LastUpdateCell referenceTime={referenceTime} value={format.text(row.updatedAt)} /></div></div>,
       ],
     };
   });
@@ -1084,28 +1080,6 @@ function LastUpdateCell({ referenceTime, value }: { referenceTime: string; value
   );
 }
 
-// SPEC: 工单正文。短的摊开，长的折起来但保留开头。
-// INTENT: 描述以前整段塞进单元格，一条长工单能把行高撑满一屏，扫队列变成了滚屏。
-function CaseText({ value }: { value: string }) {
-  const { t } = useAdminI18n();
-  if (!value.trim())
-    return <span className="text-[var(--ad-text-muted)]">{t("Nothing written")}</span>;
-  // max-w 与「描述」列的 width 对齐：宽过列宽时正文会溢出单元格，被右侧 sticky 的操作列压住裁切。
-  if (value.length <= 90)
-    return <span className="block max-w-[12rem] break-words">{value}</span>;
-  return (
-    <details className="max-w-[12rem]">
-      <summary
-        aria-label={t("Support description")}
-        className="cursor-pointer rounded break-words focus-visible:outline focus-visible:outline-2"
-      >
-        {`${value.slice(0, 90)}…`}
-      </summary>
-      <p className="mt-2 break-words whitespace-pre-wrap text-xs">{value}</p>
-    </details>
-  );
-}
-
 function sameQuery(left: SupportQuery, right: SupportQuery) {
   return (
     left.search === right.search &&
@@ -1127,12 +1101,11 @@ function Field({
 }) {
   const { t } = useAdminI18n();
   return (
-    <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
+    <label className="grid min-w-0 gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
       {t(label)}
-      {/* aria-label 保持英文原串：mounted 测试与运营脚本按它定位控件，翻译后会一起断。 */}
       <input
-        aria-label={label}
-        className="min-h-10 rounded-md border px-3 text-sm"
+        aria-label={t(label)}
+        className="min-h-10 w-full min-w-0 rounded-md border px-3 text-sm"
         onChange={(event) => onChange(event.target.value)}
         value={value}
       />
@@ -1153,11 +1126,11 @@ function Select({
 }) {
   const { t, value: enumLabel } = useAdminI18n();
   return (
-    <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
+    <label className="grid min-w-0 gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
       {t(label)}
       <select
-        aria-label={label}
-        className="min-h-10 rounded-md border px-3 text-sm"
+        aria-label={t(label)}
+        className="min-h-10 w-full min-w-0 rounded-md border px-3 text-sm"
         onChange={(event) => onChange(event.target.value)}
         value={value}
       >

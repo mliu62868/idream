@@ -115,9 +115,11 @@ describe("SupportWorkspace mounted URL state", () => {
     expect(container.querySelector<HTMLInputElement>('input[aria-label="Support search"]')?.value).toBe(
       "SUP-R5E27H6PS9",
     );
-    expect(
-      container.querySelector('[aria-label="Support Requests scrollable table"] table')?.className,
-    ).toContain("min-w-[2688px]");
+    const queue = container.querySelector('[aria-label="Support Requests scrollable table"] table');
+    expect(queue?.querySelectorAll("thead th")).toHaveLength(5);
+    const detail = queue?.querySelector("details");
+    expect(detail?.open).toBe(false);
+    expect(detail?.textContent).toContain("Profile changes are not saved.");
     expect(consoleError).not.toHaveBeenCalled();
   });
 });
@@ -132,8 +134,8 @@ describe("SupportWorkspace customer replies", () => {
     apiGet.mockReset(); apiGet.mockResolvedValue({ items: [{ ...baseTicket, status: "open" }], pageInfo: { endCursor: null, hasNextPage: false } });
   });
   afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.restoreAllMocks(); });
-  async function mount() {
-    await act(async () => root.render(<ToastProvider><SupportWorkspace canViewPlaintext={false} canWrite /></ToastProvider>));
+  async function mount(canViewPlaintext = false) {
+    await act(async () => root.render(<ToastProvider><SupportWorkspace canViewPlaintext={canViewPlaintext} canWrite /></ToastProvider>));
     await waitUntil(() => container.textContent?.includes("SUP-CLOCK-1") === true);
   }
   async function change(element: HTMLInputElement | HTMLTextAreaElement, value: string) {
@@ -143,6 +145,26 @@ describe("SupportWorkspace customer replies", () => {
       element.dispatchEvent(new Event("input", { bubbles: true }));
     });
   }
+  it("clears plaintext evidence and confirmation when its target changes", async () => {
+    await mount(true);
+    const field = (label: string) => container.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!;
+    await change(field("Plaintext target ID"), "job-a");
+    await change(field("Consent ticket ID"), "SUP-CLOCK-1");
+    await change(field("Plaintext reason"), "Investigate reported failure");
+    await change(field("Plaintext confirmation"), "job-a");
+    let resolveRead!: (value: unknown) => void;
+    apiWrite.mockImplementationOnce(() => new Promise((resolve) => { resolveRead = resolve; }));
+    await act(async () => field("Plaintext target ID").closest("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    expect(field("Plaintext target ID").closest("fieldset")?.disabled).toBe(true);
+    await act(async () => resolveRead({ target: { type: "generation_job", id: "job-a", ownerId: "user-a" }, plaintext: { prompt: "private-a" }, authorization: { ticketId: "SUP-CLOCK-1", legalHoldId: null } }));
+    expect(container.querySelector('[data-testid="admin-plaintext-result"]')?.textContent).toContain("private-a");
+    await change(field("Plaintext target ID"), "job-b");
+    expect(container.querySelector('[data-testid="admin-plaintext-result"]')).toBeNull();
+    expect(field("Plaintext confirmation").value).toBe("");
+    expect(field("Plaintext reason").value).toBe("");
+    expect(apiWrite).toHaveBeenCalledTimes(1);
+  });
+
   it("asks for a customer-facing question separately from the internal reason", async () => {
     await mount();
     expect([...container.querySelectorAll("button")].some((node) => node.textContent?.trim() === "Close")).toBe(false);
@@ -167,6 +189,30 @@ describe("SupportWorkspace customer replies", () => {
     await act(async () => ticketButton!.click());
     await waitUntil(() => container.textContent?.includes("The failing image is ABC.") === true);
     expect(container.querySelector('textarea[aria-label="Message to customer"]')).not.toBeNull();
+    expect(new URLSearchParams(window.location.search).get("ticket")).toBe("SUP-CLOCK-1");
+  });
+  it("restores a shared ticket independently of list filters and scopes plaintext access to it", async () => {
+    window.history.replaceState(null, "", "/admin/support?ticket=SUP-CLOCK-1&status=resolved");
+    apiGet.mockResolvedValue({ items: [], pageInfo: { endCursor: null, hasNextPage: false } });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => Response.json({ ok: true, data: String(input).includes("/support/requests/")
+      ? { request: { ticketId: "SUP-CLOCK-1", subject: "Charged twice", description: "Customer intake", status: "open", canReply: true, createdAt: "2026-09-02T12:00:00.000Z", updatedAt: "2026-09-02T12:00:00.000Z", messages: [] } }
+      : { items: [] } }));
+    vi.stubGlobal("fetch", fetchMock);
+    await mount(true);
+    await waitUntil(() => container.textContent?.includes("Customer intake") === true);
+    const consent = [...container.querySelectorAll<HTMLInputElement>('input[aria-label="Consent ticket ID"]')].find((input) => input.value === "SUP-CLOCK-1");
+    expect(consent).toBeDefined();
+    expect(consent?.closest("details")?.open).toBe(false);
+    expect(apiGet.mock.calls.some(([path]) => path.includes("status=resolved"))).toBe(true);
+    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/support/requests/SUP-CLOCK-1"))).toBe(true);
+    await act(async () => [...container.querySelectorAll("button")].find((node) => node.textContent?.trim() === "Close conversation")!.click());
+    expect(new URLSearchParams(window.location.search).has("ticket")).toBe(false);
+    expect(new URLSearchParams(window.location.search).get("status")).toBe("resolved");
+    await act(async () => {
+      window.history.replaceState(null, "", "/admin/support?ticket=SUP-CLOCK-2&status=resolved");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    await waitUntil(() => fetchMock.mock.calls.some(([input]) => String(input).endsWith("/support/requests/SUP-CLOCK-2")));
   });
   it("refreshes only the selected conversation, preserving its draft and ignoring an old ticket response", async () => {
     apiGet.mockResolvedValue({ items: [baseTicket, { ...baseTicket, ticketId: "SUP-CLOCK-2" }], pageInfo: { endCursor: null, hasNextPage: false } });
@@ -467,6 +513,9 @@ describe("SupportWorkspace queue cells under the zh locale", () => {
 
   it("translates the status and category cells instead of echoing the authority enum", async () => {
     await mountZh(true);
+    expect(container.querySelector('input[aria-label="Support search"]')).toBeNull();
+    expect(container.querySelector('select[aria-label="Support status"]')).toBeNull();
+    expect(container.querySelector('input[aria-label="支持搜索"]')).not.toBeNull();
     // baseTicket 是 status=open / category=billing。
     expect(container.textContent).toContain("账务问题");
     expect(container.textContent).not.toContain("billing");

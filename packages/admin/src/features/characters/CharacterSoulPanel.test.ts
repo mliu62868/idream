@@ -16,7 +16,7 @@ const panelSource = readFileSync(
 
 describe("Character Soul editor projection", () => {
   it("keeps the operator form visible and technical artifacts collapsed", () => {
-    const html = renderToStaticMarkup(createElement(CharacterSoulPanel, { data: characterWorkspaceDetail({ soul: { current: { soul: { name: "Mira", age: 31, gender: "female", characterPromise: "Notices what changes.", detailsMarkdown: "" } } }, preview: { draft: { opening: { firstMessage: "Hello." } } } }), canWrite: true, runCommittedMutation: async ({ commit }) => ({ result: await commit(), refreshed: true }) }));
+    const html = renderToStaticMarkup(createElement(CharacterSoulPanel, { actorId: "test-admin", data: characterWorkspaceDetail({ soul: { current: { soul: { name: "Mira", age: 31, gender: "female", characterPromise: "Notices what changes.", detailsMarkdown: "" } } }, preview: { draft: { opening: { firstMessage: "Hello." } } } }), canWrite: true, runCommittedMutation: async ({ commit }) => ({ result: await commit(), refreshed: true }) }));
     expect(html).toContain("Soul editor");
     expect(html).toContain("Technical details");
     expect(html).toContain("Generated SOUL.md");

@@ -71,6 +71,12 @@ type AuthorityState<T> = {
   refreshedAt: string | null;
 };
 
+type BillingView = "pending" | "subscriptions" | "ledger";
+function currentView(): BillingView {
+  const value = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("billingView");
+  return value === "subscriptions" || value === "ledger" ? value : "pending";
+}
+
 const emptyAdjustment: AdjustmentDraft = { userId: "", delta: "" };
 /** 两张表各自翻页，但一次 navigate 会把两边都重新拉一遍，所以轨迹要一起带着走。 */
 type BillingTrails = { ledger: string[]; subscription: string[] };
@@ -103,7 +109,9 @@ export function BillingWorkspace({
   const [subscriptionState, setSubscriptionState] = useState<AuthorityState<AdminBillingSubscriptionListResponse>>(emptyAuthorityState);
   const [reconciliationState, setReconciliationState] = useState<AuthorityState<BillingReconciliation>>(emptyAuthorityState);
   const [adjustment, setAdjustment] = useState<AdjustmentDraft>(emptyAdjustment);
-  const [refundReference, setRefundReference] = useState("");
+  const [refundReferences, setRefundReferences] = useState<Record<string, string>>({});
+  const [view, setView] = useState<BillingView>("pending");
+  const adjustmentPanel = useRef<HTMLDetailsElement>(null);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
   // INTENT: 退款结算数字（冲销多少、余额落到哪、有没有还回来）只在 toast 里闪一下就没了，
   //         而这正是财务事后要核对的那几个数。留在页面上直到运营自己关掉。
@@ -189,6 +197,7 @@ export function BillingWorkspace({
     // 回退到的那一页是哪一页，历史条目里没记；不知道就说不知道，把「上一页」置灰。
     const restore = () => {
       const restored = currentQuery();
+      setView(currentView());
       setQuery(restored);
       setQueryDraft(restored);
       setTrails(emptyTrails);
@@ -196,6 +205,7 @@ export function BillingWorkspace({
     };
     const refresh = () => {
       const refreshed = currentQuery();
+      setView(currentView());
       setQuery(refreshed);
       setQueryDraft(refreshed);
       setTrails(emptyTrails);
@@ -228,6 +238,24 @@ export function BillingWorkspace({
     setQueryDraft(next);
     setTrails(nextTrails);
     load(next);
+  }
+
+  function changeView(next: BillingView) {
+    window.history.pushState(null, "", billingWorkspaceUrl(window.location.pathname, window.location.search, { billingView: next }));
+    setView(next);
+  }
+
+  function selectAdjustmentUser(userId: string) {
+    setAdjustment({ userId, delta: "" });
+    if (adjustmentPanel.current) {
+      adjustmentPanel.current.open = true;
+      adjustmentPanel.current.scrollIntoView({ block: "nearest" });
+      adjustmentPanel.current.querySelector<HTMLInputElement>("input")?.focus();
+    }
+  }
+
+  function customerCell(userId: string, email: string) {
+    return <div className="min-w-0 space-y-1"><a className="block truncate font-medium underline" href={`/admin/customers/${encodeURIComponent(userId)}`} title={email}>{email || userId}</a><span className="block truncate font-mono text-xs text-[var(--ad-text-muted)]" title={userId}>{userId}</span>{canAdjust ? <button className="min-h-8 text-xs underline" onClick={() => selectAdjustmentUser(userId)} type="button">{t("Adjust Ledger")}</button> : null}</div>;
   }
 
   function apply(event: FormEvent<HTMLFormElement>) {
@@ -275,7 +303,7 @@ export function BillingWorkspace({
     if (!canReconcile || !isRefundAcknowledgementCandidate(checkout)) return;
     const checkoutId = text(checkout.id);
     const providerInvoiceId = text(checkout.providerSessionId);
-    const authorityReference = refundReference.trim();
+    const authorityReference = refundReferences[checkoutId]?.trim();
     if (!checkoutId || !providerInvoiceId || !authorityReference) return;
     const confirmationTarget =
       billingRefundAcknowledgementConfirmation(checkoutId);
@@ -284,7 +312,7 @@ export function BillingWorkspace({
       summary: (
         <span>
 
-          {t("Invoice")} {providerInvoiceId}{t(". This records an already-completed provider refund and closes the late-settlement exception; it does not issue a refund.")}
+          {text(checkout.userEmail) || text(checkout.userId)} · {checkoutId}<br />{t("Invoice")} {providerInvoiceId} · {authorityReference}{t(". This records an already-completed provider refund and closes the late-settlement exception; it does not issue a refund.")}
         </span>
       ),
       destructive: {
@@ -308,7 +336,7 @@ export function BillingWorkspace({
             confirmation: confirmationTarget,
           },
         );
-        setRefundReference("");
+        setRefundReferences((current) => { const next = { ...current }; delete next[checkoutId]; return next; });
         toast({
           tone: "success",
           title: t("Refund acknowledgement recorded for {id}", { id: checkoutId }),
@@ -453,15 +481,10 @@ export function BillingWorkspace({
     return {
       id: row.id || `subscription-${index}`,
       cells: [
-        row.id,
-        row.userId,
-        row.userEmail,
-        row.plan,
-        row.billingPeriod,
-        row.provider,
+        <div key="customer">{customerCell(row.userId, row.userEmail)}<details className="mt-2 text-xs"><summary className="cursor-pointer">{t("Details")}</summary><dl className="mt-2 space-y-1 break-all"><dt>{t("ID")}</dt><dd>{row.id}</dd><dt>{t("Provider")}</dt><dd>{row.provider}</dd><dt>{t("Cancel at end")}</dt><dd>{format.display(row.cancelAtPeriodEnd)}</dd></dl></details></div>,
+        <span key="plan">{row.plan}<span className="mt-1 block text-xs text-[var(--ad-text-muted)]">{valueLabel(row.billingPeriod)}</span></span>,
         valueLabel(row.status),
         format.dateTime(row.currentPeriodEnd),
-        format.display(row.cancelAtPeriodEnd),
         refund ? <RefundDetail key="refund" refund={refund} /> : "—",
         action,
       ],
@@ -472,64 +495,33 @@ export function BillingWorkspace({
   const ledgerRows: DataTableRow[] = ledger.map((row, index) => ({
     id: text(row.id) || `ledger-${index}`,
     cells: [
-      format.display(row.id),
-      format.display(row.userId),
-      format.display(row.userEmail),
+      <div key="customer">{customerCell(text(row.userId), text(row.userEmail))}<details className="mt-2 text-xs"><summary className="cursor-pointer">{t("Details")}</summary><p className="mt-2 break-all">{t("ID")}: {format.display(row.id)}</p><p className="break-all">{t("Source")}: {format.display(row.sourceId)}</p></details></div>,
       <span className="font-semibold tabular-nums" key="delta">{coinCell(row.delta, format, { signed: true })}</span>,
       <span className="tabular-nums" key="balance">{coinCell(row.balanceAfter, format)}</span>,
       text(row.reason) ? valueLabel(text(row.reason)) : "—",
-      format.display(row.sourceId),
       format.dateTime(row.createdAt),
     ],
   }));
   const reconciliation = reconciliationState.data;
-  const hasRefundCandidates =
-    reconciliation?.checkoutExceptions.some(isRefundAcknowledgementCandidate) ??
-    false;
-  const reconciliationRows: DataTableRow[] =
-    reconciliation?.checkoutExceptions.map((row, index) => ({
-      id: text(row.id) || `checkout-exception-${index}`,
-      cells: [
-        ...[
-          "id",
-          "userId",
-          "userEmail",
-          "plan",
-          "billingPeriod",
-          "provider",
-          "providerSessionId",
-          "providerInvoiceStatus",
-          "providerInvoiceAdditionalStatus",
-          "status",
-          "failureCode",
-          "providerLookupMissCount",
-          "providerAttemptedAt",
-          "providerLastLookupAt",
-          "updatedAt",
-        ].map((key) => format.display(row[key])),
-        ...(canReconcile
-          ? [
-              isRefundAcknowledgementCandidate(row) ? (
-                <button
-                  className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[var(--ad-border)] px-3 text-xs font-semibold disabled:opacity-50"
-                  disabled={!refundReference.trim()}
-                  key="refund-acknowledgement"
-                  onClick={() => requestRefundAcknowledgement(row)}
-                  type="button"
-                >
-                  <ReceiptText className="h-4 w-4" />
-
-                  {t("Acknowledge refund")}
-                </button>
-              ) : (
-                "—"
-              ),
-            ]
-          : []),
-      ],
-    })) ?? [];
-  const loading = ledgerState.loading || subscriptionState.loading || reconciliationState.loading;
-  const initiallyLoading = !ledgerState.data && !subscriptionState.data && !reconciliationState.data && loading;
+  const reconciliationRows: DataTableRow[] = reconciliation?.checkoutExceptions.map((row, index) => ({
+    id: text(row.id) || `checkout-exception-${index}`,
+    cells: [
+      <div key="customer">{customerCell(text(row.userId), text(row.userEmail))}<p className="mt-1 break-all font-mono text-xs">{text(row.id)}</p></div>,
+      <span key="plan">{format.display(row.plan)}<span className="mt-1 block text-xs">{valueLabel(text(row.billingPeriod))}</span></span>,
+      <div key="status" className="space-y-1 text-xs"><p>{valueLabel(text(row.status))}</p><p>{valueLabel(text(row.providerInvoiceStatus))}</p><details><summary className="cursor-pointer">{t("Details")}</summary><dl className="mt-2 space-y-1 break-all">{([
+        ["Provider", "provider"], ["Invoice", "providerSessionId"], ["Provider detail", "providerInvoiceAdditionalStatus"], ["Failure", "failureCode"], ["Misses", "providerLookupMissCount"], ["Attempted", "providerAttemptedAt"], ["Last lookup", "providerLastLookupAt"], ["Updated", "updatedAt"],
+      ] as const).map(([label, key]) => <div key={key}><dt className="text-[var(--ad-text-muted)]">{t(label)}</dt><dd>{format.display(row[key])}</dd></div>)}</dl></details></div>,
+      ...(canReconcile ? [isRefundAcknowledgementCandidate(row) ? (
+        <div className="min-w-48 space-y-2" key="refund-acknowledgement">
+          <p className="break-all text-xs">{t("Invoice")}: {text(row.providerSessionId)}</p>
+          <Field label="Provider refund reference" onChange={(reference) => setRefundReferences((current) => ({ ...current, [text(row.id)]: reference }))} placeholder={t("Refund transaction or provider case ID")} value={refundReferences[text(row.id)] ?? ""} />
+          <button className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[var(--ad-border)] px-3 text-xs font-semibold disabled:opacity-50" disabled={!refundReferences[text(row.id)]?.trim()} onClick={() => requestRefundAcknowledgement(row)} type="button"><ReceiptText className="h-4 w-4" />{t("Acknowledge refund")}</button>
+        </div>
+      ) : "—"] : []),
+    ],
+  })) ?? [];
+  const activeState = view === "pending" ? reconciliationState : view === "subscriptions" ? subscriptionState : ledgerState;
+  const initiallyLoading = !activeState.data && activeState.loading;
   return (
     <section aria-labelledby="billing-workspace-title" className="space-y-5">
       <div id="billing-workspace-title">
@@ -540,9 +532,7 @@ export function BillingWorkspace({
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--ad-text-muted)]" role="status">
         <div className="flex flex-wrap gap-x-3 gap-y-1">
-          <AuthorityFreshness label="Ledger" state={ledgerState} />
-          <AuthorityFreshness label="Subscriptions" state={subscriptionState} />
-          <AuthorityFreshness label="Reconciliation" state={reconciliationState} />
+          {view === "ledger" ? <AuthorityFreshness label="Ledger" state={ledgerState} /> : view === "subscriptions" ? <AuthorityFreshness label="Subscriptions" state={subscriptionState} /> : <AuthorityFreshness label="Reconciliation" state={reconciliationState} />}
         </div>
         <div className="flex flex-wrap gap-2">
           {!canAdjust ? <PermissionNotice permission="billing.ledger.adjust" /> : null}
@@ -551,67 +541,36 @@ export function BillingWorkspace({
         </div>
       </div>
 
-      <form className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 md:grid-cols-2 xl:grid-cols-[minmax(260px,1fr)_200px_220px_auto]" onSubmit={apply}>
+      <nav aria-label={t("Orders & Billing")} className="flex flex-wrap gap-1 border-b border-[var(--ad-border)]">
+        {([["pending", "Checkout exceptions"], ["subscriptions", "Subscriptions"], ["ledger", "Ledger"]] as const).map(([id, label]) => <button aria-current={view === id ? "page" : undefined} className={`min-h-11 border-b-2 px-4 text-sm font-semibold ${view === id ? "border-[var(--ad-ink)]" : "border-transparent text-[var(--ad-text-muted)]"}`} key={id} onClick={() => changeView(id)} type="button">{t(label)}</button>)}
+      </nav>
+
+      {view !== "pending" ? <form className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 md:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,220px)_auto]" onSubmit={apply}>
         <Field label={t("Search billing records")} onChange={(search) => setQueryDraft((current) => ({ ...current, search }))} placeholder={t("user, email, subscription, or source")} value={queryDraft.search} />
-        <Select label={t("Ledger reason")} onChange={(ledgerReason) => setQueryDraft((current) => ({ ...current, ledgerReason }))} options={["", "signup_bonus", "subscription_grant", "subscription_refund", "subscription_refund_restore", "generation_spend", "refund", "redeem", "referral", "admin_adjust"]} value={queryDraft.ledgerReason} />
-        <Select label={t("Subscription status")} onChange={(subscriptionStatus) => setQueryDraft((current) => ({ ...current, subscriptionStatus }))} options={["", "checkout_created", "checkout_completed", "active", "past_due", "canceled", "expired", "refund_pending", "refunded"]} value={queryDraft.subscriptionStatus} />
+        {view === "ledger" ? <Select label={t("Ledger reason")} onChange={(ledgerReason) => setQueryDraft((current) => ({ ...current, ledgerReason }))} options={["", "signup_bonus", "subscription_grant", "subscription_refund", "subscription_refund_restore", "generation_spend", "refund", "redeem", "referral", "admin_adjust"]} value={queryDraft.ledgerReason} /> : null}
+        {view === "subscriptions" ? <Select label={t("Subscription status")} onChange={(subscriptionStatus) => setQueryDraft((current) => ({ ...current, subscriptionStatus }))} options={["", "checkout_created", "checkout_completed", "active", "past_due", "canceled", "expired", "refund_pending", "refunded"]} value={queryDraft.subscriptionStatus} /> : null}
         <div className="flex items-end gap-2">
           <button className="min-h-11 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white" type="submit">{t("Apply")}</button>
           {filtered ? <button aria-label={t("Clear billing filters")} className="grid min-h-11 min-w-11 place-items-center rounded-md border border-[var(--ad-border)]" onClick={clearFilters} type="button"><X className="h-4 w-4" /></button> : null}
         </div>
-      </form>
-
-      {canAdjust ? (
-        <section aria-labelledby="billing-adjustment-title" className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div><h3 className="font-semibold" id="billing-adjustment-title">{t("Adjust Ledger")}</h3><p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t("Every signed delta requires a reason, target confirmation, unique idempotency key, and server-side audit.")}</p></div>
-            <button className="inline-flex min-h-11 items-center gap-2 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white disabled:opacity-50" disabled={!canAdjustLedger(adjustment)} onClick={requestAdjustment} type="button"><BadgeDollarSign className="h-4 w-4" />{t("Adjust")}</button>
-          </div>
-          <div className="mt-4 grid gap-3 md:grid-cols-2">
-            <Field label="Adjustment user ID" onChange={(userId) => setAdjustment((current) => ({ ...current, userId }))} value={adjustment.userId} />
-            <Field label="Adjustment delta" onChange={(delta) => setAdjustment((current) => ({ ...current, delta }))} value={adjustment.delta} />
-          </div>
-        </section>
-      ) : null}
-
-      {canReconcile && hasRefundCandidates ? (
-        <section
-          aria-labelledby="billing-reconciliation-resolution-title"
-          className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"
-        >
-          <h3
-            className="font-semibold"
-            id="billing-reconciliation-resolution-title"
-          >
-
-            {t("Late-settlement resolution")}
-          </h3>
-          <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-
-            {t("Enter the provider refund transaction or case reference, then acknowledge only after the external refund is complete.")}
-          </p>
-          <div className="mt-4 max-w-xl">
-            <Field
-              label="Provider refund reference"
-              onChange={setRefundReference}
-              placeholder={t("Refund transaction or provider case ID")}
-              value={refundReference}
-            />
-          </div>
-        </section>
-      ) : null}
+      </form> : null}
 
       {refundOutcome ? (
         <RefundSettlementNotice onDismiss={() => setRefundOutcome(null)} result={refundOutcome} />
       ) : null}
 
-      <AuthorityError onRetry={() => void loadLedger(query)} state={ledgerState} />
-      <AuthorityError onRetry={() => void loadSubscriptions(query)} state={subscriptionState} />
-      <AuthorityError onRetry={() => void loadReconciliation()} state={reconciliationState} />
+      {view === "ledger" ? <AuthorityError onRetry={() => void loadLedger(query)} state={ledgerState} /> : view === "subscriptions" ? <AuthorityError onRetry={() => void loadSubscriptions(query)} state={subscriptionState} /> : <AuthorityError onRetry={() => void loadReconciliation()} state={reconciliationState} />}
       {initiallyLoading ? <BillingLoading /> : (
         <>
-          {reconciliation ? <>
-          <div className="grid gap-px overflow-hidden rounded-lg border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-4">
+          {view === "pending" && reconciliation ? <>
+          <DataTable
+            caption="Checkout reconciliation exceptions"
+            empty={<EmptyState hint="No checkout intents currently require provider reconciliation." title={t("Checkout reconciliation is clear")} />}
+            headers={["User", "Plan", "Status", ...(canReconcile ? ["Action"] : [])]}
+            minimumWidthClassName="min-w-[640px]"
+            rows={reconciliationRows}
+          />
+          <details className="rounded-lg border border-[var(--ad-border)] p-4"><summary className="cursor-pointer text-sm font-semibold">{t("Reconciliation by reason")}</summary><div className="mt-3 space-y-3">          <div className="grid gap-px overflow-hidden rounded-lg border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-4">
             <Metric label="Net coins (window)" meta={t("{count} ledger entries", { count: format.count(reconciliation.totals.entries) })} value={format.dreamcoins(reconciliation.totals.net, { signed: true, unit: false })} />
             <Metric label="Active subscriptions" meta="status = active" value={format.count(reconciliation.activeSubscriptions)} />
             <Metric label="Checkout exceptions" meta="provider reconciliation queue" value={format.count(reconciliation.checkoutExceptions.length)} />
@@ -627,53 +586,12 @@ export function BillingWorkspace({
               format.display(row.count),
             ],
           }))} />
-          <DataTable
-            caption="Checkout reconciliation exceptions"
-            empty={<EmptyState hint="No checkout intents currently require provider reconciliation." title={t("Checkout reconciliation is clear")} />}
-            headers={[
-              "ID",
-              "User",
-              "Email",
-              "Plan",
-              "Period",
-              "Provider",
-              "Invoice",
-              "Provider status",
-              "Provider detail",
-              "Local status",
-              "Failure",
-              "Misses",
-              "Attempted",
-              "Last lookup",
-              "Updated",
-              ...(canReconcile ? ["Action"] : []),
-            ]}
-            // 15–16 列挤进默认的 min-w-[640px] 会把每列压到两三个字换一行；给足宽度后
-            // 表格在自己的 overflow-x-auto 容器里横向滚动，不再把页面推出视口。
-            minimumWidthClassName="min-w-[1680px]"
-            rows={reconciliationRows}
-          />
+</div></details>
           </> : null}
-          {subscriptionState.data ? <>
-          {/* SPEC: width 是**文本盒**宽度，单元格左右还各有 1rem 内边距，真实列宽 ≈ width + 2rem；
-              十一列合计 1456px，就是下面的 minimumWidthClassName。
-              INTENT: 这里原来只给了总宽、没给每列宽度，浏览器就按内容自由分配：邮箱一列吃掉大半，
-              「状态」「周期结束」「全额退款」各剩两个字的位置——中文竖排成「启/用」「周/期/结/束」
-              「全/额/退/款」，日期还被折成「20/年/11/14」。 */}
+          {view === "subscriptions" && subscriptionState.data ? <>
           <DataTable caption="Customer subscriptions" empty={<BillingEmpty filtered={Boolean(query.search || query.subscriptionStatus)} kind="subscriptions" onClear={clearFilters} />} headers={[
-            { label: "ID", truncate: true, width: "7rem" },
-            { label: "User", truncate: true, width: "7rem" },
-            { label: "Email", truncate: true, width: "11rem" },
-            { label: "Plan", truncate: true, width: "4rem" },
-            { label: "Period", truncate: true, width: "4.5rem" },
-            { label: "Provider", truncate: true, width: "4rem" },
-            { label: "Status", truncate: true, width: "3.5rem" },
-            { label: "Period end", truncate: true, width: "9.5rem" },
-            { label: "Cancel at end", truncate: true, width: "5.5rem" },
-            { label: "Refund state", truncate: true, width: "6rem" },
-            // 「全额退款」四个汉字 + 图标 + 按钮内边距实测 ~112px；6rem 时它会折成两行。
-            { label: "Action", width: "7rem" },
-          ]} minimumWidthClassName="min-w-[1456px]" rows={subscriptionRows} stickyLastColumn />
+            { label: "User", width: "12rem" }, { label: "Plan", width: "6rem" }, "Status", "Period end", "Refund state", "Action",
+          ]} minimumWidthClassName="min-w-[800px]" rows={subscriptionRows} stickyLastColumn />
           <ListPagination
             cursor={query.subscriptionCursor}
             loading={subscriptionState.loading}
@@ -683,18 +601,10 @@ export function BillingWorkspace({
             trail={trails.subscription}
           />
           </> : null}
-          {ledgerState.data ? <>
+          {view === "ledger" && ledgerState.data ? <>
           <DataTable caption="Customer ledger" empty={<BillingEmpty filtered={Boolean(query.search || query.ledgerReason)} kind="ledger" onClear={clearFilters} />} headers={[
-            { label: "ID", truncate: true, width: "7rem" },
-            { label: "User", truncate: true, width: "7rem" },
-            { label: "Email", truncate: true, width: "11rem" },
-            // 两个金额列右对齐（DataTable 的 right 自带 tabular-nums，数字能上下对齐着扫）。
-            { label: "Delta", align: "right", width: "5rem" },
-            { label: "Balance after", align: "right", width: "5.5rem" },
-            { label: "Reason", truncate: true, width: "7rem" },
-            { label: "Source", truncate: true, width: "6rem" },
-            { label: "Created", truncate: true, width: "9.5rem" },
-          ]} minimumWidthClassName="min-w-[1184px]" rows={ledgerRows} />
+            { label: "User", width: "12rem" }, { label: "Delta", align: "right" }, { label: "Balance after", align: "right" }, "Reason", "Created",
+          ]} minimumWidthClassName="min-w-[720px]" rows={ledgerRows} />
           <ListPagination
             cursor={query.ledgerCursor}
             loading={ledgerState.loading}
@@ -706,6 +616,20 @@ export function BillingWorkspace({
           </> : null}
         </>
       )}
+      {canAdjust ? (
+        <details ref={adjustmentPanel} aria-labelledby="billing-adjustment-title" className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
+          <summary className="cursor-pointer text-sm font-semibold" id="billing-adjustment-title">{t("Adjust Ledger")}</summary>
+          <div className="mt-3 flex flex-wrap items-start justify-between gap-3">
+            <div><p className="text-xs text-[var(--ad-text-muted)]">{t("Every signed delta requires a reason, target confirmation, unique idempotency key, and server-side audit.")}</p></div>
+            <button className="inline-flex min-h-11 items-center gap-2 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white disabled:opacity-50" disabled={!canAdjustLedger(adjustment)} onClick={requestAdjustment} type="button"><BadgeDollarSign className="h-4 w-4" />{t("Adjust")}</button>
+          </div>
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
+            <Field label="Adjustment user ID" onChange={(userId) => setAdjustment({ userId, delta: "" })} value={adjustment.userId} />
+            <Field label="Adjustment delta" onChange={(delta) => setAdjustment((current) => ({ ...current, delta }))} value={adjustment.delta} />
+          </div>
+        </details>
+      ) : null}
+
       {confirmation ? <ConfirmDialog onClose={() => setConfirmation(null)} spec={confirmation} /> : null}
     </section>
   );

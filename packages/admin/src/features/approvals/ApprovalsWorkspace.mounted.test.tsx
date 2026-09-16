@@ -83,7 +83,7 @@ describe("ApprovalsWorkspace decision evidence", () => {
     await mount([pendingApproval]);
     await waitUntil(() => container.textContent?.includes(approvalId) === true);
 
-    const details = container.querySelector("details");
+    const details = container.querySelector('details[aria-label="Parameters"]');
     expect(details?.textContent).toContain("2 parameters");
     expect(details?.textContent).toContain("delta");
     expect(details?.textContent).toContain("1000000");
@@ -103,6 +103,26 @@ describe("ApprovalsWorkspace decision evidence", () => {
     expect(dialog.textContent).toContain("This cannot be undone.");
   });
 
+  it("labels known actions and links supported targets without fabricating unknown routes", async () => {
+    await mount([
+      { ...pendingApproval, action: "billing.ledger.adjust" },
+      { ...pendingApproval, id: "pricing-request", action: "config.pricing.publish", targetType: "pricing_rule", targetId: "rule/2" },
+      { ...pendingApproval, id: "offer-request", action: "config.coin_offer.publish", targetType: "coin_offer" },
+      { ...pendingApproval, id: "unknown-request", action: "future.operation", targetType: "future_target", targetId: "unknown-target" },
+    ]);
+    expect(container.textContent).toContain("Adjust Ledger");
+    expect(container.textContent).toContain("1000000 Dreamcoins");
+    expect(container.textContent).toContain("Publish pricing rule");
+    expect(container.textContent).toContain("Publish coin offer");
+    expect(container.textContent).toContain("future.operation");
+    expect(container.querySelector('a[href="/admin/customers/user-7"]')).not.toBeNull();
+    expect(container.querySelector('a[href="/admin/growth/offers?view=pricing&pricingSearch=rule%2F2"]')).not.toBeNull();
+    expect([...container.querySelectorAll("a")].some(a => a.href.includes("unknown-target"))).toBe(false);
+    const technical = [...container.querySelectorAll("details")].find(detail => detail.querySelector("summary")?.textContent === "Engineering details");
+    expect(technical?.textContent).toContain("billing.ledger.adjust");
+    expect(technical?.textContent).toContain("billing.ledger.write");
+  });
+
   it("says so plainly when a request carries no parameters and no reason", async () => {
     await mount([
       { ...pendingApproval, payload: {}, reason: null },
@@ -110,7 +130,7 @@ describe("ApprovalsWorkspace decision evidence", () => {
     await waitUntil(() => container.textContent?.includes(approvalId) === true);
 
     expect(container.textContent).toContain("No parameters");
-    expect(container.querySelector("details")).toBeNull();
+    expect(container.querySelector('details[aria-label="Parameters"]')).toBeNull();
 
     await click(findButton("Approve", container));
     const dialog = await waitForDialog();
@@ -130,7 +150,16 @@ describe("ApprovalsWorkspace decision evidence", () => {
     await waitUntil(() => container.textContent?.includes(approvalId) === true);
 
     expect(container.textContent).toContain("operator-b");
+    expect(container.querySelector("tbody")?.textContent).toContain("approved");
     expect(container.textContent).not.toContain("Awaiting decision");
+    expect(findButton("Approve", container)).toBeNull();
+  });
+
+  it("does not call a canceled request awaiting a decision", async () => {
+    await mount([{ ...pendingApproval, status: "canceled" }]);
+    expect(container.querySelector("tbody")?.textContent).toContain("canceled");
+    expect(container.textContent).not.toContain("Awaiting decision");
+    expect(findButton("Approve", container)).toBeNull();
   });
 
   it("offers a way out of a filter that matched nothing", async () => {

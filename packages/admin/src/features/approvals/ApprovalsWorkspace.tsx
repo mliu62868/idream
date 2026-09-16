@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { AdminText, useAdminI18n } from "@/components/admin/i18n";
 import { Check, Loader2, X } from "lucide-react";
 import type { FormEvent } from "react";
@@ -43,6 +44,7 @@ type ListResponse = { items: Row[]; pageInfo?: PageInfo; enforcementEnabled?: bo
 type ApprovalCase = {
   id: string;
   action: string;
+  status: string;
   permissionKey: string;
   targetType: string;
   targetId: string;
@@ -58,6 +60,7 @@ function toApprovalCase(row: Row, index: number): ApprovalCase {
   return {
     id: text(row.id) || `approval-${index}`,
     action: text(row.action),
+    status: text(row.status),
     permissionKey: text(row.permissionKey),
     targetType: text(row.targetType),
     targetId: text(row.targetId),
@@ -228,7 +231,7 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
         {!canReview ? <PermissionNotice permission="admin.approval.review" /> : null}
       </div>
       <form
-        className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 md:grid-cols-[minmax(280px,1fr)_220px_auto]"
+        className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 sm:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_180px_auto]"
         onSubmit={apply}
       >
         <Field
@@ -310,19 +313,8 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
       ) : data ? (
         <DataTable
           caption="Approval requests"
-          headers={[
-            "ID",
-            "Action",
-            "Permission",
-            "Target",
-            "Requested by",
-            "Reason",
-            "Parameters",
-            "Created",
-            "Decided",
-            "Actions",
-          ]}
-          minimumWidthClassName="min-w-[1500px]"
+          headers={["Request", "Target", "Requested by", "Reason", "Actions"]}
+          minimumWidthClassName="min-w-[880px]"
           rows={approvalRows(rows, canReview, confirmDecision, format)}
           stickyLastColumn
         />
@@ -365,20 +357,12 @@ function approvalRows(
     return {
       id: entry.id,
       cells: [
-        entry.id,
-        format.display(row.action),
-        format.display(row.permissionKey),
+        <RequestCell key="request" entry={entry} />,
         <TargetCell key="target" id={entry.targetId} type={entry.targetType} />,
-        format.display(row.requestedById),
-        format.display(row.reason),
-        <PayloadCell entries={entry.payload} key="payload" />,
-        format.dateTime(row.createdAt),
-        <DecidedCell
-          at={entry.decidedAt}
-          by={entry.approvedById}
-          key="decided"
-        />,
-        canReview ? (
+        <div key="requester" className="space-y-1"><span className="block break-all">{format.display(row.requestedById)}</span><span className="block text-xs text-[var(--ad-text-muted)]">{format.dateTime(row.createdAt)}</span></div>,
+        <div key="reason" className="max-w-xs space-y-2 whitespace-normal"><p>{format.display(row.reason)}</p><PayloadCell entries={entry.payload} /></div>,
+        <div key="decision" className="space-y-2"><DecidedCell at={entry.decidedAt} by={entry.approvedById} status={entry.status} />{
+        canReview && row.status === "pending" ? (
           <div className="flex gap-1">
             <Action
               icon={<Check className="h-4 w-4" />}
@@ -394,27 +378,48 @@ function approvalRows(
         ) : (
           // approvalRows 不是组件，取不到 hook；AdminText 是既有的 t() 包装。
           <AdminText key="read-only" text="Read only" />
-        ),
+        )}</div>,
       ],
     };
   });
 }
 
+// Only label authority actions whose meaning is known. Unknown actions stay verbatim.
+function actionLabel(action: string) {
+  switch (action) {
+    case "billing.ledger.adjust": return "Adjust Ledger";
+    case "config.pricing.publish": return "Publish pricing rule";
+    case "config.coin_offer.publish": return "Publish coin offer";
+    default: return action || "—";
+  }
+}
+
+function RequestCell({ entry }: { entry: ApprovalCase }) {
+  const { t, value } = useAdminI18n();
+  const delta = entry.action === "billing.ledger.adjust" ? entry.payload.find(([key]) => key === "delta")?.[1] : undefined;
+  return <div className="max-w-xs space-y-1 whitespace-normal">
+    <p className="font-semibold">{t(actionLabel(entry.action))}</p>
+    <p className="text-xs text-[var(--ad-text-muted)]">{value(entry.status || "unknown")}</p>
+    {delta !== undefined ? <p className="font-mono text-sm">{delta} {t("Dreamcoins")}</p> : null}
+    <details className="text-xs text-[var(--ad-text-muted)]"><summary className="cursor-pointer">{t("Engineering details")}</summary><dl className="mt-2 space-y-1 break-all"><div><dt>{t("ID")}</dt><dd>{entry.id}</dd></div><div><dt>{t("Action")}</dt><dd>{entry.action || "—"}</dd></div><div><dt>{t("Permission")}</dt><dd>{entry.permissionKey || "—"}</dd></div></dl></details>
+  </div>;
+}
+
 function TargetCell({ id, type }: { id: string; type: string }) {
-  const { value } = useAdminI18n();
+  const { t, value } = useAdminI18n();
   if (!id && !type) return <>—</>;
-  return (
-    <span className="block">
-      <span className="block text-xs uppercase tracking-[0.05em] text-[var(--ad-text-muted)]">
-        {type ? value(type) : "—"}
-      </span>
-      <span className="block">{id || "—"}</span>
-    </span>
-  );
+  // These destinations consume the actual ID. Coin offers only support a workspace entry.
+  const href = !id ? null : type === "user" ? `/admin/customers/${encodeURIComponent(id)}`
+    : type === "pricing_rule" ? `/admin/growth/offers?view=pricing&pricingSearch=${encodeURIComponent(id)}` : null;
+  return <span className="block max-w-48 whitespace-normal">
+    <span className="block text-xs text-[var(--ad-text-muted)]">{type ? value(type) : "—"}</span>
+    {href ? <Link className="block break-all underline underline-offset-4" href={href}>{id}</Link> : <span className="block break-all">{id || "—"}</span>}
+    {type === "coin_offer" ? <Link className="mt-1 block text-xs underline" href="/admin/pricing#coin-offers">{t("Dreamcoin offers")}</Link> : null}
+  </span>;
 }
 
 // SPEC: 列表里参数折起来，标题写「几项」；展开是逐字的键值对。
-// INTENT: 十列宽的表格塞不下任意形状的 JSON，但「有没有参数、几项」必须一眼可见——
+// INTENT: 紧凑表格不直接铺开任意形状的 JSON，但「有没有参数、几项」必须一眼可见——
 //         零参数和「有五项没人看」是两种完全不同的风险。
 function PayloadCell({ entries }: { entries: Array<[string, string]> }) {
   const { t } = useAdminI18n();
@@ -425,7 +430,7 @@ function PayloadCell({ entries }: { entries: Array<[string, string]> }) {
       </span>
     );
   return (
-    <details className="max-w-xs">
+    <details aria-label={t("Parameters")} className="max-w-xs">
       <summary className="cursor-pointer rounded text-xs underline underline-offset-4 focus-visible:outline focus-visible:outline-2">
         {t("{count} parameters", { count: entries.length })}
       </summary>
@@ -447,10 +452,10 @@ function ParameterList({ entries }: { entries: Array<[string, string]> }) {
   );
 }
 
-function DecidedCell({ at, by }: { at: string | null; by: string | null }) {
+function DecidedCell({ at, by, status }: { at: string | null; by: string | null; status: string }) {
   const { t } = useAdminI18n();
   const format = useAdminFormat();
-  if (!at && !by) return <span className="text-[var(--ad-text-muted)]">{t("Awaiting decision")}</span>;
+  if (!at && !by) return status === "pending" ? <span className="text-[var(--ad-text-muted)]">{t("Awaiting decision")}</span> : null;
   return (
     <span className="block">
       <span className="block">{by ?? "—"}</span>
@@ -466,6 +471,7 @@ function ApprovalImpact({ entry }: { entry: ApprovalCase }) {
   const { t, value } = useAdminI18n();
   return (
     <div className="space-y-2">
+      <p className="font-semibold">{t(actionLabel(entry.action))}</p>
       <Line label={t("Action")} value={entry.action || "—"} />
       <Line
         label={t("Target")}
@@ -536,10 +542,10 @@ function Field({
 }) {
   const { t } = useAdminI18n();
   return (
-    <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
+    <label className="grid min-w-0 gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
       {t(label)}
       <input
-        className="min-h-11 rounded-md border bg-[var(--ad-surface)] px-3 text-sm"
+        className="min-h-11 min-w-0 rounded-md border bg-[var(--ad-surface)] px-3 text-sm"
         onChange={(event) => onChange(event.target.value)}
         role="searchbox"
         value={value}
@@ -561,10 +567,10 @@ function Select({
 }) {
   const { t, value: enumLabel } = useAdminI18n();
   return (
-    <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
+    <label className="grid min-w-0 gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
       {t(label)}
       <select
-        className="min-h-11 rounded-md border bg-[var(--ad-surface)] px-3 text-sm"
+        className="min-h-11 min-w-0 rounded-md border bg-[var(--ad-surface)] px-3 text-sm"
         onChange={(event) => onChange(event.target.value)}
         value={value}
       >

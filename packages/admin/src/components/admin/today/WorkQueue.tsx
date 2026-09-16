@@ -150,7 +150,7 @@ export function WorkQueue({
   };
 
   return (
-    <section className="min-w-0 grid items-start gap-3 lg:grid-cols-[minmax(280px,0.85fr)_minmax(320px,1fr)]" data-testid={`today-queue-${queueName.toLowerCase().replaceAll(" ", "-")}`}>
+    <section className="min-w-0 grid items-start gap-3 lg:grid-cols-[minmax(0,1.2fr)_minmax(320px,1fr)]" data-testid={`today-queue-${queueName.toLowerCase().replaceAll(" ", "-")}`}>
       <div className={`${mobilePreview && preview ? "hidden lg:block" : ""} min-w-0 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]`}>
       {/* 空队列压成一行：它的说明文字对"这里没有活"没有增量，却要在首屏占掉一条工作项的位置。 */}
       <div className={`px-4 py-3 ${queue.items.length > 0 ? "border-b border-[var(--ad-border)]" : ""}`}>
@@ -197,7 +197,7 @@ export function WorkQueue({
         </div>
       ) : null}
       {queue.items.length === 0 ? null : (
-        <div className="divide-y divide-[var(--ad-border)] lg:max-h-[calc(100dvh-360px)] lg:overflow-y-auto">
+        <div className="divide-y divide-[var(--ad-border)] lg:max-h-[calc(100dvh-300px)] lg:overflow-y-auto">
           {groups.map((group) => group.items.length === 1 ? (
             <WorkItem
               {...itemProps}
@@ -417,7 +417,7 @@ function WorkItem({ density, detail, onPreview, previewKey, item, locale, now, o
       [t("SLA"), item.slaDueAt ? formatDateTime(item.slaDueAt, locale) : t("No deadline")],
       [t("Verification"), t(item.verificationState)],
     ];
-    return <article className="flex min-h-[650px] flex-col rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-6 xl:p-8" data-testid="today-preview" aria-label={t("Work preview")}>
+    return <article className="flex flex-col rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5" data-testid="today-preview" aria-label={t("Work preview")}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <h2 className="min-w-0 break-words text-xl font-semibold leading-snug text-[var(--ad-ink)]">{title}</h2>
         <SeverityChip severity={item.severity} />
@@ -428,18 +428,18 @@ function WorkItem({ density, detail, onPreview, previewKey, item, locale, now, o
         {onToggleSelected ? <button className="inline-flex min-h-10 items-center gap-2 text-sm disabled:opacity-40" disabled={busy} onClick={() => void setPreference({ watching: !watchedQueue }, watchedQueue ? "Removed from Watching" : "Added to Watching")} type="button"><Eye className="h-4 w-4" />{t(watchedQueue ? "Unwatch" : "Watch")}</button> : null}
         {actions}
       </div>
-      <div className="my-6 border-t border-[var(--ad-border)]" />
-      <h3 className="text-sm font-semibold">{t("Work details")}</h3>
-      <dl className="mt-5 grid grid-cols-[auto_minmax(0,1fr)] gap-x-5 gap-y-4 text-sm leading-6">{facts.map(([label, value]) => <div className="contents" key={label}><dt className="text-[var(--ad-text-muted)]">{label}</dt><dd className="break-words [overflow-wrap:anywhere]">{value}</dd></div>)}</dl>
-      <div className="mt-auto pt-8">
-        <p className="mb-4 text-sm leading-6 text-[var(--ad-text-muted)]">{todayOperationalText(item.recommendedAction, locale)}</p>
-        <Link className="flex min-h-12 items-center justify-center gap-2 rounded-md bg-[var(--ad-ink)] px-5 text-sm font-semibold text-white focus-visible:outline-2 focus-visible:outline-offset-4" href={item.deepLink}>{t("Open source record")}<ArrowRight className="h-4 w-4" /></Link>
-        <p className="mt-3 text-center text-xs text-[var(--ad-text-muted)]">{t("Continue in the original workspace.")}</p>
+      <div className="mt-5">
+        <p className="mb-3 text-sm text-[var(--ad-text-muted)]">{todayOperationalText(item.recommendedAction, locale)}</p>
+        <Link className="flex min-h-11 items-center justify-center gap-2 rounded-md bg-[var(--ad-ink)] px-5 text-sm font-semibold text-white" href={item.deepLink}>{t("Open source record")}<ArrowRight className="h-4 w-4" /></Link>
       </div>
+      <details className="mt-5 border-t border-[var(--ad-border)] pt-3">
+        <summary className="cursor-pointer text-sm font-semibold">{t("Work details")}</summary>
+        <dl className="mt-3 grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 text-sm leading-6">{facts.map(([label, value]) => <div className="contents" key={label}><dt className="text-[var(--ad-text-muted)]">{label}</dt><dd className="break-words [overflow-wrap:anywhere]">{value}</dd></div>)}</dl>
+      </details>
     </article>;
   }
 
-  return <div className={`flex items-start gap-3 px-4 ${density === "compact" ? "py-4" : "py-6"} ${previewKey === workItemKey(item) ? "bg-[var(--ad-red-bg)]/50" : "hover:bg-black/[0.025]"}`}>
+  return <div className={`flex items-start gap-3 px-4 ${density === "compact" ? "py-3" : "py-5"} ${previewKey === workItemKey(item) ? "bg-[var(--ad-red-bg)]/50" : "hover:bg-black/[0.025]"}`}>
     {onToggleSelected ? <input aria-label={t("Select {title}", { title })} checked={selected} className="mt-1 h-4 w-4 shrink-0" onChange={(event) => onToggleSelected(item, event.target.checked)} type="checkbox" /> : null}
     <button data-today-preview aria-pressed={previewKey === workItemKey(item)} aria-label={t("Preview {title}", { title })} className="min-w-0 flex-1 text-left focus-visible:outline-2 focus-visible:outline-offset-4" onClick={() => onPreview?.(item)} type="button">
       <span className="flex items-start gap-2"><SeverityChip severity={item.severity} /><span className="min-w-0 break-words text-sm font-semibold leading-5">{item.pinned ? <Pin aria-hidden className="mr-1 inline h-3 w-3" /> : null}{title}</span></span>

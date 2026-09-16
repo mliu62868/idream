@@ -56,6 +56,8 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
   const [errorCause, setErrorCause] = useState<unknown>(undefined);
   const [refreshedAt, setRefreshedAt] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
+  const [coinOffersOpen, setCoinOffersOpen] = useState(false);
+  const coinOffersRef = useRef<HTMLDetailsElement>(null);
   const [editing, setEditing] = useState<PricingEdit | null>(null);
   const requestGate = useRef(createLatestRequestGate());
 
@@ -99,6 +101,19 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
       window.removeEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, restore);
     };
   }, [load]);
+
+  useEffect(() => {
+    const restore = () => setCoinOffersOpen(window.location.hash === "#coin-offers");
+    restore();
+    window.addEventListener("hashchange", restore);
+    return () => window.removeEventListener("hashchange", restore);
+  }, []);
+
+  useEffect(() => {
+    if (coinOffersOpen && !loading && window.location.hash === "#coin-offers") {
+      coinOffersRef.current?.scrollIntoView({ block: "start" });
+    }
+  }, [coinOffersOpen, loading]);
 
   // SPEC: 任何改变结果集的动作都回到第一页 —— 所以 trail 默认清空，只有翻页自己传轨迹。
   function navigate(next: PricingQuery, mode: "push" | "replace" = "push", trail: string[] = []) {
@@ -222,17 +237,15 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
   return (
     <section aria-labelledby="pricing-workspace-title" className="space-y-5">
       <div id="pricing-workspace-title"><PageHeader purpose={t("Version, publish, and roll back customer-facing generation prices while keeping every decision auditable.")} title={t("Pricing")} /></div>
-      <CoinOffersPanel canWrite={canWrite} />
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--ad-text-muted)]" role="status"><span>{refreshedAt ? <>{t("Refreshed")} <time dateTime={refreshedAt}>{format.time(refreshedAt)}</time></> : null}</span>{!canWrite ? <PermissionNotice permission="config.pricing.write" /> : null}</div>
 
-      <form className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 md:grid-cols-2 xl:grid-cols-[minmax(240px,1fr)_180px_180px_auto]" onSubmit={apply}>
+      <form className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 md:grid-cols-2 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_auto]" onSubmit={apply}>
         <Field label="Search prices" onChange={(search) => setQueryDraft((current) => ({ ...current, search }))} placeholder={t("rule key, label, or ID")} value={queryDraft.search} />
         <Select label="Mode" onChange={(mode) => setQueryDraft((current) => ({ ...current, mode }))} optionLabel={valueLabel} options={["", "image", "video", "voice"]} value={queryDraft.mode} />
         <Select label="Status" onChange={(status) => setQueryDraft((current) => ({ ...current, status }))} optionLabel={valueLabel} options={["", "draft", "active", "archived"]} value={queryDraft.status} />
         <div className="flex items-end gap-2"><button className="min-h-11 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white" type="submit">{t("Apply")}</button>{filtered ? <button aria-label={t("Clear pricing filters")} className="grid min-h-11 min-w-11 place-items-center rounded-md border border-[var(--ad-border)]" onClick={clearFilters} type="button"><X className="h-4 w-4" /></button> : null}</div>
       </form>
 
-      {canWrite ? <PricingDraftForm busy={writing} draft={pricingDraft} onChange={setPricingDraft} onCreate={createDraft} /> : null}
       {editing ? <PricingEditForm busy={writing} edit={editing} onCancel={() => setEditing(null)} onChange={setEditing} onSave={saveEdit} /> : null}
       {error ? <AuthorityRequestError cause={errorCause} message={error} onRetry={() => void load(query)} snapshotAt={rows ? refreshedAt : null} /> : null}
       {loading && rows === null ? <PricingLoading /> : rows?.length === 0 ? <EmptyState action={filtered ? <button className="min-h-11 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" onClick={clearFilters} type="button">{t("Clear filters")}</button> : undefined} hint={filtered ? "The complete authority query returned no pricing versions." : "Create a versioned pricing draft before publishing a customer-facing price."} title={filtered ? "No pricing rules match these filters" : "No pricing rules exist yet"} /> : rows ? <PricingTable canWrite={canWrite} onAction={confirmVersionAction} onEdit={(row) => setEditing(pricingEditFromRow(row))} rows={rows} /> : null}
@@ -251,6 +264,14 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
           rowCount={rows.length}
         />
       ) : null}
+      {canWrite ? <details className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
+        <summary className="cursor-pointer p-4 text-sm font-semibold">{t("Create Pricing Rule Draft")}</summary>
+        <PricingDraftForm busy={writing} draft={pricingDraft} onChange={setPricingDraft} onCreate={createDraft} />
+      </details> : null}
+      <details ref={coinOffersRef} id="coin-offers" open={coinOffersOpen} onToggle={(event) => setCoinOffersOpen(event.currentTarget.open)} className="scroll-mt-24 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
+        <summary className="cursor-pointer p-4 text-sm font-semibold">{t("Dreamcoin offers")}</summary>
+        <div className="p-4 pt-0"><CoinOffersPanel canWrite={canWrite} /></div>
+      </details>
       {confirmation ? <ConfirmDialog onClose={() => setConfirmation(null)} spec={confirmation} /> : null}
     </section>
   );
@@ -258,7 +279,7 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
 
 function PricingDraftForm({ busy, draft, onChange, onCreate }: { busy: boolean; draft: PricingDraft; onChange: (draft: PricingDraft) => void; onCreate: () => Promise<void> }) {
   const { t } = useAdminI18n();
-  return <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" aria-labelledby="pricing-draft-title"><div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-semibold" id="pricing-draft-title">{t("Create Pricing Rule Draft")}</h3><p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t("Draft → publish archives the previous active version; rollback restores the previous authority.")}</p></div><button className="inline-flex min-h-11 items-center gap-2 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white disabled:opacity-50" disabled={busy || !canCreatePricingRule(draft)} onClick={() => void onCreate()} type="button">{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}{t("Create Draft")}</button></div><div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-7"><Field label="Rule Key" onChange={(ruleKey) => onChange({ ...draft, ruleKey })} value={draft.ruleKey} /><Field label="Label" onChange={(label) => onChange({ ...draft, label })} value={draft.label} /><Select label="Mode" onChange={(mode) => onChange({ ...draft, mode: mode as PricingDraft["mode"] })} options={["image", "video", "voice"]} value={draft.mode} /><Field label="Base Cost (coins)" onChange={(baseCost) => onChange({ ...draft, baseCost })} value={draft.baseCost} /><Field label="Multiplier" onChange={(multiplier) => onChange({ ...draft, multiplier })} value={draft.multiplier} /><Field label="Reason (≥3)" onChange={(reason) => onChange({ ...draft, reason })} value={draft.reason} /><Field label="Confirm rule key" onChange={(confirmation) => onChange({ ...draft, confirmation })} value={draft.confirmation} /></div></section>;
+  return <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" aria-labelledby="pricing-draft-title"><div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-semibold" id="pricing-draft-title">{t("Create Pricing Rule Draft")}</h3><p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t("Draft → publish archives the previous active version; rollback restores the previous authority.")}</p></div><button className="inline-flex min-h-11 items-center gap-2 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white disabled:opacity-50" disabled={busy || !canCreatePricingRule(draft)} onClick={() => void onCreate()} type="button">{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}{t("Create Draft")}</button></div><div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3"><Field label="Rule Key" onChange={(ruleKey) => onChange({ ...draft, ruleKey })} value={draft.ruleKey} /><Field label="Label" onChange={(label) => onChange({ ...draft, label })} value={draft.label} /><Select label="Mode" onChange={(mode) => onChange({ ...draft, mode: mode as PricingDraft["mode"] })} options={["image", "video", "voice"]} value={draft.mode} /><Field label="Base Cost (coins)" onChange={(baseCost) => onChange({ ...draft, baseCost })} value={draft.baseCost} /><Field label="Multiplier" onChange={(multiplier) => onChange({ ...draft, multiplier })} value={draft.multiplier} /><Field label="Reason (≥3)" onChange={(reason) => onChange({ ...draft, reason })} value={draft.reason} /><Field label="Confirm rule key" onChange={(confirmation) => onChange({ ...draft, confirmation })} value={draft.confirmation} /></div></section>;
 }
 
 function PricingEditForm({ busy, edit, onCancel, onChange, onSave }: { busy: boolean; edit: PricingEdit; onCancel: () => void; onChange: (edit: PricingEdit) => void; onSave: () => Promise<void> }) {
@@ -292,39 +313,39 @@ function PricingEditForm({ busy, edit, onCancel, onChange, onSave }: { busy: boo
 }
 
 function PricingTable({ canWrite, onAction, onEdit, rows }: { canWrite: boolean; onAction: (row: PricingRecord, action: "publish" | "rollback") => void; onEdit: (row: PricingRecord) => void; rows: PricingRecord[] }) {
-  const { value: valueLabel } = useAdminI18n();
+  const { t, value: valueLabel } = useAdminI18n();
   const format = useAdminFormat();
   const tableRows: DataTableRow[] = rows.map((row, index) => {
     const status = text(row.status);
     const actions = canWrite && status === "draft"
       ? <div className="flex flex-wrap gap-2"><ActionButton icon={<Pencil className="h-4 w-4" />} label="Edit" onClick={() => onEdit(row)} /><ActionButton icon={<UploadCloud className="h-4 w-4" />} label="Publish" onClick={() => onAction(row, "publish")} /></div>
       : canWrite && status === "active" ? <ActionButton icon={<RotateCcw className="h-4 w-4" />} label="Rollback" onClick={() => onAction(row, "rollback")} /> : "—";
-    // INTENT: 「哪一版在售」是这张表唯一要一眼看出来的东西，所以在售那一行的状态加粗。
-    return { id: text(row.id) || `pricing-${index}`, cells: [<code key="id">{text(row.id) || "—"}</code>, text(row.ruleKey) || "—", text(row.label) || "—", text(row.mode) ? valueLabel(text(row.mode)) : "—", <span className="tabular-nums" key="base">{format.display(row.baseCost)}</span>, <span className="tabular-nums" key="multiplier">{format.display(row.multiplier)}</span>, status ? <span className={status === "active" ? "font-semibold" : undefined} key="status">{valueLabel(status)}</span> : "—", format.display(row.version), format.dateTime(row.effectiveFrom), format.dateTime(row.publishedAt), actions] };
+    return { id: text(row.id) || `pricing-${index}`, cells: [
+      <div className="min-w-0 space-y-1" key="rule">
+        <span className="block break-words font-semibold">{text(row.label) || text(row.ruleKey) || "—"}</span>
+        <span className="block break-all text-xs text-[var(--ad-text-muted)]">{text(row.ruleKey)} · {t("Version")} {format.display(row.version)}</span>
+        <details className="text-xs text-[var(--ad-text-muted)]">
+          <summary className="cursor-pointer py-1">{t("Technical details")}</summary>
+          <dl className="space-y-1 py-2">
+            <div><dt>{t("ID")}</dt><dd className="break-all font-mono">{text(row.id) || "—"}</dd></div>
+            <div><dt>{t("Effective")}</dt><dd>{format.dateTime(row.effectiveFrom)}</dd></div>
+            <div><dt>{t("Published")}</dt><dd>{format.dateTime(row.publishedAt)}</dd></div>
+          </dl>
+        </details>
+      </div>,
+      text(row.mode) ? valueLabel(text(row.mode)) : "—",
+      <span className="tabular-nums whitespace-nowrap" key="price">{format.display(row.baseCost)} × {format.display(row.multiplier)}</span>,
+      status ? <span className={status === "active" ? "font-semibold" : undefined} key="status">{valueLabel(status)}</span> : "—",
+      actions,
+    ] };
   });
-  // SPEC: width 是**文本盒**宽度，单元格左右还各有 1rem 内边距，真实列宽 ≈ width + 2rem；
-  //       十一列合计 1432px，就是下面的 minimumWidthClassName。
-  // INTENT: 这十一列原来全传字符串、也没传最小宽度，于是用默认的 min-w-[640px] 去挤内容区：
-  //         ID 与规则键把宽度吃光，「模式」「状态」和「回滚」按钮各剩两个字的位置，
-  //         中文被压成「图/片」「启/用」「回/滚」的竖排。
-  // INTENT: 宁可横向多滚 ~200px 也不让枚举列竖排——十一列的表本来就要横滚，竖排却是读不了。
   return <DataTable caption="Pricing rule versions" headers={[
-    // ID / 规则键 / 标签：钳在宽度内出省略号，完整值走 title 悬停。
-    { label: "ID", truncate: true, width: "7rem" },
-    { label: "Rule key", truncate: true, width: "9rem" },
-    { label: "Label", truncate: true, width: "8rem" },
-    // 枚举列：中文最长两字（图片 / 视频 / 语音、草稿 / 启用 / 归档），truncate 保证不折行。
-    { label: "Mode", truncate: true, width: "3.5rem" },
-    { label: "Base cost", align: "right", width: "5rem" },
-    { label: "Multiplier", align: "right", width: "4rem" },
-    { label: "Status", truncate: true, width: "3.5rem" },
-    { label: "Version", align: "right", width: "3.5rem" },
-    // 中文 dateStyle:medium + timeStyle:short 实测 ~142px；truncate 在这里的作用是不折行。
-    { label: "Effective", truncate: true, width: "9rem" },
-    { label: "Published", truncate: true, width: "9rem" },
-    // 草稿行是「编辑 + 发布」两个按钮并排；6rem 只够一个，第二个会被挤成竖排。
+    { label: "Rule key", width: "17rem" },
+    { label: "Mode", width: "4rem" },
+    { label: "Base cost × multiplier", align: "right", width: "10rem" },
+    { label: "Status", width: "5rem" },
     { label: "Action", width: "11rem" },
-  ]} minimumWidthClassName="min-w-[1512px]" rows={tableRows} />;
+  ]} minimumWidthClassName="min-w-[880px]" rows={tableRows} />;
 }
 
 // label 一律在接收方过 t()：草稿表单七个输入框、两个筛选下拉和两个行内动作按钮共用这三个原语。

@@ -13,7 +13,7 @@ export function formatTime(value: string, locale: AdminLocale) {
 export function todayOperationalText(text: string, locale: AdminLocale) {
   if (locale === "en") return text;
 
-  const entityState = /^([a-z_]+) (.+) is ([a-z_]+)$/i.exec(text);
+  const entityState = /^([a-z_]+) (.+) is ([a-z_ ]+)$/i.exec(text);
   if (entityState) {
     const [, entityType, entityId, state] = entityState;
     const [targetType, ...targetId] = entityId.split(":");
@@ -23,7 +23,7 @@ export function todayOperationalText(text: string, locale: AdminLocale) {
     return `${translateAdmin(locale, entityType.replaceAll("_", " "))} ${target} · ${translateAdmin(locale, state)}`;
   }
 
-  const incidentState = /^Incident is ([a-z_]+)$/i.exec(text);
+  const incidentState = /^Incident is ([a-z_ ]+)$/i.exec(text);
   if (incidentState) {
     return `${translateAdmin(locale, "Incident")} · ${translateAdmin(locale, incidentState[1])}`;
   }

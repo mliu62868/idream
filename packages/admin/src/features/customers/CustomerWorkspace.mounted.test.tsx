@@ -181,6 +181,58 @@ describe("CustomerWorkspace 360", () => {
     expect(panel).toContain("customer.note.added");
   });
 
+  it("retries the failed customer detail without reloading the successful list", async () => {
+    let detailAttempts = 0;
+    adminV2Request.mockImplementation(async (path) => {
+      if (path.startsWith("/api/v2/admin/customers/")) {
+        if (++detailAttempts === 1) throw new Error("detail unavailable");
+        return customer360;
+      }
+      return listResponse;
+    });
+    await mount();
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Customer results"] button')?.click());
+    await waitUntil(() => container.querySelector('[role="alert"]') !== null);
+    const listCalls = adminV2Request.mock.calls.filter(([path]) => path.startsWith("/api/v2/admin/customers?")).length;
+    await act(async () => findButton("Retry")?.click());
+    await waitUntil(() => container.querySelector("#customer-detail-title") !== null);
+    expect(detailAttempts).toBe(2);
+    expect(adminV2Request.mock.calls.filter(([path]) => path.startsWith("/api/v2/admin/customers?")).length).toBe(listCalls);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("can close a failed detail and restore another customer with browser history", async () => {
+    adminV2Request.mockImplementation(async (path) => {
+      if (path.endsWith("/user-1")) throw new Error("detail unavailable");
+      if (path.endsWith("/user-2")) return { ...customer360, customer: { ...customer360.customer, id: "user-2", displayName: "Second Customer" } };
+      return listResponse;
+    });
+    await mount();
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Customer results"] button')?.click());
+    await waitUntil(() => container.querySelector('[role="alert"]') !== null);
+    await act(async () => findButton("Close customer detail")?.click());
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(window.location.pathname).toBe("/admin/customers");
+    await act(async () => {
+      window.history.replaceState(null, "", "/admin/customers/user-2");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    await waitUntil(() => container.querySelector("#customer-detail-title")?.textContent === "Second Customer");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("links customer summaries to supported billing, chat and audit filters", async () => {
+    await mount();
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Customer results"] button')?.click());
+    await waitUntil(() => container.querySelector("#customer-detail-title") !== null);
+    const hrefs = [...container.querySelectorAll("a")].map((link) => link.getAttribute("href"));
+    expect(hrefs).toContain("/admin/customer-ops/billing?billingView=ledger&billingSearch=user-1");
+    expect(hrefs).toContain("/admin/customer-ops/billing?billingView=subscriptions&billingSearch=user-1");
+    expect(hrefs).toContain("/admin/ops/chat?chatUserId=user-1&chatSessionStatus=all");
+    expect(hrefs).toContain("/admin/system/audit?auditSearch=user-1");
+    expect(hrefs).toContain("/admin/system/audit?auditSearch=audit-1");
+  });
+
   function findButton(label: string) {
     return [...container.querySelectorAll("button")].find((button) => button.textContent?.includes(label));
   }

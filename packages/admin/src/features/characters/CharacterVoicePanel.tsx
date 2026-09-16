@@ -505,11 +505,11 @@ export function CharacterVoicePanel({
       {candidate ? (
         <section
           aria-labelledby="voice-candidate-review-title"
-          className="overflow-hidden rounded-xl border border-[var(--ad-blue-border)] bg-[var(--ad-surface)]"
+          className="overflow-hidden rounded-xl border border-[var(--ad-blue-text)] bg-[var(--ad-surface)]"
           data-testid="voice-candidate-primary-action"
           id="voice-candidate-review"
         >
-          <div className="grid gap-px bg-[var(--ad-blue-border)] lg:grid-cols-[minmax(0,1fr)_22rem]">
+          <div className="grid gap-px bg-[var(--ad-blue-text)] lg:grid-cols-[minmax(0,1fr)_22rem]">
             <div className="bg-[var(--ad-surface)] p-5 sm:p-6">
               <div className="flex flex-wrap items-center gap-2">
                 <StatusBadge tone="warn" value={t("candidate")} />
@@ -562,7 +562,7 @@ export function CharacterVoicePanel({
                   {t("No preview is available for this candidate.")}
                 </p>
               )}
-              <div className="mt-5 border-t border-[var(--ad-blue-border)] pt-4">
+              <div className="mt-5 border-t border-[var(--ad-blue-text)] pt-4">
                 <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
                   {t("Activation reason")}
                   <input
@@ -1212,7 +1212,7 @@ export function CharacterVoicePanel({
             </div>
           ) : null}
           {defaultDraftStale ? (
-            <div role="alert" className="mt-4 space-y-3 rounded-lg bg-[var(--ad-amber-bg)] p-4 text-sm">
+            <div role="alert" className="mt-4 space-y-3 rounded-lg bg-[var(--ad-yellow-bg)] p-4 text-sm">
               <p>{t("System defaults changed while you were editing. Your draft is preserved; load the current defaults before editing again.")}</p>
               <WorkspaceButton disabled={busy} onClick={() => setDefaultDraftOverride(null)} type="button">
                 {t("Discard draft and load current defaults")}
@@ -1360,8 +1360,8 @@ function VoiceDeliveryEditor({
             <button
               className={`min-h-20 rounded-lg border px-3 py-2 text-left transition ${
                 selected
-                  ? "border-[var(--ad-blue-border)] bg-[var(--ad-blue-bg)] text-[var(--ad-blue-text)]"
-                  : "border-[var(--ad-border)] bg-[var(--ad-surface)] hover:border-[var(--ad-blue-border)]"
+                  ? "border-[var(--ad-blue-text)] bg-[var(--ad-blue-bg)] text-[var(--ad-blue-text)]"
+                  : "border-[var(--ad-border)] bg-[var(--ad-surface)] hover:border-[var(--ad-blue-text)]"
               }`}
               disabled={disabled}
               key={preset.id}
@@ -1555,7 +1555,7 @@ function VoiceDefaultSelect({
     <article
       className={`rounded-lg border p-3 transition-colors ${
         active
-          ? "border-[var(--ad-blue-border)] bg-[var(--ad-blue-bg)]"
+          ? "border-[var(--ad-blue-text)] bg-[var(--ad-blue-bg)]"
           : "border-[var(--ad-border)] bg-[var(--ad-surface)]"
       }`}
     >

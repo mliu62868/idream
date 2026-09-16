@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import { act } from "react";
-import { hydrateRoot, type Root } from "react-dom/client";
+import { createRoot, hydrateRoot, type Root } from "react-dom/client";
 import { renderToString } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -61,7 +61,7 @@ describe("BillingWorkspace hydration", () => {
     window.history.replaceState(
       null,
       "",
-      "/admin/customer-ops/billing?billingSearch=refund-audit",
+      "/admin/customer-ops/billing?billingSearch=refund-audit&billingView=ledger",
     );
     container = document.createElement("div");
     document.body.append(container);
@@ -104,6 +104,84 @@ describe("BillingWorkspace hydration", () => {
     expect(consoleError).not.toHaveBeenCalled();
   });
 
+  it("opens pending exceptions first and restores task views from URL history", async () => {
+    window.history.replaceState(null, "", "/admin/customer-ops/billing");
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<BillingWorkspace canAdjust canReconcile canRefund />);
+    });
+    await waitUntil(() => container.textContent?.includes("Checkout reconciliation is clear") ?? false);
+    expect(container.querySelector<HTMLDetailsElement>('[aria-labelledby="billing-adjustment-title"]')?.open).toBe(false);
+    const ledgerTab = [...container.querySelectorAll("nav button")].find((button) => button.textContent === "Ledger") as HTMLButtonElement;
+    await act(async () => ledgerTab.click());
+    expect(new URLSearchParams(window.location.search).get("billingView")).toBe("ledger");
+    expect(ledgerTab.getAttribute("aria-current")).toBe("page");
+    expect(container.textContent).not.toContain("Checkout reconciliation is clear");
+    await act(async () => {
+      window.history.replaceState(null, "", "/admin/customer-ops/billing?billingView=subscriptions");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    expect(container.querySelector('nav [aria-current="page"]')?.textContent).toBe("Subscriptions");
+  });
+
+  it("opens ledger adjustment for the selected customer and clears the previous amount", async () => {
+    const fallback = apiGet.getMockImplementation()!;
+    apiGet.mockImplementation(async (path) => {
+      if (!path.startsWith("/api/v2/admin/billing/ledger")) return fallback(path);
+      return { dataScope, items: ["a", "b"].map((id) => ({ id: `entry-${id}`, userId: `user-${id}`, userEmail: `${id}@example.test`, delta: 50, balanceAfter: 100, reason: "admin_adjust", createdAt: "2026-08-10T00:00:00.000Z" })), pageInfo: { endCursor: null, hasNextPage: false } };
+    });
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<BillingWorkspace canAdjust canReconcile canRefund />);
+    });
+    await waitUntil(() => container.textContent?.includes("entry-a") ?? false);
+    const panel = container.querySelector<HTMLDetailsElement>('[aria-labelledby="billing-adjustment-title"]')!;
+    panel.scrollIntoView = vi.fn();
+    const actions = [...container.querySelectorAll<HTMLButtonElement>("button")].filter((button) => button.textContent === "Adjust Ledger");
+    await act(async () => actions[0].click());
+    const inputs = panel.querySelectorAll<HTMLInputElement>("input");
+    expect(panel.open).toBe(true);
+    expect(inputs[0].value).toBe("user-a");
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(inputs[1], "300");
+      inputs[1].dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => actions[1].click());
+    expect(inputs[0].value).toBe("user-b");
+    expect(inputs[1].value).toBe("");
+    expect(apiWrite).not.toHaveBeenCalled();
+  });
+
+  it("keeps external refund references scoped to their checkout", async () => {
+    window.history.replaceState(null, "", "/admin/customer-ops/billing");
+    const fallback = apiGet.getMockImplementation()!;
+    apiGet.mockImplementation(async (path) => {
+      if (!path.endsWith("/reconciliation")) return fallback(path);
+      return {
+        dataScope, window: { from: "2026-08-01T00:00:00.000Z", to: "2026-08-15T00:00:00.000Z" },
+        activeSubscriptions: 0, byReason: [], totals: { net: 0, entries: 0 },
+        checkoutExceptions: ["a", "b"].map((id) => ({ id: `checkout-${id}`, userId: `user-${id}`, userEmail: `${id}@example.test`, providerSessionId: `invoice-${id}`, status: "provider_unknown", failureCode: "provider_invoice_settled_after_abandonment", needsReconciliation: true, providerInvoiceStatus: "settled" })),
+      };
+    });
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<BillingWorkspace canAdjust canReconcile canRefund />);
+    });
+    await waitUntil(() => container.querySelectorAll('input[placeholder="Refund transaction or provider case ID"]').length === 2);
+    const inputs = [...container.querySelectorAll<HTMLInputElement>('input[placeholder="Refund transaction or provider case ID"]')];
+    const buttons = () => [...container.querySelectorAll<HTMLButtonElement>("button")].filter((button) => button.textContent?.includes("Acknowledge refund"));
+    expect(buttons().map((button) => button.disabled)).toEqual([true, true]);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(inputs[0], "refund-a");
+      inputs[0].dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(inputs[1].value).toBe("");
+    expect(buttons().map((button) => button.disabled)).toEqual([false, true]);
+    await act(async () => buttons()[0].click());
+    expect(document.body.textContent).toContain("invoice-a · refund-a");
+    expect(apiWrite).not.toHaveBeenCalled();
+  });
+
   /**
    * SPEC: 一笔退款把余额冲成负数时，运营在订阅那一行就要看到这件事。
    *
@@ -112,6 +190,7 @@ describe("BillingWorkspace hydration", () => {
    * 这个数一直在契约里，界面此前只印一个状态词。
    */
   it("shows the reversed grant and the negative balance it left behind", async () => {
+    window.history.replaceState(null, "", "/admin/customer-ops/billing?billingView=subscriptions");
     apiGet.mockImplementation(async (path) => {
       if (path.startsWith("/api/v2/admin/billing/subscriptions")) {
         return {
@@ -223,7 +302,7 @@ describe("BillingWorkspace ledger pagination", () => {
     };
   }
 
-  /** 页面上有两条分页条（订阅在前、账本在后）；账本那条永远是最后一条。 */
+  /** 当前任务视图只有自己的分页条。 */
   function pagerButton(label: string) {
     return [...container.querySelectorAll("button")]
       .filter((button) => button.textContent?.trim() === label)
@@ -249,7 +328,7 @@ describe("BillingWorkspace ledger pagination", () => {
         totals: { net: 0, entries: 0 },
       };
     });
-    window.history.replaceState(null, "", "/admin/customer-ops/billing");
+    window.history.replaceState(null, "", "/admin/customer-ops/billing?billingView=ledger");
     container = document.createElement("div");
     document.body.append(container);
     root = null;

@@ -43,7 +43,8 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
   const [detail, setDetail] = useState<Customer360 | null>(null);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [error, setError] = useState<unknown>(null);
+  const [listError, setListError] = useState<unknown>(null);
+  const [detailError, setDetailError] = useState<unknown>(null);
   // SPEC: 「上一页」重发自己走过的那个游标，不给后端发 `before`。
   // INTENT: 后端确实支持反向 keyset，但页码只有翻页栈知道 —— 用同一份栈同时回答
   //         「能不能回去」和「这是第几页」，两个读数就不会互相打架。栈空即第一页，置灰。
@@ -55,7 +56,7 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
   const loadList = useCallback(async (next: CustomerQuery) => {
     const requestId = ++listRequestId.current;
     setLoading(true);
-    setError(null);
+    setListError(null);
     try {
       const params = new URLSearchParams({ search: next.search, status: next.status, limit: String(CUSTOMER_PAGE_SIZE) });
       if (next.cursor) params.set("cursor", next.cursor);
@@ -65,7 +66,7 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
       if (requestId !== listRequestId.current) return;
       setList(response);
     } catch (cause) {
-      if (requestId === listRequestId.current) setError(cause);
+      if (requestId === listRequestId.current) setListError(cause);
     } finally {
       if (requestId === listRequestId.current) setLoading(false);
     }
@@ -74,14 +75,14 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
   const loadDetail = useCallback(async (customerId: string) => {
     const requestId = ++detailRequestId.current;
     setDetailLoading(true);
-    setError(null);
+    setDetailError(null);
     try {
       const response = await adminV2Request<Customer360>(`/api/v2/admin/customers/${encodeURIComponent(customerId)}`, {
         schema: customer360Schema,
       });
       if (requestId === detailRequestId.current) setDetail(response);
     } catch (cause) {
-      if (requestId === detailRequestId.current) setError(cause);
+      if (requestId === detailRequestId.current) setDetailError(cause);
     } finally {
       if (requestId === detailRequestId.current) setDetailLoading(false);
     }
@@ -110,6 +111,8 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
       history.current.restore(restored);
       setSelectedId(restored.selectedId);
       setDetail(null);
+      setDetailError(null);
+      setDetailLoading(false);
       void loadList(restored.query);
       if (restored.selectedId) void loadDetail(restored.selectedId);
     });
@@ -141,6 +144,8 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
     detailRequestId.current += 1;
     setSelectedId(id);
     setDetail(null);
+    setDetailError(null);
+    setDetailLoading(false);
     history.current.navigate({ ...history.current.current(), selectedId: id }, writeCustomerUrl);
     if (id) void loadDetail(id);
   }
@@ -161,9 +166,9 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
       </header>
 
       {/* SPEC: 读取失败走统一横幅 —— 人话 + 下一步 + 可复制的技术详情，并且原地能重试。 */}
-      {error ? (
+      {listError ? (
         <AuthorityRequestError
-          cause={error}
+          cause={listError}
           message="Customer workspace request failed"
           onRetry={() => void loadList(history.current.current().query)}
         />
@@ -187,7 +192,7 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
 
       <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(420px,0.9fr)]">
         {selectedId ? (
-          detailLoading && !detail ? <LoadingWorkspace label="Loading Customer 360…" /> : detail ? <CustomerInspector detail={detail} onClose={() => selectCustomer(null)} /> : null
+          detailError || (detailLoading && !detail) ? <aside className="space-y-3"><WorkspaceButton onClick={() => selectCustomer(null)}><ArrowLeft className="h-4 w-4" />{t("Close customer detail")}</WorkspaceButton>{detailError ? <AuthorityRequestError cause={detailError} message="Customer detail request failed" onRetry={() => void loadDetail(selectedId)} /> : <LoadingWorkspace label="Loading Customer 360…" />}</aside> : detail ? <CustomerInspector detail={detail} onClose={() => selectCustomer(null)} /> : null
         ) : <aside className="hidden rounded-xl bg-[var(--ad-surface-subtle)] p-8 text-sm text-[var(--ad-text-muted)] lg:block">{t("Select a customer to inspect their complete operational context.")}</aside>}
 
         <section aria-label={t("Customer results")} className="overflow-hidden rounded-xl bg-[var(--ad-surface)] lg:order-first">
@@ -204,7 +209,7 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
                 </li>
               ))}
             </ul>
-          ) : error ? null : <EmptyWorkspace filtered={Boolean(query.search || query.status)} onClear={() => applyQuery(defaultCustomerQuery)} />}
+          ) : listError ? null : <EmptyWorkspace filtered={Boolean(query.search || query.status)} onClear={() => applyQuery(defaultCustomerQuery)} />}
           {list && list.items.length > 0 ? (
             <div className="border-t border-[var(--ad-border)] p-4">
               <Pagination
@@ -244,21 +249,21 @@ function CustomerInspector({ detail, onClose }: { detail: Customer360; onClose: 
           的客户后看不到他被封了，照常按正常流程答复。开户时间同理：是分辨"新号刷量"的第一眼依据。 */}
       <header className="flex items-start justify-between gap-4"><div className="min-w-0"><p className="truncate font-mono text-xs text-[var(--ad-text-muted)]">{detail.customer.id}</p><h3 className="mt-1 text-lg font-semibold" id="customer-detail-title">{detail.customer.displayName ?? detail.customer.email}</h3><p className="break-all text-xs text-[var(--ad-text-muted)]">{detail.customer.email}</p><div className="mt-2 flex flex-wrap items-center gap-2"><StatusBadge value={detail.customer.status} /><span className="text-xs text-[var(--ad-text-muted)]">{t("Customer since")} <time dateTime={detail.customer.createdAt}>{format.date(detail.customer.createdAt)}</time></span></div></div><button aria-label={t("Close customer detail")} className="grid min-h-11 min-w-11 place-items-center rounded-md hover:bg-black/[0.04]" onClick={onClose} type="button"><ArrowLeft className="h-4 w-4" /></button></header>
       <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4"><ListStat label={t("Balance")} value={format.dreamcoins(detail.overview.balanceDreamcoins)} /><ListStat label={t("Active Cases")} value={detail.overview.activeCaseCount} /><ListStat label={t("Failed 30d")} value={detail.overview.failedGenerationCount30d} /><ListStat label={t("Last active")} value={detail.overview.lastActiveAt ? <RelativeTime referenceTime={detail.asOf} value={detail.overview.lastActiveAt} /> : "—"} /></dl>
-      <DetailSection title={t("Subscription")}>{subscription ? <div className="space-y-1 text-sm"><p className="flex flex-wrap items-center gap-2"><strong>{subscription.plan.name}</strong><StatusBadge value={subscription.status} /><span className="text-xs text-[var(--ad-text-muted)]">{value(subscription.plan.billingPeriod)}</span></p><p className="text-xs text-[var(--ad-text-muted)]">{subscription.currentPeriodEnd ? <>{subscription.cancelAtPeriodEnd ? t("Access ends") : t("Renews")} <time dateTime={subscription.currentPeriodEnd}>{format.date(subscription.currentPeriodEnd)}</time></> : t("No period end on record")}</p>{subscription.cancelAtPeriodEnd ? <p className="text-xs text-[var(--ad-yellow-text)]">{t("Cancellation is already scheduled; it will not renew.")}</p> : null}</div> : <p className="text-sm text-[var(--ad-text-muted)]">{t("No subscription")}</p>}</DetailSection>
-      <DetailSection title={t("Recent chats ({count})", { count: detail.recentChats.length })}>{detail.recentChats.length === 0 ? <EmptyRows /> : <ul className="space-y-2">{detail.recentChats.slice(0, 8).map((row) => <li className="flex justify-between gap-3 text-xs" key={row.sessionId}><Link className="truncate font-semibold underline" href={`/admin/characters/${encodeURIComponent(row.characterId)}`}>{row.characterName}</Link><span className="shrink-0 text-[var(--ad-text-muted)]">{row.lastMessageAt ? <RelativeTime referenceTime={detail.asOf} value={row.lastMessageAt} /> : "—"}</span></li>)}</ul>}</DetailSection>
+      <DetailSection href={`/admin/customer-ops/billing?billingView=subscriptions&billingSearch=${encodeURIComponent(detail.customer.id)}`} title={t("Subscription")}>{subscription ? <div className="space-y-1 text-sm"><p className="flex flex-wrap items-center gap-2"><strong>{subscription.plan.name}</strong><StatusBadge value={subscription.status} /><span className="text-xs text-[var(--ad-text-muted)]">{value(subscription.plan.billingPeriod)}</span></p><p className="text-xs text-[var(--ad-text-muted)]">{subscription.currentPeriodEnd ? <>{subscription.cancelAtPeriodEnd ? t("Access ends") : t("Renews")} <time dateTime={subscription.currentPeriodEnd}>{format.date(subscription.currentPeriodEnd)}</time></> : t("No period end on record")}</p>{subscription.cancelAtPeriodEnd ? <p className="text-xs text-[var(--ad-yellow-text)]">{t("Cancellation is already scheduled; it will not renew.")}</p> : null}</div> : <p className="text-sm text-[var(--ad-text-muted)]">{t("No subscription")}</p>}</DetailSection>
+      <DetailSection href={`/admin/ops/chat?chatUserId=${encodeURIComponent(detail.customer.id)}&chatSessionStatus=all`} title={t("Recent chats ({count})", { count: detail.recentChats.length })}>{detail.recentChats.length === 0 ? <EmptyRows /> : <ul className="space-y-2">{detail.recentChats.slice(0, 8).map((row) => <li className="flex justify-between gap-3 text-xs" key={row.sessionId}><Link className="truncate font-semibold underline" href={`/admin/ops/chat?chatUserId=${encodeURIComponent(detail.customer.id)}&chatCharacterId=${encodeURIComponent(row.characterId)}&chatSessionStatus=all`} title={row.sessionId}>{row.characterName}</Link><span className="shrink-0 text-[var(--ad-text-muted)]">{row.lastMessageAt ? <RelativeTime referenceTime={detail.asOf} value={row.lastMessageAt} /> : "—"}</span></li>)}</ul>}</DetailSection>
       {/* SPEC: 工单行要带优先级和 SLA —— 客服看客户历史是为了判断"这人是不是一直没被处理"，
           光有类型和状态回答不了。超过 10 条时给出跳到工单队列的出口，而不是默默截断。 */}
       <DetailSection title={t("Cases ({count})", { count: detail.cases.length })}>{detail.cases.length === 0 ? <EmptyRows /> : <ul className="space-y-2">{detail.cases.slice(0, 10).map((row) => <li key={row.id}><Link className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-[var(--ad-surface-subtle)] p-2 text-xs hover:bg-black/[0.04]" href={`/admin/cases/${encodeURIComponent(row.id)}`}><span className="font-semibold">{t(row.type.replaceAll("_", " "))}</span><span className="flex items-center gap-2"><StatusBadge value={row.priority} /><StatusBadge value={row.status} /><span className="text-[var(--ad-text-muted)]"><RelativeTime referenceTime={detail.asOf} value={row.slaDueAt} /></span></span></Link></li>)}</ul>}{detail.cases.length > 10 ? <p className="mt-2 text-xs"><Link className="underline" href={`/admin/cases?view=all&search=${encodeURIComponent(detail.customer.id)}`}>{t("Open all Cases for this customer")}</Link></p> : null}</DetailSection>
       <DetailSection title={t("Generations ({count})", { count: detail.generations.length })}>{detail.generations.length === 0 ? <EmptyRows /> : <ul className="space-y-2">{detail.generations.slice(0, 8).map((row) => <li className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 text-xs" key={row.id}><Link className="truncate font-mono underline" href={`/admin/ops/jobs?job=${encodeURIComponent(row.id)}`} title={row.id}>{row.id}</Link><span className="text-[var(--ad-text-muted)]">{value(row.mode)} · {format.dreamcoins(row.costDreamcoins)}</span><StatusBadge value={row.status} /></li>)}</ul>}</DetailSection>
-      <DetailSection title={t("Recent ledger")}>{detail.ledger.length === 0 ? <EmptyRows /> : <ul className="space-y-2">{detail.ledger.slice(0, 8).map((row) => <li className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-baseline gap-3 text-xs" key={row.id}><span className="truncate" title={row.reason}>{value(row.reason)}<time className="ml-2 text-[var(--ad-text-muted)]" dateTime={row.createdAt}>{format.date(row.createdAt)}</time></span>{/* 账本是有借有贷的流水，正负号必须显式；余额列紧跟其后，不再缀一遍单位。 */}<span className={`font-mono ${row.delta > 0 ? "text-[var(--ad-green-text)]" : ""}`}>{format.dreamcoins(row.delta, { signed: true })}</span><span className="font-mono text-[var(--ad-text-muted)]">{format.dreamcoins(row.balanceAfter, { unit: false })}</span></li>)}</ul>}</DetailSection>
+      <DetailSection href={`/admin/customer-ops/billing?billingView=ledger&billingSearch=${encodeURIComponent(detail.customer.id)}`} title={t("Recent ledger")}>{detail.ledger.length === 0 ? <EmptyRows /> : <ul className="space-y-2">{detail.ledger.slice(0, 8).map((row) => <li className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-baseline gap-3 text-xs" key={row.id}><span className="truncate" title={row.reason}>{value(row.reason)}<time className="ml-2 text-[var(--ad-text-muted)]" dateTime={row.createdAt}>{format.date(row.createdAt)}</time></span>{/* 账本是有借有贷的流水，正负号必须显式；余额列紧跟其后，不再缀一遍单位。 */}<span className={`font-mono ${row.delta > 0 ? "text-[var(--ad-green-text)]" : ""}`}>{format.dreamcoins(row.delta, { signed: true })}</span><span className="font-mono text-[var(--ad-text-muted)]">{format.dreamcoins(row.balanceAfter, { unit: false })}</span></li>)}</ul>}</DetailSection>
       {/* SPEC: 运营改过什么必须能在客户档案里看到 —— 这份 activity 一直在响应里，之前整段丢弃，
           页面顶上却写着"operator history"。交接和申诉复核都要靠它回答"上一次是谁动的"。 */}
-      <DetailSection title={t("Operator history ({count})", { count: detail.activity.length })}>{detail.activity.length === 0 ? <EmptyRows /> : <ol className="space-y-2">{detail.activity.slice(0, 10).map((row) => <li className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 text-xs" key={row.id}><code className="truncate" title={`${row.targetType} ${row.targetId}`}>{row.action}</code><span className="shrink-0 text-[var(--ad-text-muted)]"><RelativeTime referenceTime={detail.asOf} value={row.createdAt} /></span></li>)}</ol>}</DetailSection>
+      <DetailSection href={`/admin/system/audit?auditSearch=${encodeURIComponent(detail.customer.id)}`} title={t("Operator history ({count})", { count: detail.activity.length })}>{detail.activity.length === 0 ? <EmptyRows /> : <ol className="space-y-2">{detail.activity.slice(0, 10).map((row) => <li className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 text-xs" key={row.id}><Link className="truncate font-mono underline" href={`/admin/system/audit?auditSearch=${encodeURIComponent(row.id)}`} title={`${row.targetType} ${row.targetId}`}>{row.action}</Link><span className="shrink-0 text-[var(--ad-text-muted)]"><RelativeTime referenceTime={detail.asOf} value={row.createdAt} /></span></li>)}</ol>}</DetailSection>
     </aside>
   );
 }
 
-function DetailSection({ children, title }: { children: React.ReactNode; title: string }) { return <section className="border-t border-[var(--ad-border)] pt-4"><h4 className="mb-3 text-sm font-semibold">{title}</h4>{children}</section>; }
+function DetailSection({ children, title, href }: { children: React.ReactNode; title: string; href?: string }) { const { t } = useAdminI18n(); return <section className="border-t border-[var(--ad-border)] pt-4"><div className="mb-3 flex items-center justify-between gap-3"><h4 className="text-sm font-semibold">{title}</h4>{href ? <Link className="shrink-0 text-xs underline" href={href}>{t("View all")}</Link> : null}</div>{children}</section>; }
 function EmptyRows() { const { t } = useAdminI18n(); return <p className="text-xs text-[var(--ad-text-muted)]">{t("No records.")}</p>; }
 function ListStat({ label, value }: { label: string; value: React.ReactNode }) { return <span><span className="block text-[10px] font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">{label}</span><span className="mt-1 block font-mono text-sm">{value}</span></span>; }
 // INVARIANT: server and first browser render must agree; the address bar is restored after hydration.

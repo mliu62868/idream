@@ -1,4 +1,12 @@
 export const adminZhCharacterRecovery: Record<string, string> = {
+  "The latest Attempt is marked retryable.": "最近一次尝试可重试。",
+  "The latest Attempt requires an operator retry.": "需要手动重试。",
+  "The latest Attempt is marked not retryable.": "最近一次尝试不可重试。",
+  "No retryability evidence is recorded for the latest Attempt.": "尚无可重试依据。",
+  "No retryability evidence is recorded for this Voice request.": "这次语音请求暂无可重试依据。",
+  "This Voice request lacks replay-safe durable provider authority and cannot be reclaimed.": "这次语音请求缺少安全重放依据，无法回收。",
+  "Voice request ended with {code}; no retryability evidence is recorded.": "语音失败：{code}，暂无可重试依据。",
+
   "{action} was committed, but the authoritative Character workspace could not be refreshed{detail}. Refresh the authoritative workspace before another write.": "{action}已生效，但角色工作台的权威数据未能刷新{detail}。请先刷新权威数据，再进行下一次写入。",
   "{action} command is pending. Character writes stay locked until the worker records a terminal result and the workspace refreshes.": "{action}命令正在处理。工作进程记录终态并刷新工作台之前，角色写入保持锁定。",
   "{action} may already be accepted. The exact command is being replayed with the same idempotency key before any other Character write is allowed.": "{action}可能已被受理。正在使用相同幂等键重放原命令，确认之前禁止其他角色写入。",

@@ -326,7 +326,7 @@ export const adminZhGrowth: Record<string, string> = {
   "Use a new lowercase CMS path. Duplicate and application-owned paths are rejected.":
     "请使用新的小写 CMS 路径；重复路径和应用自有路径会被拒绝。",
   "Version, publish, and roll back customer-facing generation prices while keeping every decision auditable.":
-    "对用户可见的生成价格进行版本化、发布和回滚，并确保每个决定均可审计。",
+    "管理生成价格与版本。",
   "activity funnel": "活跃漏斗",
   "char_a, char_b": "角色 ID A，角色 ID B",
   "character id duplicate": "角色 ID 重复",
@@ -457,6 +457,7 @@ export const adminZhGrowth: Record<string, string> = {
   // 定价规则版本表。注意本文件已有大写 K 的 "Rule Key"（草稿表单），这条是表头的小写 k。
   "Rule key": "规则键",
   "Base cost": "基础费用",
+  "Base cost × multiplier": "基础费用 × 倍率",
   "Effective": "生效时间",
   // canonicalListEmptyTitle("ledger" / "subscriptions") 的四个标题，以及账单台自己的空态提示。
   "No ledger entries exist yet": "暂无账本流水",

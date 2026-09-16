@@ -9,8 +9,8 @@
            拿到 #242424 的深色边框、`outline` 拿到白色（在浅色底上等于没有焦点框）。
            一并删掉，默认值改回 --ad-*。 */
 @theme inline {
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: var(--font-admin-sans);
+  --font-mono: var(--font-admin-mono);
   /* 半径按 --radius 成比例缩放；后台只用到 sm/md/lg/xl 四档。 */
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
@@ -19,9 +19,9 @@
 }
 
 :root {
-  --font-geist-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+  --font-admin-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI",
     sans-serif;
-  --font-geist-mono: ui-monospace, "SFMono-Regular", "SF Mono", Consolas,
+  --font-admin-mono: ui-monospace, "SFMono-Regular", "SF Mono", Consolas,
     "Liberation Mono", monospace;
   --radius: 0.625rem;
 
@@ -80,4 +80,18 @@
 
 .admin-skip-link:focus {
   transform: translateY(0);
+}
+
+/* Outside layers so utility outline-none cannot hide keyboard focus. */
+:where(button, a, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--ad-ink);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

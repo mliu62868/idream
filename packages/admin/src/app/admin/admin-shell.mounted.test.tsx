@@ -5,6 +5,7 @@ import { hydrateRoot, type Root } from "react-dom/client";
 import { renderToString } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdminPermissionKey } from "@idream/shared/admin/permissions";
+import { clearSoulDraft, readSoulDraft, writeSoulDraft } from "@/features/characters/soul-drafts";
 import { AdminConsoleClient } from "@/components/admin/AdminConsoleClient";
 import {
   ADMIN_LOCALE_COOKIE,
@@ -63,6 +64,7 @@ function accountMenuTrigger() {
 
 // 外壳交互不依赖工作台数据，避免导航挂载用例向本地 Main 发出请求。
 beforeEach(() => {
+  window.sessionStorage.clear();
   vi.spyOn(globalThis, "fetch").mockImplementation(() => new Promise<Response>(() => {}));
 });
 
@@ -76,6 +78,66 @@ afterEach(async () => {
 });
 
 describe("admin shell keyboard and account menu", () => {
+  it("protects a retained Soul draft even outside the editor", async () => {
+    await mountShell();
+    window.sessionStorage.setItem("idream.admin.soul-draft:operator-1:character", "draft");
+    const pending = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(pending);
+    expect(pending.defaultPrevented).toBe(true);
+    window.sessionStorage.clear();
+    window.sessionStorage.setItem("idream.admin.soul-draft:other-operator:character", "draft");
+    const otherActor = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(otherActor);
+    expect(otherActor.defaultPrevented).toBe(false);
+  });
+
+  it("protects memory-only drafts after the editor unmounts", async () => {
+    await mountShell();
+    const key = "idream.admin.soul-draft:operator-1:storage-failure";
+    vi.spyOn(window.sessionStorage, "setItem").mockImplementation(() => { throw new Error("quota"); });
+    writeSoulDraft(key, { projectVersion: 1, contentVersionId: "version", persona: {
+      name: "Draft", age: 31, gender: "female", characterPromise: "Hello", detailsMarkdown: "", firstMessage: "Hi",
+    } });
+    const pending = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(pending);
+    expect(pending.defaultPrevented).toBe(true);
+    clearSoulDraft(key);
+  });
+
+  it("confirms leaving a character while keeping its draft, but allows same-character tabs", async () => {
+    const previousUrl = window.location.href;
+    window.history.replaceState(null, "", "/admin/characters/leave-test?tab=soul");
+    const key = "idream.admin.soul-draft:operator-1:leave-test";
+    writeSoulDraft(key, { projectVersion: 1, contentVersionId: "version", persona: {
+      name: "Draft", age: 31, gender: "female", characterPromise: "Hello", detailsMarkdown: "", firstMessage: "Hi",
+    } });
+    await mountShell();
+    const link = document.createElement("a");
+    link.href = "/admin/characters/leave-test?tab=overview";
+    document.body.append(link);
+    const navigation = vi.fn((event: MouseEvent) => event.preventDefault());
+    link.addEventListener("click", navigation);
+    await act(async () => link.click());
+    expect(navigation).toHaveBeenCalledTimes(1);
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    link.href = "/admin/characters";
+    await act(async () => link.click());
+    expect(navigation).toHaveBeenCalledTimes(1);
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Unsaved draft stays in this tab.");
+    const cancel = [...document.querySelectorAll('[role="dialog"] button')].find((button) => button.textContent === "Cancel") as HTMLButtonElement;
+    await act(async () => cancel.click());
+    expect(navigation).toHaveBeenCalledTimes(1);
+    await act(async () => link.click());
+    const confirm = [...document.querySelectorAll('[role="dialog"] button')].find((button) => button.textContent === "Keep draft and leave") as HTMLButtonElement;
+    await act(async () => confirm.click());
+    expect(navigation).toHaveBeenCalledTimes(2);
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(readSoulDraft(key).draft?.persona.name).toBe("Draft");
+    clearSoulDraft(key);
+    link.remove();
+    window.history.replaceState(null, "", previousUrl);
+  });
+
   it("focuses the global search from anywhere with the keyboard shortcut", async () => {
     await mountShell();
 

@@ -93,7 +93,7 @@ describe("disabled model profile visibility", () => {
       items: path.startsWith("/api/v2/admin/generation/model-profiles")
         ? [{ id: "image-profile", label: "image", mode: "image", status: "active", version: 2, enabled: true, runner: "comfyui", pipelineModel: "active" }]
         : path.startsWith("/api/v2/admin/jobs")
-          ? Array.from({ length: count }, (_, index) => ({ id: `test-${index}`, profileId: "image-profile" }))
+          ? Array.from({ length: count }, (_, index) => ({ id: `test-${index}`, profileId: "image-profile", profileVersion: 2, sourceType: "admin_profile_test" }))
           : [],
       pageInfo: { endCursor: null, hasNextPage: false },
     }));
@@ -109,6 +109,145 @@ describe("disabled model profile visibility", () => {
     expect(detail.querySelector("p")?.textContent).toBe("启用 · v2 · comfyui · active");
     const jobCount = [...detail.querySelectorAll("p")].find(node => node.textContent?.includes("近期配置测试任务"));
     expect(jobCount?.textContent).toBe(`${count} 个近期配置测试任务`);
+  });
+
+  it("isolates review drafts by profile and version and restores the URL selection", async () => {
+    let version = 1;
+    apiGet.mockImplementation(async path => ({ items: path.startsWith("/api/v2/admin/generation/model-profiles") ? [
+      { id: "a", label: "Profile A", mode: "image", status: "draft", version },
+      { id: "b", label: "Profile B", mode: "image", status: "draft", version: 1 },
+    ] : [] }));
+    window.history.replaceState(null, "", "/admin/ops/profiles?profile=b");
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<GenerationConfigWorkspace permissions={{ manageFlags: true, manageProfiles: true }} />);
+    });
+    await waitUntil(() => [...container.querySelectorAll("h2")].some(heading => heading.textContent === "Profile B"));
+    const samples = () => [...container.querySelectorAll("label")].find(label => label.textContent === "Consistency samples (≥20)")!.querySelector("input")!;
+    const setValue = (input: HTMLInputElement, value: string) => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    await act(async () => setValue(samples(), "20"));
+    const passes = [...container.querySelectorAll("label")].find(label => label.textContent === "Consistency passes (≥80%)")!.querySelector("input")!;
+    await act(async () => setValue(passes, "19"));
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Publish")!.click());
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Review evidence: b · v1 · 19/20");
+    await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    const select = (name: string) => [...container.querySelectorAll("button")].find(button => button.querySelector("span")?.textContent === name)!.click();
+    await act(async () => select("Profile A"));
+    expect(samples().value).toBe("");
+    expect(new URLSearchParams(window.location.search).get("profile")).toBe("a");
+    await act(async () => select("Profile B"));
+    expect(samples().value).toBe("20");
+    await act(async () => select("Profile A"));
+    await act(async () => setValue(samples(), "25"));
+    version = 2;
+    await act(async () => window.dispatchEvent(new PopStateEvent("popstate")));
+    await waitUntil(() => container.textContent?.includes("a · v2") === true);
+    expect(samples().value).toBe("");
+  });
+
+  it("closes a confirmation when its reviewed profile changes on refresh", async () => {
+    let updatedAt = "2026-09-16T01:00:00Z";
+    apiGet.mockImplementation(async path => ({ items: path.startsWith("/api/v2/admin/generation/model-profiles")
+      ? [{ id: "p", label: "Draft", mode: "video", status: "draft", version: 1, updatedAt }] : [] }));
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<GenerationConfigWorkspace permissions={{ manageFlags: true, manageProfiles: true }} />);
+    });
+    await waitUntil(() => [...container.querySelectorAll("button")].some(button => button.textContent === "Publish"));
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Publish")!.click());
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+    updatedAt = "2026-09-16T02:00:00Z";
+    await act(async () => window.dispatchEvent(new PopStateEvent("popstate")));
+    await waitUntil(() => !document.querySelector('[role="dialog"]'));
+    expect(apiWrite).not.toHaveBeenCalled();
+  });
+
+  it("queries profile tests, excludes other versions, and restores an older tracked job", async () => {
+    window.history.replaceState(null, "", "/admin/ops/profiles?profile=p&testJob=older-test");
+    apiGet.mockImplementation(async path => {
+      if (path.startsWith("/api/v2/admin/generation/model-profiles")) return { items: [{ id: "p", profileKey: "portrait", label: "Portrait", mode: "image", status: "draft", version: 2 }] };
+      if (path === "/api/v2/admin/jobs/older-test") return { request: { id: "older-test", profileId: "portrait", profileVersion: 2, sourceType: "admin_profile_test", legacyStatus: "failed", errorCode: "PROVIDER_TIMEOUT", assetCount: 0 } };
+      return { items: path.startsWith("/api/v2/admin/jobs?") ? [{ id: "old-version", profileId: "portrait", profileVersion: 1, sourceType: "admin_profile_test" }, { id: "customer-job", profileId: "portrait", profileVersion: 2, sourceType: "user" }] : [] };
+    });
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<GenerationConfigWorkspace permissions={{ manageFlags: true, manageProfiles: true }} />);
+    });
+    await waitUntil(() => container.textContent?.includes("PROVIDER_TIMEOUT") === true);
+    expect(container.textContent).not.toContain("old-version");
+    expect(container.textContent).not.toContain("customer-job");
+    expect(container.textContent).toContain("No output");
+    expect(container.querySelector('a[href="/admin/ops/jobs?mode=image&job=older-test"]')).not.toBeNull();
+    expect(apiGet.mock.calls.some(([path]) => path.includes("sourceType=admin_profile_test&search=portrait"))).toBe(true);
+    apiGet.mockClear();
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Refresh")!.click());
+    expect(apiGet).toHaveBeenCalledWith("/api/v2/admin/jobs/older-test");
+  });
+
+  it("restores a linked profile outside the current result page without choosing another profile", async () => {
+    window.history.replaceState(null, "", "/admin/ops/profiles?profile=outside");
+    apiGet.mockImplementation(async path => ({ items: path.startsWith("/api/v2/admin/generation/model-profiles")
+      ? new URL(path, "http://localhost").searchParams.get("search") === "outside"
+        ? [{ id: "outside", label: "Linked profile", mode: "image", status: "draft", version: 3 }]
+        : [{ id: "first", label: "First page profile", mode: "image", status: "draft", version: 1 }]
+      : [] }));
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<GenerationConfigWorkspace permissions={{ manageFlags: true, manageProfiles: true }} />);
+    });
+    await waitUntil(() => [...container.querySelectorAll("h2")].some(heading => heading.textContent === "Linked profile"));
+    expect(container.textContent).toContain("Review evidence: outside · v3");
+    expect([...container.querySelectorAll("h2")].some(heading => heading.textContent === "First page profile")).toBe(false);
+    expect(new URLSearchParams(window.location.search).get("profile")).toBe("outside");
+  });
+
+  it("keeps recent results visible when a pinned test fails to load and retries that test", async () => {
+    window.history.replaceState(null, "", "/admin/ops/profiles?profile=p&testJob=older-test");
+    let unavailable = true;
+    apiGet.mockImplementation(async path => {
+      if (path.startsWith("/api/v2/admin/generation/model-profiles")) return { items: [{ id: "p", mode: "image", status: "draft", version: 2 }] };
+      if (path === "/api/v2/admin/jobs/older-test") {
+        if (unavailable) throw new Error("Pinned test unavailable");
+        return { request: { id: "older-test", profileId: "p", profileVersion: 2, sourceType: "admin_profile_test", legacyStatus: "failed", errorCode: "TIMEOUT" } };
+      }
+      return { items: path.startsWith("/api/v2/admin/jobs?") ? [{ id: "recent-test", profileId: "p", profileVersion: 2, sourceType: "admin_profile_test", legacyStatus: "completed", assetCount: 1 }] : [] };
+    });
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<GenerationConfigWorkspace permissions={{ manageFlags: true, manageProfiles: true }} />);
+    });
+    await waitUntil(() => container.textContent?.includes("Pinned test unavailable") === true);
+    expect(container.querySelector('a[href="/admin/ops/jobs?mode=image&job=recent-test"]')).not.toBeNull();
+    unavailable = false;
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Refresh")!.click());
+    await waitUntil(() => container.textContent?.includes("TIMEOUT") === true);
+    expect(container.textContent).not.toContain("Pinned test unavailable");
+    expect(container.querySelector('a[href="/admin/ops/jobs?mode=image&job=recent-test"]')).not.toBeNull();
+  });
+
+  it("ignores a previous profile's delayed test response after selection changes", async () => {
+    let resolveA!: (value: unknown) => void;
+    apiGet.mockImplementation(async path => {
+      if (path.startsWith("/api/v2/admin/generation/model-profiles")) return { items: [
+        { id: "a", label: "Profile A", mode: "image", status: "draft", version: 1 },
+        { id: "b", label: "Profile B", mode: "image", status: "draft", version: 1 },
+      ] };
+      if (path.includes("search=a")) return new Promise(resolve => { resolveA = resolve; });
+      return { items: path.includes("search=b") ? [{ id: "b-test", profileId: "b", profileVersion: 1, sourceType: "admin_profile_test" }] : [] };
+    });
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<GenerationConfigWorkspace permissions={{ manageFlags: true, manageProfiles: true }} />);
+    });
+    await waitUntil(() => Boolean(resolveA));
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.querySelector("span")?.textContent === "Profile B")!.click());
+    await waitUntil(() => container.textContent?.includes("b-test") === true);
+    await act(async () => resolveA({ items: [{ id: "a-test", profileId: "a", profileVersion: 1, sourceType: "admin_profile_test" }] }));
+    expect(container.textContent).toContain("b-test");
+    expect(container.textContent).not.toContain("a-test");
   });
 
   it("keeps draft authoring unavailable when the authority disables diagnostics", async () => {

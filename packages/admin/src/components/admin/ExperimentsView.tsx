@@ -185,7 +185,7 @@ function AnalysisReport({ result }: { result: Analysis }) {
   const { t, value } = useAdminI18n();
   const percent = (ratio: number | null) => (ratio === null ? "—" : `${(ratio * 100).toFixed(1)}`);
   return (
-    <div className="mt-4 space-y-2 rounded-md bg-[var(--ad-surface-muted)] p-3 text-xs" role="status">
+    <div className="mt-4 space-y-2 rounded-md bg-[var(--ad-surface-subtle)] p-3 text-xs" role="status">
       <p>
         {t("Quality {quality} · maturity {maturity} · guardrails {guardrails} · significance {significance}", {
           quality: value(result.qualityState),

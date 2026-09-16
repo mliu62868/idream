@@ -1,6 +1,8 @@
 "use client";
+import { hasSoulDrafts, readSoulDraft } from "@/features/characters/soul-drafts";
 
 import Link from "next/link";
+import { ConfirmDialog } from "./ui/ConfirmDialog";
 import { type AdminPermissionKey } from "@idream/shared/admin/permissions";
 import { type KeyboardEvent, type WheelEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -85,6 +87,19 @@ export function AdminConsoleClient(props: AdminConsoleClientProps) {
     document.documentElement.lang = locale === "zh" ? "zh-CN" : "en";
   }, [locale]);
 
+  // 面板卸载后仍有本标签页草稿，关闭保护必须由外壳持有。
+  useEffect(() => {
+    const actorId = props.actor?.id;
+    if (!actorId) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      if (!hasSoulDrafts(actorId)) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [props.actor?.id]);
+
   const changeLocale = useCallback((next: AdminLocale) => {
     setLocale(next);
     writeAdminPreferenceCookie(ADMIN_LOCALE_COOKIE, next);
@@ -96,11 +111,49 @@ export function AdminConsoleClient(props: AdminConsoleClientProps) {
 
   return (
     <AdminI18nProvider locale={locale}>
+      {props.actor ? <SoulDraftNavigationGuard actorId={props.actor.id} /> : null}
       {path ? (
         <AdminConsoleContent {...props} locale={locale} path={path} setLocale={changeLocale} />
       ) : null}
     </AdminI18nProvider>
   );
+}
+
+function SoulDraftNavigationGuard({ actorId }: { actorId: string }) {
+  const { t } = useAdminI18n();
+  const [destination, setDestination] = useState<HTMLAnchorElement | null>(null);
+  const approved = useRef<HTMLAnchorElement | null>(null);
+  useEffect(() => {
+    const guard = (event: MouseEvent) => {
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const anchor = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>("a[href]") : null;
+      if (!anchor || anchor.target === "_blank" || anchor.hasAttribute("download")) return;
+      if (approved.current === anchor) { approved.current = null; return; }
+      const current = new URL(window.location.href);
+      const next = new URL(anchor.href, current);
+      const match = /^\/admin\/characters\/([^/]+)\/?$/.exec(current.pathname);
+      if (!match || next.origin !== current.origin || next.pathname === current.pathname) return;
+      const key = `idream.admin.soul-draft:${actorId}:${decodeURIComponent(match[1])}`;
+      if (!readSoulDraft(key).draft) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setDestination(anchor);
+    };
+    document.addEventListener("click", guard, true);
+    return () => document.removeEventListener("click", guard, true);
+  }, [actorId]);
+  return destination ? <ConfirmDialog onClose={() => setDestination(null)} spec={{
+    title: t("Leave character?"),
+    summary: t("Unsaved draft stays in this tab."),
+    requireReason: false,
+    submitLabel: t("Keep draft and leave"),
+    onSubmit: async () => {
+      approved.current = destination;
+      setDestination(null);
+      destination.click();
+      approved.current = null;
+    },
+  }} /> : null;
 }
 
 function AdminConsoleContent({

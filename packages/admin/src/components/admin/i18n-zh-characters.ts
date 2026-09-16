@@ -6,6 +6,19 @@
 // packages/main/src/server/modules/admin-v2/characters/{production-journey,readiness,renderer-preview}.ts。
 // 它们在 admin 源码里没有字面量，静态扫描判不出「在用」。删之前先查后端。
 export const adminZhCharacters: Record<string, string> = {
+  "Leave character?": "离开角色？",
+  "Unsaved draft stays in this tab.": "未保存草稿会保留在当前标签页。",
+  "Keep draft and leave": "保留并离开",
+  "Draft kept until this tab reloads. Browser storage is unavailable.": "草稿暂存中，刷新后将丢失。",
+  "Draft cleared for this tab. Browser storage is unavailable.": "本页草稿已清除，浏览器存储不可用。",
+  "Version saved. Local draft could not be cleared.": "版本已保存，但本地草稿未能清除。",
+
+  "Saved draft could not be restored.": "无法恢复草稿。",
+  "Draft storage is unavailable. Keep this page open.": "无法保留草稿，请勿离开此页。",
+  "Draft is based on an older version. Copy or discard it.": "草稿版本已过期，请复制内容或丢弃。",
+  "Unsaved draft · kept in this tab": "未保存草稿 · 已在此标签页保留",
+  "Discard draft": "丢弃草稿",
+  "Discard draft?": "丢弃草稿？",
   "Character performance fact reconciliation": "角色表现事实对账",
   "Global facts across all characters and dates; independent of portfolio filters.": "覆盖全部角色与日期的全局事实，不受角色列表筛选影响。",
   "Character facts are inconsistent; do not use these numbers for decisions.": "角色事实存在不一致，这些数字不可用于决策。",

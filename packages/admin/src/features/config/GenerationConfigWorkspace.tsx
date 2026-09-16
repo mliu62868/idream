@@ -29,7 +29,7 @@ import {
 } from "./query";
 
 type RecordRow = Record<string, unknown>;
-type ListResponse = { items: RecordRow[]; pageInfo?: PageInfo; authoringEnabled?: boolean };
+type ListResponse = { items: RecordRow[]; pageInfo?: PageInfo; authoringEnabled?: boolean; selectedProfile?: RecordRow | null };
 type AuthorityState<T> = { data: T | null; error: string | null; cause: unknown; loading: boolean; refreshedAt: string | null };
 type Permissions = { manageProfiles: boolean; manageFlags: boolean };
 type ReviewDraft = { sampleCount: string; passCount: string; reviewUrl: string };
@@ -41,6 +41,7 @@ type ConfigTrails = { profiles: string[]; flags: string[] };
 const emptyTrails: ConfigTrails = { profiles: [], flags: [] };
 type ConfigCommand = {
   title: string;
+  summary?: ReactNode;
   /** 成功后 toast 的正文，调用处已经翻译好。 */
   completed: string;
   endpoint: string;
@@ -63,8 +64,19 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
   const [recentJobs, setRecentJobs] = useState<AuthorityState<ListResponse>>(emptyAuthorityState);
   const [selectedProfileId, setSelectedProfileId] = useState("");
   const [testPrompt, setTestPrompt] = useState("cinematic portrait, natural skin texture, soft studio lighting");
-  const [review, setReview] = useState<ReviewDraft>({ sampleCount: "", passCount: "", reviewUrl: "" });
+  const [reviews, setReviews] = useState<Record<string, ReviewDraft>>({});
+  const profileRows = useMemo(() => profiles.data?.items ?? [], [profiles.data]);
+  const selectedProfile = useMemo(() => selectedProfileId ? profileRows.find((row) => text(row.id) === selectedProfileId) ?? (text(profiles.data?.selectedProfile?.id) === selectedProfileId ? profiles.data?.selectedProfile ?? null : null) : profileRows[0] ?? null, [profileRows, profiles.data, selectedProfileId]);
+  const selectedId = text(selectedProfile?.id);
+  // Evidence belongs to one immutable profile version, including automatic selection after filtering.
+  const reviewKey = JSON.stringify([selectedId, selectedProfile?.version, selectedProfile?.updatedAt]);
+  const review = reviews[reviewKey] ?? { sampleCount: "", passCount: "", reviewUrl: "" };
+  const setReview = (next: ReviewDraft) => setReviews(current => ({ ...current, [reviewKey]: next }));
+  const selectionRef = useRef(selectedProfile);
+  selectionRef.current = selectedProfile;
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
+  // A refreshed version invalidates an already-open publication confirmation too.
+  useEffect(() => { setConfirmation(null); }, [reviewKey]);
   const [testBusy, setTestBusy] = useState(false);
   const [editor, setEditor] = useState<{ source: RecordRow | null; editing: boolean } | null>(null);
   // 游标分页没有页码，只有「上一页用的是哪个游标」。这条轨迹就是 Pagination 的第 N 页。
@@ -75,7 +87,12 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
     const request = requestGates.current.profiles.begin();
     setProfiles((current) => ({ ...current, error: null, loading: true }));
     try {
+      const selected = new URLSearchParams(window.location.search).get("profile");
       const data = await apiGet<ListResponse>(generationProfilesPath(next));
+      if (selected && !data.items.some(row => text(row.id) === selected)) {
+        const matching = await apiGet<ListResponse>(generationProfilesPath({ ...defaultGenerationConfigQuery, search: selected }));
+        data.selectedProfile = matching.items.find(row => text(row.id) === selected) ?? null;
+      }
       if (request.isCurrent()) setProfiles({ data, error: null, cause: undefined, loading: false, refreshedAt: new Date().toISOString() });
     } catch (cause) {
       if (request.isCurrent()) setProfiles((current) => ({ ...current, error: errorMessage(cause, "Profile authority request failed"), cause, loading: false }));
@@ -97,7 +114,24 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
     const request = requestGates.current.jobs.begin();
     setRecentJobs((current) => ({ ...current, error: null, loading: true }));
     try {
-      const data = await apiGet<ListResponse>("/api/v2/admin/jobs?mode=image&limit=12");
+      const profile = selectionRef.current;
+      if (!profile) {
+        if (request.isCurrent()) setRecentJobs({ data: { items: [] }, error: null, cause: undefined, loading: false, refreshedAt: null });
+        return;
+      }
+      const params = new URLSearchParams({ mode: "image", sourceType: "admin_profile_test", search: text(profile.profileKey) || text(profile.id), limit: "25" });
+      const trackedId = new URLSearchParams(window.location.search).get("testJob");
+      const data = await apiGet<ListResponse>(`/api/v2/admin/jobs?${params}`);
+      if (trackedId && !data.items.some(job => text(job.id) === trackedId)) {
+        try {
+          const detail = await apiGet<{ request: RecordRow }>(`/api/v2/admin/jobs/${encodeURIComponent(trackedId)}`);
+          data.items = [detail.request, ...data.items];
+        } catch (cause) {
+          // A missing pinned job must not hide the successfully loaded recent tests.
+          if (request.isCurrent()) setRecentJobs({ data, error: errorMessage(cause, "Recent-job authority request failed"), cause, loading: false, refreshedAt: new Date().toISOString() });
+          return;
+        }
+      }
       if (request.isCurrent()) setRecentJobs({ data, error: null, cause: undefined, loading: false, refreshedAt: new Date().toISOString() });
     } catch (cause) {
       if (request.isCurrent()) setRecentJobs((current) => ({ ...current, error: errorMessage(cause, "Recent-job authority request failed"), cause, loading: false }));
@@ -114,11 +148,13 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
     const gates = requestGates.current;
     // 水合完成后才读地址栏，把 SSR 用的默认查询换成真正生效的筛选条件。
     const fromUrl = currentQuery();
+    setSelectedProfileId(new URLSearchParams(window.location.search).get("profile") ?? "");
     setQuery(fromUrl);
     setDraft(fromUrl);
     load(fromUrl);
     const restore = () => {
       const restored = currentQuery();
+      setSelectedProfileId(new URLSearchParams(window.location.search).get("profile") ?? "");
       setQuery(restored);
       setDraft(restored);
       // 回退到的那一页是哪一页，历史条目里没记；不知道就说不知道，把「上一页」置灰。
@@ -138,7 +174,13 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
 
   // SPEC: 任何改变结果集的动作都回到第一页 —— 所以 trails 默认清空，只有翻页自己传轨迹。
   function navigate(next: GenerationConfigQuery, mode: "push" | "replace" = "push", nextTrails: ConfigTrails = emptyTrails) {
-    const url = generationConfigWorkspaceUrl(window.location.pathname, window.location.search, next);
+    const params = new URLSearchParams(window.location.search);
+    if (next.search !== query.search || next.profileMode !== query.profileMode || next.profileStatus !== query.profileStatus || next.profileCursor !== query.profileCursor) {
+      params.delete("profile");
+      params.delete("testJob");
+      setSelectedProfileId("");
+    }
+    const url = generationConfigWorkspaceUrl(window.location.pathname, params.toString(), next);
     window.history[mode === "push" ? "pushState" : "replaceState"](null, "", url);
     setQuery(next);
     setDraft(next);
@@ -151,14 +193,21 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
     navigate({ ...draft, profileCursor: "", flagCursor: "" });
   }
 
-  const profileRows = useMemo(() => profiles.data?.items ?? [], [profiles.data]);
   const flagRows = flags.data?.items ?? [];
-  const selectedProfile = useMemo(() => profileRows.find((row) => text(row.id) === selectedProfileId) ?? profileRows[0] ?? null, [profileRows, selectedProfileId]);
-  const selectedId = text(selectedProfile?.id);
+  useEffect(() => { void loadJobs(); }, [loadJobs, selectedId, selectedProfile?.version]);
+
+  function selectProfile(id: string) {
+    const url = new URL(window.location.href);
+    url.searchParams.set("profile", id);
+    url.searchParams.delete("testJob");
+    window.history.pushState(null, "", `${url.pathname}${url.search}`);
+    setSelectedProfileId(id);
+  }
 
   function confirmWrite(input: ConfigCommand) {
     setConfirmation({
       title: input.title,
+      summary: input.summary,
       destructive: { expectedName: input.expected, inputLabel: "Confirmation" },
       consequence: input.consequence,
       reasonLabel: "Reason",
@@ -203,6 +252,14 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
           });
           // INTENT: 排队成功是 info 不是 success —— 图还没出来，运营要等下面的 recent jobs。
           toast({ tone: "info", title: t("Test image queued as {id}", { id: text(response.job.id) || t("an unnamed job") }) });
+          const jobId = text(response.job.id);
+          if (jobId) {
+            const url = new URL(window.location.href);
+            url.searchParams.set("profile", profileId);
+            url.searchParams.set("testJob", jobId);
+            window.history.replaceState(null, "", `${url.pathname}${url.search}`);
+            setSelectedProfileId(profileId);
+          }
           await loadJobs();
         } finally {
           setTestBusy(false);
@@ -227,7 +284,7 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
         <Tab active={query.tab === "settings"} count={flagRows.length} label="Settings" meta="Feature flags" onClick={() => navigate({ ...query, tab: "settings" })} />
       </div>
 
-      <form className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 md:grid-cols-2 xl:grid-cols-[minmax(240px,1fr)_170px_190px_170px_auto]" onSubmit={apply}>
+      <form className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 sm:grid-cols-2 xl:grid-cols-4" onSubmit={apply}>
         <Field label="Search" onChange={(search) => setDraft((current) => ({ ...current, search }))} search value={draft.search} />
         <Select label="Profile mode" onChange={(profileMode) => setDraft((current) => ({ ...current, profileMode }))} options={["", "image", "video"]} value={draft.profileMode} />
         <Select label="Profile status" onChange={(profileStatus) => setDraft((current) => ({ ...current, profileStatus }))} options={["", "draft", "active", "archived"]} value={draft.profileStatus} />
@@ -242,14 +299,14 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
         <>
           {!permissions.manageProfiles ? <p className="text-xs"><PermissionNotice permission="generation.config.write" /></p> : null}
           {permissions.manageProfiles && profiles.data ? profiles.data.authoringEnabled ? <div className="flex gap-2"><Action icon={<UploadCloud className="h-4 w-4" />} label="Create profile draft" onClick={() => setEditor({ source: null, editing: false })} />{selectedProfile ? <Action icon={<UploadCloud className="h-4 w-4" />} label="Create replacement draft" onClick={() => setEditor({ source: selectedProfile, editing: false })} /> : null}{selectedProfile?.status === "draft" ? <Action icon={<Activity className="h-4 w-4" />} label="Edit profile draft" onClick={() => setEditor({ source: selectedProfile, editing: true })} /> : null}</div> : <p role="status" className="text-sm text-[var(--ad-text-muted)]">{t("Profile authoring is disabled in this environment. Ask engineering to enable model diagnostics before creating or editing drafts.")}</p> : null}
-          {editor && permissions.manageProfiles && profiles.data?.authoringEnabled ? <GenerationProfileEditor key={`${String(editor.source?.id ?? "new")}:${editor.editing}`} source={editor.source} editing={editor.editing} onCancel={() => setEditor(null)} onSaved={id => { setEditor(null); setSelectedProfileId(id); setReview({ sampleCount: "", passCount: "", reviewUrl: "" }); navigate({ ...defaultGenerationConfigQuery, search: id }); toast({ tone: "success", title: t("Profile draft saved") }); }} /> : null}
-          {profiles.data ? profileRows.length === 0 ? <EmptyState hint={filtered ? "The complete profile authority query returned no matches." : "No built-in generation profiles are seeded yet."} title={filtered ? "No generation profiles match these filters." : "No built-in generation profiles are seeded yet."} /> : (
+          {editor && permissions.manageProfiles && profiles.data?.authoringEnabled ? <GenerationProfileEditor key={`${String(editor.source?.id ?? "new")}:${editor.editing}`} source={editor.source} editing={editor.editing} onCancel={() => setEditor(null)} onSaved={id => { setEditor(null); setReviews({}); navigate({ ...defaultGenerationConfigQuery, search: id }); selectProfile(id); toast({ tone: "success", title: t("Profile draft saved") }); }} /> : null}
+          {profiles.data ? profileRows.length === 0 && !selectedProfile ? <EmptyState hint={filtered ? "The complete profile authority query returned no matches." : "No built-in generation profiles are seeded yet."} title={filtered ? "No generation profiles match these filters." : "No built-in generation profiles are seeded yet."} /> : (
             <div className="grid gap-4 lg:grid-cols-[minmax(260px,0.8fr)_minmax(0,1.6fr)]">
               <div className="space-y-2 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3">{profileRows.map((profile) => {
                 const id = text(profile.id);
-                return <button aria-current={id === selectedId ? "true" : undefined} className={`w-full rounded-md border px-3 py-3 text-left ${id === selectedId ? "border-[var(--ad-ink)] bg-black/5" : "border-[var(--ad-border)]"}`} key={id} onClick={() => setSelectedProfileId(id)} type="button"><span className="block font-semibold">{text(profile.label) || text(profile.profileKey) || id}</span><span className="mt-1 block text-xs text-[var(--ad-text-muted)]">{enumLabel(text(profile.status))}{profile.enabled === false ? ` · ${t("Profile disabled")}` : ""} · v{format.display(profile.version)} · {enumLabel(text(profile.mode))}</span></button>;
+                return <button aria-current={id === selectedId ? "true" : undefined} className={`w-full rounded-md border px-3 py-3 text-left ${id === selectedId ? "border-[var(--ad-ink)] bg-black/5" : "border-[var(--ad-border)]"}`} key={id} onClick={() => selectProfile(id)} type="button"><span className="block font-semibold">{text(profile.label) || text(profile.profileKey) || id}</span><span className="mt-1 block text-xs text-[var(--ad-text-muted)]">{enumLabel(text(profile.status))}{profile.enabled === false ? ` · ${t("Profile disabled")}` : ""} · v{format.display(profile.version)} · {enumLabel(text(profile.mode))}</span></button>;
               })}</div>
-              {selectedProfile ? <ProfileDetail canWrite={permissions.manageProfiles} jobs={recentJobs.data?.items ?? []} onConfirm={confirmWrite} onTest={confirmTestImage} profile={selectedProfile} review={review} setReview={setReview} setTestPrompt={setTestPrompt} testBusy={testBusy} testPrompt={testPrompt} /> : null}
+              {selectedProfile ? <ProfileDetail canWrite={permissions.manageProfiles} jobs={recentJobs.loading ? [] : recentJobs.data?.items ?? []} jobsLoading={recentJobs.loading} onRefresh={() => void loadJobs()} onConfirm={confirmWrite} onTest={confirmTestImage} profile={selectedProfile} review={review} setReview={setReview} setTestPrompt={setTestPrompt} testBusy={testBusy} testPrompt={testPrompt} jobsError={Boolean(recentJobs.error)} /> : selectedProfileId && !profiles.loading ? <EmptyState title={t("No generation profiles match these filters.")} /> : null}
             </div>
           ) : null}
           {profiles.data ? <ListPagination cursor={query.profileCursor} loading={profiles.loading} onNavigate={(profileCursor, trail) => navigate({ ...query, profileCursor }, "push", { ...trails, profiles: trail })} pageInfo={profiles.data.pageInfo ?? emptyPageInfo} rowCount={profileRows.length} trail={trails.profiles} /> : null}
@@ -266,9 +323,12 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
   );
 }
 
-function ProfileDetail({ canWrite, jobs, onConfirm, onTest, profile, review, setReview, setTestPrompt, testBusy, testPrompt }: {
+function ProfileDetail({ canWrite, jobs, jobsLoading, jobsError, onRefresh, onConfirm, onTest, profile, review, setReview, setTestPrompt, testBusy, testPrompt }: {
   canWrite: boolean;
   jobs: RecordRow[];
+  jobsLoading: boolean;
+  jobsError: boolean;
+  onRefresh: () => void;
   onConfirm: (input: ConfigCommand) => void;
   onTest: () => void;
   profile: RecordRow;
@@ -284,7 +344,7 @@ function ProfileDetail({ canWrite, jobs, onConfirm, onTest, profile, review, set
   const status = text(profile.status);
   const mode = text(profile.mode);
   const rollbackTarget = profile.rollbackTarget && typeof profile.rollbackTarget === "object" && !Array.isArray(profile.rollbackTarget) ? profile.rollbackTarget as RecordRow : null;
-  const relatedJobs = jobs.filter((job) => [text(profile.profileKey), id].includes(text(job.profileId)));
+  const relatedJobs = jobs.filter((job) => job.sourceType === "admin_profile_test" && job.profileVersion === profile.version && [text(profile.profileKey), id].includes(text(job.profileId)));
   const sampleCount = integer(review.sampleCount);
   const passCount = integer(review.passCount);
   const reviewReady = mode !== "image" || (sampleCount !== null && passCount !== null && sampleCount >= 20 && passCount <= sampleCount && passCount / sampleCount >= 0.8);
@@ -293,13 +353,19 @@ function ProfileDetail({ canWrite, jobs, onConfirm, onTest, profile, review, set
     {canWrite ? <div className="flex flex-wrap gap-2">
       {status === "draft" ? <Action icon={<Activity className="h-4 w-4" />} label="Configuration check" onClick={() => onConfirm({ title: t("Check profile configuration {id}", { id }), completed: t("Configuration check finished for {id}", { id }), endpoint: `/api/v2/admin/generation/model-profiles/${id}/commands/dry-run`, method: "POST", expected: id, consequence: { effect: t("The profile is validated against the runtime. Nothing customer-facing changes."), reversible: true }, payload: (reason) => ({ reason }) })} /> : null}
       {mode === "image" && status !== "archived" ? <Action disabled={testBusy} icon={testBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />} label="Generate test image" onClick={onTest} /> : null}
-      {status === "draft" ? <Action disabled={!reviewReady} icon={<UploadCloud className="h-4 w-4" />} label="Publish" onClick={() => onConfirm({ title: t("Publish profile {id}", { id }), completed: t("Profile {id} published", { id }), endpoint: `/api/v2/admin/generation/model-profiles/${id}/commands/publish`, method: "POST", expected: id, consequence: { effect: t("Every new customer generation runs on this profile from now on, and the previous active version is archived. A rollback restores it; images already produced are not regenerated. Watch the catalog afterwards: any published Character Release pinned to the archived version goes stale at the next monitor pass, and a public Character serving it drops to unlisted — a rollback does not bring either back, only publishing a new Release does."), reversible: true }, payload: (reason) => ({ reason, ...(mode === "image" ? { dryRunSummary: { reviewSource: "admin_console_manual_consistency_review", reviewStatus: "manual_passed", consistencySampleCount: sampleCount, consistencyPassCount: passCount, consistencyRate: sampleCount && passCount !== null ? passCount / sampleCount : 0, reviewUrl: review.reviewUrl.trim() || undefined } } : {}) }) })} /> : null}
+      {status === "draft" ? <Action disabled={!reviewReady} icon={<UploadCloud className="h-4 w-4" />} label="Publish" onClick={() => onConfirm({ title: t("Publish profile {id}", { id }), summary: `${t("Review evidence")}: ${id} · v${format.display(profile.version)} · ${review.passCount}/${review.sampleCount} · ${review.reviewUrl || "—"}`, completed: t("Profile {id} published", { id }), endpoint: `/api/v2/admin/generation/model-profiles/${id}/commands/publish`, method: "POST", expected: id, consequence: { effect: t("Every new customer generation runs on this profile from now on, and the previous active version is archived. A rollback restores it; images already produced are not regenerated. Watch the catalog afterwards: any published Character Release pinned to the archived version goes stale at the next monitor pass, and a public Character serving it drops to unlisted — a rollback does not bring either back, only publishing a new Release does."), reversible: true }, payload: (reason) => ({ reason, ...(mode === "image" ? { dryRunSummary: { reviewSource: "admin_console_manual_consistency_review", reviewStatus: "manual_passed", consistencySampleCount: sampleCount, consistencyPassCount: passCount, consistencyRate: sampleCount && passCount !== null ? passCount / sampleCount : 0, reviewUrl: review.reviewUrl.trim() || undefined } } : {}) }) })} /> : null}
       {status === "active" && rollbackTarget ? <Action icon={<RotateCcw className="h-4 w-4" />} label="Rollback" onClick={() => onConfirm({ title: t("Rollback profile {id}", { id }), completed: t("Profile {id} rolled back", { id }), endpoint: `/api/v2/admin/generation/model-profiles/${id}/commands/rollback`, method: "POST", expected: id, consequence: { effect: t("Customer generations go back to the previously active profile version from now on. This needs an earlier archived version of the same profile key — without one the authority refuses and nothing changes."), reversible: true }, payload: (reason) => ({ reason }) })} /> : null}
       {status === "active" && Boolean(profile.enabled) ? <Action icon={<X className="h-4 w-4" />} label="Disable" onClick={() => onConfirm({ title: t("Disable profile {id}", { id }), completed: t("Profile {id} disabled", { id }), endpoint: `/api/v2/admin/generation/model-profiles/${id}`, method: "PATCH", expected: id, consequence: { effect: t("New requests stop using this profile, and this version can never be enabled again — the authority only accepts enabled:false here. Restoring service means publishing a replacement version or rolling back to an earlier one. Any published Character Release pinned to this version also goes stale at the next monitor pass, and a public Character serving it drops to unlisted — neither comes back on its own; each one needs a new Release."), reversible: false }, payload: (reason) => ({ reason, enabled: false }) })} /> : null}
     </div> : null}
     {canWrite && status === "active" && rollbackTarget ? <p className="text-sm text-[var(--ad-text-muted)]">{t("Rollback target: {id} · v{version}", { id: text(rollbackTarget.id), version: String(rollbackTarget.version ?? "—") })}</p> : null}
     {canWrite && status === "active" && !rollbackTarget ? <p className="text-sm text-[var(--ad-text-muted)]">{t("No earlier archived version is available. Create and verify a replacement draft to restore service.")}</p> : null}
     {mode === "image" && status !== "archived" ? <div className="grid gap-3 rounded-md border border-[var(--ad-border)] p-3 md:grid-cols-2"><Field label="Test image prompt" onChange={setTestPrompt} value={testPrompt} /><p className="self-end text-xs text-[var(--ad-text-muted)]">{t(relatedJobs.length === 1 ? "{count} recent profile test job" : "{count} recent profile test jobs", { count: relatedJobs.length })}</p></div> : null}
+    {mode === "image" ? <div className="space-y-2">
+      <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-semibold">{t("Recent jobs")}</h3><div className="flex items-center gap-3"><Action disabled={jobsLoading} icon={<RotateCcw className="h-4 w-4" />} label="Refresh" onClick={onRefresh} /><a className="text-sm underline" href={`/admin/ops/jobs?${new URLSearchParams({ mode: "image", sourceType: "admin_profile_test", search: text(profile.profileKey) || id })}`}>{t("View all")}</a></div></div>
+      {jobsLoading ? <p role="status" className="text-xs text-[var(--ad-text-muted)]">{t("Loading jobs…")}</p> : !jobsError && relatedJobs.length === 0 ? <p className="text-xs text-[var(--ad-text-muted)]">{t("No test jobs")}</p> : null}
+      {relatedJobs.map(job => <div key={text(job.id)} className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-[var(--ad-border)] py-2 text-xs"><a className="break-all font-mono underline" href={`/admin/ops/jobs?mode=image&job=${encodeURIComponent(text(job.id))}`}>{text(job.id)}</a><span>{enumLabel(text(job.legacyStatus) || text(job.status) || "unknown")}</span><span>{Number(job.assetCount) > 0 ? `${t("Assets")}: ${job.assetCount}` : t("No output")}</span>{job.errorCode ? <span className="text-[var(--ad-red-text)]">{text(job.errorCode)}</span> : null}</div>)}
+    </div> : null}
+    {mode === "image" && status === "draft" ? <p className="break-all text-xs text-[var(--ad-text-muted)]">{t("Review evidence")}: {id} · v{format.display(profile.version)}</p> : null}
     {mode === "image" && status === "draft" ? <div className="grid gap-3 rounded-md border border-[var(--ad-border)] p-3 md:grid-cols-3"><Field label="Consistency samples (≥20)" onChange={(sampleCount) => setReview({ ...review, sampleCount })} value={review.sampleCount} /><Field label="Consistency passes (≥80%)" onChange={(passCount) => setReview({ ...review, passCount })} value={review.passCount} /><Field label="Review evidence URL" onChange={(reviewUrl) => setReview({ ...review, reviewUrl })} value={review.reviewUrl} /></div> : null}
     {/* INTENT: Publish 在一致性复核没达标时是灰的，而灰按钮不会说自己为什么灰——
         运营只能猜是权限不够还是数字不对。把还差什么直接写出来。 */}
@@ -361,11 +427,11 @@ function AuthorityError<T>({ onRetry, state }: { onRetry: () => void; state: Aut
 function Loading() {
   const { t } = useAdminI18n(); return <div aria-label={t("Loading profiles…")} className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" role="status"><span className="inline-flex items-center gap-2 text-sm text-[var(--ad-text-muted)]"><Loader2 className="h-4 w-4 animate-spin" />{t("Loading profiles…")}</span></div>; }
 function Tab({ active, count, label, meta, onClick }: { active: boolean; count: number; label: string; meta: string; onClick: () => void }) { const { t } = useAdminI18n(); return <button aria-current={active ? "page" : undefined} className={`px-4 py-3 text-left ${active ? "bg-[var(--ad-ink)] text-white" : "bg-[var(--ad-surface)]"}`} onClick={onClick} type="button"><span className="flex justify-between font-semibold"><span>{t(label)}</span><span>{count}</span></span><span className="mt-1 block text-xs opacity-70">{t(meta)}</span></button>; }
-function Field({ label, onChange, search = false, value }: { label: string; onChange: (value: string) => void; search?: boolean; value: string }) { const { t } = useAdminI18n(); return <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t(label)}<input className="min-h-11 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm" onChange={(event) => onChange(event.target.value)} role={search ? "searchbox" : undefined} value={value} /></label>; }
+function Field({ label, onChange, search = false, value }: { label: string; onChange: (value: string) => void; search?: boolean; value: string }) { const { t } = useAdminI18n(); return <label className="grid min-w-0 gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t(label)}<input className="min-h-11 min-w-0 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm" onChange={(event) => onChange(event.target.value)} role={search ? "searchbox" : undefined} value={value} /></label>; }
 // SPEC: 选项文案走 enumLabel —— 枚举值与 StatusBadge 共用同一份译文（zhValues）。
 // INTENT: booleanOptions 是给"开关状态"这类布尔筛选留的口子。它的取值是查询串里的 "true"/"false"，
 //         不是领域枚举；把这两个词塞进全局 zhValues，别处任何一个 true 都会跟着被译成"已启用"。
-function Select({ booleanOptions = false, label, onChange, options, value }: { booleanOptions?: boolean; label: string; onChange: (value: string) => void; options: string[]; value: string }) { const { t, value: enumLabel } = useAdminI18n(); return <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t(label)}<select className="min-h-11 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm" onChange={(event) => onChange(event.target.value)} value={value}>{options.map((option) => <option key={option || "all"} value={option}>{option ? (booleanOptions ? t(option === "true" ? "Enabled" : "Disabled") : enumLabel(option)) : t("All")}</option>)}</select></label>; }
+function Select({ booleanOptions = false, label, onChange, options, value }: { booleanOptions?: boolean; label: string; onChange: (value: string) => void; options: string[]; value: string }) { const { t, value: enumLabel } = useAdminI18n(); return <label className="grid min-w-0 gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t(label)}<select className="min-h-11 min-w-0 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm" onChange={(event) => onChange(event.target.value)} value={value}>{options.map((option) => <option key={option || "all"} value={option}>{option ? (booleanOptions ? t(option === "true" ? "Enabled" : "Disabled") : enumLabel(option)) : t("All")}</option>)}</select></label>; }
 function Action({ disabled = false, icon, label, onClick }: { disabled?: boolean; icon: ReactNode; label: string; onClick: () => void }) { const { t } = useAdminI18n(); return <button className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[var(--ad-border)] px-3 text-sm disabled:opacity-40" disabled={disabled} onClick={onClick} type="button">{icon}{t(label)}</button>; }
 // SPEC: 配置档案和功能开关两张表的分页条形状完全一样，只有游标属于哪一张不同。
 function ListPagination({ cursor, loading, onNavigate, pageInfo, rowCount, trail }: {

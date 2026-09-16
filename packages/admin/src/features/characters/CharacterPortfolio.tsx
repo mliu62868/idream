@@ -8,7 +8,6 @@ import { useCallback, useEffect, useState } from "react";
 import { useAdminFormat } from "@/components/admin/ui/format";
 import { Pagination } from "@/components/admin/ui/Pagination";
 import {
-  LoadingWorkspace,
   WorkspaceButton,
   fieldClass,
 } from "@/features/operations/WorkspaceUi";
@@ -126,6 +125,9 @@ export function CharacterPortfolio({
   //         再加一条 severity=error 的「cutover 被阻塞，需人工核对」——此前前端只解构了
   //         items/pageInfo/asOf，两条都被丢掉，运营在这页做下架和资源分配决定时看不到它们。
   const dataQuality = portfolio.data?.dataQuality ?? EMPTY_PORTFOLIO_DATA_QUALITY;
+  // 只有与当前任务无关的毛利提示折叠；数据缺失和发布阻塞继续常驻。
+  const backgroundQuality = performanceMode ? [] : dataQuality.filter((note) => note.code === "character_margin_payment_authority_unavailable" && note.severity !== "error");
+  const visibleQuality = dataQuality.filter((note) => !backgroundQuality.includes(note));
   const freshness = portfolio.data?.freshness ?? null;
   const loading = portfolio.loading;
   const error = portfolio.error;
@@ -402,9 +404,9 @@ export function CharacterPortfolio({
           </button>
         </div>
       ) : null}
-      {dataQuality.length > 0 ? (
+      {visibleQuality.length > 0 ? (
         <ul aria-label={t("Data quality")} className="mt-5 grid gap-2">
-          {dataQuality.map((note) => (
+          {visibleQuality.map((note) => (
             <li
               className={cn(
                 "rounded-lg p-4 text-sm",
@@ -422,13 +424,15 @@ export function CharacterPortfolio({
       ) : null}
       <div className="mt-6">
         {loading && items.length === 0 ? (
-          <LoadingWorkspace
-            label={
-              performanceMode
-                ? "Loading release-attributed portfolio"
-                : "Loading characters"
-            }
-          />
+          <div role="status" aria-label={t(performanceMode ? "Loading release-attributed portfolio" : "Loading characters")} className={performanceMode ? "grid gap-3" : "grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"}>
+            {Array.from({ length: performanceMode ? 4 : 8 }, (_, index) => (
+              <div aria-hidden="true" className="overflow-hidden rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]" key={index}>
+                {!performanceMode ? <div className="aspect-[6/5] animate-pulse bg-[var(--ad-surface-subtle)]" /> : null}
+                <div className="space-y-3 p-4"><div className="h-5 w-2/3 animate-pulse rounded bg-[var(--ad-surface-subtle)]" /><div className="h-4 w-1/2 animate-pulse rounded bg-[var(--ad-surface-subtle)]" /></div>
+                <div className="h-12 border-t border-[var(--ad-border)]" />
+              </div>
+            ))}
+          </div>
         ) : items.length === 0 ? (
           error ? null : (
             <CharacterListEmptyState
@@ -465,6 +469,10 @@ export function CharacterPortfolio({
           </>
         )}
       </div>
+      {backgroundQuality.length > 0 ? <details className="mt-4 text-xs text-[var(--ad-text-muted)]">
+        <summary className="cursor-pointer">{t("Data quality")}</summary>
+        {backgroundQuality.map((note) => <p className="mt-2" key={note.code}>{t(note.message)}</p>)}
+      </details> : null}
       <div className="mt-4">
         <Pagination
           detail={

@@ -177,7 +177,7 @@ export function CharacterMediaOperationsCard({
                   </span>
                   {operation.recoverability.reason ? (
                     <span className="mt-1 block text-[var(--ad-text-muted)]">
-                      {t(operation.recoverability.reason)}
+                      {recoveryReason(operation.recoverability.reason, t)}
                     </span>
                   ) : null}
                   {operation.modality === "voice" &&
@@ -287,4 +287,9 @@ export function CharacterMediaOperationsCard({
       ) : null}
     </>
   );
+}
+
+function recoveryReason(reason: string, t: (key: string, values?: Record<string, string | number>) => string) {
+  const voiceFailure = /^Voice request ended with ([a-z_]+); no retryability evidence is recorded\.$/.exec(reason);
+  return voiceFailure ? t("Voice request ended with {code}; no retryability evidence is recorded.", { code: voiceFailure[1] }) : t(reason);
 }

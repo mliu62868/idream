@@ -83,6 +83,6 @@ export function FormFooter({
 }
 
 export const INPUT_CLASS =
-  "h-9 w-full rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)] outline-none placeholder:text-[var(--ad-text-muted)] focus:border-[var(--ad-ink)]";
+  "h-11 w-full min-w-0 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)] outline-none transition-colors disabled:cursor-not-allowed disabled:bg-[var(--ad-surface-subtle)] placeholder:text-[var(--ad-text-muted)] focus:border-[var(--ad-ink)]";
 export const TEXTAREA_CLASS =
-  "min-h-24 w-full rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-2 text-sm text-[var(--ad-text)] outline-none placeholder:text-[var(--ad-text-muted)] focus:border-[var(--ad-ink)]";
+  "min-h-24 w-full min-w-0 resize-y rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-2 text-sm text-[var(--ad-text)] outline-none transition-colors disabled:cursor-not-allowed disabled:bg-[var(--ad-surface-subtle)] placeholder:text-[var(--ad-text-muted)] focus:border-[var(--ad-ink)]";

@@ -1039,7 +1039,7 @@ function CharacterDetail({
       ) : null}
       <div
         aria-label={t("Character workspace area")}
-        className="mt-5 grid grid-cols-3 gap-1 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface-muted)] p-1 sm:max-w-xl"
+        className="mt-5 grid grid-cols-3 gap-1 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface-subtle)] p-1 sm:max-w-xl"
         role="group"
       >
         {characterWorkspaceAreas.map((area) => (
@@ -1124,6 +1124,7 @@ function CharacterDetail({
           />
         ) : tab === "soul" ? (
           <CharacterSoulPanel
+            actorId={actorId}
             canWrite={guardedPermissions.writeProject}
             data={data}
             key={data.soul.current.contentVersionId}

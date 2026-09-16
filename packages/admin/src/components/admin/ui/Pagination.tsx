@@ -70,7 +70,7 @@ export function Pagination({
     >
       <div className="min-w-0 space-y-1">
         <p className="text-xs text-[var(--ad-text-muted)]">
-          {totalCount === null
+          {loading && rowCount === 0 ? t("Loading…") : totalCount === null
             ? t("Showing {count} rows", { count: rowCount })
             : t("Showing {from}–{to} of {total}", { from, to, total: totalCount })}
         </p>

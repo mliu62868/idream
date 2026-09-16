@@ -3,13 +3,15 @@ import { describe, expect, it } from "vitest";
 import { BillingWorkspace } from "./BillingWorkspace";
 
 describe("Billing workspace permission surface", () => {
-  it("keeps authority filters visible but hides ledger mutation without billing.ledger.adjust", () => {
+  it("keeps task navigation visible but hides ledger mutation without billing.ledger.adjust", () => {
     const html = renderToStaticMarkup(
       <BillingWorkspace canAdjust={false} canReconcile={false} canRefund={false} />,
     );
 
     expect(html).toContain("Orders &amp; Billing");
-    expect(html).toContain("Search billing records");
+    expect(html).toContain("Checkout exceptions");
+    expect(html).toContain("Subscriptions");
+    expect(html).not.toContain("Search billing records");
     expect(html).toContain("Adjusting customer Dreamcoin balances is unavailable");
     expect(html).toContain("Reconciling checkout exceptions is unavailable");
     expect(html).toContain("Refunding subscriptions is unavailable");
