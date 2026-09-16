@@ -199,11 +199,24 @@ export function ChatHubWorkspace() {
                       href={`/chat/${row.id}`}
                     >
                       <div className="flex items-center justify-between gap-3">
-                        <span className="truncate text-[16px] font-bold text-white">
-                          {row.title ?? "Untitled chat"}
+                        <span className="flex min-w-0 items-center gap-2">
+                          {row.unreadProactiveAt ? (
+                            <span
+                              aria-hidden
+                              className="size-2 shrink-0 rounded-full bg-[rgb(233,74,124)]"
+                              data-testid="chat-hub-unread-dot"
+                            />
+                          ) : null}
+                          <span className="truncate text-[16px] font-bold text-white">
+                            {row.title ?? "Untitled chat"}
+                          </span>
                         </span>
                         <span className="shrink-0 text-[12px] font-medium text-[rgb(114,113,112)]">
-                          {formatRelative(row.lastMessageAt)}
+                          {row.unreadProactiveAt ? (
+                            <span className="text-[rgb(233,74,124)]">New message</span>
+                          ) : (
+                            formatRelative(row.lastMessageAt)
+                          )}
                         </span>
                       </div>
                       {row.status === "archived" ? (

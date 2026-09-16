@@ -329,9 +329,7 @@ function environmentDefaultVoiceId(
       ? env.POCKET_TTS_DEFAULT_VOICE_ID
       : providerKey === "fish_audio"
         ? env.FISH_AUDIO_DEFAULT_VOICE_ID
-        : providerKey === "pipeline"
-          ? (env.PIPELINE_VOICE_DEFAULT_VOICE_ID ?? "default")
-          : "default";
+        : "default";
   return catalog.some((voice) => voice.id === configured)
     ? configured
     : catalog[0]!.id;
@@ -355,10 +353,7 @@ function systemVoiceCatalog(
           ...FISH_AUDIO_CATALOG,
         ];
   }
-  const configured =
-    providerKey === "pipeline"
-      ? (env.PIPELINE_VOICE_DEFAULT_VOICE_ID ?? "default")
-      : "default";
+  const configured = "default";
   return [
     {
       id: configured,

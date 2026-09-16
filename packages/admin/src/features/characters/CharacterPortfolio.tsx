@@ -2,7 +2,7 @@
 
 import { useAdminI18n } from "@/components/admin/i18n";
 import Link from "next/link";
-import type { AdminPageInfo, CharacterPortfolioItem } from "@idream/shared/admin";
+import type { AdminPageInfo, CharacterPortfolioItem, DataQualityIssue } from "@idream/shared/admin";
 import { Plus, Search } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useAdminFormat } from "@/components/admin/ui/format";
@@ -35,6 +35,7 @@ import { CharacterPortfolioCard } from "./CharacterPortfolioCard";
 
 // INTENT: 稳定引用，避免"投影还没到"时每次渲染都换一个新的空值。
 const EMPTY_PORTFOLIO_ITEMS: readonly CharacterPortfolioItem[] = [];
+const EMPTY_PORTFOLIO_DATA_QUALITY: readonly DataQualityIssue[] = [];
 const EMPTY_PORTFOLIO_PAGE_INFO: AdminPageInfo = {
   endCursor: null,
   hasNextPage: false,
@@ -120,6 +121,12 @@ export function CharacterPortfolio({
   const items = portfolio.data?.items ?? EMPTY_PORTFOLIO_ITEMS;
   const pageInfo = portfolio.data?.pageInfo ?? EMPTY_PORTFOLIO_PAGE_INFO;
   const asOf = portfolio.data?.asOf ?? null;
+  // SPEC: 权威随每页一起下发的可信度声明，跟着数据一起显示。
+  // INTENT: 这个响应恒定带一条「毛利在拿到收款权威之前无效」，出现孤儿 Character Project 时
+  //         再加一条 severity=error 的「cutover 被阻塞，需人工核对」——此前前端只解构了
+  //         items/pageInfo/asOf，两条都被丢掉，运营在这页做下架和资源分配决定时看不到它们。
+  const dataQuality = portfolio.data?.dataQuality ?? EMPTY_PORTFOLIO_DATA_QUALITY;
+  const freshness = portfolio.data?.freshness ?? null;
   const loading = portfolio.loading;
   const error = portfolio.error;
 
@@ -395,6 +402,24 @@ export function CharacterPortfolio({
           </button>
         </div>
       ) : null}
+      {dataQuality.length > 0 ? (
+        <ul aria-label={t("Data quality")} className="mt-5 grid gap-2">
+          {dataQuality.map((note) => (
+            <li
+              className={cn(
+                "rounded-lg p-4 text-sm",
+                note.severity === "error"
+                  ? "bg-[var(--ad-red-bg)] text-[var(--ad-red-text)]"
+                  : "bg-[var(--ad-yellow-bg)] text-[var(--ad-yellow-text)]",
+              )}
+              key={note.code}
+              role={note.severity === "error" ? "alert" : undefined}
+            >
+              {t(note.message)}
+            </li>
+          ))}
+        </ul>
+      ) : null}
       <div className="mt-6">
         {loading && items.length === 0 ? (
           <LoadingWorkspace
@@ -444,7 +469,10 @@ export function CharacterPortfolio({
         <Pagination
           detail={
             asOf
-              ? t("Fresh as of {time}", { time: format.dateTime(asOf) })
+              // 权威说这一页降级了（例如有孤儿 Character Project 行被排除），就别说"数据新鲜"。
+              ? freshness === "degraded"
+                ? t("Degraded as of {time}", { time: format.dateTime(asOf) })
+                : t("Fresh as of {time}", { time: format.dateTime(asOf) })
               : t("Not loaded yet")
           }
           hasNext={Boolean(pageInfo.hasNextPage && pageInfo.endCursor)}

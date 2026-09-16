@@ -304,6 +304,30 @@ export type PublicAgeVerificationStatus = z.infer<
   typeof ageVerificationStatusSchema
 >;
 
+// SPEC: 发起一次年龄验证会话的返回值。
+// INTENT: provider 给的 url 是要把用户直接送过去的外链，只接受 http(s)——
+//   javascript:/data: 也能通过 new URL()，放行等于给自己开一个跳转漏洞。
+const ageVerificationSessionResponseSchema = successEnvelope(
+  z
+    .object({
+      verification: z
+        .object({ id: nonEmptyString, status: ageVerificationStatusSchema })
+        .passthrough(),
+      url: z
+        .string()
+        .refine((value) => {
+          try {
+            return ["http:", "https:"].includes(new URL(value).protocol);
+          } catch {
+            return false;
+          }
+        }, "Age verification provider returned an unusable link")
+        .nullable()
+        .optional(),
+    })
+    .passthrough(),
+);
+
 const billingPortalResponseSchema = successEnvelope(
   z
     .object({
@@ -346,6 +370,9 @@ const publicTagSchema = z
   .object({
     label: nonEmptyString,
     slug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+    // 创建向导要据此给标签打 18+ 标记，所以必须在契约里声明 ——
+    // 靠 .passthrough() 带过来的字段在类型上是 unknown，用不了。
+    isSensitive: z.boolean(),
     isMutedByDefault: z.boolean(),
     isMutedByUser: z.boolean(),
     publicCharacterCount: nonNegativeInteger,
@@ -451,6 +478,9 @@ const chatSessionSchema = z
     status: nonEmptyString,
     memoryEnabled: z.boolean(),
     lastMessageAt: timestamp.nullable(),
+    // Set when the Character reached out on its own and the user has not opened
+    // the session since. Optional so an older server keeps parsing.
+    unreadProactiveAt: timestamp.nullable().optional(),
   })
   .passthrough();
 
@@ -1127,6 +1157,20 @@ const generationRetryQuoteResponseSchema = successEnvelope(
   z.object({ quote: generationRetryQuoteSchema }).strict(),
 );
 
+// SPEC: 账目随 job 一起下发，列表和详情用同一份。
+// INTENT: 前台原本只能说「已退款」，说不出退了多少、请求几张交付几张；服务端一直在算
+//   这几项，之前被 zod 剥掉了。
+const generationJobCostSchema = z
+  .object({
+    charged: nonNegativeInteger,
+    refunded: nonNegativeInteger,
+    finalCharge: nonNegativeInteger,
+    assetCount: nonNegativeInteger,
+    requestedCount: nonNegativeInteger,
+    missingOutputs: nonNegativeInteger,
+  })
+  .passthrough();
+
 const generationJobSchema = z
   .object({
     id: nonEmptyString,
@@ -1136,6 +1180,7 @@ const generationJobSchema = z
     outputCount: nonNegativeInteger,
     errorCode: z.string().nullable(),
     createdAt: timestamp,
+    cost: generationJobCostSchema.optional(),
   })
   .passthrough();
 
@@ -1414,6 +1459,7 @@ export type RuntimeGenerationRetryQuote = z.infer<
   typeof generationRetryQuoteSchema
 >;
 export type RuntimeGenerationJob = z.infer<typeof generationJobSchema>;
+export type RuntimeGenerationJobCost = z.infer<typeof generationJobCostSchema>;
 export type RuntimeWorkspaceMediaItem = z.infer<
   typeof workspaceMediaItemSchema
 >;
@@ -1459,6 +1505,14 @@ export function parseAgeVerificationStatusResponse(payload: unknown) {
     ageVerificationStatusResponseSchema,
     payload,
     "age verification status",
+  ).data;
+}
+
+export function parseAgeVerificationSessionResponse(payload: unknown) {
+  return parseContract(
+    ageVerificationSessionResponseSchema,
+    payload,
+    "age verification session",
   ).data;
 }
 

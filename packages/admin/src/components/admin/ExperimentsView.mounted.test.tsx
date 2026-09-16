@@ -48,7 +48,7 @@ describe("ExperimentsView lifecycle commands", () => {
   });
 
   it("requires a confirmation and carries the operator's own reason into the audit payload", async () => {
-    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
       const path = String(input);
       if (path.includes("/commands/stop")) {
         return Response.json({ ok: true, data: { experiment: runningExperiment } });

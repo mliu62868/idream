@@ -19,8 +19,6 @@ import { GET as listContentAssets } from "@/app/api/v2/admin/assets/route";
 import { GET as getContentAsset } from "@/app/api/v2/admin/assets/[id]/route";
 import { GET as listPlacements } from "@/app/api/v2/admin/content/placements/route";
 import { GET as getPlacement } from "@/app/api/v2/admin/content/placements/[id]/route";
-import { GET as listReviewQueue } from "@/app/api/v2/admin/content/review-queue/route";
-import { POST as reviewSubmission } from "@/app/api/v2/admin/content/review-queue/[id]/decision/route";
 import { GET as getContentCharacter } from "@/app/api/v2/admin/content/characters/[id]/route";
 import { POST as setCharacterVisibility } from "@/app/api/v2/admin/content/characters/[id]/visibility/route";
 import {
@@ -58,10 +56,6 @@ describe("remaining Admin inventory provenance", () => {
   const placementIds = Object.fromEntries(
     classes.map((dataClass) => [dataClass, `${prefix}placement-${dataClass}`]),
   ) as Record<(typeof classes)[number], string>;
-  const submissionIds = Object.fromEntries(
-    classes.map((dataClass) => [dataClass, `${prefix}submission-${dataClass}`]),
-  ) as Record<(typeof classes)[number], string>;
-
   beforeAll(async () => {
     await purgeTestData(prefix);
     await createUser({ id: actorId, role: "admin", dataClass: "internal" });
@@ -167,14 +161,7 @@ describe("remaining Admin inventory provenance", () => {
           metadata: {},
         },
       });
-      await prisma.characterSubmission.create({
-        data: {
-          id: submissionIds[dataClass],
-          characterId: characterIds[dataClass],
-          submitterId: owners[dataClass],
-          status: "pending",
-        },
-      });
+
     }
   });
 
@@ -183,7 +170,7 @@ describe("remaining Admin inventory provenance", () => {
     await prisma.$disconnect();
   });
 
-  it("keeps character portfolio, workspace, review, and merchandising operational-only", async () => {
+  it("keeps character portfolio, workspace, and merchandising operational-only", async () => {
     const portfolio = await responseData(
       await listCharacterPortfolio(
         adminRequest(
@@ -228,36 +215,6 @@ describe("remaining Admin inventory provenance", () => {
         select: { version: true },
       }),
     ).resolves.toEqual({ version: 1 });
-
-    const review = await responseData(
-      await listReviewQueue(
-        adminRequest(
-          `/api/v2/admin/content/review-queue?search=${prefix}&limit=100`,
-        ),
-      ),
-    );
-    expect(
-      new Set(
-        (review.items as Array<{ submissionId: string }>).map(
-          (item) => item.submissionId,
-        ),
-      ),
-    ).toEqual(new Set([submissionIds.customer, submissionIds.internal]));
-
-    await expectNotFound(
-      reviewSubmission(
-        adminRequest(
-          `/api/v2/admin/content/review-queue/${submissionIds.fixture}/decision`,
-          "POST",
-          {
-            decision: "reject",
-            reason: "fixture authority must stay isolated",
-            confirmation: submissionIds.fixture,
-          },
-        ),
-        { params: Promise.resolve({ id: submissionIds.fixture }) },
-      ),
-    );
 
     await expectNotFound(
       getContentCharacter(

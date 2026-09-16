@@ -1,0 +1,66 @@
+Generation accelerator lease acquired; ComfyUI queues idle
+{"phase": "validation", "backend": "sdpa", "times_ms": [], "route": "torch SDPA, unchanged dtype", "first_call_ms": 283.03904199856333, "memory_after_first": {"mps_current_bytes": 745328640, "mps_driver_bytes": 1074233344, "process_rss_high_water_bytes": 1991458816}, "error": {"finite": true, "reference_rms": 0.019704855267508734, "rmse": 0.00011762154416659199, "relative_rmse": 0.005969165597503156, "max_abs": 0.0007013269779718306, "cosine": 0.9999907125531078}, "operator_screen_pass": true}
+{"phase": "validation", "backend": "mps-flash", "times_ms": [], "route": "mps_flash_attn native extension", "first_call_ms": 1652.8222500055563, "memory_after_first": {"mps_current_bytes": 745328640, "mps_driver_bytes": 2148220928, "process_rss_high_water_bytes": 1999585280}, "error": {"finite": true, "reference_rms": 0.019704855267508734, "rmse": 3.277652021164939e-05, "relative_rmse": 0.0016633727965358102, "max_abs": 0.00022703759389315625, "cosine": 0.9999986167522068}, "operator_screen_pass": true}
+{"phase": "validation", "backend": "mtl-auto", "times_ms": [], "route": "mtl v2_bf16; fp16 conversion=False", "first_call_ms": 489.1530830063857, "memory_after_first": {"mps_current_bytes": 745337344, "mps_driver_bytes": 2156625920, "process_rss_high_water_bytes": 2004467712}, "error": {"finite": true, "reference_rms": 0.019704855267508734, "rmse": 0.0001468127443836411, "relative_rmse": 0.007450587298944545, "max_abs": 0.0006665342179362332, "cosine": 0.9999722473035696}, "operator_screen_pass": false}
+{"phase": "validation", "backend": "mtl-fp16", "times_ms": [], "route": "mtl v2; fp16 conversion=True", "first_call_ms": 432.78500001179054, "memory_after_first": {"mps_current_bytes": 745337600, "mps_driver_bytes": 2156609536, "process_rss_high_water_bytes": 2004762624}, "error": {"finite": true, "reference_rms": 0.019704855267508734, "rmse": 3.3725082763593904e-05, "relative_rmse": 0.0017115113156503652, "max_abs": 0.00022703759389315625, "cosine": 0.9999985359467479}, "operator_screen_pass": true}
+{"phase": "timing", "round": 0, "backend": "sdpa", "ms": 279.689832997974}
+{"phase": "timing", "round": 0, "backend": "mps-flash", "ms": 1077.630040992517}
+{"phase": "timing", "round": 0, "backend": "mtl-fp16", "ms": 418.8154999865219}
+{"phase": "timing", "round": 1, "backend": "mps-flash", "ms": 1064.6309159928933}
+{"phase": "timing", "round": 1, "backend": "mtl-fp16", "ms": 435.16337501932867}
+{"phase": "timing", "round": 1, "backend": "sdpa", "ms": 322.08841701503843}
+{"phase": "timing", "round": 2, "backend": "mtl-fp16", "ms": 446.68016702053137}
+{"phase": "timing", "round": 2, "backend": "sdpa", "ms": 326.5451659972314}
+{"phase": "timing", "round": 2, "backend": "mps-flash", "ms": 1077.8114999993704}
+{"phase": "timing", "round": 3, "backend": "sdpa", "ms": 308.7727499951143}
+{"phase": "timing", "round": 3, "backend": "mps-flash", "ms": 1068.345000006957}
+{"phase": "timing", "round": 3, "backend": "mtl-fp16", "ms": 436.6332079807762}
+{"phase": "timing", "round": 4, "backend": "mps-flash", "ms": 1077.4519169935957}
+{"phase": "timing", "round": 4, "backend": "mtl-fp16", "ms": 435.06549997255206}
+{"phase": "timing", "round": 4, "backend": "sdpa", "ms": 332.1679999935441}
+[MTLFLASHATTN_TRACE] 9 attention call(s), 2 distinct shape/kernel combos:
+  calls=8      float16   D=128  Lq=10398  Lk=10398  causal=F  -> v2
+  calls=1      bfloat16  D=128  Lq=10398  Lk=10398  causal=F  -> v2r(bfloat)
+{"phase": "validation", "backend": "sdpa", "times_ms": [], "route": "torch SDPA, unchanged dtype", "first_call_ms": 96.0311249946244, "memory_after_first": {"mps_current_bytes": 36802560, "mps_driver_bytes": 1074233344, "process_rss_high_water_bytes": 390021120}, "error": {"finite": true, "reference_rms": 0.037438295981649806, "rmse": 1.5212832114681416e-05, "relative_rmse": 0.0004063441381556978, "max_abs": 8.524363409327662e-05, "cosine": 0.9999999380453514}, "operator_screen_pass": true}
+{"phase": "validation", "backend": "mps-flash", "times_ms": [], "route": "mps_flash_attn native extension", "first_call_ms": 411.5128330013249, "memory_after_first": {"mps_current_bytes": 36802560, "mps_driver_bytes": 1082621952, "process_rss_high_water_bytes": 396836864}, "error": {"finite": true, "reference_rms": 0.037438295981649806, "rmse": 7.84224415813191e-06, "relative_rmse": 0.00020947118324978644, "max_abs": 4.898069801795302e-05, "cosine": 0.9999999780729352}, "operator_screen_pass": true}
+{"phase": "validation", "backend": "mtl-auto", "times_ms": [], "route": "mtl v2; fp16 conversion=False", "first_call_ms": 200.43799999984913, "memory_after_first": {"mps_current_bytes": 36807168, "mps_driver_bytes": 1082900480, "process_rss_high_water_bytes": 401637376}, "error": {"finite": true, "reference_rms": 0.037438295981649806, "rmse": 1.979539980102053e-05, "relative_rmse": 0.0005287473503260711, "max_abs": 0.00016371240949173207, "cosine": 0.9999998602144625}, "operator_screen_pass": true}
+{"phase": "validation", "backend": "mtl-fp16", "times_ms": [], "route": "mtl v2; fp16 conversion=False", "first_call_ms": 5.40420800098218, "memory_after_first": {"mps_current_bytes": 36807168, "mps_driver_bytes": 1082900480, "process_rss_high_water_bytes": 401686528}, "error": {"finite": true, "reference_rms": 0.037438295981649806, "rmse": 1.979539980102053e-05, "relative_rmse": 0.0005287473503260711, "max_abs": 0.00016371240949173207, "cosine": 0.9999998602144625}, "operator_screen_pass": true}
+{"phase": "timing", "round": 0, "backend": "sdpa", "ms": 2.683666010852903}
+{"phase": "timing", "round": 0, "backend": "mps-flash", "ms": 7.481375010684133}
+{"phase": "timing", "round": 0, "backend": "mtl-auto", "ms": 5.683209019480273}
+{"phase": "timing", "round": 0, "backend": "mtl-fp16", "ms": 4.175500012934208}
+{"phase": "timing", "round": 1, "backend": "mps-flash", "ms": 7.547042012447491}
+{"phase": "timing", "round": 1, "backend": "mtl-auto", "ms": 3.327082988107577}
+{"phase": "timing", "round": 1, "backend": "mtl-fp16", "ms": 3.8722080062143505}
+{"phase": "timing", "round": 1, "backend": "sdpa", "ms": 2.48958301381208}
+{"phase": "timing", "round": 2, "backend": "mtl-auto", "ms": 3.9259160112123936}
+{"phase": "timing", "round": 2, "backend": "mtl-fp16", "ms": 3.475625009741634}
+{"phase": "timing", "round": 2, "backend": "sdpa", "ms": 2.444625017233193}
+{"phase": "timing", "round": 2, "backend": "mps-flash", "ms": 8.568375022150576}
+{"phase": "timing", "round": 3, "backend": "mtl-fp16", "ms": 4.070124996360391}
+{"phase": "timing", "round": 3, "backend": "sdpa", "ms": 2.430541004287079}
+{"phase": "timing", "round": 3, "backend": "mps-flash", "ms": 7.75658298516646}
+{"phase": "timing", "round": 3, "backend": "mtl-auto", "ms": 3.9884170109871775}
+{"phase": "timing", "round": 4, "backend": "sdpa", "ms": 2.4729580036364496}
+{"phase": "timing", "round": 4, "backend": "mps-flash", "ms": 7.7209580049384385}
+{"phase": "timing", "round": 4, "backend": "mtl-auto", "ms": 3.359291993547231}
+{"phase": "timing", "round": 4, "backend": "mtl-fp16", "ms": 3.8578329840674996}
+[MTLFLASHATTN_TRACE] 16 attention call(s), 1 distinct shape/kernel combos:
+  calls=16     float16   D=64   Lq=1797   Lk=1797   causal=F  -> v2r
+{"phase": "validation", "backend": "sdpa", "times_ms": [], "route": "torch SDPA, unchanged dtype", "first_call_ms": 331.62216702476144, "memory_after_first": {"mps_current_bytes": 800378880, "mps_driver_bytes": 1074233344, "process_rss_high_water_bytes": 2114437120}, "error": {"finite": true, "reference_rms": 0.1934595468191077, "rmse": 0.0018673084108649224, "relative_rmse": 0.009652190556462584, "max_abs": 0.012880798097770318, "cosine": 0.9999862847589708}, "operator_screen_pass": false}
+{"phase": "validation", "backend": "mps-flash", "times_ms": [], "route": "mps_flash_attn native extension", "first_call_ms": 1783.926000003703, "memory_after_first": {"mps_current_bytes": 800378880, "mps_driver_bytes": 2148220928, "process_rss_high_water_bytes": 2124546048}, "error": {"finite": true, "reference_rms": 0.1934595468191077, "rmse": 0.0003185495545547574, "relative_rmse": 0.0016465951657201688, "max_abs": 0.005376877069432684, "cosine": 0.999998645638992}, "operator_screen_pass": true}
+{"phase": "validation", "backend": "mtl-auto", "times_ms": [], "route": "mtl v2_bf16; fp16 conversion=False", "first_call_ms": 542.3064999922644, "memory_after_first": {"mps_current_bytes": 800387584, "mps_driver_bytes": 2156625920, "process_rss_high_water_bytes": 2129379328}, "error": {"finite": true, "reference_rms": 0.1934595468191077, "rmse": 0.004308861577968254, "relative_rmse": 0.022272674824350792, "max_abs": 0.03864313333612254, "cosine": 0.9997520759654956}, "operator_screen_pass": false}
+{"phase": "validation", "backend": "mtl-fp16", "times_ms": [], "route": "mtl v2; fp16 conversion=True", "first_call_ms": 557.1300000010524, "memory_after_first": {"mps_current_bytes": 800387840, "mps_driver_bytes": 2156609536, "process_rss_high_water_bytes": 2130051072}, "error": {"finite": true, "reference_rms": 0.1934595468191077, "rmse": 0.00032649188186706574, "relative_rmse": 0.0016876493677117342, "max_abs": 0.005376877069432684, "cosine": 0.9999985761062409}, "operator_screen_pass": true}
+{"phase": "timing", "round": 0, "backend": "mps-flash", "ms": 1238.2559580146335}
+{"phase": "timing", "round": 0, "backend": "mtl-fp16", "ms": 540.0789590203203}
+{"phase": "timing", "round": 1, "backend": "mtl-fp16", "ms": 555.6417079933453}
+{"phase": "timing", "round": 1, "backend": "mps-flash", "ms": 1204.9144580087159}
+{"phase": "timing", "round": 2, "backend": "mps-flash", "ms": 1217.814332980197}
+{"phase": "timing", "round": 2, "backend": "mtl-fp16", "ms": 571.958624990657}
+{"phase": "timing", "round": 3, "backend": "mtl-fp16", "ms": 588.2056659902446}
+{"phase": "timing", "round": 3, "backend": "mps-flash", "ms": 1351.94170800969}
+{"phase": "timing", "round": 4, "backend": "mps-flash", "ms": 1597.598416992696}
+{"phase": "timing", "round": 4, "backend": "mtl-fp16", "ms": 745.1892909884918}
+[MTLFLASHATTN_TRACE] 9 attention call(s), 2 distinct shape/kernel combos:
+  calls=8      float16   D=128  Lq=11166  Lk=11166  causal=F  -> v2
+  calls=1      bfloat16  D=128  Lq=11166  Lk=11166  causal=F  -> v2r(bfloat)

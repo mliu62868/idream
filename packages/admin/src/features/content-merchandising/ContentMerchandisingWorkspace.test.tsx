@@ -94,13 +94,36 @@ describe("Content merchandising takedown targets", () => {
       () => "2026年8月11日 18:18",
     );
 
-    expect(row.cells.slice(2, 7)).toEqual([
+    expect(row.cells.slice(2, 5)).toEqual([
       "zh:female",
       "zh:realistic",
       "zh:unlisted",
-      "zh:approved",
-      "2026年8月11日 18:18",
     ]);
+    expect(row.cells[6]).toBe("2026年8月11日 18:18");
+    // 状态列现在是「目录状态 + Serving 事实」两行，不再是一个字符串。
+    expect(renderToStaticMarkup(<>{row.cells[5]}</>)).toContain("zh:approved");
+  });
+
+  // SPEC: 目录状态旁边必须显示 Serving 事实。
+  // INTENT: 暂停角色的 characters.status 被投影成 archived，这一列只写「已归档」，而角色
+  //         工作台顶部写「已暂停」——同一件事两个词，运营会以为有人归档了它。
+  it("shows the Serving lifecycle next to the projected catalog status", () => {
+    const row = characterTableRow(
+      {
+        id: "character-1",
+        name: "Paused character",
+        visibility: "public",
+        status: "archived",
+        servingState: "paused",
+      },
+      false,
+      () => undefined,
+      (value) => `zh:${value}`,
+    );
+
+    const status = renderToStaticMarkup(<>{row.cells[5]}</>);
+    expect(status).toContain("zh:archived");
+    expect(status).toContain("zh:paused");
   });
 
   it("disables every row action without content.takedown.write", () => {

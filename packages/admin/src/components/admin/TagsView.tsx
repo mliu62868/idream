@@ -90,7 +90,9 @@ export function TagsView() {
     };
   }, [load]);
 
-  const tags = authority.data ?? [];
+  // authority.data 为空时每次渲染都会新建一个 []，下游两个 useMemo 的依赖因此每帧都变，
+  // 等于没有 memo。稳住这个引用，筛选与分类计算才真的只在数据变化时重算。
+  const tags = useMemo(() => authority.data ?? [], [authority.data]);
 
   // SPEC: 接口一次返回全部标签（无分页/无服务端搜索），所以筛选就地做——几百个标签时
   // 没有搜索的表等于没法用。

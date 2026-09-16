@@ -15,6 +15,7 @@ import {
   apiGet,
   apiWrite,
 } from "@/components/admin/api";
+import { contentCharacterExploreListingSchema } from "@idream/shared/admin";
 import { AdminText, useAdminI18n } from "@/components/admin/i18n";
 import {
   ConfirmDialog,
@@ -907,6 +908,14 @@ export function contentCommandLabel(
   return value === "unlisted" ? "Unlist" : "Make private";
 }
 
+// 权威给的是原因码，运营看的是「差什么、去哪修」。
+export const EXPLORE_LISTING_BLOCKED_COPY = {
+  character_not_live:
+    "This Character is not live, so its Explore listing cannot change here.",
+  private_needs_serving_command:
+    "An official Character leaves the catalog through Pause or Retire on its release, not by going private here.",
+} as const satisfies Record<string, string>;
+
 // SPEC: 枚举走字典、时间走 format —— 和后台其他表一致。
 // INTENT: 这张表原来所有单元格都走同一个 `cell()` 直接 String() 出去，于是中文界面上
 //         性别 / 风格 / 可见性 / 状态 印的是 female / realistic / unlisted / approved，
@@ -920,35 +929,63 @@ export function characterTableRow(
   dateTime: (value: unknown) => string = (value) => cell(value),
 ): DataTableRow {
   const id = stringValue(row.id);
+  // SPEC: 挂牌动作的可用性用权威随行下发的结论，不在前端重算一遍规则。
+  // INTENT: 这三个按钮过去只看写权限，于是对暂停的角色、以及任何官方角色的「设为私密」，
+  //         都画成可点 —— 点下去必吃 409。缺字段时（老响应）退回旧行为，不把行变成死的。
+  const listing = contentCharacterExploreListingSchema.safeParse(row.exploreListing);
+  const eligibility = listing.success ? listing.data : null;
+  const canUnlist = canWrite && (eligibility?.canUnlist ?? true);
+  const canMakePrivate = canWrite && (eligibility?.canMakePrivate ?? true);
+  const blockedReasonId = `explore-listing-blocked-${id}`;
+  const blockedReason = eligibility && (!canUnlist || !canMakePrivate)
+    ? eligibility.blockedReason
+    : null;
   const actions: ReactNode = (
-    <div className="flex gap-2">
-      <button
-        className="rounded border border-[var(--ad-border)] px-2 py-1 text-xs disabled:opacity-50"
-        disabled={!canWrite}
-        onClick={() => command(id, "visibility", "unlisted")}
-        type="button"
-      >
+    <div className="flex flex-col gap-1">
+      <div className="flex gap-2">
+        <button
+          aria-describedby={blockedReason ? blockedReasonId : undefined}
+          className="rounded border border-[var(--ad-border)] px-2 py-1 text-xs disabled:opacity-50"
+          disabled={!canUnlist}
+          onClick={() => command(id, "visibility", "unlisted")}
+          type="button"
+        >
 
-        <AdminText text="Unlist" />
-      </button>
-      <button
-        className="rounded border border-[var(--ad-border)] px-2 py-1 text-xs disabled:opacity-50"
-        disabled={!canWrite}
-        onClick={() => command(id, "visibility", "private")}
-        type="button"
-      >
+          <AdminText text="Unlist" />
+        </button>
+        <button
+          aria-describedby={blockedReason ? blockedReasonId : undefined}
+          className="rounded border border-[var(--ad-border)] px-2 py-1 text-xs disabled:opacity-50"
+          disabled={!canMakePrivate}
+          onClick={() => command(id, "visibility", "private")}
+          type="button"
+        >
 
-        <AdminText text="Make private" />
-      </button>
-      <button
-        className="rounded border border-[var(--ad-border)] px-2 py-1 text-xs disabled:opacity-50"
-        disabled={!canWrite}
-        onClick={() => command(id, "status", "removed")}
-        type="button"
-      >
+          <AdminText text="Make private" />
+        </button>
+        <button
+          className="rounded border border-[var(--ad-border)] px-2 py-1 text-xs disabled:opacity-50"
+          disabled={!canWrite}
+          onClick={() => command(id, "status", "removed")}
+          type="button"
+        >
 
-        <AdminText text="Remove" />
-      </button>
+          <AdminText text="Remove" />
+        </button>
+      </div>
+      {blockedReason ? (
+        <p className="text-[11px] text-[var(--ad-text-muted)]" id={blockedReasonId}>
+          <AdminText text={EXPLORE_LISTING_BLOCKED_COPY[blockedReason]} />
+          {eligibility?.repairDeepLink ? (
+            <>
+              {" "}
+              <Link className="underline" href={eligibility.repairDeepLink}>
+                <AdminText text="Open release" />
+              </Link>
+            </>
+          ) : null}
+        </p>
+      ) : null}
     </div>
   );
   return {
@@ -959,7 +996,17 @@ export function characterTableRow(
       enumCell(row.gender, valueLabel),
       enumCell(row.style, valueLabel),
       enumCell(row.visibility, valueLabel),
-      enumCell(row.status, valueLabel),
+      // SPEC: 目录状态旁边跟一行 Serving 事实。
+      // INTENT: 暂停角色会把 status 投影成 archived，这一列就只写「已归档」，而角色工作台
+      //         顶部写的是「已暂停」—— 同一件事两个词。两个都显示，运营不必猜哪个是真的。
+      <span key="status">
+        {enumCell(row.status, valueLabel)}
+        {typeof row.servingState === "string" ? (
+          <span className="mt-1 block text-[11px] text-[var(--ad-text-muted)]">
+            <AdminText text="Serving" />: {valueLabel(row.servingState)}
+          </span>
+        ) : null}
+      </span>,
       dateTime(row.createdAt),
       actions,
     ],

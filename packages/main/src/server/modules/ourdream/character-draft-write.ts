@@ -14,7 +14,7 @@ import {
   pruneUndefined,
 } from "./json-values";
 import { entitlementMap } from "./subscription-lifecycle";
-import { dimensionsForImageOrientation } from "./generation-dimensions";
+import { dimensionsForImageOrientation } from "@idream/shared/media/image-orientation";
 import {
   selectGenerationProfile,
   selectRecipe,
@@ -37,12 +37,20 @@ import {
   materializeUserCharacterContentVersion,
 } from "./character-soul";
 import { readCurrentCharacterDraftDetails } from "./character-draft-details";
+
 import {
   prepareCharacterDraftVoice,
   bindCharacterDraftVoice,
   cleanupPreparedCharacterDraftVoice,
 } from "./character-draft-voice";
 import { logger } from "@/server/lib/logger";
+
+/**
+ * SPEC: 一个角色最多携带 12 个发现标签。
+ * INTENT: 草稿写入端与发布端必须用同一个上限 —— 否则草稿能存下的标签会比
+ *   发布时写入的多，差额又会变成一次静默丢弃。
+ */
+export const MAX_CHARACTER_TAGS = 12;
 
 // SPEC: 用户侧建角色向导的两个写入动作 —— 生成身份预览图、把草稿提交成 Character。
 //
@@ -488,6 +496,28 @@ export async function submitCharacterDraft(input: {
       "create_preview",
     );
     await tx.characterStats.create({ data: { characterId: created.id } });
+    // SPEC: 创作者在向导里选的标签，发布后必须成为这个角色的发现维度。
+    // INTENT: 只接受标签词典里已存在的 slug。标签是受运营治理的发现维度
+    //   （admin 侧有合并、敏感标记、默认静音），创作者可以施加标签，但不能凭
+    //   自由输入往词典里添词 —— 否则 Explore 的筛选面板会被一次性标签淹没，
+    //   且绕过治理。向导侧已改为从 /api/v1/tags 选择，所以这里过滤掉的只会是
+    //   旧草稿里遗留的自由文本。
+    // INVARIANT: 此前这段完全不存在 —— 向导收集了标签、写进了 character_drafts.tags，
+    //   发布路径却一个字都不读，用户填的标签 100% 静默丢失（实测 user 来源的
+    //   18 个角色 0 条 character_tags 关联）。
+    const draftTagSlugs = jsonStringArray(draft.tags).slice(0, MAX_CHARACTER_TAGS);
+    if (draftTagSlugs.length > 0) {
+      const knownTags = await tx.tag.findMany({
+        where: { slug: { in: draftTagSlugs } },
+        select: { id: true },
+      });
+      if (knownTags.length > 0) {
+        await tx.characterTag.createMany({
+          data: knownTags.map((tag) => ({ characterId: created.id, tagId: tag.id })),
+          skipDuplicates: true,
+        });
+      }
+    }
     const submission = await tx.characterSubmission.create({
       data: {
         characterId: created.id,

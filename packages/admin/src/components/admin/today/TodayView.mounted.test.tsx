@@ -32,6 +32,7 @@ const legacy: TodayLegacyData = {
     billing: { activeSubscriptions: 4 },
   },
   featureFlags: [],
+  featureFlagCount: 0,
 };
 
 const claimable = (sourceId: string) => ({
@@ -197,7 +198,8 @@ describe("Today operator actions", () => {
     Object.defineProperty(globalThis.navigator, "clipboard", { configurable: true, value: { writeText } });
     adminV2Request.mockImplementation((path: string) => {
       if (path.startsWith("/api/v2/admin/today/all-work")) return Promise.resolve(allWorkResponse(8));
-      return Promise.reject(new AdminV2RequestError("case version changed", 409, "conflict", undefined, "req-9"));
+      return Promise.reject(// 认领请求带 entityVersion（WorkQueue.tsx:52），所以这确实是一场版本竞争。
+      new AdminV2RequestError("case version changed", 409, "conflict", { blocker: "version_mismatch" }, "req-9"));
     });
 
     await click(buttons().find((button) => button.textContent?.includes("Claim")));

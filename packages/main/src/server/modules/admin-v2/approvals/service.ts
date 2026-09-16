@@ -22,6 +22,7 @@ import {
   paginateAdminKeyset,
 } from "@/server/modules/admin-v2/shared/list-cursor";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
+import { DUAL_APPROVAL_FLAG } from "./enforcement";
 
 /**
  * SPEC: 双人审批 —— 高风险动作先落一条请求，再由**另一个**同样持有该权限的人批准。
@@ -99,7 +100,12 @@ export async function listApprovals(request: Request): Promise<ApprovalListRespo
       }),
     count: () => prisma.adminActionRequest.count({ where }),
   });
-  return { items: items.map(serializeApproval), pageInfo };
+  const flag = await prisma.featureFlag.findUnique({ where: { key: DUAL_APPROVAL_FLAG } });
+  return {
+    items: items.map(serializeApproval),
+    pageInfo,
+    enforcementEnabled: flag?.enabled === true,
+  };
 }
 
 export async function createApproval(request: Request): Promise<ApprovalMutationResponse> {

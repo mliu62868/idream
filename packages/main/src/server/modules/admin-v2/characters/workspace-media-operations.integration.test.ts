@@ -573,6 +573,14 @@ describe("Character media operations projection", () => {
           actionConfirmation: `RECLAIM VOICE ${requestId}`,
         },
       });
+      await prisma.voiceClipRequest.update({
+        where: { id: requestId }, data: { errorCode: "provider_outcome_unknown" },
+      });
+      const quarantined = characterMediaOperationsProjectionSchema.parse(
+        (await getCharacterWorkspace(characterId)).mediaOperations,
+      ).operations[2];
+      expect(quarantined).toMatchObject({ requestId, recoverability: { state: "unavailable" } });
+      expect(quarantined?.recoverability.actionHref).toBeNull();
     } finally {
       await prisma.voiceClipRequest.deleteMany({ where: { id: requestId } });
     }

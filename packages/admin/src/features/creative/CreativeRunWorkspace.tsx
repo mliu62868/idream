@@ -39,12 +39,23 @@ export function nonCampaignAssetSummary(hasAsset: boolean) {
     : { title: "Waiting for an asset", description: "The asset will be available after generation and automatic checks finish.", complete: false };
 }
 
+// SPEC: 返回「词典 key + 插值实参」，权威原话原样进 {detail}，不加工。
+// INTENT: 原来这里拼一整句英文存进 warning state，渲染处裸输出 —— 中文后台里四个
+//         投放/事故命令的"提交成功但投影没刷新"提示全是英文。同语义的提示在
+//         PlacementsDetailPage / AssetsDetailPage 是用 t() 正确实现的，这里是漏网的一处。
+export type CommittedProjectionWarning = { readonly key: string; readonly values: Record<string, string> };
+
 export function committedProjectionWarning(
   action: string,
   cause: unknown,
-) {
-  const detail = cause instanceof Error ? `: ${cause.message}` : "";
-  return `${action} was committed, but the latest projection could not be refreshed${detail}. Retry the same command safely or refresh the workspace.`;
+): { readonly key: string; readonly values: Record<string, string> } {
+  return {
+    key: "{action} was committed, but the latest projection could not be refreshed{detail}. Retry the same command safely or refresh the workspace.",
+    values: {
+      action,
+      detail: cause instanceof Error ? `: ${cause.message}` : "",
+    },
+  };
 }
 
 export function authoredCampaignPlacementCopy(input: {
@@ -417,7 +428,7 @@ function ModelEvaluationForm({ run, itemIndex, permissions, reload, onAdvance }:
   const [identityConsistency, setIdentityConsistency] = useState<"passed" | "failed">("passed");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [warning, setWarning] = useState<string | null>(null);
+  const [warning, setWarning] = useState<CommittedProjectionWarning | null>(null);
   if (!item) return null;
   const decide = async (decision: "approved" | "rejected") => {
     const numericScore = Number(score);
@@ -452,7 +463,7 @@ function ModelEvaluationForm({ run, itemIndex, permissions, reload, onAdvance }:
         }
       }
     } catch (cause) {
-      setWarning(committedProjectionWarning("Review decision", cause));
+      setWarning(committedProjectionWarning(t("Review decision"), cause));
     }
     finally { setBusy(false); }
   };
@@ -468,7 +479,7 @@ function ModelEvaluationForm({ run, itemIndex, permissions, reload, onAdvance }:
         <label className="text-xs font-semibold">{t("Evidence and reason")}<textarea className={`${textAreaClass} mt-1`} onChange={(event) => setReason(event.target.value)} value={reason} /></label>
       </div>
       {error ? <p className="mt-3 text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}
-      {warning ? <p className="mt-3 text-sm text-[var(--ad-yellow-text)]" role="status">{warning}</p> : null}
+      {warning ? <p className="mt-3 text-sm text-[var(--ad-yellow-text)]" role="status">{t(warning.key, warning.values)}</p> : null}
       <div className="mt-4 flex gap-2">
         <WorkspaceButton disabled={!permissions.review || !item.asset || busy || !validScore || reason.trim().length < 3 || identityConsistency !== "passed"} onClick={() => void decide("approved")} tone="primary"><Check className="h-4 w-4" />{t("Approve")}</WorkspaceButton>
         <WorkspaceButton disabled={!permissions.review || !item.asset || busy || !validScore || reason.trim().length < 3} onClick={() => void decide("rejected")} tone="danger"><X className="h-4 w-4" />{t("Reject")}</WorkspaceButton>
@@ -499,7 +510,7 @@ function PlacementForm({ run, itemIndex, permissions, reload }: { run: CreativeR
   const [withdrawalReason, setWithdrawalReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [warning, setWarning] = useState<string | null>(null);
+  const [warning, setWarning] = useState<CommittedProjectionWarning | null>(null);
   const hasPartialCampaignCta = Boolean(ctaLabel.trim()) !==
     Boolean(campaignHref.trim());
   if (!item) return <div className="mt-4"><CollaborationPanel canWrite={permissions.write} targetId={run.id} targetType="creative_run" targetVersion={run.version} /></div>;
@@ -545,7 +556,7 @@ function PlacementForm({ run, itemIndex, permissions, reload }: { run: CreativeR
       await reload();
       setStageReason("");
     } catch (cause) {
-      setWarning(committedProjectionWarning("Placement staging", cause));
+      setWarning(committedProjectionWarning(t("Placement staging"), cause));
     } finally {
       setBusy(false);
     }
@@ -571,7 +582,7 @@ function PlacementForm({ run, itemIndex, permissions, reload }: { run: CreativeR
     try {
       await reload();
     } catch (cause) {
-      setWarning(committedProjectionWarning("Placement activation", cause));
+      setWarning(committedProjectionWarning(t("Placement activation"), cause));
     } finally {
       setBusy(false);
     }
@@ -598,7 +609,7 @@ function PlacementForm({ run, itemIndex, permissions, reload }: { run: CreativeR
       await reload();
       setWithdrawalReason("");
     } catch (cause) {
-      setWarning(committedProjectionWarning("Placement withdrawal", cause));
+      setWarning(committedProjectionWarning(t("Placement withdrawal"), cause));
     } finally {
       setBusy(false);
     }
@@ -671,7 +682,7 @@ function PlacementForm({ run, itemIndex, permissions, reload }: { run: CreativeR
           </label>
         ) : null}
         {error ? <p className="mt-3 text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}
-        {warning ? <p className="mt-3 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">{warning}</p> : null}
+        {warning ? <p className="mt-3 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">{t(warning.key, warning.values)}</p> : null}
         <div className="mt-4 flex flex-wrap gap-2">
           {!item.placement ? (
             <WorkspaceButton
@@ -713,7 +724,7 @@ function IncidentAttachment({ run, permissions, reload }: { run: CreativeRunDeta
   const [incidentId, setIncidentId] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [warning, setWarning] = useState<string | null>(null);
+  const [warning, setWarning] = useState<CommittedProjectionWarning | null>(null);
   const attach = async () => {
     setBusy(true); setError(null); setWarning(null);
     try {
@@ -734,12 +745,12 @@ function IncidentAttachment({ run, permissions, reload }: { run: CreativeRunDeta
       await reload();
       setIncidentId("");
     } catch (cause) {
-      setWarning(committedProjectionWarning("Incident attachment", cause));
+      setWarning(committedProjectionWarning(t("Incident attachment"), cause));
     } finally {
       setBusy(false);
     }
   };
-  return <section className="mt-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"><h3 className="font-semibold">{t("Related Incidents")}</h3><div className="mt-2 flex flex-wrap gap-2">{run.relatedIncidentIds?.length ? run.relatedIncidentIds.map((id) => <Link className="text-sm underline" href={`/admin/ops/incidents/${id}`} key={id}>{id}</Link>) : <span className="text-xs text-[var(--ad-text-muted)]">{t("No correlated Incident")}</span>}</div>{permissions.manageIncident ? <div className="mt-3 flex flex-col gap-2 sm:flex-row"><label className="flex-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Active Incident ID")}<input className={`${fieldClass} mt-1`} onChange={(event) => setIncidentId(event.target.value)} value={incidentId} /></label><WorkspaceButton disabled={busy || !incidentId.trim()} onClick={() => void attach()}>{t("Attach failed Attempts")}</WorkspaceButton></div> : null}{error ? <p className="mt-3 text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}{warning ? <p className="mt-3 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">{warning}</p> : null}</section>;
+  return <section className="mt-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"><h3 className="font-semibold">{t("Related Incidents")}</h3><div className="mt-2 flex flex-wrap gap-2">{run.relatedIncidentIds?.length ? run.relatedIncidentIds.map((id) => <Link className="text-sm underline" href={`/admin/ops/incidents/${id}`} key={id}>{id}</Link>) : <span className="text-xs text-[var(--ad-text-muted)]">{t("No correlated Incident")}</span>}</div>{permissions.manageIncident ? <div className="mt-3 flex flex-col gap-2 sm:flex-row"><label className="flex-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Active Incident ID")}<input className={`${fieldClass} mt-1`} onChange={(event) => setIncidentId(event.target.value)} value={incidentId} /></label><WorkspaceButton disabled={busy || !incidentId.trim()} onClick={() => void attach()}>{t("Attach failed Attempts")}</WorkspaceButton></div> : null}{error ? <p className="mt-3 text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}{warning ? <p className="mt-3 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">{t(warning.key, warning.values)}</p> : null}</section>;
 }
 
 function RunDetail({
@@ -783,7 +794,7 @@ function RunDetail({
   // INTENT: 两者曾共用一个 useState，于是一次成功的后台刷新会把"重试命令失败"的结论
   //         也一并抹掉。分开后各自的清除时机才说得清。
   const [error, setError] = useState<string | null>(null);
-  const [warning, setWarning] = useState<string | null>(null);
+  const [warning, setWarning] = useState<CommittedProjectionWarning | null>(null);
   const [retrySubmitting, setRetrySubmitting] = useState(false);
   const [retryProjectionRefreshing, setRetryProjectionRefreshing] =
     useState(false);
@@ -942,10 +953,10 @@ function RunDetail({
             if (!context.cancelled) {
               retryCommandRef.current = next;
               setRetryCommand(next);
-              setWarning(
-                `Retry command succeeded, but the latest projection could not be refreshed${
-                  cause instanceof Error ? `: ${cause.message}` : ""
-                }. Refresh the projection before starting another retry.`,
+              setWarning({
+                key: "Retry command succeeded, but the latest projection could not be refreshed{detail}. Refresh the projection before starting another retry.",
+                values: { detail: cause instanceof Error ? `: ${cause.message}` : "" },
+              }
               );
             }
             return null;
@@ -971,10 +982,10 @@ function RunDetail({
         return 1_500;
       } catch (cause) {
         if (context.cancelled) return null;
-        setWarning(
-          `Retry command ${activeRetryCommandId} is still pending, but its latest status could not be loaded${
-            cause instanceof Error ? `: ${cause.message}` : ""
-          }.`,
+        setWarning({
+          key: "Retry command {commandId} is still pending, but its latest status could not be loaded{detail}.",
+          values: { commandId: activeRetryCommandId, detail: cause instanceof Error ? `: ${cause.message}` : "" },
+        }
         );
         return 3_000;
       }
@@ -1031,10 +1042,10 @@ function RunDetail({
       setRetryCommand(null);
       setRetryIdempotencyKey(crypto.randomUUID());
     } catch (cause) {
-      setWarning(
-        `The retry command is verified, but the latest projection still could not be refreshed${
-          cause instanceof Error ? `: ${cause.message}` : ""
-        }.`,
+      setWarning({
+        key: "The retry command is verified, but the latest projection still could not be refreshed{detail}.",
+        values: { detail: cause instanceof Error ? `: ${cause.message}` : "" },
+      }
       );
     } finally {
       setRetryProjectionRefreshing(false);
@@ -1143,7 +1154,7 @@ function RunDetail({
       </div>
     </div>
   ) : null;
-  return <section aria-labelledby="creative-run-title"><Link className="inline-flex min-h-11 items-center gap-2 text-sm text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]" href="/admin/creative/runs"><ArrowLeft className="h-4 w-4" />  {t("Creative Runs")}</Link><div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between"><div><p className="text-xs uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">{t("Creative Run ·")} {run.id}</p><h2 className="mt-1 text-2xl font-semibold" id="creative-run-title">{run.title}</h2><div className="mt-2 flex flex-wrap gap-2"><span className="inline-flex items-center gap-1 text-xs"><span className="text-[var(--ad-text-muted)]">{t("Execution")}</span><StatusBadge value={unknownCount > 0 ? "Needs confirmation" : run.executionOutcome} tone={unknownCount > 0 ? "warn" : undefined} /></span>{run.purpose === "model_eval" ? <span className="inline-flex items-center gap-1 text-xs"><span className="text-[var(--ad-text-muted)]">{t("Model evaluation")}</span><StatusBadge value={run.reviewState} /></span> : null}<span className="inline-flex items-center gap-1 text-xs"><span className="text-[var(--ad-text-muted)]">{t("Deployment")}</span><StatusBadge value={run.deploymentState} /></span><span className="inline-flex items-center gap-1 text-xs"><span className="text-[var(--ad-text-muted)]">{t("Verification")}</span><StatusBadge value={run.verificationState} /></span></div></div><div className="flex flex-wrap gap-2"><WorkspaceButton disabled={loading} onClick={() => void runResource.refresh()}><RefreshCcw className={cn("h-4 w-4", loading && "animate-spin")} /> {loading ? t("Refreshing…") : t("Refresh")}</WorkspaceButton><WorkspaceButton aria-busy={retryBusy} disabled={!permissions.write || ((retryCount === 0 || unknownCount > 0) && !retrySubmissionUnknown) || retrying} onClick={() => void retryFailed()}><RotateCcw className={cn("h-4 w-4", retryBusy && "animate-spin")} /> {retryLabel}</WorkspaceButton></div></div>{retryCommandStatus}{unknownCount > 0 ? <p className="mt-4 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">{t("{count} item(s) need confirmation. These are not confirmed failures; retry is unavailable until recovery is complete.", { count: unknownCount })}</p> : null}<IncidentAttachment permissions={permissions} reload={reloadAfterCommit} run={run} /><div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-5">{(run.purpose === "model_eval" ? ["generated", "failed", "reviewed", "approved"] as const : ["generated", "failed", "placed"] as const).map((key) => <div className="rounded-lg bg-[var(--ad-surface)] p-3" key={key}><p className="text-xs capitalize text-[var(--ad-text-muted)]">{t(key)}</p><p className="mt-1 text-xl font-semibold tabular-nums">{run.counts[key]}<span className="text-xs font-normal text-[var(--ad-text-muted)]"> / {run.counts.total}</span></p></div>)}</div>{shownError ? <p className="mt-4 text-sm text-[var(--ad-red-text)]" role="alert">{shownError}</p> : null}{backgroundRefreshWarning ? <p className="mt-4 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">{backgroundRefreshWarning}</p> : null}{warning ? <p className="mt-4 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">{warning}</p> : null}<ReviewContext itemIndex={selected} run={run} /><div className="mt-5 flex gap-2 overflow-x-auto pb-2" aria-label={t("Creative items")}>{run.items.map((item, index) => <button aria-pressed={selected === index} className={cn("min-h-11 min-w-28 rounded-md border px-3 text-left text-xs focus-visible:outline focus-visible:outline-2", selected === index ? "border-[var(--ad-ink)] bg-black/[0.04]" : "border-[var(--ad-border)]")} key={item.id} onClick={() => setSelected(index)} type="button">{t("Item")} {item.ordinal + 1}<br /><span className="text-[var(--ad-text-muted)]">{t(item.executionState === "unknown" ? "Needs confirmation" : item.executionState.replaceAll("_", " "))}</span></button>)}</div><AssetViewer onSelect={setSelected} run={run} selected={selected} /><HistoricalDecision itemIndex={selected} run={run} />{run.purpose === "model_eval" ? <ModelEvaluationForm itemIndex={selected} key={`evaluation-${selectedItemId}`} onAdvance={setSelected} permissions={permissions} reload={reloadAfterCommit} run={run} /> : null}<PlacementForm itemIndex={selected} key={`placement-${selectedItemId}`} permissions={permissions} reload={reloadAfterCommit} run={run} /></section>;
+  return <section aria-labelledby="creative-run-title"><Link className="inline-flex min-h-11 items-center gap-2 text-sm text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]" href="/admin/creative/runs"><ArrowLeft className="h-4 w-4" />  {t("Creative Runs")}</Link><div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between"><div><p className="text-xs uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">{t("Creative Run ·")} {run.id}</p><h2 className="mt-1 text-2xl font-semibold" id="creative-run-title">{run.title}</h2><div className="mt-2 flex flex-wrap gap-2"><span className="inline-flex items-center gap-1 text-xs"><span className="text-[var(--ad-text-muted)]">{t("Execution")}</span><StatusBadge value={unknownCount > 0 ? "Needs confirmation" : run.executionOutcome} tone={unknownCount > 0 ? "warn" : undefined} /></span>{run.purpose === "model_eval" ? <span className="inline-flex items-center gap-1 text-xs"><span className="text-[var(--ad-text-muted)]">{t("Model evaluation")}</span><StatusBadge value={run.reviewState} /></span> : null}<span className="inline-flex items-center gap-1 text-xs"><span className="text-[var(--ad-text-muted)]">{t("Deployment")}</span><StatusBadge value={run.deploymentState} /></span><span className="inline-flex items-center gap-1 text-xs"><span className="text-[var(--ad-text-muted)]">{t("Verification")}</span><StatusBadge value={run.verificationState} /></span></div></div><div className="flex flex-wrap gap-2"><WorkspaceButton disabled={loading} onClick={() => void runResource.refresh()}><RefreshCcw className={cn("h-4 w-4", loading && "animate-spin")} /> {loading ? t("Refreshing…") : t("Refresh")}</WorkspaceButton><WorkspaceButton aria-busy={retryBusy} disabled={!permissions.write || ((retryCount === 0 || unknownCount > 0) && !retrySubmissionUnknown) || retrying} onClick={() => void retryFailed()}><RotateCcw className={cn("h-4 w-4", retryBusy && "animate-spin")} /> {retryLabel}</WorkspaceButton></div></div>{retryCommandStatus}{unknownCount > 0 ? <p className="mt-4 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">{t("{count} item(s) need confirmation. These are not confirmed failures; retry is unavailable until recovery is complete.", { count: unknownCount })}</p> : null}<IncidentAttachment permissions={permissions} reload={reloadAfterCommit} run={run} /><div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-5">{(run.purpose === "model_eval" ? ["generated", "failed", "reviewed", "approved"] as const : ["generated", "failed", "placed"] as const).map((key) => <div className="rounded-lg bg-[var(--ad-surface)] p-3" key={key}><p className="text-xs capitalize text-[var(--ad-text-muted)]">{t(key)}</p><p className="mt-1 text-xl font-semibold tabular-nums">{run.counts[key]}<span className="text-xs font-normal text-[var(--ad-text-muted)]"> / {run.counts.total}</span></p></div>)}</div>{shownError ? <p className="mt-4 text-sm text-[var(--ad-red-text)]" role="alert">{shownError}</p> : null}{backgroundRefreshWarning ? <p className="mt-4 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">{backgroundRefreshWarning}</p> : null}{warning ? <p className="mt-4 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">{t(warning.key, warning.values)}</p> : null}<ReviewContext itemIndex={selected} run={run} /><div className="mt-5 flex gap-2 overflow-x-auto pb-2" aria-label={t("Creative items")}>{run.items.map((item, index) => <button aria-pressed={selected === index} className={cn("min-h-11 min-w-28 rounded-md border px-3 text-left text-xs focus-visible:outline focus-visible:outline-2", selected === index ? "border-[var(--ad-ink)] bg-black/[0.04]" : "border-[var(--ad-border)]")} key={item.id} onClick={() => setSelected(index)} type="button">{t("Item")} {item.ordinal + 1}<br /><span className="text-[var(--ad-text-muted)]">{t(item.executionState === "unknown" ? "Needs confirmation" : item.executionState.replaceAll("_", " "))}</span></button>)}</div><AssetViewer onSelect={setSelected} run={run} selected={selected} /><HistoricalDecision itemIndex={selected} run={run} />{run.purpose === "model_eval" ? <ModelEvaluationForm itemIndex={selected} key={`evaluation-${selectedItemId}`} onAdvance={setSelected} permissions={permissions} reload={reloadAfterCommit} run={run} /> : null}<PlacementForm itemIndex={selected} key={`placement-${selectedItemId}`} permissions={permissions} reload={reloadAfterCommit} run={run} /></section>;
 }
 
 export function CreativeRunWorkspace({

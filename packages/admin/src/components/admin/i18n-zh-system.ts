@@ -47,7 +47,7 @@ export const adminZhSystem: Record<string, string> = {
   "Disable feature flag {key}": "关闭功能开关 {key}",
   "Disable profile {id}": "停用配置 {id}",
   "Enable feature flag {key}": "开启功能开关 {key}",
-  "Every new customer generation runs on this profile from now on, and the previous active version is archived. A rollback restores it; images already produced are not regenerated.": "从现在起客户的每一次新生成都走这个配置，上一个启用版本会被归档。回滚能把它请回来；已经出过的图不会重新生成。",
+  "Every new customer generation runs on this profile from now on, and the previous active version is archived. A rollback restores it; images already produced are not regenerated. Watch the catalog afterwards: any published Character Release pinned to the archived version goes stale at the next monitor pass, and a public Character serving it drops to unlisted — a rollback does not bring either back, only publishing a new Release does.": "从现在起客户的每一次新生成都走这个配置，上一个启用版本会被归档。回滚能把它请回来；已经出过的图不会重新生成。发布之后要盯一下目录：任何绑定在被归档版本上的已发布角色 Release 会在下一轮巡检里变成 stale，正在服务它的公开角色会被降为 unlisted——回滚救不回这两件事，只有重新发一个 Release 能救。",
   "Exact action": "精确操作",
   "Feature flag {key} disabled": "功能开关 {key} 已关闭",
   "Feature flag {key} enabled": "功能开关 {key} 已开启",
@@ -111,21 +111,6 @@ export const adminZhSystem: Record<string, string> = {
   "an unnamed job": "未命名任务",
   "operator ID": "运营人员 ID",
   "{effect} the permission for: {capability}": "{effect}权限：{capability}",
-  // ---- 视图组运营化改造（合规 DSAR 下载与写反馈）----
-  // RELOCATE: 这一块属于 i18n-zh-customers.ts（合规域词条的实际归属），本轮 agent 不持有该文件；
-  // 合并时整块搬过去即可，key 无冲突。
-  "The export is redacted structured data with no raw prompt or chat text. Erasure runs the P0-F cross-service flow and needs confirmation.":
-    "导出的是脱敏后的结构化数据，不含明文 prompt 或聊天内容。擦除走 P0-F 跨服务流程，需要确认。",
-  "{id} was already erased — nothing changed.":
-    "{id} 此前已被擦除——本次没有产生任何变化。",
-  "Erasure requested for {id}. The cross-service flow reports completion in the audit log.":
-    "已为 {id} 发起擦除。跨服务流程完成后会在审计日志里回报。",
-  "Export preview":
-    "导出预览",
-  "Download JSON":
-    "下载 JSON",
-  "{id} is now {status}. The queue below reflects the new state.":
-    "{id} 现在是 {status}。下方队列已反映新状态。",
   // 审批台：审批人看得见「自己在批准什么」所需的文案。
   "Approval requests": "审批请求",
   "Awaiting decision": "待裁决",
@@ -136,6 +121,7 @@ export const adminZhSystem: Record<string, string> = {
   "Permission": "权限",
   "Requested by": "发起人",
   "Show pending approvals": "查看待审批队列",
+  "Dual approval is switched off, so no high-risk write creates a request. Enable the dual_approval_enforced flag to start routing work here.": "双人复核当前处于关闭状态，因此高风险写入不会产生审批请求。启用 dual_approval_enforced 开关后，工作才会流入这里。",
   // 团队访问的数据新鲜度行。原来是四句裸英文，中文界面里照样印英文。
   "As of {time}": "截至 {time}",
   "Controlled by account deletion": "由账号删除流程管理",

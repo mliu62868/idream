@@ -13,6 +13,7 @@ const legacy: TodayLegacyData = {
     billing: { activeSubscriptions: 4 },
   },
   featureFlags: [],
+  featureFlagCount: 0,
 };
 
 const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
@@ -101,6 +102,30 @@ describe("Today authoritative projection", () => {
     expect(html).toContain("aria-current=\"page\"");
     expect(html).not.toContain("Unavailable");
     expect(html).not.toContain("Degraded Today projection");
+  });
+
+  // 这个 tile 读的曾是 legacy.featureFlags.length，而该列表在服务端就 take: 8 ——
+  // 旗标一旦超过 8 条，界面上的"数量"会永远停在 8。计数必须有独立来源。
+  it("reports the feature flag total, not the length of the truncated preview list", () => {
+    const truncatedPreview = Array.from({ length: 8 }, (_, index) => ({
+      key: `flag-${index}`,
+      label: `Flag ${index}`,
+      enabled: false,
+      rolloutPercent: 0,
+      hardPolicy: false,
+    }));
+    const html = renderToStaticMarkup(
+      createElement(TodayView, {
+        data: {
+          ...data(),
+          legacy: { ...legacy, featureFlags: truncatedPreview, featureFlagCount: 23 },
+        },
+        workMode: "support" as const,
+      }),
+    );
+
+    expect(html).toContain("23");
+    expect(html).not.toMatch(/Feature flags[\s\S]{0,120}>8</);
   });
 
   it("reports the queue state instead of a fixed all-clear banner", () => {

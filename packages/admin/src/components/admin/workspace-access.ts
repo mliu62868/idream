@@ -1,19 +1,38 @@
+import {
+  ADMIN_V2_API_OPERATIONS_BY_ID,
+  type AdminV2DeclaredOperationId,
+} from "@idream/shared/admin";
 import type { AdminPermissionKey } from "@idream/shared/admin/permissions";
 
-// SPEC: 导航项到权限的映射，admin 独有。
-// INTENT: 曾住在 @idream/shared —— 但它只有 admin 一个消费者，是「放错包的模块」而非跨服务契约。
-// 权限 key 本身仍是 shared 的（main 侧签发、admin 侧消费），只有这张映射表归 admin。
-export const ADMIN_V2_WORKSPACE_ACCESS = {
-  today: { allOf: ["dashboard.read"] },
-  character_workspace: { allOf: ["character.project.read", "character.release.read", "character.performance.read"] },
-  character_performance: { allOf: ["character.performance.read"] },
-  creative_runs: { allOf: ["creative.run.read"] },
-  customers: { allOf: ["customer.read"] },
-  cases: { allOf: ["case.read"] },
-  experiments: { allOf: ["experiment.manage"] },
-  incidents: { allOf: ["ops.incident.read"] },
-  generation_jobs: { allOf: ["generation.job.read"] },
-  metrics: { allOf: ["analytics.metric.read"] },
-} as const satisfies Record<string, { readonly allOf: readonly AdminPermissionKey[] }>;
+// SPEC: 一个入口的读权限，由它首屏必需请求的 operation 在 API manifest 里声明的权限推导出来。
+// INTENT: 入口权限过去是手抄的权限键，和页面真正调用的接口各自演化 —— 实测漂移出三处
+//         「菜单看得见、点进去整页 403」：Profile Diagnostics 挂在 analytics.metric.read 下却调
+//         generation/model-profiles；后端诊断与生成健康写 ops.queue.read 却调 generation/*。
+//         把手写的权限键换成 operation id，权限就只有 manifest 一个来源，改接口即改入口。
+// INVARIANT: 只有 manifest 能确定回答"这个请求必须持有哪些权限"的授权形态才计入：
+//            - all_of：整组都是必需的。
+//            - all_of_and_one_of_by_resource：只有 always 是必需的，oneOf 取决于目标资源。
+//            - one_of_by_resource：一个都不是无条件必需的，计入空集。
+//            - bootstrap：不要求权限，计入空集。
+export function operationRequiredPermissions(
+  operationId: AdminV2DeclaredOperationId,
+): readonly AdminPermissionKey[] {
+  const operation = ADMIN_V2_API_OPERATIONS_BY_ID[operationId];
+  const authorization = operation.authorization;
+  if (authorization.kind === "all_of") return authorization.permissions;
+  if (authorization.kind === "all_of_and_one_of_by_resource") return authorization.always;
+  return [];
+}
 
-export type AdminV2WorkspaceAccessKey = keyof typeof ADMIN_V2_WORKSPACE_ACCESS;
+/** 首屏必需 operation 的权限并集，按首次出现顺序去重。 */
+export function firstScreenPermissions(
+  operationIds: readonly AdminV2DeclaredOperationId[],
+): readonly AdminPermissionKey[] {
+  const required: AdminPermissionKey[] = [];
+  for (const operationId of operationIds) {
+    for (const permission of operationRequiredPermissions(operationId)) {
+      if (!required.includes(permission)) required.push(permission);
+    }
+  }
+  return required;
+}

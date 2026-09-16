@@ -1,0 +1,241 @@
+{
+  "case": "smoke",
+  "input_kind": "synthetic normalized Gaussian, H3-shaped; not captured activations",
+  "shape_bhnd": [
+    1,
+    4,
+    1024,
+    128
+  ],
+  "strides": [
+    [
+      1572864,
+      128,
+      1536,
+      1
+    ],
+    [
+      1572864,
+      128,
+      1536,
+      1
+    ],
+    [
+      524288,
+      128,
+      512,
+      1
+    ]
+  ],
+  "dtype": "torch.bfloat16",
+  "learned_norms": null,
+  "checkpoint": "/Users/kk/ComfyUI-Shared/models/diffusion_models/REDMix-MiniMaxH3-A2Ab1-pruned-int8-convrot-ComfyMCP.safetensors",
+  "source_revision": "bd42bcd0b1772bd579b2c2229c4c3e236b5a39f9",
+  "script_sha256": "2403b03a15c13a3f477a7bcade84dbbe2a8c2355338fc3b020cebb7fa7771bd6",
+  "torch": "2.13.0",
+  "python": "3.13.12",
+  "macos": "26.5.1",
+  "chip": "Apple M4 Max",
+  "packages": {
+    "mps-flash-attn": "0.6.3",
+    "mtlflashattn": "0.2.0"
+  },
+  "reference": {
+    "device": "cpu",
+    "dtype": "float64",
+    "heads": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "query_rows": [
+      0,
+      33,
+      66,
+      99,
+      132,
+      165,
+      198,
+      231,
+      264,
+      297,
+      330,
+      363,
+      396,
+      429,
+      462,
+      495,
+      528,
+      561,
+      594,
+      627,
+      660,
+      693,
+      726,
+      759,
+      792,
+      825,
+      858,
+      891,
+      924,
+      957,
+      990,
+      1023
+    ],
+    "all_keys": true
+  },
+  "quantization_floor": {
+    "finite": true,
+    "reference_rms": 0.05040589872486327,
+    "rmse": 8.473777831220769e-05,
+    "relative_rmse": 0.0016811083713583275,
+    "max_abs": 0.00048739175361103837,
+    "cosine": 0.9999985869918973
+  },
+  "screening_limits": {
+    "relative_rmse": 0.00672443348543331,
+    "max_abs": 0.002
+  },
+  "memory_scope": "after synchronized calls; retained allocation observations, NOT transient peak per backend",
+  "initial_memory": {
+    "mps_current_bytes": 4194304,
+    "mps_driver_bytes": 42434560,
+    "process_rss_high_water_bytes": 318636032
+  },
+  "mps_allocator_fraction": 0.25,
+  "backends": {
+    "sdpa": {
+      "times_ms": [
+        1.8683329981286079,
+        0.9173330035991967,
+        0.40020799497142434,
+        0.3816249954979867,
+        0.4026249807793647
+      ],
+      "route": "torch SDPA, unchanged dtype",
+      "first_call_ms": 2.0767500100191683,
+      "memory_after_first": {
+        "mps_current_bytes": 5242880,
+        "mps_driver_bytes": 42434560,
+        "process_rss_high_water_bytes": 318636032
+      },
+      "error": {
+        "finite": true,
+        "reference_rms": 0.05040589872486327,
+        "rmse": 0.00023293269293466005,
+        "relative_rmse": 0.004621139565551748,
+        "max_abs": 0.0016511739723260588,
+        "cosine": 0.9999934390554084
+      },
+      "operator_screen_pass": true,
+      "last_memory": {
+        "mps_current_bytes": 5251840,
+        "mps_driver_bytes": 51068928,
+        "process_rss_high_water_bytes": 328187904
+      },
+      "median_ms": 0.4026249807793647,
+      "min_max_ms": [
+        0.3816249954979867,
+        1.8683329981286079
+      ],
+      "speedup_vs_sdpa": 1.0
+    },
+    "mps-flash": {
+      "times_ms": [
+        3.17183299921453,
+        3.060499991988763,
+        0.815125007648021,
+        0.8054999925661832,
+        0.8119999838527292
+      ],
+      "route": "mps_flash_attn native extension",
+      "first_call_ms": 578.6661659949459,
+      "memory_after_first": {
+        "mps_current_bytes": 5242880,
+        "mps_driver_bytes": 42696704,
+        "process_rss_high_water_bytes": 326959104
+      },
+      "error": {
+        "finite": true,
+        "reference_rms": 0.05040589872486327,
+        "rmse": 8.473778008755536e-05,
+        "relative_rmse": 0.0016811084065793574,
+        "max_abs": 0.00048739175361103837,
+        "cosine": 0.9999985869887091
+      },
+      "operator_screen_pass": true,
+      "last_memory": {
+        "mps_current_bytes": 5251840,
+        "mps_driver_bytes": 51068928,
+        "process_rss_high_water_bytes": 328187904
+      },
+      "median_ms": 0.815125007648021,
+      "min_max_ms": [
+        0.8054999925661832,
+        3.17183299921453
+      ],
+      "speedup_vs_sdpa": 0.4939426186188391
+    },
+    "mtl-auto": {
+      "times_ms": [],
+      "route": "mtl v2_bf16; fp16 conversion=False",
+      "first_call_ms": 383.218584000133,
+      "memory_after_first": {
+        "mps_current_bytes": 5251584,
+        "mps_driver_bytes": 42680320,
+        "process_rss_high_water_bytes": 328105984
+      },
+      "error": {
+        "finite": true,
+        "reference_rms": 0.05040589872486327,
+        "rmse": 0.0002791011909288464,
+        "relative_rmse": 0.005537073993111378,
+        "max_abs": 0.0022550760276739412,
+        "cosine": 0.9999846714538696
+      },
+      "operator_screen_pass": false
+    },
+    "mtl-fp16": {
+      "times_ms": [
+        2.849750017048791,
+        2.5144160026684403,
+        0.6812909850850701,
+        0.7816670113243163,
+        0.6802919961046427
+      ],
+      "route": "mtl v2; fp16 conversion=True",
+      "first_call_ms": 154.87720898818225,
+      "memory_after_first": {
+        "mps_current_bytes": 5251840,
+        "mps_driver_bytes": 51068928,
+        "process_rss_high_water_bytes": 328171520
+      },
+      "error": {
+        "finite": true,
+        "reference_rms": 0.05040589872486327,
+        "rmse": 8.727709716106286e-05,
+        "relative_rmse": 0.0017314857857699988,
+        "max_abs": 0.0005555324969808428,
+        "cosine": 0.9999985011111938
+      },
+      "operator_screen_pass": true,
+      "last_memory": {
+        "mps_current_bytes": 5251840,
+        "mps_driver_bytes": 51068928,
+        "process_rss_high_water_bytes": 328187904
+      },
+      "median_ms": 0.7816670113243163,
+      "min_max_ms": [
+        0.6802919961046427,
+        2.849750017048791
+      ],
+      "speedup_vs_sdpa": 0.5150850361424735
+    }
+  },
+  "final_memory": {
+    "mps_current_bytes": 4203264,
+    "mps_driver_bytes": 51068928,
+    "process_rss_high_water_bytes": 328187904
+  }
+}

@@ -4,6 +4,7 @@ import {
   type AdminInvariantCheck,
 } from "@idream/shared";
 import { Prisma, type PrismaClient } from "@prisma/client";
+import { MAIN_OUTBOX_TRANSPORT_EVENT_TYPES } from "@/server/events/main-outbox-transport";
 import { prisma } from "@/server/lib/db";
 import { ok } from "@/server/lib/http";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
@@ -365,7 +366,13 @@ const sqlChecks: readonly SqlInvariant[] = [
   {
     key: "serving_default_route_unqualified",
     description: "Current default generation routes must satisfy their current qualification",
-    evidence: "Current Release generationProvenance routeFingerprint/matrixKey joined to non-expired qualification",
+    evidence: "Current Release generationProvenance.requiredReleaseRoute joined to non-expired qualification",
+    // INVARIANT: 路由指纹住在 `generationProvenance.requiredReleaseRoute` 下，不在顶层。
+    //   这段 SQL 此前取的是顶层 `->>'routeFingerprint'` / `->>'matrixKey'`，v2 provenance
+    //   顶层根本没有这两个键，取出来恒为 NULL，于是 NOT EXISTS 永远成立 ——
+    //   实测把 3 个路由**已经资质化**的 Release 报成违规。同一个文件里
+    //   isEditorialLegacyVisualProfileProjection 走 TS 读的就是 requiredReleaseRoute，
+    //   两处实现同一判据，SQL 这处漂了。
     query: Prisma.sql`
       SELECT r.id, count(*) OVER()::int AS total
       FROM character_serving s
@@ -373,8 +380,8 @@ const sqlChecks: readonly SqlInvariant[] = [
       WHERE r.legacy = FALSE
       AND NOT EXISTS (
         SELECT 1 FROM generation_route_qualifications q
-        WHERE q."routeFingerprint" = r."generationProvenance"->>'routeFingerprint'
-          AND q."matrixKey" = r."generationProvenance"->>'matrixKey'
+        WHERE q."routeFingerprint" = r."generationProvenance"->'requiredReleaseRoute'->>'routeFingerprint'
+          AND q."matrixKey" = r."generationProvenance"->'requiredReleaseRoute'->>'matrixKey'
           AND q.result = 'qualified'
           AND (
             (
@@ -507,7 +514,8 @@ const sqlChecks: readonly SqlInvariant[] = [
         SELECT concat(l."requestId", ':', l."ledgerEntryId") AS id
         FROM generation_settlement_links l
         LEFT JOIN dreamcoin_ledger d ON d.id = l."ledgerEntryId"
-        WHERE d.id IS NULL
+        LEFT JOIN generation_jobs j ON j.id = l."requestId"
+        WHERE d.id IS NULL OR j.id IS NULL
           OR d."sourceId" IS DISTINCT FROM l."requestId"
           OR d.reason IS DISTINCT FROM l.kind
           OR (l.kind = 'generation_spend' AND d.delta >= 0)
@@ -527,6 +535,83 @@ const sqlChecks: readonly SqlInvariant[] = [
       )
       SELECT id, count(*) OVER()::int AS total
       FROM violations ORDER BY id LIMIT 20
+    `,
+  },
+  {
+    key: "voice_succeeded_delivery_mismatch",
+    description: "Succeeded voice requests require delivery evidence and exact media ownership",
+    evidence: "VoiceClipRequest joined to MediaAsset and historical VoiceUsageFact delivery receipts",
+    // A restored clip can reuse an earlier attempt's receipt. Hard deletion
+    // clears both media FKs; its surviving usage is evidence, not corruption.
+    query: Prisma.sql`
+      SELECT r.id, count(*) OVER()::int AS total
+      FROM voice_clip_requests r
+      LEFT JOIN media_assets m ON m.id = r."mediaAssetId"
+      WHERE r.status = 'succeeded' AND (
+        NOT EXISTS (SELECT 1 FROM voice_usage_facts u WHERE u."requestId" = r.id)
+        OR (r."mediaAssetId" IS NOT NULL AND (
+          m.id IS NULL OR m.type <> 'voice'
+          OR m."ownerId" IS DISTINCT FROM r."userId"
+          OR m."characterId" IS DISTINCT FROM r."characterId"
+          OR m.metadata->>'requestId' IS DISTINCT FROM r.id
+          OR m.metadata->>'messageId' IS DISTINCT FROM r."messageId"
+          OR NOT EXISTS (
+            SELECT 1 FROM voice_usage_facts u WHERE u."requestId" = r.id
+              AND (u."mediaAssetId" IS NOT NULL OR u."costDreamcoins" > 0)
+          )
+        ))
+      )
+      ORDER BY r.id LIMIT 20
+    `,
+  },
+  {
+    key: "voice_usage_authority_mismatch",
+    description: "Voice usage must belong to its request and delivered media authority",
+    evidence: "VoiceUsageFact request/user/character/attempt joined to VoiceClipRequest and surviving MediaAsset",
+    query: Prisma.sql`
+      SELECT u.id, count(*) OVER()::int AS total
+      FROM voice_usage_facts u
+      JOIN voice_clip_requests r ON r.id = u."requestId"
+      LEFT JOIN media_assets m ON m.id = u."mediaAssetId"
+      WHERE u."userId" IS DISTINCT FROM r."userId"
+        OR u."characterId" IS DISTINCT FROM r."characterId"
+        OR u."attemptNo" > r."attemptNo"
+        OR (m.id IS NOT NULL AND (
+          m.type <> 'voice' OR m."ownerId" IS DISTINCT FROM u."userId"
+          OR m."characterId" IS DISTINCT FROM u."characterId"
+          OR m.metadata->>'requestId' IS DISTINCT FROM r.id
+        ))
+      ORDER BY u.id LIMIT 20
+    `,
+  },
+  {
+    key: "voice_usage_debit_mismatch",
+    description: "Every paid voice usage must match exactly one debit and every surviving request debit must match usage",
+    evidence: "VoiceUsageFact cost reconciled with DreamcoinLedger voice request/attempt idempotency key, owner, source and amount",
+    // Scope reverse reconciliation to surviving requests: account/character
+    // deletion cascades their usage, while accounting evidence may survive.
+    query: Prisma.sql`
+      WITH violations AS (
+        SELECT u.id
+        FROM voice_usage_facts u
+        LEFT JOIN dreamcoin_ledger d ON d."idempotencyKey" =
+          concat('voice:', u."requestId", ':attempt:', u."attemptNo", ':spend')
+        WHERE (u."costDreamcoins" > 0 AND (
+          d.id IS NULL OR d.reason <> 'generation_spend'
+          OR d.delta IS DISTINCT FROM -u."costDreamcoins"
+          OR d."userId" IS DISTINCT FROM u."userId"
+          OR (u."mediaAssetId" IS NOT NULL AND d."sourceId" IS DISTINCT FROM u."mediaAssetId")
+        )) OR (u."costDreamcoins" = 0 AND d.id IS NOT NULL)
+        UNION
+        SELECT d.id
+        FROM dreamcoin_ledger d
+        JOIN voice_clip_requests r ON starts_with(d."idempotencyKey", concat('voice:', r.id, ':attempt:'))
+        WHERE right(d."idempotencyKey", 6) = ':spend' AND NOT EXISTS (
+          SELECT 1 FROM voice_usage_facts u WHERE u."requestId" = r.id
+            AND d."idempotencyKey" = concat('voice:', u."requestId", ':attempt:', u."attemptNo", ':spend')
+        )
+      )
+      SELECT id, count(*) OVER()::int AS total FROM violations ORDER BY id LIMIT 20
     `,
   },
   {
@@ -570,7 +655,8 @@ const sqlChecks: readonly SqlInvariant[] = [
           OR "failedItems" <> failed_items
           OR "approvedItems" <> approved_items
           OR status <> CASE
-            WHEN total_items > 0 AND reviewed_items = total_items THEN 'completed'
+            WHEN total_items > 0 AND reviewed_items = total_items
+              THEN CASE WHEN completed_items > 0 THEN 'completed' ELSE 'failed' END
             WHEN generated_items > 0 OR reviewed_items > 0 THEN 'reviewing'
             WHEN active_items > 0 THEN 'queued'
             ELSE 'draft'
@@ -690,13 +776,28 @@ const sqlChecks: readonly SqlInvariant[] = [
   //            账号删除请求就是靠它实现 30 天宽限期，那批是正常等待，不是无人认领。
   {
     key: "outbox_event_never_dispatched",
-    description: "Every due Main outbox event must have been attempted at least once",
-    evidence: "main_outbox_events pending past nextRunAt with attempts = 0",
+    description: "Every due Main outbox transport event must have been attempted at least once",
+    evidence: "main_outbox_events pending past nextRunAt with attempts = 0, limited to event types a dispatcher actually consumes",
+    // INTENT: 判据此前不区分「有消费者」和「无消费者」的事件类型，于是把整张表
+    //   当成传输队列来考核。实测 51 个事件类型触发违规，而 dispatcher 只按
+    //   MAIN_OUTBOX_TRANSPORT_EVENT_TYPES 取件 —— 那是 25 个事件类型
+    //   （chat 5 + legacy chat 13 + generation_dispatch 4 + product_event /
+    //   terminal_record / incident_correlation 各 1），其余 261 条是
+    //   admin.command.accepted.v2 / creative.review.decided.v2 / character.release.*
+    //   这类领域事件，本就没有消费者，永远停在 pending 是它们的正常归宿。
+    //   一条永远报红的不变式等于没有不变式：真正的投递故障会被淹没在噪音里。
+    // INVARIANT: 这里收窄的是**考核范围**，不是标准 —— 传输事件漏投仍然立刻报出来。
+    //   那 261 条反映的是另一个问题（同一张表被当成传输队列和领域事件日志两用，
+    //   却只有一套状态机，缺少「本就无消费者」这个终态），那是数据模型决策，
+    //   不该用一条永久红灯来代替。
     query: Prisma.sql`
       WITH violations AS (
         SELECT min(id) AS id
         FROM main_outbox_events
-        WHERE status = 'pending' AND attempts = 0 AND "nextRunAt" <= now()
+        WHERE status = 'pending'
+          AND attempts = 0
+          AND "nextRunAt" <= now()
+          AND "eventType" IN (${Prisma.join([...MAIN_OUTBOX_TRANSPORT_EVENT_TYPES])})
         GROUP BY "eventType"
       )
       SELECT id, count(*) OVER()::int AS total FROM violations ORDER BY id LIMIT 20
@@ -840,6 +941,71 @@ const sqlChecks: readonly SqlInvariant[] = [
         )
       )
       SELECT id, count(*) OVER()::int AS total FROM violations ORDER BY id LIMIT 20
+    `,
+  },
+  // SPEC: 宽限期一过，账号擦除必须在机器时间内走完，不能停在半路。
+  // INTENT: 这条链路横跨两个服务四个阶段（等宽限 → Chat 擦除 → 删存储对象 → 主库硬删），
+  //         而它的起点是一条 30 天后才到期的延迟 outbox。按下擦除的那个人早就不在了，
+  //         完成时也不写任何审计 —— 请求那行审计的 targetId 还会在完成时被改写成不可逆的
+  //         subject ref。于是「卡在第二阶段」这件事在这条不变式出现之前没有任何一页会说。
+  //         注意 outbox_event_never_dispatched 拦不到它：那条只看 attempts=0，而投递成功
+  //         之后 Chat 不回执、Blob 删不动、legal hold 挡住 finalize，都是 attempts≥1 的卡住。
+  // INVARIANT: 判据里没有时间阈值 —— `graceEndsAt` 是产品自己承诺给用户的日子，
+  //            过了还没 completed 就是欠着，这是结构事实不是「积压多久算久」的口味问题。
+  //            正常路径实测从到期到完成约 8.5 秒，所以它不会因为「跑得慢」而误报。
+  {
+    key: "account_erasure_past_grace_not_completed",
+    description: "Every account erasure must complete once its grace period ends",
+    evidence: "account_deletions past graceEndsAt that are not completed",
+    query: Prisma.sql`
+      WITH violations AS (
+        SELECT d.id
+        FROM account_deletions d
+        WHERE d.status <> 'completed' AND d."graceEndsAt" <= now()
+      )
+      SELECT id, count(*) OVER()::int AS total FROM violations ORDER BY id LIMIT 20
+    `,
+  },
+  // SPEC: 系统自己下架的角色，要么被放回目录，要么有人明确决定让它留在目录外。
+  // INTENT: `dispatchStaleReleaseRoutes` 在把 Release 打成 stale 的同一个事务里，
+  //   会把正在服务它的公开角色降为 unlisted（release-monitor.ts:174-195）。
+  //   Release 变 stale 会进 Today 队列（work-severity.ts:110），**下架这件事本身不会**：
+  //   `live_public_current_release_not_ready` 只看 visibility='public'，降级之后它就不看了；
+  //   `serving_default_route_unqualified` 又不检查资质背后的 profile 还在不在。
+  //   于是修好 Release、队列清空之后，角色仍然在目录外，而没有任何一处会再提起它。
+  //   实测库里这件事真发生过一次（alexa-reeves，2026-08-31，reason=generation_workflow_unavailable）。
+  // INVARIANT: 判据不是「unlisted 就不对」—— 下架是合法的运营决定。判据是
+  //   「系统降的级 + 角色现在已经健康 + 之后没有人对可见性做过决定」。最后那一条靠
+  //   `content.visibility.write` 审计行排除：运营看过并决定继续隐藏，这条就不该再响。
+  {
+    key: "system_delisted_character_not_restored",
+    description: "A Character the system delisted must be restored once it is healthy again",
+    evidence: "character_release_events catalogVisibility=unlisted joined to a live, published, ready current Release with no later operator visibility decision",
+    query: Prisma.sql`
+      WITH delisted AS (
+        SELECT e."characterId" AS character_id, max(e."occurredAt") AS at
+        FROM character_release_events e
+        WHERE e."toState"->>'catalogVisibility' = 'unlisted'
+        GROUP BY e."characterId"
+      )
+      SELECT c.id, count(*) OVER()::int AS total
+      FROM delisted d
+      JOIN characters c ON c.id = d.character_id
+      JOIN character_serving s ON s."characterId" = c.id
+      JOIN character_releases r ON r.id = s."currentReleaseId"
+      WHERE c.visibility = 'unlisted'
+        AND c.status = 'approved'
+        AND c."deletedAt" IS NULL
+        AND s.state = 'live'
+        AND r.status = 'published'
+        AND r.readiness = 'ready'
+        AND NOT EXISTS (
+          SELECT 1 FROM admin_audit_logs a
+          WHERE a.action = 'content.visibility.write'
+            AND a."targetId" = c.id
+            AND a."createdAt" > d.at
+        )
+      ORDER BY c.id LIMIT 20
     `,
   },
   {
@@ -1226,7 +1392,18 @@ async function runSqlCheck(db: InvariantDb, check: SqlInvariant): Promise<AdminI
 
 export async function auditAdminCutoverInvariants(db: InvariantDb, asOf = new Date()) {
   const [sqlResults, releaseResults] = await Promise.all([
-    Promise.all(sqlChecks.map((check) => runSqlCheck(db, check))),
+    Promise.all([...sqlChecks, {
+      key: "voice_request_requires_recovery",
+      description: "Unknown provider outcomes and expired voice leases require operational attention",
+      evidence: "VoiceClipRequest provider_outcome_unknown or running lease expired at report asOf",
+      query: Prisma.sql`
+        SELECT r.id, count(*) OVER()::int AS total
+        FROM voice_clip_requests r
+        WHERE r."errorCode" = 'provider_outcome_unknown'
+          OR (r.status = 'running' AND (r."leaseExpiresAt" IS NULL OR r."leaseExpiresAt" <= ${asOf}))
+        ORDER BY r.id LIMIT 20
+      `,
+    }].map((check) => runSqlCheck(db, check))),
     runServingReleaseChecks(db),
   ]);
   const checks = [...sqlResults, ...releaseResults];

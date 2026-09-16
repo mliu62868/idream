@@ -164,3 +164,60 @@ export const complianceAgeVerificationOverrideResponseSchema = z
       .strict(),
   })
   .strict();
+
+// SPEC: 账号擦除是一条跨两个服务、四个阶段、带宽限期的不可逆承诺。
+// INTENT: 运营按下 Erase 到擦除真正发生之间隔着一整个宽限期，按按钮的人早就走了；
+//         擦除完成时也没有任何审计行（完成路径不写审计，请求那行的 targetId 还会被改写成
+//         不可逆的 subject ref）。在这张表出现之前，后台看不到任何一条擦除请求的下落。
+// INVARIANT: 这里不发明「积压多久算久」的阈值，只摊开权威自己的事实——宽限期到期时间、
+//            Chat 投递行的 attempts、Blob 回执进度、finalize 写回的 lastError。
+export const COMPLIANCE_ACCOUNT_DELETION_WAITING_ON = [
+  "grace_period",
+  "chat_erasure",
+  "blob_deletion",
+  "main_purge",
+  "nothing",
+] as const;
+
+export const complianceAccountDeletionSchema = z
+  .object({
+    id: adminIdSchema,
+    // 完成后 userId 被置空：那正是「主库已清干净」的证据，不是缺字段。
+    userId: adminIdSchema.nullable(),
+    status: z.string().min(1),
+    waitingOn: z.enum(COMPLIANCE_ACCOUNT_DELETION_WAITING_ON),
+    // INVARIANT: 只断言「承诺的日子已经过了，事情还没做完」这一个结构事实。
+    pastDue: z.boolean(),
+    requestedAt: adminIsoDateTimeSchema,
+    graceEndsAt: adminIsoDateTimeSchema,
+    chatCompletedAt: adminIsoDateTimeSchema.nullable(),
+    blobExpectedCount: z.number().int(),
+    blobDeletedCount: z.number().int(),
+    completedAt: adminIsoDateTimeSchema.nullable(),
+    updatedAt: adminIsoDateTimeSchema,
+    blockedReason: z.string().nullable(),
+    chatRequestDelivery: z
+      .object({
+        status: z.string().min(1),
+        attempts: z.number().int(),
+        nextRunAt: adminIsoDateTimeSchema,
+      })
+      .strict()
+      .nullable(),
+  })
+  .strict();
+
+export const complianceAccountDeletionQuerySchema = z
+  .object({
+    scope: z.enum(["open", "all"]).default("open"),
+    limit: z.coerce.number().int().min(1).max(200).default(100),
+  })
+  .strict();
+
+export const complianceAccountDeletionListResponseSchema = z
+  .object({
+    items: z.array(complianceAccountDeletionSchema),
+    // 分页会截断 items，这个数不会——它是「有多少条已经过期还没做完」的唯一可信来源。
+    pastDueCount: z.number().int(),
+  })
+  .strict();

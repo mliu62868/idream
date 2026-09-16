@@ -237,6 +237,8 @@ export const chatOpsSessionQuerySchema = z
     userId: z.string().trim().min(1).max(200).optional(),
     characterId: z.string().trim().min(1).max(200).optional(),
     status: z.enum(["active", "archived", "deleted", "all"]).optional(),
+    // 让运营能直接筛出门禁要求迁移的那批会话，而不是翻页找。
+    releasePin: z.enum(["all", "legacy", "unpinned"]).optional(),
     cursor: z.string().trim().min(1).optional(),
     limit: chatOpsListQueryLimitSchema,
   })
@@ -336,6 +338,32 @@ export const chatOpsSessionSchema = z
     lastMessageAt: adminIsoDateTimeSchema.nullable(),
     createdAt: adminIsoDateTimeSchema,
     updatedAt: adminIsoDateTimeSchema,
+    // SPEC: 这个会话钉住的 Soul 内容版本，以及它是否还停在旧 schema 上。
+    // INTENT: 上线门禁 `character-soul-pin-drain` 要求活跃会话不得钉在 legacy pin 上，
+    //   整改手段点名 "the Admin release migration command"。而那条命令此前**没有任何
+    //   运营入口**：Admin 前端零调用方、control_plane_commands 里零执行记录，
+    //   运营连"哪些会话需要迁"都无从看起。判据与 soul-authority-audit.ts 一致：
+    //   pin 的 personaSnapshot.schemaVersion !== 3 即为 legacy。
+    releasePin: z
+      .object({
+        contentVersionId: adminIdSchema.nullable(),
+        releaseId: adminIdSchema.nullable(),
+        schemaVersion: z.number().int().nullable(),
+        state: z.enum(["current", "legacy", "unpinned"]),
+        // 迁到哪个 Release 不该让运营猜：这是该角色当前在服务的 Release 及其内容版本。
+        // 为 null 表示这个角色没有已发布且使用当前 Soul schema 的目标，
+        // 那就得先把角色发布收口，迁会话无从谈起。
+        recommendedTarget: z
+          .object({
+            characterReleaseId: adminIdSchema,
+            entityVersion: z.number().int().nonnegative(),
+            characterContentVersionId: adminIdSchema,
+            schemaVersion: z.number().int().nullable(),
+          })
+          .strict()
+          .nullable(),
+      })
+      .strict(),
   })
   .strict();
 
@@ -421,3 +449,38 @@ export type ChatOpsOverview = z.infer<typeof chatOpsOverviewSchema>;
 export type ChatOpsSession = z.infer<typeof chatOpsSessionSchema>;
 export type ChatOpsUsage = z.infer<typeof chatOpsUsageSchema>;
 export type ChatOpsModerationEvent = z.infer<typeof chatOpsModerationEventSchema>;
+
+export const chatOpsEngagementQuerySchema = z.object({
+  kind: z.enum(["groups", "proactive"]),
+  userId: adminIdSchema.optional(),
+  characterId: adminIdSchema.optional(),
+  cursor: z.string().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(25),
+}).strict();
+
+export const chatOpsEngagementItemSchema = z.object({
+  id: adminIdSchema,
+  userId: adminIdSchema,
+  status: z.string(),
+  sessions: z.array(z.object({ sessionId: adminIdSchema, characterId: adminIdSchema, status: z.string() }).strict()),
+  schedule: z.object({
+    enabled: z.boolean(),
+    intervalHours: z.number().int(),
+    nextAt: adminIsoDateTimeSchema.nullable(),
+    unreadAt: adminIsoDateTimeSchema.nullable(),
+    state: z.enum(["disabled", "inactive", "missing_schedule", "due", "scheduled"]),
+  }).strict().nullable(),
+  latestTurn: z.object({
+    id: adminIdSchema,
+    status: z.string(),
+    attempt: z.number().int(),
+    admissionAttempts: z.number().int(),
+    admittedAt: adminIsoDateTimeSchema.nullable(),
+    admissionNextRunAt: adminIsoDateTimeSchema.nullable(),
+    hasAdmissionError: z.boolean(),
+    createdAt: adminIsoDateTimeSchema,
+    terminalAt: adminIsoDateTimeSchema.nullable(),
+  }).strict().nullable(),
+}).strict();
+export const chatOpsEngagementResponseSchema = adminListResponseSchema(chatOpsEngagementItemSchema);
+export type ChatOpsEngagementResponse = z.infer<typeof chatOpsEngagementResponseSchema>;

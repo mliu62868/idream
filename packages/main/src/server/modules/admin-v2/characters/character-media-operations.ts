@@ -10,7 +10,6 @@ import {
   pinnedVoiceProviderPayloadSchema,
   voiceClipSynthesisPayloadSchema,
 } from "@/server/modules/ourdream/voice-clip";
-import { VOICE_PROVIDER_REPLAY } from "@/server/providers/types";
 import {
   OPERATIONAL_USER_DATA_CLASSES,
   operationalGenerationJobWhere,
@@ -115,8 +114,7 @@ export async function loadCharacterMediaOperationsProjection(
     return (
       voiceClipSynthesisPayloadSchema.safeParse(request.synthesisPayload)
         .success &&
-      provider.success &&
-      VOICE_PROVIDER_REPLAY[provider.data.providerKey] === "durable_same_key"
+      provider.success
     );
   }) ?? latestVoiceRequest;
   const requestIds = [imageJob?.id, videoJob?.id].filter(
@@ -368,9 +366,7 @@ export async function loadCharacterMediaOperationsProjection(
     const durableSynthesisPayload =
       voiceClipSynthesisPayloadSchema.safeParse(voiceRequest.synthesisPayload)
         .success &&
-      projectedProviderPayload.success &&
-      VOICE_PROVIDER_REPLAY[projectedProviderPayload.data.providerKey] ===
-        "durable_same_key";
+      projectedProviderPayload.success;
     const reclaimActionHref =
       `/api/v2/admin/characters/${encodeURIComponent(characterId)}` +
       `/voice-clips/${encodeURIComponent(voiceRequest.id)}/commands/reclaim`;
@@ -408,7 +404,12 @@ export async function loadCharacterMediaOperationsProjection(
         createdAt: asset?.createdAt.toISOString() ?? null,
         durationMs: usage?.durationMs ?? null,
       } : null,
-      recoverability: runningLeaseExpired && durableSynthesisPayload
+      recoverability: voiceRequest.errorCode === "provider_outcome_unknown"
+        ? {
+            state: "unavailable" as const,
+            reason: "The Voice provider outcome is unknown; replay is forbidden until the original outcome is resolved.",
+          }
+        : runningLeaseExpired && durableSynthesisPayload
         ? {
             state: "operator_action" as const,
             reason:

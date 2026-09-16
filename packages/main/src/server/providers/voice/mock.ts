@@ -1,31 +1,23 @@
-import { VOICE_PROVIDER_REPLAY, type BlobStore, type VoiceClipPort } from "../types";
-import { voiceArtifactKey } from "./idempotency";
+import { type VoiceClipPort } from "../types";
 
-// SPEC: Deterministic stand-in for a real TTS gateway. Unlike a key-only stub, the
-//       mock persists a genuinely playable artifact so on-demand playback works
-//       end-to-end in dev/mock — matching the PipelineVoiceModel contract (the
-//       returned key always points at stored bytes).
+// SPEC: Deterministic stand-in for a real TTS gateway. It returns genuinely
+//       playable bytes rather than a placeholder, so on-demand playback works
+//       end-to-end in dev/mock once the caller stores them.
 // INTENT: a short silent WAV is trivial to synthesize and every browser decodes it.
 export class MockVoiceModel implements VoiceClipPort {
   readonly providerKey = "mock" as const;
-  readonly providerReplay = VOICE_PROVIDER_REPLAY.mock;
-
-  constructor(private readonly blob?: BlobStore) {}
 
   async synthesize(input: Parameters<VoiceClipPort["synthesize"]>[0]) {
     const durationMs = Math.max(500, input.text.length * 35);
-    const key = voiceArtifactKey(input.idempotencyKey, ".wav");
-    if (this.blob) {
-      const stored = await this.blob.putPrivate({
-        key,
-        body: silentWavBytes(durationMs),
-        contentType: "audio/wav",
-      });
-      if (!stored.ok) return stored;
-    }
     return {
       ok: true as const,
-      data: { key, durationMs, sceneApplied: true, sceneAdapter: "mock-scene-1" },
+      data: {
+        body: silentWavBytes(durationMs),
+        contentType: "audio/wav",
+        durationMs,
+        sceneApplied: true,
+        sceneAdapter: "mock-scene-1",
+      },
     };
   }
 }

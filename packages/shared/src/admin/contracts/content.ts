@@ -7,11 +7,10 @@ import {
   adminJsonValueSchema,
   adminListResponseSchema,
 } from "./common";
-import { characterProjectCreateResponseSchema } from "./characters-create";
 
 /**
- * SPEC: 内容运营域（角色商品化 / 精选位 / 铺位 / 官方角色 CMS / 模板库 / 标签分类法 /
- *       审核队列 / 制作辅助）的 Admin v2 请求与响应契约。
+ * SPEC: 内容运营域（角色商品化 / 精选位 / 铺位 / 模板库 / 标签分类法 /
+ *       制作辅助）的 Admin v2 请求与响应契约。
  * INTENT: 这些端点从 v1 dispatchAdmin 的 `resource === "content"` if 链搬来。v1 里它们的
  *         "契约"是各 handler 自带的局部 zod + 直接回吐 Prisma 行；搬到 v2 的核心工作正是把
  *         响应显式投影成这里的 `.strict()` 形状 —— 多一个字段就是违约。
@@ -51,7 +50,19 @@ const contentCharacterVisualSummarySchema = z.object({
 const contentCharacterStatsSchema = z.object({
   chatsCount: z.number().int(),
   likesCount: z.number().int(),
-  viewsCount: z.number().int(),
+}).strict();
+
+// SPEC: 这一行的 Explore 可见性动作，允许做哪些、为什么不允许、去哪里修。
+// INTENT: 资格规则只活在写入路径里（官方角色必须 live 才能改挂牌，且永远不能从这里设为
+//         private——下线走 Serving 命令）。列表不下发结论，前端就只能无条件画三个按钮，
+//         运营点下去才吃到 409。结论跟着行走，按钮才能在点之前就说清楚。
+export const contentCharacterExploreListingSchema = z.object({
+  canUnlist: z.boolean(),
+  canMakePrivate: z.boolean(),
+  blockedReason: z
+    .enum(["character_not_live", "private_needs_serving_command"])
+    .nullable(),
+  repairDeepLink: z.string().nullable(),
 }).strict();
 
 export const contentCharacterListItemSchema = z.object({
@@ -66,6 +77,12 @@ export const contentCharacterListItemSchema = z.object({
   imageAsset: contentCharacterImageSchema.nullable(),
   visualProfile: contentCharacterVisualSummarySchema.nullable(),
   stats: contentCharacterStatsSchema.nullable(),
+  // SPEC: 生命周期事实（Serving），和被投影出来的目录状态分开显示。
+  // INTENT: 暂停一个角色会把 characters.status 投影成 archived，于是同一个角色在工作台顶部
+  //         显示「已暂停」、在这张表的状态列显示「已归档」——同一件事两个词，运营会以为
+  //         有人把它归档了。把 Serving 状态一起下发，状态列旁边就能说清楚它到底停在哪一步。
+  servingState: shortText(40).nullable(),
+  exploreListing: contentCharacterExploreListingSchema,
 }).strict();
 
 export const contentCharacterListResponseSchema = adminListResponseSchema(
@@ -412,108 +429,10 @@ export const contentPlacementMutationResponseSchema = z.object({
 }).strict();
 
 // ---------------------------------------------------------------------------
-// content/official —— 官方角色 CMS（v2 Character Project / Release 的 legacy 适配面）
-// ---------------------------------------------------------------------------
-
-const officialRecordSchema = z.record(z.string(), z.unknown());
-
-export const contentOfficialQuerySchema = z.object({
-  search: z.string().trim().min(1).max(200).optional(),
-  status: shortText(40).optional(),
-  gender: shortText(40).optional(),
-  style: shortText(60).optional(),
-  page: z.coerce.number().int().min(1).max(10_000).default(1),
-  limit: z.coerce.number().int().min(1).max(100).default(24),
-}).strict();
-
-const contentOfficialCharacterSchema = z.object({
-  id: adminIdSchema,
-  name: z.string(),
-  age: z.number().int(),
-  description: z.string(),
-  gender: shortText(40),
-  style: shortText(60),
-  status: shortText(40),
-  visibility: shortText(40),
-  appearance: adminJsonValueSchema,
-  advancedDetails: adminJsonValueSchema,
-  imageAssetId: adminIdSchema.nullable(),
-  createdAt: adminIsoDateTimeSchema,
-  updatedAt: adminIsoDateTimeSchema,
-  tags: z.array(z.string()),
-  stats: contentCharacterStatsSchema.nullable(),
-  visualProfile: z.object({
-    id: adminIdSchema,
-    version: z.number().int(),
-    status: shortText(40),
-    style: shortText(60),
-    qualityScore: z.number().nullable(),
-    consistencyScore: z.number().nullable(),
-    faceTraits: adminJsonValueSchema,
-  }).strict().nullable(),
-}).strict();
-
-export const contentOfficialListResponseSchema = z.object({
-  items: z.array(contentOfficialCharacterSchema),
-  page: z.number().int().positive(),
-  limit: z.number().int().positive(),
-  total: z.number().int().nonnegative(),
-  totalPages: z.number().int().positive(),
-}).strict();
-
-export const contentOfficialCreateRequestSchema = z.object({
-  name: z.string().trim().min(1).max(80),
-  age: z.number().int().min(18).max(99),
-  gender: z.enum(GENDERS),
-  style: z.enum(CHARACTER_STYLES),
-  description: z.string().trim().min(1).max(1500),
-  appearance: officialRecordSchema.default({}),
-  advancedDetails: officialRecordSchema.default({}),
-  tags: z.array(z.string().trim().min(1).max(40)).max(12).default([]),
-  reason: reasonSchema,
-}).strict();
-
-export const contentOfficialCreateResponseSchema = z.object({
-  character: contentOfficialCharacterSchema,
-  project: characterProjectCreateResponseSchema,
-}).strict();
-
-export const contentOfficialUpdateRequestSchema = z.object({
-  name: z.string().trim().min(1).max(80).optional(),
-  age: z.number().int().min(18).max(99).optional(),
-  gender: z.enum(GENDERS).optional(),
-  style: z.enum(CHARACTER_STYLES).optional(),
-  description: z.string().trim().min(1).max(1500).optional(),
-  appearance: officialRecordSchema.optional(),
-  advancedDetails: officialRecordSchema.optional(),
-  tags: z.array(z.string().trim().min(1).max(40)).max(12).optional(),
-  reason: reasonSchema,
-}).strict();
-
-export const contentOfficialUpdateResponseSchema = z.object({
-  character: contentOfficialCharacterSchema,
-  projectId: adminIdSchema,
-  projectVersion: z.number().int().positive(),
-  deepLink: z.string().trim().min(1),
-}).strict();
-
-export const contentOfficialStateRequestSchema = z.object({
-  status: z.enum(["approved", "archived"]),
-  reason: reasonSchema,
-}).strict();
-
-export const contentOfficialStateResponseSchema = z.object({
-  character: z.object({
-    id: adminIdSchema,
-    status: shortText(40),
-    visibility: shortText(40),
-  }).strict(),
-  commandId: adminIdSchema,
-}).strict();
-
-// ---------------------------------------------------------------------------
 // content/templates —— 角色创建模板库（Starters）
 // ---------------------------------------------------------------------------
+
+const templateRecordSchema = z.record(z.string(), z.unknown());
 
 export const contentTemplateQuerySchema = z.object({
   search: z.string().trim().min(1).max(200).optional(),
@@ -559,7 +478,7 @@ export const contentTemplateCreateRequestSchema = z.object({
   summary: z.string().trim().max(200).optional(),
   gender: z.string().trim().max(40).optional(),
   style: z.string().trim().max(60).optional(),
-  appearance: officialRecordSchema.default({}),
+  appearance: templateRecordSchema.default({}),
   advancedDetails: contentTemplateAdvancedDetailsSchema.default({
     detailsMarkdown: "",
     firstMessage: "",
@@ -576,7 +495,7 @@ export const contentTemplateUpdateRequestSchema = z.object({
   summary: z.string().trim().max(200).optional(),
   gender: z.string().trim().max(40).optional(),
   style: z.string().trim().max(60).optional(),
-  appearance: officialRecordSchema.optional(),
+  appearance: templateRecordSchema.optional(),
   advancedDetails: contentTemplateAdvancedDetailsSchema.optional(),
   tags: z.array(z.string().trim().min(1).max(40)).max(12).optional(),
   coverAssetId: z.string().trim().max(160).nullable().optional(),
@@ -650,70 +569,6 @@ export const contentTagMergeResponseSchema = z.object({
 }).strict();
 
 // ---------------------------------------------------------------------------
-// content/review-queue —— 用户角色公开审核
-// ---------------------------------------------------------------------------
-
-export const contentReviewQueueQuerySchema = z.object({
-  search: z.string().trim().min(1).max(200).optional(),
-  reportFilter: z.enum(["all", "reported", "clean"]).default("all"),
-  cursor: z.string().trim().min(1).optional(),
-  limit: z.coerce.number().int().min(1).max(100).default(25),
-}).strict();
-
-export const contentReviewQueueItemSchema = z.object({
-  submissionId: adminIdSchema,
-  submittedAt: adminIsoDateTimeSchema,
-  character: z.object({
-    id: adminIdSchema,
-    name: z.string(),
-    gender: shortText(40),
-    style: shortText(60),
-    visibility: shortText(40),
-    status: shortText(40),
-    description: z.string(),
-    imageAssetId: adminIdSchema.nullable(),
-    source: shortText(40),
-    createdAt: adminIsoDateTimeSchema,
-  }).strict(),
-  reportCount: z.number().int().nonnegative(),
-}).strict();
-
-export const contentReviewQueueListResponseSchema = adminListResponseSchema(
-  contentReviewQueueItemSchema,
-);
-
-export const contentReviewDecisionRequestSchema = z.object({
-  decision: z.enum(["approve", "reject"]),
-  reviewReason: z.string().trim().max(2_000).optional(),
-  reason: reasonSchema,
-  confirmation: confirmationSchema,
-}).strict();
-
-export const contentReviewDecisionResponseSchema = z.object({
-  submission: z.object({
-    id: adminIdSchema,
-    characterId: adminIdSchema,
-    status: shortText(40),
-    reviewReason: z.string().nullable(),
-    reviewerId: adminIdSchema.nullable(),
-    submittedAt: adminIsoDateTimeSchema,
-    reviewedAt: adminIsoDateTimeSchema.nullable(),
-  }).strict(),
-  publication: z.object({
-    state: z.literal("publication_prep"),
-    characterId: adminIdSchema,
-    submissionId: adminIdSchema,
-    projectId: adminIdSchema,
-    revisionId: adminIdSchema,
-    projectVersion: z.number().int(),
-    servingState: shortText(40),
-    deepLink: z.string().trim().min(1),
-    created: z.boolean(),
-  }).strict().nullable(),
-  replayed: z.boolean(),
-}).strict();
-
-// ---------------------------------------------------------------------------
 // content/character-assist —— 一句话 seed → 角色创作底稿（只产出建议，不落库）
 // ---------------------------------------------------------------------------
 
@@ -736,6 +591,9 @@ export const contentCharacterAssistResponseSchema = z.object({
 
 export type ContentCharacterQuery = z.infer<typeof contentCharacterQuerySchema>;
 export type ContentCharacterListItem = z.infer<typeof contentCharacterListItemSchema>;
+export type ContentCharacterExploreListing = z.infer<
+  typeof contentCharacterExploreListingSchema
+>;
 export type ContentCharacterVisibilityRequest = z.infer<
   typeof contentCharacterVisibilityRequestSchema
 >;
@@ -755,10 +613,6 @@ export type ContentProductionEstimateRequest = z.infer<
 export type ContentPlacementQuery = z.infer<typeof contentPlacementQuerySchema>;
 export type ContentPlacementCreateRequest = z.infer<typeof contentPlacementCreateRequestSchema>;
 export type ContentPlacementPatchRequest = z.infer<typeof contentPlacementPatchRequestSchema>;
-export type ContentOfficialQuery = z.infer<typeof contentOfficialQuerySchema>;
-export type ContentOfficialCreateRequest = z.infer<typeof contentOfficialCreateRequestSchema>;
-export type ContentOfficialUpdateRequest = z.infer<typeof contentOfficialUpdateRequestSchema>;
-export type ContentOfficialStateRequest = z.infer<typeof contentOfficialStateRequestSchema>;
 export type ContentTemplateQuery = z.infer<typeof contentTemplateQuerySchema>;
 export type ContentTemplate = z.infer<typeof contentTemplateSchema>;
 export type ContentTemplateCreateRequest = z.infer<typeof contentTemplateCreateRequestSchema>;
@@ -767,6 +621,4 @@ export type ContentTemplateActiveRequest = z.infer<typeof contentTemplateActiveR
 export type ContentTagQuery = z.infer<typeof contentTagQuerySchema>;
 export type ContentTagPatchRequest = z.infer<typeof contentTagPatchRequestSchema>;
 export type ContentTagMergeRequest = z.infer<typeof contentTagMergeRequestSchema>;
-export type ContentReviewQueueQuery = z.infer<typeof contentReviewQueueQuerySchema>;
-export type ContentReviewDecisionRequest = z.infer<typeof contentReviewDecisionRequestSchema>;
 export type ContentCharacterAssistRequest = z.infer<typeof contentCharacterAssistRequestSchema>;

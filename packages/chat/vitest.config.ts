@@ -27,6 +27,7 @@ export default defineConfig({
       "@idream/shared/chat/limits": new URL("../shared/src/chat/limits.ts", import.meta.url).pathname,
       "@idream/shared/chat/companion-runtime": new URL("../shared/src/chat/companion-runtime.ts", import.meta.url).pathname,
       "@idream/shared/chat/image-action": new URL("../shared/src/chat/image-action.ts", import.meta.url).pathname,
+      "@idream/shared/chat/image-intent": new URL("../shared/src/chat/image-intent.ts", import.meta.url).pathname,
       "@idream/shared/env": new URL("../shared/src/contracts/env.ts", import.meta.url).pathname,
       "@idream/shared/observability/sentry": new URL("../shared/src/observability/sentry.ts", import.meta.url).pathname,
       "@idream/shared": new URL("../shared/src/index.ts", import.meta.url).pathname,

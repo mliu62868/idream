@@ -6,7 +6,7 @@ import { UnpreparedCharacters } from "./UnpreparedCharacters";
 const { adminV2Request } = vi.hoisted(() => ({ adminV2Request: vi.fn() }));
 vi.mock("@/lib/admin-v2-api", async (original) => ({ ...await original<typeof import("@/lib/admin-v2-api")>(), adminV2Request }));
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-const item = { id: "pending-char", name: "Shared Rowan", gender: "female", style: "realistic", status: "pending_review", visibility: "unlisted", creatorId: "customer", createdAt: "2026-09-05T00:00:00.000Z", imageAsset: { id: "portrait", url: "/user-content/portrait/content.png", thumbnailUrl: null }, visualProfile: null, stats: null };
+const item = { id: "pending-char", name: "Shared Rowan", gender: "female", style: "realistic", status: "pending_review", visibility: "unlisted", creatorId: "customer", createdAt: "2026-09-05T00:00:00.000Z", imageAsset: { id: "portrait", url: "/user-content/portrait/content.png", thumbnailUrl: null }, visualProfile: null, stats: null, servingState: null, exploreListing: { canUnlist: true, canMakePrivate: true, blockedReason: null, repairDeepLink: null } };
 const response = (items: unknown[], cursor: string | null) => ({ items, pageInfo: { endCursor: cursor, hasNextPage: cursor !== null }, asOf: "2026-09-05T00:00:00.000Z", freshness: "fresh" });
 
 describe("historical shared Character discovery", () => {

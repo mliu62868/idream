@@ -139,6 +139,11 @@ export const chatExecutionSnapshotSchema = z.object({
     assistantContent: z.string(),
     createdAt: z.string().datetime(),
     speaker: groupChatMemberSchema.optional(),
+    // SPEC: a proactive Turn has no user utterance — its `userContent` is the
+    // internal directive that caused the Character to speak first.
+    // INTENT: absent means an ordinary user-led Turn, so snapshots frozen
+    // before this field stay valid and keep replaying both sides.
+    origin: z.literal("proactive").optional(),
   }).strict()),
   sceneVersion: z.number().int().nonnegative(),
   scene: chatSceneStateSchema.nullable(),

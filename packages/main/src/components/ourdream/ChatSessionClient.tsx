@@ -91,6 +91,7 @@ type VoiceClipRequestResult = {
 
 const BLOCKED_ASSISTANT_NOTICE = "I can’t help with that request.";
 const STOPPED_REPLY_STATUS = "cancelled";
+const SPEAKER_SELECT_FAILED = "Couldn't select that Character. Try again.";
 // A reply is only auto-followed while the reader is parked within this many
 // pixels of the bottom; above that the viewport belongs to the reader.
 const STICK_TO_BOTTOM_SLACK_PX = 120;
@@ -187,6 +188,22 @@ export function chatAttachmentIsActive(status: string, errorCode?: string | null
   return ACTIVE_CHAT_ATTACHMENT_STATUSES.has(status) && errorCode !== "provider_outcome_unknown";
 }
 
+// SPEC: 聊天里出的图，在它还在跑和交付之后都要能看到扣了多少币。
+// INTENT: 语音有一张完整的报价确认卡，图片是模型按用户的话直接下单的，用户此前
+//   在聊天里看不到任何金额，只能事后去 Profile 对账。失败/退款态不报这个数——
+//   这里拿不到实际退回多少，说「8 coins」会变成谎话。
+export function chatAttachmentCostLabel(attachment: {
+  costDreamcoins?: number | null;
+  status: string;
+}): string | null {
+  const cost = attachment.costDreamcoins;
+  if (typeof cost !== "number" || cost <= 0) return null;
+  if (!chatAttachmentIsActive(attachment.status) && attachment.status !== "completed") {
+    return null;
+  }
+  return `${cost} ${cost === 1 ? "coin" : "coins"}`;
+}
+
 export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: string; groupMode?: boolean }>) {
   const { accepted: ageGateAccepted } = useAgeGateAccess();
   const [title, setTitle] = useState("Chat");
@@ -206,6 +223,13 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
   const executionSessionId = group?.selectedSessionId ?? id;
   const sessionPath = `/api/v1/chat/${groupMode ? "groups" : "sessions"}/${encodeURIComponent(id)}`;
   const [canUpdateIdentity, setCanUpdateIdentity] = useState(false);
+  // SPEC: 只在这段会话真的能出视频时才给 Video / Animate 入口。
+  // INTENT: 后端 GET /api/v1/chat/:id/video 早就返回 capability，前台却一处都没读，
+  //   于是 chat_video 关着时按钮照样在、点开才看到「currently unavailable」；群聊更糟，
+  //   群 id 在 recentChat 里查不到，点下去必定 404。enabled=false 是用户无解的死路，
+  //   直接不给入口；entitled=false 用户能自己升级，保留入口走付费墙。
+  const [videoCapability, setVideoCapability] = useState<{ sessionId: string; enabled: boolean } | null>(null);
+  const videoEnabled = ageGateAccepted && !groupMode && videoCapability?.sessionId === id && videoCapability.enabled;
   const [memoryEnabled, setMemoryEnabled] = useState(true);
   const [memoryPending, setMemoryPending] = useState(false);
   const [sessionsOpen, setSessionsOpen] = useState(false);
@@ -353,6 +377,28 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
     // The loader intentionally reruns only when the route session id changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ageGateAccepted, id, groupMode]);
+
+  useEffect(() => {
+    if (groupMode || !ageGateAccepted) return;
+    const controller = new AbortController();
+    void fetch(`/api/v1/chat/${encodeURIComponent(id)}/video`, {
+      cache: "no-store",
+      headers: { accept: "application/json" },
+      signal: controller.signal,
+    })
+      .then(async (response) => (response.ok ? await response.json() : null))
+      .then((payload: unknown) => {
+        if (controller.signal.aborted) return;
+        const enabled = (payload as { data?: { capability?: { enabled?: unknown } } })?.data
+          ?.capability?.enabled;
+        setVideoCapability({ sessionId: id, enabled: enabled === true });
+      })
+      .catch(() => {
+        // 读不到 capability 时不假装可用，也不吞掉历史视频——只是不给新入口。
+        if (!controller.signal.aborted) setVideoCapability({ sessionId: id, enabled: false });
+      });
+    return () => controller.abort();
+  }, [ageGateAccepted, groupMode, id]);
 
   useEffect(() => {
     if (!ageGateAccepted) return;
@@ -630,6 +676,12 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const text = content.trim();
+    // SPEC: 输入 @Name 时说话人切换是异步的；切换期间的回车必须有回执。
+    // INTENT: 静默 return 会让用户以为消息发出去了 —— 实测第一次回车既不发消息也不报错。
+    if (text && speakerPending) {
+      setStatus("Selecting that Character… send again once the recipient is ready.");
+      return;
+    }
     if (!canSubmitChatMessage(text, pending || speakerPending || conversationArchived, hasGeneratingReply)) return;
     const mentioned = group ? mentionedGroupCharacter(text, group.members) : null;
     if (mentioned && mentioned !== characterId) {
@@ -882,11 +934,12 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
       const session = await fetchSession();
       if (epoch !== sessionMutationEpochRef.current) return;
       applySession(session);
-      setStatus(null);
+      // INVARIANT: 只收回自己上一次的失败提示。无差别清空会吞掉切换期间提交给用户的回执。
+      setStatus((current) => (current === SPEAKER_SELECT_FAILED ? null : current));
     } catch {
       if (epoch === sessionMutationEpochRef.current) {
         selectedSpeakerRef.current = prior;
-        setStatus("Couldn't select that Character. Try again.");
+        setStatus(SPEAKER_SELECT_FAILED);
       }
     } finally { setSpeakerPending(false); }
   }
@@ -1396,9 +1449,11 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
                 onOpenMemory={() => setMemoryOpen(true)}
               />
               <ConversationPreferences key={executionSessionId} sessionId={executionSessionId} />
-              <button type="button" className="mt-3 inline-flex min-h-11 items-center gap-2 self-start rounded-full border border-white/20 px-4 py-2 text-sm font-bold disabled:opacity-50" disabled={!receiptOwnerScope} onClick={() => openVideoRequest()}>
-                <Video className="size-4" />Video
-              </button>
+              {videoEnabled ? (
+                <button type="button" className="mt-3 inline-flex min-h-11 items-center gap-2 self-start rounded-full border border-white/20 px-4 py-2 text-sm font-bold disabled:opacity-50" disabled={!receiptOwnerScope} onClick={() => openVideoRequest()}>
+                  <Video className="size-4" />Video
+                </button>
+              ) : null}
               {videoForm && videoForm.conversationId === id && videoForm.ownerScope === receiptOwnerScope ? <ChatVideoComposer
                 key={`${videoForm.ownerScope}:${videoForm.characterId}:${videoForm.sourceId ?? ""}:${videoForm.prompt ?? ""}`}
                 sources={videoSources.filter(source => source.characterId === videoForm.characterId)} initialSourceId={videoForm.sourceId} initialPrompt={videoForm.prompt}
@@ -1554,7 +1609,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
                                   : undefined
                               }
                               onRetry={() => retryImageAttachment(attachment)}
-                              onAnimate={attachment.status === "completed" && attachment.mediaAssetId && receiptOwnerScope
+                              onAnimate={videoEnabled && attachment.status === "completed" && attachment.mediaAssetId && receiptOwnerScope
                                 ? () => openVideoRequest(attachment.mediaAssetId!, undefined, message.characterId ?? characterId) : undefined}
                               retryPending={retryingImageIds.has(attachment.id)}
                               onIdentityMatch={
@@ -1641,8 +1696,32 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
                   New messages
                 </button>
               ) : null}
+              {/* SPEC: 会话状态必须和输入框一起钉在视口底部。
+                  INTENT: 输入框是 sticky，状态段落原本跟在它后面的普通流里，长会话时会被顶到
+                  文档底部、永远在视口外——点「Play voice」被套餐拦下、日额度用尽、安全策略拦截、
+                  发送失败这些提示用户一条都看不到，表现得像按钮没反应。 */}
+              <div className="sticky bottom-20 z-10 mt-4 bg-[rgb(13,13,13)] md:bottom-0">
+                {status ? (
+                  <p
+                    aria-live="polite"
+                    className="pb-1 text-[13px] font-semibold text-[#ff7ac8]"
+                    data-testid="chat-session-status"
+                    role="status"
+                  >
+                    {status}
+                    {upgradeReason ? (
+                      <>
+                        {" "}
+                        <Link className="underline hover:text-white" href={upgradeHrefForChatSession(id, groupMode)}>
+                          {chatUpgradeLinkLabel(upgradeReason)}
+                        </Link>
+                        .
+                      </>
+                    ) : null}
+                  </p>
+                ) : null}
               <form
-                className="sticky bottom-20 z-10 mt-4 flex gap-2 bg-[rgb(13,13,13)] py-2 md:bottom-0"
+                className="flex gap-2 py-2"
                 onSubmit={submit}
               >
                 <input
@@ -1686,25 +1765,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
                   </button>
                 )}
               </form>
-              {status ? (
-                <p
-                  aria-live="polite"
-                  className="mt-3 text-[13px] font-semibold text-[#ff7ac8]"
-                  data-testid="chat-session-status"
-                  role="status"
-                >
-                  {status}
-                  {upgradeReason ? (
-                    <>
-                      {" "}
-                      <Link className="underline hover:text-white" href={upgradeHrefForChatSession(id, groupMode)}>
-                        {chatUpgradeLinkLabel(upgradeReason)}
-                      </Link>
-                      .
-                    </>
-                  ) : null}
-                </p>
-              ) : null}
+              </div>
             </>
           ) : (
             <ChatSessionUnavailablePanel loadState={loadState} sessionId={id} groupMode={groupMode} />
@@ -1896,6 +1957,7 @@ function ChatImageAttachmentCard({
   const [invalidPreviewKey, setInvalidPreviewKey] = useState<string | null>(null);
   const invalidPreview = invalidPreviewKey === previewKey;
   const isLegacyTestAsset = attachment.isSynthetic === true;
+  const costLabel = chatAttachmentCostLabel(attachment);
 
   if (attachment.status === "completed" && attachment.mediaUrl && source && !invalidPreview) {
     return (
@@ -1918,6 +1980,14 @@ function ChatImageAttachmentCard({
           width={attachment.width ?? 512}
         />
         <LegacyTestAssetBadge isSynthetic={isLegacyTestAsset} />
+        {costLabel ? (
+          <figcaption
+            className="px-2 py-1.5 text-[11px] font-bold leading-4 text-white/60"
+            data-testid="chat-image-attachment-cost"
+          >
+            {costLabel}
+          </figcaption>
+        ) : null}
         {attachment.mediaAssetId ? (
           <ChatImageAttachmentActions
             canAddToIdentity={canAddToIdentity}
@@ -1981,6 +2051,14 @@ function ChatImageAttachmentCard({
                 : "Your image is being prepared. You can keep chatting while it finishes."}
             </p>
           )}
+          {costLabel ? (
+            <p
+              className="mt-1 text-[11px] font-bold leading-4 text-white/70"
+              data-testid="chat-image-attachment-cost"
+            >
+              {costLabel}
+            </p>
+          ) : null}
         </div>
       </div>
       {requiresReview ? (

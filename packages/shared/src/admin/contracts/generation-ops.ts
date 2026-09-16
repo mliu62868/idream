@@ -89,8 +89,10 @@ export const generationModelProfileSchema = z
   .strict();
 
 export const generationModelProfileListResponseSchema = adminListResponseSchema(
-  generationModelProfileSchema,
-);
+  generationModelProfileSchema.extend({
+    rollbackTarget: z.object({ id: adminIdSchema, version: z.number().int().positive() }).strict().nullable(),
+  }),
+).extend({ authoringEnabled: z.boolean() });
 
 export const generationModelProfileCreateRequestSchema = z
   .object({
@@ -487,6 +489,11 @@ const generationRetryEligibilitySchema = z
       "successful_artifact_exists",
       "not_failed",
       "refunded",
+      // SPEC: 这一条尝试钉死的 workflow 版本，现在没有 worker 还在跑。
+      // INTENT: worker 的 validateWorkflowPin 是 fail-closed 的（registry.ts:108），
+      //         钉子对不上就拒绝执行。以前这类请求照样标成「可安全重新排队」，运营点下去
+      //         白扣一次尝试，请求还从死信列表里消失、停在 queued 没人看得见——实测过一次。
+      "pinned_workflow_retired",
       "retryable_failure",
     ]),
   })

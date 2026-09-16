@@ -56,7 +56,7 @@ function actorIsInternal(event: MetricProductEvent): boolean {
   return record(event.actor).isInternal === true;
 }
 
-function isEligibleServerOutcome(event: MetricProductEvent): boolean {
+export function isEligibleServerOutcome(event: MetricProductEvent): boolean {
   return event.environment === "production" &&
     event.dataClass === "customer" &&
     event.trustClass === "canonical" &&
@@ -696,6 +696,24 @@ function receiptResult(receipt: {
   }
   if (receipt.outcome === "skipped") return { status: "skipped", reason: receipt.reason ?? "unsupported_event" };
   return { status: "duplicate", factType: receipt.factType ?? "unknown", factId: receipt.factId };
+}
+
+/** Run the same authoritative projection checks, rolling back every candidate write. */
+export async function previewCanonicalMetricEvent(db: PrismaClient, event: MetricProductEvent): Promise<MetricProjectionResult> {
+  const existing = await db.metricProjectionReceipt.findUnique({
+    where: { sourceService_sourceEventId: { sourceService: event.sourceService, sourceEventId: event.sourceEventId } },
+  });
+  if (existing) return receiptResult(existing);
+  class PreviewRollback extends Error {
+    constructor(readonly result: MetricProjectionResult) { super("metric projection preview rollback"); }
+  }
+  try {
+    await db.$transaction(async (tx) => { throw new PreviewRollback(await applyEvent(tx, event)); });
+  } catch (error) {
+    if (error instanceof PreviewRollback) return error.result;
+    throw error;
+  }
+  throw new Error("Metric preview transaction did not roll back");
 }
 
 export interface MetricProjectorHooks {

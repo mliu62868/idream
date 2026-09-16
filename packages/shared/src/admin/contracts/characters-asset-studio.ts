@@ -136,48 +136,7 @@ export const characterImageSourceUploadResponseSchema = z
   })
   .strict();
 
-export const characterImageReviewRequestSchema = z.object({
-  supersedesDecisionId: adminIdSchema.optional(),
-  decision: z.enum(["approved", "rejected"]),
-  identityConsistency: z.enum(["passed", "failed"]),
-  score: z.number().int().min(0).max(100).optional(),
-  quality: characterImageReviewQualitySchema,
-  reason: z.string().trim().min(3).max(2_000),
-}).strict().superRefine((review, ctx) => {
-  if (review.decision !== "approved") return;
-  if (review.identityConsistency !== "passed") {
-    ctx.addIssue({
-      code: "custom",
-      path: ["identityConsistency"],
-      message: "An imported Character image can only be approved when identity consistency passes",
-    });
-  }
-  if (
-    review.score === undefined ||
-    review.score < CHARACTER_IDENTITY_APPROVAL_MIN_SCORE
-  ) {
-    ctx.addIssue({
-      code: "custom",
-      path: ["score"],
-      message: `An imported Character image approval requires an identity score of at least ${CHARACTER_IDENTITY_APPROVAL_MIN_SCORE}`,
-    });
-  }
-  if (Object.values(review.quality).some((passed) => !passed)) {
-    ctx.addIssue({
-      code: "custom",
-      path: ["quality"],
-      message: "Every visible quality check must pass before approval",
-    });
-  }
-});
 
-export const characterImageReviewResultSchema = z.object({
-  characterId: adminIdSchema,
-  assetId: adminIdSchema,
-  decisionId: adminIdSchema,
-  qualification: characterImageQualificationSchema,
-  replayed: z.boolean(),
-}).strict();
 
 export const characterVideoSourceUploadRequestSchema = z
   .object({
@@ -215,13 +174,7 @@ export type CharacterImageQualification = z.infer<
   typeof characterImageQualificationSchema
 >;
 
-export type CharacterImageReviewRequest = z.infer<
-  typeof characterImageReviewRequestSchema
->;
 
-export type CharacterImageReviewResult = z.infer<
-  typeof characterImageReviewResultSchema
->;
 
 export type CharacterImageSourceUploadRequest = z.infer<
   typeof characterImageSourceUploadRequestSchema

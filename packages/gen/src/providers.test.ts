@@ -60,14 +60,6 @@ describe("generation provider assembly", () => {
     );
   });
 
-  // SPEC: the image/video production-adapter asymmetry is deliberate. Image may
-  // still run the legacy OpenAI-compatible gateway as the documented rollback;
-  // video may not, because only BackendVideoModel enforces the LTX production
-  // envelope. Pinned so "make the two modes consistent" cannot quietly delete
-  // either the rollback or the guard.
- 
- 
- 
   // SPEC: `pipeline` is no longer an adapter at all, so it is refused when the
   // env getter parses the vocabulary — one stage earlier than the production
   // policy that used to catch it, and in every environment rather than only

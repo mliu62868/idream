@@ -14,7 +14,7 @@
 | `admin-web` | 运营 UI |
 | `chat` | 本地 AgentRun + 内嵌 DSH/igrep + SSE |
 | `gen-image` / `gen-video` | 图片/视频 provider worker；mock video 时不注册 video worker |
-| `gen-finalizer` | Generation terminal relay/finalize |
+| `gen-finalizer` | Generation terminal relay/finalize，以及 Main 语音过期租约恢复 |
 | `main-event-consumer` | Main durable events |
 | `admin-command-worker` | Admin command execution |
 | `fish-audio` | 可选的参考音频克隆与 Fish 角色声音进程 |
@@ -36,6 +36,12 @@ bun run pm2:start:production
 生产启动/重启只用仓库 wrapper；直接操作 PM2 会绕过 source revision、queue fence 和 readiness。
 development 的 source watch 明确是 `non-certifying-source-watch`；只有绑定单一
 source revision 的 production immutable topology 才能签发运行态证明。
+
+### 语音过期租约恢复
+
+`gen-finalizer` 每分钟至多检查一个过期 `running` VoiceClipRequest，使用游标跳过不可恢复的历史数据；TTS 恢复独立运行，同一进程只允许一个在途恢复，停机时等待它结束。沿用已有请求、合成参数、报价同意和 provider 幂等键，成功交付与 usage/扣费仍在 Main 的同一事务内提交。自动恢复最多将 `attemptNo` 推进到 3，之后由运营处理；`failed`、`skipped`、历史 `provider_outcome_unknown` 和已有在途运营回收命令不自动执行。
+
+`voice_request_requires_recovery` 对账项显式报告过期租约及 unknown（包括编码在 `errorCode` 中的历史行）。未知 provider 结果禁止直接回收；不能通过清空错误、换幂等键或另起请求绕过隔离。`voice_succeeded_delivery_mismatch`、`voice_usage_authority_mismatch`、`voice_usage_debit_mismatch` 检查交付归属与扣费证据，允许正常媒体删除及历史交付重放。
 
 ## 2. 数据权威与运行目录
 

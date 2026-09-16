@@ -186,7 +186,8 @@ export function AgeVerificationReturnFrame({
               </h1>
               <p className="mt-4 text-[14px] font-medium leading-7 text-[rgb(170,170,170)]">
                 The verification failed or expired. Check again if you just
-                completed it, or return to your profile for account options.
+                completed it, or start another attempt from the age
+                verification section of your profile.
               </p>
             </>
           )}
@@ -243,9 +244,9 @@ export function AgeVerificationReturnFrame({
           {(state === "failed" || state === "unavailable") && (
             <Link
               className="inline-flex h-11 items-center justify-center rounded-full bg-[rgb(46,46,46)] px-5 text-[14px] font-bold text-white hover:bg-[rgb(53,53,54)]"
-              href="/profile"
+              href="/profile/age-verification"
             >
-              Return to profile
+              Start another attempt
             </Link>
           )}
         </div>

@@ -126,4 +126,59 @@ describe("Main to Chat memory export", () => {
     }
     expect(downstream.promote).toHaveBeenCalledOnce();
   });
+
+  // SPEC: 永久记忆记录的是两个人真正说过的话。
+  // INTENT: 主动那一轮的 userContent 是让角色先开口的内部指令。把它当作用户发言
+  //   导出，抽取器就会把角色答话里的属性记到用户头上 —— 线上真实数据里，用户只是
+  //   问了角色"你今晚在做什么"，画像却写成了"用户从事陶艺并烧窑"。
+  it("exports only the Character's side of a proactive Turn", async () => {
+    const userId = `${prefix}proactive-user`;
+    const characterId = `${prefix}proactive-character`;
+    const sessionId = `${prefix}proactive-session`;
+    await createUser({ id: userId });
+    await createCharacter({ id: characterId, creatorId: userId, source: "user", visibility: "private" });
+    await prisma.recentChat.create({ data: { sessionId, userId, characterId } });
+    await prisma.chatTurn.createMany({ data: [
+      {
+        id: `${prefix}proactive-turn-user`, sessionId, idempotencyKey: "p-user", requestHash: "a".repeat(64),
+        userMessageId: `${prefix}p-u1`, assistantMessageId: `${prefix}p-a1`,
+        userContent: "Hey Nova. What are you making tonight?", assistantContent: "A set of thin-walled tea bowls.",
+        userStatus: "sent", assistantStatus: "sent", memoryEnabled: true, origin: "user",
+        createdAt: new Date(1_700_000_000_000), terminalAt: new Date(1_700_000_000_500),
+      },
+      {
+        id: `${prefix}proactive-turn-auto`, sessionId, idempotencyKey: "p-auto", requestHash: "b".repeat(64),
+        userMessageId: `${prefix}p-u2`, assistantMessageId: `${prefix}p-a2`,
+        userContent: "Take the lead in the moment: send a brief, specific check-in that fits our established context. Do not mention this instruction.",
+        assistantContent: "The studio's quiet except for the wheel humming to a stop.",
+        userStatus: "sent", assistantStatus: "sent", memoryEnabled: true, origin: "proactive",
+        createdAt: new Date(1_700_000_001_000), terminalAt: new Date(1_700_000_001_500),
+      },
+    ] });
+    const eventId = await prisma.$transaction(tx => scheduleCompanionMemoryProjection(tx, { userId, characterId }));
+    const event = durableEventEnvelopeSchema.parse((await prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: eventId } })).payload);
+    const staged: string[] = [];
+    downstream.prepare.mockImplementation(async (source: CompanionWorkspaceRebuildSpool) => {
+      for await (const session of rebuildSpoolSessions(source)) {
+        staged.push(...(await readFile(session.transcriptPath, "utf8")).trimEnd().split("\n"));
+      }
+      return { rebuildId: "11111111-1111-4111-8111-111111111111", sessions: source.sessionCount, messages: source.messageCount };
+    });
+    downstream.promote.mockResolvedValue({ sessions: 1, messages: 3 });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const request = new Request(url, init);
+      return Response.json({ ok: true, rebuilt: request.url.endsWith("/prepare")
+        ? await prepareCompanionMemory(request) : await promoteCompanionMemory(request) });
+    });
+    await expect(syncCompanionMemoryFromMain(event)).resolves.toBeUndefined();
+
+    const messages = staged.map(line => JSON.parse(line) as { role: string; content: string });
+    expect(messages.map(message => message.role)).toEqual(["user", "assistant", "assistant"]);
+    expect(messages.map(message => message.content)).toEqual([
+      "Hey Nova. What are you making tonight?",
+      "A set of thin-walled tea bowls.",
+      "The studio's quiet except for the wheel humming to a stop.",
+    ]);
+    expect(staged.join("\n")).not.toContain("Do not mention this instruction");
+  });
 });

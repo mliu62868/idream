@@ -98,11 +98,15 @@ async function main() {
       )
     : [];
   const terminalIngests: GenerationTerminalRecordIngest[] = [];
+  // INVARIANT: the probe sends the shape Main actually sends. `fps` used to be
+  // included here, but generationControlsSchema is .strict() and has no fps key,
+  // so Main can never put one in controls — the probe was lighting up a
+  // BackendVideoModel branch that production cannot reach, and proving nothing
+  // about the path that runs.
   const controls = {
     source: "probe-video-generation",
     width: recipe.width,
     height: recipe.height,
-    fps: recipe.fps,
     ...(binding.workflowKey && binding.workflowVersion
       ? {
           workflowKey: binding.workflowKey,
@@ -282,8 +286,12 @@ export function videoProbeBackendTarget(
   },
 ) {
   if (descriptor.backendKind === "drawthings") return targets.drawThings;
+  // buildBackendRegistry resolves "video-h3" as `comfyH3ApiUrl ?? comfyVideoApiUrl`
+  // (backend/registry.ts). Without the same fallback this probe reported an unset
+  // H3 target while the attempt actually ran on the video listener — the exact
+  // mismatch the invariant above forbids.
   return comfyUiRunnerForDescriptor(descriptor) === "video-h3"
-    ? targets.h3
+    ? (targets.h3 ?? targets.video)
     : targets.video;
 }
 

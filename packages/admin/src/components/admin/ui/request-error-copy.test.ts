@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { hasAdminZh } from "@/components/admin/i18n";
-import { AdminV2RequestError } from "@/lib/admin-v2-api";
+import { AdminV2RequestError, adminV2Request } from "@/lib/admin-v2-api";
 import {
   OPERATOR_ERROR_COPY_KEYS,
   operatorErrorCopy,
@@ -8,9 +8,44 @@ import {
 } from "./request-error-copy";
 
 describe("operatorErrorCopy", () => {
+  it("does not infer a version race from a versioned request rejected by a business rule", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({
+      ok: false, error: { code: "conflict", message: "Only a saved draft can be published" },
+    }), { status: 409 }));
+    try {
+      const error = await adminV2Request("/api/admin-test", {
+        method: "POST", ifMatch: 7, body: { entityVersion: 7 },
+      }).catch((cause: unknown) => cause);
+      expect(operatorErrorCopy(error).headline).toBe("The authority refused this action — a precondition was not met.");
+    } finally { fetchMock.mockRestore(); }
+  });
+
+  it("keeps command blockers from the actual error envelope", async () => {
+    const blockers = [{ code: "release_not_published", message: "Target Release is withdrawn" }];
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({
+      ok: false, error: { code: "invariant_failed", message: "Command rejected", requestId: "authority-request", blockers, repairDeepLink: "/admin/characters/project-1" },
+    }), { status: 422 }));
+    try {
+      const error = await adminV2Request("/api/admin-test").catch((cause: unknown) => cause);
+      const copy = operatorErrorCopy(error);
+      expect(copy.technical.requestId).toBe("authority-request");
+      expect(technicalDetailText(copy.technical)).toContain(JSON.stringify(blockers));
+      expect(technicalDetailText(copy.technical)).toContain("/admin/characters/project-1");
+    } finally { fetchMock.mockRestore(); }
+  });
+
+  it("retains the authoritative blocker and recovery instruction in copyable details", () => {
+    const details = { blocker: "pinned_workflow_retired", requiredAction: "Discard the request to refund it" };
+    const copy = operatorErrorCopy(new AdminV2RequestError("Request cannot be replayed", 409, "conflict", details));
+    expect(technicalDetailText(copy.technical)).toContain(JSON.stringify(details));
+    expect(copy.nextStep).not.toContain("override");
+    expect(copy.nextStep).not.toContain("Nothing was written");
+  });
+
+  // SPEC: 只有权威明确返回版本不匹配，才提示刷新。
   it("maps a known authority code to operator copy and keeps the raw facts", () => {
     const copy = operatorErrorCopy(
-      new AdminV2RequestError("Character version changed", 409, "conflict", undefined, "req-1"),
+      new AdminV2RequestError("Character version changed", 409, "conflict", { blocker: "version_mismatch" }, "req-1"),
     );
 
     expect(copy.headline).toBe("Someone changed this record before your action landed.");
@@ -20,7 +55,30 @@ describe("operatorErrorCopy", () => {
       status: 409,
       requestId: "req-1",
       message: "Character version changed",
+      details: { blocker: "version_mismatch" },
     });
+  });
+
+  // INVARIANT: 未分类的冲突不能猜测成版本竞争。
+  it("does not invent a version race for a conflict that carried no version precondition", () => {
+    const copy = operatorErrorCopy(
+      new AdminV2RequestError("Only a saved draft can be published", 409, "conflict", undefined, "req-2"),
+    );
+
+    expect(copy.headline).toBe("The authority refused this action — a precondition was not met.");
+    expect(copy.nextStep).toContain("open the technical details");
+    // 权威原文一个字不改地留给工程。
+    expect(copy.technical.message).toBe("Only a saved draft can be published");
+  });
+
+  // INVARIANT: 权威明说了 blocker 时，它比「可能有人改过」更具体，必须优先。
+  it("prefers the authority's blocker over the version-race reading", () => {
+    const copy = operatorErrorCopy(new AdminV2RequestError(
+      "Appeal target could not be restored; the decision was not applied",
+      409, "conflict", { blocker: "manual_followup_required" }, "req-3",
+    ));
+
+    expect(copy.headline).toBe("The authority refused this action: its precondition is not met.");
   });
 
   it("falls back to the HTTP status when the envelope carried no code", () => {
@@ -49,6 +107,25 @@ describe("operatorErrorCopy", () => {
     expect(copy.nextStep).toBe("Open case {caseId} and reopen it there. This historical case was not changed.");
     expect(copy.nextStepValues).toEqual({ caseId: "current-case-2" });
     expect(copy.technical.requestId).toBe("req-history");
+  });
+
+  // SPEC: authority 报了 blocker 的冲突不是版本竞争，不能把运营指去「刷新后重判」。
+  // INTENT: 复核类工单点「从权威数据验证」实测就是这一条；刷新一万次也不会变。
+  it("does not blame a concurrent edit when the authority named a blocker", () => {
+    const copy = operatorErrorCopy(new AdminV2RequestError(
+      "Case outcome is not proven by downstream authority",
+      409,
+      "conflict",
+      {
+        blocker: "case_action_outcome_authority_missing",
+        requiredAction: "Record a supported downstream outcome or use an explicit audited override",
+      },
+      "req-blocker",
+    ));
+
+    expect(copy.headline).toBe("The authority refused this action: its precondition is not met.");
+    expect(copy.nextStep).toContain("required action");
+    expect(copy.technical.message).toBe("Case outcome is not proven by downstream authority");
   });
 
   // SPEC: 「假 reason 禁令」在错误文案上的落点。

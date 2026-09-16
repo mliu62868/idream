@@ -1082,6 +1082,9 @@ async function verifyClaimedGenerationDispatchOutbox(
 // claim, immediately before enqueue, and again before ACK. Cancellation seals
 // the Outbox under the same lock; a row enqueued in the narrow external-system
 // window is removed by its exact Attempt key.
+// INVARIANT: callers dispatch only after their reservation transaction commits.
+// Targeted post-commit wakes and the admin worker's unfiltered drain use the same
+// due-time/lease checks. Specifying outboxIds never overrides enqueue backoff.
 export async function dispatchGenerationAttemptOutbox(
   db: PrismaClient,
   input: {

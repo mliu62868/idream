@@ -93,6 +93,42 @@ class ToolThenTextAdapter extends LlmAdapter {
   }
 }
 
+/** 与工具调用同一步说话：这正是用户读到的那句台词的来源。 */
+class LeadInThenToolAdapter extends LlmAdapter {
+  calls = 0;
+
+  constructor(private readonly leadIn: string) {
+    super();
+  }
+
+  async *stream(): AsyncIterable<StreamChunk> {
+    this.calls += 1;
+    const args = JSON.stringify({ prompt: "Mira at the blue-lit observatory tonight" });
+    yield { type: "block-start", index: 0, blockType: "text" };
+    yield { type: "text-delta", index: 0, text: this.leadIn };
+    yield { type: "block-end", index: 0, block: { type: "text", text: this.leadIn } };
+    yield { type: "block-start", index: 1, blockType: "tool-call" };
+    yield {
+      type: "tool-call-delta",
+      index: 1,
+      id: "call-image-1" as never,
+      name: "generate_image_async",
+      argumentsDelta: args,
+    };
+    yield {
+      type: "block-end",
+      index: 1,
+      block: {
+        type: "tool-call",
+        id: "call-image-1" as never,
+        name: "generate_image_async",
+        arguments: args,
+      },
+    };
+    yield { type: "finish", reason: { kind: "tool-calls" } };
+  }
+}
+
 class BlockingAdapter extends LlmAdapter {
   async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     await new Promise<never>((_resolve, reject) => {
@@ -599,6 +635,42 @@ describe("Chat embedded companion runtime", () => {
     expect(connection.events).not.toContainEqual(expect.objectContaining({
       type: "text_delta",
       delta: expect.stringContaining("Je peux"),
+    }));
+    expect(connection.events.some(event => event.type === "failed")).toBe(false);
+  });
+
+  it("keeps the Character's sentence from the tool step and lets the receipt own completion", async () => {
+    const adapter = new LeadInThenToolAdapter(
+      "Elbow-deep in clay tonight, so give me a second to wash my hands.",
+    );
+    const runtime = await engine(adapter);
+    const connection = port();
+
+    await runtime.run(requiredImageInvocation(), connection.runtimePort);
+
+    // 不额外要一次模型：台词来自工具那一步。
+    expect(adapter.calls).toBe(1);
+    expect(connection.candidates[0]).toMatchObject({
+      content: "Elbow-deep in clay tonight, so give me a second to wash my hands.\n\nOkay, your image request is confirmed.",
+      acknowledgement: { version: "image-action-ack-1", locale: "en" },
+    });
+    expect(connection.events.some(event => event.type === "failed")).toBe(false);
+  });
+
+  it("drops a tool-step sentence that announces the image already arrived", async () => {
+    const adapter = new LeadInThenToolAdapter("Here's your selfie, hope you like it.");
+    const runtime = await engine(adapter);
+    const connection = port();
+
+    await runtime.run(requiredImageInvocation(), connection.runtimePort);
+
+    expect(adapter.calls).toBe(1);
+    expect(connection.candidates[0]).toMatchObject({
+      content: "Okay, your image request is confirmed.",
+    });
+    expect(connection.events).not.toContainEqual(expect.objectContaining({
+      type: "text_delta",
+      delta: expect.stringContaining("Here's your selfie"),
     }));
     expect(connection.events.some(event => event.type === "failed")).toBe(false);
   });

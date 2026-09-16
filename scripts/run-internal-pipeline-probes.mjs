@@ -47,11 +47,6 @@ const imagePipelineUrl =
   process.env.PIPELINE_API_URL ??
   genEnv.PIPELINE_API_URL ??
   "http://127.0.0.1:8091";
-const imagePipelineToken =
-  process.env.PIPELINE_IMAGE_API_TOKEN ??
-  process.env.PIPELINE_API_TOKEN ??
-  genEnv.PIPELINE_API_TOKEN ??
-  "local-pipeline-token-0123456789";
 const imagePipelineModel =
   process.env.PIPELINE_IMAGE_MODEL_DEFAULT ??
   genEnv.PIPELINE_IMAGE_MODEL_DEFAULT ??
@@ -126,30 +121,6 @@ const steps = [
       CHAT_SERVICE_URL: chatServiceUrl,
       CHAT_BFF_SIGNING_SECRET: chatBffSigningSecret,
       CHAT_SERVICE_PROBE_USER_ID: chatServiceProbeUserId,
-    },
-  },
-  {
-    id: "image-pipeline",
-    required: true,
-    command: "bun",
-    args: [
-      "run",
-      "launch:probe:image:local",
-      "--",
-      "--report",
-      ".tmp/launch-image-probe.json",
-      "--count",
-      "1",
-    ],
-    env: {
-      ...baseEnv,
-      PIPELINE_API_URL: imagePipelineUrl,
-      PIPELINE_API_TOKEN: imagePipelineToken,
-      PIPELINE_IMAGE_MODEL_DEFAULT: imagePipelineModel,
-      PIPELINE_IMAGE_SIZE_DEFAULT:
-        process.env.PIPELINE_IMAGE_SIZE_DEFAULT ??
-        genEnv.PIPELINE_IMAGE_SIZE_DEFAULT ??
-        "512x512",
     },
   },
 ];

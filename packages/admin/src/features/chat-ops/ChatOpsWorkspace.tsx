@@ -3,6 +3,7 @@
 import {
   MAIN_TO_CHAT_REPLAY_CONFIRMATION,
   MAIN_TO_CHAT_TARGET_MISSING_CONFIRMATION,
+  type ChatOpsSession,
   type MainToChatOutboxEvent,
   type MainToChatOutboxEventListResponse,
 } from "@idream/shared/admin";
@@ -16,6 +17,8 @@ import {
   ConfirmDialog,
   type ConfirmSpec,
 } from "@/components/admin/ui/ConfirmDialog";
+import { RequestErrorDetails } from "@/components/admin/ui/RequestErrorDetails";
+import { operatorErrorCopy } from "@/components/admin/ui/request-error-copy";
 import { DataTable, type DataTableHeader, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { useAdminFormat } from "@/components/admin/ui/format";
@@ -33,6 +36,8 @@ import {
   type ChatOpsAuthority,
   type ChatOpsQuery,
 } from "./query";
+
+import { ChatEngagementPanel } from "./ChatEngagementPanel";
 
 type Row = Record<string, unknown>;
 type PageInfo = { endCursor: string | null; hasNextPage: boolean };
@@ -192,11 +197,13 @@ function initialStates(): Record<ChatOpsAuthority, AuthorityState> {
 
 export function ChatOpsWorkspace({
   canRead,
+  canMigrateSessionRelease = false,
   canReadMainOutbox = false,
   canReplayMainOutbox = false,
   canDiscardMissingMainOutbox = false,
 }: {
   canRead: boolean;
+  canMigrateSessionRelease?: boolean;
   canReadMainOutbox?: boolean;
   canReplayMainOutbox?: boolean;
   canDiscardMissingMainOutbox?: boolean;
@@ -355,6 +362,12 @@ export function ChatOpsWorkspace({
           value={draft.sessionStatus}
         />
         <Select
+          label="Release pin"
+          onChange={(releasePin) => setDraft((value) => ({ ...value, releasePin }))}
+          options={["all", "legacy", "unpinned"]}
+          value={draft.releasePin}
+        />
+        <Select
           label="Rows"
           onChange={(limit) => setDraft((value) => ({ ...value, limit }))}
           numeric
@@ -476,6 +489,11 @@ export function ChatOpsWorkspace({
             state={states.sessions}
           />
           <DiagnosticsNotice data={states.sessions.data} />
+          <SessionPinMigration
+            canMigrate={canMigrateSessionRelease}
+            onDone={() => void loadAuthority(query, "sessions")}
+            rows={states.sessions.data?.items ?? []}
+          />
           <AuthorityTable
             authority="sessions"
             empty={canonicalListEmptyTitle(
@@ -492,6 +510,8 @@ export function ChatOpsWorkspace({
             pageInfo={states.sessions.data?.pageInfo ?? emptyPageInfo}
             query={query}
           />
+
+          <ChatEngagementPanel key={`${query.userId}:${query.characterId}`} userId={query.userId} characterId={query.characterId} />
 
           <AuthorityError
             authority="events"
@@ -893,28 +913,47 @@ function MainToChatFailedOutboxPanel({
   );
 }
 
+// SPEC: 每张卡显示自己的口径排除数——后端在 dataScope.excluded 里逐项算好了。
+// INTENT: 这八张卡此前只显示数值。运营看到 "Active sessions 14"，无从知道同一时刻
+//   还有 38 条会话因为数据类不属 customer 而被排除在外。后端算了并送了，前端不读，
+//   于是口径成了隐形的 —— 这正是"客户指标被测试账号污染"在界面上无法被察觉的原因。
+//   全后台此前只有 JobsView 渲染过 dataScope。
 export function ChatOpsOverviewCards({ overview }: { overview: Row | null }) {
   const { t } = useAdminI18n();
-  const cards = [
-    ["Active sessions", overview?.activeSessions],
-    ["Archived", overview?.archivedSessions],
-    ["Messages 24h", overview?.messages24h],
-    ["Moderation 24h", overview?.moderationEvents24h],
-    ["Messages used today", overview?.messagesUsedToday],
-    ["Users at daily limit", overview?.usersAtDailyLimit],
-    ["Unlimited users", overview?.unlimitedEntitlements],
-    ["Blocked moderation 24h", overview?.blockedModeration24h],
+  const excluded = (overview?.dataScope as { excluded?: Record<string, unknown> } | undefined)
+    ?.excluded;
+  const excludedCount = (key: string) => {
+    const value = excluded?.[key];
+    return typeof value === "number" && value > 0 ? value : null;
+  };
+  const cards: readonly (readonly [string, unknown, string | null])[] = [
+    ["Active sessions", overview?.activeSessions, "activeSessions"],
+    ["Archived", overview?.archivedSessions, "archivedSessions"],
+    ["Messages 24h", overview?.messages24h, "messages24h"],
+    ["Moderation 24h", overview?.moderationEvents24h, "moderationEvents24h"],
+    ["Messages used today", overview?.messagesUsedToday, "messagesUsedToday"],
+    ["Users at daily limit", overview?.usersAtDailyLimit, null],
+    ["Unlimited users", overview?.unlimitedEntitlements, null],
+    ["Blocked moderation 24h", overview?.blockedModeration24h, null],
   ];
   return (
     <div className="grid gap-px overflow-hidden rounded-lg border bg-black/[0.05] md:grid-cols-4">
-      {cards.map(([label, value]) => (
-        <div className="bg-[var(--ad-surface)] p-4" key={String(label)}>
-          <p className="text-xs text-[var(--ad-text-muted)]">{t(String(label))}</p>
-          <p className="mt-2 text-2xl font-semibold">
-            {typeof value === "number" ? value : "—"}
-          </p>
-        </div>
-      ))}
+      {cards.map(([label, value, excludedKey]) => {
+        const hidden = excludedKey ? excludedCount(excludedKey) : null;
+        return (
+          <div className="bg-[var(--ad-surface)] p-4" key={label}>
+            <p className="text-xs text-[var(--ad-text-muted)]">{t(label)}</p>
+            <p className="mt-2 text-2xl font-semibold">
+              {typeof value === "number" ? value : "—"}
+            </p>
+            {hidden === null ? null : (
+              <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
+                {t("{count} excluded by data class", { count: hidden })}
+              </p>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -959,6 +998,7 @@ const tableColumns: Record<Exclude<ChatOpsAuthority, "overview">, ColumnSpec> = 
     ["lastMessageRole", "Last role"],
     ["lastMessageStatus", "Last message status"],
     ["lastSafetyStatus", "Last safety status"],
+    ["releasePin", "Release pin"],
     ["lastMessageAt", "Last message"],
   ],
   events: [
@@ -983,6 +1023,157 @@ const ENUM_COLUMNS: ReadonlySet<string> = new Set([
   "lastSafetyStatus",
   "targetType",
 ]);
+
+type SessionReleasePin = ChatOpsSession["releasePin"];
+
+function sessionReleasePin(row: Row): SessionReleasePin | null {
+  const pin = row.releasePin;
+  if (!pin || typeof pin !== "object") return null;
+  return pin as SessionReleasePin;
+}
+
+// INVARIANT: 默认目标来自 Main 当前 Serving；提交携带真实来源 pin 与目标版本。
+// 202 accepted 只是命令回执，只有命令权威 succeeded 才能计为已迁移。
+function SessionPinMigration({ canMigrate, onDone, rows }: {
+  canMigrate: boolean;
+  onDone: () => void;
+  rows: Row[];
+}) {
+  const { t, value } = useAdminI18n();
+  const { toast } = useToast();
+  const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
+  const [results, setResults] = useState<Array<{ sessionId: string; commandId?: string; status: string; error?: unknown }>>([]);
+  const candidates: Row[] = [];
+  const migratable: Row[] = [];
+  for (const row of rows) {
+    const pin = sessionReleasePin(row);
+    if (!pin || row.status === "deleted") continue;
+    const target = pin.recommendedTarget;
+    if (target && pin.releaseId === target.characterReleaseId && pin.contentVersionId === target.characterContentVersionId) continue;
+    candidates.push(row);
+    if (target) migratable.push(row);
+  }
+  if (candidates.length === 0 && results.length === 0) return null;
+  const blockedCount = candidates.length - migratable.length;
+
+  function requestMigration() {
+    if (!canMigrate || migratable.length === 0) return;
+    const targets = [...migratable];
+    setConfirmation({
+      title: t("Migrate session pins ({count})", { count: targets.length }),
+      consequence: {
+        effect: t(
+          "Each session is re-pinned to the Release its Character is serving today. Sessions are migrated one command at a time, so a failure part-way leaves the rest untouched. Re-running skips what already moved.",
+        ),
+        reversible: false,
+      },
+      requireReason: true,
+      reasonLabel: t("Migration reason (≥3)"),
+      submitLabel: t("Migrate pins"),
+      onSubmit: async (reason) => {
+        let migrated = 0;
+        const outcomes: typeof results = [];
+        for (const row of targets) {
+          const pin = sessionReleasePin(row);
+          const target = pin?.recommendedTarget;
+          const sessionId = typeof row.id === "string" ? row.id : "";
+          const characterId = typeof row.characterId === "string" ? row.characterId : "";
+          if (!pin || !target || !sessionId || !characterId) continue;
+          let commandId: string | undefined;
+          try {
+            const accepted = await adminV2Operation(
+              "POST /api/v2/admin/chat/sessions/:sessionId/commands/migrate-release",
+              {
+                path: { sessionId },
+                ifMatch: target.entityVersion,
+                body: {
+                  entityVersion: target.entityVersion,
+                  characterId,
+                  fromCharacterContentVersionId: pin?.contentVersionId ?? null,
+                  fromCharacterReleaseId: pin.releaseId,
+                  toCharacterContentVersionId: target.characterContentVersionId,
+                  toCharacterReleaseId: target.characterReleaseId,
+                  compatibilityCheck: {
+                    status: "passed",
+                    // 如实记录这次断言的依据：目标是该角色当前在服务的 Release，
+                    // 不假装跑过一次独立的兼容性 QA。
+                    policyVersion: "operator-session-pin-migration-v1",
+                    evidence: { source: "character_serving.currentReleaseId" },
+                  },
+                  reason: { code: "session_pin_migration", summary: reason.trim() },
+                  confirmation: `${sessionId}:${target.characterReleaseId}:migrate`,
+                },
+              },
+            );
+            commandId = accepted.commandId;
+            const command = await adminV2Operation("GET /api/v2/admin/commands/:commandId", { path: { commandId } });
+            if (command.status === "succeeded" && !command.needsReconciliation) migrated += 1;
+            outcomes.push({ sessionId, commandId, status: command.needsReconciliation ? "needs_reconciliation" : command.status, error: command.error });
+          } catch (error) {
+            outcomes.push({ sessionId, commandId, status: commandId ? "unknown" : "failed", error });
+          }
+          setResults([...outcomes]);
+          if (outcomes.at(-1)?.status !== "succeeded") break;
+        }
+        toast({
+          // 有失败时用 error 语气 —— 只有 error toast 不会自己消失，
+          // 而「哪几条没迁成」正是运营必须读完的那句。
+          tone: migrated === targets.length ? "success" : "error",
+          title: migrated === targets.length
+            ? t("Migrated {count} session pins.", { count: migrated })
+            : t("Verified {count} migrations. Review the command results before continuing.", {
+                count: migrated,
+              }),
+        });
+        onDone();
+      },
+    });
+  }
+
+  return (
+    <div
+      className="rounded-md border border-[var(--ad-border)] bg-[var(--ad-yellow-bg)] p-3"
+      data-testid="chat-session-pin-migration"
+    >
+      <p className="text-sm font-semibold text-[var(--ad-yellow-text)]">
+        {t("{count} sessions on this page can be reviewed for Release migration", {
+          count: candidates.length,
+        })}
+      </p>
+      <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
+        {t("Migration changes future turns to the Character’s current published Release. Existing messages are preserved.")}
+      </p>
+      {blockedCount > 0 ? (
+        <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
+          {t("{count} have no eligible current Release. Publish a Character Release using the current Soul schema first.", {
+            count: blockedCount,
+          })}
+        </p>
+      ) : null}
+      <button
+        className="mt-3 min-h-11 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm font-semibold disabled:opacity-50"
+        disabled={!canMigrate || migratable.length === 0}
+        onClick={requestMigration}
+        type="button"
+      >
+        {t("Migrate {count} pins", { count: migratable.length })}
+      </button>
+      {!canMigrate ? (
+        <p className="mt-2 text-xs text-[var(--ad-text-muted)]">
+          {t("Read only · character.release.publish is not granted")}
+        </p>
+      ) : null}
+      {results.map((result) => <div className="mt-2 text-sm" key={result.sessionId}>
+        <span>{result.sessionId}: {value(result.status)}</span>
+        {result.commandId ? <a className="ml-2 underline" href={`/admin/system/audit?commandId=${encodeURIComponent(result.commandId)}`}>{result.commandId}</a> : null}
+        {result.error ? <RequestErrorDetails technical={operatorErrorCopy(result.error instanceof Error ? result.error : JSON.stringify(result.error)).technical} /> : null}
+      </div>)}
+      {confirmation ? (
+        <ConfirmDialog onClose={() => setConfirmation(null)} spec={confirmation} />
+      ) : null}
+    </div>
+  );
+}
 
 function AuthorityTable({
   authority,
@@ -1024,6 +1215,18 @@ function AuthorityTable({
   );
 }
 
+// pin 是嵌套对象，通用 display() 只会渲染成 [object Object]。
+// 旧 schema 的版本号要显示出来 —— 运营据此知道差多远，也能和门禁的数字对上。
+function releasePinCell(raw: unknown, enumLabel: (key: string) => string) {
+  if (!raw || typeof raw !== "object") return display(raw);
+  const pin = raw as { state?: unknown; schemaVersion?: unknown };
+  const state = typeof pin.state === "string" ? pin.state : "";
+  if (!state) return display(undefined);
+  if (state === "current") return enumLabel(state);
+  const version = typeof pin.schemaVersion === "number" ? ` · v${pin.schemaVersion}` : "";
+  return `${enumLabel(state)}${version}`;
+}
+
 function tableRows(
   rows: Row[],
   columns: ColumnSpec,
@@ -1034,6 +1237,7 @@ function tableRows(
     id: text(row.id) || `${prefix}-${index}`,
     cells: columns.map(([field]) => {
       const raw = row[field];
+      if (field === "releasePin") return releasePinCell(raw, enumLabel);
       return ENUM_COLUMNS.has(field) && typeof raw === "string" && raw
         ? enumLabel(raw)
         : display(raw);

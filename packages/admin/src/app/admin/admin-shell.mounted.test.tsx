@@ -171,7 +171,8 @@ describe("admin shell keyboard and account menu", () => {
   it("reveals operational tools in the sidebar while keeping routine pages directly visible", async () => {
     await mountShell(shellProps({
       initialSection: "ops/jobs",
-      permissions: ["generation.job.read", "ops.queue.read"],
+      // generation.config.read 是后端诊断页首屏请求要的权限，也就是它的入口权限。
+      permissions: ["generation.job.read", "ops.queue.read", "generation.config.read"],
       preferences: { workMode: "support" },
     }));
     expect(navButton("Platform Operations").getAttribute("aria-expanded")).toBe("true");

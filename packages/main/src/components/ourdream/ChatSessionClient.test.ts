@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyLocalStreamState,
+  chatAttachmentCostLabel,
   chatUpgradeLinkLabel,
   chatViewIsPinnedToBottom,
   voicePaymentRequiredReason,
@@ -94,5 +95,25 @@ describe("chat auto-scroll anchoring", () => {
     expect(chatViewIsPinnedToBottom({ ...page, scrollY: 1_100 })).toBe(true);
     expect(chatViewIsPinnedToBottom({ ...page, scrollY: 1_000 })).toBe(false);
     expect(chatViewIsPinnedToBottom({ ...page, scrollY: 0 })).toBe(false);
+  });
+});
+
+describe("chat image charge disclosure", () => {
+  it("names the charge while the image is still being made and after it lands", () => {
+    expect(chatAttachmentCostLabel({ costDreamcoins: 8, status: "running" })).toBe("8 coins");
+    expect(chatAttachmentCostLabel({ costDreamcoins: 8, status: "completed" })).toBe("8 coins");
+    expect(chatAttachmentCostLabel({ costDreamcoins: 1, status: "completed" })).toBe("1 coin");
+  });
+
+  it("stays silent about a charge that may have been reversed", () => {
+    for (const status of ["failed", "refunded", "blocked", "rejected", "proposed"]) {
+      expect(chatAttachmentCostLabel({ costDreamcoins: 8, status })).toBeNull();
+    }
+  });
+
+  it("invents nothing when the ledger amount is missing", () => {
+    expect(chatAttachmentCostLabel({ status: "completed" })).toBeNull();
+    expect(chatAttachmentCostLabel({ costDreamcoins: null, status: "completed" })).toBeNull();
+    expect(chatAttachmentCostLabel({ costDreamcoins: 0, status: "completed" })).toBeNull();
   });
 });

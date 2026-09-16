@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { Errors } from "@/server/lib/errors";
 import { prisma } from "@/server/lib/db";
 import {
+  activeAnnouncements,
   type Announcement,
   readAnnouncements,
   writeAnnouncements,
@@ -54,6 +55,15 @@ function writeAudit(
   });
 }
 
+// SPEC: 写操作的响应也必须带 serving —— 契约是 .strict()，而且「我刚激活的这条，现在真的在
+//       展示吗」正是运营点完按钮最想知道的一件事。
+function withServingState(announcement: Announcement) {
+  return {
+    ...announcement,
+    serving: activeAnnouncements([announcement], Date.now()).length === 1,
+  };
+}
+
 export async function listAdminAnnouncements(request: Request) {
   await actorWithPermission(request, PROMO_READ);
   const query = queryParams(request, "GET /api/v2/admin/announcements");
@@ -81,8 +91,11 @@ export async function listAdminAnnouncements(request: Request) {
   const page = matches.slice(0, query.limit);
   const hasNextPage = matches.length > query.limit;
   const last = page.at(-1);
+  // INVARIANT: `serving` 走 activeAnnouncements —— 公开端点用的就是这一个函数。
+  //            两边共用同一份判据，后台说「在展示」就等于站上真的在展示。
+  const servingIds = new Set(activeAnnouncements(page, Date.now()).map((item) => item.id));
   return {
-    items: page,
+    items: page.map((item) => ({ ...item, serving: servingIds.has(item.id) })),
     pageInfo: {
       hasNextPage,
       endCursor: hasNextPage && last
@@ -135,7 +148,7 @@ export async function createAnnouncement(request: Request) {
       active: announcement.active,
     },
   });
-  return { announcement };
+  return { announcement: withServingState(announcement) };
 }
 
 export async function patchAnnouncement(request: Request, id: string) {
@@ -168,7 +181,7 @@ export async function patchAnnouncement(request: Request, id: string) {
     before: { active: before.active, level: before.level },
     after: { active: updated.active, level: updated.level },
   });
-  return { announcement: updated };
+  return { announcement: withServingState(updated) };
 }
 
 export async function deleteAnnouncement(request: Request, id: string) {

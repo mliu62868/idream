@@ -850,16 +850,6 @@ export function deriveCreativeExecutionOutcome(
   return "failed";
 }
 
-export const creativeErrorClusterSchema = z
-  .object({
-    signature: z.string().trim().min(1),
-    errorClass: z.string().trim().min(1),
-    errorCode: z.string().trim().min(1),
-    retryability: z.enum(["retryable", "not_retryable", "unknown"]),
-    affectedItemCount: z.number().int().positive(),
-    operatorGuidance: z.string().trim().min(1),
-  })
-  .strict();
 
 const creativeRunBaseSchema = z
   .object({
@@ -876,7 +866,6 @@ const creativeRunBaseSchema = z
     deploymentState: creativeDeploymentStateSchema,
     verificationState: adminVerificationStateSchema,
     counts: creativeRunCountsSchema,
-    errorClusters: z.array(creativeErrorClusterSchema).readonly().optional(),
     relatedIncidentIds: z.array(adminIdSchema).readonly().optional(),
     version: z.number().int().nonnegative(),
     createdAt: adminIsoDateTimeSchema,
@@ -1027,7 +1016,6 @@ export const creativeRunItemDetailSchema = z
   .strict();
 
 export const creativeRunDetailSchema = creativeRunBaseSchema
-  .omit({ errorClusters: true })
   .extend({
     title: z.string().trim().min(1),
     reviewContext: z.object({

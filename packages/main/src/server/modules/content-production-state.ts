@@ -225,9 +225,18 @@ export async function refreshContentProductionBatchStats(
     ["queued", "regenerate_requested"].includes(item.status),
   ).length;
   const generatedItems = items.filter((item) => item.status === "generated").length;
+  // SPEC: 全部条目终态且**至少有一条成功产出**才叫 completed；全部终态但零产出是 failed。
+  // INTENT: `failed` 是本次补进枚举的。此前枚举里没有它，于是"一条都没做出来"
+  //   的批次只能叫 completed —— 一个叫 completed 的状态，任何人读到都会理解成
+  //   "成功完成"，而它的真实含义却是"流程终结了，可能全军覆没"。命名在说谎。
+  //   v2 读模型的 executionOutcome 早就有 failed，是 legacy 状态机缺了这一格。
+  // INVARIANT: 判据必须与 invariants.ts 的 creative_run_child_projection_mismatch
+  //   里那段 CASE 保持逐字一致，否则每推进一次状态就制造一条不变式违规。
   const status =
     totalItems > 0 && reviewedItems === totalItems
-      ? "completed"
+      ? completedItems > 0
+        ? "completed"
+        : "failed"
       : generatedItems > 0 || reviewedItems > 0
         ? "reviewing"
         : activeItems > 0

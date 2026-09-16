@@ -168,6 +168,66 @@ describe("Create authoring authority", () => {
     expect(recent.data.items.map((item: { id: string }) => item.id)).not.toContain(prepared.reference.id);
   });
 
+  // SPEC: 向导里选的标签，发布后必须成为这个角色的发现维度。
+  // INTENT: 此前发布路径 character-draft-write.ts 全文没有 `tags` 字样 —— 向导收集了标签、
+  //   写进了 character_drafts.tags，发布时一个字都不读，用户填的标签 100% 静默丢失
+  //   （实测 user 来源的 18 个角色 0 条 character_tags 关联）。
+  // INVARIANT: 只接受标签词典里已存在的 slug。标签是受运营治理的发现维度，
+  //   创作者可以施加但不能凭输入往词典里添词。
+  it("writes wizard tags onto the published Character and never invents new dictionary entries", async () => {
+    const userId = `${prefix}tag-owner`;
+    await createUser({ id: userId });
+    const knownTag = await prisma.tag.upsert({
+      where: { slug: `${prefix}slow-burn` },
+      update: {},
+      create: { slug: `${prefix}slow-burn`, label: "Slow Burn", category: "relationship" },
+    });
+    const created = await api("POST", "character-drafts", {
+      userId, ageGate: true,
+      body: { name: "Tagged", age: 26, gender: "female", style: "realistic" },
+    });
+    expectOk(created);
+    const draftId = created.data.draft.id as string;
+
+    // 一个词典内的 + 一个词典外的自由输入：后者必须被丢弃，且不得凭空建 tag。
+    const unknownSlug = `${prefix}ceramics`;
+    const tagged = await api("POST", `character-drafts/${draftId}/tags`, {
+      userId, ageGate: true, body: { tags: [knownTag.slug, unknownSlug] },
+    });
+    expectOk(tagged);
+
+    const appearance = { prompt: "Freckles" };
+    await api("PATCH", `character-drafts/${draftId}`, {
+      userId, ageGate: true,
+      body: { appearance, advancedDetails: { description: "A potter", firstMessage: "Come in." } },
+    });
+    const anchor = await prisma.mediaAsset.create({ data: {
+      id: `${prefix}tag-anchor`, ownerId: userId, type: "image", url: "/user-content/tagged.png",
+      storageKey: `${prefix}tag-anchor.png`, visibility: "private", safetyStatus: "passed",
+      metadata: { synthetic: false },
+    } });
+    const preview = await prisma.characterPreviewJob.create({ data: {
+      draftId, status: "completed", provider: "test", resultAssetId: anchor.id, completedAt: new Date(),
+    } });
+    await recordPreviewInput(draftId, preview.id, userId);
+    expectOk(await api("POST", `character-drafts/${draftId}/preview-anchor`, {
+      userId, ageGate: true, body: { previewJobId: preview.id },
+    }));
+
+    const submitted = await api("POST", `character-drafts/${draftId}/submit`, {
+      userId, ageGate: true, body: { visibility: "private" },
+    });
+    expectOk(submitted);
+    const characterId = submitted.data.character.id as string;
+
+    const links = await prisma.characterTag.findMany({
+      where: { characterId }, select: { tagId: true },
+    });
+    expect(links.map((link) => link.tagId)).toEqual([knownTag.id]);
+    // 词典外的自由文本既没有被写成关联，也没有被悄悄加进词典。
+    expect(await prisma.tag.count({ where: { slug: unknownSlug } })).toBe(0);
+  });
+
   it("keeps the identity across voice changes before and after confirmation but rejects real trait changes", async () => {
     const userId = `${prefix}preview-match-owner`;
     await createUser({ id: userId });

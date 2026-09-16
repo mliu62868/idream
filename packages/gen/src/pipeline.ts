@@ -27,7 +27,6 @@ import {
   runGeneration,
   type GenerationExecutionPorts,
 } from "./generation-execution";
-import { hydratedImageReferenceInputs } from "./reference-images";
 import { enhancedImageDimensions, prepareImageEnhancement } from "./image-enhancement";
 
 type AttemptDeps = {

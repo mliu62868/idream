@@ -2,6 +2,7 @@ export type ChatOpsQuery = {
   userId: string;
   characterId: string;
   sessionStatus: string;
+  releasePin: string;
   eventStatus: string;
   eventLayer: string;
   policyCode: string;
@@ -23,6 +24,7 @@ export const defaultChatOpsQuery: ChatOpsQuery = {
   userId: "",
   characterId: "",
   sessionStatus: "active",
+  releasePin: "all",
   eventStatus: "all",
   eventLayer: "all",
   policyCode: "",
@@ -48,6 +50,7 @@ export function chatOpsQueryFromSearch(search: string): ChatOpsQuery {
     userId: params.get("chatUserId") ?? "",
     characterId: params.get("chatCharacterId") ?? "",
     sessionStatus: params.get("chatSessionStatus") || "active",
+    releasePin: params.get("chatReleasePin") || "all",
     eventStatus: params.get("chatEventStatus") || "all",
     eventLayer: params.get("chatEventLayer") || "all",
     policyCode: params.get("chatPolicyCode") ?? "",
@@ -71,6 +74,7 @@ export function chatOpsPath(query: ChatOpsQuery, authority: ChatOpsAuthority) {
       "status",
       query.sessionStatus === "all" ? "" : query.sessionStatus,
     );
+    set(params, "releasePin", query.releasePin === "all" ? "" : query.releasePin);
     set(params, "cursor", query.sessionCursor);
   }
   if (authority === "usage") {
@@ -100,6 +104,7 @@ export function chatOpsWorkspaceUrl(
     "chatSessionStatus",
     query.sessionStatus === "active" ? "" : query.sessionStatus,
   );
+  set(params, "chatReleasePin", query.releasePin === "all" ? "" : query.releasePin);
   set(
     params,
     "chatEventStatus",

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { translateAdmin } from "@/components/admin/i18n-dictionary";
 import {
+  METRIC_QUALITY_REASONS,
   hasMetricQualityReason,
   metricQualityBlocked,
   primaryMetricQualityReason,
@@ -23,6 +24,46 @@ const REAL_EVIDENCE = [
 ];
 
 describe("metric certification reasons", () => {
+  // SPEC: 这张表里的每一条都会出现在中文后台的「产品健康」上，一条都不能漏中文。
+  // INTENT: i18n-completeness 那条用例只扫 JSX 字面量，扫不到这里——本文件此前只对
+  //         三四条做了点名断言，改动别的条目不会报红。实测就漏过：改文案时中文还停在旧句上，
+  //         中文界面照样印英文原文，而两条用例都是绿的。
+  it("has Chinese for every title and hint", () => {
+    for (const [code, entry] of Object.entries(METRIC_QUALITY_REASONS)) {
+      expect(translateAdmin("zh", entry.title), `${code} title 缺中文`).not.toBe(entry.title);
+      expect(translateAdmin("zh", entry.hint), `${code} hint 缺中文`).not.toBe(entry.hint);
+    }
+  });
+
+  // SPEC: 这两条的下一步不许承诺一个不会到来的恢复。
+  // INTENT: `cash_attribution_authority_unavailable` 是 metrics/query.ts:400 写死的字符串，
+  //         那张毛利卡整张是静态拼的，它引用的 cash_attribution_fact 表在库里不存在——
+  //         原文「它恢复之前……」让运营一直等。`source_fact_missing` 原文断言投影器没跑过，
+  //         而实测投影器跑了并拒了全部 11280 条事件，会让工程去查一个没停的任务。
+  it("does not promise a recovery that is not coming", () => {
+    expect(METRIC_QUALITY_REASONS.cash_attribution_authority_unavailable!.hint)
+      .toContain("placeholder, not an outage");
+    expect(METRIC_QUALITY_REASONS.source_fact_missing!.hint)
+      .toContain("metric_projection_receipts");
+  });
+
+  it("explains every explicit validation failure and prioritises its actionable cause", () => {
+    for (const code of [
+      "definition_validation_failed", "definition_validation_identity_mismatch",
+      "definition_validation_formula_mismatch",
+      "definition_validation_from_future", "definition_validation_mature_sample_missing",
+      "definition_validation_cohort_invalid", "definition_validation_projection_incomplete",
+      "definition_evaluator_unavailable",
+    ]) expect(hasMetricQualityReason(code), code).toBe(true);
+    expect(primaryMetricQualityReason([
+      "definition_validation_failed", "definition_validation_mature_sample_missing",
+    ])?.code).toBe("definition_validation_mature_sample_missing");
+    expect(translateAdmin("zh", resolveMetricQualityReason("definition_validation_mature_sample_missing").hint))
+      .toContain("内部测试数据不能用于认证");
+    expect(translateAdmin("zh", resolveMetricQualityReason("definition_validation_projection_incomplete").hint))
+      .toContain("先修复权威数据");
+  });
+
   it("reads the parameterised prefix of a code", () => {
     expect(resolveMetricQualityReason("source_fact_missing:chat_exchange_fact")).toMatchObject({
       code: "source_fact_missing:chat_exchange_fact",

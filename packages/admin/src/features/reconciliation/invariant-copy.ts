@@ -22,10 +22,33 @@ export type InvariantCopy = {
 // 复用的下一步文案：绝大多数不变式的动作是同一个，没必要每条各写一句。
 const ESCALATE = "Hand the sample IDs to engineering — this is a data-integrity break";
 const REPUBLISH = "Re-run the release pipeline for the sampled Characters, then re-check";
-const CASE_TRIAGE = "Open the missing Case from the sampled source, then re-check";
+// INTENT: 原文是「为样本来源补开工单」——但后台没有任何一个「补开工单」按钮，运营只会以为是
+//         自己没找到。真正能收口的动作是去来源自己的工作台处置它：审核工单 / 支持工单里
+//         下一个决定，服务端就会 ensureReviewCaseFor* 把缺的工单建出来。说清楚去哪儿做。
+const CASE_TRIAGE = "Decide the sampled source in Moderation or Support — that creates the missing Case";
 const SCHEMA = "A database constraint is missing — needs a migration, not an operator action";
 
 const TABLE: Record<string, InvariantCopy> = {
+  voice_succeeded_delivery_mismatch: {
+    title: "A successful voice request has missing or mismatched delivery evidence",
+    hint: ESCALATE,
+    owner: "engineering",
+  },
+  voice_usage_authority_mismatch: {
+    title: "Voice usage does not match its request or delivered media",
+    hint: ESCALATE,
+    owner: "engineering",
+  },
+  voice_usage_debit_mismatch: {
+    title: "Voice usage and charged Dreamcoins do not reconcile",
+    hint: ESCALATE,
+    owner: "engineering",
+  },
+  voice_request_requires_recovery: {
+    title: "A voice request has an unknown provider outcome or expired lease",
+    hint: "Check the provider receipt with engineering before retrying the sampled voice request",
+    owner: "engineering",
+  },
   // —— 角色项目 / 素材 ——
   character_project_orphan: {
     title: "Character project points at a Character that no longer exists",
@@ -71,10 +94,24 @@ const TABLE: Record<string, InvariantCopy> = {
   //            唯一的按钮是跳到素材页生成一张图。也没有"改用另一条路由"的命令。
   //            我最初把它标成 operations 并写着「去 Profiles & Rollout 重新资质化」——
   //            那是指着一个不存在的按钮，比不给下一步更糟：运营会以为是自己没找到。
+  //            更正（第三轮）：上面这段话本身没错——重新资质化的入口确实至今不存在——
+  //            但**重新资质化不是收口这条的唯一办法**。发一个新 Release 就够了：
+  //            createCharacterRelease 会当场重新解析线路（release-lifecycle.ts:177
+  //            findOperationalGenerationRoute），把 Release 绑到今天合格的那条上，
+  //            而「发布 Release」是运营本来就有的按钮。我上一版连 owner 一起改掉了，改过头了。
+  //            真找不到可用线路时，发布动作自己会拒绝并说明——那一刻才轮到工程。
   serving_default_route_unqualified: {
     title: "Default generation route no longer satisfies its qualification",
-    hint: ESCALATE,
-    owner: "engineering",
+    hint: REPUBLISH,
+    owner: "operations",
+  },
+  // INTENT: 这条能标 operations，是因为动作确实存在且就在角色工作台里：
+  //   Release 面板的可见性开关（`POST /content/characters/:id/visibility`）。
+  //   它和上面那条不同——上面那条要重发 Release，这条只要把角色放回目录。
+  system_delisted_character_not_restored: {
+    title: "The system took a Character off the catalog and nobody put it back",
+    hint: "Open the sampled Character and set visibility back to public — or decide to keep it hidden, which also closes this",
+    owner: "operations",
   },
   editorial_import_authority_mismatch: {
     title: "Editorial import is missing part of its authority chain",
@@ -206,6 +243,16 @@ const TABLE: Record<string, InvariantCopy> = {
     title: "One occurrence belongs to several active Incidents",
     hint: "Merge or close the duplicate Incidents, then re-check",
     owner: "operations",
+  },
+
+  // —— 账号擦除 ——
+  account_erasure_past_grace_not_completed: {
+    // INTENT: 标题只说确证的事实：宽限期到了、还没擦完。为什么卡住由「账号请求」页上的
+    //         擦除队列逐行回答（在等哪一步、Chat 投递试了几次、权威写回的 blocker 是什么），
+    //         那里也是唯一能看到它的地方——所以 hint 直接把人送过去，而不是让人猜。
+    title: "An account erasure is past the grace period it promised and still not done",
+    hint: "Open the erasure queue in Account Requests — each row says which step it is waiting on",
+    owner: "engineering",
   },
 
   // —— 事件投递 ——

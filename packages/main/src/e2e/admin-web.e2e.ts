@@ -933,6 +933,10 @@ test("admin dead-letter queue discards failed jobs with refund audit", async ({ 
     await prisma.adminAuditLog.deleteMany({
       where: { actorId: admin.id, action: "ops.deadletter.discard", reason },
     });
+    // INVARIANT: 结算关联要和它两端一起删。generation_settlement_links 没有任何外键，
+    //            漏删就是永久悬空行——实测开发库已经攒了 3 轮 e2e 的 6 条，
+    //            并且每条都会被 generation_settlement_link_mismatch 记成一次账目违规。
+    await prisma.generationSettlementLink.deleteMany({ where: { requestId: jobId } });
     await prisma.dreamcoinLedger.deleteMany({ where: { sourceId: jobId } });
     await prisma.generationJob.deleteMany({ where: { id: jobId } });
     await prisma.user.deleteMany({ where: { id: { in: [admin.id, ownerId] } } });
@@ -1506,28 +1510,36 @@ test("admin API allows an authorized write (admin creates a pricing draft)", asy
   }
 });
 
-test("admin API creates an official character and fails mock AI assist closed", async ({ page }) => {
+test("admin API creates a character project and fails mock AI assist closed", async ({ page }) => {
   const adminURL = adminBaseURL();
   await startRoleSession(page, "admin");
   const name = `E2E Official ${Date.now()}`;
   let createdId: string | undefined;
   try {
-    const create = await page.request.post(`${adminURL}/api/v2/admin/content/official`, {
+    const create = await page.request.post(`${adminURL}/api/v2/admin/characters`, {
       headers: { "idempotency-key": `e2e-official-create-${Date.now()}` },
       data: {
-        name,
-        age: 24,
-        gender: "female",
-        style: "realistic",
-        description: "A warm cinematic companion created during the E2E run.",
-        advancedDetails: { firstMessage: "What would you like to make space for tonight?" },
-        tags: ["e2e-official"],
+        persona: {
+          name,
+          age: 24,
+          gender: "female",
+          characterPromise: "A warm cinematic companion created during the E2E run.",
+          detailsMarkdown: "An adult painter who enjoys quiet evenings in her studio.",
+          firstMessage: "What would you like to make space for tonight?",
+        },
+        visualDirection: {
+          identityAnchor: "An adult painter with auburn hair and green eyes.",
+          stableTraits: ["auburn hair", "green eyes"],
+          style: "realistic",
+          referenceDirection: "Warm studio lighting, linen shirt, waist-up framing.",
+        },
         reason: "e2e official create",
+        confirmation: "CREATE CHARACTER",
       },
     });
-    expect(create.status(), await create.text()).toBe(200);
-    const body = (await create.json()) as { data?: { character?: { id?: string } } };
-    createdId = body.data?.character?.id;
+    expect(create.status(), await create.text()).toBe(201);
+    const body = (await create.json()) as { data?: { characterId?: string } };
+    createdId = body.data?.characterId;
     expect(createdId).toBeTruthy();
 
     // Mock mode must fail closed; the local pipeline may legitimately return a
@@ -1548,7 +1560,6 @@ test("admin API creates an official character and fails mock AI assist closed", 
     }
   } finally {
     if (createdId) await prisma.character.delete({ where: { id: createdId } }).catch(() => {});
-    await prisma.tag.deleteMany({ where: { slug: "e2e-official" } });
   }
 });
 
@@ -1955,8 +1966,8 @@ test("admin API forbids under-privileged roles (403 on writes they lack)", async
   );
   expect(takedown.status()).toBe(403);
 
-  // support lacks content.official.write → official create + AI assist both 403.
-  const official = await page.request.post(`${adminURL}/api/v2/admin/content/official`, {
+  // Support lacks character.project.write and content.official.write.
+  const official = await page.request.post(`${adminURL}/api/v2/admin/characters`, {
     data: {
       name: "x",
       age: 24,
@@ -2292,8 +2303,9 @@ test("admin compliance UI requires typed confirmations for destructive actions",
       && new URL(response.url()).pathname === `/api/v2/admin/compliance/users/${targetId}/erase`);
     await confirmErase.click();
     expect((await erased).status()).toBe(200);
+    // 到期时间由权威算出来，用例不复刻它的算术——只钉住「即刻收回访问」这半句必须在。
     await expect(page.getByRole("status").filter({ hasText: targetId })).toContainText(
-      `Erasure requested for ${targetId}. The cross-service flow reports completion in the audit log.`,
+      `Access for ${targetId} is revoked now.`,
     );
     await expect(prisma.user.findUnique({ where: { id: targetId } })).resolves.toMatchObject({
       status: "deleted",
@@ -2334,6 +2346,11 @@ test("admin compliance UI requires typed confirmations for destructive actions",
       where: { targetId: { in: [targetId, ageVerification.id] } },
     });
     await prisma.ageVerification.deleteMany({ where: { id: ageVerification.id } });
+    // 这条用例真的发起了一次擦除，于是留下一行 account_deletions 和一条延迟投递的 outbox 事件。
+    // 两张表都没有指向 users 的外键，删掉用户不会带走它们：不清就是每跑一次永久多一条
+    // 悬空的擦除请求，它会一直挂在运营的擦除队列里，宽限期到了还会变成一条投递违规。
+    await prisma.mainOutboxEvent.deleteMany({ where: { id: `user_deleted_${targetId}` } });
+    await prisma.accountDeletion.deleteMany({ where: { userId: targetId } });
     await prisma.session.deleteMany({ where: { userId: { in: [admin.id, targetId, ageUserId] } } });
     await prisma.user.deleteMany({ where: { id: { in: [admin.id, targetId, ageUserId] } } });
   }

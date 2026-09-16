@@ -352,7 +352,7 @@ function publicationReadiness(page: CmsPublicationCandidate & { contentStatus: s
 
 function assertExpectedUpdatedAt(actual: Date, expected: string) {
   if (actual.toISOString() !== new Date(expected).toISOString()) {
-    throw Errors.conflict("CMS page changed since it was loaded", {
+    throw Errors.versionConflict("CMS page changed since it was loaded", {
       actualUpdatedAt: actual.toISOString(),
       expectedUpdatedAt: expected,
     });

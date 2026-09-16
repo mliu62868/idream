@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import type { BlobStore } from "../types";
 import { PocketTtsVoiceModel } from "./pocket-tts";
 
 const voiceSynthesisIdentity = {
@@ -29,7 +28,6 @@ describe("PocketTtsVoiceModel", () => {
       baseUrl: "http://127.0.0.1:8063/v1",
       model: "pocket-tts",
       language: "english",
-      blob: stubBlobStore(),
       fetchImpl: fetchMock,
     });
 
@@ -53,7 +51,6 @@ describe("PocketTtsVoiceModel", () => {
       baseUrl: "http://127.0.0.1:8063/v1",
       model: "pocket-tts",
       language: "english",
-      blob: stubBlobStore(),
       fetchImpl: async () =>
         Response.json({
           status: "healthy",
@@ -75,7 +72,6 @@ describe("PocketTtsVoiceModel", () => {
       baseUrl: "http://127.0.0.1:8063/v1",
       model: "pocket-tts",
       language: "english",
-      blob: stubBlobStore(),
       fetchImpl: async () =>
         Response.json({
           status: "healthy",
@@ -109,7 +105,6 @@ describe("PocketTtsVoiceModel", () => {
       baseUrl: "http://127.0.0.1:8063/v1",
       model: "pocket-tts",
       language: "english",
-      blob: stubBlobStore(),
       fetchImpl: async () =>
         Response.json({
           status: "healthy",
@@ -151,7 +146,6 @@ describe("PocketTtsVoiceModel", () => {
       apiKey: "voice-token",
       model: "pocket-tts",
       language: "english",
-      blob: stubBlobStore(),
       fetchImpl: fetchMock,
     });
 
@@ -198,7 +192,6 @@ describe("PocketTtsVoiceModel", () => {
       apiKey: "voice-token",
       model: "pocket-tts",
       language: "english",
-      blob: stubBlobStore(),
       fetchImpl: fetchMock,
     });
 
@@ -233,12 +226,10 @@ describe("PocketTtsVoiceModel", () => {
     const fetchMock = vi.fn(async () =>
       new Response(audio, { headers: { "content-type": "audio/wav" } }),
     );
-    const stored: Array<{ key: string; body: Uint8Array; contentType: string }> = [];
     const voice = new PocketTtsVoiceModel({
       baseUrl: "http://127.0.0.1:8063/v1",
       model: "pocket-tts",
       language: "english",
-      blob: stubBlobStore(stored),
       fetchImpl: fetchMock,
     });
 
@@ -252,9 +243,7 @@ describe("PocketTtsVoiceModel", () => {
       ok: true,
       data: { durationMs: 1_250 },
     });
-    expect(stored).toHaveLength(1);
-    expect(stored[0]).toMatchObject({ contentType: "audio/wav" });
-    expect(stored[0]?.key).toMatch(/^voice\/.+\.wav$/);
+    expect(result).toMatchObject({ ok: true, data: { contentType: "audio/wav" } });
     const [endpoint, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
     expect(endpoint.toString()).toBe("http://127.0.0.1:8063/v1/audio/speech");
     expect(init.headers).toMatchObject({
@@ -275,12 +264,10 @@ describe("PocketTtsVoiceModel", () => {
     const fetchMock = vi.fn(async () =>
       new Response(audio, { headers: { "content-type": "audio/wav" } }),
     );
-    const stored: Array<{ key: string; body: Uint8Array; contentType: string }> = [];
     const voice = new PocketTtsVoiceModel({
       baseUrl: "http://127.0.0.1:8063/v1",
       model: "pocket-tts",
       language: "english",
-      blob: stubBlobStore(stored),
       fetchImpl: fetchMock,
     });
 
@@ -295,31 +282,10 @@ describe("PocketTtsVoiceModel", () => {
         durationMs: 900,
       },
     });
-    expect(stored).toHaveLength(0);
     const [, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
     expect(JSON.parse(String(init.body))).toMatchObject({ voice: "alba" });
   });
 });
-
-function stubBlobStore(
-  stored: Array<{ key: string; body: Uint8Array; contentType: string }> = [],
-): BlobStore {
-  return {
-    async putPrivate(input) {
-      stored.push(input);
-      return {
-        ok: true,
-        data: { key: input.key, size: input.body.byteLength },
-      };
-    },
-    async signGetUrl() {
-      return { ok: true, data: { url: "https://cdn.example.com/voice.wav" } };
-    },
-    async delete() {
-      return { ok: true, data: { deleted: true } };
-    },
-  };
-}
 
 function wavBytes(durationMs: number) {
   const sampleRate = 8_000;

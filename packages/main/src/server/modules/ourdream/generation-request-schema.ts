@@ -1,6 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
-import { imageOrientations } from "./generation-dimensions";
+import { imageOrientations } from "@idream/shared/media/image-orientation";
 import { generationQuoteAuthoritySchema } from "./generation-quote-contract";
 
 const generationOrientations = [...imageOrientations, "2:3"] as [

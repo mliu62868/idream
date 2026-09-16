@@ -4,6 +4,7 @@ import { RotateCcw, X } from "lucide-react";
 import { useState } from "react";
 import { MemoryToggle } from "./MemoryToggle";
 import { ChatContextSettings } from "./ChatContextSettings";
+import { ProactiveSettings } from "./ProactiveSettings";
 
 // SPEC: Official igrep owns item-level generic memory inside DSH. The product
 // exposes memory on/off and clear all. Explicit user settings have separate,
@@ -126,6 +127,7 @@ export function MemoryPanel({
           </p>
 
           {sessionId ? <ChatContextSettings key={sessionId} sessionId={sessionId} memoryEnabled={memoryEnabled} /> : null}
+          {sessionId && !groupConversation ? <ProactiveSettings key={`proactive-${sessionId}`} sessionId={sessionId} /> : null}
 
           <div className="my-4 h-px bg-[rgb(36,36,36)]" />
 

@@ -501,11 +501,17 @@ export const adminZhCommon: Record<string, string> = {
   "Slot": "位置",
   "Snapshot": "快照",
   "Snapshot evidence": "快照证据",
+  "The authority refused this action — a precondition was not met.":
+    "权威拒绝了这次操作——某个前置条件没有满足。",
+  "Nothing was written. Open the technical details for the authority's own message; that message names the precondition.":
+    "没有写入任何数据。展开技术详情看权威的原文，那句话里写着是哪个前置条件。",
   "Someone changed this record before your action landed.": "在你的操作生效前，已经有人改过这条记录。",
   "This case is resolved or closed.": "此案件已解决或已关闭。",
   "Reopen this case before changing its assignment.": "请先重开此案件，再修改指派。",
   "This request has a newer support case.": "此工单已有更新的客服案件。",
   "Open case {caseId} and reopen it there. This historical case was not changed.": "请打开案件 {caseId} 并在那里重开。此历史案件未被修改。",
+  "The authority refused this action: its precondition is not met.": "权威拒绝了这一步：它的前置条件没有满足。",
+  "Nothing was written, and refreshing will not change it — open the technical details for the authority's blocker, then satisfy it or use the audited override.": "本次没有写入任何数据，刷新也不会改变结果——展开技术详情看权威给出的阻塞原因，满足它，或改用带审计理由的覆盖。",
   "Sort": "排序",
   "Source": "来源",
   "Sources": "来源",
@@ -589,6 +595,8 @@ export const adminZhCommon: Record<string, string> = {
   "Upcoming": "稍后进行",
   "Updated": "更新时间",
   "Use": "使用",
+  "Show": "显示",
+  "Note": "说明",
   "User": "用户",
   "User ID": "用户 ID",
   "User: …\\nCharacter: …": "用户：…\\n角色：…",
@@ -800,4 +808,6 @@ export const adminZhCommon: Record<string, string> = {
   "· data as of": "· 数据截至",
   "· refreshed": "· 已刷新",
   "· retry available": "· 可重试",
+  "Check the current state and open the technical details for the authority's reason before retrying.": "先核对当前状态，并展开技术详情查看服务端拒绝的原因，再决定是否重试。",
+  "Open the technical details for the authority's blocker and required action. Check the current state before retrying.": "展开技术详情查看阻断原因和所需操作；重试前先核对当前状态。",
 };

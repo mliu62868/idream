@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  characterSessionReleaseMigrationCommandRequestSchema,
   MAIN_TO_CHAT_REPLAY_CONFIRMATION,
   MAIN_TO_CHAT_TARGET_MISSING_CONFIRMATION,
   mainToChatOutboxEventListResponseSchema,
@@ -234,6 +235,37 @@ describe("ChatOpsWorkspace Main to Chat failed-delivery operations", () => {
     await act(async () => root.unmount());
     container.remove();
     vi.restoreAllMocks();
+  });
+
+  it("submits the real source pin and target version, and verifies acceptance before claiming migration", async () => {
+    window.history.replaceState(null, "", "/admin/ops/chat?chatReleasePin=legacy");
+    apiGet.mockImplementation(async (path: string) => path.includes("/chat/sessions?") ? {
+      configured: true, pageInfo, items: [{
+        id: "session-legacy", characterId: "character-1", status: "active",
+        releasePin: { contentVersionId: "old-content", releaseId: "old-release", schemaVersion: 2, state: "legacy",
+          recommendedTarget: { characterReleaseId: "new-release", characterContentVersionId: "new-content", schemaVersion: 3, entityVersion: 7 } },
+      }],
+    } : chatReadFixtures.get(path));
+    adminV2Operation.mockImplementation(async (operation: string, options: { body?: unknown }) => {
+      if (operation.startsWith("POST")) {
+        characterSessionReleaseMigrationCommandRequestSchema.parse(options.body);
+        return { commandId: "migration-command", status: "accepted" };
+      }
+      return { status: "failed", commandId: "migration-command", needsReconciliation: false, error: { message: "Source pin changed" } };
+    });
+    await act(async () => root.render(<ToastProvider><ChatOpsWorkspace canRead canMigrateSessionRelease /></ToastProvider>));
+    await waitUntil(() => Boolean(findButton("Migrate 1 pins", container)));
+    await click(findButton("Migrate 1 pins", container));
+    const dialog = await waitForDialog();
+    await enter(dialog.querySelector<HTMLInputElement>('input[aria-label="Migration reason (≥3)"]'), "Repair withdrawn release");
+    await click(findButton("Migrate pins", dialog));
+    await waitUntil(() => adminV2Operation.mock.calls.length >= 1);
+    const submitted = adminV2Operation.mock.calls.find(([op]) => String(op).startsWith("POST"))?.[1];
+    expect(characterSessionReleaseMigrationCommandRequestSchema.safeParse(submitted?.body).success).toBe(true);
+    expect(submitted?.body).toMatchObject({ entityVersion: 7, fromCharacterReleaseId: "old-release" });
+    await waitUntil(() => adminV2Operation.mock.calls.length >= 2);
+    expect(document.body.textContent).not.toContain("Migrated 1 session pins.");
+    expect(document.body.textContent).toContain("migration-command");
   });
 
   it("does not claim connected while an authority has not answered", async () => {

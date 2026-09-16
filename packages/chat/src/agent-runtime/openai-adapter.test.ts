@@ -423,6 +423,31 @@ describe("OpenAI-compatible DSH adapter", () => {
     expect(requests).toBe(2);
   });
 
+  it("keeps the Character's sentence that a native tool call arrived with", async () => {
+    const adapter = adapterFor("https://provider.example/v1", async () => new Response(
+      [
+        `data: ${JSON.stringify({ id: "native-1", choices: [{ delta: { content: "Elbow-deep in clay — give me a second." } }] })}`,
+        `data: ${JSON.stringify({ id: "native-1", choices: [{ delta: { tool_calls: [{ index: 0, id: "call-1", function: { name: "generate_image_async", arguments: JSON.stringify({ prompt: "A potter beside her kiln" }) } }] } }] })}`,
+        `data: ${JSON.stringify({ id: "native-1", choices: [{ delta: {}, finish_reason: "tool_calls" }] })}`,
+        "",
+      ].map((line) => line ? `${line}\n\n` : "").join(""),
+    ), { requiredToolName: "generate_image_async" });
+    const chunks: StreamChunk[] = [];
+    for await (const chunk of adapter.stream({
+      provider: "openrouter", model: "deepseek/test", messages: [],
+      tools: [{ name: "generate_image_async", description: "Reserved image action", parameters: { type: "object", properties: {} } }],
+    })) chunks.push(chunk);
+
+    // 台词写在工具结果出现之前；运行时再决定它能不能留给用户看。
+    expect(chunks).toContainEqual(expect.objectContaining({
+      type: "text-delta",
+      text: "Elbow-deep in clay — give me a second.",
+    }));
+    expect(chunks.some((chunk) =>
+      chunk.type === "block-end" && chunk.block.type === "tool-call"
+      && chunk.block.name === "generate_image_async")).toBe(true);
+  });
+
   it.each([
     { name: "generate_image_async" as const, args: { prompt: "A clothed portrait beside a closed blue notebook" }, expected: { prompt: "A clothed portrait beside a closed blue notebook", orientation: "4:5", outputCount: 1 } },
     { name: "edit_last_image" as const, args: { instruction: "Move the closed blue notebook right of the white cup" }, expected: { instruction: "Move the closed blue notebook right of the white cup" } },

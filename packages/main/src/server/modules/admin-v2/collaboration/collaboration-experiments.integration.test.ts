@@ -143,6 +143,23 @@ describe("admin collaboration, saved views, and managed experiments", () => {
     expect(await prisma.adminCollaborationActivity.count({ where: { targetId: incidentId } })).toBe(2);
   });
 
+  it("advances mentions past an entirely invisible page without consuming the next visible row", async () => {
+    const hiddenId = `z-mentions-${suffix}`;
+    const visibleId = `y-mentions-${suffix}`;
+    await prisma.adminCollaborationActivity.createMany({ data: [
+      { id: hiddenId, targetType: "incident", targetId: "deleted-incident", kind: "comment", actorId: adminId, mentionedIds: [adminId], metadata: {}, idempotencyKey: hiddenId },
+      { id: visibleId, targetType: "incident", targetId: incidentId, kind: "comment", actorId: adminId, mentionedIds: [adminId], metadata: {}, idempotencyKey: visibleId },
+    ] });
+    try {
+      const first = await mentionsRoute(new Request("http://localhost/api/v2/admin/collaboration/mentions?limit=1", { headers: headers() }));
+      expect(await first.json()).toMatchObject({ data: { items: [], pageInfo: { hasNextPage: true, endCursor: hiddenId } } });
+      const next = await mentionsRoute(new Request(`http://localhost/api/v2/admin/collaboration/mentions?limit=1&cursor=${encodeURIComponent(hiddenId)}`, { headers: headers() }));
+      expect(await next.json()).toMatchObject({ data: { items: [{ id: visibleId }], pageInfo: { hasNextPage: false, endCursor: null } } });
+    } finally {
+      await prisma.adminCollaborationActivity.deleteMany({ where: { id: { in: [hiddenId, visibleId] } } });
+    }
+  });
+
   it("enforces experiment.manage, immutable versions, idempotency, and one running version under concurrency", async () => {
     const body = (hypothesis: string) => ({
       key: experimentKey,

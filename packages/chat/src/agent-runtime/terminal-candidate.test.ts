@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { CompanionTerminalCandidate } from "./contracts";
 import {
+  acceptableRequiredImageLeadIn,
   evaluateTerminalCandidate,
   type TerminalCandidateFacts,
   type TerminalValidationCode,
@@ -219,5 +220,45 @@ describe("evaluateTerminalCandidate", () => {
     expect(decision.accepted === true && decision.candidate).not.toHaveProperty("modelRequests");
     expect(decision.accepted === true && decision.candidate).not.toHaveProperty("acknowledgement");
     expect(decision.accepted === true && decision.candidate).not.toHaveProperty("attribution");
+  });
+});
+
+// SPEC: 工具那一步的台词能不能留给用户看。放行条件全是确定性判据，
+// 任何一条不过就返回 null，调用方回落到确定性回执（改动前的行为）。
+describe("required image lead-in", () => {
+  const tools = [{ name: "generate_image_async" }];
+
+  it("keeps a short in-Character line that leaves completion to the attachment", () => {
+    expect(acceptableRequiredImageLeadIn(
+      "  Elbow-deep in clay tonight — give me a second.  ",
+      "What are you making tonight? Send a photo.",
+      tools,
+    )).toBe("Elbow-deep in clay tonight — give me a second.");
+  });
+
+  it("keeps the user's own writing system", () => {
+    expect(acceptableRequiredImageLeadIn("等我把手上的泥洗掉。", "今晚在做什么？发张照片", tools))
+      .toBe("等我把手上的泥洗掉。");
+  });
+
+  it.each([
+    ["announces arrival in English", "Here's your selfie, hope you like it.", "Send a photo."],
+    ["announces arrival in Chinese", "喏，给你了。", "发张照片"],
+    ["claims it was sent", "I just sent it over.", "Send a photo."],
+    ["claims it is ready", "It's ready for you.", "Send a photo."],
+    ["exposes the process", "Writing the prompt for the image generation process now.", "Send a photo."],
+    ["answers in another language", "Je te la prépare tout de suite.", "今晚在做什么？发张照片"],
+    ["is empty", "   ", "Send a photo."],
+    ["runs long", "a".repeat(401), "Send a photo."],
+  ])("drops a line that %s", (_case, leadIn, userText) => {
+    expect(acceptableRequiredImageLeadIn(leadIn, userText, tools)).toBeNull();
+  });
+
+  it("drops a raw tool payload the model printed instead of calling", () => {
+    expect(acceptableRequiredImageLeadIn(
+      '{"name":"generate_image_async","arguments":{"prompt":"a selfie"}}',
+      "Send a photo.",
+      tools,
+    )).toBeNull();
   });
 });

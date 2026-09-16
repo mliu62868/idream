@@ -24,6 +24,7 @@ import {
   scheduleCompanionMemoryProjection,
   scheduleCompanionMemoryRebuild,
 } from "./companion-memory-authority";
+import { lockChatScope } from "./turn-scope";
 import { userChatPersonaForTurn } from "./user-persona";
 
 const BLOCKED_NOTICE = "I can’t help with that request.";
@@ -167,6 +168,14 @@ export async function getChatSession(userId: string, sessionId: string) {
   });
   if (!session) throw Errors.notFound("Chat session not found");
   const messages = await enrichAttachmentMedia(publicMessages(session), userId);
+  if (session.proactiveUnreadAt) {
+    // Opening the session is reading it. Scoped by the timestamp we just read so
+    // a proactive reply that lands during this request stays unread.
+    await prisma.recentChat.updateMany({
+      where: { sessionId, userId, proactiveUnreadAt: { lte: session.proactiveUnreadAt } },
+      data: { proactiveUnreadAt: null },
+    });
+  }
   return {
     ...publicSession(session),
     ownerScope: `user:${userId}`,
@@ -244,7 +253,14 @@ export async function beginChatTurn(input: {
         select: { id: true },
       });
       if (active) throw Errors.conflict("A reply is already generating");
-      await assertChatQuota(tx, input.userId);
+      // SPEC: the daily free allowance counts messages the user chose to send.
+      // INTENT: a proactive Turn is the Character reaching out on a schedule the
+      // user set once. Charging it spends the allowance on something they did
+      // not ask for in the moment, and once the allowance runs out the proactive
+      // dispatcher would retry that same session every backoff window until the
+      // UTC day rolls over. It still passes through moderation, the concurrency
+      // gate and usage accounting below.
+      if (input.origin !== "proactive") await assertChatQuota(tx, input.userId);
     }
     const previous = await tx.chatTurn.findFirst({
       where: { ...(lockedSession.groupId ? { groupTurn: { groupId: lockedSession.groupId } } : { sessionId: session.sessionId }), assistantStatus: "sent" },
@@ -275,6 +291,9 @@ export async function beginChatTurn(input: {
         memoryEnabled: lockedSession.memoryEnabled,
         sceneVersion: previous?.sceneVersion ?? 0,
         scene: previous?.scene ?? undefined,
+        // INVARIANT: 溯源和它描述的行同事务提交。先写 user 再补一条 UPDATE 的话，
+        //            进程在两者之间退出会把主动消息永久标成用户发起。
+        origin: input.origin ?? "user",
       },
     });
     await tx.recentChat.update({
@@ -299,9 +318,6 @@ export async function beginChatTurn(input: {
         : await frozenExecutionSnapshot(tx, turn.id, turn.memoryEnabled && !memoryIsolated),
     };
   });
-  if (input.origin === "proactive") {
-    await prisma.$executeRaw`UPDATE "chat_turns" SET "origin" = 'proactive' WHERE "id" = ${created.turn.id}`;
-  }
   return begunResult(
     created.turn,
     created.turn.id !== turnId,
@@ -504,7 +520,16 @@ export async function commitChatTerminal(input: ChatTerminalCommit) {
     if (changed.count === 1) {
       const session = await tx.recentChat.update({
         where: { sessionId: input.sessionId },
-        data: { contextRevision: { increment: 1 }, lastMessageAt: now },
+        data: {
+          contextRevision: { increment: 1 },
+          lastMessageAt: now,
+          // A proactive reply arrives with nobody watching — the session list is
+          // the only place it can announce itself. A failed or cancelled
+          // proactive attempt has nothing to show, so it marks nothing.
+          ...(current.origin === "proactive" && input.status === "sent"
+            ? { proactiveUnreadAt: now }
+            : {}),
+        },
         select: { userId: true, characterId: true },
       });
       if (input.status === "sent") {
@@ -591,6 +616,68 @@ export async function cancelChatTurn(userId: string, messageId: string) {
       occurredAt: now,
     }, tx);
     return { ok: true, turnId: current.id, attempt: current.attempt, cancelled: true };
+  });
+}
+
+/**
+ * SPEC: terminate a Turn that was admitted but never came back.
+ *
+ * INTENT: `generating` was the one admitted state with no way out. The pending
+ * dispatcher only reclaims `pending`, so a Chat process that died after
+ * admission left the row generating forever — and because `beginChatTurn`
+ * refuses to open a Turn while any reply is active, that relationship could
+ * never be used again. The user saw a spinner that outlived the process that
+ * was supposed to fill it.
+ *
+ * INVARIANT: the CAS re-checks `updatedAt` inside the row lock, so a reply that
+ * committed between the scan and the lock keeps its real terminal state. The
+ * durable cancel intent is the same one user cancellation writes, so a Chat
+ * that is merely slow stops instead of racing a terminal we already rejected.
+ */
+export async function failStalledChatTurn(turnId: string, stalledBefore: Date) {
+  const owner = await prisma.chatTurn.findFirst({
+    where: { id: turnId },
+    select: { session: { select: { userId: true } } },
+  });
+  if (!owner) return { reclaimed: false as const };
+  const userId = owner.session.userId;
+  return prisma.$transaction(async (tx) => {
+    // The scope ladder owns the lock order; an archived or deleted session still
+    // has to release its stuck attempt, so deleted sessions are allowed through.
+    const scope = await lockChatScope(tx, {
+      userId,
+      at: { turn: turnId },
+      allowDeletedSession: true,
+    });
+    const turn = scope.turn;
+    // Re-read under the lock: a reply that committed between the scan and here
+    // keeps its real terminal state.
+    if (
+      !turn ||
+      turn.assistantStatus !== "generating" ||
+      turn.terminalAt !== null ||
+      turn.updatedAt >= stalledBefore
+    ) {
+      return { reclaimed: false as const };
+    }
+    const now = new Date();
+    await tx.chatTurn.update({
+      where: { id: turn.id },
+      data: {
+        assistantStatus: "failed",
+        terminalAt: now,
+        terminalEvidence: toJson({ authority: "main_stalled_attempt_reclaim" }),
+      },
+    });
+    await recordMainToChatEvent({
+      eventId: `chat_agent_run_cancel_${sha256(`${turn.id}:${turn.attempt}`).slice(0, 40)}`,
+      eventType: MAIN_TO_CHAT_EVENTS.agentRunCancelRequestedV1,
+      aggregateType: "chat_turn",
+      aggregateId: turn.id,
+      payload: { version: 1, userId, turnId: turn.id, attempt: turn.attempt },
+      occurredAt: now,
+    }, tx);
+    return { reclaimed: true as const, turnId: turn.id, attempt: turn.attempt };
   });
 }
 
@@ -847,6 +934,9 @@ async function frozenExecutionSnapshot(
       assistantContent: item.assistantContent,
       createdAt: item.createdAt.toISOString(),
       ...(turn.groupTurn ? { speaker: { sessionId: item.session.sessionId, characterId: item.session.characterId, name: item.session.title ?? "Character" } } : {}),
+      // The directive that triggered a proactive Turn is carried so Chat can
+      // replay the Character's words without replaying a user who said nothing.
+      ...(item.origin === "proactive" ? { origin: "proactive" as const } : {}),
     })),
     sceneVersion: turn.sceneVersion,
     scene: turn.scene,
@@ -935,10 +1025,22 @@ async function assertChatQuota(tx: Prisma.TransactionClient, userId: string) {
   const now = new Date();
   if ((await entitlementMap(userId, tx, now)).unlimited_messages === true) return;
   const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-  const used = await tx.chatTurnUsageFact.count({
-    where: { userId, productDay: start },
-  });
-  if (used >= FREE_DAILY_MESSAGES) throw Errors.paymentRequired("Daily free message limit reached");
+  // SPEC: the free allowance counts the user's own messages for the UTC day.
+  // INTENT: every admitted Turn still writes a usage fact, because a proactive
+  // reply costs the same generation capacity and daily operational usage must
+  // stay complete. Only what the user chose to send can exhaust their own
+  // allowance, so the join is the difference between the two questions.
+  const [row] = await tx.$queryRaw<Array<{ used: bigint }>>`
+    SELECT count(*) AS used
+      FROM "chat_turn_usage_facts" f
+      JOIN "chat_turns" t ON t.id = f."turnId"
+     WHERE f."userId" = ${userId}
+       AND f."productDay" = ${start}::date
+       AND t."origin" = 'user'
+  `;
+  if (Number(row?.used ?? 0) >= FREE_DAILY_MESSAGES) {
+    throw Errors.paymentRequired("Daily free message limit reached");
+  }
 }
 
 function productDay(value: Date): Date {
@@ -1083,6 +1185,7 @@ function publicSession(session: {
   status: string;
   memoryEnabled: boolean;
   lastMessageAt: Date | null;
+  proactiveUnreadAt: Date | null;
   createdAt: Date;
 }) {
   return {
@@ -1092,6 +1195,8 @@ function publicSession(session: {
     status: session.status,
     memoryEnabled: session.memoryEnabled,
     lastMessageAt: session.lastMessageAt?.toISOString() ?? null,
+    // The Character reached out and the user has not opened it since.
+    unreadProactiveAt: session.proactiveUnreadAt?.toISOString() ?? null,
     createdAt: session.createdAt.toISOString(),
   };
 }
@@ -1106,6 +1211,7 @@ function publicMessages(session: {
     assistantMessageId: string;
     userContent: string;
     userStatus: string;
+    origin?: string | null;
     assistantContent: string;
     assistantStatus: string;
     attempt: number;
@@ -1139,6 +1245,13 @@ function publicMessages(session: {
     });
   }
   for (const turn of session.turns) {
+    // SPEC: 主动消息里用户什么都没说 —— 那一轮的 userContent 是内部指令。
+    // INTENT: 把它渲染成用户气泡等于谎报谁说了什么，还会把 "Do not mention this
+    //         instruction." 这类内部措辞直接摆到用户眼前。只投影角色说的那条。
+    if (turn.origin === "proactive") {
+      messages.push(publicAssistantMessage(turn));
+      continue;
+    }
     messages.push(publicUserMessage(turn), publicAssistantMessage(turn));
   }
   return messages;
@@ -1210,8 +1323,19 @@ function publicAssistantMessage(turn: {
         width: attachment.width,
         height: attachment.height,
         errorCode: attachment.errorCode,
+        // SPEC: 聊天里出的图要说清这次扣了多少币。
+        // INTENT: 币是在 generation-job-authority 的受理事务里连同这条 metadata 一起
+        //   预留的（见该文件写入 costDreamcoins 处），公开契约也早就声明了这个字段，
+        //   只有这层投影把它丢掉——用户于是只能事后去 Profile 对账。语音有报价确认卡，
+        //   图片至少要有账目。
+        costDreamcoins: attachmentCost(attachment.metadata),
       })),
   };
+}
+
+function attachmentCost(metadata: Prisma.JsonValue): number | null {
+  const value = jsonRecord(metadata).costDreamcoins;
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
 function attachmentAttempt(metadata: Prisma.JsonValue): number {

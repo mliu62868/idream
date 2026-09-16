@@ -27,11 +27,17 @@ type ReasonEntry = Omit<MetricQualityReason, "code">;
 
 // 带 `:` 的码是「前缀:参数」形态（source_fact_missing:chat_exchange_fact），
 // 查表用前缀，参数只在工程详情里保留。
-const TABLE: Record<string, ReasonEntry> = {
+// 导出只为一件事：让用例能穷举它，钉住「每条都有中文」。
+export const METRIC_QUALITY_REASONS: Record<string, ReasonEntry> = {
   // --- 源事实：投影表本身是空的，后面所有环节都无从谈起 ---
+  // INTENT: 原文断言「投影器还没写过这张表」，听起来像是任务没跑。实测**跑了**：
+  //   开发库里 metric_projection_receipts 有 11280 行，applied 是 0，
+  //   8766 行 skipped/ineligible_data + 2514 行 skipped/legacy_untyped ——
+  //   投影器每一条都读了，然后每一条都拒了。把这两种情况说成同一句，会让工程去查
+  //   一个没停的任务。这里不替权威下结论，只说事实并指出证据在哪。
   source_fact_missing: {
     title: "Source fact table is empty",
-    hint: "The metric projector has not written this fact yet — needs engineering",
+    hint: "No row ever reached this fact table. The projector may be running and rejecting every event — engineering has to read metric_projection_receipts to tell which",
     rank: 1,
   },
   source_fact_stale: {
@@ -75,6 +81,48 @@ const TABLE: Record<string, ReasonEntry> = {
     title: "Definition validation left no evidence",
     hint: "Re-run validation so the result is auditable",
     rank: 4,
+  },
+
+  // 显式校验的具体失败优先于笼统的 validation_failed，避免把等待成熟样本误报成故障。
+  definition_validation_formula_mismatch: {
+    title: "Metric formula disagrees with independently verified examples",
+    hint: "Engineering must repair the formula and pass the fixed golden examples before validating again",
+    rank: 2,
+  },
+  definition_validation_failed: {
+    title: "Latest definition validation failed",
+    hint: "Engineering must resolve the recorded failures and run definition validation again",
+    rank: 4,
+  },
+  definition_validation_identity_mismatch: {
+    title: "Validation evidence belongs to a different definition or validator",
+    hint: "Engineering must validate the current definition with the current validator",
+    rank: 3,
+  },
+  definition_validation_from_future: {
+    title: "Definition validation is timestamped after this report",
+    hint: "Engineering must check the clock and report time before validating again",
+    rank: 3,
+  },
+  definition_validation_mature_sample_missing: {
+    title: "Definition validation has no eligible mature sample",
+    hint: "Wait for real production customer cohorts to mature and replay their canonical events; internal test data cannot certify this metric",
+    rank: 1,
+  },
+  definition_validation_cohort_invalid: {
+    title: "Definition validation found an invalid cohort result",
+    hint: "Engineering must repair cohort calculations or source facts before validating again",
+    rank: 2,
+  },
+  definition_validation_projection_incomplete: {
+    title: "Eligible canonical events have not finished projection",
+    hint: "Engineering must preview and backfill canonical events; quarantined events need their authority repaired before explicit requeue",
+    rank: 1,
+  },
+  definition_evaluator_unavailable: {
+    title: "This metric has no authoritative evaluator",
+    hint: "Engineering must provide the real data source, evaluator, and independent golden coverage before validating this definition",
+    rank: 1,
   },
 
   // --- 质量校验：从没跑过 / 没通过 ---
@@ -160,9 +208,14 @@ const TABLE: Record<string, ReasonEntry> = {
     hint: "Re-run the snapshot after the projector catches up",
     rank: 6,
   },
+  // INTENT: 「unavailable」和「until it is back」都在暗示这是一次故障、会恢复。它不会。
+  //   这张毛利卡在 metrics/query.ts:378-401 是**静态拼出来**的：value/numerator/denominator
+  //   全是 null，decisionUse 恒为 blocked，这条码是写死的字符串，没有任何判定参与；
+  //   它引用的 cash_attribution_fact 表在库里根本不存在。运营盯着一张永远红的卡等它恢复，
+  //   等的是一件不会发生的事——所以这里说清楚它是占位而不是故障。
   cash_attribution_authority_unavailable: {
     title: "Cash attribution authority is unavailable",
-    hint: "Revenue cannot be attributed until it is back — needs engineering",
+    hint: "There is no cash-attribution source in the product yet, so margin cannot be computed — this card is a placeholder, not an outage",
     rank: 2,
   },
   provider_cost_total_exceeds_safe_numeric_range: {
@@ -202,7 +255,7 @@ function providerPricingReason(code: string): ReasonEntry | null {
 
 export function resolveMetricQualityReason(code: string): MetricQualityReason {
   const prefix = code.split(":")[0] ?? code;
-  return { code, ...(TABLE[code] ?? TABLE[prefix] ?? providerPricingReason(code) ?? FALLBACK) };
+  return { code, ...(METRIC_QUALITY_REASONS[code] ?? METRIC_QUALITY_REASONS[prefix] ?? providerPricingReason(code) ?? FALLBACK) };
 }
 
 /**
@@ -214,7 +267,7 @@ export function resolveMetricQualityReason(code: string): MetricQualityReason {
  */
 export function hasMetricQualityReason(code: string) {
   const prefix = code.split(":")[0] ?? code;
-  return code in TABLE || prefix in TABLE || providerPricingReason(code) !== null;
+  return code in METRIC_QUALITY_REASONS || prefix in METRIC_QUALITY_REASONS || providerPricingReason(code) !== null;
 }
 
 /**

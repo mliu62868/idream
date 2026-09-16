@@ -36,7 +36,7 @@ import type {
   ProviderResult,
   VideoModel,
 } from "./providers";
-import { hydratedImageReferenceInputs } from "./reference-images";
+import { hydratedImageReferenceInputs } from "@idream/shared/media/image-references";
 import { workerAdapterForRecordedProvider } from "./provider-vocabulary";
 import {
   loadPersistedTerminalRecord,

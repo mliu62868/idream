@@ -32,7 +32,7 @@ bun run --filter @idream/main quality:characters run \
 
 Main 有效 Turn 是完整来源。Chat 在隔离候选中校验官方 ingest 的 dialogue，再运行 maintain；坏派生不能覆盖仍有效原文。发生撤回注释或来源变更时，只整体重建该候选的官方索引一次，明确记录 `companion_memory_derivation_rejected`，保留真实 pending / lastMaintain。恢复失败继续报错，不能发布坏候选。
 
-验证分开记录：Main 删除后的剩余原文、官方索引中实际可检索来源、DSH 本轮命中证据和模型最终回答。索引有正确事实不等于模型回答正确；无 profile 的来源恢复也不等于上游 Forget 授权已修复。细节及证据见[来源保护报告](../product-audits/2026-09-08-core-authority.md)。
+验证分开记录：Main 删除后的剩余原文、官方索引中实际可检索来源、DSH 本轮命中证据和模型最终回答。索引有正确事实不等于模型回答正确；无 profile 的来源恢复也不等于上游 Forget 授权已修复。细节及证据见来源保护报告。
 
 ## 生成耗时
 

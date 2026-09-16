@@ -334,7 +334,6 @@ export async function createCharacter(input: CreateCharacterInput) {
       characterId: character.id,
       likesCount: input.likes ?? 0,
       chatsCount: input.chats ?? 0,
-      viewsCount: input.views ?? 0,
     },
   });
   return character;

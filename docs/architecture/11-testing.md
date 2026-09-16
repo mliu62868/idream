@@ -78,7 +78,7 @@
 6. upgrade → checkout(sandbox) → webhook → 权益生效（dreamcoin/entitlement）。
 7. 举报内容 → admin 队列可见 → 处置。
 
-E2E 默认用 **seed 数据 + mock backend**，跑在 preview 或本地 `next dev`；本地高保真验证通过 Gen `BackendRegistry` 选择实际 workflow-native backend（ComfyUI/Sdcpp/DrawThings），不经 deprecated external pipeline。生成相关 E2E 会轮询 Request/Attempt/Delivery 状态并保存 backend/workflow/request/artifact 证据。artifacts（截图/视频/trace）上传 CI。
+E2E 默认用 **seed 数据 + mock backend**，跑在 preview 或本地 `next dev`；本地高保真验证通过 Gen `BackendRegistry` 选择实际 workflow-native backend（ComfyUI/DrawThings），不经 deprecated external pipeline。生成相关 E2E 会轮询 Request/Attempt/Delivery 状态并保存 backend/workflow/request/artifact 证据。artifacts（截图/视频/trace）上传 CI。
 
 ## 6. TDD 工作流（global rule）
 

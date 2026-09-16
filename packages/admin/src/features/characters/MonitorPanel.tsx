@@ -9,6 +9,7 @@ import {
   StatusBadge,
   WorkspaceButton,
 } from "@/features/operations/WorkspaceUi";
+import { routeStaleReasonCopy } from "./route-stale-reason";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
 import type {
   CharacterWorkspacePermissions,
@@ -134,21 +135,27 @@ export function MonitorPanel({
                   </dl>
                   <p className="mt-4 text-xs text-[var(--ad-text-muted)]">
                     {t("Recommendation:")}{" "}
-                    {t(
-                      String(
-                        monitor.verification.recommendation ??
-                          (window === "route_qualification" &&
-                          monitor.status === "action_required"
-                            // INVARIANT: 不要在这里写运营做不到的动作。实测后台没有任何重新资质化
-                            //            的写入口——唯一能写 GenerationRouteQualification 的端点
-                            //            `POST /characters/route-qualifications/commands/evaluate`
-                            //            在 packages/admin 里零引用，下面这个工作台通篇只读。
-                            //            原文案是「在下个发布版本前刷新在用的图片线路」，指着一个
-                            //            不存在的按钮；下面的「打开图片线路」仍然有用——它是去看证据的。
-                            ? "This route no longer meets its qualification. Re-qualifying needs engineering."
-                            : "continue_monitoring"),
-                      ),
-                    )}
+                    {/*
+                      SPEC: 线路失效时照权威算出来的 observed.reason 给下一步，不要写死一句话。
+                      INTENT: 这里曾经恒定写着「重新资质化需要工程介入」。权威其实分了 11 种原因，
+                        其中六种（profile 被禁用 / 归档、策略或评估器版本变了……）运营发一个新
+                        Release 就能收口。一句话全推给工程，等于让本可自己修的下架烂在队列里。
+                    */}
+                    {monitor.verification.recommendation == null &&
+                    window === "route_qualification" &&
+                    monitor.status === "action_required"
+                      ? (() => {
+                          const copy = routeStaleReasonCopy(
+                            monitor.observed.reason,
+                          );
+                          return `${t(copy.cause)} ${t(copy.recovery)}`;
+                        })()
+                      : t(
+                          String(
+                            monitor.verification.recommendation ??
+                              "continue_monitoring",
+                          ),
+                        )}
                   </p>
                   {window === "route_qualification" &&
                   monitor.status === "action_required" ? (

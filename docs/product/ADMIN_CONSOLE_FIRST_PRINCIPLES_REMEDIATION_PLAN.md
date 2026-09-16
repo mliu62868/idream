@@ -22,7 +22,7 @@
 - 图片生成领域已有的详细设计继续参考 [`GENERATION_ADMIN_OPERATIONS_REDESIGN.md`](./GENERATION_ADMIN_OPERATIONS_REDESIGN.md)，但其中 `completed` 等含混状态按本文的多轴状态模型修正。
 - 实施任一阶段后，必须同步更新 `CURRENT_FUNCTIONAL_COVERAGE.md`；不得用本文的目标状态覆盖实现事实。
 
-审计依据包括当前产品文档、Prisma schema、Admin 前后端源码、跨服务事件契约和 2026-07-11 实机后台审计。关键证据摘要见 §2，完整审计记录位于 [`REPORT.md`](../../.codex/product-audits/2026-07-11-admin-product-audit/REPORT.md)。
+审计依据包括当前产品文档、Prisma schema、Admin 前后端源码、跨服务事件契约和 2026-07-11 实机后台审计。关键证据摘要见 §2，完整审计记录位于 `REPORT.md`（审计产物已移出工作树，见 git 历史）。
 
 ## 1. 执行结论
 
@@ -362,12 +362,14 @@ System
 
 ### 5.3 现有 34 个入口的迁移归宿
 
+2026-09-13 同步：依照 [PRD CR-07](PRD.md) 与 [当前覆盖的日常审核决策](CURRENT_FUNCTIONAL_COVERAGE.md)，角色与素材永久采用基础自动检查、准备及显式发布。下表保留的是旧页面书签，不保留平行官方角色命令或人工审核 API；举报、申诉及历史审核记录不受影响。
+
 | Legacy route | Target route / view | 权限 | 处置 |
 | --- | --- | --- | --- |
 | `/admin` | `/admin/today` | `dashboard.read` | merge；旧根路由 redirect |
-| `/admin/content/review-queue` | `/admin/characters/review` | 现有 review permissions | keep，迁移 saved views |
+| `/admin/content/review-queue` | `/admin/characters/review` | Character 工作区权限 | 仅保留旧书签；历史待审角色通过准备发布重跑自动检查，旧审核 API 已移除 |
 | `/admin/moderation` | `/admin/cases?view=moderation` | `case.read` | merge 为 typed Case view |
-| `/admin/content/official` | `/admin/characters` | `character.project.read` | keep，切 Portfolio/Project |
+| `/admin/content/official` | `/admin/characters` | Character 工作区权限 | 仅保留旧书签；统一 Portfolio/Project/Release，移除旧 official API 适配器 |
 | `/admin/content/production` | `/admin/creative/runs?template=pregen` | `creative.run.read` | merge；Pregen 变 Run template |
 | `/admin/content` | `/admin/growth/merchandising?view=featured` | 现有 content permissions | merge 为 merchandising view |
 | `/admin/support` | `/admin/cases?view=support` | scoped `case.read` | merge 为 Support Case view |

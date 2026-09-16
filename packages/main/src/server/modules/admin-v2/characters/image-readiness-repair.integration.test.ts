@@ -7,9 +7,9 @@ import {
   POST as repairImageReadinessRoute,
 } from "@/app/api/v2/admin/characters/[id]/image-readiness/repair/route";
 import {
-  hydratedImageReferenceInputs,
   imageReferenceInputsForGenerationJob,
 } from "@/server/ai/reference-images";
+import { hydratedImageReferenceInputs } from "@idream/shared/media/image-references";
 import { prisma } from "@/server/lib/db";
 import { providers } from "@/server/providers";
 import {

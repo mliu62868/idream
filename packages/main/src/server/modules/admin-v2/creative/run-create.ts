@@ -4,7 +4,7 @@ import {
   characterRouteEvaluationMatrixSchemaVersion,
   characterVideoProductionRecipe,
 } from "@idream/shared";
-import { dimensionsForImageOrientation } from "@/server/modules/ourdream/generation-dimensions";
+import { dimensionsForImageOrientation } from "@idream/shared/media/image-orientation";
 import { generationCostDreamcoins } from "@/server/lib/generation-pricing";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";

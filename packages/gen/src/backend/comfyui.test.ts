@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { ComfyUIBackend, comfyExecutionEvidence } from "./comfyui";
 import { BackendInvocationError } from "./types";
 import { workflowDescriptorSchema } from "./workflow";
@@ -264,6 +264,7 @@ function videoOutputFetch() {
 
 describe("ComfyUIBackend", () => {
   beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.useRealTimers());
   it("submits prompt then polls history and fetches image", async () => {
     const g = mockFetch([
       () => new Response(JSON.stringify({ prompt_id: "p1" }), { status: 200 }),
@@ -377,6 +378,7 @@ describe("ComfyUIBackend", () => {
     });
   });
   it("does not spend the execution budget while ComfyUI still has the prompt queued", async () => {
+    vi.useFakeTimers();
     // 排队等待不吃执行预算：单实例 ComfyUI 串行执行，排在后面的 prompt 过去会在
     // 一次都没执行的情况下被判超时，然后被上游归成 ambiguous/not_retryable。
     let queuedPolls = 0;
@@ -412,17 +414,24 @@ describe("ComfyUIBackend", () => {
     const handle = await backend.submit({
       descriptor,
       slots: { prompt: "cat" },
-      // 预算刻意小于「排队 12 轮」的实际耗时，只有排队不计费才可能成功。
+      // 虚拟排队 12ms 超过执行预算，避免宿主调度暂停耗光单轮预算。
       timeoutMs: 8,
     });
 
-    const result = await backend.poll(handle);
+    const startedAt = Date.now();
+    const polling = backend.poll(handle);
+    const completed = expect(polling).resolves.toMatchObject({ assets: [expect.anything()] });
+    await vi.advanceTimersByTimeAsync(12);
+    await completed;
+    const result = await polling;
 
     expect(result.assets).toHaveLength(1);
-    expect(queuedPolls).toBeGreaterThanOrEqual(12);
+    expect(queuedPolls).toBe(12);
+    expect(Date.now() - startedAt).toBe(12);
   });
 
   it("still times out a prompt that never leaves the ComfyUI queue", async () => {
+    vi.useFakeTimers();
     const routed = vi.fn(async (input: string | URL | Request) => {
       const url = String(input);
       if (url.endsWith("/prompt")) {
@@ -448,11 +457,57 @@ describe("ComfyUIBackend", () => {
       timeoutMs: 5,
     });
 
-    await expect(backend.poll(handle)).rejects.toMatchObject({
+    const timedOut = expect(backend.poll(handle)).rejects.toMatchObject({
       name: "BackendInvocationError",
       code: "timeout",
       outcome: "ambiguous",
+      message: expect.stringContaining("never left the queue within 30ms"),
     });
+    await vi.advanceTimersByTimeAsync(30);
+    await timedOut;
+  });
+
+  it("starts the execution budget when the queued prompt begins running", async () => {
+    vi.useFakeTimers();
+    let queuePolls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/prompt")) {
+        return new Response(JSON.stringify({ prompt_id: "p-running" }));
+      }
+      if (url.endsWith("/queue")) {
+        queuePolls += 1;
+        const pending = queuePolls <= 12;
+        return new Response(JSON.stringify({
+          queue_running: pending ? [] : [[0, "p-running"]],
+          queue_pending: pending ? [[0, "p-running"]] : [],
+        }));
+      }
+      return new Response(JSON.stringify({}));
+    }));
+    const backend = new ComfyUIBackend({
+      apiUrl: "http://x",
+      pollIntervalMs: 1,
+      workflowSync: testWorkflowSync,
+    });
+    const handle = await backend.submit({
+      descriptor,
+      slots: { prompt: "cat" },
+      timeoutMs: 8,
+    });
+    let settled = false;
+    const polling = backend.poll(handle).finally(() => { settled = true; });
+    const timedOut = expect(polling).rejects.toMatchObject({
+      code: "timeout",
+      outcome: "ambiguous",
+      message: expect.stringContaining("8ms of execution (waited 20ms)"),
+    });
+
+    await vi.advanceTimersByTimeAsync(19);
+    expect(settled).toBe(false);
+    expect(queuePolls).toBe(13);
+    await vi.advanceTimersByTimeAsync(1);
+    await timedOut;
   });
 
   it("marks a post-submit history connection reset as ambiguous", async () => {

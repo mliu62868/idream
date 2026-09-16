@@ -79,17 +79,14 @@ export class BackendVideoModel implements VideoModel {
       );
     }
 
+    // fps is deliberately not read from controls: Main's generationControlsSchema
+    // is .strict() and declares no fps key, so the frame rate is the recipe's
+    // alone. The branch that compared a requested fps was unreachable in
+    // production and only ever exercised by a probe that sent a shape Main
+    // cannot send.
     const width = numericControl(input.controls, "width");
     const height = numericControl(input.controls, "height");
-    const requestedFps = numericControl(input.controls, "fps");
-    if (
-      width !== recipe.width ||
-      height !== recipe.height ||
-      (
-        requestedFps !== undefined &&
-        requestedFps !== recipe.fps
-      )
-    ) {
+    if (width !== recipe.width || height !== recipe.height) {
       return failure(
         "unsupported_video_envelope",
         `${recipe.modelLabel} production video generation requires ${recipe.width}x${recipe.height} at ${recipe.fps}fps`,

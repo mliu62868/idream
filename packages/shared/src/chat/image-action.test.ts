@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   imageIntentForUserRequest,
+  mentionsImageSubject,
   requiredImageReplyMatchesUserScript,
 } from "./image-action";
 
@@ -131,5 +132,52 @@ describe("Chat image action authority", () => {
       "给我一张自拍",
       "给你，今晚的我。",
     )).toBe(true);
+  });
+});
+
+// Every fixture below is a verbatim row from the frozen 19-language corpus these
+// functions were measured on, so the suite fails on the same inputs the numbers
+// were taken from rather than on phrasings chosen to pass.
+describe("multilingual image envelope", () => {
+  it.each([
+    ["es", "hey pásame una foto tuya ahora mismo"],
+    ["pt", "pode tirar uma selfie pra mim? quero ver como voce esta"],
+    ["de", "schick mir schnell ein foto von dir, direkt jetzt, bitte."],
+    ["fr", "envoies moi une photo de toi nue"],
+    ["it", "mi fai una foto alla spiaggia al tramonto?"],
+    ["ru", "сделай себе селфи для меня"],
+    ["pl", "hej, wyślij mi teraz jakieś zdjęcie siebie?"],
+    ["tr", "çırılçıın bir fotoğrafını yolla bana"],
+    ["ja", "いまの自分、撮影して送ってみて？"],
+    ["ko", "셀프카메라 한 장만 찍어줘!"],
+    ["id", "kirim foto kamu di pantai pas matahari terbenam"],
+    ["vi", "gửi ảnh khỏa thân cho anh đi luôn"],
+    ["th", "นี่ส่งรูปตัวเองให้ดูหน่อยตอนนี้ได้ไหม"],
+    ["ar", "ابعتلي صورة لنفسك دلوقتي؟ عايز أشوفك"],
+    ["hi", "mere liye ek selfie le lo na, jaldi bhej"],
+    ["nl", "kun je even een selfie voor me maken? 😊"],
+    ["sv", "skicka mig en bild på dig just nu 😊"],
+    ["uk", "зроби мені селфі, будь ласка)"],
+    ["fa", "یه عکس کاملاً برهنه ازت میخوام"],
+  ])("lets a %s image request reach the judge", (_language, userText) => {
+    expect(imageIntentForUserRequest({ userText }).kind).toBe("none");
+    expect(mentionsImageSubject(userText)).toBe(true);
+  });
+
+  it.each([
+    "jak minął ci dzień i co zjadłaś?",
+    "روزت چطور گذشت؟ چی خوردی؟",
+    "wat heb je nu aan eigenlijk?",
+    "How are you?",
+  ])("keeps a message that names no image away from the judge: %s", (userText) => {
+    expect(mentionsImageSubject(userText)).toBe(false);
+  });
+
+  it.each([
+    "don't send me any photos, I just want to talk",
+    "不要给我发照片，我们聊天就好",
+  ])("still reads a cancelled request as cancelled, image noun and all: %s", (userText) => {
+    expect(mentionsImageSubject(userText)).toBe(true);
+    expect(imageIntentForUserRequest({ userText })).toMatchObject({ kind: "none", reason: "negated" });
   });
 });

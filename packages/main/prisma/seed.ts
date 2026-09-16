@@ -12,7 +12,10 @@ import {
   PRODUCTION_H3_VIDEO_PROFILE,
   PRODUCTION_REDGRAFT_LTX25_VIDEO_PROFILE,
 } from "../src/server/modules/generation/production-video-profile";
-import { safetyDocuments } from "../src/lib/ourdream-safety-data";
+import {
+  safetyDocuments,
+  safetyDocumentVersion,
+} from "../src/lib/ourdream-safety-data";
 import {
   officialCharacterSeeds,
   officialFeedbackItems,
@@ -848,23 +851,11 @@ async function seedAdminControlPlane() {
     },
   });
 
-  await prisma.featureFlag.upsert({
-    where: { key: "image_edit" },
-    update: {
-      label: "Image edit",
-      description: "Unlocks the image edit surface when providers are ready.",
-    },
-    create: {
-      key: "image_edit",
-      label: "Image edit",
-      description: "Unlocks the image edit surface when providers are ready.",
-      enabled: false,
-      rolloutPercent: 0,
-      targetRoles: [],
-      targetPlans: [],
-      hardPolicy: false,
-    },
-  });
+  // image_edit 开关已退役（2026-09-13）：图片编辑面在 2026-07-24 随 Dark Beast
+  // identity-source profile 正式对用户开放，准入由 generation profile 的
+  // publicSelection 发布状态决定，`featureFlagEnabled("image_edit")` 全仓零调用方。
+  // 一个开了关不产生任何效果的运营开关比没有更糟——运营以为自己关掉了这个面。
+  // 不要照着 video_gen / voice_gen 的样子把它加回来，除非同时接上读取方。
 
   await prisma.generationRecipe.upsert({
     where: { id: "seed-template-image-character-v1" },
@@ -1539,23 +1530,22 @@ async function seedAdminControlPlane() {
   });
 }
 
+// SPEC: policy_versions 是发布过的政策原文存档，只增不改。
+// INTENT: 版本号此前写死成 seed-2026-06-13，而 upsert 的 update 会用新正文覆盖同一行——
+//   改一次安全文案就把「当时发布的是什么」这份记录悄悄改掉了。版本号改为按正文派生后，
+//   改文案追加新行，旧行原样保留；内容没变时重复 seed 依然是幂等的。
+//   站点 /safety/** 仍然只渲染代码里的那一份（ourdream-local-safety-docs），这张表不是
+//   渲染来源，是存档——两边由同一个 safetyDocuments 派生，结构上不会漂移。
 async function seedPolicies() {
   for (const document of safetyDocuments) {
+    const slug = `safety${document.path}`;
+    const version = safetyDocumentVersion(document);
     await prisma.policyVersion.upsert({
-      where: {
-        slug_version: {
-          slug: `safety${document.path}`,
-          version: "seed-2026-06-13",
-        },
-      },
-      update: {
-        title: document.title,
-        body: document.markdown,
-        sourceUrl: `https://ourdream.ai/safety${document.path}`,
-      },
+      where: { slug_version: { slug, version } },
+      update: {},
       create: {
-        slug: `safety${document.path}`,
-        version: "seed-2026-06-13",
+        slug,
+        version,
         title: document.title,
         body: document.markdown,
         sourceUrl: `https://ourdream.ai/safety${document.path}`,

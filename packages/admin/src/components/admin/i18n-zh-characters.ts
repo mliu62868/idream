@@ -6,6 +6,21 @@
 // packages/main/src/server/modules/admin-v2/characters/{production-journey,readiness,renderer-preview}.ts。
 // 它们在 admin 源码里没有字面量，静态扫描判不出「在用」。删之前先查后端。
 export const adminZhCharacters: Record<string, string> = {
+  "Character performance fact reconciliation": "角色表现事实对账",
+  "Global facts across all characters and dates; independent of portfolio filters.": "覆盖全部角色与日期的全局事实，不受角色列表筛选影响。",
+  "Character facts are inconsistent; do not use these numbers for decisions.": "角色事实存在不一致，这些数字不可用于决策。",
+  "Character facts are directional only; this is not a financial sign-off.": "角色事实仅供趋势参考，不能作为财务对账通过的证明。",
+  "No funnel facts are available to verify.": "暂无漏斗事实可供验证。",
+  "Funnel rows checked": "已检查漏斗行",
+  "Contradictory funnel rows": "自相矛盾漏斗行",
+  "Funnel rows without a release": "缺发布版本漏斗行",
+  "Funnel rows with incomplete attribution": "归因不完整漏斗行",
+  "Eligible cost source facts": "符合条件的成本源事实",
+  "Projected cost facts": "已投影成本事实",
+  "Missing variable cost facts": "缺失可变成本事实",
+  "Unaudited economics facts": "未审计经济事实",
+  "Economics facts with incomplete coverage": "覆盖不完整经济事实",
+  "Cash revenue, refunds and credits are not reconciled by this report. Contribution margin remains unavailable for decisions.": "本报告尚未核对现金收入、退款与赠币权威，贡献毛利仍不可用于决策。",
   "Preview unavailable": "暂无可用试听",
   "You no longer have permission to change system voice defaults.": "你已无权修改系统默认声音，请关闭确认框并刷新权限。",
   "System defaults changed while you were editing. Your draft is preserved; load the current defaults before editing again.": "编辑期间系统默认已变更。你的草稿已保留，请载入当前默认后重新核对和编辑。",
@@ -1517,8 +1532,33 @@ export const adminZhCharacters: Record<string, string> = {
     "与这个角色的所有会话，下一轮起重新挂上生图工具。",
   "The chat agent loses its image tool on the next turn of every session with this Character. Images already sent stay.":
     "与这个角色的所有会话，下一轮起不再挂生图工具。已经发出的图片保留。",
-  "This route no longer meets its qualification. Re-qualifying needs engineering.":
-    "这条线路已不再满足资质要求。重新资质化需要工程介入，后台没有这个动作。",
+  "This route no longer meets its qualification.": "这条线路已不再满足资质要求。",
+  "Publish a new Release for this Character: it re-pins to the generation route that is qualified today. Re-enabling the old profile version is not possible.":
+    "给这个角色发一个新的 Release：它会重新绑定当下合格的生成线路。被禁用的那个 profile 版本无法重新启用。",
+  "This judgement lives in code, so it needs engineering; the raw reason above is what to hand over.":
+    "这条判据写在代码里，需要工程介入；上面那行原始原因就是要交出去的东西。",
+  "This Release is pinned to a generation route that no longer has a qualification record.":
+    "这个 Release 绑定的生成线路已经没有资质记录了。",
+  "The qualification behind this route has passed its expiry.":
+    "这条线路的资质已经过期。",
+  "The Character Release policy moved on, so this route's qualification no longer counts.":
+    "角色发布策略已经换版，这条线路的资质不再作数。",
+  "The identity evaluator moved on, so this route's evidence no longer counts.":
+    "身份一致性评估器已经换版，这条线路的证据不再作数。",
+  "The generation profile behind this route is disabled, archived, or rolled out to nobody — check it under Profiles & Rollout.":
+    "这条线路背后的生成 profile 已被禁用、归档，或灰度为 0——去「生成配置与灰度」核对。",
+  "The profile now runs a different workflow than the one this route was qualified on.":
+    "这个 profile 现在跑的工作流，和这条线路当初资质化时用的不是同一个。",
+  "The route's measured identity match is below the bar, and re-evaluating a route has no console entry.":
+    "这条线路实测的身份一致性低于门槛，而后台没有重新评估线路的入口。",
+  "The workflow this route was qualified on is gone, or is running a different version.":
+    "这条线路当初资质化所用的工作流已经不存在，或换了版本。",
+  "The reference roles this Release needs are not accepted by the current workflow.":
+    "这个 Release 需要的参考图角色，当前工作流不接受。",
+  "The current workflow cannot take as many identity references as this Release carries.":
+    "当前工作流吃不下这个 Release 带的这么多身份参考图。",
+  "The current workflow has no slot arrangement for this Release's references.":
+    "当前工作流没有能放下这个 Release 参考图的槽位编排。",
   retired: "已停用",
   withdrawn: "已放弃",
   "revision {version}": "修订版 {version}",
@@ -1752,4 +1792,14 @@ export const adminZhCharacters: Record<string, string> = {
   "The provider result is not confirmed. Check the generation task before starting another image.": "尚未确认生成结果。请先打开生成任务核对并恢复，再创建新图片。",
   "Open generation task": "打开生成任务",
   "View generation": "查看生成进度",
+  // 角色总览随每页下发的可信度声明，经 t(后端字符串) 取值——来源见
+  // packages/main/src/server/modules/admin-v2/characters/portfolio.ts。
+  "Data quality": "数据可信度",
+  "Degraded as of {time}": "数据已降级 · 截至 {time}",
+  "Performance data invalid": "表现数据不可信",
+  "Inspect performance quality": "检查表现数据质量",
+  "The performance authority marked this Character's funnel facts invalid, so these numbers cannot support a decision.":
+    "表现权威已把这个角色的漏斗事实标记为不可信，这些数字不能用来做决定。",
+  "Contribution margin is invalid until captured cash, refund, credit, and character attribution authorities are available.":
+    "在收款、退款、赠币与角色归因四个权威齐备之前，贡献毛利不可用于决策。",
 };

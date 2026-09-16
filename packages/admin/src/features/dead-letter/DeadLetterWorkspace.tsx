@@ -58,6 +58,8 @@ const RETRY_BLOCKED_LABELS: Record<string, string> = {
   successful_artifact_exists: "A delivered artifact already exists",
   not_failed: "The authority recorded no failure",
   refunded: "The charge was already refunded",
+  // 钉死的 workflow 版本已经没有 worker 在跑；重新入队只会白扣一次尝试，正确出口是丢弃并退款。
+  pinned_workflow_retired: "Its pinned workflow version is no longer served — requeue would fail; discard refunds the customer",
 };
 
 // 批量命令跳过某条时后端回的理由；与上面同源，另加两个只在批量路径出现的。

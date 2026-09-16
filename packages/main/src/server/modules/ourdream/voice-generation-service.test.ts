@@ -2,7 +2,6 @@ import { readFile } from "node:fs/promises";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { DEFAULT_FISH_AUDIO_DELIVERY } from "@idream/shared/admin";
 import { resolveLocalBlobPath } from "@idream/shared/storage/local-blob";
-import { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { dispatchV1 } from "@/server/modules/ourdream/service";
 import { providers } from "@/server/providers";
@@ -116,7 +115,7 @@ describe("voice generation service contract", () => {
     });
     const configuredVoice = providers.voice;
     providers.voice = { clip: {
-      providerKey: "pocket_tts", providerReplay: "durable_same_key",
+      providerKey: "pocket_tts",
       synthesize: configuredVoice.clip.synthesize.bind(configuredVoice.clip),
     }, identity: null };
     const operation = api("POST", "generation/voice", {
@@ -498,91 +497,6 @@ describe("voice generation service contract", () => {
     }
   });
 
-  it("quarantines a non-replayable accepted timeout and never sends an expired ordinary retry twice", async () => {
-    const userId = `${P}non-replayable-timeout-user`;
-    const messageId = `${P}non-replayable-timeout-message`;
-    await createUser({ id: userId });
-    await grantVoice(userId, 10);
-    const configuredVoice = providers.voice;
-    const synthesize = vi.fn(async () => ({
-      ok: false as const,
-      error: {
-        code: "voice_timeout",
-        message: "connection closed after provider acceptance",
-        retryable: true,
-      },
-    }));
-    providers.voice = {
-      clip: {
-        providerKey: "pipeline",
-        providerReplay: "non_replayable",
-        synthesize,
-      },
-      identity: null,
-    };
-    const body = {
-      characterId: CHAR,
-      messageId,
-      text: "Do not duplicate this accepted provider call",
-      intent: "play" as const,
-    };
-    try {
-      const timedOut = await api("POST", "generation/voice", {
-        userId,
-        ageGate: true,
-        body,
-      });
-      expect(timedOut.status).toBe(500);
-      const request = await prisma.voiceClipRequest.findUniqueOrThrow({
-        where: { userId_messageId: { userId, messageId } },
-      });
-      expect(request).toMatchObject({
-        status: "failed",
-        attemptNo: 1,
-        errorCode: "provider_outcome_unknown",
-        provider: "pipeline",
-        providerRequestId: `voice:${request.id}:attempt:1:provider`,
-      });
-
-      // Simulate a process that persisted provider invocation acceptance but
-      // crashed before it could persist the terminal unknown state.
-      await prisma.voiceClipRequest.update({
-        where: { id: request.id },
-        data: {
-          status: "running",
-          errorCode: null,
-          error: Prisma.DbNull,
-          completedAt: null,
-          leaseOwner: "crashed-non-replayable-worker",
-          leaseExpiresAt: new Date(Date.now() - 1_000),
-        },
-      });
-      const expiredRetry = await api("POST", "generation/voice", {
-        userId,
-        ageGate: true,
-        body,
-      });
-      expect(expiredRetry.status).toBe(409);
-      expect(synthesize).toHaveBeenCalledTimes(1);
-      await expect(
-        prisma.voiceClipRequest.findUniqueOrThrow({ where: { id: request.id } }),
-      ).resolves.toMatchObject({
-        status: "failed",
-        attemptNo: 2,
-        errorCode: "provider_outcome_unknown",
-      });
-      const terminalReplay = await api("POST", "generation/voice", {
-        userId,
-        ageGate: true,
-        body,
-      });
-      expect(terminalReplay.status).toBe(409);
-      expect(synthesize).toHaveBeenCalledTimes(1);
-    } finally {
-      providers.voice = configuredVoice;
-    }
-  });
-
   it("keeps the canonical provider reservation when a succeeded clip is regenerated", async () => {
     const userId = `${P}durable-success-replay-user`;
     const messageId = `${P}durable-success-replay-message`;
@@ -637,82 +551,6 @@ describe("voice generation service contract", () => {
     }
   });
 
-  it("releases a definitive non-replayable rejection for a new attempt identity", async () => {
-    const userId = `${P}non-replayable-definitive-user`;
-    const messageId = `${P}non-replayable-definitive-message`;
-    await createUser({ id: userId });
-    await grantVoice(userId, 10);
-    const configuredVoice = providers.voice;
-    const keys: string[] = [];
-    const synthesize = vi.fn(async (input: { idempotencyKey: string }) => {
-      keys.push(input.idempotencyKey);
-      if (keys.length === 1) {
-        return {
-          ok: false as const,
-          error: {
-            code: "voice_request_failed",
-            message: "Pipeline voice request failed with HTTP 400",
-            retryable: false,
-          },
-        };
-      }
-      return {
-        ok: true as const,
-        data: { key: `${P}definitive-retry.wav`, durationMs: 1_000 },
-      };
-    });
-    providers.voice = {
-      clip: {
-        providerKey: "pipeline",
-        providerReplay: "non_replayable",
-        synthesize,
-      },
-      identity: null,
-    };
-    const body = {
-      characterId: CHAR,
-      messageId,
-      text: "Retry only after a definitive rejection",
-    };
-    try {
-      const rejected = await api("POST", "generation/voice", {
-        userId,
-        ageGate: true,
-        body,
-      });
-      expect(rejected.status).toBe(500);
-      const first = await prisma.voiceClipRequest.findUniqueOrThrow({
-        where: { userId_messageId: { userId, messageId } },
-      });
-      expect(first).toMatchObject({
-        status: "failed",
-        attemptNo: 1,
-        errorCode: "voice_request_failed",
-        providerRequestId: null,
-      });
-
-      const retried = await api("POST", "generation/voice", {
-        userId,
-        ageGate: true,
-        body,
-      });
-      expectOk(retried, 201);
-      expect(keys).toEqual([
-        `voice:${first.id}:attempt:1:provider`,
-        `voice:${first.id}:attempt:2:provider`,
-      ]);
-      await expect(
-        prisma.voiceClipRequest.findUniqueOrThrow({ where: { id: first.id } }),
-      ).resolves.toMatchObject({
-        status: "succeeded",
-        attemptNo: 2,
-        providerRequestId: `voice:${first.id}:attempt:2:provider`,
-      });
-    } finally {
-      providers.voice = configuredVoice;
-    }
-  });
-
   it("resumes an unfinished request with its pinned provider after configuration switches", async () => {
     const userId = `${P}pinned-provider-switch-user`;
     const messageId = `${P}pinned-provider-switch-message`;
@@ -755,8 +593,7 @@ describe("voice generation service contract", () => {
 
       providers.voice = {
         clip: {
-          providerKey: "pipeline",
-          providerReplay: "non_replayable",
+          providerKey: "fish_audio",
           synthesize: switchedProviderCall,
         },
         identity: null,
@@ -896,7 +733,6 @@ describe("voice generation service contract", () => {
     providers.voice = {
       clip: {
         providerKey: "pocket_tts",
-        providerReplay: "durable_same_key",
         synthesize: configuredVoice.clip.synthesize.bind(configuredVoice.clip),
       },
       identity: null,

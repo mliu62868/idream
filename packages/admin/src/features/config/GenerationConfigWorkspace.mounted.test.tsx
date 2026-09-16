@@ -36,7 +36,7 @@ describe("disabled model profile visibility", () => {
     apiGet.mockImplementation(async (path) => ({
       items: path.startsWith("/api/v2/admin/generation/model-profiles") ? [
         { id: "h3", label: "H3", mode: "video", status: "active", version: 4, enabled: false },
-        { id: "redgraft", label: "RedGraft", mode: "video", status: "active", version: 2, enabled: true },
+        { id: "redgraft", label: "RedGraft", mode: "video", status: "active", version: 2, enabled: true, rollbackTarget: { id: "redgraft-v1", version: 1 } },
       ] : [],
       pageInfo: { endCursor: null, hasNextPage: false },
     }));
@@ -53,9 +53,14 @@ describe("disabled model profile visibility", () => {
   });
 
   it.each([
-    ["en", "Profile disabled", "Disable", "New requests stop using this profile. Restore service only after the replacement profile is validated and published."],
-    ["zh", "已停用", "禁用", "新请求将不再使用此配置。替代配置通过验证并发布后，才能恢复服务。"],
-  ] as const)("distinguishes a disabled active profile and explains restoration in %s", async (locale, disabled, disableAction, restoration) => {
+    // INVARIANT: 停用是单向的 —— 权威在这条 PATCH 上只接受 enabled:false，
+    //            被停用的版本再也回不来（model-profiles.ts:305-314）。确认框必须这么说。
+    // INVARIANT: 而且它还会连累目录：绑在这个版本上的已发布 Release 会被巡检打成 stale，
+    //            正在服务它的公开角色被降为 unlisted（release-monitor.ts:174-195），
+    //            两件事都不自愈。确认框不说这句，运营就是在不知情的情况下下架角色。
+    ["en", "Profile disabled", "Disable", "this version can never be enabled again", "This cannot be undone.", "drops to unlisted"],
+    ["zh", "已停用", "禁用", "这个版本再也无法重新启用", "这个操作无法撤回。", "降为 unlisted"],
+  ] as const)("distinguishes a disabled active profile and explains restoration in %s", async (locale, disabled, disableAction, restoration, irreversible, cascade) => {
     await act(async () => {
       root = createRoot(container);
       root.render(<AdminI18nProvider locale={locale}><GenerationConfigWorkspace permissions={{ manageFlags: true, manageProfiles: true }} /></AdminI18nProvider>);
@@ -69,15 +74,64 @@ describe("disabled model profile visibility", () => {
     expect(redgraft.textContent).not.toContain(disabled);
     const detail = () => [...container.querySelectorAll("h2")].find(heading => ["H3", "RedGraft"].includes(heading.textContent ?? ""))!.closest("section")!;
     expect(detail().textContent).toContain(disabled);
+    expect([...detail().querySelectorAll("button")].some(button => button.textContent === (locale === "zh" ? "回滚" : "Rollback"))).toBe(false);
     expect([...detail().querySelectorAll("button")].some(button => button.textContent === disableAction)).toBe(false);
 
     await act(async () => redgraft.click());
     expect(detail().textContent).not.toContain(disabled);
+    expect(detail().textContent).toContain("redgraft-v1 · v1");
+    expect([...detail().querySelectorAll("button")].some(button => button.textContent === (locale === "zh" ? "回滚" : "Rollback"))).toBe(true);
     await act(async () => [...detail().querySelectorAll("button")].find(button => button.textContent === disableAction)!.click());
     expect(document.querySelector('[role="dialog"]')?.textContent).toContain(restoration);
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain(irreversible);
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain(cascade);
     expect(document.querySelector('[role="dialog"]')?.textContent).not.toContain("second edit on this same profile");
     expect(apiWrite).not.toHaveBeenCalled();
   });
+  it.each([0, 1, 2])("translates profile state, mode and %i recent jobs at the rendered boundary", async count => {
+    apiGet.mockImplementation(async path => ({
+      items: path.startsWith("/api/v2/admin/generation/model-profiles")
+        ? [{ id: "image-profile", label: "image", mode: "image", status: "active", version: 2, enabled: true, runner: "comfyui", pipelineModel: "active" }]
+        : path.startsWith("/api/v2/admin/jobs")
+          ? Array.from({ length: count }, (_, index) => ({ id: `test-${index}`, profileId: "image-profile" }))
+          : [],
+      pageInfo: { endCursor: null, hasNextPage: false },
+    }));
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<AdminI18nProvider locale="zh"><GenerationConfigWorkspace permissions={{ manageFlags: true, manageProfiles: true }} /></AdminI18nProvider>);
+    });
+    await waitUntil(() => [...container.querySelectorAll("h2")].some(heading => heading.textContent === "image"));
+    const profileButton = [...container.querySelectorAll("button")].find(button => button.querySelector("span")?.textContent === "image")!;
+    expect(profileButton.querySelectorAll("span")[1].textContent).toBe("启用 · v2 · 图片");
+    const detail = [...container.querySelectorAll("h2")].find(heading => heading.textContent === "image")!.closest("section")!;
+    // SPEC: operator enums are translated; authored model names and runtime identifiers retain their original spelling.
+    expect(detail.querySelector("p")?.textContent).toBe("启用 · v2 · comfyui · active");
+    const jobCount = [...detail.querySelectorAll("p")].find(node => node.textContent?.includes("近期配置测试任务"));
+    expect(jobCount?.textContent).toBe(`${count} 个近期配置测试任务`);
+  });
+
+  it("keeps draft authoring unavailable when the authority disables diagnostics", async () => {
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<AdminI18nProvider locale="en"><GenerationConfigWorkspace permissions={{ manageFlags: true, manageProfiles: true }} /></AdminI18nProvider>);
+    });
+    await waitUntil(() => container.textContent?.includes("Profile authoring is disabled") === true);
+    expect([...container.querySelectorAll("button")].some(button => button.textContent === "Create profile draft")).toBe(false);
+  });
+
+  it("opens profile authoring from an empty catalogue when the authority enables it", async () => {
+    apiGet.mockResolvedValue({ items: [], authoringEnabled: true, pageInfo: { endCursor: null, hasNextPage: false } });
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<AdminI18nProvider locale="en"><GenerationConfigWorkspace permissions={{ manageFlags: true, manageProfiles: true }} /></AdminI18nProvider>);
+    });
+    await waitUntil(() => [...container.querySelectorAll("button")].some(button => button.textContent === "Create profile draft"));
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Create profile draft")!.click());
+    expect(container.querySelector("textarea")).not.toBeNull();
+    expect(container.textContent).toContain("Saving a draft does not change live traffic");
+  });
+
 });
 
 /**

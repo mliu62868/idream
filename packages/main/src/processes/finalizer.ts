@@ -10,6 +10,9 @@ import { logger } from "@/server/lib/logger";
 import { dispatchPendingGenerationTerminalRecords } from "@/server/ai/generation-terminal-record-ingest";
 import { redriveFailedGenerationTerminalRelays } from "@/server/ai/generation-terminal-relay";
 import { scanDueUnknownGenerationReviews } from "@/server/modules/admin-v2/jobs/unknown-review-reminder";
+import { recoverExpiredVoiceClips } from "@/server/modules/ourdream/voice-clip-recovery";
+import { entitlementMap } from "@/server/modules/ourdream/subscription-lifecycle";
+import { readableCharacter } from "@/server/modules/ourdream/generation-character-authority";
 import { isProcessEntrypoint } from "./process-entrypoint";
 
 const BUSY_DELAY_MS = 50;
@@ -24,6 +27,25 @@ let running = true;
 let reconciling = false;
 let lastReconcileAt = 0;
 let nextQueueOffset = 0;
+let voiceRecovery: Promise<void> | null = null;
+let voiceRecoveryCursor: string | null = null;
+let lastVoiceRecoveryAt = 0;
+
+function maybeRecoverVoiceClips(now = Date.now()) {
+  if (voiceRecovery || now - lastVoiceRecoveryAt < RECONCILE_INTERVAL_MS) return;
+  lastVoiceRecoveryAt = now;
+  // TTS can take minutes. Keep image/video finalization moving while one Voice
+  // request recovers, and await that request during graceful shutdown.
+  voiceRecovery = recoverExpiredVoiceClips({
+    deps: { entitlementMap, readableCharacter },
+    cursorId: voiceRecoveryCursor,
+  }).then((result) => {
+    voiceRecoveryCursor = result.nextCursorId;
+    if (result.recovered) logger.info(result, "expired voice lease recovered");
+  }).catch((error) => {
+    logger.error({ error }, "voice lease recovery scan failed");
+  }).finally(() => { voiceRecovery = null; });
+}
 
 export async function runFinalizerLoop(): Promise<void> {
   logger.info("gen-finalizer started");
@@ -42,10 +64,12 @@ export async function runFinalizerLoop(): Promise<void> {
     } catch (err) {
       logger.error({ err }, "finalizer drain failed");
     }
+    maybeRecoverVoiceClips();
     await maybeReconcileStaleJobs();
     await dispatchPendingGenerationTerminalRecords().catch((err) => logger.error({ err }, "generation terminal record dispatch failed"));
     await sleep(processed > 0 ? BUSY_DELAY_MS : IDLE_DELAY_MS);
   }
+  await voiceRecovery;
 }
 
 function finalizerQueuesForIteration(): string[] {

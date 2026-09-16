@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ADMIN_METRIC_REGISTRY, metricDashboardResponseSchema } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
 import { toInputJson } from "../shared/prisma-json";
-import { getMetricDashboard, materializeMetricSnapshots } from "./query";
+import { getMetricDashboard, materializeMetricSnapshots, validateMetricDefinitions } from "./query";
 
 describe("metric snapshot materialization", () => {
   const prefix = `metric-materialize-${randomUUID()}`;
@@ -28,13 +28,12 @@ describe("metric snapshot materialization", () => {
       id: contentVersionId, characterId, version: 1, contentHash: prefix,
       personaSnapshot: {}, openingSnapshot: {}, appearanceSnapshot: {}, sourceType: "test",
     } });
-    // This is persisted definition-validation authority in the isolated test DB.
-    // Production refresh must neither manufacture nor change this evidence.
+    // Published definitions start unvalidated and remain immutable.
     await prisma.metricDefinitionSnapshot.create({ data: {
       key: definition.key, version: definition.version, definition: toInputJson(definition),
-      queryHash: definition.queryHash, qualityState: "directional",
-      effectiveAt: new Date(definition.effectiveAt), lastValidatedAt: latestDataAt,
-      validationEvidence: { test: "fixed mature relationship cohort" },
+      queryHash: definition.queryHash, qualityState: "invalid",
+      effectiveAt: new Date(definition.effectiveAt), lastValidatedAt: null,
+      validationEvidence: [],
     } });
     await prisma.metricProjectionReceipt.create({ data: {
       sourceService: "main", sourceEventId: `${prefix}-receipt`, canonicalEventId: `${prefix}-event`,
@@ -72,6 +71,24 @@ describe("metric snapshot materialization", () => {
   }
 
   it("publishes the first evaluated value and updates it when a late fact changes the same source watermark", async () => {
+    const before = await materializeMetricSnapshots(prisma, asOf);
+    expect(before.cards.find((card) => card.key === definition.key)?.decisionUse).toBe("blocked");
+    const immature = await validateMetricDefinitions(prisma, new Date(latestDataAt.getTime() - 120_000));
+    expect(immature.results.find((row) => row.key === definition.key)?.failures).toContain("definition_validation_mature_sample_missing");
+    const validation = await validateMetricDefinitions(prisma, asOf);
+    expect(validation.results.find((row) => row.key === definition.key)?.status).toBe("passed");
+    const evidence = await prisma.dataQualityCheck.findUniqueOrThrow({ where: {
+      id: validation.results.find((row) => row.key === definition.key)!.evidenceId,
+    } });
+    expect(evidence.evidence).toMatchObject({
+      validatorVersion: 2, queryHash: definition.queryHash,
+      formulaInputHash: expect.any(String), formulaEvidenceHash: expect.any(String),
+      formulaChecks: expect.arrayContaining([expect.objectContaining({ metricKey: definition.key, passed: true })]),
+    });
+    expect(validation.results.find((row) => row.key === "north_star.wpcu")?.failures).toContain("source_fact_missing:subscription_lifecycle_fact");
+    const immutable = await prisma.metricDefinitionSnapshot.findUniqueOrThrow({ where: { key_version: { key: definition.key, version: definition.version } } });
+    expect(immutable.lastValidatedAt).toBeNull();
+    expect(immutable.qualityState).toBe("invalid");
     const first = await materializeMetricSnapshots(prisma, asOf);
     expect(first.cards.find((card) => card.key === definition.key)).toMatchObject({
       value: 0, numeratorValue: 0, sampleSize: 1,
@@ -93,7 +110,7 @@ describe("metric snapshot materialization", () => {
     });
     expect(dashboard.cards.find((card) => card.key === "north_star.wpcu")).toMatchObject({
       value: null, publicationStatus: "official", decisionUse: "blocked",
-      qualityEvidence: expect.arrayContaining(["definition_not_certified"]),
+      qualityEvidence: expect.arrayContaining(["definition_validation_failed"]),
     });
     expect(await prisma.metricSnapshot.findMany({
       where: { metricKey: definition.key }, orderBy: { asOf: "asc" }, select: { value: true },

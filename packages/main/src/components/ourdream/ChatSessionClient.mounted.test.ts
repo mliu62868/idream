@@ -318,6 +318,25 @@ describe("ChatSessionClient streaming composer", () => {
     expect(toggle()?.getAttribute("aria-pressed")).toBe("true");
   });
 
+  // SPEC: 状态提示和输入框同属一个 sticky 容器。
+  // INTENT: 状态段落曾经跟在 sticky 输入框后面的普通流里，长会话时被顶到文档底部、
+  //   永远在视口外，点了按钮看起来像没反应。
+  it("keeps a chat status pinned with the composer instead of below the transcript", async () => {
+    await mountSession();
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input).endsWith("/memory")) throw new TypeError("Network connection lost");
+      return originalFetch(input, init);
+    });
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="memory-toggle"]')?.click());
+
+    const status = container.querySelector('[data-testid="chat-session-status"]');
+    expect(status).not.toBeNull();
+    const pinned = status!.closest(".sticky");
+    expect(pinned).not.toBeNull();
+    expect(pinned!.querySelector("form")).not.toBeNull();
+  });
+
   it("ignores the old attempt's delayed recovery after the reader regenerates", async () => {
     await startStreamingReply();
     const originalFetch = vi.mocked(fetch).getMockImplementation()!;
@@ -843,6 +862,29 @@ describe("ChatSessionClient streaming composer", () => {
     expect(replyBubble()?.textContent).toContain("Briar speaking.");
     expect(container.querySelector('[data-message-id="group-old-assistant"]')?.textContent).toContain("Avery");
     expect(container.querySelector<HTMLSelectElement>('[aria-label="Group speaker"]')?.disabled).toBe(true);
+  });
+
+  it("keeps the typed group message and explains itself when Enter lands during an @ speaker switch", async () => {
+    await mountGroupSession();
+    const groupFetch = vi.mocked(fetch).getMockImplementation()!;
+    let releaseSpeaker: (() => void) | undefined;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input).includes("speaker=character-2") && !init?.method) {
+        await new Promise<void>((resolve) => { releaseSpeaker = resolve; });
+      }
+      return groupFetch(input, init);
+    });
+    await act(async () => typeMessage("@Briar Hello from the garden"));
+    await act(async () => submitComposer());
+
+    expect(vi.mocked(fetch).mock.calls.some(([input, init]) =>
+      String(input) === "/api/v1/chat/groups/group-1/messages" && init?.method === "POST")).toBe(false);
+    expect(messageInput()?.value).toBe("@Briar Hello from the garden");
+    expect(container.querySelector('[data-testid="chat-session-status"]')?.textContent)
+      .toContain("Selecting that Character");
+
+    await act(async () => releaseSpeaker?.());
+    await waitUntil(() => container.querySelector<HTMLSelectElement>('[aria-label="Group speaker"]')?.value === "character-2");
   });
 
   it("quotes an old group reply's voice using its original Character and session after the selected speaker changes", async () => {

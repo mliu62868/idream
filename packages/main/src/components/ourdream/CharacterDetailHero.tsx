@@ -18,6 +18,8 @@ export function CharacterDetailHero({
   actions?: ReactNode;
 }>) {
   const heroImage = character.heroImage ?? character.image;
+  const hasLikes = typeof character.likesCount === "number" && character.likesCount > 0;
+  const hasChats = typeof character.chatsCount === "number" && character.chatsCount > 0;
   return (
     <div
       className="relative max-w-7xl overflow-hidden rounded-[24px] border border-white/10 bg-[rgb(20,20,20)]"
@@ -56,6 +58,22 @@ export function CharacterDetailHero({
         <p className="mt-5 line-clamp-3 max-w-2xl text-[15px] font-medium leading-7 text-white/75 lg:text-[17px]">
           {character.description}
         </p>
+        {/* SPEC: 详情页复述卡片上的作者与热度。
+            INTENT: 卡片承诺「谁做的、多少人聊过」，详情页丢掉这几项会让同一角色在两处
+            读起来像两个对象；接口本来就返回了 creator/likes/chats/vivid。 */}
+        <div
+          className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-[12px] font-bold leading-4 text-white/70"
+          data-testid="character-detail-byline"
+        >
+          <span data-testid="character-detail-creator">{character.creator}</span>
+          {hasLikes && <span>{character.likes} likes</span>}
+          {hasChats && <span>{character.chats} chats</span>}
+          {character.vivid && (
+            <span className="rounded-full bg-[rgb(253,95,194)] px-2 py-1 text-[10px] font-black uppercase leading-3 text-[rgb(13,13,13)]">
+              vivid
+            </span>
+          )}
+        </div>
         <div className="mt-5 flex flex-wrap gap-2">
           {character.tags?.slice(0, 8).map((tag) => (
             <span

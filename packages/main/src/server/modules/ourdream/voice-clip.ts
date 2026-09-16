@@ -20,11 +20,9 @@ import { canonicalJsonHash } from "@/server/modules/admin-v2/shared/idempotency"
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { resolveCharacterVoiceAuthority } from "@/server/modules/voice-defaults";
 import { providers } from "@/server/providers";
-import {
-  VOICE_PROVIDER_REPLAY,
-  type VoiceClipPort,
-} from "@/server/providers/types";
+import type { VoiceClipPort } from "@/server/providers/types";
 import { createVoiceClipPortForKey } from "@/server/providers/voice/factory";
+import { audioFileExtension, voiceArtifactKey } from "@/server/providers/voice/idempotency";
 import { acceptVoiceClipQuote, signVoiceClipQuote } from "./voice-clip-quote";
 import {
   fetchChatMessageVoiceAuthority,
@@ -75,7 +73,7 @@ export const voiceClipSynthesisPayloadSchema = z
 
 export const pinnedVoiceProviderPayloadSchema = z
   .object({
-    providerKey: z.enum(["mock", "pipeline", "pocket_tts", "fish_audio"]),
+    providerKey: z.enum(["mock", "pocket_tts", "fish_audio"]),
     voiceId: z.string().min(1),
     voiceAuthority: z.enum(["system_default", "character_clone"]),
     systemVoiceSettingVersion: z.number().int().nonnegative().nullable(),
@@ -102,7 +100,6 @@ export const pinnedVoiceProviderPayloadSchema = z
   });
 
 const VOICE_CLIP_CACHE_VERSION = 8;
-const VOICE_CLIP_WAIT_MS = 220_000;
 const VOICE_CLIP_POLL_MS = 25;
 
 type VoiceCharacter = {
@@ -430,6 +427,12 @@ export async function reclaimExpiredVoiceClip(input: {
       status: existing.status,
     });
   }
+  if (existing.errorCode === "provider_outcome_unknown") {
+    throw Errors.conflict("Voice provider outcome is unknown and replay is forbidden", {
+      requestId: existing.id,
+      reason: "provider_outcome_unknown",
+    });
+  }
   if (existing.leaseExpiresAt && existing.leaseExpiresAt > observedAt) {
     throw Errors.conflict("Voice clip request lease is still active", {
       requestId: existing.id,
@@ -453,19 +456,6 @@ export async function reclaimExpiredVoiceClip(input: {
       requestId: existing.id,
     });
   }
-  if (
-    VOICE_PROVIDER_REPLAY[providerPayload.data.providerKey] !==
-    "durable_same_key"
-  ) {
-    throw Errors.conflict(
-      "Voice clip provider cannot safely replay an expired operator reclaim",
-      {
-        requestId: existing.id,
-        provider: providerPayload.data.providerKey,
-        reason: "provider_not_durably_replayable",
-      },
-    );
-  }
   let voiceProvider: VoiceClipPort;
   try {
     voiceProvider = resolvePinnedVoiceProvider(providerPayload.data.providerKey);
@@ -476,18 +466,31 @@ export async function reclaimExpiredVoiceClip(input: {
       cause: cause instanceof Error ? cause.message : String(cause),
     });
   }
-  if (
-    voiceProvider.providerKey !== providerPayload.data.providerKey ||
-    voiceProvider.providerReplay !== "durable_same_key"
-  ) {
+  if (voiceProvider.providerKey !== providerPayload.data.providerKey) {
     throw Errors.conflict(
-      "The pinned Voice adapter does not provide durable same-key replay",
+      "The pinned Voice adapter does not match the reserved provider",
       {
         requestId: existing.id,
         pinnedProvider: providerPayload.data.providerKey,
         adapterProvider: voiceProvider.providerKey,
-        adapterReplay: voiceProvider.providerReplay,
-        reason: "provider_adapter_not_durably_replayable",
+        reason: "provider_adapter_mismatch",
+      },
+    );
+  }
+  // INVARIANT: an Admin reclaim must not mutate the row — not even to take the
+  // lease — when the reservation it would have to reuse is not the one this
+  // request owns. Checked here rather than inside executeOwnedVoiceClaim, which
+  // only runs after the claiming updateMany below.
+  if (
+    existing.providerRequestId &&
+    existing.providerRequestId !== voiceProviderIdempotencyKey(existing.id)
+  ) {
+    throw Errors.conflict(
+      "Voice provider invocation reservation does not match the request authority",
+      {
+        requestId: existing.id,
+        provider: providerPayload.data.providerKey,
+        reason: "provider_reservation_mismatch",
       },
     );
   }
@@ -524,6 +527,7 @@ export async function reclaimExpiredVoiceClip(input: {
       attemptNo: existing.attemptNo,
       leaseOwner: existing.leaseOwner,
       leaseExpiresAt: existing.leaseExpiresAt,
+      errorCode: existing.errorCode,
       OR: [
         { leaseExpiresAt: null },
         { leaseExpiresAt: { lte: claimedAt } },
@@ -654,74 +658,56 @@ async function executeOwnedVoiceClaim(input: {
   }
   // INVARIANT: one logical message keeps one provider key across lease expiry,
   // process restart, and transport ambiguity. attemptNo remains telemetry only.
-  const providerIdempotencyKey =
-    voiceProvider.providerReplay === "durable_same_key"
-      ? `voice:${claim.request.id}:provider`
-      : `voice:${claim.request.id}:attempt:${claim.request.attemptNo}:provider`;
-  const invocation = await reserveVoiceProviderInvocation({
+  const providerIdempotencyKey = voiceProviderIdempotencyKey(claim.request.id);
+  await reserveVoiceProviderInvocation({
     claim,
     voiceProvider,
     providerIdempotencyKey,
   });
-  if (invocation === "blocked_non_replayable") {
-    throw Errors.conflict(
-      "Voice provider outcome is unknown and this provider cannot be replayed",
-      {
-        requestId: claim.request.id,
-        provider: voiceProvider.providerKey,
-        errorCode: "provider_outcome_unknown",
-      },
-    );
-  }
-  let result: Awaited<ReturnType<VoiceClipPort["synthesize"]>>;
-  try {
-    result = await voiceProvider.synthesize({
-      requestId: claim.request.id,
-      attemptNo: claim.request.attemptNo,
-      idempotencyKey: providerIdempotencyKey,
-      text: body.text,
-      voiceId: providerPayload.voiceId,
-      tone: providerPayload.tone,
-      delivery: providerPayload.delivery,
-      scene: body.scene ?? null,
-    });
-  } catch (cause) {
-    if (voiceProvider.providerReplay === "non_replayable") {
-      await failOwnedVoiceRequest(
-        claim,
-        "provider_outcome_unknown",
-        cause,
-      );
-      throw Errors.unavailable(
-        "Voice provider connection ended after invocation; outcome is unknown",
-        {
-          requestId: claim.request.id,
-          provider: voiceProvider.providerKey,
-          errorCode: "provider_outcome_unknown",
-        },
-      );
-    }
-    throw cause;
-  }
+  // A transport exception propagates as-is: the reservation stays pinned, so
+  // re-sending the same provider key returns the original synthesis rather than
+  // leaving an outcome nobody can resolve. There used to be a catch here that
+  // quarantined the request, because one adapter could not be replayed.
+  const result = await voiceProvider.synthesize({
+    requestId: claim.request.id,
+    attemptNo: claim.request.attemptNo,
+    idempotencyKey: providerIdempotencyKey,
+    text: body.text,
+    voiceId: providerPayload.voiceId,
+    tone: providerPayload.tone,
+    delivery: providerPayload.delivery,
+    scene: body.scene ?? null,
+  });
   if (!result.ok) {
-    const ambiguousProviderOutcome =
-      voiceProvider.providerReplay === "non_replayable" &&
-      result.error.retryable &&
-      result.error.code !== "voice_rate_limited";
-    const errorCode = ambiguousProviderOutcome
-      ? "provider_outcome_unknown"
-      : result.error.code;
-    await failOwnedVoiceRequest(claim, errorCode, result.error, {
-      releaseProviderReservation:
-        voiceProvider.providerReplay === "non_replayable" &&
-        !ambiguousProviderOutcome,
-    });
+    await failOwnedVoiceRequest(claim, result.error.code, result.error);
     throw Errors.internal("Voice synthesis failed", result.error);
+  }
+
+  // SPEC: naming and persistence of the synthesized audio belong here, not to the
+  //   adapter. The key is derived from the provider idempotency key, so a durable
+  //   same-key replay lands on the same object instead of orphaning the first one.
+  // INVARIANT: the blob exists before the commit transaction opens — a MediaAsset
+  //   row may never reference bytes that were never stored. The matching cleanup
+  //   for a commit that fails afterwards is deleteUndeliveredVoiceBlob below.
+  const storageKey = voiceArtifactKey(
+    providerIdempotencyKey,
+    audioFileExtension(result.data.contentType),
+  );
+  const stored = await providers.blob.putPrivate({
+    key: storageKey,
+    body: result.data.body,
+    contentType: result.data.contentType,
+  });
+  if (!stored.ok) {
+    await failOwnedVoiceRequest(claim, stored.error.code, stored.error);
+    throw Errors.internal("Voice artifact could not be stored", stored.error);
   }
 
   const proposedMediaId = `media_voice_${randomUUID()}`;
   try {
     const commit = await prisma.$transaction(async (tx) => {
+      // Match budget authorization's User -> VoiceRequest lock order.
+      await lockUser(tx, user.id);
       await lockVoiceRequest(tx, claim.request.id);
       const owned = await tx.voiceClipRequest.findUniqueOrThrow({
         where: { id: claim.request.id },
@@ -738,14 +724,13 @@ async function executeOwnedVoiceClaim(input: {
         });
       }
 
-      await lockUser(tx, user.id);
       const activeStaleAssets = await tx.mediaAsset.findMany({
         where: voiceAssetWhere(user.id, claim.request.messageId),
         orderBy: { createdAt: "desc" },
       });
       const staleAssetIds = activeStaleAssets.map((asset) => asset.id);
       const reusableProviderAsset = await tx.mediaAsset.findUnique({
-        where: { storageKey: result.data.key },
+        where: { storageKey: storageKey },
       });
       if (
         reusableProviderAsset &&
@@ -755,13 +740,13 @@ async function executeOwnedVoiceClaim(input: {
       ) {
         throw Errors.conflict(
           "Voice provider artifact key is already bound to another authority",
-          { requestId: owned.id, storageKey: result.data.key },
+          { requestId: owned.id, storageKey: storageKey },
         );
       }
       const mediaId = reusableProviderAsset?.id ?? proposedMediaId;
       const durationMs = Math.max(0, result.data.durationMs);
       const previouslyDelivered = await hasDeliveredVoiceUsage(owned.id, tx);
-      const providerUsageRecorded = voiceProvider.providerReplay === "durable_same_key" &&
+      const providerUsageRecorded =
         (await tx.voiceUsageFact.count({ where: { requestId: owned.id } })) > 0;
       const remainingMs = await voiceMinutesRemainingMs(
         user.id,
@@ -824,7 +809,7 @@ async function executeOwnedVoiceClaim(input: {
                 balance,
                 cost,
                 required: cost,
-                providerKey: result.data.key,
+                providerKey: storageKey,
                 durationMs,
               }),
               leaseOwner: null,
@@ -878,7 +863,7 @@ async function executeOwnedVoiceClaim(input: {
         delivery: providerPayload.delivery,
         durationMs,
         provider: providerPayload.providerKey,
-        providerKey: result.data.key,
+        providerKey: storageKey,
         sceneVersion: body.sceneVersion ?? 0,
         scene: body.scene ?? null,
         sceneApplied: result.data.sceneApplied ?? !body.scene,
@@ -891,9 +876,9 @@ async function executeOwnedVoiceClaim(input: {
       });
       const assetAuthority = {
         url: `/api/v1/media/${mediaId}/content`,
-        storageKey: result.data.key,
-        contentType: voiceContentType(result.data.key),
-        providerAssetId: result.data.key,
+        storageKey: storageKey,
+        contentType: voiceContentType(storageKey),
+        providerAssetId: storageKey,
         prompt: body.text.slice(0, 500),
         visibility: "private" as const,
         safetyStatus: "passed",
@@ -956,7 +941,7 @@ async function executeOwnedVoiceClaim(input: {
     });
 
     if (commit.kind !== "asset") {
-      await deleteUndeliveredVoiceBlob(result.data.key, claim.request.id);
+      await deleteUndeliveredVoiceBlob(storageKey, claim.request.id);
     }
     if (commit.kind === "prewarm_skipped") {
       return ok(
@@ -1021,7 +1006,7 @@ async function authorizeVoiceSynthesisTurn(input: {
   allowanceWindowStartsAt?: Date;
   providerKey: z.infer<typeof pinnedVoiceProviderPayloadSchema>["providerKey"];
 }): Promise<Exclude<VoiceSynthesisBudgetDecision, { kind: "wait" }>> {
-  const deadline = Date.now() + VOICE_CLIP_WAIT_MS;
+  const deadline = Date.now() + voiceClipWaitMs(input.providerKey);
   while (Date.now() <= deadline) {
     const now = new Date();
     const decision = await prisma.$transaction(async (tx) => {
@@ -1174,7 +1159,7 @@ async function claimVoiceRequest(input: {
     if (!isUniqueConstraintError(error)) throw error;
   }
 
-  const deadline = Date.now() + VOICE_CLIP_WAIT_MS;
+  const deadline = Date.now() + voiceClipWaitMs(input.providerPayload.providerKey);
   while (Date.now() <= deadline) {
     const existing = await prisma.voiceClipRequest.findUniqueOrThrow({
       where: {
@@ -1208,26 +1193,6 @@ async function claimVoiceRequest(input: {
     ) {
       return { kind: "replay", asset: existing.mediaAsset };
     }
-    const existingPinnedProvider = pinnedVoiceProviderPayloadSchema.safeParse(
-      existing.providerPayload,
-    );
-    if (
-      existing.status !== "running" &&
-      existing.providerRequestId &&
-      existingPinnedProvider.success &&
-      VOICE_PROVIDER_REPLAY[existingPinnedProvider.data.providerKey] ===
-        "non_replayable"
-    ) {
-      throw Errors.conflict(
-        "The pinned Voice provider does not permit automatic replay",
-        {
-          requestId: existing.id,
-          provider: existingPinnedProvider.data.providerKey,
-          errorCode: existing.errorCode,
-        },
-      );
-    }
-
     const claimNow = new Date();
     const hasActiveLease =
       existing.status === "running" &&
@@ -1291,14 +1256,17 @@ async function claimVoiceRequest(input: {
   });
 }
 
-// INVARIANT: providerRequestId is the durable provider-invocation reservation.
-// A non-replayable adapter may cross the network only when this transaction
-// changes it from null to the canonical provider idempotency key.
+// SPEC: providerRequestId is the durable provider-invocation reservation. It is
+//   set once, from null to the canonical provider idempotency key, inside the
+//   lease check — so a second owner cannot start a parallel synthesis, and a
+//   replay of the same key is recognised rather than re-billed.
+// INVARIANT: a reservation that does not match the expected key is a conflict,
+//   never a takeover.
 async function reserveVoiceProviderInvocation(input: {
   readonly claim: Extract<VoiceRequestClaim, { kind: "owner" }>;
   readonly voiceProvider: VoiceClipPort;
   readonly providerIdempotencyKey: string;
-}): Promise<"first_invocation" | "durable_replay" | "blocked_non_replayable"> {
+}): Promise<"first_invocation" | "durable_replay"> {
   return prisma.$transaction(async (tx) => {
     await lockVoiceRequest(tx, input.claim.request.id);
     const owned = await tx.voiceClipRequest.findUniqueOrThrow({
@@ -1319,36 +1287,13 @@ async function reserveVoiceProviderInvocation(input: {
       );
     }
     if (owned.providerRequestId) {
-      if (
-        input.voiceProvider.providerReplay === "durable_same_key" &&
-        owned.providerRequestId === input.providerIdempotencyKey
-      ) {
+      if (owned.providerRequestId === input.providerIdempotencyKey) {
         return "durable_replay" as const;
       }
-      if (input.voiceProvider.providerReplay === "durable_same_key") {
-        throw Errors.conflict(
-          "Voice provider invocation reservation does not match the request authority",
-          { requestId: owned.id },
-        );
-      }
-      await tx.voiceClipRequest.update({
-        where: { id: owned.id },
-        data: {
-          status: "failed",
-          errorCode: "provider_outcome_unknown",
-          error: toInputJson({
-            code: "provider_outcome_unknown",
-            provider: input.voiceProvider.providerKey,
-            providerIdempotencyKey: owned.providerRequestId,
-            blockedTakeoverKey: input.providerIdempotencyKey,
-            reason: "non_replayable_provider_invocation_already_reserved",
-          }),
-          leaseOwner: null,
-          leaseExpiresAt: null,
-          completedAt: new Date(),
-        },
-      });
-      return "blocked_non_replayable" as const;
+      throw Errors.conflict(
+        "Voice provider invocation reservation does not match the request authority",
+        { requestId: owned.id },
+      );
     }
     await tx.voiceClipRequest.update({
       where: { id: owned.id },
@@ -1365,7 +1310,6 @@ async function failOwnedVoiceRequest(
   claim: Extract<VoiceRequestClaim, { kind: "owner" }>,
   errorCode: string,
   error: unknown,
-  options: { readonly releaseProviderReservation?: boolean } = {},
 ) {
   await prisma.voiceClipRequest.updateMany({
     where: {
@@ -1376,9 +1320,6 @@ async function failOwnedVoiceRequest(
     },
     data: {
       status: "failed",
-      ...(options.releaseProviderReservation
-        ? { providerRequestId: null }
-        : {}),
       errorCode,
       error: toInputJson({
         code: errorCode,
@@ -1444,6 +1385,13 @@ function voiceAssetWhere(
   };
 }
 
+// SPEC: the provider-invocation reservation key for a request. Request-scoped,
+//   not attempt-scoped: every adapter replays durably under the same key, so a
+//   retry must present the same one rather than starting a second synthesis.
+function voiceProviderIdempotencyKey(requestId: string) {
+  return `voice:${requestId}:provider`;
+}
+
 function voiceRequestId(userId: string, messageId: string) {
   const hash = createHash("sha256")
     .update(`${userId}\u0000${messageId}`)
@@ -1459,10 +1407,22 @@ function voiceClipLeaseMs(
       ? env.FISH_AUDIO_TIMEOUT_MS
       : providerKey === "pocket_tts"
         ? env.POCKET_TTS_TIMEOUT_MS
-        : providerKey === "pipeline"
-          ? env.PIPELINE_VOICE_TIMEOUT_MS
-          : 30_000;
+        : 30_000;
   return providerTimeout + 30_000;
+}
+
+// SPEC: how long a second caller waits for the current lease holder before
+//   giving up, derived from that provider's own lease.
+// INTENT: this used to be a flat `VOICE_CLIP_WAIT_MS = 220_000`, which was
+//   SHORTER than the fish_audio lease (FISH_AUDIO_TIMEOUT_MS=240s + 30s = 270s):
+//   a concurrent request on that route always timed out ~50s before the lease it
+//   was waiting on could possibly expire. Deriving it removes the pair of
+//   literals that had to agree.
+// INVARIANT: strictly greater than the lease, so the waiter outlives it.
+function voiceClipWaitMs(
+  providerKey: z.infer<typeof pinnedVoiceProviderPayloadSchema>["providerKey"],
+) {
+  return voiceClipLeaseMs(providerKey) + 10_000;
 }
 
 function resolvePinnedVoiceProvider(
@@ -1470,7 +1430,7 @@ function resolvePinnedVoiceProvider(
 ): VoiceClipPort {
   return providers.voice.clip.providerKey === providerKey
     ? providers.voice.clip
-    : createVoiceClipPortForKey(providerKey, providers.blob);
+    : createVoiceClipPortForKey(providerKey);
 }
 
 function characterVoiceTone(character: {

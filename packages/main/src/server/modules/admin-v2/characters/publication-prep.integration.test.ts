@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { compileUserCharacterContent } from "@/server/modules/ourdream/character-soul";
 import { toInputJson } from "../shared/prisma-json";
-import { createCharacter, createMedia, createUser, purgeTestData } from "@/server/test/helpers";
+import { api, createCharacter, createMedia, createUser, purgeTestData } from "@/server/test/helpers";
 import { listContentCharacters } from "../content/merchandising";
 import { POST as preparePublication } from "@/app/api/v2/admin/characters/[id]/project/route";
 import { GET as workspace } from "@/app/api/v2/admin/characters/[id]/route";
@@ -110,11 +110,43 @@ describe("historical pending Character automatic publication preparation", () =>
     expect(await prisma.characterServing.findUnique({ where: { characterId: fixture.characterId } })).toMatchObject({ state: "inactive", currentReleaseId: null });
     expect(await prisma.characterRelease.count({ where: { projectId: payload.data.projectId } })).toBe(0);
     expect(await prisma.moderationEvent.findFirst({ where: { targetId: fixture.characterId, layer: "publication_preparation" } })).toMatchObject({ status: "passed" });
+    expect(await prisma.mediaAsset.findUnique({ where: { id: fixture.imageAssetId } })).toMatchObject({ visibility: "private" });
+    expect(await prisma.characterRevision.findFirst({ where: { projectId: payload.data.projectId, characterContentVersionId: fixture.contentVersionId } })).not.toBeNull();
+    const explore = await api("GET", "characters", { ageGate: true, query: { q: "Pending valid" } });
+    expect(explore.status).toBe(200);
+    expect(explore.data.items).toEqual([]);
     const remaining = await listContentCharacters({ status: "pending_review", search: "Pending valid", sort: "recent", limit: 25 });
     expect(remaining.items.map((item) => item.id)).not.toContain(fixture.characterId);
     const replay = await prepare(fixture.characterId, fixture.submission.id, `${P}valid`);
     expect(await replay.json()).toMatchObject({ data: { projectId: payload.data.projectId, replayed: true } });
     expect(await prisma.characterProject.count({ where: { characterId: fixture.characterId } })).toBe(1);
+  });
+
+  it("repairs already-approved submissions once and records one publication command", async () => {
+    const fixture = await seedPublishableSubmission("approved");
+    await prisma.character.update({ where: { id: fixture.characterId }, data: { status: "approved" } });
+    await prisma.characterSubmission.update({ where: { id: fixture.submission.id }, data: { status: "approved", reviewReason: "automatic_checks_passed" } });
+    const response = await prepare(fixture.characterId, fixture.submission.id, `${P}approved`);
+    expect(response.status).toBe(200);
+    const { data } = await response.json();
+    expect(data).toMatchObject({ state: "publication_prep", servingState: "inactive", created: true, replayed: false });
+    const replay = await prepare(fixture.characterId, fixture.submission.id, `${P}approved`);
+    expect(await replay.json()).toMatchObject({ data: { projectId: data.projectId, replayed: true } });
+    expect(await prisma.characterRevision.count({ where: { projectId: data.projectId } })).toBe(1);
+    expect(await prisma.adminAuditLog.count({ where: { action: "character.publication_prepared", targetId: data.projectId } })).toBe(1);
+    expect(await prisma.mainOutboxEvent.count({ where: { eventType: "admin.customer_character.publication_prepared.v1", aggregateId: data.projectId } })).toBe(1);
+  });
+
+  it("rejects another character's approved submission without creating a project", async () => {
+    const target = await seedPublishableSubmission("mismatch-target");
+    const other = await seedPublishableSubmission("mismatch-other");
+    for (const fixture of [target, other]) {
+      await prisma.character.update({ where: { id: fixture.characterId }, data: { status: "approved" } });
+      await prisma.characterSubmission.update({ where: { id: fixture.submission.id }, data: { status: "approved" } });
+    }
+    const response = await prepare(target.characterId, other.submission.id);
+    expect(response.status).toBe(409);
+    expect(await prisma.characterProject.count({ where: { characterId: target.characterId } })).toBe(0);
   });
 
   it.each(["blocked_text", "underage", "wrong_owner", "wrong_character", "archived_image", "synthetic_image", "missing_blob", "wrong_submission"])("keeps the pending state and creates no publication when %s fails", async (failure) => {

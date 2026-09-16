@@ -1,5 +1,4 @@
 import { prisma } from "@/server/lib/db";
-import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 
 export type VoiceCallAvailability = {

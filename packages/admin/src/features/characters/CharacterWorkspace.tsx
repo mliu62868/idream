@@ -1,6 +1,10 @@
 "use client";
 
+import { characterCommandMessage, renderCharacterCommandMessage } from "./character-command-copy";
+
 import { adminDateLocale, useAdminI18n } from "@/components/admin/i18n";
+import { RequestErrorDetails } from "@/components/admin/ui/RequestErrorDetails";
+import { operatorErrorCopy } from "@/components/admin/ui/request-error-copy";
 import { ConfirmDialog } from "@/components/admin/ui/ConfirmDialog";
 import Link from "next/link";
 import Image from "next/image";
@@ -151,7 +155,7 @@ export function customerPublicationPrepRecoveryFromError(
 // 这里只负责措辞——所以三种出口的文案改错也改不动写入锁的行为。
 function localCleanupWarning(cause: unknown) {
   return cause instanceof Error
-    ? `The authoritative workspace refreshed, but local cleanup needs attention: ${cause.message}`
+    ? characterCommandMessage("The authoritative workspace refreshed, but local cleanup needs attention: {detail}", { detail: cause.message })
     : "The authoritative workspace refreshed, but local cleanup needs attention.";
 }
 
@@ -163,6 +167,20 @@ export function characterWorkspaceLoadError(cause: unknown) {
     : cause.message;
 }
 
+// INVARIANT: 不能先把 HTTP 异常压成 message，requestId、状态码与权威详情必须保留到渲染。
+type CharacterWorkspaceError = string | AdminV2RequestError;
+
+function CharacterWorkspaceErrorMessage({ error }: { error: CharacterWorkspaceError }) {
+  const { t } = useAdminI18n();
+  if (typeof error === "string") return t(error);
+  const copy = operatorErrorCopy(error);
+  return <>
+    <p className="font-semibold">{t(copy.headline)}</p>
+    <p className="mt-1">{t(copy.nextStep, copy.nextStepValues)}</p>
+    <RequestErrorDetails technical={copy.technical} />
+  </>;
+}
+
 /**
  * SPEC: 恢复回路每一种处置对应的一句运营文案。
  * INTENT: 处置本身（能不能重放、该不该解锁、等多久）全在 journal 里，所以这张表改错也改不动
@@ -170,54 +188,51 @@ export function characterWorkspaceLoadError(cause: unknown) {
  */
 const characterCommandRecoveryCopy: CharacterCommandRecoveryCopy = {
   attached: ({ action }) =>
-    `${action} is already active according to server authority. The workspace attached to that command instead of submitting a second one.`,
+    characterCommandMessage("{action} is already active according to server authority. The workspace attached to that command instead of submitting a second one.", { action: action }),
   windowExpired: ({ action }) =>
-    `${action} requires fresh operator confirmation before the saved request can be replayed.`,
+    characterCommandMessage("{action} requires fresh operator confirmation before the saved request can be replayed.", { action: action }),
   evidenceIncomplete: ({ action }) =>
-    `${action} recovery journal is incomplete. The authoritative workspace must be reconciled before writes resume.`,
+    characterCommandMessage("{action} recovery journal is incomplete. The authoritative workspace must be reconciled before writes resume.", { action: action }),
   replayBlocked: ({ action }) =>
-    `${action} acceptance cannot be proven with the current session or permissions. The original command may already exist, so Character writes remain locked while the exact idempotent request waits to retry.`,
+    characterCommandMessage("{action} acceptance cannot be proven with the current session or permissions. The original command may already exist, so Character writes remain locked while the exact idempotent request waits to retry.", { action: action }),
   replayUnreconciled: ({ action }) =>
-    `${action} replay was rejected, but the original acceptance is still unknown. Server-side Character authority must reconcile the active command before writes resume.`,
+    characterCommandMessage("{action} replay was rejected, but the original acceptance is still unknown. Server-side Character authority must reconcile the active command before writes resume.", { action: action }),
   replayReconciled: ({ action, cause }) =>
     cause instanceof Error
-      ? `${action} replay was rejected, and server-side Character authority confirmed that no active command remains: ${cause.message}`
-      : `${action} replay was rejected, and server-side Character authority confirmed that no active command remains.`,
+      ? characterCommandMessage("{action} replay was rejected, and server-side Character authority confirmed that no active command remains: {detail}", { action: action, detail: cause.message })
+      : characterCommandMessage("{action} replay was rejected, and server-side Character authority confirmed that no active command remains.", { action: action }),
   replayRetrying: ({ action, cause }) =>
     cause instanceof Error
-      ? `${action} acceptance is still unknown: ${cause.message}. Retrying the exact command safely.`
-      : `${action} acceptance is still unknown. Retrying the exact command safely.`,
+      ? characterCommandMessage("{action} acceptance is still unknown: {detail}. Retrying the exact command safely.", { action: action, detail: cause.message })
+      : characterCommandMessage("{action} acceptance is still unknown. Retrying the exact command safely.", { action: action }),
   commandFailed: ({ action, status }) =>
-    `${action} command ${status}. Open command evidence for the authoritative result.`,
+    characterCommandMessage("{action} command {status}. Open command evidence for the authoritative result.", { action: action, status: status }),
   evidenceMissingCleared: ({ action }) =>
-    `${action} command evidence was unavailable, and server-side Character authority confirmed that no command remains active.`,
+    characterCommandMessage("{action} command evidence was unavailable, and server-side Character authority confirmed that no command remains active.", { action: action }),
   evidenceMissingLocked: ({ action }) =>
-    `${action} command evidence is unavailable. Character writes remain locked until server authority can be reconciled.`,
+    characterCommandMessage("{action} command evidence is unavailable. Character writes remain locked until server authority can be reconciled.", { action: action }),
   statusBlocked: ({ action }) =>
-    `${action} command evidence cannot be read with the current session or permissions. The command may still be running, so Character writes remain locked.`,
+    characterCommandMessage("{action} command evidence cannot be read with the current session or permissions. The command may still be running, so Character writes remain locked.", { action: action }),
   statusUnavailable: ({ action, cause }) =>
     cause instanceof Error
-      ? `${action} status could not be refreshed: ${cause.message}`
-      : `${action} status could not be refreshed.`,
+      ? characterCommandMessage("{action} status could not be refreshed: {detail}", { action: action, detail: cause.message })
+      : characterCommandMessage("{action} status could not be refreshed.", { action: action }),
   reconcileNotice: ({ action, reason }) => {
     if (reason === "evidence_incomplete") {
-      return `${action} recovery evidence is incomplete. Server authority must be reconciled before writes resume.`;
+      return characterCommandMessage("{action} recovery evidence is incomplete. Server authority must be reconciled before writes resume.", { action: action });
     }
     if (reason === "replay_rejected") {
-      return `${action} replay was rejected after its original response was lost. Server-side Character authority must prove that no command remains active before writes resume.`;
+      return characterCommandMessage("{action} replay was rejected after its original response was lost. Server-side Character authority must prove that no command remains active before writes resume.", { action: action });
     }
     if (reason === "evidence_missing") {
-      return `${action} command evidence returned 404. Server-side Character authority must prove that no command remains active before writes resume.`;
+      return characterCommandMessage("{action} command evidence returned 404. Server-side Character authority must prove that no command remains active before writes resume.", { action: action });
     }
-    return `${action} was completed or cleared in another tab. This tab must refresh server authority before writes resume.`;
+    return characterCommandMessage("{action} was completed or cleared in another tab. This tab must refresh server authority before writes resume.", { action: action });
   },
   reconcileStillActive: ({ action }) =>
-    `${action} is still active according to server authority. Character writes remain locked.`,
+    characterCommandMessage("{action} is still active according to server authority. Character writes remain locked.", { action: action }),
   reconcileFailed: ({ action, cause }) =>
-    committedCharacterProjectionWarning(
-      `${action} command reconciliation`,
-      cause,
-    ),
+    characterCommandMessage("{action} could not be reconciled with server authority{detail}. Character writes remain locked until the authoritative workspace refreshes.", { action, detail: cause instanceof Error ? `: ${cause.message}` : "" }),
 };
 
 function CharacterDetail({
@@ -236,7 +251,7 @@ function CharacterDetail({
   const { locale, t } = useAdminI18n();
   const [data, setData] = useState<CharacterWorkspaceDetail | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<CharacterWorkspaceError | null>(null);
   const [publicationPrepRecovery, setPublicationPrepRecovery] =
     useState<CustomerPublicationPrepRecovery | null>(null);
   const [pendingPublicationPrep, setCustomerPublicationPrepRecovery] =
@@ -283,9 +298,9 @@ function CharacterDetail({
         setError(
           recovery
             ? null
-            : cause instanceof Error
-              ? characterWorkspaceLoadError(cause)
-              : "Character workspace could not be loaded",
+            : cause instanceof AdminV2RequestError
+              ? cause
+              : characterWorkspaceLoadError(cause),
         );
       }
       throw cause;
@@ -333,7 +348,7 @@ function CharacterDetail({
       setData(next);
       return next;
     } catch (cause) {
-      setError(characterWorkspaceLoadError(cause));
+      setError(cause instanceof AdminV2RequestError ? cause : characterWorkspaceLoadError(cause));
       throw cause;
     } finally {
       setLoading(false);
@@ -378,7 +393,7 @@ function CharacterDetail({
     }) => {
       if (
         !journal.beginSubmission(
-          t("Saving your changes and updating the character. Please wait before making another change."),
+          "Saving your changes and updating the character. Please wait before making another change.",
         )
       ) {
         throw new Error(
@@ -400,7 +415,7 @@ function CharacterDetail({
       );
       return { result, refreshed };
     },
-    [journal, refreshCommittedProjection, t],
+    [journal, refreshCommittedProjection],
   );
   const reclaimVoiceRequest = useCallback(
     async (input: {
@@ -648,7 +663,7 @@ function CharacterDetail({
             className="rounded-xl bg-[var(--ad-blue-bg)] p-4 text-sm text-[var(--ad-blue-text)]"
             role="status"
           >
-            <p>{mutationNotice.message}</p>
+            <p>{renderCharacterCommandMessage(mutationNotice.message, t)}</p>
             <div className="mt-3 flex flex-wrap gap-3">
               {mutationNotice.kind === "refresh_required" ? (
                 <button
@@ -685,7 +700,7 @@ function CharacterDetail({
             className="rounded-xl bg-[var(--ad-yellow-bg)] p-4 text-sm text-[var(--ad-yellow-text)]"
             role="alert"
           >
-            {commandRecoveryError}
+            {renderCharacterCommandMessage(commandRecoveryError, t)}
           </p>
         ) : null}
         {publicationPrepRecovery && permissions.writeProject ? (
@@ -702,9 +717,9 @@ function CharacterDetail({
               )}
             </p>
             {error ? (
-              <p className="mt-2" role="alert">
-                {error}
-              </p>
+              <div className="mt-2" role="alert">
+                <CharacterWorkspaceErrorMessage error={error} />
+              </div>
             ) : null}
             <button
               className="mt-3 font-semibold underline"
@@ -721,7 +736,7 @@ function CharacterDetail({
             className="rounded-xl bg-[var(--ad-red-bg)] p-5 text-sm text-[var(--ad-red-text)]"
             role="alert"
           >
-            {error ??
+            {error ? <CharacterWorkspaceErrorMessage error={error} /> :
               (loading ? t("Loading characters…") : t("Character not found"))}
             <button
               className="ml-2 font-semibold underline"
@@ -928,11 +943,11 @@ function CharacterDetail({
         </details>
       </div>
       {error ? (
-        <p
+        <div
           className="mt-4 rounded-lg bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"
           role="alert"
         >
-          {error}{" "}
+          <CharacterWorkspaceErrorMessage error={error} />{" "}
           <button
             className="ml-2 underline"
             onClick={() => void load().catch(() => undefined)}
@@ -940,14 +955,14 @@ function CharacterDetail({
           >
             {t("Retry workspace")}
           </button>
-        </p>
+        </div>
       ) : null}
       {commandRecoveryError ? (
         <p
           className="mt-4 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]"
           role="alert"
         >
-          {commandRecoveryError}
+          {renderCharacterCommandMessage(commandRecoveryError, t)}
         </p>
       ) : null}
       {mutationNotice ? (
@@ -964,7 +979,7 @@ function CharacterDetail({
           )}
           role="status"
         >
-          <p>{mutationNotice.message}</p>
+          <p>{renderCharacterCommandMessage(mutationNotice.message, t)}</p>
           <div className="mt-2 flex flex-wrap gap-3">
             {mutationNotice.kind === "refresh_required" ? (
               <button

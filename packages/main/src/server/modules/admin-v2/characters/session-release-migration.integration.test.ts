@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { POST } from "@/app/api/v2/admin/chat/sessions/[sessionId]/commands/migrate-release/route";
+import { chatOpsSessions } from "@/server/modules/admin-v2/chat/operations";
+import { chatOpsSessionListResponseSchema } from "@idream/shared/admin";
+import { acceptControlPlaneCommand } from "../shared/control-plane-command";
+import { executeAcceptedAdminCommand } from "../commands/executor";
 import { prisma } from "@/server/lib/db";
 
 describe("explicit Chat Session Release migration command", () => {
@@ -38,7 +42,7 @@ describe("explicit Chat Session Release migration command", () => {
         characterId,
         version: 2,
         contentHash: `hash-${suffix}`,
-        personaSnapshot: { systemPrompt: "compatible" },
+        personaSnapshot: { schemaVersion: 3, systemPrompt: "compatible" },
         openingSnapshot: { firstMessage: "hello" },
         appearanceSnapshot: {},
         sourceType: "test",
@@ -63,6 +67,7 @@ describe("explicit Chat Session Release migration command", () => {
         version: 7,
       },
     });
+    await prisma.characterServing.create({ data: { characterId, currentReleaseId: releaseId } });
     await prisma.recentChat.create({
       data: {
         sessionId,
@@ -84,6 +89,7 @@ describe("explicit Chat Session Release migration command", () => {
     })).map((row) => row.id);
     await prisma.controlPlaneCommandAttempt.deleteMany({ where: { commandId: { in: commandIds } } });
     await prisma.controlPlaneCommand.deleteMany({ where: { id: { in: commandIds } } });
+    await prisma.characterServing.deleteMany({ where: { characterId } });
     await prisma.characterRelease.delete({ where: { id: releaseId } });
     await prisma.characterProject.delete({ where: { id: projectId } });
     await prisma.characterContentVersion.delete({ where: { id: contentId } });
@@ -91,6 +97,18 @@ describe("explicit Chat Session Release migration command", () => {
     await prisma.user.delete({ where: { id: userId } });
     await prisma.user.delete({ where: { id: adminId } });
     await prisma.$disconnect();
+  });
+
+  it("lists the exact source pin and target CAS version needed by the operator migration", async () => {
+    const result = chatOpsSessionListResponseSchema.parse(await chatOpsSessions(new Request(
+      `http://localhost/api/v2/admin/chat/sessions?characterId=${characterId}&releasePin=legacy`,
+      { headers: { "x-idream-user-id": adminId, "x-idream-role": "admin" } },
+    )));
+    expect(result.items.find((item) => item.id === sessionId)?.releasePin).toMatchObject({
+      contentVersionId: `old-content-${suffix}`,
+      releaseId: `old-release-${suffix}`,
+      recommendedTarget: { characterReleaseId: releaseId, characterContentVersionId: contentId, entityVersion: 7, schemaVersion: 3 },
+    });
   });
 
   // SPEC: 目标 Release 不是已发布态时，命令必须当场拒绝。
@@ -181,6 +199,25 @@ describe("explicit Chat Session Release migration command", () => {
 
     await prisma.characterRelease.delete({ where: { id: draftReleaseId } });
     await prisma.characterContentVersion.delete({ where: { id: draftContentId } });
+  });
+
+  it("rechecks target publication when an accepted migration is dispatched", async () => {
+    const accepted = await acceptControlPlaneCommand(prisma, {
+      environment: "test", actor: { id: adminId, role: "admin" }, idempotencyKey: randomUUID(),
+      commandType: "chat.session_release.migrate", target: { type: "chat_session", id: sessionId },
+      expectedVersion: 7, retryMode: "idempotent", reason: "Check dispatch qualification", requestId: randomUUID(),
+      payload: { characterId, fromCharacterContentVersionId: `old-content-${suffix}`, fromCharacterReleaseId: `old-release-${suffix}`,
+        toCharacterContentVersionId: contentId, toCharacterReleaseId: releaseId,
+        compatibilityCheck: { status: "passed", policyVersion: "test" }, reason: { summary: "Check dispatch qualification" } },
+    });
+    try {
+      await prisma.characterRelease.update({ where: { id: releaseId }, data: { status: "withdrawn" } });
+      await expect(executeAcceptedAdminCommand(accepted.commandId)).rejects.toMatchObject({ code: "conflict" });
+      expect(await prisma.controlPlaneCommand.findUniqueOrThrow({ where: { id: accepted.commandId } })).toMatchObject({ status: "failed" });
+      expect(await prisma.recentChat.findUniqueOrThrow({ where: { sessionId } })).toMatchObject({ characterReleaseId: `old-release-${suffix}`, contextRevision: 4 });
+    } finally {
+      await prisma.characterRelease.update({ where: { id: releaseId }, data: { status: "superseded" } });
+    }
   });
 
   it("updates the Main-owned session pin and closes the command atomically", async () => {

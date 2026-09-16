@@ -592,11 +592,14 @@ function AuthoritySection({
   state: AuthorityState;
   scope: PromoScope;
 }) {
+  // INTENT: loadingLabel 是词典 key，不是成品文案。这里漏了 t()，于是中文后台的促销页
+  //         在加载阶段露出 "Loading redeem codes…" / "Loading referrals…" 两句英文。
+  const { t } = useAdminI18n();
   if (!state.rows && state.loading) {
     return (
       <div className="rounded-lg border p-4" role="status">
         <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
-        {loadingLabel}
+        {t(loadingLabel)}
       </div>
     );
   }

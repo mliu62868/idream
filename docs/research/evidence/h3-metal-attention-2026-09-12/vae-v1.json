@@ -1,0 +1,188 @@
+{
+  "case": "vae",
+  "input_kind": "synthetic normalized Gaussian, H3-shaped; not captured activations",
+  "shape_bhnd": [
+    1,
+    32,
+    1797,
+    64
+  ],
+  "strides": [
+    [
+      11040768,
+      64,
+      6144,
+      1
+    ],
+    [
+      11040768,
+      64,
+      6144,
+      1
+    ],
+    [
+      3680256,
+      64,
+      2048,
+      1
+    ]
+  ],
+  "dtype": "torch.float16",
+  "learned_norms": null,
+  "checkpoint": "/Users/kk/ComfyUI-Shared/models/diffusion_models/REDMix-MiniMaxH3-A2Ab1-pruned-int8-convrot-ComfyMCP.safetensors",
+  "source_revision": "bd42bcd0b1772bd579b2c2229c4c3e236b5a39f9",
+  "script_sha256": "3c7bd59f720d871359fa6345aadbe58b59bf4dd1649c21fb85b3d96ee7a2cd42",
+  "torch": "2.13.0",
+  "python": "3.13.12",
+  "macos": "26.5.1",
+  "chip": "Apple M4 Max",
+  "packages": {
+    "mps-flash-attn": "0.6.3",
+    "mtlflashattn": "0.2.0"
+  },
+  "reference": {
+    "device": "cpu",
+    "dtype": "float64",
+    "heads": [
+      0,
+      10,
+      21,
+      31
+    ],
+    "query_rows": [
+      0,
+      58,
+      116,
+      174,
+      232,
+      290,
+      348,
+      406,
+      463,
+      521,
+      579,
+      637,
+      695,
+      753,
+      811,
+      869,
+      927,
+      985,
+      1043,
+      1101,
+      1159,
+      1217,
+      1275,
+      1333,
+      1390,
+      1448,
+      1506,
+      1564,
+      1622,
+      1680,
+      1738,
+      1796
+    ],
+    "all_keys": true
+  },
+  "quantization_floor": {
+    "finite": true,
+    "reference_rms": 0.037438295981649806,
+    "rmse": 7.842176486039022e-06,
+    "relative_rmse": 0.00020946937568640478,
+    "max_abs": 4.898069801795302e-05,
+    "cosine": 0.9999999780737248
+  },
+  "screening_limits": {
+    "relative_rmse": 0.005,
+    "max_abs": 0.002
+  },
+  "memory_scope": "after synchronized calls; retained allocation observations, NOT transient peak per backend",
+  "initial_memory": {
+    "mps_current_bytes": 29442048,
+    "mps_driver_bytes": 1074233344,
+    "process_rss_high_water_bytes": 389742592
+  },
+  "mps_allocator_fraction": 0.25,
+  "backends": {
+    "sdpa": {
+      "times_ms": [
+        3.340833995025605,
+        3.2271670061163604,
+        3.0597920122090727,
+        3.5287499777041376,
+        3.2411249994765967
+      ],
+      "route": "torch SDPA, unchanged dtype",
+      "first_call_ms": 3.8915000041015446,
+      "memory_after_first": {
+        "mps_current_bytes": 36802560,
+        "mps_driver_bytes": 1074233344,
+        "process_rss_high_water_bytes": 389742592
+      },
+      "all_output_finite": true,
+      "error": {
+        "finite": true,
+        "reference_rms": 0.037438295981649806,
+        "rmse": 1.5212832114681416e-05,
+        "relative_rmse": 0.0004063441381556978,
+        "max_abs": 8.524363409327662e-05,
+        "cosine": 0.9999999380453514
+      },
+      "operator_screen_pass": true,
+      "last_memory": {
+        "mps_current_bytes": 36803328,
+        "mps_driver_bytes": 1082916864,
+        "process_rss_high_water_bytes": 396460032
+      },
+      "median_ms": 3.2411249994765967,
+      "min_max_ms": [
+        3.0597920122090727,
+        3.5287499777041376
+      ],
+      "speedup_vs_sdpa": 1.0
+    },
+    "mtl-v1-fp16": {
+      "times_ms": [
+        10.49983300617896,
+        11.428416008129716,
+        10.737000004155561,
+        10.794125002576038,
+        11.666208010865375
+      ],
+      "route": "mtl v1 (forced); fp16 conversion=False",
+      "first_call_ms": 85.08191700093448,
+      "memory_after_first": {
+        "mps_current_bytes": 36803328,
+        "mps_driver_bytes": 1082916864,
+        "process_rss_high_water_bytes": 396378112
+      },
+      "all_output_finite": true,
+      "error": {
+        "finite": true,
+        "reference_rms": 0.037438295981649806,
+        "rmse": 8.89047806846721e-05,
+        "relative_rmse": 0.0023747015817239207,
+        "max_abs": 0.00048766578530393817,
+        "cosine": 0.9999971807014931
+      },
+      "operator_screen_pass": true,
+      "last_memory": {
+        "mps_current_bytes": 36803328,
+        "mps_driver_bytes": 1082916864,
+        "process_rss_high_water_bytes": 396460032
+      },
+      "median_ms": 10.794125002576038,
+      "min_max_ms": [
+        10.49983300617896,
+        11.666208010865375
+      ],
+      "speedup_vs_sdpa": 0.3002675065096148
+    }
+  },
+  "final_memory": {
+    "mps_current_bytes": 29442816,
+    "mps_driver_bytes": 1082916864,
+    "process_rss_high_water_bytes": 396460032
+  }
+}

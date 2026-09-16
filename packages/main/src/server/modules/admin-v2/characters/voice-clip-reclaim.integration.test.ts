@@ -6,6 +6,7 @@ import { env } from "@/server/lib/env";
 import { providers } from "@/server/providers";
 import { canonicalRequestHash } from "@/server/modules/admin-v2/shared/control-plane-command";
 import { updateControlPlaneCommandMetadata } from "@/server/modules/admin-v2/shared/control-plane-command-transition";
+import { recoverExpiredVoiceClips } from "@/server/modules/ourdream/voice-clip-recovery";
 import { reclaimExpiredVoiceClip } from "@/server/modules/ourdream/voice-clip";
 import {
   createCharacter,
@@ -265,7 +266,7 @@ describe("Character Voice clip reclaim authority", () => {
     });
   });
 
-  it.each(["pipeline", "pocket_tts"] as const)(
+  it.each(["fish_audio", "pocket_tts"] as const)(
     "does not mutate or call the %s provider during Admin reclaim",
     async (providerKey) => {
       const requestId = `${prefix}admin-non-replayable-${providerKey}`;
@@ -282,7 +283,6 @@ describe("Character Voice clip reclaim authority", () => {
       providers.voice = {
         clip: {
           providerKey,
-          providerReplay: "non_replayable",
           synthesize,
         },
         identity: null,
@@ -292,19 +292,10 @@ describe("Character Voice clip reclaim authority", () => {
           reclaimExpiredVoiceClip({ characterId, requestId, deps }),
         ).rejects.toMatchObject({
           code: "conflict",
-          details: expect.objectContaining(
-            providerKey === "pipeline"
-              ? {
-                  provider: providerKey,
-                  reason: "provider_not_durably_replayable",
-                }
-              : {
-                  pinnedProvider: providerKey,
-                  adapterProvider: providerKey,
-                  adapterReplay: "non_replayable",
-                  reason: "provider_adapter_not_durably_replayable",
-                },
-          ),
+          details: expect.objectContaining({
+            provider: providerKey,
+            reason: "provider_reservation_mismatch",
+          }),
         });
         expect(synthesize).not.toHaveBeenCalled();
         const after = await prisma.voiceClipRequest.findUniqueOrThrow({
@@ -316,43 +307,6 @@ describe("Character Voice clip reclaim authority", () => {
       }
     },
   );
-
-  it("checks the selected adapter capability before mutating an Admin reclaim", async () => {
-    const requestId = `${prefix}adapter-capability-mismatch`;
-    await createExpiredRequest(requestId);
-    const before = await prisma.voiceClipRequest.findUniqueOrThrow({
-      where: { id: requestId },
-    });
-    const configuredVoice = providers.voice;
-    const synthesize = vi.fn();
-    providers.voice = {
-      clip: {
-        providerKey: "mock",
-        providerReplay: "non_replayable",
-        synthesize,
-      },
-      identity: null,
-    };
-    try {
-      await expect(
-        reclaimExpiredVoiceClip({ characterId, requestId, deps }),
-      ).rejects.toMatchObject({
-        code: "conflict",
-        details: expect.objectContaining({
-          adapterProvider: "mock",
-          adapterReplay: "non_replayable",
-          reason: "provider_adapter_not_durably_replayable",
-        }),
-      });
-      expect(synthesize).not.toHaveBeenCalled();
-      const after = await prisma.voiceClipRequest.findUniqueOrThrow({
-        where: { id: requestId },
-      });
-      expect(after).toEqual(before);
-    } finally {
-      providers.voice = configuredVoice;
-    }
-  });
 
   it("replays the original failed command receipt for the same idempotency key", async () => {
     const requestId = `${prefix}failed-receipt-replay`;
@@ -479,6 +433,80 @@ describe("Character Voice clip reclaim authority", () => {
         },
       }),
     ).resolves.toBe(1);
+  });
+
+  it("never reclaims an unknown provider outcome, including through the operator entry", async () => {
+    const requestId = `${prefix}unknown-outcome`;
+    await createExpiredRequest(requestId);
+    await prisma.voiceClipRequest.update({
+      where: { id: requestId },
+      data: { errorCode: "provider_outcome_unknown" },
+    });
+    const synthesize = vi.spyOn(providers.voice.clip, "synthesize");
+    try {
+      await expect(reclaimExpiredVoiceClip({ requestId, characterId, deps }))
+        .rejects.toMatchObject({ code: "conflict", details: { reason: "provider_outcome_unknown" } });
+      expect(synthesize).not.toHaveBeenCalled();
+      expect(await prisma.voiceClipRequest.findUniqueOrThrow({ where: { id: requestId } }))
+        .toMatchObject({ attemptNo: 1, errorCode: "provider_outcome_unknown", leaseOwner: "expired-worker" });
+    } finally { synthesize.mockRestore(); }
+  });
+
+  it("automatically recovers a crashed invocation under its original provider key", async () => {
+    const requestId = `${prefix}zz-sweep-a`;
+    await createExpiredRequest(requestId, { providerRequestId: `voice:${requestId}:provider` });
+    const synthesize = vi.spyOn(providers.voice.clip, "synthesize");
+    try {
+      expect(await recoverExpiredVoiceClips({ deps, cursorId: `${prefix}zz-sweep-` }))
+        .toEqual({ examined: 1, recovered: 1, nextCursorId: requestId });
+      expect(synthesize).toHaveBeenCalledTimes(1);
+      expect(synthesize).toHaveBeenCalledWith(expect.objectContaining({
+        idempotencyKey: `voice:${requestId}:provider`, attemptNo: 2,
+      }));
+      const terminal = await prisma.voiceClipRequest.findUniqueOrThrow({ where: { id: requestId } });
+      expect(terminal).toMatchObject({ status: "succeeded", leaseOwner: null, leaseExpiresAt: null });
+      expect(await prisma.voiceUsageFact.count({ where: { requestId } })).toBe(1);
+      expect(await prisma.mediaAsset.findUnique({ where: { id: terminal.mediaAssetId! } }))
+        .toMatchObject({ type: "voice", ownerId: userId });
+    } finally { synthesize.mockRestore(); }
+  });
+
+  it("skips exhausted, unknown and active leases while advancing past an invalid legacy row", async () => {
+    const stem = `${prefix}zzz-sweep-`;
+    await createExpiredRequest(`${stem}a`, { synthesisPayload: null });
+    await createExpiredRequest(`${stem}b`);
+    await prisma.voiceClipRequest.update({ where: { id: `${stem}b` }, data: { attemptNo: 3 } });
+    await createExpiredRequest(`${stem}c`);
+    await prisma.voiceClipRequest.update({ where: { id: `${stem}c` }, data: { errorCode: "provider_outcome_unknown" } });
+    await createExpiredRequest(`${stem}e`);
+    // Give the active lease its own user: this case tests scan eligibility,
+    // while same-user budget serialization intentionally waits for active TTS.
+    const activeUserId = `${stem}active-user`;
+    await createUser({ id: activeUserId });
+    await createExpiredRequest(`${stem}d`, { leaseExpiresAt: new Date(Date.now() + 60_000) });
+    await prisma.voiceClipRequest.update({ where: { id: `${stem}d` }, data: { userId: activeUserId } });
+    expect(await recoverExpiredVoiceClips({ deps, cursorId: stem }))
+      .toEqual({ examined: 1, recovered: 0, nextCursorId: `${stem}a` });
+    expect(await recoverExpiredVoiceClips({ deps, cursorId: `${stem}a` }))
+      .toEqual({ examined: 1, recovered: 1, nextCursorId: `${stem}e` });
+    for (const suffix of ["b", "c", "d"]) {
+      expect(await prisma.voiceClipRequest.findUniqueOrThrow({ where: { id: `${stem}${suffix}` } }))
+        .toMatchObject({ status: "running", leaseOwner: "expired-worker" });
+    }
+  });
+
+  it("leaves an expired operator command's atomic receipt to the command takeover protocol", async () => {
+    const requestId = `${prefix}zzzz-command-sweep-a`;
+    await createExpiredRequest(requestId);
+    await createExpiredCommand(requestId, `${requestId}-key`);
+    const before = await prisma.voiceClipRequest.findUniqueOrThrow({ where: { id: requestId } });
+    const synthesize = vi.spyOn(providers.voice.clip, "synthesize");
+    try {
+      expect(await recoverExpiredVoiceClips({ deps, cursorId: `${prefix}zzzz-command-sweep-` }))
+        .toEqual({ examined: 1, recovered: 0, nextCursorId: requestId });
+      expect(synthesize).not.toHaveBeenCalled();
+      expect(await prisma.voiceClipRequest.findUniqueOrThrow({ where: { id: requestId } })).toEqual(before);
+    } finally { synthesize.mockRestore(); }
   });
 
   async function createExpiredRequest(

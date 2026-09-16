@@ -43,6 +43,7 @@ import {
   adminShellSignalChips,
   type AdminShellSignals,
 } from "@/components/admin/shell-signals";
+import { MentionsInbox } from "@/features/collaboration/MentionsInbox";
 import { GlobalAdminSearch } from "@/features/search/GlobalAdminSearch";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 
@@ -338,6 +339,7 @@ function AdminConsoleContent({
               </div>
               <div className="flex w-full items-center gap-2 md:w-auto">
                 <div className="min-w-0 flex-1 md:flex-none"><GlobalAdminSearch permissions={permissions} /></div>
+                {permissions.has("dashboard.read") ? <MentionsInbox /> : null}
                 {/* SPEC: 刷新只广播事件；各工作台自取数、自报加载态。 */}
                 <button
                   aria-label={t("Refresh")}

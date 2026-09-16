@@ -59,7 +59,7 @@ export async function prepareCharacterDraftVoice(input: {
   const settings = await assertCurrentCatalogSelection(input);
   // INVARIANT: ordinary catalog selection follows the clip provider, independent
   // of the Admin cloning provider. Each Character owns a real, distinct alias.
-  const voice = createVoicePortsForKey("pocket_tts", providers.blob).identity;
+  const voice = createVoicePortsForKey("pocket_tts").identity;
   if (!voice?.createPresetVoice) throw Errors.unavailable("Catalog voice creation is unavailable");
   const voiceId = `idream-${randomUUID()}`;
   const referenceKey = `voice-references/drafts/${input.draftId}/${voiceId}.json`;
@@ -164,7 +164,7 @@ export async function cleanupPreparedCharacterDraftVoice(prepared: PreparedChara
     where: { providerVoiceId: prepared.voiceId }, select: { id: true },
   });
   if (committed) return;
-  const voice = createVoicePortsForKey(prepared.provider, providers.blob).identity;
+  const voice = createVoicePortsForKey(prepared.provider).identity;
   await Promise.allSettled([
     voice?.deleteVoice({ voiceId: prepared.voiceId }),
     providers.blob.delete({ key: prepared.reference.key }),

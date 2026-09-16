@@ -83,6 +83,22 @@ export function generationJobDTO(
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
     completedAt: job.completedAt,
+    // SPEC: 每个 job 自带「收了多少 / 退了多少 / 交付几张」的账目。
+    // INTENT: 退款和部分交付的文案原本只能说「已退款」，说不出退了多少、少了几张；
+    //   这三项服务端本来就算得出来，让列表和详情用同一份账目，前台才能说清数。
+    cost: generationJobCost(job),
+  };
+}
+
+export function generationJobCost(job: GenerationJobWithRelations) {
+  const refunded = generationRefundAmount(job.events);
+  return {
+    charged: job.costDreamcoins,
+    refunded,
+    finalCharge: Math.max(0, job.costDreamcoins - refunded),
+    assetCount: job.assets.length,
+    requestedCount: job.outputCount,
+    missingOutputs: Math.max(0, job.outputCount - job.assets.length),
   };
 }
 

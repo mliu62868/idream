@@ -76,12 +76,6 @@ export function streamEventRefreshesExpiry(event: ChatStreamEvent): boolean {
   return event.type === "start" || event.type === "done" || event.type === "error";
 }
 
-export async function listStreamEvents(key: string, afterId?: string | null): Promise<StoredStreamEvent[]> {
-  const min = afterId ? `(${afterId}` : "-";
-  const rows = (await publisherRedis().xrange(key, min, "+")) as Array<[string, string[]]>;
-  return rows.flatMap(parseRow);
-}
-
 /** SSE Response that tails the stream with XREAD BLOCK from lastEventId. */
 export function createSseResponse(
   key: string,

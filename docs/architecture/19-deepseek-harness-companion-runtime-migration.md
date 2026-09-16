@@ -19,10 +19,9 @@
 
 ```text
 Chat
-  -> POST /runs (PreparedTurn + workspace/profile + tool policy)
-chat-agent
+  -> 内嵌 DSH/igrep 执行内核 (PreparedTurn + workspace/profile + tool policy)
   -> ordered events: token / tool_call / tool_result / assistant / terminal
-  -> narrow ToolPort back to Chat/Main
+  -> narrow ToolPort to Main
 Chat
   -> terminal candidate to Main
 ```
@@ -64,5 +63,5 @@ DSH session/event 是执行证据，不是用户消息。Chat 只有拿到 Main 
 1. PreparedTurn 映射、normal/private profile 和 workspace 隔离测试。
 2. token/tool/terminal 顺序与 timeout/cancel 测试。
 3. commit ACK 前后记忆 ingest fence。
-4. Chat/chat-agent 重启与 exact replay。
+4. Chat 重启与 exact replay。
 5. 图片 ToolEffect 幂等、参数冲突和失败退款的 Main 集成测试。

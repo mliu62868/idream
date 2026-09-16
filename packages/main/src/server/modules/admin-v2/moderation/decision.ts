@@ -255,6 +255,7 @@ export async function moderationDecision(
         summary: body.notes ?? body.reason,
         evidenceRefs: [evidence.id],
         downstreamVerified: true,
+        sourceSettled: true,
         requestId,
       });
       await tx.adminAuditLog.create({ data: {
@@ -313,8 +314,19 @@ export async function appealDecision(
         ? await restoreCanonicalAppealTarget(current, tx)
         : { targetRestored: false };
       if (body.outcome === "overturned" && !restored.targetRestored) {
+        // SPEC: 拒绝的同时必须说出权威自己算出来的原因。
+        // INTENT: 这里原来只抛一句没有 details 的 conflict，而前端把「没有 blocker 的 409」
+        //         一律当成版本竞争，显示「已经有人改过这条记录，刷新后重新判断」——
+        //         而 unresolvable_feed_item / manual_followup_required 刷一万次也不会变。
+        //         restoreReason 在上一行已经算出来了，之前只是被丢掉。
         throw Errors.conflict(
           "Appeal target could not be restored; the decision was not applied",
+          {
+            blocker: restored.restoreReason ?? "appeal_target_not_restorable",
+            requiredAction:
+              "Restore the target by hand, then record the decision — refreshing will not change this",
+            ...(restored.restoredTargetType ? { targetType: restored.restoredTargetType } : {}),
+          },
         );
       }
       const updated = await tx.appeal.update({
@@ -333,6 +345,7 @@ export async function appealDecision(
         summary: body.notes ?? `Appeal ${body.outcome}`,
         evidenceRefs: [evidence.id],
         downstreamVerified: body.outcome !== "open",
+        sourceSettled: true,
         requestId,
       });
       await tx.adminAuditLog.create({ data: {

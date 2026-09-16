@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { compileCharacterSoul } from "@idream/shared";
 import type { ChatToolEffect } from "@idream/shared/contracts";
-import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { recordGenerationAttemptEvent } from "@/server/ai/generation-attempt-events";
 import { transitionGenerationRequest } from "@/server/ai/generation-request-transition";
@@ -288,6 +290,95 @@ describe("Main image action authorization", () => {
     expect(await prisma.chatTurnAttachment.count({ where: { turnId: snapshot.turnId } })).toBe(0);
     expect(await prisma.generationJob.count({ where: { userId } })).toBe(0);
     expect(await dreamcoinBalance(userId)).toBe(40);
+  });
+
+  // Main runs the same intent authority Chat does, so a language the matchers
+  // cannot read is still decided here and not accepted on Chat's word. The judge
+  // below is a stand-in for the model; its accuracy is measured elsewhere.
+  describe("with an intent judge configured", () => {
+    let verdict = "NONE";
+    let asked: string[] = [];
+    let server: Server;
+    beforeAll(async () => {
+      server = createServer((request, response) => {
+        let body = "";
+        request.on("data", chunk => { body += chunk; });
+        request.on("end", () => {
+          asked.push(body);
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(JSON.stringify({ choices: [{ message: { content: verdict } }] }));
+        });
+      });
+      await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+      const port = (server.address() as AddressInfo).port;
+      process.env.CHAT_MODEL_BASE_URL = `http://127.0.0.1:${port}/v1`;
+      process.env.CHAT_INTENT_MODEL_NAME = "test-judge";
+    });
+    afterAll(async () => {
+      delete process.env.CHAT_INTENT_MODEL_NAME;
+      delete process.env.CHAT_MODEL_BASE_URL;
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    });
+    beforeEach(() => { verdict = "NONE"; asked = []; });
+
+    it("spends on a request in a language the matchers cannot read", async () => {
+      verdict = "PHOTO";
+      const { userId, begin, generated } = await fixture();
+      const { snapshot } = await begin("kirim foto kamu di pantai pas matahari terbenam");
+      if (!snapshot) throw new Error("Missing snapshot");
+      expect(await applyChatToolEffect(effect(snapshot))).toMatchObject({ accepted: true });
+      expect(generated).toHaveBeenCalledTimes(1);
+      expect(await prisma.generationJob.count({ where: { userId } })).toBe(1);
+      // The judge sees this Turn's user message and nothing that surrounds it.
+      expect(asked).toHaveLength(1);
+      expect(asked[0]).toContain("kirim foto kamu di pantai");
+      expect(asked[0]).not.toContain("Mira");
+    });
+
+    it("refuses the same request the moment the judge declines it", async () => {
+      const { userId, begin, generated } = await fixture();
+      const { snapshot } = await begin("kirim foto kamu di pantai pas matahari terbenam");
+      if (!snapshot) throw new Error("Missing snapshot");
+      await expect(applyChatToolEffect(effect(snapshot))).rejects.toMatchObject({ code: "forbidden" });
+      expect(generated).not.toHaveBeenCalled();
+      expect(await dreamcoinBalance(userId)).toBe(40);
+    });
+
+    it.each([
+      ["a message that names no image", "ceritain dong gimana harimu tadi"],
+      ["a cancelled request", "不要给我发照片，我们聊天就好"],
+    ])("never even asks the judge about %s", async (_case, content) => {
+      verdict = "PHOTO";
+      const { userId, begin, generated } = await fixture();
+      const { snapshot } = await begin(content);
+      if (!snapshot) throw new Error("Missing snapshot");
+      await expect(applyChatToolEffect(effect(snapshot))).rejects.toMatchObject({ code: "forbidden" });
+      expect(asked).toEqual([]);
+      expect(generated).not.toHaveBeenCalled();
+      expect(await dreamcoinBalance(userId)).toBe(40);
+    });
+
+    it("refuses a wardrobe guarantee the judge never made", async () => {
+      verdict = "PHOTO";
+      const { userId, begin, generated } = await fixture();
+      const { snapshot } = await begin("kirim foto kamu di pantai pas matahari terbenam");
+      if (!snapshot) throw new Error("Missing snapshot");
+      await expect(applyChatToolEffect({ ...effect(snapshot), intent: { requestedNudity: "full" } }))
+        .rejects.toMatchObject({ code: "forbidden" });
+      expect(generated).not.toHaveBeenCalled();
+      expect(await dreamcoinBalance(userId)).toBe(40);
+    });
+
+    it("refuses a classified edit until an image has been delivered", async () => {
+      verdict = "EDIT";
+      const { userId, begin, generated } = await fixture();
+      const { snapshot } = await begin("na foto que voce mandou, consegue trocar o fundo?");
+      if (!snapshot) throw new Error("Missing snapshot");
+      const edit = { ...effect(snapshot), name: "edit_last_image" as const, arguments: { instruction: "Change the background" } };
+      await expect(applyChatToolEffect(edit)).rejects.toMatchObject({ code: "forbidden" });
+      expect(generated).not.toHaveBeenCalled();
+      expect(await dreamcoinBalance(userId)).toBe(40);
+    });
   });
 
   it("executes a requested image once, replays terminal/regenerate ACKs, and rejects a later text-only edit", async () => {

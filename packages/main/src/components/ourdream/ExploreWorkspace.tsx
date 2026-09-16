@@ -136,22 +136,31 @@ export function ExploreWorkspace() {
         const payload = parseTagListResponse(await response.json());
         if (cancelled) return;
         setTagError(false);
-        const visibleSlugs = new Set(
-          payload.items
+        // SPEC: 分类栏直接由标签词典决定，硬编码列表只作首屏的乐观初始值。
+        // INTENT: 这里过去是 `categoryFilters.filter(...)` —— 拿 API 结果去过滤一份
+        //   写死的 22 项列表，于是运营在后台新建的标签**永远进不了分类栏**
+        //   （同一批标签在搜索建议和「隐藏标签」里却都是动态的，三个界面只有这里不跟随）。
+        //   当前两份列表恰好一一对应，所以尚未暴露；`admin-v2/characters/creation.ts`
+        //   建官方角色时会 upsert 新 tag，新建一个即漂移。
+        const nextCategories = [
+          "All",
+          ...payload.items
             .filter(
               (tag) =>
                 !tag.isMutedByDefault &&
                 !tag.isMutedByUser &&
                 tag.publicCharacterCount > 0,
             )
-            .map((tag) => tag.slug),
-        );
-        const nextCategories = categoryFilters.filter(
-          (category) => category === "All" || visibleSlugs.has(categoryParam(category)),
-        );
+            .map((tag) => tag.label),
+        ];
         setAvailableCategories(nextCategories.length > 1 ? nextCategories : ["All"]);
         setActiveCategory((current) =>
-          nextCategories.includes(current) ? current : "All",
+          nextCategories.includes(current)
+            ? current
+            // URL 里存的是 slug，词典里是显示名：按 slug 对齐后校正成显示名。
+            : nextCategories.find(
+                (category) => categoryParam(category) === categoryParam(current),
+              ) ?? "All",
         );
       } catch {
         if (!cancelled) {
@@ -274,8 +283,11 @@ function categoryParam(category: string) {
 function categoryFromParam(value: string | null) {
   if (!value) return "All";
   const normalized = categoryParam(value);
+  // 标签词典是动态的，硬编码列表只覆盖得到发布时已存在的那些。匹配不上就保留原始
+  // slug —— 标签加载完成后会把它校正成对应的显示名；直接退回 "All" 会让带新标签的
+  // 分享链接静默失效（用户点开看到的是全部角色，且不知道筛选被丢了）。
   return (
-    characterCategoryValues.find((category) => categoryParam(category) === normalized) ?? "All"
+    characterCategoryValues.find((category) => categoryParam(category) === normalized) ?? normalized
   );
 }
 

@@ -1,5 +1,6 @@
 "use client";
 
+import { MetricReconciliation } from "./MetricReconciliation";
 import { metricQualityBlocked, primaryMetricQualityReason, summariseMetricQualityReasons } from "./metric-quality-reasons";
 import { useAdminI18n } from "@/components/admin/i18n";
 import type { MetricDashboardResponse } from "@idream/shared/admin";
@@ -23,14 +24,33 @@ import {
 } from "./query";
 
 type Row = Record<string, unknown>;
+// SPEC: 这个类型必须声明后端 analyticsOverviewResponseSchema 里的质量判据字段。
+// INTENT: 此前它只声明数值，于是 validForDecisions / qualityState / reason /
+//   legacyObserved 在**类型层**就被丢掉了 —— 后端明说"这几个数不能用于决策"并
+//   附了原因，页面照旧把它们渲染成四个裸数字，和上半区认证过的指标长得一模一样。
+//   上半区（CanonicalMetrics）早有一整套质量展示，legacy 区是被漏掉的那一半。
 type AnalyticsData = {
   window: { from: string; to: string };
-  funnel: { signups: number; payingUsers: number | null };
+  funnel: {
+    signups: number;
+    payingUsers: number | null;
+    qualityState: string;
+    validForDecisions: boolean;
+    reason: string;
+    legacyObserved: {
+      activatedUsers: number;
+      payingUsers: number;
+      conversionRate: number;
+    };
+  };
   generation: {
     total: number;
     completed: number;
     failed: number;
     blocked: number;
+    qualityState: string;
+    validForDecisions: boolean;
+    reason: string;
   };
   economy: { coinsGranted: number; net: number; byReason: Row[] };
   topEvents: Row[];
@@ -131,6 +151,7 @@ export function AnalyticsWorkspace({
         onRetry={() => void loadCanonical()}
       />
       {canonical.data ? <CanonicalMetrics data={canonical.data} /> : null}
+      {canReadCanonical ? <MetricReconciliation /> : null}
       {!canReadCanonical ? <PermissionNote permission="metrics.read" /> : null}
       <AuthorityError
         error={legacy.error}
@@ -571,16 +592,74 @@ function MetricQualitySummary({ cards }: { cards: MetricDashboardResponse["cards
   );
 }
 
+// SPEC: 把后端隔离在 legacyObserved 里的真实观测值显示出来，并写明为什么不能用于决策。
+// INTENT: 后端把 activatedUsers / payingUsers / conversionRate 从顶层挪走并置 null，
+//   真值放进 legacyObserved —— 意思是"这些数存在，但别拿去做决定"。前端此前两件事
+//   都没做：既不显示这些值，也不显示限制。完全不显示是另一个极端，运营会转头去别处
+//   找一个没有任何标注的版本。照常显示 + 把限制讲清楚，才是这份隔离的本意。
+// INVARIANT: reason 是后端返回的动态串，不过 t() —— 动态字符串进词表永远查不中
+//   （同文件 DataTable caption 那条注释已经交过一次学费）。
+function LegacyQualityNotes({
+  funnel,
+  generation,
+}: {
+  funnel: AnalyticsData["funnel"];
+  generation: AnalyticsData["generation"];
+}) {
+  const { t } = useAdminI18n();
+  const notes = [
+    funnel.validForDecisions ? null : { key: "Signup funnel", reason: funnel.reason },
+    generation.validForDecisions ? null : { key: "Generation counts", reason: generation.reason },
+  ].filter((note): note is { key: string; reason: string } => note !== null);
+  if (notes.length === 0) return null;
+  return (
+    <div className="rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface-subtle)] p-3">
+      <p className="text-xs font-semibold text-[var(--ad-ink)]">
+        {t("Observed, but not decision-grade")}
+      </p>
+      <div className="mt-2 grid gap-3 sm:grid-cols-3">
+        <ObservedValue label="Activated users" value={funnel.legacyObserved.activatedUsers} />
+        <ObservedValue label="Paying users" value={funnel.legacyObserved.payingUsers} />
+        <ObservedValue label="Conversion rate %" value={funnel.legacyObserved.conversionRate} />
+      </div>
+      <ul className="mt-3 space-y-1">
+        {notes.map((note) => (
+          <li className="text-xs text-[var(--ad-text-muted)]" key={note.key}>
+            <span className="font-semibold text-[var(--ad-ink)]">{t(note.key)}</span>
+            {" · "}
+            {note.reason}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function ObservedValue({ label, value }: { label: string; value: number }) {
+  const { t } = useAdminI18n();
+  return (
+    <div>
+      <p className="text-xs text-[var(--ad-text-muted)]">{t(label)}</p>
+      <p className="mt-0.5 text-lg font-semibold text-[var(--ad-text-muted)]">{value}</p>
+    </div>
+  );
+}
+
 function LegacyAnalytics({ data }: { data: AnalyticsData }) {
+  // 两组数字的可信度由各自的来源决定：signups 属漏斗，generations/failed 属生成，
+  // coins net 来自账本（后端没有给它质量判据，它就是实账）。
+  const funnelCaveat = data.funnel.validForDecisions ? null : "Not decision-grade";
+  const generationCaveat = data.generation.validForDecisions ? null : "Not decision-grade";
   return (
     <div className="space-y-4">
       <Window window={data.window} />
       <div className="grid gap-3 md:grid-cols-4">
-        <Metric label="Signups" value={data.funnel.signups} />
-        <Metric label="Generations" value={data.generation.total} />
-        <Metric label="Failed" value={data.generation.failed} />
+        <Metric caveat={funnelCaveat} label="Signups" value={data.funnel.signups} />
+        <Metric caveat={generationCaveat} label="Generations" value={data.generation.total} />
+        <Metric caveat={generationCaveat} label="Failed" value={data.generation.failed} />
         <Metric label="Coins net" value={data.economy.net} />
       </div>
+      <LegacyQualityNotes funnel={data.funnel} generation={data.generation} />
       <Rows
         columns={[["reason", "Reason"], ["totalDelta", "Net delta"], ["count", "Entries"]]}
         rows={data.economy.byReason}
@@ -600,12 +679,29 @@ function LegacyAnalytics({ data }: { data: AnalyticsData }) {
   );
 }
 
-function Metric({ label, value }: { label: string; value: string | number }) {
+// SPEC: `caveat` 是这个数字自带的可信度标注，和数值一起显示，不藏进 tooltip。
+// INTENT: 后端已经逐块算出 validForDecisions / reason，此前前端在类型层就把它们丢了，
+//   于是 legacy 区四个数字裸着显示 —— 一个被标记为"不可用于决策"的数字，
+//   长得和认证过的数字一模一样，这是在主动制造误导。
+function Metric({
+  caveat,
+  label,
+  value,
+}: {
+  caveat?: string | null;
+  label: string;
+  value: string | number;
+}) {
   const { t } = useAdminI18n();
   return (
     <div className="rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
       <p className="text-xs text-[var(--ad-text-muted)]">{t(label)}</p>
       <p className="mt-2 text-2xl font-semibold">{value}</p>
+      {caveat ? (
+        <p className="mt-2 text-xs font-semibold text-[var(--ad-yellow-text)]">
+          {t(caveat)}
+        </p>
+      ) : null}
     </div>
   );
 }

@@ -1005,12 +1005,16 @@ export async function listCharacterPortfolioData(
           workflowState: journey.stage,
           servingState: serving?.state ?? "inactive",
           // SPEC: 汇总取最坏，但"全是无观测"要报 no_data，不能借 invalid 冒充数据故障。
+          // INVARIANT: 空的 performance 数组也是 no_data —— 一条观测都没有，
+          //   不构成"已认证"。此前的判据要求 `performance.length > 0` 才判 no_data，
+          //   于是零表现行反而落进 certified 分支（实测 33 个角色里 14 个如此，
+          //   且这 14 个全部 performance: []）。`every` 对空数组恒真，
+          //   所以去掉长度前置条件就能同时覆盖两种情况。
           qualityState: !includePerformance ? "not_requested" : performance.some(
             (item) => item.qualityState === "invalid",
           )
             ? "invalid"
-            : performance.length > 0 &&
-                performance.every((item) => item.qualityState === "no_data")
+            : performance.every((item) => item.qualityState === "no_data")
               ? "no_data"
               : "certified",
           readiness,

@@ -55,7 +55,6 @@ export default defineConfig({
       exclude: [
         "src/server/**/*.test.ts",
         "src/server/test/**",
-        "src/server/lib/better-auth.ts",
       ],
       // Gate per docs/architecture/11-testing.md §7. These thresholds are a
       // ratchet at the 2026-06-25 baseline; raise them as provider/admin branch
@@ -111,6 +110,10 @@ export default defineConfig({
         "../shared/src/chat/image-action.ts",
         import.meta.url,
       ).pathname,
+      "@idream/shared/chat/image-intent": new URL(
+        "../shared/src/chat/image-intent.ts",
+        import.meta.url,
+      ).pathname,
       "@idream/shared/chat/persona-render": new URL(
         "../shared/src/chat/persona-render.ts",
         import.meta.url,
@@ -121,6 +124,14 @@ export default defineConfig({
       ).pathname,
       "@idream/shared/media/generated-image-sanity": new URL(
         "../shared/src/media/generated-image-sanity.ts",
+        import.meta.url,
+      ).pathname,
+      "@idream/shared/media/image-orientation": new URL(
+        "../shared/src/media/image-orientation.ts",
+        import.meta.url,
+      ).pathname,
+      "@idream/shared/media/image-references": new URL(
+        "../shared/src/media/image-references.ts",
         import.meta.url,
       ).pathname,
       "@idream/shared/storage/local-blob": new URL(

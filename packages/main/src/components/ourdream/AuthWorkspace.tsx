@@ -81,13 +81,17 @@ export function AuthWorkspace({
       });
       const payload = (await response.json()) as {
         ok: boolean;
-        error?: { message: string };
+        error?: { message: string; details?: { fieldErrors?: Record<string, string[]> } };
         data?: { recoveryCode?: string; user?: { id: string } };
       };
       if (!response.ok || !payload.ok) {
         if (await redirectIfAlreadyAuthenticated()) return;
         setLoginRecoveryHref(authLoginRecoveryHref());
-        setStatus(payload.error?.message ?? "Authentication failed");
+        setStatus(
+          fieldErrorSummary(payload.error?.details?.fieldErrors) ??
+            payload.error?.message ??
+            "Authentication failed",
+        );
         return;
       }
       if (mode === "signup" && payload.data?.recoveryCode && payload.data.user) {
@@ -241,3 +245,14 @@ function subscribeLocationHash(onChange: () => void) {
   window.addEventListener("hashchange", onChange);
   return () => window.removeEventListener("hashchange", onChange);
 }
+
+// SPEC: 校验失败要告诉用户是哪一项不合格。
+// INTENT: 服务端返回逐字段错误，只显示 "Validation failed" 等于让用户猜。
+function fieldErrorSummary(fieldErrors?: Record<string, string[]>) {
+  if (!fieldErrors) return null;
+  const messages = Object.values(fieldErrors)
+    .flat()
+    .filter((message) => message.trim().length > 0);
+  return messages.length ? messages.join(" ") : null;
+}
+

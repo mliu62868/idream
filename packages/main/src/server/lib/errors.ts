@@ -59,6 +59,10 @@ export const Errors = {
   conflict(message = "Conflict", details?: unknown) {
     return new AppError("conflict", message, details);
   },
+  // INVARIANT: 版本竞争由写入权威确认，客户端不能从请求是否带版本号推断。
+  versionConflict(message = "Entity version changed", details?: Record<string, unknown>) {
+    return new AppError("conflict", message, { ...details, blocker: "version_mismatch" });
+  },
   rateLimited(message = "Rate limited", details?: unknown) {
     return new AppError("rate_limited", message, details);
   },

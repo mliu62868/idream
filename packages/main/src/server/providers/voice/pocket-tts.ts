@@ -1,12 +1,9 @@
 import {
-  VOICE_PROVIDER_REPLAY,
   voiceSceneInstructions,
-  type BlobStore,
   type ProviderResult,
   type VoiceClipPort,
   type VoiceIdentityPort,
 } from "../types";
-import { voiceArtifactKey } from "./idempotency";
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -18,7 +15,6 @@ export interface PocketTtsVoiceModelConfig {
   defaultVoiceId?: string;
   maxInputChars?: number;
   timeoutMs?: number;
-  blob: BlobStore;
   fetchImpl?: FetchLike;
 }
 
@@ -44,7 +40,6 @@ type PocketHealthResponse = {
 
 export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
   readonly providerKey = "pocket_tts" as const;
-  readonly providerReplay = VOICE_PROVIDER_REPLAY.pocket_tts;
 
   private readonly speechEndpoint: URL;
   private readonly voicesEndpoint: URL;
@@ -56,7 +51,6 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
   private readonly defaultVoiceId: string;
   private readonly maxInputChars: number;
   private readonly timeoutMs: number;
-  private readonly blob: BlobStore;
   private readonly fetchImpl: FetchLike;
 
   constructor(config: PocketTtsVoiceModelConfig) {
@@ -70,24 +64,17 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
     this.defaultVoiceId = config.defaultVoiceId?.trim() || "alba";
     this.maxInputChars = Math.max(1, config.maxInputChars ?? 900);
     this.timeoutMs = Math.max(250, config.timeoutMs ?? 120_000);
-    this.blob = config.blob;
     this.fetchImpl = config.fetchImpl ?? fetch;
   }
 
   async synthesize(input: Parameters<VoiceClipPort["synthesize"]>[0]) {
     const rendered = await this.renderVoice(input);
     if (!rendered.ok) return rendered;
-    const key = voiceArtifactKey(input.idempotencyKey, ".wav");
-    const stored = await this.blob.putPrivate({
-      key,
-      body: rendered.data.body,
-      contentType: rendered.data.contentType,
-    });
-    if (!stored.ok) return stored;
     return {
       ok: true as const,
       data: {
-        key,
+        body: rendered.data.body,
+        contentType: rendered.data.contentType,
         durationMs: rendered.data.durationMs,
         // Pocket 3.0.2 does not expose Fish-style scene/delivery controls.
         sceneApplied: false,

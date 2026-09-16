@@ -647,11 +647,60 @@ function PlaintextAccessPanel() {
   const [confirmation, setConfirmation] = useState("");
   const [result, setResult] = useState<PlaintextResult | null>(null);
   const [loading, setLoading] = useState(false);
+  // SPEC: 只授权这次真正要看的字段。media 没有 negativePrompt，所以可选集跟随目标类型。
+  const grantableFields = targetType === "generation_job"
+    ? (["prompt", "negativePrompt"] as const)
+    : (["prompt"] as const);
+  const [grantFields, setGrantFields] = useState<string[]>(["prompt", "negativePrompt"]);
+  const [granting, setGranting] = useState(false);
+  const selectedGrantFields = grantFields.filter((field) =>
+    (grantableFields as readonly string[]).includes(field),
+  );
+  const grantReady = Boolean(
+    targetId.trim() &&
+    ticketId.trim() &&
+    reason.trim().length >= 3 &&
+    selectedGrantFields.length > 0,
+  );
   const ready =
     targetId.trim() &&
     reason.trim().length >= 3 &&
     confirmation.trim() === targetId.trim() &&
     (ticketId.trim() || legalHoldId.trim());
+
+  // SPEC: 把工单上的诊断同意兑现成一条具体授权 —— 这条链路此前根本不存在，
+  //   SupportConsentGrant 的写入全在测试文件里，于是下面的「查看明文」永远 403。
+  // INTENT: 服务端强制三条边界（目标属于工单提交者、用户已勾 diagnosticConsent、
+  //   字段范围 + 24h 时限），前端不重复判断，失败时把权威的理由原样呈现。
+  async function grantConsent() {
+    if (!grantReady || granting) return;
+    setGranting(true);
+    try {
+      const response = await adminV2Operation(
+        "POST /api/v2/admin/support/requests/:id/consent-grants",
+        {
+          path: { id: ticketId.trim() },
+          body: {
+            targetType,
+            targetId: targetId.trim(),
+            fields: selectedGrantFields as ("prompt" | "negativePrompt")[],
+            reason: reason.trim(),
+          },
+        },
+      );
+      toast({
+        tone: "success",
+        title: t("Consent granted for {fields} until {expires}.", {
+          fields: response.grant.fields.join(", "),
+          expires: new Date(response.grant.expiresAt).toLocaleString(),
+        }),
+      });
+    } catch (cause) {
+      failureToast(cause);
+    } finally {
+      setGranting(false);
+    }
+  }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -726,6 +775,39 @@ function PlaintextAccessPanel() {
             value={confirmation}
           />
           <Field label="Plaintext reason" onChange={setReason} value={reason} />
+        </div>
+        {/* SPEC: 授权与查看是两个动作 —— 先基于工单开一扇有时限的门，再走进去。
+            INTENT: 在这之前没有任何生产路径能创建 SupportConsentGrant，
+              所以上面那个「查看明文」按钮在生产环境必然 403。 */}
+        <div
+          className="rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface-subtle)] p-3"
+          data-testid="admin-plaintext-consent-grant"
+        >
+          <p className="text-xs font-semibold">{t("No consent on file yet?")}</p>
+          <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
+            {t("Grant access from the ticket the requester consented on. It covers only that account's own content, only the fields you pick, and expires in 24 hours.")}
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-3">
+            {grantableFields.map((field) => (
+              <label className="inline-flex items-center gap-1.5 text-xs" key={field}>
+                <input
+                  checked={selectedGrantFields.includes(field)}
+                  onChange={(event) =>
+                    setGrantFields((current) =>
+                      event.target.checked
+                        ? [...new Set([...current, field])]
+                        : current.filter((item) => item !== field),
+                    )
+                  }
+                  type="checkbox"
+                />
+                {field}
+              </label>
+            ))}
+            <GhostButton disabled={!grantReady || granting} onClick={() => void grantConsent()}>
+              {granting ? t("Granting…") : t("Grant consent from ticket")}
+            </GhostButton>
+          </div>
         </div>
         <button
           className="inline-flex min-h-10 items-center gap-2 bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white disabled:opacity-50"

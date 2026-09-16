@@ -38,6 +38,13 @@ export async function linkGenerationLedgerEntry(
   entry: { readonly id: string; readonly sourceId: string | null; readonly reason: string },
 ) {
   if (!entry.sourceId || !["generation_spend", "refund"].includes(entry.reason)) return;
+  // Voice spends use a MediaAsset source under the same ledger reason. Only
+  // an actual GenerationJob is a generation settlement authority.
+  const request = await tx.generationJob.findUnique({
+    where: { id: entry.sourceId },
+    select: { id: true },
+  });
+  if (!request) return;
   await tx.generationSettlementLink.upsert({
     where: { ledgerEntryId: entry.id },
     create: { requestId: entry.sourceId, ledgerEntryId: entry.id, kind: entry.reason },

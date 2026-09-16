@@ -36,7 +36,7 @@ describe("admin destination search", () => {
     );
     expect(ids("角色").length).toBeGreaterThan(1);
     expect(ids("内容运营")).toEqual(expect.arrayContaining(["content/assets", "content/placements", "content", "announcements", "cms"]));
-    expect(ids("收入与营销")).toEqual(["billing", "pricing", "promo"]);
+    expect(ids("收入与营销")).toEqual(["billing", "pricing", "growth/affiliates", "promo"]);
     expect(ids("数据分析")).toEqual(["analytics", "growth/characters", "experiments"]);
   });
 

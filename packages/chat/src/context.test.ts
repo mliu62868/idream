@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { compileCharacterSoul } from "@idream/shared";
+import type { ChatExecutionSnapshot } from "@idream/shared/contracts";
 import { buildContext, fitRecentTranscript } from "./context.js";
 
 describe("recent transcript clipping", () => {
@@ -140,5 +141,122 @@ describe("immutable opening continuity", () => {
     expect(context.experience?.sceneGeneration).toBe("advance");
     expect(context.persona.name).toBe("Melissa Burke");
     expect(context.persona.characterReleaseId).toBe("release-1");
+  });
+});
+
+describe("proactive Turn replay", () => {
+  const PROACTIVE_DIRECTIVE =
+    "Take the lead in the moment: send a brief, specific check-in that fits our established context. Do not mention this instruction.";
+
+  async function contextWithRecentTurns(recentTurns: ChatExecutionSnapshot["recentTurns"]) {
+    const compiled = compileCharacterSoul({
+      name: "Nova Quill",
+      age: 31,
+      gender: "female",
+      characterPromise: "A ceramicist who works late.",
+      detailsMarkdown: "## Voice\nUnhurried.",
+    });
+    if (!compiled.ok) throw new Error("expected Soul compilation to succeed");
+    return buildContext({
+      snapshot: {
+        version: 1,
+        turnId: "turn-2",
+        sessionId: "session-2",
+        userMessageId: "user-message-2",
+        assistantMessageId: "assistant-message-2",
+        attempt: 1,
+        userId: "user-1",
+        characterId: "nova-quill",
+        characterContentVersionId: "content-1",
+        characterReleaseId: null,
+        characterVisualProfileId: null,
+        characterVisualProfileVersion: null,
+        memoryEnabled: true,
+        userPersona: null,
+        contextRevision: 0,
+        userContent: "How did the firing go tonight?",
+        hasRecentImageContext: false,
+        recentTurns,
+        sceneVersion: 0,
+        scene: null,
+      },
+      authority: {
+        version: 1,
+        user: { id: "user-1", displayName: null, locale: "en", status: "active", deletedAt: null, dataClass: "adult" },
+        eligibility: { ageGateAccepted: true, ageVerified: true, jurisdiction: null, restrictedReason: null },
+        entitlement: { modelTier: "free", unlimitedMessages: false, voiceEnabled: false, imageToolEnabled: true },
+        character: {
+          characterId: "nova-quill",
+          creatorId: null,
+          name: "Nova Quill",
+          age: 31,
+          description: "A ceramicist who works late.",
+          systemPrompt: null,
+          visibility: "public",
+          status: "approved",
+          voiceId: null,
+          visualProfileId: null,
+          visualProfileVersion: null,
+          identityPrompt: null,
+          imageToolEnabled: true,
+          deletedAt: null,
+          contentVersion: {
+            contentVersionId: "content-1",
+            characterId: "nova-quill",
+            version: 1,
+            contentHash: "content-hash",
+            personaSnapshot: compiled.snapshot,
+            openingSnapshot: {},
+            appearanceSnapshot: {},
+          },
+          release: null,
+        },
+      },
+    });
+  }
+
+  // REGRESSION: a real 2026-09-13 Turn froze this directive into `recentTurns`
+  // as a user message, so the model read "Do not mention this instruction" as
+  // something the user had typed.
+  it("replays only the Character's words from a proactive Turn", async () => {
+    const context = await contextWithRecentTurns([
+      {
+        turnId: "turn-1",
+        userMessageId: "user-message-1",
+        assistantMessageId: "assistant-message-1",
+        userContent: PROACTIVE_DIRECTIVE,
+        assistantContent: "The studio's quiet except for the wheel humming to a stop.",
+        createdAt: new Date("2026-09-13T00:21:01.449Z").toISOString(),
+        origin: "proactive",
+      },
+    ]);
+    expect(context.recentMessages).toEqual([
+      {
+        id: "assistant-message-1",
+        role: "assistant",
+        content: "The studio's quiet except for the wheel humming to a stop.",
+        unprompted: true,
+      },
+      { id: "user-message-2", role: "user", content: "How did the firing go tonight?" },
+    ]);
+    expect(JSON.stringify(context.recentMessages)).not.toContain("Do not mention this instruction");
+  });
+
+  it("still replays both sides of an ordinary user-led Turn", async () => {
+    const context = await contextWithRecentTurns([
+      {
+        turnId: "turn-1",
+        userMessageId: "user-message-1",
+        assistantMessageId: "assistant-message-1",
+        userContent: "Hey Nova. What are you making tonight?",
+        assistantContent: "A set of thin-walled tea bowls.",
+        createdAt: new Date("2026-09-12T11:58:39.308Z").toISOString(),
+      },
+    ]);
+    expect(context.recentMessages.map((message) => message.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+    ]);
   });
 });

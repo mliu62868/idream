@@ -156,8 +156,17 @@ export async function listGenerationModelProfiles(request: Request) {
   const page = limit === null ? profiles : profiles.slice(0, limit);
   const last = page.at(-1);
   const hasNextPage = limit !== null && profiles.length > limit;
+  const rollbackCandidates = await prisma.generationModelProfile.findMany({
+    where: { profileKey: { in: page.map(profile => profile.profileKey) }, status: "archived" },
+    orderBy: { version: "desc" },
+    select: { id: true, profileKey: true, version: true },
+  });
   return {
-    items: page.map(modelProfileView),
+    authoringEnabled: modelDiagnosticsEnabled(),
+    items: page.map(profile => {
+      const previous = profile.status === "active" ? rollbackCandidates.find(candidate => candidate.profileKey === profile.profileKey && candidate.version < profile.version) : undefined;
+      return { ...modelProfileView(profile), rollbackTarget: previous ? { id: previous.id, version: previous.version } : null };
+    }),
     pageInfo: {
       endCursor: hasNextPage && last
         ? encodeAdminListCursor("generation_profiles", queryIdentity, [
@@ -327,6 +336,10 @@ async function patchModelProfileAuthority(
     : undefined;
   await assertKnownWorkflowKey(body.workflowKey);
 
+  const configurationChanged = before.status === "draft" && definedKeys(body).some(key =>
+    !["reason", "confirmation", "dryRunSummary", "enabled"].includes(key) &&
+    JSON.stringify(body[key as keyof ModelProfilePatchBody]) !== JSON.stringify(before[key as keyof ProfileRow])
+  );
   const updated = await tx.generationModelProfile.update({
     where: { id: profileId },
     data: {
@@ -357,7 +370,8 @@ async function patchModelProfileAuthority(
       concurrencyLimit: body.concurrencyLimit,
       enabled: body.enabled,
       rolloutPercent: body.rolloutPercent,
-      dryRunSummary: body.dryRunSummary ? toInputJson(body.dryRunSummary) : undefined,
+      // INVARIANT: validation describes one configuration; edits cannot inherit old evidence.
+      dryRunSummary: configurationChanged ? toInputJson({}) : body.dryRunSummary ? toInputJson(body.dryRunSummary) : undefined,
     },
     select: profileSelect,
   });

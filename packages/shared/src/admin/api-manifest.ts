@@ -420,13 +420,6 @@ export const ADMIN_V2_API_OPERATIONS = [
   ),
   operation(
     "POST",
-    "/api/v2/admin/characters/:id/image-sources/:assetId/reviews",
-    allOf("character.project.write", "creative.run.review"),
-    "characterImageReviewRequestSchema+idempotency-key",
-    "characterImageReviewResultSchema",
-  ),
-  operation(
-    "POST",
     "/api/v2/admin/characters/:id/video-sources",
     allOf("character.project.write", "creative.run.write"),
     "characterVideoSourceUploadRequestSchema+idempotency-key",
@@ -1195,6 +1188,13 @@ export const ADMIN_V2_API_OPERATIONS = [
   ),
   operation(
     "GET",
+    "/api/v2/admin/compliance/account-deletions",
+    allOf("compliance.read"),
+    "complianceAccountDeletionQuerySchema",
+    "complianceAccountDeletionListResponseSchema",
+  ),
+  operation(
+    "GET",
     "/api/v2/admin/compliance/age-verifications",
     allOf("compliance.read"),
     "complianceAgeVerificationQuerySchema",
@@ -1343,6 +1343,19 @@ export const ADMIN_V2_API_OPERATIONS = [
     "supportRequestMutationResponseSchema",
     undefined,
     { commandType: "support.request.escalate" },
+  ),
+  // SPEC: 把工单上的诊断同意兑现成一条有范围、有时限的明文查看授权。
+  // INTENT: 在这条之前，SupportConsentGrant 与 LegalHold 的写入**全在测试文件里**，
+  //         生产代码一处都没有 —— 于是下面那个 plaintext/view 在生产环境永远 403：
+  //         前端有按钮、后端结构上永不放行。用户勾过的 diagnosticConsent 也只是被
+  //         展示，从不兑现。这条是那条链路缺失的上游。
+  // INTENT: 不带幂等键，理由同下面那条 —— 每次发放都该留下自己的授权与审计行。
+  operation(
+    "POST",
+    "/api/v2/admin/support/requests/:id/consent-grants",
+    allOf("support.plaintext.view"),
+    "supportConsentGrantRequestSchema",
+    "supportConsentGrantResponseSchema",
   ),
   // SPEC: 明文查看不带幂等键。
   // INTENT: 它写的是审计，不是状态 —— 重放同一个 key 应当再记一条查看记录，而不是把上一次的
@@ -1524,7 +1537,30 @@ export const ADMIN_V2_API_OPERATIONS = [
     "adminReferralQuerySchema",
     "adminReferralListResponseSchema",
   ),
+  operation(
+    "GET",
+    "/api/v2/admin/affiliate/applications",
+    allOf("growth.promo.read"),
+    "affiliateApplicationListQuerySchema",
+    "affiliateApplicationListResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/affiliate/applications/:id/decision",
+    allOf("growth.promo.write"),
+    "affiliateApplicationDecisionSchema+idempotency-key",
+    "affiliateApplicationMutationResponseSchema",
+    undefined,
+    { commandType: "affiliate.application.decide" },
+  ),
   // ---- platform: migrated from v1 ----
+  operation(
+    "GET",
+    "/api/v2/admin/chat/engagement",
+    allOf("chat.ops.read"),
+    "chatOpsEngagementQuerySchema",
+    "chatOpsEngagementResponseSchema",
+  ),
   // Chat product operations are Main projections; provider health adapts the
   // narrow Chat runtime-diagnostics contract.
   operation(
@@ -2022,34 +2058,6 @@ export const ADMIN_V2_API_OPERATIONS = [
   ),
   operation(
     "GET",
-    "/api/v2/admin/content/official",
-    allOf("content.official.write"),
-    "contentOfficialQuerySchema",
-    "contentOfficialListResponseSchema",
-  ),
-  operation(
-    "POST",
-    "/api/v2/admin/content/official",
-    allOf("content.official.write"),
-    "contentOfficialCreateRequestSchema+idempotency-key",
-    "contentOfficialCreateResponseSchema",
-  ),
-  operation(
-    "PATCH",
-    "/api/v2/admin/content/official/:id",
-    allOf("content.official.write", "character.project.write"),
-    "contentOfficialUpdateRequestSchema",
-    "contentOfficialUpdateResponseSchema",
-  ),
-  operation(
-    "POST",
-    "/api/v2/admin/content/official/:id/state",
-    allOf("content.official.write", "character.release.publish"),
-    "contentOfficialStateRequestSchema",
-    "contentOfficialStateResponseSchema",
-  ),
-  operation(
-    "GET",
     "/api/v2/admin/content/templates",
     allOf("content.read"),
     "contentTemplateQuerySchema",
@@ -2103,22 +2111,6 @@ export const ADMIN_V2_API_OPERATIONS = [
     allOf("content.tag.write"),
     "contentTagPatchRequestSchema",
     "contentTagPatchResponseSchema",
-  ),
-  operation(
-    "GET",
-    "/api/v2/admin/content/review-queue",
-    allOf("safety.review.read"),
-    "contentReviewQueueQuerySchema",
-    "contentReviewQueueListResponseSchema",
-  ),
-  operation(
-    "POST",
-    "/api/v2/admin/content/review-queue/:id/decision",
-    allOf("safety.review.write"),
-    "contentReviewDecisionRequestSchema+idempotency-key",
-    "contentReviewDecisionResponseSchema",
-    undefined,
-    { commandType: "content.submission.review" },
   ),
   operation(
     "POST",

@@ -172,6 +172,51 @@ export const supportPlaintextViewResponseSchema = z
   })
   .strict();
 
+/**
+ * SPEC: 把工单上的诊断同意兑现成一条**具体的、有范围和时限的**明文查看授权。
+ *
+ * INTENT: `support_requests.diagnosticConsent` 此前只被收集和展示，从不兑现 ——
+ *   用户勾了"同意客服诊断"，后台把这个布尔量原样显示给客服，然后没有下文。
+ *   而 `viewPlaintext` 要求 SupportConsentGrant 或 LegalHold 二选一，
+ *   两张表的写入又全在测试文件里，于是「查看明文」整条功能在生产环境永远 403。
+ *
+ * INTENT: 笼统的同意不能自动换成对任意内容的无限访问 —— 那等于用一个复选框
+ *   换走一个成人内容平台上最私密的东西。所以授权必须逐条发放，并由三条边界收口：
+ *   ① 目标的 owner 必须是工单提交者本人（客服不能借一张工单去看别人的内容）；
+ *   ② 用户必须已经勾选 diagnosticConsent，否则这条路不开；
+ *   ③ 授权有短时限与字段范围，且每次发放都写审计。
+ *
+ * INVARIANT: 授权的价值不在于"限制有权限的人"，而在于把"能看"从一个常驻权限
+ *   变成一个**有用户同意前提、有据可查、会过期**的事件。
+ */
+export const supportConsentGrantRequestSchema = z
+  .object({
+    targetType: supportPlaintextTargetTypeSchema,
+    targetId: z.string().trim().min(1).max(160),
+    /** 只授权客服这次真正需要的字段，不是整条记录。 */
+    fields: z.array(z.enum(["prompt", "negativePrompt"])).min(1).max(8),
+    reason: z.string().trim().min(3).max(2_000),
+  })
+  .strict();
+
+export const supportConsentGrantResponseSchema = z
+  .object({
+    grant: z
+      .object({
+        id: adminIdSchema,
+        ticketId: z.string().min(1),
+        userId: adminIdSchema,
+        targetType: supportPlaintextTargetTypeSchema,
+        targetId: adminIdSchema,
+        fields: z.array(z.string()).readonly(),
+        expiresAt: adminIsoDateTimeSchema,
+        createdAt: adminIsoDateTimeSchema,
+      })
+      .strict(),
+  })
+  .strict();
+
+export type SupportConsentGrantResponse = z.infer<typeof supportConsentGrantResponseSchema>;
 export type SupportRequest = z.infer<typeof supportRequestSchema>;
 export type SupportRequestListQuery = z.infer<typeof supportRequestListQuerySchema>;
 export type SupportRequestListResponse = z.infer<typeof supportRequestListResponseSchema>;

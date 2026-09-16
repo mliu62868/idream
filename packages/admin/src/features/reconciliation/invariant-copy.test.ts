@@ -69,13 +69,21 @@ describe("data-integrity invariant copy", () => {
       "succeeded_request_delivery_count_mismatch",
       "partial_request_delivery_count_mismatch",
       "terminal_attempt_without_unique_terminal_event",
-      // 后台没有任何重新资质化的写入口：唯一能写 GenerationRouteQualification 的端点
-      // `POST /characters/route-qualifications/commands/evaluate` 在 packages/admin 里零引用，
-      // 角色工作台的路由工作台通篇只读。标成 operations 就是指着一个不存在的按钮。
-      "serving_default_route_unqualified",
     ]) {
       expect(invariantCopy(key).owner, `${key} 不该由运营收口`).toBe("engineering");
     }
+  });
+
+  // SPEC: 反过来也要钉：收口动作存在的，不许因为"看起来很深"就推给工程。
+  // INTENT: `serving_default_route_unqualified` 上一版被我标成 engineering，理由是后台没有
+  //         重新资质化的入口。那个事实是真的，但收口不必走重新资质化——发一个新 Release，
+  //         createCharacterRelease 就会重新绑定当下合格的线路（release-lifecycle.ts:177）。
+  //         推给工程的代价是运营把本来自己能修的下架挂在那儿等人。
+  it("keeps a break operations can actually close with operations", () => {
+    expect(invariantCopy("serving_default_route_unqualified")).toMatchObject({
+      owner: "operations",
+      hint: "Re-run the release pipeline for the sampled Characters, then re-check",
+    });
   });
 
   // SPEC: 顶部结论条要先把违规切成「我能收口的」和「只能转工程的」。

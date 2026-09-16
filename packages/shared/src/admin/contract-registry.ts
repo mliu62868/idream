@@ -56,19 +56,6 @@ const fixtureOverrides: Readonly<Record<string, unknown>> = {
       publishedAt: null, createdAt: "2026-09-10T00:00:00.000Z", fingerprint: "a".repeat(64),
     },
   },
-  // Approval requires evidence across fields; structural defaults cannot express it.
-  characterImageReviewRequestSchema: {
-    decision: "approved",
-    identityConsistency: "passed",
-    score: 95,
-    quality: {
-      artifactFree: true,
-      singleSubject: true,
-      intentMatch: true,
-      noVisibleText: true,
-    },
-    reason: "Reviewed against the Character visual identity",
-  },
   characterVoiceClipReclaimRequestSchema: {
     requestId: "voice-request-fixture",
     confirmation: "RECLAIM VOICE voice-request-fixture",

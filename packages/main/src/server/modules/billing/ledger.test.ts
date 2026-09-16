@@ -35,6 +35,10 @@ function inMemoryLedger() {
         return row;
       },
     },
+    generationJob: {
+      findUnique: async ({ where }: { where: { id: string } }) =>
+        where.id === "request-1" ? { id: where.id } : null,
+    },
     generationSettlementLink: {
       upsert: async ({ create }: { create: { requestId: string; ledgerEntryId: string; kind: string } }) => {
         if (!settlementLinks.some((link) => link.ledgerEntryId === create.ledgerEntryId)) {
@@ -82,6 +86,23 @@ describe("postDreamcoinEntry", () => {
       { requestId: "request-1", ledgerEntryId: "ledger-2", kind: "generation_spend" },
       { requestId: "request-1", ledgerEntryId: "ledger-3", kind: "refund" },
     ]);
+  });
+
+  it("does not link paid voice delivery or its replay to a GenerationJob", async () => {
+    const ledger = inMemoryLedger();
+    const intent = {
+      kind: "generation_spend" as const,
+      userId: "user-1",
+      amount: 12,
+      sourceId: "media_voice_1",
+      idempotencyKey: "voice:clip-1:attempt:1:spend",
+    };
+    const first = await postDreamcoinEntry(ledger.tx, intent);
+    const replay = await postDreamcoinEntry(ledger.tx, intent);
+    expect(replay.id).toBe(first.id);
+    expect(first.delta).toBe(-12);
+    expect(ledger.creates()).toBe(1);
+    expect(ledger.settlementLinks).toEqual([]);
   });
 
   it("returns the same entry for an identical idempotency key and intent", async () => {

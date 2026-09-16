@@ -364,7 +364,10 @@ describe("ProfileWorkspace media pagination", () => {
     expect(container.querySelectorAll("[data-media-id]")).toHaveLength(40);
     await click(button("Next page"));
     await searchFor("image-41");
-    expect(requests.at(-1)).toBe("/api/v1/library/media?q=image-41");
+    // 断言的是「搜索之后没有再回头拉分页」，不是「这是全页面最后一个请求」——
+    // 同屏还有邮箱/年龄验证等无关请求会在之后落地，按全局末位断言是在测竞态。
+    expect(requests.filter((path) => path.startsWith("/api/v1/library/media")).at(-1))
+      .toBe("/api/v1/library/media?q=image-41");
     expect(container.textContent).not.toContain("Page 2");
     expect(container.querySelectorAll("[data-media-id]")).toHaveLength(1);
   });

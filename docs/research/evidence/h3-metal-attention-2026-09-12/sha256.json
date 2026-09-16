@@ -1,0 +1,13 @@
+{
+  "dit-long-v1.json": "b0be9268e2559dce596c4ccc42d3453a1c51106cbb7358a46514d4a6c7434075",
+  "dit-long.json": "2630ff697cc081610f32a1a86ecc6cba3b3043053731ea11091e8aaf9d9dd588",
+  "dit-v1.json": "5f4370ea93e0af4a7c0f3e302821e75ddf4b58e4bd9e67656a8b61b21beabf46",
+  "dit.json": "53a7574213dac402a80792e4390fda2c32bed18bfbb708c1e45dd8420aa3b756",
+  "initial-benchmark-source.txt": "2403b03a15c13a3f477a7bcade84dbbe2a8c2355338fc3b020cebb7fa7771bd6",
+  "lease-runner-source.txt": "a5189b90bf45c83f87a04abd85d278de24182debd398f906314c89a6a926fc55",
+  "production-shapes.log": "13ec3ee1b7b45dcb3f708155a0aaf1601f397ee83c075c608031745807efcbd7",
+  "smoke.json": "a0b72097fb6b89967462d9d3243a8961cbba0b91c1a531fd13b71c577196e953",
+  "v1-shapes.log": "1d39743e3f0641f8f609ed2c58fdbea899df4068584ffdc945ef345a24596d42",
+  "vae-v1.json": "d60bf09d49e7b1f5a9a4b9510e44bf6aac73ba99da42b43bdbd61dc3a5299aab",
+  "vae.json": "00cc38f23caa1d35f5e204fb48a0eaf8e395373e6ddfc18f2d5f406cb343c30c"
+}

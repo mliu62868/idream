@@ -35,6 +35,18 @@ function validEvidence(): CertificationEvidence {
 }
 
 describe("metric certification authority", () => {
+  it("accepts separately validated immutable definitions and revokes them on a failed or mismatched validation", () => {
+    const evidence = validEvidence();
+    evidence.definitionSnapshot = { ...evidence.definitionSnapshot!, qualityState: "invalid", lastValidatedAt: null, hasEvidence: false };
+    evidence.definitionValidation = { status: "passed", checkedAt: asOf, matchesDefinition: true, hasEvidence: true };
+    expect(evaluateMetricCertification({ definition, asOf, evidence }).decisionUse).toBe("allowed");
+    evidence.definitionValidation.status = "failed";
+    expect(evaluateMetricCertification({ definition, asOf, evidence }).evidence).toContain("definition_validation_failed");
+    evidence.definitionValidation.status = "passed";
+    evidence.definitionValidation.matchesDefinition = false;
+    expect(evaluateMetricCertification({ definition, asOf, evidence }).evidence).toContain("definition_validation_identity_mismatch");
+  });
+
   it("fails closed for an empty database authority", () => {
     const result = evaluateMetricCertification({
       definition,

@@ -100,7 +100,12 @@ async function stageWorkspaceRebuild(request: Request): Promise<StagedWorkspaceR
     bytes: number;
     expectedRole: "user" | "assistant";
   } | undefined;
-  let activeMessage: { contentLength: number; received: number; createdAt: string } | undefined;
+  let activeMessage: {
+    contentLength: number;
+    received: number;
+    createdAt: string;
+    unprompted: boolean;
+  } | undefined;
   const seenSessions = new Set<string>();
   const transcriptBuffer = Buffer.allocUnsafe(TRANSCRIPT_BUFFER_BYTES);
   let bufferedBytes = 0;
@@ -180,13 +185,20 @@ async function stageWorkspaceRebuild(request: Request): Promise<StagedWorkspaceR
             expectedRole: "user",
           };
         }
-        if (frame.message.role !== currentSession.expectedRole) {
+        // A declared proactive check-in is the one exchange with no user side:
+        // the Character speaks where a user message would go, and the next
+        // message is still expected to be the user's.
+        const unprompted = frame.message.role === "assistant"
+          && frame.message.unprompted === true
+          && currentSession.expectedRole === "user";
+        if (!unprompted && frame.message.role !== currentSession.expectedRole) {
           throw new Error(`relationship rebuild expected ${currentSession.expectedRole} message`);
         }
         activeMessage = {
           contentLength: frame.contentLength,
           received: 0,
           createdAt: frame.message.createdAt,
+          unprompted,
         };
         await writeTranscript(`{"role":${JSON.stringify(frame.message.role)},"content":"`);
         continue;
@@ -209,7 +221,11 @@ async function stageWorkspaceRebuild(request: Request): Promise<StagedWorkspaceR
           `","source_at":${JSON.stringify(activeMessage.createdAt)},"source_timezone":"UTC"}\n`,
         );
         currentSession.messages += 1;
-        currentSession.expectedRole = currentSession.expectedRole === "user" ? "assistant" : "user";
+        // An unprompted reply consumed no user message, so the session still
+        // owes one and the alternation check stays armed for everything else.
+        if (!activeMessage.unprompted) {
+          currentSession.expectedRole = currentSession.expectedRole === "user" ? "assistant" : "user";
+        }
         activeMessage = undefined;
         messages += 1;
         continue;

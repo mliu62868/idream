@@ -1250,7 +1250,7 @@ function voiceIdentityPortForKey(
   if (configuredIdentity?.providerKey === providerKey) {
     return configuredIdentity;
   }
-  const identity = createVoicePortsForKey(providerKey, providers.blob).identity;
+  const identity = createVoicePortsForKey(providerKey).identity;
   if (!identity) {
     throw Errors.unavailable(
       `${voiceProviderLabel(providerKey)} does not support Character Voice Identity`,

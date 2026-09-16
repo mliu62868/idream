@@ -26,23 +26,22 @@ export interface ChatModel {
 
 export type VoiceProviderKey =
   | "mock"
-  | "pipeline"
   | "pocket_tts"
   | "fish_audio";
 
-export const VOICE_PROVIDER_REPLAY = {
-  mock: "durable_same_key",
-  fish_audio: "durable_same_key",
-  pipeline: "non_replayable",
-  pocket_tts: "durable_same_key",
-} as const satisfies Record<
-  VoiceProviderKey,
-  "durable_same_key" | "non_replayable"
->;
-
+// SPEC: every voice adapter is durably replayable under the same provider
+//   idempotency key — re-sending one key returns the original synthesis instead
+//   of billing and rendering a second one.
+// INTENT: this used to be a per-adapter `providerReplay` axis, because the
+//   `pipeline` gateway could not be replayed. That adapter was deleted (zero
+//   enablement, and the rollback URL it justified itself with was an
+//   `example.com` placeholder), leaving one value behind a whole state axis.
+//   Callers therefore no longer branch on replayability; `reserveVoiceProviderInvocation`
+//   states the reservation rule once.
+// INVARIANT: an adapter that cannot honour same-key replay may NOT implement this
+//   interface — it needs its own unknown-outcome handling, not a boolean here.
 export interface VoiceClipPort {
   readonly providerKey: VoiceProviderKey;
-  readonly providerReplay: "durable_same_key" | "non_replayable";
   synthesize(input: {
     requestId: string;
     attemptNo: number;
@@ -61,8 +60,14 @@ export interface VoiceClipPort {
       emotionalBeat: string | null;
       unresolvedThreads: string[];
     } | null;
+    // SPEC: synthesized audio, NOT a stored blob key. Naming and persistence are
+    //   the caller's; an adapter that also wrote the blob forced all four of them
+    //   to re-implement `voiceArtifactKey` + `putPrivate` + duration accounting,
+    //   and left an undelivered object behind whenever the commit that followed
+    //   failed. `VoiceIdentityPort.previewVoice` below already had this shape.
   }): Promise<ProviderResult<{
-    key: string;
+    body: Uint8Array;
+    contentType: string;
     durationMs: number;
     sceneApplied?: boolean;
     sceneAdapter?: string;
@@ -180,6 +185,37 @@ export type PaymentInvoice = {
   currency: string;
 };
 
+/** Actual original-currency receipts, independent of invoice face value and FX. */
+export type SettledInvoicePayment = {
+  paymentId: string;
+  paymentMethodId: string;
+  amount: string;
+  currency: string;
+  /** Provider-recorded payment receipt time; not the later settlement transition. */
+  receivedAt: string;
+  /** Greenfield payment methods expose receipt time, not settlement time. */
+  settledAt: null;
+};
+
+export type PaymentInvoicePaymentEvidence = {
+  provider: "mock" | "btcpay";
+  invoiceId: string;
+  orderId: string;
+} & (
+  | {
+      status: "verified";
+      merchantAccountId: string;
+      source: "btcpay_accounted_invoice_payments";
+      /** Only independently Settled payments; not an assertion of full invoice payment. */
+      payments: readonly SettledInvoicePayment[];
+    }
+  | {
+      status: "unknown";
+      reason: "provider_has_no_cash_authority" | "settled_payments_missing" | "payment_evidence_incomplete";
+      payments: readonly [];
+    }
+);
+
 export type PaymentRefundState =
   | "claimable"
   | "awaiting_approval"
@@ -233,6 +269,11 @@ export interface PaymentProvider {
   }): Promise<
     ProviderResult<PaymentInvoice | null>
   >;
+  readInvoicePaymentEvidence(input: {
+    invoiceId: string;
+    orderId: string;
+    signal?: AbortSignal;
+  }): Promise<ProviderResult<PaymentInvoicePaymentEvidence>>;
   createRefund(input: {
     invoiceId: string;
     reference: string;

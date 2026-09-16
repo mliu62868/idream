@@ -17,6 +17,7 @@ export const primaryNavItems: NavItem[] = [
   { label: "Generate", href: "/generate" },
   { label: "My AI", href: "/custom" },
   { label: "Feed", href: "/feed" },
+  { label: "Comics", href: "/comics" },
   { label: "Community", href: "/community" },
 ];
 
@@ -276,6 +277,7 @@ const linkedNonSitemapPaths = [
   "/profile/redeem-code",
   "/profile/notifications",
   "/profile/account-management",
+  "/profile/age-verification",
   "/login",
   "/signup",
 ] as const;
@@ -332,6 +334,12 @@ const routeOverrides: Record<
     title: "Account Management",
     description:
       "Manage account-level session and deletion actions from the account workspace.",
+    template: "profile",
+  },
+  "/profile/age-verification": {
+    title: "Age Verification",
+    description:
+      "Start or retry identity age verification from the account workspace.",
     template: "profile",
   },
   "/generate": {

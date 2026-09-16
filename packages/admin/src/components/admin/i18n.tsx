@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, type ReactNode } from "react";
+import { createContext, useContext, useMemo, type ReactNode } from "react";
 import type { AdminLocale } from "./shell-preferences";
 
 // AdminLocale 的取值域住在 shell-preferences.ts（服务端也要按它校验 cookie）；这里转出去，
@@ -34,11 +34,11 @@ export function AdminI18nProvider({
   children: ReactNode;
   locale: AdminLocale;
 }) {
-  const value: AdminI18nContextValue = {
+  const value = useMemo<AdminI18nContextValue>(() => ({
     locale,
     t: (key, values) => translateAdmin(locale, key, values),
     value: (key) => adminValueLabel(locale, key),
-  };
+  }), [locale]);
 
   return <AdminI18nContext value={value}>{children}</AdminI18nContext>;
 }

@@ -85,6 +85,42 @@ async function fetchChatRuntimeDiagnostics(): Promise<RuntimeDiagnosticsOutcome>
   };
 }
 
+/**
+ * SPEC: 当前 Soul schema（v3）的内容版本 id 集合。
+ * INTENT: 只在按 pin 筛选时才查。`character_content_versions` 是有界的编目表
+ *   （一个角色的历次发布），不随会话或消息增长，所以整表取 id 可接受；
+ *   真正按量增长的 recent_chats 仍然走索引 + keyset 分页。
+ */
+async function currentSoulContentVersionIds() {
+  const rows = await prisma.characterContentVersion.findMany({
+    where: { personaSnapshot: { path: ["schemaVersion"], equals: 3 } },
+    select: { id: true },
+  });
+  return rows.map((row) => row.id);
+}
+
+// INVARIANT: 判据与 soul-authority-audit.ts 的 isCurrentSoul 逐字一致 ——
+//   personaSnapshot.schemaVersion === 3 才是 current。两处分叉，后台显示的
+//   「需要迁移」就会和上线门禁数出来的不是同一批。
+function describeReleasePin(
+  contentVersion: { id: string; personaSnapshot: Prisma.JsonValue } | null,
+) {
+  if (!contentVersion) {
+    return { contentVersionId: null, schemaVersion: null, state: "unpinned" as const };
+  }
+  const snapshot = contentVersion.personaSnapshot;
+  const raw =
+    snapshot && typeof snapshot === "object" && !Array.isArray(snapshot)
+      ? (snapshot as Record<string, unknown>).schemaVersion
+      : undefined;
+  const schemaVersion = typeof raw === "number" ? raw : null;
+  return {
+    contentVersionId: contentVersion.id,
+    schemaVersion,
+    state: schemaVersion === 3 ? ("current" as const) : ("legacy" as const),
+  };
+}
+
 export async function chatOpsOverview(request: Request) {
   await actorWithPermission(request, "chat.ops.read");
   const since = new Date(Date.now() - 24 * 60 * 60 * 1_000);
@@ -369,23 +405,40 @@ export async function chatOpsSessions(request: Request) {
     ? decodeAdminListCursor(query.cursor, "chat_ops_sessions", queryIdentity)
     : null;
   if (keys) assertCursorKeyCount(keys, 3, "chat_ops_sessions");
-  // Main hard-deletes product sessions. The retained filter is a stable Admin
-  // contract, but there is deliberately no recoverable deleted-session row.
-  if (query.status === "deleted") {
-    return {
-      configured: true,
-      diagnostics: mainOwnedDiagnostics(),
-      items: [],
-      pageInfo: { hasNextPage: false, endCursor: null },
-    };
-  }
+  // INVARIANT: `status=deleted` 必须走真实查询。
+  //   这里此前硬编码 `items: []`，理由写的是「Main 硬删除产品会话，不存在可恢复的
+  //   已删除行」。这个前提被同仓两处证伪：`recent_chats` 实测有 status='deleted'
+  //   的行，且 `chat/turn-scope.ts` 仍在处理 `session.status === "deleted"`。
+  //   后果是运营选了这个筛选永远看到空，且无法区分「没有」和「查不了」——
+  //   那些行在后台任何视图里都不可达。
+  // SPEC: 按 release pin 筛选时不套 customer 口径 —— 迁移对象是"运行时会话"，不是"客户"。
+  // INTENT: 上线门禁 character-soul-pin-drain 数的是**全部**活跃会话（实测 31 条 legacy），
+  //   而本列表默认只给 dataClass='customer' 的（实测 14 条）。若沿用客户口径，
+  //   运营照着界面把能看到的都迁完，门禁依然过不了，且无从知道差额在哪 ——
+  //   等于给了一个做不完的任务。这个筛选是运维视角，看全量才能收口。
+  const scopeToCustomers = !query.releasePin || query.releasePin === "all";
   const conditions: Prisma.RecentChatWhereInput[] = [
-    { user: { is: CUSTOMER_USER } },
+    ...(scopeToCustomers ? [{ user: { is: CUSTOMER_USER } } satisfies Prisma.RecentChatWhereInput] : []),
     ...(query.userId ? [{ userId: query.userId }] : []),
     ...(query.characterId ? [{ characterId: query.characterId }] : []),
+    // `all` 仍然排除已删除：它是"日常工作面"的意思，删除态要显式选才出现。
     query.status && query.status !== "all"
       ? { status: query.status }
       : { status: { not: "deleted" } },
+    // `legacy` 复用与门禁一致的判据：钉住的 Soul 内容版本 schemaVersion 不等于 3
+    //   （包括压根没有这个字段的旧快照）。recent_chats 到 character_content_versions
+    //   之间没有外键关系，Prisma 无法跨表过滤，所以先取 current 的 id 集合再取反。
+    ...(query.releasePin === "legacy"
+      ? [{
+          characterContentVersionId: {
+            not: null,
+            notIn: await currentSoulContentVersionIds(),
+          },
+        } satisfies Prisma.RecentChatWhereInput]
+      : []),
+    ...(query.releasePin === "unpinned"
+      ? [{ characterContentVersionId: null } satisfies Prisma.RecentChatWhereInput]
+      : []),
   ];
   if (keys) conditions.push(sessionCursorWhere(keys));
   const rows = await prisma.recentChat.findMany({
@@ -414,6 +467,61 @@ export async function chatOpsSessions(request: Request) {
   });
   const hasNextPage = rows.length > query.limit;
   const page = rows.slice(0, query.limit);
+  // recent_chats 与 character_content_versions 之间没有外键，拿不到 relation include，
+  // 只能按本页的 pin 批量取回快照再在内存里对齐（soul-authority-audit.ts 同样做法）。
+  const pinnedVersionIds = page
+    .map((row) => row.characterContentVersionId)
+    .filter((id): id is string => id !== null);
+  // 迁移目标 = 该角色当前在服务的 Release 及其内容版本。运营不该去猜迁到哪一版。
+  const characterIds = [...new Set(page.map((row) => row.characterId))];
+  const servings = characterIds.length > 0
+    ? await prisma.characterServing.findMany({
+        where: { characterId: { in: characterIds } },
+        select: { characterId: true, currentReleaseId: true },
+      })
+    : [];
+  const servingReleaseIds = servings
+    .map((row) => row.currentReleaseId)
+    .filter((id): id is string => id !== null);
+  const releases = servingReleaseIds.length > 0
+    ? await prisma.characterRelease.findMany({
+        where: { id: { in: servingReleaseIds }, status: { in: ["published", "superseded"] } },
+        select: { id: true, characterContentVersionId: true, version: true },
+      })
+    : [];
+  const releaseById = new Map(releases.map((row) => [row.id, row]));
+  const targetReleaseByCharacterId = new Map(
+    servings.flatMap((row) => {
+      const release = row.currentReleaseId ? releaseById.get(row.currentReleaseId) : undefined;
+      return release ? [[row.characterId, release] as const] : [];
+    }),
+  );
+  // pin 与目标的快照一次取回，避免每行一次查询。
+  const versionIds = [
+    ...new Set([
+      ...pinnedVersionIds,
+      ...releases.map((row) => row.characterContentVersionId),
+    ]),
+  ];
+  const pinnedVersions = versionIds.length > 0
+    ? await prisma.characterContentVersion.findMany({
+        where: { id: { in: versionIds } },
+        select: { id: true, personaSnapshot: true },
+      })
+    : [];
+  const pinnedVersionById = new Map(pinnedVersions.map((row) => [row.id, row]));
+  const describeTarget = (characterId: string) => {
+    const release = targetReleaseByCharacterId.get(characterId);
+    if (!release) return null;
+    const target = pinnedVersionById.get(release.characterContentVersionId) ?? null;
+    if (describeReleasePin(target).schemaVersion !== 3) return null;
+    return {
+      characterReleaseId: release.id,
+      entityVersion: release.version,
+      characterContentVersionId: release.characterContentVersionId,
+      schemaVersion: describeReleasePin(target).schemaVersion,
+    };
+  };
   return {
     configured: true,
     diagnostics: mainOwnedDiagnostics(),
@@ -440,6 +548,17 @@ export async function chatOpsSessions(request: Request) {
         lastMessageAt: row.lastMessageAt?.toISOString() ?? null,
         createdAt: row.createdAt.toISOString(),
         updatedAt: row.updatedAt.toISOString(),
+        releasePin: {
+          ...describeReleasePin(
+            row.characterContentVersionId === null
+              ? null
+              : pinnedVersionById.get(row.characterContentVersionId) ?? null,
+          ),
+          // Preserve actual CAS values even when the referenced historical snapshot is missing.
+          contentVersionId: row.characterContentVersionId,
+          releaseId: row.characterReleaseId,
+          recommendedTarget: describeTarget(row.characterId),
+        },
       };
     }),
     pageInfo: {

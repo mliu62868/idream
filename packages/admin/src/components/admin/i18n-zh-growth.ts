@@ -3,6 +3,24 @@
 // INVARIANT: key 在所有 i18n-zh-*.ts 之间互斥——同一个 key 只能有一个域文件持有；
 // 由 i18n-zh-exclusivity.test.ts 强制。新增文案放它所属的域文件，不要另开「杂项」文件。
 export const adminZhGrowth: Record<string, string> = {
+  "Affiliate Applications": "联盟申请",
+  "Affiliate applications": "联盟申请",
+  "Approve affiliate application": "批准联盟申请",
+  "Reject affiliate application": "拒绝联盟申请",
+  "Terms version": "条款版本",
+  "The review reason is visible to the applicant. Approval enables attribution; it does not authorize commission or payment.": "审核原因对申请人可见。批准后启用归因；佣金与支付需单独授权。",
+  "Type the application ID to confirm": "输入申请 ID 确认",
+  "Affiliate application reviewed": "联盟申请已审核",
+  "Review the submitted terms version and promotion channels before deciding. Only pending applications can be reviewed; rejected applicants may reapply.": "决定前请核对申请的条款版本与推广渠道。仅待处理申请可以审核；被拒绝的申请人可以重新申请。",
+  "Search application or user ID": "搜索申请或用户 ID",
+  "Application status": "申请状态",
+  "Affiliate applications could not load": "无法加载联盟申请",
+  "Application": "申请",
+  "Promotion channels": "推广渠道",
+  "Reviewed": "已审核",
+  "No matching affiliate applications": "没有符合条件的联盟申请",
+  "Affiliate review requires growth.promo.write permission.": "审核联盟申请需要 growth.promo.write 权限。",
+
   "Comic publication review": "漫画发布审核",
   "Review the exact submitted pages before publishing. Every decision records the version and reason.": "发布前请审阅本次提交的全部页面。每项决定都会记录版本与理由。",
   "Comic review status": "漫画审核状态",
@@ -182,6 +200,13 @@ export const adminZhGrowth: Record<string, string> = {
     "这里显示全生命周期累计值；具备时序分析后可补充趋势与转化视图。",
   "Create Pricing Rule Draft": "创建定价规则草稿",
   "Create announcement": "创建公告",
+  // 创建公告按钮置灰时逐条说明还缺什么。
+  "Still needed before you can create it:": "还差这些才能创建：",
+  "a title": "标题",
+  "body text": "正文",
+  "a reason of at least 3 characters": "至少 3 个字符的原因",
+  "the title typed again to confirm": "把标题原样再敲一遍作为确认",
+  "an end time after the start time": "结束时间要晚于开始时间",
   "Create campaign images": "创建运营图片",
   "Create draft": "创建草稿",
   "Create new page draft": "创建新页面草稿",
@@ -244,6 +269,10 @@ export const adminZhGrowth: Record<string, string> = {
   "Pricing & Offers": "定价与优惠",
   "Pricing Rules": "定价规则",
   "Pricing draft {key} created": "价格草稿 {key} 已创建",
+  "Pricing draft {key} updated": "价格草稿 {key} 已更新",
+  "Edit pricing draft": "编辑定价草稿",
+  "{key} · {mode} — rule key and mode are fixed once the draft exists; create a new draft to change them.":
+    "{key} · {mode} —— 草稿建好后规则键与模式不可更改，要改请新建草稿。",
   "Pricing estimate unavailable:": "定价估算不可用：",
   "Pricing rule versions": "定价规则版本",
   "Pricing rule {name} published": "价格规则 {name} 已发布",
@@ -361,6 +390,17 @@ export const adminZhGrowth: Record<string, string> = {
     "已停用“{title}”。它现在对全站隐藏。",
   "Activated “{title}”. It is visible site-wide now.":
     "已启用“{title}”。它现在对全站可见。",
+  "Created “{title}”. It shows only inside its scheduled window.":
+    "已创建「{title}」。它只在排定的时间窗内展示。",
+  "Activated “{title}”. It shows only inside its scheduled window.":
+    "已启用「{title}」。它只在排定的时间窗内展示。",
+  "Active, outside its window": "已启用，但不在时间窗内",
+  "Always on": "始终展示",
+  "{from} → {to}": "{from} → {to}",
+  "From {from}": "{from} 起",
+  "Until {to}": "至 {to}",
+  "Starts at (optional)": "开始时间（可选）",
+  "Ends at (optional)": "结束时间（可选）",
   "Created “{title}”. It is live site-wide now.":
     "已创建“{title}”，并已对全站生效。",
   "Created “{title}”. Activate it when you want it on the site.":
@@ -373,6 +413,10 @@ export const adminZhGrowth: Record<string, string> = {
     "CMS 页面的响应不完整。",
   "The article body must be a JSON object.":
     "文章正文必须是一个 JSON 对象。",
+  "{path} is published in the authority, but the cache did not refresh — visitors keep seeing the old page. Run publish again; if it keeps failing this is an engineering issue.":
+    "{path} 在权威侧已发布，但缓存没有刷新——访客看到的仍是旧页。再执行一次发布；若持续失败，这是工程问题。",
+  "{path} is unpublished in the authority, but the cache did not refresh — visitors can still reach the old page. Run unpublish again; if it keeps failing this is an engineering issue.":
+    "{path} 在权威侧已下线，但缓存没有刷新——访客仍能打开旧页。再执行一次下线；若持续失败，这是工程问题。",
   "{path} is published and indexable per its indexing status.":
     "{path} 已发布，是否收录取决于它的 indexing 状态。",
   "{path} is unpublished and back to draft. It is no longer served.":
@@ -433,4 +477,12 @@ export const adminZhGrowth: Record<string, string> = {
   // "Inviter"（邀请人）已由 i18n-zh-platform-ops.ts 持有，这里只补对侧的受邀人。
   "Invitee": "受邀人",
   "Reward status": "奖励状态",
+  // 产品健康 legacy 区：后端算出的「不可用于决策」判据，此前在前端类型层就被丢了。
+  "Not decision-grade": "不可用于决策",
+  "Observed, but not decision-grade": "有观测值，但不可用于决策",
+  "Signup funnel": "注册漏斗",
+  "Generation counts": "生成计数",
+  "Activated users": "激活用户",
+  "Paying users": "付费用户",
+  "Conversion rate %": "转化率 %",
 };

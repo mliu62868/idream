@@ -210,7 +210,7 @@ export function createProviderRegistry(): ProviderRegistry {
 
   return {
     chat: createChatProvider(),
-    voice: createConfiguredVoicePorts(blob),
+    voice: createConfiguredVoicePorts(),
     moderation: createModerationProvider(),
     payment: createPaymentProvider(),
     blob,

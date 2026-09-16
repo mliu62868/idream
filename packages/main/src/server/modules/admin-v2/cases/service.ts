@@ -2,6 +2,7 @@ import type { Appeal, ContentReport, Prisma, PrismaClient, SupportRequest } from
 import {
   APPEAL_CASE_DECISIONS,
   BILLING_CASE_ACTIONS,
+  CONTENT_EFFECT_REVIEW_DECISIONS,
   CONTENT_REPORT_CASE_DECISIONS,
   SUPPORT_CASE_ACTIONS,
 } from "@idream/shared/admin";
@@ -16,6 +17,10 @@ type Db = PrismaClient | Prisma.TransactionClient;
 type Actor = { readonly id: string; readonly role: string };
 
 const ACTIVE_REPORT_STATUSES = ["open", "triaged", "reviewing"];
+// SPEC: 来源侧真正的终态取值 —— 与 moderation 复合命令写入的集合保持一致
+//       （decision.ts 的 "already has a terminal decision" 判据、appeal 的非 open 分支）。
+const TERMINAL_REPORT_STATUSES = ["actioned", "no_violation", "duplicate", "closed"];
+const TERMINAL_APPEAL_STATUSES = ["upheld", "overturned", "modified"];
 const ACTIVE_SUPPORT_STATUSES = ["received", "open", "waiting_on_user"];
 const BILLING_CATEGORIES = new Set([
   "billing",
@@ -691,7 +696,7 @@ export async function assignReviewCaseInTransaction(
   const current = await tx.adminCase.findUnique({ where: { id: input.caseId } });
   if (!current) throw Errors.notFound("Case not found");
   assertCaseScope(current, input.actor);
-  if (current.version !== input.expectedVersion) throw Errors.conflict("Case version changed");
+  if (current.version !== input.expectedVersion) throw Errors.versionConflict("Case version changed");
   if (input.ownerId) {
     const owner = await tx.user.findUnique({ where: { id: input.ownerId }, select: { role: true, status: true } });
     if (!owner || owner.status !== "active" || owner.role === "user") {
@@ -771,6 +776,9 @@ export async function recordReviewCaseDecision(
     readonly evidenceRefs: readonly string[];
     readonly confidence?: number;
     readonly downstreamVerified?: boolean;
+    // SPEC: moderation 的复合命令在调用之前已经把来源记录改成终态了，传 true。
+    //       其余调用方（Case 级决策端点）没有做这件事，由本函数收口。
+    readonly sourceSettled?: boolean;
     readonly requestId: string;
   },
 ) {
@@ -778,7 +786,7 @@ export async function recordReviewCaseDecision(
   if (!current) throw Errors.notFound("Case not found");
   assertCaseScope(current, input.actor);
   if (input.expectedVersion !== undefined && current.version !== input.expectedVersion) {
-    throw Errors.conflict("Case version changed");
+    throw Errors.versionConflict("Case version changed");
   }
   if (!CONTENT_REPORT_DECISION_SET.has(input.decision) && current.type === "content_report") {
     throw Errors.badRequest("Decision is not valid for a Content Report Case", {
@@ -800,6 +808,18 @@ export async function recordReviewCaseDecision(
   }
   if (["resolved", "closed"].includes(current.status)) {
     throw Errors.conflict("Terminal case must be reopened before a new decision");
+  }
+  // INVARIANT: 会改动线上内容的决定只能出自 moderation 的复合命令 —— 那里才会调用
+  //            applyModerationAction / restoreCanonicalAppealTarget。在这里放行等于让
+  //            运营记下「已处理」而内容原封不动地留在线上。
+  if (!input.sourceSettled && CONTENT_EFFECT_REVIEW_DECISIONS.includes(
+    input.decision as (typeof CONTENT_EFFECT_REVIEW_DECISIONS)[number],
+  )) {
+    throw Errors.conflict("This decision changes live content and must run as a moderation command", {
+      blocker: "content_effect_decision_requires_moderation_command",
+      requiredAction: "Record this decision in Moderation, where the takedown or restore is actually applied",
+      decision: input.decision,
+    });
   }
   const nextStatus = input.downstreamVerified ? "resolved" : "in_progress";
   if (!isAdminCaseTransitionAllowed(current.status, nextStatus)) {
@@ -861,6 +881,7 @@ export async function recordReviewCaseDecision(
       requestId: input.requestId,
     },
   });
+  if (!input.sourceSettled) await settleReviewSource(db, current.id, current.type, input.actor.id, input.decision);
   await db.mainOutboxEvent.create({
     data: {
       eventType: "admin.case.decision.recorded.v2",
@@ -870,6 +891,46 @@ export async function recordReviewCaseDecision(
     },
   });
   return updated;
+}
+
+// SPEC: Case 级决定必须把它的来源记录一起推到终态。
+// INVARIANT: 只动还开着的来源 —— moderation 先落地再调用本函数的那条路径不会走到这里，
+//            重放同一条决定也不会把已终态的记录改回去。
+// INTENT: 此前 Case 决定只写工单：举报永远停在 open，于是它既继续占着审核队列、
+//         又违反 open_source_without_case 这条跨表不变式（实测复现）。运营按流程做完
+//         全部四步，数据反而更脏——这不是运营能看出来的问题，只能在这里收口。
+async function settleReviewSource(
+  db: Db,
+  caseId: string,
+  caseType: string,
+  actorId: string,
+  decision: string,
+) {
+  // INVARIANT: 只写来源侧认得的终态。`escalated`（举报转交别的流程）和 `open`（申诉维持开启）
+  //            都不是终态——把它们写进 status，来源就会离开各自的队列却没人接手。
+  const sourceType = caseType === "content_report" ? "content_report" : caseType === "appeal" ? "appeal" : null;
+  if (!sourceType) return;
+  const terminal = sourceType === "content_report"
+    ? TERMINAL_REPORT_STATUSES
+    : TERMINAL_APPEAL_STATUSES;
+  if (!terminal.includes(decision)) return;
+  const evidence = await db.caseEvidence.findMany({
+    where: { caseId, sourceType },
+    select: { sourceId: true },
+  });
+  const sourceIds = evidence.map((row) => row.sourceId);
+  if (sourceIds.length === 0) return;
+  if (sourceType === "content_report") {
+    await db.contentReport.updateMany({
+      where: { id: { in: sourceIds }, status: { in: ACTIVE_REPORT_STATUSES } },
+      data: { status: decision },
+    });
+    return;
+  }
+  await db.appeal.updateMany({
+    where: { id: { in: sourceIds }, status: "open" },
+    data: { status: decision, reviewerId: actorId, resolvedAt: new Date() },
+  });
 }
 
 export async function recordReviewCaseDecisionAtomic(
@@ -945,7 +1006,7 @@ export async function verifyReviewCase(input: {
     const current = await tx.adminCase.findUnique({ where: { id: input.caseId } });
     if (!current) throw Errors.notFound("Case not found");
     assertCaseScope(current, input.actor);
-    if (current.version !== input.expectedVersion) throw Errors.conflict("Case version changed");
+    if (current.version !== input.expectedVersion) throw Errors.versionConflict("Case version changed");
     if (!current.resolution) throw Errors.conflict("Case needs a decision before verification");
     const evidenceCount = await tx.caseEvidence.count({
       where: { caseId: current.id, id: { in: [...input.evidenceRefs] } },
@@ -1092,7 +1153,7 @@ export async function recordCustomerCaseAction(input: {
         action: input.action,
       });
     }
-    if (current.version !== input.expectedVersion) throw Errors.conflict("Case version changed");
+    if (current.version !== input.expectedVersion) throw Errors.versionConflict("Case version changed");
     if (!isAdminCaseTransitionAllowed(current.status, "in_progress")) {
       throw Errors.conflict("Case cannot accept an action from its present state", { status: current.status });
     }
@@ -1198,7 +1259,7 @@ export async function waitCase(input: {
     const current = await tx.adminCase.findUnique({ where: { id: input.caseId } });
     if (!current) throw Errors.notFound("Case not found");
     assertCaseScope(current, input.actor);
-    if (current.version !== input.expectedVersion) throw Errors.conflict("Case version changed");
+    if (current.version !== input.expectedVersion) throw Errors.versionConflict("Case version changed");
     if (!isAdminCaseTransitionAllowed(current.status, "waiting")) {
       throw Errors.conflict("Only active Cases can enter waiting state");
     }
@@ -1261,7 +1322,7 @@ export async function reopenOrRecurCase(input: {
     const current = await tx.adminCase.findUnique({ where: { id: input.caseId } });
     if (!current) throw Errors.notFound("Case not found");
     assertCaseScope(current, input.actor);
-    if (current.version !== input.expectedVersion) throw Errors.conflict("Case version changed");
+    if (current.version !== input.expectedVersion) throw Errors.versionConflict("Case version changed");
     if (!isAdminCaseTransitionAllowed(current.status, "reopened")) throw Errors.conflict("Only terminal Cases can be reopened");
     const activeKey = adminCaseActiveKey(
       current.type,
@@ -1290,7 +1351,7 @@ export async function reopenOrRecurCase(input: {
     const locked = await tx.$queryRaw<Array<{ id: string }>>`
       SELECT id FROM admin_cases WHERE id = ${current.id} AND version = ${input.expectedVersion} FOR UPDATE
     `;
-    if (locked.length !== 1) throw Errors.conflict("Case version changed");
+    if (locked.length !== 1) throw Errors.versionConflict("Case version changed");
     const existingActive = await tx.adminCase.findFirst({ where: { activeKey, id: { not: current.id } }, select: { id: true } });
     if (existingActive) throw Errors.conflict("A recurrence of this Case is already active", { activeCaseId: existingActive.id });
     const cutoff = Date.now() - (input.reopenWindowMs ?? 7 * 24 * 60 * 60 * 1_000);

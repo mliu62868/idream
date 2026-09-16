@@ -1,8 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { env } from "@/server/lib/env";
 import { prisma } from "@/server/lib/db";
 import { backfillCanonicalMetricFacts } from "./backfill";
 import { loadCanonicalMetricDataset } from "./projector";
+
+// Production provenance is simulated only in the isolated test database.
+vi.mock("@/server/lib/env", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/server/lib/env")>();
+  return { ...actual, env: { ...actual.env, APP_ENV: "production" } };
+});
 
 describe("canonical metric fact backfill", () => {
   const prefix = `metric-backfill-${randomUUID()}`;
@@ -62,6 +69,7 @@ describe("canonical metric fact backfill", () => {
   });
 
   afterAll(async () => {
+    await prisma.analyticsEvent.deleteMany({ where: { sourceEventId: { startsWith: prefix } } });
     await prisma.metricBackfillRun.deleteMany({ where: { source: { startsWith: prefix } } });
     await prisma.metricProjectionReceipt.deleteMany({ where: { sourceEventId: { contains: prefix } } });
     await prisma.subscriptionLifecycleFact.deleteMany({ where: { userId: { in: userIds } } });
@@ -70,6 +78,39 @@ describe("canonical metric fact backfill", () => {
     await prisma.plan.deleteMany({ where: { id: planId } });
     await prisma.user.deleteMany({ where: { id: { in: userIds } } });
     await prisma.$disconnect();
+  });
+
+  it("does not relabel development authority rows as production customers", async () => {
+    const original = env.APP_ENV;
+    env.APP_ENV = "development";
+    try {
+      const report = await backfillCanonicalMetricFacts(prisma, {
+        source: `${prefix}:local-preview`, dryRun: true, batchSize: 50, userIdPrefix: prefix,
+      });
+      expect(report).toMatchObject({ wouldApplyCount: 0, skippedCount: 6, appliedCount: 0 });
+      expect(report.before).toEqual(report.after);
+    } finally { env.APP_ENV = original; }
+  });
+
+  it("uses generation delivery authority during canonical replay previews and reports missing authority as blocked", async () => {
+    const sourceEventId = `${prefix}-missing-generation-authority`;
+    await prisma.analyticsEvent.create({ data: {
+      name: "generation.delivery.completed.v2", sourceService: "main", sourceEventId, schemaVersion: 2,
+      environment: "production", dataClass: "customer", trustClass: "canonical",
+      occurredAt: new Date(), actor: { userId: customerId, isInternal: false }, context: {},
+      props: { requestId: `${prefix}-absent-request`, artifactId: `${prefix}-absent-asset`, userId: customerId,
+        expectedOutputCount: 1, deliveredOutputCount: 1, valid: true, displayable: true },
+    } });
+    try {
+      const report = await backfillCanonicalMetricFacts(prisma, {
+        source: `${prefix}:generation-preview`, sourceKind: "canonical_events", dryRun: true,
+        batchSize: 50, userIdPrefix: prefix,
+      });
+      expect(report).toMatchObject({ status: "blocked", scannedCount: 1, wouldApplyCount: 0, mismatchCount: 1 });
+      expect(report.mismatches[0]).toMatchObject({ reason: "missing_required_fact", status: "quarantined" });
+      expect(report.before).toEqual(report.after);
+      expect(await prisma.metricProjectionReceipt.count({ where: { sourceEventId } })).toBe(0);
+    } finally { await prisma.analyticsEvent.deleteMany({ where: { sourceEventId } }); }
   });
 
   it("reports only authoritative customers as eligible during a dry run", async () => {

@@ -50,6 +50,7 @@ export type TodayLegacyData = {
     billing: { activeSubscriptions: number };
   };
   featureFlags: Row[];
+  featureFlagCount: number;
 };
 
 export type TodayData = {
@@ -263,7 +264,7 @@ export function TodayView({ data, onPreferenceChanged, workMode }: { data: Today
           <ContextValue label={t("Active users")} value={data.legacy.metrics.users.active} />
           <ContextValue label={t("Queued generation jobs")} value={data.legacy.metrics.generation.queued} />
           <ContextValue label={t("Active subscriptions")} value={data.legacy.metrics.billing.activeSubscriptions} />
-          <ContextValue label={t("Feature flags")} value={data.legacy.featureFlags.length} />
+          <ContextValue label={t("Feature flags")} value={data.legacy.featureFlagCount} />
         </div>
       </details>
     </div>

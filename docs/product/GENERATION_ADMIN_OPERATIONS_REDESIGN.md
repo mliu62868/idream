@@ -4,6 +4,8 @@
 
 状态：目标设计 + 当前实现补充；生成状态、发布资格与运营权威继续服从 Admin remediation plan 与 ADR
 
+> **2026-09-13 命令口径**：本文正文记录的历史验证命令 `serve:comfyui-image`、`launch:probe:redcraft-comfyui`、`launch:probe:redcraft-image:local`、`launch:probe:redcraft-consistency:local` 已随 image-gen P1 backend 抽象删除（见 `git log -S'launch:probe:redcraft-comfyui' -- package.json`，删于 `f665b54a5`）。叙述保留以说明当时的验证形态；当前等价入口是 `bun run --filter @idream/gen preflight` 与 `bun run --filter @idream/gen smoke:backend`。
+
 > **2026-07-11 authority 修正**：本文的 Profile/Recipe/Batch/Asset/Placement 产品方向继续有效；生成状态和运营闭环以 [`ADMIN_CONSOLE_FIRST_PRINCIPLES_REMEDIATION_PLAN.md`](./ADMIN_CONSOLE_FIRST_PRINCIPLES_REMEDIATION_PLAN.md) §10–11 与 [`ADR-11`](../architecture/15-admin-operating-system-authority-adr.md) 为准。当前实现已使用 Request（兼容物理表 `GenerationJob`）→ Attempt → TransportExecution → Artifact → Delivery，并以 DreamcoinLedger + SettlementLink 表达结算；`completed`、`refunded` 和 BullMQ job state 不再混作业务成功。
 
 > **2026-07-17 ComfyUI 当前事实**：`qwen-image-edit-img2img`、`qwen-image-edit-multi-identity`、`qwen-image-edit-multi-reference`、`redcraft-krea2-txt2img` 四个 iDream workflow 已完成 UI sync/readback。single reference、dual identity、identity + source 三条真实执行分别产出 832×1216 artifact，SHA-256 为 `3e0bdfa40aa9f70fa7c6fbaeb38f360254c89febf31988221ae2ef2b54fc5ea5`、`965c9f20dd71cd294429bc7c87e940328d441fd48380599aee533343162cb512`、`b2361c115cf2b8351303cc468d82661f0a40074bee4b026927bcf4e9a889d6e5`。descriptor load、UI visibility、artifact smoke、profile publish/route qualification 与生产容量是不同 Gate；前两项或一次 smoke 不能自动发布 profile。
@@ -33,7 +35,7 @@
 - `docs/product/ADMIN_CONSOLE_PLAN.md` 已定义后台是控制面，Generation 是 P0 重点。
 - `docs/product/CURRENT_FUNCTIONAL_COVERAGE.md` 和 `docs/product-audits/2026-06-30-adversarial-chrome/audit-report.md` 显示本地 beta 流程已覆盖 Generate、Admin Jobs、Provider Health、Chat Ops 等核心面。
 - `docs/product-audits/2026-06-29-sdcpp-admin-ops-audit/README.md` 明确指出 sd.cpp 模型导入更像工程控制台，因此不应作为普通运营路径。
-- `packages/main/prisma/schema.prisma` 已有 `GenerationModelProfile`、`GenerationPromptTemplate`、`GenerationJob`、`MediaAsset`、`GenerationPreset` 等基础模型。
+- `packages/main/prisma/schema.prisma` 已有 `GenerationModelProfile`、`GenerationRecipe`（原 `GenerationPromptTemplate`，2026-07-08 改名）、`GenerationJob`、`MediaAsset`、`GenerationPreset` 等基础模型。
 - `packages/main/src/components/admin/AdminConsoleClient.tsx` 已有 `generation/config`、`generation/jobs`、`ops/providers` 等入口，但没有内容生产和素材投放层；`generation/models` 不再作为产品面入口。
 
 已有能力足够支撑第一阶段改造，缺的是产品信息架构和运营对象模型。

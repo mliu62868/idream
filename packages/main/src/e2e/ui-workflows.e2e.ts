@@ -529,7 +529,6 @@ async function seedProfileMutedTagFixture(email: string) {
         create: {
           chatsCount: 25,
           likesCount: 25,
-          viewsCount: 25,
         },
       },
     },
@@ -1924,7 +1923,6 @@ async function seedCommunityDreamer() {
       characterId,
       likesCount: score,
       chatsCount: score,
-      viewsCount: score,
     },
   });
   const authority = await seedStrictPublicCharacterAuthority({
@@ -2053,7 +2051,6 @@ async function seedExploreCharacters(token: string) {
           create: {
             likesCount: spec.chats,
             chatsCount: spec.chats,
-            viewsCount: spec.chats,
           },
         },
       },

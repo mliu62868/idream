@@ -20,7 +20,7 @@ import {
 } from "@/server/lib/media-asset-authority";
 import { isRecord, toInputJson } from "@/server/lib/request-json";
 import { jsonStringArray, pruneUndefined } from "./json-values";
-import { dimensionsForImageOrientation } from "./generation-dimensions";
+import { dimensionsForImageOrientation } from "@idream/shared/media/image-orientation";
 import {
   resolveGenerationVisualProfile,
   isEditorialLegacyVisualProfileProjection,

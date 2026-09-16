@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, Check, ImageIcon, Loader2, Sparkles, Wand2 } from "lucide-react";
 import { CHARACTER_VISIBILITY, isCatalogMember } from "@idream/shared/catalog";
 import { legacySoulDetailsMarkdown } from "@idream/shared/chat/persona";
@@ -18,6 +18,8 @@ import {
   parseCharacterVoiceCatalogResponse,
   parseCharacterVoicePreviewResponse,
   type CharacterVoiceCatalog,
+  parseTagListResponse,
+  type PublicTagList,
   parseViewerAuthorityResponse,
   type PublicCharacterTemplate as CreateTemplate,
 } from "@/lib/public-api-contracts";
@@ -101,6 +103,8 @@ function pickTags(value: unknown): string {
   return "";
 }
 
+/** 与服务端 MAX_CHARACTER_TAGS 一致（character-draft-write.ts）。 */
+const MAX_TAGS = 12;
 const DEFAULT_PREVIEW = "/images/ourdream/character-placeholder.svg";
 const STORAGE_KEY_PREFIX = "ourdream.create.draft.v2";
 
@@ -247,6 +251,9 @@ export function CreateWorkspace() {
   const [voiceCatalog, setVoiceCatalog] = useState<CharacterVoiceCatalog | null>(null);
   const [voiceCatalogError, setVoiceCatalogError] = useState(false);
   const [voiceCatalogAttempt, setVoiceCatalogAttempt] = useState(0);
+  const [tagCatalog, setTagCatalog] = useState<PublicTagList | null>(null);
+  const [tagCatalogError, setTagCatalogError] = useState(false);
+  const [tagCatalogAttempt, setTagCatalogAttempt] = useState(0);
   const [voicePreviewUrl, setVoicePreviewUrl] = useState("");
   const [voicePreviewPending, setVoicePreviewPending] = useState(false);
   const [voicePreviewStatus, setVoicePreviewStatus] = useState("");
@@ -552,6 +559,38 @@ export function CreateWorkspace() {
       .catch(() => { if (!controller.signal.aborted) setVoiceCatalogError(true); });
     return () => controller.abort();
   }, [ageGateAccepted, voiceCatalogAttempt]);
+
+  // SPEC: 标签选择只呈现标签词典里真实存在的标签。
+  // INTENT: 这里过去是一个自由文本输入框（placeholder 还举了 "artist, ceramics"
+  //   这种词典里没有的例子），用户填什么都收下、都存进草稿，发布时却一条都不写入
+  //   —— 填了等于没填。标签是受运营治理的发现维度，创作者可以施加但不能新增，
+  //   所以正确的形态是从词典里选，让所选即所得。
+  useEffect(() => {
+    if (!ageGateAccepted) return;
+    const controller = new AbortController();
+    fetch("/api/v1/tags", { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Tag catalog unavailable");
+        return parseTagListResponse(await response.json());
+      })
+      .then((catalog) => { if (!controller.signal.aborted) { setTagCatalog(catalog); setTagCatalogError(false); } })
+      .catch(() => { if (!controller.signal.aborted) setTagCatalogError(true); });
+    return () => controller.abort();
+  }, [ageGateAccepted, tagCatalogAttempt]);
+
+  const selectedTagSlugs = useMemo(
+    () => new Set(normalizedTags(state.tags).map(tagSlugOf).filter(Boolean)),
+    [state.tags],
+  );
+  const toggleTag = useCallback((slug: string) => {
+    setState((current) => {
+      const slugs = normalizedTags(current.tags).map(tagSlugOf).filter(Boolean);
+      const selected = slugs.includes(slug);
+      if (!selected && slugs.length >= MAX_TAGS) return current;
+      const next = selected ? slugs.filter((item) => item !== slug) : [...slugs, slug];
+      return { ...current, tags: next.join(",") };
+    });
+  }, []);
 
   useEffect(() => () => { voicePreviewSequence.current += 1; }, [viewerScope]);
 
@@ -1169,14 +1208,15 @@ export function CreateWorkspace() {
               <div className="grid gap-3 md:grid-cols-2" data-testid="create-step-identity">
                 <Field label="Name">
                   <input
-                    className="mt-2 w-full bg-transparent text-[18px] font-bold leading-6 outline-none"
+                    className={FIELD_LEAD_INPUT_CLASS}
                     onChange={(event) => setIdentityField("name", event.target.value)}
+                    placeholder="Nova Reyes"
                     value={state.name}
                   />
                 </Field>
                 <Field label="Age" hint={ageError || "18+ only"}>
                   <input
-                    className="mt-2 w-full bg-transparent text-[18px] font-bold leading-6 outline-none"
+                    className={FIELD_LEAD_INPUT_CLASS}
                     max={120}
                     min={18}
                     onChange={(event) => setIdentityField("age", Number(event.target.value))}
@@ -1218,20 +1258,22 @@ export function CreateWorkspace() {
 
             {step === 1 && (
               <div className="grid gap-3 md:grid-cols-3" data-testid="create-step-appearance">
-                <Field label="Appearance">
+                <Field label="Appearance" hint="A free-text summary of how they look.">
                   <input
-                    className="mt-2 w-full bg-transparent text-[14px] font-semibold leading-6 outline-none"
+                    className={FIELD_TEXT_INPUT_CLASS}
                     onChange={(event) => setIdentityField("appearance", event.target.value)}
+                    placeholder="Tall, warm-eyed, always in a worn denim jacket"
                     value={state.appearance}
                   />
                 </Field>
                 {VISUAL_FIELDS.map(({ key, label, suggestions }) => (
                   <Field key={key} label={label} hint="Choose a suggestion or write your own.">
                     <input
-                      className="mt-2 w-full bg-transparent text-[14px] font-semibold leading-6 outline-none"
+                      className={FIELD_TEXT_INPUT_CLASS}
                       list={`create-${key}-options`}
                       maxLength={key === "hair" || key === "body" ? 2000 : 160}
                       onChange={(event) => setIdentityField(key, event.target.value)}
+                      placeholder={suggestions[0] ? `e.g. ${suggestions[0]}` : undefined}
                       value={state[key]}
                     />
                     <datalist id={`create-${key}-options`}>
@@ -1266,10 +1308,11 @@ export function CreateWorkspace() {
                   {CREATE_SOUL_DETAIL_FIELDS.map(({ label, suggestions }, index) => (
                     <Field key={label} label={label} hint="Choose a suggestion or write your own.">
                       <input
-                        className="mt-2 w-full bg-transparent text-[14px] font-semibold leading-6 outline-none"
+                        className={FIELD_TEXT_INPUT_CLASS}
                         list={`create-soul-${index}-options`}
                         maxLength={1000}
                         onChange={(event) => updateGuidedSoul(label, event.target.value)}
+                        placeholder={suggestions[0] ? `e.g. ${suggestions[0]}` : undefined}
                         value={readSoulDetail(state.detailsMarkdown, label)}
                       />
                       <datalist id={`create-soul-${index}-options`}>
@@ -1333,12 +1376,57 @@ export function CreateWorkspace() {
                     value={state.detailsMarkdown}
                   />
                 </Field>
-                <Field label="Tags">
-                  <input
-                    className="mt-2 w-full bg-transparent text-[14px] font-semibold leading-6 text-white outline-none"
-                    onChange={(event) => set("tags", event.target.value)}
-                    value={state.tags}
-                  />
+                <Field
+                  hint={`Pick the tags readers filter by. Up to ${MAX_TAGS}.`}
+                  label="Tags"
+                >
+                  {tagCatalogError ? (
+                    <p className="mt-2 text-[12px]" role="status">
+                      Tags could not load.{" "}
+                      <button className="underline" onClick={() => setTagCatalogAttempt((attempt) => attempt + 1)} type="button">
+                        Retry tags
+                      </button>
+                    </p>
+                  ) : !tagCatalog ? (
+                    <p className="mt-2 text-[12px] text-[rgb(170,170,170)]" role="status">Loading tags…</p>
+                  ) : tagCatalog.items.length === 0 ? (
+                    <p className="mt-2 text-[12px] text-[rgb(170,170,170)]">
+                      No tags are published yet. Your character stays discoverable by name and search.
+                    </p>
+                  ) : (
+                    <div className="mt-2">
+                      <p className="text-[12px] text-[rgb(170,170,170)]" data-testid="create-tag-count">
+                        {selectedTagSlugs.size} of {MAX_TAGS} selected
+                      </p>
+                      <div className="mt-2 flex flex-wrap gap-2" data-testid="create-tag-picker">
+                        {tagCatalog.items.map((tag) => {
+                          const selected = selectedTagSlugs.has(tag.slug);
+                          const atLimit = !selected && selectedTagSlugs.size >= MAX_TAGS;
+                          return (
+                            <button
+                              aria-pressed={selected}
+                              className={`rounded-full border px-3 py-1.5 text-[13px] font-semibold leading-5 transition ${
+                                selected
+                                  ? "border-white bg-white text-black"
+                                  : "border-white/15 bg-[rgb(36,36,36)] text-[rgb(214,214,214)] hover:border-white/40"
+                              } ${atLimit ? "cursor-not-allowed opacity-40" : ""}`}
+                              disabled={atLimit}
+                              key={tag.slug}
+                              onClick={() => toggleTag(tag.slug)}
+                              type="button"
+                            >
+                              {tag.label}
+                              {tag.isSensitive && (
+                                <span className={`ml-1.5 text-[11px] font-bold ${selected ? "text-[rgb(120,120,120)]" : "text-[rgb(150,150,150)]"}`}>
+                                  18+
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
                 </Field>
               </div>
             )}
@@ -1651,6 +1739,15 @@ export function CreateWorkspace() {
   );
 }
 
+// SPEC: 向导里可输入的字段必须自己看起来像输入框。
+// INTENT: 这些卡片原本用 bg-transparent + 无边框 + 无 placeholder，渲染出来是一块空白，
+//   用户看到「Choose a suggestion or write your own」却找不到可点的地方。边框沿用 Soul
+//   步骤 textarea 已有的样式，不引入第二套视觉。
+const FIELD_TEXT_INPUT_CLASS =
+  "mt-2 w-full rounded-[10px] border border-white/10 bg-[rgb(13,13,13)] px-3 py-2 text-[14px] font-semibold leading-6 text-white outline-none focus:border-[rgb(253,95,194)]";
+const FIELD_LEAD_INPUT_CLASS =
+  "mt-2 w-full rounded-[10px] border border-white/10 bg-[rgb(13,13,13)] px-3 py-2 text-[18px] font-bold leading-6 text-white outline-none focus:border-[rgb(253,95,194)]";
+
 function Field({
   label,
   hint,
@@ -1840,7 +1937,16 @@ function normalizedTags(value: string) {
     .split(",")
     .map((tag) => tag.trim())
     .filter(Boolean)
-    .slice(0, 12);
+    .slice(0, MAX_TAGS);
+}
+
+/** 与服务端 slugify 同一套规则；草稿里可能留有旧的自由文本，按同样规则比对才能对上。 */
+function tagSlugOf(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
 }
 
 // Guided authoring edits the one Soul Markdown authority; it never creates a

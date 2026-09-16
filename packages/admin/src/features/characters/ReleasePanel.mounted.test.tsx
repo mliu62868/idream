@@ -123,6 +123,20 @@ describe("Character release history empty state", () => {
     expect(request).toHaveBeenCalledWith("/api/v2/admin/characters/character-fixture/commands/restore", expect.objectContaining({ body: expect.objectContaining({ entityVersion: 10, reason: { code: "operator_restore", summary: "恢复草稿" } }) }));
   });
 
+  it.each([
+    [new transport.AdminV2RequestError("conflict", 409, "conflict", { activeCommandId: "existing-command", activeCommandType: "character.serving.restore" }), "恢复草稿已在执行。工作台已关联该命令，没有受理另一个命令。"],
+    [null, "恢复草稿受理状态不明确。将安全重放同一命令。"],
+  ])("translates interpolated submission outcomes in the mounted release panel", async (cause, message) => {
+    vi.spyOn(transport, "adminV2Request").mockRejectedValue(cause);
+    await render(characterWorkspaceDetail({ ...readyCharacter(), serving: { characterId: "character-fixture", state: "retired", currentReleaseId: null, version: 10, updatedAt: "2026-09-05T00:00:00.000Z" } }));
+    await act(async () => container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
+    const restore = [...container.querySelectorAll<HTMLButtonElement>("button")].find((item) => item.textContent?.trim() === "恢复草稿")!;
+    await act(async () => restore.click());
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(message);
+    expect(container.textContent).not.toContain("acceptance is unknown");
+    expect(container.textContent).not.toContain("is already active");
+  });
+
   it("never offers draft restoration for a retired published Character", async () => {
     await render(characterWorkspaceDetail({ serving: { characterId: "character-fixture", state: "retired", currentReleaseId: "previously-published", version: 10, updatedAt: "2026-09-05T00:00:00.000Z" } }));
     expect(container.textContent).not.toContain("恢复草稿");

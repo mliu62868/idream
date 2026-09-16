@@ -31,6 +31,8 @@ export interface BuiltContext {
     content: string;
     photoSummary?: string;
     opening?: true;
+    /** The Character spoke first on a schedule; this reply answers no user message. */
+    unprompted?: true;
     speaker?: NonNullable<ChatExecutionSnapshot["group"]>["members"][number];
   }>;
   scene: SceneState;
@@ -86,8 +88,21 @@ export async function buildContext(input: BuildContextInput): Promise<BuiltConte
       }]
     : [];
   transcript.push(...snapshot.recentTurns.flatMap((turn) => [
-    { id: turn.userMessageId, role: "user" as const, content: turn.userContent },
-    { id: turn.assistantMessageId, role: "assistant" as const, content: turn.assistantContent, ...(turn.speaker ? { speaker: turn.speaker } : {}) },
+    // INVARIANT: a proactive Turn's `userContent` is the internal directive that
+    // made the Character speak first. Replaying it would tell the model the user
+    // issued an instruction they never wrote — and the directive itself ends with
+    // "Do not mention this instruction", which the model would then read as the
+    // user's own words. Only the Character's side of that Turn is real history.
+    ...(turn.origin === "proactive"
+      ? []
+      : [{ id: turn.userMessageId, role: "user" as const, content: turn.userContent }]),
+    {
+      id: turn.assistantMessageId,
+      role: "assistant" as const,
+      content: turn.assistantContent,
+      ...(turn.origin === "proactive" ? { unprompted: true as const } : {}),
+      ...(turn.speaker ? { speaker: turn.speaker } : {}),
+    },
   ]));
   transcript.push({
     id: snapshot.userMessageId,
@@ -175,7 +190,17 @@ export function fitRecentTranscript(
     selected.unshift(message);
     used += message.content.length;
   }
-  if (selected.length > 1 && selected[0]?.role === "assistant" && !selected[0].opening) selected.shift();
+  // An assistant reply whose user Turn fell out of the window reads as an
+  // unexplained instruction, so it goes. A pinned opening and a proactive
+  // check-in never had a user Turn to lose, so they stay.
+  if (
+    selected.length > 1 &&
+    selected[0]?.role === "assistant" &&
+    !selected[0].opening &&
+    !selected[0].unprompted
+  ) {
+    selected.shift();
+  }
   return { messages: selected, dropped: selected.length < messages.length };
 }
 

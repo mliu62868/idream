@@ -18,6 +18,7 @@
       "@idream/shared/bff": ["../shared/src/bff/signing.ts"],
       "@idream/shared/chat/limits": ["../shared/src/chat/limits.ts"],
       "@idream/shared/chat/image-action": ["../shared/src/chat/image-action.ts"],
+      "@idream/shared/chat/image-intent": ["../shared/src/chat/image-intent.ts"],
       "@idream/shared/chat/companion-runtime": ["../shared/src/chat/companion-runtime.ts"],
       "@idream/shared/observability/sentry": ["../shared/src/observability/sentry.ts"]
     }

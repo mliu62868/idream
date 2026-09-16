@@ -1,7 +1,8 @@
+import { env } from "@/server/lib/env";
 import { METRIC_PRODUCT_EVENTS } from "@idream/shared/contracts";
 import type { PrismaClient } from "@prisma/client";
 import { toInputJson } from "../shared/prisma-json";
-import { projectCanonicalMetricEvent, type MetricProductEvent } from "./projector";
+import { projectCanonicalMetricEvent, previewCanonicalMetricEvent, isEligibleServerOutcome, type MetricProductEvent } from "./projector";
 import { classifyExistingCustomerMetricActor } from "./event-classification";
 
 const SUPPORTED_EVENT_TYPES = Object.values(METRIC_PRODUCT_EVENTS);
@@ -17,7 +18,7 @@ export interface MetricBackfillOptions {
 
 export interface MetricBackfillReport {
   readonly runId: string;
-  readonly status: "paused" | "completed";
+  readonly status: "paused" | "completed" | "blocked";
   readonly dryRun: boolean;
   readonly scannedCount: number;
   readonly wouldApplyCount: number;
@@ -25,6 +26,7 @@ export interface MetricBackfillReport {
   readonly duplicateCount: number;
   readonly skippedCount: number;
   readonly mismatchCount: number;
+  readonly skippedReasons: Readonly<Record<string, number>>;
   readonly nextCursor: string | null;
   readonly validFrom: string | null;
   readonly coverage: number;
@@ -54,7 +56,8 @@ function syntheticEvent(input: {
     schemaVersion: 2,
     occurredAt: input.occurredAt,
     ingestedAt: new Date(),
-    environment: "production",
+    // Authority rows have no historical environment field; never promote a local database to production.
+    environment: env.APP_ENV,
     dataClass: input.classification.dataClass,
     trustClass: "canonical",
     actor: input.classification.actor,
@@ -162,6 +165,7 @@ async function canonicalEventItems(
       name: { in: SUPPORTED_EVENT_TYPES },
       sourceEventId: { not: null },
       trustClass: "canonical",
+      ...(options.userIdPrefix ? { actor: { path: ["userId"], string_starts_with: options.userIdPrefix } } : {}),
     },
     orderBy: { id: "asc" },
     take: limit + 1,
@@ -221,28 +225,38 @@ export async function backfillCanonicalMetricFacts(
   let appliedCount = 0;
   let duplicateCount = 0;
   let skippedCount = 0;
+  const skippedReasons: Record<string, number> = {};
   const mismatches: Array<Readonly<Record<string, unknown>>> = [];
-  if (!options.dryRun) {
-    for (const item of batch.items) {
-      try {
-        const result = await projectCanonicalMetricEvent(db, item.event);
-        if (result.status === "applied") appliedCount += 1;
-        else if (result.status === "duplicate") duplicateCount += 1;
-        else skippedCount += 1;
-      } catch (error) {
-        mismatches.push({
-          cursor: item.cursor,
-          sourceEventId: item.event.sourceEventId,
-          message: error instanceof Error ? error.message : "unknown backfill failure",
-        });
+  let wouldApplyCount = 0;
+  for (const item of batch.items) {
+    try {
+      const result = options.dryRun
+        ? await previewCanonicalMetricEvent(db, item.event)
+        : await projectCanonicalMetricEvent(db, item.event);
+      if (result.status === "applied") {
+        wouldApplyCount += 1;
+        if (!options.dryRun) appliedCount += 1;
+      } else if (result.status === "duplicate") duplicateCount += 1;
+      else if (result.status === "skipped") {
+        skippedCount += 1;
+        skippedReasons[result.reason] = (skippedReasons[result.reason] ?? 0) + 1;
       }
+      else mismatches.push({ cursor: item.cursor, sourceEventId: item.event.sourceEventId, status: result.status, reason: "reason" in result ? result.reason : "unexpected_projection_result" });
+    } catch (error) {
+      mismatches.push({
+        cursor: item.cursor,
+        sourceEventId: item.event.sourceEventId,
+        message: error instanceof Error ? error.message : "unknown backfill failure",
+      });
     }
   }
   const after = await factCounts(db, options.userIdPrefix);
-  const status = batch.hasMore ? "paused" as const : "completed" as const;
-  const nextCursor = batch.hasMore ? batch.items.at(-1)?.cursor ?? options.cursor ?? null : null;
-  const eligibleCount = batch.items.filter((item) => item.event.dataClass === "customer" && record(item.event.actor).isInternal !== true).length;
-  const coverage = eligibleCount === 0 ? 1 : (options.dryRun ? eligibleCount : appliedCount + duplicateCount) / eligibleCount;
+  const status = mismatches.length > 0 ? "blocked" as const : batch.hasMore ? "paused" as const : "completed" as const;
+  // A failed batch is resumable from its input cursor; existing receipts make replay idempotent.
+  const nextCursor = status === "blocked" ? options.cursor ?? null
+    : batch.hasMore ? batch.items.at(-1)?.cursor ?? options.cursor ?? null : null;
+  const eligibleCount = batch.items.filter((item) => isEligibleServerOutcome(item.event)).length;
+  const coverage = eligibleCount === 0 ? 1 : (wouldApplyCount + duplicateCount) / eligibleCount;
   await db.metricBackfillRun.update({
     where: { id: run.id },
     data: {
@@ -263,7 +277,7 @@ export async function backfillCanonicalMetricFacts(
     status,
     dryRun: options.dryRun,
     scannedCount: batch.items.length,
-    wouldApplyCount: eligibleCount,
+    wouldApplyCount,
     appliedCount,
     duplicateCount,
     skippedCount,
@@ -274,11 +288,6 @@ export async function backfillCanonicalMetricFacts(
     before,
     after,
     mismatches,
+    skippedReasons,
   };
-}
-
-function record(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {};
 }

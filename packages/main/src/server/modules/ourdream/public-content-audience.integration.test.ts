@@ -305,8 +305,6 @@ describe("public content audience", () => {
     });
     await prisma.characterStats.createMany({
       data: [
-        { characterId: characterIds.official, viewsCount: 5 },
-        { characterId: characterIds.customer, viewsCount: 7 },
       ],
     });
     await prisma.mediaCollection.createMany({
@@ -714,21 +712,6 @@ describe("public content audience", () => {
     expect(ids).not.toContain(collectionIds.fixture);
   });
 
-  it("does not mutate public view totals merely by reading character detail", async () => {
-    const before = await prisma.characterStats.findUniqueOrThrow({
-      where: { characterId: characterIds.customer },
-    });
-
-    const response = await api("GET", `characters/${characterIds.customer}`, {
-      ageGate: true,
-    });
-    expectOk(response);
-
-    const after = await prisma.characterStats.findUniqueOrThrow({
-      where: { characterId: characterIds.customer },
-    });
-    expect(after.viewsCount).toBe(before.viewsCount);
-  });
 
   it("fails closed generated malformed manifests from the public list while preserving legacy", async () => {
     const strictManifest = strictReleaseManifest();

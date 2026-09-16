@@ -213,6 +213,8 @@ async function exerciseDeferredPublicCatalogQualificationAuthority(
       workflowVersion: 1,
     },
   };
+  // Directly adopted generation has no manual review decision. Keep this fixture
+  // on the current contract so a stale database guard fails the real commit.
   const strictManifest = {
     schemaVersion: 2,
     placements: [
@@ -222,7 +224,6 @@ async function exerciseDeferredPublicCatalogQualificationAuthority(
         slotVersion: 1,
         runId: `${fixture}-avatar-run`,
         itemId: `${fixture}-avatar-item`,
-        reviewDecisionId: `${fixture}-avatar-review`,
         generationJobId: `${fixture}-avatar-generation`,
       },
       {
@@ -231,7 +232,6 @@ async function exerciseDeferredPublicCatalogQualificationAuthority(
         slotVersion: 1,
         runId: `${fixture}-hero-run`,
         itemId: `${fixture}-hero-item`,
-        reviewDecisionId: `${fixture}-hero-review`,
         generationJobId: `${fixture}-hero-generation`,
       },
       {
@@ -240,7 +240,6 @@ async function exerciseDeferredPublicCatalogQualificationAuthority(
         slotVersion: 1,
         runId: `${fixture}-chat-run`,
         itemId: `${fixture}-chat-item`,
-        reviewDecisionId: `${fixture}-chat-review`,
         generationJobId: `${fixture}-chat-generation`,
       },
     ],

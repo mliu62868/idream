@@ -425,6 +425,8 @@ describe("Support and billing Case depth", () => {
       summary: "Resolve after downstream verification.",
       evidenceRefs: [evidenceId],
       downstreamVerified: true,
+      // 这一步在模拟 moderation 的复合命令：那里已经下架并把举报改成终态了。
+      sourceSettled: true,
       requestId: `resolve-review-${suffix}`,
     });
     expect(resolved).toMatchObject({ status: "resolved", activeKey: null });

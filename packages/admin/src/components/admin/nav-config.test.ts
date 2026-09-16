@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  ADMIN_V2_WORKSPACE_ACCESS,
-  type AdminV2WorkspaceAccessKey,
+  firstScreenPermissions,
 } from "./workspace-access";
+import type { AdminV2DeclaredOperationId } from "@idream/shared/admin";
 import type { AdminPermissionKey } from "@idream/shared/admin/permissions";
 import { ADMIN_WORK_MODES } from "./shell-preferences";
 import {
@@ -33,7 +33,7 @@ const NAV_IDS = [
   "announcements", "analytics", "insights", "experiments", "compliance", "ops/incidents",
   "approvals", "system/access", "audit-log",
 ];
-const TARGET_ONLY_NAV_IDS = ["growth/characters", "ops/invariants"];
+const TARGET_ONLY_NAV_IDS = ["growth/characters", "ops/invariants", "growth/affiliates"];
 
 describe("admin navigation information architecture", () => {
   it("publishes every decision workspace exactly once inside the task groups", () => {
@@ -162,32 +162,137 @@ describe("admin navigation information architecture", () => {
 
 describe("permission and work-mode navigation", () => {
   it("derives every v2 workspace and deep-link gate from the API authority manifest", () => {
-    const expected = {
-      dashboard: "today",
-      "content/official": "character_workspace",
-      "growth/characters": "character_performance",
-      "content/production": "creative_runs",
-      users: "customers",
-      cases: "cases",
-      experiments: "experiments",
-      "ops/incidents": "incidents",
-      "generation/jobs": "generation_jobs",
-      analytics: "metrics",
-      insights: "metrics",
-    } as const satisfies Record<string, AdminV2WorkspaceAccessKey>;
+    for (const item of ALL_SECTION_ITEMS) {
+      const complete = new Set<AdminPermissionKey>(item.read.allOf);
+      expect(sectionIsPermitted(item.id, complete), item.id).toBe(true);
+      for (const missing of item.read.allOf) {
+        const incomplete = new Set(item.read.allOf.filter((key) => key !== missing));
+        expect(sectionIsPermitted(item.id, incomplete), `${item.id} without ${missing}`).toBe(false);
+      }
+    }
+  });
 
-    for (const [id, workspace] of Object.entries(expected)) {
-      const item = navItems.find((candidate) => candidate.id === id);
-      expect(item?.apiWorkspace, id).toBe(workspace);
-      expect(item?.read, id).toBe(ADMIN_V2_WORKSPACE_ACCESS[workspace]);
+  // SPEC: 入口读权限必须覆盖该页首屏真正调用的 API 所需权限。
+  // INTENT: 这三页只读 generation/* 权威（backends、metrics、model-profiles），要求的是
+  //         generation.config.read。它们曾分别挂在 ops.queue.read 和 metrics 工作区
+  //         （analytics.metric.read）下：菜单可见、点进去首屏请求 403，只有分析师这种
+  //         单权限账号才会撞上，内置的 ops/admin 因为同时持有两个权限一直掩盖着它。
+  // SPEC: 每个入口都要登记它"首屏必需"的 operation；入口读权限必须覆盖这些 operation 在 API
+  //       manifest 里要求的全部权限。
+  // INTENT: 入口权限和页面真正调的接口曾各自演化，漂移出三处「菜单可见、点进去整页 403」
+  //         （Profile Diagnostics / 后端诊断 / 生成健康）。权限键是手写的，没有任何机制把它
+  //         和接口绑在一起。把首屏依赖登记下来之后：漏登记 → 红；入口比首屏松（会 403）→ 红；
+  //         入口比首屏严 → 必须写明理由，避免无意中把有权限的人挡在外面。
+  // 定义：首屏必需 = 进页面就会发、且失败会让这一屏拿不到主要内容的请求。挂载即发但失败可
+  //       优雅降级的附加面板（saved-views、correlation-outbox、flag-monitoring 等）不算。
+  const FIRST_SCREEN: Record<string, readonly AdminV2DeclaredOperationId[]> = {
+    dashboard: ["GET /api/v2/admin/dashboard", "GET /api/v2/admin/today"],
+    "content/official": ["GET /api/v2/admin/characters/portfolio"],
+    "content/templates": ["GET /api/v2/admin/content/templates"],
+    "content/tags": ["GET /api/v2/admin/content/tags"],
+    "content/assets": ["GET /api/v2/admin/assets"],
+    "content/placements": ["GET /api/v2/admin/content/placements"],
+    "content/production": ["GET /api/v2/admin/creative/runs"],
+    cases: ["GET /api/v2/admin/cases"],
+    users: ["GET /api/v2/admin/customers"],
+    billing: [
+      "GET /api/v2/admin/billing/ledger",
+      "GET /api/v2/admin/billing/subscriptions",
+      "GET /api/v2/admin/billing/reconciliation",
+    ],
+    compliance: [
+      "GET /api/v2/admin/compliance/account-deletions",
+      "GET /api/v2/admin/compliance/age-verifications",
+    ],
+    analytics: ["GET /api/v2/admin/metrics"],
+    "growth/characters": ["GET /api/v2/admin/characters/portfolio"],
+    experiments: ["GET /api/v2/admin/experiments"],
+    content: ["GET /api/v2/admin/content/characters", "GET /api/v2/admin/content/featured"],
+    announcements: ["GET /api/v2/admin/announcements"],
+    cms: ["GET /api/v2/admin/cms/pages"],
+    pricing: ["GET /api/v2/admin/pricing/rules"],
+    "growth/affiliates": ["GET /api/v2/admin/affiliate/applications"],
+    promo: ["GET /api/v2/admin/promo/redeem-codes", "GET /api/v2/admin/promo/referrals"],
+    "ops/incidents": ["GET /api/v2/admin/incidents"],
+    "ops/invariants": ["GET /api/v2/admin/reconciliation/invariants"],
+    "generation/jobs": ["GET /api/v2/admin/jobs"],
+    "generation/dead-letter": ["GET /api/v2/admin/generation/dead-letter"],
+    "ops/providers": ["GET /api/v2/admin/ops/providers"],
+    "generation/backends": ["GET /api/v2/admin/generation/backends"],
+    "generation/metrics": ["GET /api/v2/admin/generation/metrics"],
+    insights: ["GET /api/v2/admin/generation/model-profiles"],
+    "generation/config": ["GET /api/v2/admin/generation/model-profiles"],
+    "generation/recipes": ["GET /api/v2/admin/generation/recipes"],
+    "generation/presets": ["GET /api/v2/admin/generation/presets"],
+    "generation/workflows": ["GET /api/v2/admin/generation/workflows"],
+    chat: [
+      "GET /api/v2/admin/chat/overview",
+      "GET /api/v2/admin/chat/provider-health",
+      "GET /api/v2/admin/chat/sessions",
+      "GET /api/v2/admin/chat/usage",
+      "GET /api/v2/admin/chat/moderation-events",
+    ],
+    approvals: ["GET /api/v2/admin/approvals"],
+    "system/access": ["GET /api/v2/admin/users"],
+    "audit-log": ["GET /api/v2/admin/audit-log"],
+    moderation: ["GET /api/v2/admin/moderation/queue"],
+    support: ["GET /api/v2/admin/support/requests"],
+    risk: ["GET /api/v2/admin/risk/abuse"],
+  };
 
-      const complete = new Set<AdminPermissionKey>(ADMIN_V2_WORKSPACE_ACCESS[workspace].allOf);
-      expect(sectionIsPermitted(id, complete), `${id} complete`).toBe(true);
-      for (const missing of ADMIN_V2_WORKSPACE_ACCESS[workspace].allOf) {
-        const incomplete = new Set<AdminPermissionKey>(
-          ADMIN_V2_WORKSPACE_ACCESS[workspace].allOf.filter((key) => key !== missing),
-        );
-        expect(sectionIsPermitted(id, incomplete), `${id} deep link without ${missing}`).toBe(false);
+  // 入口权限严格超集于首屏必需权限的条目，必须在这里写明为什么 —— 每一条都会挡住
+  // "本来看得了这一屏"的人，所以只有想清楚了的才允许存在。
+  const STRICTER_BY_DESIGN: Record<string, string> = {
+    "content/official":
+      "同一个入口还承载 /admin/characters/:id 详情态，详情首屏是 GET /characters/:id，" +
+      "它要 project+release+performance 三个权限；入口取两个子视图的高水位线，" +
+      "只有 performance.read 的人走 Character Performance 那个入口。",
+    "generation/config":
+      "挂载即发的还有 feature-flags（Settings tab）与 jobs（详情侧栏）；两者失败都只影响" +
+      "非默认 tab，但入口按全部挂载期请求的并集要求权限，宁可挡住也不让人进来看半张页面。",
+  };
+
+  it("declares a first screen for every entry and never gates it looser than that screen needs", () => {
+    const registered = new Set(Object.keys(FIRST_SCREEN));
+    expect(
+      ALL_SECTION_ITEMS.map((item) => item.id).filter((id) => !registered.has(id)),
+      "every nav entry registers its first screen",
+    ).toEqual([]);
+
+    for (const item of ALL_SECTION_ITEMS) {
+      const required = firstScreenPermissions(FIRST_SCREEN[item.id] ?? []);
+      const declared = new Set<AdminPermissionKey>(item.read.allOf);
+      const missing = required.filter((permission) => !declared.has(permission));
+      // 入口比首屏松 = 菜单可见、点进去 403。这是硬失败。
+      expect(missing, `${item.id} entry permission must cover its first screen`).toEqual([]);
+
+      const extra = item.read.allOf.filter((permission) => !required.includes(permission));
+      if (extra.length > 0) {
+        expect(
+          STRICTER_BY_DESIGN[item.id],
+          `${item.id} is stricter than its first screen (${extra.join(", ")}) — record why`,
+        ).toBeTruthy();
+      }
+    }
+  });
+
+  it("gates the generation diagnostics pages on the permission their first request needs", () => {
+    // 入口权限从 manifest 推导，所以这里断言的是"和接口要求一致"，不是某个写死的权限键：
+    // 接口哪天换了权限，入口跟着换，这条用例仍然成立。
+    const firstScreen = {
+      "generation/backends": "GET /api/v2/admin/generation/backends",
+      "generation/metrics": "GET /api/v2/admin/generation/metrics",
+      insights: "GET /api/v2/admin/generation/model-profiles",
+    } as const satisfies Record<string, AdminV2DeclaredOperationId>;
+
+    for (const [id, operationId] of Object.entries(firstScreen)) {
+      const required = firstScreenPermissions([operationId]);
+      expect(required.length, `${operationId} declares permissions`).toBeGreaterThan(0);
+      expect(navItems.find((candidate) => candidate.id === id)?.read, id).toEqual({ allOf: required });
+      expect(sectionIsPermitted(id, new Set<AdminPermissionKey>(required)), id).toBe(true);
+      for (const missing of required) {
+        const withoutOne = new Set<AdminPermissionKey>(required.filter((key) => key !== missing));
+        expect(sectionIsPermitted(id, withoutOne), `${id} without ${missing}`).toBe(false);
       }
     }
   });
@@ -278,7 +383,8 @@ describe("permission and work-mode navigation", () => {
   });
 
   it("keeps permitted low-frequency operations reachable in an unrelated work mode", () => {
-    const permissions = new Set<AdminPermissionKey>(["generation.job.read", "ops.queue.read"]);
+    // generation.config.read 是两个诊断页首屏请求要的权限，所以它也是它们的入口权限。
+    const permissions = new Set<AdminPermissionKey>(["generation.job.read", "ops.queue.read", "generation.config.read"]);
     const ids = navGroupsForPermissions(permissions, "support")
       .flatMap((group) => group.items.map((item) => item.id));
 
@@ -306,9 +412,11 @@ describe("permission and work-mode navigation", () => {
       "character.performance.read",
     ]), "growth_analyst").flatMap((group) => group.items.map((item) => item.id));
     expect(growth).toEqual(expect.arrayContaining(["analytics", "experiments"]));
-    expect(growth).toContain("insights");
     expect(growth).toContain("growth/characters");
-    expect(sectionIsPermitted("insights", new Set(["analytics.metric.read"]))).toBe(true);
+    // Profile Diagnostics 读的是生成配置权威，不是增长指标：分析师看不到它，
+    // 也不该看到——它以前在这里，点进去只会拿到 403。
+    expect(growth).not.toContain("insights");
+    expect(sectionIsPermitted("insights", new Set(["analytics.metric.read"]))).toBe(false);
     expect(sectionIsPermitted("growth/characters", new Set(["character.performance.read"]))).toBe(true);
     expect(growth).not.toContain("content/official");
   });

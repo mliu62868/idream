@@ -188,6 +188,17 @@ export function chatModelTimeoutMs(
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_CHAT_MODEL_TIMEOUT_MS;
 }
 
+// SPEC: image/video provider execution budgets. Gen enforces them on the actual
+//   provider call; Main uses the video one to decide when an attempt has gone
+//   stale (VIDEO_JOB_STALE_TIMEOUT_MS must stay strictly larger).
+// INTENT: both packages used to parse `GEN_VIDEO_TIMEOUT_MS` independently, each
+//   with its own `30 * 60 * 1000` literal. They agreed only by coincidence, and
+//   only one of the two .env files sets the variable — so raising it on the gen
+//   side alone would have left Main declaring attempts stale while they were
+//   still legitimately running.
+export const DEFAULT_GEN_IMAGE_TIMEOUT_MS = 600_000;
+export const DEFAULT_GEN_VIDEO_TIMEOUT_MS = 1_800_000;
+
 export const DEFAULT_MODERATION_PROVIDER = "mock";
 export const moderationProviderSchema = z.enum(["mock", "pipeline", "safety-gateway"]);
 export const DEFAULT_MODERATION_TIMEOUT_MS = 5_000;

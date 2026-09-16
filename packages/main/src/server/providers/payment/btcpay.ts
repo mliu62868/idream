@@ -1,6 +1,8 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type {
   PaymentInvoiceAdditionalStatus,
+  PaymentInvoicePaymentEvidence,
+  SettledInvoicePayment,
   PaymentInvoiceStatus,
   PaymentProvider,
   PaymentRefund,
@@ -118,6 +120,40 @@ export class BtcPayPaymentProvider implements PaymentProvider {
       };
     } catch (error) {
       return networkFailure("invoice_lookup_failed", error);
+    }
+  }
+
+  async readInvoicePaymentEvidence(
+    input: Parameters<PaymentProvider["readInvoicePaymentEvidence"]>[0],
+  ): Promise<ProviderResult<PaymentInvoicePaymentEvidence>> {
+    try {
+      // Bind receipts to the configured merchant and caller's immutable order first.
+      const invoiceResponse = await this.fetchImpl(this.apiUrl(
+        `/api/v1/stores/${encodeURIComponent(this.storeId)}/invoices/${encodeURIComponent(input.invoiceId)}`,
+      ), { method: "GET", signal: input.signal, headers: { authorization: `token ${this.apiKey}` } });
+      const invoiceJson: unknown = await invoiceResponse.json().catch(() => null);
+      if (!invoiceResponse.ok) return paymentFailure("invoice_payment_lookup_failed", invoiceResponse.status, invoiceJson);
+      const invoice = invoiceFromRecord(asRecord(invoiceJson), input.orderId);
+      if (!invoice || invoice.invoiceId !== input.invoiceId) return {
+        ok: false, error: { code: "invoice_payment_identity_mismatch", message: "BTCPay receipt lookup did not prove the merchant invoice and checkout identity", retryable: false },
+      };
+
+      const endpoint = this.apiUrl(`/api/v1/invoices/${encodeURIComponent(input.invoiceId)}/payment-methods`);
+      // Greenfield onlyAccountedPayments excludes replaced/double-spent payments.
+      // Never request or retain additionalData (which may contain wallet derivation data).
+      endpoint.searchParams.set("onlyAccountedPayments", "true");
+      endpoint.searchParams.set("includeSensitive", "false");
+      const response = await this.fetchImpl(endpoint, { method: "GET", signal: input.signal, headers: { authorization: `token ${this.apiKey}` } });
+      const json: unknown = await response.json().catch(() => null);
+      if (!response.ok) return paymentFailure("invoice_payment_lookup_failed", response.status, json);
+      const payments = settledPaymentsFromMethods(json);
+      const identity = { provider: "btcpay" as const, invoiceId: input.invoiceId, orderId: input.orderId };
+      if (payments === null || payments.length === 0) return {
+        ok: true, data: { ...identity, status: "unknown", reason: payments === null ? "payment_evidence_incomplete" : "settled_payments_missing", payments: [] },
+      };
+      return { ok: true, data: { ...identity, status: "verified", merchantAccountId: this.storeId, source: "btcpay_accounted_invoice_payments", payments } };
+    } catch (error) {
+      return networkFailure("invoice_payment_lookup_failed", error);
     }
   }
 
@@ -692,6 +728,41 @@ function invoiceFromRecord(
     amountCents,
     currency,
   };
+}
+
+/**
+ * SPEC: Greenfield InvoicePaymentMethodDataModel / Payment, upstream source:
+ * https://github.com/btcpayserver/btcpayserver/blob/master/BTCPayServer/wwwroot/swagger/v1/swagger.template.invoices.json
+ * INVARIANT: payment.value is original-currency received value. Invoice amount,
+ * totalPaid (converted across methods), exchange rate, and local observation time
+ * cannot replace it. receivedDate is provider-recorded receipt time, not settledAt.
+ */
+function settledPaymentsFromMethods(value: unknown): SettledInvoicePayment[] | null {
+  if (!Array.isArray(value)) return null;
+  const payments: SettledInvoicePayment[] = [];
+  const identities = new Set<string>();
+  for (const item of value) {
+    const method = asRecord(item);
+    const paymentMethodId = stringField(method, "paymentMethodId");
+    const currency = stringField(method, "currency")?.toUpperCase();
+    if (!paymentMethodId || !currency || !/^[A-Z0-9]{2,16}$/.test(currency) || !Array.isArray(method.payments)) return null;
+    for (const item of method.payments) {
+      const payment = asRecord(item);
+      // InvoiceSettled/Marked alone proves no individual payment settled.
+      if (payment.status === "Processing" || payment.status === "Invalid") continue;
+      if (payment.status !== "Settled") return null;
+      const paymentId = stringField(payment, "id");
+      const amount = payment.value;
+      const receivedDate = payment.receivedDate;
+      if (!paymentId || typeof amount !== "string" || amount.length > 128 || !/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(amount) || !/[1-9]/.test(amount)
+        || typeof receivedDate !== "number" || !Number.isSafeInteger(receivedDate) || receivedDate <= 0 || receivedDate > 253402300799) return null;
+      const identity = JSON.stringify([paymentMethodId, paymentId]);
+      if (identities.has(identity)) return null;
+      identities.add(identity);
+      payments.push({ paymentId, paymentMethodId, amount, currency, receivedAt: new Date(receivedDate * 1000).toISOString(), settledAt: null });
+    }
+  }
+  return payments;
 }
 
 function invalidLookup(message: string): ProviderResult<never> {

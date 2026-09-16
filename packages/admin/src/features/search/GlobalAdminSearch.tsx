@@ -55,16 +55,26 @@ export function globalAdminSearchFailed(
   };
 }
 
+// SPEC: 返回「词典 key + 插值实参」，不返回成品句子。
+// INTENT: 原来这里直接拼英文并在 264 行裸渲染 —— 顶栏降级横幅是 role="alert"，
+//         中文后台的运营在最显眼的位置读到三句英文。句子里嵌着运行时才知道的查询词，
+//         所以必须走 t(key, values)，拼完再 t() 永远命不中字典。
 export function globalAdminSearchUnavailableMessage(
   state: GlobalAdminSearchAuthorityState,
-) {
+): { readonly key: string; readonly values?: Record<string, string> } {
   if (state.items.length > 0 && state.lastGoodQuery) {
-    return `Search unavailable. Showing last successful results for "${state.lastGoodQuery}".`;
+    return {
+      key: 'Search unavailable. Showing last successful results for "{query}".',
+      values: { query: state.lastGoodQuery },
+    };
   }
   if (state.lastGoodQuery) {
-    return `Search unavailable. The last successful search for "${state.lastGoodQuery}" returned no results.`;
+    return {
+      key: 'Search unavailable. The last successful search for "{query}" returned no results.',
+      values: { query: state.lastGoodQuery },
+    };
   }
-  return "Search unavailable. No cached results are available.";
+  return { key: "Search unavailable. No cached results are available." };
 }
 
 // SPEC: 这批实体记录是否属于当前输入。
@@ -261,7 +271,7 @@ export function GlobalAdminSearch({
               className="m-2 rounded-md bg-[var(--ad-red-bg)] px-3 py-2 text-xs text-[var(--ad-red-text)]"
               role="alert"
             >
-              {globalAdminSearchUnavailableMessage(authority)}
+              {((notice) => t(notice.key, notice.values))(globalAdminSearchUnavailableMessage(authority))}
             </div>
           ) : null}
           {/* role=listbox > role=group > role=option：上下键跨组连续走，两组各自带标题。 */}

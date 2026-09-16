@@ -8,6 +8,7 @@
 // INVARIANT: 不新增后端能力，也不替后端下判断——结论（qualityState / decisionUse /
 //            totalViolations）一律照抄权威，界面只负责让它可读、可分诊、可转交。
 
+import { CharacterPerformanceReconciliation } from "./CharacterPerformanceReconciliation";
 import { useCallback, useMemo } from "react";
 import { CircleCheck, Loader2, RefreshCcw, ShieldAlert } from "lucide-react";
 import type { AdminInvariantCheck, AdminInvariantReport } from "@idream/shared/admin";
@@ -126,6 +127,7 @@ export function InvariantsWorkspace({ canRead }: { canRead: boolean }) {
 
         </>
       ) : null}
+      <CharacterPerformanceReconciliation />
     </section>
   );
 }
@@ -202,7 +204,7 @@ function Verdict({
           ? t(
               "Downstream numbers built on these tables are not safe for decisions until they clear.",
             )
-          : t("Downstream numbers built on these tables are safe for decisions.")}
+          : t("These cross-table checks passed. Metric coverage and financial reconciliation still need separate verification.")}
       </p>
       {/* 只有 failed 才有"该找谁"可分；没跑成的那些单列，不塞进任何一个桶。 */}
       {failedCount > 0 ? (

@@ -5,7 +5,7 @@ import {
   type CollaborationTargetType,
   type SavedViewQueryState,
 } from "@idream/shared/admin";
-import { Bookmark, RefreshCcw, Save } from "lucide-react";
+import { Bookmark, RefreshCcw, Save, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
@@ -146,6 +146,36 @@ export function SavedViewsControl({
     });
   };
 
+  // SPEC: 删除走确认框并要求敲出视图名 —— 和 Support 的删除同一套口径。
+  // INTENT: 这个控件此前只有「保存 / 覆盖」，攒下来的视图删不掉，于是下拉框只会越来越长；
+  //         而同一份契约里 DELETE 一直是完整可用的，缺的只是这个入口。本文件自己的注释
+  //         （confirmUpdate 上方）早就写着「跟同一个 scope 里的删除流程用同一套口径」，
+  //         指的就是这条当时还不存在的流程。
+  const confirmDelete = (view: SavedViewRecord) => {
+    setConfirmSpec({
+      title: t("Delete saved view {label}", { label: view.label }),
+      destructive: { expectedName: view.label, inputLabel: t("Saved view name") },
+      consequence: {
+        effect: t("The saved view is gone for everyone who uses it. There is no recycle bin."),
+        reversible: false,
+      },
+      // 后端 DELETE 契约没有 reason 字段。
+      requireReason: false,
+      submitLabel: t("Delete saved view"),
+      onSubmit: async () => {
+        await adminV2Operation("DELETE /api/v2/admin/saved-views/:id", {
+          path: { id: view.id },
+          ifMatch: view.version,
+        });
+        setViews((items) => items.filter((item) => item.id !== view.id));
+        // 删掉的正好是当前选中的那个，就把选择和 URL 参数一起清干净 —— 留着会让
+        // 下一次 load() 拿不到它、再走一遍 clearSelection，中间那一帧标签还是旧的。
+        if (view.id === selectedId) clearSelection();
+        toast({ tone: "success", title: t("Saved view {label} deleted", { label: view.label }) });
+      },
+    });
+  };
+
   const selected = views.find((view) => view.id === selectedId) ?? null;
   // SPEC: 有存好的视图才默认展开。
   // INTENT: 这块面板过去恒定展开，于是队列页第一屏被一张写着「No saved views yet」的空卡
@@ -164,7 +194,7 @@ export function SavedViewsControl({
         <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
           <label className="grid min-w-0 flex-1 gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Select a server view")}<select className={fieldClass} disabled={loading} onChange={(event) => select(event.target.value)} value={selectedId ?? ""}><option value="">{loading ? t("Loading views…") : views.length === 0 ? t("No saved views yet") : t("Choose a saved view")}</option>{views.map((view) => <option key={view.id} value={view.id}>{view.label} · v{view.version}</option>)}</select></label>
           <label className="grid min-w-0 flex-1 gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("View label")}<input className={fieldClass} maxLength={80} onChange={(event) => setLabel(event.target.value)} placeholder={t("e.g. Critical incidents I own")} value={label} /></label>
-          <div className="flex flex-wrap gap-2"><WorkspaceButton disabled={busy || label.trim().length === 0} onClick={() => void saveNew()}><Save className="h-4 w-4" />{t("Save new")}</WorkspaceButton>{selected ? <WorkspaceButton aria-label={t("Overwrite shared view {label} (v{version})", { label: selected.label, version: selected.version })} disabled={busy || label.trim().length === 0} onClick={() => confirmUpdate(selected)}>{t("Overwrite v")}{selected.version}</WorkspaceButton> : null}<WorkspaceButton disabled={loading || busy} onClick={() => void load()}><RefreshCcw className="h-4 w-4" />{t("Reload")}</WorkspaceButton></div>
+          <div className="flex flex-wrap gap-2"><WorkspaceButton disabled={busy || label.trim().length === 0} onClick={() => void saveNew()}><Save className="h-4 w-4" />{t("Save new")}</WorkspaceButton>{selected ? <WorkspaceButton aria-label={t("Overwrite shared view {label} (v{version})", { label: selected.label, version: selected.version })} disabled={busy || label.trim().length === 0} onClick={() => confirmUpdate(selected)}>{t("Overwrite v")}{selected.version}</WorkspaceButton> : null}{selected ? <WorkspaceButton aria-label={t("Delete saved view {label}", { label: selected.label })} disabled={busy} onClick={() => confirmDelete(selected)}><Trash2 className="h-4 w-4" />{t("Delete")}</WorkspaceButton> : null}<WorkspaceButton disabled={loading || busy} onClick={() => void load()}><RefreshCcw className="h-4 w-4" />{t("Reload")}</WorkspaceButton></div>
         </div>
         {loadError ? (
           <div className="mt-2">

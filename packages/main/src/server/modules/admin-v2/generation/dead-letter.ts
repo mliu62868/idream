@@ -17,6 +17,7 @@ import {
   operationalGenerationJobWhere,
 } from "@/server/modules/metric-data-scope";
 import type { ExistingGenerationJob } from "@/server/modules/generation/attempt-dispatch";
+import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 import { reserveRetryGenerationAttempt } from "@/server/modules/generation/generation-attempt-authority";
 import {
   actorWithPermission,
@@ -81,6 +82,7 @@ export async function listGenerationDeadLetter(request: Request) {
     count: () => prisma.generationJob.count({ where }),
   });
   const refundedIds = await refundedJobIds(prisma, page.map((job) => job.id));
+  const retiredPins = await retiredWorkflowPins(page.map((job) => job.id));
   return {
     items: page.map((job) => ({
       id: job.id,
@@ -91,7 +93,10 @@ export async function listGenerationDeadLetter(request: Request) {
       errorCode: job.errorCode,
       costDreamcoins: job.costDreamcoins,
       ledgerState: refundedIds.has(job.id) ? ("refunded" as const) : ("reserved" as const),
-      retryEligibility: retryEligibilityOf(job, refundedIds.has(job.id)),
+      retryEligibility: retryEligibilityWithPin(
+        retryEligibilityOf(job, refundedIds.has(job.id)),
+        retiredPins.has(job.id),
+      ),
       createdAt: job.createdAt.toISOString(),
       updatedAt: job.updatedAt.toISOString(),
     })),
@@ -123,10 +128,14 @@ export async function requeueGenerationDeadLetterBatch(request: Request) {
         include: { assets: true, events: { orderBy: { createdAt: "asc" } } },
       });
       const refundedIds = await refundedJobIds(tx, [...body.jobIds]);
+      const retiredPins = await retiredWorkflowPins(jobs.map((job) => job.id));
       const requeued: string[] = [];
       const skipped: { id: string; reason: string }[] = [];
       for (const job of jobs) {
-        const eligibility = retryEligibilityOf(job, refundedIds.has(job.id));
+        const eligibility = retryEligibilityWithPin(
+          retryEligibilityOf(job, refundedIds.has(job.id)),
+          retiredPins.has(job.id),
+        );
         if (!eligibility.eligible) {
           skipped.push({ id: job.id, reason: eligibility.reason });
           continue;
@@ -213,7 +222,10 @@ export async function requeueGenerationDeadLetterJob(request: Request, jobId: st
       });
       if (!job) throw Errors.notFound("Generation job not found");
       const refunds = await refundedJobIds(tx, [job.id]);
-      const eligibility = retryEligibilityOf(job, refunds.has(job.id));
+      const eligibility = retryEligibilityWithPin(
+        retryEligibilityOf(job, refunds.has(job.id)),
+        (await retiredWorkflowPins([job.id])).has(job.id),
+      );
       if (!eligibility.eligible) {
         throw Errors.conflict("Generation job is not eligible for retry", {
           reason: eligibility.reason,
@@ -275,6 +287,31 @@ function isDiscardable(status: string) {
   return ["failed", "blocked", "refunded"].includes(status);
 }
 
+// SPEC: 重试会继承上一轮尝试钉死的 workflow 版本（generation-attempt-authority.ts:385），
+//       而 worker 对钉子是 fail-closed 的。版本已经不在服务中，这条请求就重试不了。
+// INVARIANT: 判不出来（没有尝试记录 / 没有 workflowKey）时返回 null —— 不因为查不到就
+//            把一条本来能重试的请求标成不能重试。
+async function retiredWorkflowPins(requestIds: readonly string[]) {
+  if (requestIds.length === 0) return new Set<string>();
+  const attempts = await prisma.generationAttempt.findMany({
+    where: { requestId: { in: [...requestIds] } },
+    orderBy: [{ requestId: "asc" }, { attemptNo: "desc" }],
+    distinct: ["requestId"],
+    select: { requestId: true, workflowKey: true, workflowVersion: true },
+  });
+  const served = new Map<string, number | null>();
+  const retired = new Set<string>();
+  for (const attempt of attempts) {
+    if (!attempt.workflowKey || attempt.workflowVersion === null) continue;
+    if (!served.has(attempt.workflowKey)) {
+      const descriptor = await generationWorkflowDescriptor(attempt.workflowKey);
+      served.set(attempt.workflowKey, descriptor?.version ?? null);
+    }
+    if (served.get(attempt.workflowKey) !== attempt.workflowVersion) retired.add(attempt.requestId);
+  }
+  return retired;
+}
+
 function retryEligibilityOf(
   job: {
     status: string;
@@ -296,6 +333,15 @@ function retryEligibilityOf(
     events: job.events,
     ledgerEntries: refunded ? [{ reason: "refund", delta: job.costDreamcoins }] : [],
   }).retryEligibility;
+}
+
+function retryEligibilityWithPin(
+  eligibility: ReturnType<typeof retryEligibilityOf>,
+  pinRetired: boolean,
+) {
+  return eligibility.eligible && pinRetired
+    ? { eligible: false as const, reason: "pinned_workflow_retired" as const }
+    : eligibility;
 }
 
 async function refundDiscardableJob(

@@ -62,6 +62,15 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
     return () => controller.abort();
   }, [ageGateAccepted, id]);
 
+  // SPEC: 服务端元数据对非公开角色刻意退化成通用标题并 noindex —— 它是可被爬虫和缓存
+  //       读到的，不能泄露私有角色名。标签页标题是本人才看得到的，读出来才不算泄露。
+  useEffect(() => {
+    if (!character?.name) return;
+    const previous = document.title;
+    document.title = `${character.name} | iDream`;
+    return () => { document.title = previous; };
+  }, [character?.name]);
+
   async function startChat() {
     if (!character) return;
     setBusy(true);

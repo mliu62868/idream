@@ -3,7 +3,7 @@
 import { useAdminI18n } from "@/components/admin/i18n";
 import type { FormEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Loader2, Plus, RotateCcw, UploadCloud, X } from "lucide-react";
+import { Loader2, Pencil, Plus, RotateCcw, UploadCloud, X } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
@@ -19,19 +19,23 @@ import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { CoinOffersPanel } from "./CoinOffersPanel";
 import {
   canCreatePricingRule,
+  canSavePricingEdit,
   defaultPricingDraft,
   defaultPricingQuery,
   isPricingQueryFiltered,
   PRICING_PAGE_SIZE,
   pricingDraftPayload,
+  pricingEditFromRow,
   pricingListPath,
   pricingQueryFromSearch,
   pricingWorkspaceUrl,
   type PricingDraft,
+  type PricingEdit,
   type PricingQuery,
 } from "./query";
 
 type PricingRecord = Record<string, unknown>;
+
 type PricingListResponse = { items: PricingRecord[]; pageInfo?: PageInfo };
 
 export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
@@ -52,6 +56,7 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
   const [errorCause, setErrorCause] = useState<unknown>(undefined);
   const [refreshedAt, setRefreshedAt] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
+  const [editing, setEditing] = useState<PricingEdit | null>(null);
   const requestGate = useRef(createLatestRequestGate());
 
   const load = useCallback(async (next: PricingQuery) => {
@@ -142,6 +147,28 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
     }
   }
 
+  // SPEC: 草稿可以改，在售的不能 —— 权威也是这么判的（"Only draft pricing rules can be edited"）。
+  // INTENT: 在这之前敲错一个基础价只能再建一条草稿，旧的那条既删不掉也改不动，
+  //         于是定价表越用越长，而 PATCH 这条完整实现过的路从来没有调用方。
+  async function saveEdit() {
+    if (!editing || !canSavePricingEdit(editing)) return;
+    setWriting(true);
+    try {
+      await apiWrite(`/api/v2/admin/pricing/rules/${encodeURIComponent(editing.id)}`, "PATCH", {
+        label: editing.label.trim(),
+        baseCost: Number(editing.baseCost),
+        multiplier: Number(editing.multiplier),
+      });
+      toast({ tone: "success", title: t("Pricing draft {key} updated", { key: editing.label.trim() }) });
+      setEditing(null);
+      navigate({ ...query, cursor: "" }, "replace");
+    } catch (cause) {
+      failureToast(cause);
+    } finally {
+      setWriting(false);
+    }
+  }
+
   function confirmVersionAction(row: PricingRecord, action: "publish" | "rollback") {
     const id = text(row.id);
     const name = text(row.label) || text(row.ruleKey) || id;
@@ -206,8 +233,9 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
       </form>
 
       {canWrite ? <PricingDraftForm busy={writing} draft={pricingDraft} onChange={setPricingDraft} onCreate={createDraft} /> : null}
+      {editing ? <PricingEditForm busy={writing} edit={editing} onCancel={() => setEditing(null)} onChange={setEditing} onSave={saveEdit} /> : null}
       {error ? <AuthorityRequestError cause={errorCause} message={error} onRetry={() => void load(query)} snapshotAt={rows ? refreshedAt : null} /> : null}
-      {loading && rows === null ? <PricingLoading /> : rows?.length === 0 ? <EmptyState action={filtered ? <button className="min-h-11 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" onClick={clearFilters} type="button">{t("Clear filters")}</button> : undefined} hint={filtered ? "The complete authority query returned no pricing versions." : "Create a versioned pricing draft before publishing a customer-facing price."} title={filtered ? "No pricing rules match these filters" : "No pricing rules exist yet"} /> : rows ? <PricingTable canWrite={canWrite} onAction={confirmVersionAction} rows={rows} /> : null}
+      {loading && rows === null ? <PricingLoading /> : rows?.length === 0 ? <EmptyState action={filtered ? <button className="min-h-11 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" onClick={clearFilters} type="button">{t("Clear filters")}</button> : undefined} hint={filtered ? "The complete authority query returned no pricing versions." : "Create a versioned pricing draft before publishing a customer-facing price."} title={filtered ? "No pricing rules match these filters" : "No pricing rules exist yet"} /> : rows ? <PricingTable canWrite={canWrite} onAction={confirmVersionAction} onEdit={(row) => setEditing(pricingEditFromRow(row))} rows={rows} /> : null}
       {rows ? (
         <Pagination
           hasNext={Boolean(pageInfo.hasNextPage && pageInfo.endCursor)}
@@ -233,12 +261,44 @@ function PricingDraftForm({ busy, draft, onChange, onCreate }: { busy: boolean; 
   return <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" aria-labelledby="pricing-draft-title"><div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-semibold" id="pricing-draft-title">{t("Create Pricing Rule Draft")}</h3><p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t("Draft → publish archives the previous active version; rollback restores the previous authority.")}</p></div><button className="inline-flex min-h-11 items-center gap-2 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white disabled:opacity-50" disabled={busy || !canCreatePricingRule(draft)} onClick={() => void onCreate()} type="button">{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}{t("Create Draft")}</button></div><div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-7"><Field label="Rule Key" onChange={(ruleKey) => onChange({ ...draft, ruleKey })} value={draft.ruleKey} /><Field label="Label" onChange={(label) => onChange({ ...draft, label })} value={draft.label} /><Select label="Mode" onChange={(mode) => onChange({ ...draft, mode: mode as PricingDraft["mode"] })} options={["image", "video", "voice"]} value={draft.mode} /><Field label="Base Cost (coins)" onChange={(baseCost) => onChange({ ...draft, baseCost })} value={draft.baseCost} /><Field label="Multiplier" onChange={(multiplier) => onChange({ ...draft, multiplier })} value={draft.multiplier} /><Field label="Reason (≥3)" onChange={(reason) => onChange({ ...draft, reason })} value={draft.reason} /><Field label="Confirm rule key" onChange={(confirmation) => onChange({ ...draft, confirmation })} value={draft.confirmation} /></div></section>;
 }
 
-function PricingTable({ canWrite, onAction, rows }: { canWrite: boolean; onAction: (row: PricingRecord, action: "publish" | "rollback") => void; rows: PricingRecord[] }) {
+function PricingEditForm({ busy, edit, onCancel, onChange, onSave }: { busy: boolean; edit: PricingEdit; onCancel: () => void; onChange: (edit: PricingEdit) => void; onSave: () => Promise<void> }) {
+  // INVARIANT: mode 是枚举，插值进整句也必须先过 value()——直接塞 edit.mode 会在中文界面里
+  //            印出 "image"，这正是表格列早就修掉的那个漏。
+  const { t, value: valueLabel } = useAdminI18n();
+  return (
+    <section aria-labelledby="pricing-edit-title" className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="font-semibold" id="pricing-edit-title">{t("Edit pricing draft")}</h3>
+          {/* INVARIANT: 规则键与模式不在 PATCH 的契约里，改不了——所以只读地摆出来，不做成输入框。 */}
+          <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
+            {t("{key} · {mode} — rule key and mode are fixed once the draft exists; create a new draft to change them.", { key: edit.ruleKey, mode: valueLabel(edit.mode) })}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button className="inline-flex min-h-11 items-center gap-2 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" onClick={onCancel} type="button">{t("Cancel")}</button>
+          <button className="inline-flex min-h-11 items-center gap-2 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white disabled:opacity-50" disabled={busy || !canSavePricingEdit(edit)} onClick={() => void onSave()} type="button">
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Pencil className="h-4 w-4" />}{t("Save draft")}
+          </button>
+        </div>
+      </div>
+      <div className="mt-4 grid gap-3 md:grid-cols-3">
+        <Field label="Label" onChange={(label) => onChange({ ...edit, label })} value={edit.label} />
+        <Field label="Base Cost (coins)" onChange={(baseCost) => onChange({ ...edit, baseCost })} value={edit.baseCost} />
+        <Field label="Multiplier" onChange={(multiplier) => onChange({ ...edit, multiplier })} value={edit.multiplier} />
+      </div>
+    </section>
+  );
+}
+
+function PricingTable({ canWrite, onAction, onEdit, rows }: { canWrite: boolean; onAction: (row: PricingRecord, action: "publish" | "rollback") => void; onEdit: (row: PricingRecord) => void; rows: PricingRecord[] }) {
   const { value: valueLabel } = useAdminI18n();
   const format = useAdminFormat();
   const tableRows: DataTableRow[] = rows.map((row, index) => {
     const status = text(row.status);
-    const actions = canWrite && status === "draft" ? <ActionButton icon={<UploadCloud className="h-4 w-4" />} label="Publish" onClick={() => onAction(row, "publish")} /> : canWrite && status === "active" ? <ActionButton icon={<RotateCcw className="h-4 w-4" />} label="Rollback" onClick={() => onAction(row, "rollback")} /> : "—";
+    const actions = canWrite && status === "draft"
+      ? <div className="flex flex-wrap gap-2"><ActionButton icon={<Pencil className="h-4 w-4" />} label="Edit" onClick={() => onEdit(row)} /><ActionButton icon={<UploadCloud className="h-4 w-4" />} label="Publish" onClick={() => onAction(row, "publish")} /></div>
+      : canWrite && status === "active" ? <ActionButton icon={<RotateCcw className="h-4 w-4" />} label="Rollback" onClick={() => onAction(row, "rollback")} /> : "—";
     // INTENT: 「哪一版在售」是这张表唯一要一眼看出来的东西，所以在售那一行的状态加粗。
     return { id: text(row.id) || `pricing-${index}`, cells: [<code key="id">{text(row.id) || "—"}</code>, text(row.ruleKey) || "—", text(row.label) || "—", text(row.mode) ? valueLabel(text(row.mode)) : "—", <span className="tabular-nums" key="base">{format.display(row.baseCost)}</span>, <span className="tabular-nums" key="multiplier">{format.display(row.multiplier)}</span>, status ? <span className={status === "active" ? "font-semibold" : undefined} key="status">{valueLabel(status)}</span> : "—", format.display(row.version), format.dateTime(row.effectiveFrom), format.dateTime(row.publishedAt), actions] };
   });
@@ -262,9 +322,9 @@ function PricingTable({ canWrite, onAction, rows }: { canWrite: boolean; onActio
     // 中文 dateStyle:medium + timeStyle:short 实测 ~142px；truncate 在这里的作用是不折行。
     { label: "Effective", truncate: true, width: "9rem" },
     { label: "Published", truncate: true, width: "9rem" },
-    // 单个按钮（发布 / 回滚），给够一行的量，否则「回滚」两个字会竖着排。
-    { label: "Action", width: "6rem" },
-  ]} minimumWidthClassName="min-w-[1432px]" rows={tableRows} />;
+    // 草稿行是「编辑 + 发布」两个按钮并排；6rem 只够一个，第二个会被挤成竖排。
+    { label: "Action", width: "11rem" },
+  ]} minimumWidthClassName="min-w-[1512px]" rows={tableRows} />;
 }
 
 // label 一律在接收方过 t()：草稿表单七个输入框、两个筛选下拉和两个行内动作按钮共用这三个原语。

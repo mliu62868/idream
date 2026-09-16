@@ -6,6 +6,7 @@ import {
   assignWorkflowReferenceSlots,
   type WorkflowReferenceRole,
 } from "@idream/shared/gen-workflow";
+import type { GenerationRouteStaleReason } from "@idream/shared/admin";
 import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 
 type GenerationRouteAuthorityStore = Pick<
@@ -184,7 +185,7 @@ export function generationRouteRuntimeCompatibility(input: {
   readonly profileCapabilities: unknown;
   readonly requiredReferenceCount?: number;
   readonly requiredReferenceRoles?: readonly string[];
-}) {
+}): GenerationRouteStaleReason | null {
   const capabilities = record(input.profileCapabilities);
   const workflow = input.workflow;
   if (
@@ -239,6 +240,15 @@ function record(value: unknown): Record<string, unknown> {
     : {};
 }
 
+type RouteQualificationVerdict = {
+  readonly state: "qualified" | "unqualified" | "expired" | "stale";
+  readonly reason: GenerationRouteStaleReason | null;
+};
+
+// SPEC: 线路失效的每一条原因都必须是 shared 的 GENERATION_ROUTE_STALE_REASONS 之一。
+// INTENT: 后台角色工作台照那份词表给「下一步该做什么」。这里写下一个词表里没有的原因，
+//         界面就只能掉进兜底——它不会编原因，但也给不出下一步。返回类型钉住这个方向：
+//         新增原因而忘了同步 shared，这个文件先编译不过。
 export function evaluateRouteQualification(input: {
   readonly qualification: {
     readonly result: string;
@@ -252,7 +262,7 @@ export function evaluateRouteQualification(input: {
   readonly currentPolicyVersion: string;
   readonly currentEvaluatorVersion: string;
   readonly now: Date;
-}) {
+}): RouteQualificationVerdict {
   const qualification = input.qualification;
   if (!qualification) {
     return { state: "unqualified" as const, reason: "missing_qualification" };
@@ -300,7 +310,7 @@ export async function evaluateEffectiveGenerationRouteAuthority(
     readonly requiredReferenceCount?: number;
     readonly requiredReferenceRoles?: readonly string[];
   },
-) {
+): Promise<RouteQualificationVerdict> {
   const qualificationState = evaluateRouteQualification(input);
   if (qualificationState.state !== "qualified" || !input.qualification) {
     return qualificationState;

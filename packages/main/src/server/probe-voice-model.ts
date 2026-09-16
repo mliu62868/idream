@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { env } from "./lib/env";
 import { createVoicePortsForKey } from "./providers/voice/factory";
+import { audioFileExtension, voiceArtifactKey } from "./providers/voice/idempotency";
 import type {
   BlobStore,
   ProviderResult,
@@ -35,6 +36,20 @@ type StoredBlob = {
   contentType: string;
   body: Uint8Array;
 };
+
+// SPEC: the probe now performs the persistence that voice adapters used to do
+//   inline, through the same helpers as production (voiceArtifactKey +
+//   audioFileExtension). Keeping the probe on the production naming path is the
+//   point: a probe that stored differently would stop proving anything about it.
+function storeProbeArtifact(
+  blob: ProbeBlobStore,
+  idempotencyKey: string,
+  data: { body: Uint8Array; contentType: string },
+) {
+  const key = voiceArtifactKey(idempotencyKey, audioFileExtension(data.contentType));
+  void blob.putPrivate({ key, body: data.body, contentType: data.contentType });
+  return key;
+}
 
 class ProbeBlobStore implements BlobStore {
   stored: StoredBlob | null = null;
@@ -131,7 +146,7 @@ async function main() {
 }
 
 async function runProbe(input: {
-  provider: "mock" | "pipeline" | "fish-audio" | "pocket-tts";
+  provider: "mock" | "fish-audio" | "pocket-tts";
   providerKey: VoiceProviderKey;
   baseUrl: string | null;
   model: string | null;
@@ -156,7 +171,7 @@ async function runProbe(input: {
   let catalogVoices: readonly string[] = [];
 
   try {
-    const voice = createVoicePortsForKey(input.providerKey, blob);
+    const voice = createVoicePortsForKey(input.providerKey);
     if (voice.identity) {
       const capabilities = await voice.identity.inspectCapabilities();
       voiceCloningAvailable = capabilities.ok
@@ -196,6 +211,11 @@ async function runProbe(input: {
         },
       };
     }
+    let synthesizedKey = storeProbeArtifact(
+      blob,
+      `voice-probe-${input.startedAt}:1`,
+      result.data,
+    );
     let synthesized = result.data;
     if (input.provider === "pocket-tts" || input.provider === "fish-audio") {
       const identity = voice.identity;
@@ -213,7 +233,7 @@ async function runProbe(input: {
           ...baseReport,
           ok: false,
           durationMs: Date.now() - input.startedAt,
-          key: result.data.key,
+          key: synthesizedKey,
           audioDurationMs: result.data.durationMs,
           voiceCloningAvailable,
           voiceCloneVerified:
@@ -258,7 +278,7 @@ async function runProbe(input: {
           ...baseReport,
           ok: false,
           durationMs: Date.now() - input.startedAt,
-          key: result.data.key,
+          key: synthesizedKey,
           audioDurationMs: result.data.durationMs,
           voiceCloningAvailable,
           voiceCloneVerified:
@@ -317,7 +337,11 @@ async function runProbe(input: {
           ...baseReport,
           ok: false,
           durationMs: Date.now() - input.startedAt,
-          key: clonedSpeech.data.key,
+          key: storeProbeArtifact(
+            blob,
+            `voice-clone-probe-${input.startedAt}:1`,
+            clonedSpeech.data,
+          ),
           audioDurationMs: clonedSpeech.data.durationMs,
           voiceCloningAvailable,
           voiceCloneVerified:
@@ -335,6 +359,11 @@ async function runProbe(input: {
           },
         };
       }
+      synthesizedKey = storeProbeArtifact(
+        blob,
+        `voice-clone-probe-${input.startedAt}:1`,
+        clonedSpeech.data,
+      );
       synthesized = clonedSpeech.data;
       if (input.provider === "pocket-tts") {
         voiceCatalogVerified = true;
@@ -345,9 +374,9 @@ async function runProbe(input: {
 
     return {
       ...baseReport,
-      ok: hasText(synthesized.key) && synthesized.durationMs > 0,
+      ok: hasText(synthesizedKey) && synthesized.durationMs > 0,
       durationMs: Date.now() - input.startedAt,
-      key: synthesized.key,
+      key: synthesizedKey,
       audioDurationMs: synthesized.durationMs,
       voiceCloningAvailable,
       voiceCloneVerified,
@@ -380,7 +409,7 @@ async function runProbe(input: {
 }
 
 function configuredVoiceProbeTarget(
-  provider: "mock" | "pipeline" | "fish-audio" | "pocket-tts",
+  provider: "mock" | "fish-audio" | "pocket-tts",
 ) {
   if (provider === "pocket-tts") {
     return {

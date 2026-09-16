@@ -17,6 +17,7 @@ const dedicatedProductRouteTemplates = {
   "/login": "marketing",
   "/profile": "profile",
   "/profile/account-management": "profile",
+  "/profile/age-verification": "profile",
   "/profile/notifications": "profile",
   "/profile/redeem-code": "profile",
   "/resources-hub": "library",

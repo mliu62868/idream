@@ -176,6 +176,24 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
         </div>
       ) : null}
 
+      {/* SPEC: 草稿铺位上没有"上线"按钮，就得在这一页说清楚上线权在谁手里、下一步去哪。 */}
+      {/* INTENT: 这条规则以前只写在列表页顶部的横幅上，从列表点进详情后它就消失了 ——
+          运营在详情页只看到「暂停 / 归档」，无从知道为什么没有发布按钮。 */}
+      {!row.managedRunId && row.status === "draft" ? (
+        <div className="rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]">
+          {t("Standalone placements are draft records only. Customer-visible campaign activation happens from a verified Creative Run; Character images publish through a Character Release.")}{" "}
+          {row.targetType === "character" ? (
+            <Link className="font-semibold underline" href={`/admin/characters/${row.targetId}?tab=release`}>
+              {t("Open this Character's release")}
+            </Link>
+          ) : (
+            <Link className="font-semibold underline" href="/admin/creative/runs">
+              {t("Open Creative Runs")}
+            </Link>
+          )}
+        </div>
+      ) : null}
+
       <AssetImage asset={row.asset} />
 
       <DetailSection title={t("Basic info")}>

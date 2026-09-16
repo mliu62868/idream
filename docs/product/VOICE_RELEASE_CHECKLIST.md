@@ -1,8 +1,10 @@
 # Voice Generation — Release Checklist
 
 On-demand TTS for assistant chat turns. The full code path (API → billing → UI →
-provider → launch gates) is implemented and tested. This checklist covers the steps
-to take it from `mock` to a **publishable production** state.
+provider → launch gates) is implemented and tested. Voice is no longer on `mock` —
+`VOICE_PROVIDER=pocket-tts` is the configured default (see `packages/main/.env.production.example:114`
+and §29 below). This checklist covers the remaining steps to reach a
+**publishable production** state.
 
 ## What ships in code (already done)
 

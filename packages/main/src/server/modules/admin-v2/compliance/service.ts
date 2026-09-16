@@ -1,4 +1,7 @@
+import type { Prisma } from "@prisma/client";
 import type {
+  COMPLIANCE_ACCOUNT_DELETION_WAITING_ON,
+  complianceAccountDeletionListResponseSchema,
   complianceAgeVerificationListResponseSchema,
   complianceAgeVerificationOverrideResponseSchema,
   complianceEraseResponseSchema,
@@ -33,6 +36,8 @@ import {
 type ExportResponse = z.infer<typeof complianceUserExportResponseSchema>;
 type EraseResponse = z.infer<typeof complianceEraseResponseSchema>;
 type AgeVerificationListResponse = z.infer<typeof complianceAgeVerificationListResponseSchema>;
+type AccountDeletionListResponse = z.infer<typeof complianceAccountDeletionListResponseSchema>;
+type AccountDeletionWaitingOn = (typeof COMPLIANCE_ACCOUNT_DELETION_WAITING_ON)[number];
 type AgeOverrideResponse = z.infer<typeof complianceAgeVerificationOverrideResponseSchema>;
 type EraseBody = AdminV2RequestBody<"complianceEraseRequestSchema">;
 type AgeOverrideBody = AdminV2RequestBody<"complianceAgeVerificationOverrideRequestSchema">;
@@ -143,6 +148,89 @@ export async function eraseUser(request: Request, userId: string): Promise<Erase
     idempotent: !deletion.created,
     deletion: accountDeletionPublicState(deletion),
   };
+}
+
+/**
+ * SPEC: 擦除请求队列 —— 每一条账号擦除承诺的当前阶段与它在等谁。
+ * INTENT: `eraseUser` 只是起点：真正的擦除要等宽限期结束，再经 Chat 擦除 → Blob 删除 →
+ *         主库硬删四个阶段，中间跨两个服务。完成时不写审计，请求那条审计的 targetId 还会被
+ *         改写成不可逆的 subject ref —— 所以「去审计日志里查」这条路事实上是断的，
+ *         在这个端点出现之前后台看不到任何一条擦除请求的下落。
+ * INVARIANT: 只读。卡住的行需要的下一步（解除 legal hold、把生成请求推到终态）都在别的模块，
+ *            这里给出权威写回的 blocker 原文，不摆一个按了没用的按钮。
+ */
+export async function listAccountDeletions(request: Request): Promise<AccountDeletionListResponse> {
+  await actorWithPermission(request, "compliance.read");
+  const { scope, limit } = queryParams(
+    request,
+    "GET /api/v2/admin/compliance/account-deletions",
+  );
+  const now = new Date();
+  const openOnly = { status: { not: "completed" } };
+  const [rows, pastDueCount] = await Promise.all([
+    prisma.accountDeletion.findMany({
+      where: scope === "all" ? {} : openOnly,
+      // 最早到期的排最前：运营要先看的是「已经欠着的」，不是最近提交的。
+      orderBy: [{ graceEndsAt: "asc" }, { id: "asc" }],
+      take: limit,
+    }),
+    prisma.accountDeletion.count({ where: { ...openOnly, graceEndsAt: { lte: now } } }),
+  ]);
+  const requestEventIds = rows.flatMap((row) => row.chatRequestEventId ?? []);
+  const deliveries = requestEventIds.length === 0 ? [] : await prisma.mainOutboxEvent.findMany({
+    where: { id: { in: requestEventIds } },
+    select: { id: true, status: true, attempts: true, nextRunAt: true },
+  });
+  const deliveryById = new Map(deliveries.map((row) => [row.id, row]));
+  return {
+    pastDueCount,
+    items: rows.map((row) => {
+      const delivery = row.chatRequestEventId
+        ? deliveryById.get(row.chatRequestEventId)
+        : undefined;
+      return {
+        id: row.id,
+        userId: row.userId,
+        status: row.status,
+        waitingOn: accountDeletionWaitingOn(row.status, row.graceEndsAt, now),
+        pastDue: row.status !== "completed" && row.graceEndsAt.getTime() <= now.getTime(),
+        requestedAt: row.requestedAt.toISOString(),
+        graceEndsAt: row.graceEndsAt.toISOString(),
+        chatCompletedAt: row.chatCompletedAt?.toISOString() ?? null,
+        blobExpectedCount: row.blobExpectedCount,
+        blobDeletedCount: row.blobDeletedCount,
+        completedAt: row.completedAt?.toISOString() ?? null,
+        updatedAt: row.updatedAt.toISOString(),
+        blockedReason: accountDeletionBlocker(row.lastError),
+        chatRequestDelivery: delivery
+          ? {
+            status: delivery.status,
+            attempts: delivery.attempts,
+            nextRunAt: delivery.nextRunAt.toISOString(),
+          }
+          : null,
+      };
+    }),
+  };
+}
+
+function accountDeletionWaitingOn(
+  status: string,
+  graceEndsAt: Date,
+  now: Date,
+): AccountDeletionWaitingOn {
+  if (status === "completed") return "nothing";
+  if (status === "deleting_blobs") return "blob_deletion";
+  if (status === "finalizing") return "main_purge";
+  // awaiting_chat 覆盖两件完全不同的事：宽限期内的正常等待，和宽限期已过却还没被擦除。
+  // 状态列本身分不开它们，所以运营看到的是这个派生值，不是 status。
+  return graceEndsAt.getTime() > now.getTime() ? "grace_period" : "chat_erasure";
+}
+
+function accountDeletionBlocker(lastError: Prisma.JsonValue | null): string | null {
+  if (!lastError || typeof lastError !== "object" || Array.isArray(lastError)) return null;
+  const code = (lastError as Record<string, unknown>).code;
+  return typeof code === "string" && code.length > 0 ? code : null;
 }
 
 export async function listAgeVerifications(

@@ -24,6 +24,12 @@ export const announcementSchema = z
     endsAt: adminIsoDateTimeSchema.nullable(),
     href: z.string().nullable(),
     createdAt: adminIsoDateTimeSchema,
+    // SPEC: 此刻站上是不是真的在展示它 —— 由服务端用公开端点那条同一个判据算出来。
+    // INTENT: `active` 只是三个条件里的一个，另两个是 startsAt / endsAt 的时间窗。
+    //         后台过去只显示 active，于是一条窗口已过的公告在列表里是「启用」，站上却什么都没有。
+    //         判据不在前端重算 —— 那正是本仓刚踩过的那类漂移（同一判据两处实现，SQL 那处取错了
+    //         JSON 路径，恒为空）。这里让权威把结论直接说出来。
+    serving: z.boolean(),
   })
   .strict();
 

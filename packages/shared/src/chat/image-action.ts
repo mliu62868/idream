@@ -119,13 +119,13 @@ const ENGLISH_NON_NUDE_IMAGE_NOUN = "(?:photo|picture|pic|selfie|image|portrait)
 export type ImageIntentDecision =
   | {
       kind: "generate";
-      reason: "explicit_media_command" | "show_companion_command" | "visual_gift_command" | "confirmed_image_offer";
+      reason: "explicit_media_command" | "show_companion_command" | "visual_gift_command" | "confirmed_image_offer" | "classified_media_request";
       action: RequiredImageAction & { readonly name: typeof GENERATE_IMAGE_ASYNC_TOOL };
       confirmedOffer?: string;
     }
   | {
       kind: "edit";
-      reason: "explicit_last_image_edit" | "contextual_image_edit";
+      reason: "explicit_last_image_edit" | "contextual_image_edit" | "classified_image_edit";
       action: RequiredImageAction & { readonly name: typeof EDIT_LAST_IMAGE_TOOL };
     }
   | { kind: "none"; reason: "empty" | "negated" | "discussion_or_ambiguous" };
@@ -167,6 +167,37 @@ export function imageIntentForUserRequest(input: {
       requestedNudity: requestedNudityIntent(confirmedOffer ?? userText),
     },
   };
+}
+
+// SPEC: a recall-only, deterministic gate over the user's own words in this Turn.
+// INTENT: the CN/EN matchers below decide; every other language is decided by a
+// classifier that sees nothing but this same message. This gate bounds what that
+// classifier may ever be asked about, and it is the same envelope Main enforces
+// before it will spend, so no memory, instruction or persona can widen it.
+// INVARIANT: err wide. A false positive costs one classifier call; a false
+// negative makes the feature unreachable in that language.
+const IMAGE_SUBJECT_PATTERNS: readonly RegExp[] = [
+  // ASCII stems, inflection-tolerant: a word boundary keeps them off longer words.
+  /\b(?:photo|foto|selfie|selfi|selca|snap|pics?\b|picture|imagem|imagen|immagin|images?\b|portrait|portret|potret|gambar|resim|bild|billed|afbeeld|plaatje|kuva|zdjec|obrazek|poza|kep|snimok|snimk|slik|tasveer|tasvir|nude|naked)/iu,
+  // Diacritics put the stem outside \b's ASCII alphabet, so match them plainly.
+  /(?:fot[oó]|fotoğraf|fotó|zdj[eę]ci|po[zż]a|k[eé]p|sn[ií]m|ảnh|hình|chụp|brehne|çıplak)/iu,
+  // One alternation per non-Latin script family.
+  /(?:照片|相片|图片|圖片|图像|圖像|写真|自拍|画像|撮影|撮って|セルフィー|自撮り|사진|셀카|셀피|이미지|찍어)/u,
+  /(?:фот|селф|снимок|снимк|картинк|изображени|світлин)/iu,
+  /(?:صور|عکس|سلفی|سيلفي|برهنه|عاري)/u,
+  /(?:तस्वीर|फोटो|छवि|नंगी)/u,
+  /(?:รูป|ภาพ|เซลฟี|ถ่าย|เปลือย)/u,
+  /(?:φωτογραφ|תמונה|סלפי)/iu,
+];
+
+/**
+ * Does this message name an image subject at all? Recall only — it answers
+ * "could this be about a picture", never "is a picture authorized".
+ */
+export function mentionsImageSubject(userText: string): boolean {
+  const value = userText.replace(/\s+/g, " ").trim();
+  if (!value) return false;
+  return IMAGE_SUBJECT_PATTERNS.some((pattern) => pattern.test(value));
 }
 
 export function requiredImageActionForUserRequest(input: {

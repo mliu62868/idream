@@ -133,7 +133,6 @@ export async function resolveGenerationVisualProfile(
 
   return resolveActiveVisualProfile(character, {
     bootstrapIfMissing: opts.bootstrapIfMissing,
-    allowEditorialLegacyProjection: opts.fallbackToActiveOnStale,
   });
 }
 
@@ -228,7 +227,6 @@ async function resolveActiveVisualProfile(
   character: GenerationPromptCharacter,
   options: {
     bootstrapIfMissing?: boolean;
-    allowEditorialLegacyProjection?: boolean;
   } = {},
 ): Promise<CharacterVisualProfile | null> {
   const legacyReleaseAuthority = await prisma.$transaction((tx) =>
@@ -239,11 +237,14 @@ async function resolveActiveVisualProfile(
     orderBy: { version: "desc" },
   });
   if (legacyReleaseAuthority) {
-    return options.allowEditorialLegacyProjection && active &&
-        isEditorialLegacyVisualProfileProjection(
-          active,
-          legacyReleaseAuthority,
-        )
+    // SPEC: 投影是否可用，只由 isEditorialLegacyVisualProfileProjection 判定 —— 它证明
+    //       这份 profile 就是 Release 那张权威 portrait，不是第二份身份权威。
+    // INTENT: 这里曾经额外要求调用方传 allowEditorialLegacyProjection，而该开关实际由
+    //         fallbackToActiveOnStale（Chat 的 pin 失效兜底）顺带决定。结果是 Chat 拿得到
+    //         身份、公开 Generate 拿不到，同一个角色两个入口给出互相矛盾的答案。
+    //         授权条件是投影自身的性质，与调用方是否有 pin 无关。
+    return active &&
+        isEditorialLegacyVisualProfileProjection(active, legacyReleaseAuthority)
       ? active
       : null;
   }

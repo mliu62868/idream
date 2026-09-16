@@ -1,3 +1,4 @@
+import { characterCommandMessage, type CharacterCommandMessage } from "./character-command-copy";
 import {
   adminCommandAcceptedSchema,
   adminCommandStatusSchema,
@@ -36,24 +37,24 @@ export type PendingCharacterCommand = {
 export type CharacterMutationNotice =
   | {
       readonly kind: "mutation_in_flight";
-      readonly message: string;
+      readonly message: CharacterCommandMessage;
     }
   | {
       readonly kind: "command_pending";
-      readonly message: string;
+      readonly message: CharacterCommandMessage;
       readonly commandId: string;
     }
   | {
       readonly kind: "command_submission_unknown";
-      readonly message: string;
+      readonly message: CharacterCommandMessage;
     }
   | {
       readonly kind: "command_reconfirmation_required";
-      readonly message: string;
+      readonly message: CharacterCommandMessage;
     }
   | {
       readonly kind: "refresh_required";
-      readonly message: string;
+      readonly message: CharacterCommandMessage;
       readonly commandId?: string;
     };
 
@@ -166,30 +167,30 @@ export type CharacterCommandRecoveryDisposition =
  *            改错这里的任何一句都改不动写入锁的行为；反过来，漏接一支只会让运营看不到发生了什么。
  */
 export type CharacterCommandRecoveryCopy = {
-  readonly attached: (input: { readonly action: string }) => string;
-  readonly windowExpired: (input: { readonly action: string }) => string;
-  readonly evidenceIncomplete: (input: { readonly action: string }) => string;
-  readonly replayBlocked: (input: { readonly action: string }) => string;
-  readonly replayUnreconciled: (input: { readonly action: string }) => string;
+  readonly attached: (input: { readonly action: string }) => CharacterCommandMessage;
+  readonly windowExpired: (input: { readonly action: string }) => CharacterCommandMessage;
+  readonly evidenceIncomplete: (input: { readonly action: string }) => CharacterCommandMessage;
+  readonly replayBlocked: (input: { readonly action: string }) => CharacterCommandMessage;
+  readonly replayUnreconciled: (input: { readonly action: string }) => CharacterCommandMessage;
   readonly replayReconciled: (input: {
     readonly action: string;
     readonly cause: unknown;
-  }) => string;
+  }) => CharacterCommandMessage;
   readonly replayRetrying: (input: {
     readonly action: string;
     readonly cause: unknown;
-  }) => string;
+  }) => CharacterCommandMessage;
   readonly commandFailed: (input: {
     readonly action: string;
     readonly status: string;
-  }) => string;
-  readonly evidenceMissingCleared: (input: { readonly action: string }) => string;
-  readonly evidenceMissingLocked: (input: { readonly action: string }) => string;
-  readonly statusBlocked: (input: { readonly action: string }) => string;
+  }) => CharacterCommandMessage;
+  readonly evidenceMissingCleared: (input: { readonly action: string }) => CharacterCommandMessage;
+  readonly evidenceMissingLocked: (input: { readonly action: string }) => CharacterCommandMessage;
+  readonly statusBlocked: (input: { readonly action: string }) => CharacterCommandMessage;
   readonly statusUnavailable: (input: {
     readonly action: string;
     readonly cause: unknown;
-  }) => string;
+  }) => CharacterCommandMessage;
   /** 与服务端对账期间挂出的通知（不是旁注），按触发它的出口分三句。 */
   readonly reconcileNotice: (input: {
     readonly action: string;
@@ -198,20 +199,20 @@ export type CharacterCommandRecoveryCopy = {
       | "replay_rejected"
       | "evidence_missing"
       | "cross_tab_cleared";
-  }) => string;
+  }) => CharacterCommandMessage;
   /** 对账发现服务端仍有命令活着。 */
-  readonly reconcileStillActive: (input: { readonly action: string }) => string;
+  readonly reconcileStillActive: (input: { readonly action: string }) => CharacterCommandMessage;
   /** 对账本身读不到权威投影。 */
   readonly reconcileFailed: (input: {
     readonly action: string;
     readonly cause: unknown;
-  }) => string;
+  }) => CharacterCommandMessage;
 };
 
 export type CharacterCommandRecoveryOutcome = {
   readonly disposition: CharacterCommandRecoveryDisposition;
   /** 本轮结束后挂在运营面前的那句话；journal 已经应用过了。 */
-  readonly message: string | null;
+  readonly message: CharacterCommandMessage | null;
   /** 交回调度器的下一轮间隔；null = 这条命令不需要再轮询。 */
   readonly retryInMs: number | null;
 };
@@ -243,7 +244,7 @@ export type CharacterCommandJournalSnapshot = {
    *            8 个调用点上时，只要有一个忘了清，运营就会看着一条已经不存在的命令的告警
    *            去处理另一条命令。
    */
-  readonly recoveryError: string | null;
+  readonly recoveryError: CharacterCommandMessage | null;
   readonly writesLocked: boolean;
 };
 
@@ -439,7 +440,7 @@ export function committedCharacterProjectionWarning(
   cause: unknown,
 ) {
   const detail = cause instanceof Error ? `: ${cause.message}` : "";
-  return `${action} was committed, but the authoritative Character workspace could not be refreshed${detail}. Refresh the authoritative workspace before another write.`;
+  return characterCommandMessage("{action} was committed, but the authoritative Character workspace could not be refreshed{detail}. Refresh the authoritative workspace before another write.", { action: action, detail: detail });
 }
 
 function characterCommandActionLabel(commandType: string) {
@@ -522,7 +523,7 @@ export type CharacterCommandJournal = {
   readonly ownsStorageEvent: (event: StorageEvent) => boolean;
 
   /** 抢写入锁。已有命令或通知在身时返回 false —— 调用方不得越过它提交。 */
-  readonly beginSubmission: (message: string) => boolean;
+  readonly beginSubmission: (message: CharacterCommandMessage) => boolean;
   /** 还没落盘就失败了：放弃这次抢锁。 */
   readonly abortSubmission: () => void;
 
@@ -603,7 +604,7 @@ export type CharacterCommandJournal = {
   readonly getGeneration: () => number;
   readonly isCurrentGeneration: (candidate: number) => boolean;
   readonly setNotice: (notice: CharacterMutationNotice | null) => void;
-  readonly setRecoveryError: (message: string | null) => void;
+  readonly setRecoveryError: (message: CharacterCommandMessage | null) => void;
   /**
    * 同一 (操作员, 角色) 下按业务签名稳定的幂等键，跨刷新存活。
    * INTENT: 同步原子 mutation（如 Voice request reclaim）也需要它——它们不落命令日志，
@@ -648,7 +649,7 @@ export function createCharacterCommandJournal(options: {
   let generation = 0;
   let command: PendingCharacterCommand | null = null;
   let notice: CharacterMutationNotice | null = null;
-  let recoveryError: string | null = null;
+  let recoveryError: CharacterCommandMessage | null = null;
   let snapshot: CharacterCommandJournalSnapshot = {
     command: null,
     notice: null,
@@ -691,12 +692,12 @@ export function createCharacterCommandJournal(options: {
     next.commandId
       ? {
           kind: "command_pending",
-          message: `${next.action} command is pending. Character writes stay locked until the worker records a terminal result and the workspace refreshes.`,
+          message: characterCommandMessage("{action} command is pending. Character writes stay locked until the worker records a terminal result and the workspace refreshes.", { action: next.action }),
           commandId: next.commandId,
         }
       : {
           kind: "command_submission_unknown",
-          message: `${next.action} may already be accepted. The exact command is being replayed with the same idempotency key before any other Character write is allowed.`,
+          message: characterCommandMessage("{action} may already be accepted. The exact command is being replayed with the same idempotency key before any other Character write is allowed.", { action: next.action }),
         };
 
   const persist = (next: PendingCharacterCommand) => {
@@ -868,7 +869,7 @@ export function createCharacterCommandJournal(options: {
     return true;
   };
 
-  const setRecoveryError = (message: string | null) => {
+  const setRecoveryError = (message: CharacterCommandMessage | null) => {
     recoveryError = message;
     publish();
   };
@@ -882,7 +883,7 @@ export function createCharacterCommandJournal(options: {
     if (!characterCommandJournalCanAutoReplay(target, now())) {
       notice = {
         kind: "command_reconfirmation_required",
-        message: `${target.action} was saved before acceptance could be proven, but the automatic replay window expired. Review the action and explicitly resume it; no old command will run automatically.`,
+        message: characterCommandMessage("{action} was saved before acceptance could be proven, but the automatic replay window expired. Review the action and explicitly resume it; no old command will run automatically.", { action: target.action }),
       };
       publish();
       return { kind: "window_expired" };

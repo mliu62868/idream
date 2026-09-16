@@ -32,9 +32,10 @@ describe("Global Admin Search authority state", () => {
       items: [result],
       lastGoodQuery: "amy",
     });
-    expect(globalAdminSearchUnavailableMessage(unavailable)).toBe(
-      'Search unavailable. Showing last successful results for "amy".',
-    );
+    expect(globalAdminSearchUnavailableMessage(unavailable)).toEqual({
+      key: 'Search unavailable. Showing last successful results for "{query}".',
+      values: { query: "amy" },
+    });
   });
 
   it("does not pretend an unavailable empty cache is a valid empty search", () => {
@@ -43,9 +44,9 @@ describe("Global Admin Search authority state", () => {
     );
 
     expect(unavailable.items).toEqual([]);
-    expect(globalAdminSearchUnavailableMessage(unavailable)).toBe(
-      "Search unavailable. No cached results are available.",
-    );
+    expect(globalAdminSearchUnavailableMessage(unavailable)).toEqual({
+      key: "Search unavailable. No cached results are available.",
+    });
   });
 
   it("distinguishes a cached empty result from no successful result", () => {
@@ -56,9 +57,10 @@ describe("Global Admin Search authority state", () => {
     );
     const unavailable = globalAdminSearchFailed(available);
 
-    expect(globalAdminSearchUnavailableMessage(unavailable)).toBe(
-      'Search unavailable. The last successful search for "nobody" returned no results.',
-    );
+    expect(globalAdminSearchUnavailableMessage(unavailable)).toEqual({
+      key: 'Search unavailable. The last successful search for "{query}" returned no results.',
+      values: { query: "nobody" },
+    });
   });
 });
 

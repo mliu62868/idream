@@ -137,6 +137,28 @@ export const characterReleaseCreateRequestSchema = z
   })
   .strict();
 
+// SPEC: 生成线路资质失效的**全部**原因，由 Main 的 evaluateEffectiveGenerationRouteAuthority 产出，
+// 写进 release_monitors.observed.reason，后台角色工作台照着它给下一步。
+// INTENT: 原先这份词表只活在 main 的源码里，后台那一格写死一句「重新资质化需要工程介入」——
+//         对 generation_profile_unavailable 这类**运营自己就能收口**的原因来说，这是把人指错地方。
+//         放进 shared 之后两边同一份 union：新增一个原因而后台没给下一步，编译就过不去。
+export const GENERATION_ROUTE_STALE_REASONS = [
+  "missing_qualification",
+  "qualification_expired",
+  "policy_version_changed",
+  "evaluator_version_changed",
+  "qualification_threshold_failed",
+  "generation_profile_unavailable",
+  "generation_profile_workflow_changed",
+  "generation_workflow_unavailable",
+  "generation_route_reference_role_unsupported",
+  "generation_route_reference_capacity_insufficient",
+  "generation_route_reference_slot_assignment_unsupported",
+] as const;
+
+export type GenerationRouteStaleReason =
+  (typeof GENERATION_ROUTE_STALE_REASONS)[number];
+
 export const characterReleaseMonitorSchema = z
   .object({
     id: adminIdSchema,

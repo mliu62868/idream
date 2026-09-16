@@ -30,9 +30,9 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 import {
-  ADMIN_V2_WORKSPACE_ACCESS,
-  type AdminV2WorkspaceAccessKey,
+  firstScreenPermissions,
 } from "./workspace-access";
+import type { AdminV2DeclaredOperationId } from "@idream/shared/admin";
 import type { WorkMode } from "./shell-preferences";
 import {
   matchAdminRoute,
@@ -55,6 +55,7 @@ import { TagsView } from "@/components/admin/TagsView";
 import { CmsView } from "@/components/admin/CmsView";
 import { ComplianceView } from "@/components/admin/ComplianceView";
 import { InsightsView } from "@/components/admin/InsightsView";
+import { AffiliateApplicationsView } from "@/components/admin/AffiliateApplicationsView";
 import { AnnouncementsView } from "@/components/admin/AnnouncementsView";
 import { ExperimentsView } from "@/components/admin/ExperimentsView";
 import { TodayWorkspace } from "@/components/admin/today/TodayWorkspace";
@@ -121,7 +122,6 @@ export type NavItem = {
   icon: LucideIcon;
   group: AdminWorkspace;
   read: { allOf: readonly AdminPermissionKey[] };
-  apiWorkspace: AdminV2WorkspaceAccessKey | null;
   // SPEC: 入口只有三层：跨工作区常驻、区内常规任务、区内低频工具。
   // INTENT: 用一个互斥枚举表达信息层级，避免多个布尔值组合出「既常驻又是低频工具」之类的无效状态。
   navigation: "primary" | "workspace" | "tool";
@@ -137,20 +137,23 @@ export type NavItem = {
   render: (context: SectionContext) => ReactNode;
 };
 
-type ItemInput = Omit<NavItem, "apiWorkspace" | "legacyHref" | "chrome" | "navigation"> & {
-  apiWorkspace?: AdminV2WorkspaceAccessKey;
+type ItemInput = Omit<NavItem, "legacyHref" | "chrome" | "navigation"> & {
   chrome?: NavItem["chrome"];
   navigation?: NavItem["navigation"];
 };
 
-function read(...allOf: AdminPermissionKey[]): NavItem["read"] {
-  return { allOf };
+// SPEC: 入口权限 = 这一页首屏必需请求在 API manifest 里声明的权限。
+// INTENT: 手写权限键会和页面真正调的接口各自演化 —— 实测漂移出三处「菜单可见、进去整页 403」。
+//         写 operation id 之后，权限只有 manifest 一个来源：接口改要求，入口自动跟随。
+function readForOperations(
+  ...operationIds: AdminV2DeclaredOperationId[]
+): NavItem["read"] {
+  return { allOf: firstScreenPermissions(operationIds) };
 }
 
 function item(input: ItemInput): NavItem {
   return {
     ...input,
-    apiWorkspace: input.apiWorkspace ?? null,
     chrome: input.chrome ?? "default",
     legacyHref: input.id === "dashboard" ? "/admin" : `/admin/${input.id}`,
     navigation: input.navigation ?? "workspace",
@@ -160,44 +163,31 @@ function item(input: ItemInput): NavItem {
 function targetItem(input: ItemInput): NavItem {
   return {
     ...input,
-    apiWorkspace: input.apiWorkspace ?? null,
     chrome: input.chrome ?? "default",
     legacyHref: null,
     navigation: input.navigation ?? "workspace",
   };
 }
 
-function apiItem(
-  input: Omit<ItemInput, "read"> & { apiWorkspace: AdminV2WorkspaceAccessKey },
-): NavItem {
-  return item({ ...input, read: ADMIN_V2_WORKSPACE_ACCESS[input.apiWorkspace] });
-}
-
-function apiTargetItem(
-  input: Omit<ItemInput, "read"> & { apiWorkspace: AdminV2WorkspaceAccessKey },
-): NavItem {
-  return targetItem({ ...input, read: ADMIN_V2_WORKSPACE_ACCESS[input.apiWorkspace] });
-}
-
 // SSoT for the migration shell. `id` remains the legacy implementation key so every
 // shipped capability stays reachable; `href` is the canonical decision-workspace URL.
 // Permissions are existing effective keys, not client-side role guesses.
 export const navItems: NavItem[] = [
-  apiItem({ id: "dashboard", label: "Today", href: "/admin/today", icon: Gauge, group: "Today", apiWorkspace: "today", navigation: "primary",
+  item({ id: "dashboard", label: "Today", href: "/admin/today", icon: Gauge, group: "Today", read: readForOperations("GET /api/v2/admin/dashboard", "GET /api/v2/admin/today"), navigation: "primary",
     render: (ctx) => <TodayWorkspace workMode={ctx.workMode} /> }),
 
-  apiItem({ id: "content/official", label: "Characters", href: "/admin/characters", icon: UserRound, group: "Characters", apiWorkspace: "character_workspace", chrome: "compact",
+  item({ id: "content/official", label: "Characters", href: "/admin/characters", icon: UserRound, group: "Characters", read: readForOperations("GET /api/v2/admin/characters/:id", "GET /api/v2/admin/characters/portfolio"), chrome: "compact",
     render: (ctx) => <CharacterWorkspace actorId={ctx.actorId} permissions={ctx.permissions} view={ctx.view} /> }),
-  item({ id: "content/templates", label: "Character Starters", href: "/admin/characters/starters", icon: Sparkles, group: "Characters", read: read("content.read"),
+  item({ id: "content/templates", label: "Character Starters", href: "/admin/characters/starters", icon: Sparkles, group: "Characters", read: readForOperations("GET /api/v2/admin/content/templates"),
     render: (ctx) => <StartersSection view={ctx.view} /> }),
-  item({ id: "content/tags", label: "Taxonomy", href: "/admin/characters/taxonomy", icon: Flag, group: "Characters", read: read("content.read"),
+  item({ id: "content/tags", label: "Taxonomy", href: "/admin/characters/taxonomy", icon: Flag, group: "Characters", read: readForOperations("GET /api/v2/admin/content/tags"),
     render: () => <TagsView /> }),
 
-  item({ id: "content/assets", label: "Operational Assets", href: "/admin/creative/library", icon: ImageIcon, group: "Content Operations", read: read("creative.asset.read"),
+  item({ id: "content/assets", label: "Operational Assets", href: "/admin/creative/library", icon: ImageIcon, group: "Content Operations", read: readForOperations("GET /api/v2/admin/assets"),
     render: (ctx) => <AssetsSection canReview={ctx.permissions.has("content.asset.review")} view={ctx.view} /> }),
-  item({ id: "content/placements", label: "Placements", href: "/admin/creative/placements", icon: Bookmark, group: "Content Operations", read: read("creative.placement.read"),
+  item({ id: "content/placements", label: "Placements", href: "/admin/creative/placements", icon: Bookmark, group: "Content Operations", read: readForOperations("GET /api/v2/admin/content/placements"),
     render: (ctx) => <PlacementsSection canPublish={ctx.permissions.has("creative.placement.publish")} view={ctx.view} /> }),
-  apiItem({ id: "content/production", label: "Generation History", href: "/admin/creative/runs", icon: Play, group: "Content Operations", apiWorkspace: "creative_runs", navigation: "tool",
+  item({ id: "content/production", label: "Generation History", href: "/admin/creative/runs", icon: Play, group: "Content Operations", read: readForOperations("GET /api/v2/admin/creative/runs"), navigation: "tool",
     render: (ctx) => <CreativeRunWorkspace actorId={ctx.actorId} permissions={{
       read: ctx.canRead,
       write: ctx.permissions.has("creative.run.write"),
@@ -206,45 +196,47 @@ export const navItems: NavItem[] = [
       manageIncident: ctx.permissions.has("ops.incident.manage"),
     }} view={ctx.view} /> }),
 
-  apiItem({ id: "cases", label: "Cases", href: "/admin/cases?view=mine", icon: Ticket, group: "Customers & Support", apiWorkspace: "cases",
+  item({ id: "cases", label: "Cases", href: "/admin/cases?view=mine", icon: Ticket, group: "Customers & Support", read: readForOperations("GET /api/v2/admin/cases"),
     render: (ctx) => <CaseWorkspace
       canAssign={ctx.permissions.has("case.assign")}
       canDecide={ctx.permissions.has("case.decide")}
       initialCaseId={detailId(ctx.view)}
       key={detailId(ctx.view) ?? "case-list"}
     /> }),
-  apiItem({ id: "users", label: "Customers", href: "/admin/customers", icon: Users, group: "Customers & Support", apiWorkspace: "customers",
+  item({ id: "users", label: "Customers", href: "/admin/customers", icon: Users, group: "Customers & Support", read: readForOperations("GET /api/v2/admin/customers"),
     render: (ctx) => <CustomerWorkspace initialCustomerId={detailId(ctx.view)} /> }),
-  item({ id: "billing", label: "Orders & Billing", href: "/admin/customer-ops/billing", icon: BadgeDollarSign, group: "Revenue & Marketing", read: read("billing.read"),
+  item({ id: "billing", label: "Orders & Billing", href: "/admin/customer-ops/billing", icon: BadgeDollarSign, group: "Revenue & Marketing", read: readForOperations("GET /api/v2/admin/billing/ledger", "GET /api/v2/admin/billing/subscriptions", "GET /api/v2/admin/billing/reconciliation"),
     render: (ctx) => <BillingWorkspace
       canAdjust={ctx.permissions.has("billing.ledger.adjust")}
       canReconcile={ctx.permissions.has("billing.checkout.reconcile")}
       canRefund={ctx.permissions.has("billing.subscription.refund")}
     /> }),
-  item({ id: "compliance", label: "Account Requests", href: "/admin/customer-ops/account-requests", icon: ShieldAlert, group: "Customers & Support", read: read("compliance.read"),
+  item({ id: "compliance", label: "Account Requests", href: "/admin/customer-ops/account-requests", icon: ShieldAlert, group: "Customers & Support", read: readForOperations("GET /api/v2/admin/compliance/account-deletions", "GET /api/v2/admin/compliance/age-verifications"),
     render: () => <ComplianceView /> }),
 
-  apiItem({ id: "analytics", label: "Product Health", href: "/admin/growth/health", icon: BarChart3, group: "Analytics", apiWorkspace: "metrics",
+  item({ id: "analytics", label: "Product Health", href: "/admin/growth/health", icon: BarChart3, group: "Analytics", read: readForOperations("GET /api/v2/admin/metrics"),
     render: (ctx) => <AnalyticsWorkspace
       canReadCanonical={ctx.canRead}
       canReadLegacy={ctx.permissions.has("analytics.export")}
     /> }),
-  apiTargetItem({ id: "growth/characters", label: "Character Performance", href: "/admin/growth/characters", icon: Activity, group: "Analytics", apiWorkspace: "character_performance",
+  targetItem({ id: "growth/characters", label: "Character Performance", href: "/admin/growth/characters", icon: Activity, group: "Analytics", read: readForOperations("GET /api/v2/admin/characters/portfolio"),
     render: (ctx) => <CharacterPerformanceWorkspace permissions={ctx.permissions} /> }),
-  apiItem({ id: "experiments", label: "Experiments", href: "/admin/growth/experiments", icon: Flag, group: "Analytics", apiWorkspace: "experiments",
+  item({ id: "experiments", label: "Experiments", href: "/admin/growth/experiments", icon: Flag, group: "Analytics", read: readForOperations("GET /api/v2/admin/experiments"),
     render: () => <ExperimentsView /> }),
-  item({ id: "content", label: "Featured Merchandising", href: "/admin/growth/merchandising?view=featured", icon: Library, group: "Content Operations", read: read("content.read"),
+  item({ id: "content", label: "Featured Merchandising", href: "/admin/growth/merchandising?view=featured", icon: Library, group: "Content Operations", read: readForOperations("GET /api/v2/admin/content/characters", "GET /api/v2/admin/content/featured"),
     render: (ctx) => <ContentMerchandisingWorkspace canWrite={ctx.permissions.has("content.takedown.write")} /> }),
-  item({ id: "announcements", label: "Announcements", href: "/admin/growth/merchandising?view=announcements", icon: MessageSquare, group: "Content Operations", read: read("growth.promo.read"),
+  item({ id: "announcements", label: "Announcements", href: "/admin/growth/merchandising?view=announcements", icon: MessageSquare, group: "Content Operations", read: readForOperations("GET /api/v2/admin/announcements"),
     render: () => <AnnouncementsView /> }),
-  item({ id: "cms", label: "Site Content & SEO", href: "/admin/growth/content", icon: FileText, group: "Content Operations", read: read("content.read"),
+  item({ id: "cms", label: "Site Content & SEO", href: "/admin/growth/content", icon: FileText, group: "Content Operations", read: readForOperations("GET /api/v2/admin/cms/pages"),
     render: (ctx) => <CmsView canWrite={ctx.permissions.has("content.cms.write")} /> }),
-  item({ id: "pricing", label: "Pricing", href: "/admin/growth/offers?view=pricing", icon: Coins, group: "Revenue & Marketing", read: read("billing.read"),
+  item({ id: "pricing", label: "Pricing", href: "/admin/growth/offers?view=pricing", icon: Coins, group: "Revenue & Marketing", read: readForOperations("GET /api/v2/admin/pricing/rules"),
     render: (ctx) => <PricingWorkspace canWrite={ctx.permissions.has("config.pricing.write")} /> }),
-  item({ id: "promo", label: "Promotions", href: "/admin/growth/offers?view=promo", icon: Ticket, group: "Revenue & Marketing", read: read("growth.promo.read"),
+  targetItem({ id: "growth/affiliates", label: "Affiliate Applications", href: "/admin/growth/affiliates", icon: Users, group: "Revenue & Marketing", read: readForOperations("GET /api/v2/admin/affiliate/applications"),
+    render: (ctx) => <AffiliateApplicationsView canWrite={adminV2OperationAllowed("POST /api/v2/admin/affiliate/applications/:id/decision", ctx.permissions)} /> }),
+  item({ id: "promo", label: "Promotions", href: "/admin/growth/offers?view=promo", icon: Ticket, group: "Revenue & Marketing", read: readForOperations("GET /api/v2/admin/promo/redeem-codes", "GET /api/v2/admin/promo/referrals"),
     render: (ctx) => <PromoWorkspace canWrite={ctx.permissions.has("growth.promo.write")} /> }),
 
-  apiItem({ id: "ops/incidents", label: "Incidents", href: "/admin/ops/incidents", icon: ShieldAlert, group: "Platform Operations", apiWorkspace: "incidents",
+  item({ id: "ops/incidents", label: "Incidents", href: "/admin/ops/incidents", icon: ShieldAlert, group: "Platform Operations", read: readForOperations("GET /api/v2/admin/incidents"),
     render: (ctx) => <IncidentWorkspace
       canManage={ctx.permissions.has("ops.incident.manage")}
       canDiscardAttemptMissingCorrelationOutbox={adminV2OperationAllowed(
@@ -266,20 +258,22 @@ export const navItems: NavItem[] = [
   //       任何人发现」。targetItem：id 与 href 同形，不需要再造一条同名的 legacy 别名。
   // INTENT: 权威早就在算这 31 条检查（reconciliation/invariants，实测 17 条违规、
   //         decisionUse=blocked），此前整个控制台零引用 —— 结论算出来却没有任何一页显示它。
-  targetItem({ id: "ops/invariants", label: "Data Integrity", href: "/admin/ops/invariants", icon: ListChecks, group: "Platform Operations", read: read("analytics.metric.read"),
+  targetItem({ id: "ops/invariants", label: "Data Integrity", href: "/admin/ops/invariants", icon: ListChecks, group: "Platform Operations", read: readForOperations("GET /api/v2/admin/reconciliation/invariants"),
     render: (ctx) => <InvariantsWorkspace canRead={ctx.canRead} /> }),
-  apiItem({ id: "generation/jobs", label: "Generation Jobs", href: "/admin/ops/jobs", icon: Activity, group: "Platform Operations", apiWorkspace: "generation_jobs",
+  item({ id: "generation/jobs", label: "Generation Jobs", href: "/admin/ops/jobs", icon: Activity, group: "Platform Operations", read: readForOperations("GET /api/v2/admin/jobs"),
     render: () => <GenerationJobsWorkspace /> }),
-  item({ id: "generation/dead-letter", label: "Dead-letter", href: "/admin/ops/jobs?view=dead-letter", icon: Inbox, group: "Platform Operations", read: read("ops.queue.read"), navigation: "tool",
+  item({ id: "generation/dead-letter", label: "Dead-letter", href: "/admin/ops/jobs?view=dead-letter", icon: Inbox, group: "Platform Operations", read: readForOperations("GET /api/v2/admin/generation/dead-letter"), navigation: "tool",
     render: (ctx) => <DeadLetterWorkspace permissions={{
       requeue: ctx.permissions.has("generation.job.requeue"),
       discard: ctx.permissions.has("ops.deadletter.write"),
     }} /> }),
-  item({ id: "ops/providers", label: "Providers", href: "/admin/ops/providers", icon: Gauge, group: "Platform Operations", read: read("ops.queue.read"),
+  item({ id: "ops/providers", label: "Providers", href: "/admin/ops/providers", icon: Gauge, group: "Platform Operations", read: readForOperations("GET /api/v2/admin/ops/providers"),
     render: (ctx) => <ProviderOverviewWorkspace canRead={ctx.permissions.has("ops.queue.read")} /> }),
-  item({ id: "generation/backends", label: "Backend Diagnostics", href: "/admin/ops/providers?view=backends", icon: Server, group: "Platform Operations", read: read("ops.queue.read"), navigation: "tool",
+  // 两个诊断页只读 generation/* 权威，不碰队列接口：入口权限跟着首屏 API 走，
+  // 否则只拿到 ops.queue.read 的人会看到入口、进去整页 403。
+  item({ id: "generation/backends", label: "Backend Diagnostics", href: "/admin/ops/providers?view=backends", icon: Server, group: "Platform Operations", read: readForOperations("GET /api/v2/admin/generation/backends"), navigation: "tool",
     render: () => <BackendsView /> }),
-  item({ id: "generation/metrics", label: "Generation Health", href: "/admin/ops/providers?view=generation-metrics", icon: BarChart3, group: "Platform Operations", read: read("ops.queue.read"), navigation: "tool",
+  item({ id: "generation/metrics", label: "Generation Health", href: "/admin/ops/providers?view=generation-metrics", icon: BarChart3, group: "Platform Operations", read: readForOperations("GET /api/v2/admin/generation/metrics"), navigation: "tool",
     render: () => <GenerationMetricsView /> }),
   // SPEC: 这一页按 model-profile id 查健康度、跑不调 provider 的配置检查。
   // INTENT: 它过去叫「Funnels & Retention」、挂在 Growth 下，但页面里既没有漏斗也没有 cohort
@@ -288,20 +282,24 @@ export const navItems: NavItem[] = [
   //         按页面真正提供的能力改名，并归到它受众所在的分组：读它的是平台运维，不是增长。
   //         和邻居 Backend / Workflow Diagnostics 是同一族命名。
   // INVARIANT: href 保持 /admin/growth/funnels —— 换 URL 会废掉现有书签，而这一轮只改元数据。
-  apiItem({ id: "insights", label: "Profile Diagnostics", href: "/admin/growth/funnels", icon: BarChart3, group: "Platform Operations", apiWorkspace: "metrics", navigation: "tool",
+  // SPEC: 入口权限 = 首屏真正调用的 API 所要求的权限。
+  // INTENT: 这页只调 generation/model-profiles（+ health/dry-run），要的是 generation.config.read；
+  //         它过去挂在 metrics 工作区（analytics.metric.read），于是只有 analytics.metric.read 的
+  //         分析师能看到入口、点进去下拉框必 403。共用 metrics 这个 key 是接错了，不是两条配置。
+  item({ id: "insights", label: "Profile Diagnostics", href: "/admin/growth/funnels", icon: BarChart3, group: "Platform Operations", read: readForOperations("GET /api/v2/admin/generation/model-profiles"), navigation: "tool",
     render: () => <InsightsView /> }),
-  item({ id: "generation/config", label: "Profiles & Rollout", href: "/admin/ops/profiles", icon: SlidersHorizontal, group: "Platform Operations", read: read("generation.config.read", "ops.queue.read", "generation.job.read"),
+  item({ id: "generation/config", label: "Profiles & Rollout", href: "/admin/ops/profiles", icon: SlidersHorizontal, group: "Platform Operations", read: readForOperations("GET /api/v2/admin/generation/model-profiles", "GET /api/v2/admin/feature-flags", "GET /api/v2/admin/jobs"),
     render: (ctx) => <GenerationConfigWorkspace permissions={{
       manageProfiles: ctx.permissions.has("generation.config.write"),
       manageFlags: ctx.permissions.has("config.feature_flag.write"),
     }} /> }),
-  item({ id: "generation/recipes", label: "Prompt Recipes", href: "/admin/ops/recipes", icon: ScrollText, group: "Platform Operations", read: read("generation.config.read"),
+  item({ id: "generation/recipes", label: "Prompt Recipes", href: "/admin/ops/recipes", icon: ScrollText, group: "Platform Operations", read: readForOperations("GET /api/v2/admin/generation/recipes"),
     render: (ctx) => <RecipesSection view={ctx.view} /> }),
-  item({ id: "generation/presets", label: "Presets", href: "/admin/ops/recipes?view=presets", icon: Layers, group: "Platform Operations", read: read("generation.config.read"), navigation: "tool",
+  item({ id: "generation/presets", label: "Presets", href: "/admin/ops/recipes?view=presets", icon: Layers, group: "Platform Operations", read: readForOperations("GET /api/v2/admin/generation/presets"), navigation: "tool",
     render: (ctx) => <PresetsSection view={ctx.view} /> }),
-  item({ id: "generation/workflows", label: "Workflow Diagnostics", href: "/admin/ops/recipes?view=workflows", icon: Workflow, group: "Platform Operations", read: read("generation.config.read"), navigation: "tool",
+  item({ id: "generation/workflows", label: "Workflow Diagnostics", href: "/admin/ops/recipes?view=workflows", icon: Workflow, group: "Platform Operations", read: readForOperations("GET /api/v2/admin/generation/workflows"), navigation: "tool",
     render: () => <WorkflowsView /> }),
-  item({ id: "chat", label: "Chat Operations", href: "/admin/ops/chat", icon: MessageSquare, group: "Platform Operations", read: read("chat.ops.read"),
+  item({ id: "chat", label: "Chat Operations", href: "/admin/ops/chat", icon: MessageSquare, group: "Platform Operations", read: readForOperations("GET /api/v2/admin/chat/overview", "GET /api/v2/admin/chat/provider-health", "GET /api/v2/admin/chat/sessions", "GET /api/v2/admin/chat/usage", "GET /api/v2/admin/chat/moderation-events"),
     render: (ctx) => <ChatOpsWorkspace
       canRead={ctx.permissions.has("chat.ops.read")}
       canReadMainOutbox={adminV2OperationAllowed(
@@ -316,16 +314,20 @@ export const navItems: NavItem[] = [
         "POST /api/v2/admin/chat/main-outbox-events/commands/discard-target-missing",
         ctx.permissions,
       )}
+      canMigrateSessionRelease={adminV2OperationAllowed(
+        "POST /api/v2/admin/chat/sessions/:sessionId/commands/migrate-release",
+        ctx.permissions,
+      )}
     /> }),
 
-  item({ id: "approvals", label: "Approvals", href: "/admin/system/approvals", icon: ClipboardCheck, group: "System", read: read("admin.approval.review"),
+  item({ id: "approvals", label: "Approvals", href: "/admin/system/approvals", icon: ClipboardCheck, group: "System", read: readForOperations("GET /api/v2/admin/approvals"),
     render: (ctx) => <ApprovalsWorkspace canReview={ctx.permissions.has("admin.approval.review")} /> }),
-  item({ id: "system/access", label: "Team Access", href: "/admin/system/access", icon: Users, group: "System", read: read("user.read"),
+  item({ id: "system/access", label: "Team Access", href: "/admin/system/access", icon: Users, group: "System", read: readForOperations("GET /api/v2/admin/users"),
     render: (ctx) => <AccessWorkspace permissions={{
       changeStatus: ctx.permissions.has("user.status.write"),
       managePermissions: ctx.permissions.has("user.role.write"),
     }} /> }),
-  item({ id: "audit-log", label: "Audit Log", href: "/admin/system/audit", icon: History, group: "System", read: read("audit.read"),
+  item({ id: "audit-log", label: "Audit Log", href: "/admin/system/audit", icon: History, group: "System", read: readForOperations("GET /api/v2/admin/audit-log"),
     render: () => <AuditWorkspace /> }),
 ];
 
@@ -407,14 +409,14 @@ export function navGroupsForPermissions(
 // a necessary compatibility tool must be discoverable without pretending it is a new workspace.
 // Production traffic telemetry decides their eventual sunset.
 const COMPATIBILITY_ITEMS: NavItem[] = [
-  item({ id: "moderation", label: "Moderation Cases", href: "/admin/moderation", icon: ShieldAlert, group: "Customers & Support", read: read("safety.review.read"), navigation: "tool",
+  item({ id: "moderation", label: "Moderation Cases", href: "/admin/moderation", icon: ShieldAlert, group: "Customers & Support", read: readForOperations("GET /api/v2/admin/moderation/queue"), navigation: "tool",
     render: (ctx) => <ModerationWorkspace canDecide={ctx.permissions.has("safety.review.write")} canReadComics={ctx.permissions.has("content.asset.read")} canReviewComics={ctx.permissions.has("safety.review.write")} /> }),
-  item({ id: "support", label: "Support Cases", href: "/admin/support", icon: Ticket, group: "Customers & Support", read: read("support.request.read"), navigation: "tool",
+  item({ id: "support", label: "Support Cases", href: "/admin/support", icon: Ticket, group: "Customers & Support", read: readForOperations("GET /api/v2/admin/support/requests"), navigation: "tool",
     render: (ctx) => <SupportWorkspace
       canViewPlaintext={ctx.permissions.has("support.plaintext.view")}
       canWrite={ctx.permissions.has("support.request.write")}
     /> }),
-  item({ id: "risk", label: "Risk Cases", href: "/admin/risk", icon: ShieldAlert, group: "Customers & Support", read: read("billing.read"), navigation: "tool",
+  item({ id: "risk", label: "Risk Cases", href: "/admin/risk", icon: ShieldAlert, group: "Customers & Support", read: readForOperations("GET /api/v2/admin/risk/abuse"), navigation: "tool",
     render: (ctx) => <RiskWorkspace canRead={ctx.permissions.has("billing.read")} /> }),
 ];
 

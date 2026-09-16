@@ -50,6 +50,12 @@ export const CONTENT_REPORT_CASE_DECISIONS = [
   "closed",
 ] as const;
 export const APPEAL_CASE_DECISIONS = ["upheld", "overturned", "modified", "open"] as const;
+// SPEC: 这两个决定会真的改动线上内容——`actioned` 下架、`overturned` 恢复。
+// INTENT: Case 级决策端点只写工单：它不调用 applyModerationAction，也不调用
+//         restoreCanonicalAppealTarget。在那里记一条 `actioned`，工单看起来处理完了，
+//         内容其实还挂在线上，举报也还开着——实测过一次，代价是一条静默的安全漏洞。
+//         真正执行下架 / 恢复的是 moderation 的复合命令，所以这两个决定只能在那里下。
+export const CONTENT_EFFECT_REVIEW_DECISIONS = ["actioned", "overturned"] as const;
 export const REVIEW_CASE_DECISIONS = [
   ...CONTENT_REPORT_CASE_DECISIONS,
   ...APPEAL_CASE_DECISIONS,

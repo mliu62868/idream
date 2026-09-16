@@ -282,7 +282,7 @@ export async function triageIncidentInTransaction(
 ) {
   const current = await tx.opsIncident.findUnique({ where: { id: input.incidentId } });
   if (!current) throw Errors.notFound("Incident not found");
-  if (current.version !== input.expectedVersion) throw Errors.conflict("Incident version changed");
+  if (current.version !== input.expectedVersion) throw Errors.versionConflict("Incident version changed");
   const nextStatus = current.status === "detected" ? "triaged" : current.status;
   if (!isIncidentTransitionAllowed(current.status, nextStatus)) {
     throw Errors.conflict("Incident cannot be triaged from its present state", { status: current.status });
@@ -362,7 +362,7 @@ export async function verifyIncidentRecovery(input: {
     await tx.$queryRaw`SELECT id FROM "ops_incidents" WHERE id = ${input.incidentId} FOR UPDATE`;
     const current = await tx.opsIncident.findUnique({ where: { id: input.incidentId } });
     if (!current) throw Errors.notFound("Incident not found");
-    if (current.version !== input.expectedVersion) throw Errors.conflict("Incident version changed");
+    if (current.version !== input.expectedVersion) throw Errors.versionConflict("Incident version changed");
     if (!isIncidentTransitionAllowed(current.status, "monitoring")) {
       throw Errors.conflict("Incident must be mitigating or monitoring before recovery verification");
     }

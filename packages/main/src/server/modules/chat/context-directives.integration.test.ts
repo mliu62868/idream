@@ -131,9 +131,11 @@ describe("explicit user Chat context", () => {
     expect(lateWrites.map((result) => result.status)).toEqual([410, 410, 410]);
     expect((await f.call("GET")).json.items).toEqual([custom]);
     // A completed purge acknowledgement cannot make the old Turn's pinned facts reappear.
+    // Clear archived this conversation, so the stronger guarantee now applies: the archived
+    // Turn cannot be re-executed at all, which is also why its pins cannot come back through it.
     await prisma.mainOutboxEvent.updateMany({ where: { aggregateId: `${f.userId}:${f.characterId}` }, data: { status: "delivered", deliveredAt: new Date() } });
-    const regenerated = await regenerateChatTurn(f.userId, normalTurn.snapshot!.assistantMessageId);
-    expect(regenerated.snapshot.contextDirectives).toEqual([custom]);
+    await expect(regenerateChatTurn(f.userId, normalTurn.snapshot!.assistantMessageId))
+      .rejects.toMatchObject({ code: "gone" });
     const freshSession = await createChatSession(f.userId, { characterId: f.characterId });
     const fresh = await beginChatTurn({ userId: f.userId, sessionId: freshSession.id, content: "Hello again.", idempotencyKey: randomUUID() });
     expect(fresh.snapshot?.contextDirectives).toEqual([custom]);

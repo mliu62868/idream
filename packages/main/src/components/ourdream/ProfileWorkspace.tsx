@@ -25,6 +25,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { UserPersonaPanel } from "./UserPersonaPanel";
 import { RecoveryCodeCard } from "./AccountRecovery";
+import { AccountAgeVerification } from "./AccountAgeVerification";
 import { AccountEmailVerification } from "./AccountEmailVerification";
 import {
   isBlankImagePreview,
@@ -251,17 +252,43 @@ const profileDeepLinkTargets: Record<string, { selector: string; focusSelector: 
     selector: "[data-testid='profile-account-management-panel']",
     focusSelector: "[aria-label='Delete confirmation']",
   },
+  // 被年龄验证锁住的用户从错误文案和 /age-verification/return 落到这里，
+  // 要直接看到重试按钮，而不是 Account management 顶部的「Type DELETE」。
+  "/profile/age-verification": {
+    selector: "[data-testid='profile-age-verification']",
+    focusSelector: "[data-testid='profile-age-verification-start']",
+  },
 };
 
+const DEEP_LINK_POLL_MS = 100;
+const DEEP_LINK_ATTEMPTS = 30;
+
+// SPEC: 深链要把目标面板送进视口。
+// INTENT: 原本只在 50ms 后找一次。年龄验证面板要等一次接口返回才渲染，那时还不在
+//   DOM 里，于是深链把用户停在面板上方一千多像素处——文案说「去 Profile 重试」，
+//   用户到了却看不到按钮，和提示渲染在视口外是同一类失败。改成等目标出现；
+//   用户自己滚了就不再抢滚动条。
 function focusProfileDeepLink() {
   const target = profileDeepLinkTargets[window.location.pathname];
   if (!target) return;
-  const timer = window.setTimeout(() => {
+  const landedAt = window.scrollY;
+  let attempts = 0;
+  let timer: number | undefined;
+  const tick = () => {
+    if (window.scrollY !== landedAt) return;
     const panel = document.querySelector<HTMLElement>(target.selector);
-    panel?.scrollIntoView({ block: "center" });
-    document.querySelector<HTMLElement>(target.focusSelector)?.focus({ preventScroll: true });
-  }, 50);
-  return () => window.clearTimeout(timer);
+    if (panel) {
+      panel.scrollIntoView({ block: "center" });
+      document.querySelector<HTMLElement>(target.focusSelector)?.focus({ preventScroll: true });
+      return;
+    }
+    attempts += 1;
+    if (attempts <= DEEP_LINK_ATTEMPTS) timer = window.setTimeout(tick, DEEP_LINK_POLL_MS);
+  };
+  timer = window.setTimeout(tick, 50);
+  return () => {
+    if (timer) window.clearTimeout(timer);
+  };
 }
 
 export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>) {
@@ -388,7 +415,6 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
   const [query, setQuery] = useState("");
   const mediaSearchQuery = tab === "media" ? query.trim() : "";
   const [redeemCode, setRedeemCode] = useState("");
-  const [emailUpdates, setEmailUpdates] = useState<boolean | null>(null);
   const [mutedTags, setMutedTags] = useState<string[]>([]);
   const [preferencesAuthority, setPreferencesAuthority] = useState(initialAuthorityStatus);
   const [preferenceTags, setPreferenceTags] = useState<ProfileTag[]>([]);
@@ -404,6 +430,9 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
   const [status, setStatus] = useState("");
   const { openReport, reportDialog } = useReportDialog(setStatus);
   const [referralUrl, setReferralUrl] = useState("");
+  const [referralResults, setReferralResults] = useState<
+    { total: number; rewarded: number; pending: number } | null
+  >(null);
   const [failedImageIds, setFailedImageIds] = useState<Set<string>>(new Set());
   const [invalidPreviewImageIds, setInvalidPreviewImageIds] = useState<Set<string>>(new Set());
   const [mediaCollections, setMediaCollections] = useState<MediaCollection[]>([]);
@@ -526,9 +555,6 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
         failedAuthorityStatus(current, preferencesOutcome.error),
       );
     } else {
-      const notificationSettings =
-        preferencesOutcome.data.notificationSettings ?? {};
-      setEmailUpdates(notificationSettings.productUpdates === true);
       setMutedTags(preferencesOutcome.data.mutedTags ?? []);
       setPreferencesAuthority(readyAuthorityStatus());
     }
@@ -589,7 +615,8 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
     return () => window.clearTimeout(timer);
   }, [ageGateAccepted, profileOwnerScope, refreshPreferences]);
 
-  const deepLinkFocusReady = routePath !== "/profile/notifications" || emailUpdates !== null;
+  const deepLinkFocusReady =
+    routePath !== "/profile/notifications" || preferencesAuthority.hasSnapshot;
   useEffect(() => {
     if (!ageGateAccepted || !profileOwnerScope) return;
     // The notification input cannot receive focus before its saved value loads.
@@ -644,6 +671,28 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
     }
   }
 
+  // SPEC: 邀请人能看到自己的邀请有没有转化、奖励有没有发。
+  // INTENT: /api/v1/referrals 一直返回这些行但没有任何调用方，用户拿到过奖励也无从查证。
+  //   只汇总计数，不回显被邀请人的账号标识。
+  async function loadReferralResults() {
+    try {
+      const response = await fetchForOwner("/api/v1/referrals");
+      if (!response.ok) return;
+      const payload = (await response.json()) as {
+        data?: { referrals?: Array<{ rewardStatus?: string | null }> };
+      };
+      const rows = payload.data?.referrals ?? [];
+      const rewarded = rows.filter((row) => row.rewardStatus === "granted").length;
+      setReferralResults({
+        total: rows.length,
+        rewarded,
+        pending: rows.length - rewarded,
+      });
+    } catch {
+      // 邀请链接本身已经可用；结果读取失败不改写它的状态。
+    }
+  }
+
   async function invite() {
     setStatus("");
     try {
@@ -661,6 +710,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
       }
       setReferralUrl(new URL(shareUrl, window.location.origin).toString());
       setStatus("Referral invite ready.");
+      void loadReferralResults();
     } catch {
       setStatus("Network error. Please try again.");
     }
@@ -703,7 +753,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
   }
 
   async function savePreferences() {
-    if (emailUpdates === null) {
+    if (!preferencesAuthority.hasSnapshot) {
       setStatus("Load your saved preferences before updating them.");
       return;
     }
@@ -711,10 +761,11 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
       const response = await fetchForOwner("/api/v1/profile/preferences", {
         method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          mutedTags,
-          notificationSettings: { productUpdates: emailUpdates },
-        }),
+        // INVARIANT: 只提交真正有消费方的偏好。notificationSettings.productUpdates
+        //   此前也一并写入，但服务端零消费、且全站没有按用户投递的通道
+        //   （站内公告读单个 AppSetting 无差别群发，唯一的邮件路径只发验证码）——
+        //   收下一个永远不会被兑现的开关，等于对用户说谎。
+        body: JSON.stringify({ mutedTags }),
       });
       if (response.ok) setPreferencesAuthority(readyAuthorityStatus());
       setStatus(response.ok ? "Preferences updated." : "Preferences update failed.");
@@ -1188,9 +1239,15 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
             </h1>
             <p className="mt-2 text-[14px] font-semibold text-white">{displayName}</p>
             {balance !== null && plan ? (
+              /* SPEC: 余额本身就是去买币的入口。
+                 INTENT: /coins 是真实页面，但此前只有 Upgrade 页内一个入口，任何导航里
+                   都没有它——用户看着自己的余额却找不到充值的地方。 */
               <p className="mt-3 flex items-center gap-2 text-[13px] font-bold text-[rgb(170,170,170)]">
                 <Coins className="h-4 w-4 text-[rgb(253,95,194)]" />
-                {balance.toLocaleString()} dreamcoins · {plan}
+                <Link className="underline decoration-white/30 hover:text-white" data-testid="profile-balance-link" href="/coins">
+                  {balance.toLocaleString()} dreamcoins
+                </Link>
+                <span>· {plan}</span>
               </p>
             ) : null}
             {profileAuthority.phase === "error" ? (
@@ -1242,297 +1299,8 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
             </button>
           ))}
         </div>
-        <div className="mt-6 grid gap-3 md:grid-cols-3">
-          <label
-            className="rounded-[14px] bg-[rgb(18,18,18)] p-4 text-[12px] font-bold uppercase text-[rgb(114,113,112)]"
-            data-testid="profile-redeem-panel"
-            id="redeem-code"
-          >
-            Redeem
-            <div className="mt-2 flex gap-2">
-              <input
-                aria-label="Redeem code input"
-                className="min-w-0 flex-1 rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] normal-case text-white outline-none"
-                onChange={(event) => setRedeemCode(event.target.value)}
-                placeholder="Enter code"
-                value={redeemCode}
-              />
-              <button
-                aria-label="Redeem code"
-                className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white text-[rgb(13,13,13)]"
-                onClick={redeem}
-                type="button"
-              >
-                <Gift className="h-4 w-4" />
-              </button>
-            </div>
-          </label>
-          <div className="rounded-[14px] bg-[rgb(18,18,18)] p-4">
-            <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">Referral</p>
-            <button
-              className="mt-2 inline-flex h-10 items-center gap-2 rounded-full bg-[rgb(36,36,36)] px-4 text-[13px] font-bold text-white"
-              onClick={invite}
-              type="button"
-            >
-              <Link2 className="h-4 w-4" />
-              Invite
-            </button>
-          </div>
-          <div
-            className="rounded-[14px] bg-[rgb(18,18,18)] p-4"
-            data-testid="profile-billing-card"
-            id="billing"
-          >
-            <p className="text-[13px] font-black uppercase text-white">
-              Billing &amp; access
-            </p>
-            <p className="mt-2 text-[12px] font-bold text-[rgb(170,170,170)]">
-              {plan ?? "Plan unavailable"}
-            </p>
-            <p className="mt-1 text-[12px] font-medium text-[rgb(170,170,170)]">{billingStatus}</p>
-            {refund && refundStatus ? (
-              <div className="mt-3 rounded-[10px] bg-[rgb(29,29,29)] p-3" data-testid="profile-refund-status">
-                <p className="text-[12px] font-bold text-white">{refundStatus}</p>
-                <p className="mt-1 text-[11px] font-medium text-[rgb(170,170,170)]">
-                  Refund reference {refund.reference}
-                </p>
-                {refund.claimUrl ? (
-                  <a className="mt-2 inline-flex h-9 items-center justify-center rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]" href={refund.claimUrl} rel="noreferrer" target="_blank">
-                    Claim refund
-                  </a>
-                ) : null}
-              </div>
-            ) : null}
-            <div className="mt-3 flex flex-wrap gap-2">
-              {!plan && profileAuthority.phase === "error" ? (
-                <button
-                  className="inline-flex h-9 items-center justify-center rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]"
-                  onClick={() => void refreshProfile()}
-                  type="button"
-                >
-                  Retry account data
-                </button>
-              ) : subscription ? (
-                <Link
-                  className="inline-flex h-9 items-center justify-center rounded-full bg-[rgb(36,36,36)] px-4 text-[12px] font-bold text-white"
-                  href="/upgrade"
-                >
-                  Change plan
-                </Link>
-              ) : (
-                <Link
-                  className="inline-flex h-9 items-center justify-center rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]"
-                  href="/upgrade"
-                >
-                  Compare plans
-                </Link>
-              )}
-            </div>
-          </div>
-        </div>
-        {(status || referralUrl) && (
-          <div className="mt-4 space-y-3">
-            {status && (
-              <div className="flex flex-wrap items-center gap-2">
-                <p
-                  aria-live="polite"
-                  className="text-[13px] font-semibold text-[rgb(170,170,170)]"
-                  data-testid="profile-status"
-                  role="status"
-                >
-                  {status}
-                </p>
-                {publishedCollectionHref && status === "Collection published to Community." && (
-                  <Link
-                    className="inline-flex h-8 items-center justify-center rounded-full bg-[rgb(36,36,36)] px-3 text-[12px] font-bold text-white"
-                    href={publishedCollectionHref}
-                  >
-                    View in Community
-                  </Link>
-                )}
-              </div>
-            )}
-            {referralUrl && (
-              <div className="flex max-w-xl items-center gap-2">
-                <input
-                  aria-label="Referral link"
-                  className="h-10 min-w-0 flex-1 rounded-[12px] bg-[rgb(18,18,18)] px-3 text-[12px] font-semibold text-[rgb(230,230,230)] outline-none"
-                  readOnly
-                  value={referralUrl}
-                />
-                <button
-                  aria-label="Copy invite link"
-                  className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[rgb(36,36,36)] text-white"
-                  onClick={copyReferralUrl}
-                  title="Copy invite link"
-                  type="button"
-                >
-                  <Copy className="h-4 w-4" />
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-        <div className="mt-6 grid gap-3 md:grid-cols-2">
-          <div className="rounded-[14px] bg-[rgb(18,18,18)] p-4">
-            <p className="flex items-center gap-2 text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
-              <UserCog className="h-4 w-4" />
-              Account settings
-            </p>
-            <label className="mt-3 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
-              Display name
-              <div className="mt-2 flex gap-2">
-                <input
-                  aria-label="Display name"
-                  className="min-w-0 flex-1 rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] normal-case text-white outline-none"
-                  onChange={(event) => setProfileName(event.target.value)}
-                  value={profileName}
-                />
-                <button
-                  aria-label="Save profile"
-                  className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white text-[rgb(13,13,13)]"
-                  onClick={saveProfile}
-                  type="button"
-                >
-                  <Save className="h-4 w-4" />
-                </button>
-              </div>
-            </label>
-            {profileOwnerScope ? <UserPersonaPanel key={profileOwnerScope} ownerScope={profileOwnerScope} /> : null}
-            <div
-              className="mt-4 rounded-[10px] bg-[rgb(36,36,36)] p-3"
-              data-testid="profile-notifications-panel"
-              id="notifications"
-            >
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <label className="flex items-center gap-2 text-[13px] font-semibold text-white">
-                  <input
-                    aria-label="Product updates"
-                    checked={emailUpdates ?? false}
-                    className="h-4 w-4 accent-[rgb(253,95,194)]"
-                    disabled={emailUpdates === null}
-                    onChange={(event) => setEmailUpdates(event.target.checked)}
-                    type="checkbox"
-                  />
-                  Product updates
-                </label>
-                <button
-                  className="inline-flex h-9 items-center gap-2 rounded-full bg-black/30 px-3 text-[12px] font-bold text-white disabled:opacity-50"
-                  disabled={emailUpdates === null}
-                  onClick={savePreferences}
-                  type="button"
-                >
-                  <Bell className="h-4 w-4" />
-                  Save preferences
-                </button>
-              </div>
-              {preferencesAuthority.phase === "loading" &&
-              !preferencesAuthority.hasSnapshot ? (
-                <p className="mt-3 text-[12px] font-semibold text-[rgb(170,170,170)]">
-                  Loading saved preferences…
-                </p>
-              ) : null}
-              {preferencesAuthority.phase === "error" ? (
-                <ProfileAuthorityNotice
-                  hasSnapshot={preferencesAuthority.hasSnapshot}
-                  message={
-                    preferencesAuthority.error ?? "Preferences could not load."
-                  }
-                  onRetry={() => void refreshPreferences()}
-                />
-              ) : null}
-              {preferenceTagsAuthority.phase === "error" ? (
-                <ProfileAuthorityNotice
-                  hasSnapshot={preferenceTagsAuthority.hasSnapshot}
-                  message={
-                    preferenceTagsAuthority.error ??
-                    "Preference tags could not load."
-                  }
-                  onRetry={() => void refreshPreferences()}
-                />
-              ) : null}
-              {preferenceTagsAuthority.phase === "loading" &&
-              !preferenceTagsAuthority.hasSnapshot ? (
-                <p className="mt-3 text-[12px] font-semibold text-[rgb(170,170,170)]">
-                  Loading available tags…
-                </p>
-              ) : null}
-              {preferenceTags.length > 0 ? (
-                <div className="mt-4 border-t border-white/10 pt-3">
-                  <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
-                    Muted tags
-                  </p>
-                  <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                    {preferenceTags.map((tag) => (
-                      <label
-                        className="flex min-h-9 items-center gap-2 rounded-[8px] bg-black/20 px-3 text-[12px] font-semibold text-white"
-                        key={tag.slug}
-                      >
-                        <input
-                          aria-label={`Mute ${tag.label}`}
-                          checked={mutedTags.includes(tag.slug)}
-                          className="h-4 w-4 accent-[rgb(253,95,194)]"
-                          onChange={(event) => toggleMutedTag(tag.slug, event.target.checked)}
-                          type="checkbox"
-                        />
-                        <span className="min-w-0 truncate">{tag.label}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-            </div>
-          </div>
-          <div
-            className="rounded-[14px] bg-[rgb(18,18,18)] p-4"
-            data-testid="profile-account-management-panel"
-            id="account-management"
-          >
-            <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
-              Account management
-            </p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button
-                className="inline-flex h-10 items-center gap-2 rounded-full bg-[rgb(36,36,36)] px-4 text-[13px] font-bold text-white"
-                onClick={signOutEverywhere}
-                type="button"
-              >
-                <LogOut className="h-4 w-4" />
-                Sign out all sessions
-              </button>
-            </div>
-            <label className="mt-4 block text-sm font-bold">Current password<input className="mt-2 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 py-3 text-sm" aria-label="Current account password" autoComplete="current-password" type="password" value={securityPassword} onChange={(event) => setSecurityPassword(event.target.value)} /></label>
-            <p className="mt-2 text-sm leading-6 text-white/60">Confirm your password to replace a recovery code or delete your account.</p>
-            <button className="mt-3 rounded-full bg-[rgb(36,36,36)] px-4 py-3 text-sm font-bold disabled:opacity-40" type="button" disabled={securityPending || !securityPassword || !profileOwnerScope} onClick={generateRecoveryCode}>Generate new recovery code</button>
-            {savedRecoveryCode && savedRecoveryCode.ownerId === profileOwnerScope.replace(/^user:/, "") && <div className="mt-4"><RecoveryCodeCard key={savedRecoveryCode.code} code={savedRecoveryCode.code} ownerId={savedRecoveryCode.ownerId} /></div>}
-            {ownerId && <AccountEmailVerification key={ownerId} ownerId={ownerId} fetcher={fetchForOwner} />}
-            <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
-              Delete account
-              <span className="mt-1 block text-[11px] font-medium normal-case leading-5 text-[rgb(154,153,152)]">
-                Access ends immediately and all sessions are signed out. Erasure begins after 30 days; this grace period does not provide self-service cancellation or restoration.
-              </span>
-              <span className="mt-2 block text-[12px] font-medium normal-case leading-6 text-white/65">Chats, memories, private characters, drafts and owned media are erased. Your published characters, posts and collections are removed from this service as erasure completes; copies already downloaded by other people cannot be recalled. Remaining dreamcoins and paid access become unusable, and deletion does not request a refund. Minimal de-identified transaction records and legally required evidence may be retained; an active retention requirement may delay erasure. You receive a private status link that works after logout. Interrupted work retries automatically.</span>
-              <div className="mt-2 flex gap-2">
-                <input
-                  aria-label="Delete confirmation"
-                  className="min-w-0 flex-1 rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] normal-case text-white outline-none"
-                  onChange={(event) => setDeleteConfirm(event.target.value)}
-                  placeholder="Type DELETE"
-                  value={deleteConfirm}
-                />
-                <button
-                  className="inline-flex h-10 items-center gap-2 rounded-full bg-[rgb(120,25,40)] px-4 text-[12px] font-black text-white disabled:opacity-40"
-                  disabled={deleteConfirm !== "DELETE" || !securityPassword || securityPending || !profileOwnerScope}
-                  onClick={requestAccountDeletion}
-                  type="button"
-                >
-                  <Trash2 className="h-4 w-4" />
-                  Delete
-                </button>
-              </div>
-            </label>
-          </div>
-        </div>
+        {/* SPEC: My AI 是资产页 —— 角色/预设/媒体/群聊排在账号设置和注销之前。
+            以前 tab 内容渲染在「删除账号」之后，点 tab 在视口里毫无反应。 */}
         <div className="mt-6 flex items-center gap-2 rounded-[12px] bg-[rgb(18,18,18)] px-3">
           <Search className="h-4 w-4 text-[rgb(114,113,112)]" />
           <input
@@ -1698,6 +1466,315 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
         </div>
       </div>
       {reportDialog}
+        <div className="mt-6 grid gap-3 md:grid-cols-3">
+          <label
+            className="rounded-[14px] bg-[rgb(18,18,18)] p-4 text-[12px] font-bold uppercase text-[rgb(114,113,112)]"
+            data-testid="profile-redeem-panel"
+            id="redeem-code"
+          >
+            Redeem
+            <div className="mt-2 flex gap-2">
+              <input
+                aria-label="Redeem code input"
+                className="min-w-0 flex-1 rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] normal-case text-white outline-none"
+                onChange={(event) => setRedeemCode(event.target.value)}
+                /* 单字段输入框按 Enter 就该提交；这里不是 form，只有一个图标按钮，
+                   不接这个键等于让用户以为兑换码没被接受。 */
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter") return;
+                  event.preventDefault();
+                  void redeem();
+                }}
+                placeholder="Enter code"
+                value={redeemCode}
+              />
+              <button
+                aria-label="Redeem code"
+                className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white text-[rgb(13,13,13)]"
+                onClick={redeem}
+                type="button"
+              >
+                <Gift className="h-4 w-4" />
+              </button>
+            </div>
+          </label>
+          <div className="rounded-[14px] bg-[rgb(18,18,18)] p-4">
+            <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">Referral</p>
+            <button
+              className="mt-2 inline-flex h-10 items-center gap-2 rounded-full bg-[rgb(36,36,36)] px-4 text-[13px] font-bold text-white"
+              onClick={invite}
+              type="button"
+            >
+              <Link2 className="h-4 w-4" />
+              Invite
+            </button>
+            {referralResults ? (
+              <p
+                className="mt-3 text-[12px] font-semibold text-[rgb(170,170,170)]"
+                data-testid="profile-referral-results"
+              >
+                {referralResults.total === 0
+                  ? "No one has signed up with your link yet."
+                  : `${referralResults.total} signed up with your link · ${referralResults.rewarded} rewarded · ${referralResults.pending} awaiting reward.`}
+              </p>
+            ) : null}
+          </div>
+          <div
+            className="rounded-[14px] bg-[rgb(18,18,18)] p-4"
+            data-testid="profile-billing-card"
+            id="billing"
+          >
+            <p className="text-[13px] font-black uppercase text-white">
+              Billing &amp; access
+            </p>
+            <p className="mt-2 text-[12px] font-bold text-[rgb(170,170,170)]">
+              {plan ?? "Plan unavailable"}
+            </p>
+            <p className="mt-1 text-[12px] font-medium text-[rgb(170,170,170)]">{billingStatus}</p>
+            {refund && refundStatus ? (
+              <div className="mt-3 rounded-[10px] bg-[rgb(29,29,29)] p-3" data-testid="profile-refund-status">
+                <p className="text-[12px] font-bold text-white">{refundStatus}</p>
+                <p className="mt-1 text-[11px] font-medium text-[rgb(170,170,170)]">
+                  Refund reference {refund.reference}
+                </p>
+                {refund.claimUrl ? (
+                  <a className="mt-2 inline-flex h-9 items-center justify-center rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]" href={refund.claimUrl} rel="noreferrer" target="_blank">
+                    Claim refund
+                  </a>
+                ) : null}
+              </div>
+            ) : null}
+            <div className="mt-3 flex flex-wrap gap-2">
+              {!plan && profileAuthority.phase === "error" ? (
+                <button
+                  className="inline-flex h-9 items-center justify-center rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]"
+                  onClick={() => void refreshProfile()}
+                  type="button"
+                >
+                  Retry account data
+                </button>
+              ) : subscription ? (
+                <Link
+                  className="inline-flex h-9 items-center justify-center rounded-full bg-[rgb(36,36,36)] px-4 text-[12px] font-bold text-white"
+                  href="/upgrade"
+                >
+                  Change plan
+                </Link>
+              ) : (
+                <Link
+                  className="inline-flex h-9 items-center justify-center rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]"
+                  href="/upgrade"
+                >
+                  Compare plans
+                </Link>
+              )}
+            </div>
+          </div>
+        </div>
+        {(status || referralUrl) && (
+          <div className="mt-4 space-y-3">
+            {status && (
+              <div className="flex flex-wrap items-center gap-2">
+                <p
+                  aria-live="polite"
+                  className="text-[13px] font-semibold text-[rgb(170,170,170)]"
+                  data-testid="profile-status"
+                  role="status"
+                >
+                  {status}
+                </p>
+                {publishedCollectionHref && status === "Collection published to Community." && (
+                  <Link
+                    className="inline-flex h-8 items-center justify-center rounded-full bg-[rgb(36,36,36)] px-3 text-[12px] font-bold text-white"
+                    href={publishedCollectionHref}
+                  >
+                    View in Community
+                  </Link>
+                )}
+              </div>
+            )}
+            {referralUrl && (
+              <div className="flex max-w-xl items-center gap-2">
+                <input
+                  aria-label="Referral link"
+                  className="h-10 min-w-0 flex-1 rounded-[12px] bg-[rgb(18,18,18)] px-3 text-[12px] font-semibold text-[rgb(230,230,230)] outline-none"
+                  readOnly
+                  value={referralUrl}
+                />
+                <button
+                  aria-label="Copy invite link"
+                  className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[rgb(36,36,36)] text-white"
+                  onClick={copyReferralUrl}
+                  title="Copy invite link"
+                  type="button"
+                >
+                  <Copy className="h-4 w-4" />
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+        <div className="mt-6 grid gap-3 md:grid-cols-2">
+          <div className="rounded-[14px] bg-[rgb(18,18,18)] p-4">
+            <p className="flex items-center gap-2 text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
+              <UserCog className="h-4 w-4" />
+              Account settings
+            </p>
+            <label className="mt-3 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
+              Display name
+              <div className="mt-2 flex gap-2">
+                <input
+                  aria-label="Display name"
+                  className="min-w-0 flex-1 rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] normal-case text-white outline-none"
+                  onChange={(event) => setProfileName(event.target.value)}
+                  value={profileName}
+                />
+                <button
+                  aria-label="Save profile"
+                  className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white text-[rgb(13,13,13)]"
+                  onClick={saveProfile}
+                  type="button"
+                >
+                  <Save className="h-4 w-4" />
+                </button>
+              </div>
+            </label>
+            {profileOwnerScope ? <UserPersonaPanel key={profileOwnerScope} ownerScope={profileOwnerScope} /> : null}
+            <div
+              className="mt-4 rounded-[10px] bg-[rgb(36,36,36)] p-3"
+              data-testid="profile-notifications-panel"
+              id="notifications"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="text-[13px] font-semibold text-white">
+                  Product updates
+                  <p className="mt-1 text-[11px] font-medium leading-4 text-[rgb(114,113,112)]">
+                    Announcements show up in the app. Email subscriptions are not available yet.
+                  </p>
+                </div>
+                <button
+                  className="inline-flex h-9 items-center gap-2 rounded-full bg-black/30 px-3 text-[12px] font-bold text-white disabled:opacity-50"
+                  disabled={!preferencesAuthority.hasSnapshot}
+                  onClick={savePreferences}
+                  type="button"
+                >
+                  <Bell className="h-4 w-4" />
+                  Save preferences
+                </button>
+              </div>
+              {preferencesAuthority.phase === "loading" &&
+              !preferencesAuthority.hasSnapshot ? (
+                <p className="mt-3 text-[12px] font-semibold text-[rgb(170,170,170)]">
+                  Loading saved preferences…
+                </p>
+              ) : null}
+              {preferencesAuthority.phase === "error" ? (
+                <ProfileAuthorityNotice
+                  hasSnapshot={preferencesAuthority.hasSnapshot}
+                  message={
+                    preferencesAuthority.error ?? "Preferences could not load."
+                  }
+                  onRetry={() => void refreshPreferences()}
+                />
+              ) : null}
+              {preferenceTagsAuthority.phase === "error" ? (
+                <ProfileAuthorityNotice
+                  hasSnapshot={preferenceTagsAuthority.hasSnapshot}
+                  message={
+                    preferenceTagsAuthority.error ??
+                    "Preference tags could not load."
+                  }
+                  onRetry={() => void refreshPreferences()}
+                />
+              ) : null}
+              {preferenceTagsAuthority.phase === "loading" &&
+              !preferenceTagsAuthority.hasSnapshot ? (
+                <p className="mt-3 text-[12px] font-semibold text-[rgb(170,170,170)]">
+                  Loading available tags…
+                </p>
+              ) : null}
+              {preferenceTags.length > 0 ? (
+                <div className="mt-4 border-t border-white/10 pt-3">
+                  {/* 这里列的是「可以屏蔽的标签」，勾上才是屏蔽。原标题 "Muted tags"
+                      会被读成「以下标签已被屏蔽」，而复选框默认全是空的。 */}
+                  <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
+                    Hide tags
+                  </p>
+                  <p className="mt-1 text-[11px] font-medium leading-4 text-[rgb(114,113,112)]">
+                    Tick a tag to keep it out of your recommendations.
+                  </p>
+                  <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                    {preferenceTags.map((tag) => (
+                      <label
+                        className="flex min-h-9 items-center gap-2 rounded-[8px] bg-black/20 px-3 text-[12px] font-semibold text-white"
+                        key={tag.slug}
+                      >
+                        <input
+                          aria-label={`Mute ${tag.label}`}
+                          checked={mutedTags.includes(tag.slug)}
+                          className="h-4 w-4 accent-[rgb(253,95,194)]"
+                          onChange={(event) => toggleMutedTag(tag.slug, event.target.checked)}
+                          type="checkbox"
+                        />
+                        <span className="min-w-0 truncate">{tag.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </div>
+          <div
+            className="rounded-[14px] bg-[rgb(18,18,18)] p-4"
+            data-testid="profile-account-management-panel"
+            id="account-management"
+          >
+            <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
+              Account management
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                className="inline-flex h-10 items-center gap-2 rounded-full bg-[rgb(36,36,36)] px-4 text-[13px] font-bold text-white"
+                onClick={signOutEverywhere}
+                type="button"
+              >
+                <LogOut className="h-4 w-4" />
+                Sign out all sessions
+              </button>
+            </div>
+            <label className="mt-4 block text-sm font-bold">Current password<input className="mt-2 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 py-3 text-sm" aria-label="Current account password" autoComplete="current-password" type="password" value={securityPassword} onChange={(event) => setSecurityPassword(event.target.value)} /></label>
+            <p className="mt-2 text-sm leading-6 text-white/60">Confirm your password to replace a recovery code or delete your account.</p>
+            <button className="mt-3 rounded-full bg-[rgb(36,36,36)] px-4 py-3 text-sm font-bold disabled:opacity-40" type="button" disabled={securityPending || !securityPassword || !profileOwnerScope} onClick={generateRecoveryCode}>Generate new recovery code</button>
+            {savedRecoveryCode && savedRecoveryCode.ownerId === profileOwnerScope.replace(/^user:/, "") && <div className="mt-4"><RecoveryCodeCard key={savedRecoveryCode.code} code={savedRecoveryCode.code} ownerId={savedRecoveryCode.ownerId} /></div>}
+            {ownerId && <AccountEmailVerification key={ownerId} ownerId={ownerId} fetcher={fetchForOwner} />}
+            {ownerId && <AccountAgeVerification key={ownerId} ownerId={ownerId} fetcher={fetchForOwner} />}
+            <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
+              Delete account
+              <span className="mt-1 block text-[11px] font-medium normal-case leading-5 text-[rgb(154,153,152)]">
+                Access ends immediately and all sessions are signed out. Erasure begins after 30 days; this grace period does not provide self-service cancellation or restoration.
+              </span>
+              <span className="mt-2 block text-[12px] font-medium normal-case leading-6 text-white/65">Chats, memories, private characters, drafts and owned media are erased. Your published characters, posts and collections are removed from this service as erasure completes; copies already downloaded by other people cannot be recalled. Remaining dreamcoins and paid access become unusable, and deletion does not request a refund. Minimal de-identified transaction records and legally required evidence may be retained; an active retention requirement may delay erasure. You receive a private status link that works after logout. Interrupted work retries automatically.</span>
+              <div className="mt-2 flex gap-2">
+                <input
+                  aria-label="Delete confirmation"
+                  className="min-w-0 flex-1 rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] normal-case text-white outline-none"
+                  onChange={(event) => setDeleteConfirm(event.target.value)}
+                  placeholder="Type DELETE"
+                  value={deleteConfirm}
+                />
+                <button
+                  className="inline-flex h-10 items-center gap-2 rounded-full bg-[rgb(120,25,40)] px-4 text-[12px] font-black text-white disabled:opacity-40"
+                  disabled={deleteConfirm !== "DELETE" || !securityPassword || securityPending || !profileOwnerScope}
+                  onClick={requestAccountDeletion}
+                  type="button"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  Delete
+                </button>
+              </div>
+            </label>
+          </div>
+        </div>
     </section>
   );
 }

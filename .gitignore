@@ -96,3 +96,16 @@ packages/main/data/
 .data/fish-audio/idempotency/
 .data/fish-audio/voices/
 .gstack/
+
+# Audit / probe artifacts (transient evidence, never part of a commit)
+# Audit output belongs in .scratch/ per docs/agents/audit-brief.md — local only.
+.scratch/
+output/
+artifacts/
+docs/product-audits/
+.codex/audits/
+.codex/design-qa/
+.codex/product-audits/
+*.igrep.md
+*.igrep.meta.json
+*.igrep.images/

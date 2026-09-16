@@ -755,7 +755,6 @@ export async function community(request: Request, segments: string[]) {
           : null,
       })),
       dreamers,
-      collections: [],
     },
     experimentAssignment: rankingAssignment?.status === "assigned" &&
       rankingAssignment.assignmentId &&

@@ -181,7 +181,12 @@ export function resolvePlaywrightEnvironment(
     CHAT_BFF_SIGNING_SECRET: bffSecret,
     INTERNAL_TOKEN: internalToken,
     MAIN_WEB_URL: mainBaseURL,
-    GEN_IMAGE_PROVIDER: input.PW_IMAGE_PROVIDER ?? "pipeline",
+    // "pipeline" retired with the legacy external adapter on 2026-09-12 and now
+    // fails provider vocabulary parsing, which stopped the image worker — and
+    // with it every browser test — before a single spec could run. Browser tests
+    // assert product flow, not pixels, so they take the same mock the video
+    // worker already defaults to.
+    GEN_IMAGE_PROVIDER: input.PW_IMAGE_PROVIDER ?? "mock",
     PIPELINE_API_URL: pipelineBaseURL,
     GEN_VIDEO_PROVIDER: input.PW_VIDEO_PROVIDER ?? "mock",
     VOICE_PROVIDER: input.PW_VOICE_PROVIDER ?? "mock",

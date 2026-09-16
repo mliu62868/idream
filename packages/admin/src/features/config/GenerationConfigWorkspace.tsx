@@ -1,5 +1,6 @@
 "use client";
 
+import { GenerationProfileEditor } from "./GenerationProfileEditor";
 import { useAdminI18n } from "@/components/admin/i18n";
 import type { FormEvent, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -28,7 +29,7 @@ import {
 } from "./query";
 
 type RecordRow = Record<string, unknown>;
-type ListResponse = { items: RecordRow[]; pageInfo?: PageInfo };
+type ListResponse = { items: RecordRow[]; pageInfo?: PageInfo; authoringEnabled?: boolean };
 type AuthorityState<T> = { data: T | null; error: string | null; cause: unknown; loading: boolean; refreshedAt: string | null };
 type Permissions = { manageProfiles: boolean; manageFlags: boolean };
 type ReviewDraft = { sampleCount: string; passCount: string; reviewUrl: string };
@@ -50,7 +51,7 @@ type ConfigCommand = {
 };
 
 export function GenerationConfigWorkspace({ permissions }: { permissions: Permissions }) {
-  const { t } = useAdminI18n();
+  const { t, value: enumLabel } = useAdminI18n();
   const format = useAdminFormat();
   const { toast } = useToast();
   // INVARIANT: 初值不许读地址栏 —— 服务端得出默认查询、客户端首帧得出真实查询，
@@ -65,6 +66,7 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
   const [review, setReview] = useState<ReviewDraft>({ sampleCount: "", passCount: "", reviewUrl: "" });
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
   const [testBusy, setTestBusy] = useState(false);
+  const [editor, setEditor] = useState<{ source: RecordRow | null; editing: boolean } | null>(null);
   // 游标分页没有页码，只有「上一页用的是哪个游标」。这条轨迹就是 Pagination 的第 N 页。
   const [trails, setTrails] = useState<ConfigTrails>(emptyTrails);
   const requestGates = useRef({ profiles: createLatestRequestGate(), flags: createLatestRequestGate(), jobs: createLatestRequestGate() });
@@ -239,11 +241,13 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
       {initiallyLoading ? <Loading /> : query.tab === "profiles" ? (
         <>
           {!permissions.manageProfiles ? <p className="text-xs"><PermissionNotice permission="generation.config.write" /></p> : null}
+          {permissions.manageProfiles && profiles.data ? profiles.data.authoringEnabled ? <div className="flex gap-2"><Action icon={<UploadCloud className="h-4 w-4" />} label="Create profile draft" onClick={() => setEditor({ source: null, editing: false })} />{selectedProfile ? <Action icon={<UploadCloud className="h-4 w-4" />} label="Create replacement draft" onClick={() => setEditor({ source: selectedProfile, editing: false })} /> : null}{selectedProfile?.status === "draft" ? <Action icon={<Activity className="h-4 w-4" />} label="Edit profile draft" onClick={() => setEditor({ source: selectedProfile, editing: true })} /> : null}</div> : <p role="status" className="text-sm text-[var(--ad-text-muted)]">{t("Profile authoring is disabled in this environment. Ask engineering to enable model diagnostics before creating or editing drafts.")}</p> : null}
+          {editor && permissions.manageProfiles && profiles.data?.authoringEnabled ? <GenerationProfileEditor key={`${String(editor.source?.id ?? "new")}:${editor.editing}`} source={editor.source} editing={editor.editing} onCancel={() => setEditor(null)} onSaved={id => { setEditor(null); setSelectedProfileId(id); setReview({ sampleCount: "", passCount: "", reviewUrl: "" }); navigate({ ...defaultGenerationConfigQuery, search: id }); toast({ tone: "success", title: t("Profile draft saved") }); }} /> : null}
           {profiles.data ? profileRows.length === 0 ? <EmptyState hint={filtered ? "The complete profile authority query returned no matches." : "No built-in generation profiles are seeded yet."} title={filtered ? "No generation profiles match these filters." : "No built-in generation profiles are seeded yet."} /> : (
             <div className="grid gap-4 lg:grid-cols-[minmax(260px,0.8fr)_minmax(0,1.6fr)]">
               <div className="space-y-2 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3">{profileRows.map((profile) => {
                 const id = text(profile.id);
-                return <button aria-current={id === selectedId ? "true" : undefined} className={`w-full rounded-md border px-3 py-3 text-left ${id === selectedId ? "border-[var(--ad-ink)] bg-black/5" : "border-[var(--ad-border)]"}`} key={id} onClick={() => setSelectedProfileId(id)} type="button"><span className="block font-semibold">{text(profile.label) || text(profile.profileKey) || id}</span><span className="mt-1 block text-xs text-[var(--ad-text-muted)]">{format.display(profile.status)}{profile.enabled === false ? ` · ${t("Profile disabled")}` : ""} · v{format.display(profile.version)} · {format.display(profile.mode)}</span></button>;
+                return <button aria-current={id === selectedId ? "true" : undefined} className={`w-full rounded-md border px-3 py-3 text-left ${id === selectedId ? "border-[var(--ad-ink)] bg-black/5" : "border-[var(--ad-border)]"}`} key={id} onClick={() => setSelectedProfileId(id)} type="button"><span className="block font-semibold">{text(profile.label) || text(profile.profileKey) || id}</span><span className="mt-1 block text-xs text-[var(--ad-text-muted)]">{enumLabel(text(profile.status))}{profile.enabled === false ? ` · ${t("Profile disabled")}` : ""} · v{format.display(profile.version)} · {enumLabel(text(profile.mode))}</span></button>;
               })}</div>
               {selectedProfile ? <ProfileDetail canWrite={permissions.manageProfiles} jobs={recentJobs.data?.items ?? []} onConfirm={confirmWrite} onTest={confirmTestImage} profile={selectedProfile} review={review} setReview={setReview} setTestPrompt={setTestPrompt} testBusy={testBusy} testPrompt={testPrompt} /> : null}
             </div>
@@ -274,25 +278,28 @@ function ProfileDetail({ canWrite, jobs, onConfirm, onTest, profile, review, set
   testBusy: boolean;
   testPrompt: string;
 }) {
-  const { t } = useAdminI18n();
+  const { t, value: enumLabel } = useAdminI18n();
   const format = useAdminFormat();
   const id = text(profile.id);
   const status = text(profile.status);
   const mode = text(profile.mode);
+  const rollbackTarget = profile.rollbackTarget && typeof profile.rollbackTarget === "object" && !Array.isArray(profile.rollbackTarget) ? profile.rollbackTarget as RecordRow : null;
   const relatedJobs = jobs.filter((job) => [text(profile.profileKey), id].includes(text(job.profileId)));
   const sampleCount = integer(review.sampleCount);
   const passCount = integer(review.passCount);
   const reviewReady = mode !== "image" || (sampleCount !== null && passCount !== null && sampleCount >= 20 && passCount <= sampleCount && passCount / sampleCount >= 0.8);
   return <section className="space-y-4 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-    <div><h2 className="text-lg font-semibold">{text(profile.label) || text(profile.profileKey) || id}</h2><p className="mt-1 text-sm text-[var(--ad-text-muted)]">{format.display(status)}{profile.enabled === false ? ` · ${t("Profile disabled")}` : ""} · v{format.display(profile.version)} · {format.display(profile.runner)} · {format.display(profile.pipelineModel)}</p></div>
+    <div><h2 className="text-lg font-semibold">{text(profile.label) || text(profile.profileKey) || id}</h2><p className="mt-1 text-sm text-[var(--ad-text-muted)]">{enumLabel(status)}{profile.enabled === false ? ` · ${t("Profile disabled")}` : ""} · v{format.display(profile.version)} · {format.display(profile.runner)} · {format.display(profile.pipelineModel)}</p></div>
     {canWrite ? <div className="flex flex-wrap gap-2">
       {status === "draft" ? <Action icon={<Activity className="h-4 w-4" />} label="Configuration check" onClick={() => onConfirm({ title: t("Check profile configuration {id}", { id }), completed: t("Configuration check finished for {id}", { id }), endpoint: `/api/v2/admin/generation/model-profiles/${id}/commands/dry-run`, method: "POST", expected: id, consequence: { effect: t("The profile is validated against the runtime. Nothing customer-facing changes."), reversible: true }, payload: (reason) => ({ reason }) })} /> : null}
       {mode === "image" && status !== "archived" ? <Action disabled={testBusy} icon={testBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />} label="Generate test image" onClick={onTest} /> : null}
-      {status === "draft" ? <Action disabled={!reviewReady} icon={<UploadCloud className="h-4 w-4" />} label="Publish" onClick={() => onConfirm({ title: t("Publish profile {id}", { id }), completed: t("Profile {id} published", { id }), endpoint: `/api/v2/admin/generation/model-profiles/${id}/commands/publish`, method: "POST", expected: id, consequence: { effect: t("Every new customer generation runs on this profile from now on, and the previous active version is archived. A rollback restores it; images already produced are not regenerated."), reversible: true }, payload: (reason) => ({ reason, ...(mode === "image" ? { dryRunSummary: { reviewSource: "admin_console_manual_consistency_review", reviewStatus: "manual_passed", consistencySampleCount: sampleCount, consistencyPassCount: passCount, consistencyRate: sampleCount && passCount !== null ? passCount / sampleCount : 0, reviewUrl: review.reviewUrl.trim() || undefined } } : {}) }) })} /> : null}
-      {status === "active" ? <Action icon={<RotateCcw className="h-4 w-4" />} label="Rollback" onClick={() => onConfirm({ title: t("Rollback profile {id}", { id }), completed: t("Profile {id} rolled back", { id }), endpoint: `/api/v2/admin/generation/model-profiles/${id}/commands/rollback`, method: "POST", expected: id, consequence: { effect: t("Customer generations go back to the previously active profile version from now on."), reversible: true }, payload: (reason) => ({ reason }) })} /> : null}
-      {status === "active" && Boolean(profile.enabled) ? <Action icon={<X className="h-4 w-4" />} label="Disable" onClick={() => onConfirm({ title: t("Disable profile {id}", { id }), completed: t("Profile {id} disabled", { id }), endpoint: `/api/v2/admin/generation/model-profiles/${id}`, method: "PATCH", expected: id, consequence: { effect: t("New requests stop using this profile. Restore service only after the replacement profile is validated and published."), reversible: true }, payload: (reason) => ({ reason, enabled: false }) })} /> : null}
+      {status === "draft" ? <Action disabled={!reviewReady} icon={<UploadCloud className="h-4 w-4" />} label="Publish" onClick={() => onConfirm({ title: t("Publish profile {id}", { id }), completed: t("Profile {id} published", { id }), endpoint: `/api/v2/admin/generation/model-profiles/${id}/commands/publish`, method: "POST", expected: id, consequence: { effect: t("Every new customer generation runs on this profile from now on, and the previous active version is archived. A rollback restores it; images already produced are not regenerated. Watch the catalog afterwards: any published Character Release pinned to the archived version goes stale at the next monitor pass, and a public Character serving it drops to unlisted — a rollback does not bring either back, only publishing a new Release does."), reversible: true }, payload: (reason) => ({ reason, ...(mode === "image" ? { dryRunSummary: { reviewSource: "admin_console_manual_consistency_review", reviewStatus: "manual_passed", consistencySampleCount: sampleCount, consistencyPassCount: passCount, consistencyRate: sampleCount && passCount !== null ? passCount / sampleCount : 0, reviewUrl: review.reviewUrl.trim() || undefined } } : {}) }) })} /> : null}
+      {status === "active" && rollbackTarget ? <Action icon={<RotateCcw className="h-4 w-4" />} label="Rollback" onClick={() => onConfirm({ title: t("Rollback profile {id}", { id }), completed: t("Profile {id} rolled back", { id }), endpoint: `/api/v2/admin/generation/model-profiles/${id}/commands/rollback`, method: "POST", expected: id, consequence: { effect: t("Customer generations go back to the previously active profile version from now on. This needs an earlier archived version of the same profile key — without one the authority refuses and nothing changes."), reversible: true }, payload: (reason) => ({ reason }) })} /> : null}
+      {status === "active" && Boolean(profile.enabled) ? <Action icon={<X className="h-4 w-4" />} label="Disable" onClick={() => onConfirm({ title: t("Disable profile {id}", { id }), completed: t("Profile {id} disabled", { id }), endpoint: `/api/v2/admin/generation/model-profiles/${id}`, method: "PATCH", expected: id, consequence: { effect: t("New requests stop using this profile, and this version can never be enabled again — the authority only accepts enabled:false here. Restoring service means publishing a replacement version or rolling back to an earlier one. Any published Character Release pinned to this version also goes stale at the next monitor pass, and a public Character serving it drops to unlisted — neither comes back on its own; each one needs a new Release."), reversible: false }, payload: (reason) => ({ reason, enabled: false }) })} /> : null}
     </div> : null}
-    {mode === "image" && status !== "archived" ? <div className="grid gap-3 rounded-md border border-[var(--ad-border)] p-3 md:grid-cols-2"><Field label="Test image prompt" onChange={setTestPrompt} value={testPrompt} /><p className="self-end text-xs text-[var(--ad-text-muted)]">{relatedJobs.length}  {t("recent profile test job")}{relatedJobs.length === 1 ? "" : "s"}</p></div> : null}
+    {canWrite && status === "active" && rollbackTarget ? <p className="text-sm text-[var(--ad-text-muted)]">{t("Rollback target: {id} · v{version}", { id: text(rollbackTarget.id), version: String(rollbackTarget.version ?? "—") })}</p> : null}
+    {canWrite && status === "active" && !rollbackTarget ? <p className="text-sm text-[var(--ad-text-muted)]">{t("No earlier archived version is available. Create and verify a replacement draft to restore service.")}</p> : null}
+    {mode === "image" && status !== "archived" ? <div className="grid gap-3 rounded-md border border-[var(--ad-border)] p-3 md:grid-cols-2"><Field label="Test image prompt" onChange={setTestPrompt} value={testPrompt} /><p className="self-end text-xs text-[var(--ad-text-muted)]">{t(relatedJobs.length === 1 ? "{count} recent profile test job" : "{count} recent profile test jobs", { count: relatedJobs.length })}</p></div> : null}
     {mode === "image" && status === "draft" ? <div className="grid gap-3 rounded-md border border-[var(--ad-border)] p-3 md:grid-cols-3"><Field label="Consistency samples (≥20)" onChange={(sampleCount) => setReview({ ...review, sampleCount })} value={review.sampleCount} /><Field label="Consistency passes (≥80%)" onChange={(passCount) => setReview({ ...review, passCount })} value={review.passCount} /><Field label="Review evidence URL" onChange={(reviewUrl) => setReview({ ...review, reviewUrl })} value={review.reviewUrl} /></div> : null}
     {/* INTENT: Publish 在一致性复核没达标时是灰的，而灰按钮不会说自己为什么灰——
         运营只能猜是权限不够还是数字不对。把还差什么直接写出来。 */}

@@ -86,7 +86,7 @@ export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
   const [editDraft, setEditDraft] = useState<EditDraft | null>(null);
   const [editLoadingPath, setEditLoadingPath] = useState<string | null>(null);
   const [editBusy, setEditBusy] = useState(false);
-  const { feedback, reportSuccess, clearFeedback } = useWriteFeedback();
+  const { feedback, reportSuccess, reportFailure, clearFeedback } = useWriteFeedback();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -132,21 +132,41 @@ export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
     setPublishBusy(true);
     setError(null);
     try {
-      await apiWrite("/api/v2/admin/cms/pages/publish", "POST", {
-        path: publishDraft.path,
-        contentStatus: publishDraft.nextStatus,
-        expectedUpdatedAt: publishDraft.expectedUpdatedAt,
-        reason: publishDraft.reason.trim(),
-        confirmation: publishDraft.confirmation.trim(),
-      });
+      // SPEC: 发布 / 下线的响应里带 `cacheRevalidated` —— 那是「访客现在看到的是不是新版」
+      //       这件事的唯一权威判据。
+      // INTENT: 契约里一直有这个字段，服务端每次都算（pages.ts:95 的 revalidateCmsPage 失败
+      //       时返回 false 并只写一条 warn 日志），而后台从来没读过它：无论缓存刷没刷新，
+      //       运营看到的都是「已发布」。刷新失败时数据库是 published、站上还是旧页，
+      //       没有任何一处会告诉运营这件事。
+      const result = await apiWrite<{ cacheRevalidated?: boolean }>(
+        "/api/v2/admin/cms/pages/publish",
+        "POST",
+        {
+          path: publishDraft.path,
+          contentStatus: publishDraft.nextStatus,
+          expectedUpdatedAt: publishDraft.expectedUpdatedAt,
+          reason: publishDraft.reason.trim(),
+          confirmation: publishDraft.confirmation.trim(),
+        },
+      );
       const { path, nextStatus } = publishDraft;
       setPublishDraft(null);
       await load();
-      reportSuccess(
-        nextStatus === "published"
-          ? t("{path} is published and indexable per its indexing status.", { path })
-          : t("{path} is unpublished and back to draft. It is no longer served.", { path }),
-      );
+      // INVARIANT: 缓存没刷新不是「成功」—— 走 reportFailure 那条不会自动消失的通道，
+      //            因为这条要人去做点什么（本文件顶部的注释：运营没读到的失败等于没发生）。
+      if (result.cacheRevalidated === false) {
+        reportFailure(
+          nextStatus === "published"
+            ? t("{path} is published in the authority, but the cache did not refresh — visitors keep seeing the old page. Run publish again; if it keeps failing this is an engineering issue.", { path })
+            : t("{path} is unpublished in the authority, but the cache did not refresh — visitors can still reach the old page. Run unpublish again; if it keeps failing this is an engineering issue.", { path }),
+        );
+      } else {
+        reportSuccess(
+          nextStatus === "published"
+            ? t("{path} is published and indexable per its indexing status.", { path })
+            : t("{path} is unpublished and back to draft. It is no longer served.", { path }),
+        );
+      }
     } catch (err) {
       // A status command is a one-shot operation against the exact row version
       // displayed to the operator. Never retain a stale confirmation.

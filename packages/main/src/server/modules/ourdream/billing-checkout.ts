@@ -29,6 +29,7 @@ import {
 } from "@/server/lib/request-json";
 import { createClassifiedAnalyticsEvent } from "@/server/modules/admin-v2/metrics/classified-event-writer";
 import { coinOfferEligible, coinOfferFingerprint, coinOfferSnapshot, readCoinPurchase, settleCoinPurchaseInTx } from "@/server/modules/billing/coin-offers";
+import { recordInvoiceCashCapturesInTx } from "@/server/modules/billing/cash-capture";
 import { dreamcoinBalance } from "@/server/modules/billing/ledger";
 import {
   parseSubscriptionRefundEvidence,
@@ -36,7 +37,7 @@ import {
   publicSubscriptionRefundDTO,
 } from "@/server/modules/billing/subscription-refund";
 import { providers } from "@/server/providers";
-import type { PaymentInvoice, ProviderResult } from "@/server/providers/types";
+import type { PaymentInvoice, PaymentInvoicePaymentEvidence, ProviderResult } from "@/server/providers/types";
 import {
   publicFeatureProjection,
   publicOfferAvailability,
@@ -75,6 +76,7 @@ async function convergeProcessedSettlementReplayInTx(
   tx: Prisma.TransactionClient,
   provider: string,
   invoice: PaymentInvoice,
+  cashEvidence: PaymentInvoicePaymentEvidence | null,
 ) {
   const identity = await tx.checkoutSession.findUnique({
     where: {
@@ -101,6 +103,7 @@ async function convergeProcessedSettlementReplayInTx(
     });
   }
   assertRecoveredInvoiceMatchesCheckout(checkoutSession, invoice);
+  await recordInvoiceCashCapturesInTx(tx, checkoutSession, cashEvidence);
   if (checkoutSession.status !== "completed") return;
 
   await tx.checkoutSession.update({
@@ -899,17 +902,32 @@ async function persistRecoveredCheckoutInvoice(
   return persistCheckoutInvoiceAuthority(checkoutId, invoice);
 }
 
+// Payment-method evidence is fetched outside the DB transaction. Missing receipt
+// evidence blocks cash certification, not already-authorized entitlement delivery.
+async function loadInvoiceCashCaptureEvidence(invoice: PaymentInvoice): Promise<PaymentInvoicePaymentEvidence | null> {
+  if (invoice.status !== "settled") return null;
+  const result = await paymentProviderRequestWithDeadline("cash_capture_lookup_timeout", (signal) =>
+    providers.payment.readInvoicePaymentEvidence({ invoiceId: invoice.invoiceId, orderId: invoice.orderId, signal }),
+  );
+  return result.ok ? result.data : {
+    status: "unknown", provider: invoice.provider, invoiceId: invoice.invoiceId, orderId: invoice.orderId,
+    reason: "payment_evidence_incomplete", payments: [],
+  };
+}
+
 async function persistCheckoutInvoiceAuthority(
   checkoutId: string,
   invoice: PaymentInvoice,
   expectedDispatchToken?: string,
 ) {
+  const cashEvidence = await loadInvoiceCashCaptureEvidence(invoice);
   return prisma.$transaction((tx) =>
     persistCheckoutInvoiceAuthorityInTx(
       tx,
       checkoutId,
       invoice,
       expectedDispatchToken,
+      cashEvidence,
     ),
   );
 }
@@ -919,6 +937,7 @@ async function persistCheckoutInvoiceAuthorityInTx(
   checkoutId: string,
   invoice: PaymentInvoice,
   expectedDispatchToken?: string,
+  cashEvidence: PaymentInvoicePaymentEvidence | null = null,
 ) {
   await lockCheckoutSession(tx, checkoutId);
   const current = await tx.checkoutSession.findUniqueOrThrow({
@@ -940,6 +959,7 @@ async function persistCheckoutInvoiceAuthorityInTx(
       });
     }
     assertRecoveredInvoiceMatchesCheckout(current, invoice);
+    if (invoice.status === "settled") await recordInvoiceCashCapturesInTx(tx, current, cashEvidence);
     if (isCheckoutReconciliationResolved(current)) return current;
     if (isLateSettledAbandonedCheckout(current)) {
       if (invoice.status !== "settled") return current;
@@ -1640,6 +1660,8 @@ export async function billingWebhook(request: Request, provider: string) {
     }
   }
 
+  const cashEvidence = verifiedOrderInvoice ? await loadInvoiceCashCaptureEvidence(verifiedOrderInvoice) : null;
+
   type BillingWebhookSettlement = {
     processed: boolean;
     idempotent?: boolean;
@@ -1658,6 +1680,7 @@ export async function billingWebhook(request: Request, provider: string) {
           tx,
           provider,
           verifiedOrderInvoice,
+          cashEvidence,
         );
       }
       return { processed: false, idempotent: true };
@@ -1740,6 +1763,7 @@ export async function billingWebhook(request: Request, provider: string) {
         verifiedOrderInvoice,
       );
     }
+    await recordInvoiceCashCapturesInTx(tx, checkoutSession, cashEvidence);
     if (isLateSettledAbandonedCheckout(checkoutSession)) {
       await tx.providerEvent.update({
         where: { id: event.id },

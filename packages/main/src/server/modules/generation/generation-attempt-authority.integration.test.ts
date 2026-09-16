@@ -256,6 +256,80 @@ describe("GenerationAttemptAuthority", () => {
     ).resolves.toMatchObject({ status: "delivered", attempts: 1 });
   });
 
+  it("rolls back the Attempt and dispatch intent when the caller transaction fails", async () => {
+    const job = await createJob("reservation-rollback");
+    const input = reservationFor(job);
+
+    await expect(prisma.$transaction(async (tx) => {
+      await reserveInitialGenerationAttempt(tx, input);
+      throw new Error("caller transaction failed");
+    })).rejects.toThrow("caller transaction failed");
+
+    expect(await prisma.generationAttempt.count({
+      where: { requestId: job.id },
+    })).toBe(0);
+    expect(await prisma.mainOutboxEvent.count({
+      where: { id: input.dispatch.outboxId },
+    })).toBe(0);
+    let enqueued = false;
+    await expect(dispatchGenerationAttemptOutbox(prisma, {
+      outboxIds: [input.dispatch.outboxId],
+      queue: {
+        enqueue: async () => { enqueued = true; },
+        removeByDedupeKey: async () => false,
+      },
+    })).resolves.toEqual({ examined: 0, delivered: 0, failed: 0 });
+    expect(enqueued).toBe(false);
+  });
+
+  it("preserves enqueue backoff across reservation replay and targeted dispatch", async () => {
+    const job = await createJob("dispatch-backoff");
+    const input = reservationFor(job);
+    const reserved = await prisma.$transaction((tx) =>
+      reserveInitialGenerationAttempt(tx, input),
+    );
+    const now = new Date(Date.now() + 1_000);
+    const retryAt = new Date(now.getTime() + 30_000);
+    const enqueued: EnqueueJobInput[] = [];
+    let calls = 0;
+    const queue = {
+      enqueue: async (queueInput: EnqueueJobInput) => {
+        calls += 1;
+        if (calls === 1) throw new Error("queue unavailable");
+        enqueued.push(queueInput);
+      },
+      removeByDedupeKey: async () => false,
+    };
+    const dispatch = (at: Date) => dispatchGenerationAttemptOutbox(prisma, {
+      outboxIds: [reserved.outbox.id],
+      queue,
+      now: at,
+    });
+
+    await expect(dispatch(now)).resolves.toEqual({ examined: 1, delivered: 0, failed: 1 });
+    const replay = await prisma.$transaction((tx) =>
+      reserveInitialGenerationAttempt(tx, input),
+    );
+    expect(replay.attempt.id).toBe(reserved.attempt.id);
+    expect(replay.outbox).toMatchObject({
+      status: "pending",
+      attempts: 1,
+      nextRunAt: retryAt,
+      lastError: { message: "queue unavailable" },
+    });
+    await expect(dispatch(new Date(retryAt.getTime() - 1))).resolves.toEqual({
+      examined: 0, delivered: 0, failed: 0,
+    });
+    expect(calls).toBe(1);
+
+    await expect(dispatch(retryAt)).resolves.toEqual({ examined: 1, delivered: 1, failed: 0 });
+    expect(enqueued).toHaveLength(1);
+    expect(enqueued[0]?.dedupeKey).toBe(`generation:${job.id}:attempt:1`);
+    await expect(prisma.mainOutboxEvent.findUniqueOrThrow({
+      where: { id: reserved.outbox.id },
+    })).resolves.toMatchObject({ status: "delivered", attempts: 2, lastError: null });
+  });
+
   it("rejects 25 oldest malformed rows so they cannot starve the next valid dispatch", async () => {
     const job = await createJob("malformed-batch");
     const reserved = await prisma.$transaction((tx) =>

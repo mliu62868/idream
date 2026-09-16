@@ -84,6 +84,37 @@ export function resolveChatModelProfile(
   };
 }
 
+/** The small judge that decides image intent for languages the matchers miss. */
+export interface ChatIntentModel {
+  baseUrl: string;
+  model: string;
+  apiKey: string;
+  timeoutMs: number;
+}
+
+/**
+ * SPEC: resolve the intent judge, or null when none is configured.
+ * INTENT: unset must degrade to "the deterministic matchers are the whole
+ * authority", never to "let the roleplay model decide" — the roleplay model
+ * reads persona and memory, which is exactly what may not reach this decision.
+ * INVARIANT: it shares the chat server and key; only the model name differs,
+ * so a deployment cannot point the judge at an unrelated endpoint by accident.
+ */
+export function resolveChatIntentModel(
+  source: Environment = process.env,
+): ChatIntentModel | null {
+  const model = source.CHAT_INTENT_MODEL_NAME?.trim();
+  if (!model) return null;
+  return {
+    baseUrl: source.CHAT_MODEL_BASE_URL ?? DEFAULT_BASE_URL,
+    model,
+    apiKey: source.CHAT_MODEL_API_KEY ?? "",
+    // A judge slower than this is worse than no judge: the user is waiting on a
+    // reply that the deterministic matchers were already willing to produce.
+    timeoutMs: positiveInt(source.CHAT_INTENT_TIMEOUT_MS, 2_500),
+  };
+}
+
 export function isOpenRouterBaseUrl(baseUrl: string): boolean {
   return new URL(baseUrl).hostname === "openrouter.ai";
 }

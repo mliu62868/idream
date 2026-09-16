@@ -4,7 +4,7 @@
 范围：本机 ComfyUI `0.28.0` / PyTorch `2.10.0` / Apple MPS / 137 GiB unified memory。14 次真实生成，全部 `success`。
 这是 [`QWEN_IMAGE_EDIT_VS_FLUX2_KLEIN_2026-07-25.md`](./QWEN_IMAGE_EDIT_VS_FLUX2_KLEIN_2026-07-25.md) 里一直缺的那次受控 A/B。
 
-产物：[`output/model-ab/qwen-vs-klein-2026-07-27/`](../../output/model-ab/qwen-vs-klein-2026-07-27/)（14 张原图、`results.jsonl`、`review.html` 盲评页、`ab_run.py` 驱动脚本）。
+产物：`output/model-ab/qwen-vs-klein-2026-07-27/`（历史审计产物，2026-09-13 移出工作树，见 git 历史）（14 张原图、`results.jsonl`、`review.html` 盲评页、`ab_run.py` 驱动脚本）。
 
 ## 结论
 

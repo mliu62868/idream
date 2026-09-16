@@ -14,8 +14,9 @@ import { fail, ok } from "@/server/lib/http";
 import { actorWithPermission, queryParams } from "@/server/modules/admin-v2/shared/authority";
 import { effectivePermissionScope } from "@/server/admin/effective-permissions";
 import { canonicalSha256 } from "../shared/canonical-json";
-import { toInputJson } from "../shared/prisma-json";
-import { evaluateMetricCertification, REQUIRED_METRIC_QUALITY_CHECKS } from "./certification";
+import { toInputJson, jsonRecord, jsonStrings } from "../shared/prisma-json";
+import { evaluateMetricCertification, METRIC_DEFINITION_VALIDATOR_VERSION, REQUIRED_METRIC_QUALITY_CHECKS } from "./certification";
+import { METRIC_FORMULA_VALIDATION } from "./formula-validation";
 import { evaluateCanonicalMetrics, type CanonicalMetricDataset, utcCalendarWeekStart } from "./engine";
 import { loadCanonicalMetricDataset, reconcileCanonicalMetricFacts } from "./projector";
 
@@ -215,6 +216,10 @@ async function buildCards(input: {
     },
     orderBy: { checkedAt: "desc" },
   });
+  const definitionValidations = await input.db.dataQualityCheck.findMany({
+    where: { checkKey: "metrics.definition_validation", checkedAt: { lte: input.asOf } },
+    orderBy: { checkedAt: "desc" },
+  });
   const definitionSnapshotByKey = new Map(definitionSnapshots.map((row) => [`${row.key}@${row.version}`, row]));
   const latestMetricSnapshot = new Map<string, MetricSnapshot>();
   if (input.requireMetricSnapshot !== false) {
@@ -240,11 +245,26 @@ async function buildCards(input: {
     // read authority; reusing it here freezes values and launders old evidence.
     const snapshot = input.requireMetricSnapshot === false ? undefined : latestMetricSnapshot.get(identity);
     const metricQualityChecks = selectQualityChecksForMetric(qualityChecks, definition.key);
+    const validation = definitionValidations.find((row) => Array.isArray(row.metricKeys) && row.metricKeys.includes(key));
+    const validationEvidence = validation?.evidence as Record<string, unknown> | undefined;
     const certification = evaluateMetricCertification({
       definition,
       asOf: input.asOf,
       requireMetricSnapshot: input.requireMetricSnapshot,
       evidence: {
+        ...(validation ? { definitionValidation: {
+          status: validation.status,
+          failures: jsonStrings(jsonRecord(validation.observed).failures as Prisma.JsonValue),
+          checkedAt: validation.checkedAt,
+          matchesDefinition: validationEvidence?.definitionHash === canonicalSha256(definition)
+            && validationEvidence?.queryHash === definition.queryHash
+            && validationEvidence?.validatorVersion === METRIC_DEFINITION_VALIDATOR_VERSION,
+          hasEvidence: hasEvidence(validationEvidence?.checks) && hasEvidence(validationEvidence?.evaluation)
+            && validationEvidence?.formulaInputHash === METRIC_FORMULA_VALIDATION.inputHash
+            && validationEvidence?.formulaEvidenceHash === METRIC_FORMULA_VALIDATION.evidenceHash
+            && METRIC_FORMULA_VALIDATION.checks.some((check) => check.metricKey === key)
+            && METRIC_FORMULA_VALIDATION.checks.filter((check) => check.metricKey === key).every((check) => check.passed),
+        } } : {}),
         definitionSnapshot: definitionSnapshot ? {
           queryHash: definitionSnapshot.queryHash,
           definitionMatches: canonicalSha256(definitionSnapshot.definition) === canonicalSha256(definition),
@@ -431,6 +451,78 @@ export async function publishMetricRegistrySnapshots(db: MetricDb) {
     created += 1;
   }
   return { created, existing: existingCount };
+}
+
+/** Explicit engineering validation. Refresh only consumes this evidence; it cannot grant it. */
+export async function validateMetricDefinitions(db: PrismaClient, asOf = new Date()) {
+  return db.$transaction(async (tx) => {
+    await publishMetricRegistrySnapshots(tx);
+    const dataset = filterDatasetFrom(await loadCanonicalMetricDataset(tx), factsValidFrom());
+    const quality = await qualityReport(tx, asOf);
+    const sources = sourceFactEvidence(dataset, asOf);
+    const evaluation = evaluateCanonicalMetrics(dataset, asOf);
+    const events = await tx.analyticsEvent.findMany({
+      where: {
+        name: { in: [...new Set(CANONICAL_DEFINITIONS.flatMap((definition) => [...definition.sourceEvents]))] },
+        environment: "production", dataClass: "customer", trustClass: "canonical",
+        occurredAt: { gte: factsValidFrom(), lte: asOf }, ingestedAt: { lte: asOf },
+      },
+      select: { id: true, name: true, actor: true },
+    });
+    const receipts = await tx.metricProjectionReceipt.findMany({
+      where: { canonicalEventId: { in: events.map((event) => event.id) }, outcome: "applied", processedAt: { lte: asOf } },
+      select: { canonicalEventId: true },
+    });
+    const appliedIds = new Set(receipts.map((receipt) => receipt.canonicalEventId));
+    const unprojected = events.filter((event) => {
+      const actor = event.actor as Record<string, unknown> | null;
+      return actor?.isInternal !== true && !appliedIds.has(event.id);
+    });
+    const results = [];
+    for (const definition of CANONICAL_DEFINITIONS) {
+      const result = evaluation.metrics[definition.key];
+      const failures: string[] = [];
+      const formulaChecks = METRIC_FORMULA_VALIDATION.checks.filter((check) => check.metricKey === definition.key);
+      if (formulaChecks.length === 0) failures.push("definition_evaluator_unavailable");
+      else if (formulaChecks.some((check) => !check.passed)) failures.push("definition_validation_formula_mismatch");
+      const missingProjections = unprojected.filter((event) => definition.sourceEvents.includes(event.name));
+      if (missingProjections.length > 0) failures.push("definition_validation_projection_incomplete");
+      if (!result) failures.push("definition_evaluator_unavailable");
+      if (new Date(definition.effectiveAt) > asOf) failures.push("definition_snapshot_not_effective");
+      for (const check of quality.checks) {
+        if (check.status !== "passed") failures.push(`quality_check_${check.status}:metrics.${check.key}`);
+      }
+      for (const sourceName of definition.sourceFacts) {
+        const source = sources.get(sourceName);
+        if (!source || source.count === 0 || !source.latestDataAt) failures.push(`source_fact_missing:${sourceName}`);
+        else if (asOf.getTime() - source.latestDataAt.getTime() > definition.freshnessSlo.maxAgeSeconds * 1_000) failures.push(`source_fact_stale:${sourceName}`);
+      }
+      if (result) {
+        if (result.matureSampleSize === 0) failures.push("definition_validation_mature_sample_missing");
+        if (result.value === null || !Number.isFinite(result.value)
+          || (result.denominator !== null && (result.numerator > result.denominator || result.denominator <= 0))) {
+          failures.push("definition_validation_cohort_invalid");
+        }
+      }
+      const status = failures.length === 0 ? "passed" : "failed";
+      const row = await tx.dataQualityCheck.create({ data: {
+        checkKey: "metrics.definition_validation", status, metricKeys: [definition.key],
+        observed: toInputJson({ failures }), threshold: { expression: "all checks passed with a mature eligible cohort" },
+        evidence: toInputJson({
+          validatorVersion: METRIC_DEFINITION_VALIDATOR_VERSION,
+          formulaInputHash: METRIC_FORMULA_VALIDATION.inputHash,
+          formulaEvidenceHash: METRIC_FORMULA_VALIDATION.evidenceHash,
+          formulaChecks,
+          definitionHash: canonicalSha256(definition), queryHash: definition.queryHash,
+          checks: quality.checks, sources: Object.fromEntries(sources), evaluation: result ?? null,
+          missingProjectionCount: missingProjections.length, missingProjectionEventIds: missingProjections.slice(0, 20).map((event) => event.id),
+        }),
+        windowStart: new Date(definition.validFrom), windowEnd: asOf, checkedAt: asOf,
+      } });
+      results.push({ key: definition.key, version: definition.version, status, evidenceId: row.id, failures });
+    }
+    return { asOf: asOf.toISOString(), results };
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, timeout: 60_000 });
 }
 
 export async function materializeMetricSnapshots(db: PrismaClient, asOf = new Date()) {

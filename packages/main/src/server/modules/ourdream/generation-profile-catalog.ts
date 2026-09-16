@@ -1,6 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
-import { imageOrientations } from "./generation-dimensions";
+import { imageOrientations } from "@idream/shared/media/image-orientation";
 
 export async function featureFlagEnabled(key: string) {
   const flag = await prisma.featureFlag.findUnique({

@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import {
   parseImageAgentToolCall,
-  requiredImageActionForUserRequest,
   type ImageAgentToolCall,
+  type RequiredImageAction,
 } from "@idream/shared/chat/image-action";
+import { resolveImageIntent } from "@idream/shared/chat/image-intent";
 import {
   chatToolEffectSchema,
   chatExecutionSnapshotSchema,
@@ -12,6 +13,7 @@ import {
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
+import { logger } from "@/server/lib/logger";
 import { compileChatImagePrompt, sanitizeChatImageDirection } from "@/server/modules/ourdream/generation-prompt";
 import { createChatImageGenerationJob } from "@/server/modules/ourdream/service";
 import { loadChatAuthoritySnapshot } from "./chat-authority-snapshot";
@@ -57,7 +59,8 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
     else assertTurnActionIntent(prior, effect.intent);
     return existingEffect(prior, requestDigest, effect.effectScope);
   }
-  assertFrozenImageAction(turn, effect);
+  const action = await frozenImageAction(turn);
+  assertImageAction(action, effect);
   // INVARIANT: an accepted effect remains replayable after its Turn becomes
   // terminal. HTTP timeout must not turn a successful reservation into a 409.
   if (prior && prior.status !== "requesting") {
@@ -70,7 +73,7 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
       ) {
         throw Errors.conflict("Required effect replay does not belong to the active Chat attempt");
       }
-      prior = await rebindTurnActionAttempt(prior, effect, requestDigest);
+      prior = await rebindTurnActionAttempt(prior, effect, requestDigest, turn, action);
     }
     return existingEffect(prior, requestDigest, effect.effectScope);
   }
@@ -252,20 +255,43 @@ function effectAttachmentId(effect: ChatToolEffect): string {
   return `chatfx_${sha256(identity).slice(0, 48)}`;
 }
 
-function assertFrozenImageAction(
+/** The Turn's own frozen context, or null when it is missing or no longer binds. */
+function boundSnapshot(
   turn: { id: string; attempt: number; userContent: string; executionSnapshot: Prisma.JsonValue | null },
-  effect: ChatToolEffect,
 ) {
   const frozen = chatExecutionSnapshotSchema.safeParse(turn.executionSnapshot);
-  const action = frozen.success && frozen.data.turnId === turn.id &&
+  return frozen.success && frozen.data.turnId === turn.id &&
     frozen.data.attempt === turn.attempt && frozen.data.userContent === turn.userContent
-    ? requiredImageActionForUserRequest({
-        userText: frozen.data.userContent,
-        hasRecentImageContext: frozen.data.hasRecentImageContext,
-        previousAssistantText: frozen.data.recentTurns.at(-1)?.assistantContent,
-      })
+    ? frozen.data
     : null;
-  // Main owns consent; neither the caller's tool name nor scope can grant it.
+}
+
+/**
+ * SPEC: what this Turn's own user message authorizes, decided here and not
+ * anywhere upstream.
+ * INVARIANT: this re-runs the same authority Chat used, over the frozen user
+ * message and nothing else. Chat's copy decides which tool the model may see;
+ * this copy decides whether anything is bought, so a bug or a bypass there still
+ * cannot spend. A saved instruction, a pinned fact or a persona line is not part
+ * of either input, and an unreachable judge withholds rather than grants.
+ */
+async function frozenImageAction(
+  turn: { id: string; attempt: number; userContent: string; executionSnapshot: Prisma.JsonValue | null },
+): Promise<RequiredImageAction | null> {
+  const bound = boundSnapshot(turn);
+  if (!bound) return null;
+  const decision = await resolveImageIntent({
+    userText: bound.userContent,
+    hasRecentImageContext: bound.hasRecentImageContext,
+    previousAssistantText: bound.recentTurns.at(-1)?.assistantContent,
+    imageToolEnabled: true,
+    onJudgeUnavailable: (reason) => logger.warn({ event: "chat_image_intent_judge" }, reason),
+  });
+  return decision.kind === "none" ? null : decision.action;
+}
+
+// Main owns consent; neither the caller's tool name nor scope can grant it.
+function assertImageAction(action: RequiredImageAction | null, effect: ChatToolEffect) {
   if (!action || action.name !== effect.name || action.requestedNudity !== effect.intent.requestedNudity) {
     throw Errors.forbidden("Image generation requires a confirmed user image request");
   }
@@ -371,6 +397,8 @@ async function rebindTurnActionAttempt(
   attachment: { id: string; metadata: Prisma.JsonValue },
   effect: ChatToolEffect,
   replayRequestDigest: string,
+  judged: { attempt: number; userContent: string },
+  action: RequiredImageAction | null,
 ) {
   const attempt = effect.attempt;
   const metadata = record(attachment.metadata) ?? {};
@@ -378,7 +406,14 @@ async function rebindTurnActionAttempt(
   return prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "chat_turns" WHERE id = ${effect.turnId} FOR UPDATE`;
     const current = await tx.chatTurn.findUniqueOrThrow({ where: { id: effect.turnId } });
-    assertFrozenImageAction(current, effect);
+    // The consent above was decided before this lock, and deciding it again here
+    // would hold the row across a network call to the judge. Re-bind it instead:
+    // the same frozen message still has to be the Turn's message under the lock.
+    const bound = boundSnapshot(current);
+    if (!bound || bound.attempt !== judged.attempt || bound.userContent !== judged.userContent) {
+      throw Errors.forbidden("Image generation requires a confirmed user image request");
+    }
+    assertImageAction(action, effect);
     if (current.attempt !== attempt || !["pending", "generating"].includes(current.assistantStatus)) {
       throw Errors.conflict("Required effect replay does not belong to the active Chat attempt");
     }

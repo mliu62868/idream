@@ -18,6 +18,7 @@
 //    non-numeric seed is FNV-hashed via providers.ts's stableNumericSeed rather than
 //    coerced to 0, so concurrent jobs don't collide on the same numeric seed.
 import { env } from "../env";
+import { dimensionsForImageOrientation } from "@idream/shared/media/image-orientation";
 import { logger } from "../logger";
 import { stableNumericSeed, type ImageModel } from "../providers";
 import {
@@ -44,19 +45,23 @@ type PrepareComfyUiRunner = (runner: ComfyUiRunner) => Promise<void>;
 const runWithoutAcceleratorLease: RunWithAcceleratorLease = (run) => run();
 const skipComfyUiMemoryTransition: PrepareComfyUiRunner = async () => {};
 
-// SPEC: orientation -> default pixel size. Wire vocabulary mirrors main's actual
-// contract (packages/main/src/server/modules/ourdream/generation-dimensions.ts:
-// imageOrientations = ["1:1","4:5","3:4","9:16","16:9"], wire default "4:5") and its
-// dimensionsForImageOrientation math: base = the shorter side, the other side is
-// snapDimension(base * aspectRatio) — snapped to the nearest multiple of 64 (min 64).
-// gen cannot import packages/main, so that math is duplicated below (keep both in
-// sync). BASE=832 is the short side the legacy orientationToOpenAiSize/
-// orientationToSize mapping used for "portrait", chosen here too so the new wire
-// aspect strings land in the same dimensional neighborhood as those pre-existing
-// values rather than introducing an unrelated second scale.
-// INTENT: "portrait"/"landscape"/"square" are the OLD (pre-wire-contract) values —
-// kept byte-for-byte so any caller still using them doesn't see a behavior shift.
-// An unrecognized non-empty orientation is logged once (config drift, not a crash)
+// SPEC: orientation -> default pixel size, used ONLY when controls carry no
+// explicit width/height. Main always pins both on the paths that go through
+// createGenerationJobForUser, so this is a fallback for descriptors and callers
+// that do not.
+// INTENT: the ratio math and the 64-multiple snapping now come from
+// @idream/shared/media/image-orientation, the same function Main calls. This file
+// used to carry a hand-copied second implementation whose comment asked future
+// readers to "keep both in sync" — and which had already drifted, because Main
+// derives its base from the generation profile's default dimensions while this
+// copy hard-coded 832. Only the base is gen's own decision now, and it is stated
+// here rather than reimplemented.
+// BASE=832 is the short side the legacy portrait mapping used, kept so the wire
+// aspect strings land in the same dimensional neighborhood as the pre-existing
+// "portrait"/"landscape"/"square" values below.
+// INVARIANT: "portrait"/"landscape"/"square" are the OLD (pre-wire-contract)
+// values — kept byte-for-byte so any caller still using them sees no shift. An
+// unrecognized non-empty orientation is logged once (config drift, not a crash)
 // and treated as the wire default "4:5". orientation undefined/null/"" returns
 // undefined so resolveSize() can omit width/height and let the workflow
 // descriptor's own declared slot defaults apply.
@@ -90,31 +95,12 @@ export function orientationToSize(
   }
 }
 
-// Mirrors generation-dimensions.ts's dimensionsForImageOrientation switch (minus the
-// normalizeImageOrientation step, since callers here only ever pass one of the 5
-// known aspect strings or the "4:5" fallback).
-function dimensionsForOrientation(orientation: string): { width: number; height: number } {
-  const base = ORIENTATION_BASE;
-  switch (orientation) {
-    case "16:9":
-      return { width: snapDimension((base * 16) / 9), height: base };
-    case "9:16":
-      return { width: base, height: snapDimension((base * 16) / 9) };
-    case "4:5":
-      return { width: base, height: snapDimension((base * 5) / 4) };
-    case "3:4":
-      return { width: base, height: snapDimension((base * 4) / 3) };
-    case "1:1":
-    default:
-      return { width: base, height: base };
-  }
-}
-
-// Mirrors generation-dimensions.ts's snapDimension exactly (duplicated for the same
-// cross-package reason as above — keep both in sync).
-function snapDimension(value: number): number {
-  const snapped = Math.round(value / 64) * 64;
-  return Math.max(64, snapped);
+function dimensionsForOrientation(orientation: string) {
+  return dimensionsForImageOrientation({
+    orientation,
+    defaultWidth: ORIENTATION_BASE,
+    defaultHeight: ORIENTATION_BASE,
+  });
 }
 
 export class BackendImageModel implements ImageModel {

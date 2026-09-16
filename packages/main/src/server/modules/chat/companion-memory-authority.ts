@@ -416,15 +416,19 @@ async function memorySourceMetrics(userId: string, characterId: string): Promise
   estimatedBytes: number;
 }> {
   const rows = await prisma.$queryRaw<Array<{
-    turnCount: bigint;
+    messageCount: bigint;
     sessionCount: bigint;
     contentChars: bigint;
   }>>`
     SELECT
-      COUNT(*)::bigint AS "turnCount",
+      -- A proactive Turn exports one message, not two: its "userContent" is the
+      -- internal directive that made the Character speak and never ships.
+      COALESCE(SUM(CASE WHEN turn."origin" = 'proactive' THEN 1 ELSE 2 END), 0)::bigint
+        AS "messageCount",
       COUNT(DISTINCT turn."sessionId")::bigint AS "sessionCount",
       COALESCE(SUM(
-        char_length(turn."userContent") + char_length(turn."assistantContent")
+        CASE WHEN turn."origin" = 'proactive' THEN 0 ELSE char_length(turn."userContent") END
+        + char_length(turn."assistantContent")
       ), 0)::bigint AS "contentChars"
     FROM "chat_turns" AS turn
     JOIN "recent_chats" AS session ON session."sessionId" = turn."sessionId"
@@ -435,11 +439,11 @@ async function memorySourceMetrics(userId: string, characterId: string): Promise
       AND turn."memoryEnabled" = true
   `;
   const row = rows[0] ?? {
-    turnCount: BigInt(0),
+    messageCount: BigInt(0),
     sessionCount: BigInt(0),
     contentChars: BigInt(0),
   };
-  const messageCount = safeNumber(row.turnCount * BigInt(2));
+  const messageCount = safeNumber(row.messageCount);
   return {
     messageCount,
     sessionCount: safeNumber(row.sessionCount),
@@ -475,6 +479,7 @@ async function* memorySourceMessages(
         assistantMessageId: true,
         userContent: true,
         assistantContent: true,
+        origin: true,
         createdAt: true,
         updatedAt: true,
         terminalAt: true,
@@ -482,19 +487,29 @@ async function* memorySourceMessages(
     });
     if (rows.length === 0) return;
     for (const turn of rows) {
-      yield {
-        id: turn.userMessageId,
-        sessionId: turn.sessionId,
-        role: "user",
-        content: turn.userContent,
-        createdAt: turn.createdAt.toISOString(),
-      };
+      // INVARIANT: canonical memory records what the two of them actually said.
+      // A proactive Turn's `userContent` is the internal directive that made the
+      // Character speak first, so exporting it would file an instruction the user
+      // never wrote as a durable user utterance — and memory extraction then
+      // attributes whatever the Character answered to the user.
+      if (turn.origin !== "proactive") {
+        yield {
+          id: turn.userMessageId,
+          sessionId: turn.sessionId,
+          role: "user",
+          content: turn.userContent,
+          createdAt: turn.createdAt.toISOString(),
+        };
+      }
       yield {
         id: turn.assistantMessageId,
         sessionId: turn.sessionId,
         role: "assistant",
         content: turn.assistantContent,
         createdAt: (turn.terminalAt ?? turn.updatedAt).toISOString(),
+        // Declares the one exchange with no user side, so the transcript decoder
+        // accepts it without relaxing its alternation check for everything else.
+        ...(turn.origin === "proactive" ? { unprompted: true as const } : {}),
       };
     }
     cursor = rows.at(-1)?.id;

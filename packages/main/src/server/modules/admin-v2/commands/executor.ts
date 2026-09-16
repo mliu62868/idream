@@ -246,12 +246,16 @@ async function executeMigrateSessionRelease(commandId: string) {
       }
       // Interactive transactions own one pg connection; keep authority reads
       // sequential so the adapter never multiplexes a busy client.
+      // Lock qualification through pin commit: a concurrent withdrawal must serialize
+      // before this check or after migration, never between validation and the write.
+      await tx.$queryRaw`SELECT id FROM character_releases WHERE id = ${toCharacterReleaseId} FOR UPDATE`;
       const release = await tx.characterRelease.findUnique({ where: { id: toCharacterReleaseId } });
       const content = await tx.characterContentVersion.findUnique({
         where: { id: toCharacterContentVersionId },
       });
       if (
         !release ||
+        !["published", "superseded"].includes(release.status) ||
         !content ||
         content.characterId !== characterId ||
         release.characterContentVersionId !== content.id ||

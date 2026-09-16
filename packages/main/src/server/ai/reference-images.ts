@@ -1,8 +1,5 @@
-import { Buffer } from "node:buffer";
-import { readFile } from "node:fs/promises";
 import type { Prisma } from "@prisma/client";
 import type { ImageGeneratePayload } from "@idream/shared/contracts";
-import { resolveLocalBlobPath } from "@idream/shared/storage/local-blob";
 import { prisma } from "@/server/lib/db";
 import {
   hasHydratableMediaBlobAuthority,
@@ -11,13 +8,6 @@ import {
 } from "@/server/lib/media-asset-authority";
 
 export type ImageReferenceInput = NonNullable<ImageGeneratePayload["referenceImages"]>[number];
-
-type ReferenceBlobStore = {
-  signGetUrl(input: { key: string; expiresInSeconds: number }): Promise<
-    | { ok: true; data: { url: string } }
-    | { ok: false; error: { code: string; message: string; retryable: boolean } }
-  >;
-};
 
 type GenerationReferenceRequest = {
   readonly mediaAssetId: string;
@@ -227,40 +217,6 @@ function referenceManifestItems(value: unknown) {
   });
 }
 
-export async function hydratedImageReferenceInputs(
-  images: ImageReferenceInput[] | undefined,
-  blob: ReferenceBlobStore,
-): Promise<ImageReferenceInput[]> {
-  const requested = images ?? [];
-  const hydrated = await Promise.all(
-    requested.map(async (image) => {
-      if (image.b64Json || isAbsoluteUrl(image.url)) return image;
-      if (!image.storageKey) return image;
-      const local = await localBlobReference(image);
-      if (local) return local;
-      const signed = await blob.signGetUrl({
-        key: image.storageKey,
-        expiresInSeconds: 60 * 15,
-      });
-      if (signed.ok) return { ...image, url: signed.data.url };
-      return image;
-    }),
-  );
-  const readable = hydrated.filter(
-    (image) => image.b64Json || isAbsoluteUrl(image.url),
-  );
-  if (readable.length !== requested.length) {
-    const readableIds = new Set(readable.map((image) => image.assetId));
-    const unavailableAssetIds = requested.flatMap((image) =>
-      readableIds.has(image.assetId) ? [] : [image.assetId]
-    );
-    throw new Error(
-      `Pinned image references could not be hydrated: ${unavailableAssetIds.join(", ")}`,
-    );
-  }
-  return readable;
-}
-
 function referenceRole(input: {
   assetId: string;
   sourceImageAssetId?: string;
@@ -295,19 +251,6 @@ function referenceWeight(
   if (mode === "creative") return 0.45;
   if (mode === "strict") return 0.95;
   return 0.75;
-}
-
-async function localBlobReference(image: ImageReferenceInput) {
-  if (!image.storageKey) return null;
-  try {
-    const bytes = await readFile(resolveLocalBlobPath(image.storageKey));
-    return {
-      ...image,
-      b64Json: Buffer.from(bytes).toString("base64"),
-    };
-  } catch {
-    return null;
-  }
 }
 
 function consistencyModeFromControls(
@@ -365,12 +308,3 @@ function uniqueReferenceRequests(
   });
 }
 
-function isAbsoluteUrl(value: string | undefined) {
-  if (!value) return false;
-  try {
-    const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:";
-  } catch {
-    return false;
-  }
-}

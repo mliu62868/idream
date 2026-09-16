@@ -1,12 +1,9 @@
 import {
-  VOICE_PROVIDER_REPLAY,
   voiceSceneInstructions,
-  type BlobStore,
   type ProviderResult,
   type VoiceClipPort,
   type VoiceIdentityPort,
 } from "../types";
-import { voiceArtifactKey } from "./idempotency";
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -18,7 +15,6 @@ export interface FishAudioVoiceModelConfig {
   defaultVoiceId?: string;
   maxInputChars?: number;
   timeoutMs?: number;
-  blob: BlobStore;
   fetchImpl?: FetchLike;
 }
 
@@ -39,7 +35,6 @@ type FishHealthResponse = {
 
 export class FishAudioVoiceModel implements VoiceClipPort, VoiceIdentityPort {
   readonly providerKey = "fish_audio" as const;
-  readonly providerReplay = VOICE_PROVIDER_REPLAY.fish_audio;
 
   private readonly speechEndpoint: URL;
   private readonly voicesEndpoint: URL;
@@ -50,7 +45,6 @@ export class FishAudioVoiceModel implements VoiceClipPort, VoiceIdentityPort {
   private readonly defaultVoiceId: string;
   private readonly maxInputChars: number;
   private readonly timeoutMs: number;
-  private readonly blob: BlobStore;
   private readonly fetchImpl: FetchLike;
 
   constructor(config: FishAudioVoiceModelConfig) {
@@ -64,24 +58,17 @@ export class FishAudioVoiceModel implements VoiceClipPort, VoiceIdentityPort {
       config.defaultVoiceId?.trim() || "fish-female-default";
     this.maxInputChars = Math.max(1, config.maxInputChars ?? 900);
     this.timeoutMs = Math.max(250, config.timeoutMs ?? 180_000);
-    this.blob = config.blob;
     this.fetchImpl = config.fetchImpl ?? fetch;
   }
 
   async synthesize(input: Parameters<VoiceClipPort["synthesize"]>[0]) {
     const rendered = await this.renderVoice(input);
     if (!rendered.ok) return rendered;
-    const key = voiceArtifactKey(input.idempotencyKey, ".wav");
-    const stored = await this.blob.putPrivate({
-      key,
-      body: rendered.data.body,
-      contentType: rendered.data.contentType,
-    });
-    if (!stored.ok) return stored;
     return {
       ok: true as const,
       data: {
-        key,
+        body: rendered.data.body,
+        contentType: rendered.data.contentType,
         durationMs: rendered.data.durationMs,
         sceneApplied: true,
         sceneAdapter: "fish-audio-scene-1",

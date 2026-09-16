@@ -449,6 +449,82 @@ export async function viewPlaintext(request: Request) {
   };
 }
 
+/**
+ * SPEC: 把工单上的诊断同意兑现成一条具体的明文查看授权。
+ * INVARIANT: 三条边界缺一不可 —— 目标属于工单提交者本人、用户已勾选
+ *   diagnosticConsent、授权有字段范围与短时限。任何一条不成立就拒绝发放，
+ *   而不是发一条"宽一点"的授权。
+ */
+const SUPPORT_CONSENT_GRANT_TTL_MS = 24 * 60 * 60 * 1_000;
+
+export async function grantSupportConsent(request: Request, ticketId: string) {
+  const actor = await actorWithPermission(request, "support.plaintext.view");
+  const body = await jsonBody(
+    request,
+    "POST /api/v2/admin/support/requests/:id/consent-grants",
+  );
+  const ticket = await prisma.supportRequest.findUnique({ where: { ticketId } });
+  if (!ticket) throw Errors.notFound("Support request not found");
+  // 边界②：用户没同意就没有这条路。让客服去请用户同意，而不是给他一个更宽的开关。
+  if (!ticket.diagnosticConsent) {
+    throw Errors.forbidden(
+      "This requester has not consented to diagnostics; ask them to allow it on the ticket before viewing plaintext",
+      { ticketId, reason: "diagnostic_consent_missing" },
+    );
+  }
+  const target = await plaintextTarget(body.targetType, body.targetId);
+  if (!target) throw Errors.notFound("Plaintext target not found");
+  // 边界①：一张工单只能解锁**这个提交者自己**的内容。否则任何一张工单都会变成
+  //   看任意用户私密内容的万能钥匙。
+  if (target.ownerId !== ticket.userId) {
+    throw Errors.forbidden(
+      "The target belongs to a different account than the ticket requester",
+      { ticketId, reason: "target_owner_mismatch" },
+    );
+  }
+  // 边界③：只授权这次真正要看的字段，且 24 小时后自动失效。
+  const fields = [...new Set(body.fields)].filter((field) => field in target.plaintext);
+  if (fields.length === 0) {
+    throw Errors.badRequest("None of the requested fields exist on this target", {
+      available: Object.keys(target.plaintext),
+    });
+  }
+  const expiresAt = new Date(Date.now() + SUPPORT_CONSENT_GRANT_TTL_MS);
+  const grant = await prisma.supportConsentGrant.create({
+    data: {
+      userId: ticket.userId,
+      ticketId,
+      targetType: body.targetType,
+      targetId: body.targetId,
+      scope: toInputJson({ fields }),
+      expiresAt,
+      createdById: actor.id,
+    },
+  });
+  await prisma.adminAuditLog.create({ data: {
+    actorId: actor.id,
+    actorRole: actor.role,
+    action: "support.consent.grant",
+    targetType: body.targetType,
+    targetId: body.targetId,
+    reason: body.reason,
+    after: toInputJson({ ticketId, fields, expiresAt: expiresAt.toISOString() }),
+    requestId: request.headers.get("x-request-id")?.trim() || randomUUID(),
+  } });
+  return {
+    grant: {
+      id: grant.id,
+      ticketId: grant.ticketId,
+      userId: grant.userId,
+      targetType: body.targetType,
+      targetId: grant.targetId,
+      fields,
+      expiresAt: expiresAt.toISOString(),
+      createdAt: grant.createdAt.toISOString(),
+    },
+  };
+}
+
 async function plaintextTarget(
   targetType: "generation_job" | "media",
   targetId: string,

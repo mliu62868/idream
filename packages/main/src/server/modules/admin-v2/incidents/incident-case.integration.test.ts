@@ -557,13 +557,23 @@ describe("Incident and P0 Review Case authority loops", () => {
         caseId,
         actor,
         expectedVersion: 2,
-        decision: "actioned",
-        summary: "Applied the reviewed downstream action",
+        // INVARIANT: 会改动线上内容的决定（actioned / overturned）只能出自 moderation 的复合命令；
+        //            Case 级端点不调用 applyModerationAction，放行等于记一条「已处理」而内容还在线上。
+        //            这条用例测的是工单闭环本身，用一个不带内容效果的决定即可。
+        decision: "no_violation",
+        summary: "Reviewed both reports; neither violates policy",
         evidenceRefs: [evidence[0]!.id, evidence[1]!.id],
         requestId: `decision-${suffix}`,
       }),
     );
     expect(decided).toMatchObject({ status: "in_progress", verificationState: "pending", version: 3 });
+    // Case 级决定必须把它聚合的两条来源举报一起推到终态，否则它们会继续占着审核队列。
+    expect(
+      await prisma.contentReport.findMany({
+        where: { id: { in: [reportA, reportB] } },
+        select: { status: true },
+      }),
+    ).toEqual([{ status: "no_violation" }, { status: "no_violation" }]);
     await expect(verifyReviewCase({
       caseId,
       actor,

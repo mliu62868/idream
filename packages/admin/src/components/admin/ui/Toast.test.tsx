@@ -179,7 +179,8 @@ function FailureFixture() {
     <button
       onClick={() =>
         failureToast(
-          new AdminV2RequestError("Character version changed", 409, "conflict", undefined, "req-9"),
+          // 角色写入带 entityVersion，版本竞争成立。
+          new AdminV2RequestError("Character version changed", 409, "conflict", { blocker: "version_mismatch" }, "req-9"),
         )
       }
       type="button"

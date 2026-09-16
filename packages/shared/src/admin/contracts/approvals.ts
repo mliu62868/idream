@@ -38,6 +38,12 @@ export const approvalListResponseSchema = z
   .object({
     items: z.array(approvalRequestSchema),
     pageInfo: adminPageInfoSchema,
+    // SPEC: 双人复核由 feature flag `dual_approval_enforced` 控制，关闭时
+    //   enforceApproval() 直接返回，任何高风险写入都不会产生审批请求。
+    // INTENT: 队列空有两种完全不同的含义 —— "没有待办" 和 "这个机制根本没启用"。
+    //   前者运营可以走开，后者是配置事实。不把这一位送到前端，空态就只能二选一
+    //   地猜，而它此前猜的是前者（文案写 "query returned no work"）。
+    enforcementEnabled: z.boolean(),
   })
   .strict();
 

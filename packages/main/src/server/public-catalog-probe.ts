@@ -125,7 +125,6 @@ const characterInclude = {
     select: {
       likesCount: true,
       chatsCount: true,
-      viewsCount: true,
     },
   },
 } as const satisfies Prisma.CharacterInclude;

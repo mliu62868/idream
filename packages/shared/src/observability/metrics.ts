@@ -177,18 +177,3 @@ export function metricSnapshot(): MetricSnapshot {
     };
   });
 }
-
-export function histogramQuantileUpperBound(
-  name: string,
-  labels: MetricLabels,
-  quantile: number,
-): number | null {
-  if (!(quantile > 0 && quantile <= 1)) throw new Error("Histogram quantile must be in (0, 1]");
-  const metric = metrics.get(name);
-  if (!metric || metric.type !== "histogram") return null;
-  const series = metric.series.get(seriesKey(labels));
-  if (!series || series.count === 0) return null;
-  const target = Math.ceil(series.count * quantile);
-  const index = series.buckets.findIndex((count) => count >= target);
-  return index >= 0 ? metric.boundaries[index] : Number.POSITIVE_INFINITY;
-}

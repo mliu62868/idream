@@ -18,7 +18,7 @@ import {
   OPERATIONAL_METRIC_DATA_SCOPE,
   operationalGenerationJobWhere,
 } from "@/server/modules/metric-data-scope";
-import { dimensionsForImageOrientation } from "@/server/modules/ourdream/generation-dimensions";
+import { dimensionsForImageOrientation } from "@idream/shared/media/image-orientation";
 import {
   dispatchGenerationAttemptOutbox,
   reserveInitialGenerationAttempt,

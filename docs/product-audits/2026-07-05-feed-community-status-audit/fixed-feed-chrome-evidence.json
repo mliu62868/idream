@@ -1,8 +1,0 @@
-{
-  "statusAriaLive": "polite",
-  "statusRole": "status",
-  "statusTag": "P",
-  "statusTestId": "feed-status",
-  "statusText": "Report submitted.",
-  "url": "http://localhost:3240/feed"
-}

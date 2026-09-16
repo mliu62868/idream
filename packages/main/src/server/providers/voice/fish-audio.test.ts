@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_FISH_AUDIO_DELIVERY } from "@idream/shared/contracts";
-import type { BlobStore } from "../types";
 import { FishAudioVoiceModel } from "./fish-audio";
 
 describe("FishAudioVoiceModel", () => {
@@ -9,7 +8,6 @@ describe("FishAudioVoiceModel", () => {
       baseUrl: "http://127.0.0.1:8062/v1",
       model: "fish-audio-s2-pro-8bit",
       language: "auto",
-      blob: stubBlobStore(),
       fetchImpl: async () =>
         Response.json({
           status: "healthy",
@@ -38,7 +36,6 @@ describe("FishAudioVoiceModel", () => {
       baseUrl: "http://127.0.0.1:8062/v1",
       model: "fish-audio-s2-pro-8bit",
       language: "auto",
-      blob: stubBlobStore(),
       fetchImpl: async () =>
         Response.json({
           status: "healthy",
@@ -67,7 +64,6 @@ describe("FishAudioVoiceModel", () => {
       model: "fish-audio-s2-pro-8bit",
       language: "auto",
       defaultVoiceId: "fish-female-default",
-      blob: stubBlobStore(),
       fetchImpl: fetchMock,
     });
 
@@ -92,20 +88,11 @@ describe("FishAudioVoiceModel", () => {
     });
   });
 
-  it("reuses one blob key when the same synthesis attempt is replayed", async () => {
-    const storedKeys: string[] = [];
-    const blob: BlobStore = {
-      ...stubBlobStore(),
-      async putPrivate(input) {
-        storedKeys.push(input.key);
-        return { ok: true, data: { key: input.key, size: input.body.byteLength } };
-      },
-    };
+  it("returns identical bytes when the same synthesis attempt is replayed", async () => {
     const voice = new FishAudioVoiceModel({
       baseUrl: "http://127.0.0.1:8062/v1",
       model: "fish-audio-s2-pro-8bit",
       language: "auto",
-      blob,
       fetchImpl: async () =>
         new Response(wavBytes(800), {
           headers: { "content-type": "audio/wav" },
@@ -121,25 +108,13 @@ describe("FishAudioVoiceModel", () => {
     const first = await voice.synthesize(input);
     const replay = await voice.synthesize(input);
 
+    // The adapter no longer names or stores the artifact, so "one key per attempt"
+    // is now a property of voiceArtifactKey (see idempotency.test.ts). What this
+    // adapter still owes the caller is a byte-identical replay.
     expect(first).toEqual(replay);
-    expect(storedKeys).toHaveLength(2);
-    expect(new Set(storedKeys).size).toBe(1);
+    expect(first).toMatchObject({ ok: true, data: { contentType: "audio/wav" } });
   });
 });
-
-function stubBlobStore(): BlobStore {
-  return {
-    async putPrivate(input) {
-      return { ok: true, data: { key: input.key, size: input.body.byteLength } };
-    },
-    async signGetUrl() {
-      return { ok: true, data: { url: "https://cdn.example.com/voice.wav" } };
-    },
-    async delete() {
-      return { ok: true, data: { deleted: true } };
-    },
-  };
-}
 
 function wavBytes(durationMs: number) {
   const sampleRate = 8_000;

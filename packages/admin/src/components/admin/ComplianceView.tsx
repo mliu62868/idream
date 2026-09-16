@@ -10,6 +10,7 @@ import { useAdminI18n } from "@/components/admin/i18n";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
+import { formatDateTime } from "@/components/admin/ui/format";
 import { StatusPill } from "@/components/admin/ui/StatusPill";
 import { WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
 import {
@@ -35,6 +36,20 @@ type AgeRow = {
   createdAt: string;
 };
 
+type DeletionRow = {
+  id: string;
+  userId: string | null;
+  waitingOn: string;
+  pastDue: boolean;
+  graceEndsAt: string;
+  blobExpectedCount: number;
+  blobDeletedCount: number;
+  blockedReason: string | null;
+  chatRequestDelivery: { status: string; attempts: number } | null;
+};
+
+type DeletionPayload = { items: DeletionRow[]; pastDueCount: number };
+
 type ConfirmDraft = {
   reason: string;
   confirmation: string;
@@ -49,13 +64,33 @@ export function ComplianceView() {
   return (
     <div className="space-y-6">
       <DsarSection />
+      <ErasureQueueSection />
       <AgeVerificationSection />
     </div>
   );
 }
 
+// SPEC: 「在等谁」的四个取值各自对应一句运营能据以行动的话。
+// INTENT: status 列分不开「宽限期内的正常等待」和「宽限期已过还没擦」——它俩都是
+//         `awaiting_chat`。派生值分开之后，这张表才回答得了唯一重要的那个问题：
+//         这条要不要现在管。
+export const WAITING_ON_COPY: Record<string, string> = {
+  grace_period: "Inside the grace period — erasure starts on its own when it ends",
+  chat_erasure: "Grace period is over; waiting for Chat to confirm its erasure",
+  blob_deletion: "Deleting the stored objects this account owned",
+  main_purge: "Waiting for the final purge of the Main database",
+  nothing: "Erased — nothing is owed",
+};
+
+export const BLOCKER_COPY: Record<string, string> = {
+  account_deletion_active_legal_hold:
+    "Paused by an active legal hold — release the hold to let the purge continue",
+  account_deletion_generation_authority_pending:
+    "A generation request of this account has not reached a terminal state — settle it in Jobs",
+};
+
 function DsarSection() {
-  const { t } = useAdminI18n();
+  const { t, locale } = useAdminI18n();
   const [userId, setUserId] = useState("");
   const [exported, setExported] = useState<unknown>(null);
   const [busy, setBusy] = useState<"export" | "erase" | null>(null);
@@ -100,7 +135,11 @@ function DsarSection() {
     setErr(null);
     clearFeedback();
     try {
-      const data = await apiWrite<{ erased: boolean; idempotent?: boolean }>(
+      const data = await apiWrite<{
+        erased: boolean;
+        idempotent?: boolean;
+        deletion: { graceEndsAt: string };
+      }>(
         `/api/v2/admin/compliance/users/${encodeURIComponent(userId.trim())}/erase`,
         "POST",
         {
@@ -109,10 +148,17 @@ function DsarSection() {
         },
       );
       setEraseDraft(null);
+      // SPEC: 成功文案必须说出「什么时候真的会被删」。
+      // INTENT: 旧文案说完成会出现在审计日志里——那是假的：完成路径一行审计都不写，
+      //         而请求那行审计的 targetId 在完成时会被改写成不可逆的 subject ref，
+      //         按用户 ID 也再查不到。权威在响应里给了准确的到期时间，照它说。
       reportSuccess(
         data.idempotent
-          ? t("{id} was already erased — nothing changed.", { id: userId.trim() })
-          : t("Erasure requested for {id}. The cross-service flow reports completion in the audit log.", { id: userId.trim() }),
+          ? t("{id} already has an erasure request — nothing changed.", { id: userId.trim() })
+          : t("Access for {id} is revoked now. Erasure itself starts after {due}; track it in the queue below.", {
+            id: userId.trim(),
+            due: formatDateTime(data.deletion.graceEndsAt, locale),
+          }),
       );
     } catch (error) {
       setErr({ message: requestErrorMessage(error, t), cause: error, retry: () => void erase() });
@@ -125,7 +171,7 @@ function DsarSection() {
     <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
       <h2 className="text-sm font-semibold">{t("DSAR — export / erase")}</h2>
       <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-        {t("The export is redacted structured data with no raw prompt or chat text. Erasure runs the P0-F cross-service flow and needs confirmation.")}
+        {t("The export is redacted structured data with no raw prompt or chat text. Erasure revokes access immediately, then runs across Chat and storage after a grace period — the queue below is where it can be followed.")}
       </p>
       <div className="mt-3 grid gap-3 md:grid-cols-[1fr_auto_auto]">
         <input
@@ -224,6 +270,142 @@ function DsarSection() {
       ) : null}
     </section>
   );
+}
+
+function ErasureQueueSection() {
+  const { t, locale } = useAdminI18n();
+  const [scope, setScope] = useState<"open" | "all">("open");
+  const [authority, setAuthority] = useState(() => createAuthorityState<DeletionPayload>());
+  const requestGate = useRef(createLatestRequestGate());
+  const initialScope = useRef(scope);
+  const scopeFilterId = useId();
+
+  const load = useCallback(async (nextScope: string) => {
+    const queryKey = `scope=${encodeURIComponent(nextScope)}`;
+    const request = requestGate.current.begin();
+    setAuthority((current) => authorityRequestStarted(current, queryKey));
+    try {
+      const data = await apiGet<DeletionPayload>(
+        `/api/v2/admin/compliance/account-deletions?${queryKey}`,
+      );
+      if (!request.isCurrent()) return;
+      setAuthority(authorityRequestSucceeded(queryKey, data));
+    } catch (err) {
+      if (!request.isCurrent()) return;
+      setAuthority((current) => authorityRequestFailed(current, queryKey, requestErrorMessage(err, t), err));
+    }
+  }, [t]);
+
+  useEffect(() => {
+    const gate = requestGate.current;
+    const timer = window.setTimeout(() => void load(initialScope.current), 0);
+    return () => {
+      gate.invalidate();
+      window.clearTimeout(timer);
+    };
+  }, [load]);
+
+  const payload = authority.data;
+  const rows: DataTableRow[] = (payload?.items ?? []).map((row) => ({
+    id: row.id,
+    cells: [
+      <span className="font-mono text-xs" key="user">{row.userId ?? t("Purged")}</span>,
+      <span key="stage" title={t(WAITING_ON_COPY[row.waitingOn] ?? row.waitingOn)}>
+        <StatusPill status={row.waitingOn} />
+      </span>,
+      <span className={row.pastDue ? "text-[var(--ad-red-text)]" : undefined} key="due">
+        {formatDateTime(row.graceEndsAt, locale)}
+      </span>,
+      row.blobExpectedCount > 0 ? `${row.blobDeletedCount}/${row.blobExpectedCount}` : "—",
+      <span className="text-xs" key="blocked">{deletionRowNote(row, t)}</span>,
+    ],
+  }));
+
+  return (
+    <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--ad-border)] p-3">
+        <div>
+          <h2 className="text-sm font-semibold">{t("Erasure queue")}</h2>
+          {/* INVARIANT: 没读到数之前不许说「没有超期的」——那是断言，不是占位。 */}
+          {payload ? (
+            <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
+              {payload.pastDueCount > 0
+                ? t("{count} past their grace period and not erased yet.", { count: String(payload.pastDueCount) })
+                : t("Nothing is past its grace period.")}
+            </p>
+          ) : null}
+        </div>
+        <div className="flex items-center gap-2">
+          <label className="text-xs text-[var(--ad-text-muted)]" htmlFor={scopeFilterId}>
+            {t("Show")}
+          </label>
+          <select
+            className="rounded-md h-9 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-2 text-sm outline-none focus:border-[var(--ad-ink)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]"
+            id={scopeFilterId}
+            onChange={(e) => {
+              const next = e.target.value === "all" ? "all" : "open";
+              setScope(next);
+              void load(next);
+            }}
+            value={scope}
+          >
+            <option value="open">{t("In flight")}</option>
+            <option value="all">{t("Including erased")}</option>
+          </select>
+          <button
+            className="rounded-md inline-flex h-9 items-center gap-2 border border-[var(--ad-border)] px-3 text-sm disabled:opacity-50"
+            disabled={authority.loading}
+            onClick={() => void load(scope)}
+            type="button"
+          >
+            {authority.loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+            {t("Refresh")}
+          </button>
+        </div>
+      </div>
+      {authority.error ? (
+        <div className="p-3">
+          <AuthorityRequestError
+            cause={authority.cause}
+            message={authority.error}
+            onRetry={() => void load(scope)}
+            snapshotAt={authority.data ? authority.refreshedAt : null}
+          />
+        </div>
+      ) : null}
+      {authority.error && authority.data === null ? null : (
+        <div className="p-3">
+          <DataTable
+            caption="Account erasure requests"
+            empty={<EmptyState title={t("No erasure requests in flight.")} />}
+            headers={[
+              { label: t("User"), width: "20rem", truncate: true },
+              t("Waiting on"),
+              t("Grace ends"),
+              t("Objects deleted"),
+              t("Note"),
+            ]}
+            loading={authority.loading}
+            minimumWidthClassName="min-w-[860px]"
+            rows={rows}
+          />
+        </div>
+      )}
+    </section>
+  );
+}
+
+// SPEC: 每行右侧只说一句「现在该知道什么」。
+// INTENT: 优先级是 blocker > 到期未投递 > 阶段解释。第二条单独存在，是因为投递器按
+//         eventType allowlist 取件：一条到期却 attempts 仍为 0 的行，意味着根本没人取过它
+//         —— 这跟「取过但失败」是两种完全不同的故障，混成一句话运营就分不出来了。
+function deletionRowNote(row: DeletionRow, t: (key: string, values?: Record<string, string>) => string) {
+  if (row.blockedReason) return t(BLOCKER_COPY[row.blockedReason] ?? row.blockedReason);
+  const delivery = row.chatRequestDelivery;
+  if (row.waitingOn === "chat_erasure" && delivery && delivery.status === "pending" && delivery.attempts === 0) {
+    return t("Due, but the Chat erasure request has never been picked up — check the event consumer");
+  }
+  return t(WAITING_ON_COPY[row.waitingOn] ?? row.waitingOn);
 }
 
 function AgeVerificationSection() {

@@ -58,6 +58,7 @@ export async function adminDashboard(request: Request) {
     openReports,
     activeSubscriptions,
     flags,
+    featureFlagCount,
   ] = await Promise.all([
     prisma.user.count({
       where: customerUserWhere({ status: "active", deletedAt: null }),
@@ -86,6 +87,7 @@ export async function adminDashboard(request: Request) {
       where: customerSubscriptionWhere({ status: "active" }),
     }),
     prisma.featureFlag.findMany({ orderBy: { key: "asc" }, take: 8 }),
+    prisma.featureFlag.count(),
   ]);
 
   const totalFinished = completedJobs + failedJobs + blockedJobs;
@@ -106,6 +108,7 @@ export async function adminDashboard(request: Request) {
       billing: { activeSubscriptions },
     },
     featureFlags: flags.map(featureFlagDto),
+    featureFlagCount,
   };
 }
 

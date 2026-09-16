@@ -6,9 +6,9 @@ import {
 import { prisma } from "@/server/lib/db";
 import { providers } from "@/server/providers";
 import {
-  hydratedImageReferenceInputs,
   imageReferenceInputsForGenerationJob,
 } from "@/server/ai/reference-images";
+import { hydratedImageReferenceInputs } from "@idream/shared/media/image-references";
 import { dispatchV1 } from "@/server/modules/ourdream/service";
 import { compileUserCharacterContent } from "@/server/modules/ourdream/character-soul";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
@@ -1018,7 +1018,6 @@ describe("tags, likes, duplicate", () => {
     expect(duplicate.stats).toMatchObject({
       likesCount: 0,
       chatsCount: 0,
-      viewsCount: 0,
     });
     await expect(
       prisma.character.findUniqueOrThrow({ where: { id: CHAR } }),

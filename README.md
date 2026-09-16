@@ -177,7 +177,6 @@ bun run --silent launch:secrets
 Run launch probes:
 
 ```bash
-bun run launch:probe:image:local
 bun run launch:probe:web-surface -- --report .tmp/launch-web-surface-probe.json
 bun run launch:probe:product-config -- --report .tmp/launch-product-config-probe.json
 bun run launch:probe:chat-service -- --report .tmp/launch-chat-service-probe.json
@@ -195,7 +194,7 @@ excluded from launch readiness.
 Run the final direct gate:
 
 ```bash
-bun run check:launch:direct -- --launch-env-file .tmp/production-launch.env
+bun run check:launch -- --launch-env-file .tmp/production-launch.env
 ```
 
 `LAUNCH_SCOPE=full` is the default. A release that explicitly excludes Billing

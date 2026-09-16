@@ -1,5 +1,6 @@
 "use client";
 
+import { characterCommandMessage, renderCharacterCommandMessage, type CharacterCommandMessage } from "./character-command-copy";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import Link from "next/link";
@@ -36,11 +37,11 @@ function commandSubmissionMessage(
   action: string,
 ) {
   if (outcome.kind === "attached") {
-    return `${outcome.command.action} is already active. This workspace attached to that command instead of accepting another one.`;
+    return characterCommandMessage("{action} is already active. This workspace attached to that command instead of accepting another one.", { action: outcome.command.action });
   }
   return outcome.cause instanceof Error
     ? outcome.cause.message
-    : `${action} acceptance is unknown. The same command will be replayed safely.`;
+    : characterCommandMessage("{action} acceptance is unknown. The same command will be replayed safely.", { action: action });
 }
 
 type CharacterReleaseItem = CharacterWorkspaceDetail["releases"][number];
@@ -276,7 +277,7 @@ export function ReleasePanel({
   const [selectedRollbackSourceId, setSelectedRollbackSourceId] = useState("");
   const [releaseConfirmed, setReleaseConfirmed] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<CharacterCommandMessage | null>(null);
   const [authorityBlockers, setAuthorityBlockers] = useState<string[]>([]);
 
   const submitCommand = async (
@@ -287,7 +288,7 @@ export function ReleasePanel({
     if (writesLocked) return;
     if (
       !journal.beginSubmission(
-        `Submitting Release ${kind}. Character writes stay locked until command acceptance is known.`,
+        characterCommandMessage("Submitting {action}. Character writes stay locked until command acceptance is known.", { action: `Release ${kind}` }),
       )
     ) {
       return;
@@ -375,7 +376,7 @@ export function ReleasePanel({
     setError(null);
     if (
       !journal.beginSubmission(
-        `Submitting Serving ${action}. Character writes stay locked until command acceptance is known.`,
+        characterCommandMessage("Submitting {action}. Character writes stay locked until command acceptance is known.", { action: `Serving ${action}` }),
       )
     ) {
       setBusy(null);
@@ -571,7 +572,7 @@ export function ReleasePanel({
 
         {error ? (
           <p className="mt-3 text-xs text-[var(--ad-red-text)]" role="alert">
-            {t(error)}
+            {renderCharacterCommandMessage(error, t)}
           </p>
         ) : null}
 

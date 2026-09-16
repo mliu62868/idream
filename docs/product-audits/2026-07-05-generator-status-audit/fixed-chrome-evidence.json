@@ -1,8 +1,0 @@
-{
-  "statusAriaLive": "polite",
-  "statusRole": "status",
-  "statusTag": "P",
-  "statusTestId": "generator-status",
-  "statusText": "Generation queued.",
-  "url": "http://localhost:3240/generate?characterId=melissa-burke"
-}

@@ -161,7 +161,7 @@ SEO/CMS、Feed/Community 管理、Analyst 高级导出、双人审批和其他�
 | `id` | 稳定 profile id，例如 `profile_image_default_v1` |
 | `label` | 前台展示名 |
 | `mode` | `image` / `video` |
-| `runner` | `pipeline` / `sd_cpp` / `mlx` / `comfyui` / `external` |
+| `runner` | `comfyui`（其余值已于 2026-08-03 / 2026-09-12 退役） |
 | `pipelineModel` | Pipeline 内部模型名或别名 |
 | `sourceModelPath` / `convertedModelPath` | 工程侧 seed/config 或隐藏诊断写入的本地模型源文件与转换产物路径；普通运营不手动维护 |
 | `modelFormat` | `safetensors` / `gguf` / `diffusers` / `external` |
@@ -169,7 +169,6 @@ SEO/CMS、Feed/Community 管理、Analyst 高级导出、双人审批和其他�
 | `defaultWidth` / `defaultHeight` | 默认尺寸 |
 | `allowedOrientations` | 前台可选比例 |
 | `steps` / `sampler` / `scheduler` / `cfgScale` | 推理参数 |
-| `negativeTemplateId` | 默认 negative prompt 模板 |
 | `costMultiplier` | 价格乘数 |
 | `requiredEntitlement` | 例如 `premium_models` |
 | `maxCount` | 单次生成数量上限 |

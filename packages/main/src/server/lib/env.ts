@@ -5,6 +5,7 @@ import { z } from "zod";
 import {
   DEFAULT_APP_ENV,
   DEFAULT_BLOB_REGION,
+  DEFAULT_GEN_VIDEO_TIMEOUT_MS,
   crossServiceEnvShape,
   launchScopeSchema,
 } from "@idream/shared/env";
@@ -48,7 +49,7 @@ const EnvSchema = z.object({
   // Tests with no environment remain isolated on mock. Versioned local and
   // production env templates select Pocket TTS as the English product authority.
   VOICE_PROVIDER: z
-    .enum(["mock", "pipeline", "pocket-tts", "fish-audio"])
+    .enum(["mock", "pocket-tts", "fish-audio"])
     .default("mock"),
   // Character voice cloning can move independently from the system/default
   // speech route. Once activated, the persisted CharacterVoiceProfile provider
@@ -96,12 +97,19 @@ const EnvSchema = z.object({
   PIPELINE_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
   PIPELINE_VOICE_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
   JOB_STALE_TIMEOUT_MS: z.coerce.number().int().positive().default(10 * 60 * 1_000),
-  GEN_VIDEO_TIMEOUT_MS: z.coerce.number().int().positive().default(30 * 60 * 1_000),
+  GEN_VIDEO_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(DEFAULT_GEN_VIDEO_TIMEOUT_MS),
+  // Must stay strictly greater than GEN_VIDEO_TIMEOUT_MS; superRefine below
+  // enforces it. Derived so raising the execution budget cannot silently make
+  // Main declare still-running attempts stale.
   VIDEO_JOB_STALE_TIMEOUT_MS: z.coerce
     .number()
     .int()
     .positive()
-    .default(35 * 60 * 1_000),
+    .default(DEFAULT_GEN_VIDEO_TIMEOUT_MS + 5 * 60 * 1_000),
   POCKET_TTS_API_URL: z.string().url().default("http://127.0.0.1:8063/v1"),
   POCKET_TTS_API_TOKEN: z.string().optional(),
   POCKET_TTS_MODEL: z.string().min(1).default("pocket-tts"),

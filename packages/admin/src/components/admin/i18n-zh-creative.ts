@@ -5,6 +5,14 @@
 // TRAP: 本域约 17 个键是后端下发的短语（packages/main/src/server/modules/admin-v2/creative/**、
 // packages/shared/src/admin/contracts/creative.ts），经 t(后端字符串) 动态取值，静态扫描看不见。
 export const adminZhCreative: Record<string, string> = {
+  "Retry command succeeded, but the latest projection could not be refreshed{detail}. Refresh the projection before starting another retry.": "重试命令已成功，但最新投影没能刷新{detail}。开始下一次重试前请先刷新投影。",
+  "Retry command {commandId} is still pending, but its latest status could not be loaded{detail}.": "重试命令 {commandId} 仍在进行中，但没能读到它的最新状态{detail}。",
+  "The retry command is verified, but the latest projection still could not be refreshed{detail}.": "重试命令已完成校验，但最新投影仍然没能刷新{detail}。",
+  "{action} was committed, but the latest projection could not be refreshed{detail}. Retry the same command safely or refresh the workspace.": "{action}已提交成功，但最新投影没能刷新{detail}。可以安全地重试同一条命令，或刷新本工作台。",
+  "Placement staging": "投放预备",
+  "Placement activation": "投放上线",
+  "Placement withdrawal": "投放撤下",
+  "Incident attachment": "事故关联",
   "Generation outcome needs confirmation": "生成结果待确认",
   "Needs confirmation": "待确认",
   "Retry unavailable": "暂不可重试",
@@ -244,6 +252,11 @@ export const adminZhCreative: Record<string, string> = {
     "保存只要求名称与描述；完成视觉和图片检查前仍无法发布。",
   "Open Character Asset Studio": "打开角色图片工作台",
   "Open Creative Run": "打开创意生产批次",
+  "Open Creative Runs": "打开创意生产批次列表",
+  // Explore 挂牌资格：权威随行下发原因码，这里是运营看的话术。
+  "This Character is not live, so its Explore listing cannot change here.": "该角色未上线，这里改不了它的 Explore 挂牌。",
+  "An official Character leaves the catalog through Pause or Retire on its release, not by going private here.": "官方角色要离开公开目录，请在发布版本页用暂停或停用，而不是在这里设为私密。",
+  "Open this Character's release": "打开该角色的发布版本",
   "Open Creative Run review": "打开创意批次审核",
   "Open an image to review it. Creating a new batch never changes the live character automatically.":
     "打开图片即可进入审核；创建新批次永远不会自动更改线上角色。",

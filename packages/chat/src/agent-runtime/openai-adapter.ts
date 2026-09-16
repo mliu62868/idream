@@ -145,19 +145,27 @@ function requiredToolArgumentsJson(
   }
 }
 
+/**
+ * SPEC: 必需工具这一轮，只放行该工具的块，外加模型在同一步说的台词。
+ *
+ * INTENT: 台词曾经和其它块一起被滤掉，于是「今晚做什么？顺便发张照片」只会换来一句
+ *   系统回执，角色在整段等待里不在场。它写在工具结果出现之前，不可能重新解释一个已被
+ *   接受的动作；运行时再按确定性判据校验它（语言、流程泄露、交付声明），不过就丢弃。
+ *   这条只作用于原生工具调用成功的路径；JSON 兼容路径整条消息就是载荷，不走这里。
+ */
 function requiredToolOnlyChunks(
   chunks: readonly StreamChunk[],
   name: CompanionToolCall["name"],
 ): StreamChunk[] {
-  const toolIndexes = new Set(chunks.flatMap((chunk) =>
+  const keptIndexes = new Set(chunks.flatMap((chunk) =>
     chunk.type === "block-end"
-      && chunk.block.type === "tool-call"
-      && chunk.block.name === name
+      && ((chunk.block.type === "tool-call" && chunk.block.name === name)
+        || chunk.block.type === "text")
       ? [chunk.index]
       : []));
   return chunks.filter((chunk) => {
     if (chunk.type === "usage" || chunk.type === "finish") return true;
-    return toolIndexes.has(chunk.index);
+    return keptIndexes.has(chunk.index);
   });
 }
 

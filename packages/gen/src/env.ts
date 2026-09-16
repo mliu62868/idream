@@ -4,6 +4,10 @@
 // INTENT: Lazy getters so importing this module never throws; tests can run
 // without any env set. Config comes from packages/gen/.env (see .env.example),
 // loaded here non-overriding so injected vars still win.
+import {
+  DEFAULT_GEN_IMAGE_TIMEOUT_MS,
+  DEFAULT_GEN_VIDEO_TIMEOUT_MS,
+} from "@idream/shared/env";
 import { resolveLocalBlobRoot } from "@idream/shared/storage/local-blob";
 import {
   BLOB_ACCESS_KEY_ID_ALIASES,
@@ -175,11 +179,11 @@ export const env = {
   },
   /** Workflow-native image execution budget; identity edits on MPS can exceed five minutes. */
   get IMAGE_TIMEOUT_MS(): number {
-    return positiveIntegerEnv("GEN_IMAGE_TIMEOUT_MS", 600_000);
+    return positiveIntegerEnv("GEN_IMAGE_TIMEOUT_MS", DEFAULT_GEN_IMAGE_TIMEOUT_MS);
   },
   /** Long-running video timeout; RedGraft LTX 2.5 and H3 MPS runs need a larger budget. */
   get VIDEO_TIMEOUT_MS(): number {
-    return positiveIntegerEnv("GEN_VIDEO_TIMEOUT_MS", 1_800_000);
+    return positiveIntegerEnv("GEN_VIDEO_TIMEOUT_MS", DEFAULT_GEN_VIDEO_TIMEOUT_MS);
   },
   /**
    * Shared explicit override. Prefer the modality-specific authorities below.

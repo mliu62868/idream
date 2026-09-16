@@ -1,7 +1,6 @@
 import { randomBytes } from "node:crypto";
 export { hashPassword, verifyPassword } from "./password";
 import type { User } from "@prisma/client";
-import { auth } from "@/server/lib/better-auth";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "../errors";
@@ -126,9 +125,7 @@ export async function getAuthCtx(request?: Request): Promise<AuthCtx> {
     testUser || adminCookieUser
       ? null
       : await userFromCustomSession(cookies.get(SESSION_COOKIE));
-  const betterAuthUser =
-    testUser || adminCookieUser || cookieUser ? null : await userFromBetterAuth(request);
-  const user = testUser ?? adminCookieUser ?? cookieUser ?? betterAuthUser;
+  const user = testUser ?? adminCookieUser ?? cookieUser;
 
   const acceptedInDb = await hasAgeGateAcceptance({
     userId: user?.id,
@@ -169,14 +166,19 @@ export function requireAgeGate(ctx: AuthCtx) {
   }
 }
 
+// SPEC: 被年龄验证拦下时必须同时告诉用户去哪里解开。
+// INTENT: 这条 403 会冒到生成、聊天、Comic、语音等约 20 个入口的错误位；只说
+//   "Age verification required" 等于把用户留在死路上——自助入口在 Profile
+//   (AccountAgeVerification)，文案直接带路。
 export function requireAgeVerified(ctx: AuthCtx) {
   if (
     ctx.ageVerificationStatus !== "not_required" &&
     ctx.ageVerificationStatus !== "verified"
   ) {
-    throw Errors.forbidden("Age verification required", {
-      status: ctx.ageVerificationStatus,
-    });
+    throw Errors.forbidden(
+      "Age verification required. Start or retry verification from your profile.",
+      { status: ctx.ageVerificationStatus, reason: "age_verification_required" },
+    );
   }
 }
 
@@ -223,19 +225,6 @@ async function userFromCustomSession(token?: string) {
   return session.user;
 }
 
-async function userFromBetterAuth(request?: Request) {
-  if (!request) return null;
-
-  try {
-    const session = await auth.api.getSession({
-      headers: request.headers,
-    });
-    const userId = session?.user?.id;
-    return userId ? findActiveUser(userId) : null;
-  } catch {
-    return null;
-  }
-}
 
 function roleFromUser(user: User | null): ActorRole | undefined {
   if (user && isActorRole(user.role)) return user.role;

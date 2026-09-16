@@ -1,5 +1,6 @@
 import Link from "next/link";
 import {
+  BookOpen,
   Bot,
   CircleHelp,
   Compass,
@@ -17,6 +18,7 @@ import {
 import { primaryNavItems, secondaryNavItems } from "@/lib/ourdream-data";
 import { cn } from "@/lib/utils";
 
+// INVARIANT: 与 primaryNavItems 逐项对齐，改一边必须改另一边。
 const primaryIcons = [
   PlusSquare,
   Compass,
@@ -24,6 +26,7 @@ const primaryIcons = [
   Sparkles,
   Bot,
   Newspaper,
+  BookOpen,
   UsersRound,
 ];
 

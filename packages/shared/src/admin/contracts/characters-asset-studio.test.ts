@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   characterDraftImageSelectionRequestSchema,
   characterDraftImageSelectionResultSchema,
-  characterImageReviewRequestSchema,
   characterImageSourceAssetSchema,
 } from "./characters-asset-studio";
 import { findAdminV2ApiOperation } from "../api-manifest";
@@ -92,40 +91,5 @@ describe("Character Asset Studio contracts", () => {
     });
   });
 
-  it("requires complete visible evidence before approving an imported image", () => {
-    const review = {
-      decision: "approved" as const,
-      identityConsistency: "passed" as const,
-      score: 94,
-      quality: {
-        artifactFree: true,
-        singleSubject: true,
-        intentMatch: true,
-        noVisibleText: true,
-      },
-      reason: "Matches the sealed Character identity",
-    };
-    expect(characterImageReviewRequestSchema.parse(review)).toEqual(review);
-    expect(characterImageReviewRequestSchema.safeParse({
-      ...review,
-      quality: { ...review.quality, artifactFree: false },
-    }).success).toBe(false);
-  });
 
-  it("registers the Character-scoped Review mutation in the Admin authority manifest", () => {
-    expect(findAdminV2ApiOperation(
-      "POST",
-      "/api/v2/admin/characters/character-1/image-sources/asset-1/reviews",
-    )).toMatchObject({
-      id: "POST /api/v2/admin/characters/:id/image-sources/:assetId/reviews",
-      authorization: {
-        kind: "all_of",
-        permissions: ["character.project.write", "creative.run.review"],
-      },
-      contract: {
-        request: "characterImageReviewRequestSchema+idempotency-key",
-        response: "characterImageReviewResultSchema",
-      },
-    });
-  });
 });

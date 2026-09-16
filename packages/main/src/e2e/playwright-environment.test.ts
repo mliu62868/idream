@@ -129,7 +129,9 @@ describe("managed Playwright environment", () => {
     expect(servers[4]?.env.REDIS_URL).toBe(first.redisURL);
     expect(servers[4]?.env.GEN_REDIS_URL).toBe(first.redisURL);
     expect(servers[4]?.env.BULLMQ_PREFIX).toBe(first.bullmqPrefix);
-    expect(servers[4]?.env.GEN_IMAGE_PROVIDER).toBe("pipeline");
+    // "pipeline" retired with the legacy external adapter on 2026-09-12; the
+    // browser image worker takes the same mock the video worker defaults to.
+    expect(servers[4]?.env.GEN_IMAGE_PROVIDER).toBe("mock");
     expect(servers[4]?.env.GEN_MODERATION_PROVIDER).toBe("mock");
     expect(servers[4]?.env.GEN_BLOB_PROVIDER).toBe("mock");
     expect(servers[4]?.env.BLOB_ROOT).toBe(first.blobRoot);

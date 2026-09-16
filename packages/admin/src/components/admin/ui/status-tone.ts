@@ -38,6 +38,9 @@ const TONE_BY_STATUS: Record<string, StatusTone> = {
   overdue: "pending", due_soon: "pending", high: "pending", unknown: "pending",
   stale: "pending", flagged: "pending", escalated: "pending",
   partially_succeeded: "pending", needs_reconciliation: "pending",
+  // compliance.ts COMPLIANCE_ACCOUNT_DELETION_WAITING_ON —— 账号擦除队列的「在等谁」。
+  // grace_period 等时间到，chat_erasure 等另一个服务回执：都是「在等」，不是在跑。
+  grace_period: "pending", chat_erasure: "pending",
 
   // 真错误、否决与强制处置。来源：jobs.ts generationJobStatusSchema、
   // common.ts adminSeveritySchema（critical）+ adminPrioritySchema（urgent）+
@@ -52,6 +55,8 @@ const TONE_BY_STATUS: Record<string, StatusTone> = {
   // Shared contracts also use transient validation states outside Character Release.
   // creative.ts creativeRunItemExecutionStateSchema（dispatching / finalizing）。
   running: "info", processing: "info", generating: "info", dispatching: "info",
+  // compliance.ts COMPLIANCE_ACCOUNT_DELETION_WAITING_ON：这两步是机器正在干活。
+  blob_deletion: "info", main_purge: "info",
   monitoring: "info", verifying: "info", validating: "info", finalizing: "info",
   // characters-performance.ts 的 steps[].state：current = 运营此刻正站在这一步。
   current: "info",
@@ -70,6 +75,9 @@ const TONE_BY_STATUS: Record<string, StatusTone> = {
   // 它跟兜底同为 neutral，但收进表里才分得清"认识它、判定为无事"和"不认识它"——
   // 那正是这条 SEAM 要修的东西：五步状态机里三个值全部走的是后者。
   upcoming: "neutral",
+  // compliance.ts COMPLIANCE_ACCOUNT_DELETION_WAITING_ON —— 账号擦除队列的「在等谁」。
+  // nothing = 已擦除，没有欠账。
+  nothing: "neutral",
 };
 
 export function statusTone(status: string): StatusTone {

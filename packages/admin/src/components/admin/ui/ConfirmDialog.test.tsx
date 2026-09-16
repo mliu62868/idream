@@ -128,8 +128,10 @@ describe("ConfirmDialog", () => {
     await click(submit());
 
     const alert = dialog().querySelector('[role="alert"]');
-    expect(alert?.textContent).toContain("Someone changed this record before your action landed.");
-    expect(alert?.textContent).toContain("Refresh to load the current version, then decide again.");
+    // INTENT: 「已经退过款了」是前置条件，不是版本竞争——这次请求没带任何版本前置条件，
+    //         所以不许说「有人改过这条记录，刷新后重新判断」：刷新一万次也不会变。
+    expect(alert?.textContent).toContain("The authority refused this action — a precondition was not met.");
+    expect(alert?.textContent).toContain("open the technical details");
     // 原文和 requestId 折在技术详情里，一个字都没丢。
     expect(alert?.textContent).toContain("Subscription already refunded");
     expect(alert?.textContent).toContain("req-7");

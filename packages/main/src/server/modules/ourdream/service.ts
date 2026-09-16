@@ -146,7 +146,7 @@ import type { OurdreamRoute, OurdreamRouteTemplate } from "@/types/ourdream";
 import {
   imageOrientations,
   normalizeImageOrientation,
-} from "./generation-dimensions";
+} from "@idream/shared/media/image-orientation";
 import {
   metricExposureSubject,
   verifyExposureContext,
@@ -235,8 +235,8 @@ import {
   effectiveGenerationJobStatus,
   generationExecutionErrorCode,
   generationJobDTO,
+  generationJobCost,
   generationJobInclude,
-  generationRefundAmount,
   latestGenerationAttemptStatuses,
   type GenerationJobWithRelations,
 } from "./generation-job-read-model";
@@ -253,6 +253,7 @@ import {
   mediaMetadataWithQuality,
 } from "./customer-media-authority";
 import {
+  MAX_CHARACTER_TAGS,
   assertDraftOwner,
   characterPreviewMatchesDraft,
   previewCharacterDraft,
@@ -273,10 +274,21 @@ type SearchRouteSuggestion = {
 
 const credentialProvider = "credential";
 
+// SPEC: 校验信息直接面向注册用户。
+// INTENT: 前端只渲染这几条文案，默认的 zod 文案（"Too small: expected string to have
+//   >=8 characters"）读不懂，用户不知道该改哪一项。
 const signupSchema = z.object({
-  email: z.string().email().transform((value) => value.toLowerCase()),
-  password: z.string().min(8),
-  name: z.string().trim().min(1).max(80).optional(),
+  email: z
+    .string()
+    .email("Enter a valid email address.")
+    .transform((value) => value.toLowerCase()),
+  password: z.string().min(8, "Password must be at least 8 characters."),
+  name: z
+    .string()
+    .trim()
+    .min(1, "Display name cannot be empty.")
+    .max(80, "Display name must be 80 characters or fewer.")
+    .optional(),
   // Referral code captured from /signup?ref=DREAM-XXXX (invite share link).
   ref: z.string().trim().min(1).max(64).optional(),
 });
@@ -288,8 +300,11 @@ const REFERRAL_INVITEE_BONUS = 150;
 const REFERRAL_INVITER_REWARD = 150;
 
 const loginSchema = z.object({
-  email: z.string().email().transform((value) => value.toLowerCase()),
-  password: z.string().min(1),
+  email: z
+    .string()
+    .email("Enter a valid email address.")
+    .transform((value) => value.toLowerCase()),
+  password: z.string().min(1, "Enter your password."),
 });
 
 const ageGateSchema = z.object({
@@ -315,7 +330,7 @@ const draftPatchSchema = z.object({
   hair: z.record(z.string(), z.unknown()).optional(),
   body: z.record(z.string(), z.unknown()).optional(),
   advancedDetails: characterDraftDetailsWriteSchema.optional(),
-  tags: z.array(z.string().trim().min(1).max(40)).max(12).optional(),
+  tags: z.array(z.string().trim().min(1).max(40)).max(MAX_CHARACTER_TAGS).optional(),
 }).strict();
 
 const draftSubmitSchema = z.object({
@@ -1930,7 +1945,7 @@ async function updateDraftTags(request: Request, id: string) {
   const user = requireUser(ctx);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
-  const body = z.object({ tags: z.array(z.string()).max(12) }).parse(await jsonBody(request));
+  const body = z.object({ tags: z.array(z.string()).max(MAX_CHARACTER_TAGS) }).parse(await jsonBody(request));
   await assertDraftOwner(id, user.id);
   const draft = await prisma.characterDraft.update({
     where: { id },
@@ -3944,7 +3959,12 @@ async function library(request: Request, tab: string) {
   if (tab === "media") return listMedia(request);
   if (tab === "group-chats") {
     const groups = await listGroupConversations(user.id);
-    return ok({ items: groups.map(group => ({ id: group.id, type: "group_chat", title: group.title, status: group.status, description: group.members.map(member => member.name).join(" · ") })), emptyCta: "/chat/groups" });
+    // INVARIANT: emptyCta only OVERRIDES the client's own empty-state CTA
+    // (ProfileWorkspace.tsx: `emptyCta ?? defaults[tab].ctaHref`). The client
+    // default for this tab is already "/chat/groups", so returning it here was a
+    // second definition of the same constant on the other side of the boundary —
+    // a client-side change to that route would have been silently overridden.
+    return ok({ items: groups.map(group => ({ id: group.id, type: "group_chat", title: group.title, status: group.status, description: group.members.map(member => member.name).join(" · ") })), emptyCta: null });
   }
   if (tab === "packs") {
     return ok({ items: [], emptyCta: null });
@@ -4594,8 +4614,6 @@ function generationJobResponse(
   job: GenerationJobWithRelations,
   latestAttemptStatus: string | null = null,
 ) {
-  const refunded = generationRefundAmount(job.events);
-  const missingOutputs = Math.max(0, job.outputCount - job.assets.length);
   const sourceJob = {
     sourceType: job.sourceType,
     sourceId: job.sourceId,
@@ -4611,14 +4629,7 @@ function generationJobResponse(
       metadata: event.metadata,
       createdAt: event.createdAt,
     })),
-    cost: {
-      charged: job.costDreamcoins,
-      refunded,
-      finalCharge: Math.max(0, job.costDreamcoins - refunded),
-      assetCount: job.assets.length,
-      requestedCount: job.outputCount,
-      missingOutputs,
-    },
+    cost: generationJobCost(job),
   };
 }
 

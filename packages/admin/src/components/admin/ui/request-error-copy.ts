@@ -17,6 +17,7 @@ export type OperatorErrorCopy = {
     requestId: string | null;
     /** authority 的原文，一个字不改——工程要拿它去对日志。 */
     message: string;
+    details?: unknown;
   };
 };
 
@@ -51,9 +52,16 @@ const COPY_BY_CODE: Record<string, Copy> = {
     headline: "This record has been permanently removed.",
     nextStep: "Refresh the list; it can no longer be acted on.",
   },
+  // SPEC: 409 的默认解释**不是**版本竞争。
+  // INTENT: 本仓 admin-v2 有 190 处 `Errors.conflict`，只有 9 处带结构化 details；其余绝大多数
+  //         是「前置条件不满足」（must / only / already has a terminal / is unavailable），
+  //         不是并发写入。此前默认文案一律说「有人改过这条记录，刷新后重新判断」——
+  //         对这批冲突刷新一万次也不会变，而且这正是本文件自己写的「假 reason 禁令」所禁的：
+  //         编一个原因比说不知道更糟。版本竞争的文案改为需要正面证据才启用（见 CONFLICT_VERSION_RACE）。
   conflict: {
-    headline: "Someone changed this record before your action landed.",
-    nextStep: "Refresh to load the current version, then decide again.",
+    headline: "The authority refused this action — a precondition was not met.",
+    nextStep:
+      "Check the current state and open the technical details for the authority's reason before retrying.",
   },
   rate_limited: {
     headline: "Too many admin requests in a short window.",
@@ -113,6 +121,19 @@ const CASE_ASSIGNMENT_BLOCKED: Copy = {
   nextStep: "Reopen this case before changing its assignment.",
 };
 
+// INVARIANT: blocker 不保证可覆盖、刷新无效或事务未写入；这些结论必须由具体权威提供。
+const CONFLICT_PRECONDITION: Copy = {
+  headline: "The authority refused this action: its precondition is not met.",
+  nextStep:
+    "Open the technical details for the authority's blocker and required action. Check the current state before retrying.",
+};
+
+// INVARIANT: 请求带版本号只证明启用了乐观锁；只有权威明确报出版本不匹配才使用竞争文案。
+const CONFLICT_VERSION_RACE: Copy = {
+  headline: "Someone changed this record before your action landed.",
+  nextStep: "Refresh to load the current version, then decide again.",
+};
+
 const SUPPORT_CASE_SUPERSEDED: Copy = {
   headline: "This request has a newer support case.",
   nextStep: "Open case {caseId} and reopen it there. This historical case was not changed.",
@@ -133,8 +154,12 @@ export function operatorErrorCopy(cause: unknown): OperatorErrorCopy {
       cause.details !== null && typeof cause.details === "object" &&
       "currentCaseId" in cause.details && typeof cause.details.currentCaseId === "string"
       ? cause.details.currentCaseId : null;
+    const precondition = code === "conflict" &&
+      cause.details !== null && typeof cause.details === "object" &&
+      "blocker" in cause.details && typeof cause.details.blocker === "string";
+    const versionRace = precondition && (cause.details as { blocker: string }).blocker === "version_mismatch";
     return {
-      ...(currentCaseId ? SUPPORT_CASE_SUPERSEDED : terminalAssignment ? CASE_ASSIGNMENT_BLOCKED : fields.length > 0 ? FIELD_REJECTED : (COPY_BY_CODE[code ?? ""] ?? UNMAPPED)),
+      ...(currentCaseId ? SUPPORT_CASE_SUPERSEDED : terminalAssignment ? CASE_ASSIGNMENT_BLOCKED : versionRace ? CONFLICT_VERSION_RACE : precondition ? CONFLICT_PRECONDITION : fields.length > 0 ? FIELD_REJECTED : (COPY_BY_CODE[code ?? ""] ?? UNMAPPED)),
       ...(fields.length > 0 ? { nextStepValues: { fields: fields.join("、") } } : {}),
       ...(currentCaseId ? { nextStepValues: { caseId: currentCaseId } } : {}),
       technical: {
@@ -142,6 +167,7 @@ export function operatorErrorCopy(cause: unknown): OperatorErrorCopy {
         status: cause.status,
         requestId: cause.requestId ?? null,
         message,
+        ...(cause.details === undefined ? {} : { details: cause.details }),
       },
     };
   }
@@ -159,6 +185,7 @@ export function technicalDetailText(technical: OperatorErrorCopy["technical"]) {
     technical.status === null ? null : `status: ${technical.status}`,
     technical.requestId ? `requestId: ${technical.requestId}` : null,
     `message: ${technical.message}`,
+    technical.details === undefined ? null : `details: ${JSON.stringify(technical.details)}`,
   ]
     .filter((line): line is string => line !== null)
     .join("\n");
@@ -172,6 +199,8 @@ export const OPERATOR_ERROR_COPY_KEYS: readonly string[] = [
   FIELD_REJECTED,
   CASE_ASSIGNMENT_BLOCKED,
   SUPPORT_CASE_SUPERSEDED,
+  CONFLICT_PRECONDITION,
+  CONFLICT_VERSION_RACE,
 ].flatMap((copy) => [copy.headline, copy.nextStep]);
 
 function errorText(cause: unknown) {

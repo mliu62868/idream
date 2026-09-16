@@ -400,7 +400,9 @@ export async function listMentions(request: Request) {
     orderBy: { id: "desc" },
     take: query.limit + 1,
   });
-  const visibleRows = (await Promise.all(rows.map(async (row) => {
+  // INVARIANT: 游标推进到扫描页末行，与权限过滤后的可见行数无关。
+  // 否则整页不可见时会丢掉后续有权查看的提及。额外一行只探测下一页，不能本页提前消费。
+  const visibleRows = (await Promise.all(rows.slice(0, query.limit).map(async (row) => {
       const targetType = collaborationTargetTypeSchema.safeParse(row.targetType);
       if (!targetType.success || !actorPermissions.has(targetDescriptors[targetType.data].read)) return null;
       return await targetAccess(actor, targetType.data, row.targetId) === "allowed" ? row : null;
@@ -408,7 +410,7 @@ export async function listMentions(request: Request) {
   const items = visibleRows
     .slice(0, query.limit)
     .map(activityDto);
-  return ok({ items, pageInfo: { hasNextPage: rows.length > query.limit, endCursor: rows.length > query.limit ? items.at(-1)?.id ?? null : null } });
+  return ok({ items, pageInfo: { hasNextPage: rows.length > query.limit, endCursor: rows.length > query.limit ? rows[query.limit - 1]?.id ?? null : null } });
 }
 
 function viewDto(view: Awaited<ReturnType<typeof prisma.adminSavedView.findFirstOrThrow>>) {
@@ -454,7 +456,7 @@ export async function updateSavedViewV2(request: Request, id: string) {
     where: { id, ownerId: actor.id, version: input.expectedVersion },
     data: { label: input.label, queryState: input.queryState as Prisma.InputJsonValue | undefined, filters: input.queryState?.filters as Prisma.InputJsonValue | undefined, version: { increment: 1 } },
   });
-  if (result.count !== 1) throw Errors.conflict("Saved view changed; reload before applying edits");
+  if (result.count !== 1) throw Errors.versionConflict("Saved view changed; reload before applying edits");
   return ok({ view: viewDto(await prisma.adminSavedView.findUniqueOrThrow({ where: { id } })) });
 }
 
@@ -468,6 +470,6 @@ export async function deleteSavedViewV2(request: Request, id: string) {
   const expectedVersion = Number(request.headers.get("if-match")?.replace(/^W\//, "").replace(/^"|"$/g, ""));
   if (!Number.isInteger(expectedVersion) || expectedVersion < 1) throw Errors.badRequest("If-Match must contain the saved view version");
   const deleted = await prisma.adminSavedView.deleteMany({ where: { id, ownerId: actor.id, version: expectedVersion } });
-  if (deleted.count !== 1) throw Errors.conflict("Saved view changed; reload before deleting");
+  if (deleted.count !== 1) throw Errors.versionConflict("Saved view changed; reload before deleting");
   return ok(savedViewDeleteSchema.parse({ deleted: true }));
 }

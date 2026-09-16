@@ -273,6 +273,30 @@ describe("Character Portfolio card", () => {
     });
   });
 
+  // SPEC: 权威判"表现数据不可信"必须在卡片上有出口，而且比"零观测"更优先。
+  // INTENT: qualityState=invalid 表示漏斗事实自相矛盾/曝光链不精确，也就是这张卡上的数字不能
+  //         用来做决定。它此前在前端完全没有出口——needsAttention 只覆盖 no_data，invalid 的
+  //         角色和正常角色长得一模一样，运营会照着已知有问题的数据做下架和资源分配。
+  it("surfaces an invalid performance verdict ahead of a missing-telemetry one", () => {
+    const action = resolveCharacterPortfolioPrimaryAction({
+      ...item,
+      needsAttention: true,
+      operationalState: { ...item.operationalState, qualityState: "invalid" },
+    });
+
+    expect(action).toEqual({
+      description:
+        "The performance authority marked this Character's funnel facts invalid, so these numbers cannot support a decision.",
+      eyebrow: "Performance data invalid",
+      href: "/admin/characters/character-1?tab=monitor",
+      label: "Inspect performance quality",
+      requiresAssets: false,
+    });
+    // 这两句文案必须有中文，否则中文界面上印的是英文原句。
+    expect(translateAdmin("zh", "Performance data invalid")).not.toBe("Performance data invalid");
+    expect(translateAdmin("zh", "Inspect performance quality")).not.toBe("Inspect performance quality");
+  });
+
   it("explains the exact telemetry problem inside the needs-attention view", () => {
     const action = resolveCharacterPortfolioPrimaryAction({
       ...item,

@@ -108,7 +108,6 @@ export function characterDTO(
     chats: formatCount(character.stats?.chatsCount ?? 0),
     likesCount: character.stats?.likesCount ?? 0,
     chatsCount: character.stats?.chatsCount ?? 0,
-    views: character.stats?.viewsCount ?? 0,
     vivid: character.vivid,
     liked: Array.isArray(character.likes) ? character.likes.length > 0 : false,
     visualProfile: visualProfile

@@ -73,7 +73,7 @@ packages/main/prisma/schema.prisma + packages/*/src ← 代码（最终事实来
 | UI | shadcn/ui + @base-ui/react + Tailwind v4 | 既有，前端不在本目录范围 |
 | 支付 | 抽象 `PaymentProvider`；**生产用加密货币**（推荐自托管 BTCPay Server，非托管/无 AUP 风险） | 见 02-ADR-4 |
 | 异步 | Main/Gen 使用 Redis/BullMQ；Chat 是有界 HTTP AgentRun，Redis 只缓存 SSE；跨服务删除等命令使用 durable event/receipt | 见 06、14、17 |
-| AI | 抽象 `ChatModel`/`ImageModel`/`VideoModel`/`Voice`/`Moderation` | Chat 使用自托管 OpenAI-compatible endpoint；Image/Video 使用 Gen workflow-native BackendRegistry（ComfyUI/Sdcpp/DrawThings），legacy external pipeline adapter 已于 2026-09-12 删除，见 02-ADR-6 |
+| AI | 抽象 `ChatModel`/`ImageModel`/`VideoModel`/`Voice`/`Moderation` | Chat 使用自托管 OpenAI-compatible endpoint；Image/Video 使用 Gen workflow-native BackendRegistry（ComfyUI/DrawThings），legacy external pipeline adapter 已于 2026-09-12 删除，见 02-ADR-6 |
 | 管理后台 | 独立 `@idream/admin` web/BFF + main `/api/v2/admin/*` authority；v1 仅兼容观测 | Today、Character、Creative、Incident、Case、Metrics、系统控制面，见 ADR-11 |
 | 对象存储 | 抽象 `BlobStore`；S3 兼容（R2）/ 本地 fs（dev） | 签名 URL，见 02-ADR-8 |
 | 限流 | DB 令牌桶 / Redis（prod 推荐） | 见 02-ADR-9 |
@@ -81,7 +81,9 @@ packages/main/prisma/schema.prisma + packages/*/src ← 代码（最终事实来
 | 测试 | Vitest（L1/L2/L3）+ Playwright（L4） | 见 11 |
 | 日志/监控 | pino 结构化日志 + Sentry + 自建 analytics 事件 | 见 09/10 |
 
-## 3. 关键技术决策摘要（详见 02）
+## 3. 关键技术决策摘要
+
+> ADR-1~10 与 ADR-20 详见 [02-technical-decisions.md](./02-technical-decisions.md)；ADR-11 起的条目各有独立 ADR 文档，出处标在编号后。
 
 | ADR | 决策 | 一句话理由 |
 | --- | --- | --- |
@@ -95,13 +97,13 @@ packages/main/prisma/schema.prisma + packages/*/src ← 代码（最终事实来
 | ADR-8 | **对象存储抽象 + S3 兼容(R2)/Vercel Blob(private)**，私有 + 签名 URL | 媒体资产私密、防盗链、成人 CDN 友好 |
 | ADR-9 | **限流：dev DB 令牌桶 / prod Upstash Redis** | 鉴权/生成/聊天端点必须限流，防滥用与成本失控 |
 | ADR-10 | **缓存：公开 SEO/目录用 Cache Components(`use cache`+`cacheTag`)，产品/鉴权 API 全动态** | Next 16 缓存模型；角色更新按 tag 失效 |
-| ADR-11 | **Admin 是领域 authority 上的决策执行系统**：shared contract + fail-closed BFF + command/outbox + shadow/canary cutover | 状态、指标、权限、审计和回滚都可独立证明 |
-| ADR-12 | **Character Asset Studio 复用现有生成、审核、草稿、Release 与 Serving authority** | 采用只改草稿，只有显式发布改变线上角色 |
-| ADR-13 | **六个深 Module 吸收重复的可靠性协议**：Gen、Ledger、Admin mutation、聚合 transition、Durable Exchange、Character Journey | 每个高风险事实只有一个窄写入口；状态与部署配置不再漂移 |
-| ADR-14（Proposed） | **Character Soul 是版本化结构化权威；SOUL.md 与 system prompt 都是派生产物** | Release 与 Chat 共享一个解释 Interface；静态人格不再与关系、记忆、场景混写 |
-| ADR-19 | **DSH + official igrep 是唯一 Companion Agent 执行内核** | 统一 model/tool/memory loop，但不扩大为产品数据权威 |
+| ADR-11（详见 15） | **Admin 是领域 authority 上的决策执行系统**：shared contract + fail-closed BFF + command/outbox + shadow/canary cutover | 状态、指标、权限、审计和回滚都可独立证明 |
+| ADR-12（详见 16） | **Character Asset Studio 复用现有生成、审核、草稿、Release 与 Serving authority** | 采用只改草稿，只有显式发布改变线上角色 |
+| ADR-13（详见 17） | **六个深 Module 吸收重复的可靠性协议**：Gen、Ledger、Admin mutation、聚合 transition、Durable Exchange、Character Journey | 每个高风险事实只有一个窄写入口；状态与部署配置不再漂移 |
+| ADR-14（已实现 schema v3，详见 18） | **Character Soul 是版本化结构化权威；SOUL.md 与 system prompt 都是派生产物** | Release 与 Chat 共享一个解释 Interface；静态人格不再与关系、记忆、场景混写 |
+| ADR-19（详见 19） | **DSH + official igrep 是唯一 Companion Agent 执行内核** | 统一 model/tool/memory loop，但不扩大为产品数据权威 |
 | ADR-20 | **Main PG 是产品 Turn/计费权威，Chat 本地文件只保存 AgentRun** | Agent 运行与产品记录分离；Chat 删除数据库协调层但不复制 Main ledger |
-| ADR-21 | **Chat 单进程执行；Main committed Turn 异步投影记忆** | 删除低价值 process seam、双状态机与同步记忆提交热路径 |
+| ADR-21（详见 21） | **Chat 单进程执行；Main committed Turn 异步投影记忆** | 删除低价值 process seam、双状态机与同步记忆提交热路径 |
 
 ## 4. 不可妥协的合规底线（贯穿全文，P0）
 

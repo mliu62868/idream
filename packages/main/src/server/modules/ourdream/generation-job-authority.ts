@@ -394,16 +394,16 @@ export async function assertGenerationSourceImageAuthorityInTx(
   }
 }
 
+// SPEC: reserve the first Attempt and its dispatch Outbox row for a request.
+// INTENT: the parameter list used to name six fields (provider, profileId,
+//   profileVersion, model, controls) and read exactly one of them. That shape
+//   told every caller those values were part of the reservation contract — they
+//   are not; the Attempt's execution identity comes from the request row itself.
+// INVARIANT: reservation commits before dispatch. The admin command worker
+//   drains committed intents; a targeted dispatch after commit reduces latency.
 export async function reserveInitialGenerationAttempt(
   tx: Prisma.TransactionClient,
-  job: {
-    readonly id: string;
-    readonly provider: string | null;
-    readonly profileId: string | null;
-    readonly profileVersion: number | null;
-    readonly model: string | null;
-    readonly controls: Prisma.JsonValue;
-  },
+  job: { readonly id: string },
 ) {
   return reserveInitialGenerationAttemptAuthority(tx, {
     requestId: job.id,
@@ -414,14 +414,12 @@ export async function reserveInitialGenerationAttempt(
   });
 }
 
+// SPEC: replay a queued initial reservation and attempt dispatch after commit.
+// Existing Outbox backoff and active leases still apply; the admin command
+// worker owns eventual dispatch if this wake finds nothing due or enqueue fails.
 export async function wakeQueuedGenerationDispatch(job: {
   readonly id: string;
   readonly status: string;
-  readonly provider: string | null;
-  readonly profileId: string | null;
-  readonly profileVersion: number | null;
-  readonly model: string | null;
-  readonly controls: Prisma.JsonValue;
 }) {
   if (job.status !== "queued") return;
   const reservation = await prisma.$transaction((tx) =>

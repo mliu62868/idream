@@ -3,6 +3,9 @@
 // INVARIANT: key 在所有 i18n-zh-*.ts 之间互斥——同一个 key 只能有一个域文件持有；
 // 由 i18n-zh-exclusivity.test.ts 强制。新增文案放它所属的域文件，不要另开「杂项」文件。
 export const adminZhShell: Record<string, string> = {
+  'Search unavailable. Showing last successful results for "{query}".': "搜索暂不可用，显示的是上一次成功搜索「{query}」的结果。",
+  'Search unavailable. The last successful search for "{query}" returned no results.': "搜索暂不可用；上一次成功搜索「{query}」没有任何结果。",
+  "Search unavailable. No cached results are available.": "搜索暂不可用，也没有可用的缓存结果。",
   "Account Requests": "账号请求",
   "Account and shell settings": "账号与控制台设置",
   "Activity is unavailable for this scoped record.": "此范围记录的协作动态不可用。",

@@ -40,6 +40,9 @@ const listSelect = {
   visibility: true,
   creatorId: true,
   createdAt: true,
+  // Explore 挂牌资格要看这三项：官方角色只有 live 且发布版本已发布时才能改挂牌。
+  source: true,
+  serving: { select: { state: true, currentRelease: { select: { status: true } } } },
   imageAsset: { select: { id: true, url: true, thumbnailUrl: true } },
   visualProfiles: {
     where: { status: "active" },
@@ -47,7 +50,7 @@ const listSelect = {
     take: 1,
     select: { id: true, version: true, status: true, style: true },
   },
-  stats: { select: { chatsCount: true, likesCount: true, viewsCount: true } },
+  stats: { select: { chatsCount: true, likesCount: true } },
 } satisfies Prisma.CharacterSelect;
 
 type ListRow = Prisma.CharacterGetPayload<{ select: typeof listSelect }>;
@@ -181,6 +184,15 @@ function contentCharacterListItem(row: ListRow): ContentCharacterListItem {
       : null,
     visualProfile: visualProfile ?? null,
     stats: row.stats ?? null,
+    servingState: row.serving?.state ?? null,
+    exploreListing: exploreListingEligibility({
+      id: row.id,
+      source: row.source,
+      status: row.status,
+      visibility: row.visibility,
+      servingState: row.serving?.state ?? null,
+      currentReleaseStatus: row.serving?.currentRelease?.status ?? null,
+    }),
   };
 }
 
@@ -188,7 +200,7 @@ export async function getContentCharacter(id: string) {
   const character = await prisma.character.findFirst({
     where: operationalCharacterWhere({ id, deletedAt: null }),
     include: {
-      stats: { select: { chatsCount: true, likesCount: true, viewsCount: true } },
+      stats: { select: { chatsCount: true, likesCount: true } },
       creator: { select: { id: true, email: true, displayName: true } },
       // 带上 Tag 本体：`tags: true` 只给 characterId/tagId，运营界面拿不到标签名。
       tags: { include: { tag: true } },
@@ -262,6 +274,51 @@ export function chatImageToolEnabled(advancedDetails: Prisma.JsonValue) {
     : true;
 }
 
+// SPEC: 一个角色现在允许对 Explore 挂牌做什么 —— 列表投影和写入校验共用这一份判断。
+// INTENT: 规则过去只写在 setCharacterVisibility 里，列表无从知道，于是后台对每一行都画出
+//         「取消公开列出 / 设为私密」，运营点下去才拿到 409。官方角色尤其反直觉：它从这里
+//         永远不能设为 private（下线是 Serving 的 pause/retire），而暂停后连取消挂牌也不行。
+// INVARIANT: 只有 source='official' 受这套限制；用户创建的角色仍由 content.visibility.write 直接管。
+export type ExploreListingEligibility = {
+  readonly canUnlist: boolean;
+  readonly canMakePrivate: boolean;
+  readonly blockedReason:
+    | "character_not_live"
+    | "private_needs_serving_command"
+    | null;
+  readonly repairDeepLink: string | null;
+};
+
+export function exploreListingEligibility(input: {
+  readonly id: string;
+  readonly source: string;
+  readonly status: string;
+  readonly visibility: string;
+  readonly servingState: string | null;
+  readonly currentReleaseStatus: string | null;
+}): ExploreListingEligibility {
+  if (input.source !== "official") {
+    return {
+      canUnlist: true,
+      canMakePrivate: true,
+      blockedReason: null,
+      repairDeepLink: null,
+    };
+  }
+  const live =
+    ["public", "unlisted"].includes(input.visibility) &&
+    input.status === "approved" &&
+    input.servingState === "live" &&
+    input.currentReleaseStatus === "published";
+  return {
+    canUnlist: live,
+    // 官方角色从这里改成 private 一直是被拒的：把它从目录里拿掉要走 Release/Serving 命令。
+    canMakePrivate: false,
+    blockedReason: live ? "private_needs_serving_command" : "character_not_live",
+    repairDeepLink: `/admin/characters/${input.id}?tab=release`,
+  };
+}
+
 export async function setCharacterVisibility(input: {
   tx: Prisma.TransactionClient;
   request: Request;
@@ -287,12 +344,21 @@ export async function setCharacterVisibility(input: {
       where: { characterId: id }, include: { currentRelease: { include: { publicCatalogQualification: true } } },
     });
     const release = serving?.currentRelease;
-    if (
-      !["public", "unlisted"].includes(before.visibility) || body.visibility === "private" ||
-      before.status !== "approved" || serving?.state !== "live" || !release || release.status !== "published"
-    ) {
+    // 和列表下发给运营的结论同源：改这条规则，按钮的可用性会跟着一起变。
+    const eligibility = exploreListingEligibility({
+      id,
+      source: before.source,
+      status: before.status,
+      visibility: before.visibility,
+      servingState: serving?.state ?? null,
+      currentReleaseStatus: release?.status ?? null,
+    });
+    const allowed = body.visibility === "private"
+      ? eligibility.canMakePrivate
+      : eligibility.canUnlist;
+    if (!allowed || !serving || !release) {
       throw Errors.conflict("Only a live official Character can change its Explore listing; use Release and Serving commands to publish or pause", {
-        repairDeepLink: `/admin/characters/${id}?tab=release`,
+        repairDeepLink: eligibility.repairDeepLink ?? `/admin/characters/${id}?tab=release`,
       });
     }
     if (body.entityVersion !== serving.version) {

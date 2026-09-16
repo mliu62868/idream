@@ -47,3 +47,5 @@ export * from "./overviews";
 export * from "./generation-ops";
 // ---- content: migrated from v1 ----
 export * from "./content";
+
+export * from "./affiliate";

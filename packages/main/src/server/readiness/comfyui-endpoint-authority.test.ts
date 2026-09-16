@@ -33,7 +33,6 @@ async function sourceFiles(root: string): Promise<string[]> {
   const entries = await readdir(absolute, { withFileTypes: true });
   const nested = await Promise.all(
     entries.map(async (entry) => {
-      const filePath = path.join(absolute, entry.name);
       if (entry.isSymbolicLink()) return [];
       if (entry.isDirectory()) return sourceFiles(path.join(root, entry.name));
       return /\.tsx?$/.test(entry.name) ? [path.join(root, entry.name)] : [];

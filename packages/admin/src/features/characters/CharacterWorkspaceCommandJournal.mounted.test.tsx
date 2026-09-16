@@ -198,6 +198,42 @@ function seedPendingCommand(
 
 describe("Character workspace — 每个命令出口都接到了运营界面", () => {
   it.each([
+    ["internal", "Internal error", "后台发生了内部错误。"],
+    ["future_authority_error", "Unfamiliar provider fault", "这个操作没有完成。"],
+  ])("renders a real %s response in Chinese and retains request evidence", async (code, message, headline) => {
+    const actual = await vi.importActual<typeof import("@/lib/admin-v2-api")>("@/lib/admin-v2-api");
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ ok: false, error: {
+      code, message, requestId: "character-load-500", details: { provider: "main", diagnostic: "schema mismatch" },
+    } }, { status: 500 }));
+    adminV2Request.mockImplementation((path) => actual.adminV2Request(path));
+    try {
+      await act(async () => root.render(<AdminI18nProvider locale="zh"><CharacterWorkspace actorId="operator-a" permissions={permissions} view={{ kind: "detail", id: "character-1" }} /></AdminI18nProvider>));
+      await waitUntil(() => container.querySelector('[role="alert"]') !== null, "internal error");
+      const alert = container.querySelector('[role="alert"]')!;
+      expect(alert.textContent).toContain(headline);
+      expect(alert.textContent).toContain("工程");
+      const details = alert.querySelector("details")!;
+      expect(details).not.toBeNull();
+      expect(details.open).toBe(false);
+      expect(details.textContent).toContain("requestId: character-load-500");
+      expect(details.textContent).toContain(message);
+      expect(details.textContent).toContain("schema mismatch");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally { fetchMock.mockRestore(); }
+  });
+
+  it("translates an initial legacy evidence load failure without reloading on provider rerender", async () => {
+    adminV2Request.mockRejectedValue(new Error("Validation failed: legacy evidence"));
+    const workspaceInChinese = () => <AdminI18nProvider locale="zh"><CharacterWorkspace actorId="operator-a" permissions={permissions} view={{ kind: "detail", id: "character-1" }} /></AdminI18nProvider>;
+    await act(async () => root.render(workspaceInChinese()));
+    await waitUntil(() => container.querySelector('[role="alert"]') !== null, "load failure");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("此角色包含旧版运营证据");
+    expect(adminV2Request).toHaveBeenCalledTimes(1);
+    await act(async () => root.render(workspaceInChinese()));
+    expect(adminV2Request).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
     ["en", "Saving your changes and updating the character. Please wait before making another change."],
     ["zh", "正在保存更改并更新角色资料，请稍候再继续操作。"],
   ] as const)("shows a clear %s placement-saving notice and preserves the write lock until refresh", async (locale, message) => {

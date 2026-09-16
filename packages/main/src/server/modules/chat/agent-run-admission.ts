@@ -18,6 +18,7 @@ import {
   cancelChatTurn,
   editChatTurn,
   executionSnapshot,
+  failStalledChatTurn,
   regenerateChatTurn,
 } from "./turn-ledger";
 import { loadChatAuthoritySnapshot } from "./chat-authority-snapshot";
@@ -25,6 +26,8 @@ import { loadChatAuthoritySnapshot } from "./chat-authority-snapshot";
 const ADMISSION_PATH = "/internal/agent-runs";
 const ADMISSION_TIMEOUT_MS = 5_000;
 const ADMISSION_LEASE_MS = 15_000;
+/** Chat's own 300s AgentRun deadline plus a margin for a slow terminal commit. */
+const STALLED_ATTEMPT_MS = 6 * 60_000;
 
 export interface AgentRunAdmissionResult {
   admitted: boolean;
@@ -257,6 +260,51 @@ export async function dispatchPendingChatAgentRuns(
     if (result.admitted) admitted += 1;
   }
   return { admitted, pending: rows.length - admitted };
+}
+
+/**
+ * SPEC: reclaim Turns stuck in `generating` past any attempt's useful life.
+ *
+ * INTENT: Chat bounds one AgentRun with `DSH_AGENT_DEADLINE_MS` (300s default)
+ * and reports its own failures, so anything still generating well past that
+ * window means the reporting path itself is gone — a killed process, a lost
+ * terminal callback. Main is the only authority that can still end it.
+ * The grace margin keeps a merely slow attempt from being cut off early.
+ */
+export async function reclaimStalledChatAgentRuns(
+  batch = 50,
+  signal?: AbortSignal,
+): Promise<{ reclaimed: number }> {
+  if (signal?.aborted) return { reclaimed: 0 };
+  const stalledBefore = new Date(Date.now() - STALLED_ATTEMPT_MS);
+  const rows = await prisma.chatTurn.findMany({
+    where: {
+      assistantStatus: "generating",
+      terminalAt: null,
+      updatedAt: { lt: stalledBefore },
+    },
+    orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
+    select: { id: true },
+    take: batch,
+  });
+  let reclaimed = 0;
+  for (const row of rows) {
+    if (signal?.aborted) break;
+    try {
+      const result = await failStalledChatTurn(row.id, stalledBefore);
+      if (result.reclaimed) {
+        reclaimed += 1;
+        logger.warn(
+          { turnId: result.turnId, attempt: result.attempt },
+          "reclaimed stalled Chat attempt stuck in generating",
+        );
+      }
+    } catch (err) {
+      // One unreclaimable row must not strand the rest of the batch.
+      logger.error({ err, turnId: row.id }, "failed to reclaim stalled Chat attempt");
+    }
+  }
+  return { reclaimed };
 }
 
 async function attemptPersistedChatAgentRunAdmission(

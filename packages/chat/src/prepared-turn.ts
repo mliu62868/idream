@@ -6,7 +6,10 @@ import {
   COMPANION_PRODUCT_PROMPT_VERSION,
   type ChatToolDefinition,
 } from "@idream/shared";
+import type { ImageIntentDecision } from "@idream/shared/chat/image-action";
 import { imageIntentForUserRequest } from "@idream/shared/chat/image-action";
+import { resolveImageIntent } from "@idream/shared/chat/image-intent";
+import { logger } from "./logger.js";
 import type { ChatAuthoritySnapshot } from "@idream/shared/bff";
 import type { ChatExecutionSnapshot } from "@idream/shared/contracts";
 import { buildContext, type BuiltContext } from "./context.js";
@@ -32,7 +35,17 @@ export async function prepareCompanionTurn(
   input: PrepareCompanionTurnInput,
 ): Promise<PreparedTurn> {
   const context = await buildContext(input);
-  return compilePreparedTurn(context, input.snapshot.userMessageId, new Date());
+  const currentUser = context.recentMessages.find(
+    (message) => message.id === input.snapshot.userMessageId,
+  );
+  const imageIntent = await resolveImageIntent({
+    userText: currentUser?.content ?? "",
+    hasRecentImageContext: context.hasRecentImageContext,
+    previousAssistantText: context.previousAssistantText,
+    imageToolEnabled: context.policy.imageToolEnabled,
+    onJudgeUnavailable: (reason: string) => logger.warn({ event: "image_intent_judge" }, reason),
+  });
+  return compilePreparedTurn(context, input.snapshot.userMessageId, new Date(), imageIntent);
 }
 
 /** Compile a pure, pinned generation snapshot from an already-authoritative context. */
@@ -40,8 +53,9 @@ export function compilePreparedTurn(
   context: BuiltContext,
   currentUserMessageId: string,
   now: Date = new Date(),
+  imageIntent?: ImageIntentDecision,
 ): PreparedTurn {
-  const fitted = fitPreparedTurnBudget(context, currentUserMessageId, now);
+  const fitted = fitPreparedTurnBudget(context, currentUserMessageId, now, imageIntent);
   const modelProfile = fitted.context.policy.modelProfile;
   const profile: PreparedTurnInput["profile"] = {
     tier: fitted.context.policy.tier,
@@ -138,6 +152,7 @@ export function fitPreparedTurnBudget(
   context: BuiltContext,
   currentUserMessageId: string,
   now: Date = new Date(),
+  resolvedImageIntent?: ImageIntentDecision,
 ): {
   context: BuiltContext;
   messages: PreparedTurnInput["messages"];
@@ -154,7 +169,9 @@ export function fitPreparedTurnBudget(
   if (!currentUser || currentUser.role !== "user") {
     throw new Error("PreparedTurn current user message is missing");
   }
-  const imageIntent = imageIntentForUserRequest({
+  // Recovery and every pure caller re-derive the deterministic decision; only
+  // prepareCompanionTurn can supply one that also consulted the intent judge.
+  const imageIntent = resolvedImageIntent ?? imageIntentForUserRequest({
     userText: currentUser.content,
     hasRecentImageContext: fitted.hasRecentImageContext,
     previousAssistantText: fitted.previousAssistantText,
@@ -162,6 +179,11 @@ export function fitPreparedTurnBudget(
   const requiredAction = fitted.policy.imageToolEnabled && imageIntent.kind !== "none"
     ? { ...imageIntent.action, replyLocale: fitted.userLocale }
     : null;
+  // INVARIANT: exposing an image tool IS the authorization. A tool reaches the
+  // model only for an action resolveImageIntent derived from this Turn's user
+  // message, and Main derives the same thing again before it will spend — so a
+  // saved instruction, a pinned fact or a hypothetical question can never become
+  // a paid action no matter what the model decides.
   const registeredTools = fitted.policy.imageToolEnabled ? registryChatTools() : [];
   const tools = requiredAction
     ? registeredTools.filter((tool) => tool.name === requiredAction.name)

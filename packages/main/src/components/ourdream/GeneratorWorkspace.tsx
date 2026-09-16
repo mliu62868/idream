@@ -45,6 +45,7 @@ import {
   parseGenerationConfigResponse,
   parseGenerationJobDetailResponse,
   parseGenerationJobsResponse,
+  type RuntimeGenerationJobCost,
   parseGeneratorCharactersResponse,
   parseMediaEnhancementQuoteResponse,
   parseUserPresetsResponse,
@@ -219,6 +220,8 @@ type GenerationJob = {
   outputCount: number;
   errorCode: string | null;
   createdAt: string;
+  // 服务端每个 job 都带账目；本地类型漏掉它就等于把退款金额和交付张数丢在契约层。
+  cost?: RuntimeGenerationJobCost;
 };
 
 type ApiPayload<T> = {
@@ -319,6 +322,17 @@ export function generatorImageEditModelOptions(
   if (compatibleModelIds === null) return models;
   const compatible = new Set(compatibleModelIds);
   return models.filter((model) => compatible.has(model.id));
+}
+
+// SPEC: 退款文案要说清退了多少、请求几张交付几张。
+// INTENT: 「已退款」三个字不足以让用户对账；没有账目时退回旧文案，不编数字。
+export function generationRefundCopy(cost?: RuntimeGenerationJobCost) {
+  if (!cost) return "Coins for unfinished outputs were refunded to your balance.";
+  const coins = (amount: number) => `${amount} ${amount === 1 ? "coin" : "coins"}`;
+  if (cost.assetCount === 0) {
+    return `Nothing was delivered. ${coins(cost.refunded)} refunded to your balance.`;
+  }
+  return `Delivered ${cost.assetCount} of ${cost.requestedCount}. ${coins(cost.refunded)} refunded for the ${cost.missingOutputs} that did not arrive; ${coins(cost.finalCharge)} charged.`;
 }
 
 export function generatorRouteAfterRemixExit(
@@ -3738,7 +3752,7 @@ export function GeneratorWorkspace() {
                     )}
                     {job.status === "refunded" && (
                       <p className="mt-3 text-[12px] font-medium text-[rgb(170,170,170)]">
-                        Coins for unfinished outputs were refunded to your balance.
+                        {generationRefundCopy(job.cost)}
                       </p>
                     )}
                   </div>

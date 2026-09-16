@@ -1,6 +1,8 @@
 import type { AdminV2HttpMethod } from "@idream/shared/admin";
 
 export type ApiError = {
+  [key: string]: unknown;
+  requestId?: string;
   code?: string;
   message?: string;
   details?: unknown;
@@ -90,11 +92,22 @@ export async function adminV2Request<T>(
       formatApiError(payload.error, "Admin request failed"),
       response.status,
       payload.error.code,
-      payload.error.details,
-      requestId,
+      authorityErrorDetails(payload.error),
+      payload.error.requestId ?? requestId,
     );
   }
   return options.schema ? options.schema.parse(payload.data) : payload.data;
+}
+
+// Command errors also carry blockers/currentSnapshot outside `details`.
+// Preserve these authority facts instead of dropping the only actionable evidence.
+function authorityErrorDetails(error: ApiError): unknown {
+  const facts = Object.fromEntries(Object.entries(error).filter(([key]) => !["code", "message", "requestId", "details"].includes(key)));
+  if (Object.keys(facts).length === 0) return error.details;
+  if (error.details !== null && typeof error.details === "object" && !Array.isArray(error.details)) {
+    return { ...error.details, ...facts };
+  }
+  return error.details === undefined ? facts : { details: error.details, ...facts };
 }
 
 /**

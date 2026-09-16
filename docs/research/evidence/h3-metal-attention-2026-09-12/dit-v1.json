@@ -1,0 +1,199 @@
+{
+  "case": "dit",
+  "input_kind": "synthetic normalized Gaussian, H3-shaped; not captured activations",
+  "shape_bhnd": [
+    1,
+    56,
+    10398,
+    128
+  ],
+  "strides": [
+    [
+      223598592,
+      128,
+      21504,
+      1
+    ],
+    [
+      223598592,
+      128,
+      21504,
+      1
+    ],
+    [
+      74532864,
+      128,
+      7168,
+      1
+    ]
+  ],
+  "dtype": "torch.bfloat16",
+  "learned_norms": {
+    "block": 0,
+    "q_min_max": [
+      0.859375,
+      1.515625
+    ],
+    "k_min_max": [
+      0.78125,
+      1.421875
+    ],
+    "sha256": "f47330aff40e1eb71753ae0426e765a7a5338b549e10ef279dc25cd34fa63b0b"
+  },
+  "checkpoint": "/Users/kk/ComfyUI-Shared/models/diffusion_models/REDMix-MiniMaxH3-A2Ab1-pruned-int8-convrot-ComfyMCP.safetensors",
+  "source_revision": "bd42bcd0b1772bd579b2c2229c4c3e236b5a39f9",
+  "script_sha256": "3c7bd59f720d871359fa6345aadbe58b59bf4dd1649c21fb85b3d96ee7a2cd42",
+  "torch": "2.13.0",
+  "python": "3.13.12",
+  "macos": "26.5.1",
+  "chip": "Apple M4 Max",
+  "packages": {
+    "mps-flash-attn": "0.6.3",
+    "mtlflashattn": "0.2.0"
+  },
+  "reference": {
+    "device": "cpu",
+    "dtype": "float64",
+    "heads": [
+      0,
+      18,
+      37,
+      55
+    ],
+    "query_rows": [
+      0,
+      335,
+      671,
+      1006,
+      1342,
+      1677,
+      2012,
+      2348,
+      2683,
+      3018,
+      3354,
+      3689,
+      4025,
+      4360,
+      4695,
+      5031,
+      5366,
+      5702,
+      6037,
+      6372,
+      6708,
+      7043,
+      7379,
+      7714,
+      8049,
+      8385,
+      8720,
+      9055,
+      9391,
+      9726,
+      10062,
+      10397
+    ],
+    "all_keys": true
+  },
+  "quantization_floor": {
+    "finite": true,
+    "reference_rms": 0.019704855267508734,
+    "rmse": 3.277648749080913e-05,
+    "relative_rmse": 0.0016633711359887106,
+    "max_abs": 0.00022703759389315625,
+    "cosine": 0.9999986167719426
+  },
+  "screening_limits": {
+    "relative_rmse": 0.006653484543954842,
+    "max_abs": 0.002
+  },
+  "memory_scope": "after synchronized calls; retained allocation observations, NOT transient peak per backend",
+  "initial_memory": {
+    "mps_current_bytes": 596262912,
+    "mps_driver_bytes": 1074233344,
+    "process_rss_high_water_bytes": 1990705152
+  },
+  "mps_allocator_fraction": 0.25,
+  "backends": {
+    "sdpa": {
+      "times_ms": [
+        469.04654198442586,
+        444.37637500232086,
+        403.88637501746416,
+        447.4017920147162,
+        443.40895797358826
+      ],
+      "route": "torch SDPA, unchanged dtype",
+      "first_call_ms": 251.55366701073945,
+      "memory_after_first": {
+        "mps_current_bytes": 745328640,
+        "mps_driver_bytes": 1074233344,
+        "process_rss_high_water_bytes": 1990705152
+      },
+      "all_output_finite": true,
+      "error": {
+        "finite": true,
+        "reference_rms": 0.019704855267508734,
+        "rmse": 0.00011762154416659199,
+        "relative_rmse": 0.005969165597503156,
+        "max_abs": 0.0007013269779718306,
+        "cosine": 0.9999907125531078
+      },
+      "operator_screen_pass": true,
+      "last_memory": {
+        "mps_current_bytes": 745329408,
+        "mps_driver_bytes": 2156625920,
+        "process_rss_high_water_bytes": 1997324288
+      },
+      "median_ms": 444.37637500232086,
+      "min_max_ms": [
+        403.88637501746416,
+        469.04654198442586
+      ],
+      "speedup_vs_sdpa": 1.0
+    },
+    "mtl-v1-fp16": {
+      "times_ms": [
+        1343.7045419996139,
+        1371.8167500046548,
+        1379.6501670149155,
+        1356.61545797484,
+        1393.6289999983273
+      ],
+      "route": "mtl v1 (forced); fp16 conversion=True",
+      "first_call_ms": 1120.4408750054426,
+      "memory_after_first": {
+        "mps_current_bytes": 745329408,
+        "mps_driver_bytes": 2156625920,
+        "process_rss_high_water_bytes": 1996734464
+      },
+      "all_output_finite": true,
+      "error": {
+        "finite": true,
+        "reference_rms": 0.019704855267508734,
+        "rmse": 9.860462893468736e-05,
+        "relative_rmse": 0.005004077807020293,
+        "max_abs": 0.0008508907249327458,
+        "cosine": 0.9999874815987082
+      },
+      "operator_screen_pass": true,
+      "last_memory": {
+        "mps_current_bytes": 745329408,
+        "mps_driver_bytes": 2156625920,
+        "process_rss_high_water_bytes": 1997324288
+      },
+      "median_ms": 1371.8167500046548,
+      "min_max_ms": [
+        1343.7045419996139,
+        1393.6289999983273
+      ],
+      "speedup_vs_sdpa": 0.3239327519516094
+    }
+  },
+  "final_memory": {
+    "mps_current_bytes": 596263680,
+    "mps_driver_bytes": 2156625920,
+    "process_rss_high_water_bytes": 1997324288
+  }
+}

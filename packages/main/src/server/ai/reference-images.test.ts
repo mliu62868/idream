@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   generationReferenceRequests,
-  hydratedImageReferenceInputs,
 } from "./reference-images";
+import { hydratedImageReferenceInputs } from "@idream/shared/media/image-references";
 
 describe("image reference hydration authority", () => {
   it("preserves canonical and source roles when both point at the same asset", () => {

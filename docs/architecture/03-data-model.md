@@ -915,7 +915,7 @@ model GenerationModelProfile {                     // 可治理的生成模型�
   profileKey          String
   label               String
   mode                String    @default("image")  /// enum: image | video
-  runner              String    @default("sd_cpp") /// enum: pipeline | sd_cpp | mlx | comfyui | external
+  runner              String    @default("comfyui") /// enum: comfyui（sd_cpp 于 2026-08-03、pipeline|mlx|external 于 2026-09-12 退役）
   pipelineModel       String
   sourceModelPath     String?
   convertedModelPath  String?
@@ -928,7 +928,6 @@ model GenerationModelProfile {                     // 可治理的生成模型�
   sampler             String    @default("dpm++2m")
   scheduler           String    @default("model_default")
   cfgScale            Float     @default(7)
-  negativeTemplateId  String?
   costMultiplier      Float     @default(1)
   requiredEntitlement String?
   maxCount            Int       @default(4)
@@ -947,7 +946,7 @@ model GenerationModelProfile {                     // 可治理的生成模型�
   @@map("generation_model_profiles")
 }
 
-model GenerationPromptTemplate {                   // 可治理的生成 prompt 模板（含 negative）
+model GenerationRecipe {                           // 可治理的生成 prompt 模板（含 negative）；@@map("generation_recipes")
   id            String    @id @default(cuid())
   templateKey   String
   label         String
@@ -1080,7 +1079,7 @@ dev/prod 同为 Postgres（dev 用 `docker-compose.yml` 起本地 PG，见 10）
 | dev（应用内表） | `npm run db:push`（`packages/main/scripts/db-push.mjs` → `prisma db push` + `prisma generate`） | 快速同步 schema，无迁移文件 |
 | dev（验证迁移） | `npm run db:migrate:dev`（`prisma migrate dev`） | 产生迁移文件 |
 | CI / prod（应用内表） | `npm run db:migrate:deploy`（`prisma migrate deploy`） | **迁移文件是应用内表 DDL 的 SSoT** |
-| legacy Chat 导入/cutover 与 schema/role 清理 | `db/sql/*.sql`（`db/sql/apply-validate.sh`） | **仅由用户在 prod 维护窗手工执行**（见 10 §6）；它们是迁移/退役工具，不是当前 Chat 产品 schema 的 SSoT。当前产品表仍以 Main Prisma migrations 为准 |
+| legacy Chat 导入/cutover 与 schema/role 清理 | `db/sql/*.sql` | **仅由用户在 prod 维护窗手工执行**（见 10 §6）；它们是迁移/退役工具，不是当前 Chat 产品 schema 的 SSoT。当前产品表仍以 Main Prisma migrations 为准 |
 
 `package.json` 关键脚本（`packages/main`）：
 

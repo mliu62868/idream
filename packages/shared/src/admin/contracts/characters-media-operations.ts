@@ -64,7 +64,6 @@ export const POCKET_TTS_CATALOG_VOICE_IDS = [
 
 export const systemVoiceProviderSchema = z.enum([
   "mock",
-  "pipeline",
   "pocket_tts",
   "fish_audio",
 ]);
@@ -177,7 +176,7 @@ export const characterVoiceProfileSchema = z
 
 export const characterVoiceWorkspaceSchema = z
   .object({
-    provider: z.enum(["mock", "pipeline", "pocket_tts", "fish_audio"]),
+    provider: z.enum(["mock", "pocket_tts", "fish_audio"]),
     cloningAvailable: z.boolean(),
     runtimeStatus: z.enum(["ready", "unavailable", "inactive"]),
     runtimeEngine: z.enum([

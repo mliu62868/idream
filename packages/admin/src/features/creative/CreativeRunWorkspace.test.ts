@@ -18,12 +18,15 @@ describe("Creative Run review handoff", () => {
   });
 
   it("describes committed mutations separately from projection refresh failures", () => {
+    // INVARIANT: 返回词典 key + 插值实参，不返回成品句子 —— 成品句子在中文后台里
+    //            只能原样吐英文。权威原话仍然原样落在 {detail} 里，不加工。
     expect(committedProjectionWarning(
       "Placement activation",
       new Error("gateway unavailable"),
-    )).toBe(
-      "Placement activation was committed, but the latest projection could not be refreshed: gateway unavailable. Retry the same command safely or refresh the workspace.",
-    );
+    )).toEqual({
+      key: "{action} was committed, but the latest projection could not be refreshed{detail}. Retry the same command safely or refresh the workspace.",
+      values: { action: "Placement activation", detail: ": gateway unavailable" },
+    });
   });
 
   it("normalizes authored campaign copy", () => {

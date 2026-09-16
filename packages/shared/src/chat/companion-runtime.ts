@@ -67,6 +67,13 @@ export const companionWorkspaceRebuildMessageSchema = z
     role: z.enum(["user", "assistant"]),
     content: z.string().min(1),
     createdAt: isoDateTimeSchema,
+    // SPEC: the Character spoke without a user message before it.
+    // INTENT: the transcript is otherwise a strict user/assistant alternation,
+    // and that check is what catches a reordered or truncated export. A
+    // proactive check-in is the one real exchange with no user side, so it is
+    // declared rather than silently tolerated — an unflagged assistant message
+    // out of turn stays an error.
+    unprompted: z.literal(true).optional(),
   })
   .strict();
 
@@ -259,80 +266,6 @@ export function decodeCompanionWorkspaceRebuildFrame(
     throw new Error("expected exactly one relationship rebuild NDJSON frame");
   }
   return companionWorkspaceRebuildFrameSchema.parse(JSON.parse(value));
-}
-
-/** Stream one canonical rebuild without imposing an aggregate history cap. */
-export function createCompanionWorkspaceRebuildBody(
-  request: CompanionWorkspaceRebuild,
-): ReadableStream<Uint8Array> {
-  const encoder = new TextEncoder();
-  let phase: "start" | "message_start" | "content" | "message_complete" | "complete" | "done" = "start";
-  let messageIndex = 0;
-  let contentOffset = 0;
-  return new ReadableStream<Uint8Array>({
-    pull(controller) {
-      if (phase === "start") {
-        phase = request.messages.length > 0 ? "message_start" : "complete";
-        controller.enqueue(encoder.encode(encodeCompanionWorkspaceRebuildFrame({
-          protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
-          type: "start",
-          scope: "relationship",
-          userId: request.userId,
-          characterId: request.characterId,
-          mode: request.mode,
-          messageCount: request.messages.length,
-          ...(request.fence ? { fence: request.fence } : {}),
-        })));
-        return;
-      }
-      const message = request.messages[messageIndex];
-      if (phase === "message_start" && message) {
-        contentOffset = 0;
-        phase = "content";
-        const { content, ...header } = message;
-        controller.enqueue(encoder.encode(encodeCompanionWorkspaceRebuildFrame({
-          protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
-          type: "message_start",
-          message: header,
-          contentLength: content.length,
-        })));
-        return;
-      }
-      if (phase === "content" && message) {
-        const content = message.content.slice(
-          contentOffset,
-          contentOffset + COMPANION_WORKSPACE_REBUILD_CONTENT_CHUNK_CHARS,
-        );
-        contentOffset += content.length;
-        phase = contentOffset === message.content.length ? "message_complete" : "content";
-        controller.enqueue(encoder.encode(encodeCompanionWorkspaceRebuildFrame({
-          protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
-          type: "content_chunk",
-          content,
-        })));
-        return;
-      }
-      if (phase === "message_complete") {
-        messageIndex += 1;
-        phase = messageIndex < request.messages.length ? "message_start" : "complete";
-        controller.enqueue(encoder.encode(encodeCompanionWorkspaceRebuildFrame({
-          protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
-          type: "message_complete",
-        })));
-        return;
-      }
-      if (phase === "complete") {
-        phase = "done";
-        controller.enqueue(encoder.encode(encodeCompanionWorkspaceRebuildFrame({
-          protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
-          type: "complete",
-          messageCount: request.messages.length,
-        })));
-        return;
-      }
-      controller.close();
-    },
-  });
 }
 
 /**

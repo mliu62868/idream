@@ -5,7 +5,7 @@
 1. **产品契约**：[`product/README.md`](product/README.md) → PRD、功能地图、用户故事、当前覆盖与剩余工作。
 2. **工程架构**：[`architecture/README.md`](architecture/README.md) → 技术决策、模块边界、运行与测试；代码和同一 revision 的运行证据是最终事实来源。
 3. **研究资料**：[`research/`](research/) → 外部资料与模型评估，仅在被产品或架构文档引用时影响决策。
-4. **产品审计**：[`product-audits/`](product-audits/) → 按日期保存的运行证据；不得直接当作当前状态。
+4. **产品审计**：审计证据按 [`agents/audit-brief.md`](agents/audit-brief.md) 写进本地 `.scratch/<slug>/`，不进版本库。2026-09-13 前的历史审计证据（`docs/product-audits/`、`output/`）已移出工作树，需要时从 git 历史检索。
 5. **方案记录**：[`superpowers/`](superpowers/) → 已完成方案的历史记录。新的需求应先更新产品/架构权威文档，只有仍需执行的方案才放入这里。
 
 ## 维护规则

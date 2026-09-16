@@ -299,6 +299,7 @@ function versionConflict(requestId: string, currentSnapshot: unknown, expectedVe
       error: {
         code: "conflict",
         message: "Entity version changed",
+        details: { blocker: "version_mismatch", expectedVersion },
         requestId,
         currentSnapshot,
         differences: [`Expected version ${expectedVersion}`],

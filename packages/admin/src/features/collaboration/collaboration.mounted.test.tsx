@@ -88,6 +88,28 @@ describe("collaboration write safety", () => {
     expect(dialog?.querySelector('input[aria-label="Saved view name"]')).not.toBeNull();
   });
 
+  // 删除此前在 Cases / Incidents 上没有入口，视图只进不出；补上入口的同时必须和 Support 一样
+  // 要求敲名字 —— 后台没有回收站，误点就是所有人一起失去这个视图。
+  it("requires the view name before deleting a shared Saved View", async () => {
+    adminV2Request.mockImplementation(async () => ({ items: [savedView] }));
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<SavedViewsControl currentState={currentState} onApply={() => undefined} onSelectedChange={() => undefined} scope="case" selectedId="view-1" />);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await waitUntil(() => container.textContent?.includes("Delete") === true);
+
+    const remove = [...container.querySelectorAll("button")].find((button) => button.getAttribute("aria-label")?.startsWith("Delete saved view"));
+    await act(async () => remove?.click());
+
+    expect(adminV2Request.mock.calls.every(([, init]) => init?.method !== "DELETE")).toBe(true);
+    const dialog = document.querySelector('[role="dialog"]');
+    expect(dialog?.textContent).toContain("Overdue billing");
+    expect(dialog?.textContent).toContain("There is no recycle bin.");
+    expect(dialog?.textContent).toContain("This cannot be undone.");
+    expect(dialog?.querySelector('input[aria-label="Saved view name"]')).not.toBeNull();
+  });
+
   // handoff 会在服务端换掉记录的 ownerId 并 +1 version；父级不重拉就会拿着陈旧 version 去撞 409。
   it("tells the parent record to reload after a handoff transfers ownership", async () => {
     const authorityChanged = vi.fn();

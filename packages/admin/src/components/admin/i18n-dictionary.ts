@@ -6,11 +6,13 @@
 //         每次都是各自绕开；这次从根上分开。
 // INVARIANT: i18n.tsx 继续 re-export 这里的全部导出，所以既有调用点一行都不用改。
 
+import { adminZhCharacterRecovery } from "./i18n-zh-character-recovery";
 import { adminZhCharacters } from "./i18n-zh-characters";
 import { adminZhCommon } from "./i18n-zh-common";
 import { adminZhCreative } from "./i18n-zh-creative";
 import { adminZhCustomers } from "./i18n-zh-customers";
 import { adminZhDashboard } from "./i18n-zh-dashboard";
+import { adminZhMetricValidation } from "./i18n-zh-metric-validation";
 import { adminZhGrowth } from "./i18n-zh-growth";
 import { adminZhPlatformOps } from "./i18n-zh-platform-ops";
 import { adminZhShell } from "./i18n-zh-shell";
@@ -28,14 +30,18 @@ const zh: Record<string, string> = {
   ...adminZhShell,
   ...adminZhDashboard,
   ...adminZhCharacters,
+  ...adminZhCharacterRecovery,
   ...adminZhCreative,
   ...adminZhCustomers,
   ...adminZhGrowth,
+  ...adminZhMetricValidation,
   ...adminZhPlatformOps,
   ...adminZhSystem,
 };
 
 const zhValues: Record<string, string> = {
+  legacy: "旧版结构",
+  unpinned: "未锚定版本",
   // SPEC: 线上表现的枚举值走 zhValues 通道——StatusBadge 直接接收服务端枚举。
   Retire: "下线",
   // maturity 是两个维度：immature 说的是观察窗口还没走完（时间），insufficient_data 才是
@@ -65,6 +71,7 @@ const zhValues: Record<string, string> = {
   audit: "审计",
   available: "已就绪",
   blocked: "已拦截",
+  ready: "就绪",
   built_in: "内置",
   character: "角色",
   comfyui: "ComfyUI",
@@ -287,6 +294,14 @@ const zhValues: Record<string, string> = {
   support: "客服",
   ops: "运维",
   analyst: "分析师",
+  // 账号擦除队列的「在等谁」（compliance.ts COMPLIANCE_ACCOUNT_DELETION_WAITING_ON）。
+  // 它是派生值不是库里的 status：awaiting_chat 同时覆盖「宽限期内正常等待」和
+  // 「宽限期已过还没擦」，只有拆开运营才知道哪一条要现在管。
+  grace_period: "宽限期内",
+  chat_erasure: "等 Chat 擦除",
+  blob_deletion: "删除存储对象",
+  main_purge: "清除主库",
+  nothing: "无",
   // 授权包 key（ADMIN_GRANT_BUNDLES）—— 角色之上可叠加的能力集合。
   character_producer: "角色制作",
   creative_operator: "创意运营",

@@ -32,7 +32,7 @@ import {
 
 type Row = Record<string, unknown>;
 type AdminFormat = ReturnType<typeof useAdminFormat>;
-type ListResponse = { items: Row[]; pageInfo?: PageInfo };
+type ListResponse = { items: Row[]; pageInfo?: PageInfo; enforcementEnabled?: boolean };
 
 /**
  * SPEC: 一条待审批请求在审批人眼里的完整形状。
@@ -269,6 +269,21 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
           onRetry={() => void load(query)}
           snapshotAt={data ? refreshedAt : null}
         />
+      ) : null}
+      {/* SPEC: 开关状态与队列空不空无关，所以这条必须是 section 级横幅。
+          INTENT: 先前它挂在 EmptyState 的 hint 上 —— 只有队列为空时才说。一旦队列里
+            有行，提示就消失，运营看到的是一个像在生效的审批队列。而 enforcement.ts:16
+            在 flag 关闭时直接 return，高风险写入（billing/adjustment、pricing 发布、
+            coin-offers 发布）照常放行：运营批准了一条请求，以为放行了一次高风险写入，
+            实际那次写入根本不需要凭据，而这条 approved 请求永远不会被 consume。 */}
+      {data?.enforcementEnabled === false ? (
+        <p
+          className="rounded-md border border-[var(--ad-border)] bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]"
+          data-testid="approvals-enforcement-off"
+          role="status"
+        >
+          {t("Dual approval is switched off, so no high-risk write creates a request. Enable the dual_approval_enforced flag to start routing work here.")}
+        </p>
       ) : null}
       {!data && loading ? (
         <div className="rounded-lg border p-4" role="status">

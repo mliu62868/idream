@@ -2,7 +2,6 @@ import { resolveMediaAssetAuthorityMap } from "@/server/lib/media-asset-authorit
 import {
   characterImageQualificationSchema,
   type CharacterImageQualification,
-  type CharacterImageReviewRequest,
 } from "@idream/shared/admin";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
@@ -12,7 +11,6 @@ import {
   inspectOperatorUploadAuthority,
   isMediaAssetOperationalForAuthority,
 } from "@/server/lib/media-asset-authority";
-import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { creativeReviewQuality } from "@/server/modules/admin-v2/shared/creative-review-quality";
 import {
   characterDraftAssetPurposes,
@@ -470,21 +468,4 @@ export async function resolveSelectableCharacterImage(
         : {}),
     },
   };
-}
-
-export async function reviewImportedCharacterImage(
-  input: {
-    readonly characterId: string;
-    readonly assetId: string;
-    readonly actor: AdminActor;
-    readonly review: CharacterImageReviewRequest;
-    readonly requestId: string;
-  },
-  db?: Prisma.TransactionClient,
-) {
-  void input;
-  void db;
-  throw Errors.conflict("Manual asset reviews are retired; select the image directly", {
-    code: "manual_asset_review_retired",
-  });
 }

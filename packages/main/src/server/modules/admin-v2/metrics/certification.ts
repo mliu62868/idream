@@ -10,7 +10,16 @@ export const REQUIRED_METRIC_QUALITY_CHECKS = [
   "metrics.eligible_fact_presence",
 ] as const;
 
+export const METRIC_DEFINITION_VALIDATOR_VERSION = 2;
+
 export interface CertificationEvidence {
+  definitionValidation?: {
+    failures?: readonly string[];
+    status: string;
+    checkedAt: Date;
+    matchesDefinition: boolean;
+    hasEvidence: boolean;
+  };
   definitionSnapshot: {
     queryHash: string;
     definitionMatches: boolean;
@@ -56,11 +65,19 @@ export function evaluateMetricCertification(input: {
     if (definitionSnapshot.queryHash !== input.definition.queryHash) failures.push("definition_query_hash_mismatch");
     if (!definitionSnapshot.definitionMatches) failures.push("definition_snapshot_mismatch");
     if (definitionSnapshot.effectiveAt > input.asOf) failures.push("definition_snapshot_not_effective");
+    if (input.evidence.definitionValidation) {
+      const validation = input.evidence.definitionValidation;
+      if (validation.status !== "passed") failures.push("definition_validation_failed", ...(validation.failures ?? []));
+      if (!validation.matchesDefinition) failures.push("definition_validation_identity_mismatch");
+      if (!validation.hasEvidence) failures.push("definition_validation_evidence_missing");
+      if (validation.checkedAt > input.asOf) failures.push("definition_validation_from_future");
+    } else {
     if (definitionSnapshot.qualityState !== "certified" && definitionSnapshot.qualityState !== "directional") {
       failures.push("definition_not_certified");
     }
     if (!definitionSnapshot.lastValidatedAt) failures.push("definition_validation_timestamp_missing");
     if (!definitionSnapshot.hasEvidence) failures.push("definition_validation_evidence_missing");
+    }
   }
 
   for (const checkKey of REQUIRED_METRIC_QUALITY_CHECKS) {

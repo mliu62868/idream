@@ -50,7 +50,13 @@ describe("Companion Product Agent Contract", () => {
       prompt.indexOf("Runtime authority"),
     );
     expect(prompt.indexOf("Soul marker")).toBeGreaterThan(prompt.indexOf("Runtime authority"));
-    expect(prompt).toContain("latest user's language with one short, natural in-Character sentence");
+    // 角色必须先说一句人话再调工具，且不能替附件宣布交付完成。
+    // 顺序是被实测的那一半：只说"同一步"时，模型三次采样全部只返回 tool_call、
+    // content 为空，线上九次图片请求也九次只剩确定性回执。
+    expect(prompt).toContain("one short, natural in-Character sentence");
+    expect(prompt).toContain("OUTPUT ORDER, required");
+    expect(prompt).toContain("Only after that sentence, call the image tool");
+    expect(prompt).toContain("attachment state owns completion");
   });
 
   it("proves a direct image request cannot be delegated back to Character copy", () => {

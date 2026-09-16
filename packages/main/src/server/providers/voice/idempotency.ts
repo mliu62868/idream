@@ -20,3 +20,20 @@ export function voiceChunkIdempotencyKey(
     ? idempotencyKey
     : `${idempotencyKey}:chunk:${chunkIndex + 1}`;
 }
+
+// SPEC: file extension for a synthesized voice artifact, derived from the
+//   provider's content type. Lives beside voiceArtifactKey because the two are
+//   always used together to name one stored object.
+export function audioFileExtension(contentType: string) {
+  const mediaType = contentType.split(";")[0]?.trim().toLowerCase();
+  const extensions: Record<string, string> = {
+    "audio/mpeg": ".mp3",
+    "audio/mp3": ".mp3",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+    "audio/ogg": ".ogg",
+    "audio/flac": ".flac",
+    "audio/webm": ".webm",
+  };
+  return (mediaType && extensions[mediaType]) || ".wav";
+}

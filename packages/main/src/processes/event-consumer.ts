@@ -19,7 +19,11 @@ import {
   dispatchPendingAccountDeletionBlobDeletes,
 } from "@/server/account-deletion-authority";
 import { isProcessEntrypoint } from "./process-entrypoint";
-import { dispatchPendingChatAgentRuns } from "@/server/modules/chat/agent-run-admission";
+import {
+  dispatchPendingChatAgentRuns,
+  reclaimStalledChatAgentRuns,
+} from "@/server/modules/chat/agent-run-admission";
+import { dispatchDueProactiveTurns } from "@/server/modules/chat/proactive-messages";
 
 interface InboundEvent {
   eventId: string;
@@ -319,7 +323,17 @@ export function startEventConsumer(): { close(): Promise<void> } {
     { name: "product_events", run: () => dispatchPendingProductEvents(100, { signal: stopping.signal }) },
     { name: "chat_memory", run: () => dispatchPendingChatEvents({ lane: "memory", batch: 50, signal: stopping.signal }) },
     { name: "chat_lifecycle", run: () => dispatchPendingChatEvents({ lane: "lifecycle", batch: 50, signal: stopping.signal }) },
-    { name: "chat_admission", run: () => dispatchPendingChatAgentRuns(50, stopping.signal) },
+    {
+      name: "chat_admission",
+      // Admitting new attempts and reclaiming abandoned ones are the two halves
+      // of one responsibility: an attempt nobody will ever finish also blocks
+      // every later Turn in that relationship.
+      run: async () => {
+        await dispatchPendingChatAgentRuns(50, stopping.signal);
+        await reclaimStalledChatAgentRuns(50, stopping.signal);
+      },
+    },
+    { name: "proactive_messages", run: () => dispatchDueProactiveTurns(20, stopping.signal).then(() => undefined) },
     { name: "account_blob_deletion", run: () => dispatchPendingAccountDeletionBlobDeletes({ signal: stopping.signal }) },
   ].map((lane) => ({ ...lane, inFlight: null as Promise<void> | null }));
   const reconcile = () => {

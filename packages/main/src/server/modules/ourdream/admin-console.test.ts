@@ -13,21 +13,6 @@ import { env } from "@/server/lib/env";
 import { ACCOUNT_DELETION_GRACE_PERIOD_MS } from "@/server/account-deletion-authority";
 import { CHARACTER_RELEASE_POLICY_VERSION } from "@/server/modules/admin-v2/characters/release-validation";
 import { POST as createCreativeRunV2 } from "@/app/api/v2/admin/creative/runs/route";
-import { GET as adminAuditLogRoute } from "@/app/api/v2/admin/audit-log/route";
-import { PATCH as adminFeatureFlagRoute } from "@/app/api/v2/admin/feature-flags/[key]/route";
-import { GET as adminSavedViewsRoute, POST as adminSavedViewCreateRoute } from "@/app/api/v2/admin/saved-views/route";
-import { DELETE as adminSavedViewDeleteRoute } from "@/app/api/v2/admin/saved-views/[id]/route";
-import { GET as adminSupportRequestsRoute } from "@/app/api/v2/admin/support/requests/route";
-import { PATCH as adminSupportRequestPatchRoute } from "@/app/api/v2/admin/support/requests/[id]/route";
-import { POST as adminSupportEscalateRoute } from "@/app/api/v2/admin/support/requests/[id]/escalate/route";
-import { POST as adminSupportPlaintextRoute } from "@/app/api/v2/admin/support/plaintext/view/route";
-import { GET as adminUsersRoute } from "@/app/api/v2/admin/users/route";
-import { POST as adminUserStatusRoute } from "@/app/api/v2/admin/users/[id]/status/route";
-import { POST as adminUserRoleRoute } from "@/app/api/v2/admin/users/[id]/role/route";
-import {
-  GET as adminUserPermissionsReadRoute,
-  POST as adminUserPermissionsWriteRoute,
-} from "@/app/api/v2/admin/users/[id]/permissions/route";
 import { POST as adminBillingAdjustmentV2 } from "@/app/api/v2/admin/billing/adjustments/route";
 import { GET as adminBillingLedgerV2 } from "@/app/api/v2/admin/billing/ledger/route";
 import { GET as adminDashboardV2 } from "@/app/api/v2/admin/dashboard/route";
@@ -3738,6 +3723,73 @@ describe("user permission overrides", () => {
 });
 
 describe("support plaintext gate", () => {
+  // SPEC: 工单上的诊断同意必须能被兑现成一条具体授权，否则「查看明文」在生产环境
+  //   永远 403 —— SupportConsentGrant 与 LegalHold 的写入此前全在测试文件里。
+  // INVARIANT: 三条边界缺一不可：目标属于工单提交者本人、用户已勾 diagnosticConsent、
+  //   授权限定字段且会过期。
+  it("turns ticket diagnostic consent into a scoped, expiring plaintext grant", async () => {
+    const support = await setupActor("support", "consent-grant");
+    const owner = `${P}consent-owner`;
+    const stranger = `${P}consent-stranger`;
+    await createUser({ id: owner });
+    await createUser({ id: stranger });
+    const job = await prisma.generationJob.create({ data: {
+      id: `${P}consent-job`, userId: owner, mode: "image",
+      prompt: "the private prompt", negativePrompt: "the private negative",
+      controls: {}, presetIds: [], status: "failed", costDreamcoins: 10,
+      provider: "mock-pipeline", errorCode: "provider_failed",
+    } });
+    const strangerJob = await prisma.generationJob.create({ data: {
+      id: `${P}consent-stranger-job`, userId: stranger, mode: "image",
+      prompt: "someone else's prompt", controls: {}, presetIds: [],
+      status: "failed", costDreamcoins: 10, provider: "mock-pipeline",
+    } });
+    const consented = await prisma.supportRequest.create({ data: {
+      ticketId: `${P}consent-ticket`, userId: owner, category: "generation",
+      subject: "My image failed", description: "It failed twice.", diagnosticConsent: true,
+    } });
+    const withheld = await prisma.supportRequest.create({ data: {
+      ticketId: `${P}withheld-ticket`, userId: owner, category: "generation",
+      subject: "No diagnostics please", description: "Do not look.", diagnosticConsent: false,
+    } });
+
+    const grantPath = (ticketId: string) =>
+      `/api/v2/admin/support/requests/${ticketId}/consent-grants`;
+
+    // 边界②：用户没同意，这条路不开。
+    expectError(await adminV2Api("POST", grantPath(withheld.ticketId), {
+      userId: support, role: "support",
+      body: { targetType: "generation_job", targetId: job.id, fields: ["prompt"], reason: "debug the failure" },
+    }), 403, "forbidden");
+
+    // 边界①：一张工单不能变成看别人内容的万能钥匙。
+    expectError(await adminV2Api("POST", grantPath(consented.ticketId), {
+      userId: support, role: "support",
+      body: { targetType: "generation_job", targetId: strangerJob.id, fields: ["prompt"], reason: "debug the failure" },
+    }), 403, "forbidden");
+
+    // 边界③：只授权勾选的字段。
+    const granted = await adminV2Api("POST", grantPath(consented.ticketId), {
+      userId: support, role: "support",
+      body: { targetType: "generation_job", targetId: job.id, fields: ["prompt"], reason: "debug the failure" },
+    });
+    expectOk(granted);
+    expect(granted.data.grant.fields).toEqual(["prompt"]);
+    expect(new Date(granted.data.grant.expiresAt).getTime()).toBeGreaterThan(Date.now());
+
+    // 端到端：发放之后，同一个客服真的能读到明文 —— 且只读到被授权的那个字段。
+    const viewed = await adminV2Api("POST", "/api/v2/admin/support/plaintext/view", {
+      userId: support, role: "support",
+      body: {
+        targetType: "generation_job", targetId: job.id, ticketId: consented.ticketId,
+        reason: "debug the failure", confirmation: job.id,
+      },
+    });
+    expectOk(viewed);
+    expect(viewed.data.plaintext).toEqual({ prompt: "the private prompt" });
+    expect(viewed.data.authorization.ticketId).toBe(consented.ticketId);
+  });
+
   it("requires consent or legal hold and redacts audit payloads", async () => {
     const support = await setupActor("support", "plaintext");
     const owner = `${P}plain-owner`;

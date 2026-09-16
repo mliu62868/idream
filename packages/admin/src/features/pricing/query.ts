@@ -1,4 +1,5 @@
 import { buildCompatibilityListUrl } from "@/features/compatibility-lists/query";
+import { text } from "@/components/admin/ui/format";
 
 export type PricingQuery = { search: string; mode: string; status: string; cursor: string };
 export type PricingDraft = {
@@ -79,4 +80,27 @@ function number(value: string, fallback: number, integer: boolean) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
   return integer ? Math.trunc(parsed) : parsed;
+}
+
+export type PricingEdit = { id: string; ruleKey: string; mode: string; label: string; baseCost: string; multiplier: string };
+
+export function pricingEditFromRow(row: Record<string, unknown>): PricingEdit {
+  return {
+    id: text(row.id),
+    ruleKey: text(row.ruleKey),
+    mode: text(row.mode),
+    label: text(row.label),
+    baseCost: String(row.baseCost ?? ""),
+    multiplier: String(row.multiplier ?? ""),
+  };
+}
+
+// INVARIANT: 判据抄的是 adminPricingRulePatchRequestSchema —— 权威会再校一遍，
+//            这里只是别让运营白发一次请求。
+export function canSavePricingEdit(edit: PricingEdit): boolean {
+  const baseCost = Number(edit.baseCost);
+  const multiplier = Number(edit.multiplier);
+  return edit.label.trim().length > 0
+    && Number.isInteger(baseCost) && baseCost >= 0 && baseCost <= 100_000
+    && Number.isFinite(multiplier) && multiplier >= 0.1 && multiplier <= 20;
 }

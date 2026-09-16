@@ -78,7 +78,7 @@ describe("character draft catalog voice", () => {
     const second = await prepareCharacterDraftVoice({ ...selection, userId: "user-1", draftId: "draft-2" });
     expect(first.voiceId).not.toBe(selection.voiceId);
     expect(first.voiceId).not.toBe(second.voiceId);
-    expect(mocks.createPorts).toHaveBeenCalledWith("pocket_tts", expect.anything());
+    expect(mocks.createPorts).toHaveBeenCalledWith("pocket_tts");
     expect(mocks.preview).toHaveBeenCalledWith(expect.objectContaining({ voiceId: first.voiceId }));
     expect(first).toMatchObject({ provider: "pocket_tts", presetVoiceId: "anna", model: "pocket-tts", preview: { durationMs: 3_200 } });
   });

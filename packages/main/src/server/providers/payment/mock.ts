@@ -1,4 +1,4 @@
-import type { PaymentProvider } from "../types";
+import type { PaymentProvider, PaymentInvoicePaymentEvidence, ProviderResult } from "../types";
 import { paymentProviderCapabilities } from "./capabilities";
 
 export class MockPaymentProvider implements PaymentProvider {
@@ -60,6 +60,16 @@ export class MockPaymentProvider implements PaymentProvider {
       ok: true as const,
       data: this.invoices.get(input.orderId) ?? null,
     };
+  }
+
+  async readInvoicePaymentEvidence(
+    input: Parameters<PaymentProvider["readInvoicePaymentEvidence"]>[0],
+  ): Promise<ProviderResult<PaymentInvoicePaymentEvidence>> {
+    if (input.signal?.aborted) return abortedPaymentRequest();
+    return { ok: true, data: {
+      provider: "mock", invoiceId: input.invoiceId, orderId: input.orderId,
+      status: "unknown", reason: "provider_has_no_cash_authority", payments: [],
+    } };
   }
 
   async createRefund(input: Parameters<PaymentProvider["createRefund"]>[0]) {

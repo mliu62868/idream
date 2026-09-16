@@ -107,7 +107,7 @@ export async function updateOperationalWorkPreference(input: {
       },
     });
     if ((prior?.version ?? 0) !== input.expectedVersion) {
-      throw Errors.conflict("Today preference version changed", {
+      throw Errors.versionConflict("Today preference version changed", {
         expectedVersion: input.expectedVersion,
         currentVersion: prior?.version ?? 0,
       });
@@ -134,7 +134,7 @@ export async function updateOperationalWorkPreference(input: {
           version: { increment: 1 },
         },
       });
-      if (changed.count !== 1) throw Errors.conflict("Today preference version changed");
+      if (changed.count !== 1) throw Errors.versionConflict("Today preference version changed");
       preference = await tx.operationalWorkPreference.findUniqueOrThrow({ where: { id: prior.id } });
     }
     await tx.adminAuditLog.create({

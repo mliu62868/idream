@@ -82,7 +82,7 @@ function ProfileHealthSection() {
   const [busy, setBusy] = useState<"health" | "dryrun" | null>(null);
   const [err, setErr] = useState<unknown>(null);
   const [confirmingDryRun, setConfirmingDryRun] = useState(false);
-  const { feedback, reportSuccess, reportFailure, clearFeedback } = useWriteFeedback();
+  const { feedback, reportSuccess, clearFeedback } = useWriteFeedback();
   const requestGate = useRef(createLatestRequestGate());
 
   // SPEC: 运营不该手敲 UUID —— 没有选择器时，一个打错的字符和一个不存在的 profile 长得一样。
@@ -100,7 +100,7 @@ function ProfileHealthSection() {
       setProfiles([]);
       setProfilesError(error);
     }
-  }, [t]);
+  }, []);
 
   useEffect(() => {
     const gate = requestGate.current;

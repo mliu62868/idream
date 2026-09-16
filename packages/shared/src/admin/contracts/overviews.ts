@@ -71,7 +71,12 @@ export const adminDashboardResponseSchema = z
         billing: z.object({ activeSubscriptions: nonNegativeInt }).strict(),
       })
       .strict(),
+    // SPEC: featureFlags 是一份**截断**的预览列表，featureFlagCount 才是总数。
+    // INTENT: Today 的 "Feature flags" tile 过去读 featureFlags.length，而该列表
+    //   在服务端就 take: 8 —— 旗标超过 8 条后这个数字会永远停在 8。计数必须有
+    //   独立来源，不能从一份带上限的列表推出来。
     featureFlags: z.array(adminFeatureFlagSummarySchema).readonly(),
+    featureFlagCount: nonNegativeInt,
   })
   .strict();
 

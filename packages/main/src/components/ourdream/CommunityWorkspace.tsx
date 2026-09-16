@@ -560,17 +560,19 @@ export function CommunityWorkspace() {
               className="mb-3 text-[11px] font-bold uppercase tracking-wide text-white/70"
               data-testid="community-campaign-authority-status"
             >
+              {/* 区分"正在展示的是什么"这件事要保留，但用读者认得的词说：
+                  campaign / authority / editorial overview 是运营内部词汇。 */}
               {activeCampaign.source === "authority"
                 ? campaignsAuthority.phase === "ready"
-                  ? "Live community campaign"
+                  ? "This week's spotlight"
                   : campaignsAuthority.phase === "error"
-                    ? "Campaigns unavailable · Last known campaign"
-                    : "Refreshing campaigns · Last known campaign"
+                    ? "Couldn't refresh · showing the last spotlight"
+                    : "Refreshing · showing the last spotlight"
                 : campaignsAuthority.phase === "error"
-                  ? "Campaigns unavailable · Editorial community overview"
+                  ? "Couldn't load spotlights · showing editors' picks"
                   : campaignsAuthority.phase === "ready"
-                    ? "No active campaign · Editorial community overview"
-                    : "Loading campaigns · Editorial community overview"}
+                    ? "Editors' picks"
+                    : "Loading spotlights · showing editors' picks"}
             </p>
             {campaignsAuthority.phase === "error" ? (
               <button

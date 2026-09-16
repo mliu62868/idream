@@ -1,3 +1,5 @@
+import { translateAdmin } from "@/components/admin/i18n-dictionary";
+import { renderCharacterCommandMessage } from "./character-command-copy";
 import { describe, expect, it, vi } from "vitest";
 import type { AdminCommandStatus } from "@idream/shared/admin";
 import { AdminV2RequestError, type adminV2Request } from "@/lib/admin-v2-api";
@@ -510,10 +512,10 @@ describe("character command journal — 权威刷新与代际", () => {
 
   it("describes a committed write separately from an authoritative refresh failure", () => {
     expect(
-      committedCharacterProjectionWarning(
+      renderCharacterCommandMessage(committedCharacterProjectionWarning(
         "Release publish",
         new Error("workspace unavailable"),
-      ),
+      ), (key, values) => translateAdmin("en", key, values)),
     ).toBe(
       "Release publish was committed, but the authoritative Character workspace could not be refreshed: workspace unavailable. Refresh the authoritative workspace before another write.",
     );

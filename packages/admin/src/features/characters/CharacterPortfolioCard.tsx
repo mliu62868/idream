@@ -144,6 +144,21 @@ export function resolveCharacterPortfolioPrimaryAction(
       requiresAssets: false,
     };
   }
+  // SPEC: 权威判定"表现数据不可信"要比"没有数据"更早说出来。
+  // INTENT: qualityState=invalid 的意思是漏斗事实自相矛盾或曝光链不精确（performance.ts:191-198），
+  //         也就是这张卡上的数字不能用来做决定。此前这个状态在前端没有任何出口：
+  //         needsAttention 只覆盖"发布满 7 天零观测"(no_data)，invalid 的角色因此和正常角色
+  //         长得一模一样，运营会照着一份已知有问题的数据做下架和资源分配。
+  if (item.operationalState.qualityState === "invalid") {
+    return {
+      description:
+        "The performance authority marked this Character's funnel facts invalid, so these numbers cannot support a decision.",
+      eyebrow: "Performance data invalid",
+      href: `/admin/characters/${encodeURIComponent(item.characterId)}?tab=monitor`,
+      label: "Inspect performance quality",
+      requiresAssets: false,
+    };
+  }
   if (item.needsAttention) {
     return {
       description:

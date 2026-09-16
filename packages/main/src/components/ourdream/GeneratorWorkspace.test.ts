@@ -6,6 +6,7 @@ import {
   generatorShowsSavedLooksEmpty,
   generatorConfigRequestIsCurrent,
   generatorImageEditModelOptions,
+  generationRefundCopy,
   generatorRouteAfterRemixExit,
   invalidateGeneratorConfigAuthority,
   loadGeneratorLooksForViewer,
@@ -772,5 +773,41 @@ describe("generator viewer data bootstrap", () => {
     expect(loaders.loadMedia).not.toHaveBeenCalled();
     expect(loaders.loadPresets).not.toHaveBeenCalled();
     expect(loaders.loadIdentityMedia).not.toHaveBeenCalled();
+  });
+});
+
+describe("generationRefundCopy", () => {
+  it("states how much came back and how many outputs arrived", () => {
+    expect(
+      generationRefundCopy({
+        charged: 32,
+        refunded: 24,
+        finalCharge: 8,
+        assetCount: 1,
+        requestedCount: 4,
+        missingOutputs: 3,
+      }),
+    ).toBe(
+      "Delivered 1 of 4. 24 coins refunded for the 3 that did not arrive; 8 coins charged.",
+    );
+  });
+
+  it("says nothing arrived when the whole batch failed", () => {
+    expect(
+      generationRefundCopy({
+        charged: 8,
+        refunded: 8,
+        finalCharge: 0,
+        assetCount: 0,
+        requestedCount: 1,
+        missingOutputs: 1,
+      }),
+    ).toBe("Nothing was delivered. 8 coins refunded to your balance.");
+  });
+
+  it("keeps the unquantified wording when the job carries no ledger", () => {
+    expect(generationRefundCopy(undefined)).toBe(
+      "Coins for unfinished outputs were refunded to your balance.",
+    );
   });
 });

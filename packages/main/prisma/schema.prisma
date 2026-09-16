@@ -66,7 +66,6 @@ model User {
   generationFeedback GenerationFeedback[]
   affiliateApplication AffiliateApplication?
   affiliateClicks     AffiliateClick[]
-  creatorLevelFacts   CreatorLevelFact[]
 
   @@index([dataClass, status, deletedAt])
   @@map("users")
@@ -559,7 +558,6 @@ model CharacterStats {
   characterId    String    @id
   likesCount     Int       @default(0)
   chatsCount     Int       @default(0)
-  viewsCount     Int       @default(0)
   lastActivityAt DateTime?
   character      Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
 
@@ -671,6 +669,10 @@ model RecentChat {
   proactiveEnabled              Boolean    @default(false)
   proactiveIntervalHours        Int        @default(24)
   proactiveNextAt               DateTime?
+  // Set when a proactive reply lands, cleared when the user opens the session.
+  // Only Character-initiated messages need announcing; the user knows about
+  // the ones they sent themselves.
+  proactiveUnreadAt             DateTime?
   entryExposureId               String?
   entryJourneyId                String?
   entryPlacementId              String?
@@ -716,7 +718,7 @@ model AffiliateApplication {
   updatedAt   DateTime @updatedAt
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   clicks      AffiliateClick[]
-  @@map("AffiliateApplication")
+  @@map("affiliate_applications")
 }
 
 model AffiliateClick {
@@ -731,23 +733,9 @@ model AffiliateClick {
   application    AffiliateApplication? @relation(fields: [code], references: [id], onDelete: Cascade)
   @@unique([code, visitorKey])
   @@index([code, createdAt])
-  @@map("AffiliateClick")
+  @@map("affiliate_clicks")
 }
 
-model CreatorLevelFact {
-  id                  String   @id
-  userId              String
-  level               String
-  version             Int
-  publishedCharacters Int      @default(0)
-  publishedComics     Int      @default(0)
-  followers           Int      @default(0)
-  effectiveAt         DateTime @default(now())
-  createdAt           DateTime @default(now())
-  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  @@unique([userId, version])
-  @@map("CreatorLevelFact")
-}
 
 // One row is exactly what the product displays: one user message and its one
 // selected final assistant reply. Main retains content-free terminal evidence;
@@ -1052,7 +1040,7 @@ model ContentProductionBatch {
   failedItems             Int                     @default(0)
   approvedItems           Int                     @default(0)
   estimatedCostDreamcoins Int                     @default(0)
-  status                  String                  @default("draft") // enum: draft | queued | reviewing | completed | archived
+  status                  String                  @default("draft") // enum: draft | queued | reviewing | completed | failed | archived
   ownerId                 String?
   dueAt                   DateTime?
   priority                String                  @default("normal")
@@ -1317,6 +1305,33 @@ model CheckoutSession {
   @@index([planId, createdAt])
   @@index([coinOfferId, createdAt])
   @@map("checkout_sessions")
+}
+
+// Immutable observed receipts in native currency. No fiat valuation or Character allocation.
+// Source references are retained without a User FK; financial evidence is not a user profile.
+model CashCaptureFact {
+  id                   String   @id @default(cuid())
+  provider             String
+  merchantAccountId    String
+  paymentMethodId      String
+  providerPaymentId    String
+  providerInvoiceId    String
+  checkoutId           String
+  amount               String
+  currency             String
+  receivedAt           DateTime
+  source               String
+  evidenceHash         String
+  evidence             Json
+  environment          String
+  dataClass            String
+  actorIsInternal      Boolean
+  observedAt           DateTime @default(now())
+
+  @@unique([provider, merchantAccountId, paymentMethodId, providerPaymentId], map: "cash_capture_facts_payment_identity_key")
+  @@index([checkoutId])
+  @@index([environment, dataClass, receivedAt])
+  @@map("cash_capture_facts")
 }
 
 model ModerationEvent {
@@ -1997,23 +2012,6 @@ model PublicCatalogQualification {
   @@map("public_catalog_qualifications")
 }
 
-model PublicContentRepairItem {
-  id          String    @id @default(cuid())
-  entityType  String
-  entityId    String
-  reasonCodes Json
-  evidence    Json
-  repairPath  String
-  status      String    @default("open") // enum: open | resolved | waived
-  activeKey   String?   @unique
-  detectedAt  DateTime  @default(now())
-  resolvedAt  DateTime?
-  updatedAt   DateTime  @default(now()) @updatedAt
-
-  @@index([status, entityType, detectedAt])
-  @@index([entityType, entityId])
-  @@map("public_content_repair_items")
-}
 
 model ReleaseCheckResult {
   id              String   @id @default(cuid())

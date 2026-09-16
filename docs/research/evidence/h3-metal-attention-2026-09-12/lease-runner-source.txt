@@ -1,0 +1,23 @@
+import { withGenerationAcceleratorLease } from "../../packages/gen/src/backend/generation-accelerator-lease";
+const cases = process.argv.slice(2);
+if (!cases.length) throw new Error("Pass case names");
+await withGenerationAcceleratorLease("video", async () => {
+  for (const port of [8188,8189,8190]) {
+    const q = await (await fetch(`http://127.0.0.1:${port}/queue`)).json();
+    if (q.queue_running.length || q.queue_pending.length) throw new Error(`Runner ${port} is busy`);
+  }
+  console.log("Generation accelerator lease acquired; ComfyUI queues idle");
+  for (const name of cases) {
+    const child = Bun.spawn([
+      ".tmp/h3-metal-attention-20260912/venv/bin/python", "-u",
+      "scripts/benchmark-h3-metal-attention.py", "--case", name,
+      "--checkpoint", "/Users/kk/ComfyUI-Shared/models/diffusion_models/REDMix-MiniMaxH3-A2Ab1-pruned-int8-convrot-ComfyMCP.safetensors",
+      "--output", `.tmp/h3-metal-attention-20260912/${name}${process.env.H3_BENCH_SUFFIX || ""}.json`,
+      "--backends", process.env.H3_BENCH_BACKENDS || "sdpa,mps-flash,mtl-auto,mtl-fp16",
+    ], {stdout:"inherit", stderr:"inherit", env:{...process.env,MTLFLASHATTN_SHIM:"off",MTLFLASHATTN_SDPA:"off",MTLFLASHATTN_TRACE:"1"}});
+    const timer = setTimeout(() => child.kill("SIGKILL"), 300_000);
+    const code = await child.exited;
+    clearTimeout(timer);
+    if (code !== 0) throw new Error(`${name} exited ${code}`);
+  }
+}, {waitTimeoutMs:60_000});
