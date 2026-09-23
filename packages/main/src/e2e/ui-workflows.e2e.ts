@@ -3434,7 +3434,7 @@ test("create UI resumes a draft and prepares public characters for publication",
   await page.getByTestId("create-next").click();
   const publishStep = page.getByTestId("create-step-publish");
   await expect(publishStep).toBeVisible({ timeout: 10_000 });
-  await publishStep.getByRole("button", { name: "public" }).click();
+  await publishStep.getByRole("button", { name: "Public", exact: true }).click();
   await page.getByTestId("create-submit").click();
   await expect(
     page.getByText(`${characterName} is saved and awaiting publication preparation. Sharing starts after publication.`),
@@ -5907,27 +5907,9 @@ test("profile UI handles redeem, referral, billing, and media actions", async ({
   await expect(page.getByText("Profile updated.")).toBeVisible({ timeout: 10_000 });
   await expect(page.getByText(nextName)).toBeVisible({ timeout: 10_000 });
 
-  await page.getByRole("checkbox", { name: "Product updates" }).uncheck();
   await page.getByRole("checkbox", { name: "Mute Slow Burn" }).check({ timeout: 10_000 });
-  await page.getByRole("button", { name: "Save preferences" }).click();
+  await page.getByRole("button", { name: "Save hidden tags" }).click();
   await expect(page.getByText("Preferences updated.")).toBeVisible({ timeout: 10_000 });
-  await expect
-    .poll(async () => {
-      const user = await prisma.user.findUniqueOrThrow({
-        where: { email },
-        select: { id: true },
-      });
-      const preferences = await prisma.userPreferences.findUnique({
-        where: { userId: user.id },
-        select: { notificationSettings: true },
-      });
-      const notificationSettings = preferences?.notificationSettings as
-        | { productUpdates?: unknown }
-        | null
-        | undefined;
-      return notificationSettings?.productUpdates;
-    })
-    .toBe(false);
   await expect
     .poll(async () => {
       const user = await prisma.user.findUniqueOrThrow({
@@ -5942,9 +5924,6 @@ test("profile UI handles redeem, referral, billing, and media actions", async ({
     })
     .toContain(mutedTagSlug);
   await page.reload();
-  await expect(page.getByRole("checkbox", { name: "Product updates" })).not.toBeChecked({
-    timeout: 10_000,
-  });
   await expect(page.getByRole("checkbox", { name: "Mute Slow Burn" })).toBeChecked({
     timeout: 10_000,
   });
@@ -6210,7 +6189,7 @@ test("my ai shows deferred group chat and pack tabs as explicit empty states", a
     "aria-pressed",
     "false",
   );
-  await expect(page.getByRole("button", { name: "packs" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "packs" })).toHaveCount(0);
 
   await page.getByRole("button", { name: "group chats" }).click();
   await expect(page.getByRole("button", { name: "group chats" })).toHaveAttribute(
@@ -6218,13 +6197,11 @@ test("my ai shows deferred group chat and pack tabs as explicit empty states", a
     "true",
   );
   await expect(
-    page.getByRole("heading", { name: "Group chats are not in this beta" }),
+    page.getByRole("heading", { name: "No group chats yet" }),
   ).toBeVisible();
-  await expect(page.getByTestId("library-empty-state").getByRole("link")).toHaveCount(0);
-
-  await page.getByRole("button", { name: "packs" }).click();
-  await expect(page.getByRole("heading", { name: "Packs are not in this beta" })).toBeVisible();
-  await expect(page.getByTestId("library-empty-state").getByRole("link")).toHaveCount(0);
+  await expect(
+    page.getByTestId("library-empty-state").getByRole("link", { name: "Create a group chat" }),
+  ).toHaveAttribute("href", "/chat/groups");
   expect(consoleErrors.filter((message) => !message.includes("favicon"))).toEqual([]);
 });
 
@@ -6239,7 +6216,7 @@ test("profile subroutes deep-link to the matching account panels", async ({ page
     {
       path: "/profile/notifications",
       testId: "profile-notifications-panel",
-      activeLabel: "Product updates",
+      activeLabel: "Save hidden tags",
     },
     {
       path: "/profile/account-management",

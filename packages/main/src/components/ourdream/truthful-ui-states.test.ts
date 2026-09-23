@@ -230,16 +230,19 @@ describe("truthful public UI states", () => {
       status: "approved",
       visibility: "private",
       publicationState: "live",
-    })).toBe("approved");
+    })).toBe("private");
     expect(createdCharacterPublicationStatus({
       status: "approved",
       visibility: "private",
       publicationState: "awaiting_publication",
-    })).toBe("approved");
+    })).toBe("private");
     expect(createdCharacterPublicationStatus({
       status: "pending_review",
       visibility: "public",
     })).toBe("awaiting publication preparation");
+    // Raw enum values never reach the card.
+    expect(createdCharacterPublicationStatus({ status: "rejected", visibility: "private" })).toBe("not approved");
+    expect(createdCharacterPublicationStatus({ status: "some_new_state" })).toBe("unavailable");
     expect(source("CreateWorkspace.tsx")).toContain(
       "is saved and awaiting publication preparation. Sharing starts after publication.",
     );

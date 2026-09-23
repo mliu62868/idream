@@ -17,6 +17,7 @@ import { useReportDialog } from "./ReportDialog";
 import { AppSidebar } from "./AppSidebar";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { SiteFooter } from "./SiteFooter";
+import { apiEnvelopeErrorMessage } from "@/lib/viewer-resource-client";
 
 type CharacterDetail = PublicCharacterDetail;
 
@@ -93,7 +94,8 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
         return;
       }
       if (!response.ok) {
-        setStatus("Could not start chat. Please try again.");
+        const payload = await response.json().catch(() => null);
+        setStatus(apiEnvelopeErrorMessage(payload) || "Could not start chat. Please try again.");
         return;
       }
       const payload = parseChatSessionCreateResponse(await response.json());
@@ -122,7 +124,11 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
         return;
       }
       const payload = parseCharacterLikeResponse(await response.json());
-      setCharacter({ ...character, liked: payload.liked });
+      setCharacter({
+        ...character,
+        liked: payload.liked,
+        ...(payload.likesCount === undefined ? {} : { likesCount: payload.likesCount, likes: payload.likes ?? String(payload.likesCount) }),
+      });
       setStatus(payload.liked ? "Character liked." : "Character like removed.");
     } catch {
       setStatus("Could not save your like. Please try again.");

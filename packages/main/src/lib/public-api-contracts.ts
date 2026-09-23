@@ -621,7 +621,11 @@ const chatSessionCreateResponseSchema = successEnvelope(
 );
 
 const characterLikeResponseSchema = successEnvelope(
-  z.object({ liked: z.boolean() }),
+  z.object({
+    liked: z.boolean(),
+    likesCount: z.number().int().nonnegative().optional(),
+    likes: z.string().optional(),
+  }),
 );
 
 const reportResponseSchema = successEnvelope(

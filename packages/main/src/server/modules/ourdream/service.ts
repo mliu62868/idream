@@ -202,6 +202,7 @@ import {
   mediaFileExtension,
   mediaViewUrl,
   visualProfileDTO,
+  formatCount,
   type CharacterWithPublicRelations,
 } from "./public-read-model";
 import { loadCharacterRendererPreview } from "@/server/modules/admin-v2/characters/renderer-preview";
@@ -1263,11 +1264,7 @@ async function listCharacters(request: Request) {
     "male",
     "trans",
   ]);
-  const style = publicCharacterEnumFilter(url.searchParams.get("style"), [
-    "realistic",
-    "anime",
-    "hybrid",
-  ]);
+  const style = publicCharacterEnumFilter(url.searchParams.get("style"), CHARACTER_STYLES);
 
   const where: Prisma.CharacterWhereInput = {
     AND: [
@@ -1594,7 +1591,18 @@ async function likeCharacter(request: Request, id: string) {
       });
     }
   });
-  return ok({ liked: true });
+  return ok({ liked: true, ...(await likeTotals(id)) });
+}
+
+// INTENT: 点赞后详情页要显示新计数；返回服务端真实值，不让客户端自行 ±1
+//   （fixture/内部账号的点赞不计入公开计数）。
+async function likeTotals(characterId: string) {
+  const stats = await prisma.characterStats.findUnique({
+    where: { characterId },
+    select: { likesCount: true },
+  });
+  const likesCount = stats?.likesCount ?? 0;
+  return { likesCount, likes: formatCount(likesCount) };
 }
 
 async function unlikeCharacter(request: Request, id: string) {
@@ -1612,7 +1620,7 @@ async function unlikeCharacter(request: Request, id: string) {
       data: { likesCount: { decrement: 1 } },
     });
   }
-  return ok({ liked: false });
+  return ok({ liked: false, ...(await likeTotals(id)) });
 }
 
 async function listTags(request: Request) {
@@ -3966,10 +3974,6 @@ async function library(request: Request, tab: string) {
     // a client-side change to that route would have been silently overridden.
     return ok({ items: groups.map(group => ({ id: group.id, type: "group_chat", title: group.title, status: group.status, description: group.members.map(member => member.name).join(" · ") })), emptyCta: null });
   }
-  if (tab === "packs") {
-    return ok({ items: [], emptyCta: null });
-  }
-
   throw Errors.notFound("Library tab not found");
 }
 
