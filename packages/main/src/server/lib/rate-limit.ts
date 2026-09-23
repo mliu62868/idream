@@ -35,6 +35,8 @@ export const RATE_LIMITS = {
   contentReport: { limit: 20, windowMs: 60 * 60_000 },
   // 埋点：匿名开放写，正常用户一次会话也会打不少，阈值放宽但不能无界。
   eventTrack: { limit: 300, windowMs: 60 * 60_000 },
+  // 推广点击：匿名开放写。一个真实访客一小时点不了几十次推广链接。
+  affiliateClick: { limit: 30, windowMs: 60 * 60_000 },
 } as const satisfies Record<string, RateLimitPolicy>;
 
 export type RateLimitScope = keyof typeof RATE_LIMITS;

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
 import { z } from "zod";
 import { Errors } from "@/server/lib/errors";
@@ -43,9 +44,38 @@ export async function applyAffiliate(db: AffiliateDb, userId: string, input: unk
  });
  return db.affiliateApplication.findUniqueOrThrow({ where: { userId } });
 }
-export async function recordAffiliateClick(db: AffiliateDb, code: string, visitorKey: string, landingPath: string) {
+/**
+ * SPEC: one click per code per visitor per attribution window.
+ * INTENT: the visitor is what the server can see — client IP and User-Agent —
+ * never a key the client names; a self-named key let anyone mint a click per
+ * request. The attribution cookie this route set earlier is honoured only when
+ * its click row exists, so a forged cookie cannot mint one either. The window is
+ * a fixed bucket so the (code, visitorKey) unique index enforces it.
+ */
+export function affiliateVisitorKey(request: Request, now = new Date()) {
+  const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || request.headers.get("x-real-ip")?.trim() || "";
+  const userAgent = request.headers.get("user-agent") ?? "";
+  const bucket = Math.floor(now.getTime() / (AFFILIATE_ATTRIBUTION_WINDOW_DAYS * 24 * 60 * 60 * 1000));
+  return `srv_${bucket}_${createHash("sha256").update(`${ip}\n${userAgent}`).digest("hex").slice(0, 40)}`;
+}
+
+/** Returns null when the promoter clicked their own link: that is not traffic. */
+export async function recordAffiliateClick(db: AffiliateDb, input: {
+  code: string;
+  visitorKey: string;
+  cookieVisitorKey: string | null;
+  landingPath: string;
+  viewerUserId: string | undefined;
+}) {
+ const { code, landingPath } = input;
  const app = await db.affiliateApplication.findFirst({ where: { id: code, status: "approved" } });
  if (!app) throw Errors.notFound("Affiliate link is unavailable");
+ if (input.viewerUserId === app.userId) return null;
+ if (input.cookieVisitorKey) {
+   const earlier = await db.affiliateClick.findUnique({ where: { code_visitorKey: { code, visitorKey: input.cookieVisitorKey } } });
+   if (earlier) return earlier;
+ }
+ const visitorKey = input.visitorKey;
  return db.affiliateClick.upsert({ where: { code_visitorKey: { code, visitorKey } }, update: {}, create: { id: crypto.randomUUID(), affiliateUserId: app.userId, code, visitorKey, landingPath } });
 }
 
