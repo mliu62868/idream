@@ -631,8 +631,9 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
       userId,
       ageGate: true,
       body: {
+        // firstMessage is not part of the identity projection, so the confirmed
+        // identity survives and the persona check is what blocks publishing.
         advancedDetails: {
-          description: "",
           firstMessage: "",
         },
       },
@@ -649,10 +650,7 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
       "Complete the character persona before publishing",
     );
     expect(incompletePersonaSubmit.error?.details).toMatchObject({
-      missingFields: [
-        "description",
-        "firstMessage",
-      ],
+      missingFields: ["firstMessage"],
     });
 
     const completedPersona = await api("PATCH", `character-drafts/${draftId}`, {
