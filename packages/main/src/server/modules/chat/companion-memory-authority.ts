@@ -21,6 +21,7 @@ import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
+import { settleChatTurnUsage } from "./turn-ledger";
 
 const DESTRUCTIVE_MEMORY_EVENT_TYPES = [
   MAIN_TO_CHAT_EVENTS.companionMemoryRebuildRequestedV1,
@@ -314,7 +315,7 @@ export async function clearCompanionMemory(userId: string, characterId: string) 
         sessionId: { in: endingSessionIds },
         assistantStatus: { in: ["pending", "generating"] },
       },
-      select: { id: true, attempt: true },
+      select: { id: true, attempt: true, statsCountedAt: true, admittedAt: true },
     });
     const now = new Date();
     await tx.chatTurn.updateMany({
@@ -327,6 +328,8 @@ export async function clearCompanionMemory(userId: string, characterId: string) 
         admissionLeaseUntil: null,
       },
     });
+    // Same allowance rule as a user's Stop: a reply Chat never started is not charged.
+    for (const turn of active) await settleChatTurnUsage(tx, turn, "cancelled", now);
     // Turn.memoryEnabled is the immutable projection pin used by every later
     // canonical rebuild. Clearing only the mutable Session flag would let a
     // late rebuild resurrect the archived transcript.

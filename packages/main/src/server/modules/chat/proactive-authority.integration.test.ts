@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { compileCharacterSoul } from "@idream/shared";
 import { FREE_DAILY_MESSAGES } from "@idream/shared/chat/limits";
-import { chatExchangeCompletedV2Schema } from "@idream/shared/contracts";
+import { chatExchangeCompletedV2Schema, chatExchangeCorrectionV2Schema } from "@idream/shared/contracts";
 import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { AppError } from "@/server/lib/errors";
@@ -14,10 +14,12 @@ import {
   createChatSession,
   deleteChatMessage,
   deleteChatSession,
+  editChatTurn,
   getChatSession,
   listChatSessions,
   regenerateChatTurn,
 } from "./turn-ledger";
+import { clearCompanionMemory } from "./companion-memory-authority";
 
 const prefix = `zt-proactive-authority-${randomUUID()}-`;
 
@@ -303,6 +305,29 @@ describe("daily allowance ledger", () => {
       .toMatchObject({ voidedAt: null });
   });
 
+  // SPEC: 清空记忆取消进行中的回复，与用户点 Stop 同口径：Chat 还没受理的不扣额度。
+  it("frees the allowance of a Turn that clearing memory cancelled before Chat ran it", async () => {
+    const f = await fixture();
+    const pending = await send(f);
+    await clearCompanionMemory(f.userId, f.characterId);
+    expect(await prisma.chatTurn.findUniqueOrThrow({ where: { id: pending.snapshot!.turnId } }))
+      .toMatchObject({ assistantStatus: "cancelled" });
+    expect(await prisma.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId: pending.snapshot!.turnId } }))
+      .toMatchObject({ voidedAt: expect.any(Date) });
+  });
+
+  it("keeps charging a Turn that clearing memory cancelled while Chat streamed it", async () => {
+    const f = await fixture();
+    const streaming = await send(f);
+    await prisma.chatTurn.update({
+      where: { id: streaming.snapshot!.turnId },
+      data: { assistantStatus: "generating", admittedAt: new Date() },
+    });
+    await clearCompanionMemory(f.userId, f.characterId);
+    expect(await prisma.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId: streaming.snapshot!.turnId } }))
+      .toMatchObject({ voidedAt: null });
+  });
+
   it("counts a deleted proactive Turn as proactive, not as the user's message", async () => {
     const f = await fixture();
     await exhaustDailyAllowance(f.userId, f.sessionId, FREE_DAILY_MESSAGES - 1);
@@ -341,6 +366,59 @@ describe("revising around a proactive Turn", () => {
     await deleteChatMessage(f.userId, proactive.assistant.id);
     const session = await getChatSession(f.userId, f.sessionId);
     expect(session.messages.map((message) => (message as { id?: unknown }).id)).not.toContain(proactive.assistant.id);
+  });
+});
+
+// SPEC: Serving 换了 Release 时，进行中的回复不能被归档吊死；等它结束，下次打开再切到新 Release。
+describe("opening a chat after Serving moved to a new Release", () => {
+  async function publicFixture() {
+    const creatorId = `${prefix}${randomUUID()}`;
+    const userId = `${prefix}${randomUUID()}`;
+    await createUser({ id: creatorId });
+    await createUser({ id: userId });
+    const character = await createCharacter({ id: `${creatorId}-character`, creatorId, source: "user", visibility: "public" });
+    const soul = compileCharacterSoul({
+      name: "Nova", age: 31, gender: "female", characterPromise: "A ceramicist who works late.", detailsMarkdown: "Unhurried and specific.",
+    });
+    if (!soul.ok) throw new Error("Invalid fixture Soul");
+    const project = await prisma.characterProject.create({ data: { characterId: character.id } });
+    const release = async (version: number) => {
+      const content = await prisma.characterContentVersion.create({ data: {
+        characterId: character.id, version, sourceType: "test", contentHash: `${soul.snapshot.compiled.fingerprint}-${version}`,
+        personaSnapshot: JSON.parse(JSON.stringify(soul.snapshot)), openingSnapshot: { firstMessage: "Hello." }, appearanceSnapshot: {},
+      } });
+      return prisma.characterRelease.create({ data: {
+        projectId: project.id, revisionId: `${character.id}-revision-${version}`, characterContentVersionId: content.id,
+        generationProvenance: {}, releasePlacementManifest: {}, snapshotHash: `${character.id}-hash-${version}`,
+        status: "published", publishedAt: new Date(),
+      } });
+    };
+    const first = await release(1);
+    await prisma.characterServing.create({ data: { characterId: character.id, currentReleaseId: first.id, state: "live" } });
+    const moveServing = async () => {
+      const next = await release(2);
+      await prisma.characterRelease.update({ where: { id: first.id }, data: { status: "superseded" } });
+      await prisma.characterServing.update({ where: { characterId: character.id }, data: { currentReleaseId: next.id } });
+      return next;
+    };
+    return { userId, characterId: character.id, moveServing };
+  }
+
+  it("keeps the session with a pending reply and moves once the reply ended", async () => {
+    const f = await publicFixture();
+    const session = await createChatSession(f.userId, { characterId: f.characterId });
+    const pending = await send({ userId: f.userId, sessionId: session.id });
+    const next = await f.moveServing();
+
+    const reopened = await createChatSession(f.userId, { characterId: f.characterId });
+    expect(reopened.id).toBe(session.id);
+    expect(await prisma.recentChat.findUniqueOrThrow({ where: { sessionId: session.id } })).toMatchObject({ status: "active" });
+
+    await commitSent(pending.snapshot!, "Still here.");
+    const moved = await createChatSession(f.userId, { characterId: f.characterId });
+    expect(moved.id).not.toBe(session.id);
+    expect(await prisma.recentChat.findUniqueOrThrow({ where: { sessionId: moved.id } })).toMatchObject({ characterReleaseId: next.id });
+    expect(await prisma.recentChat.findUniqueOrThrow({ where: { sessionId: session.id } })).toMatchObject({ status: "archived", activeKey: null });
   });
 });
 
@@ -412,5 +490,58 @@ describe("chat exchange metric event", () => {
     await commitSent(later.snapshot!, "Welcome back.");
     const [event] = await exchangeEvents(later.snapshot!.turnId);
     expect(chatExchangeCompletedV2Schema.parse(event.props).engagementSessionId).toBe(`eng_${later.snapshot!.turnId}`);
+  });
+});
+
+// SPEC: 编辑/删除一条已计入指标的回复，同事务写 chat.exchange.corrected.v2；从未送达过的不写。
+describe("chat exchange correction metric event", () => {
+  async function correctionEvents(turnId: string) {
+    const rows = await prisma.analyticsEvent.findMany({
+      where: { name: "chat.exchange.corrected.v2", sourceService: "main", sourceEventId: { startsWith: `chat_exchange_correction:${turnId}:` } },
+      orderBy: { sourceEventId: "asc" },
+    });
+    return rows.map((row) => chatExchangeCorrectionV2Schema.parse(row.props));
+  }
+
+  it("records an edit of a sent exchange at the replaced attempt", async () => {
+    const f = await fixture();
+    const turn = await send(f, "Morning.");
+    await commitSent(turn.snapshot!, "Morning to you.");
+    await editChatTurn(f.userId, turn.userMessage.id, "Evening.");
+    expect(await correctionEvents(turn.snapshot!.turnId)).toEqual([
+      { exchangeId: turn.snapshot!.turnId, correctionType: "edited", correctionRevision: 1, userId: f.userId },
+    ]);
+    expect(await prisma.mainOutboxEvent.count({
+      where: { id: `product_metric_chat_exchange_correction_${turn.snapshot!.turnId}_edited_1`, eventType: "product.event.persisted.v2" },
+    })).toBe(1);
+  });
+
+  it("records a deleted message", async () => {
+    const f = await fixture();
+    const turn = await send(f, "Coffee?");
+    await commitSent(turn.snapshot!, "Always.");
+    await deleteChatMessage(f.userId, turn.assistant.id);
+    expect(await correctionEvents(turn.snapshot!.turnId)).toEqual([{
+      exchangeId: turn.snapshot!.turnId, correctionType: "deleted", correctionRevision: 1, userId: f.userId,
+      sessionId: f.sessionId, messageIds: [turn.userMessage.id, turn.assistant.id],
+    }]);
+  });
+
+  it("supersedes every counted exchange of a deleted session", async () => {
+    const f = await fixture();
+    const turn = await send(f, "Morning.");
+    await commitSent(turn.snapshot!, "Morning to you.");
+    await deleteChatSession(f.userId, f.sessionId);
+    expect(await correctionEvents(turn.snapshot!.turnId)).toEqual([
+      expect.objectContaining({ correctionType: "superseded", correctionRevision: 1, sessionId: f.sessionId }),
+    ]);
+  });
+
+  it("records nothing for an exchange that never delivered a reply", async () => {
+    const f = await fixture();
+    const failed = await send(f, "Morning.");
+    await commitFailed(failed.snapshot!);
+    await editChatTurn(f.userId, failed.userMessage.id, "Evening.");
+    expect(await correctionEvents(failed.snapshot!.turnId)).toEqual([]);
   });
 });

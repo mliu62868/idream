@@ -79,7 +79,8 @@ const METRIC_EVENT_DESCRIPTORS = new Map<string, MetricEventDescriptor>([
   // Main has owned the Turn and emitted this since Chat lost its database;
   // "chat" stays valid so events Chat already recorded still re-project.
   [METRIC_PRODUCT_EVENTS.chatExchangeCompleted, { schema: chatExchangeCompletedV2Schema, serverOutcome: true, allowedSources: new Set(["main", "chat"]) }],
-  [METRIC_PRODUCT_EVENTS.chatExchangeCorrected, { schema: chatExchangeCorrectionV2Schema, serverOutcome: true, allowedSources: new Set(["chat"]) }],
+  // Main records edits and deletes of the Turns it owns; see turn-ledger.ts appendChatExchangeCorrected.
+  [METRIC_PRODUCT_EVENTS.chatExchangeCorrected, { schema: chatExchangeCorrectionV2Schema, serverOutcome: true, allowedSources: new Set(["main", "chat"]) }],
   [METRIC_PRODUCT_EVENTS.customerSignupCompleted, { schema: customerSignupCompletedV2Schema, serverOutcome: true, allowedSources: new Set(["main"]) }],
   [METRIC_PRODUCT_EVENTS.subscriptionActivated, { schema: subscriptionActivatedV2Schema, serverOutcome: true, allowedSources: new Set(["main"]) }],
   [METRIC_PRODUCT_EVENTS.subscriptionEnded, { schema: subscriptionEndedV2Schema, serverOutcome: true, allowedSources: new Set(["main"]) }],

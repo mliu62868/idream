@@ -7,7 +7,7 @@ import type {
   ChatExperiencePreference,
   UserChatPersona,
 } from "@idream/shared/contracts";
-import { chatContextDirectivesSchema, chatExchangeCompletedV2Schema, chatExecutionSnapshotSchema, chatExperiencePreferenceSchema, chatTerminalCommitSchema, DEFAULT_CHAT_EXPERIENCE, MAIN_TO_CHAT_EVENTS, METRIC_PRODUCT_EVENTS } from "@idream/shared/contracts";
+import { chatContextDirectivesSchema, chatExchangeCompletedV2Schema, chatExchangeCorrectionV2Schema, chatExecutionSnapshotSchema, chatExperiencePreferenceSchema, chatTerminalCommitSchema, DEFAULT_CHAT_EXPERIENCE, MAIN_TO_CHAT_EVENTS, METRIC_PRODUCT_EVENTS } from "@idream/shared/contracts";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
@@ -121,10 +121,27 @@ export async function createChatSession(
     }
     // INVARIANT: a session keeps its immutable Release pin. When Serving moves,
     // preserve that history and open a new active session instead of mutating it.
-    await prisma.recentChat.updateMany({
-      where: { sessionId: existing.sessionId, activeKey },
-      data: { status: "archived", activeKey: null },
+    // INTENT: admission only runs Turns of active sessions, so archiving under a
+    // pending reply would leave it spinning forever. Cancelling it would throw
+    // away the answer the user is waiting for, and refusing would block opening
+    // the chat at all. Keep the old session until its reply ends; the next open
+    // moves to the new Release. Locks follow beginChatTurn so no reply can start
+    // between the check and the archive.
+    const kept = await prisma.$transaction(async (tx) => {
+      const { session } = await lockChatScope(tx, { userId, at: { session: existing.sessionId } });
+      if (session.activeKey !== activeKey) return null;
+      const active = await tx.chatTurn.findFirst({
+        where: { sessionId: session.sessionId, assistantStatus: { in: ACTIVE_ASSISTANT_STATES } },
+        select: { id: true },
+      });
+      if (active) return session;
+      await tx.recentChat.update({
+        where: { sessionId: session.sessionId },
+        data: { status: "archived", activeKey: null },
+      });
+      return null;
     });
+    if (kept) return publicSession(kept);
   }
 
   try {
@@ -417,6 +434,9 @@ export async function editChatTurn(userId: string, messageId: string, nextConten
     const contextDirectives = originalSnapshot?.contextDirectives ?? [];
     const experience = originalSnapshot?.experience ?? null;
     const userPersona = originalSnapshot?.userPersona ?? null;
+    // The edit invalidates every earlier attempt; the replacement reply is the
+    // next attempt and makes the exchange count again once it is sent.
+    await appendChatExchangeCorrected(tx, current, { userId, correctionType: "edited", correctionRevision: previousAttempt }, now);
     const edited = await tx.chatTurn.update({
       where: { id: turn.id },
       data: {
@@ -700,6 +720,13 @@ export async function deleteChatMessage(userId: string, messageId: string) {
     if (ACTIVE_ASSISTANT_STATES.includes(current.assistantStatus)) {
       throw Errors.conflict("Cancel the active reply before deleting this chat turn");
     }
+    await appendChatExchangeCorrected(tx, current, {
+      userId,
+      correctionType: "deleted",
+      correctionRevision: current.attempt,
+      sessionId: current.sessionId,
+      messageIds: [current.userMessageId, current.assistantMessageId],
+    }, new Date());
     await redactChatImageSourceText(tx, {
       userId,
       reason: "logical_turn_deleted",
@@ -747,8 +774,18 @@ async function deleteSessionTranscript(tx: Prisma.TransactionClient, userId: str
     if (active) throw Errors.conflict("Cancel the active reply before deleting this chat");
     const turnIds = await tx.chatTurn.findMany({
       where: { sessionId },
-      select: { id: true },
+      select: { id: true, attempt: true, origin: true, statsCountedAt: true, characterContentVersionId: true, userMessageId: true, assistantMessageId: true },
     });
+    const deletedAt = new Date();
+    for (const turn of turnIds) {
+      await appendChatExchangeCorrected(tx, turn, {
+        userId,
+        correctionType: "superseded",
+        correctionRevision: turn.attempt,
+        sessionId,
+        messageIds: [turn.userMessageId, turn.assistantMessageId],
+      }, deletedAt);
+    }
     await redactChatImageSourceText(tx, {
       userId,
       reason: "session_deleted",
@@ -1084,7 +1121,7 @@ async function assertChatQuota(tx: Prisma.TransactionClient, userId: string) {
  *     by more than that one Turn.
  * INVARIANT: the fact row is never deleted here; operational usage stays whole.
  */
-async function settleChatTurnUsage(
+export async function settleChatTurnUsage(
   tx: Prisma.TransactionClient,
   turn: { id: string; statsCountedAt: Date | null; admittedAt: Date | null },
   outcome: "sent" | "failed" | "cancelled",
@@ -1198,6 +1235,50 @@ async function appendChatExchangeCompleted(
       characterReleaseId: turn.characterReleaseId,
     },
     payload,
+  });
+}
+
+/**
+ * SPEC: a user edit, message delete or session delete of an exchange that was
+ * already counted emits `chat.exchange.corrected.v2` in the same transaction.
+ * INTENT: the projector marks the exchange fact ineligible for every correction
+ * except `selected`; without this an edited or deleted reply kept counting in
+ * WPCU and activation. Rules carried over from the Chat producer before
+ * 59089e316:
+ *   - edited: revision = the attempt being replaced; the next sent attempt
+ *     (revision + 1) makes the exchange count again, whatever the arrival order.
+ *   - deleted / superseded (session delete): revision = the current attempt, so
+ *     a late completion of that same attempt cannot revive it.
+ *   - `selected` has no producer: a Turn has one reply, and regeneration
+ *     already replaces it through a higher-attempt completion event.
+ *   - only exchanges that ever produced a completion (user origin, a sent reply,
+ *     a content version) are corrected; anything else would sit deferred forever.
+ */
+async function appendChatExchangeCorrected(
+  tx: Prisma.TransactionClient,
+  turn: { id: string; origin: string; statsCountedAt: Date | null; characterContentVersionId: string | null },
+  correction: {
+    userId: string;
+    correctionType: "edited" | "deleted" | "superseded";
+    correctionRevision: number;
+    sessionId?: string;
+    messageIds?: string[];
+  },
+  at: Date,
+) {
+  if (turn.origin !== "user" || !turn.statsCountedAt || !turn.characterContentVersionId) return;
+  // INVARIANT: same as the completion event — a derived metric never rolls back the user's edit.
+  const parsed = chatExchangeCorrectionV2Schema.safeParse({ exchangeId: turn.id, ...correction });
+  if (!parsed.success) {
+    logger.error({ turnId: turn.id, correctionType: correction.correctionType, issues: parsed.error.issues.slice(0, 5) }, "chat exchange correction metric outside its contract; skipped");
+    return;
+  }
+  await appendCanonicalMetricEvent(tx, {
+    sourceEventId: `chat_exchange_correction:${turn.id}:${correction.correctionType}:${correction.correctionRevision}`,
+    eventType: METRIC_PRODUCT_EVENTS.chatExchangeCorrected,
+    occurredAt: at,
+    userId: correction.userId,
+    payload: parsed.data,
   });
 }
 

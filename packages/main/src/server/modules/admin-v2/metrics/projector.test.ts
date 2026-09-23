@@ -148,6 +148,24 @@ describe("canonical metric fact projector", () => {
         characterReleaseId: null,
       },
     })).resolves.toMatchObject({ status: "applied", factType: "chat_exchange" });
+
+    await expect(projectCanonicalMetricEvent(prisma, {
+      id: `${prefix}-canonical-main-corrected`,
+      sourceService: "main",
+      sourceEventId: `${prefix}-main-corrected`,
+      name: "chat.exchange.corrected.v2",
+      schemaVersion: 2,
+      occurredAt: new Date("2026-07-02T12:05:00Z"),
+      ingestedAt: new Date("2026-07-02T12:05:01Z"),
+      environment: "production",
+      dataClass: "customer",
+      trustClass: "canonical",
+      actor: { userId, isInternal: false },
+      context: {},
+      props: { exchangeId: `${prefix}-main-exchange`, correctionType: "edited", correctionRevision: 1, userId },
+    })).resolves.toMatchObject({ status: "applied", factType: "chat_exchange_correction" });
+    expect(await prisma.chatExchangeFact.findUniqueOrThrow({ where: { exchangeId: `${prefix}-main-exchange` } }))
+      .toMatchObject({ eligible: false, correctionType: "edited" });
   });
 
   it("replays regenerate, edit, delete, and selection corrections into exact activation and D1 metrics", async () => {
