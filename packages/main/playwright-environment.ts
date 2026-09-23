@@ -242,6 +242,17 @@ export function managedPlaywrightWebServers(
   ManagedPlaywrightWebServer,
 ] {
   return [
+    // The fixture also serves the Chat model endpoint; Chat is not ready until
+    // it can reach that endpoint, so the fixture starts first.
+    {
+      command: `bun src/e2e/pipeline-image-fixture-server.ts --port ${environment.pipelinePort}`,
+      url: `${environment.pipelineBaseURL}/health`,
+      reuseExistingServer: false,
+      timeout: 30_000,
+      env: {
+        ...environment.serviceEnv,
+      },
+    },
     {
       command: "bun src/e2e/start-playwright-chat-service.ts",
       url: `${environment.chatBaseURL}/readyz`,
@@ -281,15 +292,6 @@ export function managedPlaywrightWebServers(
         MAIN_WEB_URL: environment.mainBaseURL,
         IDREAM_NEXT_DIST_DIR: environment.adminDistDir,
         IDREAM_NEXT_TSCONFIG: environment.adminTsconfigPath,
-      },
-    },
-    {
-      command: `bun src/e2e/pipeline-image-fixture-server.ts --port ${environment.pipelinePort}`,
-      url: `${environment.pipelineBaseURL}/health`,
-      reuseExistingServer: false,
-      timeout: 30_000,
-      env: {
-        ...environment.serviceEnv,
       },
     },
     {

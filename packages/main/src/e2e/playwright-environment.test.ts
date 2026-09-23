@@ -85,39 +85,39 @@ describe("managed Playwright environment", () => {
     expect(servers).toHaveLength(8);
     expect(servers.every((server) => server.reuseExistingServer === false)).toBe(true);
     expect(servers.map((server) => server.url)).toEqual([
+      `${first.pipelineBaseURL}/health`,
       `${first.chatBaseURL}/readyz`,
       first.mainBaseURL,
       first.adminBaseURL,
-      `${first.pipelineBaseURL}/health`,
       undefined,
       undefined,
       undefined,
       undefined,
     ]);
     expect(servers.filter((server) => server.url)).toHaveLength(4);
-    expect(servers[0]?.command).toContain("start-playwright-chat-service");
-    expect(servers[0]?.gracefulShutdown).toEqual({
+    expect(servers[1]?.command).toContain("start-playwright-chat-service");
+    expect(servers[1]?.gracefulShutdown).toEqual({
       signal: "SIGTERM",
       timeout: 30_000,
     });
-    expect(servers[0]?.env.CHAT_REDIS_URL).toBe(first.redisURL);
-    expect(servers[0]?.env.CHAT_FS_ROOT).toBe(first.chatFsRoot);
-    expect(servers[0]?.env.BLOB_ROOT).toBe(first.blobRoot);
-    expect(servers[1]?.env.CHAT_SERVICE_URL).toBe(first.chatBaseURL);
+    expect(servers[1]?.env.CHAT_REDIS_URL).toBe(first.redisURL);
+    expect(servers[1]?.env.CHAT_FS_ROOT).toBe(first.chatFsRoot);
     expect(servers[1]?.env.BLOB_ROOT).toBe(first.blobRoot);
-    expect(servers[1]?.env.IDREAM_NEXT_DIST_DIR).toBe(
+    expect(servers[2]?.env.CHAT_SERVICE_URL).toBe(first.chatBaseURL);
+    expect(servers[2]?.env.BLOB_ROOT).toBe(first.blobRoot);
+    expect(servers[2]?.env.IDREAM_NEXT_DIST_DIR).toBe(
       ".next/playwright-main-3110-a1b2c3d4",
     );
-    expect(servers[1]?.env.IDREAM_NEXT_TSCONFIG).toBe(
+    expect(servers[2]?.env.IDREAM_NEXT_TSCONFIG).toBe(
       ".next/playwright-config-main-3110-a1b2c3d4/tsconfig.json",
     );
-    expect(servers[2]?.env.IDREAM_NEXT_DIST_DIR).toBe(
+    expect(servers[3]?.env.IDREAM_NEXT_DIST_DIR).toBe(
       ".next/playwright-admin-3111-a1b2c3d4",
     );
-    expect(servers[2]?.env.IDREAM_NEXT_TSCONFIG).toBe(
+    expect(servers[3]?.env.IDREAM_NEXT_TSCONFIG).toBe(
       ".next/playwright-config-admin-3111-a1b2c3d4/tsconfig.json",
     );
-    expect(servers[2]?.env.BLOB_ROOT).toBe(first.blobRoot);
+    expect(servers[3]?.env.BLOB_ROOT).toBe(first.blobRoot);
     expect(servers[4]?.command).toBe("bun run --cwd ../gen start:image");
     expect(servers[4]?.wait).toEqual({
       stdout: /gen\/image workers started/,
@@ -215,8 +215,8 @@ describe("managed Playwright environment", () => {
       IGREP_LLM_API_KEY: "playwright-model-key",
     });
     const servers = managedPlaywrightWebServers(environment);
-    expect(servers[0]?.url).toBe(`${environment.chatBaseURL}/readyz`);
-    expect(servers[0]?.env.CHAT_MODEL_BASE_URL).toBe(servers[1]?.env.CHAT_MODEL_BASE_URL);
+    expect(servers[1]?.url).toBe(`${environment.chatBaseURL}/readyz`);
+    expect(servers[1]?.env.CHAT_MODEL_BASE_URL).toBe(servers[2]?.env.CHAT_MODEL_BASE_URL);
   });
 
   it("rejects a cleanup plan whose Chat directory is not the exact run authority", () => {
