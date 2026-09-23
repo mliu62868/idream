@@ -274,6 +274,7 @@ model Character {
   looks                 CharacterLook[]
   voiceProfiles         CharacterVoiceProfile[]
   likes                 CharacterLike[]
+  editDrafts            CharacterDraft[]         @relation("CharacterEditDrafts")
   serving               CharacterServing?
   currentContentVersion CharacterContentVersion? @relation("CharacterCurrentContentVersion", fields: [currentContentVersionId, id], references: [id, characterId], onDelete: Restrict, onUpdate: Cascade, map: "characters_currentContentVersion_character_fkey")
 
@@ -379,12 +380,17 @@ model CharacterDraft {
   advancedDetails Json
   tags            Json
   previewJobId    String?
+  // Set only for an edit draft: the owned Character this draft revises. Create
+  // resume ignores these drafts; submit appends versions to this Character.
+  editsCharacterId String?
   createdAt       DateTime              @default(now())
   updatedAt       DateTime              @updatedAt
   owner           User                  @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  editsCharacter  Character?            @relation("CharacterEditDrafts", fields: [editsCharacterId], references: [id], onDelete: Cascade)
   previewJobs     CharacterPreviewJob[]
 
   @@index([ownerId])
+  @@index([editsCharacterId])
   @@map("character_drafts")
 }
 

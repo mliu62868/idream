@@ -93,6 +93,20 @@ export function ageGateCookie() {
   });
 }
 
+export const AFFILIATE_COOKIE = "idream_affiliate";
+
+// Carries "<code>:<visitorKey>" of the affiliate click this browser made, so the
+// signup that follows can be attributed. Lifetime equals the attribution window.
+export function affiliateAttributionCookie(value: string, windowDays: number) {
+  return serializeCookie(AFFILIATE_COOKIE, value, {
+    expires: new Date(Date.now() + 1000 * 60 * 60 * 24 * windowDays),
+    httpOnly: true,
+    sameSite: "lax",
+    secure: env.APP_ENV === "production",
+    path: "/",
+  });
+}
+
 export function anonymousCookie(anonymousId: string) {
   const expires = new Date(Date.now() + 1000 * 60 * 60 * 24 * 365);
   return serializeCookie(ANONYMOUS_COOKIE, anonymousId, {

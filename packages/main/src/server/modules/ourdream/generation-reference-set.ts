@@ -41,7 +41,9 @@ type CharacterVisualProfileSource = {
 export async function createActiveCharacterVisualProfileVersion(
   tx: Prisma.TransactionClient,
   character: CharacterVisualProfileSource,
-  input: { createdFrom: string },
+  // `anchorAssetIds` replaces the inherited Reference Set with a newly confirmed
+  // identity (owner edit); omitted, the active references carry forward.
+  input: { createdFrom: string; anchorAssetIds?: string[] },
 ) {
   await lockCharacterGenerationAuthority(tx, character.id);
   await assertCharacterIdentityAuthorityMutable(tx, character.id);
@@ -65,7 +67,7 @@ export async function createActiveCharacterVisualProfileVersion(
       weight: reference.weight,
       selectionReason: reference.selectionReason,
     })) ?? [];
-  const anchorAssetIds = inheritedReferences
+  const anchorAssetIds = input.anchorAssetIds ?? inheritedReferences
     .filter((reference) =>
       reference.role === "primary_face" || reference.role === "identity_anchor"
     )
@@ -78,6 +80,7 @@ export async function createActiveCharacterVisualProfileVersion(
   }
   const version = (active?.version ?? 0) + 1;
   const createdFrom =
+    !input.anchorAssetIds &&
     inheritedReferences.length === 0 &&
     (!active || active.createdFrom.startsWith("generation_bootstrap"))
       ? `generation_bootstrap:${input.createdFrom}`
@@ -98,7 +101,9 @@ export async function createActiveCharacterVisualProfileVersion(
       createdFrom,
     }),
   });
-  if (inheritedReferences.length > 0) {
+  if (input.anchorAssetIds) {
+    await createReferenceSetRevision(tx, created, input.createdFrom);
+  } else if (inheritedReferences.length > 0) {
     await createReferenceSetRevision(
       tx,
       created,

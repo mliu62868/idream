@@ -175,6 +175,35 @@ describe("explore: search, filter, sort, pagination", () => {
     expect(ids).toEqual([`${P}c-alpha`, `${P}c-beta`, `${P}c-gamma`]);
   });
 
+  // SPEC (EX-02): For You follows the viewer's own likes / chats; it must not
+  // be Popular under another name once there is a signal.
+  it("ranks for-you by the viewer's liked tags and moves chatted Characters back", async () => {
+    const viewer = `${P}for-you-viewer`;
+    await createUser({ id: viewer });
+    await seedChar({ id: `${P}liked-noir`, name: "ZZQLIKED Noir", creatorId: sys, tagSlug: `${P}noir` });
+    await prisma.characterTag.create({ data: { characterId: `${P}c-gamma`, tagId: `${P}tag-${P}noir` } });
+    await prisma.characterLike.create({ data: { userId: viewer, characterId: `${P}liked-noir` } });
+    await prisma.recentChat.create({ data: {
+      sessionId: `${P}for-you-session`, userId: viewer, characterId: `${P}c-alpha`, title: "Alpha",
+    } });
+    try {
+      const forYou = await api("GET", "characters", { userId: viewer, ageGate: true, query: { q: TOKEN, sort: "for-you", limit: 28 } });
+      const popular = await api("GET", "characters", { userId: viewer, ageGate: true, query: { q: TOKEN, sort: "popular", limit: 28 } });
+      expectOk(forYou);
+      expectOk(popular);
+      const ids = (res: typeof forYou) => (res.data.items as Array<{ id: string }>).map((c) => c.id);
+      expect(ids(forYou)).toEqual([`${P}c-gamma`, `${P}c-beta`, `${P}c-alpha`]);
+      expect(ids(popular)).toEqual([`${P}c-alpha`, `${P}c-beta`, `${P}c-gamma`]);
+      // The offset cursor walks the same total order.
+      const first = await api("GET", "characters", { userId: viewer, ageGate: true, query: { q: TOKEN, sort: "for-you", limit: 2 } });
+      const second = await api("GET", "characters", { userId: viewer, ageGate: true, query: { q: TOKEN, sort: "for-you", limit: 2, cursor: first.data.nextCursor } });
+      expect([...ids(first), ...ids(second)]).toEqual(ids(forYou));
+    } finally {
+      await prisma.characterTag.deleteMany({ where: { characterId: `${P}c-gamma` } });
+      await prisma.recentChat.deleteMany({ where: { userId: viewer } });
+    }
+  });
+
   it("searches by name and sorts by popularity (chats desc)", async () => {
     const res = await api("GET", "characters", {
       ageGate: true,

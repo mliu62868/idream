@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { AffiliateClickTracker } from "@/components/ourdream/AffiliateClickTracker";
 import { AgeGateBoundary } from "@/components/ourdream/AgeGateBoundary";
 import { AnnouncementBanner } from "@/components/ourdream/AnnouncementBanner";
 import { publicSiteOrigin } from "@/lib/public-site-origin";
@@ -36,6 +37,7 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark h-full antialiased">
       <body className="min-h-full">
+        <AffiliateClickTracker />
         <AgeGateBoundary>
           <AnnouncementBanner />
           {children}

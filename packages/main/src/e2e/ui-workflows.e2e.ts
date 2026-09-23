@@ -3274,13 +3274,21 @@ test("create UI walks the multi-step builder and shows the character in My AI", 
   const editedName = `${characterName} Edited`;
   const editedDescription = "Edited from My AI to verify created-character management.";
 
-  await originalShell.getByRole("button", { name: "Edit character" }).click();
-  const editForm = originalShell.getByTestId("character-edit-form");
-  await expect(editForm).toBeVisible();
-  await editForm.getByRole("textbox", { name: "Character name" }).fill(editedName);
-  await editForm.getByRole("textbox", { name: "Character description" }).fill(editedDescription);
-  await editForm.getByRole("button", { name: "Save character edit" }).click();
-  await expect(page.getByText("Character updated.")).toBeVisible({ timeout: 10_000 });
+  // CR-06: Edit reopens the full wizard on an edit draft; unchanged looks keep the identity.
+  await originalShell.getByRole("link", { name: "Edit character" }).click();
+  await expect(page).toHaveURL(/\/create\?edit=/);
+  await expect(page.getByRole("heading", { name: `Edit ${characterName}` })).toBeVisible({ timeout: 10_000 });
+  await page.getByPlaceholder("Nova Reyes").fill(editedName);
+  await page.getByTestId("create-next").click();
+  await page.getByTestId("create-next").click();
+  await page.getByLabel("Character promise").fill(editedDescription);
+  await page.getByTestId("create-next").click();
+  await expect(page.getByTestId("edit-identity-kept")).toBeVisible();
+  await page.getByTestId("create-next").click();
+  await page.getByTestId("create-submit").click();
+  await expect(page.getByText(`Saved changes to ${editedName}.`, { exact: false })).toBeVisible({ timeout: 20_000 });
+  await page.goto("/custom");
+  await page.getByRole("button", { name: "created" }).click();
   await expect(originalCard).toContainText(editedName, { timeout: 10_000 });
   await expect(originalCard).toContainText(editedDescription, { timeout: 10_000 });
 
