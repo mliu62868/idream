@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { ArrowLeft, Flag, Heart, MessageCircle, Sparkles } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   parseCharacterDetailResponse,
   parseCharacterLikeResponse,
@@ -72,6 +72,20 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
     return () => { document.title = previous; };
   }, [character?.name]);
 
+  const resumedChat = useRef(false);
+  useEffect(() => {
+    if (!character || resumedChat.current) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("resume") !== "chat") return;
+    resumedChat.current = true;
+    params.delete("resume");
+    const query = params.toString();
+    window.history.replaceState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`);
+    void startChat();
+    // startChat reads only `character`, which is the trigger here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [character]);
+
   async function startChat() {
     if (!character) return;
     setBusy(true);
@@ -90,7 +104,7 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
         body: JSON.stringify({ characterId: character.id, ...completeAttribution }),
       });
       if (response.status === 401) {
-        window.location.assign(signupUrlForCurrentCharacter());
+        window.location.assign(signupUrlForCurrentCharacter("chat"));
         return;
       }
       if (!response.ok) {
@@ -222,7 +236,12 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
 }
 
 
-function signupUrlForCurrentCharacter() {
-  const next = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+// INTENT: 游客点 Chat 被带去注册；回来时带上 resume=chat，详情页自动接着开聊，
+//   用户不必在同一个按钮上点第二次。
+function signupUrlForCurrentCharacter(resume?: "chat") {
+  const params = new URLSearchParams(window.location.search);
+  if (resume) params.set("resume", resume);
+  const query = params.toString();
+  const next = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`;
   return `/signup?next=${encodeURIComponent(next)}`;
 }

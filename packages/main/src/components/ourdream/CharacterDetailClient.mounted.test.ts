@@ -120,6 +120,16 @@ describe("CharacterDetailClient like relationship", () => {
     expect(container.textContent).not.toContain("Could not start chat");
   });
 
+  it("resumes the chat a guest asked for once they come back from signup", async () => {
+    window.history.replaceState(null, "", "/characters/character-1?resume=chat");
+    await act(async () =>
+      root.render(createElement(CharacterDetailClient, { id: "character-1" }))
+    );
+    await waitUntil(() => mutationMethods.length > 0);
+    expect(mutationMethods).toEqual(["POST"]);
+    expect(window.location.search).toBe("");
+  });
+
   function findButton(label: string) {
     return [...container.querySelectorAll("button")].find(
       (button) => button.textContent?.trim() === label,
