@@ -258,6 +258,7 @@ function invocationFailure(input: {
     EMPTY_RESPONSE: "provider_empty_response",
     INVALID_RESPONSE: "provider_invalid_response",
     INVALID_ROUTE: "provider_invalid_route",
+    TRANSPORT: "provider_unavailable",
   };
   const providerCode = input.turnFailure?.code
     ? providerCodes[input.turnFailure.code]
@@ -268,7 +269,8 @@ function invocationFailure(input: {
       message: "companion provider response failed",
       retryable: providerCode === "provider_empty_response"
         || providerCode === "provider_first_token_timeout"
-        || providerCode === "provider_idle_timeout",
+        || providerCode === "provider_idle_timeout"
+        || providerCode === "provider_unavailable",
     };
   }
   if (input.igrepFailure) {

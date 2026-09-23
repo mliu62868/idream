@@ -118,6 +118,38 @@ describe("canonical metric fact projector", () => {
     ]);
   });
 
+  // Main owns the Turn since Chat lost its database; its exchange events must project.
+  it("accepts completed exchanges authored by Main", async () => {
+    await expect(projectCanonicalMetricEvent(prisma, {
+      id: `${prefix}-canonical-main-completed`,
+      sourceService: "main",
+      sourceEventId: `${prefix}-main-completed`,
+      name: "chat.exchange.completed.v2",
+      schemaVersion: 2,
+      occurredAt: new Date("2026-07-02T12:00:00Z"),
+      ingestedAt: new Date("2026-07-02T12:00:01Z"),
+      environment: "production",
+      dataClass: "customer",
+      trustClass: "canonical",
+      actor: { userId, isInternal: false },
+      context: { characterId: "character-v2", characterContentVersionId: "content-v4", characterReleaseId: null },
+      props: {
+        exchangeId: `${prefix}-main-exchange`,
+        userMessageId: `${prefix}-main-user-message`,
+        assistantMessageId: `${prefix}-main-assistant-message`,
+        selectedAssistantMessageId: `${prefix}-main-assistant-message`,
+        assistantAttemptNo: 1,
+        isRegeneration: false,
+        sessionId: `${prefix}-main-chat-session`,
+        engagementSessionId: `${prefix}-main-engagement-session`,
+        userId,
+        characterId: "character-v2",
+        characterContentVersionId: "content-v4",
+        characterReleaseId: null,
+      },
+    })).resolves.toMatchObject({ status: "applied", factType: "chat_exchange" });
+  });
+
   it("replays regenerate, edit, delete, and selection corrections into exact activation and D1 metrics", async () => {
     const replayId = `${prefix}-golden-replay`;
     const replayUserId = `${replayId}-user`;

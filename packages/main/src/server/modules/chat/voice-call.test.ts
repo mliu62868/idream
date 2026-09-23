@@ -10,14 +10,14 @@ describe("voice call capability", () => {
     if (originalTransport === undefined) delete process.env.CHAT_VOICE_CALL_TRANSPORT_URL;
     else process.env.CHAT_VOICE_CALL_TRANSPORT_URL = originalTransport;
   });
-  it("fails closed when no provider or transport is configured", () => {
+  it("fails closed while the transport is unimplemented", () => {
     delete process.env.CHAT_VOICE_CALL_PROVIDER;
     delete process.env.CHAT_VOICE_CALL_TRANSPORT_URL;
-    expect(voiceCallAvailability()).toEqual({ status: "unavailable", reason: "provider_unconfigured" });
+    expect(voiceCallAvailability()).toEqual({ status: "unavailable", reason: "transport_unimplemented" });
   });
-  it("does not claim call availability from provider name alone", () => {
+  it("does not claim availability from configuration alone", () => {
     process.env.CHAT_VOICE_CALL_PROVIDER = "self-hosted-stt-tts";
-    delete process.env.CHAT_VOICE_CALL_TRANSPORT_URL;
+    process.env.CHAT_VOICE_CALL_TRANSPORT_URL = "wss://voice.example.test/call";
     expect(voiceCallAvailability()).toEqual({ status: "unavailable", reason: "transport_unimplemented" });
   });
 });

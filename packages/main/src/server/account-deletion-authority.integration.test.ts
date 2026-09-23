@@ -469,6 +469,12 @@ describe("account deletion authority", () => {
       email: `${P}no-blob@example.com`,
       dataClass: "customer",
     });
+    // FK-free companion memory authority keyed by the user id.
+    await prisma.companionMemoryAuthority.create({
+      data: { aggregateId: `${user.id}:${P}character`, version: BigInt(3) },
+    });
+    const otherAuthority = `${P}no-blob-user-other:${P}character`;
+    await prisma.companionMemoryAuthority.create({ data: { aggregateId: otherAuthority } });
     await requestDeletionPastGrace(user.id);
     const now = new Date();
     await prisma.mainOutboxEvent.update({
@@ -504,6 +510,12 @@ describe("account deletion authority", () => {
       blobExpectedCount: 0,
       blobDeletedCount: 0,
     });
+    await expect(prisma.companionMemoryAuthority.count({
+      where: { aggregateId: { startsWith: `${user.id}:` } },
+    })).resolves.toBe(0);
+    // A user id that merely extends this one is a different subject.
+    await expect(prisma.companionMemoryAuthority.count({ where: { aggregateId: otherAuthority } })).resolves.toBe(1);
+    await prisma.companionMemoryAuthority.delete({ where: { aggregateId: otherAuthority } });
   });
 
   it("completes deletion for an owner whose published Character has immutable qualification evidence", async () => {

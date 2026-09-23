@@ -216,7 +216,10 @@ export async function chatOpsOverview(request: Request) {
         ) AS included
       FROM "chat_turn_usage_facts" f
       LEFT JOIN "users" u ON u.id = f."userId"
+      -- Same allowance question as turn-ledger.ts assertChatQuota.
       WHERE f."productDay" = ${today}
+        AND f."origin" = 'user'
+        AND f."voidedAt" IS NULL
       GROUP BY f."userId", u.id, u.status, u."deletedAt", u."dataClass"
     ),
     session_metrics AS (
@@ -587,6 +590,9 @@ export async function chatOpsUsage(request: Request) {
   if (keys) assertCursorKeyCount(keys, 3, "chat_ops_usage");
   const innerConditions: Prisma.Sql[] = [
     Prisma.sql`f."productDay" = ${periodStart}`,
+    // Same allowance question as turn-ledger.ts assertChatQuota.
+    Prisma.sql`f."origin" = 'user'`,
+    Prisma.sql`f."voidedAt" IS NULL`,
     Prisma.sql`u.status = 'active'`,
     Prisma.sql`u."deletedAt" IS NULL`,
     Prisma.sql`u."dataClass" = 'customer'`,

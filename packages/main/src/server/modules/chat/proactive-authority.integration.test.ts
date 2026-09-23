@@ -1,21 +1,30 @@
 import { randomUUID } from "node:crypto";
 import { compileCharacterSoul } from "@idream/shared";
 import { FREE_DAILY_MESSAGES } from "@idream/shared/chat/limits";
+import { chatExchangeCompletedV2Schema } from "@idream/shared/contracts";
 import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { AppError } from "@/server/lib/errors";
 import { createCharacter, createUser, purgeTestData } from "@/server/test/helpers";
 import {
+  archiveChatSession,
   beginChatTurn,
+  cancelChatTurn,
   commitChatTerminal,
   createChatSession,
+  deleteChatMessage,
+  deleteChatSession,
   getChatSession,
   listChatSessions,
+  regenerateChatTurn,
 } from "./turn-ledger";
 
 const prefix = `zt-proactive-authority-${randomUUID()}-`;
 
 afterAll(async () => {
+  const metricEvents = await prisma.analyticsEvent.findMany({ where: { userId: { startsWith: prefix } }, select: { id: true } });
+  await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: { in: metricEvents.map((event) => event.id) } } });
+  await prisma.analyticsEvent.deleteMany({ where: { userId: { startsWith: prefix } } });
   await prisma.chatTurnUsageFact.deleteMany({ where: { userId: { startsWith: prefix } } });
   await prisma.chatTurn.deleteMany({ where: { session: { userId: { startsWith: prefix } } } });
   await prisma.recentChat.deleteMany({ where: { userId: { startsWith: prefix } } });
@@ -60,7 +69,7 @@ async function fixture() {
 }
 
 /** Burn the whole daily allowance with Turns the user actually sent. */
-async function exhaustDailyAllowance(userId: string, sessionId: string) {
+async function exhaustDailyAllowance(userId: string, sessionId: string, count = FREE_DAILY_MESSAGES) {
   const productDay = new Date(
     Date.UTC(
       new Date().getUTCFullYear(),
@@ -68,7 +77,7 @@ async function exhaustDailyAllowance(userId: string, sessionId: string) {
       new Date().getUTCDate(),
     ),
   );
-  const turns = Array.from({ length: FREE_DAILY_MESSAGES }, (_, index) => ({
+  const turns = Array.from({ length: count }, (_, index) => ({
     id: `${userId}-used-${index}`,
     sessionId,
     idempotencyKey: `used-${index}`,
@@ -85,6 +94,38 @@ async function exhaustDailyAllowance(userId: string, sessionId: string) {
   await prisma.chatTurnUsageFact.createMany({
     data: turns.map((turn) => ({ turnId: turn.id, userId, productDay })),
   });
+}
+
+async function commitFailed(
+  snapshot: NonNullable<Awaited<ReturnType<typeof beginChatTurn>>["snapshot"]>,
+) {
+  await commitChatTerminal({
+    version: 1,
+    turnId: snapshot.turnId,
+    sessionId: snapshot.sessionId,
+    assistantMessageId: snapshot.assistantMessageId,
+    attempt: snapshot.attempt,
+    status: "failed",
+    content: "",
+    model: null,
+    promptTokens: null,
+    completionTokens: null,
+    sceneVersion: snapshot.sceneVersion,
+    scene: snapshot.scene,
+    terminalEvidence: {
+      authority: "test",
+      prompt: {
+        productPromptVersion: "companion-product-1",
+        preparedTurnVersion: null,
+        systemPromptDigest: null,
+        soulFingerprint: null,
+      },
+    },
+  });
+}
+
+function send(f: { userId: string; sessionId: string }, content = "Hello?") {
+  return beginChatTurn({ userId: f.userId, sessionId: f.sessionId, content, idempotencyKey: randomUUID() });
 }
 
 async function commitSent(
@@ -203,5 +244,173 @@ describe("proactive delivery marker", () => {
     await commitSent(own.snapshot!, "Better than I hoped.");
     const listed = await listChatSessions(f.userId);
     expect(listed.find((row) => row.id === f.sessionId)?.unreadProactiveAt).toBeNull();
+  });
+});
+
+// SPEC: 额度只看 usage fact 本身；删消息/删会话不退额度，没拿到回复的 Turn 不扣额度。
+describe("daily allowance ledger", () => {
+  it("does not hand the allowance back when the user deletes a message", async () => {
+    const f = await fixture();
+    await exhaustDailyAllowance(f.userId, f.sessionId, FREE_DAILY_MESSAGES - 1);
+    const last = await send(f);
+    await commitSent(last.snapshot!, "Sure.");
+    await deleteChatMessage(f.userId, last.assistant.id);
+    await expect(send(f)).rejects.toMatchObject({ status: 402 });
+  });
+
+  it("does not hand the allowance back when the user deletes the whole session", async () => {
+    const f = await fixture();
+    await exhaustDailyAllowance(f.userId, f.sessionId);
+    await deleteChatSession(f.userId, f.sessionId);
+    const again = await createChatSession(f.userId, { characterId: f.characterId });
+    await expect(send({ userId: f.userId, sessionId: again.id })).rejects.toMatchObject({ status: 402 });
+  });
+
+  it("does not charge a failed Turn, and charges it again once a regeneration succeeds", async () => {
+    const f = await fixture();
+    await exhaustDailyAllowance(f.userId, f.sessionId, FREE_DAILY_MESSAGES - 1);
+    const failed = await send(f);
+    await commitFailed(failed.snapshot!);
+    expect(await prisma.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId: failed.snapshot!.turnId } }))
+      .toMatchObject({ origin: "user", voidedAt: expect.any(Date) });
+
+    const regenerated = await regenerateChatTurn(f.userId, failed.assistant.id);
+    await commitSent(regenerated.snapshot, "Here I am.");
+    expect(await prisma.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId: failed.snapshot!.turnId } }))
+      .toMatchObject({ voidedAt: null });
+    await expect(send(f)).rejects.toMatchObject({ status: 402 });
+  });
+
+  it("frees the allowance of a Turn cancelled before Chat ran it", async () => {
+    const f = await fixture();
+    await exhaustDailyAllowance(f.userId, f.sessionId, FREE_DAILY_MESSAGES - 1);
+    const cancelled = await send(f);
+    await cancelChatTurn(f.userId, cancelled.assistant.id);
+    const next = await send(f);
+    expect(next.snapshot).not.toBeNull();
+  });
+
+  // INTENT: 已受理的回复已经在流式输出；读完再取消不能变成免费额度。
+  it("keeps charging a Turn cancelled after Chat started streaming it", async () => {
+    const f = await fixture();
+    const streaming = await send(f);
+    await prisma.chatTurn.update({
+      where: { id: streaming.snapshot!.turnId },
+      data: { assistantStatus: "generating", admittedAt: new Date() },
+    });
+    await cancelChatTurn(f.userId, streaming.assistant.id);
+    expect(await prisma.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId: streaming.snapshot!.turnId } }))
+      .toMatchObject({ voidedAt: null });
+  });
+
+  it("counts a deleted proactive Turn as proactive, not as the user's message", async () => {
+    const f = await fixture();
+    await exhaustDailyAllowance(f.userId, f.sessionId, FREE_DAILY_MESSAGES - 1);
+    const proactive = await beginChatTurn({
+      userId: f.userId, sessionId: f.sessionId, content: "Take the lead.", idempotencyKey: randomUUID(), origin: "proactive",
+    });
+    await commitSent(proactive.snapshot!, "Thinking of you.");
+    await deleteChatMessage(f.userId, proactive.assistant.id);
+    expect((await send(f)).snapshot).not.toBeNull();
+  });
+});
+
+// SPEC: 主动消息之后，最新一轮是主动消息那一轮 —— 它能删除/重生成，更早那轮不能。
+describe("revising around a proactive Turn", () => {
+  async function afterProactive() {
+    const f = await fixture();
+    const own = await send(f, "How was the firing?");
+    await commitSent(own.snapshot!, "Better than I hoped.");
+    const proactive = await beginChatTurn({
+      userId: f.userId, sessionId: f.sessionId, content: "Take the lead.", idempotencyKey: randomUUID(), origin: "proactive",
+    });
+    await commitSent(proactive.snapshot!, "The kiln's cooling.");
+    return { f, own, proactive };
+  }
+
+  it("regenerates the proactive reply, not the exchange before it", async () => {
+    const { f, own, proactive } = await afterProactive();
+    await expect(regenerateChatTurn(f.userId, own.assistant.id)).rejects.toMatchObject({ status: 409 });
+    const regenerated = await regenerateChatTurn(f.userId, proactive.assistant.id);
+    expect(regenerated.attempt).toBe(2);
+  });
+
+  it("deletes the proactive reply, not the exchange before it", async () => {
+    const { f, own, proactive } = await afterProactive();
+    await expect(deleteChatMessage(f.userId, own.assistant.id)).rejects.toMatchObject({ status: 409 });
+    await deleteChatMessage(f.userId, proactive.assistant.id);
+    const session = await getChatSession(f.userId, f.sessionId);
+    expect(session.messages.map((message) => (message as { id?: unknown }).id)).not.toContain(proactive.assistant.id);
+  });
+});
+
+describe("archiving a session", () => {
+  // INVARIANT: 归档会话的 Turn 永远不会被受理；留下 pending 就是永远转圈。
+  it("refuses while a reply is still pending", async () => {
+    const f = await fixture();
+    await send(f);
+    await expect(archiveChatSession(f.userId, f.sessionId)).rejects.toMatchObject({ status: 409 });
+  });
+});
+
+// SPEC: 成功回复的用户 Turn 在同事务里写 chat.exchange.completed.v2，所有聊天口径指标只读这个事件。
+describe("chat exchange metric event", () => {
+  async function exchangeEvents(turnId: string) {
+    return prisma.analyticsEvent.findMany({
+      where: { name: "chat.exchange.completed.v2", sourceService: "main", sourceEventId: { startsWith: `chat_exchange:${turnId}:` } },
+      orderBy: { sourceEventId: "asc" },
+    });
+  }
+
+  it("records one contract-valid event per sent attempt and none for a proactive Turn", async () => {
+    const f = await fixture();
+    const first = await send(f, "Morning.");
+    await commitSent(first.snapshot!, "Morning to you.");
+    const [event] = await exchangeEvents(first.snapshot!.turnId);
+    expect(event).toBeDefined();
+    const payload = chatExchangeCompletedV2Schema.parse(event.props);
+    expect(payload).toMatchObject({
+      exchangeId: first.snapshot!.turnId,
+      assistantAttemptNo: 1,
+      isRegeneration: false,
+      userId: f.userId,
+      characterId: f.characterId,
+      sessionId: f.sessionId,
+      engagementSessionId: `eng_${first.snapshot!.turnId}`,
+    });
+    expect(await prisma.mainOutboxEvent.count({
+      where: { id: `product_metric_chat_exchange_${first.snapshot!.turnId}_1`, eventType: "product.event.persisted.v2" },
+    })).toBe(1);
+
+    // A message within 30 minutes continues the same engagement session.
+    const second = await send(f, "Coffee?");
+    await commitSent(second.snapshot!, "Always.");
+    const regenerated = await regenerateChatTurn(f.userId, second.assistant.id);
+    await commitSent(regenerated.snapshot, "Always, obviously.");
+    const secondEvents = await exchangeEvents(second.snapshot!.turnId);
+    expect(secondEvents.map((row) => chatExchangeCompletedV2Schema.parse(row.props))).toEqual([
+      expect.objectContaining({ assistantAttemptNo: 1, engagementSessionId: `eng_${first.snapshot!.turnId}` }),
+      expect.objectContaining({ assistantAttemptNo: 2, isRegeneration: true, engagementSessionId: `eng_${first.snapshot!.turnId}` }),
+    ]);
+
+    const proactive = await beginChatTurn({
+      userId: f.userId, sessionId: f.sessionId, content: "Take the lead.", idempotencyKey: randomUUID(), origin: "proactive",
+    });
+    await commitSent(proactive.snapshot!, "Thinking of you.");
+    expect(await exchangeEvents(proactive.snapshot!.turnId)).toEqual([]);
+  });
+
+  it("starts a new engagement session after 30 quiet minutes", async () => {
+    const f = await fixture();
+    const first = await send(f, "Morning.");
+    await commitSent(first.snapshot!, "Morning to you.");
+    await prisma.chatTurn.update({
+      where: { id: first.snapshot!.turnId },
+      data: { terminalAt: new Date(Date.now() - 31 * 60_000) },
+    });
+    const later = await send(f, "Back again.");
+    await commitSent(later.snapshot!, "Welcome back.");
+    const [event] = await exchangeEvents(later.snapshot!.turnId);
+    expect(chatExchangeCompletedV2Schema.parse(event.props).engagementSessionId).toBe(`eng_${later.snapshot!.turnId}`);
   });
 });

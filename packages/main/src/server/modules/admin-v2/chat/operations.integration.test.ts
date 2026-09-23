@@ -149,6 +149,9 @@ describe("Admin v2 Main-owned Chat operations", () => {
     await prisma.chatTurnUsageFact.createMany({
       data: [
         { turnId, userId: customerId, productDay, createdAt: now },
+        // Neither spends the free allowance, so "messages used" must skip them.
+        { turnId: `${P}proactive-turn`, userId: customerId, productDay, createdAt: now, origin: "proactive" },
+        { turnId: `${P}failed-turn`, userId: customerId, productDay, createdAt: now, voidedAt: now },
         { turnId: `${P}excluded-turn`, userId: excludedUserId, productDay, createdAt: now },
       ],
     });

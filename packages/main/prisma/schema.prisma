@@ -786,13 +786,17 @@ model ChatTurn {
   @@map("chat_turns")
 }
 
-// One accepted product Turn consumes one daily allowance forever, even when
-// privacy operations later remove the mutable transcript row.
+// One accepted product Turn consumes one daily allowance, even when privacy
+// operations later remove the mutable transcript row. The allowance question is
+// answered from this row alone: origin is copied from the Turn at admission and
+// voidedAt marks a Turn that never produced a reply the user could keep.
 model ChatTurnUsageFact {
-  turnId     String   @id
+  turnId     String    @id
   userId     String
-  productDay DateTime @db.Date
-  createdAt  DateTime @default(now())
+  productDay DateTime  @db.Date
+  origin     String    @default("user") // user | proactive
+  voidedAt   DateTime?
+  createdAt  DateTime  @default(now())
   user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, productDay])

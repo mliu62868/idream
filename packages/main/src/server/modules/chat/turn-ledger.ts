@@ -7,7 +7,7 @@ import type {
   ChatExperiencePreference,
   UserChatPersona,
 } from "@idream/shared/contracts";
-import { chatContextDirectivesSchema, chatExecutionSnapshotSchema, chatExperiencePreferenceSchema, chatTerminalCommitSchema, DEFAULT_CHAT_EXPERIENCE, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
+import { chatContextDirectivesSchema, chatExchangeCompletedV2Schema, chatExecutionSnapshotSchema, chatExperiencePreferenceSchema, chatTerminalCommitSchema, DEFAULT_CHAT_EXPERIENCE, MAIN_TO_CHAT_EVENTS, METRIC_PRODUCT_EVENTS } from "@idream/shared/contracts";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
@@ -15,6 +15,7 @@ import { isSyntheticMediaAsset } from "@/server/lib/media-asset-authority";
 import { moderateText } from "@/server/moderation/text-authority";
 import { updateGenerationRequestSourceMeta } from "@/server/ai/generation-request-transition";
 import { recordMainToChatEvent } from "@/processes/chat-outbox";
+import { appendCanonicalMetricEvent } from "@/server/modules/admin-v2/metrics/event-writer";
 import { isReusablePlatformAssetWhere } from "@/server/modules/ourdream/chat-image-reuse";
 import { generationExecutionErrorCode, latestGenerationAttemptStatuses } from "@/server/modules/ourdream/generation-job-read-model";
 import { entitlementMap } from "@/server/modules/ourdream/subscription-lifecycle";
@@ -179,6 +180,8 @@ export async function getChatSession(userId: string, sessionId: string) {
   return {
     ...publicSession(session),
     ownerScope: `user:${userId}`,
+    // The open page polls for a check-in only while one can arrive.
+    proactiveEnabled: session.proactiveEnabled,
     character: {
       name: session.character.name,
       canUpdateIdentity: session.character.creatorId === userId,
@@ -308,7 +311,7 @@ export async function beginChatTurn(input: {
     }
     if (!blocked) {
       await tx.chatTurnUsageFact.create({
-        data: { turnId: turn.id, userId: input.userId, productDay: productDay(now) },
+        data: { turnId: turn.id, userId: input.userId, productDay: productDay(now), origin: turn.origin },
       });
     }
     return {
@@ -530,8 +533,11 @@ export async function commitChatTerminal(input: ChatTerminalCommit) {
             ? { proactiveUnreadAt: now }
             : {}),
         },
-        select: { userId: true, characterId: true },
+        select: { userId: true, characterId: true, entryExposureId: true, entryJourneyId: true, entryPlacementId: true },
       });
+      if (input.status === "sent" || input.status === "failed" || input.status === "cancelled") {
+        await settleChatTurnUsage(tx, current, input.status, now);
+      }
       if (input.status === "sent") {
         const firstSelectedReply = await tx.chatTurn.updateMany({
           where: { id: input.turnId, statsCountedAt: null },
@@ -544,8 +550,9 @@ export async function commitChatTerminal(input: ChatTerminalCommit) {
           });
         }
         if (current.memoryEnabled) {
-          await scheduleCompanionMemoryProjection(tx, session);
+          await scheduleCompanionMemoryProjection(tx, { userId: session.userId, characterId: session.characterId });
         }
+        if (current.origin === "user") await appendChatExchangeCompleted(tx, current, session, now);
       }
       return { turn: current, duplicate: false };
     }
@@ -607,6 +614,7 @@ export async function cancelChatTurn(userId: string, messageId: string) {
         terminalEvidence: toJson({ authority: "main_user_cancel" }),
       },
     });
+    await settleChatTurnUsage(tx, current, "cancelled", now);
     await recordMainToChatEvent({
       eventId: `chat_agent_run_cancel_${sha256(`${current.id}:${current.attempt}`).slice(0, 40)}`,
       eventType: MAIN_TO_CHAT_EVENTS.agentRunCancelRequestedV1,
@@ -669,6 +677,7 @@ export async function failStalledChatTurn(turnId: string, stalledBefore: Date) {
         terminalEvidence: toJson({ authority: "main_stalled_attempt_reclaim" }),
       },
     });
+    await settleChatTurnUsage(tx, turn, "failed", now);
     await recordMainToChatEvent({
       eventId: `chat_agent_run_cancel_${sha256(`${turn.id}:${turn.attempt}`).slice(0, 40)}`,
       eventType: MAIN_TO_CHAT_EVENTS.agentRunCancelRequestedV1,
@@ -752,12 +761,22 @@ async function deleteSessionTranscript(tx: Prisma.TransactionClient, userId: str
 }
 
 export async function archiveChatSession(userId: string, sessionId: string) {
-  const session = await requireSession(userId, sessionId);
-  if (session.groupId) throw Errors.conflict("Archive this conversation from its group chat");
-  return publicSession(await prisma.recentChat.update({
-    where: { sessionId: session.sessionId },
-    data: { status: "archived", activeKey: null },
-  }));
+  return prisma.$transaction(async (tx) => {
+    const { session } = await lockChatScope(tx, { userId, at: { session: sessionId } });
+    if (session.groupId) throw Errors.conflict("Archive this conversation from its group chat");
+    // INVARIANT: admission only runs Turns of active sessions, so a reply left
+    // pending here would never be admitted, never end, and the spinner would
+    // outlive the conversation. Same rule as archiving or deleting a group.
+    const active = await tx.chatTurn.findFirst({
+      where: { sessionId: session.sessionId, assistantStatus: { in: ACTIVE_ASSISTANT_STATES } },
+      select: { id: true },
+    });
+    if (active) throw Errors.conflict("Cancel the active reply before archiving this chat");
+    return publicSession(await tx.recentChat.update({
+      where: { sessionId: session.sessionId },
+      data: { status: "archived", activeKey: null },
+    }));
+  });
 }
 
 export async function renameChatSession(userId: string, sessionId: string, title: string) {
@@ -1029,18 +1048,147 @@ async function assertChatQuota(tx: Prisma.TransactionClient, userId: string) {
   // INTENT: every admitted Turn still writes a usage fact, because a proactive
   // reply costs the same generation capacity and daily operational usage must
   // stay complete. Only what the user chose to send can exhaust their own
-  // allowance, so the join is the difference between the two questions.
+  // allowance.
+  // INVARIANT: the count reads the fact alone. Facts deliberately outlive the
+  // Turn (no FK), so a JOIN to "chat_turns" would hand the allowance back
+  // every time the user deleted a message or a session.
   const [row] = await tx.$queryRaw<Array<{ used: bigint }>>`
     SELECT count(*) AS used
-      FROM "chat_turn_usage_facts" f
-      JOIN "chat_turns" t ON t.id = f."turnId"
-     WHERE f."userId" = ${userId}
-       AND f."productDay" = ${start}::date
-       AND t."origin" = 'user'
+      FROM "chat_turn_usage_facts"
+     WHERE "userId" = ${userId}
+       AND "productDay" = ${start}::date
+       AND "origin" = 'user'
+       AND "voidedAt" IS NULL
   `;
   if (Number(row?.used ?? 0) >= FREE_DAILY_MESSAGES) {
     throw Errors.paymentRequired("Daily free message limit reached");
   }
+}
+
+/**
+ * SPEC: the free allowance counts Turns that gave the user a reply.
+ *
+ * INTENT: charging a Turn that failed makes the user pay for our outage — while
+ * the model was down every send spent 1/30 and delivered nothing.
+ *   - failed: voided.
+ *   - cancelled: voided only while the attempt was never admitted to Chat
+ *     (`admittedAt` null). An admitted attempt is already streaming text to the
+ *     user; voiding it would make "read the reply, then press Stop" free.
+ *   - a Turn that already delivered a reply once (`statsCountedAt`) keeps
+ *     counting even when a later regeneration fails.
+ *   - a later sent attempt (regenerate / edit) restores the count. Only the
+ *     latest Turn can be revised, so this never lets the day exceed the limit
+ *     by more than that one Turn.
+ * INVARIANT: the fact row is never deleted here; operational usage stays whole.
+ */
+async function settleChatTurnUsage(
+  tx: Prisma.TransactionClient,
+  turn: { id: string; statsCountedAt: Date | null; admittedAt: Date | null },
+  outcome: "sent" | "failed" | "cancelled",
+  at: Date,
+) {
+  if (outcome === "sent") {
+    await tx.chatTurnUsageFact.updateMany({
+      where: { turnId: turn.id, voidedAt: { not: null } },
+      data: { voidedAt: null },
+    });
+    return;
+  }
+  if (turn.statsCountedAt) return;
+  if (outcome === "cancelled" && turn.admittedAt) return;
+  await tx.chatTurnUsageFact.updateMany({
+    where: { turnId: turn.id, voidedAt: null },
+    data: { voidedAt: at },
+  });
+}
+
+const ENGAGEMENT_INACTIVITY_MS_V1 = 30 * 60 * 1_000;
+
+function chatExchangeEventId(turnId: string, attempt: number) {
+  return `chat_exchange:${turnId}:${attempt}`;
+}
+
+/**
+ * SPEC: every sent reply to a user message emits `chat.exchange.completed.v2`
+ * (WPCU, activation, QCE and every chat-based metric read only this event).
+ * INTENT: Chat emitted it from its own ledger until Chat lost its database
+ * (59089e316, 2026-08-28); since then nothing did and every chat metric sat at
+ * zero. Main now owns the Turn, so it records the event in the same
+ * transaction as the terminal commit, through the canonical metric outbox.
+ *   - one event per sent attempt; the projector keeps the highest attempt, so
+ *     a regeneration replaces the earlier reply in the fact.
+ *   - a proactive Turn is not an exchange: the user sent nothing.
+ *   - engagement session: continues the previous exchange of this session
+ *     when this message came within 30 minutes of that reply (the v1 rule the
+ *     Chat ledger used), otherwise starts at this Turn.
+ */
+async function appendChatExchangeCompleted(
+  tx: Prisma.TransactionClient,
+  turn: {
+    id: string;
+    sessionId: string;
+    userMessageId: string;
+    assistantMessageId: string;
+    attempt: number;
+    createdAt: Date;
+    characterContentVersionId: string | null;
+    characterReleaseId: string | null;
+  },
+  session: {
+    userId: string;
+    characterId: string;
+    entryExposureId: string | null;
+    entryJourneyId: string | null;
+    entryPlacementId: string | null;
+  },
+  at: Date,
+) {
+  if (!turn.characterContentVersionId) return;
+  const previous = await tx.chatTurn.findFirst({
+    where: { sessionId: turn.sessionId, id: { not: turn.id }, createdAt: { lte: turn.createdAt }, origin: "user", assistantStatus: "sent" },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    select: { id: true, attempt: true, terminalAt: true },
+  });
+  let engagementSessionId = `eng_${turn.id}`;
+  if (previous?.terminalAt && turn.createdAt.getTime() - previous.terminalAt.getTime() < ENGAGEMENT_INACTIVITY_MS_V1) {
+    const previousEvent = await tx.analyticsEvent.findUnique({
+      where: { sourceService_sourceEventId: { sourceService: "main", sourceEventId: chatExchangeEventId(previous.id, previous.attempt) } },
+      select: { props: true },
+    });
+    const inherited = jsonRecord(previousEvent?.props ?? null).engagementSessionId;
+    if (typeof inherited === "string" && inherited) engagementSessionId = inherited;
+  }
+  // The contract accepts entry attribution only as a complete triple.
+  const entry = session.entryExposureId && session.entryJourneyId && session.entryPlacementId
+    ? { entryExposureId: session.entryExposureId, journeyId: session.entryJourneyId, placementId: session.entryPlacementId }
+    : { entryExposureId: null, journeyId: null, placementId: null };
+  const payload = chatExchangeCompletedV2Schema.parse({
+    exchangeId: turn.id,
+    userMessageId: turn.userMessageId,
+    assistantMessageId: turn.assistantMessageId,
+    selectedAssistantMessageId: turn.assistantMessageId,
+    assistantAttemptNo: turn.attempt,
+    isRegeneration: turn.attempt > 1,
+    sessionId: turn.sessionId,
+    engagementSessionId,
+    userId: session.userId,
+    characterId: session.characterId,
+    characterContentVersionId: turn.characterContentVersionId,
+    characterReleaseId: turn.characterReleaseId,
+    ...entry,
+  });
+  await appendCanonicalMetricEvent(tx, {
+    sourceEventId: chatExchangeEventId(turn.id, turn.attempt),
+    eventType: METRIC_PRODUCT_EVENTS.chatExchangeCompleted,
+    occurredAt: at,
+    userId: session.userId,
+    context: {
+      characterId: session.characterId,
+      characterContentVersionId: turn.characterContentVersionId,
+      characterReleaseId: turn.characterReleaseId,
+    },
+    payload,
+  });
 }
 
 function productDay(value: Date): Date {
