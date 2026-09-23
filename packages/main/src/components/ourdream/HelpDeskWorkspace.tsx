@@ -5,7 +5,6 @@ import {
   ArrowRight,
   Bug,
   CheckCircle2,
-  Crown,
   ExternalLink,
   LifeBuoy,
   Loader2,
@@ -57,6 +56,8 @@ import {
 import { fetchViewerScope } from "./viewer-auth";
 import { isRecord } from "./workspace-helpers";
 import { HelpDeskConversation } from "./HelpDeskConversation";
+import { REASON_LABELS } from "./ReportDialog";
+import { CONTENT_REPORT_REASONS } from "@idream/shared/contracts";
 
 type SupportPayload = {
   ok?: boolean;
@@ -224,12 +225,7 @@ const roadmapItems = [
   {
     icon: Sparkles,
     title: "Features",
-    copy: "Premium feedback gets routed into the beta product backlog below for voting and triage.",
-  },
-  {
-    icon: Crown,
-    title: "Changelog",
-    copy: "Beta release notes highlight creator, chat, generation, billing, and community improvements.",
+    copy: "Suggest a feature below; everyone can vote on what should ship next.",
   },
 ] as const;
 
@@ -419,7 +415,7 @@ export function HelpDeskWorkspace() {
         signal: requested.signal,
       })
         .then(async (response) => {
-          if (!response.ok) throw new Error("Viewer authority could not load.");
+          if (!response.ok) throw new Error("Sign-in check failed.");
           const payload = parseViewerAuthorityResponse(await response.json());
           if (requested.signal.aborted) return;
           const user = payload.user;
@@ -429,7 +425,7 @@ export function HelpDeskWorkspace() {
               : typeof payload.anonymousId === "string"
                 ? `anonymous:${payload.anonymousId}`
                 : null;
-          if (!nextScope) throw new Error("Viewer authority was incomplete.");
+          if (!nextScope) throw new Error("Sign-in check failed.");
           if (viewerScopeRef.current !== nextScope) {
             feedbackRequestRef.current?.abort();
             setFeedbackItems([]); setFeedbackNextCursor(null); setFeedbackMoreLoading(false);
@@ -445,7 +441,7 @@ export function HelpDeskWorkspace() {
           setFeedbackLoading(false); setFeedbackLoadError("Could not confirm your account. Refresh to try again.");
           viewerScopeRef.current = null;
           setViewerScope(null);
-          setStatus("Viewer authority could not load. Draft recovery is paused.");
+          setStatus("We couldn't confirm your sign-in, so your saved draft isn't restored yet. Refresh to try again.");
         });
     }
     const onVisible = () => { if (document.visibilityState === "visible") refreshViewer(); };
@@ -658,7 +654,7 @@ export function HelpDeskWorkspace() {
         if (response.status === 401) {
           const scope = await resolveViewerScope().catch(() => null);
           if (!scope) {
-            setStatus("Viewer authority could not be confirmed. Refresh and try again.");
+            setStatus("We couldn't confirm your sign-in. Refresh and try again.");
             return;
           }
           saveSupportDraft(scope, supportDraft);
@@ -710,7 +706,7 @@ export function HelpDeskWorkspace() {
         if (response.status === 401) {
           const scope = await resolveViewerScope().catch(() => null);
           if (!scope) {
-            setFeedbackStatus("Viewer authority could not be confirmed. Refresh and try again.");
+            setFeedbackStatus("We couldn't confirm your sign-in. Refresh and try again.");
             return;
           }
           saveFeedbackDraft(scope, feedbackDraft);
@@ -759,7 +755,7 @@ export function HelpDeskWorkspace() {
             title: item.title,
           } satisfies PendingFeedbackVote;
           if (!scope) {
-            setFeedbackStatus("Viewer authority could not be confirmed. Refresh and try again.");
+            setFeedbackStatus("We couldn't confirm your sign-in. Refresh and try again.");
             return;
           }
           window.location.assign(
@@ -807,7 +803,7 @@ export function HelpDeskWorkspace() {
         if (response.status === 401) {
           const scope = await resolveViewerScope().catch(() => null);
           if (!scope) {
-            setAppealStatus("Viewer authority could not be confirmed. Refresh and try again.");
+            setAppealStatus("We couldn't confirm your sign-in. Refresh and try again.");
             return;
           }
           saveAppealDraft(scope, appealDraft);
@@ -1000,19 +996,19 @@ export function HelpDeskWorkspace() {
                 maxLength={300}
                 name="appealTargetId"
                 onChange={(event) => setAppealDraftField("targetId", event.target.value)}
-                placeholder="character-id or /characters/example"
+                placeholder="Paste the page link, e.g. /characters/…"
                 value={appealTargetId}
               />
             </label>
 
             <label className="block text-[12px] font-bold uppercase leading-4 text-[rgb(170,170,170)]">
-              Decision ID
+              Decision reference
               <input
                 className="mt-2 h-11 w-full rounded-[10px] border border-white/10 bg-[rgb(36,36,36)] px-3 text-[14px] font-semibold text-white outline-none placeholder:text-[rgb(114,113,112)]"
                 maxLength={160}
                 name="appealDecisionId"
                 onChange={(event) => setAppealDraftField("decisionId", event.target.value)}
-                placeholder="Optional"
+                placeholder="Optional — filled in when you appeal from your history"
                 value={appealDecisionId}
               />
             </label>
@@ -1060,6 +1056,11 @@ export function HelpDeskWorkspace() {
           history={history}
           loading={historyLoading}
           onRefresh={() => void loadHelpDeskHistory()}
+          onAppeal={(target) => {
+            setAppealDraft((current) => ({ ...current, ...target }));
+            setAppealStatus("");
+            document.getElementById("appeals")?.scrollIntoView({ block: "start" });
+          }}
         />
       </section>
 
@@ -1088,14 +1089,8 @@ export function HelpDeskWorkspace() {
         <div>
           <div className="flex items-center justify-between gap-4">
             <h2 className="text-[24px] font-black uppercase leading-7 text-white">
-              Bugs, features, changelog
+              Bugs & features
             </h2>
-            <Link
-              className="rounded-full bg-[rgb(36,36,36)] px-3 py-2 text-[12px] font-black uppercase text-white hover:bg-[rgb(53,53,54)]"
-              href="/upgrade"
-            >
-              Premium
-            </Link>
           </div>
           <div className="mt-4 grid gap-3">
             {roadmapItems.map((item) => (
@@ -1319,6 +1314,7 @@ export function HelpDeskHistoryPanel({
   history,
   loading,
   onRefresh,
+  onAppeal,
 }: Readonly<{
   viewerScope?: string | null;
   authenticated: boolean;
@@ -1327,6 +1323,7 @@ export function HelpDeskHistoryPanel({
   history: HelpDeskHistory;
   loading: boolean;
   onRefresh: () => void;
+  onAppeal?: (draft: Omit<AppealDraft, "text">) => void;
 }>) {
   const empty =
     history.supportRequests.length === 0 &&
@@ -1407,7 +1404,7 @@ export function HelpDeskHistoryPanel({
                 <HistoryCard
                   key={item.id}
                   status={item.status}
-                  subtitle={`${item.category} · ${formatHelpDeskTimestamp(item.createdAt)}`}
+                  subtitle={`${supportCategoryLabel(item.category)} · ${formatHelpDeskTimestamp(item.createdAt)}`}
                   title={item.ticketId}
                 >
                   <p>{item.subject}</p>
@@ -1425,17 +1422,30 @@ export function HelpDeskHistoryPanel({
               {history.reports.map((item) => (
                 <HistoryCard
                   key={item.id}
+                  reference={item.id}
                   status={item.status}
-                  subtitle={`${item.category} · ${formatHelpDeskTimestamp(item.createdAt)}`}
-                  title={`Report ${item.id}`}
+                  subtitle={`${targetTypeLabel(item.targetType)} · ${formatHelpDeskTimestamp(item.createdAt)}`}
+                  title={reportReasonLabel(item.category)}
                 >
-                  <p className="break-all">{item.targetType}: {item.targetId}</p>
                   {item.decision ? (
                     <p>Decision: {historyStatusLabel(item.decision.outcome)}</p>
                   ) : null}
-                  {item.appealIds.map((appealId) => (
-                    <p className="break-all" key={appealId}>Appeal {appealId}</p>
-                  ))}
+                  {item.appealIds.length > 0 ? (
+                    <p>{item.appealIds.length === 1 ? "Appeal filed" : `${item.appealIds.length} appeals filed`}</p>
+                  ) : item.decision && onAppeal && isCatalogMember(APPEAL_TARGET_TYPES, item.targetType) ? (
+                    <button
+                      className="mt-1 inline-flex h-8 items-center gap-1.5 rounded-full bg-white/10 px-3 text-[12px] font-black text-white hover:bg-white/20"
+                      onClick={() => onAppeal({
+                        targetType: item.targetType as AppealTargetType,
+                        targetId: item.targetId,
+                        decisionId: item.decision!.id,
+                      })}
+                      type="button"
+                    >
+                      <Scale className="h-3.5 w-3.5" />
+                      Appeal this decision
+                    </button>
+                  ) : null}
                 </HistoryCard>
               ))}
             </HistoryGroup>
@@ -1446,14 +1456,12 @@ export function HelpDeskHistoryPanel({
               {history.appeals.map((item) => (
                 <HistoryCard
                   key={item.id}
+                  reference={item.id}
                   status={item.status}
-                  subtitle={`${item.targetType} · ${formatHelpDeskTimestamp(item.createdAt)}`}
-                  title={`Appeal ${item.id}`}
+                  subtitle={formatHelpDeskTimestamp(item.createdAt)}
+                  title={`Appeal · ${targetTypeLabel(item.targetType)}`}
                 >
-                  <p className="break-all">Target: {item.targetId}</p>
-                  {item.relatedReportId ? (
-                    <p className="break-all">Related report: {item.relatedReportId}</p>
-                  ) : null}
+                  {item.relatedReportId ? <p>Linked to one of your reports</p> : null}
                   {item.outcome ? (
                     <p>Outcome: {historyStatusLabel(item.outcome.result)}</p>
                   ) : null}
@@ -1489,11 +1497,13 @@ function HistoryGroup({ children, title }: Readonly<{ children: ReactNode; title
 
 function HistoryCard({
   children,
+  reference,
   status,
   subtitle,
   title,
 }: Readonly<{
   children: ReactNode;
+  reference?: string;
   status: string;
   subtitle: string;
   title: string;
@@ -1512,8 +1522,26 @@ function HistoryCard({
       <div className="mt-2 space-y-1 text-[12px] font-medium leading-5 text-[rgb(190,190,190)]">
         {children}
       </div>
+      {/* ID 只作为联系客服时的参考号：次要、可整段选中复制。 */}
+      {reference ? (
+        <p className="mt-2 text-[10px] font-medium text-[rgb(114,113,112)]">
+          Reference <span className="select-all break-all font-mono">{reference}</span>
+        </p>
+      ) : null}
     </article>
   );
+}
+
+function reportReasonLabel(value: string) {
+  return isCatalogMember(CONTENT_REPORT_REASONS, value) ? REASON_LABELS[value] : "Report";
+}
+
+function targetTypeLabel(value: string) {
+  return isCatalogMember(APPEAL_TARGET_TYPES, value) ? appealTargetTypeLabels[value] : "Content";
+}
+
+function supportCategoryLabel(value: string) {
+  return isCatalogMember(SUPPORT_REQUEST_CATEGORIES, value) ? supportCategoryLabels[value] : "Other";
 }
 
 function historyStatusLabel(value: string) {
@@ -1899,9 +1927,9 @@ export function helpDeskHistoryFailure(status: number, payload: unknown) {
   } as const;
 }
 
+// 403 既可能是年龄门，也可能是「这个决定不属于你」——以服务端原因为准。
 function appealErrorMessage(status: number, fallback?: string) {
   if (status === 401) return "Sign in to submit an appeal.";
-  if (status === 403) return "Accept the age gate before submitting an appeal.";
   return fallback ?? "Appeal failed. Try again.";
 }
 

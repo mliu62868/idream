@@ -663,6 +663,7 @@ const helpDeskReportSchema = z
     createdAt: timestamp,
     decision: z
       .object({
+        id: nonEmptyString,
         outcome: nonEmptyString,
         decidedAt: timestamp,
       })

@@ -41,10 +41,30 @@ const appealTargetTypeSchema = z.enum(APPEAL_TARGET_TYPES);
 
 const appealCreateSchema = z.object({
   targetType: appealTargetTypeSchema,
-  targetId: z.string().trim().min(1).max(300),
+  targetId: z.string().trim().min(1).max(300).transform(appealTargetIdFromInput),
   appealText: z.string().min(1).max(4_000),
   originalDecisionId: z.string().trim().min(1).max(160).optional(),
 });
+
+// SPEC: 申诉表单接受 id 或站内链接（/characters/<id>、完整 URL、/feed?item=<id>）。
+// INTENT: 用户手上只有页面链接；决定按 targetId 严格相等匹配，所以在入口处还原成 id。
+export function appealTargetIdFromInput(raw: string) {
+  const value = raw.trim();
+  if (!value.includes("/")) return value;
+  let url: URL;
+  try {
+    url = new URL(value, "https://idream.invalid");
+  } catch {
+    return value;
+  }
+  const item = url.searchParams.get("item");
+  if (item) return item;
+  const [, section, id] = url.pathname.split("/");
+  if (id && ["characters", "creators", "comics", "media"].includes(section)) {
+    return decodeURIComponent(id);
+  }
+  return value;
+}
 
 const supportRequestSchema = z.object({
   category: z.enum(SUPPORT_REQUEST_CATEGORIES),
@@ -469,6 +489,8 @@ async function customerHelpDeskHistory(request: Request) {
         createdAt: item.createdAt.toISOString(),
         decision: latestReview
           ? {
+              // 前台「对此决定申诉」按钮用它预填，用户不必自己找 Decision ID。
+              id: latestReview.id,
               outcome: latestReview.decision,
               decidedAt: latestReview.createdAt.toISOString(),
             }
