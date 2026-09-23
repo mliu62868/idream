@@ -85,10 +85,19 @@ describe("affiliate operational approval", () => {
     expect(dashboard.data).toMatchObject({ status: "approved", clicks: 1, conversions: 0 });
   });
 
+  it("keeps test-account applications out of the operator queue", async () => {
+    const fixtureId = `${prefix}fixture-applicant`;
+    await createUser({ id: fixtureId });
+    expectOk(await api("POST", "affiliate/application", { userId: fixtureId, body: application }), 201);
+    const listed = await adminV2("GET", "affiliate/applications", { userId: adminId, role: "admin", query: { status: "all", search: fixtureId, limit: 10 } });
+    expectOk(listed);
+    expect(listed.data.items).toEqual([]);
+  });
+
   it("paginates filtered application evidence and rejects a cursor reused for another status", async () => {
     for (let index = 0; index < 3; index += 1) {
       const userId = `${prefix}customer-${index}`;
-      await createUser({ id: userId });
+      await createUser({ id: userId, dataClass: "customer" });
       expectOk(await api("POST", "affiliate/application", { userId, body: application }), 201);
     }
     const options = { userId: adminId, role: "admin", query: { status: "all", search: prefix, limit: 2 } };

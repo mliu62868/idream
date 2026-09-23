@@ -21,7 +21,9 @@ function applicationDTO(item: AffiliateApplication) {
 export async function listAffiliateApplications(request: Request) {
   await actorWithPermission(request, "growth.promo.read");
   const query = queryParams(request, "GET /api/v2/admin/affiliate/applications");
+  // 与其它运营队列同口径：测试/审计/内部账号的申请不进审批队列。
   const where: Prisma.AffiliateApplicationWhereInput = {
+    user: { is: { dataClass: "customer" } },
     ...(query.status === "all" ? {} : { status: query.status }),
     ...(query.search ? { OR: [
       { id: { contains: query.search, mode: "insensitive" } },

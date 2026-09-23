@@ -251,7 +251,7 @@ async function runSupportCommand(input: {
 export async function patchSupportRequest(request: Request, ticketId: string) {
   const actor = await actorWithPermission(request, "support.request.write");
   const body = await jsonBody(request, "PATCH /api/v2/admin/support/requests/:id");
-  if (body.confirmation !== ticketId && body.confirmation !== "UPDATE") {
+  if (body.confirmation !== ticketId) {
     throw Errors.badRequest("Support request updates require ticket confirmation");
   }
   const terminal = body.status === "resolved" || body.status === "closed";
