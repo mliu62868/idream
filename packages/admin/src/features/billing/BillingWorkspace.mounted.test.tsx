@@ -152,6 +152,52 @@ describe("BillingWorkspace hydration", () => {
     expect(apiWrite).not.toHaveBeenCalled();
   });
 
+  // SPEC: 双人复核开启后，调账被 403 拦下；被拦下的表单是运营提交审批申请的唯一入口。
+  it("offers an approval request for exactly the adjustment dual approval refused", async () => {
+    const { AdminV2RequestError } = await import("@/lib/admin-v2-api");
+    apiWrite.mockImplementation(async (path: string) => {
+      if (path === "/api/v2/admin/billing/adjustments") {
+        throw new AdminV2RequestError("Dual approval required: no approved request for this action", 403, "forbidden");
+      }
+      return { request: { id: "approval-1" } };
+    });
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<BillingWorkspace canAdjust canReconcile canRefund />);
+    });
+    const panel = await (async () => {
+      await waitUntil(() => Boolean(container.querySelector('[aria-labelledby="billing-adjustment-title"]')));
+      return container.querySelector<HTMLDetailsElement>('[aria-labelledby="billing-adjustment-title"]')!;
+    })();
+    const setValue = async (input: HTMLInputElement, value: string) => act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const [userInput, deltaInput] = panel.querySelectorAll<HTMLInputElement>("input");
+    await setValue(userInput, "user-a");
+    await setValue(deltaInput, "1500");
+    const adjust = [...panel.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Adjust")!;
+    await act(async () => adjust.click());
+    await setValue(document.body.querySelector<HTMLInputElement>('input[aria-label="Reason"]')!, "goodwill credit");
+    await setValue(document.body.querySelector<HTMLInputElement>('input[aria-label="Confirmation"]')!, "user-a:1500");
+    const confirm = [...document.body.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Confirm")!;
+    await act(async () => confirm.click());
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="billing-adjustment-approval-required"]')));
+
+    const request = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Request approval")!;
+    await act(async () => request.click());
+    expect(apiWrite).toHaveBeenLastCalledWith("/api/v2/admin/approvals", "POST", {
+      permissionKey: "billing.ledger.adjust",
+      action: "billing.ledger.adjust",
+      targetType: "user",
+      targetId: "user-a",
+      payload: { delta: 1500 },
+      reason: "goodwill credit",
+      confirmation: "user-a:billing.ledger.adjust",
+    });
+    await waitUntil(() => !container.querySelector('[data-testid="billing-adjustment-approval-required"]'));
+  });
+
   it("keeps external refund references scoped to their checkout", async () => {
     window.history.replaceState(null, "", "/admin/customer-ops/billing");
     const fallback = apiGet.getMockImplementation()!;

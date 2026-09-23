@@ -151,6 +151,9 @@ describe("BackendVideoModel", () => {
       data: {
         asset: {
           seconds: VERIFIED_VIDEO.durationSeconds,
+          // The measured frame size reaches the terminal record and media row.
+          width: VERIFIED_VIDEO.width,
+          height: VERIFIED_VIDEO.height,
           contentType: "video/mp4",
           body: MP4,
         },

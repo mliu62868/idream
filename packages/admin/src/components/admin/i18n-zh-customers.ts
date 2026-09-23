@@ -47,6 +47,11 @@ export const adminZhCustomers: Record<string, string> = {
   "Audit trail": "审计轨迹",
   "Active support": "进行中",
   "Adjust Ledger": "调整账本",
+  "Adjusting {delta} for {user} needs a second approver. Submit an approval request; once approved, run the same adjustment again.":
+    "为 {user} 调整 {delta} 需要第二位审批人。请提交审批申请，批准后再执行同一笔调整。",
+  "Approval requested for {user}. Run the same adjustment again once it is approved.":
+    "已为 {user} 提交审批申请。批准后请再执行同一笔调整。",
+  "Request approval": "提交审批申请",
   "Adjust ledger for {user}": "调整 {user} 的余额",
   "Adjustment delta": "调整数额",
   "Adjustment user ID": "调整用户 ID",

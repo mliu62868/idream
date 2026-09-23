@@ -170,6 +170,10 @@ export class BackendVideoModel implements VideoModel {
           asset: {
             key: `backend/videos/${providerRequestId}.mp4`,
             seconds: asset.verifiedVideo!.durationSeconds,
+            // ffprobe already measured the delivered stream; without these the
+            // video's media_assets row had no size at all.
+            width: asset.verifiedVideo!.width,
+            height: asset.verifiedVideo!.height,
             contentType: "video/mp4",
             body: asset.body,
           },
