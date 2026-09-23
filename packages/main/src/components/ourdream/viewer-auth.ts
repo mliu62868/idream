@@ -95,7 +95,7 @@ async function requestViewerAuthority(
   const raw: unknown = await response.json().catch(() => null);
   if (!response.ok) {
     throw new Error(
-      apiEnvelopeErrorMessage(raw) ?? "Viewer authority could not load.",
+      apiEnvelopeErrorMessage(raw) ?? "We couldn't confirm your account. Refresh and try again.",
     );
   }
   return parseViewerAuthorityResponse(raw);
@@ -110,7 +110,7 @@ export async function fetchViewerScope(
   if (typeof payload.anonymousId === "string" && payload.anonymousId.length > 0) {
     return `anonymous:${payload.anonymousId}`;
   }
-  throw new Error("Viewer authority was incomplete.");
+  throw new Error("We couldn't confirm your account. Refresh and try again.");
 }
 
 /**

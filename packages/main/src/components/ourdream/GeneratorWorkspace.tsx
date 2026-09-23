@@ -2188,7 +2188,7 @@ export function GeneratorWorkspace() {
         if (response.status === 401 && !original && presetEditorType === "setup") {
           const viewerScope = viewerScopeRef.current;
           if (!viewerScope) {
-            setStatus("Viewer authority could not be confirmed. Refresh and try again.");
+            setStatus("We couldn't confirm your account. Refresh and try again.");
             return;
           }
           const draft = {

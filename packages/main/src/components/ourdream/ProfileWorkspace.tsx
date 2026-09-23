@@ -23,7 +23,7 @@ import {
   UserCog,
   Volume2,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { UserPersonaPanel } from "./UserPersonaPanel";
 import { RecoveryCodeCard } from "./AccountRecovery";
 import { AccountAgeVerification } from "./AccountAgeVerification";
@@ -326,8 +326,9 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
   const requestSerialRef = useRef(0);
   const confirmedOwnerRef = useRef<string | null>(null);
   const isConfirmedOwner = useCallback((ownerId: string) => confirmedOwnerRef.current === ownerId, []);
+  const confirmationRef = useRef<Promise<void> | null>(null);
 
-  const refreshProfile = useCallback(async () => {
+  const confirmProfile = useCallback(async () => {
     const serial = ++requestSerialRef.current;
     confirmedOwnerRef.current = null;
     // A focus event may follow a sign-in in another tab. The cached /me result
@@ -363,6 +364,21 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
     }
   }, []);
 
+  const refreshProfile = useCallback(() => {
+    const confirmation = confirmProfile().finally(() => {
+      if (confirmationRef.current === confirmation) confirmationRef.current = null;
+    });
+    confirmationRef.current = confirmation;
+    return confirmation;
+  }, [confirmProfile]);
+  // INTENT: every refresh clears the confirmed owner first, so a private
+  // request made during one — a panel mounting, a Save clicked just after focus
+  // — waits for the answer instead of being refused. Refusing left each caller
+  // to guess when to ask again; three panels grew their own back-off loops.
+  const ownerConfirmed = useCallback(async () => {
+    while (confirmationRef.current) await confirmationRef.current;
+  }, []);
+
   useEffect(() => {
     if (!ageGateAccepted) return;
     const timer = window.setTimeout(() => void refreshProfile(), 0);
@@ -387,15 +403,17 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
     profileAuthority={viewer.authority}
     refreshProfile={refreshProfile}
     isConfirmedOwner={isConfirmedOwner}
+    ownerConfirmed={ownerConfirmed}
   />;
 }
 
-function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority, refreshProfile, isConfirmedOwner }: Readonly<ProfileWorkspaceProps & {
+function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority, refreshProfile, isConfirmedOwner, ownerConfirmed }: Readonly<ProfileWorkspaceProps & {
   profile: ReturnType<typeof parseProfileResponse> | null;
   authState: AuthState;
   profileAuthority: AuthorityStatus;
   refreshProfile: () => Promise<void>;
   isConfirmedOwner: (ownerId: string) => boolean;
+  ownerConfirmed: () => Promise<void>;
 }>) {
   const { accepted: ageGateAccepted } = useAgeGateAccess();
   const [authTarget, setAuthTarget] = useState("/profile");
@@ -413,7 +431,10 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
   const profileOwnerScope = profile ? `user:${profile.user.id}` : "";
   const ownerId = profile?.user.id;
   const mountedRef = useRef(false);
-  useEffect(() => {
+  // INVARIANT: a layout effect. The account panels below mount in the same
+  // commit as this subtree, and their passive effects run before this
+  // component's — set passively, their first read found it "unmounted".
+  useLayoutEffect(() => {
     mountedRef.current = true;
     return () => { mountedRef.current = false; };
   }, []);
@@ -421,14 +442,20 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
     mountedRef.current && Boolean(ownerId && isConfirmedOwner(ownerId)), [isConfirmedOwner, ownerId]);
   // The cookie may change before focus fires. Bind every private read/write to
   // the server-confirmed owner, and abandon continuations after its subtree ends.
+  // A confirmation in flight is waited out: only one that names another owner
+  // (which remounts this subtree) abandons the request.
   const fetchForOwner = useCallback(async (input: RequestInfo | URL, init?: RequestInit) => {
-    if (!ownerRequestIsCurrent()) throw new DOMException("Account confirmation changed", "AbortError");
+    const confirmCurrentOwner = async () => {
+      if (!ownerRequestIsCurrent()) await ownerConfirmed();
+      if (!ownerRequestIsCurrent()) throw new DOMException("Account confirmation changed", "AbortError");
+    };
+    await confirmCurrentOwner();
     const headers = new Headers(init?.headers);
     headers.set("x-idream-viewer-scope", profileOwnerScope);
     const response = await fetch(input, { ...init, headers });
-    if (!ownerRequestIsCurrent()) throw new DOMException("Account confirmation changed", "AbortError");
+    await confirmCurrentOwner();
     return response;
-  }, [ownerRequestIsCurrent, profileOwnerScope]);
+  }, [ownerConfirmed, ownerRequestIsCurrent, profileOwnerScope]);
   const [tab, setTab] = useState<LibraryTab>(() =>
     typeof window === "undefined" ? "recent" : libraryTabFromSearch(window.location.search),
   );

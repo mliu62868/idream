@@ -37,6 +37,7 @@ describe("ProfileWorkspace media pagination", () => {
   let viewer: string;
   let olderPage: () => Promise<Response>;
   let searchPage: (query: string) => Promise<Response>;
+  let profileHold: Promise<unknown>;
 
   beforeEach(() => {
     window.history.replaceState(null, "", "/custom");
@@ -48,13 +49,15 @@ describe("ProfileWorkspace media pagination", () => {
     searchPage = async () => Response.json({ ok: true, data: {
       items: [mediaItem("image-41")], nextCursor: null,
     } });
+    profileHold = Promise.resolve(true);
     invalidateViewerAuthority();
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       requests.push(path);
       let data: unknown = { items: [] };
       if (path === "/api/v1/me") data = { user: { id: viewer } };
-      else if (path === "/api/v1/profile") data = {
+      else if (path === "/api/v1/profile" && init?.method === "PATCH") data = { user: { displayName: "Renamed" } };
+      else if (path === "/api/v1/profile" && await profileHold) data = {
         user: { id: viewer, displayName: viewer, email: `${viewer}@example.test` },
         balance: 100, subscription: null, billingAccess: null, entitlements: {},
       };
@@ -187,6 +190,34 @@ describe("ProfileWorkspace media pagination", () => {
     expect(container.querySelector('[data-testid="profile-unavailable"]')).not.toBeNull();
     expect(container.querySelector('[data-media-id]')).toBeNull();
     expect(container.textContent).not.toContain("viewer-a");
+  });
+
+  // Profile remounts its owner subtree — these panels included — in the commit
+  // that confirms the owner, and child effects run before the parent's. The
+  // first read used to be refused as "not mounted", and each panel carried a
+  // 300ms back-off to paper over it.
+  it("lets the account panels read on the first try in the commit that confirms the owner", async () => {
+    await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/custom" })));
+    await settle();
+    for (const path of ["/api/v1/affiliate/dashboard", "/api/v1/account/email-verification", "/api/v1/age-verification/status"]) {
+      expect(requests, path).toContain(path);
+    }
+  });
+
+  it("holds a write made while focus re-confirms the owner and sends it once the same owner is confirmed", async () => {
+    await mountMedia();
+    let release!: () => void;
+    profileHold = new Promise<void>((resolve) => { release = () => resolve(); }).then(() => true);
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await act(async () => button("Save profile").dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    const fetcher = vi.mocked(globalThis.fetch);
+    const patches = () => fetcher.mock.calls.filter(([input, init]) => String(input) === "/api/v1/profile" && init?.method === "PATCH");
+    expect(patches()).toHaveLength(0);
+    await act(async () => release());
+    await settle();
+    expect(patches()).toHaveLength(1);
+    expect(container.textContent).toContain("Profile updated.");
+    expect(container.textContent).not.toContain("Network error");
   });
 
   it("preserves an unsaved profile name when focus confirms the same owner", async () => {
