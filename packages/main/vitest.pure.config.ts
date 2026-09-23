@@ -25,6 +25,7 @@ export default defineConfig({
       "src/scripts/character-quality/*.test.ts",
       "src/server/launch-readiness.test.ts",
       "src/server/public-route-existence.test.ts",
+      "src/server/security-headers.test.ts",
       "src/server/providers/voice/transcode.test.ts",
       "src/server/lib/auth/password.test.ts",
       "src/server/modules/voice-defaults.test.ts",

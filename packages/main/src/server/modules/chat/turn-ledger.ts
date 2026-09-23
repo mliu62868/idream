@@ -11,6 +11,7 @@ import { chatContextDirectivesSchema, chatExchangeCompletedV2Schema, chatExecuti
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
+import { logger } from "@/server/lib/logger";
 import { isSyntheticMediaAsset } from "@/server/lib/media-asset-authority";
 import { moderateText } from "@/server/moderation/text-authority";
 import { updateGenerationRequestSourceMeta } from "@/server/ai/generation-request-transition";
@@ -1164,7 +1165,9 @@ async function appendChatExchangeCompleted(
   const entry = session.entryExposureId && session.entryJourneyId && session.entryPlacementId
     ? { entryExposureId: session.entryExposureId, journeyId: session.entryJourneyId, placementId: session.entryPlacementId }
     : { entryExposureId: null, journeyId: null, placementId: null };
-  const payload = chatExchangeCompletedV2Schema.parse({
+  // INVARIANT: 指标是派生数据，不能让一次契约漂移把已生成的回复整轮回滚；
+  //   不合契约就记日志并跳过这条指标（纯 JS 判定，不会污染事务）。
+  const parsed = chatExchangeCompletedV2Schema.safeParse({
     exchangeId: turn.id,
     userMessageId: turn.userMessageId,
     assistantMessageId: turn.assistantMessageId,
@@ -1179,6 +1182,11 @@ async function appendChatExchangeCompleted(
     characterReleaseId: turn.characterReleaseId,
     ...entry,
   });
+  if (!parsed.success) {
+    logger.error({ turnId: turn.id, attempt: turn.attempt, issues: parsed.error.issues.slice(0, 5) }, "chat exchange metric outside its contract; skipped");
+    return;
+  }
+  const payload = parsed.data;
   await appendCanonicalMetricEvent(tx, {
     sourceEventId: chatExchangeEventId(turn.id, turn.attempt),
     eventType: METRIC_PRODUCT_EVENTS.chatExchangeCompleted,

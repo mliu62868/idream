@@ -191,7 +191,10 @@ export async function handleChatRequest(
   ) {
     if (!internal(request)) return json(401, { error: "unauthorized" });
     await readiness.refreshDependencies();
-    if (!readiness.canAcceptTurns()) return json(503, { error: "service_not_ready" });
+    const ready = url.pathname === COMPANION_MEMORY_PURGE_PATH
+      ? readiness.canServeMaintenance()
+      : readiness.canAcceptTurns();
+    if (!ready) return json(503, { error: "service_not_ready" });
     try {
       if (url.pathname === COMPANION_MEMORY_PURGE_PATH) {
         const result = await purgeCompanionMemory(request);

@@ -63,7 +63,10 @@ describe("model endpoint readiness", () => {
 
     const response = await handleChatRequest(new Request("http://chat.internal/readyz"), readiness);
     expect(response.status).toBe(503);
-    expect(await response.json()).toMatchObject({ ok: false, reason: "model endpoint http://127.0.0.1:8061 unreachable" });
+    expect(await response.json()).toMatchObject({ ok: false, model: false, reason: "model endpoint http://127.0.0.1:8061 unreachable" });
+    // Turns wait for the model; privacy purges that never call it keep working.
+    expect(readiness.canAcceptTurns()).toBe(false);
+    expect(readiness.canServeMaintenance()).toBe(true);
   });
 
   it("asks GET <baseUrl>/models at most once per 15s and reuses the outcome", async () => {

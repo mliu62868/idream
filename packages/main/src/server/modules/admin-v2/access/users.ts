@@ -281,6 +281,8 @@ async function assertKeepsAdminAccess(
   const losesAdmin = target.role === "admin" && target.status === "active"
     && (next.role !== "admin" || next.status !== "active");
   if (!losesAdmin) return;
+  // 锁住全部 active admin 行，两个管理员同时互相降级时第二个会看到第一个的结果。
+  await tx.$queryRaw`SELECT "id" FROM "users" WHERE "role" = 'admin' AND "status" = 'active' AND "deletedAt" IS NULL FOR UPDATE`;
   const others = await tx.user.count({
     where: { role: "admin", status: "active", deletedAt: null, id: { not: target.id } },
   });

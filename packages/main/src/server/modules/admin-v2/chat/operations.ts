@@ -358,7 +358,7 @@ export async function chatOpsProviderHealth(request: Request) {
   const runtime = outcome.data?.runtime;
   const runtimeReady = Boolean(
     runtime?.accepting && runtime.warmed && runtime.fileStore && runtime.redis &&
-    runtime.agentRuntime && runtime.fresh,
+    runtime.agentRuntime && runtime.model && runtime.fresh,
   );
   const chatItem = outcome.data ? {
     provider: "chat_model",
@@ -369,7 +369,7 @@ export async function chatOpsProviderHealth(request: Request) {
     endpoint: outcome.data.provider.endpoint,
     latencyMs: null,
     httpStatus: 200,
-    modelListed: null,
+    modelListed: runtime ? runtime.model : null,
     error: outcome.data.provider.adapter === "mock"
       ? "CHAT_MODEL_PROVIDER=mock"
       : runtimeReady ? null : runtime?.reason ?? "runtime_not_ready",

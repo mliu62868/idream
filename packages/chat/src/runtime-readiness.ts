@@ -12,6 +12,7 @@ export interface RuntimeReadinessSnapshot {
   fileStore: boolean;
   redis: boolean;
   agentRuntime: boolean;
+  model: boolean;
   fresh: boolean;
   observedAt: string | null;
   reason: string | null;
@@ -24,6 +25,7 @@ export class RuntimeReadiness {
     fileStore: false,
     redis: false,
     agentRuntime: false,
+    model: false,
     reason: "warming",
   };
   private recover: (() => Promise<void>) | null = null;
@@ -46,6 +48,12 @@ export class RuntimeReadiness {
   }
 
   canAcceptTurns(): boolean {
+    return this.canServeMaintenance() && this.state.model;
+  }
+
+  // SPEC: 不调用模型的内部操作（隐私清除）只依赖本地存储/Redis/运行时。
+  // INTENT: 模型停机时用户「删除消息 / 清空记忆」必须照常生效，不能跟着生成链路一起 503。
+  canServeMaintenance(): boolean {
     return this.state.accepting && this.state.warmed
       && this.state.fileStore && this.state.redis && this.state.agentRuntime
       && this.isFresh();
@@ -67,7 +75,7 @@ export class RuntimeReadiness {
     await this.refreshInFlight;
   }
 
-  markReady(): void {
+  markReady(model: { reachable: boolean; reason?: string } = { reachable: true }): void {
     this.observedAtMs = this.now();
     this.state = {
       accepting: this.state.accepting,
@@ -75,7 +83,8 @@ export class RuntimeReadiness {
       fileStore: true,
       redis: true,
       agentRuntime: true,
-      reason: null,
+      model: model.reachable,
+      reason: model.reachable ? null : model.reason ?? "model_unreachable",
     };
   }
 
@@ -112,10 +121,17 @@ export async function warmRuntime(input: {
     await assertWritableFileRoot();
     await (input.pingRedis ?? pingRedis)();
     await (input.probeAgentRuntime ?? warmAgentRuntime)();
+  } catch (error) {
+    readiness.markFailed(error instanceof Error ? error.message : "warmup_failed");
+    throw error;
+  }
+  try {
     await (input.probeModel ?? probeConfiguredModel)();
     readiness.markReady();
   } catch (error) {
-    readiness.markFailed(error instanceof Error ? error.message : "warmup_failed");
+    // Local dependencies are ready; only turns wait for the model. Still throw so
+    // startup keeps retrying and does not start the Agent-run worker yet.
+    readiness.markReady({ reachable: false, reason: error instanceof Error ? error.message : "model_unreachable" });
     throw error;
   }
 }

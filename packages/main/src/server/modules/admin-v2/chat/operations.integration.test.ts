@@ -49,6 +49,7 @@ function runtimeDiagnostic(): ChatRuntimeDiagnostics {
       fileStore: true,
       redis: true,
       agentRuntime: true,
+      model: true,
       fresh: true,
       observedAt: checkedAt,
       reason: null,

@@ -14,11 +14,12 @@ UPDATE "chat_turn_usage_facts" f
  WHERE t.id = f."turnId"
    AND t."origin" <> 'user';
 
--- A Turn that failed or was cancelled and never delivered a reply does not
+-- A Turn that failed, or was cancelled before admission, and never delivered a reply does not
 -- spend the allowance (see turn-ledger.ts settleChatTurnUsage).
 UPDATE "chat_turn_usage_facts" f
    SET "voidedAt" = COALESCE(t."terminalAt", now())
   FROM "chat_turns" t
  WHERE t.id = f."turnId"
-   AND t."assistantStatus" IN ('failed', 'cancelled')
-   AND t."statsCountedAt" IS NULL;
+   AND t."statsCountedAt" IS NULL
+   AND (t."assistantStatus" = 'failed'
+        OR (t."assistantStatus" = 'cancelled' AND t."admittedAt" IS NULL));

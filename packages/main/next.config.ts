@@ -61,16 +61,28 @@ const nextConfig: NextConfig = {
   // INTENT: 这些头原本写在包根的 proxy.ts 里，但 app 在 src/ 下，Next 只认与 app 同级的
   //   proxy，自 monorepo 迁移起它从未执行过。静态头放在这里不需要额外的请求期运行时；
   //   年龄门与匿名 id 已由服务端（DB 为权威）负责，不再在边缘重复。
+  // INVARIANT: 只有 /internal-preview 可以被嵌入，而且只允许 Admin 源嵌入（角色工作区用
+  //   iframe 渲染真实前台）；其余页面一律禁止被 frame。
   async headers() {
-    return [{
-      source: "/:path*",
-      headers: [
-        { key: "X-Content-Type-Options", value: "nosniff" },
-        { key: "X-Frame-Options", value: "DENY" },
-        { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
-        { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
-      ],
-    }];
+    const adminOrigin = process.env.ADMIN_WEB_URL ? new URL(process.env.ADMIN_WEB_URL).origin : "'none'";
+    return [
+      {
+        source: "/:path*",
+        headers: [
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+          { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
+        ],
+      },
+      {
+        source: "/((?!internal-preview/).*)",
+        headers: [{ key: "X-Frame-Options", value: "DENY" }],
+      },
+      {
+        source: "/internal-preview/:path*",
+        headers: [{ key: "Content-Security-Policy", value: `frame-ancestors ${adminOrigin}` }],
+      },
+    ];
   },
   experimental: {
     // Runtime releases are immutable. Keep ISR/fetch entries in memory instead
