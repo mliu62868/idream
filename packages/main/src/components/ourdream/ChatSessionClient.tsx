@@ -58,6 +58,7 @@ import {
   canSubmitChatMessage,
   isImmutableOpeningMessage,
   isLocalChatMessageId,
+  latestTurnUserMessageId,
   LOCAL_CHAT_MESSAGE_ID_PREFIX,
 } from "./chat-message-actions";
 import {
@@ -95,6 +96,7 @@ const SPEAKER_SELECT_FAILED = "Couldn't select that Character. Try again.";
 // A reply is only auto-followed while the reader is parked within this many
 // pixels of the bottom; above that the viewport belongs to the reader.
 const STICK_TO_BOTTOM_SLACK_PX = 120;
+const PROACTIVE_POLL_MS = 60_000;
 const COMPOSER_BUTTON_CLASS =
   "inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-[linear-gradient(0deg,#ff1cac,#fd5fc2_50%,#ff79d1)] text-white disabled:opacity-70";
 
@@ -231,6 +233,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
   const [videoCapability, setVideoCapability] = useState<{ sessionId: string; enabled: boolean } | null>(null);
   const videoEnabled = ageGateAccepted && !groupMode && videoCapability?.sessionId === id && videoCapability.enabled;
   const [memoryEnabled, setMemoryEnabled] = useState(true);
+  const [proactiveEnabled, setProactiveEnabled] = useState(false);
   const [memoryPending, setMemoryPending] = useState(false);
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
@@ -442,8 +445,12 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
 
   useEffect(() => {
     if (!ageGateAccepted) return;
+    const reconciling = hasActiveAttachment || hasGeneratingReply;
     if (
-      (!hasActiveAttachment && !hasGeneratingReply) ||
+      // INTENT: a proactive check-in lands while nobody is sending anything, so
+      // without this the open page only saw it after a refocus. A slow read is
+      // enough — check-ins are hours apart; the list marker covers other pages.
+      (!reconciling && !proactiveEnabled) ||
       pending ||
       editingPending ||
       memoryPending
@@ -479,7 +486,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
         applySession(session);
         resumePendingStreams(session.messages);
         failureCount = 0;
-        if (chatStreamLatestReplyFailed(session.messages)) {
+        if (reconciling && chatStreamLatestReplyFailed(session.messages)) {
           setStatus("Reply failed to load. Please try again.");
         }
       } catch (error) {
@@ -491,7 +498,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
       } finally {
         controller = null;
         if (!cancelled) {
-          schedule(Math.min(12_000, 1_500 * 2 ** failureCount));
+          schedule(reconciling ? Math.min(12_000, 1_500 * 2 ** failureCount) : PROACTIVE_POLL_MS);
         }
       }
     };
@@ -501,7 +508,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
       schedule(0);
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
-    schedule(1_500);
+    schedule(reconciling ? 1_500 : PROACTIVE_POLL_MS);
     return () => {
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
@@ -518,6 +525,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
     id,
     memoryPending,
     pending,
+    proactiveEnabled,
   ]);
 
   function stopVoice() {
@@ -920,6 +928,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
     if (session.status === "archived") cancelEdit();
     setCanUpdateIdentity(Boolean(session.character.canUpdateIdentity));
     if (typeof session.memoryEnabled === "boolean") setMemoryEnabled(session.memoryEnabled);
+    setProactiveEnabled(session.proactiveEnabled === true);
   }
 
   async function changeSpeaker(nextCharacterId: string) {
@@ -1417,7 +1426,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
     });
   }
 
-  const latestUserMessageId = newestUserMessageId(messages);
+  const latestUserMessageId = latestTurnUserMessageId(messages);
   const latestReplyInProgress = replyAfterLatestUserInProgress(messages);
   const latestCompletedReply = [...messages].reverse().find(message => message.role === "assistant" && message.status === "sent" && message.turnId && (!group || message.characterId === characterId));
   const videoSources = chatVideoSources(messages, { sessionId: executionSessionId, characterId });
@@ -1894,14 +1903,6 @@ function isChatAuthError(error: unknown) {
     "status" in error &&
     (error as { status?: unknown }).status === 401
   );
-}
-
-function newestUserMessageId(messages: ChatMessage[]) {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message?.role === "user") return message.id;
-  }
-  return null;
 }
 
 function replyAfterLatestUserInProgress(messages: ChatMessage[]) {

@@ -1407,6 +1407,7 @@ const chatSessionDetailSchema = z
     title: z.string().nullable(),
     characterId: z.string().optional(),
     memoryEnabled: z.boolean().optional(),
+    proactiveEnabled: z.boolean().optional(),
     status: z.string().optional(),
     group: z.object({ members: z.array(groupChatMemberSchema).min(2).max(12), selectedSessionId: nonEmptyString }).strict().optional(),
     messages: z.array(chatMessageSchema),

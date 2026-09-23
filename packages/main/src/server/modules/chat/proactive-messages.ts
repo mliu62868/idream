@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { prisma } from "@/server/lib/db";
-import { Errors } from "@/server/lib/errors";
+import { AppError, Errors } from "@/server/lib/errors";
 import { logger } from "@/server/lib/logger";
 import { beginAdmittedChatTurn } from "./agent-run-admission";
 
@@ -71,6 +71,8 @@ export async function updateProactiveSettings(
  *         而不会重复领取同一行；没有先读后写的窗口，所以不会出现同一会话连发两条。
  * INVARIANT: `proactiveNextAt` 为 NULL 不算到期 —— NULL 表示未知，对未知立即触发会在任何
  *            数据异常时变成刷屏。开启时一定会写入具体时间。
+ * INVARIANT: 只领取 active 且未进入删除流程的账号。待删除（宽限期内）、封禁的账号
+ *            Chat 侧会拒绝执行，但 Main 此时已经建好 Turn 和 usage fact —— 在领取处挡住。
  */
 async function claimDueProactiveSession() {
   const rows = await prisma.$queryRaw<
@@ -79,13 +81,16 @@ async function claimDueProactiveSession() {
     UPDATE "recent_chats"
        SET "proactiveNextAt" = now() + ("proactiveIntervalHours" || ' hours')::interval
      WHERE "sessionId" = (
-       SELECT "sessionId" FROM "recent_chats"
-        WHERE "proactiveEnabled" = true
-          AND "status" = 'active'
-          AND "proactiveNextAt" IS NOT NULL
-          AND "proactiveNextAt" <= now()
-        ORDER BY "proactiveNextAt" ASC
-          FOR UPDATE SKIP LOCKED
+       SELECT c."sessionId" FROM "recent_chats" c
+         JOIN "users" u ON u.id = c."userId"
+        WHERE c."proactiveEnabled" = true
+          AND c."status" = 'active'
+          AND c."proactiveNextAt" IS NOT NULL
+          AND c."proactiveNextAt" <= now()
+          AND u."status" = 'active'
+          AND u."deletedAt" IS NULL
+        ORDER BY c."proactiveNextAt" ASC
+          FOR UPDATE OF c SKIP LOCKED
         LIMIT 1
      )
     RETURNING "sessionId", "userId"
@@ -109,12 +114,16 @@ async function admitProactiveTurn(claim: {
       origin: "proactive",
     });
   } catch (error) {
-    // 把这次领取快速还回队列；不留下一条"发过了"的假象。
+    // SPEC: 404/410 是永久性的（会话或角色已不存在、已归档、角色下架），重试不会变好。
+    // INTENT: 以前一律 15 分钟后重来，下架角色的会话会每 15 分钟失败一次、刷一条错误日志，
+    //         没有尽头。永久错误直接关掉这个会话的主动消息，与用户手动关闭同一状态；
+    //         其余错误（例如回复正在生成的 409）快速还回队列，不留下一条"发过了"的假象。
+    const permanent = error instanceof AppError && (error.status === 404 || error.status === 410);
     await prisma.recentChat.updateMany({
       where: { sessionId: claim.sessionId, userId: claim.userId },
-      data: {
-        proactiveNextAt: new Date(Date.now() + RETRY_BACKOFF_MINUTES * 60_000),
-      },
+      data: permanent
+        ? { proactiveEnabled: false, proactiveNextAt: null }
+        : { proactiveNextAt: new Date(Date.now() + RETRY_BACKOFF_MINUTES * 60_000) },
     });
     throw error;
   }

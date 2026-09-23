@@ -75,6 +75,7 @@ describe("ChatSessionClient streaming composer", () => {
   let container: HTMLDivElement;
   let root: Root;
   let sessionMessages: unknown[];
+  let sessionProactiveEnabled: boolean;
   let sessionReads: number;
   let releaseSend: ((response: Response) => void) | undefined;
 
@@ -92,6 +93,7 @@ describe("ChatSessionClient streaming composer", () => {
     });
     FakeEventSource.instances = [];
     sessionMessages = [opening];
+    sessionProactiveEnabled = false;
     sessionReads = 0;
     const sendResponse = new Promise<Response>((resolve) => {
       releaseSend = resolve;
@@ -132,6 +134,7 @@ describe("ChatSessionClient streaming composer", () => {
                 title: "Test chat",
                 characterId: "character-1",
                 memoryEnabled: true,
+                proactiveEnabled: sessionProactiveEnabled,
                 messages: sessionMessages,
                 character: { name: "Avery", canUpdateIdentity: false },
               },
@@ -898,6 +901,52 @@ describe("ChatSessionClient streaming composer", () => {
     await act(async () => container.querySelector<HTMLButtonElement>('[data-message-id="group-old-assistant"] [data-testid="chat-play-voice"]')?.click());
     const quoted = vi.mocked(fetch).mock.calls.find(([input]) => String(input) === "/api/v1/generation/voice/quote");
     expect(JSON.parse(String(quoted?.[1]?.body))).toMatchObject({ characterId: "character-1", sessionId: "member-1", messageId: "group-old-assistant" });
+  });
+
+  it("offers actions on the proactive reply and none on the exchange it superseded", async () => {
+    const sentReply = { ...streamingReply, turnId: "turn-1", content: "Hi.", status: "sent", attempt: 1 };
+    const proactiveReply = {
+      id: "assistant-2", turnId: "turn-2", role: "assistant", content: "The kiln's cooling.",
+      status: "sent", attempt: 1, replyToMessageId: "hidden-directive",
+    };
+    sessionMessages = [opening, { ...userTurn, status: "sent" }, sentReply, proactiveReply];
+    await mountSession();
+    await waitUntil(() => Boolean(container.querySelector('[data-message-id="assistant-2"]')));
+
+    const older = container.querySelector('[data-message-id="assistant-1"]');
+    const olderUser = container.querySelector('[data-message-id="user-1"]');
+    const proactive = container.querySelector('[data-message-id="assistant-2"]');
+    // Main only revises the latest Turn; these would all be 409s.
+    expect(olderUser?.querySelector('[data-testid="chat-edit-message"]')).toBeNull();
+    expect(older?.querySelector('[data-testid="chat-regenerate"]')).toBeNull();
+    expect(older?.querySelector('[data-testid="chat-delete-message"]')).toBeNull();
+    expect(proactive?.querySelector('[data-testid="chat-regenerate"]')).not.toBeNull();
+    expect(proactive?.querySelector('[data-testid="chat-delete-message"]')).not.toBeNull();
+  });
+
+  it("reads new proactive messages while the page stays open", async () => {
+    sessionProactiveEnabled = true;
+    await mountSession();
+    await waitUntil(() => sessionReads > 0);
+    const readsBefore = sessionReads;
+    sessionMessages = [opening, {
+      id: "assistant-2", turnId: "turn-2", role: "assistant", content: "The kiln's cooling.",
+      status: "sent", attempt: 1, replyToMessageId: "hidden-directive",
+    }];
+
+    // Idle page, nothing generating: only the proactive poller is listening.
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    await waitUntil(() => sessionReads > readsBefore);
+    await waitUntil(() => Boolean(container.querySelector('[data-message-id="assistant-2"]')));
+  });
+
+  it("does not poll an idle page without proactive messages", async () => {
+    await mountSession();
+    await waitUntil(() => sessionReads > 0);
+    const readsBefore = sessionReads;
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 20)));
+    expect(sessionReads).toBe(readsBefore);
   });
 
   it("keeps archived group history readable and deletable without exposing edit or regenerate", async () => {

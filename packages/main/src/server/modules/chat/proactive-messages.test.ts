@@ -92,6 +92,68 @@ describe("proactive message cadence", () => {
   });
 });
 
+// SPEC: 领取只面向还能收消息的账号和还能成立的关系。
+describe("proactive message eligibility", () => {
+  const E = "zt-proactive-eligibility-";
+
+  beforeAll(async () => {
+    await purgeTestData(E);
+  });
+
+  afterAll(async () => {
+    await purgeTestData(E);
+  });
+
+  async function dueSession(name: string, user: { status?: string; deletedAt?: Date } = {}) {
+    const owner = `${E}${name}-user`;
+    const character = `${E}${name}-character`;
+    await createUser({ id: owner });
+    if (user.status || user.deletedAt) {
+      await prisma.user.update({ where: { id: owner }, data: user });
+    }
+    await createCharacter({ id: character, creatorId: owner });
+    const session = `${E}${name}-session`;
+    await prisma.recentChat.create({
+      data: {
+        sessionId: session,
+        userId: owner,
+        characterId: character,
+        status: "active",
+        proactiveEnabled: true,
+        proactiveIntervalHours: 24,
+        proactiveNextAt: new Date(Date.now() - 60_000),
+      },
+    });
+    return { owner, character, session };
+  }
+
+  it("never claims a session of a suspended or deletion-pending account", async () => {
+    const suspended = await dueSession("suspended", { status: "suspended" });
+    const deleting = await dueSession("deleting", { status: "deleted", deletedAt: new Date() });
+    await dispatchDueProactiveTurns(20);
+    expect(await prisma.chatTurn.count({
+      where: { sessionId: { in: [suspended.session, deleting.session] } },
+    })).toBe(0);
+    // Not even the cadence moves: nothing was claimed.
+    const rows = await prisma.recentChat.findMany({
+      where: { sessionId: { in: [suspended.session, deleting.session] } },
+      select: { proactiveNextAt: true },
+    });
+    for (const row of rows) expect(row.proactiveNextAt!.getTime()).toBeLessThan(Date.now());
+  });
+
+  // INTENT: 下架角色永远 410，15 分钟退避会一直重试到天荒地老。
+  it("switches proactive messages off for a relationship that can no longer continue", async () => {
+    const gone = await dueSession("gone");
+    await prisma.character.update({ where: { id: gone.character }, data: { deletedAt: new Date() } });
+    await dispatchDueProactiveTurns(20);
+    await expect(getProactiveSettings(gone.owner, gone.session)).resolves.toMatchObject({
+      enabled: false,
+      nextAt: null,
+    });
+  });
+});
+
 // SPEC: 主动消息那一轮的 userContent 是内部指令，不能出现在用户看到的记录里。
 describe("proactive transcript projection", () => {
   const base = {

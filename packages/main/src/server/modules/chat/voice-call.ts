@@ -2,22 +2,20 @@ import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 
 export type VoiceCallAvailability = {
-  status: "unavailable" | "available";
-  reason?: "provider_unconfigured" | "transport_unimplemented";
-  provider?: string;
+  status: "unavailable";
+  reason: "transport_unimplemented";
 };
 
 /**
- * Voice Clip playback is intentionally not treated as Voice Call. Until a
- * bidirectional STT/TTS transport and durable call ledger are configured,
- * every call operation fails closed with an actionable capability response.
+ * SPEC: Voice Call (PRD CH-14) has no bidirectional STT/TTS transport, call
+ * ledger or settlement yet, so every call operation fails closed.
+ * INTENT: availability used to turn "available" as soon as two env vars were
+ * set, while start still threw 503 unconditionally — a UI trusting it would
+ * offer a button that can only fail. Until the transport exists in code, no
+ * configuration can make it available. Voice Clip playback is not Voice Call.
  */
 export function voiceCallAvailability(): VoiceCallAvailability {
-  const provider = process.env.CHAT_VOICE_CALL_PROVIDER?.trim();
-  if (!provider || !process.env.CHAT_VOICE_CALL_TRANSPORT_URL?.trim()) {
-    return { status: "unavailable", reason: provider ? "transport_unimplemented" : "provider_unconfigured" };
-  }
-  return { status: "available", provider };
+  return { status: "unavailable", reason: "transport_unimplemented" };
 }
 
 export async function getVoiceCallCapability(userId: string, sessionId: string) {
@@ -28,5 +26,5 @@ export async function getVoiceCallCapability(userId: string, sessionId: string) 
 
 export async function startVoiceCall(userId: string, sessionId: string): Promise<never> {
   await getVoiceCallCapability(userId, sessionId);
-  throw Errors.unavailable("Two-way Voice Call is unavailable until its STT/TTS transport is configured");
+  throw Errors.unavailable("Two-way Voice Call is not implemented yet");
 }

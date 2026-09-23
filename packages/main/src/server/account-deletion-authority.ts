@@ -1096,6 +1096,13 @@ async function hardDeleteMainAccountAuthority(
   await tx.subscriptionLifecycleFact.deleteMany({ where: { userId: input.userId } });
   await tx.characterExposureFact.deleteMany({ where: { userId: input.userId } });
   await tx.companionEngagementDaily.deleteMany({ where: { userId: input.userId } });
+  // The memory projector's version row is keyed "<userId>:<characterId>" with
+  // no User FK, so nothing cascades it: left alone it keeps recording which
+  // Characters this person had a relationship with. Its pending events are
+  // removed with the payload.userId sweep below.
+  await tx.companionMemoryAuthority.deleteMany({
+    where: { aggregateId: { startsWith: `${input.userId}:` } },
+  });
   await tx.aiUsageFact.deleteMany({ where: { userId: input.userId } });
   await tx.supportConsentGrant.deleteMany({ where: { userId: input.userId } });
   // Audit rows are retained evidence, not user-owned content. Replace direct
