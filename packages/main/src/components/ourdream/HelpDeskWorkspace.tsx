@@ -818,7 +818,7 @@ export function HelpDeskWorkspace() {
         setAppealStatus(appealErrorMessage(response.status, payload.error?.message));
         return;
       }
-      setAppealStatus(`Appeal ${payload.data.appeal.id} submitted.`);
+      setAppealStatus(`Appeal submitted. We will review it and update your history. Reference: ${payload.data.appeal.id}`);
       if (viewerScopeRef.current) clearAppealDraft(viewerScopeRef.current);
       setAppealDraft(INITIAL_APPEAL_DRAFT);
       void loadHelpDeskHistory();

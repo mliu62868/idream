@@ -1377,12 +1377,12 @@ test("help desk submits a tracked support request", async ({ page }) => {
   await expect(page.getByRole("heading", { name: /ask for another review/i })).toBeVisible();
   await page.getByLabel("Target type").selectOption("character");
   await page.getByLabel("Target ID or link").fill(appealTarget);
-  await page.getByLabel("Decision ID").fill(appealDecision);
+  await page.getByLabel("Decision reference").fill(appealDecision);
   await page
     .getByLabel("Appeal details")
     .fill("Please review this character decision again with the attached context.");
   await page.getByRole("button", { name: /submit appeal/i }).click();
-  await expect(page.getByTestId("appeal-status")).toContainText(/Appeal .* submitted/);
+  await expect(page.getByTestId("appeal-status")).toContainText(/Appeal submitted/);
   await expect(page.getByTestId("appeal-status")).toHaveAttribute("role", "status");
   await expect(page.getByTestId("appeal-status")).toHaveAttribute("aria-live", "polite");
 
@@ -1737,7 +1737,7 @@ test("help desk signup redirect preserves anonymous appeal draft", async ({ page
   const appealDetails = appealForm.locator('textarea[name="appealText"]');
   await appealForm.getByLabel("Target type").selectOption("character");
   await appealForm.getByLabel("Target ID or link").fill(targetId);
-  await appealForm.getByLabel("Decision ID").fill(decisionId);
+  await appealForm.getByLabel("Decision reference").fill(decisionId);
   await appealDetails.fill(appealText);
   await appealForm.getByRole("button", { name: /submit appeal/i }).click();
 
@@ -1760,7 +1760,7 @@ test("help desk signup redirect preserves anonymous appeal draft", async ({ page
   await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
   await expect(appealForm.getByLabel("Target type")).toHaveValue("character");
   await expect(appealForm.getByLabel("Target ID or link")).toHaveValue(targetId);
-  await expect(appealForm.getByLabel("Decision ID")).toHaveValue(decisionId);
+  await expect(appealForm.getByLabel("Decision reference")).toHaveValue(decisionId);
   await expect(appealDetails).toHaveValue(appealText);
   await expect(page.getByTestId("appeal-status")).toContainText(/appeal draft was restored/i);
 
@@ -1813,7 +1813,7 @@ test("help desk signup redirect preserves anonymous appeal draft", async ({ page
     .not.toBeNull();
 
   await appealForm.getByRole("button", { name: /submit appeal/i }).click();
-  await expect(page.getByTestId("appeal-status")).toContainText(/Appeal .* submitted/);
+  await expect(page.getByTestId("appeal-status")).toContainText(/Appeal submitted/);
   await expect
     .poll(() =>
       page.evaluate(
@@ -3357,7 +3357,7 @@ test("created removed character links to a prefilled Help Desk appeal", async ({
   await expect(page.getByTestId("appeal-status")).toContainText(/prefilled from your selected item/i);
 
   await appealForm.getByRole("button", { name: /submit appeal/i }).click();
-  await expect(page.getByTestId("appeal-status")).toContainText(/Appeal .* submitted/);
+  await expect(page.getByTestId("appeal-status")).toContainText(/Appeal submitted/);
 
   const appeal = await prisma.appeal.findFirst({
     where: { userId, targetType: "character", targetId: characterId },
