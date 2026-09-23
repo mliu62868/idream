@@ -165,18 +165,24 @@ export function applyLocalStreamState(
   });
 }
 
-// SPEC: Follow the newest message only while the reader is parked at the bottom.
+// SPEC: Follow the newest message only while the reader is parked at it: the end
+//       of the message list sits at most the slack below the viewport bottom.
+//       Only the reader scrolling up releases the pin.
 // INTENT: a stream re-renders on every token; without this the reader is dragged
 //         back down and can never scroll up through the history mid-reply.
-export function chatViewIsPinnedToBottom(viewport: {
-  readonly innerHeight: number;
+//         Measured against the list end, not the page end: the follow-scroll parks
+//         that end above the sticky composer, which on desktop is more than the
+//         slack above the page end, so a page-end rule unpinned the follow itself.
+//         A smooth follow-scroll is also still travelling when the next message
+//         lands, so its own scroll events must not count as the reader leaving.
+export function chatViewPinAfterScroll(input: {
+  readonly wasPinned: boolean;
+  readonly previousScrollY: number;
   readonly scrollY: number;
-  readonly scrollHeight: number;
+  readonly latestBelowViewportPx: number;
 }): boolean {
-  return (
-    viewport.scrollHeight - (viewport.scrollY + viewport.innerHeight) <=
-    STICK_TO_BOTTOM_SLACK_PX
-  );
+  if (input.latestBelowViewportPx <= STICK_TO_BOTTOM_SLACK_PX) return true;
+  return input.wasPinned && input.scrollY >= input.previousScrollY;
 }
 
 const ACTIVE_CHAT_ATTACHMENT_STATUSES = new Set([
@@ -299,8 +305,16 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
   );
 
   useEffect(() => {
+    let previousScrollY = window.scrollY;
     const onScroll = () => {
-      pinnedToBottomRef.current = chatViewIsPinnedToBottom(chatViewportMetrics());
+      const latestEnd = messagesEndRef.current?.getBoundingClientRect().bottom;
+      pinnedToBottomRef.current = chatViewPinAfterScroll({
+        wasPinned: pinnedToBottomRef.current,
+        previousScrollY,
+        scrollY: window.scrollY,
+        latestBelowViewportPx: latestEnd === undefined ? 0 : latestEnd - window.innerHeight,
+      });
+      previousScrollY = window.scrollY;
       if (pinnedToBottomRef.current) setJumpToLatestVisible(false);
     };
     window.addEventListener("scroll", onScroll, { passive: true });
@@ -1898,14 +1912,6 @@ function ChatSessionUnavailablePanel({
       </div>
     </div>
   );
-}
-
-function chatViewportMetrics() {
-  return {
-    innerHeight: window.innerHeight,
-    scrollY: window.scrollY,
-    scrollHeight: document.documentElement.scrollHeight,
-  };
 }
 
 function chatSessionFetchError(status: number) {

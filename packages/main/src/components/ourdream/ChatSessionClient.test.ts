@@ -3,7 +3,7 @@ import {
   applyLocalStreamState,
   chatAttachmentCostLabel,
   chatUpgradeLinkLabel,
-  chatViewIsPinnedToBottom,
+  chatViewPinAfterScroll,
   voicePaymentRequiredReason,
 } from "./ChatSessionClient";
 
@@ -89,12 +89,22 @@ describe("local stream state over polled session rows", () => {
 });
 
 describe("chat auto-scroll anchoring", () => {
-  it("follows new tokens only while the reader is parked at the bottom", () => {
-    const page = { innerHeight: 800, scrollHeight: 2_000 };
-    expect(chatViewIsPinnedToBottom({ ...page, scrollY: 1_200 })).toBe(true);
-    expect(chatViewIsPinnedToBottom({ ...page, scrollY: 1_100 })).toBe(true);
-    expect(chatViewIsPinnedToBottom({ ...page, scrollY: 1_000 })).toBe(false);
-    expect(chatViewIsPinnedToBottom({ ...page, scrollY: 0 })).toBe(false);
+  const pin = (input: Partial<Parameters<typeof chatViewPinAfterScroll>[0]>) =>
+    chatViewPinAfterScroll({ wasPinned: false, previousScrollY: 0, scrollY: 0, latestBelowViewportPx: 0, ...input });
+
+  it("follows new tokens only while the reader is parked at the latest message", () => {
+    expect(pin({ latestBelowViewportPx: -160 })).toBe(true);
+    expect(pin({ latestBelowViewportPx: 120 })).toBe(true);
+    expect(pin({ latestBelowViewportPx: 121 })).toBe(false);
+  });
+
+  it("keeps following while a follow-scroll trails newly appended messages", () => {
+    // Messages landed mid-animation: the list end is far below while scrollY still moves down.
+    expect(pin({ wasPinned: true, previousScrollY: 1_200, scrollY: 1_300, latestBelowViewportPx: 400 })).toBe(true);
+    // The reader scrolling up is what releases the pin.
+    expect(pin({ wasPinned: true, previousScrollY: 1_300, scrollY: 1_250, latestBelowViewportPx: 400 })).toBe(false);
+    // Moving down short of the latest message does not re-pin a released reader.
+    expect(pin({ wasPinned: false, previousScrollY: 1_000, scrollY: 1_300, latestBelowViewportPx: 400 })).toBe(false);
   });
 });
 
