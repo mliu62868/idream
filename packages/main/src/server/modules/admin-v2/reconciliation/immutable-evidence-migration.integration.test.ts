@@ -18,6 +18,14 @@ describe("immutable admin evidence database guards", () => {
     });
     await client.connect();
     try {
+      // The test DB may already carry these guards (global setup or an earlier run);
+      // the migration uses plain CREATE, so clear them to replay its exact SQL.
+      await client.query(`
+        DROP FUNCTION IF EXISTS reject_admin_evidence_update() CASCADE;
+        DROP FUNCTION IF EXISTS enforce_character_release_snapshot_immutable() CASCADE;
+        DROP FUNCTION IF EXISTS enforce_reference_set_snapshot_immutable() CASCADE;
+        DROP FUNCTION IF EXISTS enforce_generation_transport_execution_lifecycle() CASCADE;
+      `);
       for (const migration of [
         "20260711120000_immutable_admin_evidence",
         "20260801203000_generation_terminal_record_authority",
