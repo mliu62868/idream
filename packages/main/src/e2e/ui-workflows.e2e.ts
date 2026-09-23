@@ -22,6 +22,7 @@ import {
 } from "@/server/modules/admin-v2/characters/release-snapshot";
 import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
+import { characterContentHash } from "@/server/modules/admin-v2/shared/character-content-identity";
 import { relationshipWorkspacePath } from "../../../chat/src/agent-runtime/workspace";
 import { redeemCodeHash } from "@/server/lib/redeem-codes";
 const accountErasureCompletionReceiptSource =
@@ -625,12 +626,19 @@ async function seedOwnedIdentityMedia(email: string) {
     detailsMarkdown: "Warm, attentive, and playful in conversation.",
   });
   if (!soul.ok) throw new Error("Owned E2E Character Soul must compile");
+  const openingSnapshot = { firstMessage: "Welcome back. How is your day going?" };
   const content = await prisma.characterContentVersion.create({ data: {
     characterId,
     version: 1,
-    contentHash: soul.snapshot.compiled.fingerprint,
+    // Chat-sourced Generate re-derives this hash; a fixture-only formula would
+    // make the frozen chat content look tampered.
+    contentHash: characterContentHash({
+      personaSnapshot: soul.snapshot,
+      openingSnapshot,
+      appearanceSnapshot: {},
+    }),
     personaSnapshot: soul.snapshot as unknown as Prisma.InputJsonValue,
-    openingSnapshot: { firstMessage: "Welcome back. How is your day going?" },
+    openingSnapshot,
     appearanceSnapshot: {},
     sourceType: "playwright",
   } });
@@ -3477,7 +3485,9 @@ test("character detail signup redirect returns anonymous chat intent to the char
   await page.getByRole("button", { name: "Chat" }).click();
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/signup");
-  expect(new URL(page.url()).searchParams.get("next")).toBe("/characters/melissa-burke");
+  expect(new URL(page.url()).searchParams.get("next")).toBe(
+    "/characters/melissa-burke?resume=chat",
+  );
   const authExploreClass = await page
     .locator("aside")
     .getByRole("link", { name: "Explore" })
@@ -3491,12 +3501,9 @@ test("character detail signup redirect returns anonymous chat intent to the char
   await page.getByRole("button", { name: "Join Free" }).click();
   await completeSignupRecoveryCode(page);
 
-  await expect.poll(() => new URL(page.url()).pathname).toBe("/characters/melissa-burke");
-  await expect(page.getByRole("heading", { name: "Melissa Burke" })).toBeVisible({
-    timeout: 10_000,
-  });
-  await page.getByRole("button", { name: "Chat" }).click();
-  await expect(page).toHaveURL(/\/chat\/[^/]+$/);
+  // The detail page consumes resume=chat and opens the chat the guest asked
+  // for without a second click.
+  await expect(page).toHaveURL(/\/chat\/[^/]+$/, { timeout: 15_000 });
 });
 
 test("character detail like signup redirect returns anonymous intent and persists", async ({
@@ -3828,15 +3835,30 @@ test("chat UI opens Generate with character context and renders chat image attac
     },
   });
 
+  // The attachment's Generate link selects the durable Main Turn and its image,
+  // so Generate opens with that chat context rather than a bare character.
   const attachmentGenerate = assistantBubble.getByRole("link", { name: "Open in Generate" }).first();
-  await expect(attachmentGenerate).toHaveAttribute("href", `/generate?characterId=${characterId}`);
+  const generateTurn = await prisma.chatTurn.findUniqueOrThrow({
+    where: { assistantMessageId: assistantMessageId! }, select: { id: true },
+  });
+  const generateHref = new URL((await attachmentGenerate.getAttribute("href"))!, page.url());
+  expect(generateHref.pathname).toBe("/generate");
+  expect(Object.fromEntries(generateHref.searchParams)).toEqual({
+    characterId,
+    chatSessionId: expect.any(String),
+    chatTurnId: generateTurn.id,
+    chatAttempt: "2",
+    chatMediaAssetId: mediaId,
+  });
   await attachmentGenerate.click();
-  await expect(page).toHaveURL(new RegExp(`/generate\\?characterId=${characterId}$`), {
-    timeout: 10_000,
-  });
-  await expect(page.locator('select[aria-label="Character"]')).toHaveValue(characterId, {
-    timeout: 10_000,
-  });
+  await expect.poll(() => new URL(page.url()).pathname, { timeout: 10_000 }).toBe("/generate");
+  expect(new URL(page.url()).searchParams.get("characterId")).toBe(characterId);
+  const generatorContext = page.getByTestId("generator-context");
+  await expect(generatorContext).toContainText(
+    "The original source and its available character identity are attached.",
+    { timeout: 10_000 },
+  );
+  await expect(generatorContext.getByAltText("Original source image")).toBeVisible();
 });
 
 test("chat hub signup redirect returns anonymous user to the hub", async ({ page }) => {
@@ -4464,7 +4486,7 @@ test("generator UI explains config load failures instead of showing a fake zero 
   ).toBeVisible();
 });
 
-test("generator UI blocks insufficient-balance requests with an upgrade path", async ({ page }) => {
+test("generator UI blocks insufficient-balance requests with a coin store path", async ({ page }) => {
   const { email } = await startSignedInAdultSession(page, "generate-low-balance");
   await clearDreamcoins(email);
   const returnTarget = "/generate?characterId=lola-moonstruck";
@@ -4478,7 +4500,7 @@ test("generator UI blocks insufficient-balance requests with an upgrade path", a
   await expect(insufficientBalance).toContainText("you have 0");
   await expect(insufficientBalance).toHaveAttribute(
     "href",
-    `/upgrade?returnTo=${encodeURIComponent(returnTarget)}`,
+    `/coins?returnTo=${encodeURIComponent(returnTarget)}`,
   );
   await expect(insufficientBalance.getByText("Get coins")).toBeVisible();
   await expect(page.getByRole("button", { name: "Generate" })).toBeDisabled();
@@ -4582,9 +4604,10 @@ test("generator Image Edit queues a variation from a gallery source", async ({ p
   await page.getByRole("textbox", { name: "Edit instructions" }).fill(
     "Change the outfit to a deep red velvet jacket and keep the background unchanged.",
   );
-  await page.getByRole("textbox", { name: "Negative Prompt" }).fill(
-    "visible text, duplicate person",
-  );
+  // Edit instructions are free; a user-written negative prompt is a Premium
+  // control, so a free account sees it locked instead of hitting a 402.
+  await expect(page.getByRole("textbox", { name: "Negative Prompt" })).toBeDisabled();
+  await expect(page.getByText("Negative prompts are a Premium control.")).toBeVisible();
   const createEdit = page.getByRole("button", {
     name: /^Create edit · \d[\d,]* coins$/,
   });
@@ -4611,7 +4634,6 @@ test("generator Image Edit queues a variation from a gallery source", async ({ p
   expect(stored.sourceId).toContain(`media:${sourceMediaId}:variation:`);
   expect(stored.sourceMeta).toMatchObject({ sourceMediaId });
   expect(stored.prompt).toContain("Requested edit: Change the outfit to a deep red velvet jacket");
-  expect(stored.negativePrompt).toContain("visible text, duplicate person");
 
   await drainWorker(page.request, job.id);
   await expect(page.getByText("Generation complete.")).toBeVisible({ timeout: 10_000 });
@@ -5125,9 +5147,9 @@ test("upgrade UI activates Premium, grants dreamcoins, and unlocks prompt contro
   await expect(page.locator('select[aria-label="Character"]')).toHaveValue("lola-moonstruck");
 
   await page.goto("/profile");
-  await expect(page.getByText(/1,?750 dreamcoins · Premium monthly/)).toBeVisible({
-    timeout: 10_000,
-  });
+  const balanceLink = page.getByTestId("profile-balance-link");
+  await expect(balanceLink).toHaveText(/^1,?750 dreamcoins$/, { timeout: 10_000 });
+  await expect(balanceLink.locator("..")).toContainText("· Premium monthly");
   const billingCard = page.getByTestId("profile-billing-card");
   await expect(billingCard.getByText("Premium monthly")).toBeVisible({ timeout: 10_000 });
   await expect(
@@ -6055,6 +6077,10 @@ test("mobile profile media publish links directly to the focused Community colle
   await expect(mediaCard).toBeVisible({ timeout: 10_000 });
 
   await mediaCard.getByLabel("Collection name").fill(collectionName);
+  // Collections start private; publishing is an explicit opt-in.
+  const publishToggle = mediaCard.getByLabel("Publish collection to Community");
+  await expect(publishToggle).not.toBeChecked();
+  await publishToggle.check();
   await mediaCard.getByRole("button", { name: "Create collection from media" }).click();
   await expect(page.getByText("Collection published to Community.")).toBeVisible({
     timeout: 10_000,
@@ -6404,7 +6430,9 @@ test("profile account management signs out sessions and deletes the account", as
   await page.getByLabel("Email").filter({ visible: true }).fill(email);
   await page.getByLabel("Password").filter({ visible: true }).fill("password123");
   await page.getByRole("button", { name: "Login" }).click();
-  await expect(page.getByTestId("auth-status")).toHaveText("Account is not active");
+  await expect(page.getByTestId("auth-status")).toHaveText(
+    `This account was deleted at your request. Erasure completes by ${deletion.graceEndsAt.toISOString().slice(0, 10)}; it can no longer be signed in to.`,
+  );
 
   // INTENT: the browser proves the real 30-day contract above. This run owns
   // its disposable Main DB, Redis namespace, Chat FS, and Blob root, so

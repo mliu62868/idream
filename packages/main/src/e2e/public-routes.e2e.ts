@@ -295,10 +295,10 @@ test.describe("public route smoke", () => {
     await page.goto("/community");
     await expect(
       page.getByTestId("community-campaign-authority-status"),
-    ).toHaveText("Campaigns unavailable · Editorial community overview");
+    ).toHaveText("Couldn't load spotlights · showing editors' picks");
     await expect(
       page.getByTestId("community-campaign-authority-status"),
-    ).not.toHaveText("Live community campaign");
+    ).not.toHaveText("This week's spotlight");
   });
 
   test("unpublished library collections remain unpublished", async ({
@@ -600,7 +600,7 @@ test.describe("public route smoke", () => {
     }
   });
 
-  test("my ai metadata does not market deferred group chats or packs as active features", async ({
+  test("my ai metadata describes shipped library features and does not market packs", async ({
     page,
   }) => {
     await startSignedInAdultSession(page, "/custom");
@@ -613,7 +613,9 @@ test.describe("public route smoke", () => {
         "",
     }));
 
-    expect(metadata.description).not.toContain("group chats, packs");
-    expect(metadata.description).toContain("deferred group-chat and pack tabs");
+    // INTENT: group conversations shipped with the group chat manager and belong
+    // in the library summary; packs have no My AI surface, so never advertise them.
+    expect(metadata.description).toContain("group conversations");
+    expect(metadata.description).not.toMatch(/\bpacks?\b/);
   });
 });

@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { resolveLocalBlobPath } from "@idream/shared/storage/local-blob";
@@ -623,6 +623,8 @@ test("admin users and billing actions write audit trail and clear adjustment for
 
     await page.goto(`${adminURL}/admin/billing`);
     await expectAdminShellReady(page, "Orders & Billing");
+    // The adjustment form is a collapsed disclosure; operators open it first.
+    await page.locator("summary").filter({ hasText: "Adjust Ledger" }).click();
     await page.getByLabel("Adjustment user ID").fill(targetId);
     await page.getByLabel("Adjustment delta").fill("37");
     await page.getByRole("button", { name: "Adjust" }).click();
@@ -638,6 +640,9 @@ test("admin users and billing actions write audit trail and clear adjustment for
     );
     await expect(page.getByLabel("Adjustment user ID")).toHaveValue("");
     await expect(page.getByLabel("Adjustment delta")).toHaveValue("");
+    // Billing opens on checkout exceptions; ledger and subscriptions are tabs.
+    const billingTabs = page.getByRole("navigation", { name: "Orders & Billing" });
+    await billingTabs.getByRole("button", { name: "Ledger", exact: true }).click();
     const ledgerRow = page.getByRole("row").filter({ hasText: targetId });
     await expect(ledgerRow).toHaveCount(1, { timeout: 10_000 });
     await expect(ledgerRow.getByText("admin_adjust", { exact: true })).toBeVisible();
@@ -669,6 +674,7 @@ test("admin users and billing actions write audit trail and clear adjustment for
     await expect(page.getByRole("row").filter({ hasText: refreshLedgerId })).toHaveCount(1, {
       timeout: 10_000,
     });
+    await billingTabs.getByRole("button", { name: "Subscriptions", exact: true }).click();
     const subscriptionError = page.getByRole("alert").filter({ hasText: "This action did not complete." });
     await expect(subscriptionError).toBeVisible();
     await subscriptionError.locator("summary").click();
@@ -943,6 +949,14 @@ test("admin dead-letter queue discards failed jobs with refund audit", async ({ 
   }
 });
 
+// Ticket actions and escalation details sit in a collapsed per-row disclosure.
+async function openSupportRowActions(row: Locator) {
+  const disclosure = row.locator("details").first();
+  if (!(await disclosure.evaluate((element) => (element as HTMLDetailsElement).open))) {
+    await disclosure.locator("summary").click();
+  }
+}
+
 test("admin support inbox resolves a help desk request", async ({ page }) => {
   const consoleFailures = collectConsoleFailures(page);
 
@@ -1008,6 +1022,7 @@ test("admin support inbox resolves a help desk request", async ({ page }) => {
     await expect(ticketRow).toHaveCount(1, { timeout: 10_000 });
     await expect(page.getByRole("row").filter({ hasText: freshTicketId })).toHaveCount(0);
     await expect(ticketRow.getByText("overdue", { exact: true })).toBeVisible();
+    await openSupportRowActions(ticketRow);
     await ticketRow.getByRole("button", { name: "Escalate" }).click();
     await page
       .getByRole("textbox", { name: "Reason", exact: true })
@@ -1038,6 +1053,7 @@ test("admin support inbox resolves a help desk request", async ({ page }) => {
     await page.getByRole("button", { name: "Reset filters" }).click();
     await page.getByRole("textbox", { name: "Support search" }).fill(ticketId);
 
+    await openSupportRowActions(ticketRow);
     await ticketRow.getByRole("button", { name: "Resolve" }).click();
     await page.getByRole("textbox", { name: "Message to customer", exact: true })
       .fill("Your generation issue is fixed. Please refresh your gallery and retry the download.");
@@ -1047,7 +1063,8 @@ test("admin support inbox resolves a help desk request", async ({ page }) => {
     await page.getByRole("textbox", { name: "Confirmation", exact: true }).fill(ticketId);
     await page.getByRole("button", { name: "Confirm" }).click();
 
-    await expect(ticketRow.getByText("resolved", { exact: true })).toBeVisible({
+    // The status cell reads "<status> Priority · <n>".
+    await expect(ticketRow.getByRole("cell", { name: /^resolved Priority/ })).toBeVisible({
       timeout: 10_000,
     });
     const updated = await prisma.supportRequest.findUniqueOrThrow({ where: { ticketId } });
@@ -1161,6 +1178,7 @@ test("admin support plaintext panel views consent-scoped generation prompt", asy
     const adminURL = adminBaseURL();
     await page.goto(`${adminURL}/admin/support`);
     await expectAdminShellReady(page, "Support Cases");
+    await page.locator("summary").filter({ hasText: "Plaintext access" }).click();
     await expect(page.getByRole("heading", { name: "Plaintext access" })).toBeVisible();
 
     await page.getByRole("combobox", { name: "Target type" }).selectOption("generation_job");
@@ -1529,7 +1547,7 @@ test("admin API creates a character project and fails mock AI assist closed", as
           style: "realistic",
           referenceDirection: "Warm studio lighting, linen shirt, waist-up framing.",
         },
-        reason: "e2e official create",
+        reason: { code: "new_supply", summary: "e2e official create" },
         confirmation: "CREATE CHARACTER",
       },
     });
@@ -1742,6 +1760,7 @@ test("admin pricing and promo creation require typed confirmation", async ({ pag
   try {
     await page.goto(`${adminURL}/admin/pricing`);
     await expectAdminShellReady(page, "Pricing");
+    await page.locator("summary").filter({ hasText: "Create Pricing Rule Draft" }).click();
     await page.getByRole("textbox", { name: "Rule Key", exact: true }).fill(ruleKey);
     await page.getByRole("textbox", { name: "Label", exact: true }).fill("E2E pricing confirmation");
     await page.getByRole("textbox", { name: "Base Cost (coins)", exact: true }).fill("7");
