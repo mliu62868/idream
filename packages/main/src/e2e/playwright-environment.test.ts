@@ -118,38 +118,25 @@ describe("managed Playwright environment", () => {
       ".next/playwright-config-admin-3111-a1b2c3d4/tsconfig.json",
     );
     expect(servers[3]?.env.BLOB_ROOT).toBe(first.blobRoot);
-    expect(servers[4]?.command).toBe("bun run --cwd ../gen start:image");
-    expect(servers[4]?.wait).toEqual({
-      stdout: /gen\/image workers started/,
-    });
-    expect(servers[4]?.gracefulShutdown).toEqual({
-      signal: "SIGTERM",
-      timeout: 30_000,
-    });
-    expect(servers[4]?.env.REDIS_URL).toBe(first.redisURL);
-    expect(servers[4]?.env.GEN_REDIS_URL).toBe(first.redisURL);
-    expect(servers[4]?.env.BULLMQ_PREFIX).toBe(first.bullmqPrefix);
-    // "pipeline" retired with the legacy external adapter on 2026-09-12; the
-    // browser image worker takes the same mock the video worker defaults to.
-    expect(servers[4]?.env.GEN_IMAGE_PROVIDER).toBe("mock");
-    expect(servers[4]?.env.GEN_MODERATION_PROVIDER).toBe("mock");
-    expect(servers[4]?.env.GEN_BLOB_PROVIDER).toBe("mock");
-    expect(servers[4]?.env.BLOB_ROOT).toBe(first.blobRoot);
-    expect(servers[4]?.env.PIPELINE_API_URL).toBe(first.pipelineBaseURL);
-    expect(servers[4]?.env.MAIN_WEB_URL).toBe(first.mainBaseURL);
-    expect(servers[4]?.env.INTERNAL_TOKEN).toBe(
-      first.serviceEnv.INTERNAL_TOKEN,
-    );
-    expect(servers[4]?.env.LOG_LEVEL).toBe("info");
-    expect(servers[5]?.command).toBe("bun src/e2e/start-playwright-video-worker.ts");
-    expect(servers[5]?.wait).toEqual({ stdout: /Playwright video worker started/ });
-    expect(servers[5]?.gracefulShutdown).toEqual({ signal: "SIGTERM", timeout: 30_000 });
-    expect(servers[5]?.env.GEN_REDIS_URL).toBe(first.redisURL);
-    expect(servers[5]?.env.BULLMQ_PREFIX).toBe(first.bullmqPrefix);
-    expect(servers[5]?.env.GEN_VIDEO_PROVIDER).toBe("backend");
-    expect(servers[5]?.env.GEN_BLOB_PROVIDER).toBe("mock");
-    expect(servers[5]?.env.BLOB_ROOT).toBe(first.blobRoot);
-    expect(servers[5]?.env.MAIN_WEB_URL).toBe(first.mainBaseURL);
+    for (const [index, mode] of [[4, "image"], [5, "video"]] as const) {
+      const worker = servers[index];
+      expect(worker?.command).toBe(`bun src/e2e/start-playwright-gen-worker.ts ${mode}`);
+      expect(worker?.wait).toEqual({ stdout: new RegExp(`Playwright ${mode} worker started`) });
+      expect(worker?.gracefulShutdown).toEqual({ signal: "SIGTERM", timeout: 30_000 });
+      expect(worker?.env.REDIS_URL).toBe(first.redisURL);
+      expect(worker?.env.GEN_REDIS_URL).toBe(first.redisURL);
+      expect(worker?.env.BULLMQ_PREFIX).toBe(first.bullmqPrefix);
+      // Seeded profiles pin runner `comfyui`, which Gen accepts only on the
+      // backend adapter; provider I/O stays mock inside the worker script.
+      expect(worker?.env.GEN_IMAGE_PROVIDER).toBe("backend");
+      expect(worker?.env.GEN_VIDEO_PROVIDER).toBe("backend");
+      expect(worker?.env.GEN_MODERATION_PROVIDER).toBe("mock");
+      expect(worker?.env.GEN_BLOB_PROVIDER).toBe("mock");
+      expect(worker?.env.BLOB_ROOT).toBe(first.blobRoot);
+      expect(worker?.env.MAIN_WEB_URL).toBe(first.mainBaseURL);
+      expect(worker?.env.INTERNAL_TOKEN).toBe(first.serviceEnv.INTERNAL_TOKEN);
+      expect(worker?.env.LOG_LEVEL).toBe("info");
+    }
     expect(servers[6]?.command).toBe("bun src/processes/finalizer.ts");
     expect(servers[6]?.wait).toEqual({
       stdout: /gen-finalizer started/,

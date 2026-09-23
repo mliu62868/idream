@@ -192,7 +192,7 @@ async function drainCreativeRun(
     await prisma.generationJob.count({
       where: {
         id: { in: generatedJobIds },
-        provider: "pipeline",
+        provider: "comfyui",
       },
     }),
   ).toBe(expectedItemCount);
@@ -200,7 +200,7 @@ async function drainCreativeRun(
     await prisma.generationAttempt.count({
       where: {
         requestId: { in: generatedJobIds },
-        provider: "pipeline",
+        provider: "comfyui",
         status: "succeeded",
       },
     }),
@@ -213,7 +213,7 @@ async function drainCreativeRun(
   expect(
     generatedAssets.every((asset) => {
       const metadata = asset.metadata as Record<string, unknown>;
-      return metadata.provider === "pipeline" && metadata.synthetic === false;
+      return metadata.provider === "comfyui" && metadata.synthetic === false;
     }),
   ).toBe(true);
 }
@@ -502,7 +502,7 @@ async function seedResponsiveCoreFixture(fixture: ResponsiveCoreFixture) {
       status: "completed",
       outputCount: 1,
       deliveredOutputCount: 1,
-      provider: "pipeline",
+      provider: "comfyui",
       sourceType: "content_production_item",
       sourceId: fixture.creativeItemId,
       completedAt: new Date(),
@@ -513,7 +513,7 @@ async function seedResponsiveCoreFixture(fixture: ResponsiveCoreFixture) {
       id: fixture.creativeAttemptId,
       requestId: fixture.creativeJobId,
       attemptNo: 1,
-      provider: "pipeline",
+      provider: "comfyui",
       status: "succeeded",
       finishedAt: new Date(),
     },
@@ -2146,7 +2146,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       ).not.toBeNull();
       expect(item.job).toMatchObject({
         characterId: wizardCharacterId,
-        provider: "pipeline",
+        provider: "comfyui",
         profileId: wizardBootstrapProfileKey,
         referenceAssetIds: null,
         referenceSetRevisionId: null,
@@ -3145,7 +3145,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     expect(dynamicItem).toMatchObject({
       status: "generated",
       job: {
-        provider: "pipeline",
+        provider: "comfyui",
         profileId: wizardBootstrapProfileKey,
         orientation: "16:9",
         status: "completed",
@@ -3581,12 +3581,14 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     const casePreview = resolved
       .getByRole("button", { name: "Preview support request case", exact: true })
       .filter({ hasText: `user ${caseTargetId} is closed` });
+    // Incidents are titled by their suspected cause; the dedupe signature is
+    // only a short reference in the summary.
     const incidentPreview = resolved.getByRole("button", {
-      name: `Preview Incident: provider:profile:e2e-${suffix}`,
+      name: `Preview Incident: E2E provider regression ${suffix}`,
       exact: true,
     });
     await expect(casePreview.getByText(`user ${caseTargetId} is closed`, { exact: true })).toBeVisible();
-    await expect(incidentPreview.getByText(`E2E provider regression ${suffix}`, { exact: true })).toBeVisible();
+    await expect(incidentPreview).toContainText("Incident is closed · ref provider");
     await casePreview.click();
     await expect(casePreview).toHaveAttribute("aria-pressed", "true");
     const openSourceRecord = resolved
