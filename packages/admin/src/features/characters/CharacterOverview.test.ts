@@ -16,6 +16,7 @@ function workspace(overrides: {
   servingState?: string | null;
   changedFields?: string[];
   publishedRelease?: boolean;
+  pendingRevision?: { revision: number; createdAt: string };
   anchors?: { mediaAssetId: string; available: boolean }[];
   references?: { mediaAssetId: string; available: boolean }[];
   videoSources?: { mediaAssetId: string; available: boolean }[];
@@ -40,6 +41,7 @@ function workspace(overrides: {
       release: {
         servingState: overrides.servingState ?? "inactive",
         currentReleaseId: overrides.servingState ? releaseId : null,
+        pendingRevision: overrides.pendingRevision ?? null,
       },
       assetPack: {
         draft: { availablePurposes, completed: availablePurposes.length, total: 3 },
@@ -173,6 +175,18 @@ describe("Character detail facts", () => {
     expect(factValue(live, "Owner")).toBeUndefined();
   });
 
+
+  // SPEC: 创作者改了已发布角色后，运营在角色概览直接看到「待发布修订」。
+  it("flags a saved revision the live release does not serve yet", () => {
+    const edited = workspace({
+      servingState: "live",
+      publishedRelease: true,
+      pendingRevision: { revision: 3, createdAt: "2026-09-20T08:00:00.000Z" },
+    });
+    expect(factValue(edited, "Pending revision")).toEqual({ label: "Pending revision", value: "#3 · 2026-09-20", alert: true });
+    expect(factValue(workspace({ servingState: "live", publishedRelease: true }), "Pending revision"))
+      .toMatchObject({ value: "None", alert: false });
+  });
 
   it("flags an unpublished character on serving and release instead of showing a blank", () => {
     const draft = workspace({ servingState: null });

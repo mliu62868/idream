@@ -1078,6 +1078,10 @@ export const adminZhCharacters: Record<string, string> = {
   "Publish the prepared immutable Character snapshot.":
     "发布已准备好的不可变角色快照。",
   "Review live character": "查看线上角色",
+  "Unpublished revision": "有待发布的修订",
+  "Prepare release": "准备发布",
+  "A newer Character revision is saved but the live Release still serves the previous one.":
+    "角色已保存更新的修订，但线上版本仍在提供旧修订。",
   "Resolve live release blocker": "处理线上版本阻塞",
   "Resolve the current live Release blocker before continuing routine production.":
     "先处理当前线上版本的阻塞，再继续常规生产。",
@@ -1370,6 +1374,7 @@ export const adminZhCharacters: Record<string, string> = {
   "Type {token} to confirm": "输入 {token} 确认",
   "Unpublish character": "取消发布角色",
   "Unpublished changes": "未发布改动",
+  "Pending revision": "待发布修订",
   "Upload one clean voice sample, verify the generated preview, and bind it to this character.":
     "上传一段干净的声音样本，验证生成的试听音频，再将其绑定到这个角色。",
   "Upload the recording that defines the voice identity, then enter its exact transcript.":

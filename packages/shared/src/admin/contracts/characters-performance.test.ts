@@ -130,6 +130,7 @@ describe("Character Portfolio v2 contracts", () => {
           servingState: "live",
           currentReleaseId: "release-1",
           candidateReleaseId: null,
+          pendingRevision: null,
         },
       }).primaryAction,
     ).toMatchObject({ code: "prepare_image_production" });

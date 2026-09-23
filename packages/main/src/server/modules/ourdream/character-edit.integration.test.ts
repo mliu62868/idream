@@ -3,6 +3,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { api, createUser, expectError, expectOk, purgeTestData } from "@/server/test/helpers";
 import { beginChatTurn, commitChatTerminal, createChatSession } from "@/server/modules/chat/turn-ledger";
+import { projectCharacterProductionJourney } from "@/server/modules/admin-v2/characters/production-journey";
 
 const prefix = `zt-character-edit-${randomUUID()}-`;
 const tagSlug = `zt-edit-${randomUUID().slice(0, 8)}`;
@@ -203,6 +204,7 @@ describe("Character edit (CR-06 / CR-08)", () => {
       await tx.character.update({ where: { id: characterId }, data: { visibility: "public" } });
     });
     const visualProfilesBefore = await prisma.characterVisualProfile.count({ where: { characterId } });
+    expect((await projectCharacterProductionJourney(prisma, characterId)).release.pendingRevision).toBeNull();
 
     const opened = await api("POST", `characters/${characterId}/edit-draft`, { userId, ageGate: true });
     expectOk(opened);
@@ -234,6 +236,13 @@ describe("Character edit (CR-06 / CR-08)", () => {
     expect(revision.revision).toBe(2);
     const pending = await prisma.characterContentVersion.findUniqueOrThrow({ where: { id: revision.characterContentVersionId } });
     expect(pending.personaSnapshot).toMatchObject({ soul: { name: "Avery Vale", characterPromise: "A late-night radio host" } });
+    // Operators see the unpublished edit and where to prepare its Release.
+    expect((await projectCharacterProductionJourney(prisma, characterId)).release.pendingRevision).toEqual({
+      revisionId: revision.id,
+      revision: 2,
+      createdAt: revision.createdAt.toISOString(),
+      deepLink: `/admin/characters/${encodeURIComponent(characterId)}?tab=release`,
+    });
 
     // The next edit starts from the pending revision, not the live projection.
     const reopened = await api("POST", `characters/${characterId}/edit-draft`, { userId, ageGate: true });

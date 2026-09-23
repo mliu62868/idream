@@ -124,7 +124,7 @@ export function resolveCharacterPortfolioPrimaryAction(
     href: item.journey.primaryAction.deepLink,
   };
   // SPEC: 卡片主动作只服从这个优先级：未完成命令/旅程阻塞 → Release 阻塞 → 线上零观测
-  //       → 待发布版本 → 线上图片包缺失 → 普通制作旅程。
+  //       → 待发布版本 → 待发布修订 → 线上图片包缺失 → 普通制作旅程。
   // INTENT: 生成批次只是生产过程，不能盖过线上故障或发布决策。
   if (
     item.journey.primaryAction.code === "recover_active_command" ||
@@ -171,6 +171,18 @@ export function resolveCharacterPortfolioPrimaryAction(
   }
   if (item.journey.primaryAction.code === "publish_character") {
     return journeyAction;
+  }
+  // INTENT: 创作者改了已发布角色只会写 Revision、不动 Serving；这里不出声，改动就一直停在未发布。
+  const pendingRevision = item.journey.release.pendingRevision;
+  if (pendingRevision) {
+    return {
+      description:
+        "A newer Character revision is saved but the live Release still serves the previous one.",
+      eyebrow: "Unpublished revision",
+      href: pendingRevision.deepLink,
+      label: "Prepare release",
+      requiresAssets: false,
+    };
   }
   if (
     item.serving.state === "live" &&

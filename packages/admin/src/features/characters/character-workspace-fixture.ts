@@ -121,6 +121,7 @@ const base = {
       servingState: "inactive",
       currentReleaseId: null,
       candidateReleaseId: null,
+      pendingRevision: null,
     },
   },
   mediaOperations: {
