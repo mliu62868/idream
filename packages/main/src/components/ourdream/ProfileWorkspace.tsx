@@ -1535,6 +1535,26 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
               <Link2 className="h-4 w-4" />
               Invite
             </button>
+            {/* The link belongs next to the button that makes it; the page-level status is far away. */}
+            {referralUrl && (
+              <div className="mt-3 flex items-center gap-2">
+                <input
+                  aria-label="Referral link"
+                  className="h-10 min-w-0 flex-1 rounded-[12px] bg-[rgb(36,36,36)] px-3 text-[12px] font-semibold text-[rgb(230,230,230)] outline-none"
+                  readOnly
+                  value={referralUrl}
+                />
+                <button
+                  aria-label="Copy invite link"
+                  className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[rgb(36,36,36)] text-white"
+                  onClick={copyReferralUrl}
+                  title="Copy invite link"
+                  type="button"
+                >
+                  <Copy className="h-4 w-4" />
+                </button>
+              </div>
+            )}
             {referralResults ? (
               <p
                 className="mt-3 text-[12px] font-semibold text-[rgb(170,170,170)]"
@@ -1600,7 +1620,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
             </div>
           </div>
         </div>
-        {(status || referralUrl) && (
+        {status && (
           <div className="mt-4 space-y-3">
             {status && (
               <div className="flex flex-wrap items-center gap-2">
@@ -1620,25 +1640,6 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
                     View in Community
                   </Link>
                 )}
-              </div>
-            )}
-            {referralUrl && (
-              <div className="flex max-w-xl items-center gap-2">
-                <input
-                  aria-label="Referral link"
-                  className="h-10 min-w-0 flex-1 rounded-[12px] bg-[rgb(18,18,18)] px-3 text-[12px] font-semibold text-[rgb(230,230,230)] outline-none"
-                  readOnly
-                  value={referralUrl}
-                />
-                <button
-                  aria-label="Copy invite link"
-                  className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[rgb(36,36,36)] text-white"
-                  onClick={copyReferralUrl}
-                  title="Copy invite link"
-                  type="button"
-                >
-                  <Copy className="h-4 w-4" />
-                </button>
               </div>
             )}
           </div>
