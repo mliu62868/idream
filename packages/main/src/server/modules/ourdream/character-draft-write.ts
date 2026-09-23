@@ -314,7 +314,7 @@ export async function submitCharacterDraft(input: {
     if (!existing) {
       throw Errors.conflict("This draft was submitted but its Character is unavailable");
     }
-    return { character: existing, edited: Boolean(draft.editsCharacterId) };
+    return { character: existing, edited: Boolean(draft.editsCharacterId), pendingPublication: false };
   }
   const editsCharacterId = draft.editsCharacterId;
   if (editsCharacterId) {
@@ -558,7 +558,7 @@ export async function submitCharacterDraft(input: {
     throw error;
   });
 
-  return { character, edited: false };
+  return { character, edited: false, pendingPublication: false };
 }
 
 function draftVisualFields(value: Prisma.JsonValue): Prisma.JsonObject {

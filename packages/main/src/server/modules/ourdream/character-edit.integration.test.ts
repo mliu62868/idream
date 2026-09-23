@@ -177,4 +177,67 @@ describe("Character edit (CR-06 / CR-08)", () => {
     expect(visual.referenceSetRevisions[0]?.references.map((reference) => reference.mediaAssetId)).toEqual([newAnchorId]);
     expect((await prisma.mediaAsset.findUniqueOrThrow({ where: { id: newAnchorId } })).characterId).toBe(characterId);
   });
+
+  it("turns a published Character's Soul edit into a Release revision while the live Release keeps serving", async () => {
+    const userId = `${prefix}published-owner`;
+    await createUser({ id: userId });
+    const { characterId, anchorId } = await createOwnedCharacter(userId);
+    const before = await prisma.character.findUniqueOrThrow({ where: { id: characterId } });
+    const projectId = `${prefix}published-project`;
+    const releaseId = `${prefix}published-release`;
+    await prisma.$transaction(async (tx) => {
+      await tx.characterProject.create({ data: { id: projectId, characterId } });
+      await tx.characterRevision.create({ data: {
+        projectId, revision: 1, characterContentVersionId: before.currentContentVersionId!, projectSnapshot: {},
+      } });
+      await tx.characterRelease.create({ data: {
+        id: releaseId, projectId, revisionId: `${releaseId}:revision`, characterContentVersionId: before.currentContentVersionId!,
+        generationProvenance: { schemaVersion: "character-release-generation-provenance-v2" },
+        releasePlacementManifest: { schemaVersion: 2, placements: [{
+          slotKey: "character_avatar", assetId: anchorId, slotVersion: 1, runId: `${releaseId}:run`,
+          itemId: `${releaseId}:item`, reviewDecisionId: `${releaseId}:decision`, generationJobId: `${releaseId}:job`,
+        }] },
+        snapshotHash: `${releaseId}:snapshot`, readiness: "ready", status: "published", publishedAt: new Date(),
+      } });
+      await tx.characterServing.create({ data: { characterId, currentReleaseId: releaseId, state: "live" } });
+      await tx.character.update({ where: { id: characterId }, data: { visibility: "public" } });
+    });
+    const visualProfilesBefore = await prisma.characterVisualProfile.count({ where: { characterId } });
+
+    const opened = await api("POST", `characters/${characterId}/edit-draft`, { userId, ageGate: true });
+    expectOk(opened);
+    expect(opened.data.character).toMatchObject({ published: true, visibility: "public" });
+    const draftId = opened.data.draft.id as string;
+
+    expectOk(await api("PATCH", `character-drafts/${draftId}`, { userId, ageGate: true, body: { ...form, hair: { prompt: "Short silver bob" } } }));
+    expectError(await api("POST", `character-drafts/${draftId}/submit`, { userId, ageGate: true, body: { visibility: "public" } }), 409, "conflict");
+
+    expectOk(await api("PATCH", `character-drafts/${draftId}`, { userId, ageGate: true, body: {
+      ...form,
+      name: "Avery Vale",
+      advancedDetails: { description: "A late-night radio host", firstMessage: "You're up late again.", detailsMarkdown: "## Occupation\nNight-shift radio host" },
+    } }));
+    const submitted = await api("POST", `character-drafts/${draftId}/submit`, { userId, ageGate: true, body: { visibility: "public" } });
+    expectOk(submitted);
+    expect(submitted.data.pendingPublication).toBe(true);
+
+    // Release-owned projections and identity are untouched until the Release executor publishes.
+    const after = await prisma.character.findUniqueOrThrow({ where: { id: characterId } });
+    expect(after).toMatchObject({
+      name: before.name, systemPrompt: before.systemPrompt, currentContentVersionId: before.currentContentVersionId,
+      imageAssetId: before.imageAssetId, voiceId: before.voiceId,
+    });
+    expect(await prisma.characterVisualProfile.count({ where: { characterId } })).toBe(visualProfilesBefore);
+    expect(await prisma.characterServing.findUniqueOrThrow({ where: { characterId } }))
+      .toMatchObject({ state: "live", currentReleaseId: releaseId });
+    const revision = await prisma.characterRevision.findFirstOrThrow({ where: { projectId }, orderBy: { revision: "desc" } });
+    expect(revision.revision).toBe(2);
+    const pending = await prisma.characterContentVersion.findUniqueOrThrow({ where: { id: revision.characterContentVersionId } });
+    expect(pending.personaSnapshot).toMatchObject({ soul: { name: "Avery Vale", characterPromise: "A late-night radio host" } });
+
+    // The next edit starts from the pending revision, not the live projection.
+    const reopened = await api("POST", `characters/${characterId}/edit-draft`, { userId, ageGate: true });
+    expectOk(reopened);
+    expect(reopened.data.draft).toMatchObject({ name: "Avery Vale", advancedDetails: { description: "A late-night radio host" } });
+  });
 });

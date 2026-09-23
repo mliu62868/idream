@@ -342,6 +342,31 @@ describe("ProfileWorkspace media pagination", () => {
     expect(patches).toEqual([{ visibility: "private" }]);
   });
 
+  it("opens a chat with an owned Character straight from the Created card", async () => {
+    const originalFetch = globalThis.fetch;
+    const sessionRequests: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/v1/library/created") return Response.json({ ok: true, data: { items: [{
+        id: "own-character", name: "Avery", visibility: "private", status: "approved", image: "/user-content/avery.png",
+      }] } });
+      if (String(input) === "/api/v1/chat/sessions" && init?.method === "POST") {
+        sessionRequests.push(JSON.parse(String(init.body)));
+        return Response.json({ ok: true, data: { session: {
+          id: "session-1", title: "Avery", characterId: "own-character", status: "active", memoryEnabled: true, lastMessageAt: null,
+        } } }, { status: 201 });
+      }
+      return originalFetch(input, init);
+    }));
+    const assign = vi.spyOn(window.location, "assign").mockImplementation(() => {});
+    await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/custom" })));
+    await settle();
+    await click(button("created"));
+    await click(button("Chat with character"));
+    expect(sessionRequests).toEqual([{ characterId: "own-character" }]);
+    expect(assign).toHaveBeenCalledWith("/chat/session-1");
+    assign.mockRestore();
+  });
+
   it("shows the server's reason when publishing a Character fails", async () => {
     const originalFetch = globalThis.fetch;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

@@ -14,6 +14,7 @@ import {
   ImageIcon,
   Link2,
   LogOut,
+  MessageCircle,
   Pencil,
   Save,
   Scale,
@@ -34,6 +35,7 @@ import {
   isPrivateMediaUrl,
 } from "@/lib/image-delivery";
 import {
+  parseChatSessionCreateResponse,
   parseLibraryResponse,
   parseMediaCollectionsResponse,
   parseProfileResponse,
@@ -921,6 +923,28 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
     }
   }
 
+  // Authors may always chat with their own Character (the session pins its
+  // current version); open or resume that session directly from My AI.
+  async function startCharacterChat(id: string) {
+    setStatus("");
+    try {
+      const response = await fetchForOwner("/api/v1/chat/sessions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ characterId: id }),
+      });
+      if (!response.ok) {
+        setStatus(await failureMessage(response, "Could not start chat. Please try again."));
+        return;
+      }
+      const payload = parseChatSessionCreateResponse(await response.json());
+      window.location.assign(`/chat/${encodeURIComponent(payload.session.id)}`);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      setStatus("Could not start chat. Please try again.");
+    }
+  }
+
   async function duplicateCharacter(id: string) {
     setStatus("");
     setDeleteConfirmCharacterId(null);
@@ -1412,6 +1436,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
                   onAddToCollection={addMediaToCollection}
                   showCharacterActions={isCreatedTab}
                   onDuplicateCharacter={duplicateCharacter}
+                  onStartChat={startCharacterChat}
                   deleteConfirmMediaId={deleteConfirmMediaId}
                   deleteConfirmCharacterId={deleteConfirmCharacterId}
                   onDeleteCharacter={deleteCharacter}
@@ -1830,6 +1855,7 @@ function LibraryCard({
   onReport,
   showCharacterActions = false,
   onDuplicateCharacter,
+  onStartChat,
   deleteConfirmMediaId,
   deleteConfirmCharacterId,
   onDeleteCharacter,
@@ -1853,6 +1879,7 @@ function LibraryCard({
   onReport: (id: string) => void;
   showCharacterActions?: boolean;
   onDuplicateCharacter?: (id: string) => void;
+  onStartChat?: (id: string) => void;
   deleteConfirmMediaId?: string | null;
   deleteConfirmCharacterId?: string | null;
   onDeleteCharacter?: (id: string) => void;
@@ -2104,6 +2131,15 @@ function LibraryCard({
               })}
             </span>
           )}
+          <button
+            aria-label="Chat with character"
+            className="inline-flex h-8 items-center gap-1 rounded-full bg-white px-3 text-[12px] font-black text-[rgb(13,13,13)]"
+            onClick={() => onStartChat?.(character?.id ?? item.id)}
+            type="button"
+          >
+            <MessageCircle className="h-3.5 w-3.5" />
+            Chat
+          </button>
           {/* CR-06: edits reuse the full Create wizard and save a new version. */}
           <Link
             aria-label="Edit character"
