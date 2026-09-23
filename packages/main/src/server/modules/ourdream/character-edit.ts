@@ -36,23 +36,42 @@ import { updateCharacterForUser } from "./character-update";
 // CharacterContentVersion and one active CharacterVisualProfile version; every
 // earlier ChatTurn keeps its own content/visual pin. Only the owner's active,
 // Release-less sessions move to the new pin, so their next Turn uses the edit.
-// INTENT: characters with Release authority are not editable here. Their
-// Visual Identity is locked by assertCharacterIdentityAuthorityMutable, and a
-// new public version must go through the Release executor — that path does not
-// exist for customers yet, so we refuse instead of silently diverging.
+//
+// SPEC: a Character with Release authority (published, or paused after
+// publishing) takes a Soul/opening/tag edit as a new publication revision:
+// one CharacterContentVersion plus one CharacterRevision in its project. The
+// serving Release keeps serving; the existing Release executor publishes the
+// revision and projects its content onto the Character (supersede).
+// INVARIANT: that path never writes Release-owned Character columns, Visual
+// Identity or the voice pointer. Visual Identity stays locked by
+// assertCharacterIdentityAuthorityMutable, and voice is not Release-versioned,
+// so changing either on a published Character is refused rather than applied
+// to the live version.
 
-const NOT_EDITABLE_MESSAGE =
-  "Published characters can't be edited yet. Duplicate this character to edit a private copy.";
+const PUBLISHED_LOOK_LOCKED =
+  "A published character keeps its current look. Undo the appearance changes to save, or duplicate the character to change how it looks.";
+const PUBLISHED_VOICE_LOCKED =
+  "A published character keeps its current voice. Choose the current voice to save, or duplicate the character to change it.";
 
-async function assertCharacterEditable(tx: Prisma.TransactionClient, characterId: string) {
+/** True when a Release pins this Character's identity (serving pointer or approved Release). */
+async function hasReleaseAuthority(tx: Prisma.TransactionClient, characterId: string) {
   try {
     await assertCharacterIdentityAuthorityMutable(tx, characterId);
+    return false;
   } catch (error) {
-    if (error instanceof AppError && error.code === "conflict") {
-      throw Errors.conflict(NOT_EDITABLE_MESSAGE, { characterId });
-    }
+    if (error instanceof AppError && error.code === "conflict") return true;
     throw error;
   }
+}
+
+/** A published Character's newest authored Soul is its latest project revision. */
+async function latestRevisionContentVersionId(tx: Prisma.TransactionClient, characterId: string) {
+  const revision = await tx.characterRevision.findFirst({
+    where: { projectId: { in: (await tx.characterProject.findMany({ where: { characterId }, select: { id: true } })).map((project) => project.id) } },
+    orderBy: [{ createdAt: "desc" }, { revision: "desc" }],
+    select: { characterContentVersionId: true },
+  });
+  return revision?.characterContentVersionId ?? null;
 }
 
 function text(value: unknown) {
@@ -133,18 +152,19 @@ export async function openCharacterEditDraft(input: {
 }) {
   const { userId, characterId } = input;
   const character = await editableCharacter(userId, characterId);
-  await assertCharacterEditable(prisma, characterId);
+  const published = await hasReleaseAuthority(prisma, characterId);
   const open = await prisma.characterDraft.findFirst({
     where: { ownerId: userId, editsCharacterId: characterId },
     orderBy: { updatedAt: "desc" },
   });
   if (open && !readCurrentCharacterDraftDetails(open.advancedDetails).submittedCharacterId) {
-    return { draft: open, character };
+    return { draft: open, character, published };
   }
+  // A pending (not yet published) revision is what the owner last saved.
   const content = await loadCurrentCharacterContentSnapshot(
     prisma,
     character.id,
-    character.currentContentVersionId,
+    (published ? await latestRevisionContentVersionId(prisma, characterId) : null) ?? character.currentContentVersionId,
   );
   const soul = content ? loadCharacterSoulSnapshot(content.personaSnapshot) : null;
   if (soul && !soul.ok) {
@@ -177,7 +197,7 @@ export async function openCharacterEditDraft(input: {
       tags: toInputJson(character.tags.map(({ tag }) => tag.slug)),
     },
   });
-  return { draft, character };
+  return { draft, character, published };
 }
 
 /**
@@ -222,6 +242,13 @@ export async function applyCharacterEditDraft(input: {
     gender !== before.gender ||
     age !== before.age ||
     !canonicalJsonEqual(draftVisualProjection(draft), wizardVisualProjection(before.appearance));
+  const previousPresetVoiceId = await currentPresetVoiceId(before.voiceId);
+  const voiceChanged = Boolean(details.voiceSelection && details.voiceSelection.voiceId !== previousPresetVoiceId);
+  if (await hasReleaseAuthority(prisma, characterId)) {
+    if (visualChanged || draft.previewJobId) throw Errors.conflict(PUBLISHED_LOOK_LOCKED);
+    if (voiceChanged) throw Errors.conflict(PUBLISHED_VOICE_LOCKED);
+    return submitPublishedCharacterRevision({ userId, draft, before, name, age, description, style, gender, details });
+  }
   const selectedPreview = draft.previewJobId
     ? await prisma.characterPreviewJob.findFirst({
         where: { id: draft.previewJobId, draftId: draft.id, status: "completed", resultAssetId: { not: null } },
@@ -253,9 +280,8 @@ export async function applyCharacterEditDraft(input: {
     advancedDetails: details,
   });
 
-  const previousPresetVoiceId = await currentPresetVoiceId(before.voiceId);
   // Clearing the selection keeps the current voice; the wizard only offers a replacement.
-  const preparedVoice = details.voiceSelection && details.voiceSelection.voiceId !== previousPresetVoiceId
+  const preparedVoice = voiceChanged && details.voiceSelection
     ? await prepareCharacterDraftVoice({ ...details.voiceSelection, userId, draftId: draft.id })
     : null;
 
@@ -263,7 +289,8 @@ export async function applyCharacterEditDraft(input: {
     await lockCharacterGenerationAuthority(tx, characterId);
     const existing = await tx.character.findFirst({ where: { id: characterId, creatorId: userId, deletedAt: null } });
     if (!existing) throw Errors.notFound("Character not found");
-    await assertCharacterEditable(tx, characterId);
+    // A Release may have been prepared since the pre-check; its identity lock wins.
+    if (await hasReleaseAuthority(tx, characterId)) throw Errors.conflict(PUBLISHED_LOOK_LOCKED);
     if (anchorAssetId) {
       await lockCharacterMediaAssetAuthorities(tx, [anchorAssetId]);
       const anchor = await assertIdentityImageMediaInTx(tx, anchorAssetId, userId);
@@ -373,7 +400,89 @@ export async function applyCharacterEditDraft(input: {
   if (input.visibility !== character.visibility) {
     // Visibility has its own publication rules; reuse them instead of copying.
     await updateCharacterForUser({ userId, characterId, patch: { visibility: input.visibility } });
-    return { character: await prisma.character.findUniqueOrThrow({ where: { id: characterId } }) };
+    return { character: await prisma.character.findUniqueOrThrow({ where: { id: characterId } }), pendingPublication: false };
   }
-  return { character };
+  return { character, pendingPublication: false };
+}
+
+async function submitPublishedCharacterRevision(input: {
+  readonly userId: string;
+  readonly draft: CharacterDraft & { editsCharacterId: string };
+  readonly before: { appearance: Prisma.JsonValue };
+  readonly name: string;
+  readonly age: number;
+  readonly description: string;
+  readonly style: string;
+  readonly gender: string;
+  readonly details: ReturnType<typeof readCurrentCharacterDraftDetails>;
+}) {
+  const { userId, draft } = input;
+  const characterId = draft.editsCharacterId;
+  const userContent = compileUserSoulOrBadRequest({
+    name: input.name,
+    age: input.age,
+    description: input.description,
+    style: input.style,
+    gender: input.gender,
+    appearance: input.before.appearance,
+    advancedDetails: input.details,
+  });
+  const character = await prisma.$transaction(async (tx) => {
+    await lockCharacterGenerationAuthority(tx, characterId);
+    const existing = await tx.character.findFirst({ where: { id: characterId, creatorId: userId, deletedAt: null } });
+    if (!existing) throw Errors.notFound("Character not found");
+    const project = await tx.characterProject.findFirst({
+      where: { characterId },
+      orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+      select: { id: true },
+    });
+    if (!project) throw Errors.conflict("This character's publication project is unavailable");
+    const contentVersion = await materializeUserCharacterContentVersion({
+      tx,
+      characterId,
+      sourceId: draft.id,
+      createdById: userId,
+      content: userContent,
+    });
+    const latest = await tx.characterRevision.findFirst({
+      where: { projectId: project.id },
+      orderBy: [{ revision: "desc" }, { id: "desc" }],
+      select: { revision: true, characterContentVersionId: true },
+    });
+    // Release preparation reads the project's newest revision.
+    if (latest?.characterContentVersionId !== contentVersion.id) {
+      await tx.characterRevision.create({
+        data: {
+          projectId: project.id,
+          revision: (latest?.revision ?? 0) + 1,
+          characterContentVersionId: contentVersion.id,
+          projectSnapshot: toInputJson({
+            schemaVersion: "customer-character-edit-revision-v1",
+            source: "customer_edit",
+            draftId: draft.id,
+            contentVersion: contentVersion.version,
+          }),
+          createdById: userId,
+        },
+      });
+    }
+    // Tags are catalog dimensions, not Release content; same dictionary rule as create.
+    const tagSlugs = jsonStringArray(draft.tags);
+    const knownTags = tagSlugs.length
+      ? await tx.tag.findMany({ where: { slug: { in: tagSlugs } }, select: { id: true } })
+      : [];
+    await tx.characterTag.deleteMany({ where: { characterId } });
+    if (knownTags.length) {
+      await tx.characterTag.createMany({
+        data: knownTags.map((tag) => ({ characterId, tagId: tag.id })),
+        skipDuplicates: true,
+      });
+    }
+    await tx.characterDraft.update({
+      where: { id: draft.id },
+      data: { advancedDetails: toInputJson({ ...input.details, age: input.age, submittedCharacterId: characterId }) },
+    });
+    return existing;
+  });
+  return { character, pendingPublication: true };
 }

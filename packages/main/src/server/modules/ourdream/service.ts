@@ -1957,7 +1957,7 @@ async function openEditDraft(request: Request, characterId: string) {
   const user = requireUser(ctx);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
-  const { draft, character } = await openCharacterEditDraft({ userId: user.id, characterId });
+  const { draft, character, published } = await openCharacterEditDraft({ userId: user.id, characterId });
   const image = character.imageAssetId
     ? await prisma.mediaAsset.findUnique({ where: { id: character.imageAssetId } })
     : null;
@@ -1968,6 +1968,8 @@ async function openEditDraft(request: Request, characterId: string) {
       name: character.name,
       visibility: character.visibility,
       imageUrl: image ? mediaDTO(image).url : null,
+      // Published: the edit becomes a revision for the Release pipeline; look and voice stay fixed.
+      published,
       // The wizard compares against these to know whether the current identity still fits.
       visual: {
         gender: character.gender,
@@ -2069,7 +2071,7 @@ async function submitDraft(request: Request, id: string) {
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const body = draftSubmitSchema.parse(await jsonBody(request));
-  const { character, edited } = await submitCharacterDraft({
+  const { character, edited, pendingPublication } = await submitCharacterDraft({
     userId: user.id,
     draftId: id,
     visibility: body.visibility,
@@ -2077,7 +2079,7 @@ async function submitDraft(request: Request, id: string) {
   // Input moderation already ran synchronously inside the submit action; no async pass.
   // A committed Character remains a successful save when optional telemetry is unavailable.
   await trackEventBestEffort(edited ? "character_edited" : "character_created", { characterId: character.id }, ctx);
-  return ok({ character });
+  return ok({ character, pendingPublication });
 }
 
 async function updateDraftTags(request: Request, id: string) {

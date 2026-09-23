@@ -50,7 +50,8 @@ type DraftPayload = {
   error?: { message?: string };
   data?: {
     draft?: ServerCharacterDraft | null;
-    character?: { id: string; name: string; visibility: string; imageUrl?: string | null; visual?: CharacterEditVisual };
+    character?: { id: string; name: string; visibility: string; imageUrl?: string | null; published?: boolean; visual?: CharacterEditVisual };
+    pendingPublication?: boolean;
     asset?: { id?: string; url: string; isSynthetic?: boolean };
     previewJob?: { id: string; status: string; errorCode?: string | null };
   };
@@ -87,6 +88,8 @@ type CharacterEditTarget = {
   name: string;
   imageUrl: string | null;
   baseline: WizardState;
+  // Published characters save edits as a revision for the Release pipeline; look and voice stay fixed.
+  published: boolean;
 };
 
 const EDIT_IDENTITY_KEYS = ["age", "gender", "style", "appearance", "ethnicity", "skinTone", "eyeColor", "faceShape", "hair", "body"] as const;
@@ -533,7 +536,7 @@ export function CreateWorkspace() {
               })
             : null;
           if (!serverState || !character || !baseline) throw new Error("This character could not be opened for editing.");
-          setEditTarget({ id: character.id, name: character.name, imageUrl: character.imageUrl ?? null, baseline });
+          setEditTarget({ id: character.id, name: character.name, imageUrl: character.imageUrl ?? null, baseline, published: character.published === true });
           const local = restored?.draftId === serverState.draftId ? restored : null;
           applyRestored(
             { ...(local ?? serverState), visibility: local?.visibility ?? character.visibility },
@@ -759,8 +762,9 @@ export function CreateWorkspace() {
     setIdentityField("detailsMarkdown", details);
   }
 
-  const identityKept = editTarget !== null && !state.confirmedPreviewJobId && editKeepsIdentity(state, editTarget.baseline);
-  const identityReady = Boolean(state.confirmedPreviewJobId) || identityKept;
+  const identityKept = editTarget !== null && (editTarget.published || !state.confirmedPreviewJobId) &&
+    editKeepsIdentity(state, editTarget.baseline);
+  const identityReady = editTarget?.published ? identityKept : Boolean(state.confirmedPreviewJobId) || identityKept;
   const nameError = state.name.trim().length < 2 ? "Name needs at least 2 characters." : "";
   const ageError = state.age < 18 || state.age > 120 ? "Age must be between 18 and 120." : "";
   const personaError = requiredPersonaMessage(state);
@@ -1088,7 +1092,9 @@ export function CreateWorkspace() {
         setCreatedVisibility(character.visibility);
       }
       setStatus(
-        character && editTarget
+        character && editTarget && submitted.data?.pendingPublication
+          ? `Saved changes to ${character.name}. They go live once the new version is published; the current version keeps serving until then.`
+          : character && editTarget
           ? `Saved changes to ${character.name}. New messages use this version; earlier messages keep the one they were written with.`
           : character
           ? character.visibility !== "private"
@@ -1452,6 +1458,7 @@ export function CreateWorkspace() {
                     <select
                       className="min-w-48 flex-1 bg-[rgb(36,36,36)] text-[14px] font-semibold leading-6"
                       data-testid="create-voice-select"
+                      disabled={Boolean(editTarget?.published)}
                       id="create-voice-select"
                       onChange={(event) => selectVoice(event.target.value)}
                       value={state.voiceSelection?.voiceId ?? ""}
@@ -1472,7 +1479,11 @@ export function CreateWorkspace() {
                       {voicePreviewPending ? "Preparing preview…" : "Preview voice"}
                     </button>
                   </div>
-                  <p className="mt-2 text-[12px] text-[rgb(170,170,170)]">Choose how this character sounds. Personality and speech style stay in their Soul.</p>
+                  <p className="mt-2 text-[12px] text-[rgb(170,170,170)]">
+                    {editTarget?.published
+                      ? "A published character keeps its current voice."
+                      : "Choose how this character sounds. Personality and speech style stay in their Soul."}
+                  </p>
                   {voiceCatalogError && <p className="mt-2 text-[12px]" role="status">Voice choices could not load. <button className="underline" onClick={() => setVoiceCatalogAttempt((attempt) => attempt + 1)} type="button">Retry voices</button></p>}
                   {voicePreviewStatus && <p className="mt-2 text-[12px]" role="status">{voicePreviewStatus}</p>}
                   {voicePreviewUrl && <audio aria-label="Selected voice preview" className="mt-3 w-full" controls src={voicePreviewUrl} />}
@@ -1574,14 +1585,23 @@ export function CreateWorkspace() {
                 </section>
                 {identityKept && (
                   <p className="text-[13px] font-semibold text-[rgb(120,220,170)]" data-testid="edit-identity-kept">
-                    Keeping {state.name}&apos;s current identity image. Generate new candidates only if you want to change how they look.
+                    {editTarget?.published
+                      ? `Keeping ${state.name}'s current look. Published characters change their Soul and opening here; their look stays fixed.`
+                      : `Keeping ${state.name}'s current identity image. Generate new candidates only if you want to change how they look.`}
                   </p>
                 )}
-                {editTarget && !identityKept && !state.confirmedPreviewJobId && (
+                {editTarget && !identityKept && !state.confirmedPreviewJobId && !editTarget.published && (
                   <p className="text-[13px] font-semibold text-[rgb(255,184,112)]">
                     You changed how {state.name} looks. Generate and confirm a new identity image to save.
                   </p>
                 )}
+                {editTarget?.published ? (
+                  !identityKept && (
+                    <p className="text-[13px] font-semibold text-[rgb(255,184,112)]" data-testid="edit-published-look-locked">
+                      A published character keeps its current look. Undo the appearance changes to save, or duplicate the character to change how it looks.
+                    </p>
+                  )
+                ) : (<>
                 <p className="text-[13px] font-medium text-[rgb(170,170,170)]">
                   {state.restoredPreviewCandidate && !state.previewBatch
                     ? "Your saved preview is ready. Confirm this identity or generate new candidates."
@@ -1755,6 +1775,7 @@ export function CreateWorkspace() {
                 {previewStatus === "paused" && (
                   <p className="text-[13px] leading-6 text-neutral-300">Checking is paused. This does not cancel queued work or mean generation failed. Check the saved request again, or confirm an available identity.</p>
                 )}
+                </>)}
               </div>
             )}
 
@@ -1763,7 +1784,9 @@ export function CreateWorkspace() {
                 <div className="flex items-center gap-2 rounded-[12px] bg-black/25 p-3 text-[13px] font-semibold text-[rgb(120,220,170)]">
                   <Check className="h-4 w-4" />
                   {identityKept
-                    ? "Keeping the current identity image. Changes save as a new version."
+                    ? editTarget?.published
+                      ? "Keeping the current look. Changes go live after the new version is published."
+                      : "Keeping the current identity image. Changes save as a new version."
                     : "Identity confirmed. This character is ready to publish."}
                 </div>
                 <div>
