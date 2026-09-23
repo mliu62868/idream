@@ -8,6 +8,8 @@ type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Respons
 const challengeSchema = z.object({ challengeId: z.string().min(1), expiresAt: z.string().datetime(), resendAt: z.string().datetime() });
 const verificationSchema = z.object({ userId: z.string(), email: z.string().email(), verified: z.boolean(), available: z.boolean() });
 const recoverySchema = z.object({ recovered: z.literal(true), userId: z.string().min(1), recoveryCode: z.string().min(1) });
+const OWNER_CONFIRM_RETRIES = 10;
+const OWNER_CONFIRM_RETRY_MS = 300;
 const fieldClass = "mt-2 w-full rounded-lg bg-white/10 p-3 disabled:opacity-50";
 const buttonClass = "rounded-full bg-pink-600 px-5 py-3 text-sm font-bold disabled:opacity-40";
 
@@ -66,15 +68,29 @@ export function AccountEmailVerification({ ownerId, fetcher = fetch }: { ownerId
   const emailCode = useEmailChallenge();
   useEffect(() => {
     alive.current = true;
-    void fetcher("/api/v1/account/email-verification", { cache: "no-store" })
-      .then((response) => readResponse(response, verificationSchema))
-      .then((next) => {
-        if (!alive.current) return;
-        if (next.userId !== ownerId) throw new Error("Your account changed. Reload before verifying your email.");
-        setAccount(next);
-      })
-      .catch((error: unknown) => { if (alive.current) setStatus(error instanceof Error ? error.message : "Could not check email verification. Reload and try again."); });
-    return () => { alive.current = false; };
+    let attempt = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // Profile 刷新身份期间 fetchForOwner 抛 AbortError：那是生命周期信号不是失败，
+    // 且确认结果存在 ref 里等不到新 fetcher，只能退避重问（同 AccountAgeVerification）。
+    const ask = () => {
+      void fetcher("/api/v1/account/email-verification", { cache: "no-store" })
+        .then((response) => readResponse(response, verificationSchema))
+        .then((next) => {
+          if (!alive.current) return;
+          if (next.userId !== ownerId) throw new Error("Your account changed. Reload before verifying your email.");
+          setAccount(next);
+        })
+        .catch((error: unknown) => {
+          if (!alive.current) return;
+          if (error instanceof DOMException && error.name === "AbortError" && (attempt += 1) <= OWNER_CONFIRM_RETRIES) {
+            timer = setTimeout(ask, OWNER_CONFIRM_RETRY_MS);
+            return;
+          }
+          setStatus(error instanceof Error ? error.message : "Could not check email verification. Reload and try again.");
+        });
+    };
+    ask();
+    return () => { alive.current = false; if (timer) clearTimeout(timer); };
   }, [fetcher, ownerId]);
 
   async function requestCode() {

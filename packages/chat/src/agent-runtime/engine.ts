@@ -772,8 +772,9 @@ export class CompanionEngine {
       // and stopping lifecycle, but never ask a caption model to reinterpret an
       // accepted Main action. No result or failed/unknown result cannot confirm.
       //
-      // SPEC: 终态正文 = 工具调用之前那句经校验的角色台词 + 确定性回执。
-      // INTENT: 产品契约要求角色回一句人话、完成状态由附件承担。整段丢弃模型输出会让
+      // SPEC: 终态正文 = 工具调用之前那句经校验的角色台词；没有合格台词时才用确定性回执。
+      // INTENT: 产品契约要求角色回一句人话、完成状态由附件承担（附件卡本身显示生成中/完成）。
+      //   台词后再硬接一句系统回执会让角色出戏，所以二者只取其一。整段丢弃模型输出会让
       //   「今晚做什么？顺便发张照片」只换来一句系统回执，角色在整段等待里不在场；而且
       //   模型一旦真的开口，缓冲下来的流式文本会和终态文本不一致，让整轮失败。
       //   台词来自工具结果出现之前，所以它不可能重新解释一个已被接受的 Main 动作；
@@ -796,9 +797,8 @@ export class CompanionEngine {
         );
         // 缓冲的引子会作为终态正文的一部分重新流出，这里先清空，避免重复计入。
         currentStepText = "";
-        const text = leadIn
-          ? `${leadIn}\n\n${acknowledgement.content}`
-          : acknowledgement.content;
+        // 台词原本是给回执引路的，结尾冒号在独立成句后会悬空。
+        const text = leadIn?.replace(/\s*[:：]\s*$/u, "…") || acknowledgement.content;
         yield { type: "block-start", index: 0, blockType: "text" };
         yield { type: "text-delta", index: 0, text };
         yield { type: "block-end", index: 0, block: { type: "text", text } };

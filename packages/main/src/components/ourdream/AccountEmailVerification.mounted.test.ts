@@ -54,6 +54,21 @@ describe("email verification and recovery UI", () => {
     expect(fetcher).toHaveBeenCalledOnce();
   });
 
+  // Profile 刷新身份期间 fetchForOwner 抛 AbortError，确认结果存在 ref 里不会重渲染。
+  it("asks again on its own while the profile confirms the account instead of showing an abort", async () => {
+    let aborts = 2;
+    const fetcher = vi.fn<Fetcher>(async () => {
+      if (aborts-- > 0) throw new DOMException("Account confirmation changed", "AbortError");
+      return ok(account);
+    });
+    await act(async () => root.render(createElement(AccountEmailVerification, { ownerId: "owner-a", fetcher })));
+    expect(container.textContent).not.toContain("Account confirmation changed");
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    expect(container.textContent).toContain("controlled@customer.invalid · Not verified");
+    expect(container.textContent).not.toContain("Account confirmation changed");
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+
   it("does not display another account's email or allow verification after an owner mismatch", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => ok({ ...account, userId: "owner-b", email: "other@customer.invalid" })));
     await act(async () => root.render(createElement(AccountEmailVerification, { ownerId: "owner-a" })));

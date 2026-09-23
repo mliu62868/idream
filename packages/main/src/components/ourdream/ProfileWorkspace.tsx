@@ -1746,8 +1746,8 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
             <p className="mt-2 text-sm leading-6 text-white/60">Confirm your password to replace a recovery code or delete your account.</p>
             <button className="mt-3 rounded-full bg-[rgb(36,36,36)] px-4 py-3 text-sm font-bold disabled:opacity-40" type="button" disabled={securityPending || !securityPassword || !profileOwnerScope} onClick={generateRecoveryCode}>Generate new recovery code</button>
             {savedRecoveryCode && savedRecoveryCode.ownerId === profileOwnerScope.replace(/^user:/, "") && <div className="mt-4"><RecoveryCodeCard key={savedRecoveryCode.code} code={savedRecoveryCode.code} ownerId={savedRecoveryCode.ownerId} /></div>}
-            {ownerId && <AccountEmailVerification key={ownerId} ownerId={ownerId} fetcher={fetchForOwner} />}
-            {ownerId && <AccountAgeVerification key={ownerId} ownerId={ownerId} fetcher={fetchForOwner} />}
+            {ownerId && <AccountEmailVerification key={`email:${ownerId}`} ownerId={ownerId} fetcher={fetchForOwner} />}
+            {ownerId && <AccountAgeVerification key={`age:${ownerId}`} ownerId={ownerId} fetcher={fetchForOwner} />}
             <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
               Delete account
               <span className="mt-1 block text-[11px] font-medium normal-case leading-5 text-[rgb(154,153,152)]">

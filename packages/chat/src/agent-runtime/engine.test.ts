@@ -639,7 +639,7 @@ describe("Chat embedded companion runtime", () => {
     expect(connection.events.some(event => event.type === "failed")).toBe(false);
   });
 
-  it("keeps the Character's sentence from the tool step and lets the receipt own completion", async () => {
+  it("keeps the Character's sentence from the tool step without appending the system receipt", async () => {
     const adapter = new LeadInThenToolAdapter(
       "Elbow-deep in clay tonight, so give me a second to wash my hands.",
     );
@@ -651,10 +651,20 @@ describe("Chat embedded companion runtime", () => {
     // 不额外要一次模型：台词来自工具那一步。
     expect(adapter.calls).toBe(1);
     expect(connection.candidates[0]).toMatchObject({
-      content: "Elbow-deep in clay tonight, so give me a second to wash my hands.\n\nOkay, your image request is confirmed.",
+      content: "Elbow-deep in clay tonight, so give me a second to wash my hands.",
       acknowledgement: { version: "image-action-ack-1", locale: "en" },
     });
     expect(connection.events.some(event => event.type === "failed")).toBe(false);
+  });
+
+  it("does not leave a lead-in colon dangling once the receipt is gone", async () => {
+    const adapter = new LeadInThenToolAdapter("Hold still, let me grab the camera:");
+    const runtime = await engine(adapter);
+    const connection = port();
+
+    await runtime.run(requiredImageInvocation(), connection.runtimePort);
+
+    expect(connection.candidates[0]).toMatchObject({ content: "Hold still, let me grab the camera…" });
   });
 
   it("drops a tool-step sentence that announces the image already arrived", async () => {
