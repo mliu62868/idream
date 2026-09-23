@@ -64,7 +64,12 @@ const nextConfig: NextConfig = {
   // INVARIANT: 只有 /internal-preview 可以被嵌入，而且只允许 Admin 源嵌入（角色工作区用
   //   iframe 渲染真实前台）；其余页面一律禁止被 frame。
   async headers() {
-    const adminOrigin = process.env.ADMIN_WEB_URL ? new URL(process.env.ADMIN_WEB_URL).origin : "'none'";
+    // 本机开发时后台可能用 localhost 或 127.0.0.1 打开，二者是不同的源，都放行。
+    const adminUrl = process.env.ADMIN_WEB_URL ? new URL(process.env.ADMIN_WEB_URL) : null;
+    const loopbackTwin = adminUrl && ["localhost", "127.0.0.1"].includes(adminUrl.hostname)
+      ? `${adminUrl.protocol}//${adminUrl.hostname === "localhost" ? "127.0.0.1" : "localhost"}:${adminUrl.port}`
+      : null;
+    const adminOrigin = adminUrl ? [adminUrl.origin, loopbackTwin].filter(Boolean).join(" ") : "'none'";
     return [
       {
         source: "/:path*",
