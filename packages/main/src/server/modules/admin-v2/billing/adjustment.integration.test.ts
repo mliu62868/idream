@@ -133,6 +133,21 @@ describe.sequential("Admin v2 ledger adjustment", () => {
     expect(await dreamcoinBalance(targetId)).toBe(42);
   });
 
+  it("refuses a deduction that would take the balance below zero", async () => {
+    const before = await dreamcoinBalance(targetId);
+    const delta = -(before + 1);
+    expectError(
+      await adjust({
+        userId: adminId,
+        role: "admin",
+        idempotencyKey: `${P}overdraw`,
+        body: { userId: targetId, delta, reason: "overdraw attempt", confirmation: `${targetId}:${delta}` },
+      }),
+      409,
+    );
+    await expect(dreamcoinBalance(targetId)).resolves.toBe(before);
+  });
+
   it("404s an adjustment against a user that does not exist", async () => {
     expectError(
       await adjust({

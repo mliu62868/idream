@@ -1,4 +1,3 @@
-import { ZodError } from "zod";
 import {
   findAdminV2ApiOperation,
   narrowAdminV2ResponseData,
@@ -65,9 +64,6 @@ export async function adminV2Route<T>(
     });
   } catch (error) {
     if (error instanceof AppError) return fail(error);
-    if (error instanceof ZodError || error instanceof SyntaxError) {
-      return fail(Errors.badRequest("Validation failed", error instanceof ZodError ? error.flatten() : undefined));
-    }
     // INVARIANT: an unexpected authority failure still uses the API envelope;
     // Next's fallback response has no usable error contract for operator recovery.
     logger.error({

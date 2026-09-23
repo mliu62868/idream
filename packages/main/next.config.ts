@@ -57,6 +57,21 @@ const nextConfig: NextConfig = {
     ? { typescript: { tsconfigPath: isolatedTsconfigPath } }
     : {}),
   allowedDevOrigins: ["127.0.0.1"],
+  // SPEC: 全站响应带基础安全头。
+  // INTENT: 这些头原本写在包根的 proxy.ts 里，但 app 在 src/ 下，Next 只认与 app 同级的
+  //   proxy，自 monorepo 迁移起它从未执行过。静态头放在这里不需要额外的请求期运行时；
+  //   年龄门与匿名 id 已由服务端（DB 为权威）负责，不再在边缘重复。
+  async headers() {
+    return [{
+      source: "/:path*",
+      headers: [
+        { key: "X-Content-Type-Options", value: "nosniff" },
+        { key: "X-Frame-Options", value: "DENY" },
+        { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+        { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
+      ],
+    }];
+  },
   experimental: {
     // Runtime releases are immutable. Keep ISR/fetch entries in memory instead
     // of allowing Next to rewrite .next/server after publication.

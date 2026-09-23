@@ -266,6 +266,27 @@ export async function getUserDetail(request: Request, userId: string) {
   };
 }
 
+// SPEC: 后台不能把自己锁在门外。
+// INVARIANT: 管理员不能改自己的状态/角色；任何写入之后至少还剩一个 active admin。
+//   否则一次误操作或一个被盗账号就能锁死整个后台，只能直接改库恢复。
+async function assertKeepsAdminAccess(
+  tx: Prisma.TransactionClient,
+  actorId: string,
+  target: { id: string; role: string; status: string },
+  next: { role: string; status: string },
+) {
+  if (target.id === actorId) {
+    throw Errors.conflict("You cannot change your own status or role");
+  }
+  const losesAdmin = target.role === "admin" && target.status === "active"
+    && (next.role !== "admin" || next.status !== "active");
+  if (!losesAdmin) return;
+  const others = await tx.user.count({
+    where: { role: "admin", status: "active", deletedAt: null, id: { not: target.id } },
+  });
+  if (others === 0) throw Errors.conflict("At least one active admin must remain");
+}
+
 export async function updateUserStatus(request: Request, userId: string) {
   const actor = await actorWithPermission(request, "user.status.write");
   const body = await jsonBody(request, "POST /api/v2/admin/users/:id/status");
@@ -291,6 +312,7 @@ export async function updateUserStatus(request: Request, userId: string) {
       if (before.status === "deleted" || before.deletedAt) {
         throw Errors.conflict("Deleted users are controlled by account deletion authority");
       }
+      await assertKeepsAdminAccess(tx, actor.id, before, { role: before.role, status: body.status });
       const updated = await tx.user.update({
         where: { id: userId },
         data: { status: body.status, deletedAt: body.status === "active" ? null : undefined },
@@ -330,8 +352,12 @@ export async function updateUserRole(request: Request, userId: string) {
     userId,
     payload: body,
     execute: async (tx, requestId) => {
+      await tx.$queryRaw(
+        Prisma.sql`SELECT "id" FROM "users" WHERE "id" = ${userId} FOR UPDATE`,
+      );
       const before = await tx.user.findUnique({ where: { id: userId } });
       if (!before) throw Errors.notFound("User not found");
+      await assertKeepsAdminAccess(tx, actor.id, before, { role: body.role, status: before.status });
       const updated = await tx.user.update({ where: { id: userId }, data: { role: body.role } });
       await tx.adminAuditLog.create({ data: {
         actorId: actor.id,
