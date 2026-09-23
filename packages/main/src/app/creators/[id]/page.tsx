@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { CreatorProfileClient } from "@/components/ourdream/CreatorProfileClient";
+import { requirePublicCreatorForAnonymous } from "@/server/public-route-existence";
 
 type PageProps = {
   params: Promise<{ id: string }>;
@@ -26,5 +27,6 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 
 export default async function CreatorPage({ params }: PageProps) {
   const { id } = await params;
+  await requirePublicCreatorForAnonymous(id);
   return <CreatorProfileClient id={id} key={id} />;
 }

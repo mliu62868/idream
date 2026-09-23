@@ -24,6 +24,7 @@ export default defineConfig({
       "src/lib/**/*.test.ts",
       "src/scripts/character-quality/*.test.ts",
       "src/server/launch-readiness.test.ts",
+      "src/server/public-route-existence.test.ts",
       "src/server/lib/auth/password.test.ts",
       "src/server/modules/voice-defaults.test.ts",
       "src/server/modules/billing/cash-capture.test.ts",

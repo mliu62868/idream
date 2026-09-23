@@ -952,6 +952,16 @@ async function login(request: Request) {
     `);
     const user = await tx.user.findUnique({ where: { id: account.userId } });
     if (!user || user.status !== "active" || user.deletedAt) {
+      // INTENT: 密码已验证，告诉本人账号在删除宽限期、何时完成；换了设备、没存回执的
+      //   用户否则只看到 "not active"，无从得知账号状态（AC-03）。
+      const deletion = await tx.accountDeletion.findUnique({
+        where: { userId: account.userId },
+        select: { graceEndsAt: true },
+      });
+      if (deletion) {
+        const date = deletion.graceEndsAt.toISOString().slice(0, 10);
+        throw Errors.forbidden(`This account was deleted at your request. Erasure completes by ${date}; it can no longer be signed in to.`);
+      }
       throw Errors.forbidden("Account is not active");
     }
     const currentAccount = await passwordAccountForUser(tx, account.userId);

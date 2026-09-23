@@ -599,7 +599,10 @@ describe("referrals + account", () => {
 
     const login = await api("POST", "auth/login", { body: { email, password } });
     expectError(login, 403, "forbidden");
-    expect(login.error?.message).toBe("Account is not active");
+    const deletion = await prisma.accountDeletion.findUniqueOrThrow({ where: { userId } });
+    expect(login.error?.message).toBe(
+      `This account was deleted at your request. Erasure completes by ${deletion.graceEndsAt.toISOString().slice(0, 10)}; it can no longer be signed in to.`,
+    );
   });
 
   it("commits account deletion and keeps its Chat erasure intent pending until graceEndsAt", async () => {

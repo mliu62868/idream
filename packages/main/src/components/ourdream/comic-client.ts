@@ -15,3 +15,21 @@ export function comicPayload<T>(schema: z.ZodType<T>): (raw: unknown) => T {
 
 export const comicButton = "inline-flex min-h-11 items-center justify-center gap-2 rounded-full border border-white/20 px-4 py-2 text-sm font-bold hover:bg-white/10 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-white disabled:cursor-not-allowed disabled:opacity-40";
 export const comicInput = "w-full rounded-lg border border-white/20 bg-[rgb(24,24,24)] px-3 py-2.5 text-base text-white placeholder:text-neutral-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white disabled:opacity-50";
+
+const COMIC_STATUS_LABELS: Record<string, string> = {
+  draft: "Draft",
+  pending_review: "In review",
+  published: "Published",
+  withdrawn: "Withdrawn",
+};
+
+const COMIC_VISIBILITY_LABELS: Record<string, string> = {
+  private: "only you",
+  unlisted: "link only",
+  public: "public",
+};
+
+// INTENT: 作者看到的是用户语言，不是 status/visibility 的枚举原值。
+export function comicStateLabel(status: string, visibility: string) {
+  return `${COMIC_STATUS_LABELS[status] ?? "Draft"} · ${COMIC_VISIBILITY_LABELS[visibility] ?? "only you"}`;
+}
