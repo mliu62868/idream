@@ -26,18 +26,19 @@ describe("immutable admin evidence database guards", () => {
           path.resolve(process.cwd(), `prisma/migrations/${migration}/migration.sql`),
           "utf8",
         );
-        // The test DB may already carry these guards (global setup or an earlier run) and
-        // the migration uses plain CREATE; an already-installed guard is what we assert on.
-        // Never DROP ... CASCADE here: other migrations attach triggers to these functions.
-        await client.query("BEGIN");
-        try {
-          await client.query(sql);
-          await client.query("COMMIT");
-        } catch (error) {
-          await client.query("ROLLBACK");
-          const code = (error as { code?: string }).code;
-          if (code !== "42723" && code !== "42710") throw error;
+        // Global setup pre-installs the shared reject_admin_evidence_update() function
+        // (cash capture needs it) but none of its triggers; replay the rest of the
+        // migration from the same boundary global-setup uses.
+        let replay = sql;
+        if (migration === "20260711120000_immutable_admin_evidence") {
+          const installed = await client.query<{ present: boolean }>("SELECT to_regprocedure('reject_admin_evidence_update()') IS NOT NULL AS present");
+          if (installed.rows[0]?.present) {
+            const boundary = sql.indexOf("CREATE TRIGGER analytics_events_immutable\n");
+            if (boundary <= 0) throw new Error("Immutable evidence migration boundary changed");
+            replay = sql.slice(boundary);
+          }
         }
+        await client.query(replay);
       }
     } finally {
       await client.end();
