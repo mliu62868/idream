@@ -26,6 +26,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { UserPersonaPanel } from "./UserPersonaPanel";
 import { RecoveryCodeCard } from "./AccountRecovery";
 import { AccountAgeVerification } from "./AccountAgeVerification";
+import { AffiliatePanel } from "./AffiliatePanel";
 import { AccountEmailVerification } from "./AccountEmailVerification";
 import {
   isBlankImagePreview,
@@ -95,7 +96,6 @@ type MediaCollectionCreatePayload = {
 };
 
 type AuthState = "loading" | "authenticated" | "anonymous" | "error";
-type CharacterEditInput = { name: string; description: string };
 type CollectionVisibility = MediaCollection["visibility"];
 type ProfileWorkspaceProps = {
   routePath: string;
@@ -900,41 +900,6 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
     }
   }
 
-  async function updateCharacterDetails(id: string, input: CharacterEditInput) {
-    setStatus("");
-    const name = input.name.trim();
-    const description = input.description.trim();
-    if (!name) {
-      setStatus("Enter a character name.");
-      return false;
-    }
-    if (!description) {
-      setStatus("Enter a character description.");
-      return false;
-    }
-    try {
-      const response = await fetchForOwner(`/api/v1/characters/${id}`, {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name, description }),
-      });
-      const payload = (await response.json()) as {
-        ok?: boolean;
-        error?: { message?: string };
-      };
-      if (!response.ok || payload.ok === false) {
-        setStatus(payload.error?.message ?? "Character update failed.");
-        return false;
-      }
-      setStatus("Character updated.");
-      await refreshLibrary(tab);
-      return true;
-    } catch {
-      setStatus("Network error. Please try again.");
-      return false;
-    }
-  }
-
   async function deleteCharacter(id: string) {
     setStatus("");
     if (deleteConfirmCharacterId !== id) {
@@ -1408,7 +1373,6 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
                   onCreateCollection={createMediaCollection}
                   onAddToCollection={addMediaToCollection}
                   showCharacterActions={isCreatedTab}
-                  onUpdateCharacter={updateCharacterDetails}
                   onDuplicateCharacter={duplicateCharacter}
                   deleteConfirmMediaId={deleteConfirmMediaId}
                   deleteConfirmCharacterId={deleteConfirmCharacterId}
@@ -1519,6 +1483,8 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
               </p>
             ) : null}
           </div>
+          {/* AF-01: the commercial affiliate program is separate from the referral reward above. */}
+          {ownerId && <AffiliatePanel key={`affiliate:${ownerId}`} fetcher={fetchForOwner} />}
           <div
             className="rounded-[14px] bg-[rgb(18,18,18)] p-4"
             data-testid="profile-billing-card"
@@ -1823,7 +1789,6 @@ function LibraryCard({
   onInvalidImagePreview,
   onReport,
   showCharacterActions = false,
-  onUpdateCharacter,
   onDuplicateCharacter,
   deleteConfirmMediaId,
   deleteConfirmCharacterId,
@@ -1847,7 +1812,6 @@ function LibraryCard({
   onInvalidImagePreview: (id: string) => void;
   onReport: (id: string) => void;
   showCharacterActions?: boolean;
-  onUpdateCharacter?: (id: string, input: CharacterEditInput) => Promise<boolean>;
   onDuplicateCharacter?: (id: string) => void;
   deleteConfirmMediaId?: string | null;
   deleteConfirmCharacterId?: string | null;
@@ -1856,10 +1820,6 @@ function LibraryCard({
 }>) {
   const character = item.character;
   const { summary, title } = profileLibraryCardPresentation(item);
-  const [editing, setEditing] = useState(false);
-  const [editName, setEditName] = useState(title);
-  const [editDescription, setEditDescription] = useState(summary ?? "");
-  const [savingEdit, setSavingEdit] = useState(false);
   const [collectionName, setCollectionName] = useState("");
   const [publishCollection, setPublishCollection] = useState(true);
   const [selectedCollectionId, setSelectedCollectionId] = useState("");
@@ -1892,23 +1852,6 @@ function LibraryCard({
       ? characterAppealHref(character?.id ?? item.id, title)
       : null;
   const confirmMediaDelete = isMediaItem && deleteConfirmMediaId === item.id;
-
-  function startCharacterEdit() {
-    setEditName(title);
-    setEditDescription(summary ?? "");
-    setEditing(true);
-  }
-
-  async function saveCharacterEdit() {
-    if (!onUpdateCharacter) return;
-    setSavingEdit(true);
-    const saved = await onUpdateCharacter(item.id, {
-      description: editDescription,
-      name: editName,
-    });
-    setSavingEdit(false);
-    if (saved) setEditing(false);
-  }
 
   async function createCollectionFromMedia() {
     if (!onCreateCollection) return;
@@ -2121,15 +2064,15 @@ function LibraryCard({
               })}
             </span>
           )}
-          <button
+          {/* CR-06: edits reuse the full Create wizard and save a new version. */}
+          <Link
             aria-label="Edit character"
             className="inline-flex h-8 items-center gap-1 rounded-full bg-[rgb(46,46,46)] px-3 text-[12px] font-bold text-white"
-            onClick={startCharacterEdit}
-            type="button"
+            href={`/create?edit=${encodeURIComponent(character?.id ?? item.id)}`}
           >
             <Pencil className="h-3.5 w-3.5" />
             Edit
-          </button>
+          </Link>
           <button
             className="inline-flex h-8 items-center gap-1 rounded-full bg-[rgb(46,46,46)] px-3 text-[12px] font-bold text-white"
             onClick={() => onToggleVisibility?.(item.id, item.visibility)}
@@ -2169,49 +2112,6 @@ function LibraryCard({
             {confirmDelete ? "Confirm delete" : <Trash2 className="h-3.5 w-3.5" />}
           </button>
         </div>
-        {editing && (
-          <div
-            className="mt-3 rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-3"
-            data-testid="character-edit-form"
-          >
-            <label className="block text-[11px] font-black uppercase text-[rgb(114,113,112)]">
-              Name
-              <input
-                aria-label="Character name"
-                className="mt-2 h-10 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] normal-case text-white outline-none"
-                onChange={(event) => setEditName(event.target.value)}
-                value={editName}
-              />
-            </label>
-            <label className="mt-3 block text-[11px] font-black uppercase text-[rgb(114,113,112)]">
-              Description
-              <textarea
-                aria-label="Character description"
-                className="mt-2 min-h-24 w-full resize-y rounded-[10px] bg-[rgb(36,36,36)] px-3 py-2 text-[13px] normal-case leading-5 text-white outline-none"
-                onChange={(event) => setEditDescription(event.target.value)}
-                value={editDescription}
-              />
-            </label>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button
-                aria-label="Save character edit"
-                className="inline-flex h-9 items-center justify-center rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)] disabled:opacity-50"
-                disabled={savingEdit}
-                onClick={() => void saveCharacterEdit()}
-                type="button"
-              >
-                {savingEdit ? "Saving..." : "Save"}
-              </button>
-              <button
-                className="inline-flex h-9 items-center justify-center rounded-full bg-[rgb(36,36,36)] px-4 text-[12px] font-bold text-white"
-                onClick={() => setEditing(false)}
-                type="button"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        )}
       </div>
     );
   }

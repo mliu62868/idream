@@ -1,4 +1,4 @@
-import { Prisma, type CharacterPreviewJob } from "@prisma/client";
+import { Prisma, type CharacterDraft, type CharacterPreviewJob } from "@prisma/client";
 import {
   CHARACTER_STYLES,
   CHARACTER_VISIBILITY,
@@ -97,6 +97,9 @@ import {
   anonymousCookie,
   clearAdminSessionCookie,
   verifyPassword,
+  AFFILIATE_COOKIE,
+  affiliateAttributionCookie,
+  parseCookieHeader,
 } from "@/server/lib/auth";
 import { prisma } from "@/server/lib/db";
 import { nameMatch } from "@/server/lib/db/search";
@@ -153,7 +156,16 @@ import {
 } from "./exposure-context";
 import { createVoiceClip as createDurableVoiceClip, quoteVoiceClip } from "./voice-clip";
 import { getCharacterDraftVoiceCatalog, previewCharacterDraftVoice } from "./character-draft-voice";
-import { applyAffiliate, affiliateDashboard, recordAffiliateClick } from "./affiliate";
+import {
+  AFFILIATE_ATTRIBUTION_WINDOW_DAYS,
+  AFFILIATE_TERMS_PATH,
+  affiliateDashboard,
+  applyAffiliate,
+  attributeAffiliateSignup,
+  recordAffiliateClick,
+  type AffiliateTerms,
+} from "./affiliate";
+import { resolveCmsRouteWithReader } from "@/server/cms/published-route";
 import { trackEvent, trackEventBestEffort } from "./product-events";
 import { enforceRateLimit } from "@/server/lib/rate-limit";
 import { submitReport } from "./reports";
@@ -259,6 +271,8 @@ import {
   previewCharacterDraft,
   submitCharacterDraft,
 } from "./character-draft-write";
+import { openCharacterEditDraft, wizardVisualProjection } from "./character-edit";
+import { loadForYouProfile, rankForYou, type ForYouProfile } from "./for-you-ranking";
 import { duplicateCharacterForUser } from "./character-duplicate";
 import { updateCharacterForUser } from "./character-update";
 import { recordMediaIdentityFeedback } from "./media-feedback";
@@ -563,6 +577,7 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
       return submitReport(request, { targetType: "character", targetId: id });
     }
     if (id && action === "duplicate" && method === "POST") return duplicateCharacter(request, id);
+    if (id && action === "edit-draft" && method === "POST") return openEditDraft(request, id);
     if (id && action === "looks" && !child && method === "GET") return listCharacterLooks(request, id);
     if (id && action === "looks" && !child && method === "POST") return createCharacterLook(request, id);
     if (id && action === "looks" && child && method === "PATCH") {
@@ -583,19 +598,29 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
     if (id === "application" && !action && method === "POST") {
       const ctx = await getAuthCtx(request);
       const user = requireUser(ctx);
-      return ok(await applyAffiliate(prisma, user.id, await jsonBody(request)), { status: 201 });
+      return ok(await applyAffiliate(prisma, user.id, await jsonBody(request), await loadAffiliateTerms()), { status: 201 });
     }
     if (id === "dashboard" && !action && method === "GET") {
       const ctx = await getAuthCtx(request);
       const user = requireUser(ctx);
-      return ok(await affiliateDashboard(prisma, user.id));
+      return ok({
+        ...(await affiliateDashboard(prisma, user.id)),
+        terms: await loadAffiliateTerms(),
+        attributionWindowDays: AFFILIATE_ATTRIBUTION_WINDOW_DAYS,
+      });
     }
     if (id === "click" && !action && method === "POST") {
       const body = z.record(z.string(), z.unknown()).parse(await jsonBody(request));
       const code = z.string().trim().min(1).max(120).parse(body.code);
       const visitorKey = z.string().trim().min(8).max(200).parse(body.visitorKey);
       const landingPath = z.string().trim().min(1).max(500).parse(body.landingPath ?? "/");
-      return ok(await recordAffiliateClick(prisma, code, visitorKey, landingPath), { status: 201 });
+      const click = await recordAffiliateClick(prisma, code, visitorKey, landingPath);
+      const response = ok({ id: click.id }, { status: 201 });
+      response.headers.append(
+        "set-cookie",
+        affiliateAttributionCookie(`${code}:${visitorKey}`, AFFILIATE_ATTRIBUTION_WINDOW_DAYS),
+      );
+      return response;
     }
   }
   // 前台创建页拉取可用角色模板（仅 isActive，公开只读，见 CHARACTER_MANAGEMENT_PLAN §B）。
@@ -788,6 +813,21 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
   throw Errors.notFound("API route not found", { path: `/${segments.join("/")}` });
 }
 
+// Read uncached: an applicant must accept the version that is published now.
+async function loadAffiliateTerms(): Promise<AffiliateTerms> {
+  const resolution = await resolveCmsRouteWithReader(AFFILIATE_TERMS_PATH, (path) =>
+    prisma.routePage.findUnique({ where: { path } }));
+  if (resolution.state === "published") {
+    return {
+      state: "published",
+      version: resolution.page.publishedAt.toISOString(),
+      title: resolution.page.title,
+      path: resolution.page.path,
+    };
+  }
+  return resolution.state === "unavailable" ? { state: "unavailable" } : { state: "unpublished" };
+}
+
 async function signup(request: Request) {
   const body = signupSchema.parse(await jsonBody(request));
   const ctx = await getAuthCtx(request);
@@ -881,6 +921,11 @@ async function signup(request: Request) {
         });
       }
     }
+    await attributeAffiliateSignup(
+      tx,
+      parseCookieHeader(request.headers.get("cookie")).get(AFFILIATE_COOKIE),
+      created.id,
+    );
     await appendCanonicalMetricEvent(tx, {
       sourceEventId: `signup:${created.id}`,
       eventType: METRIC_PRODUCT_EVENTS.customerSignupCompleted,
@@ -1324,13 +1369,16 @@ async function listCharacters(request: Request) {
     ];
   }
 
-  const characters = await prisma.character.findMany({
-    where,
-    include: characterInclude(ctx.userId),
-    orderBy: exploreOrderBy(sort),
-    skip: cursor,
-    take: limit + 1,
-  });
+  const forYouProfile = sort === "for-you" && ctx.userId ? await loadForYouProfile(ctx.userId) : null;
+  const characters = forYouProfile
+    ? await forYouPage(where, forYouProfile, cursor, limit + 1, ctx.userId)
+    : await prisma.character.findMany({
+        where,
+        include: characterInclude(ctx.userId),
+        orderBy: exploreOrderBy(sort),
+        skip: cursor,
+        take: limit + 1,
+      });
 
   const page = characters
     .slice(0, limit)
@@ -1341,6 +1389,44 @@ async function listCharacters(request: Request) {
   });
 }
 
+// For You ranks in memory: the score mixes per-viewer tag/style weights that an
+// ORDER BY cannot express. Candidates are the filtered public catalog (ids and
+// ranking keys only); only the requested page is hydrated.
+async function forYouPage(
+  where: Prisma.CharacterWhereInput,
+  profile: ForYouProfile,
+  offset: number,
+  take: number,
+  userId: string | undefined,
+) {
+  const candidates = await prisma.character.findMany({
+    where,
+    select: {
+      id: true,
+      style: true,
+      creatorId: true,
+      createdAt: true,
+      stats: { select: { chatsCount: true, likesCount: true } },
+      tags: { select: { tag: { select: { slug: true } } } },
+    },
+  });
+  const pageIds = rankForYou(candidates.map((candidate) => ({
+    id: candidate.id,
+    style: candidate.style,
+    creatorId: candidate.creatorId,
+    createdAt: candidate.createdAt,
+    tagSlugs: candidate.tags.map(({ tag }) => tag.slug),
+    chatsCount: candidate.stats?.chatsCount ?? 0,
+    likesCount: candidate.stats?.likesCount ?? 0,
+  })), profile).slice(offset, offset + take).map((candidate) => candidate.id);
+  const rows = await prisma.character.findMany({
+    where: { AND: [where, { id: { in: pageIds } }] },
+    include: characterInclude(userId),
+  });
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  return pageIds.flatMap((id) => byId.get(id) ?? []);
+}
+
 type ExploreSort = "for-you" | "popular" | "newest" | "following";
 
 function exploreSort(value: string | null): ExploreSort {
@@ -1348,6 +1434,7 @@ function exploreSort(value: string | null): ExploreSort {
   return "for-you";
 }
 
+// Popular order; also For You's fallback when the viewer has no signal yet.
 function exploreOrderBy(sort: ExploreSort): Prisma.CharacterOrderByWithRelationInput[] {
   if (sort === "newest" || sort === "following") {
     return [{ createdAt: "desc" }, { id: "asc" }];
@@ -1798,8 +1885,9 @@ async function currentDraft(request: Request) {
   const user = requireUser(ctx);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
+  // Edit drafts belong to their Character's Edit entry, never to Create resume.
   const latest = await prisma.characterDraft.findFirst({
-    where: { ownerId: user.id },
+    where: { ownerId: user.id, editsCharacterId: null },
     orderBy: { updatedAt: "desc" },
   });
   const latestDetails = latest
@@ -1815,6 +1903,11 @@ async function currentDraft(request: Request) {
     ? latest
     : null;
   if (!draft) return ok({ draft: null, previewJob: null, asset: null });
+  return ok(await draftResumePayload(draft, user.id));
+}
+
+// The durable half of wizard resume: the draft, its matching preview job and asset.
+async function draftResumePayload(draft: CharacterDraft, userId: string) {
   const storedPreviewJob = draft.previewJobId
     ? await prisma.characterPreviewJob.findFirst({
         where: { id: draft.previewJobId, draftId: draft.id },
@@ -1824,18 +1917,47 @@ async function currentDraft(request: Request) {
         orderBy: { createdAt: "desc" },
       });
   const previewJob = storedPreviewJob && await characterPreviewMatchesDraft(draft, storedPreviewJob.id)
-    ? await previewWithExecutionStatus(storedPreviewJob, user.id)
+    ? await previewWithExecutionStatus(storedPreviewJob, userId)
     : null;
   const asset = previewJob?.resultAssetId
     ? await prisma.mediaAsset.findUnique({ where: { id: previewJob.resultAssetId } })
     : null;
-  return ok({
+  return {
     draft: {
       ...draft,
-      advancedDetails: latestDetails,
+      advancedDetails: readCurrentCharacterDraftDetails(draft.advancedDetails),
     },
     previewJob,
     asset: asset ? mediaDTO(asset) : null,
+  };
+}
+
+// POST characters/:id/edit-draft — CR-06: open (or derive) the owner's edit
+// draft; the Create wizard edits it and its submit appends new versions.
+async function openEditDraft(request: Request, characterId: string) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
+  const { draft, character } = await openCharacterEditDraft({ userId: user.id, characterId });
+  const image = character.imageAssetId
+    ? await prisma.mediaAsset.findUnique({ where: { id: character.imageAssetId } })
+    : null;
+  return ok({
+    ...(await draftResumePayload(draft, user.id)),
+    character: {
+      id: character.id,
+      name: character.name,
+      visibility: character.visibility,
+      imageUrl: image ? mediaDTO(image).url : null,
+      // The wizard compares against these to know whether the current identity still fits.
+      visual: {
+        gender: character.gender,
+        style: character.style,
+        age: character.age,
+        ...wizardVisualProjection(character.appearance),
+      },
+    },
   });
 }
 
@@ -1929,14 +2051,14 @@ async function submitDraft(request: Request, id: string) {
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const body = draftSubmitSchema.parse(await jsonBody(request));
-  const { character } = await submitCharacterDraft({
+  const { character, edited } = await submitCharacterDraft({
     userId: user.id,
     draftId: id,
     visibility: body.visibility,
   });
   // Input moderation already ran synchronously inside the submit action; no async pass.
   // A committed Character remains a successful save when optional telemetry is unavailable.
-  await trackEventBestEffort("character_created", { characterId: character.id }, ctx);
+  await trackEventBestEffort(edited ? "character_edited" : "character_created", { characterId: character.id }, ctx);
   return ok({ character });
 }
 

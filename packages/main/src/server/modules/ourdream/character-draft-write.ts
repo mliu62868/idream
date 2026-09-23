@@ -37,6 +37,7 @@ import {
   materializeUserCharacterContentVersion,
 } from "./character-soul";
 import { readCurrentCharacterDraftDetails } from "./character-draft-details";
+import { applyCharacterEditDraft } from "./character-edit";
 
 import {
   prepareCharacterDraftVoice,
@@ -313,7 +314,12 @@ export async function submitCharacterDraft(input: {
     if (!existing) {
       throw Errors.conflict("This draft was submitted but its Character is unavailable");
     }
-    return { character: existing };
+    return { character: existing, edited: Boolean(draft.editsCharacterId) };
+  }
+  const editsCharacterId = draft.editsCharacterId;
+  if (editsCharacterId) {
+    const edited = await applyCharacterEditDraft({ userId, draft: { ...draft, editsCharacterId }, visibility: input.visibility });
+    return { ...edited, edited: true };
   }
   const age = advancedDetails.age;
   if (age === undefined) {
@@ -552,7 +558,7 @@ export async function submitCharacterDraft(input: {
     throw error;
   });
 
-  return { character };
+  return { character, edited: false };
 }
 
 function draftVisualFields(value: Prisma.JsonValue): Prisma.JsonObject {

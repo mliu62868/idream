@@ -7,10 +7,26 @@ const prefix = "zt-affiliate-ops-";
 const adminId = `${prefix}admin`;
 const supportId = `${prefix}support`;
 const customerId = `${prefix}customer`;
-const application = { termsVersion: "2026-09", channels: ["https://example.test/channel"] };
+const termsPublishedAt = new Date("2026-09-01T00:00:00Z");
+// Applications are accepted only against the published /affiliate terms page.
+const application = { termsVersion: termsPublishedAt.toISOString(), channels: ["https://example.test/channel"] };
 let itemId: string;
 
 beforeAll(async () => {
+  await prisma.routePage.create({ data: {
+    path: "/affiliate", template: "article", title: `${prefix}Affiliate program`,
+    description: "Program terms for creators who promote iDream to adult audiences.",
+    contentStatus: "published", contentSchemaVersion: 1, indexingStatus: "noindex", canonical: null,
+    publishedAt: termsPublishedAt,
+    body: {
+      heading: "Affiliate program",
+      intro: "These are the terms that apply to every approved affiliate partner of iDream.",
+      sections: [
+        { heading: "Attribution", paragraphs: ["A signup counts when it follows your link within the attribution window."] },
+        { heading: "Payouts", paragraphs: ["Commission and settlement terms are published separately before any payout."] },
+      ],
+    },
+  } });
   await createUser({ id: adminId, role: "admin", dataClass: "internal" });
   await createUser({ id: supportId, role: "support", dataClass: "internal" });
   await createUser({ id: customerId, dataClass: "customer" });
@@ -18,7 +34,10 @@ beforeAll(async () => {
   expectOk(created, 201);
   itemId = created.data.id;
 });
-afterAll(async () => { await purgeTestData(prefix); });
+afterAll(async () => {
+  await prisma.routePage.deleteMany({ where: { path: "/affiliate", title: { startsWith: prefix } } });
+  await purgeTestData(prefix);
+});
 
 async function readItem() {
   const result = await adminV2("GET", "affiliate/applications", { userId: adminId, role: "admin", query: { status: "all", search: customerId } });
