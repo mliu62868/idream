@@ -967,13 +967,38 @@ describe("ChatSessionClient streaming composer", () => {
     expect(avatars.map((image) => image.getAttribute("src"))).toEqual(["/media/avery-thumb.png"]);
   });
 
+  it("shows the latest reply's scene under the header and hides it when there is none", async () => {
+    const scene = (version: number, location: string) => ({
+      schemaVersion: 1, version, location, time: "Late evening", participants: [], emotionalBeat: null, unresolvedThreads: [],
+    });
+    sessionMessages = [
+      { ...opening, sceneVersion: 1, scene: scene(1, "Old harbor") },
+      { id: "user-2", role: "user", content: "Walk with me.", status: "sent" },
+      { id: "assistant-2", turnId: "turn-2", role: "assistant", content: "Sure.", status: "sent", attempt: 1, sceneVersion: 2, scene: scene(2, "Rooftop garden") },
+    ];
+    await mountSession();
+    expect(container.querySelector('[data-testid="chat-scene"]')?.textContent).toBe("Scene · Rooftop garden · Late evening");
+  });
+
+  it("renders no scene line for a conversation without scene state", async () => {
+    await mountSession();
+    expect(container.querySelector('[data-testid="chat-scene"]')).toBeNull();
+  });
+
+  it("tells a new group how to start instead of inventing an opening line", async () => {
+    await mountGroupSession("active", []);
+    const empty = container.querySelector('[data-testid="group-chat-empty"]')?.textContent ?? "";
+    expect(empty).toContain("Send a message to Avery");
+    expect(empty).toContain("@mention Avery, Briar");
+  });
+
   it("shows every group member's avatar in the header", async () => {
     await mountGroupSession();
     const avatars = [...container.querySelectorAll('[data-testid="chat-header-avatars"] img')];
     expect(avatars.map((image) => image.getAttribute("alt"))).toEqual(["Avery", "Briar"]);
   });
 
-  async function mountGroupSession(status: "active" | "archived" = "active") {
+  async function mountGroupSession(status: "active" | "archived" = "active", messages?: unknown[]) {
     const originalFetch = vi.mocked(fetch).getMockImplementation()!;
     const members = [{ characterId: "character-1", sessionId: "member-1", name: "Avery" }, { characterId: "character-2", sessionId: "member-2", name: "Briar" }];
     vi.mocked(fetch).mockImplementation(async (input, init) => {
@@ -985,7 +1010,7 @@ describe("ChatSessionClient streaming composer", () => {
           characterId: selected.characterId, memoryEnabled: selected.characterId === "character-1",
           character: { name: selected.name, canUpdateIdentity: false }, group: { members, selectedSessionId: selected.sessionId },
           memberImages: { "character-1": "/media/avery-thumb.png", "character-2": "/media/briar-thumb.png" },
-          messages: [
+          messages: messages ?? [
             { id: "group-old-user", role: "user", content: "Avery, come to the garden.", status: "sent", characterId: "character-1", sessionId: "member-1", speakerName: "Avery" },
             { id: "group-old-assistant", turnId: "group-old-turn", role: "assistant", content: "I brought the blue notebook.", status: "sent", attempt: 1, replyToMessageId: "group-old-user", characterId: "character-1", sessionId: "member-1", speakerName: "Avery" },
           ],

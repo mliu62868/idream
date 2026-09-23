@@ -23,6 +23,7 @@ import { providers } from "@/server/providers";
 import type { VoiceClipPort } from "@/server/providers/types";
 import { createVoiceClipPortForKey } from "@/server/providers/voice/factory";
 import { audioFileExtension, voiceArtifactKey } from "@/server/providers/voice/idempotency";
+import { encodeVoiceClipMp3 } from "@/server/providers/voice/transcode";
 import { acceptVoiceClipQuote, signVoiceClipQuote } from "./voice-clip-quote";
 import {
   fetchChatMessageVoiceAuthority,
@@ -689,14 +690,15 @@ async function executeOwnedVoiceClaim(input: {
   // INVARIANT: the blob exists before the commit transaction opens — a MediaAsset
   //   row may never reference bytes that were never stored. The matching cleanup
   //   for a commit that fails afterwards is deleteUndeliveredVoiceBlob below.
+  const artifact = await deliverableVoiceAudio(result.data.body, result.data.contentType);
   const storageKey = voiceArtifactKey(
     providerIdempotencyKey,
-    audioFileExtension(result.data.contentType),
+    audioFileExtension(artifact.contentType),
   );
   const stored = await providers.blob.putPrivate({
     key: storageKey,
-    body: result.data.body,
-    contentType: result.data.contentType,
+    body: artifact.body,
+    contentType: artifact.contentType,
   });
   if (!stored.ok) {
     await failOwnedVoiceRequest(claim, stored.error.code, stored.error);
@@ -1461,6 +1463,14 @@ function voicePrewarmSkipped(
   reason: "allowance_exhausted" | "disabled" | "not_entitled" | "play_required",
 ) {
   return { messageId, prewarmed: false as const, reason };
+}
+
+async function deliverableVoiceAudio(body: Uint8Array, contentType: string) {
+  if (!audioFileExtension(contentType).endsWith(".wav")) return { body, contentType };
+  const mp3 = await encodeVoiceClipMp3(body, { ffmpegBin: env.VOICE_FFMPEG_BIN });
+  if (mp3) return { body: mp3, contentType: "audio/mpeg" };
+  logger.warn({ bytes: body.byteLength }, "Voice clip MP3 encoding failed; delivering WAV");
+  return { body, contentType };
 }
 
 function voiceContentType(key: string) {

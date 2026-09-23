@@ -1455,6 +1455,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
             />
             <h1 className="min-w-0 break-words text-[32px] font-black uppercase leading-9">{title}</h1>
           </div>
+          <ChatSceneLine messages={messages} characterId={group ? characterId ?? undefined : undefined} />
           {loadState === "ready" ? (
             <>
               {group ? <GroupSpeakerControls members={group.members} selectedCharacterId={characterId} disabled={pending || hasGeneratingReply || speakerPending || conversationArchived || sendOutcomeUnknown} onSelect={next => void changeSpeaker(next)} /> : null}
@@ -1501,6 +1502,12 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
                 </section>
               ) : null}
               <div className="mt-6 flex min-h-[55vh] flex-1 flex-col gap-3 rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-4">
+                {/* 群聊没有开场白：说清楚怎么开始，而不是替角色编一句。 */}
+                {group && messages.length === 0 ? (
+                  <p className="m-auto max-w-md text-center text-sm leading-6 text-white/65" data-testid="group-chat-empty">
+                    No messages yet. Send a message to {group.members.find(member => member.characterId === characterId)?.name ?? group.members[0].name}, or @mention {group.members.map(member => member.name).join(", ")} to choose who replies.
+                  </p>
+                ) : null}
                 {messages.map((message) => {
                   const isUser = message.role === "user";
                   const immutableOpening = isImmutableOpeningMessage(message);
@@ -2191,6 +2198,29 @@ function ChatImageAttachmentActions({
       </Link> : null}
       {onAnimate ? <button type="button" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-white/10 px-3 text-xs font-bold text-white" onClick={onAnimate}><Video className="size-4" />Animate</button> : null}
     </div>
+  );
+}
+
+// SPEC: 头部下方一行小字显示当前场景（最新一条带 scene 的回复）；没有场景就不渲染。
+// 群聊每个角色各有自己的场景，只看当前发言角色的回复。
+export function currentChatScene(messages: ChatMessage[], characterId?: string) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== "assistant" || !message.scene) continue;
+    if (characterId && message.characterId !== characterId) continue;
+    return message.scene;
+  }
+  return null;
+}
+
+function ChatSceneLine({ messages, characterId }: { messages: ChatMessage[]; characterId?: string }) {
+  const scene = currentChatScene(messages, characterId);
+  const parts = scene ? [scene.location, scene.time, scene.emotionalBeat].filter((part): part is string => Boolean(part?.trim())) : [];
+  if (!parts.length) return null;
+  return (
+    <p className="mt-2 text-[12px] font-medium leading-5 text-white/55" data-testid="chat-scene">
+      Scene · {parts.join(" · ")}
+    </p>
   );
 }
 
