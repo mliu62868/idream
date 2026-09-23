@@ -518,6 +518,14 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
         },
         body: serializedBody,
         signal: timeout.signal,
+      }).catch((error: unknown) => {
+        // SPEC: a request that never reached the provider (ECONNREFUSED, DNS,
+        // reset) is the dsh-llm TRANSPORT class. Our own timeouts and cancels
+        // abort the signal and keep their own classification.
+        // INTENT: the raw TypeError("fetch failed") normalized to UNKNOWN, so a
+        // stopped model server read as a non-retryable invocation bug.
+        if (timeout.signal.aborted || error instanceof LlmError) throw error;
+        throw new LlmError("OpenAI-compatible provider is unreachable", "TRANSPORT", { cause: error });
       });
       if (!response.ok) {
         await response.body?.cancel().catch(() => undefined);

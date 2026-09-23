@@ -317,6 +317,13 @@ describe("OpenAI-compatible DSH adapter", () => {
     expect(contacted).toBe(false);
   });
 
+  it("classifies a request that never reached the provider as TRANSPORT", async () => {
+    const adapter = adapterFor("http://127.0.0.1:9/v1", (async () => {
+      throw new TypeError("fetch failed");
+    }) as typeof fetch);
+    await expect(drain(adapter)).rejects.toMatchObject({ code: "TRANSPORT" });
+  });
+
   it("keeps forcing the reserved image tool after a failed transport", async () => {
     const choices: unknown[] = [];
     const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
@@ -368,7 +375,7 @@ describe("OpenAI-compatible DSH adapter", () => {
 
     await expect((async () => {
       for await (const _chunk of adapter.stream(options)) { /* drain */ }
-    })()).rejects.toThrow(/connection reset/);
+    })()).rejects.toMatchObject({ code: "TRANSPORT" });
     for await (const _chunk of adapter.stream(options)) { /* drain */ }
 
     expect(choices).toEqual([
