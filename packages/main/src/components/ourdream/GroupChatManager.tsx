@@ -79,17 +79,11 @@ function GroupChats({ viewer }: { viewer: ViewerGate }) {
 
   const refreshGroups = groups.refresh;
   const refreshCandidates = candidates.refresh;
-  // INVARIANT: deferred past the commit. This subtree mounts in the same commit
-  // that first confirms the viewer, and child effects run before the parent's
-  // useViewerGate syncs its identity ref — an immediate refresh was refused and
-  // the page sat on "Loading" until a focus event re-validated.
   useEffect(() => {
-    const timer = window.setTimeout(() => void refreshGroups(), 0);
-    return () => window.clearTimeout(timer);
+    void refreshGroups();
   }, [refreshGroups, viewer.revalidation]);
   useEffect(() => {
-    const timer = window.setTimeout(() => void refreshCandidates(searched), 0);
-    return () => window.clearTimeout(timer);
+    void refreshCandidates(searched);
   }, [refreshCandidates, searched, viewer.revalidation]);
 
   async function more() {

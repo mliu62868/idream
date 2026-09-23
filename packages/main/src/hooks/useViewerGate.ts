@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   invalidateViewerAuthority,
   resolveViewerAuthority,
@@ -274,11 +274,17 @@ export function useViewerGate(options?: ViewerGateOptions): ViewerGate {
   // keep one identity across re-renders — it feeds effect dependency arrays, and
   // a fresh one each render would turn one refresh into a request loop — so the
   // live values reach it through refs, the same trade `useViewerResource` makes
-  // for its options. A ticket issued before this effect runs still carries the
-  // generation it was issued under, so the owner check below invalidates it.
+  // for its options.
+  //
+  // INVARIANT: a layout effect, not a passive one. The gate is handed to child
+  // components, and child effects run before their parent's: synced passively,
+  // a child's mount-time read in the commit that first confirms the viewer saw
+  // `null` and was refused, and nothing asked again until a focus event —
+  // /chat/groups sat on "Loading". Every layout effect in a commit runs before
+  // any passive one, so no child read can observe the previous identity.
   const requireUserRef = useRef(requireUser);
   const identityRef = useRef<ViewerIdentity | null>(session.identity);
-  useEffect(() => {
+  useLayoutEffect(() => {
     requireUserRef.current = requireUser;
     identityRef.current = session.identity;
   });
@@ -347,7 +353,10 @@ export function useViewerGate(options?: ViewerGateOptions): ViewerGate {
     }
   });
 
-  useEffect(() => {
+  // INVARIANT: a layout effect for the same reason as the identity sync above:
+  // the generation must move before a child's passive refresh effect asks for a
+  // ticket, or that read goes out under the old generation and is aborted here.
+  useLayoutEffect(() => {
     const previous = seenRef.current;
     seenRef.current = session.identity;
     // The first answer is not a change: nothing private has been read yet.

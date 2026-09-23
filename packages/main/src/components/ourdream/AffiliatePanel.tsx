@@ -5,8 +5,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { z } from "zod";
 
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-const OWNER_CONFIRM_RETRIES = 10;
-const OWNER_CONFIRM_RETRY_MS = 300;
 
 const dashboardSchema = z.object({
   status: z.string(),
@@ -53,24 +51,15 @@ export function AffiliatePanel({ fetcher }: Readonly<{ fetcher: Fetcher }>) {
 
   useEffect(() => {
     alive.current = true;
-    let attempt = 0;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    // fetchForOwner throws AbortError while Profile re-confirms the owner; back off and ask again.
-    const ask = () => {
-      void fetcher("/api/v1/affiliate/dashboard", { cache: "no-store" })
-        .then(readPayload)
-        .then((data) => { if (alive.current) setDashboard(dashboardSchema.parse(data)); })
-        .catch((error: unknown) => {
-          if (!alive.current) return;
-          if (error instanceof DOMException && error.name === "AbortError" && (attempt += 1) <= OWNER_CONFIRM_RETRIES) {
-            timer = setTimeout(ask, OWNER_CONFIRM_RETRY_MS);
-            return;
-          }
-          setStatus("Affiliate status could not be loaded.");
-        });
-    };
-    ask();
-    return () => { alive.current = false; if (timer) clearTimeout(timer); };
+    void fetcher("/api/v1/affiliate/dashboard", { cache: "no-store" })
+      .then(readPayload)
+      .then((data) => { if (alive.current) setDashboard(dashboardSchema.parse(data)); })
+      .catch((error: unknown) => {
+        // AbortError: Profile confirmed another account and this panel is going away.
+        if (!alive.current || (error instanceof DOMException && error.name === "AbortError")) return;
+        setStatus("Affiliate status could not be loaded.");
+      });
+    return () => { alive.current = false; };
   }, [fetcher, loadAttempt]);
 
   const apply = useCallback(async () => {
