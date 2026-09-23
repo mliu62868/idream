@@ -285,7 +285,7 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
           data-testid="approvals-enforcement-off"
           role="status"
         >
-          {t("Dual approval is switched off, so no high-risk write creates a request. Enable the dual_approval_enforced flag to start routing work here.")}
+          {t("Dual approval is switched off, so high-risk writes run without an approval. When the dual_approval_enforced flag is on, a blocked write is not queued here automatically: the operator submits it from the blocked form with Request approval.")}
         </p>
       ) : null}
       {!data && loading ? (

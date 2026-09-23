@@ -121,7 +121,7 @@ export const adminZhSystem: Record<string, string> = {
   "Permission": "权限",
   "Requested by": "发起人",
   "Show pending approvals": "查看待审批队列",
-  "Dual approval is switched off, so no high-risk write creates a request. Enable the dual_approval_enforced flag to start routing work here.": "双人复核当前处于关闭状态，因此高风险写入不会产生审批请求。启用 dual_approval_enforced 开关后，工作才会流入这里。",
+  "Dual approval is switched off, so high-risk writes run without an approval. When the dual_approval_enforced flag is on, a blocked write is not queued here automatically: the operator submits it from the blocked form with Request approval.": "双人复核当前处于关闭状态，高风险写入无需审批即可执行。开启 dual_approval_enforced 后，被拦下的写入不会自动进入这里，需要操作人在被拦下的表单上点「提交审批申请」。",
   // 团队访问的数据新鲜度行。原来是四句裸英文，中文界面里照样印英文。
   "As of {time}": "截至 {time}",
   "Controlled by account deletion": "由账号删除流程管理",
