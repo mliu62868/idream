@@ -160,6 +160,7 @@ import {
   AFFILIATE_ATTRIBUTION_WINDOW_DAYS,
   AFFILIATE_TERMS_PATH,
   affiliateDashboard,
+  affiliateVisitorKey,
   applyAffiliate,
   attributeAffiliateSignup,
   recordAffiliateClick,
@@ -594,7 +595,7 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
   if (resource === "tags" && !id && method === "GET") return listTags(request);
 
   // Affiliate creator economy: applications/dashboard require an authenticated
-  // user; click attribution is intentionally public and deduplicated by visitor key.
+  // user; click attribution is intentionally public, rate limited and deduplicated per visitor.
   if (resource === "affiliate") {
     if (id === "application" && !action && method === "POST") {
       const ctx = await getAuthCtx(request);
@@ -611,15 +612,24 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
       });
     }
     if (id === "click" && !action && method === "POST") {
+      const ctx = await getAuthCtx(request);
+      await enforceRateLimit(request, "affiliateClick", ctx.userId);
       const body = z.record(z.string(), z.unknown()).parse(await jsonBody(request));
       const code = z.string().trim().min(1).max(120).parse(body.code);
-      const visitorKey = z.string().trim().min(8).max(200).parse(body.visitorKey);
       const landingPath = z.string().trim().min(1).max(500).parse(body.landingPath ?? "/");
-      const click = await recordAffiliateClick(prisma, code, visitorKey, landingPath);
+      const cookie = parseCookieHeader(request.headers.get("cookie")).get(AFFILIATE_COOKIE);
+      const click = await recordAffiliateClick(prisma, {
+        code,
+        visitorKey: affiliateVisitorKey(request),
+        cookieVisitorKey: cookie?.startsWith(`${code}:`) ? cookie.slice(code.length + 1) : null,
+        landingPath,
+        viewerUserId: ctx.userId,
+      });
+      if (!click) return ok({ id: null });
       const response = ok({ id: click.id }, { status: 201 });
       response.headers.append(
         "set-cookie",
-        affiliateAttributionCookie(`${code}:${visitorKey}`, AFFILIATE_ATTRIBUTION_WINDOW_DAYS),
+        affiliateAttributionCookie(`${code}:${click.visitorKey}`, AFFILIATE_ATTRIBUTION_WINDOW_DAYS),
       );
       return response;
     }

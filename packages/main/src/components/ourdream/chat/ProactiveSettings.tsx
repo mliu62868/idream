@@ -32,7 +32,8 @@ function parseSettings(value: unknown): Settings {
 //         用户对"它什么时候会打扰我"应当有确定答案，而不是只看到一个开关。
 export function ProactiveSettings({
   sessionId,
-}: Readonly<{ sessionId: string }>) {
+  onEnabledChange,
+}: Readonly<{ sessionId: string; onEnabledChange?: (enabled: boolean) => void }>) {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -77,7 +78,11 @@ export function ProactiveSettings({
       if (!response.ok) throw new Error("rejected");
       const body = (await response.json()) as unknown;
       if (scope.current !== epoch) return;
-      setSettings(parseSettings(body));
+      const saved = parseSettings(body);
+      setSettings(saved);
+      // The open chat polls for check-ins only while they are on; tell it now
+      // instead of on its next session reload.
+      onEnabledChange?.(saved.enabled);
     } catch {
       if (scope.current === epoch) {
         setError("Couldn't save that. Try again.");

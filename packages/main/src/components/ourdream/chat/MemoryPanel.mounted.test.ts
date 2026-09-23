@@ -174,3 +174,43 @@ describe("MemoryPanel clear", () => {
     ).toContain("Old chats may already be archived");
   });
 });
+
+// SPEC: 开关主动消息后，聊天页立即开始/停止轮询，而不是等下次拉会话。
+describe("MemoryPanel check-ins", () => {
+  async function toggleCheckIns(putStatus: number) {
+    let enabled = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (!String(input).endsWith("/proactive")) return Response.json({ items: [] });
+      if (init?.method === "PUT") {
+        if (putStatus !== 200) return Response.json({}, { status: putStatus });
+        enabled = (JSON.parse(String(init.body)) as { enabled: boolean }).enabled;
+      }
+      return Response.json({ enabled, intervalHours: 24, nextAt: null });
+    }));
+    const onProactiveChange = vi.fn();
+    await act(async () => {
+      root.render(createElement(MemoryPanel, {
+        open: true,
+        onClose: () => {},
+        characterId: "raya-reyes",
+        sessionId: "session-1",
+        memoryEnabled: true,
+        memoryPending: false,
+        onToggleMemory: () => {},
+        onProactiveChange,
+      }));
+    });
+    const checkbox = container.querySelector<HTMLInputElement>("#proactive-enabled-session-1");
+    if (!checkbox) throw new Error("check-in toggle missing");
+    await click(checkbox as unknown as HTMLButtonElement);
+    return onProactiveChange;
+  }
+
+  it("tells the chat page the saved state as soon as the toggle is saved", async () => {
+    expect(await toggleCheckIns(200)).toHaveBeenCalledWith(true);
+  });
+
+  it("leaves the chat page alone when the save fails", async () => {
+    expect(await toggleCheckIns(503)).not.toHaveBeenCalled();
+  });
+});

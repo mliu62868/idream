@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { AFFILIATE_ATTRIBUTION_WINDOW_DAYS, affiliateApplicationSchema, affiliateDashboard, applyAffiliate, attributeAffiliateSignup, recordAffiliateClick, type AffiliateDb, type AffiliateTerms } from "./affiliate";
+import { AFFILIATE_ATTRIBUTION_WINDOW_DAYS, affiliateApplicationSchema, affiliateDashboard, applyAffiliate, affiliateVisitorKey, attributeAffiliateSignup, recordAffiliateClick, type AffiliateDb, type AffiliateTerms } from "./affiliate";
 
 const published: AffiliateTerms = { state: "published", version: "2026-09", title: "Affiliate program", path: "/affiliate" };
 
@@ -49,8 +49,18 @@ describe("affiliate domain", () => {
       affiliateApplication: { findFirst: vi.fn().mockResolvedValue({ id: "app-1", userId: "u1", status: "approved" }) },
       affiliateClick: { upsert: vi.fn().mockResolvedValue(click) },
     } as unknown as AffiliateDb;
-    await expect(recordAffiliateClick(db, "app-1", "visitor-1234", "/pricing")).resolves.toEqual(click);
+    await expect(recordAffiliateClick(db, { code: "app-1", visitorKey: "visitor-1234", cookieVisitorKey: null, landingPath: "/pricing", viewerUserId: undefined })).resolves.toEqual(click);
     expect(db.affiliateClick.upsert).toHaveBeenCalledWith(expect.objectContaining({ where: { code_visitorKey: { code: "app-1", visitorKey: "visitor-1234" } } }));
+  });
+
+  it("derives the visitor from the server-visible address and agent, bucketed by the attribution window", () => {
+    const request = (ip: string, agent: string) => new Request("http://localhost/api/v1/affiliate/click", { headers: { "x-forwarded-for": ip, "user-agent": agent } });
+    const now = new Date("2026-09-23T00:00:00Z");
+    const key = affiliateVisitorKey(request("203.0.113.7", "A"), now);
+    expect(affiliateVisitorKey(request("203.0.113.7", "A"), new Date(now.getTime() + 60_000))).toBe(key);
+    expect(affiliateVisitorKey(request("203.0.113.8", "A"), now)).not.toBe(key);
+    expect(affiliateVisitorKey(request("203.0.113.7", "B"), now)).not.toBe(key);
+    expect(affiliateVisitorKey(request("203.0.113.7", "A"), new Date(now.getTime() + 31 * 24 * 60 * 60 * 1000))).not.toBe(key);
   });
 
   it("reports dashboard conversion counts", async () => {

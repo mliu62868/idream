@@ -1829,6 +1829,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
         memoryEnabled={memoryEnabled}
         memoryPending={memoryPending}
         onToggleMemory={toggleMemory}
+        onProactiveChange={setProactiveEnabled}
       />
       {reportDialog}
     </main>

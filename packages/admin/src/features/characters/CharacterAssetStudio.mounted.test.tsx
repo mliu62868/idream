@@ -128,6 +128,7 @@ function journeyFor(
       servingState: "inactive" as const,
       currentReleaseId: null,
       candidateReleaseId: null,
+      pendingRevision: null,
     },
   };
 }

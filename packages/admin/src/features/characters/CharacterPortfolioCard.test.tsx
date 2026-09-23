@@ -68,6 +68,7 @@ function journey(
       servingState: "live",
       currentReleaseId: "release-1",
       candidateReleaseId: null,
+      pendingRevision: null,
     },
   };
 }
@@ -206,6 +207,25 @@ describe("Character Portfolio card", () => {
       href: "/admin/characters/character-1?tab=assets",
       requiresAssets: true,
     });
+  });
+
+  // SPEC: 创作者改了已发布角色（新 Revision、Release 未动），卡片主动作直达发布页准备发布。
+  it("sends a live Character with a saved revision to prepare its release", () => {
+    const live = journey("monitor_live_character", "live_operations", "/admin/characters/character-1?tab=monitor");
+    const pendingRevision = {
+      revisionId: "revision-2",
+      revision: 2,
+      createdAt: "2026-09-20T08:00:00.000Z",
+      deepLink: "/admin/characters/character-1?tab=release",
+    };
+    const edited = { ...item, journey: { ...live, release: { ...live.release, pendingRevision } } } as CharacterPortfolioItem;
+    expect(resolveCharacterPortfolioPrimaryAction(edited)).toMatchObject({
+      eyebrow: "Unpublished revision",
+      label: "Prepare release",
+      href: "/admin/characters/character-1?tab=release",
+    });
+    expect(resolveCharacterPortfolioPrimaryAction({ ...item, journey: live }).label).not.toBe("Prepare release");
+    expect(translateAdmin("zh", "Unpublished revision")).toBe("有待发布的修订");
   });
 
   it("returns an unfinished image run to the image still in progress", () => {
