@@ -1,8 +1,10 @@
+import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { DEFAULT_FISH_AUDIO_DELIVERY } from "@idream/shared/admin";
 import { resolveLocalBlobPath } from "@idream/shared/storage/local-blob";
 import { prisma } from "@/server/lib/db";
+import { env } from "@/server/lib/env";
 import { dispatchV1 } from "@/server/modules/ourdream/service";
 import { providers } from "@/server/providers";
 import * as generationCharacterAuthority from "./generation-character-authority";
@@ -656,24 +658,29 @@ describe("voice generation service contract", () => {
     });
     const bytes = await readFile(resolveLocalBlobPath(asset.storageKey as string));
     expect(bytes.byteLength).toBeGreaterThan(44);
-    expect(bytes.subarray(0, 4).toString("ascii")).toBe("RIFF");
+    // Gateway WAV is re-encoded to MP3 before storage; without ffmpeg the WAV
+    // itself is delivered rather than failing the clip.
+    const encoded = spawnSync(env.VOICE_FFMPEG_BIN, ["-version"]).status === 0;
+    const magic = encoded ? "ID3" : "RIFF";
+    expect(asset.storageKey).toMatch(encoded ? /\.mp3$/ : /\.wav$/);
+    expect(bytes.subarray(0, magic.length).toString("ascii")).toBe(magic);
 
     const rangeResponse = await dispatchV1(
       new Request(`http://localhost/api/v1/media/${first.data.assetId}/content`, {
         headers: {
           "x-idream-user-id": userId,
           cookie: AGE_GATE_COOKIE_HEADER,
-          range: "bytes=0-3",
+          range: `bytes=0-${magic.length - 1}`,
         },
       }),
       ["media", first.data.assetId as string, "content"],
     );
     expect(rangeResponse.status).toBe(206);
     expect(rangeResponse.headers.get("accept-ranges")).toBe("bytes");
-    expect(rangeResponse.headers.get("content-length")).toBe("4");
-    expect(rangeResponse.headers.get("content-range")).toBe(`bytes 0-3/${bytes.byteLength}`);
-    expect(rangeResponse.headers.get("content-type")).toBe("audio/wav");
-    expect(Buffer.from(await rangeResponse.arrayBuffer()).toString("ascii")).toBe("RIFF");
+    expect(rangeResponse.headers.get("content-length")).toBe(String(magic.length));
+    expect(rangeResponse.headers.get("content-range")).toBe(`bytes 0-${magic.length - 1}/${bytes.byteLength}`);
+    expect(rangeResponse.headers.get("content-type")).toBe(encoded ? "audio/mpeg" : "audio/wav");
+    expect(Buffer.from(await rangeResponse.arrayBuffer()).toString("ascii")).toBe(magic);
 
     // Replay of the same message reuses the cached clip — no second charge.
     const second = await api("POST", "generation/voice", {
