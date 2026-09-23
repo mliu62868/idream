@@ -133,7 +133,7 @@ describe("ChatSessionClient streaming composer", () => {
                 characterId: "character-1",
                 memoryEnabled: true,
                 messages: sessionMessages,
-                character: { name: "Avery", canUpdateIdentity: false },
+                character: { name: "Avery", canUpdateIdentity: false, image: "/media/avery-thumb.png" },
               },
             },
           });
@@ -912,6 +912,18 @@ describe("ChatSessionClient streaming composer", () => {
     expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === "POST" || init?.method === "PATCH")).toBe(false);
   });
 
+  it("shows the character's cover as a small header avatar", async () => {
+    await mountSession();
+    const avatars = [...container.querySelectorAll('[data-testid="chat-header-avatars"] img')];
+    expect(avatars.map((image) => image.getAttribute("src"))).toEqual(["/media/avery-thumb.png"]);
+  });
+
+  it("shows every group member's avatar in the header", async () => {
+    await mountGroupSession();
+    const avatars = [...container.querySelectorAll('[data-testid="chat-header-avatars"] img')];
+    expect(avatars.map((image) => image.getAttribute("alt"))).toEqual(["Avery", "Briar"]);
+  });
+
   async function mountGroupSession(status: "active" | "archived" = "active") {
     const originalFetch = vi.mocked(fetch).getMockImplementation()!;
     const members = [{ characterId: "character-1", sessionId: "member-1", name: "Avery" }, { characterId: "character-2", sessionId: "member-2", name: "Briar" }];
@@ -923,6 +935,7 @@ describe("ChatSessionClient streaming composer", () => {
           id: "group-1", ownerScope: "user:viewer-a", title: "Garden companions", status,
           characterId: selected.characterId, memoryEnabled: selected.characterId === "character-1",
           character: { name: selected.name, canUpdateIdentity: false }, group: { members, selectedSessionId: selected.sessionId },
+          memberImages: { "character-1": "/media/avery-thumb.png", "character-2": "/media/briar-thumb.png" },
           messages: [
             { id: "group-old-user", role: "user", content: "Avery, come to the garden.", status: "sent", characterId: "character-1", sessionId: "member-1", speakerName: "Avery" },
             { id: "group-old-assistant", turnId: "group-old-turn", role: "assistant", content: "I brought the blue notebook.", status: "sent", attempt: 1, replyToMessageId: "group-old-user", characterId: "character-1", sessionId: "member-1", speakerName: "Avery" },
