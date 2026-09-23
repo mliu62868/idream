@@ -5483,7 +5483,7 @@ test("community shows explicit empty states when public data is unavailable", as
   await expect(page.getByText("Public collections appear here.")).toBeVisible();
 });
 
-test("feed chat signup redirect returns anonymous intent to character detail", async ({
+test("feed chat signup redirect lands the guest in the chat they asked for", async ({
   page,
 }) => {
   await page.request.post("/api/v1/age-gate/accept", {
@@ -5503,7 +5503,7 @@ test("feed chat signup redirect returns anonymous intent to character detail", a
   await melissaFeedCard.getByRole("button", { name: "Chat" }).click();
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/signup");
-  expect(new URL(page.url()).searchParams.get("next")).toBe("/characters/melissa-burke");
+  expect(new URL(page.url()).searchParams.get("next")).toBe("/characters/melissa-burke?resume=chat");
   const authExploreClass = await page
     .locator("aside")
     .getByRole("link", { name: "Explore" })
@@ -5517,12 +5517,8 @@ test("feed chat signup redirect returns anonymous intent to character detail", a
   await page.getByRole("button", { name: "Join Free" }).click();
   await completeSignupRecoveryCode(page);
 
-  await expect.poll(() => new URL(page.url()).pathname).toBe("/characters/melissa-burke");
-  await expect(page.getByRole("heading", { name: "Melissa Burke" })).toBeVisible({
-    timeout: 10_000,
-  });
-  await page.getByRole("button", { name: "Chat" }).click();
-  await expect(page).toHaveURL(/\/chat\/[^/]+$/);
+  // The character page consumes resume=chat and opens the chat the guest asked for.
+  await expect(page).toHaveURL(/\/chat\/[^/]+$/, { timeout: 15_000 });
 });
 
 test("feed like signup redirect returns anonymous intent to focused feed item", async ({

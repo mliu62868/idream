@@ -585,8 +585,9 @@ function publicApiErrorMessage(payload: unknown) {
   return typeof message === "string" ? message : undefined;
 }
 
+// resume=chat: the character page starts the chat the guest asked for once they are back.
 function signupUrlForFeedChat(characterId: string) {
-  const next = `/characters/${encodeURIComponent(characterId)}`;
+  const next = `/characters/${encodeURIComponent(characterId)}?resume=chat`;
   return `/signup?next=${encodeURIComponent(next)}`;
 }
 
