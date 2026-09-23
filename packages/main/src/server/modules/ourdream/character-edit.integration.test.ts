@@ -240,4 +240,54 @@ describe("Character edit (CR-06 / CR-08)", () => {
     expectOk(reopened);
     expect(reopened.data.draft).toMatchObject({ name: "Avery Vale", advancedDetails: { description: "A late-night radio host" } });
   });
+
+  it("appends exactly one version when the same edit draft is submitted twice concurrently", async () => {
+    const userId = `${prefix}race-owner`;
+    await createUser({ id: userId });
+    const { characterId } = await createOwnedCharacter(userId);
+    const [contentBefore, visualBefore] = await Promise.all([
+      prisma.characterContentVersion.count({ where: { characterId } }),
+      prisma.characterVisualProfile.count({ where: { characterId } }),
+    ]);
+    const opened = await api("POST", `characters/${characterId}/edit-draft`, { userId, ageGate: true });
+    expectOk(opened);
+    const draftId = opened.data.draft.id as string;
+    expectOk(await api("PATCH", `character-drafts/${draftId}`, { userId, ageGate: true, body: {
+      ...form,
+      advancedDetails: { description: "A late-night radio host", firstMessage: "You're up late again.", detailsMarkdown: "## Occupation\nNight-shift radio host" },
+    } }));
+    const submit = () => api("POST", `character-drafts/${draftId}/submit`, { userId, ageGate: true, body: { visibility: "private" } });
+    const [first, second] = await Promise.all([submit(), submit()]);
+    expectOk(first);
+    expectOk(second);
+    expect(second.data.character.id).toBe(first.data.character.id);
+    expect(await prisma.characterContentVersion.count({ where: { characterId } })).toBe(contentBefore + 1);
+    expect(await prisma.characterVisualProfile.count({ where: { characterId } })).toBe(visualBefore + 1);
+    expect(await prisma.characterVisualProfile.count({ where: { characterId, status: "active" } })).toBe(1);
+  });
+
+  it("keeps the saved edit and reports a refused visibility change, again on retry", async () => {
+    const userId = `${prefix}visibility-owner`;
+    await createUser({ id: userId });
+    const { characterId } = await createOwnedCharacter(userId);
+    // A rejected Character may be edited privately but not shared (updateCharacterForUser rule).
+    await prisma.character.update({ where: { id: characterId }, data: { status: "rejected" } });
+    const opened = await api("POST", `characters/${characterId}/edit-draft`, { userId, ageGate: true });
+    expectOk(opened);
+    const draftId = opened.data.draft.id as string;
+    expectOk(await api("PATCH", `character-drafts/${draftId}`, { userId, ageGate: true, body: {
+      ...form,
+      advancedDetails: { description: "A late-night radio host", firstMessage: "You're up late again.", detailsMarkdown: "" },
+    } }));
+    const submit = () => api("POST", `character-drafts/${draftId}/submit`, { userId, ageGate: true, body: { visibility: "public" } });
+    const submitted = await submit();
+    expectOk(submitted);
+    expect(submitted.data.visibilityWarning).toMatch(/visibility was not changed: This Character is unavailable for sharing/);
+    expect(submitted.data.character.visibility).toBe("private");
+    const saved = await prisma.character.findUniqueOrThrow({ where: { id: characterId } });
+    expect(saved).toMatchObject({ visibility: "private", description: "A late-night radio host" });
+    const retried = await submit();
+    expectOk(retried);
+    expect(retried.data.visibilityWarning).toMatch(/visibility was not changed/);
+  });
 });

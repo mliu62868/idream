@@ -52,6 +52,7 @@ type DraftPayload = {
     draft?: ServerCharacterDraft | null;
     character?: { id: string; name: string; visibility: string; imageUrl?: string | null; published?: boolean; visual?: CharacterEditVisual };
     pendingPublication?: boolean;
+    visibilityWarning?: string | null;
     asset?: { id?: string; url: string; isSynthetic?: boolean };
     previewJob?: { id: string; status: string; errorCode?: string | null };
   };
@@ -1091,8 +1092,12 @@ export function CreateWorkspace() {
         setCreatedCharacterId(character.id);
         setCreatedVisibility(character.visibility);
       }
+      // A refused visibility change leaves the saved edit in place; say so instead of the success line.
+      const visibilityWarning = submitted.data?.visibilityWarning;
       setStatus(
-        character && editTarget && submitted.data?.pendingPublication
+        visibilityWarning
+          ? visibilityWarning
+          : character && editTarget && submitted.data?.pendingPublication
           ? `Saved changes to ${character.name}. They go live once the new version is published; the current version keeps serving until then.`
           : character && editTarget
           ? `Saved changes to ${character.name}. New messages use this version; earlier messages keep the one they were written with.`

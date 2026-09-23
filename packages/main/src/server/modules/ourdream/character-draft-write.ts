@@ -37,7 +37,7 @@ import {
   materializeUserCharacterContentVersion,
 } from "./character-soul";
 import { readCurrentCharacterDraftDetails } from "./character-draft-details";
-import { applyCharacterEditDraft } from "./character-edit";
+import { applyCharacterEditDraft, applyEditVisibility } from "./character-edit";
 
 import {
   prepareCharacterDraftVoice,
@@ -314,7 +314,12 @@ export async function submitCharacterDraft(input: {
     if (!existing) {
       throw Errors.conflict("This draft was submitted but its Character is unavailable");
     }
-    return { character: existing, edited: Boolean(draft.editsCharacterId), pendingPublication: false };
+    if (draft.editsCharacterId) {
+      // A retried edit submit may still owe the visibility change a refused first attempt did not make.
+      const retried = await applyEditVisibility(userId, existing.id, input.visibility);
+      return { ...retried, edited: true, pendingPublication: false };
+    }
+    return { character: existing, edited: false, pendingPublication: false, visibilityWarning: null };
   }
   const editsCharacterId = draft.editsCharacterId;
   if (editsCharacterId) {
@@ -558,7 +563,7 @@ export async function submitCharacterDraft(input: {
     throw error;
   });
 
-  return { character, edited: false, pendingPublication: false };
+  return { character, edited: false, pendingPublication: false, visibilityWarning: null };
 }
 
 function draftVisualFields(value: Prisma.JsonValue): Prisma.JsonObject {

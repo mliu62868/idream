@@ -64,6 +64,43 @@ async function hasReleaseAuthority(tx: Prisma.TransactionClient, characterId: st
   }
 }
 
+/**
+ * INVARIANT: one edit draft submits once. The pre-transaction replay check in
+ * submitCharacterDraft cannot stop two concurrent submits, so each submit
+ * transaction locks the draft row first and re-reads its submitted mark; the
+ * loser returns the winner's result instead of appending a second version.
+ */
+async function lockEditDraftSubmission(tx: Prisma.TransactionClient, draftId: string) {
+  await tx.$queryRaw`SELECT id FROM character_drafts WHERE id = ${draftId} FOR UPDATE`;
+  const locked = await tx.characterDraft.findUnique({ where: { id: draftId }, select: { advancedDetails: true } });
+  return Boolean(readCurrentCharacterDraftDetails(locked?.advancedDetails).submittedCharacterId);
+}
+
+/**
+ * SPEC: visibility is applied after the content commit through the one
+ * visibility authority (updateCharacterForUser). A refusal there does not undo
+ * the saved edit; it comes back as a warning the wizard shows, and a retried
+ * submit (replay) attempts the visibility change again.
+ */
+export async function applyEditVisibility(
+  userId: string,
+  characterId: string,
+  visibility: "private" | "unlisted" | "public",
+) {
+  const current = await prisma.character.findFirstOrThrow({ where: { id: characterId, creatorId: userId } });
+  if (current.visibility === visibility) return { character: current, visibilityWarning: null };
+  try {
+    await updateCharacterForUser({ userId, characterId, patch: { visibility } });
+  } catch (error) {
+    if (!(error instanceof AppError) || error.status >= 500) throw error;
+    return {
+      character: current,
+      visibilityWarning: `Your changes were saved, but the visibility was not changed: ${error.message}`,
+    };
+  }
+  return { character: await prisma.character.findUniqueOrThrow({ where: { id: characterId } }), visibilityWarning: null };
+}
+
 /** A published Character's newest authored Soul is its latest project revision. */
 async function latestRevisionContentVersionId(tx: Prisma.TransactionClient, characterId: string) {
   const revision = await tx.characterRevision.findFirst({
@@ -247,7 +284,8 @@ export async function applyCharacterEditDraft(input: {
   if (await hasReleaseAuthority(prisma, characterId)) {
     if (visualChanged || draft.previewJobId) throw Errors.conflict(PUBLISHED_LOOK_LOCKED);
     if (voiceChanged) throw Errors.conflict(PUBLISHED_VOICE_LOCKED);
-    return submitPublishedCharacterRevision({ userId, draft, before, name, age, description, style, gender, details });
+    const revision = await submitPublishedCharacterRevision({ userId, draft, before, name, age, description, style, gender, details });
+    return { ...(await applyEditVisibility(userId, characterId, input.visibility)), pendingPublication: revision.pendingPublication };
   }
   const selectedPreview = draft.previewJobId
     ? await prisma.characterPreviewJob.findFirst({
@@ -285,10 +323,12 @@ export async function applyCharacterEditDraft(input: {
     ? await prepareCharacterDraftVoice({ ...details.voiceSelection, userId, draftId: draft.id })
     : null;
 
-  const character = await prisma.$transaction(async (tx) => {
+  const committed = await prisma.$transaction(async (tx) => {
+    const alreadySubmitted = await lockEditDraftSubmission(tx, draft.id);
     await lockCharacterGenerationAuthority(tx, characterId);
     const existing = await tx.character.findFirst({ where: { id: characterId, creatorId: userId, deletedAt: null } });
     if (!existing) throw Errors.notFound("Character not found");
+    if (alreadySubmitted) return { replayed: true as const };
     // A Release may have been prepared since the pre-check; its identity lock wins.
     if (await hasReleaseAuthority(tx, characterId)) throw Errors.conflict(PUBLISHED_LOOK_LOCKED);
     if (anchorAssetId) {
@@ -387,7 +427,7 @@ export async function applyCharacterEditDraft(input: {
       where: { id: draft.id },
       data: { advancedDetails: toInputJson({ ...details, age, submittedCharacterId: characterId }) },
     });
-    return updated;
+    return { replayed: false as const };
   }).catch(async (error) => {
     if (preparedVoice) {
       await cleanupPreparedCharacterDraftVoice(preparedVoice).catch((cleanupError) => {
@@ -397,12 +437,13 @@ export async function applyCharacterEditDraft(input: {
     throw error;
   });
 
-  if (input.visibility !== character.visibility) {
-    // Visibility has its own publication rules; reuse them instead of copying.
-    await updateCharacterForUser({ userId, characterId, patch: { visibility: input.visibility } });
-    return { character: await prisma.character.findUniqueOrThrow({ where: { id: characterId } }), pendingPublication: false };
+  if (committed.replayed && preparedVoice) {
+    // The concurrent winner committed its own voice; this alias was never bound.
+    await cleanupPreparedCharacterDraftVoice(preparedVoice).catch((cleanupError) => {
+      logger.error({ err: cleanupError, draftId: draft.id }, "Could not clean up a prepared Character voice after a duplicate edit submit");
+    });
   }
-  return { character, pendingPublication: false };
+  return { ...(await applyEditVisibility(userId, characterId, input.visibility)), pendingPublication: false };
 }
 
 async function submitPublishedCharacterRevision(input: {
@@ -427,10 +468,12 @@ async function submitPublishedCharacterRevision(input: {
     appearance: input.before.appearance,
     advancedDetails: input.details,
   });
-  const character = await prisma.$transaction(async (tx) => {
+  await prisma.$transaction(async (tx) => {
+    const alreadySubmitted = await lockEditDraftSubmission(tx, draft.id);
     await lockCharacterGenerationAuthority(tx, characterId);
     const existing = await tx.character.findFirst({ where: { id: characterId, creatorId: userId, deletedAt: null } });
     if (!existing) throw Errors.notFound("Character not found");
+    if (alreadySubmitted) return;
     const project = await tx.characterProject.findFirst({
       where: { characterId },
       orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
@@ -482,7 +525,6 @@ async function submitPublishedCharacterRevision(input: {
       where: { id: draft.id },
       data: { advancedDetails: toInputJson({ ...input.details, age: input.age, submittedCharacterId: characterId }) },
     });
-    return existing;
   });
-  return { character, pendingPublication: true };
+  return { pendingPublication: true };
 }
