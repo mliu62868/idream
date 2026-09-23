@@ -38,7 +38,7 @@ export const FISH_AUDIO_CATALOG = [
 export const POCKET_TTS_CATALOG = POCKET_TTS_CATALOG_VOICE_IDS.map((id) => ({
   id,
   label: catalogVoiceLabel(id),
-  presentation: "unspecified" as const,
+  presentation: "female" as const,
   description: "Official English Pocket TTS voice",
 }));
 
@@ -202,7 +202,6 @@ export async function updateVoiceDefaultSettings(input: {
           action: "voice.defaults.updated",
           targetType: "app_setting",
           targetId: VOICE_DEFAULTS_SETTING_KEY,
-          reason: request.reason,
           before: toInputJson({
             settings: voiceDefaultSettingsDto(before),
           }),

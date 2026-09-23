@@ -115,10 +115,9 @@ export function CharacterPlacementEditor({
   return (
     <section className="mb-5 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 sm:p-5" aria-labelledby="character-placement-title">
       <div>
-        <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">{t("Character operations")}</p>
         <h3 className="mt-1 text-xl font-semibold" id="character-placement-title">{t("Choose where existing images appear")}</h3>
         <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--ad-text-muted)]">
-          {t("Each placement uses an image already in this Character's library. Creating and importing stay in Images.")}
+          {t("Each placement uses an image from this Character's library below.")}
         </p>
       </div>
       <div className="mt-5 grid gap-3 lg:grid-cols-3">

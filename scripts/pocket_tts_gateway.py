@@ -33,7 +33,7 @@ from pydantic import BaseModel, Field
 
 MODEL_ID = os.getenv("POCKET_TTS_MODEL", "pocket-tts").strip()
 LANGUAGE = os.getenv("POCKET_TTS_LANGUAGE", "english").strip()
-DEFAULT_VOICE = os.getenv("POCKET_TTS_DEFAULT_VOICE_ID", "alba").strip()
+DEFAULT_VOICE = os.getenv("POCKET_TTS_DEFAULT_VOICE_ID", "anna").strip()
 PINNED_MODEL_REVISION = "39592ff23c9ef80098bb74895d104c26275fe2c9"
 MODEL_REVISION = os.getenv(
     "POCKET_TTS_MODEL_REVISION",

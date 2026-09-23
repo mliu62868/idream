@@ -71,7 +71,6 @@ export async function POST(
           characterId: id,
           actor,
           requestId,
-          reason: body.reason,
           submissionId: body.submissionId,
         }),
       decorateResult: (value, replayed) => ({

@@ -61,7 +61,7 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
     this.apiKey = config.apiKey;
     this.model = config.model;
     this.language = config.language;
-    this.defaultVoiceId = config.defaultVoiceId?.trim() || "alba";
+    this.defaultVoiceId = config.defaultVoiceId?.trim() || "anna";
     this.maxInputChars = Math.max(1, config.maxInputChars ?? 900);
     this.timeoutMs = Math.max(250, config.timeoutMs ?? 120_000);
     this.fetchImpl = config.fetchImpl ?? fetch;

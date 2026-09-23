@@ -237,7 +237,7 @@ describe("Release historical image authority", () => {
     } });
     const updated = await createCharacterSoulVersion({
       characterId, expectedProjectVersion: 1, expectedContentVersionId: content.id,
-      actor: { id: `${characterId}-owner`, role: "admin" }, reason: "Update opening only", requestId: `${characterId}-soul`,
+      actor: { id: `${characterId}-owner`, role: "admin" }, requestId: `${characterId}-soul`,
       persona: { name: "Mara", age: 28, gender: "female", characterPromise: "A precise place to put the day down.",
         detailsMarkdown: "Measured, observant, and gently challenging. Warm and concise. A former night-shift radio host.",
         firstMessage: "What followed you home tonight?" },

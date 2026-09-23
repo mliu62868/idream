@@ -137,7 +137,6 @@ export const characterProjectCreateResponseSchema = z
 export const customerCharacterPublicationPrepRequestSchema = z
   .object({
     submissionId: adminIdSchema,
-    reason: z.string().trim().min(3).max(2_000),
     confirmation: z.string().trim().min(1).max(240),
   })
   .strict();
@@ -186,12 +185,17 @@ export const characterProjectDraftPatchRequestSchema = z
   })
   .strict();
 
+// SPEC: one save of the Character's persona and, when edited, its visual direction.
+// INTENT: saving a draft is routine and reversible (every content version is kept and
+// nothing reaches customers until a Release), so it carries no reason.
+// INVARIANT: visualDirection absent = keep the current appearance bytes unchanged; legacy
+// characters without a visual direction can still save persona edits.
 export const characterSoulVersionCreateRequestSchema = z
   .object({
     entityVersion: z.number().int().positive(),
     expectedContentVersionId: adminIdSchema,
     persona: characterDraftPersonaSchema,
-    reason: z.string().trim().min(3).max(2_000),
+    visualDirection: characterDraftVisualDirectionSchema.optional(),
   })
   .strict();
 

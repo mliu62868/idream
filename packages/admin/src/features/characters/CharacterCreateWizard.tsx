@@ -8,7 +8,6 @@ import {
   type CharacterProjectDraft,
   type CharacterProjectDraftAuthority,
 } from "@idream/shared/admin";
-import { legacySoulDetailsMarkdown } from "@idream/shared/chat/persona";
 import { renderCharacterSoulMarkdown } from "@idream/shared/chat/persona-render";
 import {
   ArrowLeft,
@@ -85,7 +84,7 @@ const initialDraft: Draft = {
 // SPEC: 每一句只说这一步真正拦人的东西，不多列一项。
 // INTENT: Soul 只有基本信息与一个可选 Markdown 扩展，不再要求用户拆填人格、语气与示例对话。
 export const characterCreateStepRequirements = [
-  "Give the character a name, promise, and opening message.",
+  "Give the character a name, short description, and opening message.",
   "Define the identity anchor, stable traits, style, and reference direction.",
   "Review the character before creating it.",
 ] as const;
@@ -107,7 +106,7 @@ export function isCharacterCreateStepComplete(draft: Draft, step: number) {
 const characterCreateFieldErrorCopy: Record<string, string> = {
   name: "Enter a character name.",
   age: "Age must be a whole number from 18 to 120.",
-  characterPromise: "Write the promise this character makes to users.",
+  characterPromise: "Write a one-line description.",
   firstMessage: "Write the first message users will receive.",
   identityAnchor: "Describe the visual identity to establish.",
   stableTraits: "Add at least one stable visual trait.",
@@ -143,13 +142,6 @@ function localDraftStorageKey(actorId: string) {
   return `idream.admin.character-create-draft.v3:${actorId}`;
 }
 
-function legacyLocalDraftStorageKeys(actorId: string) {
-  return [
-    `idream.admin.character-create-draft.v2:${actorId}`,
-    `idream.admin.character-create-draft.v1:${actorId}`,
-  ];
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -183,40 +175,15 @@ function isRecoverableLocalDraft(value: unknown): value is Draft {
   );
 }
 
-function migrateLegacyLocalDraft(value: unknown): Draft | null {
-  if (!isRecord(value) || !isRecord(value.persona)) return null;
-  const persona = value.persona;
-  const migrated = {
-    ...value,
-    persona: {
-      name: persona.name,
-      age: persona.age,
-      gender: persona.gender,
-      characterPromise: persona.characterPromise,
-      detailsMarkdown: legacySoulDetailsMarkdown(persona),
-      firstMessage: persona.firstMessage,
-    },
-  };
-  return isRecoverableLocalDraft(migrated) ? migrated : null;
-}
-
 function readLocalDraft(actorId: string) {
   if (typeof window === "undefined" || requestedDraftTarget()) return null;
   try {
     const currentRaw = window.localStorage.getItem(
       localDraftStorageKey(actorId),
     );
-    if (currentRaw) {
-      const value: unknown = JSON.parse(currentRaw);
-      if (isRecoverableLocalDraft(value)) return value;
-    }
-    for (const key of legacyLocalDraftStorageKeys(actorId)) {
-      const legacyRaw = window.localStorage.getItem(key);
-      if (!legacyRaw) continue;
-      const migrated = migrateLegacyLocalDraft(JSON.parse(legacyRaw));
-      if (migrated) return migrated;
-    }
-    return null;
+    if (!currentRaw) return null;
+    const value: unknown = JSON.parse(currentRaw);
+    return isRecoverableLocalDraft(value) ? value : null;
   } catch {
     return null;
   }
@@ -238,9 +205,6 @@ function saveLocalDraft(actorId: string, draft: Draft): boolean {
 function clearLocalDraft(actorId: string) {
   try {
     window.localStorage.removeItem(localDraftStorageKey(actorId));
-    for (const key of legacyLocalDraftStorageKeys(actorId)) {
-      window.localStorage.removeItem(key);
-    }
   } catch {
     // Nothing else is required when browser storage is unavailable.
   }
@@ -1199,7 +1163,7 @@ function PersonaStep({ draft, errors, update }: StepProps) {
       <Grid>
         <Area
           error={errors.characterPromise}
-          label="Character promise"
+          label="Short description"
           name="persona.characterPromise"
           onChange={(value) => set("characterPromise", value)}
           placeholder={t("A precise, warm place to put the day down")}
@@ -1207,7 +1171,7 @@ function PersonaStep({ draft, errors, update }: StepProps) {
         />
         <Area
           error={errors.firstMessage}
-          label="First message"
+          label="Opening message"
           name="persona.firstMessage"
           onChange={(value) => set("firstMessage", value)}
           placeholder={t("You made it. What do you need to put down tonight?")}
@@ -1310,8 +1274,8 @@ function ReviewStep({
           "Character",
           `${draft.persona.name}, age ${draft.persona.age}, ${draft.persona.gender}`,
         ],
-        ["Promise", draft.persona.characterPromise],
-        ["First message", draft.persona.firstMessage],
+        ["Short description", draft.persona.characterPromise],
+        ["Opening message", draft.persona.firstMessage],
         ["Additional details", draft.persona.detailsMarkdown],
       ],
     },

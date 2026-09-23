@@ -130,7 +130,7 @@ describe("customer shared Character publication", () => {
     expect(await prisma.characterProject.count({ where: { characterId: result.characterId } })).toBe(0);
     await expect(prisma.$transaction(tx => prepareApprovedCustomerCharacterPublication(tx, {
       characterId: result.characterId, submissionId: result.submission.id,
-      actor: { id: result.userId, role: "admin" }, requestId: randomUUID(), reason: "Private must stay private",
+      actor: { id: result.userId, role: "admin" }, requestId: randomUUID(),
     }))).rejects.toMatchObject({ status: 409 });
   });
 
@@ -144,7 +144,7 @@ describe("customer shared Character publication", () => {
     await createUser({ id: moderatorId, role: "admin" });
     const prepared = await prisma.$transaction(tx => prepareApprovedCustomerCharacterPublication(tx, {
       characterId: result.characterId, submissionId: result.submission.id,
-      actor: { id: moderatorId, role: "admin" }, requestId: randomUUID(), reason: "Recover publication preparation",
+      actor: { id: moderatorId, role: "admin" }, requestId: randomUUID(),
     }));
     expect(prepared).toMatchObject({ state: "publication_prep", servingState: "inactive" });
     expect(await prisma.character.findUniqueOrThrow({ where: { id: result.characterId } }))

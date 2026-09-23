@@ -1,4 +1,7 @@
-import type { CharacterDraftPersona } from "@idream/shared/admin";
+import type {
+  CharacterDraftPersona,
+  CharacterDraftVisualDirection,
+} from "@idream/shared/admin";
 import type { Prisma } from "@prisma/client";
 import { inTransaction, prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
@@ -20,9 +23,13 @@ export type CharacterSoulVersionResult = {
 };
 
 /**
- * SPEC: editing Soul creates one immutable Content Version and Revision.
- * INVARIANT: it preserves the previously pinned Appearance bytes and never
- * reads mutable Character fields as authoring input.
+ * SPEC: saving the Character draft creates one immutable Content Version and Revision.
+ * INTENT: the visual direction written at creation feeds every image prompt; this is
+ * the only place an operator can correct it afterwards.
+ * INVARIANT: without visualDirection the previously pinned Appearance bytes are kept
+ * as-is; with it, only the four direction keys change and every other appearance key
+ * (legacy sourceImage, structured traits) is carried forward. Mutable Character fields
+ * are never read as authoring input.
  */
 export async function createCharacterSoulVersion(input: {
   readonly characterId: string;
@@ -30,7 +37,7 @@ export async function createCharacterSoulVersion(input: {
   readonly expectedContentVersionId: string;
   readonly actor: AdminActor;
   readonly persona: CharacterDraftPersona;
-  readonly reason: string;
+  readonly visualDirection?: CharacterDraftVisualDirection;
   readonly requestId: string;
 }, db: Prisma.TransactionClient | typeof prisma = prisma): Promise<CharacterSoulVersionResult> {
   const execute = async (tx: Prisma.TransactionClient) => {
@@ -67,7 +74,9 @@ export async function createCharacterSoulVersion(input: {
     try {
       snapshots = characterSoulVersionSnapshots({
         persona: input.persona,
-        appearanceSnapshot: currentContent.appearanceSnapshot,
+        appearanceSnapshot: input.visualDirection
+          ? { ...appearanceRecord(currentContent.appearanceSnapshot), ...input.visualDirection }
+          : currentContent.appearanceSnapshot,
       });
     } catch (cause) {
       throw Errors.badRequest(
@@ -135,7 +144,6 @@ export async function createCharacterSoulVersion(input: {
         action: "character.soul.version_created",
         targetType: "character_project",
         targetId: project.id,
-        reason: input.reason,
         before: toInputJson({
           projectVersion: project.version,
           contentVersionId: currentContent.id,
@@ -157,4 +165,10 @@ export async function createCharacterSoulVersion(input: {
   };
 
   return inTransaction(db, execute);
+}
+
+function appearanceRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
 }

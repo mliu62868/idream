@@ -61,7 +61,9 @@ and §29 below). This checklist covers the remaining steps to reach a
 ## Production cutover steps (ops)
 
 1. **Prepare Pocket TTS** — install the locked runtime from
-   `scripts/pocket-tts-requirements.lock`, retain the pinned model revision, and verify
+   `scripts/pocket-tts-requirements.lock` with `bun run voice:pocket:install` (the
+   `pocket-tts` process resolves Python packages offline and fails fast until this has run
+   for the current lock), retain the pinned model revision, and verify
    `/health` reports `runtime=pocket_tts`, `acceleration=cpu`, `catalog_ready=true`, and
    all 21 official English voices.
 2. **Optional Fish cloning** — only when reference-audio identity cloning is required,
@@ -83,7 +85,7 @@ and §29 below). This checklist covers the remaining steps to reach a
    POCKET_TTS_API_URL=http://127.0.0.1:8063/v1
    POCKET_TTS_API_TOKEN=<shared-internal-token>
    POCKET_TTS_LANGUAGE=english
-   POCKET_TTS_DEFAULT_VOICE_ID=alba
+   POCKET_TTS_DEFAULT_VOICE_ID=anna
    # Optional reference-audio candidate provider.
    # VOICE_IDENTITY_PROVIDER=fish-audio
    VOICE_MODEL_PROBE_REPORT=.tmp/launch-voice-probe.json
@@ -122,7 +124,7 @@ and §29 below). This checklist covers the remaining steps to reach a
 | Overflow price per clip | `PricingRule` mode `voice` (admin) | 2 Dreamcoins |
 | Free minutes per plan | plan `voiceMinutes` feature | 30 / 120 / 360 / 1440 |
 | Default delivery model | `POCKET_TTS_MODEL` | `pocket-tts` |
-| System fallback identity | `POCKET_TTS_DEFAULT_VOICE_ID` | `alba` |
+| System fallback identity | `POCKET_TTS_DEFAULT_VOICE_ID` | `anna` (must be one of the female voices in `POCKET_TTS_CATALOG_VOICE_IDS`) |
 | Pocket runtime API | `POCKET_TTS_API_URL` | `http://127.0.0.1:8063/v1` |
 | Pocket language | `POCKET_TTS_LANGUAGE` | `english` |
 | Pocket voice registry | `POCKET_TTS_VOICE_DIR` | `.data/pocket-tts/voices` |

@@ -35,15 +35,6 @@ async function waitUntil(predicate: () => boolean, label: string) {
   }
 }
 
-function setInput(input: HTMLInputElement, value: string) {
-  const setter = Object.getOwnPropertyDescriptor(
-    HTMLInputElement.prototype,
-    "value",
-  )?.set;
-  setter?.call(input, value);
-  input.dispatchEvent(new Event("input", { bubbles: true }));
-}
-
 const VOICE_DEFAULTS_READ_ONLY =
   "Read-only: generation.config.write is required to change system voice defaults.";
 
@@ -490,18 +481,9 @@ describe("Character workspace details", () => {
     expect(document.body.textContent).toContain(
       "It does not create or publish a Release and does not make the Character visible in Explore or Community.",
     );
-    const reason = document.body.querySelector<HTMLInputElement>(
-      'input[aria-label="Operational reason (≥3)"]',
-    );
-    const confirmation = document.body.querySelector<HTMLInputElement>(
-      'input[aria-label="Type the publication preparation confirmation"]',
-    );
-    expect(reason).toBeTruthy();
-    expect(confirmation).toBeTruthy();
-    await act(async () => {
-      setInput(reason!, "Repair the approved customer publication workspace");
-      setInput(confirmation!, "PREPARE PUBLICATION character-detail");
-    });
+    // SPEC: preparing a private workspace publishes nothing, so the dialog asks for no
+    // reason and no typed confirmation.
+    expect(document.body.querySelector('[role="dialog"] input')).toBeNull();
     const submit = [...document.body.querySelectorAll("button")].find(
       (candidate) =>
         candidate !== button &&
@@ -529,7 +511,6 @@ describe("Character workspace details", () => {
         method: "POST",
         body: expect.objectContaining({
           submissionId: "submission-detail",
-          reason: "Repair the approved customer publication workspace",
           confirmation: "PREPARE PUBLICATION character-detail",
         }),
         idempotencyKey: expect.any(String),
@@ -537,6 +518,10 @@ describe("Character workspace details", () => {
     );
     expect(submittedIdempotencyKeys).toHaveLength(2);
     expect(new Set(submittedIdempotencyKeys).size).toBe(1);
+    const body = (adminV2Request.mock.calls.find(([path, options]) =>
+      path === "/api/v2/admin/characters/character-detail/project" && options?.method === "POST",
+    )?.[1] as { body?: Record<string, unknown> } | undefined)?.body;
+    expect(body).not.toHaveProperty("reason");
   });
 
   /**
@@ -545,6 +530,30 @@ describe("Character workspace details", () => {
    *         角色，页签不会被拨回 release。此前 canManageDefaults 读的是未过写入锁的那份权限，
    *         按钮亮着，点下去只会拿到 journal 抛出的错误。
    */
+  // SPEC: choosing where an image appears lives with the images; launch preview only previews.
+  it("keeps image placements with the image library, not in launch preview", async () => {
+    window.history.replaceState(null, "", "/admin/characters/character-detail?tab=assets");
+    await act(async () => {
+      root.render(
+        <AdminI18nProvider locale="en">
+          <CharacterWorkspace actorId="operator-a" permissions={permissions}
+            view={{ kind: "detail", id: "character-detail" }} />
+        </AdminI18nProvider>,
+      );
+    });
+    await waitUntil(
+      () => container.textContent?.includes("Choose where existing images appear") === true,
+      "placements in Images",
+    );
+    expect(container.textContent).toContain("All images for Mira");
+    const operationsArea = [...container.querySelectorAll("button")].find(
+      (candidate) => candidate.textContent === "Character operations",
+    );
+    await act(async () => operationsArea?.click());
+    await waitUntil(() => window.location.search === "?tab=preview", "launch preview tab");
+    expect(container.textContent).not.toContain("Choose where existing images appear");
+  });
+
   it("disables the system voice defaults write while an authoritative command is running", async () => {
     window.history.replaceState(
       null,

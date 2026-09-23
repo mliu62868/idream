@@ -11,7 +11,6 @@ export const adminZhCharacters: Record<string, string> = {
   "Keep draft and leave": "保留并离开",
   "Draft kept until this tab reloads. Browser storage is unavailable.": "草稿暂存中，刷新后将丢失。",
   "Draft cleared for this tab. Browser storage is unavailable.": "本页草稿已清除，浏览器存储不可用。",
-  "Version saved. Local draft could not be cleared.": "版本已保存，但本地草稿未能清除。",
 
   "Saved draft could not be restored.": "无法恢复草稿。",
   "Draft storage is unavailable. Keep this page open.": "无法保留草稿，请勿离开此页。",
@@ -43,7 +42,6 @@ export const adminZhCharacters: Record<string, string> = {
   "The image request is in progress. Resource waits may extend the time; choose an image once it is ready.": "图片任务处理中。等待共享资源可能延长耗时，完成后可选择采用图片。",
   "Resume generation": "继续生成",
   "Saving your changes and updating the character. Please wait before making another change.": "正在保存更改并更新角色资料，请稍候再继续操作。",
-  "The Pocket voice candidate is ready. Listen to the preview before activation.": "Pocket 候选声音已就绪，请先试听再启用。",
   "Generate the first portrait without references, compare the results, then use one as identity version {version}.": "无需参考图，先生成首张肖像，比较结果后采用其中一张，建立身份版本 {version}。",
   "Generate images from the current identity, compare them, and choose which to use in the draft image set.": "基于当前身份生成图片，比较后选择用于草稿的图片。",
   "No reference image is needed. Your selected portrait becomes identity version {version}; earlier candidates remain in history.": "无需参考图。采用的肖像将建立身份版本 {version}，此前候选保留在历史记录中。",
@@ -151,8 +149,6 @@ export const adminZhCharacters: Record<string, string> = {
   "Generating…": "正在生成…",
   "Generation mode": "生成方式",
   "Generation results could not be refreshed": "无法刷新生成结果",
-  "Give the character a name, promise, and opening message.":
-    "给角色取名，写清角色承诺和开场白。",
   "Hair traits (one per line)": "头发特征（每行一个）",
   "I confirm creating a new visual identity version. Live images are not replaced automatically.":
     "我确认要创建新的视觉身份版本。线上图片不会自动替换。",
@@ -165,11 +161,7 @@ export const adminZhCharacters: Record<string, string> = {
   "Image to image": "图生图",
   "In progress": "进行中",
   "In use": "当前使用",
-  "It does not publish a Release. Live chat keeps the released Soul until a Release ships this version.":
-    "此操作不发布 Release。线上对话仍使用已发布的灵魂版本，直到有 Release 带上这一版。",
   "Keep adjusting from this one": "从这张继续调整",
-  "Keep the basics clear. Put anything else in Markdown. Creating a version is explicit, and existing sessions keep their pinned bytes.":
-    "基本信息保持清晰，其余内容写进 Markdown。新建版本需要明确确认，现有会话继续使用已固定的内容。",
   "Live {completed}/{total}": "线上 {completed}/{total}",
   "Loaded this run's parameter snapshot. Adjust it to create a new run.":
     "已载入这一轮的参数快照；修改后可创建新一轮。",
@@ -203,7 +195,6 @@ export const adminZhCharacters: Record<string, string> = {
   "Production journey": "生产进度",
   "Production journey steps": "生产进度步骤",
   "Profile tier": "配置档位",
-  Promise: "角色承诺",
   Propose: "提案",
   "Random each run": "每轮随机",
   Randomize: "随机",
@@ -224,7 +215,6 @@ export const adminZhCharacters: Record<string, string> = {
   "Run {run}": "第 {run} 次",
   "Run {run}: no images produced": "第 {run} 次：未产出图片",
   "Runs with no images": "未产出图片的历史创作",
-  "Save character tags": "保存角色标签",
   "Save system voice defaults": "保存系统语音默认值",
   "Save tags": "保存标签",
   "Seed strategy": "种子策略",
@@ -239,13 +229,9 @@ export const adminZhCharacters: Record<string, string> = {
   "Signature traits (optional)": "标志特征（可留空）",
   "Stable traits": "稳定特征",
   "System generated": "系统生成",
-  "Tags drive discovery filters on the public catalog. This replaces the character's whole tag set.":
-    "标签驱动公开目录的发现筛选。本次保存会整组替换该角色的标签。",
   "Text to image": "文生图",
   "The selected candidate is now the source for the next image-to-image run. Adjust the prompt before generating.":
     "已把所选候选图设为下一轮图生图来源；请继续修改提示词后再生成。",
-  "This becomes the authoritative persona for new chat. Version {version} is kept as history and is not deleted.":
-    "它将成为新对话的人格权威。第 {version} 版会作为历史版本保留，不会被删除。",
   "This creates a private publishing workspace for the Character.":
     "这会为角色创建私密发布工作区。",
   "It does not create or publish a Release and does not make the Character visible in Explore or Community.":
@@ -262,28 +248,20 @@ export const adminZhCharacters: Record<string, string> = {
   "This run produced {count} candidate images. Parameters and the actual seed are frozen; the current visual identity is unchanged.":
     "本轮已完成 {count} 张候选图；参数与实际种子已冻结，当前视觉身份未改动。",
   "Tone (optional)": "语气（选填）",
-  "Type the publication preparation confirmation": "输入发布准备确认文本",
-  "A newer Soul or Character draft exists. Reload before creating another version.":
-    "存在更新的 Soul 或角色草稿。请刷新后再创建版本。",
   Cadence: "节奏",
   "Canon facts": "设定事实",
   "Canon unknowns": "设定未知项",
   "Character Soul Behavior Evaluation": "角色 Soul 行为评测",
   "Changed from version": "相较版本",
-  "Changed from Serving version": "相较当前 Serving 版本",
   "Character Soul could not be loaded": "无法加载角色 Soul",
   "Character Soul version": "角色 Soul 版本",
-  "Character Soul version could not be created": "无法创建角色 Soul 版本",
   "Compiled system prompt": "编译后的系统提示词",
   "Compiler diagnostics": "编译诊断",
   Contradictions: "矛盾特质",
   "Cold start": "冷启动",
-  "Create Character Soul version": "创建角色 Soul 版本",
-  "Create Soul version": "创建 Soul 版本",
   "Create reviewed Character Soul version": "创建已审核的角色 Soul 版本",
   "Creating a version is explicit. Existing sessions keep their pinned bytes.":
     "版本创建是显式操作；现有会话继续使用已固定的内容。",
-  "Creating version…": "正在创建版本…",
   "Durable canary evidence reference": "持久化 canary 证据引用",
   "Durable transcript or evaluator evidence": "持久化对话记录或评测器证据",
   "Evaluator version": "评测器版本",
@@ -300,20 +278,17 @@ export const adminZhCharacters: Record<string, string> = {
   "Negative dialogue · assistant text :: reason · one per line":
     "反例对话 · 角色文本 :: 原因 · 每行一条",
   "No valid fingerprint": "没有有效指纹",
-  "Opening message": "开场消息",
+  "Opening message": "开场白",
   "Official character pairwise distinctiveness": "官方角色两两区分度",
   "Positive dialogue examples": "正例对话",
   "Prompt:": "输入：",
   "Rationale:": "判定理由：",
   "Response:": "回复：",
   "Positive dialogue examples · JSON": "正例对话 · JSON",
-  "Release ready": "可进入发布",
-  "Review diagnostics": "检查诊断",
   "Soul invalid": "Soul 无效",
   "This historical check predates pairwise distinctiveness evidence.":
     "该历史检查早于两两区分度证据。",
   "Structured Soul editor": "结构化 Soul 编辑器",
-  "Soul editor": "Soul 编辑器",
   "SOUL.md · exact Agent prompt": "SOUL.md · Agent 实际提示词",
   "The basics are rendered into SOUL.md automatically. Additional details are appended as Markdown without another schema.":
     "基本信息会自动渲染为 SOUL.md；扩展信息直接作为 Markdown 附加，不再套另一层结构。",
@@ -380,7 +355,6 @@ export const adminZhCharacters: Record<string, string> = {
   "Activate this as a new identity version": "将其激活为新的身份版本",
   "Activate this as a new identity version.": "将其激活为新的身份版本。",
   "Activating voice…": "正在启用声音…",
-  "Activation reason": "启用原因",
   "Active cloned voice": "当前克隆声音",
   "Active cloned voice preview": "当前克隆声音试听",
   "Active character voice preview": "当前角色声音试听",
@@ -434,7 +408,6 @@ export const adminZhCharacters: Record<string, string> = {
     "使用 CVP 身份描述和稳定 seed，不发送参考图。",
   "Calm direction without generic affirmation": "冷静引导，避免泛泛肯定",
   "Candidate history is paused": "候选图记录暂时收起",
-  "Candidate preview": "候选声音试听",
   "Candidate voice preview": "候选声音试听",
   "Candidate {number}": "候选图 {number}",
   "Candidate {number} · {state}": "候选图 {number} · {state}",
@@ -460,7 +433,6 @@ export const adminZhCharacters: Record<string, string> = {
   "Character operations overview": "角色运营总览",
   "Character override": "角色专属覆盖",
   "Character positioning and project details": "角色定位与项目详情",
-  "Character promise": "角色承诺",
   "Character summary": "角色摘要",
   "Character video": "角色视频",
   "Character videos could not be loaded": "角色视频加载失败",
@@ -569,8 +541,6 @@ export const adminZhCharacters: Record<string, string> = {
   "Create video": "生成视频",
   "Create visual identity version": "创建视觉身份版本",
   "Create voice candidate": "创建候选声音",
-  "Create Pocket voice candidate": "创建 Pocket 声音候选",
-  "Creating Pocket voice candidate…": "正在创建 Pocket 声音候选…",
   "Create, review, and adopt the remaining portrait, hero, or chat images without changing the locked identity.":
     "继续创建、审核并采用剩余的肖像、角色主视觉或聊天场景图，已锁定的身份不会改变。",
   "Create, review, and adopt the remaining portrait, hero, or chat images.":
@@ -589,7 +559,6 @@ export const adminZhCharacters: Record<string, string> = {
   "Current source": "当前来源",
   "Current status": "当前状态",
   "Current voice and one new candidate": "当前声音与一个新候选",
-  "Current voice and runtime": "当前声音与运行线路",
   "Asset generation authority": "素材生成权威",
   "Asset review authority": "素材审核权威",
   "Avatar placement": "头像铺位",
@@ -772,8 +741,6 @@ export const adminZhCharacters: Record<string, string> = {
   "Live performance": "线上表现",
   "Live portrait": "线上肖像",
   "Live release": "线上发布版本",
-  "Live voice": "线上声音",
-  "Live voice configuration": "线上声音配置",
   "Live without a usable primary image. Video generation for this character is rejected. Repair it in Image assets.":
     "已上线但没有可用主图，该角色的视频生成会被拒绝。请在「图片资产」中修复。",
   "Load server revision": "加载服务端版本",
@@ -847,8 +814,6 @@ export const adminZhCharacters: Record<string, string> = {
   "New image": "新图片",
   "New pending character submissions will appear here with their report context and decision actions.":
     "新的待审核角色提交会在这里显示举报上下文和决策操作。",
-  "New speech uses this system default. Existing cached clips remain unchanged.":
-    "新的语音将使用这个系统默认声音；已缓存的历史语音不会改变。",
   "New starter template": "新建角色模板",
   "New video": "新视频",
   "Next action": "下一步操作",
@@ -980,7 +945,6 @@ export const adminZhCharacters: Record<string, string> = {
   "Premium image": "高级图片",
   "Preparing generation": "正在准备生成",
   "Preparing video generation": "正在准备视频生成",
-  "Preview and audit": "试听与审计",
   "Preview script": "试听文案",
   "Preview the draft before release": "发布前预览草稿",
   "Preview {voice}": "试听 {voice}",
@@ -1028,7 +992,6 @@ export const adminZhCharacters: Record<string, string> = {
   "Ready to decide": "可以做出决定",
   "Real user-surface renderer": "真实用户界面渲染器",
   Realistic: "写实",
-  "Reason for restoring system default": "恢复系统默认的原因",
   "Recently updated": "最近更新在前",
   "Recent assets": "最近素材",
   "Recent media operations": "最近媒体生产",
@@ -1042,8 +1005,6 @@ export const adminZhCharacters: Record<string, string> = {
   "Record the visible review evidence": "记录可见审核证据",
   "Reference Set": "参考集",
   "Reference direction": "参考图方向",
-  "Write the promise this character makes to users.":
-    "填写这个角色向用户提供的核心承诺。",
   "Reference identity": "参考声音身份",
   "Reference identity template": "参考图身份模板",
   "Reference transcript": "参考音频转录文本",
@@ -1127,7 +1088,6 @@ export const adminZhCharacters: Record<string, string> = {
   "Review submission is ready to resume with the same request key.":
     "审核提交已可使用同一个请求键继续。",
   "Review the character's visual setup evidence": "检查角色的视觉设置证据",
-  "Listen to voice version {version}": "试听声音版本 {version}",
   "Roll back to selected snapshot": "回滚到所选快照",
   "A completed run does not select or publish an asset.":
     "生产完成不会自动采用或发布素材。",
@@ -1200,15 +1160,39 @@ export const adminZhCharacters: Record<string, string> = {
   "Subtle natural breathing, a gentle smile, and direct eye contact. Keep the camera steady and preserve the exact face and background.":
     "轻微自然呼吸，面带柔和微笑并直视镜头。保持镜头稳定，严格保留人物面容与背景。",
   "Summary (≤200)": "摘要（≤200）",
-  "System default change reason": "系统默认声音变更原因",
   "System default voice": "系统默认声音",
   "Creating a candidate keeps the current voice unchanged. Listen before activation; activation affects newly generated speech.": "创建候选不会改变当前音色。请先试听再启用；启用后仅影响新生成的语音。",
-  "Choose an official English Pocket voice for this character. It stays fixed when system defaults change.": "为角色选择一个 Pocket 官方英语音色；启用后会固定使用它，不随系统默认音色变化。",
-  "Voice cloning runtime": "音色复制服务",
   "Official English Pocket TTS voice": "Pocket TTS 官方英语音色",
-  "Choose an official voice": "选择官方音色",
-  "Clone from reference audio": "从参考音频复制音色",
-  "Native voice delivery": "音色原生演绎",
+  "Current voice": "当前声音",
+  "Change voice": "更换声音",
+  "Pick a model, then a voice. Changes only affect speech generated afterwards.":
+    "先选模型，再选声音。更换只影响之后新生成的语音。",
+  "Official voices": "官方音色",
+  "Voice cloning": "声音克隆",
+  "Cloned voice": "克隆声音",
+  "{count} official English female voices. Listen instantly and apply in one step.":
+    "{count} 个官方英语女声，即点即听，一步应用。",
+  "Upload a reference recording to clone a dedicated voice, then listen before activating it.":
+    "上传一段参考录音，克隆出专属声音；试听确认后再启用。",
+  "cloning not enabled": "未开启克隆",
+  "Official voices require Pocket TTS as the system voice provider.":
+    "官方音色需要系统声音供应器为 Pocket TTS。",
+  "Voice cloning is not enabled on this model.": "该模型未开启声音克隆。",
+  "Choose a voice": "选择音色",
+  "Press play to hear {character} with that voice.": "点播放键，听 {character} 用这个音色说话。",
+  "Customize preview script": "自定义试听文案",
+  "Applying voice…": "正在更换声音…",
+  "Already in use": "正在使用",
+  "Use as character voice": "设为角色声音",
+  "Submit as candidate": "提交为候选",
+  "Read-only: character write permission is required to change the voice.":
+    "只读：需要角色编辑权限才能更换声音。",
+  "Candidate submitted. It takes effect after a teammate with publish permission activates it.":
+    "候选已提交，需要有发布权限的同事启用后才会生效。",
+  "Voice changed. New chat speech now uses {voice}.": "声音已更换，新生成的聊天语音将使用 {voice}。",
+  "Listen to {voice} before activating it": "启用前先试听 {voice}",
+  "{character} goes back to inheriting the system default voice {voice}.":
+    "{character} 将重新继承系统默认音色 {voice}。",
   "Official voice service is unavailable. Refresh after it recovers.": "官方音色服务暂不可用，请在服务恢复后刷新。",
   "Gender mappings select inherited voices. The fallback is used for other or unspecified genders.": "未设置专属音色的角色按性别使用以下音色；其他或未指定性别使用回退音色。",
   "Female character default": "女性角色默认音色",
@@ -1220,7 +1204,6 @@ export const adminZhCharacters: Record<string, string> = {
   "Pocket TTS uses each official voice's native English delivery; performance controls are not applied.":
     "Pocket TTS 使用各官方音色原生的英语演绎，当前不会应用演绎参数。",
   "System voice defaults": "系统默认声音",
-  "System voice defaults could not be saved": "无法保存系统默认声音",
   "System voice defaults were saved. New speech now uses this mapping.":
     "系统默认声音已保存，新的语音将使用这组映射。",
   "System voice preview": "系统声音试听",
@@ -1245,7 +1228,6 @@ export const adminZhCharacters: Record<string, string> = {
   "The active command outcome must be reconciled before another mutation.":
     "开始另一项变更前，必须先对账当前命令的结果。",
   "The active image generation route changed.": "当前图片生成线路已发生变化。",
-  "The character voice could not be reset": "无法将角色声音恢复为系统默认",
   "The committed generation receipt is visible in this exact Run. Review can continue.":
     "生成回执已在当前生产记录中确认，可以继续审核。",
   "The image Run is confirmed. Generation is still in progress; review becomes available when the image is ready.":
@@ -1352,15 +1334,10 @@ export const adminZhCharacters: Record<string, string> = {
     "这一精选成年女性声音身份适用于所有没有角色专属覆盖的角色。",
   "This image will establish the first reviewed identity anchor.":
     "这张图将建立第一张经过审核的身份锚点。",
-  "This is the authoritative voice used for new chat speech.":
-    "这是新聊天语音当前实际使用的权威配置。",
   "Choose an official English Pocket voice. A role-specific durable voice is created for this Character.":
     "选择一个 Pocket 官方英语音色；系统会为该角色创建独立、持久的声音标识。",
-  "Official English voice": "官方英语音色",
   "Reference-audio cloning weights are unavailable on this host. Official voices remain fully usable.":
     "当前主机没有参考音频克隆权重，但官方音色仍可完整使用。",
-  "{count} official English voices available":
-    "可用的官方英语音色：{count} 个",
   "runtime ready": "运行时已就绪",
   "voice service unavailable": "声音服务不可用",
   "voice provider inactive": "声音供应器未启用",
@@ -1368,8 +1345,6 @@ export const adminZhCharacters: Record<string, string> = {
     "这张肖像用于定义身份，因此身份一致性有意不评分；请判断瑕疵、主体数量、构图和用户用途。",
   "This preview checks the role card and opening message. Use the public preview before final release to verify the full page and chat behavior.":
     "此预览用于检查角色卡与开场消息；最终发布前请使用公开预览验证完整页面与聊天行为。",
-  "This reason is stored in the operator audit trail.":
-    "该原因会写入运营审计记录。",
   "This removes the active Look dependency. It does not delete the role image.":
     "此操作会移除生效造型依赖，但不会删除角色图片。",
   "This saved request is aged or no longer matches the active contract. Reconcile its server receipt before editing or creating another Character.":
@@ -1445,16 +1420,12 @@ export const adminZhCharacters: Record<string, string> = {
   "Visual reference evidence": "视觉参考证据",
   "Visual style": "视觉风格",
   Visuals: "视觉资产",
-  "Voice activation failed": "声音启用失败",
-  "Voice cloning failed": "声音克隆失败",
   "Voice control room": "角色声音控制台",
   // SPEC: 声音面板的"演绎风格"必须用独立键。共用 "Performance" 会盖掉角色工作台
   // "Performance"（表现）tab 的译文——扁平词典没有命名空间，同名即冲突。
   "Voice delivery": "演绎风格",
   "Voice history": "声音历史",
   "Voice reference audio": "声音参考音频",
-  "Voice style and advanced settings": "演绎风格与高级设置",
-  "Voice version {version}": "声音版本 {version}",
   "WAV, MP3, FLAC, or OGG · maximum 15 MB":
     "支持 WAV、MP3、FLAC 或 OGG · 最大 15 MB",
   "Waiting for generation capacity": "正在等待生成资源",
@@ -1489,7 +1460,6 @@ export const adminZhCharacters: Record<string, string> = {
   "character not approved": "角色未通过",
   "character not operational": "角色不在运营清单",
   "character not public": "角色未公开",
-  "character override": "角色专属覆盖",
   "character source ineligible": "角色来源不符合条件",
   "character.id =": "角色 ID =",
   "chat assets": "张聊天场景图",
@@ -1514,7 +1484,6 @@ export const adminZhCharacters: Record<string, string> = {
   "identity anchor": "身份锚点",
   "identity reference": "身份参考图",
   inactive: "未上线",
-  "inherits system default": "继承系统默认",
   "live management": "上线运营",
   "live reference": "生效参考图",
   "locked until identity": "身份建立后解锁",
@@ -1676,10 +1645,6 @@ export const adminZhCharacters: Record<string, string> = {
     "为这个角色创作或导入第一个视频。",
   "Create videos here or import videos made elsewhere. No approval step is required.":
     "可以在这里创作，也可以导入外部制作的视频，无需额外审核步骤。",
-  "Each placement uses an image already in this Character's library. Creating and importing stay in Images.":
-    "每个展示位都使用角色素材库中已有的图片；创作和导入统一在“图片”中完成。",
-  "Generate here or import images made elsewhere. Character operations chooses from this same library.":
-    "可以在这里创作，也可以导入外部制作的图片；角色运营统一从这个素材库选择。",
   "Image could not be removed": "无法移出图片",
   "Image creator": "图片创作器",
   "Image import failed": "图片导入失败",
@@ -1715,8 +1680,6 @@ export const adminZhCharacters: Record<string, string> = {
   "visual authority changed": "视觉身份已变更",
   "Image placement could not be saved": "无法保存图片展示位",
   "Image removed from the library": "图片已移出素材库",
-  "Images currently used by Character operations must be replaced first.":
-    "正在角色运营中使用的图片必须先替换。",
   "Import image": "导入图片",
   "Import video": "导入视频",
   Imported: "已导入",
@@ -1743,8 +1706,6 @@ export const adminZhCharacters: Record<string, string> = {
   "Remove video from library": "从素材库移出视频",
   "Remove video from library?": "要从素材库移出这个视频吗？",
   "Replace image": "替换图片",
-  "Replace this image in Character operations before removing it.":
-    "请先在角色运营中替换这张图片，再将其移出。",
   "Save character": "保存角色",
   "Saved locally": "已保存到本机",
   Saving: "正在保存",
@@ -1798,7 +1759,6 @@ export const adminZhCharacters: Record<string, string> = {
   "Serving action failed": "线上操作失败",
   "Update image selection": "更新所选图片",
   "Load more images": "加载更多图片",
-  "Image imported. Choose it in Character operations.": "图片已导入，可在角色运营中选择使用。",
   "Video generation in progress": "视频生成中",
   "Image generation in progress": "图片生成中",
   "Generation result awaiting confirmation": "生成结果待确认",
@@ -1815,4 +1775,22 @@ export const adminZhCharacters: Record<string, string> = {
     "表现权威已把这个角色的漏斗事实标记为不可信，这些数字不能用来做决定。",
   "Contribution margin is invalid until captured cash, refund, credit, and character attribution authorities are available.":
     "在收款、退款、赠币与角色归因四个权威齐备之前，贡献毛利不可用于决策。",
+  "Persona & appearance": "人设与外观",
+  "Short description": "一句话简介",
+  "Write a one-line description.": "写一句话简介。",
+  "Give the character a name, short description, and opening message.": "填写角色名称、一句话简介和开场白。",
+  "Every new image of this Character is generated from this description.": "这个角色之后生成的每张新图片都会用到这段外观描述。",
+  "Fix the highlighted fields to save.": "请先修正标红的字段再保存。",
+  "Someone saved a newer version. Reload before saving again.": "已有人保存了更新的版本，请刷新后再保存。",
+  "Changes could not be saved": "改动未能保存",
+  "Saved. Local draft could not be cleared.": "已保存，但本地草稿未能清除。",
+  "This Character has not been published yet.": "这个角色还没有发布。",
+  "Saved changes are not live yet. Customers still see the published version.": "保存的改动还没上线，用户看到的仍是已发布的版本。",
+  "Go to Release": "去发布",
+  "Tags could not be saved": "标签未能保存",
+  "Image imported. Choose where it appears above.": "图片已导入，可在上方选择它的展示位置。",
+  "Images used as the cover, hero or chat image must be replaced first.": "正在用作封面、头图或聊天图的图片需要先替换。",
+  "Replace this image in its placement above before removing it.": "请先在上方的展示位置里替换这张图片，再移除。",
+  "Generate here or import images made elsewhere. The placements above choose from this library.": "在这里生成，或导入别处做好的图片；上方的展示位置从这个图库里选图。",
+  "Each placement uses an image from this Character's library below.": "每个展示位置都从下方这个角色的图库里选图。",
 };

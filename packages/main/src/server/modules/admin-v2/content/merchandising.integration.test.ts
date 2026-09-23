@@ -208,7 +208,6 @@ describe("content merchandising commands", () => {
 
     const applied = await tagsCommand(characterId, `${P}tags-key-1`, {
       tagIds: [slow.id, elf.id],
-      reason: "curate discovery taxonomy for the launch catalog",
       confirmation: `${characterId}:tags`,
     });
     expectOk(applied);
@@ -217,7 +216,6 @@ describe("content merchandising commands", () => {
     // 整组替换：再发一次只留一个，另一个必须被摘掉。
     const replaced = await tagsCommand(characterId, `${P}tags-key-2`, {
       tagIds: [elf.id],
-      reason: "drop the mismatched pacing tag",
       confirmation: `${characterId}:tags`,
     });
     expectOk(replaced);
@@ -243,7 +241,6 @@ describe("content merchandising commands", () => {
     expectError(
       await tagsCommand(characterId, `${P}tags-key-3`, {
         tagIds: [`${P}does-not-exist`],
-        reason: "attempt to invent taxonomy from the character page",
         confirmation: `${characterId}:tags`,
       }),
       400,
@@ -255,7 +252,6 @@ describe("content merchandising commands", () => {
     expectError(
       await tagsCommand(characterId, `${P}tags-key-4`, {
         tagIds: [],
-        reason: "confirmation does not match the tag target",
         confirmation: `${characterId}:visibility:private`,
       }),
       400,

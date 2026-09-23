@@ -475,7 +475,6 @@ export async function setCharacterTags(input: {
   await writeCommandSideEffects(tx, request, actor, requestId, {
     action: "content.tags.write",
     targetId: id,
-    reason: body.reason,
     before: { tags: beforeLabels },
     after: { tags: afterLabels },
     eventType: "admin.content.tags_changed.v1",
@@ -492,7 +491,7 @@ export async function writeCommandSideEffects(
     action: string;
     targetType?: string;
     targetId: string;
-    reason: string;
+    reason?: string;
     before: unknown;
     after: unknown;
     eventType: string;

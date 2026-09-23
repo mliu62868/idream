@@ -168,7 +168,6 @@ export async function prepareApprovedCustomerCharacterPublication(
     characterId: string;
     actor: { id: string; role: string };
     requestId: string;
-    reason: string;
     submissionId: string;
   },
 ) {
@@ -241,7 +240,6 @@ export async function prepareApprovedCustomerCharacterPublication(
         action: "character.publication_prepared",
         targetType: "character_project",
         targetId: publication.projectId,
-        reason: input.reason,
         before: toInputJson({ characterStatus: character.status, submissionStatus: recoveredPending ? "pending" : "approved" }),
         after: toInputJson(publication),
         requestId: input.requestId,

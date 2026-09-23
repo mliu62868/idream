@@ -10,13 +10,12 @@
 //
 // INVARIANTS: 只从服务端返回的词表里选，不在这里造标签（造词是 Taxonomy 的治理动作）；
 // 保存走 content.tags.write 审计命令，confirmation 由前端按 `${characterId}:tags` 自动填充
-// （运营不手敲内部 ID），reason 仍必填。
+// （运营不手敲内部 ID）。标签随时能改回，审计已记前后标签，所以一键保存、不问原因。
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Loader2, Tag as TagIcon } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
-import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { cn } from "@/lib/utils";
 
 type TagRow = {
@@ -50,7 +49,8 @@ export function CharacterTagsPanel({
   const [saved, setSaved] = useState<string[] | null>(null);
   const [draft, setDraft] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [confirmSpec, setConfirmSpec] = useState<ConfirmSpec | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -94,27 +94,21 @@ export function CharacterTagsPanel({
     );
   }
 
-  function save() {
-    setConfirmSpec({
-      title: t("Save character tags"),
-      summary: (
-        <p>
-          {t(
-            "Tags drive discovery filters on the public catalog. This replaces the character's whole tag set.",
-          )}
-        </p>
-      ),
-      reasonLabel: t("Operational reason (≥3)"),
-      submitLabel: t("Save tags"),
-      onSubmit: async (reason) => {
-        await apiWrite(
-          `/api/v2/admin/content/characters/${encodeURIComponent(characterId)}/tags`,
-          "PUT",
-          { tagIds: draft, reason, confirmation: `${characterId}:tags` },
-        );
-        await load();
-      },
-    });
+  async function save() {
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await apiWrite(
+        `/api/v2/admin/content/characters/${encodeURIComponent(characterId)}/tags`,
+        "PUT",
+        { tagIds: draft, confirmation: `${characterId}:tags` },
+      );
+      await load();
+    } catch (cause) {
+      setSaveError(cause instanceof Error ? cause.message : t("Tags could not be saved"));
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -127,13 +121,17 @@ export function CharacterTagsPanel({
         {dirty && canWrite ? (
           <button
             className="min-h-10 text-sm font-semibold underline-offset-4 hover:underline"
-            onClick={save}
+            disabled={saving}
+            onClick={() => void save()}
             type="button"
           >
-            {t("Save tags")}
+            {saving ? t("Saving…") : t("Save tags")}
           </button>
         ) : null}
       </div>
+      {saveError ? (
+        <p className="mt-3 text-xs text-[var(--ad-red-text)]" role="alert">{saveError}</p>
+      ) : null}
       {error ? (
         <p className="mt-3 text-xs text-[var(--ad-red-text)]" role="alert">
           {error}{" "}
@@ -184,9 +182,6 @@ export function CharacterTagsPanel({
         <p className="mt-3 text-xs text-[var(--ad-text-muted)]">
           {t("Read only · content.tag.write is not granted")}
         </p>
-      ) : null}
-      {confirmSpec ? (
-        <ConfirmDialog onClose={() => setConfirmSpec(null)} spec={confirmSpec} />
       ) : null}
     </section>
   );

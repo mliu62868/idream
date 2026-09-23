@@ -168,9 +168,9 @@ export const contentCharacterModerationResponseSchema = z.object({
 // SPEC: 整组替换角色标签，tagIds 必须是 Tag 表里已存在的行。
 // INTENT: 只做"把已有词表挂到角色上"，不隐式建标签 —— 造词属于 Taxonomy 的治理动作，
 //         从角色页顺手 upsert 出新标签正是分类法失控的起点。
+// INTENT: 标签可随时改回，审计里已有前后标签，不再要求填原因。
 export const contentCharacterTagsRequestSchema = z.object({
   tagIds: z.array(adminIdSchema.max(160)).max(24),
-  reason: reasonSchema,
   confirmation: confirmationSchema,
 }).strict();
 
@@ -184,7 +184,6 @@ export const contentCharacterTagsResponseSchema = z.object({
 
 export const contentCharacterChatToolsRequestSchema = z.object({
   imageToolEnabled: z.boolean(),
-  reason: reasonSchema,
 }).strict();
 
 export const contentCharacterChatToolsResponseSchema = z.object({

@@ -68,11 +68,11 @@ describe("system voice defaults", () => {
     expect(settings).toMatchObject({
       provider: "pocket_tts",
       source: "environment",
-      defaultVoiceId: "alba",
+      defaultVoiceId: "anna",
       genderVoiceIds: {
-        female: "alba",
-        male: "alba",
-        trans: "alba",
+        female: "anna",
+        male: "anna",
+        trans: "anna",
       },
       delivery: {
         preset: "sensual",
@@ -84,10 +84,37 @@ describe("system voice defaults", () => {
         repetitionPenalty: 1.2,
       },
     });
-    expect(voiceIdForGender(settings, "female")).toBe("alba");
-    expect(voiceIdForGender(settings, "unknown")).toBe("alba");
+    expect(voiceIdForGender(settings, "female")).toBe("anna");
+    expect(voiceIdForGender(settings, "unknown")).toBe("anna");
     expect(settings.catalog).toEqual(POCKET_TTS_CATALOG);
-    expect(settings.catalog).toHaveLength(21);
+    expect(settings.catalog).toHaveLength(10);
+    expect(settings.catalog.every((voice) => voice.presentation === "female")).toBe(true);
+  });
+
+  it("drops a stored default that still names a male Pocket voice", () => {
+    // alba was the default for every gender before the catalog became female-only.
+    const settings = voiceDefaultSettingsDto(
+      {
+        version: 2,
+        updatedAt: new Date("2026-09-06T00:00:00.000Z"),
+        value: {
+          schemaVersion: 3,
+          provider: "pocket_tts",
+          defaultVoiceId: "alba",
+          genderVoiceIds: { female: "alba", male: "alba", trans: "alba" },
+          delivery: DEFAULT_FISH_AUDIO_DELIVERY,
+        },
+      },
+      "pocket_tts",
+    );
+
+    expect(settings).toMatchObject({
+      source: "environment",
+      settingVersion: 2,
+      defaultVoiceId: "anna",
+      genderVoiceIds: { female: "anna", male: "anna", trans: "anna" },
+    });
+    expect(settings.catalog.map((voice) => voice.id)).not.toContain("alba");
   });
 
   it("keeps system fallback speech pinned to the configured provider", async () => {
@@ -135,7 +162,7 @@ describe("system voice defaults", () => {
       provider: "pocket_tts",
       source: "environment",
       settingVersion: 4,
-      defaultVoiceId: "alba",
+      defaultVoiceId: "anna",
     });
   });
 
@@ -150,7 +177,7 @@ describe("system voice defaults", () => {
           defaultVoiceId: "anna",
           genderVoiceIds: {
             female: "anna",
-            male: "marius",
+            male: "vera",
             trans: "cosette",
           },
           delivery: DEFAULT_FISH_AUDIO_DELIVERY,
@@ -166,7 +193,7 @@ describe("system voice defaults", () => {
       defaultVoiceId: "anna",
       genderVoiceIds: {
         female: "anna",
-        male: "marius",
+        male: "vera",
         trans: "cosette",
       },
     });
@@ -236,13 +263,13 @@ describe("system voice defaults", () => {
     voiceProfileState.systemProvider = "pocket_tts";
     voiceProfileState.setting = {
       version: 7, updatedAt: new Date("2026-09-06T00:00:00Z"), value: {
-        schemaVersion: 3, provider: "pocket_tts", defaultVoiceId: "alba",
-        genderVoiceIds: { female: "anna", male: "marius", trans: "cosette" },
+        schemaVersion: 3, provider: "pocket_tts", defaultVoiceId: "eve",
+        genderVoiceIds: { female: "anna", male: "vera", trans: "cosette" },
         delivery: DEFAULT_FISH_AUDIO_DELIVERY,
       },
     };
     await expect(resolveCharacterVoiceAuthority({ characterId: "gender-edited-character" })).resolves.toMatchObject({
-      source: "system_default", voiceId: "marius", settingVersion: 7,
+      source: "system_default", voiceId: "vera", settingVersion: 7,
     });
   });
 

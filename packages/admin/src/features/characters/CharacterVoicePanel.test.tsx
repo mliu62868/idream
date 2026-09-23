@@ -62,6 +62,7 @@ const candidateProfile = {
   version: 3,
   provider: "fish_audio",
   providerVoiceId: "fish-candidate-1",
+  presetVoiceId: null,
   model: "s2-pro",
   language: "en",
   delivery: {
@@ -100,6 +101,13 @@ const activeProfile = {
   preview: { ...candidateProfile.preview, url: "/voice-active-1.mp3" },
 } as const;
 
+const pocketCatalog = ["vera", "anna"].map((id) => ({
+  id,
+  label: id.charAt(0).toUpperCase() + id.slice(1),
+  presentation: "female" as const,
+  description: "Official English Pocket TTS voice",
+}));
+
 function withCandidate() {
   return characterWorkspaceDetail({
     character: { id: "character-voice-1", name: "Mira" },
@@ -124,6 +132,43 @@ function withCandidate() {
   });
 }
 
+// Pocket owns system speech and the official catalog; Fish owns cloning.
+function pocketWorkspace() {
+  return characterWorkspaceDetail({
+    character: { id: "character-pocket-1", name: "Mira" },
+    voice: {
+      provider: "fish_audio",
+      cloningAvailable: true,
+      runtimeStatus: "ready",
+      runtimeEngine: "mlx_audio",
+      runtimeVersion: "0.4.3",
+      presetRuntime: { provider: "pocket_tts", runtimeStatus: "ready", catalogVoiceIds: ["vera", "anna"] },
+      candidateRuntimeStatus: null,
+      currentVoiceId: null,
+      effectiveVoiceId: "vera",
+      authoritySource: "system_default",
+      systemDefaults: {
+        provider: "pocket_tts",
+        defaultVoiceId: "vera",
+        genderVoiceIds: { female: "vera", male: "vera", trans: "vera" },
+        catalog: pocketCatalog,
+      },
+      activeProfile: null,
+      candidateProfile: null,
+      history: [],
+    },
+  });
+}
+
+const createdPocketProfile = {
+  ...candidateProfile,
+  id: "voice-pocket-anna",
+  provider: "pocket_tts",
+  providerVoiceId: "idream-pocket-anna",
+  presetVoiceId: "anna",
+  model: "pocket-tts",
+} as const;
+
 async function typeInto(selector: string, value: string) {
   const element = document.querySelector<HTMLInputElement | HTMLTextAreaElement>(
     selector,
@@ -136,6 +181,22 @@ async function typeInto(selector: string, value: string) {
     Object.getOwnPropertyDescriptor(prototype, "value")?.set?.call(element, value);
     element.dispatchEvent(new Event("input", { bubbles: true }));
   });
+}
+
+function dialog() {
+  return document.querySelector<HTMLElement>('[role="dialog"]');
+}
+
+function dialogButton(label: string) {
+  return [...(dialog()?.querySelectorAll("button") ?? [])].find(
+    (candidate) => candidate.textContent?.includes(label),
+  );
+}
+
+async function confirmDialog(submitLabel: string) {
+  // SPEC: voice writes never ask for a reason; the dialog is a plain confirmation.
+  expect(dialog()?.querySelector("input")).toBeNull();
+  await act(async () => dialogButton(submitLabel)?.click());
 }
 
 describe("CharacterVoicePanel voice identity controls", () => {
@@ -187,13 +248,223 @@ describe("CharacterVoicePanel voice identity controls", () => {
     );
   }
 
+  function modelRadio(id: "voice-model-official" | "voice-model-clone") {
+    return container.querySelector<HTMLInputElement>(`#${id}`);
+  }
+
+  async function chooseModel(id: "voice-model-official" | "voice-model-clone") {
+    await act(async () => modelRadio(id)?.click());
+  }
+
+  async function chooseOfficialVoice(voiceId: string) {
+    await act(async () => {
+      container.querySelector<HTMLInputElement>(`#character-official-voice-${voiceId}`)?.click();
+    });
+  }
+
+  // SPEC: 运营进来第一眼要看到「现在是什么声音、哪个模型、从哪来」，而不是表单。
+  it("leads with the live voice, its model and where it comes from", async () => {
+    await render(pocketWorkspace());
+    const room = container.querySelector('[data-testid="voice-control-room"]');
+    expect(room?.textContent).toContain("Current voice");
+    expect(room?.textContent).toContain("Vera");
+    expect(room?.textContent).toContain("Pocket TTS");
+    expect(room?.textContent).toContain("System inheritance");
+    // SPEC: 继承默认时没有可恢复的对象。
+    expect(button("Use system default voice")).toBeUndefined();
+  });
+
+  // INTENT: 角色专属的官方音色落库时只是一个 idream-<uuid> 别名；以前界面只能写「声音版本 3」。
+  it("names the official voice a pinned Pocket profile aliases", async () => {
+    const data = pocketWorkspace();
+    const pinned = { ...createdPocketProfile, status: "active" as const };
+    data.voice = {
+      ...data.voice,
+      currentVoiceId: pinned.providerVoiceId,
+      effectiveVoiceId: pinned.providerVoiceId,
+      authoritySource: "character_clone",
+      activeProfile: pinned,
+      history: [pinned],
+    };
+    await render(data);
+    const room = container.querySelector('[data-testid="voice-control-room"]');
+    expect(room?.textContent).toContain("Anna");
+    expect(room?.textContent).toContain("Character override");
+    expect(
+      container.querySelector('[data-voice-id="anna"]')?.textContent,
+    ).toContain("In use");
+    expect(container.querySelector('[data-voice-id="vera"]')?.textContent).not.toContain("In use");
+    expect(button("Already in use")?.disabled).toBe(true);
+  });
+
+  // SPEC: 模型是一等选择 —— 两个模型都列出来，各自带运行状态，切换即换对应的操作区。
+  it("offers both models with runtime status and swaps the builder with the choice", async () => {
+    await render(pocketWorkspace());
+    expect(modelRadio("voice-model-official")?.checked).toBe(true);
+    expect(modelRadio("voice-model-clone")?.checked).toBe(false);
+    const change = container.querySelector('[data-testid="voice-change"]');
+    expect(change?.textContent).toContain("Pocket TTS · Official voices");
+    expect(change?.textContent).toContain("Fish Audio S2 Pro · Voice cloning");
+    expect(change?.textContent).toContain("2 official English female voices");
+    expect(change?.textContent).toContain("Engine MLX 0.4.3");
+    expect(container.querySelector('[data-testid="voice-preset-builder"]')).not.toBeNull();
+    expect(container.querySelector("#voice-candidate-builder")).toBeNull();
+
+    await chooseModel("voice-model-clone");
+    expect(container.querySelector('[data-testid="voice-preset-builder"]')).toBeNull();
+    expect(container.querySelector("#voice-candidate-builder")).not.toBeNull();
+    // SPEC: Fish 的演绎风格属于克隆这条路，直接可见，不再藏在折叠区。
+    expect(container.textContent).toContain("Attraction intensity");
+  });
+
+  it("explains why a model cannot be chosen", async () => {
+    const data = pocketWorkspace();
+    data.voice.presetRuntime = { provider: "pocket_tts", runtimeStatus: "inactive", catalogVoiceIds: [] };
+    data.voice.provider = "pocket_tts";
+    data.voice.cloningAvailable = false;
+    data.voice.runtimeEngine = "pocket_tts";
+    await render(data);
+    expect(modelRadio("voice-model-official")?.disabled).toBe(true);
+    expect(container.textContent).toContain(
+      "Official voices require Pocket TTS as the system voice provider.",
+    );
+    expect(modelRadio("voice-model-clone")?.checked).toBe(true);
+    expect(container.textContent).toContain("cloning not enabled");
+    expect(container.textContent).toContain("Voice cloning is not enabled on this model.");
+    expect(button("Clone and render preview")?.disabled).toBe(true);
+  });
+
+  it("auditions a catalog voice with the preview script and selects it", async () => {
+    adminV2Request.mockResolvedValue({ contentType: "audio/wav", audioBase64: "AAAA" });
+    await render(pocketWorkspace());
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Preview Anna"]')?.click();
+    });
+    expect(adminV2Request).toHaveBeenCalledWith(
+      "/api/v2/admin/voice-defaults/preview",
+      expect.objectContaining({
+        body: expect.objectContaining({
+          provider: "pocket_tts",
+          voiceId: "anna",
+          text: expect.stringContaining("Mira"),
+        }),
+      }),
+    );
+    expect(container.querySelector<HTMLInputElement>("#character-official-voice-anna")?.checked).toBe(true);
+    expect(container.querySelector('audio[aria-label="Preview Anna"]')?.getAttribute("src"))
+      .toBe("data:audio/wav;base64,AAAA");
+  });
+
+  // SPEC: 官方音色试听即审阅，点一下 = 生成候选 + 启用；后台仍是两条命令、两条审计，都不带原因。
+  it("applies an official voice in one click without asking for a reason", async () => {
+    adminV2Request.mockImplementation(async (path: string) =>
+      path.endsWith("/voice-presets")
+        ? { profile: createdPocketProfile, replacedCandidateProfileId: null, replayed: false }
+        : { profile: { ...createdPocketProfile, status: "active" }, replacedActiveProfileId: null, replayed: false },
+    );
+    await render(pocketWorkspace());
+    await chooseOfficialVoice("anna");
+    await act(async () => button("Use as character voice")?.click());
+
+    expect(dialog()).toBeNull();
+    expect(adminV2Request).toHaveBeenCalledTimes(2);
+    const [[createPath, create], [activatePath, activate]] = adminV2Request.mock.calls;
+    expect(createPath).toBe("/api/v2/admin/characters/character-pocket-1/voice-presets");
+    expect(create).toMatchObject({ method: "POST" });
+    expect(create?.body).toEqual({
+      presetVoiceId: "anna",
+      sampleText: expect.stringContaining("Mira"),
+    });
+    expect(activatePath).toBe(
+      "/api/v2/admin/characters/character-pocket-1/voice-profiles/voice-pocket-anna/activate",
+    );
+    // SPEC: 激活声明它以为的当前权威；服务端据此拒绝基于旧投影的写入。
+    expect(activate?.body).toEqual({
+      expectedActiveProfileId: null,
+      expectedCurrentVoiceId: null,
+    });
+    expect(container.textContent).toContain("Voice changed. New chat speech now uses Anna.");
+  });
+
+  // INTENT: 候选已落库而启用失败时，重试不能再生成一个新候选（会归档刚才那个）。
+  it("resumes a failed one-click apply at activation with the same key", async () => {
+    let activations = 0;
+    adminV2Request.mockImplementation(async (path: string) => {
+      if (path.endsWith("/voice-presets")) {
+        return { profile: createdPocketProfile, replacedCandidateProfileId: null, replayed: false };
+      }
+      activations += 1;
+      if (activations === 1) throw new Error("Acknowledgement lost");
+      return { profile: { ...createdPocketProfile, status: "active" }, replacedActiveProfileId: null, replayed: true };
+    });
+    await render(pocketWorkspace());
+    await chooseOfficialVoice("anna");
+    await act(async () => button("Use as character voice")?.click());
+    // SPEC: 没有确认框兜住失败，错误就地显示在操作区。
+    const builder = container.querySelector('[data-testid="voice-preset-builder"]');
+    expect(builder?.querySelector('[role="alert"]')?.textContent).toContain("Acknowledgement lost");
+
+    await act(async () => button("Use as character voice")?.click());
+
+    const paths = adminV2Request.mock.calls.map(([path]) => path as string);
+    expect(paths.filter((path) => path.endsWith("/voice-presets"))).toHaveLength(1);
+    const activationKeys = adminV2Request.mock.calls
+      .filter(([path]) => (path as string).endsWith("/activate"))
+      .map(([, options]) => options?.idempotencyKey);
+    expect(activationKeys).toHaveLength(2);
+    expect(activationKeys[1]).toBe(activationKeys[0]);
+    expect(builder?.querySelector('[role="alert"]')).toBeNull();
+    expect(container.textContent).toContain("Voice changed. New chat speech now uses Anna.");
+  });
+
+  // INTENT: 工作区在写入期间把所有写权限置为 false（写锁）。实测一键应用时文案中途从
+  //         「设为角色声音」变成了「提交为候选」——应用还是只提交，必须按点击那一刻的权限定。
+  it("keeps the apply decision it was clicked with while the workspace write lock flips permissions", async () => {
+    let releaseCreate: () => void = () => {};
+    adminV2Request.mockImplementation(async (path: string) => {
+      if (path.endsWith("/voice-presets")) {
+        await new Promise<void>((resolve) => { releaseCreate = resolve; });
+        return { profile: createdPocketProfile, replacedCandidateProfileId: null, replayed: false };
+      }
+      return { profile: { ...createdPocketProfile, status: "active" }, replacedActiveProfileId: null, replayed: false };
+    });
+    await render(pocketWorkspace());
+    await chooseOfficialVoice("anna");
+    await act(async () => { button("Use as character voice")?.click(); });
+    await render(pocketWorkspace(), { canActivate: false });
+    expect(button("Applying voice…")).toBeDefined();
+    expect(button("Submit as candidate")).toBeUndefined();
+    await act(async () => releaseCreate());
+    expect(adminV2Request.mock.calls.map(([path]) => path)).toEqual([
+      "/api/v2/admin/characters/character-pocket-1/voice-presets",
+      "/api/v2/admin/characters/character-pocket-1/voice-profiles/voice-pocket-anna/activate",
+    ]);
+    expect(container.textContent).toContain("Voice changed. New chat speech now uses Anna.");
+  });
+
+  it("only submits a candidate when the operator cannot publish", async () => {
+    adminV2Request.mockResolvedValue({
+      profile: createdPocketProfile,
+      replacedCandidateProfileId: null,
+      replayed: false,
+    });
+    await render(pocketWorkspace(), { canActivate: false });
+    await chooseOfficialVoice("anna");
+    expect(button("Use as character voice")).toBeUndefined();
+    await act(async () => button("Submit as candidate")?.click());
+    expect(dialog()).toBeNull();
+    expect(adminV2Request).toHaveBeenCalledTimes(1);
+    expect(adminV2Request.mock.calls[0]?.[0]).toContain("/voice-presets");
+    expect(container.textContent).toContain("teammate with publish permission");
+  });
+
   it("sends the authored delivery settings with the voice clone reference", async () => {
     adminV2Request.mockResolvedValue({
       profile: candidateProfile,
+      replacedCandidateProfileId: null,
       replayed: false,
     });
     await render();
-
     const file = new File(["reference-audio"], "mira-reference.wav", {
       type: "audio/wav",
     });
@@ -211,216 +482,57 @@ describe("CharacterVoicePanel voice identity controls", () => {
       "#character-voice-reference-transcript",
       "Come a little closer.",
     );
-    await typeInto(
-      "#character-voice-change-reason",
-      "Recorded a warmer reference take",
-    );
-
-    const form = container.querySelector<HTMLFormElement>(
-      "#voice-candidate-builder",
-    );
     await act(async () => {
-      form?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      container
+        .querySelector<HTMLFormElement>("#voice-candidate-builder")
+        ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     });
 
+    // SPEC: 克隆只生成候选，不动线上声音，提交即执行。
+    expect(dialog()).toBeNull();
     expect(adminV2Request).toHaveBeenCalledTimes(1);
     const body = adminV2Request.mock.calls[0]?.[1]?.form as FormData;
     // SPEC: 声音身份（参考音频 + 逐字稿）与表演方向（delivery）是两件事，一次提交都要带上。
     expect(body.get("audio")).toBe(file);
     expect(body.get("referenceText")).toBe("Come a little closer.");
+    expect(body.has("reason")).toBe(false);
     expect(JSON.parse(String(body.get("delivery")))).toMatchObject({
       preset: "sensual",
       repetitionPenalty: expect.any(Number),
     });
   });
 
-  it("makes Fish Audio the visible runtime and exposes every performance control", async () => {
-    await render();
-    expect(container.textContent).toContain("Fish Audio S2 Pro");
-    expect(container.textContent).toContain("Attraction intensity");
-    expect(container.textContent).toContain("Speaking pace");
-    expect(container.textContent).toContain("Advanced Fish sampling");
-    expect(container.textContent).not.toContain("Pocket TTS");
-  });
-
-  it("shows the official Pocket CPU runtime without Fish-only delivery controls", async () => {
-    const pocketCandidate = {
-      ...candidateProfile,
-      provider: "pocket_tts" as const,
-      providerVoiceId: "pocket-candidate-1",
-      model: "pocket-tts",
-    };
-    await render(
-      characterWorkspaceDetail({
-        character: { id: "character-pocket-1", name: "Mira" },
-        voice: {
-          provider: "pocket_tts",
-          runtimeStatus: "ready",
-          runtimeEngine: "pocket_tts",
-          runtimeVersion: "3.0.2",
-          runtimeLanguage: "english",
-          catalogVoiceIds: ["alba", "anna"],
-          presetRuntime: { provider: "pocket_tts", runtimeStatus: "ready", catalogVoiceIds: ["alba", "anna"] },
-          candidateRuntimeStatus: "ready",
-          cloningAvailable: false,
-          currentVoiceId: null,
-          effectiveVoiceId: "alba",
-          authoritySource: "system_default",
-          systemDefaults: {
-            provider: "pocket_tts",
-            defaultVoiceId: "alba",
-            genderVoiceIds: {
-              female: "alba",
-              male: "alba",
-              trans: "alba",
-            },
-            catalog: [
-              {
-                id: "alba",
-                label: "Alba",
-                presentation: "unspecified",
-                description: "Official English Pocket TTS voice",
-              },
-              {
-                id: "anna",
-                label: "Anna",
-                presentation: "unspecified",
-                description: "Official English Pocket TTS voice",
-              },
-            ],
-          },
-          activeProfile: null,
-          candidateProfile: pocketCandidate,
-          history: [pocketCandidate],
-        },
-      }),
-    );
-
-    expect(container.textContent).toContain("Pocket TTS 3.0.2");
-    expect(container.textContent).toContain(
-      "Choose an official English Pocket voice",
-    );
-    expect(container.textContent).toContain("2 official English voices available");
-    expect(container.textContent).toContain(
-      "Pocket TTS uses each official voice's native English delivery",
-    );
-    expect(container.querySelector('[data-testid="voice-preset-builder"]'))
-      .not.toBeNull();
-    expect(container.querySelector("#voice-candidate-builder")).toBeNull();
-    expect(container.querySelector("#character-performance-direction")).toBeNull();
-  });
-
-  it("creates a role-specific candidate from the selected Pocket catalog voice", async () => {
-    adminV2Request.mockResolvedValue({
-      profile: {
-        ...candidateProfile,
-        provider: "pocket_tts",
-        providerVoiceId: "idream-pocket-anna-1",
-        model: "pocket-tts",
-      },
-      replacedCandidateProfileId: null,
-      replayed: false,
-    });
-    await render(
-      characterWorkspaceDetail({
-        character: { id: "character-pocket-2", name: "Mira" },
-        voice: {
-          provider: "pocket_tts",
-          runtimeStatus: "ready",
-          runtimeEngine: "pocket_tts",
-          runtimeVersion: "3.0.2",
-          runtimeLanguage: "english",
-          catalogVoiceIds: ["alba", "anna"],
-          presetRuntime: { provider: "pocket_tts", runtimeStatus: "ready", catalogVoiceIds: ["alba", "anna"] },
-          candidateRuntimeStatus: "ready",
-          cloningAvailable: false,
-          currentVoiceId: null,
-          authoritySource: "system_default",
-          activeProfile: null,
-          candidateProfile: null,
-          history: [],
-        },
-      }),
-    );
-    const select = container.querySelector<HTMLSelectElement>(
-      "#character-pocket-preset-voice",
-    );
-    await act(async () => {
-      if (!select) throw new Error("Pocket preset selector is missing");
-      select.value = "anna";
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-    await typeInto(
-      "#character-pocket-preset-reason",
-      "Assign a distinct fast voice to Mira",
-    );
-    await act(async () => {
-      container
-        .querySelector<HTMLFormElement>('[data-testid="voice-preset-builder"]')
-        ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-    });
-
-    expect(adminV2Request).toHaveBeenCalledTimes(1);
-    const [path, options] = adminV2Request.mock.calls[0] ?? [];
-    expect(path).toBe(
-      "/api/v2/admin/characters/character-pocket-2/voice-presets",
-    );
-    expect(options).toMatchObject({
-      method: "POST",
-      idempotencyKey: expect.any(String),
-      body: {
-        presetVoiceId: "anna",
-        sampleText: expect.stringContaining("Mira"),
-        reason: "Assign a distinct fast voice to Mira",
-      },
-    });
-  });
-
   it("names the exact authority it expects when activating a reviewed candidate", async () => {
     adminV2Request.mockResolvedValue({
       profile: { ...candidateProfile, status: "active" },
+      replacedActiveProfileId: "voice-active-1",
       replayed: false,
     });
     await render();
+    const review = container.querySelector('[data-testid="voice-candidate-primary-action"]');
+    expect(review?.textContent).toContain("Creating a candidate keeps the current voice unchanged.");
+    expect(review?.querySelector('audio[aria-label="Candidate voice preview"]')?.getAttribute("src"))
+      .toBe("/voice-candidate-1.mp3");
 
-    // SPEC: 运营文案必须说明候选不改当前音色，避免暴露内部字段名。
-    expect(container.textContent).toContain(
-      "Creating a candidate keeps the current voice unchanged.",
-    );
-    const activate = button("Activate voice");
-    expect(activate?.disabled).toBe(true);
-    await typeInto(
-      "#character-voice-activation-reason",
-      "Reviewed the candidate preview",
-    );
-    expect(button("Activate voice")?.disabled).toBe(false);
     await act(async () => button("Activate voice")?.click());
 
+    expect(dialog()).toBeNull();
     expect(adminV2Request).toHaveBeenCalledTimes(1);
     const [path, options] = adminV2Request.mock.calls[0] ?? [];
-    expect(path).toContain(
-      "/voice-profiles/voice-candidate-1/activate",
-    );
-    // SPEC: 激活必须声明它以为的当前权威；服务端据此拒绝基于旧投影的激活。
-    expect(options?.body).toMatchObject({
-      reason: "Reviewed the candidate preview",
+    expect(path).toContain("/voice-profiles/voice-candidate-1/activate");
+    expect(options?.body).toEqual({
       expectedActiveProfileId: "voice-active-1",
       expectedCurrentVoiceId: "fish-active-1",
     });
   });
 
   // SPEC: 重试一次失败的激活必须复用同一个幂等键。
-  // INTENT: 这四处写入原本每次点击现开一个 UUID —— 第一次请求其实已经到达服务端、只是响应
-  //         在网络上丢了的话，运营再点一次就是第二次真实激活。
   it("replays a failed activation under the same idempotency key", async () => {
     adminV2Request.mockRejectedValue(new Error("network down"));
     await render();
-    await typeInto(
-      "#character-voice-activation-reason",
-      "Reviewed the candidate preview",
-    );
-
     await act(async () => button("Activate voice")?.click());
+    const review = container.querySelector('[data-testid="voice-candidate-primary-action"]');
+    expect(review?.querySelector('[role="alert"]')?.textContent).toContain("network down");
     await act(async () => button("Activate voice")?.click());
 
     expect(adminV2Request).toHaveBeenCalledTimes(2);
@@ -445,10 +557,6 @@ describe("CharacterVoicePanel voice identity controls", () => {
         },
       }),
     );
-    await typeInto(
-      "#character-voice-activation-reason",
-      "Reviewed the candidate preview",
-    );
     expect(button("Activate voice")?.disabled).toBe(true);
     expect(container.textContent).toContain(
       "The candidate provider must be ready",
@@ -456,16 +564,35 @@ describe("CharacterVoicePanel voice identity controls", () => {
     expect(adminV2Request).not.toHaveBeenCalled();
   });
 
-  it("keeps one candidate task visible and folds secondary configuration away", async () => {
+  // INTENT: 恢复默认针对的是某个线上权威；它被替换，打开的确认框就作废。
+  it("lapses an open reset when the live authority changes", async () => {
     await render();
-    expect(container.querySelector('[data-testid="voice-control-room"]'))
-      .not.toBeNull();
-    expect(
-      container.querySelector('[data-testid="voice-candidate-primary-action"]'),
-    ).not.toBeNull();
-    expect(container.querySelector("#voice-candidate-builder")).not.toBeNull();
-    expect(container.querySelector('[data-testid="live-voice-configuration"]'))
-      .not.toBeNull();
+    await act(async () => button("Use system default voice")?.click());
+    expect(dialog()).not.toBeNull();
+    const changed = withCandidate();
+    await render({ ...changed, voice: { ...changed.voice, currentVoiceId: "new-live-pointer" } });
+    expect(dialog()).toBeNull();
+    expect(adminV2Request).not.toHaveBeenCalled();
+  });
+
+  it("restores the system default through a confirmed reset", async () => {
+    adminV2Request.mockResolvedValue({ currentVoiceId: null, archivedProfileId: "voice-active-1", replayed: false });
+    await render();
+    await act(async () => button("Use system default voice")?.click());
+    expect(dialog()?.textContent).toContain(
+      "Mira goes back to inheriting the system default voice",
+    );
+    await confirmDialog("Use system default voice");
+    const [path, options] = adminV2Request.mock.calls[0] ?? [];
+    expect(path).toBe("/api/v2/admin/characters/character-voice-1/voice-defaults/reset");
+    expect(options?.body).toEqual({
+      expectedActiveProfileId: "voice-active-1",
+      expectedCurrentVoiceId: "fish-active-1",
+    });
+  });
+
+  it("keeps secondary configuration folded away", async () => {
+    await render();
     expect(container.querySelector('[data-testid="system-voice-defaults"]'))
       .not.toBeNull();
     const systemDefaultsSummary = container.querySelector(
@@ -474,15 +601,9 @@ describe("CharacterVoicePanel voice identity controls", () => {
     // SPEC: 窄屏时操作入口独占一行，不能把说明文案压成逐词换行。
     expect(systemDefaultsSummary?.className).toContain("flex-col");
     expect(systemDefaultsSummary?.className).toContain("sm:flex-row");
-    expect(container.textContent).toContain("Live voice");
-    expect(container.textContent).toContain("Current voice and runtime");
-    expect(container.textContent).toContain("System voice defaults");
-    // SPEC: 表演方向属于次要配置，收进折叠区，但必须还在。
-    expect(container.textContent).toContain("Voice style and advanced settings");
     expect(container.textContent).toContain("System performance direction");
-    // SPEC: 次要配置必须默认折叠——一屏只留一个候选任务。
-    expect([...container.querySelectorAll("details")].length)
-      .toBeGreaterThan(0);
+    // SPEC: 次要配置默认折叠——一屏只留更换声音这一件事。
+    expect([...container.querySelectorAll("details")].length).toBeGreaterThan(0);
     expect([...container.querySelectorAll("details")]
       .every((element) => element.open === false)).toBe(true);
     expect(
@@ -492,7 +613,6 @@ describe("CharacterVoicePanel voice identity controls", () => {
   });
 
   // SPEC: 系统语音默认值是从单个角色页面能改到全站的唯一一处写操作。
-  // INTENT: 原先只有一个 reason 输入框加一个「保存」按钮，界面上没有任何一句说明这是全局的。
   it("states the platform-wide blast radius before saving system voice defaults", async () => {
     adminV2Request.mockResolvedValue({ replayed: false });
     await render();
@@ -504,29 +624,14 @@ describe("CharacterVoicePanel voice identity controls", () => {
     expect(document.body.textContent).toContain(
       "It changes new speech for every character that has no voice override",
     );
-
-    const reason = document.body.querySelector<HTMLInputElement>(
-      'input[aria-label="System default change reason"]',
-    );
-    expect(reason).toBeTruthy();
-    await act(async () => {
-      setInputValue(reason!, "Rotate the shared default after provider change");
-    });
-    const submit = [...document.body.querySelectorAll("button")].find(
-      (candidate) =>
-        candidate.textContent?.includes("Save system defaults") &&
-        candidate !== save,
-    );
-    await act(async () => submit?.click());
+    await confirmDialog("Save system defaults");
     expect(adminV2Request).toHaveBeenCalledWith(
       "/api/v2/admin/voice-defaults",
       expect.objectContaining({
-        body: expect.objectContaining({
-          provider: "fish_audio",
-          reason: "Rotate the shared default after provider change",
-        }),
+        body: expect.objectContaining({ provider: "fish_audio" }),
       }),
     );
+    expect(adminV2Request.mock.calls[0]?.[1]?.body).not.toHaveProperty("reason");
   });
 
   it("preserves gender mappings when editing only the global fallback", async () => {
@@ -539,13 +644,10 @@ describe("CharacterVoicePanel voice identity controls", () => {
     await act(async () => {
       select.value = "another";
       select.dispatchEvent(new Event("change", { bubbles: true }));
-      button("Save system defaults")?.click();
     });
-    await typeInto('input[aria-label="System default change reason"]', "Change only the fallback");
+    await act(async () => button("Save system defaults")?.click());
     adminV2Request.mockResolvedValue({ replayed: false });
-    await act(async () => {
-      document.querySelector<HTMLDivElement>('[role="dialog"]')?.querySelector<HTMLButtonElement>('button:last-child')?.click();
-    });
+    await confirmDialog("Save system defaults");
     expect(adminV2Request).toHaveBeenCalledWith("/api/v2/admin/voice-defaults", expect.objectContaining({
       body: expect.objectContaining({ defaultVoiceId: "another", genderVoiceIds: data.voice.systemDefaults.genderVoiceIds }),
     }));
@@ -564,42 +666,22 @@ describe("CharacterVoicePanel voice identity controls", () => {
     expect(container.querySelectorAll("audio[autoplay]")).toHaveLength(1);
   });
 
-  it("keeps a failed system save dialog and its reason for an idempotent retry", async () => {
+  it("keeps a failed system save dialog open for an idempotent retry", async () => {
     await render();
     await act(async () => button("Save system defaults")?.click());
-    await typeInto('input[aria-label="System default change reason"]', "Keep this retry reason");
     adminV2Request.mockRejectedValueOnce(new Error("Network interrupted"));
-    const submit = () => [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find((item) => item.textContent?.includes("Save system defaults"))!;
-    await act(async () => submit().click());
-    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
-    expect(document.querySelector<HTMLInputElement>('input[aria-label="System default change reason"]')?.value).toBe("Keep this retry reason");
+    await act(async () => dialogButton("Save system defaults")?.click());
+    expect(dialog()?.querySelector('[role="alert"]')).not.toBeNull();
     const firstKey = adminV2Request.mock.calls[0]?.[1].idempotencyKey;
     adminV2Request.mockResolvedValueOnce({ replayed: true });
-    await act(async () => submit().click());
+    await act(async () => dialogButton("Save system defaults")?.click());
     expect(adminV2Request.mock.calls[1]?.[1].idempotencyKey).toBe(firstKey);
   });
 
   it("does not label Pocket speech with unused Fish performance controls", async () => {
-    const data = characterWorkspaceDetail({ voice: { systemDefaults: { provider: "pocket_tts" }, effectiveVoiceId: "alba" } });
+    const data = characterWorkspaceDetail({ voice: { systemDefaults: { provider: "pocket_tts" }, effectiveVoiceId: "vera" } });
     await render(data);
     expect(container.querySelector('[data-testid="voice-control-room"]')?.textContent).not.toContain("Sensual");
-    expect(container.querySelector('[data-testid="live-voice-configuration"]')?.textContent).not.toContain("Sensual");
-  });
-
-  it("offers official presets alongside Fish cloning and activates a Pocket candidate independently", async () => {
-    const data = withCandidate();
-    data.voice.presetRuntime = { provider: "pocket_tts", runtimeStatus: "ready", catalogVoiceIds: ["alba", "anna"] };
-    data.voice.candidateProfile = { ...candidateProfile, provider: "pocket_tts" };
-    data.voice.runtimeStatus = "unavailable";
-    data.voice.cloningAvailable = false;
-    data.voice.candidateRuntimeStatus = "ready";
-    await render(data);
-    expect(container.querySelector('[data-testid="voice-preset-builder"]')).not.toBeNull();
-    expect(container.querySelector('#voice-candidate-builder')).not.toBeNull();
-    expect(container.querySelector<HTMLSelectElement>('#character-pocket-preset-voice')?.disabled).toBe(false);
-    await typeInto("#character-voice-activation-reason", "Listen to the official candidate");
-    expect(button("Activate voice")?.disabled).toBe(false);
-    expect(container.querySelector<HTMLTextAreaElement>("#character-pocket-preset-preview-script")?.value).toContain("Hello");
   });
 
   it("keeps system mapping fields read-only without generation config permission", async () => {
@@ -607,22 +689,6 @@ describe("CharacterVoicePanel voice identity controls", () => {
     const fields = [...container.querySelectorAll<HTMLSelectElement>('[data-testid="system-voice-defaults"] select')];
     expect(fields).toHaveLength(4);
     expect(fields.every((field) => field.disabled)).toBe(true);
-  });
-
-  it("requires a new review when the candidate or live authority changes", async () => {
-    await render();
-    await typeInto("#character-voice-activation-reason", "Reviewed the original candidate");
-    expect(button("Activate voice")?.disabled).toBe(false);
-    const changed = withCandidate();
-    changed.voice.candidateProfile = { ...candidateProfile, id: "replacement-candidate", version: 4 };
-    await render(changed);
-    expect(container.querySelector<HTMLInputElement>("#character-voice-activation-reason")?.value).toBe("");
-    expect(button("Activate voice")?.disabled).toBe(true);
-
-    await typeInto("#character-voice-activation-reason", "Reviewed the replacement candidate");
-    await render({ ...changed, voice: { ...changed.voice, currentVoiceId: "new-live-pointer" } });
-    expect(button("Activate voice")?.disabled).toBe(true);
-    expect(adminV2Request).not.toHaveBeenCalled();
   });
 
   it("preserves an edited default draft on refresh and requires explicit reload", async () => {
@@ -649,38 +715,23 @@ describe("CharacterVoicePanel voice identity controls", () => {
     const data = withCandidate();
     await render(data);
     await act(async () => button("Save system defaults")?.click());
-    await typeInto('input[aria-label="System default change reason"]', "Keep the reviewed mapping");
-    const submit = () => [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find((item) => item.textContent?.includes("Save system defaults"))!;
     adminV2Request.mockRejectedValueOnce(new Error("Acknowledgement lost"));
-    await act(async () => submit().click());
+    await act(async () => dialogButton("Save system defaults")?.click());
     const firstOptions = adminV2Request.mock.calls[0]?.[1];
     await render({ ...data, voice: { ...data.voice, systemDefaults: { ...data.voice.systemDefaults, settingVersion: 9, defaultVoiceId: "another" } } });
-    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("System fallback identity");
+    expect(dialog()?.textContent).toContain("System fallback identity");
     adminV2Request.mockResolvedValueOnce({ replayed: true });
-    await act(async () => submit().click());
+    await act(async () => dialogButton("Save system defaults")?.click());
     expect(adminV2Request.mock.calls[1]?.[1]).toEqual(firstOptions);
-  });
-
-  it("invalidates a reset review when the default it would inherit changes", async () => {
-    await render();
-    const resetInput = () => container.querySelector<HTMLInputElement>('[data-testid="live-voice-configuration"] input')!;
-    await act(async () => setInputValue(resetInput(), "Restore the reviewed default"));
-    expect(resetInput().value).toBe("Restore the reviewed default");
-    const data = withCandidate();
-    data.voice.systemDefaults.settingVersion += 1;
-    await render(data);
-    expect(resetInput().value).toBe("");
-    expect(adminV2Request).not.toHaveBeenCalled();
   });
 
   it("keeps a confirmation open with an error when write permission is revoked", async () => {
     await render();
     await act(async () => button("Save system defaults")?.click());
-    await typeInto('input[aria-label="System default change reason"]', "Save the reviewed default");
     await render(withCandidate(), { canManageDefaults: false });
-    await act(async () => [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find((item) => item.textContent?.includes("Save system defaults"))?.click());
-    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
-    expect(document.querySelector('[role="dialog"] [role="alert"]')?.textContent).toContain("You no longer have permission");
+    await act(async () => dialogButton("Save system defaults")?.click());
+    expect(dialog()).not.toBeNull();
+    expect(dialog()?.querySelector('[role="alert"]')?.textContent).toContain("You no longer have permission");
     expect(adminV2Request).not.toHaveBeenCalled();
   });
 
@@ -709,13 +760,3 @@ describe("CharacterVoicePanel voice identity controls", () => {
     expect(container.textContent).not.toContain("No audio selected");
   });
 });
-
-function setInputValue(input: HTMLInputElement, value: string) {
-  const setter = Object.getOwnPropertyDescriptor(
-    HTMLInputElement.prototype,
-    "value",
-  )?.set;
-  setter?.call(input, value);
-  input.dispatchEvent(new Event("input", { bubbles: true }));
-  input.dispatchEvent(new Event("change", { bubbles: true }));
-}

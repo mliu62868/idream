@@ -7,20 +7,23 @@ import {
   type CharacterWorkspaceDetail,
 } from "@idream/shared/admin";
 import {
-  Activity,
   AudioLines,
+  Check,
   CheckCircle2,
   History,
+  ListMusic,
+  Mic,
   Play,
-  Radio,
   RotateCcw,
   Save,
   Settings2,
   Upload,
 } from "lucide-react";
-import { useRef, useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useAdminI18n } from "@/components/admin/i18n";
-import { ConfirmDialog } from "@/components/admin/ui/ConfirmDialog";
+import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
+import { RequestErrorDetails } from "@/components/admin/ui/RequestErrorDetails";
+import { operatorErrorCopy, type OperatorErrorCopy } from "@/components/admin/ui/request-error-copy";
 import {
   StatusBadge,
   WorkspaceButton,
@@ -36,8 +39,28 @@ type RunCommittedMutation = <T>(input: {
   readonly afterRefresh?: () => void;
 }) => Promise<{ readonly result: T; readonly refreshed: boolean }>;
 
-type VoiceDefaultDraft = Pick<CharacterWorkspaceDetail["voice"]["systemDefaults"],
+type VoiceData = CharacterWorkspaceDetail["voice"];
+type VoiceProfile = NonNullable<VoiceData["activeProfile"]>;
+type VoiceDefaultDraft = Pick<VoiceData["systemDefaults"],
   "settingVersion" | "provider" | "defaultVoiceId" | "genderVoiceIds" | "delivery" | "catalog">;
+type Translate = (key: string, values?: Record<string, string | number>) => string;
+
+// SPEC: the two ways a Character gets its own voice. "official" aliases a Pocket
+// catalog voice; "clone" renders a new identity from reference audio.
+type VoiceModel = "official" | "clone";
+type ModelStatus = "ready" | "unavailable" | "inactive" | "cloning_disabled";
+
+// SPEC: picking, cloning and activating a voice apply on click. No write asks for a
+// reason. Only two writes reach beyond this pick and get a ConfirmDialog: reset
+// drops this Character's own voice, and defaults changes every inheriting Character.
+// reviewKey pins the live authority a reset was opened against: if the live voice
+// changes underneath, the review silently lapses.
+type DialogIntent =
+  | { readonly kind: "reset"; readonly reviewKey: string }
+  | { readonly kind: "defaults"; readonly draft: VoiceDefaultDraft; readonly reviewKey: null };
+type DirectAction = "preset" | "clone" | "activate";
+
+const AUDITION_MAX_CHARS = 240;
 
 export function CharacterVoicePanel({
   data,
@@ -64,124 +87,252 @@ export function CharacterVoicePanel({
   releaseIdempotencyKey: (signature: string) => void;
 }) {
   const { t, locale } = useAdminI18n();
+  const voice = data.voice;
+  const active = voice.activeProfile;
+  const candidate = voice.candidateProfile;
+  const catalogLabel = (voiceId: string) =>
+    voice.systemDefaults.catalog.find((entry) => entry.id === voiceId)?.label ??
+    formatCatalogVoiceName(voiceId);
+  const profileName = (profile: VoiceProfile) =>
+    profile.presetVoiceId ? catalogLabel(profile.presetVoiceId) : t("Cloned voice");
+
   const fileInput = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
   const [referenceText, setReferenceText] = useState("");
   const [sampleText, setSampleText] = useState(
-    data.voice.provider !== "pocket_tts" && locale === "zh"
+    voice.provider !== "pocket_tts" && locale === "zh"
       ? `靠近一点，我是${data.character.name}。很高兴让你听见我的声音。`
       : `Come a little closer. I’m ${data.character.name}. It’s good to hear from you.`,
   );
-  const [cloneDelivery, setCloneDelivery] = useState<FishAudioDeliverySettings>(
-    {
-      ...DEFAULT_FISH_AUDIO_DELIVERY,
-    },
-  );
-  const [reason, setReason] = useState("");
-  const [presetVoiceId, setPresetVoiceId] = useState(
-    data.voice.presetRuntime.catalogVoiceIds.includes(data.voice.effectiveVoiceId)
-      ? data.voice.effectiveVoiceId
-      : data.voice.systemDefaults.defaultVoiceId,
-  );
-  const [presetReason, setPresetReason] = useState("");
+  const [cloneDelivery, setCloneDelivery] = useState<FishAudioDeliverySettings>({
+    ...DEFAULT_FISH_AUDIO_DELIVERY,
+  });
+
+  const officialStatus: ModelStatus = voice.presetRuntime.runtimeStatus;
+  const cloneStatus: ModelStatus =
+    voice.provider !== "fish_audio" && voice.provider !== "pocket_tts"
+      ? "inactive"
+      : voice.cloningAvailable
+        ? "ready"
+        : voice.runtimeStatus === "ready"
+          ? "cloning_disabled"
+          : voice.runtimeStatus;
+  // A live clone keeps the clone path open; otherwise lead with instant catalog voices.
+  const defaultModel: VoiceModel =
+    active && active.presetVoiceId === null
+      ? "clone"
+      : officialStatus !== "inactive"
+        ? "official"
+        : "clone";
+  const [modelChoice, setModelChoice] = useState<VoiceModel | null>(null);
+  const model = modelChoice ?? defaultModel;
+
+  const catalogVoiceIds = voice.presetRuntime.catalogVoiceIds;
+  // The official voice this Character sounds like right now, pinned or inherited.
+  const livePresetVoiceId = active
+    ? active.presetVoiceId
+    : voice.systemDefaults.provider === "pocket_tts"
+      ? voice.effectiveVoiceId
+      : null;
+  const [presetChoice, setPresetChoice] = useState<string | null>(null);
+  const selectedPresetVoiceId =
+    presetChoice && catalogVoiceIds.includes(presetChoice)
+      ? presetChoice
+      : livePresetVoiceId && catalogVoiceIds.includes(livePresetVoiceId)
+        ? livePresetVoiceId
+        : (catalogVoiceIds[0] ?? "");
   const [presetSampleText, setPresetSampleText] = useState(
     `Hello, I’m ${data.character.name}. It’s good to hear from you.`,
   );
+  // One-click apply creates a candidate and then activates it. If activation fails
+  // after the candidate committed, a retry of the same apply resumes at activation.
+  const preparedPreset = useRef<{ signature: string; profileId: string } | null>(null);
+
   const authorityReviewKey = JSON.stringify([
     data.character.id,
-    data.voice.currentVoiceId,
-    data.voice.activeProfile?.id,
-    data.voice.systemDefaults.provider,
-    data.voice.systemDefaults.settingVersion,
+    voice.currentVoiceId,
+    active?.id,
+    voice.systemDefaults.provider,
+    voice.systemDefaults.settingVersion,
   ]);
-  const candidateReviewKey = JSON.stringify([authorityReviewKey, data.voice.candidateProfile?.id]);
-  const [activationReview, setActivationReview] = useState({ key: candidateReviewKey, reason: "" });
-  const [resetReview, setResetReview] = useState({ key: authorityReviewKey, reason: "" });
-  // A reason reviews a particular candidate and live authority, never their replacements.
-  const activationReason = activationReview.key === candidateReviewKey ? activationReview.reason : "";
-  const resetReason = resetReview.key === authorityReviewKey ? resetReview.reason : "";
-  const setActivationReason = (reason: string) => setActivationReview({ key: candidateReviewKey, reason });
-  const setResetReason = (reason: string) => setResetReview({ key: authorityReviewKey, reason });
-  const [pendingDefaults, setPendingDefaults] = useState<VoiceDefaultDraft | null>(null);
+  const [dialog, setDialog] = useState<DialogIntent | null>(null);
+
   const [defaultDraftOverride, setDefaultDraftOverride] = useState<VoiceDefaultDraft | null>(null);
-  const defaultDraft: VoiceDefaultDraft = defaultDraftOverride ?? data.voice.systemDefaults;
-  const defaultDraftStale = defaultDraft.provider !== data.voice.systemDefaults.provider ||
-    defaultDraft.settingVersion !== data.voice.systemDefaults.settingVersion;
-  const [previewBusy, setPreviewBusy] =
-    useState<SystemVoiceCatalogVoiceId | null>(null);
+  const defaultDraft: VoiceDefaultDraft = defaultDraftOverride ?? voice.systemDefaults;
+  const defaultDraftStale = defaultDraft.provider !== voice.systemDefaults.provider ||
+    defaultDraft.settingVersion !== voice.systemDefaults.settingVersion;
+  const [previewBusy, setPreviewBusy] = useState<SystemVoiceCatalogVoiceId | null>(null);
   const [catalogPreview, setCatalogPreview] = useState<{
     voiceId: SystemVoiceCatalogVoiceId;
     src: string;
-    scope: "live" | "draft";
+    scope: "live" | "draft" | "audition";
     signature: string;
   } | null>(null);
   const [busyAction, setBusyAction] = useState<"clone" | "preset" | "activate" | "defaults" | "reset" | null>(null);
   const busy = busyAction !== null;
   const [message, setMessage] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const active = data.voice.activeProfile;
-  const candidate = data.voice.candidateProfile;
-  const archivedProfiles = data.voice.history.filter(
+  const [error, setError] = useState<{ scope: "live" | "draft" | "audition"; text: string } | null>(null);
+  const [actionError, setActionError] = useState<{ action: DirectAction; copy: OperatorErrorCopy } | null>(null);
+
+  const archivedProfiles = voice.history.filter(
     (profile) => profile.id !== active?.id && profile.id !== candidate?.id,
   );
-  const candidateReadiness = [
-    { complete: file !== null, label: "Voice reference audio" },
-    {
-      complete: referenceText.trim().length >= 3,
-      label: "Reference transcript",
-    },
-    {
-      complete: sampleText.trim().length >= 3,
-      label: "Preview script",
-    },
-    { complete: reason.trim().length >= 3, label: "Change reason" },
+  const cloneReadiness = [
+    file !== null,
+    referenceText.trim().length >= 3,
+    sampleText.trim().length >= 3,
   ];
-  const candidateReadyCount = candidateReadiness.filter(
-    (item) => item.complete,
-  ).length;
-  const identityProviderLabel = voiceProviderLabel(data.voice.provider);
-  const selectedPresetVoiceId = data.voice.presetRuntime.catalogVoiceIds.includes(
-    presetVoiceId,
-  )
-    ? presetVoiceId
-    : (data.voice.presetRuntime.catalogVoiceIds[0] ?? "");
-  const presetCandidateReady =
+  const cloneReadyCount = cloneReadiness.filter(Boolean).length;
+  const cloneProviderLabel = voiceProviderLabel(voice.provider);
+  const activationProviderAvailable = voice.candidateRuntimeStatus === "ready";
+  const liveProvider = active?.provider ?? voice.systemDefaults.provider;
+  const liveVoiceName = active ? profileName(active) : catalogLabel(voice.effectiveVoiceId);
+  const livePreviewSignature = previewSignature(voice.effectiveVoiceId, voice.systemDefaults.delivery, "live");
+  const auditionText = presetSampleText.trim();
+  const selectedIsLiveOverride =
+    active !== null && active.presetVoiceId === selectedPresetVoiceId;
+  const officialApplyReady =
+    canWrite &&
+    officialStatus === "ready" &&
     selectedPresetVoiceId.length > 0 &&
-    presetSampleText.trim().length >= 3 &&
-    presetReason.trim().length >= 3;
-  const activationProviderAvailable =
-    data.voice.candidateRuntimeStatus === "ready";
-  const liveProvider = active?.provider ?? data.voice.systemDefaults.provider;
-  const livePreviewSignature = previewSignature(data.voice.effectiveVoiceId, data.voice.systemDefaults.delivery);
+    auditionText.length >= 3 &&
+    !selectedIsLiveOverride;
 
-  function previewSignature(voiceId: string, delivery: FishAudioDeliverySettings) {
-    return JSON.stringify([data.character.id, data.voice.systemDefaults.provider, data.voice.systemDefaults.settingVersion, voiceId, delivery]);
+  function previewSignature(voiceId: string, delivery: FishAudioDeliverySettings, text: string) {
+    return JSON.stringify([
+      data.character.id,
+      voice.systemDefaults.provider,
+      voice.systemDefaults.settingVersion,
+      voiceId,
+      delivery,
+      text,
+    ]);
   }
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!file || busy) return;
-    setBusyAction("clone");
+  async function previewCatalogVoice(
+    voiceId: SystemVoiceCatalogVoiceId,
+    scope: "live" | "draft" | "audition" = "draft",
+  ) {
+    if (!canPreview || previewBusy || busy || (scope === "draft" && defaultDraftStale)) return;
+    const delivery = scope === "draft" ? defaultDraft.delivery : voice.systemDefaults.delivery;
+    const text = scope === "audition"
+      ? auditionText
+      : voice.systemDefaults.provider !== "pocket_tts" && locale === "zh"
+        ? `靠近一点，我是${data.character.name}。这是系统声音的试听。`
+        : `Come a little closer. I’m ${data.character.name}. This is the system voice preview.`;
+    if (text.length < 3) return;
+    const signature = previewSignature(voiceId, delivery, scope === "audition" ? text : scope);
+    setPreviewBusy(voiceId);
     setError(null);
-    setMessage(null);
-    const form = new FormData();
-    form.set("audio", file, file.name);
-    form.set("language", data.voice.runtimeLanguage);
-    form.set("referenceText", referenceText.trim());
-    form.set("sampleText", sampleText.trim());
-    form.set("delivery", JSON.stringify(cloneDelivery));
-    form.set("reason", reason.trim());
-    const signature = `voice-clone:${data.character.id}:${JSON.stringify({
-      audio: [file.name, file.size, file.lastModified],
-      language: data.voice.runtimeLanguage,
-      referenceText: referenceText.trim(),
-      sampleText: sampleText.trim(),
-      delivery: cloneDelivery,
-      reason: reason.trim(),
-    })}`;
     try {
+      const preview = await adminV2Operation("POST /api/v2/admin/voice-defaults/preview", {
+        body: { provider: voice.systemDefaults.provider, voiceId, text, delivery },
+      });
+      setCatalogPreview({
+        voiceId,
+        scope,
+        signature,
+        src: `data:${preview.contentType};base64,${preview.audioBase64}`,
+      });
+    } catch (cause) {
+      setError({
+        scope,
+        text: cause instanceof Error ? cause.message : "The system voice preview could not be rendered",
+      });
+    } finally {
+      setPreviewBusy(null);
+    }
+  }
+
+  function auditionOfficialVoice(voiceId: string) {
+    setPresetChoice(voiceId);
+    void previewCatalogVoice(voiceId, "audition");
+  }
+
+  // Direct writes have no dialog to hold a failure, so it renders beside the control.
+  async function runDirectAction(action: DirectAction, write: () => Promise<void>) {
+    if (busy) return;
+    setBusyAction(action);
+    setMessage(null);
+    setActionError(null);
+    try {
+      await write();
+    } catch (cause) {
+      setActionError({ action, copy: operatorErrorCopy(cause) });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  // `activate` is read at click time: the write lock revokes permissions mid-write,
+  // and the outcome must follow what the operator clicked.
+  function applyOfficialVoice(voiceId: string, activate: boolean) {
+    return runDirectAction("preset", async () => {
+      const body = { presetVoiceId: voiceId, sampleText: auditionText };
+      const createSignature = `voice-preset:${data.character.id}:${JSON.stringify(body)}`;
+      const expectedAuthority = {
+        expectedActiveProfileId: active?.id ?? null,
+        expectedCurrentVoiceId: voice.currentVoiceId,
+      };
+      let profileId = preparedPreset.current?.signature === createSignature
+        ? preparedPreset.current.profileId
+        : null;
+      if (!profileId) {
+        const created = await runCommittedMutation({
+          action: "Create Pocket TTS voice candidate",
+          commit: () =>
+            adminV2Operation("POST /api/v2/admin/characters/:id/voice-presets", {
+              path: { id: data.character.id },
+              replayIdempotencyKey: takeIdempotencyKey(createSignature),
+              body,
+            }),
+          afterRefresh: () => releaseIdempotencyKey(createSignature),
+        });
+        profileId = created.result.profile.id;
+        preparedPreset.current = { signature: createSignature, profileId };
+      }
+      if (!activate) {
+        preparedPreset.current = null;
+        setMessage("Candidate submitted. It takes effect after a teammate with publish permission activates it.");
+        return;
+      }
+      const activateSignature =
+        `voice-activate:${data.character.id}:${profileId}:${JSON.stringify(expectedAuthority)}`;
+      const createdProfileId = profileId;
+      await runCommittedMutation({
+        action: "Activate Pocket TTS voice",
+        commit: () =>
+          adminV2Operation("POST /api/v2/admin/characters/:id/voice-profiles/:profileId/activate", {
+            path: { id: data.character.id, profileId: createdProfileId },
+            replayIdempotencyKey: takeIdempotencyKey(activateSignature),
+            body: expectedAuthority,
+          }),
+        afterRefresh: () => releaseIdempotencyKey(activateSignature),
+      });
+      preparedPreset.current = null;
+      setPresetChoice(null);
+      setMessage(t("Voice changed. New chat speech now uses {voice}.", { voice: catalogLabel(voiceId) }));
+    });
+  }
+
+  function createClone() {
+    if (!file) return;
+    return runDirectAction("clone", async () => {
+      const form = new FormData();
+      form.set("audio", file, file.name);
+      form.set("language", voice.runtimeLanguage);
+      form.set("referenceText", referenceText.trim());
+      form.set("sampleText", sampleText.trim());
+      form.set("delivery", JSON.stringify(cloneDelivery));
+      const signature = `voice-clone:${data.character.id}:${JSON.stringify({
+        audio: [file.name, file.size, file.lastModified],
+        language: voice.runtimeLanguage,
+        referenceText: referenceText.trim(),
+        sampleText: sampleText.trim(),
+        delivery: cloneDelivery,
+      })}`;
       const mutation = await runCommittedMutation({
-        action: `${identityProviderLabel} voice clone`,
+        action: `${cloneProviderLabel} voice clone`,
         commit: () =>
           adminV2Operation("POST /api/v2/admin/characters/:id/voice-clones", {
             path: { id: data.character.id },
@@ -192,7 +343,6 @@ export function CharacterVoicePanel({
           releaseIdempotencyKey(signature);
           setFile(null);
           setReferenceText("");
-          setReason("");
           if (fileInput.current) fileInput.current.value = "";
         },
       });
@@ -201,104 +351,72 @@ export function CharacterVoicePanel({
           ? "The existing voice candidate result was recovered."
           : "The voice candidate is ready. Listen to the preview before activation.",
       );
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Voice cloning failed");
-    } finally {
-      setBusyAction(null);
-    }
+    });
   }
 
-  async function submitPreset(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!presetCandidateReady || busy) return;
-    setBusyAction("preset");
-    setError(null);
-    setMessage(null);
-    const body = {
-      presetVoiceId: selectedPresetVoiceId,
-      sampleText: presetSampleText.trim(),
-      reason: presetReason.trim(),
-    };
-    const signature = `voice-preset:${data.character.id}:${JSON.stringify(body)}`;
-    try {
-      const mutation = await runCommittedMutation({
-        action: "Create Pocket TTS voice candidate",
-        commit: () =>
-          adminV2Operation("POST /api/v2/admin/characters/:id/voice-presets", {
-            path: { id: data.character.id },
-            replayIdempotencyKey: takeIdempotencyKey(signature),
-            body,
-          }),
-        afterRefresh: () => {
-          releaseIdempotencyKey(signature);
-          setPresetReason("");
-        },
-      });
-      setMessage(
-        mutation.result.replayed
-          ? "The existing voice candidate result was recovered."
-          : "The Pocket voice candidate is ready. Listen to the preview before activation.",
-      );
-    } catch (cause) {
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : "Pocket voice candidate creation failed",
-      );
-    } finally {
-      setBusyAction(null);
-    }
-  }
-
-  async function activateCandidate() {
-    if (!candidate || busy || activationReason.trim().length < 3) return;
-    setBusyAction("activate");
-    setError(null);
-    setMessage(null);
-    const body = {
-      reason: activationReason.trim(),
-      expectedActiveProfileId: active?.id ?? null,
-      expectedCurrentVoiceId: data.voice.currentVoiceId,
-    };
-    const signature = `voice-activate:${data.character.id}:${candidate.id}:${JSON.stringify(body)}`;
-    try {
+  function activateCandidate() {
+    if (!candidate) return;
+    return runDirectAction("activate", async () => {
+      const body = {
+        expectedActiveProfileId: active?.id ?? null,
+        expectedCurrentVoiceId: voice.currentVoiceId,
+      };
+      const signature = `voice-activate:${data.character.id}:${candidate.id}:${JSON.stringify(body)}`;
       const mutation = await runCommittedMutation({
         action: `Activate ${voiceProviderLabel(candidate.provider)} voice`,
         commit: () =>
-          adminV2Operation(
-            "POST /api/v2/admin/characters/:id/voice-profiles/:profileId/activate",
-            {
-              path: { id: data.character.id, profileId: candidate.id },
-              replayIdempotencyKey: takeIdempotencyKey(signature),
-              body,
-            },
-          ),
-        afterRefresh: () => {
-          releaseIdempotencyKey(signature);
-          setActivationReason("");
-        },
+          adminV2Operation("POST /api/v2/admin/characters/:id/voice-profiles/:profileId/activate", {
+            path: { id: data.character.id, profileId: candidate.id },
+            replayIdempotencyKey: takeIdempotencyKey(signature),
+            body,
+          }),
+        afterRefresh: () => releaseIdempotencyKey(signature),
       });
       setMessage(
         mutation.result.replayed
           ? "The existing voice activation result was recovered."
           : "The selected voice is now active for new chat speech.",
       );
-    } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : "Voice activation failed",
+    });
+  }
+
+  // Dialog actions throw so ConfirmDialog stays open and shows the failure.
+  async function resetToSystemDefault() {
+    if (!canActivate || busy || voice.currentVoiceId === null) return;
+    setBusyAction("reset");
+    setMessage(null);
+    const body = {
+      expectedActiveProfileId: active?.id ?? null,
+      expectedCurrentVoiceId: voice.currentVoiceId,
+    };
+    const signature = `voice-reset:${data.character.id}:${JSON.stringify(body)}`;
+    try {
+      const mutation = await runCommittedMutation({
+        action: "Reset character voice to system default",
+        commit: () =>
+          adminV2Operation("POST /api/v2/admin/characters/:id/voice-defaults/reset", {
+            path: { id: data.character.id },
+            replayIdempotencyKey: takeIdempotencyKey(signature),
+            body,
+          }),
+        afterRefresh: () => releaseIdempotencyKey(signature),
+      });
+      setMessage(
+        mutation.result.replayed
+          ? "The existing reset to system default was recovered."
+          : "This character now inherits the system voice default.",
       );
     } finally {
       setBusyAction(null);
     }
   }
 
-  async function saveSystemDefaults(draft: VoiceDefaultDraft, defaultReason: string) {
+  async function saveSystemDefaults(draft: VoiceDefaultDraft) {
     if (!canManageDefaults) {
       throw new Error(t("You no longer have permission to change system voice defaults."));
     }
-    if (busy || defaultReason.trim().length < 3) return;
+    if (busy) return;
     setBusyAction("defaults");
-    setError(null);
     setMessage(null);
     const body = {
       expectedVersion: draft.settingVersion,
@@ -306,7 +424,6 @@ export function CharacterVoicePanel({
       defaultVoiceId: draft.defaultVoiceId,
       genderVoiceIds: draft.genderVoiceIds,
       delivery: draft.delivery,
-      reason: defaultReason.trim(),
     };
     const signature = `voice-system-defaults:${JSON.stringify(body)}`;
     try {
@@ -327,175 +444,170 @@ export function CharacterVoicePanel({
           ? "The saved system voice defaults were recovered."
           : "System voice defaults were saved. New speech now uses this mapping.",
       );
-    } catch (cause) {
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : "System voice defaults could not be saved",
-      );
-      throw cause;
     } finally {
       setBusyAction(null);
     }
   }
 
-  async function resetToSystemDefault() {
-    if (
-      !canActivate ||
-      busy ||
-      data.voice.currentVoiceId === null ||
-      resetReason.trim().length < 3
-    )
-      return;
-    setBusyAction("reset");
-    setError(null);
-    setMessage(null);
-    const body = {
-      reason: resetReason.trim(),
-      expectedActiveProfileId: active?.id ?? null,
-      expectedCurrentVoiceId: data.voice.currentVoiceId,
-    };
-    const signature = `voice-reset:${data.character.id}:${JSON.stringify(body)}`;
-    try {
-      const mutation = await runCommittedMutation({
-        action: "Reset character voice to system default",
-        commit: () =>
-          adminV2Operation(
-            "POST /api/v2/admin/characters/:id/voice-defaults/reset",
-            {
-              path: { id: data.character.id },
-              replayIdempotencyKey: takeIdempotencyKey(signature),
-              body,
-            },
+  function submitClone(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (cloneReadyCount !== cloneReadiness.length) return;
+    void createClone();
+  }
+
+  const dialogOpen = dialog !== null &&
+    (dialog.reviewKey === null || dialog.reviewKey === authorityReviewKey);
+  const dialogSpec = dialog && dialogOpen ? dialogSpecFor(dialog) : null;
+
+  function dialogSpecFor(intent: DialogIntent): ConfirmSpec {
+    const close = () => setDialog(null);
+    switch (intent.kind) {
+      case "reset":
+        return {
+          title: "Use system default voice",
+          summary: (
+            <p>
+              {t("{character} goes back to inheriting the system default voice {voice}.", {
+                character: data.character.name,
+                voice: catalogLabel(
+                  voiceIdForGender(voice.systemDefaults, data.character.gender),
+                ),
+              })}
+            </p>
           ),
-        afterRefresh: () => {
-          releaseIdempotencyKey(signature);
-          setResetReason("");
-        },
-      });
-      setMessage(
-        mutation.result.replayed
-          ? "The existing reset to system default was recovered."
-          : "This character now inherits the system voice default.",
-      );
-    } catch (cause) {
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : "The character voice could not be reset",
-      );
-    } finally {
-      setBusyAction(null);
+          requireReason: false,
+          submitLabel: "Use system default voice",
+          onSubmit: async () => {
+            await resetToSystemDefault();
+            close();
+          },
+        };
+      case "defaults": {
+        const draft = intent.draft;
+        return {
+          title: "Save system voice defaults",
+          summary: (
+            <div className="space-y-2">
+              <p>{t("Provider")}: {voiceProviderLabel(draft.provider)} · {t("Settings version")}: {draft.settingVersion}</p>
+              <dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1">
+                {([
+                  ["System fallback identity", draft.defaultVoiceId],
+                  ["Female character default", draft.genderVoiceIds.female],
+                  ["Male character default", draft.genderVoiceIds.male],
+                  ["Trans character default", draft.genderVoiceIds.trans],
+                ] as const).map(([label, voiceId]) => (
+                  <div className="contents" key={label}>
+                    <dt>{t(label)}</dt>
+                    <dd className="font-semibold">{t(draft.catalog.find((entry) => entry.id === voiceId)?.label ?? voiceId)}</dd>
+                  </div>
+                ))}
+              </dl>
+              {draft.provider === "fish_audio" ? <VoiceDeliverySummary delivery={draft.delivery} t={t} /> : null}
+              <p>
+                {t("This is a platform-wide setting. It changes new speech for every character that has no voice override, not just this one.")}
+              </p>
+              <p>
+                {t("Characters with an activated voice keep it. Already generated audio is not replaced.")}
+              </p>
+            </div>
+          ),
+          requireReason: false,
+          submitLabel: "Save system defaults",
+          onSubmit: async () => {
+            await saveSystemDefaults(draft);
+            close();
+          },
+        };
+      }
     }
   }
 
-  async function previewCatalogVoice(voiceId: SystemVoiceCatalogVoiceId, scope: "live" | "draft" = "draft") {
-    if (!canPreview || previewBusy || busy || (scope === "draft" && defaultDraftStale)) return;
-    const delivery = scope === "live" ? data.voice.systemDefaults.delivery : defaultDraft.delivery;
-    const signature = previewSignature(voiceId, delivery);
-    setPreviewBusy(voiceId);
-    setError(null);
-    try {
-      const preview = await adminV2Operation(
-        "POST /api/v2/admin/voice-defaults/preview",
-        {
-          body: {
-            provider: data.voice.systemDefaults.provider,
-            voiceId,
-            text:
-              data.voice.systemDefaults.provider !== "pocket_tts" &&
-              locale === "zh"
-                ? `靠近一点，我是${data.character.name}。这是系统声音的试听。`
-                : `Come a little closer. I’m ${data.character.name}. This is the system voice preview.`,
-            delivery,
-          },
-        },
-      );
-      setCatalogPreview({
-        voiceId,
-        scope,
-        signature,
-        src: `data:${preview.contentType};base64,${preview.audioBase64}`,
-      });
-    } catch (cause) {
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : "The system voice preview could not be rendered",
-      );
-    } finally {
-      setPreviewBusy(null);
-    }
-  }
+  const liveAudio = active?.preview ? (
+    <audio
+      aria-label={t("Active character voice preview")}
+      className="h-10 w-full sm:w-72"
+      controls
+      preload="metadata"
+      src={active.preview.url}
+    />
+  ) : catalogPreview?.scope === "live" && catalogPreview.signature === livePreviewSignature ? (
+    <audio
+      aria-label={t("System voice preview")}
+      autoPlay
+      className="h-10 w-full sm:w-72"
+      controls
+      src={catalogPreview.src}
+    />
+  ) : (
+    // An override's effective id is a private alias the catalog preview cannot render.
+    <WorkspaceButton
+      disabled={active !== null || !canPreview || previewBusy !== null || busy}
+      onClick={() => void previewCatalogVoice(voice.effectiveVoiceId, "live")}
+      type="button"
+    >
+      {previewBusy === voice.effectiveVoiceId ? (
+        <AudioLines aria-hidden="true" className="h-4 w-4 animate-pulse" />
+      ) : (
+        <Play aria-hidden="true" className="h-4 w-4" />
+      )}
+      {active
+        ? t("Preview unavailable")
+        : previewBusy === voice.effectiveVoiceId ? t("Rendering…") : t("Preview")}
+    </WorkspaceButton>
+  );
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
       <section
         aria-labelledby="character-voice-authority"
-        className="border-b border-[var(--ad-border)] pb-5"
+        className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5 sm:p-6"
         data-testid="voice-control-room"
       >
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <h3 className="font-semibold" id="character-voice-authority">
-              {t("Live voice")}
+        <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+          <div className="min-w-0">
+            <h3 className="text-sm font-semibold text-[var(--ad-text-muted)]" id="character-voice-authority">
+              {t("Current voice")}
             </h3>
-            <p className="mt-1 text-sm text-[var(--ad-text-muted)]">
-              {active
-                ? t("Voice version {version}", { version: active.version })
-                : t(voiceLabel(data, data.voice.effectiveVoiceId))}
+            <p className="mt-1 truncate text-2xl font-semibold tracking-[-0.01em] text-[var(--ad-ink)]">
+              {liveVoiceName}
             </p>
-            <dl className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-xs">
-              <div>
-                <dt className="inline text-[var(--ad-text-muted)]">{t("Provider")} </dt>
-                <dd className="inline font-semibold">{t(voiceProviderLabel(liveProvider))}</dd>
-              </div>
-              <div>
-                <dt className="inline text-[var(--ad-text-muted)]">{t("Current source")} </dt>
-                <dd className="inline font-semibold">
-                  {data.voice.authoritySource === "character_clone" ? t("Character override") : t("System inheritance")}
-                </dd>
-              </div>
-              <div>
-                <dt className="inline text-[var(--ad-text-muted)]">{t("Voice delivery")} </dt>
-                <dd className="inline font-semibold">
-                  {liveProvider === "fish_audio"
-                    ? t(deliveryPresetLabel(active?.delivery.preset ?? data.voice.systemDefaults.delivery.preset))
-                    : t("Native voice delivery")}
-                </dd>
-              </div>
+            <dl className="mt-3 flex flex-wrap gap-x-5 gap-y-1.5 text-xs">
+              <MetaItem label={t("Model")} value={voiceProviderLabel(liveProvider)} />
+              <MetaItem
+                label={t("Current source")}
+                value={voice.authoritySource === "character_clone" ? t("Character override") : t("System inheritance")}
+              />
+              {active ? (
+                <MetaItem label={t("Version")} value={`v${active.version}`} />
+              ) : null}
+              {liveProvider === "fish_audio" ? (
+                <MetaItem
+                  label={t("Voice delivery")}
+                  value={t(deliveryPresetLabel(active?.delivery.preset ?? voice.systemDefaults.delivery.preset))}
+                />
+              ) : null}
             </dl>
           </div>
-          {active?.preview ? (
-            <audio aria-label={t("Active character voice preview")} className="w-full lg:w-80" controls preload="metadata" src={active.preview.url} />
-          ) : catalogPreview?.scope === "live" && catalogPreview.signature === livePreviewSignature ? (
-            <audio aria-label={t("System voice preview")} autoPlay className="w-full lg:w-80" controls src={catalogPreview.src} />
-          ) : (
-            <WorkspaceButton
-              disabled={active !== null || !canPreview || previewBusy !== null || busy}
-              onClick={() =>
-                void previewCatalogVoice(data.voice.effectiveVoiceId, "live")
-              }
-              type="button"
-            >
-              <Play aria-hidden="true" className="h-4 w-4" />
-              {active ? t("Preview unavailable") : previewBusy ? t("Rendering…") : t("Preview")}
-            </WorkspaceButton>
-          )}
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center lg:shrink-0">
+            {liveAudio}
+            {voice.currentVoiceId !== null ? (
+              <WorkspaceButton
+                disabled={!canActivate || busy}
+                onClick={() => setDialog({ kind: "reset", reviewKey: authorityReviewKey })}
+                type="button"
+              >
+                <RotateCcw aria-hidden="true" className="h-4 w-4" />
+                {busyAction === "reset" ? t("Restoring system default…") : t("Use system default voice")}
+              </WorkspaceButton>
+            ) : null}
+          </div>
         </div>
+        {error?.scope === "live" ? <InlineAlert tone="error">{t(error.text)}</InlineAlert> : null}
       </section>
 
-      {error ? (
-        <p
-          className="rounded-lg bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"
-          role="alert"
-        >
-          {t(error)}
-        </p>
-      ) : null}
       {message ? (
         <p
-          className="rounded-lg bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]"
+          className="rounded-lg bg-[var(--ad-green-bg)] px-4 py-3 text-sm text-[var(--ad-green-text)]"
           role="status"
         >
           {t(message)}
@@ -505,578 +617,383 @@ export function CharacterVoicePanel({
       {candidate ? (
         <section
           aria-labelledby="voice-candidate-review-title"
-          className="overflow-hidden rounded-xl border border-[var(--ad-blue-text)] bg-[var(--ad-surface)]"
+          className="overflow-hidden rounded-xl border border-[var(--ad-blue-text)]/40 bg-[var(--ad-blue-bg)]"
           data-testid="voice-candidate-primary-action"
           id="voice-candidate-review"
         >
-          <div className="grid gap-px bg-[var(--ad-blue-text)] lg:grid-cols-[minmax(0,1fr)_22rem]">
-            <div className="bg-[var(--ad-surface)] p-5 sm:p-6">
+          <div className="flex flex-col gap-4 p-5 sm:p-6 lg:flex-row lg:items-center lg:justify-between">
+            <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <StatusBadge tone="warn" value={t("candidate")} />
                 <span className="text-xs text-[var(--ad-text-muted)]">
-                  {candidate.reference.filename} ·{" "}
-                  {formatBytes(candidate.reference.sizeBytes, locale)}
+                  {voiceProviderLabel(candidate.provider)} · v{candidate.version}
                 </span>
               </div>
-              <h3
-                className="mt-3 text-lg font-semibold"
-                id="voice-candidate-review-title"
-              >
-                {t("Listen to voice version {version}", {
-                  version: candidate.version,
-                })}
+              <h3 className="mt-2 text-lg font-semibold text-[var(--ad-ink)]" id="voice-candidate-review-title">
+                {t("Listen to {voice} before activating it", { voice: profileName(candidate) })}
               </h3>
-              <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--ad-text-muted)]">
-                {t(
-                  "Creating a candidate keeps the current voice unchanged. Listen before activation; activation affects newly generated speech.",
-                )}
+              <p className="mt-1 max-w-2xl text-sm leading-6 text-[var(--ad-text)]">
+                {t("Creating a candidate keeps the current voice unchanged. Listen before activation; activation affects newly generated speech.")}
               </p>
               {candidate.provider === "fish_audio" ? (
                 <VoiceDeliverySummary delivery={candidate.delivery} t={t} />
               ) : null}
               {candidate.reference.transcript ? (
-                <details className="mt-4 rounded-lg bg-[var(--ad-surface-subtle)] px-3 py-2">
-                  <summary className="cursor-pointer text-xs font-semibold text-[var(--ad-text-muted)]">
-                    {t("Reference transcript")}
+                <details className="mt-3">
+                  <summary className="cursor-pointer text-xs font-semibold text-[var(--ad-text)]">
+                    {t("Reference transcript")} · {candidate.reference.filename}
                   </summary>
-                  <p className="mt-2 text-sm leading-6">
-                    {candidate.reference.transcript}
-                  </p>
+                  <p className="mt-2 max-w-2xl text-sm leading-6">{candidate.reference.transcript}</p>
                 </details>
               ) : null}
             </div>
-            <div className="bg-[var(--ad-blue-bg)] p-5 sm:p-6">
-              <p className="text-xs font-semibold uppercase tracking-wide text-[var(--ad-blue-text)]">
-                {t("Candidate preview")}
-              </p>
+            <div className="flex flex-col gap-2 lg:w-80 lg:shrink-0">
               {candidate.preview ? (
                 <audio
                   aria-label={t("Candidate voice preview")}
-                  className="mt-3 w-full"
+                  className="h-10 w-full"
                   controls
                   preload="metadata"
                   src={candidate.preview.url}
                 />
               ) : (
-                <p className="mt-3 text-sm text-[var(--ad-text-muted)]">
-                  {t("No preview is available for this candidate.")}
-                </p>
+                <p className="text-sm text-[var(--ad-text)]">{t("No preview is available for this candidate.")}</p>
               )}
-              <div className="mt-5 border-t border-[var(--ad-blue-text)] pt-4">
-                <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
-                  {t("Activation reason")}
-                  <input
-                    className={`${fieldClass} mt-1`}
-                    disabled={
-                      !canActivate || !activationProviderAvailable || busy
-                    }
-                    id="character-voice-activation-reason"
-                    minLength={3}
-                    name="activationReason"
-                    onChange={(event) =>
-                      setActivationReason(event.target.value)
-                    }
-                    value={activationReason}
-                  />
-                </label>
-                <WorkspaceButton
-                  className="mt-3 w-full"
-                  disabled={
-                    !canActivate ||
-                    !activationProviderAvailable ||
-                    busy ||
-                    activationReason.trim().length < 3
-                  }
-                  onClick={() => void activateCandidate()}
-                  tone="primary"
-                  type="button"
-                >
-                  <CheckCircle2 aria-hidden="true" className="h-4 w-4" />
-                  {busyAction === "activate"
-                    ? t("Activating voice…")
-                    : t("Activate voice")}
-                </WorkspaceButton>
-              </div>
+              <WorkspaceButton
+                disabled={!canActivate || !activationProviderAvailable || busy}
+                onClick={() => void activateCandidate()}
+                tone="primary"
+                type="button"
+              >
+                <CheckCircle2 aria-hidden="true" className="h-4 w-4" />
+                {busyAction === "activate" ? t("Activating voice…") : t("Activate voice")}
+              </WorkspaceButton>
             </div>
           </div>
           {!canActivate && !busy ? (
-            <p className="border-t border-[var(--ad-border)] px-5 py-3 text-xs text-[var(--ad-text-muted)]">
-              {t(
-                "Read-only: character.release.publish is required to activate a voice.",
-              )}
+            <p className="border-t border-[var(--ad-blue-text)]/20 px-5 py-3 text-xs text-[var(--ad-text)] sm:px-6">
+              {t("Read-only: character.release.publish is required to activate a voice.")}
             </p>
           ) : null}
           {canActivate && !activationProviderAvailable ? (
             <p
-              className="border-t border-[var(--ad-border)] bg-[var(--ad-yellow-bg)] px-5 py-3 text-xs text-[var(--ad-yellow-text)]"
+              className="border-t border-[var(--ad-blue-text)]/20 bg-[var(--ad-yellow-bg)] px-5 py-3 text-xs text-[var(--ad-yellow-text)] sm:px-6"
               role="alert"
             >
-              {t(
-                "The candidate provider must be ready before this voice can be activated.",
-              )}
+              {t("The candidate provider must be ready before this voice can be activated.")}
             </p>
+          ) : null}
+          {actionError?.action === "activate" ? (
+            <div className="px-5 pb-5 sm:px-6">
+              <ActionErrorAlert copy={actionError.copy} t={t} />
+            </div>
           ) : null}
         </section>
       ) : null}
 
-      <div className="space-y-4">
-        {data.voice.presetRuntime.runtimeStatus !== "inactive" ? (
-          <form
-            className="overflow-hidden rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]"
-            data-testid="voice-preset-builder"
-            onSubmit={(event) => void submitPreset(event)}
-          >
-            <div className="border-b border-[var(--ad-border)] px-5 py-4 sm:px-6">
-              <h3 className="font-semibold">
-                {t("Choose an official voice")}
-              </h3>
+      <section
+        aria-labelledby="voice-change-title"
+        className="overflow-hidden rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)]"
+        data-testid="voice-change"
+      >
+        <div className="px-5 pt-5 sm:px-6 sm:pt-6">
+          <h3 className="text-lg font-semibold text-[var(--ad-ink)]" id="voice-change-title">
+            {t("Change voice")}
+          </h3>
+          <p className="mt-1 text-sm text-[var(--ad-text-muted)]">
+            {t("Pick a model, then a voice. Changes only affect speech generated afterwards.")}
+          </p>
+        </div>
+
+        <fieldset className="px-5 pt-5 sm:px-6">
+          <legend className="sr-only">{t("Model")}</legend>
+          <div className="grid gap-3 md:grid-cols-2">
+            <ModelOption
+              checked={model === "official"}
+              description={t("{count} official English female voices. Listen instantly and apply in one step.", {
+                count: catalogVoiceIds.length,
+              })}
+              detail={officialStatusDetail(officialStatus)}
+              engine={voice.provider === "pocket_tts" ? engineLabel(voice) : null}
+              icon={<ListMusic aria-hidden="true" className="h-5 w-5" />}
+              id="voice-model-official"
+              kind={t("Official voices")}
+              name="Pocket TTS"
+              onSelect={() => setModelChoice("official")}
+              status={officialStatus}
+              t={t}
+            />
+            <ModelOption
+              checked={model === "clone"}
+              description={t("Upload a reference recording to clone a dedicated voice, then listen before activating it.")}
+              detail={cloneStatusDetail(voice.provider, cloneStatus)}
+              engine={voice.provider === "fish_audio" ? engineLabel(voice) : null}
+              icon={<Mic aria-hidden="true" className="h-5 w-5" />}
+              id="voice-model-clone"
+              kind={t("Voice cloning")}
+              name={voice.provider === "mock" ? t("Voice cloning") : cloneProviderLabel}
+              onSelect={() => setModelChoice("clone")}
+              status={cloneStatus}
+              t={t}
+            />
+          </div>
+        </fieldset>
+
+        {model === "official" ? (
+          <div data-testid="voice-preset-builder">
+            {/* A visible legend sits in the fieldset border, so padding lives on a wrapper. */}
+            <div className="px-5 pt-6 sm:px-6">
+            <fieldset>
+              <legend className="text-sm font-semibold text-[var(--ad-ink)]">{t("Choose a voice")}</legend>
               <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-                {t(
-                  "Choose an official English Pocket voice for this character. It stays fixed when system defaults change.",
-                )}
+                {t("Press play to hear {character} with that voice.", { character: data.character.name })}
               </p>
+              <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-6">
+                {catalogVoiceIds.map((voiceId) => (
+                  <OfficialVoiceTile
+                    busy={previewBusy === voiceId}
+                    canPreview={canPreview && !busy && previewBusy === null && auditionText.length >= 3 && officialStatus === "ready"}
+                    disabled={!canWrite || busy || officialStatus !== "ready"}
+                    inUse={voiceId === livePresetVoiceId}
+                    key={voiceId}
+                    label={catalogLabel(voiceId)}
+                    onAudition={() => auditionOfficialVoice(voiceId)}
+                    onSelect={() => setPresetChoice(voiceId)}
+                    selected={voiceId === selectedPresetVoiceId}
+                    t={t}
+                    voiceId={voiceId}
+                  />
+                ))}
+              </div>
+            </fieldset>
             </div>
-            <div className="grid gap-4 p-5 sm:p-6 lg:grid-cols-2">
-              <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
-                {t("Official English voice")}
-                <select
-                  className={`${fieldClass} mt-1`}
-                  disabled={
-                    !canWrite || data.voice.presetRuntime.runtimeStatus !== "ready" || busy
-                  }
-                  id="character-pocket-preset-voice"
-                  onChange={(event) => setPresetVoiceId(event.target.value)}
-                  value={selectedPresetVoiceId}
-                >
-                  {data.voice.presetRuntime.catalogVoiceIds.map((voiceId) => (
-                    <option key={voiceId} value={voiceId}>
-                      {formatCatalogVoiceName(voiceId)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
-                {t("Change reason")}
-                <input
-                  className={`${fieldClass} mt-1`}
-                  disabled={!canWrite || busy}
-                  id="character-pocket-preset-reason"
-                  minLength={3}
-                  onChange={(event) => setPresetReason(event.target.value)}
-                  required
-                  value={presetReason}
-                />
-              </label>
-              <label className="text-xs font-semibold text-[var(--ad-text-muted)] lg:col-span-2">
-                {t("Preview script")}
-                <textarea
-                  className={`${textAreaClass} mt-1 min-h-28`}
-                  disabled={!canWrite || busy}
-                  id="character-pocket-preset-preview-script"
-                  maxLength={500}
-                  minLength={3}
-                  onChange={(event) => setPresetSampleText(event.target.value)}
-                  required
-                  value={presetSampleText}
-                />
-              </label>
-            </div>
-            {data.voice.presetRuntime.runtimeStatus !== "ready" ? (
-              <p role="alert" className="px-5 py-3 text-sm text-[var(--ad-yellow-text)]">
-                {t("Official voice service is unavailable. Refresh after it recovers.")}
-              </p>
+            <details className="mx-5 mt-4 sm:mx-6">
+              <summary className="cursor-pointer text-xs font-semibold text-[var(--ad-text-muted)]">
+                {t("Customize preview script")}
+              </summary>
+              <textarea
+                aria-label={t("Preview script")}
+                className={`${textAreaClass} mt-2`}
+                disabled={!canWrite || busy}
+                id="character-pocket-preset-preview-script"
+                maxLength={AUDITION_MAX_CHARS}
+                onChange={(event) => setPresetSampleText(event.target.value)}
+                value={presetSampleText}
+              />
+            </details>
+            {officialStatus !== "ready" ? (
+              <div className="px-5 sm:px-6">
+                <InlineAlert tone="warn">{t(officialStatusDetail(officialStatus) ?? "")}</InlineAlert>
+              </div>
             ) : null}
-            <div className="flex justify-end border-t border-[var(--ad-border)] p-5 sm:p-6">
+            {error?.scope === "audition" ? (
+              <div className="px-5 sm:px-6">
+                <InlineAlert tone="error">{t(error.text)}</InlineAlert>
+              </div>
+            ) : null}
+            {actionError?.action === "preset" ? (
+              <div className="px-5 sm:px-6">
+                <ActionErrorAlert copy={actionError.copy} t={t} />
+              </div>
+            ) : null}
+            <div className="mt-5 flex flex-col gap-4 border-t border-[var(--ad-border)] bg-[var(--ad-surface-subtle)]/60 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+              <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
+                <p className="text-sm">
+                  <span className="text-[var(--ad-text-muted)]">{t("Selected")} </span>
+                  <strong className="font-semibold text-[var(--ad-ink)]">
+                    {selectedPresetVoiceId ? catalogLabel(selectedPresetVoiceId) : "—"}
+                  </strong>
+                </p>
+                {catalogPreview?.scope === "audition" &&
+                catalogPreview.voiceId === selectedPresetVoiceId &&
+                catalogPreview.signature === previewSignature(selectedPresetVoiceId, voice.systemDefaults.delivery, auditionText) ? (
+                  <audio
+                    aria-label={t("Preview {voice}", { voice: catalogLabel(selectedPresetVoiceId) })}
+                    autoPlay
+                    className="h-9 w-full sm:w-64"
+                    controls
+                    src={catalogPreview.src}
+                  />
+                ) : null}
+              </div>
               <WorkspaceButton
-                disabled={
-                  !canWrite ||
-                  data.voice.presetRuntime.runtimeStatus !== "ready" ||
-                  busy ||
-                  !presetCandidateReady
-                }
+                className="sm:shrink-0"
+                disabled={!officialApplyReady || busy}
+                onClick={() => void applyOfficialVoice(selectedPresetVoiceId, canActivate)}
                 tone="primary"
-                type="submit"
+                type="button"
               >
-                <AudioLines
-                  aria-hidden="true"
-                  className={cn("h-4 w-4", busy && "animate-pulse")}
-                />
+                {busyAction === "preset" ? (
+                  <AudioLines aria-hidden="true" className="h-4 w-4 animate-pulse" />
+                ) : (
+                  <Check aria-hidden="true" className="h-4 w-4" />
+                )}
                 {busyAction === "preset"
-                  ? t("Creating Pocket voice candidate…")
-                  : t("Create Pocket voice candidate")}
+                  ? t("Applying voice…")
+                  : selectedIsLiveOverride
+                    ? t("Already in use")
+                    : canActivate
+                      ? t("Use as character voice")
+                      : t("Submit as candidate")}
               </WorkspaceButton>
             </div>
-          </form>
-        ) : null}
-
-        {data.voice.provider !== "pocket_tts" ||
-        data.voice.cloningAvailable ? (
-        <form
-          className="overflow-hidden rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]"
-          id="voice-candidate-builder"
-          onSubmit={(event) => void submit(event)}
-        >
-          <div className="border-b border-[var(--ad-border)] px-5 py-4 sm:px-6">
-            <h3 className="font-semibold">
-              {t("Clone from reference audio")}
-            </h3>
+            {!canWrite ? (
+              <p className="border-t border-[var(--ad-border)] px-5 py-3 text-xs text-[var(--ad-text-muted)] sm:px-6">
+                {t("Read-only: character write permission is required to change the voice.")}
+              </p>
+            ) : null}
           </div>
-          {!data.voice.cloningAvailable ? (
-            <p
-              className="m-5 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)] sm:mx-6"
-              role="alert"
-            >
-              {t(
-                voiceRuntimeMessage(
-                  data.voice.provider,
-                  data.voice.runtimeStatus,
-                ),
-              )}
-            </p>
-          ) : null}
-          <div className="grid gap-5 p-5 sm:p-6 lg:grid-cols-2">
-            <section
-              aria-labelledby="voice-reference-identity"
-              className="min-w-0"
-            >
-              <h4 className="text-sm font-semibold" id="voice-reference-identity">
-                {t("Reference identity")}
-              </h4>
-              <div className="mt-3 grid gap-4">
+        ) : (
+          <form id="voice-candidate-builder" onSubmit={submitClone}>
+            {cloneStatus !== "ready" ? (
+              <div className="px-5 sm:px-6">
+                <InlineAlert tone="warn">{t(cloneStatusDetail(voice.provider, cloneStatus) ?? "")}</InlineAlert>
+              </div>
+            ) : null}
+            <div className="grid gap-6 px-5 pt-6 sm:px-6 lg:grid-cols-2">
+              <section aria-labelledby="voice-reference-identity" className="min-w-0 space-y-4">
+                <h4 className="text-sm font-semibold text-[var(--ad-ink)]" id="voice-reference-identity">
+                  {t("Reference identity")}
+                </h4>
                 <div className="text-xs font-semibold text-[var(--ad-text-muted)]">
                   <span>{t("Voice reference audio")}</span>
                   <input
                     accept=".wav,.mp3,.flac,.ogg,audio/wav,audio/mpeg,audio/flac,audio/ogg"
                     aria-describedby="character-voice-reference-help"
                     className="sr-only"
-                    disabled={!canWrite || !data.voice.cloningAvailable || busy}
+                    disabled={!canWrite || cloneStatus !== "ready" || busy}
                     id="character-voice-reference"
                     name="audio"
-                    onChange={(event) =>
-                      setFile(event.target.files?.[0] ?? null)
-                    }
+                    onChange={(event) => setFile(event.target.files?.[0] ?? null)}
                     ref={fileInput}
-                    required
                     type="file"
                   />
                   <div className="mt-1 flex min-h-11 items-center rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] p-1">
                     <label
                       className={cn(
-                        "inline-flex min-h-9 shrink-0 cursor-pointer items-center rounded px-3 text-xs font-semibold text-[var(--ad-ink)] hover:bg-black/[0.04]",
-                        (!canWrite || !data.voice.cloningAvailable || busy) &&
-                          "cursor-not-allowed opacity-50",
+                        "inline-flex min-h-9 shrink-0 cursor-pointer items-center gap-1.5 rounded px-3 text-xs font-semibold text-[var(--ad-ink)] hover:bg-black/[0.04]",
+                        (!canWrite || cloneStatus !== "ready" || busy) && "cursor-not-allowed opacity-50",
                       )}
                       htmlFor="character-voice-reference"
                     >
+                      <Upload aria-hidden="true" className="h-3.5 w-3.5" />
                       {t("Choose audio")}
                     </label>
                     <span className="min-w-0 truncate px-3 font-normal text-[var(--ad-ink)]">
                       {file?.name ?? t("No audio selected")}
                     </span>
                   </div>
-                  <span
-                    className="mt-1 block font-normal"
-                    id="character-voice-reference-help"
-                  >
+                  <span className="mt-1 block font-normal" id="character-voice-reference-help">
                     {t("WAV, MP3, FLAC, or OGG · maximum 15 MB")}
                   </span>
                 </div>
-                <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
+                <label className="block text-xs font-semibold text-[var(--ad-text-muted)]">
                   {t("Reference transcript")}
                   <textarea
-                    className={`${textAreaClass} mt-1 min-h-36`}
-                    disabled={!canWrite || !data.voice.cloningAvailable || busy}
+                    className={`${textAreaClass} mt-1 min-h-32`}
+                    disabled={!canWrite || cloneStatus !== "ready" || busy}
                     id="character-voice-reference-transcript"
                     maxLength={2_000}
-                    minLength={3}
                     name="referenceText"
                     onChange={(event) => setReferenceText(event.target.value)}
-                    placeholder={t(
-                      "Enter the exact words spoken in the reference recording.",
-                    )}
-                    required
+                    placeholder={t("Enter the exact words spoken in the reference recording.")}
                     value={referenceText}
                   />
                   <span className="mt-1 block font-normal">
-                    {t(
-                      voiceReferenceTranscriptHelp(data.voice.provider),
-                    )}
+                    {t(voiceReferenceTranscriptHelp(voice.provider))}
                   </span>
                 </label>
-              </div>
-            </section>
-
-            <section
-              aria-labelledby="voice-preview-audit"
-              className="min-w-0"
-            >
-              <h4 className="text-sm font-semibold" id="voice-preview-audit">
-                {t("Preview and audit")}
-              </h4>
-              <div className="mt-3 grid gap-4">
-                <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
+              </section>
+              <section aria-labelledby="voice-clone-preview" className="min-w-0 space-y-4">
+                <h4 className="text-sm font-semibold text-[var(--ad-ink)]" id="voice-clone-preview">
                   {t("Preview script")}
+                </h4>
+                <label className="block text-xs font-semibold text-[var(--ad-text-muted)]">
+                  <span className="sr-only">{t("Preview script")}</span>
                   <textarea
-                    className={`${textAreaClass} mt-1 min-h-36`}
+                    className={`${textAreaClass} min-h-32`}
                     disabled={!canWrite || busy}
                     id="character-voice-preview-script"
                     maxLength={500}
-                    minLength={3}
                     name="sampleText"
                     onChange={(event) => setSampleText(event.target.value)}
-                    required
                     value={sampleText}
                   />
                 </label>
-                <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
-                  {t("Change reason")}
-                  <input
-                    className={`${fieldClass} mt-1`}
-                    disabled={!canWrite || busy}
-                    id="character-voice-change-reason"
-                    minLength={3}
-                    name="reason"
-                    onChange={(event) => setReason(event.target.value)}
-                    required
-                    value={reason}
-                  />
-                  <span className="mt-1 block font-normal">
-                    {t("This reason is stored in the operator audit trail.")}
-                  </span>
-                </label>
-              </div>
-            </section>
-          </div>
-
-          {data.voice.provider === "fish_audio" ? (
-            <details className="border-t border-[var(--ad-border)] bg-[var(--ad-surface-subtle)]">
-              <summary
-                className="cursor-pointer px-5 py-4 text-sm font-semibold sm:px-6"
-                id="character-performance-direction"
+              </section>
+            </div>
+            {voice.provider === "fish_audio" ? (
+              <section
+                aria-labelledby="character-performance-direction"
+                className="mx-5 mt-6 border-t border-[var(--ad-border)] pt-5 sm:mx-6"
               >
-                {t("Voice style and advanced settings")}
-              </summary>
-              <div className="border-t border-[var(--ad-border)] p-5 sm:p-6">
-                <VoiceDeliveryEditor
-                  delivery={cloneDelivery}
-                  disabled={!canWrite || busy}
-                  onChange={setCloneDelivery}
-                  t={t}
-                />
+                <h4 className="text-sm font-semibold text-[var(--ad-ink)]" id="character-performance-direction">
+                  {t("Voice delivery")}
+                </h4>
+                <div className="mt-3">
+                  <VoiceDeliveryEditor
+                    delivery={cloneDelivery}
+                    disabled={!canWrite || busy}
+                    onChange={setCloneDelivery}
+                    t={t}
+                  />
+                </div>
+              </section>
+            ) : null}
+            {actionError?.action === "clone" ? (
+              <div className="px-5 sm:px-6">
+                <ActionErrorAlert copy={actionError.copy} t={t} />
               </div>
-            </details>
-          ) : null}
-
-          <div className="border-t border-[var(--ad-border)] p-5 sm:p-6">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-              <div className="text-sm text-[var(--ad-text-muted)]">
-                <p>
-                  {t("{done} of {total} required inputs ready", {
-                    done: candidateReadyCount,
-                    total: candidateReadiness.length,
-                  })}
-                </p>
-              </div>
+            ) : null}
+            <div className="mt-6 flex flex-col gap-3 border-t border-[var(--ad-border)] bg-[var(--ad-surface-subtle)]/60 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+              <p className="text-sm text-[var(--ad-text-muted)]">
+                {t("{done} of {total} required inputs ready", {
+                  done: cloneReadyCount,
+                  total: cloneReadiness.length,
+                })}
+              </p>
               <WorkspaceButton
-                className="w-full lg:w-auto"
-                disabled={
-                  !canWrite ||
-                  !data.voice.cloningAvailable ||
-                  busy ||
-                  candidateReadyCount !== candidateReadiness.length
-                }
+                disabled={!canWrite || cloneStatus !== "ready" || busy || cloneReadyCount !== cloneReadiness.length}
                 tone="primary"
                 type="submit"
               >
-                {busy ? (
-                  <AudioLines
-                    aria-hidden="true"
-                    className="h-4 w-4 animate-pulse"
-                  />
+                {busyAction === "clone" ? (
+                  <AudioLines aria-hidden="true" className="h-4 w-4 animate-pulse" />
                 ) : (
                   <Upload aria-hidden="true" className="h-4 w-4" />
                 )}
-                {busyAction === "clone"
-                  ? t("Cloning and rendering preview…")
-                  : t("Clone and render preview")}
+                {busyAction === "clone" ? t("Cloning and rendering preview…") : t("Clone and render preview")}
               </WorkspaceButton>
             </div>
-          </div>
-        </form>
-        ) : null}
+          </form>
+        )}
+      </section>
 
-        <details className="overflow-hidden rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
-          <summary className="cursor-pointer px-4 py-4 text-sm font-semibold">
-            {t("Current voice and runtime")}
+      {archivedProfiles.length > 0 ? (
+        <details className="overflow-hidden rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)]">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-5 py-4 sm:px-6">
+            <span className="inline-flex items-center gap-2 text-sm font-semibold">
+              <History aria-hidden="true" className="h-4 w-4 text-[var(--ad-text-muted)]" />
+              {t("Voice history")}
+            </span>
+            <StatusBadge value={`${archivedProfiles.length}`} />
           </summary>
-          <div className="space-y-5 border-t border-[var(--ad-border)] p-3">
-          <section
-            aria-labelledby="live-voice-configuration"
-            className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5"
-            data-testid="live-voice-configuration"
-          >
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2">
-                <Radio
-                  aria-hidden="true"
-                  className="h-4 w-4 text-[var(--ad-blue-text)]"
-                />
-                <h3
-                  className="text-sm font-semibold"
-                  id="live-voice-configuration"
-                >
-                  {t("Live voice configuration")}
-                </h3>
-              </div>
-              <span
-                aria-hidden="true"
-                className="h-2.5 w-2.5 rounded-full bg-[var(--ad-green-text)] shadow-[0_0_0_3px_var(--ad-green-bg)]"
-              />
-            </div>
-            <p className="mt-2 text-xs leading-5 text-[var(--ad-text-muted)]">
-              {t("This is the authoritative voice used for new chat speech.")}
-            </p>
-            <div className="mt-4 border-t border-[var(--ad-border)] pt-4">
-              {active ? (
-                <>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <StatusBadge value={t("character override")} />
-                    <span className="text-xs text-[var(--ad-text-muted)]">
-                      {t("Voice version {version}", {
-                        version: active.version,
-                      })}
-                    </span>
-                  </div>
-                  <p className="mt-3 text-sm font-semibold">
-                    {active.reference.filename}
-                  </p>
-                  <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-                    {formatBytes(active.reference.sizeBytes, locale)} ·{" "}
-                    {t(active.language)}
-                  </p>
-                  {active.provider === "fish_audio" ? (
-                    <VoiceDeliverySummary delivery={active.delivery} t={t} />
-                  ) : null}
-                  {active.preview ? (
-                    <audio
-                      aria-label={t("Active character voice preview")}
-                      className="mt-4 w-full"
-                      controls
-                      preload="none"
-                      src={active.preview.url}
-                    />
-                  ) : null}
-                </>
-              ) : (
-                <>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <StatusBadge
-                      tone="good"
-                      value={t("inherits system default")}
-                    />
-                  </div>
-                  <p className="mt-3 text-sm font-semibold">
-                    {t(voiceLabel(data, data.voice.effectiveVoiceId))}
-                  </p>
-                  <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">
-                    {t(
-                      "New speech uses this system default. Existing cached clips remain unchanged.",
-                    )}
-                  </p>
-                  {data.voice.systemDefaults.provider === "fish_audio" ? (
-                    <VoiceDeliverySummary delivery={data.voice.systemDefaults.delivery} t={t} />
-                  ) : <p className="mt-3 text-xs text-[var(--ad-text-muted)]">{t("Native voice delivery")}</p>}
-                </>
-              )}
-            </div>
-            {data.voice.currentVoiceId !== null ? (
-              <div className="mt-4 border-t border-[var(--ad-border)] pt-4">
-                <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
-                  {t("Reason for restoring system default")}
-                  <input
-                    className={`${fieldClass} mt-1`}
-                    disabled={!canActivate || busy}
-                    minLength={3}
-                    onChange={(event) => setResetReason(event.target.value)}
-                    value={resetReason}
-                  />
-                </label>
-                <WorkspaceButton
-                  className="mt-3 w-full"
-                  disabled={
-                    !canActivate || busy || resetReason.trim().length < 3
-                  }
-                  onClick={() => void resetToSystemDefault()}
-                  type="button"
-                >
-                  <RotateCcw aria-hidden="true" className="h-4 w-4" />
-                  {busyAction === "reset"
-                    ? t("Restoring system default…")
-                    : t("Use system default voice")}
-                </WorkspaceButton>
-              </div>
-            ) : null}
-          </section>
-
-          <section
-            aria-labelledby="voice-runtime-route"
-            className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5"
-          >
-            <div className="flex items-center gap-2">
-              <Activity
-                aria-hidden="true"
-                className="h-4 w-4 text-[var(--ad-blue-text)]"
-              />
-              <h3 className="text-sm font-semibold" id="voice-runtime-route">
-                {t("Voice cloning runtime")}
-              </h3>
-            </div>
-            <div className="mt-4 flex items-center gap-2">
-              <span
-                aria-hidden="true"
-                className={`h-2.5 w-2.5 rounded-full ${
-                  data.voice.runtimeStatus === "ready"
-                    ? "bg-[var(--ad-green-text)]"
-                    : "bg-[var(--ad-yellow-text)]"
-                }`}
-              />
-              <span className="text-sm font-semibold">
-                {t(voiceRuntimeLabel(data.voice.runtimeStatus))}
-              </span>
-            </div>
-            {data.voice.provider === "pocket_tts" ? (
-              <p className="mt-2 text-xs text-[var(--ad-text-muted)]">
-                {t("{count} official English voices available", {
-                  count: data.voice.presetRuntime.catalogVoiceIds.length,
-                })}
-              </p>
-            ) : null}
-            <dl className="mt-4 grid gap-3 text-xs">
-              <div className="flex items-center justify-between gap-4 border-t border-[var(--ad-border)] pt-3">
-                <dt className="text-[var(--ad-text-muted)]">{t("Provider")}</dt>
-                <dd className="font-semibold">{t(identityProviderLabel)}</dd>
-              </div>
-              <div className="flex items-center justify-between gap-4 border-t border-[var(--ad-border)] pt-3">
-                <dt className="text-[var(--ad-text-muted)]">{t("Engine")}</dt>
-                <dd className="font-semibold">
-                  {data.voice.runtimeEngine === "mlx_audio"
-                    ? `MLX ${data.voice.runtimeVersion ?? ""}`.trim()
-                    : data.voice.runtimeEngine === "pocket_tts"
-                      ? `Pocket TTS ${data.voice.runtimeVersion ?? ""}`.trim()
-                      : data.voice.runtimeEngine}
-                </dd>
-              </div>
-              <div className="flex items-center justify-between gap-4 border-t border-[var(--ad-border)] pt-3">
-                <dt className="text-[var(--ad-text-muted)]">{t("Language")}</dt>
-                <dd className="font-semibold">
-                  {t(data.voice.runtimeLanguage)}
-                </dd>
-              </div>
-            </dl>
-          </section>
-          </div>
+          <ul className="divide-y divide-[var(--ad-border)] border-t border-[var(--ad-border)]">
+            {archivedProfiles.map((profile) => (
+              <li className="flex flex-wrap items-center justify-between gap-2 px-5 py-3 text-sm sm:px-6" key={profile.id}>
+                <span className="min-w-0">
+                  <strong className="font-semibold">{profileName(profile)}</strong>
+                  <span className="text-[var(--ad-text-muted)]">
+                    {" "}· {voiceProviderLabel(profile.provider)} · v{profile.version} ·{" "}
+                    {new Date(profile.createdAt).toLocaleString(locale === "zh" ? "zh-CN" : "en-US")}
+                  </span>
+                </span>
+                <StatusBadge value={profile.status} />
+              </li>
+            ))}
+          </ul>
         </details>
-      </div>
+      ) : null}
 
       <details
         className="group overflow-hidden rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)]"
@@ -1084,7 +1001,7 @@ export function CharacterVoicePanel({
       >
         <summary className="flex cursor-pointer list-none flex-col items-start justify-between gap-4 p-5 sm:flex-row sm:p-6">
           <div className="flex min-w-0 items-start gap-3">
-            <div className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-[var(--ad-blue-bg)] text-[var(--ad-blue-text)]">
+            <div className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-[var(--ad-surface-subtle)] text-[var(--ad-text)]">
               <Settings2 aria-hidden="true" className="h-5 w-5" />
             </div>
             <div>
@@ -1096,37 +1013,22 @@ export function CharacterVoicePanel({
               </p>
               <div className="mt-3 flex flex-wrap gap-2">
                 <StatusBadge
-                  value={
-                    data.voice.systemDefaults.source === "app_setting"
-                      ? t("saved in Admin")
-                      : t("environment fallback")
-                  }
+                  value={voice.systemDefaults.source === "app_setting" ? t("saved in Admin") : t("environment fallback")}
                 />
-                <StatusBadge
-                  value={`${t("version")} ${data.voice.systemDefaults.settingVersion}`}
-                />
-                <StatusBadge
-                  value={voiceProviderLabel(data.voice.systemDefaults.provider)}
-                />
-                {data.voice.authoritySource === "system_default" ? (
+                <StatusBadge value={`${t("version")} ${voice.systemDefaults.settingVersion}`} />
+                <StatusBadge value={voiceProviderLabel(voice.systemDefaults.provider)} />
+                {voice.authoritySource === "system_default" ? (
                   <StatusBadge tone="good" value={t("used here")} />
                 ) : null}
               </div>
             </div>
           </div>
           <span className="shrink-0 self-start rounded-md border border-[var(--ad-border)] px-3 py-2 text-xs font-semibold text-[var(--ad-text-muted)]">
-            <span className="group-open:hidden">
-              {t("Open system defaults")}
-            </span>
-            <span className="hidden group-open:inline">
-              {t("Close system defaults")}
-            </span>
+            <span className="group-open:hidden">{t("Open system defaults")}</span>
+            <span className="hidden group-open:inline">{t("Close system defaults")}</span>
           </span>
         </summary>
-        <div
-          aria-labelledby="system-voice-defaults-title"
-          className="border-t border-[var(--ad-border)] p-5 sm:p-6"
-        >
+        <div aria-labelledby="system-voice-defaults-title" className="border-t border-[var(--ad-border)] p-5 sm:p-6">
           <div className="grid gap-5 lg:grid-cols-[minmax(16rem,22rem)_minmax(0,1fr)]">
             <div className="space-y-3">
               <p className="text-xs leading-5 text-[var(--ad-text-muted)]">{t("Gender mappings select inherited voices. The fallback is used for other or unspecified genders.")}</p>
@@ -1146,7 +1048,7 @@ export function CharacterVoicePanel({
               {(["female", "male", "trans"] as const).map((gender) => (
                 <VoiceDefaultSelect
                   key={gender}
-                  active={data.voice.authoritySource === "system_default" && data.character.gender === gender && defaultDraft.genderVoiceIds[gender] === data.voice.effectiveVoiceId && (data.voice.systemDefaults.provider !== "fish_audio" || JSON.stringify(defaultDraft.delivery) === JSON.stringify(data.voice.systemDefaults.delivery))}
+                  active={voice.authoritySource === "system_default" && data.character.gender === gender && defaultDraft.genderVoiceIds[gender] === voice.effectiveVoiceId && (voice.systemDefaults.provider !== "fish_audio" || JSON.stringify(defaultDraft.delivery) === JSON.stringify(voice.systemDefaults.delivery))}
                   busy={previewBusy}
                   disabled={!canManageDefaults || busy || defaultDraftStale}
                   canPreview={canPreview && !busy && !defaultDraftStale}
@@ -1162,55 +1064,39 @@ export function CharacterVoicePanel({
             </div>
             <div className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface-subtle)] p-4">
               <div className="mb-4">
-                <h4 className="text-sm font-semibold">
-                  {t("System performance direction")}
-                </h4>
+                <h4 className="text-sm font-semibold">{t("System performance direction")}</h4>
                 {defaultDraft.provider === "fish_audio" ? (
                   <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">{t("Set the sensual character of every inherited voice. Identity and performance stay separate.")}</p>
                 ) : null}
               </div>
               {defaultDraft.provider === "pocket_tts" ? (
                 <p className="text-sm leading-6 text-[var(--ad-text-muted)]">
-                  {t(
-                    "Pocket TTS uses each official voice's native English delivery; performance controls are not applied.",
-                  )}
+                  {t("Pocket TTS uses each official voice's native English delivery; performance controls are not applied.")}
                 </p>
               ) : (
                 <VoiceDeliveryEditor
                   disabled={!canManageDefaults || busy || defaultDraftStale}
                   delivery={defaultDraft.delivery}
-                  onChange={(delivery) =>
-                    setDefaultDraftOverride({
-                      ...defaultDraft,
-                      delivery,
-                    })
-                  }
+                  onChange={(delivery) => setDefaultDraftOverride({ ...defaultDraft, delivery })}
                   t={t}
                 />
               )}
             </div>
           </div>
-          {catalogPreview?.scope === "draft" && catalogPreview.signature === previewSignature(catalogPreview.voiceId, defaultDraft.delivery) ? (
+          {catalogPreview?.scope === "draft" && catalogPreview.signature === previewSignature(catalogPreview.voiceId, defaultDraft.delivery, "draft") ? (
             <div className="mt-4 grid gap-3 rounded-lg bg-[var(--ad-blue-bg)] p-4 sm:grid-cols-[1fr_auto] sm:items-center">
               <div>
                 <p className="text-sm font-semibold text-[var(--ad-blue-text)]">
-                  {t("Previewing {voice}", {
-                    voice: t(voiceLabel(data, catalogPreview.voiceId)),
-                  })}
+                  {t("Previewing {voice}", { voice: t(catalogLabel(catalogPreview.voiceId)) })}
                 </p>
                 <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
                   {t("Listen before saving the default mapping.")}
                 </p>
               </div>
-              <audio
-                aria-label={t("System voice preview")}
-                autoPlay
-                className="w-full sm:w-72"
-                controls
-                src={catalogPreview.src}
-              />
+              <audio aria-label={t("System voice preview")} autoPlay className="w-full sm:w-72" controls src={catalogPreview.src} />
             </div>
           ) : null}
+          {error?.scope === "draft" ? <InlineAlert tone="error">{t(error.text)}</InlineAlert> : null}
           {defaultDraftStale ? (
             <div role="alert" className="mt-4 space-y-3 rounded-lg bg-[var(--ad-yellow-bg)] p-4 text-sm">
               <p>{t("System defaults changed while you were editing. Your draft is preserved; load the current defaults before editing again.")}</p>
@@ -1222,7 +1108,7 @@ export function CharacterVoicePanel({
           <div className="mt-5 border-t border-[var(--ad-border)] pt-4">
             <WorkspaceButton
               disabled={!canManageDefaults || busy || defaultDraftStale}
-              onClick={() => setPendingDefaults(defaultDraft)}
+              onClick={() => setDialog({ kind: "defaults", draft: defaultDraft, reviewKey: null })}
               tone="primary"
               type="button"
             >
@@ -1232,96 +1118,261 @@ export function CharacterVoicePanel({
           </div>
           {!canManageDefaults && !busy ? (
             <p className="mt-3 text-xs text-[var(--ad-text-muted)]">
-              {t(
-                "Read-only: generation.config.write is required to change system voice defaults.",
-              )}
+              {t("Read-only: generation.config.write is required to change system voice defaults.")}
             </p>
           ) : null}
         </div>
       </details>
 
-      {archivedProfiles.length > 0 ? (
-        <details className="overflow-hidden rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)]">
-          <summary className="flex cursor-pointer list-none items-center justify-between gap-4 p-5">
-            <span className="inline-flex items-center gap-2 text-sm font-semibold">
-              <History
-                aria-hidden="true"
-                className="h-4 w-4 text-[var(--ad-blue-text)]"
-              />
-              {t("Voice history")}
-            </span>
-            <StatusBadge value={`${archivedProfiles.length}`} />
-          </summary>
-          <div className="grid gap-3 border-t border-[var(--ad-border)] p-5 sm:grid-cols-2">
-            {archivedProfiles.map((profile) => (
-              <article
-                className="rounded-lg bg-[var(--ad-surface-subtle)] p-3 text-sm"
-                key={profile.id}
-              >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <strong>
-                    {t("Voice version {version}", {
-                      version: profile.version,
-                    })}
-                  </strong>
-                  <StatusBadge value={profile.status} />
-                </div>
-                <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-                  {profile.reference.filename} ·{" "}
-                  {new Date(profile.createdAt).toLocaleString(
-                    locale === "zh" ? "zh-CN" : "en-US",
-                  )}
-                </p>
-              </article>
-            ))}
-          </div>
-        </details>
-      ) : null}
-      {pendingDefaults ? (
-        <ConfirmDialog
-          onClose={() => setPendingDefaults(null)}
-          spec={{
-            title: t("Save system voice defaults"),
-            summary: (
-              <div className="space-y-2">
-                <p>{t("Provider")}: {voiceProviderLabel(pendingDefaults.provider)} · {t("Settings version")}: {pendingDefaults.settingVersion}</p>
-                <dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1">
-                  {([
-                    ["System fallback identity", pendingDefaults.defaultVoiceId],
-                    ["Female character default", pendingDefaults.genderVoiceIds.female],
-                    ["Male character default", pendingDefaults.genderVoiceIds.male],
-                    ["Trans character default", pendingDefaults.genderVoiceIds.trans],
-                  ] as const).map(([label, voiceId]) => (
-                    <div className="contents" key={label}>
-                      <dt>{t(label)}</dt>
-                      <dd className="font-semibold">{t(pendingDefaults.catalog.find((voice) => voice.id === voiceId)?.label ?? voiceId)}</dd>
-                    </div>
-                  ))}
-                </dl>
-                {pendingDefaults.provider === "fish_audio" ? <VoiceDeliverySummary delivery={pendingDefaults.delivery} t={t} /> : null}
-                <p>
-                  {t(
-                    "This is a platform-wide setting. It changes new speech for every character that has no voice override, not just this one.",
-                  )}
-                </p>
-                <p>
-                  {t(
-                    "Characters with an activated voice keep it. Already generated audio is not replaced.",
-                  )}
-                </p>
-              </div>
-            ),
-            reasonLabel: t("System default change reason"),
-            submitLabel: t("Save system defaults"),
-            onSubmit: async (reason) => {
-              await saveSystemDefaults(pendingDefaults, reason);
-              setPendingDefaults(null);
-            },
-          }}
-        />
-      ) : null}
+      {dialogSpec ? <ConfirmDialog onClose={() => setDialog(null)} spec={dialogSpec} /> : null}
     </div>
   );
+}
+
+function MetaItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <dt className="inline text-[var(--ad-text-muted)]">{label} </dt>
+      <dd className="inline font-semibold text-[var(--ad-ink)]">{value}</dd>
+    </div>
+  );
+}
+
+function InlineAlert({ children, tone }: { children: ReactNode; tone: "warn" | "error" }) {
+  return (
+    <p
+      className={cn(
+        "mt-4 rounded-lg px-4 py-3 text-sm",
+        tone === "error"
+          ? "bg-[var(--ad-red-bg)] text-[var(--ad-red-text)]"
+          : "bg-[var(--ad-yellow-bg)] text-[var(--ad-yellow-text)]",
+      )}
+      role="alert"
+    >
+      {children}
+    </p>
+  );
+}
+
+function ActionErrorAlert({ copy, t }: { copy: OperatorErrorCopy; t: Translate }) {
+  return (
+    <div className="mt-4 rounded-lg bg-[var(--ad-red-bg)] px-4 py-3 text-sm text-[var(--ad-red-text)]" role="alert">
+      <span className="block font-semibold">{t(copy.headline)}</span>
+      <span className="mt-1 block">{t(copy.nextStep, copy.nextStepValues)}</span>
+      <RequestErrorDetails technical={copy.technical} />
+    </div>
+  );
+}
+
+function ModelOption({
+  checked,
+  description,
+  detail,
+  engine,
+  icon,
+  id,
+  kind,
+  name,
+  onSelect,
+  status,
+  t,
+}: {
+  checked: boolean;
+  description: string;
+  detail: string | null;
+  engine: string | null;
+  icon: ReactNode;
+  id: string;
+  kind: string;
+  name: string;
+  onSelect: () => void;
+  status: ModelStatus;
+  t: Translate;
+}) {
+  const disabled = status === "inactive";
+  return (
+    <label
+      className={cn(
+        "relative flex cursor-pointer gap-3 rounded-lg border p-4 transition-[border-color,box-shadow] duration-150 has-[input:focus-visible]:outline-2 has-[input:focus-visible]:outline-offset-2 has-[input:focus-visible]:outline-[var(--ad-ink)]",
+        checked
+          ? "border-[var(--ad-ink)] shadow-[inset_0_0_0_1px_var(--ad-ink)]"
+          : "border-[var(--ad-border)] hover:border-[#bdbbb3]",
+        disabled && "cursor-not-allowed opacity-60 hover:border-[var(--ad-border)]",
+      )}
+      htmlFor={id}
+    >
+      <input
+        checked={checked}
+        className="sr-only"
+        disabled={disabled}
+        id={id}
+        name="character-voice-model"
+        onChange={onSelect}
+        type="radio"
+      />
+      <span
+        className={cn(
+          "grid h-10 w-10 shrink-0 place-items-center rounded-lg",
+          checked ? "bg-[var(--ad-ink)] text-white" : "bg-[var(--ad-surface-subtle)] text-[var(--ad-text)]",
+        )}
+      >
+        {icon}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+          <span className="text-sm font-semibold text-[var(--ad-ink)]">
+            {name}
+            <span className="font-normal text-[var(--ad-text-muted)]"> · {kind}</span>
+          </span>
+          <ModelStatusLabel status={status} t={t} />
+        </span>
+        <span className="mt-1 block text-xs leading-5 text-[var(--ad-text-muted)]">{description}</span>
+        {engine ? (
+          <span className="mt-1 block text-xs text-[var(--ad-text-muted)]">
+            {t("Engine")} {engine}
+          </span>
+        ) : null}
+        {disabled && detail ? (
+          <span className="mt-2 block text-xs leading-5 text-[var(--ad-yellow-text)]">{t(detail)}</span>
+        ) : null}
+      </span>
+    </label>
+  );
+}
+
+function ModelStatusLabel({ status, t }: { status: ModelStatus; t: Translate }) {
+  const ready = status === "ready";
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1.5 text-xs font-semibold",
+        ready ? "text-[var(--ad-green-text)]" : "text-[var(--ad-yellow-text)]",
+      )}
+    >
+      <span
+        aria-hidden="true"
+        className={cn("h-2 w-2 rounded-full", ready ? "bg-[var(--ad-green-text)]" : "bg-[var(--ad-yellow-text)]")}
+      />
+      {t({
+        ready: "runtime ready",
+        unavailable: "voice service unavailable",
+        inactive: "voice provider inactive",
+        cloning_disabled: "cloning not enabled",
+      }[status])}
+    </span>
+  );
+}
+
+function OfficialVoiceTile({
+  busy,
+  canPreview,
+  disabled,
+  inUse,
+  label,
+  onAudition,
+  onSelect,
+  selected,
+  t,
+  voiceId,
+}: {
+  busy: boolean;
+  canPreview: boolean;
+  disabled: boolean;
+  inUse: boolean;
+  label: string;
+  onAudition: () => void;
+  onSelect: () => void;
+  selected: boolean;
+  t: Translate;
+  voiceId: string;
+}) {
+  const inputId = `character-official-voice-${voiceId}`;
+  return (
+    <div
+      className={cn(
+        "flex items-center gap-1 rounded-lg border bg-[var(--ad-surface)] pl-3 pr-1 transition-[border-color,box-shadow] duration-150 has-[input:focus-visible]:outline-2 has-[input:focus-visible]:outline-offset-2 has-[input:focus-visible]:outline-[var(--ad-ink)]",
+        selected
+          ? "border-[var(--ad-ink)] shadow-[inset_0_0_0_1px_var(--ad-ink)]"
+          : "border-[var(--ad-border)] hover:border-[#bdbbb3]",
+      )}
+      data-voice-id={voiceId}
+    >
+      <label
+        className={cn("flex min-h-12 min-w-0 flex-1 cursor-pointer items-center gap-2", disabled && "cursor-not-allowed")}
+        htmlFor={inputId}
+      >
+        <input
+          checked={selected}
+          className="sr-only"
+          disabled={disabled}
+          id={inputId}
+          name="character-official-voice"
+          onChange={onSelect}
+          type="radio"
+          value={voiceId}
+        />
+        <span
+          aria-hidden="true"
+          className={cn(
+            "grid h-4 w-4 shrink-0 place-items-center rounded-full border",
+            selected ? "border-[var(--ad-ink)] bg-[var(--ad-ink)] text-white" : "border-[#b9b7af]",
+          )}
+        >
+          {selected ? <Check className="h-3 w-3" strokeWidth={3} /> : null}
+        </span>
+        <span className="min-w-0">
+          <span className="block truncate text-sm font-semibold text-[var(--ad-ink)]">{label}</span>
+          {inUse ? (
+            <span className="block text-[11px] font-semibold leading-4 text-[var(--ad-green-text)]">{t("In use")}</span>
+          ) : null}
+        </span>
+      </label>
+      <button
+        aria-label={t("Preview {voice}", { voice: label })}
+        className="grid h-10 w-10 shrink-0 place-items-center rounded-md text-[var(--ad-text)] transition-colors hover:bg-black/[0.05] disabled:cursor-not-allowed disabled:opacity-40"
+        disabled={!canPreview}
+        onClick={onAudition}
+        type="button"
+      >
+        {busy ? (
+          <AudioLines aria-hidden="true" className="h-4 w-4 animate-pulse" />
+        ) : (
+          <Play aria-hidden="true" className="h-4 w-4" />
+        )}
+      </button>
+    </div>
+  );
+}
+
+function officialStatusDetail(status: ModelStatus) {
+  return {
+    ready: null,
+    unavailable: "Official voice service is unavailable. Refresh after it recovers.",
+    inactive: "Official voices require Pocket TTS as the system voice provider.",
+    cloning_disabled: null,
+  }[status];
+}
+
+function cloneStatusDetail(provider: VoiceData["provider"], status: ModelStatus) {
+  if (status === "ready") return null;
+  if (status === "cloning_disabled") return "Voice cloning is not enabled on this model.";
+  return voiceRuntimeMessage(provider, status);
+}
+
+function engineLabel(voice: VoiceData) {
+  const version = voice.runtimeVersion ?? "";
+  if (voice.runtimeEngine === "mlx_audio") return `MLX ${version}`.trim();
+  if (voice.runtimeEngine === "pocket_tts") return `Pocket TTS ${version}`.trim();
+  return null;
+}
+
+function voiceIdForGender(
+  defaults: VoiceData["systemDefaults"],
+  gender: CharacterWorkspaceDetail["character"]["gender"],
+) {
+  return gender === "female" || gender === "male" || gender === "trans"
+    ? defaults.genderVoiceIds[gender]
+    : defaults.defaultVoiceId;
 }
 
 function VoiceDeliveryEditor({
@@ -1607,13 +1658,6 @@ function VoiceDefaultSelect({
   );
 }
 
-function voiceLabel(data: CharacterWorkspaceDetail, voiceId: string) {
-  return (
-    data.voice.systemDefaults.catalog.find((voice) => voice.id === voiceId)
-      ?.label ?? voiceId
-  );
-}
-
 function formatCatalogVoiceName(voiceId: string) {
   const words = voiceId.replaceAll("_", " ");
   return words.charAt(0).toUpperCase() + words.slice(1);
@@ -1627,25 +1671,6 @@ function deliveryPresetLabel(preset: FishAudioDeliverySettings["preset"]) {
     confident: "Confident",
     natural: "Natural",
   }[preset];
-}
-
-function formatBytes(value: number, locale: "en" | "zh") {
-  return new Intl.NumberFormat(locale === "zh" ? "zh-CN" : "en-US", {
-    style: "unit",
-    unit: value >= 1024 * 1024 ? "megabyte" : "kilobyte",
-    unitDisplay: "short",
-    maximumFractionDigits: 1,
-  }).format(value / (value >= 1024 * 1024 ? 1024 * 1024 : 1024));
-}
-
-function voiceRuntimeLabel(
-  status: CharacterWorkspaceDetail["voice"]["runtimeStatus"],
-) {
-  return {
-    ready: "runtime ready",
-    unavailable: "voice service unavailable",
-    inactive: "voice provider inactive",
-  }[status];
 }
 
 function voiceRuntimeMessage(

@@ -212,7 +212,7 @@ module.exports = {
         POCKET_TTS_LANGUAGE: mainEnvValue("POCKET_TTS_LANGUAGE", "english"),
         POCKET_TTS_DEFAULT_VOICE_ID: mainEnvValue(
           "POCKET_TTS_DEFAULT_VOICE_ID",
-          "alba",
+          "anna",
         ),
         POCKET_TTS_VOICE_DIR: mainEnvValue(
           "POCKET_TTS_VOICE_DIR",

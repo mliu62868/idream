@@ -339,8 +339,20 @@ describe("Character voice identity authority", () => {
         runtimeEngine: "pocket_tts",
         runtimeVersion: "3.0.2",
         runtimeLanguage: expect.any(String),
-        catalogVoiceIds: ["alba", "anna"],
+        // The runtime also serves male voices (alba); the product offers only female ones.
+        catalogVoiceIds: ["anna"],
       });
+      await expect(createCharacterVoicePreset({
+        characterId,
+        actor: { id: actorId, role: "admin" },
+        idempotencyKey: `voice-preset-male-${suffix}`,
+        requestId: `voice-preset-male-request-${suffix}`,
+        request: {
+          presetVoiceId: "alba",
+          sampleText: "Alba is served by the runtime but not offered.",
+        },
+      })).rejects.toMatchObject({ status: 503 });
+      expect(providerState.presetCalls).toBe(0);
 
       const candidate = await createCharacterVoicePreset({
         characterId,
@@ -350,7 +362,6 @@ describe("Character voice identity authority", () => {
         request: {
           presetVoiceId: "anna",
           sampleText: "Anna is the reviewed Pocket catalog voice.",
-          reason: "Assign a fast distinct voice to this role",
         },
       });
       expect(providerState.presetCalls).toBe(1);
@@ -358,6 +369,7 @@ describe("Character voice identity authority", () => {
         replayed: false,
         profile: {
           provider: "pocket_tts",
+          presetVoiceId: "anna",
           status: "candidate",
           language: "english",
           reference: {
@@ -389,7 +401,6 @@ describe("Character voice identity authority", () => {
         idempotencyKey: `voice-preset-activate-${suffix}`,
         requestId: `voice-preset-activate-request-${suffix}`,
         request: {
-          reason: "The Pocket catalog preview matches this character",
           expectedActiveProfileId: active?.id ?? null,
           expectedCurrentVoiceId: character.voiceId,
         },
@@ -431,6 +442,7 @@ describe("Character voice identity authority", () => {
         where: {
           requestId: {
             in: [
+              `voice-preset-male-request-${suffix}`,
               `voice-preset-request-${suffix}`,
               `voice-preset-activate-request-${suffix}`,
             ],
@@ -453,7 +465,6 @@ describe("Character voice identity authority", () => {
     form.set("language", "english");
     form.set("referenceText", "Unsupported container reference transcript.");
     form.set("sampleText", "Preview this voice candidate.");
-    form.set("reason", "Verify the supported upload contract");
     form.set(
       "audio",
       new File([new Uint8Array(2_048)], "unsupported.m4a", {
@@ -472,7 +483,6 @@ describe("Character voice identity authority", () => {
     form.set("language", "english");
     form.set("referenceText", "The rain in Spain stays mainly in the plain.");
     form.set("sampleText", "Preview this voice candidate.");
-    form.set("reason", "Verify the reference transcript");
     form.set(
       "audio",
       new File([new Uint8Array(2_048)], "reference.wav", {
@@ -526,6 +536,7 @@ describe("Character voice identity authority", () => {
     expect(first.profile).toMatchObject({
       version: 1,
       provider: "fish_audio",
+      presetVoiceId: null,
       delivery: DEFAULT_FISH_AUDIO_DELIVERY,
       status: "candidate",
       reference: {
@@ -557,7 +568,6 @@ describe("Character voice identity authority", () => {
       idempotencyKey: firstActivationKey,
       requestId: `voice-activate-request-first-${suffix}`,
       request: {
-        reason: "The reviewed preview matches the character",
         expectedActiveProfileId: null,
         expectedCurrentVoiceId: null,
       },
@@ -569,7 +579,6 @@ describe("Character voice identity authority", () => {
       idempotencyKey: firstActivationKey,
       requestId: `voice-activate-request-replay-${suffix}`,
       request: {
-        reason: "The reviewed preview matches the character",
         expectedActiveProfileId: null,
         expectedCurrentVoiceId: null,
       },
@@ -609,7 +618,6 @@ describe("Character voice identity authority", () => {
       idempotencyKey: `voice-activate-stale-${suffix}`,
       requestId: `voice-activate-request-stale-${suffix}`,
       request: {
-        reason: "Stale operator review should not win",
         expectedActiveProfileId: null,
         expectedCurrentVoiceId: null,
       },
@@ -621,7 +629,6 @@ describe("Character voice identity authority", () => {
       idempotencyKey: `voice-activate-second-${suffix}`,
       requestId: `voice-activate-request-second-${suffix}`,
       request: {
-        reason: "The replacement preview passed review",
         expectedActiveProfileId: first.profile.id,
         expectedCurrentVoiceId: first.profile.providerVoiceId,
       },
@@ -725,7 +732,6 @@ describe("Character voice identity authority", () => {
           idempotencyKey: `voice-activate-provider-switch-${suffix}`,
           requestId: `voice-activate-request-provider-switch-${suffix}`,
           request: {
-            reason: "This must not cross provider authority",
             expectedActiveProfileId: active?.id ?? null,
             expectedCurrentVoiceId: character.voiceId,
           },
@@ -791,7 +797,6 @@ describe("Character voice identity authority", () => {
           idempotencyKey: `voice-activate-unavailable-${suffix}`,
           requestId: `voice-activate-request-unavailable-${suffix}`,
           request: {
-            reason: "Unavailable providers must not become live authority",
             expectedActiveProfileId: active?.id ?? null,
             expectedCurrentVoiceId: before.voiceId,
           },
@@ -846,7 +851,6 @@ describe("Character voice identity authority", () => {
           idempotencyKey: `voice-activate-broken-preview-${suffix}`,
           requestId: `voice-activate-request-broken-preview-${suffix}`,
           request: {
-            reason: "The exact candidate voice must still render",
             expectedActiveProfileId: active?.id ?? null,
             expectedCurrentVoiceId: before.voiceId,
           },
@@ -882,7 +886,6 @@ describe("Character voice identity authority", () => {
     });
     const idempotencyKey = `voice-reset-system-default-${suffix}`;
     const request = {
-      reason: "Return the character to the managed system default",
       expectedActiveProfileId: active.id,
       expectedCurrentVoiceId: character.voiceId,
     };
@@ -937,22 +940,22 @@ describe("Character voice identity authority", () => {
     providerState.identityProviderKey = "fish_audio";
     providerState.inspectOk = true;
     providerState.voiceCloning = true;
-    providerState.catalogVoices = ["alba", "anna"];
+    providerState.catalogVoices = ["anna", "vera"];
     const presetInput = {
       characterId, actor: { id: actorId, role: "admin" as const },
       idempotencyKey: `voice-split-preset-${suffix}`, requestId: randomUUID(),
-      request: { presetVoiceId: "anna", sampleText: "A distinct catalog voice.", reason: "Review the catalog candidate" },
+      request: { presetVoiceId: "anna", sampleText: "A distinct catalog voice." },
     };
     try {
       await expect(inspectCharacterVoiceRuntimes("pocket_tts")).resolves.toMatchObject({
         provider: "fish_audio", cloningAvailable: true, runtimeStatus: "ready",
-        presetRuntime: { provider: "pocket_tts", runtimeStatus: "ready", catalogVoiceIds: ["alba", "anna"] },
+        presetRuntime: { provider: "pocket_tts", runtimeStatus: "ready", catalogVoiceIds: ["anna", "vera"] },
         candidateRuntimeStatus: "ready",
       });
       providerState.unavailableProviders = ["fish_audio"];
       await expect(inspectCharacterVoiceRuntimes("pocket_tts")).resolves.toMatchObject({
         provider: "fish_audio", cloningAvailable: false, runtimeStatus: "unavailable",
-        presetRuntime: { provider: "pocket_tts", runtimeStatus: "ready", catalogVoiceIds: ["alba", "anna"] },
+        presetRuntime: { provider: "pocket_tts", runtimeStatus: "ready", catalogVoiceIds: ["anna", "vera"] },
         candidateRuntimeStatus: "ready",
       });
       const candidate = await createCharacterVoicePreset(presetInput);
@@ -962,8 +965,7 @@ describe("Character voice identity authority", () => {
       await expect(activateCharacterVoiceProfile({
         characterId, profileId: candidate.profile.id, actor: { id: actorId, role: "admin" },
         idempotencyKey: `voice-split-activation-${suffix}`, requestId: randomUUID(),
-        request: { expectedCurrentVoiceId: current.voiceId, expectedActiveProfileId: active?.id ?? null,
-          reason: "Activate the healthy Pocket candidate while cloning is offline" },
+        request: { expectedCurrentVoiceId: current.voiceId, expectedActiveProfileId: active?.id ?? null },
       })).resolves.toMatchObject({ profile: { id: candidate.profile.id, status: "active" } });
       providerState.inspectOk = false;
       providerState.providerKey = "mock";
@@ -1103,7 +1105,7 @@ describe("Character voice identity authority", () => {
       idempotencyKey: `voice-default-replay-${suffix}`, requestId: randomUUID(),
       request: { provider: "mock", expectedVersion: previous?.version ?? 0,
         defaultVoiceId: "default", genderVoiceIds: { female: "default", male: "default", trans: "default" },
-        delivery: DEFAULT_FISH_AUDIO_DELIVERY, reason: "Verify durable default setting receipt",
+        delivery: DEFAULT_FISH_AUDIO_DELIVERY,
       },
     };
     try {
@@ -1137,7 +1139,6 @@ function cloneForm(
     referenceText: "The reference speaker reads this exact transcript.",
     sampleText,
     delivery: DEFAULT_FISH_AUDIO_DELIVERY,
-    reason: "Create the character voice authority",
     reference: {
       filename,
       contentType,

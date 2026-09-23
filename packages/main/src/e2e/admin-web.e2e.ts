@@ -1439,11 +1439,7 @@ test("admin prepares a historical shared character without manual approval or pu
     await expect(page.getByText("Awaiting publication preparation", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Prepare publication workspace", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "Prepare publication workspace", exact: true });
-    await dialog.getByRole("textbox", { name: "Operational reason (≥3)" }).fill("Recover historical publication preparation");
-    const confirmation = dialog.getByRole("textbox", { name: "Type the publication preparation confirmation" });
-    await confirmation.fill("PREPARE");
-    await expect(dialog.getByRole("button", { name: "Prepare publication workspace", exact: true })).toBeDisabled();
-    await confirmation.fill(`PREPARE PUBLICATION ${characterId}`);
+    await expect(dialog.getByRole("textbox")).toHaveCount(0);
     const prepared = page.waitForResponse((response) => response.request().method() === "POST"
       && new URL(response.url()).pathname === `/api/v2/admin/characters/${characterId}/project`);
     await dialog.getByRole("button", { name: "Prepare publication workspace", exact: true }).click();

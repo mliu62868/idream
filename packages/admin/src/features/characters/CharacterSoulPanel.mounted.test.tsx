@@ -47,6 +47,21 @@ describe("Soul draft retention", () => {
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
   }
+  function typeInto(label: string, value: string) {
+    const field = [...container.querySelectorAll("label")].find((item) => item.firstChild?.textContent === label)!
+      .querySelector("textarea")!;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, value);
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+  function saveButton() {
+    return [...container.querySelectorAll("button")].find((button) => button.textContent === "Save")!;
+  }
+  function committingMutation() {
+    operation.mockResolvedValueOnce({});
+    runCommittedMutation.mockImplementationOnce(async ({ commit }) => ({ result: await commit(), refreshed: true }));
+  }
   function leavePanel() { act(() => root.render(null)); }
 
   it("restores unsaved input after leaving and returning without a write", async () => {
@@ -68,8 +83,9 @@ describe("Soul draft retention", () => {
   it("updates a clean editor when authority refreshes", async () => {
     await render();
     await render(actor, { ...data, project: { ...data.project, version: data.project.version + 1 } });
-    const save = [...container.querySelectorAll("button")].find((button) => button.textContent === "Create Soul version");
-    expect(save?.disabled).toBe(false);
+    expect(saveButton().disabled).toBe(true);
+    editName();
+    expect(saveButton().disabled).toBe(false);
     expect(container.textContent).not.toContain("older version");
   });
 
@@ -84,8 +100,7 @@ describe("Soul draft retention", () => {
     await render(actor, { ...data, project: { ...data.project, version: data.project.version + 1 } });
     expect(container.querySelector("input")!.value).toBe("Mira draft");
     expect(container.textContent).toContain("older version");
-    const save = [...container.querySelectorAll("button")].find((button) => button.textContent === "Create Soul version");
-    expect(save?.disabled).toBe(true);
+    expect(saveButton().disabled).toBe(true);
   });
   it("keeps the latest edit across refresh and remount when storage writes fail", async () => {
     await render();
@@ -111,45 +126,63 @@ describe("Soul draft retention", () => {
     expect(container.textContent).not.toContain("Unsaved draft");
   });
 
-  it("keeps input and confirmation open when a save fails", async () => {
+  it("keeps the edited input when a save fails", async () => {
     await render(); editName();
     runCommittedMutation.mockRejectedValueOnce(new Error("Save failed"));
-    const create = [...container.querySelectorAll("button")].find((button) => button.textContent === "Create Soul version")!;
-    await act(async () => create.click());
-    const reason = document.querySelector('[role="dialog"] input')!;
-    act(() => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(reason, "Update persona");
-      reason.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    const confirm = [...document.querySelectorAll('[role="dialog"] button')].find((button) => button.textContent === "Create Soul version") as HTMLButtonElement;
-    await act(async () => confirm.click());
-    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+    await act(async () => saveButton().click());
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
     expect(container.querySelector("input")!.value).toBe("Mira draft");
     expect(container.textContent).toContain("Unsaved draft");
+    expect(container.textContent).toContain("Save failed");
   });
 
-  it("does not resurrect a committed draft if browser storage cannot be cleared", async () => {
+  it("saves in one click without a reason and does not resurrect the committed draft", async () => {
     await render(); editName();
-    operation.mockResolvedValueOnce({});
-    runCommittedMutation.mockImplementationOnce(async ({ commit }) => ({ result: await commit(), refreshed: true }));
+    committingMutation();
     vi.spyOn(window.sessionStorage, "removeItem").mockImplementation(() => { throw new Error("blocked"); });
-    const create = [...container.querySelectorAll("button")].find((button) => button.textContent === "Create Soul version")!;
-    await act(async () => create.click());
-    const reason = document.querySelector('[role="dialog"] input')!;
-    act(() => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(reason, "Update persona");
-      reason.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    const confirm = [...document.querySelectorAll('[role="dialog"] button')].find((button) => button.textContent === "Create Soul version") as HTMLButtonElement;
-    await act(async () => confirm.click());
+    await act(async () => saveButton().click());
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
     expect(operation).toHaveBeenCalledWith("POST /api/v2/admin/characters/:id/soul/versions", expect.objectContaining({
       ifMatch: data.project.version,
-      body: expect.objectContaining({ expectedContentVersionId: data.soul.current.contentVersionId, persona: expect.objectContaining({ name: "Mira draft" }) }),
+      body: {
+        entityVersion: data.project.version,
+        expectedContentVersionId: data.soul.current.contentVersionId,
+        persona: expect.objectContaining({ name: "Mira draft" }),
+      },
     }));
-    expect(document.querySelector('[role="dialog"]')).toBeNull();
     expect(container.textContent).not.toContain("Unsaved draft");
     leavePanel(); await render();
     expect(container.textContent).not.toContain("Unsaved draft");
   });
 
+  it("sends an edited appearance only once it is complete", async () => {
+    await render();
+    typeInto("Identity anchor", "Composed late-night radio host");
+    await act(async () => saveButton().click());
+    expect(operation).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Add at least one stable visual trait.");
+    expect(container.textContent).toContain("Describe the portrait's visual direction.");
+
+    typeInto("Stable traits (one per line)", "Dark wavy hair\nWarm brown eyes\n");
+    typeInto("Reference direction", "Low-key tungsten portraiture");
+    expect(container.textContent).not.toContain("Add at least one stable visual trait.");
+    committingMutation();
+    await act(async () => saveButton().click());
+    expect(operation).toHaveBeenCalledWith("POST /api/v2/admin/characters/:id/soul/versions", expect.objectContaining({
+      body: expect.objectContaining({
+        visualDirection: {
+          identityAnchor: "Composed late-night radio host",
+          stableTraits: ["Dark wavy hair", "Warm brown eyes"],
+          style: "realistic",
+          referenceDirection: "Low-key tungsten portraiture",
+        },
+      }),
+    }));
+  });
+
+  it("points saved but unpublished changes to Release", async () => {
+    await render(actor, { ...data, preview: { ...data.preview, live: data.preview.draft, changedFields: ["persona"] } });
+    expect(container.textContent).toContain("Saved changes are not live yet.");
+    expect(container.querySelector('a[href$="?tab=release"]')?.textContent).toBe("Go to Release");
+  });
 });

@@ -1,7 +1,11 @@
-import type { CharacterDraftPersona } from "@idream/shared/admin";
+import type { CharacterDraftPersona, CharacterDraftVisualDirection } from "@idream/shared/admin";
+
+// Stable traits stay raw text while editing so a trailing newline can start the next trait.
+export type SoulVisualForm = Omit<CharacterDraftVisualDirection, "stableTraits"> & { stableTraits: string };
 
 export type SoulDraft = {
   persona: CharacterDraftPersona;
+  visual: SoulVisualForm;
   projectVersion: number;
   contentVersionId: string;
 };
@@ -17,9 +21,11 @@ export function readSoulDraft(key: string): { draft: SoulDraft | null; error?: s
     if (!raw) return { draft: null };
     const saved = JSON.parse(raw);
     const persona = saved?.persona;
+    const visual = saved?.visual;
     if (typeof saved?.projectVersion !== "number" || typeof saved?.contentVersionId !== "string"
       || !persona || !["name", "gender", "characterPromise", "detailsMarkdown", "firstMessage"].every((field) => typeof persona[field] === "string")
-      || typeof persona.age !== "number" || !Number.isFinite(persona.age)) {
+      || typeof persona.age !== "number" || !Number.isFinite(persona.age)
+      || !visual || !["identityAnchor", "stableTraits", "style", "referenceDirection"].every((field) => typeof visual[field] === "string")) {
       return { draft: null, error: "Saved draft could not be restored." };
     }
     drafts.set(key, saved);

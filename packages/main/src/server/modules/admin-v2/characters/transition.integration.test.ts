@@ -163,7 +163,7 @@ describe("Character aggregate transitions", () => {
       request: new Request("http://localhost/api/v2/admin/content/characters/tools"),
       actor: { id: actorId, role: "admin" },
       characterId,
-      body: { imageToolEnabled: true, reason: "Enable images after release review" },
+      body: { imageToolEnabled: true },
     });
     await expect(prisma.character.findUniqueOrThrow({ where: { id: characterId } }))
       .resolves.toMatchObject({ advancedDetails: {
@@ -192,7 +192,7 @@ describe("Character aggregate transitions", () => {
     const ownerPid = await locked.promise;
     const tools = setCharacterChatTools({
       request: new Request("http://localhost/chat-tools"), actor: { id: actorId, role: "admin" },
-      characterId, body: { imageToolEnabled: false, reason: "Disable during release" },
+      characterId, body: { imageToolEnabled: false },
     });
     try {
       // Observe a real Postgres lock wait, rather than relying on a sleep to
@@ -232,7 +232,7 @@ describe("Character aggregate transitions", () => {
     try {
       const tools = setCharacterChatTools({
         request: new Request("http://localhost/chat-tools"), actor: { id: actorId, role: "admin" },
-        characterId, body: { imageToolEnabled: false, reason: "Disable before release projection" },
+        characterId, body: { imageToolEnabled: false },
       });
       const ownerPid = await locked.promise;
       const release = prisma.$transaction((tx) => projectServingToCharacter(tx, {
@@ -270,7 +270,7 @@ describe("Character aggregate transitions", () => {
     try {
       await expect(setCharacterChatTools({
         request: new Request("http://localhost/chat-tools"), actor: { id: actorId, role: "admin" },
-        characterId, body: { imageToolEnabled: true, reason: "Enable with failing audit" },
+        characterId, body: { imageToolEnabled: true },
       })).rejects.toThrow("Audit write unavailable");
     } finally {
       audit.mockRestore();

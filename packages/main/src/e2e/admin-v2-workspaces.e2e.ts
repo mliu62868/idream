@@ -382,10 +382,10 @@ async function completeCharacterCreateDraft(
 
   await page.getByLabel("Name", { exact: true }).fill(name);
   await page
-    .getByLabel("Character promise")
+    .getByLabel("Short description")
     .fill("A warm, precise place to put the day down");
   await page
-    .getByLabel("First message")
+    .getByLabel("Opening message")
     .fill("You made it. What do you need to put down tonight?");
   await page
     .getByLabel("Additional details · Markdown (optional)")

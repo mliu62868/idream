@@ -4,6 +4,7 @@ import { loadCharacterSoulSnapshot } from "@idream/shared";
 import { prisma } from "@/server/lib/db";
 import { POST as createSoulVersionRoute } from "@/app/api/v2/admin/characters/[id]/soul/versions/route";
 import { createCharacterSoulVersion } from "./soul-version";
+import { previewSnapshot } from "./workspace-preview";
 
 describe("Character Soul version authority", () => {
   const suffix = randomUUID();
@@ -103,7 +104,6 @@ describe("Character Soul version authority", () => {
         detailsMarkdown: "Measured, observant, and gently challenging. Warm and concise. A former night-shift radio host.",
         firstMessage: "What followed you home tonight?",
       },
-      reason: "Create reviewed Soul version",
       requestId: `soul-version-request-${suffix}`,
     });
 
@@ -154,7 +154,6 @@ describe("Character Soul version authority", () => {
         detailsMarkdown: "Measured, observant, and gently challenging. Warm, concise, and newly candid. A former night-shift radio host.",
         firstMessage: "What followed you home tonight?",
       },
-      reason: "Verify idempotent Soul version creation",
     };
     const key = `soul-version-http-${suffix}`;
     const request = () => new Request(
@@ -187,5 +186,77 @@ describe("Character Soul version authority", () => {
       data: { projectVersion: 3, contentVersion: 3, replayed: true },
     });
     expect(await prisma.characterContentVersion.count({ where: { characterId } })).toBe(3);
+  });
+
+  it("saves an edited visual direction with the persona and previews the draft, not the live row", async () => {
+    const current = await prisma.characterContentVersion.findFirstOrThrow({
+      where: { characterId },
+      orderBy: { version: "desc" },
+    });
+    const response = await createSoulVersionRoute(new Request(
+      `http://localhost/api/v2/admin/characters/${characterId}/soul/versions`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": `soul-version-visual-${suffix}`,
+          "if-match": '"3"',
+          "x-idream-user-id": actorId,
+          "x-idream-role": "admin",
+        },
+        body: JSON.stringify({
+          entityVersion: 3,
+          expectedContentVersionId: current.id,
+          persona: {
+            name: "Renamed Mara",
+            age: 28,
+            gender: "female",
+            characterPromise: "A renamed draft promise.",
+            detailsMarkdown: "",
+            firstMessage: "What followed you home tonight?",
+          },
+          visualDirection: {
+            identityAnchor: "Composed late-night radio host",
+            stableTraits: ["Dark wavy hair", "Warm brown eyes"],
+            style: "anime",
+            referenceDirection: "Low-key tungsten portraiture",
+          },
+        }),
+      },
+    ), { params: Promise.resolve({ id: characterId }) });
+    expect(response.status).toBe(201);
+
+    const saved = await prisma.characterContentVersion.findFirstOrThrow({
+      where: { characterId },
+      orderBy: { version: "desc" },
+    });
+    // The legacy structured source image survives; only the four direction keys change.
+    expect(saved.appearanceSnapshot).toEqual({
+      style: "anime",
+      structured: { sourceImage: "/legacy-mara.webp" },
+      identityAnchor: "Composed late-night radio host",
+      stableTraits: ["Dark wavy hair", "Warm brown eyes"],
+      referenceDirection: "Low-key tungsten portraiture",
+    });
+    const audit = await prisma.adminAuditLog.findFirstOrThrow({
+      where: { targetId: projectId, action: "character.soul.version_created" },
+      orderBy: { createdAt: "desc" },
+    });
+    expect(audit.reason).toBeNull();
+
+    const character = await prisma.character.findUniqueOrThrow({ where: { id: characterId } });
+    const missing = { assetId: null, imageUrl: null, status: "missing" as const };
+    const draft = previewSnapshot({
+      character,
+      content: saved,
+      releaseId: null,
+      servingVersion: null,
+      assetPack: { character_cover: missing, character_hero: missing, character_chat: missing },
+      label: "Draft Preview",
+    });
+    expect(draft).toMatchObject({
+      name: "Renamed Mara",
+      description: "A renamed draft promise.",
+    });
   });
 });

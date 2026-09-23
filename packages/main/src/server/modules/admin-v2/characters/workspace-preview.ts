@@ -1,4 +1,5 @@
 import type { Prisma } from "@prisma/client";
+import { loadCharacterSoulSnapshot } from "@idream/shared";
 import { env } from "@/server/lib/env";
 import { isMediaAssetOperationalForAuthority } from "@/server/lib/media-asset-authority";
 import { jsonRecord as record, jsonText as text } from "../shared/prisma-json";
@@ -109,12 +110,18 @@ export function previewSnapshot(input: {
         env.BETTER_AUTH_URL,
       ).toString()
     : null;
+  // INVARIANT: name and description come from the content being previewed. Soul v3
+  // snapshots keep them under soul.{name, characterPromise}; reading only the legacy
+  // top-level keys fell through to the mutable Character row (the live projection), so
+  // a draft rename showed the live name.
+  const loadedSoul = input.content ? loadCharacterSoulSnapshot(input.content.personaSnapshot) : null;
+  const soul = loadedSoul?.ok ? loadedSoul.snapshot.soul : null;
   return {
     releaseId: input.releaseId,
     contentVersionId: input.content?.id ?? null,
     label: input.label,
-    name: text(persona.name) || input.character.name,
-    description: text(persona.description) || input.character.description,
+    name: soul?.name || text(persona.name) || input.character.name,
+    description: soul?.characterPromise || text(persona.description) || input.character.description,
     persona,
     opening,
     appearance,

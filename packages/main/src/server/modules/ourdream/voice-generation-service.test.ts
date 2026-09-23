@@ -139,7 +139,7 @@ describe("voice generation service contract", () => {
       expect(request.providerPayload).toMatchObject(transition === "activate" ? {
         providerKey: "pocket_tts", voiceId: voiceB, voiceAuthority: "character_clone", characterVoiceProfileVersion: 2,
       } : {
-        providerKey: "pocket_tts", voiceId: "alba", voiceAuthority: "system_default", characterVoiceProfileVersion: null,
+        providerKey: "pocket_tts", voiceId: "anna", voiceAuthority: "system_default", characterVoiceProfileVersion: null,
       });
     } finally {
       resumeRead();

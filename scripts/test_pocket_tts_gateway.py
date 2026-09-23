@@ -413,6 +413,8 @@ class PocketTtsGatewayTests(unittest.TestCase):
 
         self.assertIn('"--python",\n    "3.12"', launcher)
         self.assertIn('"--with-requirements"', launcher)
+        # A restart must not depend on PyPI or the host proxy being reachable.
+        self.assertIn('"run",\n    "--offline"', launcher)
         self.assertIn('process.env.POCKET_TTS_PORT || "8063"', launcher)
         self.assertNotIn("httpx", launcher)
         self.assertNotIn("omlx", launcher.lower())

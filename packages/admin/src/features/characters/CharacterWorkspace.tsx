@@ -74,7 +74,7 @@ type Tab = CharacterWorkspaceTab;
 
 const characterWorkspaceTabLabels: Record<Tab, string> = {
   project: "Overview",
-  soul: "Soul",
+  soul: "Persona & appearance",
   visual: "Visual identity",
   assets: "Images",
   video: "Videos",
@@ -309,14 +309,13 @@ function CharacterDetail({
     }
   }, [id]);
   const preparePublicationWorkspace = useCallback(
-    async (pending: CustomerPublicationPrepRecovery, reason: string) => {
+    async (pending: CustomerPublicationPrepRecovery) => {
       setError(null);
       try {
         await adminV2Operation("POST /api/v2/admin/characters/:id/project", {
           path: { id },
           body: {
             submissionId: pending.submissionId,
-            reason,
             confirmation: `PREPARE PUBLICATION ${id}`,
           },
         });
@@ -766,14 +765,11 @@ function CharacterDetail({
                   </p>
                 </div>
               ),
-              destructive: {
-                expectedName: `PREPARE PUBLICATION ${id}`,
-                inputLabel: t("Type the publication preparation confirmation"),
-              },
-              reasonLabel: t("Operational reason (≥3)"),
+              // INTENT: 只建一个私有工作区，不发布、不改用户可见面，确认一次即可，不要求原因或手输口令。
+              requireReason: false,
               submitLabel: t("Prepare publication workspace"),
-              onSubmit: (reason) =>
-                preparePublicationWorkspace(pendingPublicationPrep, reason),
+              onSubmit: () =>
+                preparePublicationWorkspace(pendingPublicationPrep),
             }}
           />
         ) : null}
@@ -1139,7 +1135,14 @@ function CharacterDetail({
             runCommittedMutation={runCommittedMutation}
           />
         ) : tab === "assets" ? (
+          // SPEC: 图片与它出现在哪（封面 / 头图 / 聊天图）放在同一页：先选位置，下面是图库。
+          // INTENT: 位置编辑器曾放在「运营 → 上线预览」，导入的图只能跨区去那里才能用上。
           <div id="character-image-studio">
+            <CharacterPlacementEditor
+              canWrite={guardedPermissions.writeProject}
+              data={data}
+              runCommittedMutation={runCommittedMutation}
+            />
             <CharacterImageLibrary
               actorId={actorId}
               canArchive={guardedPermissions.archiveAssets}
@@ -1183,14 +1186,7 @@ function CharacterDetail({
             takeIdempotencyKey={journal.takeIdempotencyKey}
           />
         ) : tab === "preview" ? (
-          <>
-            <CharacterPlacementEditor
-              canWrite={guardedPermissions.writeProject}
-              data={data}
-              runCommittedMutation={runCommittedMutation}
-            />
-            <PreviewDiff data={data} />
-          </>
+          <PreviewDiff data={data} />
         ) : tab === "release" ? (
           <ReleasePanel
             data={data}

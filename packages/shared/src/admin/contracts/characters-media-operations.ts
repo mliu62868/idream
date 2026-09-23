@@ -18,6 +18,10 @@ export {
 } from "../../contracts/voice";
 export type { FishAudioDeliverySettings } from "../../contracts/voice";
 
+// SPEC: voice-setting commands (clone, preset, activate, reset, system defaults)
+// carry no reason; audit rows record actor, before/after and request id.
+// INTENT: choosing a voice is a routine, reversible, one-click operation. Voice
+// history keeps every profile, so a required reason only added friction.
 export const characterVoiceCloneCreateRequestSchema = z
   .object({
     language: z.string().trim().min(1).max(40).default("english"),
@@ -26,7 +30,6 @@ export const characterVoiceCloneCreateRequestSchema = z
     delivery: fishAudioDeliverySettingsSchema.default(
       DEFAULT_FISH_AUDIO_DELIVERY,
     ),
-    reason: z.string().trim().min(3).max(2_000),
   })
   .strict();
 
@@ -34,31 +37,28 @@ export const characterVoicePresetCreateRequestSchema = z
   .object({
     presetVoiceId: z.string().trim().min(3).max(160),
     sampleText: z.string().trim().min(3).max(500),
-    reason: z.string().trim().min(3).max(2_000),
   })
   .strict();
 
+// SPEC: the Pocket voices the product offers: system defaults, the Admin
+// preset picker and the creator's picker all draw from this list.
+// INTENT: the characters are almost all women, so only female voices are offered.
+// Pocket's runtime also serves 11 male voices (alba, marius, javert, jean,
+// charles, paul, george, michael, bill_boerst, peter_yearsley, stuart_bell).
+// A speaker-gender classifier on their real synthesis, cross-checked against
+// the VCTK speaker table, sorted all 21 on 2026-09-19.
+// INVARIANT: the first entry is the fallback when POCKET_TTS_DEFAULT_VOICE_ID names
+// a voice outside this list.
 export const POCKET_TTS_CATALOG_VOICE_IDS = [
-  "cosette",
-  "marius",
-  "javert",
-  "alba",
-  "jean",
   "anna",
+  "cosette",
   "vera",
   "fantine",
-  "charles",
-  "paul",
   "eponine",
   "azelma",
-  "george",
   "mary",
   "jane",
-  "michael",
   "eve",
-  "bill_boerst",
-  "peter_yearsley",
-  "stuart_bell",
   "caro_davy",
 ] as const;
 
@@ -111,7 +111,6 @@ export const voiceDefaultSettingsUpdateRequestSchema = z
       })
       .strict(),
     delivery: fishAudioDeliverySettingsSchema,
-    reason: z.string().trim().min(3).max(2_000),
   })
   .strict();
 
@@ -146,6 +145,10 @@ export const characterVoiceProfileSchema = z
     version: z.number().int().positive(),
     provider: z.enum(["pocket_tts", "fish_audio"]),
     providerVoiceId: z.string().trim().min(1),
+    // SPEC: the official Pocket catalog voice this profile aliases; null for clones.
+    // INTENT: providerVoiceId is a per-Character alias (idream-<uuid>), so without this
+    // operators could only see "voice version 3", never which official voice is live.
+    presetVoiceId: z.string().trim().min(1).nullable(),
     model: z.string().trim().min(1),
     language: z.string().trim().min(1),
     delivery: fishAudioDeliverySettingsSchema,
@@ -218,7 +221,6 @@ export const characterVoicePresetCreateResponseSchema =
 
 export const characterVoiceActivationRequestSchema = z
   .object({
-    reason: z.string().trim().min(3).max(2_000),
     expectedActiveProfileId: adminIdSchema.nullable(),
     expectedCurrentVoiceId: z.string().trim().min(1).nullable(),
   })
@@ -234,7 +236,6 @@ export const characterVoiceActivationResponseSchema = z
 
 export const characterVoiceSystemDefaultResetRequestSchema = z
   .object({
-    reason: z.string().trim().min(3).max(2_000),
     expectedActiveProfileId: adminIdSchema.nullable(),
     expectedCurrentVoiceId: z.string().trim().min(1).nullable(),
   })

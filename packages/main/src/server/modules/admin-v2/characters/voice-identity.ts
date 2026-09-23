@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   DEFAULT_FISH_AUDIO_DELIVERY,
+  POCKET_TTS_CATALOG_VOICE_IDS,
   characterVoiceActivationResponseSchema,
   characterVoiceCloneCreateRequestSchema,
   characterVoiceCloneCreateResponseSchema,
@@ -135,9 +136,13 @@ async function inspectVoiceIdentityProviderRuntime(
       capabilities.ok &&
       capabilities.data.runtime === expectedRuntime &&
       capabilities.data.acceleration === expectedAcceleration;
+    // INVARIANT: only the product catalog is offered or accepted for presets. The
+    // runtime also reports voices the product excludes (male voices), and preset
+    // creation validates against this list.
     const catalogVoiceIds =
       runtimeCompatible && providerKey === "pocket_tts"
-        ? [...(capabilities.data.catalogVoices ?? [])]
+        ? (capabilities.data.catalogVoices ?? []).filter((voiceId) =>
+            (POCKET_TTS_CATALOG_VOICE_IDS as readonly string[]).includes(voiceId))
         : [];
     const cloningAvailable =
       runtimeCompatible && capabilities.data.voiceCloning;
@@ -195,7 +200,6 @@ export type ParsedVoiceCloneForm = {
   referenceText: string;
   sampleText: string;
   delivery: FishAudioDeliverySettings;
-  reason: string;
   reference: {
     filename: string;
     contentType: string;
@@ -211,7 +215,6 @@ export async function parseVoiceCloneForm(request: Request): Promise<ParsedVoice
     referenceText: stringField(form, "referenceText"),
     sampleText: stringField(form, "sampleText"),
     delivery: jsonFormField(form, "delivery"),
-    reason: stringField(form, "reason"),
   });
   const audio = form.get("audio");
   if (!(audio instanceof File)) {
@@ -293,7 +296,6 @@ export async function createCharacterVoiceClone(input: {
         language: input.form.language,
         sampleText: input.form.sampleText,
         delivery: input.form.delivery,
-        reason: input.form.reason,
         referenceFilename: input.form.reference.filename,
         referenceText: input.form.referenceText,
         referenceContentType: input.form.reference.contentType,
@@ -463,7 +465,6 @@ export async function createCharacterVoiceClone(input: {
             action: "character.voice_candidate.created",
             targetType: "character_voice_profile",
             targetId: profile.id,
-            reason: input.form.reason,
             after: toInputJson({
               characterId: input.characterId,
               profileId: profile.id,
@@ -566,7 +567,6 @@ export async function createCharacterVoicePreset(input: {
         provider: providerKey,
         presetVoiceId: input.request.presetVoiceId,
         sampleText: input.request.sampleText,
-        reason: input.request.reason,
       },
       prepare: async () => {
         if (providers.voice.clip.providerKey !== providerKey || !voice.createPresetVoice) {
@@ -744,7 +744,6 @@ export async function createCharacterVoicePreset(input: {
             action: "character.voice_candidate.created",
             targetType: "character_voice_profile",
             targetId: profile.id,
-            reason: input.request.reason,
             after: toInputJson({
               characterId: input.characterId,
               profileId: profile.id,
@@ -958,7 +957,6 @@ export async function activateCharacterVoiceProfile(input: {
           action: "character.voice.activated",
           targetType: "character_voice_profile",
           targetId: activated.id,
-          reason: request.reason,
           before: toInputJson({
             characterId: input.characterId,
             activeProfileId: current?.id ?? null,
@@ -1074,7 +1072,6 @@ export async function resetCharacterVoiceToSystemDefault(input: {
           action: "character.voice.reset_to_system_default",
           targetType: "character",
           targetId: input.characterId,
-          reason: request.reason,
           before: toInputJson({
             activeProfileId: current?.id ?? null,
             providerVoiceId: lockedCharacter.voiceId,
@@ -1122,6 +1119,11 @@ export function characterVoiceProfileDto(profile: VoiceProfileWithAssets): Chara
     version: profile.version,
     provider: profile.provider,
     providerVoiceId: profile.providerVoiceId,
+    presetVoiceId:
+      typeof referenceMetadata.presetVoiceId === "string" &&
+      referenceMetadata.presetVoiceId.trim().length > 0
+        ? referenceMetadata.presetVoiceId
+        : null,
     model: profile.model,
     language: profile.language,
     delivery: deliverySettings(profile.deliverySettings),

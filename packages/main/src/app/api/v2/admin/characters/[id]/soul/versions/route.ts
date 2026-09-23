@@ -32,7 +32,7 @@ export function POST(request: Request, context: { params: Promise<{ id: string }
         expectedContentVersionId: body.expectedContentVersionId,
         actor,
         persona: body.persona,
-        reason: body.reason,
+        visualDirection: body.visualDirection,
         requestId,
       }, tx),
       decorateResult: (stored, replayed) =>

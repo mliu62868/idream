@@ -51,21 +51,6 @@ const restoredDraft = {
   },
 };
 
-const legacyRestoredDraft = {
-  ...restoredDraft,
-  persona: {
-    name: "Mira",
-    age: 24,
-    gender: "female",
-    characterPromise: "A dependable conversational presence",
-    personality: "Warm and observant",
-    tone: "Natural and concise",
-    backstory: "A complete restored backstory.",
-    firstMessage: "Where should we begin?",
-    exampleDialogue: ["Tell me what matters most."],
-  },
-};
-
 async function waitUntil(predicate: () => boolean) {
   const deadline = Date.now() + 2_000;
   while (!predicate()) {
@@ -225,8 +210,8 @@ describe("Character create wizard restore authority", () => {
     vi.unstubAllGlobals();
     expect(window).toBe(browserWindow);
     window.localStorage.setItem(
-      "idream.admin.character-create-draft.v1:operator-hydration",
-      JSON.stringify(legacyRestoredDraft),
+      "idream.admin.character-create-draft.v3:operator-hydration",
+      JSON.stringify(restoredDraft),
     );
 
     const hydrationContainer = document.createElement("div");
@@ -339,7 +324,7 @@ describe("Character create wizard restore authority", () => {
 
   it("keeps edits in memory without claiming local persistence when browser storage rejects writes", async () => {
     window.localStorage.setItem(
-      "idream.admin.character-create-draft.v2:operator-storage-denied",
+      "idream.admin.character-create-draft.v3:operator-storage-denied",
       JSON.stringify(restoredDraft),
     );
     vi.spyOn(window.localStorage, "setItem").mockImplementation(() => {
@@ -681,7 +666,7 @@ describe("Character create wizard restore authority", () => {
 
   it("clears the committed creation receipt before non-authoritative URL synchronization", async () => {
     window.localStorage.setItem(
-      "idream.admin.character-create-draft.v2:operator-a",
+      "idream.admin.character-create-draft.v3:operator-a",
       JSON.stringify(restoredDraft),
     );
     adminV2Request.mockImplementation(async (path, options) => {
@@ -757,7 +742,7 @@ describe("Character create wizard restore authority", () => {
     );
     expect(
       window.localStorage.getItem(
-        "idream.admin.character-create-draft.v2:operator-a",
+        "idream.admin.character-create-draft.v3:operator-a",
       ),
     ).toBeNull();
   });

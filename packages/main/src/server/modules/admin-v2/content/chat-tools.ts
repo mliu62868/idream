@@ -42,7 +42,6 @@ export async function setCharacterChatTools(input: {
       action: "content.chat-tools.write",
       targetType: "character",
       targetId: characterId,
-      reason: body.reason,
       before: { imageToolEnabled: existingAdvancedDetails.imageToolEnabled ?? true },
       after: { imageToolEnabled: body.imageToolEnabled },
     }, tx);

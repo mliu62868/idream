@@ -97,7 +97,7 @@ describe("admin shell keyboard and account menu", () => {
     vi.spyOn(window.sessionStorage, "setItem").mockImplementation(() => { throw new Error("quota"); });
     writeSoulDraft(key, { projectVersion: 1, contentVersionId: "version", persona: {
       name: "Draft", age: 31, gender: "female", characterPromise: "Hello", detailsMarkdown: "", firstMessage: "Hi",
-    } });
+    }, visual: { identityAnchor: "", stableTraits: "", style: "realistic", referenceDirection: "" } });
     const pending = new Event("beforeunload", { cancelable: true });
     window.dispatchEvent(pending);
     expect(pending.defaultPrevented).toBe(true);
@@ -110,7 +110,7 @@ describe("admin shell keyboard and account menu", () => {
     const key = "idream.admin.soul-draft:operator-1:leave-test";
     writeSoulDraft(key, { projectVersion: 1, contentVersionId: "version", persona: {
       name: "Draft", age: 31, gender: "female", characterPromise: "Hello", detailsMarkdown: "", firstMessage: "Hi",
-    } });
+    }, visual: { identityAnchor: "", stableTraits: "", style: "realistic", referenceDirection: "" } });
     await mountShell();
     const link = document.createElement("a");
     link.href = "/admin/characters/leave-test?tab=overview";

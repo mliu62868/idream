@@ -5,6 +5,7 @@ import {
   characterProjectDraftSchema,
   characterProjectDraftPatchRequestSchema,
   characterProjectProductionReadyDraftSchema,
+  characterSoulVersionCreateRequestSchema,
   customerCharacterPublicationPrepRequestSchema,
   customerCharacterPublicationPrepResponseSchema,
 } from "./characters-create";
@@ -43,13 +44,11 @@ describe("Character Project create contract", () => {
     expect(
       customerCharacterPublicationPrepRequestSchema.parse({
         submissionId: "submission-1",
-        reason: "Repair approved publication preparation",
         confirmation: "PREPARE PUBLICATION character-1",
       }),
     ).toMatchObject({ submissionId: "submission-1" });
     expect(
       customerCharacterPublicationPrepRequestSchema.safeParse({
-        reason: "Repair approved publication preparation",
         confirmation: "PREPARE PUBLICATION character-1",
       }).success,
     ).toBe(false);
@@ -206,6 +205,39 @@ describe("Character Project create contract", () => {
       characterProjectDraftPatchRequestSchema.safeParse({
         ...validPatch,
         phase: "launch_ready",
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe("Character Soul save contract", () => {
+  const save = {
+    entityVersion: 3,
+    expectedContentVersionId: "content-2",
+    persona: validCreate.persona,
+  };
+
+  it("saves persona edits without a reason and keeps appearance optional", () => {
+    expect(characterSoulVersionCreateRequestSchema.safeParse(save).success).toBe(true);
+    expect(
+      characterSoulVersionCreateRequestSchema.safeParse({
+        ...save,
+        reason: "Tighten the opening line",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("accepts a complete visual direction edit and rejects a partial one", () => {
+    expect(
+      characterSoulVersionCreateRequestSchema.safeParse({
+        ...save,
+        visualDirection: validCreate.visualDirection,
+      }).success,
+    ).toBe(true);
+    expect(
+      characterSoulVersionCreateRequestSchema.safeParse({
+        ...save,
+        visualDirection: { ...validCreate.visualDirection, stableTraits: [] },
       }).success,
     ).toBe(false);
   });

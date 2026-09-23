@@ -140,7 +140,7 @@ export function CharacterImageLibrary({
           form,
         },
       );
-      setMessage(t("Image imported. Choose it in Character operations."));
+      setMessage(t("Image imported. Choose where it appears above."));
       await loadAssets();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t("Image import failed"));
@@ -152,7 +152,7 @@ export function CharacterImageLibrary({
   function requestArchive(asset: CharacterImageSourceAsset) {
     setArchiveSpec({
       title: "Remove image from library?",
-      summary: t("Images currently used by Character operations must be replaced first."),
+      summary: t("Images used as the cover, hero or chat image must be replaced first."),
       consequence: {
         effect: "The image will be archived and hidden from this Character's library.",
         reversible: true,
@@ -170,7 +170,7 @@ export function CharacterImageLibrary({
           await loadAssets();
         } catch (cause) {
           if (cause instanceof AssetBulkArchiveError && cause.details.dependencies.length > 0) {
-            throw new Error(t("Replace this image in Character operations before removing it."));
+            throw new Error(t("Replace this image in its placement above before removing it."));
           }
           throw cause;
         }
@@ -200,7 +200,7 @@ export function CharacterImageLibrary({
             </p>
             <h3 className="mt-1 text-xl font-semibold">{t("All images for {name}", { name: data.character.name })}</h3>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--ad-text-muted)]">
-              {t("Generate here or import images made elsewhere. Character operations chooses from this same library.")}
+              {t("Generate here or import images made elsewhere. The placements above choose from this library.")}
             </p>
           </div>
           <div className="flex flex-wrap gap-2">

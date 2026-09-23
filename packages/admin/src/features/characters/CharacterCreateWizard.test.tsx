@@ -52,10 +52,10 @@ describe("Character create wizard", () => {
     expect(html).not.toContain("Backstory (optional)");
     expect(html).not.toContain("Example dialogue (optional, one per line)");
     const promise =
-      /Character promise[\s\S]{0,700}?<\/textarea>/.exec(html)?.[0] ?? "";
+      /Short description[\s\S]{0,700}?<\/textarea>/.exec(html)?.[0] ?? "";
     expect(promise).toContain('required=""');
     const opening =
-      /First message[\s\S]{0,700}?<\/textarea>/.exec(html)?.[0] ?? "";
+      /Opening message[\s\S]{0,700}?<\/textarea>/.exec(html)?.[0] ?? "";
     expect(opening).toContain('required=""');
   });
 

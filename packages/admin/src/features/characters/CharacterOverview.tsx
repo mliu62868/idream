@@ -8,6 +8,7 @@ import { ShieldAlert } from "lucide-react";
 import { useMemo } from "react";
 import { CharacterChatToolsPanel } from "./CharacterChatToolsPanel";
 import { CharacterTagsPanel } from "./CharacterTagsPanel";
+import { soulDraftFromWorkspace, visualFormFromWorkspace } from "./CharacterSoulPanel";
 import { cn } from "@/lib/utils";
 import { characterReleaseOrdinals } from "./character-workspace-format";
 
@@ -121,11 +122,15 @@ export function CharacterOverview({
 }) {
   const { t } = useAdminI18n();
   const recentAssets = useMemo(() => characterRecentAssets(data), [data]);
+  // SPEC: 资料区显示正在编辑的草稿，与标题里的名字同源；是否已上线看「未发布改动」。
+  // INTENT: 这里曾读 Character 行，而那一行只在发布时才更新，改完人设后标题是新名字、
+  //         资料却还是线上旧值，同一屏两个来源。
+  const persona = soulDraftFromWorkspace(data);
   const characterDetails = [
-    { label: "Description", value: data.character.description || "N/A" },
-    { label: "Age", value: String(data.character.age) },
-    { label: "Gender", value: data.character.gender || "N/A" },
-    { label: "Style", value: data.character.style || "N/A" },
+    { label: "Short description", value: data.preview.draft.description || "N/A" },
+    { label: "Age", value: String(persona?.age ?? data.character.age) },
+    { label: "Gender", value: persona?.gender ?? (data.character.gender || "N/A") },
+    { label: "Style", value: visualFormFromWorkspace(data).style },
   ] as const;
   const operationalFacts = characterOperationsFacts(data).filter(
     (fact) => fact.label !== "Serving" && fact.label !== "Visibility",
@@ -141,7 +146,7 @@ export function CharacterOverview({
             {characterDetails.map((detail) => (
               <div
                 className={
-                  detail.label === "Description" ? "sm:col-span-2" : undefined
+                  detail.label === "Short description" ? "sm:col-span-2" : undefined
                 }
                 key={detail.label}
               >

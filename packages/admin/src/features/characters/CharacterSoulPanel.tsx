@@ -2,12 +2,17 @@
 
 import {
   characterDraftPersonaSchema,
+  characterDraftVisualDirectionSchema,
   type CharacterDraftPersona,
+  type CharacterDraftVisualDirection,
   type CharacterWorkspaceDetail,
 } from "@idream/shared/admin";
 import { compileCharacterSoul } from "@idream/shared/chat/persona";
+import Link from "next/link";
 import { useEffect, useState } from "react";
-import { clearSoulDraft, readSoulDraft, writeSoulDraft, type SoulDraft } from "./soul-drafts";
+import { clearSoulDraft, readSoulDraft, writeSoulDraft, type SoulDraft, type SoulVisualForm } from "./soul-drafts";
+import { characterCreateStepFieldErrors } from "./CharacterCreateWizard";
+import type { RunCommittedCharacterMutation } from "./character-workspace-permissions";
 import { ConfirmDialog } from "@/components/admin/ui/ConfirmDialog";
 import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
@@ -19,16 +24,15 @@ import {
 } from "@/features/operations/WorkspaceUi";
 import { useAdminI18n } from "@/components/admin/i18n";
 
-type RunCommittedMutation = <T>(input: {
-  readonly action: string;
-  readonly commit: () => Promise<T>;
-  readonly afterRefresh?: () => void;
-}) => Promise<{ readonly result: T; readonly refreshed: boolean }>;
-
 export function CharacterSoulPanel(props: Parameters<typeof SoulEditor>[0]) {
   return <SoulEditor key={`${props.actorId}:${props.data.character.id}`} {...props} />;
 }
 
+// SPEC: one form holds everything that defines the Character: persona, opening and
+// appearance. One Save writes it as a new draft version; publishing stays in Release.
+// INTENT: saving a draft is reversible and invisible to customers, so it asks for
+// neither a reason nor a confirmation. The appearance written at creation feeds every
+// image prompt and had no other place to be corrected.
 function SoulEditor({
   data,
   actorId,
@@ -38,22 +42,21 @@ function SoulEditor({
   data: CharacterWorkspaceDetail;
   actorId: string;
   canWrite: boolean;
-  runCommittedMutation: RunCommittedMutation;
+  runCommittedMutation: RunCommittedCharacterMutation;
 }) {
   const { t } = useAdminI18n();
   const storageKey = `idream.admin.soul-draft:${actorId}:${data.character.id}`;
   const [draft, setDraft] = useState<SoulDraft | null>(null);
   const persona = draft?.persona ?? soulDraftFromWorkspace(data);
+  const baseVisual = visualFormFromWorkspace(data);
+  const visual = draft?.visual ?? baseVisual;
   const baseVersion = draft?.projectVersion ?? data.project.version;
   const baseContentId = draft?.contentVersionId ?? data.soul.current.contentVersionId;
   const [discardOpen, setDiscardOpen] = useState(false);
   const stale = baseVersion !== data.project.version || baseContentId !== data.soul.current.contentVersionId;
   const dirty = draft !== null;
-  // SPEC: 新建 Soul 版本会成为角色人格的权威快照，确认走 ConfirmDialog（它自己收 reason ≥3）。
-  // INTENT: 原先只有一个 reason 输入框加一个按钮 —— 与同一工作台里"改个标签都要走对话框"
-  //         的门槛完全倒置。
-  const [confirmOpen, setConfirmOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [validationAttempted, setValidationAttempted] = useState(false);
   const [error, setError] = useState<string | null>(() =>
     persona ? null : t("Character Soul could not be loaded"),
   );
@@ -78,6 +81,7 @@ function SoulEditor({
   function discardDraft() {
     const persisted = clearSoulDraft(storageKey);
     setDraft(null);
+    setValidationAttempted(false);
     setError(persisted ? null : t("Draft cleared for this tab. Browser storage is unavailable."));
   }
 
@@ -91,21 +95,35 @@ function SoulEditor({
     );
   }
 
-  const setPersona = (patch: Partial<CharacterDraftPersona>) => {
-    const next = { persona: { ...persona, ...patch }, projectVersion: baseVersion, contentVersionId: baseContentId };
+  const keepDraft = (next: SoulDraft) => {
     setDraft(next);
     if (!writeSoulDraft(storageKey, next)) {
       setError(t("Draft kept until this tab reloads. Browser storage is unavailable."));
     }
   };
+  const setPersona = (patch: Partial<CharacterDraftPersona>) =>
+    keepDraft({ persona: { ...persona, ...patch }, visual, projectVersion: baseVersion, contentVersionId: baseContentId });
+  const setVisual = (patch: Partial<SoulVisualForm>) =>
+    keepDraft({ persona, visual: { ...visual, ...patch }, projectVersion: baseVersion, contentVersionId: baseContentId });
   const draftPreview = compileSoulDraftPreview(persona);
+  const visualDirection = visualDirectionFromForm(visual);
+  // Appearance is only sent when edited, so a legacy Character without a visual
+  // direction can still save persona changes.
+  const visualChanged = JSON.stringify(visualDirection) !== JSON.stringify(visualDirectionFromForm(baseVisual));
+  const errors: Record<string, string> = {
+    ...characterCreateStepFieldErrors({ persona, visualDirection }, 0),
+    ...(visualChanged ? characterCreateStepFieldErrors({ persona, visualDirection }, 1) : {}),
+  };
+  const fieldErrors = validationAttempted ? errors : {};
 
-  const createVersion = async (reason: string) => {
+  const save = async () => {
+    setValidationAttempted(true);
+    if (Object.keys(errors).length > 0) return;
     setBusy(true);
     setError(null);
     try {
       await runCommittedMutation({
-        action: t("Create Character Soul version"),
+        action: t("Save character"),
         commit: async () => {
           const result = await adminV2Operation(
             "POST /api/v2/admin/characters/:id/soul/versions",
@@ -116,12 +134,12 @@ function SoulEditor({
                 entityVersion: baseVersion,
                 expectedContentVersionId: baseContentId,
                 persona,
-                reason,
+                ...(visualChanged ? { visualDirection } : {}),
               },
             },
           );
           // 清理先于权威刷新，避免新面板恢复刚提交的旧草稿。
-          if (!clearSoulDraft(storageKey)) setError(t("Version saved. Local draft could not be cleared."));
+          if (!clearSoulDraft(storageKey)) setError(t("Saved. Local draft could not be cleared."));
           setDraft(null);
           return result;
         },
@@ -129,47 +147,32 @@ function SoulEditor({
     } catch (cause) {
       setError(
         cause instanceof AdminV2RequestError && cause.status === 409
-          ? t("A newer Soul or Character draft exists. Reload before creating another version.")
+          ? t("Someone saved a newer version. Reload before saving again.")
           : cause instanceof Error
             ? cause.message
-            : t("Character Soul version could not be created"),
+            : t("Changes could not be saved"),
       );
-      throw cause;
     } finally {
       setBusy(false);
     }
   };
+
+  const releaseHref = `/admin/characters/${encodeURIComponent(data.character.id)}?tab=release`;
+  const unpublishedNotice = data.preview.live === null
+    ? t("This Character has not been published yet.")
+    : data.preview.changedFields.length > 0
+      ? t("Saved changes are not live yet. Customers still see the published version.")
+      : null;
 
   return (
     <div className="space-y-5">
       {dirty ? <div className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-[var(--ad-yellow-bg)] px-4 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">
         <span>{t(stale ? "Draft is based on an older version. Copy or discard it." : "Unsaved draft · kept in this tab")}</span>
         <button className="min-h-9 underline" disabled={busy} onClick={() => setDiscardOpen(true)} type="button">{t("Discard draft")}</button>
+      </div> : unpublishedNotice ? <div className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-[var(--ad-blue-bg)] px-4 py-2 text-sm text-[var(--ad-blue-text)]" role="status">
+        <span>{unpublishedNotice}</span>
+        <Link className="min-h-9 content-center font-semibold underline" href={releaseHref}>{t("Go to Release")}</Link>
       </div> : null}
-      <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <h3 className="mt-1 text-lg font-semibold">{t("Character Soul version")} {data.soul.current.version}</h3>
-          </div>
-          <span className={data.soul.valid && data.soul.current.diagnostics.length === 0
-            ? "text-sm font-semibold text-[var(--ad-green-text)]"
-            : "text-sm font-semibold text-[var(--ad-yellow-text)]"}>
-            {data.soul.valid && data.soul.current.diagnostics.length === 0
-              ? t("Release ready")
-              : t("Review diagnostics")}
-          </span>
-        </div>
-        {data.soul.changedFields.length > 0 ? (
-          <div className="mt-4">
-            <p className="text-sm font-semibold">{t("Changed from Serving version")} {data.soul.previous?.version}</p>
-            <div className="mt-2 flex flex-wrap gap-2">
-              {data.soul.changedFields.map((field) => (
-                <code className="rounded bg-[var(--ad-surface-subtle)] px-2 py-1 text-xs" key={field}>{field}</code>
-              ))}
-            </div>
-          </div>
-        ) : null}
-      </section>
 
       {data.soul.current.diagnostics.length > 0 ? (
         <section className="rounded-lg border border-[var(--ad-yellow-text)] bg-[var(--ad-yellow-bg)] p-4">
@@ -185,11 +188,10 @@ function SoulEditor({
       ) : null}
 
       <fieldset disabled={!canWrite || busy} className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5">
-        <h3 className="text-lg font-semibold">{t("Soul editor")}</h3>
-        <p className="mt-1 text-sm text-[var(--ad-text-muted)]">{t("Keep the basics clear. Put anything else in Markdown. Creating a version is explicit, and existing sessions keep their pinned bytes.")}</p>
-        <div className="mt-5 grid gap-5 lg:grid-cols-2">
-          <Field label={t("Name")} value={persona.name} onChange={(value) => setPersona({ name: value })} />
-          <Field label={t("Age")} max={120} min={18} type="number" value={String(persona.age)} onChange={(value) => setPersona({ age: Number(value) })} />
+        <h3 className="text-lg font-semibold">{t("Persona")}</h3>
+        <div className="mt-4 grid gap-5 lg:grid-cols-2">
+          <Field error={fieldErrors.name} label={t("Name")} value={persona.name} onChange={(value) => setPersona({ name: value })} />
+          <Field error={fieldErrors.age} label={t("Age")} max={120} min={18} type="number" value={String(persona.age)} onChange={(value) => setPersona({ age: Number(value) })} />
           <label className="text-sm font-medium">
             {t("Gender")}
             <select className={`${fieldClass} mt-2`} onChange={(event) => setPersona({ gender: event.target.value as CharacterDraftPersona["gender"] })} value={persona.gender}>
@@ -198,23 +200,44 @@ function SoulEditor({
               <option value="trans">{t("Trans")}</option>
             </select>
           </label>
-          <Field label={t("Character promise")} value={persona.characterPromise} onChange={(value) => setPersona({ characterPromise: value })} />
-          <Area label={t("Opening message")} value={persona.firstMessage} onChange={(value) => setPersona({ firstMessage: value })} />
+          <Field error={fieldErrors.characterPromise} label={t("Short description")} value={persona.characterPromise} onChange={(value) => setPersona({ characterPromise: value })} />
+          <div className="lg:col-span-2">
+            <Area error={fieldErrors.firstMessage} label={t("Opening message")} value={persona.firstMessage} onChange={(value) => setPersona({ firstMessage: value })} />
+          </div>
           <div className="lg:col-span-2">
             <Area label={t("Additional details · Markdown (optional)")} value={persona.detailsMarkdown} onChange={(value) => setPersona({ detailsMarkdown: value })} />
           </div>
         </div>
-        {error ? <p className="mt-3 text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}
+
+        <h3 className="mt-8 text-lg font-semibold">{t("Appearance")}</h3>
+        <p className="mt-1 text-sm text-[var(--ad-text-muted)]">{t("Every new image of this Character is generated from this description.")}</p>
+        <div className="mt-4 grid gap-5 lg:grid-cols-2">
+          <Area error={fieldErrors.identityAnchor} label={t("Identity anchor")} value={visual.identityAnchor} onChange={(value) => setVisual({ identityAnchor: value })} />
+          <Area error={fieldErrors.stableTraits} label={t("Stable traits (one per line)")} value={visual.stableTraits} onChange={(value) => setVisual({ stableTraits: value })} />
+          <label className="text-sm font-medium">
+            {t("Visual style")}
+            <select className={`${fieldClass} mt-2`} onChange={(event) => setVisual({ style: event.target.value as SoulVisualForm["style"] })} value={visual.style}>
+              <option value="realistic">{t("Realistic")}</option>
+              <option value="anime">{t("Anime")}</option>
+              <option value="hybrid">{t("Hybrid")}</option>
+              <option value="other">{t("Other")}</option>
+            </select>
+          </label>
+          <Area error={fieldErrors.referenceDirection} label={t("Reference direction")} value={visual.referenceDirection} onChange={(value) => setVisual({ referenceDirection: value })} />
+        </div>
+
+        {Object.keys(fieldErrors).length > 0 ? <p className="mt-4 text-sm text-[var(--ad-red-text)]" role="alert">{t("Fix the highlighted fields to save.")}</p> : null}
+        {error ? <p className="mt-4 text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}
         <div className="mt-5">
-          <WorkspaceButton disabled={!canWrite || busy || stale} onClick={() => setConfirmOpen(true)} tone="primary">
-            {busy ? t("Creating version…") : t("Create Soul version")}
+          <WorkspaceButton disabled={!canWrite || busy || stale || !dirty} onClick={() => void save()} tone="primary">
+            {busy ? t("Saving…") : t("Save")}
           </WorkspaceButton>
         </div>
       </fieldset>
 
       <details className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5">
         <summary className="cursor-pointer text-sm font-semibold">{t("Technical details")}</summary>
-        <p className="mt-3 text-xs text-[var(--ad-text-muted)]">{t("schema")} {data.soul.current.schemaVersion ?? t("Soul invalid")} · {data.soul.current.compilerVersion ?? t("not compiled")} · {data.soul.current.estimatedTokens ?? "—"} {t("tokens")}</p>
+        <p className="mt-3 text-xs text-[var(--ad-text-muted)]">{t("Character Soul version")} {data.soul.current.version} · {t("schema")} {data.soul.current.schemaVersion ?? t("Soul invalid")} · {data.soul.current.compilerVersion ?? t("not compiled")} · {data.soul.current.estimatedTokens ?? "—"} {t("tokens")}</p>
         <p className="mt-2 break-all font-mono text-xs text-[var(--ad-text-muted)]">{data.soul.current.fingerprint ?? t("No valid fingerprint")}</p>
         <div className="mt-4 grid gap-5 xl:grid-cols-2">
           <ReadOnlyArtifact title={t("Generated SOUL.md")} unavailableLabel={t("Unavailable until the Soul compiles.")} value={draftPreview?.markdown ?? ""} />
@@ -225,35 +248,6 @@ function SoulEditor({
         title: t("Discard draft?"), requireReason: false, submitLabel: t("Discard draft"),
         onSubmit: async () => { discardDraft(); setDiscardOpen(false); },
       }} /> : null}
-      {confirmOpen ? (
-        <ConfirmDialog
-          onClose={() => setConfirmOpen(false)}
-          spec={{
-            title: t("Create Soul version"),
-            summary: (
-              <div className="space-y-2">
-                <p>
-                  {t(
-                    "This becomes the authoritative persona for new chat. Version {version} is kept as history and is not deleted.",
-                    { version: data.soul.current.version },
-                  )}
-                </p>
-                <p>
-                  {t(
-                    "It does not publish a Release. Live chat keeps the released Soul until a Release ships this version.",
-                  )}
-                </p>
-              </div>
-            ),
-            reasonLabel: t("Reason"),
-            submitLabel: t("Create Soul version"),
-            onSubmit: async (reason) => {
-              await createVersion(reason);
-              setConfirmOpen(false);
-            },
-          }}
-        />
-      ) : null}
     </div>
   );
 }
@@ -288,13 +282,48 @@ export function soulDraftFromWorkspace(data: CharacterWorkspaceDetail): Characte
   return parsed.success ? parsed.data : null;
 }
 
+const visualStyles = characterDraftVisualDirectionSchema.shape.style.options;
+
+function isVisualStyle(value: unknown): value is SoulVisualForm["style"] {
+  return visualStyles.includes(value as SoulVisualForm["style"]);
+}
+
+// Legacy appearances predate the visual direction; missing keys start empty and style
+// falls back to the live Character's style.
+export function visualFormFromWorkspace(data: CharacterWorkspaceDetail): SoulVisualForm {
+  const appearance = data.preview.draft.appearance;
+  return {
+    identityAnchor: typeof appearance.identityAnchor === "string" ? appearance.identityAnchor : "",
+    stableTraits: Array.isArray(appearance.stableTraits)
+      ? appearance.stableTraits.filter((trait): trait is string => typeof trait === "string").join("\n")
+      : "",
+    style: [appearance.style, data.character.style].find(isVisualStyle) ?? "realistic",
+    referenceDirection: typeof appearance.referenceDirection === "string" ? appearance.referenceDirection : "",
+  };
+}
+
+export function visualDirectionFromForm(form: SoulVisualForm): CharacterDraftVisualDirection {
+  return {
+    identityAnchor: form.identityAnchor.trim(),
+    stableTraits: form.stableTraits.split("\n").map((trait) => trait.trim()).filter(Boolean),
+    style: form.style,
+    referenceDirection: form.referenceDirection.trim(),
+  };
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
 }
 
-function Field({ label, value, onChange, type = "text", min, max }: {
+function FieldError({ error }: { error?: string }) {
+  const { t } = useAdminI18n();
+  return error ? <span className="mt-1 block text-xs font-medium text-[var(--ad-red-text)]">{t(error)}</span> : null;
+}
+
+function Field({ error, label, value, onChange, type = "text", min, max }: {
+  error?: string;
   label: string;
   value: string;
   onChange: (value: string) => void;
@@ -302,11 +331,11 @@ function Field({ label, value, onChange, type = "text", min, max }: {
   min?: number;
   max?: number;
 }) {
-  return <label className="text-sm font-medium">{label}<input className={`${fieldClass} mt-2`} max={max} min={min} onChange={(event) => onChange(event.target.value)} type={type} value={value} /></label>;
+  return <label className="text-sm font-medium">{label}<input aria-invalid={error ? true : undefined} className={`${fieldClass} mt-2`} max={max} min={min} onChange={(event) => onChange(event.target.value)} type={type} value={value} /><FieldError error={error} /></label>;
 }
 
-function Area({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
-  return <label className="text-sm font-medium">{label}<textarea className={`${textAreaClass} mt-2 min-h-24`} onChange={(event) => onChange(event.target.value)} value={value} /></label>;
+function Area({ error, label, value, onChange }: { error?: string; label: string; value: string; onChange: (value: string) => void }) {
+  return <label className="text-sm font-medium">{label}<textarea aria-invalid={error ? true : undefined} className={`${textAreaClass} mt-2 min-h-24`} onChange={(event) => onChange(event.target.value)} value={value} /><FieldError error={error} /></label>;
 }
 
 function ReadOnlyArtifact({ title, unavailableLabel, value }: { title: string; unavailableLabel: string; value: string | null }) {

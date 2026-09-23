@@ -14,8 +14,8 @@
 // - 未设置 = 开。后端 `chatImageToolEnabled()` 是 `=== false ? false : true`，
 //   core.chat_character_view 也 COALESCE 成 true；这里必须同口径，否则界面会把"没配过"
 //   显示成"已关闭"。
-// - 写操作照本仓惯例：必填 reason + ConfirmDialog 说清后果；关闭是**可撤销**的（再打开即可），
-//   所以 reversible: true，不摆那句"无法撤回"。
+// - 写操作过 ConfirmDialog 说清后果（影响该角色所有会话），但不收原因：关闭是**可撤销**的
+//   （再打开即可），审计已记开关前后值，所以 reversible: true，不摆那句"无法撤回"。
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2, Wand2 } from "lucide-react";
@@ -82,13 +82,13 @@ export function CharacterChatToolsPanel({
           : t("The chat agent loses its image tool on the next turn of every session with this Character. Images already sent stay."),
         reversible: true,
       },
-      reasonLabel: t("Operational reason (≥3)"),
+      requireReason: false,
       submitLabel: next ? t("Enable image tool") : t("Disable image tool"),
-      onSubmit: async (reason) => {
+      onSubmit: async () => {
         await apiWrite(
           `/api/v2/admin/content/characters/${encodeURIComponent(characterId)}/chat-tools`,
           "POST",
-          { imageToolEnabled: next, reason },
+          { imageToolEnabled: next },
         );
         await load();
       },

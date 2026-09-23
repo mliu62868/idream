@@ -13,10 +13,16 @@ if (!uv) {
   throw new Error("uv is required to start Pocket TTS; set UV_BIN to its executable");
 }
 
+// SPEC: start only from the wheels `bun run voice:pocket:install` put in the uv cache.
+// INTENT: without --offline uv revalidates the PyPI index once its HTTP cache
+// expires, so a restart with PyPI or the host proxy unreachable exits and PM2
+// crash-loops the resident voice runtime. uv still resolves the hashed lock
+// from cache; a lock change fails here until install runs again.
 const child = spawn(
   uv,
   [
     "run",
+    "--offline",
     "--no-project",
     "--python",
     "3.12",

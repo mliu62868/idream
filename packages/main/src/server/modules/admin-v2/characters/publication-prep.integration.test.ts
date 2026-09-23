@@ -11,7 +11,7 @@ const actorId = `${P}operator`;
 beforeAll(async () => { await purgeTestData(P); await createUser({ id: actorId, role: "admin" }); });
 afterAll(async () => { await purgeTestData(P); await prisma.$disconnect(); });
 function request(characterId: string, submissionId: string, key: string = crypto.randomUUID()) {
-  return new Request(`http://test.local/api/v2/admin/characters/${characterId}/project`, { method: "POST", headers: { "content-type": "application/json", "x-idream-user-id": actorId, "x-idream-role": "admin", "idempotency-key": key }, body: JSON.stringify({ submissionId, reason: "Prepare historical shared character", confirmation: `PREPARE PUBLICATION ${characterId}` }) });
+  return new Request(`http://test.local/api/v2/admin/characters/${characterId}/project`, { method: "POST", headers: { "content-type": "application/json", "x-idream-user-id": actorId, "x-idream-role": "admin", "idempotency-key": key }, body: JSON.stringify({ submissionId, confirmation: `PREPARE PUBLICATION ${characterId}` }) });
 }
 async function prepare(characterId: string, submissionId: string, key?: string) {
   return preparePublication(request(characterId, submissionId, key), { params: Promise.resolve({ id: characterId }) });

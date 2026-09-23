@@ -4050,21 +4050,21 @@ describe("admin content/character chat image tool toggle (P4 Task 6)", () => {
     const forbidden = await adminV2Api("POST", `/api/v2/admin/content/characters/${charId}/chat-tools`, {
       userId: support,
       role: "support",
-      body: { imageToolEnabled: false, reason: "toggle chat image tool" },
+      body: { imageToolEnabled: false },
     });
     expectError(forbidden, 403);
 
     const badBody = await adminV2Api("POST", `/api/v2/admin/content/characters/${charId}/chat-tools`, {
       userId: admin,
       role: "admin",
-      body: { imageToolEnabled: false },
+      body: { imageToolEnabled: "off" },
     });
     expectError(badBody, 400);
 
     const disable = await adminV2Api("POST", `/api/v2/admin/content/characters/${charId}/chat-tools`, {
       userId: admin,
       role: "admin",
-      body: { imageToolEnabled: false, reason: "toggle chat image tool" },
+      body: { imageToolEnabled: false },
     });
     expectOk(disable);
 
@@ -4078,7 +4078,7 @@ describe("admin content/character chat image tool toggle (P4 Task 6)", () => {
     const enable = await adminV2Api("POST", `/api/v2/admin/content/characters/${charId}/chat-tools`, {
       userId: admin,
       role: "admin",
-      body: { imageToolEnabled: true, reason: "toggle chat image tool" },
+      body: { imageToolEnabled: true },
     });
     expectOk(enable);
 
@@ -4094,11 +4094,13 @@ describe("admin content/character chat image tool toggle (P4 Task 6)", () => {
       orderBy: { createdAt: "desc" },
     });
     expect(audit).not.toBeNull();
+    // SPEC: the switch is reversible and the audit keeps before/after, so no reason is asked.
+    expect(audit?.reason).toBeNull();
 
     const missing = await adminV2Api("POST", `/api/v2/admin/content/characters/${P}nope/chat-tools`, {
       userId: admin,
       role: "admin",
-      body: { imageToolEnabled: false, reason: "toggle chat image tool" },
+      body: { imageToolEnabled: false },
     });
     expectError(missing, 404);
   });
