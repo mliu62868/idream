@@ -21,6 +21,7 @@ import {
   parseTagListResponse,
   type PublicTagList,
   parseViewerAuthorityResponse,
+  parseChatSessionCreateResponse,
   type PublicCharacterTemplate as CreateTemplate,
 } from "@/lib/public-api-contracts";
 import { useAgeGateAccess } from "./AgeGateBoundary";
@@ -468,7 +469,7 @@ export function CreateWorkspace() {
         setStatus(
           applied.previewBatch?.errorMessage ||
           (serverPreviewJob?.errorCode
-            ? `Preview generation failed (${serverPreviewJob.errorCode}). Try again.`
+            ? previewFailedMessage(serverPreviewJob.errorCode)
             : "Preview generation failed. Try again."),
         );
       }
@@ -755,8 +756,24 @@ export function CreateWorkspace() {
   }
 
   function back() {
+    goToStep(Math.max(step - 1, 0));
+  }
+
+  function goToStep(target: number) {
     setStatus("");
-    set("step", Math.max(step - 1, 0));
+    set("step", target);
+  }
+
+  async function startChat() {
+    if (!createdCharacterId || pending) return;
+    setPending(true);
+    try {
+      const payload = await requestApi("/api/v1/chat/sessions", { characterId: createdCharacterId });
+      window.location.href = `/chat/${parseChatSessionCreateResponse(payload).session.id}`;
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Could not start chat. Please try again.");
+      setPending(false);
+    }
   }
 
   const runPreviewBatch = useCallback(
@@ -810,7 +827,7 @@ export function CreateWorkspace() {
               asset: candidate,
               errorCode: previewJob?.errorCode,
               errorMessage: previewJob?.errorCode
-                ? `Preview generation failed (${previewJob.errorCode}). Try again.`
+                ? previewFailedMessage(previewJob.errorCode)
                 : undefined,
             };
           },
@@ -1091,8 +1108,23 @@ export function CreateWorkspace() {
               }`}
               key={label}
             >
-              {index < step ? <Check className="h-3.5 w-3.5" /> : <span>{index + 1}</span>}
-              {label}
+              {index < step ? (
+                // 已完成的步骤可直接跳回（CR-01），未到的步骤仍须按 Next 逐步校验。
+                <button
+                  className="flex items-center gap-2 uppercase"
+                  disabled={pending}
+                  onClick={() => goToStep(index)}
+                  type="button"
+                >
+                  <Check className="h-3.5 w-3.5" />
+                  {label}
+                </button>
+              ) : (
+                <>
+                  <span>{index + 1}</span>
+                  {label}
+                </>
+              )}
             </li>
           ))}
         </ol>
@@ -1333,7 +1365,7 @@ export function CreateWorkspace() {
                     >
                       <option value="">System default</option>
                       {state.voiceSelection && !voiceCatalog?.items.some((voice) => voice.id === state.voiceSelection?.voiceId) && (
-                        <option value={state.voiceSelection.voiceId}>Saved voice: {state.voiceSelection.voiceId} (unavailable)</option>
+                        <option value={state.voiceSelection.voiceId}>Previously chosen voice (no longer available)</option>
                       )}
                       {voiceCatalog?.items.map((voice) => <option key={voice.id} value={voice.id}>{voice.label}</option>)}
                     </select>
@@ -1435,7 +1467,7 @@ export function CreateWorkspace() {
               <div className="grid gap-4" data-testid="create-step-preview">
                 <section className="rounded-[14px] bg-[rgb(36,36,36)] p-4 text-left text-white" data-testid="create-soul-preview">
                   <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
-                    SOUL.md · exact Agent prompt
+                    Personality preview · what your character will follow
                   </p>
                   <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap rounded-[12px] border border-white/10 bg-[rgb(13,13,13)] p-4 font-mono text-[12px] font-medium leading-6 text-white">
                     {renderCharacterSoulMarkdown({
@@ -1604,11 +1636,13 @@ export function CreateWorkspace() {
                   </div>
                 )}
                 {previewStatus === "complete" && (
-                  <p className="text-[13px] font-semibold text-[rgb(120,220,170)]">
-                    {previewCandidates.some((candidate) => candidate.isSynthetic)
-                      ? "Demo samples cannot be confirmed. Connect the real image provider and regenerate."
-                      : "Preview ready."}
-                  </p>
+                  previewCandidates.some((candidate) => candidate.isSynthetic) ? (
+                    <p className="text-[13px] font-semibold text-[rgb(255,184,112)]">
+                      These are placeholder samples and can&apos;t be confirmed. Generate again to get real previews.
+                    </p>
+                  ) : (
+                    <p className="text-[13px] font-semibold text-[rgb(120,220,170)]">Preview ready.</p>
+                  )
                 )}
                 {previewStatus === "failed" && (
                   <p className="text-[13px] font-semibold text-[rgb(255,140,140)]">
@@ -1641,7 +1675,7 @@ export function CreateWorkspace() {
                         onClick={() => set("visibility", item)}
                         type="button"
                       >
-                        {item}
+                        {VISIBILITY_LABELS[item]}
                       </button>
                     ))}
                   </div>
@@ -1725,12 +1759,23 @@ export function CreateWorkspace() {
               </div>
             )}
             {createdCharacterId && createdVisibility !== "private" && (
-              <Link
-                className="mt-4 inline-flex h-10 items-center justify-center rounded-full bg-[rgb(36,36,36)] px-4 text-[13px] font-bold text-white"
-                href="/custom"
-              >
-                View in My AI
-              </Link>
+              <div className="mt-4 flex flex-wrap gap-2">
+                {/* 作者本人在公开发布完成前就可以和自己的角色聊天。 */}
+                <button
+                  className="inline-flex h-10 items-center justify-center gap-2 rounded-full bg-white px-4 text-[13px] font-black text-[rgb(13,13,13)] disabled:opacity-60"
+                  disabled={pending}
+                  onClick={() => void startChat()}
+                  type="button"
+                >
+                  Start chatting
+                </button>
+                <Link
+                  className="inline-flex h-10 items-center justify-center rounded-full bg-[rgb(36,36,36)] px-4 text-[13px] font-bold text-white"
+                  href="/custom"
+                >
+                  View in My AI
+                </Link>
+              </div>
             )}
           </div>
         </div>
@@ -1763,6 +1808,17 @@ function Field({
     </label>
   );
 }
+
+// INTENT: errorCode 只作为联系客服时的参考码，不当作给用户看的原因。
+function previewFailedMessage(errorCode: string) {
+  return `Preview generation failed. Try again. Support reference: ${errorCode}`;
+}
+
+const VISIBILITY_LABELS: Record<string, string> = {
+  private: "Private",
+  unlisted: "Link only",
+  public: "Public",
+};
 
 async function api(
   path: string,

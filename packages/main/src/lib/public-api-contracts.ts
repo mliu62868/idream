@@ -621,7 +621,11 @@ const chatSessionCreateResponseSchema = successEnvelope(
 );
 
 const characterLikeResponseSchema = successEnvelope(
-  z.object({ liked: z.boolean() }),
+  z.object({
+    liked: z.boolean(),
+    likesCount: z.number().int().nonnegative().optional(),
+    likes: z.string().optional(),
+  }),
 );
 
 const reportResponseSchema = successEnvelope(
@@ -659,6 +663,7 @@ const helpDeskReportSchema = z
     createdAt: timestamp,
     decision: z
       .object({
+        id: nonEmptyString,
         outcome: nonEmptyString,
         decidedAt: timestamp,
       })
@@ -1410,11 +1415,13 @@ const chatSessionDetailSchema = z
     proactiveEnabled: z.boolean().optional(),
     status: z.string().optional(),
     group: z.object({ members: z.array(groupChatMemberSchema).min(2).max(12), selectedSessionId: nonEmptyString }).strict().optional(),
+    memberImages: z.record(z.string(), z.string()).optional(),
     messages: z.array(chatMessageSchema),
     character: z
       .object({
         canUpdateIdentity: z.boolean().optional(),
         name: nonEmptyString,
+        image: z.string().nullable().optional(),
       })
       .passthrough(),
   })

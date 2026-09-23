@@ -54,6 +54,7 @@ function GroupChats({ viewer }: { viewer: ViewerGate }) {
   const [searched, setSearched] = useState("");
   const [pending, setPending] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState<{ id: string; title: string } | null>(null);
   const [status, setStatus] = useState("");
 
   const groups = useViewerResource({
@@ -78,11 +79,17 @@ function GroupChats({ viewer }: { viewer: ViewerGate }) {
 
   const refreshGroups = groups.refresh;
   const refreshCandidates = candidates.refresh;
+  // INVARIANT: deferred past the commit. This subtree mounts in the same commit
+  // that first confirms the viewer, and child effects run before the parent's
+  // useViewerGate syncs its identity ref — an immediate refresh was refused and
+  // the page sat on "Loading" until a focus event re-validated.
   useEffect(() => {
-    void refreshGroups();
+    const timer = window.setTimeout(() => void refreshGroups(), 0);
+    return () => window.clearTimeout(timer);
   }, [refreshGroups, viewer.revalidation]);
   useEffect(() => {
-    void refreshCandidates(searched);
+    const timer = window.setTimeout(() => void refreshCandidates(searched), 0);
+    return () => window.clearTimeout(timer);
   }, [refreshCandidates, searched, viewer.revalidation]);
 
   async function more() {
@@ -120,18 +127,20 @@ function GroupChats({ viewer }: { viewer: ViewerGate }) {
     finally { setPending(false); }
   }
 
-  async function changeGroup(group: Group, deleting: boolean) {
+  async function changeGroup(group: Group, change: "delete" | { status: "archived" } | { title: string }) {
     if (pending) return;
+    const deleting = change === "delete";
     if (deleting && confirmDelete !== group.id) { setConfirmDelete(group.id); return; }
     setPending(true); setStatus("");
     try {
       const response = await viewer.fetch(`/api/v1/chat/groups/${encodeURIComponent(group.id)}`, {
         method: deleting ? "DELETE" : "PATCH",
         headers: { "content-type": "application/json" },
-        ...(deleting ? {} : { body: JSON.stringify({ status: "archived" }) }),
+        ...(deleting ? {} : { body: JSON.stringify(change) }),
       });
       if (!response.ok) { setStatus(chatFailureCopy(await response.json().catch(() => null), "The group could not be updated")); return; }
       setConfirmDelete(null);
+      setRenaming(null);
       await groups.refresh();
     } catch { setStatus("The result could not be confirmed. Reload to check the group."); }
     finally { setPending(false); }
@@ -173,12 +182,19 @@ function GroupChats({ viewer }: { viewer: ViewerGate }) {
       <section aria-label="Your saved group chats"><h2 className="text-xl font-bold">Your groups</h2>
         {!groups.data.length ? <p className="mt-4 text-sm text-white/65">Your new group will appear here with its full conversation history.</p> : null}
         <ul className="mt-4 space-y-3">{groups.data.map(group => <li key={group.id} className="rounded-xl border border-white/10 p-4">
-          <Link className="text-lg font-bold underline-offset-4 hover:underline" href={`/chat/groups/${encodeURIComponent(group.id)}`}>{group.title}</Link>
+          {renaming?.id === group.id
+            ? <form className="flex flex-wrap gap-2" onSubmit={event => { event.preventDefault(); if (renaming.title.trim()) void changeGroup(group, { title: renaming.title.trim() }); }}>
+                <input aria-label="Group name" autoFocus className="min-h-11 min-w-0 flex-1 rounded-lg bg-white/10 px-3" maxLength={120} value={renaming.title} onChange={event => setRenaming({ id: group.id, title: event.target.value })} />
+                <button className={button} disabled={pending || !renaming.title.trim()} type="submit">Save name</button>
+                <button className={button} onClick={() => setRenaming(null)} type="button">Cancel</button>
+              </form>
+            : <Link className="text-lg font-bold underline-offset-4 hover:underline" href={`/chat/groups/${encodeURIComponent(group.id)}`}>{group.title}</Link>}
           <p className="mt-2 text-sm leading-6 text-white/65">{group.members.map(member => member.name).join(" · ")}</p>
           {group.status === "archived" ? <p className="mt-2 text-xs font-bold text-white/60">Archived · history available</p> : null}
           <div className="mt-3 flex flex-wrap gap-2">
-            {group.status === "active" ? <button className={button} disabled={pending} onClick={() => void changeGroup(group, false)}>Archive</button> : null}
-            <button className={button} disabled={pending} onClick={() => void changeGroup(group, true)}>{confirmDelete === group.id ? "Confirm delete group and history" : "Delete group"}</button>
+            {renaming?.id !== group.id ? <button className={button} disabled={pending} onClick={() => setRenaming({ id: group.id, title: group.title })}>Rename</button> : null}
+            {group.status === "active" ? <button className={button} disabled={pending} onClick={() => void changeGroup(group, { status: "archived" })}>Archive</button> : null}
+            <button className={button} disabled={pending} onClick={() => void changeGroup(group, "delete")}>{confirmDelete === group.id ? "Confirm delete group and history" : "Delete group"}</button>
             {confirmDelete === group.id ? <button className={button} onClick={() => setConfirmDelete(null)}>Keep group</button> : null}
           </div>
         </li>)}</ul>

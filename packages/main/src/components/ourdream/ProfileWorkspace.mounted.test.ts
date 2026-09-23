@@ -342,6 +342,60 @@ describe("ProfileWorkspace media pagination", () => {
     expect(patches).toEqual([{ visibility: "private" }]);
   });
 
+  it("shows the server's reason when publishing a Character fails", async () => {
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/v1/library/created") return Response.json({ ok: true, data: { items: [{
+        id: "held-character", name: "Avery", visibility: "private", status: "approved",
+      }] } });
+      if (String(input) === "/api/v1/characters/held-character" && init?.method === "PATCH") {
+        return Response.json({ ok: false, error: { code: "forbidden",
+          message: "This Character is unavailable for sharing. Resolve its report or appeal first." } }, { status: 403 });
+      }
+      return originalFetch(input, init);
+    }));
+    await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/custom" })));
+    await settle();
+    await click(button("created"));
+    expect(container.textContent).not.toContain("approved");
+    await click(button("Publish"));
+    expect(container.querySelector('[data-testid="profile-status"]')?.textContent)
+      .toBe("This Character is unavailable for sharing. Resolve its report or appeal first.");
+  });
+
+  it("does not offer a Packs tab and sends its old deep link to Recent", async () => {
+    window.history.replaceState(null, "", "/custom?tab=packs");
+    await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/custom" })));
+    await settle();
+    expect([...container.querySelectorAll("button")].some((item) => item.textContent?.trim() === "packs")).toBe(false);
+    expect(button("recent").getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("keeps a new collection private unless the owner opts in", async () => {
+    await mountMedia();
+    const publish = container.querySelector<HTMLInputElement>('[aria-label="Publish collection to Community"]');
+    expect(publish).not.toBeNull();
+    expect(publish!.checked).toBe(false);
+  });
+
+  it("shows an existing referral link on load without pressing Invite", async () => {
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/v1/referrals") return Response.json({ ok: true, data: {
+        code: "DREAM-VIEWERA",
+        referrals: [{ inviteeId: null, rewardStatus: "none" }, { inviteeId: "friend", rewardStatus: "granted" }],
+      } });
+      return originalFetch(input, init);
+    }));
+    await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/profile" })));
+    await settle();
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Referral link"]')?.value)
+      .toContain("/signup?ref=DREAM-VIEWERA");
+    expect(container.querySelector('[data-testid="profile-referral-results"]')?.textContent)
+      .toContain("1 signed up with your link · 1 rewarded · 0 awaiting reward.");
+    expect(requests).not.toContain("/api/v1/referrals/invite");
+  });
+
   it("retries the failed page without silently returning to the first 40 items", async () => {
     const successfulPage = olderPage;
     olderPage = async () => Response.json({ ok: false }, { status: 503 });

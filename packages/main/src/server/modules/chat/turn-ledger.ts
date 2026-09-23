@@ -160,7 +160,7 @@ export async function getChatSession(userId: string, sessionId: string) {
   const session = await prisma.recentChat.findFirst({
     where: { sessionId, userId },
     include: {
-      character: { select: { name: true, creatorId: true } },
+      character: { select: { name: true, creatorId: true, imageAsset: { select: { url: true, thumbnailUrl: true } } } },
       turns: {
         orderBy: [{ createdAt: "asc" }, { id: "asc" }],
         include: { attachments: { orderBy: { createdAt: "asc" } } },
@@ -185,6 +185,8 @@ export async function getChatSession(userId: string, sessionId: string) {
     character: {
       name: session.character.name,
       canUpdateIdentity: session.character.creatorId === userId,
+      // 聊天页头像：与角色卡同一张封面，小图优先。
+      image: session.character.imageAsset?.thumbnailUrl ?? session.character.imageAsset?.url ?? null,
     },
     messages,
   };

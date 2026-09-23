@@ -7,7 +7,7 @@ import { comicDetailSchema, type ComicDetail } from "@idream/shared/comics";
 import { useViewerGate } from "@/hooks/useViewerGate";
 import { useViewerResource } from "@/hooks/useViewerResource";
 import { useAgeGateAccess } from "./AgeGateBoundary";
-import { comicButton, comicPayload } from "./comic-client";
+import { comicButton, comicPayload, comicStateLabel } from "./comic-client";
 import { ComicShell } from "./ComicShell";
 import { parseChatSessionCreateResponse, parsePublicApiError } from "@/lib/public-api-contracts";
 import { authHrefForTarget } from "./authRedirect";
@@ -72,7 +72,7 @@ export function ComicReader({ id }: { id: string }) {
       <header className="mb-10"><h1 className="break-words text-4xl font-black md:text-5xl">{comic.title}</h1>
         <p className="mt-4 text-sm text-neutral-300">By <Link className="font-bold text-white underline underline-offset-4" href={`/creators/${encodeURIComponent(comic.creator.id)}`}>{comic.creator.displayName}</Link> · {comic.pageCount} pages</p>
         {comic.description && <p className="mt-5 max-w-prose whitespace-pre-line leading-7 text-neutral-200">{comic.description}</p>}
-        {comic.canManage && <div className="mt-5 flex flex-wrap items-center gap-4"><Link className={comicButton} href={`/creator-studio/comics/${encodeURIComponent(id)}`}>Manage Comic</Link><span className="text-sm text-neutral-300">{comic.status.replaceAll("_", " ")} · {comic.visibility}</span></div>}
+        {comic.canManage && <div className="mt-5 flex flex-wrap items-center gap-4"><Link className={comicButton} href={`/creator-studio/comics/${encodeURIComponent(id)}`}>Manage Comic</Link><span className="text-sm text-neutral-300">{comicStateLabel(comic.status, comic.visibility)}</span></div>}
       </header>
       <nav aria-label="Chapters" className="mb-8 flex flex-wrap gap-3">{comic.episodes.map((episode, index) => <a className={comicButton} href={`#chapter-${episode.id}`} key={episode.id}>{index + 1}. {episode.title}</a>)}</nav>
       {comic.episodes.map((episode, episodeIndex) => <section className="mb-12 scroll-mt-6" id={`chapter-${episode.id}`} key={episode.id}>

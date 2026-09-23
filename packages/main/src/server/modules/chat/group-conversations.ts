@@ -87,7 +87,7 @@ export async function getGroupConversation(userId: string, groupId: string, sele
   const group = await prisma.groupConversation.findFirst({
     where: { id: groupId, userId },
     include: {
-      members: { orderBy: { groupPosition: "asc" }, include: { character: { select: { creatorId: true } } } },
+      members: { orderBy: { groupPosition: "asc" }, include: { character: { select: { creatorId: true, imageAsset: { select: { url: true, thumbnailUrl: true } } } } } },
       turns: { orderBy: { ordinal: "asc" }, include: { turn: { include: { attachments: { orderBy: { createdAt: "asc" } } } } } },
     },
   });
@@ -106,6 +106,11 @@ export async function getGroupConversation(userId: string, groupId: string, sele
     id: group.id, ownerScope: `user:${userId}`, title: group.title, status: group.status,
     characterId: selected.characterId, memoryEnabled: selected.memoryEnabled,
     character: { name: selected.title ?? "Character", canUpdateIdentity: selected.character.creatorId === userId },
+    // 群聊头部的成员头像组；group.members 是 Main→Chat 的执行契约，不往里加展示字段。
+    memberImages: Object.fromEntries(group.members.flatMap(member => {
+      const image = member.character.imageAsset?.thumbnailUrl ?? member.character.imageAsset?.url;
+      return image ? [[member.characterId, image]] : [];
+    })),
     group: {
       members: group.members.map(member => ({ sessionId: member.sessionId, characterId: member.characterId, name: member.title ?? "Character" })),
       selectedSessionId: selected.sessionId,

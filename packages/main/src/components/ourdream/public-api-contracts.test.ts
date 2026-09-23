@@ -93,6 +93,7 @@ describe("public API runtime contracts", () => {
           status: "closed",
           createdAt: "2026-08-11T10:00:00.000Z",
           decision: {
+            id: "decision-1",
             outcome: "closed",
             decidedAt: "2026-08-11T11:00:00.000Z",
           },

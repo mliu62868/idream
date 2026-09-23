@@ -51,6 +51,7 @@ import {
   type AuthorityStatus,
 } from "./authority-state";
 import {
+  apiEnvelopeErrorMessage,
   loadViewerResource,
   requestErrorMessage,
 } from "@/lib/viewer-resource-client";
@@ -144,8 +145,33 @@ export function createdCharacterPublicationStatus(input: {
   ) {
     return "awaiting publication";
   }
-  return input.status?.replaceAll("_", " ") ?? "";
+  if (!input.status) return "";
+  return CHARACTER_STATUS_LABELS[input.status] ?? "unavailable";
 }
+
+// INTENT: 用户语言，不回显数据库枚举原值；未知值落到「unavailable」而不是原样透出。
+const CHARACTER_STATUS_LABELS: Record<string, string> = {
+  draft: "draft",
+  approved: "private",
+  rejected: "not approved",
+  removed: "removed",
+  archived: "archived",
+};
+
+const COLLECTION_VISIBILITY_LABELS: Record<string, string> = {
+  private: "private",
+  unlisted: "link only",
+  public: "in Community",
+};
+
+const REFUND_STATE_LABELS: Record<string, string> = {
+  provider_dispatching: "being sent to the payment provider",
+  provider_unknown: "being confirmed with the payment provider",
+  claimable: "ready to claim",
+  awaiting_approval: "awaiting approval",
+  awaiting_payment: "awaiting payment",
+  in_progress: "in progress",
+};
 
 export function accountDeletionLoginHref(payload: unknown) {
   const value = payload as {
@@ -162,6 +188,10 @@ export function accountDeletionLoginHref(payload: unknown) {
   return `/login?${params.toString()}`;
 }
 
+async function failureMessage(response: Response, fallback: string) {
+  return apiEnvelopeErrorMessage(await response.json().catch(() => null)) || fallback;
+}
+
 export function loadProfileForViewer(fetcher: ViewerFetcher = fetch) {
   return fetchProtectedForViewer(
     "/api/v1/profile",
@@ -170,7 +200,7 @@ export function loadProfileForViewer(fetcher: ViewerFetcher = fetch) {
   );
 }
 
-const tabs = ["recent", "characters", "created", "presets", "media", "group-chats", "packs"] as const;
+const tabs = ["recent", "characters", "created", "presets", "media", "group-chats"] as const;
 type LibraryTab = (typeof tabs)[number];
 
 function libraryTabFromSearch(search: string): LibraryTab {
@@ -185,7 +215,6 @@ const tabLabels: Record<LibraryTab, string> = {
   presets: "presets",
   media: "media",
   "group-chats": "group chats",
-  packs: "packs",
 };
 
 function emptyStateForTab(tab: LibraryTab, emptyCta: string | null) {
@@ -229,12 +258,6 @@ function emptyStateForTab(tab: LibraryTab, emptyCta: string | null) {
       ctaHref: "/chat/groups",
       ctaLabel: "Create a group chat",
     },
-    packs: {
-      title: "Packs are not in this beta",
-      copy: "Saved bundles will appear here when packs are enabled. Current beta keeps characters and presets separate.",
-      ctaHref: null,
-      ctaLabel: "",
-    },
   };
   return { ...defaults[tab], ctaHref: emptyCta ?? defaults[tab].ctaHref };
 }
@@ -246,7 +269,7 @@ const profileDeepLinkTargets: Record<string, { selector: string; focusSelector: 
   },
   "/profile/notifications": {
     selector: "[data-testid='profile-notifications-panel']",
-    focusSelector: "[aria-label='Product updates']",
+    focusSelector: "[aria-label='Save hidden tags']",
   },
   "/profile/account-management": {
     selector: "[data-testid='profile-account-management-panel']",
@@ -674,24 +697,38 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
   // SPEC: 邀请人能看到自己的邀请有没有转化、奖励有没有发。
   // INTENT: /api/v1/referrals 一直返回这些行但没有任何调用方，用户拿到过奖励也无从查证。
   //   只汇总计数，不回显被邀请人的账号标识。
-  async function loadReferralResults() {
+  // INTENT: 进页即读，已经生成过邀请的用户不用再点 Invite 才看到自己的链接。
+  //   链接只在已有邀请行时展示：注册按 code 找邀请行，GET 本身不建行。
+  const loadReferralResults = useCallback(async () => {
     try {
       const response = await fetchForOwner("/api/v1/referrals");
       if (!response.ok) return;
       const payload = (await response.json()) as {
-        data?: { referrals?: Array<{ rewardStatus?: string | null }> };
+        data?: { code?: string; referrals?: Array<{ inviteeId?: string | null; rewardStatus?: string | null }> };
       };
       const rows = payload.data?.referrals ?? [];
-      const rewarded = rows.filter((row) => row.rewardStatus === "granted").length;
+      const code = payload.data?.code;
+      if (rows.length > 0 && code) {
+        setReferralUrl(new URL(`/signup?ref=${encodeURIComponent(code)}`, window.location.origin).toString());
+      }
+      // 未被使用的邀请行本身不是一次注册。
+      const signups = rows.filter((row) => row.inviteeId);
+      const rewarded = signups.filter((row) => row.rewardStatus === "granted").length;
       setReferralResults({
-        total: rows.length,
+        total: signups.length,
         rewarded,
-        pending: rows.length - rewarded,
+        pending: signups.length - rewarded,
       });
     } catch {
       // 邀请链接本身已经可用；结果读取失败不改写它的状态。
     }
-  }
+  }, [fetchForOwner]);
+
+  useEffect(() => {
+    if (!ageGateAccepted || !profileOwnerScope) return;
+    const timer = window.setTimeout(() => void loadReferralResults(), 0);
+    return () => window.clearTimeout(timer);
+  }, [ageGateAccepted, profileOwnerScope, loadReferralResults]);
 
   async function invite() {
     setStatus("");
@@ -852,7 +889,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
     try {
       const response = await fetchForOwner(`/api/v1/media/${id}`, { method: "DELETE" });
       if (!response.ok) {
-        setStatus("Delete failed.");
+        setStatus(await failureMessage(response, "Delete failed."));
         return;
       }
       setStatus("Media deleted.");
@@ -890,7 +927,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
     try {
       const response = await fetchForOwner(`/api/v1/characters/${id}/duplicate`, { method: "POST" });
       if (!response.ok) {
-        setStatus("Duplicate failed.");
+        setStatus(await failureMessage(response, "Duplicate failed."));
         return;
       }
       setStatus("Character duplicated to your created tab.");
@@ -945,7 +982,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
     try {
       const response = await fetchForOwner(`/api/v1/characters/${id}`, { method: "DELETE" });
       if (!response.ok) {
-        setStatus("Delete failed.");
+        setStatus(await failureMessage(response, "Delete failed."));
         return;
       }
       setStatus("Character deleted.");
@@ -968,7 +1005,8 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
         body: JSON.stringify({ visibility: next }),
       });
       if (!response.ok) {
-        setStatus("Visibility update failed.");
+        // The server says why (e.g. a report must be resolved or appealed first).
+        setStatus(await failureMessage(response, "Visibility update failed."));
         return;
       }
       setStatus(
@@ -1088,7 +1126,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
       ? `Full refund completed · ${refund.reversedDreamcoins.toLocaleString()} Dreamcoins reversed · balance ${refund.balanceAfter.toLocaleString()}`
       : refund.state === "canceled"
         ? `Refund canceled · subscription access and ${refund.reversedDreamcoins.toLocaleString()} Dreamcoins restored`
-        : `Full refund ${refund.state.replaceAll("_", " ")} · access frozen · ${refund.reversedDreamcoins.toLocaleString()} Dreamcoins reversed`
+        : `Full refund ${REFUND_STATE_LABELS[refund.state] ?? "in progress"} · access frozen · ${refund.reversedDreamcoins.toLocaleString()} Dreamcoins reversed`
     : null;
   const isMyAiRoute = routePath.startsWith("/custom");
   const workspaceTitle = isMyAiRoute ? "My AI" : "Profile";
@@ -1327,7 +1365,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
           <h2 className="mb-3 font-bold">Your collections</h2>
           <ul className="grid gap-2 sm:grid-cols-2">
             {mediaCollections.map((collection) => <li key={collection.id}><Link className="block rounded-lg bg-white/5 p-3 text-sm hover:bg-white/10" href={`/community?collection=${encodeURIComponent(collection.id)}`}>
-              {collection.name} · {collection.itemCount} items · {collection.visibility}
+              {collection.name} · {collection.itemCount} items · {COLLECTION_VISIBILITY_LABELS[collection.visibility] ?? "private"}
             </Link></li>)}
           </ul>
         </section>}
@@ -1647,19 +1685,21 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
             >
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="text-[13px] font-semibold text-white">
-                  Product updates
+                  Notifications & recommendations
                   <p className="mt-1 text-[11px] font-medium leading-4 text-[rgb(114,113,112)]">
-                    Announcements show up in the app. Email subscriptions are not available yet.
+                    Product announcements show up in the app. Email subscriptions are not available yet.
                   </p>
                 </div>
+                {/* 这个按钮只保存下面的 Hide tags；按钮名要说清保存的是什么。 */}
                 <button
+                  aria-label="Save hidden tags"
                   className="inline-flex h-9 items-center gap-2 rounded-full bg-black/30 px-3 text-[12px] font-bold text-white disabled:opacity-50"
                   disabled={!preferencesAuthority.hasSnapshot}
                   onClick={savePreferences}
                   type="button"
                 >
                   <Bell className="h-4 w-4" />
-                  Save preferences
+                  Save hidden tags
                 </button>
               </div>
               {preferencesAuthority.phase === "loading" &&
@@ -1861,7 +1901,7 @@ function LibraryCard({
   const [editDescription, setEditDescription] = useState(summary ?? "");
   const [savingEdit, setSavingEdit] = useState(false);
   const [collectionName, setCollectionName] = useState("");
-  const [publishCollection, setPublishCollection] = useState(true);
+  const [publishCollection, setPublishCollection] = useState(false);
   const [selectedCollectionId, setSelectedCollectionId] = useState("");
   const [collectionBusy, setCollectionBusy] = useState(false);
   const contentType = item.contentType?.toLowerCase() ?? "";

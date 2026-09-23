@@ -225,6 +225,8 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
   const executionSessionId = group?.selectedSessionId ?? id;
   const sessionPath = `/api/v1/chat/${groupMode ? "groups" : "sessions"}/${encodeURIComponent(id)}`;
   const [canUpdateIdentity, setCanUpdateIdentity] = useState(false);
+  const [characterImage, setCharacterImage] = useState<string | null>(null);
+  const [memberImages, setMemberImages] = useState<Record<string, string>>({});
   // SPEC: 只在这段会话真的能出视频时才给 Video / Animate 入口。
   // INTENT: 后端 GET /api/v1/chat/:id/video 早就返回 capability，前台却一处都没读，
   //   于是 chat_video 关着时按钮照样在、点开才看到「currently unavailable」；群聊更糟，
@@ -927,6 +929,8 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
     setConversationArchived(session.status === "archived");
     if (session.status === "archived") cancelEdit();
     setCanUpdateIdentity(Boolean(session.character.canUpdateIdentity));
+    setCharacterImage(session.character.image ?? null);
+    setMemberImages(session.memberImages ?? {});
     if (typeof session.memoryEnabled === "boolean") setMemoryEnabled(session.memoryEnabled);
     setProactiveEnabled(session.proactiveEnabled === true);
   }
@@ -1443,7 +1447,14 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
             <ArrowLeft className="h-4 w-4" />
             {groupMode ? "Your group chats" : "Explore"}
           </Link>
-          <h1 className="text-[32px] font-black uppercase leading-9">{title}</h1>
+          <div className="flex min-w-0 items-center gap-3">
+            <ChatHeaderAvatars
+              images={group
+                ? group.members.flatMap(member => memberImages[member.characterId] ? [{ id: member.characterId, name: member.name, url: memberImages[member.characterId] }] : [])
+                : characterImage ? [{ id: characterId || "character", name: title, url: characterImage }] : []}
+            />
+            <h1 className="min-w-0 break-words text-[32px] font-black uppercase leading-9">{title}</h1>
+          </div>
           {loadState === "ready" ? (
             <>
               {group ? <GroupSpeakerControls members={group.members} selectedCharacterId={characterId} disabled={pending || hasGeneratingReply || speakerPending || conversationArchived || sendOutcomeUnknown} onSelect={next => void changeSpeaker(next)} /> : null}
@@ -2179,6 +2190,24 @@ function ChatImageAttachmentActions({
         Open in Generate
       </Link> : null}
       {onAnimate ? <button type="button" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-white/10 px-3 text-xs font-bold text-white" onClick={onAnimate}><Video className="size-4" />Animate</button> : null}
+    </div>
+  );
+}
+
+// 头部只放角色已有的封面小图；群聊叠成一组，最多 5 个。没有图就不占位。
+function ChatHeaderAvatars({ images }: { images: Array<{ id: string; name: string; url: string }> }) {
+  if (!images.length) return null;
+  return (
+    <div className="flex shrink-0 -space-x-3" data-testid="chat-header-avatars">
+      {images.slice(0, 5).map(image => (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          alt={image.name}
+          className="h-11 w-11 rounded-full border-2 border-[rgb(13,13,13)] bg-[rgb(36,36,36)] object-cover object-top"
+          key={image.id}
+          src={image.url}
+        />
+      ))}
     </div>
   );
 }

@@ -202,6 +202,7 @@ import {
   mediaFileExtension,
   mediaViewUrl,
   visualProfileDTO,
+  formatCount,
   type CharacterWithPublicRelations,
 } from "./public-read-model";
 import { loadCharacterRendererPreview } from "@/server/modules/admin-v2/characters/renderer-preview";
@@ -951,6 +952,16 @@ async function login(request: Request) {
     `);
     const user = await tx.user.findUnique({ where: { id: account.userId } });
     if (!user || user.status !== "active" || user.deletedAt) {
+      // INTENT: 密码已验证，告诉本人账号在删除宽限期、何时完成；换了设备、没存回执的
+      //   用户否则只看到 "not active"，无从得知账号状态（AC-03）。
+      const deletion = await tx.accountDeletion.findUnique({
+        where: { userId: account.userId },
+        select: { graceEndsAt: true },
+      });
+      if (deletion) {
+        const date = deletion.graceEndsAt.toISOString().slice(0, 10);
+        throw Errors.forbidden(`This account was deleted at your request. Erasure completes by ${date}; it can no longer be signed in to.`);
+      }
       throw Errors.forbidden("Account is not active");
     }
     const currentAccount = await passwordAccountForUser(tx, account.userId);
@@ -1263,11 +1274,7 @@ async function listCharacters(request: Request) {
     "male",
     "trans",
   ]);
-  const style = publicCharacterEnumFilter(url.searchParams.get("style"), [
-    "realistic",
-    "anime",
-    "hybrid",
-  ]);
+  const style = publicCharacterEnumFilter(url.searchParams.get("style"), CHARACTER_STYLES);
 
   const where: Prisma.CharacterWhereInput = {
     AND: [
@@ -1594,7 +1601,18 @@ async function likeCharacter(request: Request, id: string) {
       });
     }
   });
-  return ok({ liked: true });
+  return ok({ liked: true, ...(await likeTotals(id)) });
+}
+
+// INTENT: 点赞后详情页要显示新计数；返回服务端真实值，不让客户端自行 ±1
+//   （fixture/内部账号的点赞不计入公开计数）。
+async function likeTotals(characterId: string) {
+  const stats = await prisma.characterStats.findUnique({
+    where: { characterId },
+    select: { likesCount: true },
+  });
+  const likesCount = stats?.likesCount ?? 0;
+  return { likesCount, likes: formatCount(likesCount) };
 }
 
 async function unlikeCharacter(request: Request, id: string) {
@@ -1612,7 +1630,7 @@ async function unlikeCharacter(request: Request, id: string) {
       data: { likesCount: { decrement: 1 } },
     });
   }
-  return ok({ liked: false });
+  return ok({ liked: false, ...(await likeTotals(id)) });
 }
 
 async function listTags(request: Request) {
@@ -3966,10 +3984,6 @@ async function library(request: Request, tab: string) {
     // a client-side change to that route would have been silently overridden.
     return ok({ items: groups.map(group => ({ id: group.id, type: "group_chat", title: group.title, status: group.status, description: group.members.map(member => member.name).join(" · ") })), emptyCta: null });
   }
-  if (tab === "packs") {
-    return ok({ items: [], emptyCta: null });
-  }
-
   throw Errors.notFound("Library tab not found");
 }
 

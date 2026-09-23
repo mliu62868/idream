@@ -21,11 +21,12 @@ vi.mock("./SiteFooter", () => ({ SiteFooter: () => null }));
 vi.mock("./CharacterDetailHero", () => ({
   CharacterDetailHero: ({ actions, character }: {
     actions: ReactNode;
-    character: { title: string };
+    character: { title: string; likes: string };
   }) => createElement(
     "section",
     null,
     createElement("h1", null, character.title),
+    createElement("p", { "data-testid": "likes" }, `${character.likes} likes`),
     actions,
   ),
 }));
@@ -68,9 +69,16 @@ describe("CharacterDetailClient like relationship", () => {
         return Response.json({ ok: true, data: { character } });
       }
       mutationMethods.push(init.method);
+      if (String(_input) === "/api/v1/chat/sessions") {
+        return Response.json(
+          { ok: false, error: { code: "forbidden", message: "This Character is unavailable for chat." } },
+          { status: 403 },
+        );
+      }
+      const liked = init.method === "POST";
       return Response.json({
         ok: true,
-        data: { liked: init.method === "POST" },
+        data: { liked, likesCount: liked ? 1 : 0, likes: liked ? "1" : "0" },
       });
     }));
     container = document.createElement("div");
@@ -93,11 +101,23 @@ describe("CharacterDetailClient like relationship", () => {
     await act(async () => findButton("Like")?.click());
     await waitUntil(() => Boolean(findButton("Liked")));
     expect(container.textContent).toContain("Character liked.");
+    expect(container.querySelector('[data-testid="likes"]')?.textContent).toBe("1 likes");
 
     await act(async () => findButton("Liked")?.click());
     await waitUntil(() => Boolean(findButton("Like")));
     expect(container.textContent).toContain("Character like removed.");
+    expect(container.querySelector('[data-testid="likes"]')?.textContent).toBe("0 likes");
     expect(mutationMethods).toEqual(["POST", "DELETE"]);
+  });
+
+  it("shows the server's reason when a chat cannot start", async () => {
+    await act(async () =>
+      root.render(createElement(CharacterDetailClient, { id: "character-1" }))
+    );
+    await waitUntil(() => Boolean(findButton("Chat")));
+    await act(async () => findButton("Chat")?.click());
+    await waitUntil(() => container.textContent?.includes("unavailable for chat") ?? false);
+    expect(container.textContent).not.toContain("Could not start chat");
   });
 
   function findButton(label: string) {

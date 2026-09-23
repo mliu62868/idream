@@ -55,10 +55,11 @@ describe("HelpDeskHistoryPanel", () => {
           id: "report-1",
           targetType: "character",
           targetId: "character-1",
-          category: "other",
+          category: "nonconsensual_real_person",
           status: "closed",
           createdAt: "2026-08-11T10:00:00.000Z",
           decision: {
+            id: "decision-1",
             outcome: "closed",
             decidedAt: "2026-08-11T11:00:00.000Z",
           },
@@ -82,10 +83,57 @@ describe("HelpDeskHistoryPanel", () => {
     expect(html).toContain("SUP-123");
     expect(html).toContain("Generator issue");
     expect(html).toContain("Resolved");
-    expect(html).toContain("Report report-1");
+    expect(html).toContain("A real person, used without consent");
+    expect(html).not.toContain("nonconsensual_real_person");
     expect(html).toContain("Decision: Closed");
-    expect(html).toContain("Appeal appeal-1");
-    expect(html).toContain("Related report: report-1");
+    expect(html).toContain("Appeal filed");
+    expect(html).toContain("Appeal · Character");
+    expect(html).toContain("Linked to one of your reports");
     expect(html).toContain("Outcome: Upheld");
+    // IDs stay available as a secondary support reference only.
+    expect(html).not.toContain("Report report-1");
+    expect(html).toContain("report-1");
+  });
+
+  it("offers an appeal prefilled with the decision it came from", () => {
+    const onAppeal = vi.fn();
+    const report = {
+      id: "report-2",
+      targetType: "character",
+      targetId: "character-2",
+      category: "spam",
+      status: "closed",
+      createdAt: "2026-08-11T10:00:00.000Z",
+      decision: { id: "decision-2", outcome: "actioned", decidedAt: "2026-08-11T11:00:00.000Z" },
+      appealIds: [],
+    };
+    const element = HelpDeskHistoryPanel({
+      authenticated: true,
+      loading: false,
+      error: "",
+      onRefresh: vi.fn(),
+      onAppeal,
+      history: { supportRequests: [], reports: [report], appeals: [] },
+    });
+    const html = renderToStaticMarkup(element);
+    expect(html).toContain("Appeal this decision");
+    const button = findElement(element, (node) => node.type === "button" && String(node.props.children).includes("Appeal this decision"));
+    (button!.props.onClick as () => void)();
+    expect(onAppeal).toHaveBeenCalledWith({ targetType: "character", targetId: "character-2", decisionId: "decision-2" });
   });
 });
+
+type Node = { type: unknown; props: Record<string, unknown> & { children?: unknown } };
+function findElement(node: unknown, match: (node: Node) => boolean): Node | undefined {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const found = findElement(child, match);
+      if (found) return found;
+    }
+    return undefined;
+  }
+  if (!node || typeof node !== "object" || !("props" in node)) return undefined;
+  const element = node as Node;
+  if (match(element)) return element;
+  return findElement(element.props.children, match);
+}
