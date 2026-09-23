@@ -4778,7 +4778,13 @@ test("generator UI queues an image job and surfaces completed media in the galle
     )
     .not.toBeNull();
 
+  // The heart flips optimistically; the Liked tab reads the server, so wait
+  // for the like to commit before switching.
+  const likeCommitted = page.waitForResponse((response) =>
+    response.request().method() === "POST" && response.url().endsWith(`/api/v1/media/${generatedMediaId}/like`),
+  );
   await generatedMediaCard.getByRole("button", { name: "Like", exact: true }).click();
+  expect((await likeCommitted).ok()).toBe(true);
   await page.getByRole("button", { name: "Liked" }).click();
   const likedCard = page.locator(`[data-media-id="${generatedMediaId}"]`);
   await expect(likedCard).toBeVisible({ timeout: 10_000 });
