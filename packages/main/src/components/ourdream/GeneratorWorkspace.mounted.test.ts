@@ -1144,6 +1144,22 @@ describe("GeneratorWorkspace media journeys", () => {
     expect(container.textContent).toContain("Create edit · 5 coins");
   });
 
+  it("locks the Image Edit negative prompt for accounts without Premium controls", async () => {
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/v1/generation/config") {
+        return Response.json({ ok: true, data: { ...config, entitlements: { premium_controls: false } } });
+      }
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(button("Image Edit"));
+    const negativePrompt = container.querySelector<HTMLInputElement>("#generator-negative-prompt");
+    expect(negativePrompt?.disabled).toBe(true);
+    expect(negativePrompt?.placeholder).toBe("Premium control");
+    expect(container.textContent).toContain("Negative prompts are a Premium control.");
+  });
+
   it("keeps the selected edit source when deleting it fails", async () => {
     const originalFetch = globalThis.fetch;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
