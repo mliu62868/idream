@@ -643,6 +643,7 @@ const helpDeskSupportRequestSchema = z
     status: nonEmptyString,
     createdAt: timestamp,
     updatedAt: timestamp,
+    supportReplied: z.boolean().optional(),
     resolution: z
       .object({
         outcome: nonEmptyString,

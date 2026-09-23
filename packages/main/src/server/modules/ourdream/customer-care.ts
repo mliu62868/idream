@@ -1,4 +1,4 @@
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { createHash } from "node:crypto";
 import {
   APPEAL_TARGET_TYPES,
@@ -450,6 +450,18 @@ async function customerHelpDeskHistory(request: Request) {
     }),
   ]);
 
+  // SPEC: 客服最后一条对用户可见的消息之后用户还没回应 = 「客服已回复」。
+  // INTENT: 没有站内通知时，这是用户知道该回来看工单的唯一信号；按消息作者判断，不改工单状态。
+  const lastAuthors = supportRequests.length === 0 ? [] : await prisma.$queryRaw<Array<{ requestId: string; author: string }>>`
+    SELECT DISTINCT ON (e."snapshot"->>'supportRequestId')
+           e."snapshot"->>'supportRequestId' AS "requestId", e."snapshot"->>'author' AS "author"
+      FROM "case_evidence" e
+     WHERE e."sourceType" = 'support_message'
+       AND e."snapshot"->>'visibility' = 'customer'
+       AND e."snapshot"->>'supportRequestId' IN (${Prisma.join(supportRequests.map((item) => item.id))})
+     ORDER BY e."snapshot"->>'supportRequestId', e."occurredAt" DESC, e."id" DESC`;
+  const supportRepliedIds = new Set(lastAuthors.filter((row) => row.author === "support").map((row) => row.requestId));
+
   const reportByDecisionId = new Map<string, string>();
   for (const report of reports) {
     reportByDecisionId.set(report.id, report.id);
@@ -477,6 +489,7 @@ async function customerHelpDeskHistory(request: Request) {
       resolution: item.resolvedAt
         ? { outcome: item.status, resolvedAt: item.resolvedAt.toISOString() }
         : null,
+      supportReplied: !item.resolvedAt && supportRepliedIds.has(item.id),
     })),
     reports: reports.map((item) => {
       const latestReview = item.reviews[0];

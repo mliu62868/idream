@@ -1408,6 +1408,9 @@ export function HelpDeskHistoryPanel({
                   title={item.ticketId}
                 >
                   <p>{item.subject}</p>
+                  {item.supportReplied ? (
+                    <p className="font-bold text-[rgb(255,121,198)]" data-testid="support-replied">Support replied — open the conversation to read it.</p>
+                  ) : null}
                   {item.resolution ? (
                     <p>Resolution: {historyStatusLabel(item.resolution.outcome)}</p>
                   ) : null}
