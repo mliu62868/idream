@@ -211,12 +211,12 @@ function libraryTabFromSearch(search: string): LibraryTab {
 }
 
 const tabLabels: Record<LibraryTab, string> = {
-  recent: "recent",
-  characters: "characters",
-  created: "created",
-  presets: "presets",
-  media: "media",
-  "group-chats": "group chats",
+  recent: "Recent",
+  characters: "Characters",
+  created: "Created",
+  presets: "Presets",
+  media: "Media",
+  "group-chats": "Group chats",
 };
 
 function emptyStateForTab(tab: LibraryTab, emptyCta: string | null) {

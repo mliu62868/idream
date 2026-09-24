@@ -173,7 +173,8 @@ function GroupChats({ viewer }: { viewer: ViewerGate }) {
         {picker.nextCursor ? <button className={`${button} mt-3`} disabled={pending} onClick={() => void more()}>Load more Characters</button> : null}
         <button className="mt-5 min-h-11 rounded-full bg-white px-6 text-sm font-bold text-black disabled:opacity-40" disabled={pending || selected.length < 2 || !title.trim()} onClick={() => void create()}>{pending ? "Saving…" : "Create group chat"}</button>
       </section>
-      <section aria-label="Your saved group chats"><h2 className="text-xl font-bold">Your groups</h2>
+      {/* Stacked on small screens: returning users look for their groups first, not the picker. */}
+      <section aria-label="Your saved group chats" className={groups.data.length ? "order-first xl:order-none" : undefined}><h2 className="text-xl font-bold">Your groups</h2>
         {!groups.data.length ? <p className="mt-4 text-sm text-white/65">Your new group will appear here with its full conversation history.</p> : null}
         <ul className="mt-4 space-y-3">{groups.data.map(group => <li key={group.id} className="rounded-xl border border-white/10 p-4">
           {renaming?.id === group.id

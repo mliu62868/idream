@@ -109,7 +109,7 @@ describe("ProfileWorkspace media pagination", () => {
   async function mountMedia() {
     await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/custom" })));
     await settle();
-    await click(button("media"));
+    await click(button("Media"));
   }
 
   async function setSearch(value: string) {
@@ -277,7 +277,7 @@ describe("ProfileWorkspace media pagination", () => {
     }));
     await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/custom" })));
     await settle();
-    await click(button("presets"));
+    await click(button("Presets"));
     expect(container.querySelector('[data-media-id="preset-rain"]')?.textContent).toContain("Rainy cafe");
     expect(container.querySelector('[data-media-id="preset-rain"]')?.closest("a")?.getAttribute("href"))
       .toBe("/generate?presetId=preset-rain");
@@ -307,7 +307,7 @@ describe("ProfileWorkspace media pagination", () => {
     window.history.replaceState(null, "", "/custom?tab=media");
     await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/custom" })));
     await settle();
-    expect(button("media").getAttribute("aria-pressed")).toBe("true");
+    expect(button("Media").getAttribute("aria-pressed")).toBe("true");
     expect(container.querySelectorAll("[data-media-id]")).toHaveLength(40);
     expect(requests).not.toContain("/api/v1/library/recent");
   });
@@ -318,7 +318,7 @@ describe("ProfileWorkspace media pagination", () => {
     await mountMedia();
     expect(new URL(window.location.href).searchParams.get("tab")).toBe("media");
     await click(button("Next page"));
-    await click(button("presets"));
+    await click(button("Presets"));
     expect(new URL(window.location.href).searchParams.get("tab")).toBe("presets");
     await act(async () => {
       window.history.replaceState(null, "", "/custom?tab=media");
@@ -329,7 +329,7 @@ describe("ProfileWorkspace media pagination", () => {
       items: [mediaItem("departed-page")], nextCursor: null,
     } })));
     await settle();
-    expect(button("media").getAttribute("aria-pressed")).toBe("true");
+    expect(button("Media").getAttribute("aria-pressed")).toBe("true");
     expect(container.querySelectorAll("[data-media-id]")).toHaveLength(40);
     expect(container.querySelector('[data-media-id="departed-page"]')).toBeNull();
     expect(container.textContent).toContain("Page 1");
@@ -367,7 +367,7 @@ describe("ProfileWorkspace media pagination", () => {
     }));
     await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/custom" })));
     await settle();
-    await click(button("created"));
+    await click(button("Created"));
     expect(container.textContent).toContain("awaiting publication");
     await click(button("Make private"));
     expect(patches).toEqual([{ visibility: "private" }]);
@@ -391,7 +391,7 @@ describe("ProfileWorkspace media pagination", () => {
     const assign = vi.spyOn(window.location, "assign").mockImplementation(() => {});
     await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/custom" })));
     await settle();
-    await click(button("created"));
+    await click(button("Created"));
     await click(button("Chat with character"));
     expect(sessionRequests).toEqual([{ characterId: "own-character" }]);
     expect(assign).toHaveBeenCalledWith("/chat/session-1");
@@ -412,7 +412,7 @@ describe("ProfileWorkspace media pagination", () => {
     }));
     await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/custom" })));
     await settle();
-    await click(button("created"));
+    await click(button("Created"));
     expect(container.textContent).not.toContain("approved");
     await click(button("Publish"));
     expect(container.querySelector('[data-testid="profile-status"]')?.textContent)
@@ -424,7 +424,7 @@ describe("ProfileWorkspace media pagination", () => {
     await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/custom" })));
     await settle();
     expect([...container.querySelectorAll("button")].some((item) => item.textContent?.trim() === "packs")).toBe(false);
-    expect(button("recent").getAttribute("aria-pressed")).toBe("true");
+    expect(button("Recent").getAttribute("aria-pressed")).toBe("true");
   });
 
   it("keeps a new collection private unless the owner opts in", async () => {
@@ -541,8 +541,8 @@ describe("ProfileWorkspace media pagination", () => {
     olderPage = () => pendingPage.promise;
     await mountMedia();
     await click(button("Next page"));
-    await click(button("characters"));
-    await click(button("media"));
+    await click(button("Characters"));
+    await click(button("Media"));
     await act(async () => pendingPage.resolve(Response.json({ ok: true, data: {
       items: [mediaItem("stale-image")], nextCursor: "stale-cursor",
     } })));
