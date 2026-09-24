@@ -872,7 +872,12 @@ describe("Main-owned Chat façade", () => {
     fetchMock.mockResolvedValue(Response.json({ ok: true, active: false }));
     // The lane drains every pending lifecycle row in the shared test DB, so assert on
     // this Turn's own row rather than on global delivered/failed counts.
-    await dispatchPendingChatEvents({ lane: "lifecycle" });
+    // Older leftovers can fill a batch ahead of this row; drain until it is picked up.
+    for (let round = 0; round < 20; round += 1) {
+      await dispatchPendingChatEvents({ lane: "lifecycle" });
+      const row = await prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: pending.id } });
+      if (row.status !== "pending") break;
+    }
     await expect(prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: pending.id } }))
       .resolves.toMatchObject({ status: "delivered" });
     expect(fetchMock).toHaveBeenCalledWith(
