@@ -63,6 +63,9 @@ import { authHrefForTarget, authNextTargetFromPath } from "./authRedirect";
 import {
   fetchProtectedForViewer,
   invalidateViewerAuthority,
+  isTimeoutError,
+  VIEWER_CHECK_TIMEOUT_MS,
+  VIEWER_UNCONFIRMED_MESSAGE,
   type ViewerFetcher,
 } from "./viewer-auth";
 import { useReportDialog } from "./ReportDialog";
@@ -197,7 +200,9 @@ async function failureMessage(response: Response, fallback: string) {
 export function loadProfileForViewer(fetcher: ViewerFetcher = fetch) {
   return fetchProtectedForViewer(
     "/api/v1/profile",
-    { cache: "no-store" },
+    // Bounded like the /me check before it: this read is the second half of
+    // confirming the owner, and every private request waits on that answer.
+    { cache: "no-store", signal: AbortSignal.timeout(VIEWER_CHECK_TIMEOUT_MS) },
     fetcher,
   );
 }
@@ -359,7 +364,10 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
       setViewer((current) => ({
         ...current,
         authState: "error",
-        authority: failedAuthorityStatus(current.authority, requestErrorMessage(error, "Account data could not load.")),
+        authority: failedAuthorityStatus(
+          current.authority,
+          isTimeoutError(error) ? VIEWER_UNCONFIRMED_MESSAGE : requestErrorMessage(error, "Account data could not load."),
+        ),
       }));
     }
   }, []);

@@ -38,6 +38,7 @@ describe("ProfileWorkspace media pagination", () => {
   let olderPage: () => Promise<Response>;
   let searchPage: (query: string) => Promise<Response>;
   let profileHold: Promise<unknown>;
+  let override: ((path: string, init?: RequestInit) => Promise<Response> | undefined) | undefined;
 
   beforeEach(() => {
     window.history.replaceState(null, "", "/custom");
@@ -50,10 +51,13 @@ describe("ProfileWorkspace media pagination", () => {
       items: [mediaItem("image-41")], nextCursor: null,
     } });
     profileHold = Promise.resolve(true);
+    override = undefined;
     invalidateViewerAuthority();
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       requests.push(path);
+      const overridden = override?.(path, init);
+      if (overridden) return overridden;
       let data: unknown = { items: [] };
       if (path === "/api/v1/me") data = { user: { id: viewer } };
       else if (path === "/api/v1/profile" && init?.method === "PATCH") data = { user: { displayName: "Renamed" } };
@@ -218,6 +222,59 @@ describe("ProfileWorkspace media pagination", () => {
     expect(patches()).toHaveLength(1);
     expect(container.textContent).toContain("Profile updated.");
     expect(container.textContent).not.toContain("Network error");
+  });
+
+  it("shows a panel's in-flight read as failed when re-confirmation fails, and reloads it once Retry confirms", async () => {
+    let releaseStatus!: () => void;
+    let statusRequests = 0;
+    let profileFails = false;
+    override = (path) => {
+      if (path === "/api/v1/age-verification/status") {
+        statusRequests += 1;
+        if (statusRequests > 1) return Promise.resolve(Response.json({ ok: true, data: { status: "failed" } }));
+        return new Promise((resolve) => { releaseStatus = () => resolve(Response.json({ ok: true, data: { status: "failed" } })); });
+      }
+      if (path === "/api/v1/profile" && profileFails) {
+        return Promise.resolve(Response.json({ ok: false, error: { message: "Profile store is down." } }, { status: 503 }));
+      }
+      return undefined;
+    };
+    await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/custom" })));
+    await settle();
+    profileFails = true;
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await settle();
+    await act(async () => releaseStatus());
+    await settle();
+    expect(container.textContent).toContain("Profile store is down.");
+    profileFails = false;
+    await click(button("Retry"));
+    expect(statusRequests).toBe(2);
+    expect(container.textContent).toContain("Verification did not pass");
+  });
+
+  it.each(["/api/v1/me", "/api/v1/profile"])("gives up on a hung %s during the account check and offers Retry instead of loading forever", async (hung) => {
+    const timeouts: AbortController[] = [];
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation(() => {
+      const controller = new AbortController();
+      timeouts.push(controller);
+      return controller.signal;
+    });
+    try {
+      override = (path, init) => path === hung
+        ? new Promise((_, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal!.reason)))
+        : undefined;
+      await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/custom" })));
+      await settle();
+      expect(timeouts.length).toBeGreaterThan(0);
+      await act(async () => { for (const controller of timeouts) controller.abort(new DOMException("timed out", "TimeoutError")); });
+      await settle();
+      expect(container.textContent).toContain("Account unavailable");
+      expect(container.textContent).toContain("We couldn't confirm your account. Refresh and try again.");
+      expect(button("Retry")).toBeDefined();
+    } finally {
+      timeout.mockRestore();
+    }
   });
 
   it("preserves an unsaved profile name when focus confirms the same owner", async () => {

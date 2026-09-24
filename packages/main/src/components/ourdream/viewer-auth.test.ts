@@ -44,6 +44,7 @@ describe("protected viewer requests", () => {
     );
     expect(anonymousFetcher).toHaveBeenCalledWith("/api/v1/me", {
       cache: "no-store",
+      signal: expect.any(AbortSignal),
     });
   });
 
@@ -87,6 +88,7 @@ describe("protected viewer requests", () => {
     expect(result.response?.ok).toBe(true);
     expect(fetcher).toHaveBeenNthCalledWith(1, "/api/v1/me", {
       cache: "no-store",
+      signal: expect.any(AbortSignal),
     });
     expect(fetcher).toHaveBeenNthCalledWith(2, "/api/v1/profile", {
       cache: "no-store",
