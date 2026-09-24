@@ -883,6 +883,9 @@ describe("Main-owned Chat façade", () => {
       await dispatchPendingChatEvents({ lane: "lifecycle" });
       const row = await prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: pending.id } });
       if (row.status !== "pending") break;
+      // nextRunAt comes from the database clock; give a VM-hosted test DB running
+      // slightly ahead of this process a moment to become due.
+      await new Promise((resolve) => setTimeout(resolve, 50));
     }
     await expect(prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: pending.id } }))
       .resolves.toMatchObject({ status: "delivered" });
