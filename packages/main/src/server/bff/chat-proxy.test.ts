@@ -868,11 +868,17 @@ describe("Main-owned Chat façade", () => {
       payload: { version: 1, userId: USER_ID, turnId: begun.snapshot!.turnId, attempt: 1 },
     });
 
+    // USER_ID is the shared seed user and the lifecycle lane keeps per-user order: an
+    // unfinished event another test file left for this user would block this row forever.
+    await prisma.$executeRaw`
+      DELETE FROM "main_outbox_events"
+       WHERE "id" <> ${pending.id}
+         AND "status" IN ('pending', 'processing', 'failed')
+         AND "payload"->'payload'->>'userId' = ${USER_ID}`;
     fetchMock.mockClear();
     fetchMock.mockResolvedValue(Response.json({ ok: true, active: false }));
     // The lane drains every pending lifecycle row in the shared test DB, so assert on
-    // this Turn's own row rather than on global delivered/failed counts.
-    // Older leftovers can fill a batch ahead of this row; drain until it is picked up.
+    // this Turn's own row, draining until it is picked up.
     for (let round = 0; round < 20; round += 1) {
       await dispatchPendingChatEvents({ lane: "lifecycle" });
       const row = await prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: pending.id } });
