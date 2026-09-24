@@ -870,7 +870,11 @@ describe("Main-owned Chat façade", () => {
 
     fetchMock.mockClear();
     fetchMock.mockResolvedValue(Response.json({ ok: true, active: false }));
-    await expect(dispatchPendingChatEvents({ lane: "lifecycle" })).resolves.toEqual({ delivered: 1, failed: 0 });
+    // The lane drains every pending lifecycle row in the shared test DB, so assert on
+    // this Turn's own row rather than on global delivered/failed counts.
+    await dispatchPendingChatEvents({ lane: "lifecycle" });
+    await expect(prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: pending.id } }))
+      .resolves.toMatchObject({ status: "delivered" });
     expect(fetchMock).toHaveBeenCalledWith(
       `${env.CHAT_SERVICE_URL}/internal/agent-runs/${begun.snapshot!.turnId}/1/cancel`,
       expect.objectContaining({ method: "POST" }),

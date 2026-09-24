@@ -5990,7 +5990,7 @@ test("profile UI handles redeem, referral, billing, and media actions", async ({
   await expect(page).toHaveURL(/\/upgrade$/);
 
   await page.goto("/profile");
-  await page.getByRole("button", { name: "media", exact: true }).click();
+  await page.getByRole("button", { name: "Media", exact: true }).click();
   const mediaCard = page.locator(`[data-media-id="${mediaId}"]`);
   await expect(mediaCard).toBeVisible({ timeout: 10_000 });
   const blankMediaCard = page.locator(`[data-media-id="${blankMediaId}"]`);
@@ -6037,7 +6037,7 @@ test("profile UI handles redeem, referral, billing, and media actions", async ({
   await expect(collectionCard.getByText("1 item")).toBeVisible();
 
   await page.goto("/profile");
-  await page.getByRole("button", { name: "media", exact: true }).click();
+  await page.getByRole("button", { name: "Media", exact: true }).click();
   await expect(mediaCard).toBeVisible({ timeout: 10_000 });
 
   await mediaCard.getByRole("button", { name: "Report media" }).click();
@@ -6074,7 +6074,7 @@ test("mobile profile media publish links directly to the focused Community colle
   const collectionName = uniqueName("mobile profile collection");
 
   await page.goto("/profile");
-  await page.getByRole("button", { name: "media", exact: true }).click();
+  await page.getByRole("button", { name: "Media", exact: true }).click();
   const mediaCard = page.locator(`[data-media-id="${mediaId}"]`);
   await expect(mediaCard).toBeVisible({ timeout: 10_000 });
 
