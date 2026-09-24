@@ -8,7 +8,7 @@ import type {
   UserChatPersona,
 } from "@idream/shared/contracts";
 import { chatContextDirectivesSchema, chatExchangeCompletedV2Schema, chatExchangeCorrectionV2Schema, chatExecutionSnapshotSchema, chatExperiencePreferenceSchema, chatTerminalCommitSchema, DEFAULT_CHAT_EXPERIENCE, MAIN_TO_CHAT_EVENTS, METRIC_PRODUCT_EVENTS } from "@idream/shared/contracts";
-import { Prisma } from "@prisma/client";
+import { Prisma, type RecentChat } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { logger } from "@/server/lib/logger";
@@ -116,8 +116,14 @@ export async function createChatSession(
   const activeKey = `${userId}:${characterId}`;
   const existing = await prisma.recentChat.findUnique({ where: { activeKey } });
   if (existing) {
-    if (owner || existing.characterReleaseId === release?.id) {
-      return publicSession(existing);
+    if (existing.characterReleaseId === release?.id) return publicSession(existing);
+    if (owner) {
+      // Same lock ladder as beginChatTurn, so no reply can start between the
+      // pending-reply check and the re-pin.
+      return publicSession(await prisma.$transaction(async (tx) => {
+        const { session } = await lockChatScope(tx, { userId, at: { session: existing.sessionId } });
+        return repinOwnerSessionToServingRelease(tx, userId, session);
+      }));
     }
     // INVARIANT: a session keeps its immutable Release pin. When Serving moves,
     // preserve that history and open a new active session instead of mutating it.
@@ -243,6 +249,7 @@ export async function beginChatTurn(input: {
     if (!lockedSession) throw Errors.notFound("Chat session not found");
     if (lockedSession.status !== "active") throw Errors.gone("Chat session is archived");
     await assertChatSessionServingAuthority(tx, input.userId, lockedSession);
+    const pinnedSession = await repinOwnerSessionToServingRelease(tx, input.userId, lockedSession);
     const duplicate = lockedSession.groupId
       ? await tx.chatTurn.findFirst({ where: { groupTurn: { groupId: lockedSession.groupId }, idempotencyKey } })
       : await tx.chatTurn.findUnique({ where: { sessionId_idempotencyKey: { sessionId: session.sessionId, idempotencyKey } } });
@@ -307,10 +314,10 @@ export async function beginChatTurn(input: {
         terminalEvidence: blocked
           ? toJson({ authority: "main_input_moderation", policyCode: moderation.policyCode ?? null })
           : undefined,
-        characterContentVersionId: lockedSession.characterContentVersionId,
-        characterReleaseId: lockedSession.characterReleaseId,
-        characterVisualProfileId: lockedSession.characterVisualProfileId,
-        characterVisualProfileVersion: lockedSession.characterVisualProfileVersion,
+        characterContentVersionId: pinnedSession.characterContentVersionId,
+        characterReleaseId: pinnedSession.characterReleaseId,
+        characterVisualProfileId: pinnedSession.characterVisualProfileId,
+        characterVisualProfileVersion: pinnedSession.characterVisualProfileVersion,
         memoryEnabled: lockedSession.memoryEnabled,
         sceneVersion: previous?.sceneVersion ?? 0,
         scene: previous?.scene ?? undefined,
@@ -1033,6 +1040,52 @@ async function requireActiveSession(userId: string, sessionId: string) {
   const session = await requireSession(userId, sessionId);
   if (session.status !== "active") throw Errors.gone("Chat session is archived");
   return session;
+}
+
+/**
+ * SPEC: the author's own Release-pinned session follows the Character's serving
+ * Release; the next Turn runs on the version the author just published.
+ * INTENT: readers get a new session when Serving moves (their pin is the version
+ * they chose to talk to). The author is the one who changed it, and archiving
+ * their chat on every publish would bury it; re-pinning in place keeps one
+ * conversation, while every existing Turn keeps its own frozen pins (CR-08).
+ * A session whose reply is still pending/generating keeps its pin until the
+ * reply ends. A session without a Release pin (private-era) is left alone: it
+ * already follows the author's saved edits through character-edit.
+ * INVARIANT: caller holds the session row lock (lockChatScope or beginChatTurn).
+ */
+async function repinOwnerSessionToServingRelease<T extends {
+  sessionId: string;
+  characterId: string;
+  characterReleaseId: string | null;
+}>(tx: Prisma.TransactionClient, userId: string, session: T): Promise<T | RecentChat> {
+  if (!session.characterReleaseId) return session;
+  const character = await tx.character.findUnique({
+    where: { id: session.characterId },
+    select: { creatorId: true, serving: { select: { state: true, currentRelease: true } } },
+  });
+  const serving = character?.serving;
+  const release = serving?.state === "live" && serving.currentRelease?.status === "published"
+    ? serving.currentRelease
+    : null;
+  if (character?.creatorId !== userId || !release || release.id === session.characterReleaseId) return session;
+  const active = await tx.chatTurn.findFirst({
+    where: { sessionId: session.sessionId, assistantStatus: { in: ACTIVE_ASSISTANT_STATES } },
+    select: { id: true },
+  });
+  if (active) return session;
+  return tx.recentChat.update({
+    where: { sessionId: session.sessionId },
+    data: {
+      characterReleaseId: release.id,
+      characterContentVersionId: release.characterContentVersionId,
+      characterVisualProfileId: release.visualProfileId,
+      characterVisualProfileVersion: release.visualProfileVersion,
+      releasePinnedAt: new Date(),
+      // Same as the operator Release migration: Chat's cached context is stale.
+      contextRevision: { increment: 1 },
+    },
+  });
 }
 
 async function assertChatSessionServingAuthority(
