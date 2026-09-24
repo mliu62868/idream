@@ -16,7 +16,7 @@ import { isSyntheticMediaAsset } from "@/server/lib/media-asset-authority";
 import { moderateText } from "@/server/moderation/text-authority";
 import { updateGenerationRequestSourceMeta } from "@/server/ai/generation-request-transition";
 import { recordMainToChatEvent } from "@/processes/chat-outbox";
-import { appendCanonicalMetricEvent } from "@/server/modules/admin-v2/metrics/event-writer";
+import { appendCanonicalMetricEvent, appendCanonicalMetricEventsForUser } from "@/server/modules/admin-v2/metrics/event-writer";
 import { isReusablePlatformAssetWhere } from "@/server/modules/ourdream/chat-image-reuse";
 import { generationExecutionErrorCode, latestGenerationAttemptStatuses } from "@/server/modules/ourdream/generation-job-read-model";
 import { entitlementMap } from "@/server/modules/ourdream/subscription-lifecycle";
@@ -777,15 +777,17 @@ async function deleteSessionTranscript(tx: Prisma.TransactionClient, userId: str
       select: { id: true, attempt: true, origin: true, statsCountedAt: true, characterContentVersionId: true, userMessageId: true, assistantMessageId: true },
     });
     const deletedAt = new Date();
-    for (const turn of turnIds) {
-      await appendChatExchangeCorrected(tx, turn, {
+    // One batch: a long session must still delete inside the transaction timeout.
+    await appendCanonicalMetricEventsForUser(tx, userId, turnIds.flatMap((turn) => {
+      const event = chatExchangeCorrectedEvent(turn, {
         userId,
         correctionType: "superseded",
         correctionRevision: turn.attempt,
         sessionId,
         messageIds: [turn.userMessageId, turn.assistantMessageId],
       }, deletedAt);
-    }
+      return event ? [event] : [];
+    }));
     await redactChatImageSourceText(tx, {
       userId,
       reason: "session_deleted",
@@ -1258,30 +1260,37 @@ async function appendChatExchangeCompleted(
  */
 async function appendChatExchangeCorrected(
   tx: Prisma.TransactionClient,
-  turn: { id: string; origin: string; statsCountedAt: Date | null; characterContentVersionId: string | null },
-  correction: {
-    userId: string;
-    correctionType: "edited" | "deleted" | "superseded";
-    correctionRevision: number;
-    sessionId?: string;
-    messageIds?: string[];
-  },
+  turn: ExchangeCorrectionTurn,
+  correction: ExchangeCorrection,
   at: Date,
 ) {
-  if (turn.origin !== "user" || !turn.statsCountedAt || !turn.characterContentVersionId) return;
+  const event = chatExchangeCorrectedEvent(turn, correction, at);
+  if (event) await appendCanonicalMetricEvent(tx, { ...event, userId: correction.userId });
+}
+
+type ExchangeCorrectionTurn = { id: string; origin: string; statsCountedAt: Date | null; characterContentVersionId: string | null };
+type ExchangeCorrection = {
+  userId: string;
+  correctionType: "edited" | "deleted" | "superseded";
+  correctionRevision: number;
+  sessionId?: string;
+  messageIds?: string[];
+};
+
+function chatExchangeCorrectedEvent(turn: ExchangeCorrectionTurn, correction: ExchangeCorrection, at: Date) {
+  if (turn.origin !== "user" || !turn.statsCountedAt || !turn.characterContentVersionId) return null;
   // INVARIANT: same as the completion event — a derived metric never rolls back the user's edit.
   const parsed = chatExchangeCorrectionV2Schema.safeParse({ exchangeId: turn.id, ...correction });
   if (!parsed.success) {
     logger.error({ turnId: turn.id, correctionType: correction.correctionType, issues: parsed.error.issues.slice(0, 5) }, "chat exchange correction metric outside its contract; skipped");
-    return;
+    return null;
   }
-  await appendCanonicalMetricEvent(tx, {
+  return {
     sourceEventId: `chat_exchange_correction:${turn.id}:${correction.correctionType}:${correction.correctionRevision}`,
     eventType: METRIC_PRODUCT_EVENTS.chatExchangeCorrected,
     occurredAt: at,
-    userId: correction.userId,
     payload: parsed.data,
-  });
+  };
 }
 
 function productDay(value: Date): Date {

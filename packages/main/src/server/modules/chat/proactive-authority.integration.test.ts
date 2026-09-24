@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { compileCharacterSoul } from "@idream/shared";
 import { FREE_DAILY_MESSAGES } from "@idream/shared/chat/limits";
 import { chatExchangeCompletedV2Schema, chatExchangeCorrectionV2Schema } from "@idream/shared/contracts";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { AppError } from "@/server/lib/errors";
 import { createCharacter, createUser, purgeTestData } from "@/server/test/helpers";
@@ -249,6 +249,17 @@ describe("proactive delivery marker", () => {
   });
 });
 
+// The best-effort cancel call to Chat is not what these tests measure; the local
+// Chat service answering slowly (or not at all) must not time them out.
+async function clearWithoutChat(userId: string, characterId: string) {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 202 })));
+  try {
+    await clearCompanionMemory(userId, characterId);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+}
+
 // SPEC: 额度只看 usage fact 本身；删消息/删会话不退额度，没拿到回复的 Turn 不扣额度。
 describe("daily allowance ledger", () => {
   it("does not hand the allowance back when the user deletes a message", async () => {
@@ -309,7 +320,7 @@ describe("daily allowance ledger", () => {
   it("frees the allowance of a Turn that clearing memory cancelled before Chat ran it", async () => {
     const f = await fixture();
     const pending = await send(f);
-    await clearCompanionMemory(f.userId, f.characterId);
+    await clearWithoutChat(f.userId, f.characterId);
     expect(await prisma.chatTurn.findUniqueOrThrow({ where: { id: pending.snapshot!.turnId } }))
       .toMatchObject({ assistantStatus: "cancelled" });
     expect(await prisma.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId: pending.snapshot!.turnId } }))
@@ -323,7 +334,7 @@ describe("daily allowance ledger", () => {
       where: { id: streaming.snapshot!.turnId },
       data: { assistantStatus: "generating", admittedAt: new Date() },
     });
-    await clearCompanionMemory(f.userId, f.characterId);
+    await clearWithoutChat(f.userId, f.characterId);
     expect(await prisma.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId: streaming.snapshot!.turnId } }))
       .toMatchObject({ voidedAt: null });
   });
@@ -536,6 +547,43 @@ describe("chat exchange correction metric event", () => {
       expect.objectContaining({ correctionType: "superseded", correctionRevision: 1, sessionId: f.sessionId }),
     ]);
   });
+
+  // INTENT: 删会话在持 users 行锁的事务里逐轮写修正，每轮 4 次往返时上千轮的会话会撞 5s 事务超时、删不掉。
+  // 4000 轮：本机逐轮写约 1.8s/千轮，4000 轮在旧写法下稳定越过 5s；批量写约 0.3s/千轮。
+  it("deletes a four-thousand-Turn session inside the transaction timeout", async () => {
+    const f = await fixture();
+    const session = await prisma.recentChat.findUniqueOrThrow({ where: { sessionId: f.sessionId } });
+    const now = new Date();
+    const turns = Array.from({ length: 4_000 }, (_, index) => ({
+      id: `${f.sessionId}-long-${index}`,
+      sessionId: f.sessionId,
+      idempotencyKey: `long-${index}`,
+      requestHash: `long-hash-${index}`,
+      userMessageId: `${f.sessionId}-long-user-${index}`,
+      assistantMessageId: `${f.sessionId}-long-assistant-${index}`,
+      userContent: "Earlier message.",
+      assistantContent: "Earlier reply.",
+      assistantStatus: "sent",
+      origin: "user",
+      memoryEnabled: false,
+      statsCountedAt: now,
+      characterContentVersionId: session.characterContentVersionId,
+      createdAt: new Date(now.getTime() - (4_000 - index) * 1_000),
+    }));
+    await prisma.chatTurn.createMany({ data: turns });
+    const started = Date.now();
+    await deleteChatSession(f.userId, f.sessionId);
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(await prisma.analyticsEvent.count({
+      where: { name: "chat.exchange.corrected.v2", sourceService: "main", sourceEventId: { startsWith: `chat_exchange_correction:${f.sessionId}-long-` } },
+    })).toBe(4_000);
+    expect(await prisma.mainOutboxEvent.count({
+      where: { id: { startsWith: `product_metric_chat_exchange_correction_${f.sessionId}-long-` } },
+    })).toBe(4_000);
+    expect(await correctionEvents(turns[0].id)).toEqual([
+      { exchangeId: turns[0].id, correctionType: "superseded", correctionRevision: 1, userId: f.userId, sessionId: f.sessionId, messageIds: [turns[0].userMessageId, turns[0].assistantMessageId] },
+    ]);
+  }, 30_000);
 
   it("records nothing for an exchange that never delivered a reply", async () => {
     const f = await fixture();
