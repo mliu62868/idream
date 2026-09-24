@@ -1057,15 +1057,21 @@ async function assertChatSessionServingAuthority(
   });
   if (!character || character.deletedAt) throw Errors.gone("Character is unavailable");
   if (character.creatorId === userId) return;
-  const publicReleaseIsLive =
+  const publicServingIsLive =
     ["public", "unlisted"].includes(character.visibility) &&
     character.status === "approved" &&
     character.serving?.state === "live" &&
-    character.serving.currentRelease?.id === session.characterReleaseId &&
-    character.serving.currentRelease.status === "published";
-  if (!publicReleaseIsLive) {
-    throw Errors.gone("Character has no active Serving Release");
-  }
+    character.serving.currentRelease?.status === "published";
+  if (publicServingIsLive && character.serving?.currentRelease?.id === session.characterReleaseId) return;
+  // INTENT: a session never leaves its Release pin, so after an update this one
+  // stays read-only. To the reader that is "the Character changed", not "the chat
+  // broke": the reason lets the page open the Character's current chat
+  // (createChatSession) and carry the unsent message over. Nothing was admitted
+  // or charged — this runs before any Turn or usage fact exists.
+  throw Errors.gone(
+    "Character has no active Serving Release",
+    publicServingIsLive ? { reason: "character_release_changed", characterId: session.characterId } : undefined,
+  );
 }
 
 async function requireTurn(userId: string, messageId: string) {

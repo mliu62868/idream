@@ -21,6 +21,7 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 import { voiceClipQuoteSchema, type VoiceClipQuote } from "@idream/shared/contracts";
 import {
   parseChatSendResponse,
+  parseChatSessionCreateResponse,
   parseChatSessionDetailResponse,
   parseGenerationRetryQuoteResponse,
   type RuntimeChatAttachment as ChatAttachment,
@@ -40,6 +41,7 @@ import { authHrefForTarget } from "./authRedirect";
 import { LegacyTestAssetBadge } from "./LegacyTestAssetBadge";
 import { useReportDialog } from "./ReportDialog";
 import { chatFailureCopy } from "@/lib/chat-failure-copy";
+import { chatReleaseChangedCharacterId, stashChatReleaseHandoff, takeChatReleaseHandoff } from "@/lib/chat-release-handoff";
 import { chatGenerationHref } from "@/lib/chat-generation-link";
 import { chatVideoSources, isExplicitChatVideoRequest } from "@/lib/chat-video";
 import { ChatVideoComposer, type ChatVideoSubmission } from "./chat/ChatVideoComposer";
@@ -93,6 +95,8 @@ type VoiceClipRequestResult = {
 const BLOCKED_ASSISTANT_NOTICE = "I can’t help with that request.";
 const STOPPED_REPLY_STATUS = "cancelled";
 const SPEAKER_SELECT_FAILED = "Couldn't select that Character. Try again.";
+const CHAT_RELEASE_HANDOFF_NOTICE =
+  "This Character was updated, so we opened a new chat. Your unsent message is ready below. The earlier conversation stays in your chats.";
 // A reply is only auto-followed while the reader is parked within this many
 // pixels of the bottom; above that the viewport belongs to the reader.
 const STICK_TO_BOTTOM_SLACK_PX = 120;
@@ -380,6 +384,11 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
           applySession(session);
           resumePendingStreams(session.messages);
           setLoadState("ready");
+          const handedOver = groupMode ? null : takeChatReleaseHandoff(id);
+          if (handedOver !== null) {
+            setContent((current) => current || handedOver);
+            setStatus(CHAT_RELEASE_HANDOFF_NOTICE);
+          }
         })
         .catch((error: unknown) => {
           if (cancelled || epoch !== sessionMutationEpochRef.current) return;
@@ -764,11 +773,13 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
         return;
       }
       if (!response.ok) {
+        const failure = await response.json().catch(() => null);
+        const updatedCharacterId = response.status === 410 && !groupMode ? chatReleaseChangedCharacterId(failure) : null;
+        if (updatedCharacterId && await openUpdatedCharacterChat(updatedCharacterId, text)) return;
         setSendOutcomeUnknown(response.status >= 500);
-        setStatus(chatFailureCopy(
-          await response.json().catch(() => null),
-          "Message failed to send. Please try again.",
-        ));
+        setStatus(updatedCharacterId
+          ? "This Character was updated, so this chat is now read-only. Your message is still below. Open the Character again to continue in a new chat."
+          : chatFailureCopy(failure, "Message failed to send. Please try again."));
         setContent(text);
         setMessages(dropOptimisticMessage);
         return;
@@ -812,6 +823,25 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
       setMessages(dropOptimisticMessage);
     } finally {
       setPending(false);
+    }
+  }
+
+  // The old chat keeps its history; the Character's current chat receives the
+  // unsent message. False means nothing moved and the caller keeps the text here.
+  async function openUpdatedCharacterChat(updatedCharacterId: string, draft: string): Promise<boolean> {
+    try {
+      const response = await fetch("/api/v1/chat/sessions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ characterId: updatedCharacterId }),
+      });
+      if (!response.ok) return false;
+      const nextId = parseChatSessionCreateResponse(await response.json()).session.id;
+      if (nextId === id || !stashChatReleaseHandoff(nextId, draft)) return false;
+      window.location.assign(`/chat/${encodeURIComponent(nextId)}`);
+      return true;
+    } catch {
+      return false;
     }
   }
 

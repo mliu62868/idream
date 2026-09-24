@@ -420,6 +420,27 @@ describe("opening a chat after Serving moved to a new Release", () => {
     expect(await prisma.recentChat.findUniqueOrThrow({ where: { sessionId: moved.id } })).toMatchObject({ characterReleaseId: next.id });
     expect(await prisma.recentChat.findUniqueOrThrow({ where: { sessionId: session.id } })).toMatchObject({ status: "archived", activeKey: null });
   });
+
+  // SPEC: 旧会话里继续发消息，410 要告诉前端「角色更新了、去哪继续」，且什么都没扣。
+  it("tells the page where to continue when an old session sends after the update, without admitting or charging", async () => {
+    const f = await publicFixture();
+    const session = await createChatSession(f.userId, { characterId: f.characterId });
+    const next = await f.moveServing();
+
+    const refused = await send({ userId: f.userId, sessionId: session.id }, "Still there?").catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(AppError);
+    expect(refused).toMatchObject({
+      status: 410,
+      details: { reason: "character_release_changed", characterId: f.characterId },
+    });
+    expect(await prisma.chatTurn.count({ where: { sessionId: session.id } })).toBe(0);
+    expect(await prisma.chatTurnUsageFact.count({ where: { userId: f.userId } })).toBe(0);
+
+    const continued = await createChatSession(f.userId, { characterId: f.characterId });
+    expect(continued.id).not.toBe(session.id);
+    expect(await prisma.recentChat.findUniqueOrThrow({ where: { sessionId: continued.id } }))
+      .toMatchObject({ characterReleaseId: next.id, status: "active" });
+  });
 });
 
 describe("archiving a session", () => {

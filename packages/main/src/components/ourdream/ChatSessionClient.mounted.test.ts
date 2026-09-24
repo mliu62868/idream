@@ -321,6 +321,81 @@ describe("ChatSessionClient streaming composer", () => {
     expect(toggle()?.getAttribute("aria-pressed")).toBe("true");
   });
 
+  // SPEC: 角色发布新版本后，旧会话里发消息 → 打开角色当前会话并带上没发出去的那句话。
+  // INTENT: 以前这里只显示「This chat is no longer active」，用户看到的是聊天突然坏了。
+  it("moves an unsent message to the Character's current chat when the Character was updated", async () => {
+    const handoff = new Map<string, string>();
+    vi.stubGlobal("sessionStorage", {
+      getItem: (key: string) => handoff.get(key) ?? null,
+      setItem: (key: string, value: string) => { handoff.set(key, value); },
+      removeItem: (key: string) => { handoff.delete(key); },
+    });
+    const assign = vi.spyOn(window.location, "assign").mockImplementation(() => {});
+    await mountSession();
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/messages") && init?.method === "POST") {
+        return Response.json({
+          error: "gone",
+          message: "Character has no active Serving Release",
+          details: { reason: "character_release_changed", characterId: "character-1" },
+        }, { status: 410 });
+      }
+      if (url === "/api/v1/chat/sessions" && init?.method === "POST") {
+        expect(JSON.parse(String(init.body))).toEqual({ characterId: "character-1" });
+        return Response.json({ ok: true, data: { session: { id: "session-2" } } });
+      }
+      return originalFetch(input, init);
+    });
+
+    await act(async () => typeMessage("are you still there?"));
+    await act(async () => submitComposer());
+    await waitUntil(() => assign.mock.calls.length > 0);
+    expect(assign).toHaveBeenCalledWith("/chat/session-2");
+    expect([...handoff.values()]).toEqual(["are you still there?"]);
+
+    // Arriving in the new chat: the message waits in the box, sent by nobody yet.
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    vi.mocked(fetch).mockImplementation(async (input, init) =>
+      originalFetch(String(input) === "/api/v1/chat/sessions/session-2" ? "/api/v1/chat/sessions/session-1" : input, init),
+    );
+    handoff.set("idream:chat-release-handoff:session-1", "are you still there?");
+    await mountSession();
+    await waitUntil(() => messageInput()?.value === "are you still there?");
+    expect(container.querySelector('[data-testid="chat-session-status"]')?.textContent)
+      .toContain("This Character was updated, so we opened a new chat.");
+    expect(handoff.size).toBe(1);
+    expect(handoff.has("idream:chat-release-handoff:session-1")).toBe(false);
+    assign.mockRestore();
+  });
+
+  it("keeps the message in place when the Character's current chat cannot be opened", async () => {
+    const assign = vi.spyOn(window.location, "assign").mockImplementation(() => {});
+    await mountSession();
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/messages") && init?.method === "POST") {
+        return Response.json({ error: "gone", details: { reason: "character_release_changed", characterId: "character-1" } }, { status: 410 });
+      }
+      if (url === "/api/v1/chat/sessions" && init?.method === "POST") {
+        return Response.json({ ok: false, error: { code: "gone" } }, { status: 410 });
+      }
+      return originalFetch(input, init);
+    });
+
+    await act(async () => typeMessage("are you still there?"));
+    await act(async () => submitComposer());
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="chat-session-status"]')));
+    expect(container.querySelector('[data-testid="chat-session-status"]')?.textContent)
+      .toContain("This Character was updated, so this chat is now read-only.");
+    expect(messageInput()?.value).toBe("are you still there?");
+    expect(assign).not.toHaveBeenCalled();
+    assign.mockRestore();
+  });
+
   // SPEC: 状态提示和输入框同属一个 sticky 容器。
   // INTENT: 状态段落曾经跟在 sticky 输入框后面的普通流里，长会话时被顶到文档底部、
   //   永远在视口外，点了按钮看起来像没反应。
