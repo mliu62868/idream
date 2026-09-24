@@ -67,7 +67,7 @@ const nextConfig: NextConfig = {
     // 本机开发时后台可能用 localhost 或 127.0.0.1 打开，二者是不同的源，都放行。
     const adminUrl = process.env.ADMIN_WEB_URL ? new URL(process.env.ADMIN_WEB_URL) : null;
     const loopbackTwin = adminUrl && ["localhost", "127.0.0.1"].includes(adminUrl.hostname)
-      ? `${adminUrl.protocol}//${adminUrl.hostname === "localhost" ? "127.0.0.1" : "localhost"}:${adminUrl.port}`
+      ? `${adminUrl.protocol}//${adminUrl.hostname === "localhost" ? "127.0.0.1" : "localhost"}${adminUrl.port ? `:${adminUrl.port}` : ""}`
       : null;
     const adminOrigin = adminUrl ? [adminUrl.origin, loopbackTwin].filter(Boolean).join(" ") : "'none'";
     return [
