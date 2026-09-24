@@ -88,15 +88,35 @@ export function invalidateViewerAuthority(): void {
   sharedResolver.invalidate();
 }
 
+/**
+ * INTENT: a hung `/api/v1/me` used to hold everything waiting on it — every
+ * gated read, and Profile's private reads and writes, Save included — on
+ * "Loading" with no way out. Past this bound the check counts as failed, which
+ * every caller already renders with a way to retry.
+ */
+export const VIEWER_CHECK_TIMEOUT_MS = 15_000;
+export const VIEWER_UNCONFIRMED_MESSAGE = "We couldn't confirm your account. Refresh and try again.";
+
+export function isTimeoutError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "TimeoutError";
+}
+
 async function requestViewerAuthority(
   fetcher: ViewerFetcher,
 ): Promise<ViewerAuthority> {
-  const response = await fetcher("/api/v1/me", { cache: "no-store" });
-  const raw: unknown = await response.json().catch(() => null);
+  let response: Response;
+  let raw: unknown;
+  try {
+    response = await fetcher("/api/v1/me", {
+      cache: "no-store",
+      signal: AbortSignal.timeout(VIEWER_CHECK_TIMEOUT_MS),
+    });
+    raw = await response.json().catch(() => null);
+  } catch (error) {
+    throw isTimeoutError(error) ? new Error(VIEWER_UNCONFIRMED_MESSAGE) : error;
+  }
   if (!response.ok) {
-    throw new Error(
-      apiEnvelopeErrorMessage(raw) ?? "We couldn't confirm your account. Refresh and try again.",
-    );
+    throw new Error(apiEnvelopeErrorMessage(raw) ?? VIEWER_UNCONFIRMED_MESSAGE);
   }
   return parseViewerAuthorityResponse(raw);
 }
@@ -110,7 +130,7 @@ export async function fetchViewerScope(
   if (typeof payload.anonymousId === "string" && payload.anonymousId.length > 0) {
     return `anonymous:${payload.anonymousId}`;
   }
-  throw new Error("We couldn't confirm your account. Refresh and try again.");
+  throw new Error(VIEWER_UNCONFIRMED_MESSAGE);
 }
 
 /**
