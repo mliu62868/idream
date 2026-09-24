@@ -1246,13 +1246,15 @@ async function appendChatExchangeCompleted(
  * WPCU and activation. Rules carried over from the Chat producer before
  * 59089e316:
  *   - edited: revision = the attempt being replaced; the next sent attempt
- *     (revision + 1) makes the exchange count again, whatever the arrival order.
+ *     (revision + 1) makes the exchange count again; the projector ignores a
+ *     correction older than the fact's attempt, so arrival order does not matter.
  *   - deleted / superseded (session delete): revision = the current attempt, so
  *     a late completion of that same attempt cannot revive it.
  *   - `selected` has no producer: a Turn has one reply, and regeneration
  *     already replaces it through a higher-attempt completion event.
  *   - only exchanges that ever produced a completion (user origin, a sent reply,
- *     a content version) are corrected; anything else would sit deferred forever.
+ *     a content version) are corrected. A Turn from the 2026-08-28 gap has no
+ *     fact at all; the projector skips a Main correction for it.
  */
 async function appendChatExchangeCorrected(
   tx: Prisma.TransactionClient,

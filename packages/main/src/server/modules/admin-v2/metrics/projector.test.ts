@@ -168,6 +168,61 @@ describe("canonical metric fact projector", () => {
       .toMatchObject({ eligible: false, correctionType: "edited" });
   });
 
+  // SPEC: 修正只对它 revision 及之前的 attempt 生效；Main 发出、却没有 fact 的修正直接跳过，不无限 deferred。
+  describe("Main exchange corrections", () => {
+    const mainEvent = (key: string, name: string, occurredAt: Date, props: Record<string, unknown>) => ({
+      id: `${prefix}-canonical-${key}`,
+      sourceService: "main",
+      sourceEventId: `${prefix}-${key}`,
+      name,
+      schemaVersion: 2,
+      occurredAt,
+      ingestedAt: new Date(occurredAt.getTime() + 1_000),
+      environment: "production",
+      dataClass: "customer",
+      trustClass: "canonical",
+      actor: { userId, isInternal: false },
+      context: {},
+      props,
+    });
+    const completed = (exchangeId: string, attempt: number, occurredAt: Date) =>
+      mainEvent(`${exchangeId}-completed-${attempt}`, "chat.exchange.completed.v2", occurredAt, {
+        exchangeId,
+        userMessageId: `${exchangeId}-user-message`,
+        assistantMessageId: `${exchangeId}-assistant-message`,
+        selectedAssistantMessageId: `${exchangeId}-assistant-message`,
+        assistantAttemptNo: attempt,
+        isRegeneration: attempt > 1,
+        sessionId: `${exchangeId}-session`,
+        engagementSessionId: `${exchangeId}-engagement`,
+        userId,
+        characterId: "character-v2",
+        characterContentVersionId: "content-v4",
+        characterReleaseId: null,
+      });
+    const edited = (exchangeId: string, revision: number, occurredAt: Date) =>
+      mainEvent(`${exchangeId}-edited-${revision}`, "chat.exchange.corrected.v2", occurredAt, {
+        exchangeId, correctionType: "edited", correctionRevision: revision, userId,
+      });
+
+    it("keeps the edited reply counted when the edit's correction lands after the next attempt's completion", async () => {
+      const exchangeId = `${prefix}-late-correction`;
+      await projectCanonicalMetricEvent(prisma, completed(exchangeId, 1, new Date("2026-07-03T12:00:00Z")));
+      await projectCanonicalMetricEvent(prisma, completed(exchangeId, 2, new Date("2026-07-03T12:10:00Z")));
+      await expect(projectCanonicalMetricEvent(prisma, edited(exchangeId, 1, new Date("2026-07-03T12:05:00Z"))))
+        .resolves.toMatchObject({ status: "applied" });
+      expect(await prisma.chatExchangeFact.findUniqueOrThrow({ where: { exchangeId } }))
+        .toMatchObject({ assistantAttemptNo: 2, eligible: true, correctionType: null });
+    });
+
+    it("skips a Main correction of an exchange that never had a fact", async () => {
+      const exchangeId = `${prefix}-no-fact`;
+      await expect(projectCanonicalMetricEvent(prisma, edited(exchangeId, 1, new Date("2026-07-04T12:00:00Z"))))
+        .resolves.toMatchObject({ status: "skipped", reason: "exchange_fact_absent" });
+      expect(await prisma.chatExchangeFact.findUnique({ where: { exchangeId } })).toBeNull();
+    });
+  });
+
   it("replays regenerate, edit, delete, and selection corrections into exact activation and D1 metrics", async () => {
     const replayId = `${prefix}-golden-replay`;
     const replayUserId = `${replayId}-user`;
