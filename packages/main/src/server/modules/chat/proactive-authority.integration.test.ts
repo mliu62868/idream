@@ -412,7 +412,7 @@ describe("opening a chat after Serving moved to a new Release", () => {
       await prisma.characterServing.update({ where: { characterId: character.id }, data: { currentReleaseId: next.id } });
       return next;
     };
-    return { userId, characterId: character.id, moveServing };
+    return { userId, creatorId, characterId: character.id, firstReleaseId: first.id, moveServing };
   }
 
   it("keeps the session with a pending reply and moves once the reply ended", async () => {
@@ -430,6 +430,40 @@ describe("opening a chat after Serving moved to a new Release", () => {
     expect(moved.id).not.toBe(session.id);
     expect(await prisma.recentChat.findUniqueOrThrow({ where: { sessionId: moved.id } })).toMatchObject({ characterReleaseId: next.id });
     expect(await prisma.recentChat.findUniqueOrThrow({ where: { sessionId: session.id } })).toMatchObject({ status: "archived", activeKey: null });
+  });
+
+  // SPEC: 作者自己的会话原地改钉到新上线的 Release（CR-08）：下一轮用新版本，旧 Turn 各守各的钉，会话不归档。
+  it("re-pins the author's own session to the newly published Release while earlier Turns keep theirs", async () => {
+    const f = await publicFixture();
+    const session = await createChatSession(f.creatorId, { characterId: f.characterId });
+    const before = await send({ userId: f.creatorId, sessionId: session.id }, "Before the update.");
+    await commitSent(before.snapshot!, "Still v1.");
+    const next = await f.moveServing();
+
+    const after = await send({ userId: f.creatorId, sessionId: session.id }, "After the update.");
+    expect(await prisma.chatTurn.findUniqueOrThrow({ where: { id: after.snapshot!.turnId } }))
+      .toMatchObject({ characterReleaseId: next.id, characterContentVersionId: next.characterContentVersionId });
+    expect(await prisma.chatTurn.findUniqueOrThrow({ where: { id: before.snapshot!.turnId } }))
+      .toMatchObject({ characterReleaseId: f.firstReleaseId });
+    expect(await prisma.recentChat.findUniqueOrThrow({ where: { sessionId: session.id } }))
+      .toMatchObject({ status: "active", characterReleaseId: next.id, characterContentVersionId: next.characterContentVersionId });
+    expect((await createChatSession(f.creatorId, { characterId: f.characterId })).id).toBe(session.id);
+  });
+
+  it("re-pins the author's session on open only once its pending reply ended", async () => {
+    const f = await publicFixture();
+    const session = await createChatSession(f.creatorId, { characterId: f.characterId });
+    const pending = await send({ userId: f.creatorId, sessionId: session.id });
+    const next = await f.moveServing();
+
+    expect((await createChatSession(f.creatorId, { characterId: f.characterId })).id).toBe(session.id);
+    expect(await prisma.recentChat.findUniqueOrThrow({ where: { sessionId: session.id } }))
+      .toMatchObject({ characterReleaseId: f.firstReleaseId });
+
+    await commitSent(pending.snapshot!, "Done.");
+    expect((await createChatSession(f.creatorId, { characterId: f.characterId })).id).toBe(session.id);
+    expect(await prisma.recentChat.findUniqueOrThrow({ where: { sessionId: session.id } }))
+      .toMatchObject({ status: "active", characterReleaseId: next.id });
   });
 
   // SPEC: 旧会话里继续发消息，410 要告诉前端「角色更新了、去哪继续」，且什么都没扣。
