@@ -303,7 +303,7 @@ const routeOverrides: Record<
   "/create": {
     title: "Create Your Dream AI Character",
     description:
-      "Character creator with style controls, preview cards, and guided fields for building a private or public AI companion.",
+      "Design your own AI companion step by step — looks, personality, voice, and story — then keep them private or share them.",
     template: "create",
   },
   "/custom": {
@@ -321,43 +321,43 @@ const routeOverrides: Record<
   "/profile/redeem-code": {
     title: "Redeem Dreamcoin Code",
     description:
-      "Redeem a promo or support code into dreamcoins from the account workspace.",
+      "Have a promo or support code? Redeem it here for dreamcoins.",
     template: "profile",
   },
   "/profile/notifications": {
     title: "Profile Notifications",
     description:
-      "Manage product update preferences from the account workspace.",
+      "Choose which announcements you see and which tags stay out of your recommendations.",
     template: "profile",
   },
   "/profile/account-management": {
     title: "Account Management",
     description:
-      "Manage account-level session and deletion actions from the account workspace.",
+      "Sign out everywhere, manage your recovery code, or delete your account.",
     template: "profile",
   },
   "/profile/age-verification": {
     title: "Age Verification",
     description:
-      "Start or retry identity age verification from the account workspace.",
+      "Verify your age to unlock age-restricted features.",
     template: "profile",
   },
   "/generate": {
     title: "NSFW AI Image Generator",
     description:
-      "Image generation workspace with required character selection, optional prompts, premium controls, and gallery states.",
+      "Create images of your characters — pick a character, describe the moment, and keep everything in your gallery.",
     template: "generator",
   },
   "/upgrade": {
     title: "Upgrade iDream",
     description:
-      "Prepaid upgrade page with plan cards, access periods, dreamcoin allowances, and premium generation controls from the live catalog.",
+      "Unlock unlimited chat, voice, video, and premium creative controls. Pay once for the period you choose — no automatic renewal.",
     template: "upgrade",
   },
   "/ai-girlfriend": {
     title: "AI Girlfriend Characters",
     description:
-      "AI girlfriend landing page with a character browser, creator CTA, feature sections, and related discovery paths.",
+      "Meet AI girlfriends who remember you — browse characters, start chatting, or create your own.",
     template: "marketing",
   },
   "/ai-boyfriend": {
@@ -379,31 +379,31 @@ const routeOverrides: Record<
   "/type": {
     title: "AI Girlfriend Types",
     description:
-      "Index of AI girlfriend type landing pages with pill-style internal links.",
+      "Explore AI girlfriend types and find the kind of companion you're looking for.",
     template: "library",
   },
   "/videos": {
     title: "AI Video Guides",
     description:
-      "Video category index for generated media ideas, cinematic roleplay routes, and related adult AI video guide pages.",
+      "Ideas and guides for making AI videos with your characters.",
     template: "library",
   },
   "/comparison": {
     title: "Compare AI Girlfriend Platforms",
     description:
-      "Comparison hub for AI companion alternatives and iDream competitor pages.",
+      "See how iDream compares with other AI companion platforms.",
     template: "comparison",
   },
   "/games": {
     title: "AI Games",
     description:
-      "A reserved library for future game-style roleplay guides; no game guide is published here yet.",
+      "Game-style roleplay guides will appear here. None are published yet.",
     template: "library",
   },
   "/romantasy": {
     title: "AI Romantasy",
     description:
-      "A reserved library for future fantasy-romance guides; no romantasy guide is published here yet.",
+      "Fantasy-romance guides will appear here. None are published yet.",
     template: "library",
   },
   "/terms": {
@@ -415,7 +415,7 @@ const routeOverrides: Record<
   "/helpdesk": {
     title: "Help Desk",
     description:
-      "Support requests, account and billing help, product FAQs, roadmap voting, appeals, and beta feedback paths.",
+      "Get help with your account, billing, chats, and images — send a request, appeal a decision, or vote on what we build next.",
     template: "marketing",
   },
 };
