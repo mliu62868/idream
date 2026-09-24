@@ -1098,7 +1098,9 @@ export function CreateWorkspace() {
         visibilityWarning
           ? visibilityWarning
           : character && editTarget && submitted.data?.pendingPublication
-          ? `Saved changes to ${character.name}. They go live once the new version is published; the current version keeps serving until then.`
+          // A published Character's text edit becomes a Release revision that operators publish from the
+          // Release tab (the production journey flags it). Look and voice are locked, so its images carry over.
+          ? `Saved changes to ${character.name}. They go live after our team publishes the new version; until then, chats keep using the current version.`
           : character && editTarget
           ? `Saved changes to ${character.name}. New messages use this version; earlier messages keep the one they were written with.`
           : character

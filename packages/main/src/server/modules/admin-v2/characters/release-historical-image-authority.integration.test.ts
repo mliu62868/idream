@@ -8,6 +8,7 @@ import { canonicalSha256 } from "../shared/canonical-json";
 import { CHARACTER_RELEASE_POLICY_VERSION, evaluateCharacterReleaseSnapshot, type CharacterReleaseSnapshotCandidate } from "./release-validation";
 import { characterReleaseSnapshotHash, characterVisualProfileSnapshotHash, referenceSetSnapshotHash } from "./release-snapshot";
 import { createCharacterSoulVersion } from "./soul-version";
+import { createCharacterRelease } from "./release-lifecycle";
 
 const P = "zt-release-history-";
 
@@ -256,5 +257,76 @@ describe("Release historical image authority", () => {
     }
     const tampered = await evaluate({ ...currentCandidate, revisionId: oldRevision.id });
     expect(tampered.checks.find((check) => check.key === "revision_is_immutable_and_pinned")).toMatchObject({ passed: false });
+  });
+
+  // SPEC: 已上线角色只改了文字（作者编辑或运营改 Soul）后，新 Release 直接用现有图片发布。
+  // INTENT: 审计担心「待发布修订」会被 approved_asset_pack_incomplete 挡住。实际上草稿图片包
+  //   发布后原样保留，作者编辑只动文字（外观/声音已锁），身份与参考集在有线上 Release 时不可变
+  //   （assertCharacterIdentityAuthorityMutable），所以同一套已批准图片仍是完整草稿包；这里钉住
+  //   这条路径，不另造「沿用线上图片」的第二套发布管线。
+  it("prepares a text-only revision of a live Character with its already-published images", async () => {
+    const candidate = await imageCandidate("text-only-live");
+    const characterId = `${P}text-only-live`;
+    const actor = { id: `${characterId}-owner`, role: "admin" } as const;
+    const legacy = await prisma.characterContentVersion.create({ data: {
+      characterId, version: 1, contentHash: `${characterId}-legacy`,
+      personaSnapshot: { name: "Mara", age: 28, gender: "female", personality: "Measured and observant." },
+      openingSnapshot: { firstMessage: "Old opening." }, appearanceSnapshot: { style: "realistic", structured: {} }, sourceType: "test",
+    } });
+    await prisma.characterRevision.create({ data: {
+      projectId: candidate.projectId, revision: 1, characterContentVersionId: legacy.id, projectSnapshot: {},
+    } });
+    const persona = {
+      name: "Mara", age: 28, gender: "female" as const, characterPromise: "A precise place to put the day down.",
+      detailsMarkdown: "Measured, observant, and gently challenging. Warm and concise. A former night-shift radio host.",
+      firstMessage: "What followed you home tonight?",
+    };
+    const projectVersion = async () => (await prisma.characterProject.findUniqueOrThrow({ where: { id: candidate.projectId } })).version;
+    const livedSoul = await createCharacterSoulVersion({
+      characterId, expectedProjectVersion: await projectVersion(), expectedContentVersionId: legacy.id,
+      actor, requestId: `${characterId}-soul-live`, persona,
+    });
+    const livedRevision = await prisma.characterRevision.findFirstOrThrow({ where: { projectId: candidate.projectId, revision: livedSoul.revision } });
+    // The first Release published exactly the selected draft pack; publishing leaves that pack in place.
+    const purposeBySlot = { character_avatar: "character_cover", character_hero: "character_hero", character_chat: "character_chat" } as const;
+    const draftAssetPack = Object.fromEntries(candidate.releasePlacementManifest.placements.map((placement) => [
+      purposeBySlot[placement.slotKey as keyof typeof purposeBySlot],
+      {
+        assetId: placement.assetId, runId: placement.runId, itemId: placement.itemId, reviewDecisionId: placement.reviewDecisionId,
+        generationJobId: placement.generationJobId, bootstrapIdentity: placement.bootstrapIdentity,
+        generationRouteFingerprint: candidate.generationProvenance.requiredReleaseRoute.routeFingerprint,
+      },
+    ]));
+    const cover = candidate.releasePlacementManifest.placements.find((placement) => placement.slotKey === "character_avatar")!;
+    await prisma.characterProject.update({ where: { id: candidate.projectId }, data: { draftAssetPack, draftImageAssetId: cover.assetId } });
+    const liveSnapshot = { ...candidate, revisionId: livedRevision.id, characterContentVersionId: livedRevision.characterContentVersionId };
+    const live = await prisma.characterRelease.create({ data: {
+      projectId: liveSnapshot.projectId, revisionId: liveSnapshot.revisionId, characterContentVersionId: liveSnapshot.characterContentVersionId,
+      visualProfileId: liveSnapshot.visualProfileId, visualProfileVersion: liveSnapshot.visualProfileVersion,
+      referenceSetRevisionId: liveSnapshot.referenceSetRevisionId,
+      generationProvenance: liveSnapshot.generationProvenance, releasePlacementManifest: liveSnapshot.releasePlacementManifest,
+      snapshotHash: candidateSnapshotHash(liveSnapshot), readiness: "ready", status: "published", publishedAt: new Date(),
+    } });
+    await prisma.characterServing.create({ data: { characterId, currentReleaseId: live.id, state: "live" } });
+
+    const edited = await createCharacterSoulVersion({
+      characterId, expectedProjectVersion: await projectVersion(), expectedContentVersionId: livedRevision.characterContentVersionId,
+      actor, requestId: `${characterId}-soul-edit`, persona: { ...persona, characterPromise: "A late-night radio host who remembers callers." },
+    });
+    const editedRevision = await prisma.characterRevision.findFirstOrThrow({ where: { projectId: candidate.projectId, revision: edited.revision } });
+
+    const next = await createCharacterRelease({
+      request: new Request("http://localhost"), characterId, expectedProjectVersion: await projectVersion(),
+      reason: "Publish the author's text edit", actor, requestId: `${characterId}-release`,
+    });
+    expect(next).toMatchObject({
+      status: "approved", readiness: "ready",
+      revisionId: editedRevision.id, characterContentVersionId: editedRevision.characterContentVersionId,
+      visualProfileId: live.visualProfileId, referenceSetRevisionId: live.referenceSetRevisionId,
+    });
+    const assetsBySlot = (manifest: unknown) => Object.fromEntries(
+      (manifest as { placements: { slotKey: string; assetId: string }[] }).placements.map((placement) => [placement.slotKey, placement.assetId]),
+    );
+    expect(assetsBySlot(next.releasePlacementManifest)).toEqual(assetsBySlot(live.releasePlacementManifest));
   });
 });

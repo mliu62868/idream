@@ -249,6 +249,10 @@ describe("truthful public UI states", () => {
     expect(source("CreateWorkspace.tsx")).not.toContain(
       "Public characters go live after approval.",
     );
+    // A published Character's edit waits for an operator-published Release; say who publishes it.
+    expect(source("CreateWorkspace.tsx")).toContain(
+      "They go live after our team publishes the new version; until then, chats keep using the current version.",
+    );
   });
 
   it("distinguishes creator auth, age, not-found, and dependency failures", () => {
