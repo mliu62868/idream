@@ -86,6 +86,7 @@ describe("Character Production Journey", () => {
       releaseRevisionId: string;
       releaseCreatedAt?: Date;
       revisions: Array<{ id: string; revision: number; createdAt: Date }>;
+      otherReleases?: Array<{ id: string; revisionId: string; status: string; publishedAt: Date | null }>;
     }) {
       const db = {
         characterProject: { findMany: async () => [{ id: "project-1", characterId: "character-1", draftAssetPack: {}, updatedAt: new Date() }] },
@@ -96,7 +97,10 @@ describe("Character Production Journey", () => {
         characterRelease: { findMany: async () => [{
           id: "release-live", projectId: "project-1", revisionId: input.releaseRevisionId, status: "published",
           releasePlacementManifest: {}, createdAt: input.releaseCreatedAt ?? new Date("2026-09-01T00:00:00.000Z"),
-        }] },
+          publishedAt: input.releaseCreatedAt ?? new Date("2026-09-01T00:00:00.000Z"),
+        }, ...(input.otherReleases ?? []).map((release) => ({
+          ...release, projectId: "project-1", releasePlacementManifest: {}, createdAt: new Date("2026-09-10T00:00:00.000Z"),
+        }))] },
         characterRevision: { findMany: async () => input.revisions.map((revision) => ({ ...revision, projectId: "project-1" })) },
       } as unknown as PrismaClient;
       return (await projectCharacterProductionJourneys(db, ["character-1"], new Date("2026-09-23T00:00:00.000Z")))
@@ -112,6 +116,23 @@ describe("Character Production Journey", () => {
         createdAt: "2026-09-20T00:00:00.000Z",
         deepLink: "/admin/characters/character-1?tab=release",
       });
+    });
+
+    // SPEC: 回滚到旧 Release 后，被回滚掉的 Revision 是运营的决定，不算待发布。
+    it("stays quiet after a rollback away from a Revision that already went live", async () => {
+      await expect(project({
+        releaseRevisionId: rev1.id,
+        revisions: [rev2, rev1],
+        otherReleases: [{ id: "release-rolled-back", revisionId: rev2.id, status: "superseded", publishedAt: new Date("2026-09-21T00:00:00.000Z") }],
+      })).resolves.toBeNull();
+    });
+
+    it("still flags a Revision whose Release was prepared but never went live", async () => {
+      await expect(project({
+        releaseRevisionId: rev1.id,
+        revisions: [rev2, rev1],
+        otherReleases: [{ id: "release-withdrawn", revisionId: rev2.id, status: "withdrawn", publishedAt: null }],
+      })).resolves.toMatchObject({ revisionId: "revision-2" });
     });
 
     it("stays quiet when the live Release pins the newest Revision", async () => {

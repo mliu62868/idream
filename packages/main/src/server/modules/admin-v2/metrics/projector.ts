@@ -499,8 +499,22 @@ async function applyEvent(tx: Transaction, event: MetricProductEvent): Promise<M
   if (event.name === METRIC_PRODUCT_EVENTS.chatExchangeCorrected) {
     const payload = chatExchangeCorrectionV2Schema.parse(event.props);
     const existing = await tx.chatExchangeFact.findUnique({ where: { exchangeId: payload.exchangeId } });
-    if (!existing) return { status: "deferred", reason: "awaiting_required_fact" };
-    if (payload.correctionRevision > existing.correctionRevision) {
+    if (!existing) {
+      // INTENT: Main emitted no completion between 59089e316 (2026-08-28) and
+      // turn-ledger's appendChatExchangeCompleted, so a Main correction of a Turn
+      // from that gap has no fact and never will; deferring it retries forever.
+      // A Chat correction may still precede its completion in the old replay.
+      return event.sourceService === "main"
+        ? { status: "skipped", reason: "exchange_fact_absent" }
+        : { status: "deferred", reason: "awaiting_required_fact" };
+    }
+    // INVARIANT: a correction only speaks for attempts up to its revision. One
+    // that lands after the next attempt's completion is older than the fact
+    // and must not un-count the reply that replaced it, whatever the order.
+    if (
+      payload.correctionRevision >= existing.assistantAttemptNo &&
+      payload.correctionRevision > existing.correctionRevision
+    ) {
       await tx.chatExchangeFact.update({
         where: { id: existing.id },
         data: {
