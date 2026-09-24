@@ -534,19 +534,25 @@ export async function projectCharacterProductionJourneys(
       ),
     );
     livePackByCharacter.set(characterId, releaseAssetPack(currentRelease));
-    // SPEC: a Character that has a current Release but a newer Revision on its
-    // Project has an edit nobody published yet.
+    // SPEC: a Character that has a current Release but a Revision newer than
+    // every Revision any of its Releases ever put live has an edit nobody
+    // published yet.
     // INTENT: a creator edit writes a Revision and never touches Serving, so
     // without this the operator sees a healthy live Character and the edit sits
-    // unpublished indefinitely.
+    // unpublished indefinitely. A Revision that did go live and was rolled back
+    // is a decision, not a forgotten edit.
     if (currentRelease) {
       const latest = revisions.find((revision) => revision.projectId === project.id);
-      const pinned = revisions.find((revision) => revision.id === currentRelease.revisionId);
+      const shipped = characterReleases.filter(
+        (release) => release.publishedAt !== null || release.id === currentRelease.id,
+      );
       // A legacy Release may pin a Revision id that never existed; then only a
       // Revision written after that Release counts.
-      const newer = latest && latest.id !== currentRelease.revisionId && (pinned
-        ? latest.revision > pinned.revision
-        : latest.createdAt > currentRelease.createdAt);
+      const newer = latest && shipped.every((release) => {
+        if (release.revisionId === latest.id) return false;
+        const pinned = revisions.find((revision) => revision.id === release.revisionId);
+        return pinned ? latest.revision > pinned.revision : latest.createdAt > release.createdAt;
+      });
       if (latest && newer) {
         pendingRevisionByCharacter.set(characterId, latest);
       }
