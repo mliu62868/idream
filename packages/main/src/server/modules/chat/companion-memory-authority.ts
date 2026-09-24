@@ -401,9 +401,11 @@ export async function clearCompanionMemory(userId: string, characterId: string) 
     return { active, eventId };
   });
 
+  // Best effort only: the durable cancel event above already guarantees delivery, so a
+  // slow or hung Chat must not hold the user's "clear memory" response.
   await Promise.allSettled(result.active.map((turn) => fetch(
     chatUrl(`/internal/agent-runs/${encodeURIComponent(turn.id)}/${turn.attempt}/cancel`),
-    { method: "POST", headers: { "x-internal-token": env.INTERNAL_TOKEN } },
+    { method: "POST", headers: { "x-internal-token": env.INTERNAL_TOKEN }, signal: AbortSignal.timeout(3_000) },
   )));
   return {
     ok: true as const,
