@@ -196,6 +196,18 @@ describe("Main-owned Chat façade", () => {
     await prisma.character.delete({ where: { id: CHARACTER_ID } });
   });
 
+  // SPEC: 客户端错误的 details 与 Main 信封同口径透出（如会话为何只读、去哪继续）；5xx 不透出。
+  it("passes client-error details through the façade envelope", async () => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const response = await proxyChatRequest(authRequest("/api/v1/chat/groups", {
+      method: "POST",
+      headers: { "x-idream-viewer-scope": `user:${USER_ID}` },
+      body: JSON.stringify({}),
+    }), ["chat", "groups"]);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: "bad_request", details: { issues: expect.any(Array) } });
+  });
+
   it("keeps session reads in Main even when Chat execution is unavailable", async () => {
     const { proxyChatRequest } = await import("./chat-proxy");
     const created = await proxyChatRequest(authRequest("/api/v1/chat/sessions", {

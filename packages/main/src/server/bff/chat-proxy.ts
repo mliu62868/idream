@@ -305,5 +305,11 @@ function errorResponse(error: unknown): Response {
   const appError = error instanceof AppError
     ? error
     : Errors.internal("The Chat request could not be completed");
-  return json({ error: appError.code, message: appError.message }, appError.status);
+  // Same rule as the Main envelope: client errors carry their details (e.g. why a
+  // chat is gone and where to continue); server errors never do.
+  return json({
+    error: appError.code,
+    message: appError.message,
+    ...(appError.status < 500 && appError.details !== undefined ? { details: appError.details } : {}),
+  }, appError.status);
 }
