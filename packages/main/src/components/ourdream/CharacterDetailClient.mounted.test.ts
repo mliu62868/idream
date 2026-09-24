@@ -130,6 +130,25 @@ describe("CharacterDetailClient like relationship", () => {
     expect(window.location.search).toBe("");
   });
 
+  it("ends with other characters like this one, never the one being viewed", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).startsWith("/api/v1/characters?")) {
+        return Response.json({ ok: true, data: {
+          items: [character, { ...character, id: "character-2", title: "Blake" }],
+          nextCursor: null,
+        } });
+      }
+      return Response.json({ ok: true, data: { character } });
+    }));
+    await act(async () =>
+      root.render(createElement(CharacterDetailClient, { id: "character-1" }))
+    );
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="character-detail-similar"]')));
+    const similar = container.querySelector('[data-testid="character-detail-similar"]')!;
+    expect(similar.textContent).toContain("Blake");
+    expect(similar.querySelector('a[href="/characters/character-1"]')).toBeNull();
+  });
+
   function findButton(label: string) {
     return [...container.querySelectorAll("button")].find(
       (button) => button.textContent?.trim() === label,

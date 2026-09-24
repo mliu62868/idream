@@ -6,9 +6,12 @@ import { useEffect, useRef, useState } from "react";
 import {
   parseCharacterDetailResponse,
   parseCharacterLikeResponse,
+  parseCharacterListResponse,
   parseChatSessionCreateResponse,
   type PublicCharacterDetail,
 } from "@/lib/public-api-contracts";
+import type { CharacterCardData } from "@/types/ourdream";
+import { CharacterCard } from "./CharacterCard";
 import {
   CharacterDetailHero,
 } from "./CharacterDetailHero";
@@ -215,6 +218,7 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
                     {status}
                   </p>
               )}
+              <SimilarCharacters character={character} />
             </div>
           ) : (
             <div
@@ -244,4 +248,30 @@ function signupUrlForCurrentCharacter(resume?: "chat") {
   const query = params.toString();
   const next = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`;
   return `/signup?next=${encodeURIComponent(next)}`;
+}
+
+// SPEC: the detail page ends with a next step — other public characters of the same style
+// and gender — instead of an empty page below the hero. Reuses the Explore list endpoint.
+function SimilarCharacters({ character }: Readonly<{ character: CharacterDetail }>) {
+  const [cards, setCards] = useState<CharacterCardData[]>([]);
+  useEffect(() => {
+    const controller = new AbortController();
+    const params = new URLSearchParams({ sort: "popular", limit: "7" });
+    if (character.style) params.set("style", character.style);
+    if (character.gender) params.set("gender", character.gender);
+    fetch(`/api/v1/characters?${params.toString()}`, { signal: controller.signal })
+      .then(async (response) => (response.ok ? parseCharacterListResponse(await response.json()).items : []))
+      .then((items) => setCards(items.filter((item) => item.id !== character.id).slice(0, 6)))
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [character.id, character.style, character.gender]);
+  if (cards.length === 0) return null;
+  return (
+    <section aria-label="More like this" className="mt-10" data-testid="character-detail-similar">
+      <h2 className="text-[20px] font-black uppercase">More like this</h2>
+      <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+        {cards.map((card) => <CharacterCard card={card} key={card.id} />)}
+      </div>
+    </section>
+  );
 }
