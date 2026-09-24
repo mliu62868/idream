@@ -12,6 +12,7 @@ import {
   genderFormOptions,
 } from "@/lib/character-taxonomy";
 import { isPrivateMediaUrl } from "@/lib/image-delivery";
+import { cn } from "@/lib/utils";
 import {
   isRenderableMediaSource,
   parseTemplatesResponse,
@@ -1237,7 +1238,9 @@ export function CreateWorkspace() {
             的预览栏，iPad 竖屏装不下 —— 整页溢出 141px，且右栏被压到把 select 的
             选中值裁掉（"Female" 显示成 "Femal"）。双栏推到 lg(1024)。 */}
         <div className="mt-8 grid gap-4 lg:grid-cols-[360px_1fr]">
-          <div className="relative aspect-[4/5] w-full max-w-[448px] self-start justify-self-center overflow-hidden rounded-[20px] bg-[rgb(18,18,18)]">
+          {/* On phones the empty silhouette filled the first screen and pushed the form below
+              the fold; show it only once there is a real preview to look at. */}
+          <div className={cn("relative aspect-[4/5] w-full max-w-[448px] self-start justify-self-center overflow-hidden rounded-[20px] bg-[rgb(18,18,18)]", preview === DEFAULT_PREVIEW && "hidden lg:block")}>
             <Image
               alt=""
               className="object-cover object-top"
