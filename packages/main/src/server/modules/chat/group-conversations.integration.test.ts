@@ -215,7 +215,7 @@ describe("Main group conversation authority", () => {
     expect(a.snapshot!.memoryEnabled).toBe(false); await finish(a.snapshot!);
     const b = await f.begin(1);
     expect(b.snapshot!.memoryEnabled).toBe(true);
-    const transport = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ ok: true }));
+    const transport = vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json({ ok: true }));
     try { await clearCompanionMemory(f.userId, f.characters[0].id); } finally { transport.mockRestore(); }
     expect(await prisma.groupConversation.findUnique({ where: { id: f.group.id } })).toMatchObject({ status: "archived" });
     expect(await prisma.chatTurn.findUnique({ where: { id: b.snapshot!.turnId } })).toMatchObject({ assistantStatus: "cancelled", memoryEnabled: true });

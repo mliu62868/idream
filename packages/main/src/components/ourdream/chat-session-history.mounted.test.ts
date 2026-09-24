@@ -58,7 +58,7 @@ describe("Complete chat history navigation", () => {
     let releaseOld!: (response: Response) => void;
     vi.mocked(fetch).mockImplementationOnce(() => new Promise(resolve => { releaseOld = resolve; }));
     await act(async () => root.render(drawer("old-session"))); await settle();
-    vi.mocked(fetch).mockResolvedValue(Response.json([{ ...rows[0], id: "new-session", title: "Current viewer chat" }]));
+    vi.mocked(fetch).mockImplementation(async () => Response.json([{ ...rows[0], id: "new-session", title: "Current viewer chat" }]));
     await act(async () => root.render(drawer("new-session"))); await settle();
     await act(async () => releaseOld(Response.json(rows)));
     expect(container.textContent).toContain("Current viewer chat");
