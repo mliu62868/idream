@@ -697,7 +697,9 @@ const productionTypeScript = globSync("src/**/*.ts")
     !path.endsWith(".e2e.ts"),
   );
 
-describe("Admin v2 finite-state authority inventory", () => {
+// Parses every Admin v2 source file with the TypeScript compiler; under a loaded machine
+// that exceeds the 5s default, which made it the one recurring flake in full runs.
+describe("Admin v2 finite-state authority inventory", { timeout: 30_000 }, () => {
   describe("mutation writer detector", () => {
     const writesCreativeItemStatus = (contents: string) =>
       mutationSourceWritesField(contents, "contentProductionItem", "status");
