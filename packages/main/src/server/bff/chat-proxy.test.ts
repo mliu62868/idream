@@ -164,7 +164,7 @@ describe("Main-owned Chat façade", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     fetchMock.mockReset();
-    fetchMock.mockResolvedValue(Response.json({ ok: true }, { status: 202 }));
+    fetchMock.mockImplementation(async () => Response.json({ ok: true }, { status: 202 }));
   });
 
   afterAll(async () => {
@@ -502,7 +502,7 @@ describe("Main-owned Chat façade", () => {
       where: { sessionId_idempotencyKey: { sessionId, idempotencyKey: key } },
     })).resolves.toMatchObject({ assistantStatus: "pending" });
 
-    fetchMock.mockResolvedValue(Response.json({ ok: true }, { status: 202 }));
+    fetchMock.mockImplementation(async () => Response.json({ ok: true }, { status: 202 }));
     await prisma.chatTurn.updateMany({
       where: { sessionId, idempotencyKey: key },
       data: { admissionNextRunAt: new Date(0) },
@@ -560,7 +560,7 @@ describe("Main-owned Chat façade", () => {
       data: { admissionNextRunAt: new Date(1) },
     });
     fetchMock.mockClear();
-    fetchMock.mockResolvedValue(Response.json({ ok: true }, { status: 202 }));
+    fetchMock.mockImplementation(async () => Response.json({ ok: true }, { status: 202 }));
 
     await expect(dispatchPendingChatAgentRuns()).resolves.toEqual({ admitted: 1, pending: 1 });
     expect(fetchMock).toHaveBeenCalledOnce();
@@ -664,7 +664,7 @@ describe("Main-owned Chat façade", () => {
       },
     });
     fetchMock.mockClear();
-    fetchMock.mockResolvedValue(Response.json({ ok: true }, { status: 202 }));
+    fetchMock.mockImplementation(async () => Response.json({ ok: true }, { status: 202 }));
     await prisma.chatTurn.updateMany({
       where: { sessionId, idempotencyKey: key },
       data: { admissionNextRunAt: new Date(0) },
@@ -868,24 +868,14 @@ describe("Main-owned Chat façade", () => {
       payload: { version: 1, userId: USER_ID, turnId: begun.snapshot!.turnId, attempt: 1 },
     });
 
-    // USER_ID is the shared seed user and the lifecycle lane keeps per-user order: an
-    // unfinished event another test file left for this user would block this row forever.
-    await prisma.$executeRaw`
-      DELETE FROM "main_outbox_events"
-       WHERE "id" <> ${pending.id}
-         AND "status" IN ('pending', 'processing', 'failed')
-         AND "payload"->'payload'->>'userId' = ${USER_ID}`;
     fetchMock.mockClear();
-    fetchMock.mockResolvedValue(Response.json({ ok: true, active: false }));
-    // The lane drains every pending lifecycle row in the shared test DB, so assert on
-    // this Turn's own row, draining until it is picked up.
+    // A Response body can be read once, so each mocked delivery gets a fresh one: the lane
+    // also delivers other pending rows in the shared test DB before this Turn's row.
+    fetchMock.mockImplementation(async () => Response.json({ ok: true, active: false }));
     for (let round = 0; round < 20; round += 1) {
       await dispatchPendingChatEvents({ lane: "lifecycle" });
       const row = await prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: pending.id } });
       if (row.status !== "pending") break;
-      // nextRunAt comes from the database clock; give a VM-hosted test DB running
-      // slightly ahead of this process a moment to become due.
-      await new Promise((resolve) => setTimeout(resolve, 50));
     }
     await expect(prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: pending.id } }))
       .resolves.toMatchObject({ status: "delivered" });
