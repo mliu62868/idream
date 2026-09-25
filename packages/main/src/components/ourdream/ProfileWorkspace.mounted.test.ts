@@ -110,8 +110,9 @@ describe("ProfileWorkspace media pagination", () => {
     await settle();
   }
 
-  async function mountMedia() {
-    await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/custom" })));
+  // Account controls render only on /profile; My AI (/custom) is the library alone.
+  async function mountMedia(routePath = "/custom") {
+    await act(async () => root.render(createElement(ProfileWorkspace, { routePath })));
     await settle();
     await click(button("Media"));
   }
@@ -137,7 +138,7 @@ describe("ProfileWorkspace media pagination", () => {
       if (String(input) === "/api/v1/account/recovery-code") return deferred.promise;
       return originalFetch(input, init);
     }));
-    await mountMedia();
+    await mountMedia("/profile");
     const password = container.querySelector<HTMLInputElement>('[aria-label="Current account password"]')!;
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(password, "A-private-password");
@@ -154,7 +155,7 @@ describe("ProfileWorkspace media pagination", () => {
   });
 
   it("replaces the entire private library when focus confirms another owner without remounting the page", async () => {
-    await mountMedia();
+    await mountMedia("/profile");
     expect(container.querySelector('[data-media-id="image-1"]')).not.toBeNull();
     viewer = "viewer-b";
     await act(async () => window.dispatchEvent(new Event("focus")));
@@ -201,7 +202,7 @@ describe("ProfileWorkspace media pagination", () => {
   // first read used to be refused as "not mounted", and each panel carried a
   // 300ms back-off to paper over it.
   it("lets the account panels read on the first try in the commit that confirms the owner", async () => {
-    await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/custom" })));
+    await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/profile" })));
     await settle();
     for (const path of ["/api/v1/affiliate/dashboard", "/api/v1/account/email-verification", "/api/v1/age-verification/status"]) {
       expect(requests, path).toContain(path);
@@ -209,7 +210,7 @@ describe("ProfileWorkspace media pagination", () => {
   });
 
   it("holds a write made while focus re-confirms the owner and sends it once the same owner is confirmed", async () => {
-    await mountMedia();
+    await mountMedia("/profile");
     let release!: () => void;
     profileHold = new Promise<void>((resolve) => { release = () => resolve(); }).then(() => true);
     await act(async () => window.dispatchEvent(new Event("focus")));
@@ -239,7 +240,7 @@ describe("ProfileWorkspace media pagination", () => {
       }
       return undefined;
     };
-    await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/custom" })));
+    await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/profile" })));
     await settle();
     profileFails = true;
     await act(async () => window.dispatchEvent(new Event("focus")));
@@ -278,7 +279,7 @@ describe("ProfileWorkspace media pagination", () => {
   });
 
   it("preserves an unsaved profile name when focus confirms the same owner", async () => {
-    await mountMedia();
+    await mountMedia("/profile");
     const name = container.querySelector<HTMLInputElement>('[aria-label="Display name"]')!;
     expect(name).not.toBeNull();
     await act(async () => {
@@ -291,7 +292,7 @@ describe("ProfileWorkspace media pagination", () => {
   });
 
   it("binds private reads and form writes to the confirmed account, even before focus notices changed cookies", async () => {
-    await mountMedia();
+    await mountMedia("/profile");
     const fetcher = vi.mocked(globalThis.fetch);
     for (const path of ["/api/v1/library/media", "/api/v1/profile/preferences", "/api/v1/media/collections"]) {
       const call = fetcher.mock.calls.find(([input]) => String(input) === path)!;
@@ -490,7 +491,7 @@ describe("ProfileWorkspace media pagination", () => {
     await click(button("Created"));
     expect(container.textContent).not.toContain("approved");
     await click(button("Publish"));
-    expect(container.querySelector('[data-testid="profile-status"]')?.textContent)
+    expect(container.querySelector('[data-testid="profile-library-status"]')?.textContent)
       .toBe("This Character is unavailable for sharing. Resolve its report or appeal first.");
   });
 
@@ -504,6 +505,7 @@ describe("ProfileWorkspace media pagination", () => {
 
   it("keeps a new collection private unless the owner opts in", async () => {
     await mountMedia();
+    await click(container.querySelector('[data-media-id="image-1"]')!.querySelector("[aria-expanded]")!);
     const publish = container.querySelector<HTMLInputElement>('[aria-label="Publish collection to Community"]');
     expect(publish).not.toBeNull();
     expect(publish!.checked).toBe(false);
@@ -649,5 +651,68 @@ describe("ProfileWorkspace media pagination", () => {
     expect(container.querySelector('[data-media-id="viewer-b-image"]')).not.toBeNull();
     expect(container.querySelector('[data-media-id="viewer-a-private-image"]')).toBeNull();
     expect(container.querySelector('nav[aria-label="Library pages"]')).toBeNull();
+  });
+
+  it("shows only the library on My AI and keeps the account area on Profile", async () => {
+    const accountPanels = ["profile-redeem-panel", "profile-billing-card", "profile-notifications-panel", "profile-account-management-panel"];
+    await mountMedia("/custom");
+    expect(container.querySelector("h1")?.textContent).toBe("My AI");
+    expect(container.querySelector('[data-media-id="image-1"]')).not.toBeNull();
+    for (const testId of accountPanels) expect(container.querySelector(`[data-testid="${testId}"]`), testId).toBeNull();
+    for (const path of ["/api/v1/referrals", "/api/v1/profile/preferences", "/api/v1/affiliate/dashboard", "/api/v1/account/email-verification"]) {
+      expect(requests, path).not.toContain(path);
+    }
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await mountMedia("/profile");
+    for (const testId of accountPanels) expect(container.querySelector(`[data-testid="${testId}"]`), testId).not.toBeNull();
+    // The account grids share the library's width instead of spilling past it.
+    const libraryColumn = container.querySelector('[aria-label="Search your library"]')!.closest(".max-w-5xl");
+    expect(container.querySelector('[data-testid="profile-account-management-panel"]')!.closest(".max-w-5xl")).toBe(libraryColumn);
+  });
+
+  it("keeps the collection form behind Add to collection and opens the full image in a new tab", async () => {
+    await mountMedia();
+    const card = container.querySelector('[data-media-id="image-1"]')!;
+    expect(card.querySelector('[aria-label="Collection name"]')).toBeNull();
+    const fullImage = card.querySelector<HTMLAnchorElement>('a[aria-label="Open full image"]')!;
+    expect(fullImage.getAttribute("href")).toBe("/user-content/image-1.png");
+    expect(fullImage.getAttribute("target")).toBe("_blank");
+    const toggle = [...card.querySelectorAll("button")].find((item) => item.textContent?.trim() === "Add to collection")!;
+    await click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(card.querySelector('[aria-label="Collection name"]')).not.toBeNull();
+    expect(container.querySelectorAll('[aria-label="Collection name"]')).toHaveLength(1);
+  });
+
+  it("shows a card action's result above the cards, not after the account panels", async () => {
+    await mountMedia("/profile");
+    const card = container.querySelector('[data-media-id="image-3"]')!;
+    await click(card.querySelector('[aria-label="Delete media"]')!);
+    const receipt = container.querySelector('[data-testid="profile-library-status"]')!;
+    expect(receipt.textContent).toBe("Press Confirm delete to remove this media.");
+    expect(container.querySelector('[data-testid="profile-status"]')).toBeNull();
+    const follows = (target: Element) => receipt.compareDocumentPosition(target) & Node.DOCUMENT_POSITION_FOLLOWING;
+    expect(follows(container.querySelector('[data-media-id="image-1"]')!)).toBeTruthy();
+    expect(follows(container.querySelector('[data-testid="profile-redeem-panel"]')!)).toBeTruthy();
+  });
+
+  it.each([
+    ["/profile/account-management", "Sign out all sessions", "account-management", "start"],
+    ["/profile/account-management#delete-account", "Delete confirmation", "delete-account", "center"],
+  ])("deep link %s focuses %s", async (url, focused, scrolledId, block) => {
+    window.history.replaceState(null, "", url);
+    const scrolled: Array<{ id: string; block?: ScrollLogicalPosition }> = [];
+    const scrollIntoView = vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (this: Element, options?: boolean | ScrollIntoViewOptions) {
+      scrolled.push({ id: this.id, block: typeof options === "object" ? options.block : undefined });
+    });
+    try {
+      await mountMedia("/profile/account-management");
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 100)); });
+      expect(document.activeElement?.getAttribute("aria-label")).toBe(focused);
+      expect(scrolled.at(-1)).toEqual({ id: scrolledId, block });
+    } finally {
+      scrollIntoView.mockRestore();
+    }
   });
 });

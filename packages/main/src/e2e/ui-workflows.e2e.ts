@@ -6016,6 +6016,7 @@ test("profile UI handles redeem, referral, billing, and media actions", async ({
   );
   await expect(videoCard.getByTestId("profile-media-video")).toBeVisible({ timeout: 10_000 });
 
+  await mediaCard.getByRole("button", { name: "Add to collection" }).click();
   await mediaCard.getByLabel("Collection name").fill(collectionName);
   await mediaCard.getByRole("checkbox", { name: "Publish collection to Community" }).check();
   await mediaCard.getByRole("button", { name: "Create collection from media" }).click();
@@ -6078,6 +6079,7 @@ test("mobile profile media publish links directly to the focused Community colle
   const mediaCard = page.locator(`[data-media-id="${mediaId}"]`);
   await expect(mediaCard).toBeVisible({ timeout: 10_000 });
 
+  await mediaCard.getByRole("button", { name: "Add to collection" }).click();
   await mediaCard.getByLabel("Collection name").fill(collectionName);
   // Collections start private; publishing is an explicit opt-in.
   const publishToggle = mediaCard.getByLabel("Publish collection to Community");
@@ -6257,7 +6259,7 @@ test("profile subroutes deep-link to the matching account panels", async ({ page
     {
       path: "/profile/account-management",
       testId: "profile-account-management-panel",
-      activeLabel: "Delete confirmation",
+      activeLabel: "Sign out all sessions",
     },
   ] as const;
 

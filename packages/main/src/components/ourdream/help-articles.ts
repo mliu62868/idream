@@ -159,7 +159,7 @@ export const helpTopics: readonly HelpTopic[] = [
         question: "How do I delete my account?",
         answer:
           "In Account management, enter your current password, type DELETE and choose Delete. Access ends immediately and every session is signed out; erasure begins after 30 days. The 30 days are not an undo window: you cannot cancel or restore the deletion yourself. Remaining coins and paid access become unusable and no refund is requested. You get a private status link that works after you are signed out.",
-        links: [{ href: "/profile/account-management", label: "Account management" }],
+        links: [{ href: "/profile/account-management#delete-account", label: "Delete account" }],
         keywords: "remove erase close account gdpr data",
       },
       {
