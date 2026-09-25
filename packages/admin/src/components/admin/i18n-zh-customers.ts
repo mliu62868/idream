@@ -225,6 +225,7 @@ export const adminZhCustomers: Record<string, string> = {
   "Reply to customer": "回复客户",
   "Assign to me": "分配给我",
   "Case assigned to you": "已分配给你",
+  "You": "你",
   "Open all Cases for this customer": "查看该客户的全部工单",
   "Operator history ({count})": "运营操作历史（{count}）",
   "Outcome reference": "结果引用",
