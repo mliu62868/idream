@@ -85,6 +85,50 @@ describe("collection details and membership", () => {
     expect(await prisma.mediaCollectionItem.count({ where: { collectionId: second, mediaAssetId: mediaIds[0] } })).toBe(1);
   });
 
+  it("takes media back to private when it was public only because of a collection that no longer shares it", async () => {
+    const viaCollection = `${prefix}retract-private-origin`;
+    const alreadyPublic = `${prefix}retract-already-public`;
+    for (const [id, visibility] of [[viaCollection, "private"], [alreadyPublic, "public_pack"]] as const) {
+      await createMedia({ id, ownerId: owner, visibility });
+    }
+    const created = await api("POST", "media/collections", { ...owned, body: { name: "Retract", visibility: "public", mediaAssetId: viaCollection } });
+    expectOk(created, 201);
+    const collectionId = created.data.collection.id as string;
+    expectOk(await api("POST", `media/collections/${collectionId}/items`, { ...owned, body: { mediaAssetId: alreadyPublic } }));
+    const alsoShared = await api("POST", "media/collections", { ...owned, body: { name: "Also shared", visibility: "public", mediaAssetId: viaCollection } });
+    expectOk(alsoShared, 201);
+    const visibility = async (id: string) => (await prisma.mediaAsset.findUniqueOrThrow({ where: { id } })).visibility;
+    expect(await visibility(viaCollection)).toBe("public_pack");
+
+    // Still shared by another public collection: it stays public.
+    expectOk(await api("PATCH", `media/collections/${collectionId}`, { ...owned, body: { visibility: "private" } }));
+    expect(await visibility(viaCollection)).toBe("public_pack");
+    expect(await visibility(alreadyPublic)).toBe("public_pack");
+
+    // Removed from the last public collection that shared it: back to private.
+    expectOk(await api("DELETE", `media/collections/${alsoShared.data.collection.id}/items/${viaCollection}`, owned));
+    expect(await visibility(viaCollection)).toBe("private");
+    expect(await visibility(alreadyPublic)).toBe("public_pack");
+    const retracted = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: viaCollection } });
+    expect(retracted.metadata).not.toHaveProperty("publicViaCollection");
+
+    // Publishing the collection again re-shares it, and making it private takes it back.
+    expectOk(await api("PATCH", `media/collections/${collectionId}`, { ...owned, body: { visibility: "public" } }));
+    expect(await visibility(viaCollection)).toBe("public_pack");
+    expectOk(await api("PATCH", `media/collections/${collectionId}`, { ...owned, body: { visibility: "private" } }));
+    expect(await visibility(viaCollection)).toBe("private");
+    expect(await visibility(alreadyPublic)).toBe("public_pack");
+  });
+
+  it("rejects link-only visibility that no one could open", async () => {
+    const mediaAssetId = `${prefix}unlisted-media`;
+    await createMedia({ id: mediaAssetId, ownerId: owner });
+    expectError(await api("POST", "media/collections", { ...owned, body: { name: "Link only", visibility: "unlisted", mediaAssetId } }), 400);
+    const created = await api("POST", "media/collections", { ...owned, body: { name: "Private first", visibility: "private", mediaAssetId } });
+    expectOk(created, 201);
+    expectError(await api("PATCH", `media/collections/${created.data.collection.id}`, { ...owned, body: { visibility: "unlisted" } }), 400);
+  });
+
   it("serializes add/remove and assigns increasing order after holes", async () => {
     const { id, mediaIds } = await collection("order", 3);
     await api("DELETE", `media/collections/${id}/items/${mediaIds[1]}`, owned);
