@@ -34,11 +34,11 @@ afterAll(async () => {
   await prisma.$disconnect();
 });
 
-async function fixture() {
-  const userId = `${prefix}${randomUUID()}`;
-  await createUser({ id: userId });
+async function fixture(existingUserId?: string) {
+  const userId = existingUserId ?? `${prefix}${randomUUID()}`;
+  if (!existingUserId) await createUser({ id: userId });
   const character = await createCharacter({
-    id: `${userId}-character`,
+    id: existingUserId ? `${userId}-character-${randomUUID()}` : `${userId}-character`,
     creatorId: userId,
     source: "user",
     visibility: "private",
@@ -485,6 +485,19 @@ describe("opening a chat after Serving moved to a new Release", () => {
     expect(continued.id).not.toBe(session.id);
     expect(await prisma.recentChat.findUniqueOrThrow({ where: { sessionId: continued.id } }))
       .toMatchObject({ characterReleaseId: next.id, status: "active" });
+  });
+});
+
+describe("replies generating at once for one user", () => {
+  // INVARIANT: the Chat agent pool is shared by everyone; one user cannot hold more than three of its slots.
+  it("refuses a fourth concurrent reply across sessions with a message the reader can act on", async () => {
+    const first = await fixture();
+    const others = [await fixture(first.userId), await fixture(first.userId), await fixture(first.userId)];
+    for (const f of [first, ...others.slice(0, 2)]) await send(f);
+    const refused = send(others[2]!);
+    await expect(refused).rejects.toMatchObject({ status: 409 });
+    await expect(refused).rejects.toThrow(/^A reply is already generating in 3 of your chats\./);
+    expect(await prisma.chatTurn.count({ where: { sessionId: others[2]!.sessionId } })).toBe(0);
   });
 });
 
