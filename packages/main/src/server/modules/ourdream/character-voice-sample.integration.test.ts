@@ -13,6 +13,8 @@ import {
   publishCharacterForPublicAudience,
   purgeTestData,
 } from "@/server/test/helpers";
+import { resolveCharacterVoiceAuthority } from "@/server/modules/voice-defaults";
+import { providers } from "@/server/providers";
 import { VOICE_SAMPLE_TEXT } from "./character-voice-sample";
 
 const P = "zt-voice-sample-";
@@ -121,12 +123,23 @@ describe("Character voice sample", () => {
     expect(preview).toHaveBeenCalledTimes(1);
   });
 
-  it("returns 404 for a Character without a bound voice", async () => {
+  it("previews the system default voice Chat uses when a Character has no voice of its own", async () => {
     renderSilence();
-    const detail = await api("GET", `characters/${silentId}`, { ageGate: true });
-    expect(detail.data.character.voiceSampleAvailable).toBe(false);
-    expectError(await api("GET", `characters/${silentId}/voice-sample`, { ageGate: true }), 404);
-    expect(preview).not.toHaveBeenCalled();
+    // The test env speaks through the mock provider, which has no real voice to preview.
+    const clip = providers.voice.clip as { providerKey: string };
+    const configured = clip.providerKey;
+    expect((await api("GET", `characters/${silentId}`, { ageGate: true })).data.character.voiceSampleAvailable).toBe(false);
+    clip.providerKey = "pocket_tts";
+    try {
+      const detail = await api("GET", `characters/${silentId}`, { ageGate: true });
+      expect(detail.data.character.voiceSampleAvailable).toBe(true);
+      expectOk(await api("GET", `characters/${silentId}/voice-sample`, { ageGate: true }));
+      const authority = await resolveCharacterVoiceAuthority({ characterId: silentId });
+      expect(authority.source).toBe("system_default");
+      expect(preview.mock.calls[0]?.[0]).toMatchObject({ text: VOICE_SAMPLE_TEXT, voiceId: authority.voiceId });
+    } finally {
+      clip.providerKey = configured;
+    }
   });
 
   it("requires the age gate", async () => {

@@ -25,12 +25,16 @@ const inflight = new Map<string, Promise<VoiceSample>>();
 // SPEC: 只有绑定了 active 声音 profile 的角色才有试听；落回系统默认声音的（legacy /
 //   未绑定 / 悬空指针）返回 null —— 与 Voice Clip 的声音权威同一判据。
 export async function characterVoiceSampleProfile(characterId: string) {
+  // INTENT: the sample is the voice Chat will actually speak with. A Character
+  // without its own clone speaks with the system default for its gender, so it
+  // previews that voice too instead of hiding the button (17 of 18 public
+  // Characters had no clone).
   const authority = await resolveCharacterVoiceAuthority({ characterId });
-  if (authority.source !== "character_clone" || authority.characterVoiceProfileVersion === null) return null;
+  if (!authority.voiceId || authority.providerKey === "mock") return null;
   return {
     providerKey: authority.providerKey,
     voiceId: authority.voiceId,
-    version: authority.characterVoiceProfileVersion,
+    version: authority.characterVoiceProfileVersion ?? `default-${authority.settingVersion ?? 0}`,
     delivery: authority.delivery,
   };
 }
