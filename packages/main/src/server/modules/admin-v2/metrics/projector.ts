@@ -504,9 +504,21 @@ async function applyEvent(tx: Transaction, event: MetricProductEvent): Promise<M
       // turn-ledger's appendChatExchangeCompleted, so a Main correction of a Turn
       // from that gap has no fact and never will; deferring it retries forever.
       // A Chat correction may still precede its completion in the old replay.
-      return event.sourceService === "main"
-        ? { status: "skipped", reason: "exchange_fact_absent" }
-        : { status: "deferred", reason: "awaiting_required_fact" };
+      // A Main completion that exists but has not been projected yet (e.g. it hit a
+      // transient error and is backing off) must still be waited for; otherwise the
+      // deleted exchange would later be counted by that completion forever.
+      if (event.sourceService !== "main") return { status: "deferred", reason: "awaiting_required_fact" };
+      const completion = await tx.analyticsEvent.findFirst({
+        where: {
+          sourceService: "main",
+          name: METRIC_PRODUCT_EVENTS.chatExchangeCompleted,
+          sourceEventId: { startsWith: `chat_exchange:${payload.exchangeId}:` },
+        },
+        select: { id: true },
+      });
+      return completion
+        ? { status: "deferred", reason: "awaiting_required_fact" }
+        : { status: "skipped", reason: "exchange_fact_absent" };
     }
     // INVARIANT: a correction only speaks for attempts up to its revision. One
     // that lands after the next attempt's completion is older than the fact

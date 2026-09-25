@@ -215,6 +215,25 @@ describe("canonical metric fact projector", () => {
         .toMatchObject({ assistantAttemptNo: 2, eligible: true, correctionType: null });
     });
 
+    it("waits for a recorded but not yet projected completion instead of skipping the correction", async () => {
+      const exchangeId = `${prefix}-correction-first`;
+      const completion = completed(exchangeId, 1, new Date("2026-07-05T12:00:00Z"));
+      // The completion is durable in analytics_events but its projection is still backing off.
+      await prisma.analyticsEvent.create({ data: {
+        id: completion.id, name: completion.name, props: completion.props,
+        sourceService: "main", sourceEventId: `chat_exchange:${exchangeId}:1`,
+      } });
+      const deleted = mainEvent(`${exchangeId}-deleted`, "chat.exchange.corrected.v2", new Date("2026-07-05T12:05:00Z"), {
+        exchangeId, correctionType: "deleted", correctionRevision: 1, userId,
+      });
+      await expect(projectCanonicalMetricEvent(prisma, deleted))
+        .resolves.toMatchObject({ status: "deferred", reason: "awaiting_required_fact" });
+      await projectCanonicalMetricEvent(prisma, completion);
+      await expect(projectCanonicalMetricEvent(prisma, deleted)).resolves.toMatchObject({ status: "applied" });
+      expect(await prisma.chatExchangeFact.findUniqueOrThrow({ where: { exchangeId } }))
+        .toMatchObject({ eligible: false, correctionType: "deleted" });
+    });
+
     it("skips a Main correction of an exchange that never had a fact", async () => {
       const exchangeId = `${prefix}-no-fact`;
       await expect(projectCanonicalMetricEvent(prisma, edited(exchangeId, 1, new Date("2026-07-04T12:00:00Z"))))
