@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowLeft, Flag, Heart, MessageCircle, Share2, Sparkles } from "lucide-react";
+import { ArrowLeft, Flag, Heart, Loader2, MessageCircle, Share2, Sparkles, Square, Volume2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   parseCharacterDetailResponse,
@@ -188,6 +188,9 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
                     <Sparkles className="h-4 w-4" />
                     Generate
                   </Link>
+                  {character.voiceSampleAvailable && (
+                    <VoiceSampleButton characterId={character.id} onError={setStatus} />
+                  )}
                   <button
                     className="inline-flex h-12 items-center justify-center gap-2 rounded-full bg-[rgb(36,36,36)] px-5 text-[14px] font-bold text-white"
                     disabled={busy}
@@ -251,6 +254,59 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
   );
 }
 
+
+// SPEC: 开聊前试听角色声音。只在点击时取音频（不自动播放、不在进页时触发合成）；
+//   取回的音频留在内存里，重复播放不再请求。服务端说明见 character-voice-sample.ts。
+function VoiceSampleButton({ characterId, onError }: Readonly<{
+  characterId: string;
+  onError: (message: string) => void;
+}>) {
+  const [state, setState] = useState<"idle" | "loading" | "playing">("idle");
+  const audio = useRef<HTMLAudioElement | null>(null);
+  useEffect(() => () => {
+    audio.current?.pause();
+    if (audio.current) URL.revokeObjectURL(audio.current.src);
+  }, []);
+
+  async function toggle() {
+    if (state === "loading") return;
+    if (state === "playing" && audio.current) {
+      audio.current.pause();
+      audio.current.currentTime = 0;
+      setState("idle");
+      return;
+    }
+    setState("loading");
+    try {
+      if (!audio.current) {
+        const response = await fetch(`/api/v1/characters/${encodeURIComponent(characterId)}/voice-sample`);
+        if (!response.ok) throw new Error(`voice sample ${response.status}`);
+        const element = new Audio(URL.createObjectURL(await response.blob()));
+        element.onended = () => setState("idle");
+        audio.current = element;
+      }
+      await audio.current.play();
+      setState("playing");
+    } catch {
+      setState("idle");
+      onError("Could not play this voice sample. Please try again.");
+    }
+  }
+
+  const Icon = state === "loading" ? Loader2 : state === "playing" ? Square : Volume2;
+  return (
+    <button
+      aria-busy={state === "loading"}
+      className="inline-flex h-12 items-center justify-center gap-2 rounded-full bg-[rgb(36,36,36)] px-5 text-[14px] font-bold text-white"
+      data-testid="character-voice-sample"
+      onClick={toggle}
+      type="button"
+    >
+      <Icon className={`h-4 w-4${state === "loading" ? " animate-spin" : ""}`} />
+      {state === "loading" ? "Loading voice..." : state === "playing" ? "Stop voice" : "Hear voice"}
+    </button>
+  );
+}
 
 // INTENT: 游客点 Chat 被带去注册；回来时带上 resume=chat，详情页自动接着开聊，
 //   用户不必在同一个按钮上点第二次。

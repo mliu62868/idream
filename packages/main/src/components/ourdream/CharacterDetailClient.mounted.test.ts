@@ -172,6 +172,76 @@ describe("CharacterDetailClient like relationship", () => {
     expect(findButton("Share")).toBeUndefined();
   });
 
+  it("offers Hear voice only for a Character with a voice, and plays it on click without autoplay", async () => {
+    let release: () => void = () => undefined;
+    const sampleFetches: string[] = [];
+    let voiceSampleAvailable = true;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/voice-sample")) {
+        sampleFetches.push(url);
+        await new Promise<void>((resolve) => { release = resolve; });
+        return new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "audio/mpeg" } });
+      }
+      return Response.json({ ok: true, data: { character: { ...character, voiceSampleAvailable } } });
+    }));
+    const played: HTMLAudioElement[] = [];
+    const createObjectURL = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:sample");
+    const play = vi.spyOn(HTMLMediaElement.prototype, "play").mockImplementation(async function (this: HTMLAudioElement) {
+      played.push(this);
+    });
+    const pause = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => undefined);
+    try {
+      await act(async () =>
+        root.render(createElement(CharacterDetailClient, { id: "character-1" }))
+      );
+      await waitUntil(() => Boolean(findButton("Hear voice")));
+      expect(sampleFetches).toEqual([]);
+      expect(play).not.toHaveBeenCalled();
+
+      await act(async () => findButton("Hear voice")?.click());
+      await waitUntil(() => Boolean(findButton("Loading voice...")));
+      await act(async () => release());
+      await waitUntil(() => Boolean(findButton("Stop voice")));
+      expect(sampleFetches).toEqual(["/api/v1/characters/character-1/voice-sample"]);
+      expect(played).toHaveLength(1);
+
+      await act(async () => findButton("Stop voice")?.click());
+      expect(pause).toHaveBeenCalled();
+      await waitUntil(() => Boolean(findButton("Hear voice")));
+      await act(async () => findButton("Hear voice")?.click());
+      await waitUntil(() => Boolean(findButton("Stop voice")));
+      await act(async () => played[1]?.onended?.(new Event("ended")));
+      await waitUntil(() => Boolean(findButton("Hear voice")));
+      // The fetched sample is reused; replay never asks the server again.
+      expect(sampleFetches).toHaveLength(1);
+
+      voiceSampleAvailable = false;
+      await act(async () =>
+        root.render(createElement(CharacterDetailClient, { id: "character-2" }))
+      );
+      await waitUntil(() => Boolean(findButton("Like")));
+      expect(findButton("Hear voice")).toBeUndefined();
+    } finally {
+      play.mockRestore();
+      pause.mockRestore();
+      createObjectURL.mockRestore();
+    }
+  });
+
+  it("returns to Hear voice with a status message when the sample cannot load", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).endsWith("/voice-sample")
+      ? Response.json({ ok: false, error: { code: "not_found", message: "Character has no voice sample" } }, { status: 404 })
+      : Response.json({ ok: true, data: { character: { ...character, voiceSampleAvailable: true } } })));
+    await act(async () =>
+      root.render(createElement(CharacterDetailClient, { id: "character-1" }))
+    );
+    await waitUntil(() => Boolean(findButton("Hear voice")));
+    await act(async () => findButton("Hear voice")?.click());
+    await waitUntil(() => container.textContent?.includes("Could not play this voice sample") ?? false);
+    expect(findButton("Hear voice")).toBeDefined();
+  });
+
   function findButton(label: string) {
     return [...container.querySelectorAll("button")].find(
       (button) => button.textContent?.trim() === label,
