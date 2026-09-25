@@ -125,6 +125,10 @@ async function routeMainChat(request: Request, segments: string[], userId: strin
   if (root === "chat" && path[0] === "sessions" && path.length === 1) {
     if (method === "GET") return json(await listChatSessions(userId));
     if (method === "POST") {
+      // Optional guard: a caller that states which account it is acting for (e.g. the
+      // Release hand-off carrying an unsent draft) must not land in another account.
+      const scope = request.headers.get("x-idream-viewer-scope");
+      if (scope !== null && scope !== `user:${userId}`) throw Errors.conflict("Your account changed. Reload to continue.");
       const session = await createChatSession(userId, {
         characterId: text(body.characterId),
         title: optionalText(body.title),

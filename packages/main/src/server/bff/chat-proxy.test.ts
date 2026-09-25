@@ -208,6 +208,16 @@ describe("Main-owned Chat façade", () => {
     expect(await response.json()).toMatchObject({ error: "bad_request", details: { issues: expect.any(Array) } });
   });
 
+  it("refuses to open a chat for a different account than the caller states", async () => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const response = await proxyChatRequest(authRequest("/api/v1/chat/sessions", {
+      method: "POST",
+      headers: { "x-idream-viewer-scope": "user:someone-else" },
+      body: JSON.stringify({ characterId: CHARACTER_ID }),
+    }), ["chat", "sessions"]);
+    expect(response.status).toBe(409);
+  });
+
   it("keeps session reads in Main even when Chat execution is unavailable", async () => {
     const { proxyChatRequest } = await import("./chat-proxy");
     const created = await proxyChatRequest(authRequest("/api/v1/chat/sessions", {

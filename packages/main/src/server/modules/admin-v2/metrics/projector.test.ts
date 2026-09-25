@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { renderPrometheusMetrics, resetMetricsForTests } from "@idream/shared";
@@ -220,7 +221,7 @@ describe("canonical metric fact projector", () => {
       const completion = completed(exchangeId, 1, new Date("2026-07-05T12:00:00Z"));
       // The completion is durable in analytics_events but its projection is still backing off.
       await prisma.analyticsEvent.create({ data: {
-        id: completion.id, name: completion.name, props: completion.props,
+        id: completion.id, name: completion.name, props: completion.props as Prisma.InputJsonValue,
         sourceService: "main", sourceEventId: `chat_exchange:${exchangeId}:1`,
       } });
       const deleted = mainEvent(`${exchangeId}-deleted`, "chat.exchange.corrected.v2", new Date("2026-07-05T12:05:00Z"), {

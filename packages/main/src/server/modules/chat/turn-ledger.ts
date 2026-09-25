@@ -118,36 +118,44 @@ export async function createChatSession(
   if (existing) {
     if (existing.characterReleaseId === release?.id) return publicSession(existing);
     if (owner) {
+      // Only a Release-pinned session behind a different live Release can move;
+      // anything else would take the user-row lock for nothing.
+      if (!release || !existing.characterReleaseId) return publicSession(existing);
       // Same lock ladder as beginChatTurn, so no reply can start between the
       // pending-reply check and the re-pin.
-      return publicSession(await prisma.$transaction(async (tx) => {
+      const repinned = await prisma.$transaction(async (tx) => {
         const { session } = await lockChatScope(tx, { userId, at: { session: existing.sessionId } });
+        // Archived concurrently: fall through and open the new active session.
+        if (session.activeKey !== activeKey) return null;
         return repinOwnerSessionToServingRelease(tx, userId, session);
-      }));
+      });
+      if (repinned) return publicSession(repinned);
     }
-    // INVARIANT: a session keeps its immutable Release pin. When Serving moves,
-    // preserve that history and open a new active session instead of mutating it.
-    // INTENT: admission only runs Turns of active sessions, so archiving under a
-    // pending reply would leave it spinning forever. Cancelling it would throw
-    // away the answer the user is waiting for, and refusing would block opening
-    // the chat at all. Keep the old session until its reply ends; the next open
-    // moves to the new Release. Locks follow beginChatTurn so no reply can start
-    // between the check and the archive.
-    const kept = await prisma.$transaction(async (tx) => {
-      const { session } = await lockChatScope(tx, { userId, at: { session: existing.sessionId } });
-      if (session.activeKey !== activeKey) return null;
-      const active = await tx.chatTurn.findFirst({
-        where: { sessionId: session.sessionId, assistantStatus: { in: ACTIVE_ASSISTANT_STATES } },
-        select: { id: true },
+    if (!owner) {
+      // INVARIANT: a session keeps its immutable Release pin. When Serving moves,
+      // preserve that history and open a new active session instead of mutating it.
+      // INTENT: admission only runs Turns of active sessions, so archiving under a
+      // pending reply would leave it spinning forever. Cancelling it would throw
+      // away the answer the user is waiting for, and refusing would block opening
+      // the chat at all. Keep the old session until its reply ends; the next open
+      // moves to the new Release. Locks follow beginChatTurn so no reply can start
+      // between the check and the archive.
+      const kept = await prisma.$transaction(async (tx) => {
+        const { session } = await lockChatScope(tx, { userId, at: { session: existing.sessionId } });
+        if (session.activeKey !== activeKey) return null;
+        const active = await tx.chatTurn.findFirst({
+          where: { sessionId: session.sessionId, assistantStatus: { in: ACTIVE_ASSISTANT_STATES } },
+          select: { id: true },
+        });
+        if (active) return session;
+        await tx.recentChat.update({
+          where: { sessionId: session.sessionId },
+          data: { status: "archived", activeKey: null },
+        });
+        return null;
       });
-      if (active) return session;
-      await tx.recentChat.update({
-        where: { sessionId: session.sessionId },
-        data: { status: "archived", activeKey: null },
-      });
-      return null;
-    });
-    if (kept) return publicSession(kept);
+      if (kept) return publicSession(kept);
+    }
   }
 
   try {
@@ -249,7 +257,6 @@ export async function beginChatTurn(input: {
     if (!lockedSession) throw Errors.notFound("Chat session not found");
     if (lockedSession.status !== "active") throw Errors.gone("Chat session is archived");
     await assertChatSessionServingAuthority(tx, input.userId, lockedSession);
-    const pinnedSession = await repinOwnerSessionToServingRelease(tx, input.userId, lockedSession);
     const duplicate = lockedSession.groupId
       ? await tx.chatTurn.findFirst({ where: { groupTurn: { groupId: lockedSession.groupId }, idempotencyKey } })
       : await tx.chatTurn.findUnique({ where: { sessionId_idempotencyKey: { sessionId: session.sessionId, idempotencyKey } } });
@@ -297,6 +304,8 @@ export async function beginChatTurn(input: {
       orderBy: lockedSession.groupId ? { groupTurn: { ordinal: "desc" } } : [{ createdAt: "desc" }, { id: "desc" }],
       select: { sceneVersion: true, scene: true },
     });
+    // After the idempotent-replay return: a replay must not re-pin or bump contextRevision.
+    const pinnedSession = await repinOwnerSessionToServingRelease(tx, input.userId, lockedSession);
     const now = new Date();
     const turn = await tx.chatTurn.create({
       data: {

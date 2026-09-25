@@ -830,9 +830,11 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
   // unsent message. False means nothing moved and the caller keeps the text here.
   async function openUpdatedCharacterChat(updatedCharacterId: string, draft: string): Promise<boolean> {
     try {
+      if (!receiptOwnerScope) return false;
       const response = await fetch("/api/v1/chat/sessions", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        // The draft belongs to this account; if another tab switched accounts, refuse.
+        headers: { "content-type": "application/json", "x-idream-viewer-scope": receiptOwnerScope },
         body: JSON.stringify({ characterId: updatedCharacterId }),
       });
       if (!response.ok) return false;
