@@ -4,6 +4,7 @@ import { prisma } from "@/server/lib/db";
 import { api, createUser, expectOk, purgeTestData } from "@/server/test/helpers";
 import { getCharacterWorkspace } from "../admin-v2/characters/workspace";
 import { prepareApprovedCustomerCharacterPublication } from "../admin-v2/characters/publication-prep";
+import { characterPreviewPrompt } from "./character-draft-write";
 
 const prefix = `zt-shared-create-${randomUUID()}-`;
 afterAll(async () => {
@@ -38,10 +39,7 @@ async function submit(suffix: string, visibility: "public" | "unlisted" | "priva
   await prisma.generationJob.create({ data: {
     userId, mode: "image", controls: {}, presetIds: [], sourceType: "character_preview", sourceId: preview.id,
     recipeId: recipe.recipeKey, recipeVersion: recipe.version,
-    prompt: [recipe.body, "realistic portrait of an adult female character", `Character name: ${draft.name}`,
-      `Appearance: ${JSON.stringify(draft.appearance ?? {})}`, `Hair: ${JSON.stringify(draft.hair ?? {})}`,
-      `Body: ${JSON.stringify(draft.body ?? {})}`, `Details: ${JSON.stringify(draft.advancedDetails ?? {})}`,
-      "single subject, clear face, identity reference portrait"].join(". "),
+    prompt: characterPreviewPrompt(draft),
   } });
   expectOk(await api("POST", `character-drafts/${draftId}/preview-anchor`, {
     userId, ageGate: true, body: { previewJobId: preview.id },

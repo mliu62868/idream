@@ -2,10 +2,9 @@ import { ensureCustomerCharacterPublicationPrep } from "@/server/modules/admin-v
 import type { CharacterDraft, Prisma } from "@prisma/client";
 import { dispatchGenerationAttemptOutbox } from "@/server/modules/generation/generation-attempt-authority";
 import { lockCharacterMediaAssetAuthorities } from "@/server/modules/admin-v2/characters/generation-authority-lock";
-import { canonicalJsonEqual } from "@/server/modules/admin-v2/shared/idempotency";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
-import { isRecord, toInputJson } from "@/server/lib/request-json";
+import { toInputJson } from "@/server/lib/request-json";
 import { moderateText } from "@/server/moderation/text-authority";
 import {
   jsonNonBlankString,
@@ -66,28 +65,48 @@ export async function assertDraftOwner(id: string, userId: string) {
   return draft;
 }
 
-const PREVIEW_PROMPT_SUFFIX = ". single subject, clear face, identity reference portrait";
+// SPEC: the identity preview prompt carries only what the face and body look
+// like, written as plain phrases.
+// INTENT: it used to open with the recipe's own description ("…template with
+// appearance, pose, outfit … blocks"), paste traits as JSON, and append the
+// opening line and Soul markdown. A model that renders text well answered with
+// character sheets: the persona typed out beside the portrait. The name is left
+// out for the same reason — it is not a visual trait and invites a caption.
+// INVARIANT: firstMessage, detailsMarkdown and voiceSelection never reach the
+// prompt — exactly the fields service.ts visualAdvancedDetailsChanged treats as
+// not changing the identity image. age and description are placed explicitly.
+const NOT_GENERIC_DETAILS = new Set(["voiceSelection", "firstMessage", "detailsMarkdown", "description", "age"]);
 
-function characterPreviewDetails(value: unknown) {
-  const details = { ...jsonRecord(value) };
-  delete details.voiceSelection;
-  return details;
+function traitPhrases(value: unknown): string {
+  return Object.entries(jsonRecord(value))
+    .flatMap(([key, raw]) => {
+      if (typeof raw !== "string" && typeof raw !== "number") return [];
+      const text = String(raw).trim();
+      if (!text) return [];
+      if (key === "prompt" || key === "type") return [text];
+      return [`${key.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase()} ${text}`];
+    })
+    .join(", ");
 }
 
-function characterPreviewPromptPrefix(draft: CharacterDraft, recipeBody: string) {
+export function characterPreviewPrompt(draft: Pick<CharacterDraft, "style" | "gender" | "appearance" | "hair" | "body" | "advancedDetails">) {
+  const details = jsonRecord(draft.advancedDetails);
+  const otherDetails = Object.fromEntries(Object.entries(details).filter(([key]) => !NOT_GENERIC_DETAILS.has(key)));
+  const appearance = traitPhrases(draft.appearance);
+  const hair = traitPhrases(draft.hair);
+  const body = traitPhrases(draft.body);
+  const extra = traitPhrases(otherDetails);
+  const age = typeof details.age === "number" ? details.age : null;
+  const concept = typeof details.description === "string" ? details.description.trim() : "";
   return [
-    recipeBody,
-    `${draft.style ?? "realistic"} portrait of an adult ${draft.gender ?? "female"} character`,
-    draft.name ? `Character name: ${draft.name}` : null,
-    `Appearance: ${JSON.stringify(draft.appearance ?? {})}`,
-    `Hair: ${JSON.stringify(draft.hair ?? {})}`,
-    `Body: ${JSON.stringify(draft.body ?? {})}`,
-  ].filter((part): part is string => Boolean(part)).join(". ") + ". Details: ";
-}
-
-function characterPreviewPrompt(draft: CharacterDraft, recipeBody: string) {
-  return characterPreviewPromptPrefix(draft, recipeBody) +
-    JSON.stringify(characterPreviewDetails(draft.advancedDetails)) + PREVIEW_PROMPT_SUFFIX;
+    `${draft.style ?? "realistic"} portrait photo of one adult ${draft.gender ?? "female"}${age ? `, ${age} years old` : ""}`,
+    appearance ? `Appearance: ${appearance}` : null,
+    hair ? `Hair: ${hair}` : null,
+    body ? `Body: ${body}` : null,
+    extra ? `Details: ${extra}` : null,
+    concept ? `Mood and setting inspired by: ${concept}` : null,
+    "single subject, clear face, identity reference portrait, photo only, no text, no captions, no lettering",
+  ].filter((part): part is string => Boolean(part)).join(". ");
 }
 
 export async function characterPreviewMatchesDraft(
@@ -101,23 +120,9 @@ export async function characterPreviewMatchesDraft(
     orderBy: { createdAt: "desc" },
   });
   if (!request?.recipeId || !request.prompt || request.recipeVersion === null) return false;
-  const recipe = await db.generationRecipe.findFirst({
-    where: { recipeKey: request.recipeId, version: request.recipeVersion },
-    select: { body: true },
-  });
-  if (!recipe) return false;
-  const prefix = characterPreviewPromptPrefix(draft, recipe.body);
-  if (!request.prompt.startsWith(prefix) || !request.prompt.endsWith(PREVIEW_PROMPT_SUFFIX)) return false;
-  // Existing prompts may contain voiceSelection. Only that nonvisual field is
-  // ignored; the pinned recipe, portrait traits and remaining details must match.
-  try {
-    const details: unknown = JSON.parse(request.prompt.slice(prefix.length, -PREVIEW_PROMPT_SUFFIX.length));
-    return isRecord(details) && canonicalJsonEqual(
-      characterPreviewDetails(details), characterPreviewDetails(draft.advancedDetails),
-    );
-  } catch {
-    return false;
-  }
+  // Rebuilding from the current draft is the whole comparison: any visual trait
+  // edited since the preview changes the prompt, a Soul or voice edit does not.
+  return request.prompt === characterPreviewPrompt(draft);
 }
 
 export async function previewCharacterDraft(input: {
@@ -171,7 +176,7 @@ export async function previewCharacterDraft(input: {
     defaultWidth: profile.defaultWidth,
     defaultHeight: profile.defaultHeight,
   });
-  const prompt = characterPreviewPrompt(draft, recipe.body);
+  const prompt = characterPreviewPrompt(draft);
 
   // INVARIANT: Preview business state, Generation Request, first Attempt and
   // dispatch Outbox either all exist or none do. Gen consumes the same formal

@@ -4,6 +4,7 @@ import { prisma } from "@/server/lib/db";
 import { api, createUser, expectError, expectOk, purgeTestData } from "@/server/test/helpers";
 import { beginChatTurn, commitChatTerminal, createChatSession } from "@/server/modules/chat/turn-ledger";
 import { projectCharacterProductionJourney } from "@/server/modules/admin-v2/characters/production-journey";
+import { characterPreviewPrompt } from "./character-draft-write";
 
 const prefix = `zt-character-edit-${randomUUID()}-`;
 const tagSlug = `zt-edit-${randomUUID().slice(0, 8)}`;
@@ -24,10 +25,7 @@ async function recordPreviewInput(draftId: string, previewId: string, userId: st
   await prisma.generationJob.create({ data: {
     id: `${prefix}${previewId}`, userId, mode: "image", controls: {}, presetIds: [],
     sourceType: "character_preview", sourceId: previewId, recipeId: recipe.recipeKey, recipeVersion: recipe.version,
-    prompt: [recipe.body, `${draft.style ?? "realistic"} portrait of an adult ${draft.gender ?? "female"} character`,
-      draft.name ? `Character name: ${draft.name}` : null, `Appearance: ${JSON.stringify(draft.appearance ?? {})}`,
-      `Hair: ${JSON.stringify(draft.hair ?? {})}`, `Body: ${JSON.stringify(draft.body ?? {})}`,
-      `Details: ${JSON.stringify(draft.advancedDetails ?? {})}`, "single subject, clear face, identity reference portrait"].filter(Boolean).join(". "),
+    prompt: characterPreviewPrompt(draft),
   } });
 }
 

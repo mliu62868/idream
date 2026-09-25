@@ -6,6 +6,7 @@ import { resolveCharacterVoiceAuthority } from "@/server/modules/voice-defaults"
 import { prisma } from "@/server/lib/db";
 import { transitionGenerationRequest } from "@/server/ai/generation-request-transition";
 import { api, createUser, expectOk, expectError, purgeTestData } from "@/server/test/helpers";
+import { characterPreviewPrompt } from "./character-draft-write";
 
 const prefix = `zt-create-authoring-${randomUUID()}-`;
 afterEach(() => vi.restoreAllMocks());
@@ -24,10 +25,7 @@ async function recordPreviewInput(draftId: string, previewId: string, userId: st
   return prisma.generationJob.create({ data: {
     id: `${prefix}${previewId}`, userId, mode: "image", controls: {}, presetIds: [],
     sourceType: "character_preview", sourceId: previewId, recipeId: recipe.recipeKey, recipeVersion: recipe.version,
-    prompt: [recipe.body, `${draft.style ?? "realistic"} portrait of an adult ${draft.gender ?? "female"} character`,
-      draft.name ? `Character name: ${draft.name}` : null, `Appearance: ${JSON.stringify(draft.appearance ?? {})}`,
-      `Hair: ${JSON.stringify(draft.hair ?? {})}`, `Body: ${JSON.stringify(draft.body ?? {})}`,
-      `Details: ${JSON.stringify(draft.advancedDetails ?? {})}`, "single subject, clear face, identity reference portrait"].filter(Boolean).join(". "),
+    prompt: characterPreviewPrompt(draft),
   } });
 }
 
@@ -131,6 +129,14 @@ describe("Create authoring authority", () => {
       expectOk(saved);
       expect(saved.data.draft.previewJobId).toBe(preview.id);
     }
+    // Rewording the opening line or Soul after confirming keeps the confirmed face.
+    const reworded = await api("PATCH", `character-drafts/${draftId}`, { userId, ageGate: true, body: {
+      advancedDetails: { description: "A warm radio host", firstMessage: "Back already?", detailsMarkdown: "## Occupation\nRadio host\n\n## Relationship\nChildhood friend", voiceSelection: selection },
+    } });
+    expectOk(reworded);
+    expect(reworded.data.draft.previewJobId).toBe(preview.id);
+    const previewPrompt = (await prisma.generationJob.findFirstOrThrow({ where: { sourceType: "character_preview", sourceId: preview.id } })).prompt;
+    expect(previewPrompt).not.toMatch(/Welcome back|Back already|## Occupation|[{}]|Identity portrait/);
     const submitted = await api("POST", `character-drafts/${draftId}/submit`, { userId, ageGate: true, body: { visibility: "private" } });
     expectOk(submitted);
     const characterId = submitted.data.character.id as string;
