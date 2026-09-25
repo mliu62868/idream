@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
 import { groupChatMemberSchema, GROUP_CHAT_MAX_MEMBERS } from "@idream/shared/contracts";
 import { useViewerGate, type ViewerGate } from "@/hooks/useViewerGate";
@@ -54,7 +54,12 @@ function GroupChats({ viewer }: { viewer: ViewerGate }) {
   const [searched, setSearched] = useState("");
   const [pending, setPending] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState<{ id: string; title: string } | null>(null);
   const [status, setStatus] = useState("");
+  // The picker serves either the new group or an existing group gaining members.
+  const [adding, setAdding] = useState<Group | null>(null);
+  const createDraftRef = useRef<Candidate[]>([]);
+  const pickerRef = useRef<HTMLElement>(null);
 
   const groups = useViewerResource({
     request: () => ({ path: "/api/v1/chat/groups", init: { cache: "no-store" } }),
@@ -120,18 +125,43 @@ function GroupChats({ viewer }: { viewer: ViewerGate }) {
     finally { setPending(false); }
   }
 
-  async function changeGroup(group: Group, deleting: boolean) {
+  // The picker is shared with group creation; keep that draft while adding.
+  function startAdding(group: Group | null) {
+    if (group && !adding) createDraftRef.current = selected;
+    setAdding(group); setSelected(group ? [] : createDraftRef.current); setStatus("");
+    if (group) pickerRef.current?.scrollIntoView?.({ block: "start" });
+  }
+
+  async function addMembers() {
+    if (!adding || pending || !selected.length) return;
+    setPending(true); setStatus("");
+    try {
+      const response = await viewer.fetch(`/api/v1/chat/groups/${encodeURIComponent(adding.id)}`, {
+        method: "PATCH", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ addCharacterIds: selected.map(item => item.id) }),
+      });
+      if (!response.ok) { setStatus(chatFailureCopy(await response.json().catch(() => null), "These Characters could not be added. Check the group and try again.")); return; }
+      setStatus(`Added ${selected.map(item => item.name).join(", ")} to ${adding.title}.`);
+      setAdding(null); setSelected(createDraftRef.current);
+      await groups.refresh();
+    } catch { setStatus("The result could not be confirmed. Reload to check the group."); }
+    finally { setPending(false); }
+  }
+
+  async function changeGroup(group: Group, change: "delete" | { status: "archived" } | { title: string }) {
     if (pending) return;
+    const deleting = change === "delete";
     if (deleting && confirmDelete !== group.id) { setConfirmDelete(group.id); return; }
     setPending(true); setStatus("");
     try {
       const response = await viewer.fetch(`/api/v1/chat/groups/${encodeURIComponent(group.id)}`, {
         method: deleting ? "DELETE" : "PATCH",
         headers: { "content-type": "application/json" },
-        ...(deleting ? {} : { body: JSON.stringify({ status: "archived" }) }),
+        ...(deleting ? {} : { body: JSON.stringify(change) }),
       });
       if (!response.ok) { setStatus(chatFailureCopy(await response.json().catch(() => null), "The group could not be updated")); return; }
       setConfirmDelete(null);
+      setRenaming(null);
       await groups.refresh();
     } catch { setStatus("The result could not be confirmed. Reload to check the group."); }
     finally { setPending(false); }
@@ -148,37 +178,61 @@ function GroupChats({ viewer }: { viewer: ViewerGate }) {
     return <p role="status" className="mt-6">Loading your group chats…</p>;
   }
   const picker = candidates.data;
+  const inGroup = new Set(adding?.members.map(member => member.characterId));
+  const limit = GROUP_CHAT_MAX_MEMBERS - inGroup.size;
   return <>
     <div className="mt-7 grid gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(280px,0.8fr)]">
-      <section aria-label="Create a group chat" className="rounded-2xl border border-white/10 bg-[rgb(18,18,18)] p-5">
-        <h2 className="text-xl font-bold">Create a group</h2>
-        <label className="mt-4 block text-sm font-bold">Group name<input className="mt-2 block min-h-11 w-full rounded-lg bg-white/10 px-3" value={title} maxLength={120} onChange={event => setTitle(event.target.value)} /></label>
+      <section ref={pickerRef} aria-label={adding ? `Add Characters to ${adding.title}` : "Create a group chat"} className="scroll-mt-6 rounded-2xl border border-white/10 bg-[rgb(18,18,18)] p-5">
+        {adding
+          ? <>
+              <h2 className="text-xl font-bold">Add to {adding.title}</h2>
+              <p className="mt-2 text-sm leading-6 text-white/65">New members join the shared conversation and can read everything said in this group before they arrived.</p>
+            </>
+          : <>
+              <h2 className="text-xl font-bold">Create a group</h2>
+              <label className="mt-4 block text-sm font-bold">Group name<input className="mt-2 block min-h-11 w-full rounded-lg bg-white/10 px-3" value={title} maxLength={120} onChange={event => setTitle(event.target.value)} /></label>
+            </>}
         <form className="mt-4 flex gap-2" onSubmit={event => { event.preventDefault(); setSearched(query); }}>
           <input aria-label="Search Characters for group" className="min-h-11 min-w-0 flex-1 rounded-lg bg-white/10 px-3 text-sm" value={query} maxLength={80} onChange={event => setQuery(event.target.value)} placeholder="Find a Character" />
           <button className={button} disabled={pending} type="submit">Search</button>
         </form>
-        <p className="mt-4 text-sm font-bold" aria-live="polite">{selected.length} of {GROUP_CHAT_MAX_MEMBERS} selected</p>
+        <p className="mt-4 text-sm font-bold" aria-live="polite">{adding ? `${inGroup.size + selected.length} of ${GROUP_CHAT_MAX_MEMBERS} members` : `${selected.length} of ${GROUP_CHAT_MAX_MEMBERS} selected`}</p>
         {selected.length ? <ul aria-label="Selected group members" className="mt-2 flex flex-wrap gap-2">{selected.map(item => <li key={item.id}><button className="min-h-9 rounded-full bg-white px-3 text-xs font-bold text-black" onClick={() => setSelected(previous => previous.filter(candidate => candidate.id !== item.id))} disabled={pending}>{item.name} ×<span className="sr-only"> Remove</span></button></li>)}</ul> : null}
         <div className="mt-3 grid max-h-[400px] gap-2 overflow-y-auto sm:grid-cols-2" aria-label="Available group Characters">
           {picker.items.map(item => <label key={item.id} className="flex cursor-pointer items-start gap-3 rounded-lg border border-white/10 p-3 hover:bg-white/5">
-            <input className="mt-1 size-4 shrink-0 accent-pink-400" type="checkbox" checked={selected.some(candidate => candidate.id === item.id)} disabled={pending || (!selected.some(candidate => candidate.id === item.id) && selected.length >= GROUP_CHAT_MAX_MEMBERS)}
+            <input className="mt-1 size-4 shrink-0 accent-pink-400" type="checkbox" checked={inGroup.has(item.id) || selected.some(candidate => candidate.id === item.id)} disabled={pending || inGroup.has(item.id) || (!selected.some(candidate => candidate.id === item.id) && selected.length >= limit)}
               onChange={event => setSelected(previous => event.target.checked ? [...previous, item] : previous.filter(candidate => candidate.id !== item.id))} />
-            <span className="min-w-0"><span className="block text-sm font-bold">{item.name}</span><span className="mt-1 block text-xs leading-5 text-white/60">{item.owned ? "Your Character" : "Public Character"} · {item.description}</span></span>
+            <span className="min-w-0"><span className="block text-sm font-bold">{item.name}</span><span className="mt-1 block text-xs leading-5 text-white/60">{inGroup.has(item.id) ? "Already in this group" : item.owned ? "Your Character" : "Public Character"} · {item.description}</span></span>
           </label>)}
         </div>
         {!picker.items.length ? <p className="mt-4 text-sm text-white/65">No available Characters match this search.</p> : null}
         {picker.nextCursor ? <button className={`${button} mt-3`} disabled={pending} onClick={() => void more()}>Load more Characters</button> : null}
-        <button className="mt-5 min-h-11 rounded-full bg-white px-6 text-sm font-bold text-black disabled:opacity-40" disabled={pending || selected.length < 2 || !title.trim()} onClick={() => void create()}>{pending ? "Saving…" : "Create group chat"}</button>
+        {selected.length >= limit ? <p className="mt-3 text-sm text-white/65">A group can have up to {GROUP_CHAT_MAX_MEMBERS} Characters.</p> : null}
+        {adding
+          ? <div className="mt-5 flex flex-wrap gap-2">
+              <button className="min-h-11 rounded-full bg-white px-6 text-sm font-bold text-black disabled:opacity-40" disabled={pending || !selected.length} onClick={() => void addMembers()}>{pending ? "Saving…" : "Add to group"}</button>
+              <button className={button} disabled={pending} onClick={() => startAdding(null)}>Cancel</button>
+            </div>
+          : <button className="mt-5 min-h-11 rounded-full bg-white px-6 text-sm font-bold text-black disabled:opacity-40" disabled={pending || selected.length < 2 || !title.trim()} onClick={() => void create()}>{pending ? "Saving…" : "Create group chat"}</button>}
       </section>
-      <section aria-label="Your saved group chats"><h2 className="text-xl font-bold">Your groups</h2>
+      {/* Stacked on small screens: returning users look for their groups first, not the picker. */}
+      <section aria-label="Your saved group chats" className={groups.data.length ? "order-first xl:order-none" : undefined}><h2 className="text-xl font-bold">Your groups</h2>
         {!groups.data.length ? <p className="mt-4 text-sm text-white/65">Your new group will appear here with its full conversation history.</p> : null}
         <ul className="mt-4 space-y-3">{groups.data.map(group => <li key={group.id} className="rounded-xl border border-white/10 p-4">
-          <Link className="text-lg font-bold underline-offset-4 hover:underline" href={`/chat/groups/${encodeURIComponent(group.id)}`}>{group.title}</Link>
+          {renaming?.id === group.id
+            ? <form className="flex flex-wrap gap-2" onSubmit={event => { event.preventDefault(); if (renaming.title.trim()) void changeGroup(group, { title: renaming.title.trim() }); }}>
+                <input aria-label="Group name" autoFocus className="min-h-11 min-w-0 flex-1 rounded-lg bg-white/10 px-3" maxLength={120} value={renaming.title} onChange={event => setRenaming({ id: group.id, title: event.target.value })} />
+                <button className={button} disabled={pending || !renaming.title.trim()} type="submit">Save name</button>
+                <button className={button} onClick={() => setRenaming(null)} type="button">Cancel</button>
+              </form>
+            : <Link className="text-lg font-bold underline-offset-4 hover:underline" href={`/chat/groups/${encodeURIComponent(group.id)}`}>{group.title}</Link>}
           <p className="mt-2 text-sm leading-6 text-white/65">{group.members.map(member => member.name).join(" · ")}</p>
           {group.status === "archived" ? <p className="mt-2 text-xs font-bold text-white/60">Archived · history available</p> : null}
           <div className="mt-3 flex flex-wrap gap-2">
-            {group.status === "active" ? <button className={button} disabled={pending} onClick={() => void changeGroup(group, false)}>Archive</button> : null}
-            <button className={button} disabled={pending} onClick={() => void changeGroup(group, true)}>{confirmDelete === group.id ? "Confirm delete group and history" : "Delete group"}</button>
+            {renaming?.id !== group.id ? <button className={button} disabled={pending} onClick={() => setRenaming({ id: group.id, title: group.title })}>Rename</button> : null}
+            {group.status === "active" && group.members.length < GROUP_CHAT_MAX_MEMBERS ? <button className={button} disabled={pending || adding?.id === group.id} onClick={() => startAdding(group)}>Add character</button> : null}
+            {group.status === "active" ? <button className={button} disabled={pending} onClick={() => void changeGroup(group, { status: "archived" })}>Archive</button> : null}
+            <button className={button} disabled={pending} onClick={() => void changeGroup(group, "delete")}>{confirmDelete === group.id ? "Confirm delete group and history" : "Delete group"}</button>
             {confirmDelete === group.id ? <button className={button} onClick={() => setConfirmDelete(null)}>Keep group</button> : null}
           </div>
         </li>)}</ul>

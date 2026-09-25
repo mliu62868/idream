@@ -1,4 +1,4 @@
-import type { z } from "zod";
+import { ZodError, type z } from "zod";
 import type * as adminContracts from "@idream/shared/admin/contracts";
 import {
   ADMIN_V2_API_OPERATIONS,
@@ -209,7 +209,7 @@ export function multipartFields<const Id extends AdminV2DeclaredWriteOperationId
       contract: operation.contract.request,
     });
   }
-  return contract.schema.parse(fields) as AdminV2RequestBody<
+  return parseRequestInput(contract.schema, fields) as AdminV2RequestBody<
     AdminV2DeclaredRequestRefFor<Id>
   >;
 }
@@ -253,9 +253,22 @@ export function queryParams<const Id extends AdminV2DeclaredReadOperationId>(
       contract: declared.contract.request,
     });
   }
-  return contract.schema.parse(
+  return parseRequestInput(
+    contract.schema,
     Object.fromEntries(url.searchParams),
   ) as AdminV2RequestBody<AdminV2DeclaredRequestRefFor<Id>>;
+}
+
+// SPEC: 只有请求输入不合契约才是 400。
+// INTENT: route-handler 把其余 ZodError 当成服务端契约漂移（500 + 日志）；在这里把输入校验
+//   失败显式转成 AppError，两类错误才不会再被同一个「Validation failed」混为一谈。
+function parseRequestInput(schema: { parse(value: unknown): unknown }, value: unknown) {
+  try {
+    return schema.parse(value);
+  } catch (error) {
+    if (error instanceof ZodError) throw Errors.badRequest("Validation failed", error.flatten());
+    throw error;
+  }
 }
 
 async function parseManifestBody(
@@ -265,7 +278,12 @@ async function parseManifestBody(
 ): Promise<unknown> {
   if (request.method === "GET" || request.method === "HEAD") return {};
   const text = await request.text();
-  const raw = text ? JSON.parse(text) as unknown : {};
+  let raw: unknown = {};
+  try {
+    raw = text ? JSON.parse(text) as unknown : {};
+  } catch {
+    throw Errors.badRequest("Request body is not valid JSON");
+  }
   if (!operation) {
     if (pathname.startsWith("/api/v2/admin/")) {
       throw Errors.internal("Admin v2 operation is missing from the authority manifest", {
@@ -280,7 +298,7 @@ async function parseManifestBody(
   }
   const contract = requireExecutableAdminV2Contract(operation.contract.request);
   if (contract.kind === "transport") return raw;
-  const parsed = contract.schema.parse(raw);
+  const parsed = parseRequestInput(contract.schema, raw);
   if (
     operation.mutation?.transport.includes("if_match") &&
     parsed !== null &&

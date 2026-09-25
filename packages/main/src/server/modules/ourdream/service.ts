@@ -1,4 +1,4 @@
-import { Prisma, type CharacterPreviewJob } from "@prisma/client";
+import { Prisma, type CharacterDraft, type CharacterPreviewJob } from "@prisma/client";
 import {
   CHARACTER_STYLES,
   CHARACTER_VISIBILITY,
@@ -56,6 +56,7 @@ import {
   unfollowUser,
 } from "./discovery";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import { currentModerationEffectOwner } from "@/server/modules/admin-v2/moderation/moderation-effect";
 import { listActiveTemplates } from "./character-templates";
 import { isReusablePlatformAssetWhere } from "@/server/modules/ourdream/chat-image-reuse";
 import { generationContextSelectorSchema, generationContextToken, generationContextSource, loadGenerationContext, resolveGenerationContext, signGenerationContext } from "./generation-context";
@@ -97,6 +98,9 @@ import {
   anonymousCookie,
   clearAdminSessionCookie,
   verifyPassword,
+  AFFILIATE_COOKIE,
+  affiliateAttributionCookie,
+  parseCookieHeader,
 } from "@/server/lib/auth";
 import { prisma } from "@/server/lib/db";
 import { nameMatch } from "@/server/lib/db/search";
@@ -153,7 +157,20 @@ import {
 } from "./exposure-context";
 import { createVoiceClip as createDurableVoiceClip, quoteVoiceClip } from "./voice-clip";
 import { getCharacterDraftVoiceCatalog, previewCharacterDraftVoice } from "./character-draft-voice";
-import { applyAffiliate, affiliateDashboard, recordAffiliateClick } from "./affiliate";
+import { characterVoiceSample, characterVoiceSampleProfile } from "./character-voice-sample";
+import { characterQuickStartRequestSchema, generateCharacterQuickStart } from "./character-quick-start";
+import { moderateText } from "@/server/moderation/text-authority";
+import {
+  AFFILIATE_ATTRIBUTION_WINDOW_DAYS,
+  AFFILIATE_TERMS_PATH,
+  affiliateDashboard,
+  affiliateVisitorKey,
+  applyAffiliate,
+  attributeAffiliateSignup,
+  recordAffiliateClick,
+  type AffiliateTerms,
+} from "./affiliate";
+import { resolveCmsRouteWithReader } from "@/server/cms/published-route";
 import { trackEvent, trackEventBestEffort } from "./product-events";
 import { enforceRateLimit } from "@/server/lib/rate-limit";
 import { submitReport } from "./reports";
@@ -202,6 +219,7 @@ import {
   mediaFileExtension,
   mediaViewUrl,
   visualProfileDTO,
+  formatCount,
   type CharacterWithPublicRelations,
 } from "./public-read-model";
 import { loadCharacterRendererPreview } from "@/server/modules/admin-v2/characters/renderer-preview";
@@ -259,6 +277,15 @@ import {
   previewCharacterDraft,
   submitCharacterDraft,
 } from "./character-draft-write";
+import { openCharacterEditDraft, wizardVisualProjection } from "./character-edit";
+import { loadForYouProfile, rankForYou, type ForYouProfile } from "./for-you-ranking";
+import {
+  cumulativePopularOrderBy,
+  DEFAULT_POPULAR_PERIOD,
+  popularPeriod,
+  windowedPopularPageIds,
+  type PopularPeriod,
+} from "./popular-ranking";
 import { duplicateCharacterForUser } from "./character-duplicate";
 import { updateCharacterForUser } from "./character-update";
 import { recordMediaIdentityFeedback } from "./media-feedback";
@@ -556,6 +583,7 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
   if (resource === "characters") {
     if (!id && method === "GET") return listCharacters(request);
     if (id && !action && method === "GET") return getCharacter(request, id);
+    if (id && action === "voice-sample" && !child && method === "GET") return characterVoiceSampleAudio(request, id);
     if (id && action === "like" && method === "POST") return likeCharacter(request, id);
     if (id && action === "like" && method === "DELETE") return unlikeCharacter(request, id);
     if (id && action === "report" && method === "POST") {
@@ -563,6 +591,7 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
       return submitReport(request, { targetType: "character", targetId: id });
     }
     if (id && action === "duplicate" && method === "POST") return duplicateCharacter(request, id);
+    if (id && action === "edit-draft" && method === "POST") return openEditDraft(request, id);
     if (id && action === "looks" && !child && method === "GET") return listCharacterLooks(request, id);
     if (id && action === "looks" && !child && method === "POST") return createCharacterLook(request, id);
     if (id && action === "looks" && child && method === "PATCH") {
@@ -578,24 +607,43 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
   if (resource === "tags" && !id && method === "GET") return listTags(request);
 
   // Affiliate creator economy: applications/dashboard require an authenticated
-  // user; click attribution is intentionally public and deduplicated by visitor key.
+  // user; click attribution is intentionally public, rate limited and deduplicated per visitor.
   if (resource === "affiliate") {
     if (id === "application" && !action && method === "POST") {
       const ctx = await getAuthCtx(request);
       const user = requireUser(ctx);
-      return ok(await applyAffiliate(prisma, user.id, await jsonBody(request)), { status: 201 });
+      return ok(await applyAffiliate(prisma, user.id, await jsonBody(request), await loadAffiliateTerms()), { status: 201 });
     }
     if (id === "dashboard" && !action && method === "GET") {
       const ctx = await getAuthCtx(request);
       const user = requireUser(ctx);
-      return ok(await affiliateDashboard(prisma, user.id));
+      return ok({
+        ...(await affiliateDashboard(prisma, user.id)),
+        terms: await loadAffiliateTerms(),
+        attributionWindowDays: AFFILIATE_ATTRIBUTION_WINDOW_DAYS,
+      });
     }
     if (id === "click" && !action && method === "POST") {
+      const ctx = await getAuthCtx(request);
+      await enforceRateLimit(request, "affiliateClick", ctx.userId);
       const body = z.record(z.string(), z.unknown()).parse(await jsonBody(request));
       const code = z.string().trim().min(1).max(120).parse(body.code);
-      const visitorKey = z.string().trim().min(8).max(200).parse(body.visitorKey);
       const landingPath = z.string().trim().min(1).max(500).parse(body.landingPath ?? "/");
-      return ok(await recordAffiliateClick(prisma, code, visitorKey, landingPath), { status: 201 });
+      const cookie = parseCookieHeader(request.headers.get("cookie")).get(AFFILIATE_COOKIE);
+      const click = await recordAffiliateClick(prisma, {
+        code,
+        visitorKey: affiliateVisitorKey(request),
+        cookieVisitorKey: cookie?.startsWith(`${code}:`) ? cookie.slice(code.length + 1) : null,
+        landingPath,
+        viewerUserId: ctx.userId,
+      });
+      if (!click) return ok({ id: null });
+      const response = ok({ id: click.id }, { status: 201 });
+      response.headers.append(
+        "set-cookie",
+        affiliateAttributionCookie(`${code}:${click.visitorKey}`, AFFILIATE_ATTRIBUTION_WINDOW_DAYS),
+      );
+      return response;
     }
   }
   // 前台创建页拉取可用角色模板（仅 isActive，公开只读，见 CHARACTER_MANAGEMENT_PLAN §B）。
@@ -621,6 +669,7 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
 
   if (resource === "character-drafts") {
     if (!id && method === "POST") return createDraft(request);
+    if (id === "quick-start" && !action && method === "POST") return quickStartDraft(request);
     if (id === "current" && !action && method === "GET") return currentDraft(request);
     if (id && !action && method === "PATCH") return updateDraft(request, id);
     if (id && action === "preview" && method === "POST") return previewDraft(request, id);
@@ -788,6 +837,21 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
   throw Errors.notFound("API route not found", { path: `/${segments.join("/")}` });
 }
 
+// Read uncached: an applicant must accept the version that is published now.
+async function loadAffiliateTerms(): Promise<AffiliateTerms> {
+  const resolution = await resolveCmsRouteWithReader(AFFILIATE_TERMS_PATH, (path) =>
+    prisma.routePage.findUnique({ where: { path } }));
+  if (resolution.state === "published") {
+    return {
+      state: "published",
+      version: resolution.page.publishedAt.toISOString(),
+      title: resolution.page.title,
+      path: resolution.page.path,
+    };
+  }
+  return resolution.state === "unavailable" ? { state: "unavailable" } : { state: "unpublished" };
+}
+
 async function signup(request: Request) {
   const body = signupSchema.parse(await jsonBody(request));
   const ctx = await getAuthCtx(request);
@@ -881,6 +945,11 @@ async function signup(request: Request) {
         });
       }
     }
+    await attributeAffiliateSignup(
+      tx,
+      parseCookieHeader(request.headers.get("cookie")).get(AFFILIATE_COOKIE),
+      created.id,
+    );
     await appendCanonicalMetricEvent(tx, {
       sourceEventId: `signup:${created.id}`,
       eventType: METRIC_PRODUCT_EVENTS.customerSignupCompleted,
@@ -951,6 +1020,16 @@ async function login(request: Request) {
     `);
     const user = await tx.user.findUnique({ where: { id: account.userId } });
     if (!user || user.status !== "active" || user.deletedAt) {
+      // INTENT: 密码已验证，告诉本人账号在删除宽限期、何时完成；换了设备、没存回执的
+      //   用户否则只看到 "not active"，无从得知账号状态（AC-03）。
+      const deletion = await tx.accountDeletion.findUnique({
+        where: { userId: account.userId },
+        select: { graceEndsAt: true },
+      });
+      if (deletion) {
+        const date = deletion.graceEndsAt.toISOString().slice(0, 10);
+        throw Errors.forbidden(`This account was deleted at your request. Erasure completes by ${date}; it can no longer be signed in to.`);
+      }
       throw Errors.forbidden("Account is not active");
     }
     const currentAccount = await passwordAccountForUser(tx, account.userId);
@@ -1263,11 +1342,7 @@ async function listCharacters(request: Request) {
     "male",
     "trans",
   ]);
-  const style = publicCharacterEnumFilter(url.searchParams.get("style"), [
-    "realistic",
-    "anime",
-    "hybrid",
-  ]);
+  const style = publicCharacterEnumFilter(url.searchParams.get("style"), CHARACTER_STYLES);
 
   const where: Prisma.CharacterWhereInput = {
     AND: [
@@ -1324,13 +1399,24 @@ async function listCharacters(request: Request) {
     ];
   }
 
-  const characters = await prisma.character.findMany({
-    where,
-    include: characterInclude(ctx.userId),
-    orderBy: exploreOrderBy(sort),
-    skip: cursor,
-    take: limit + 1,
-  });
+  const forYouProfile = sort === "for-you" && ctx.userId ? await loadForYouProfile(ctx.userId) : null;
+  // INTENT: For You without a signal is the default Popular (the month window),
+  // the same list a viewer gets by picking Popular with no period.
+  const period: PopularPeriod | null =
+    sort === "popular" ? popularPeriod(url.searchParams.get("period"))
+    : sort === "for-you" && !forYouProfile ? DEFAULT_POPULAR_PERIOD
+    : null;
+  const characters = forYouProfile
+    ? await forYouPage(where, forYouProfile, cursor, limit + 1, ctx.userId)
+    : period && period !== "all"
+      ? await orderedPage(where, await windowedPopularPageIds(where, period, cursor, limit + 1), ctx.userId)
+      : await prisma.character.findMany({
+          where,
+          include: characterInclude(ctx.userId),
+          orderBy: exploreOrderBy(sort),
+          skip: cursor,
+          take: limit + 1,
+        });
 
   const page = characters
     .slice(0, limit)
@@ -1341,6 +1427,49 @@ async function listCharacters(request: Request) {
   });
 }
 
+// For You ranks in memory: the score mixes per-viewer tag/style weights that an
+// ORDER BY cannot express. Candidates are the filtered public catalog (ids and
+// ranking keys only); only the requested page is hydrated.
+async function forYouPage(
+  where: Prisma.CharacterWhereInput,
+  profile: ForYouProfile,
+  offset: number,
+  take: number,
+  userId: string | undefined,
+) {
+  const candidates = await prisma.character.findMany({
+    where,
+    select: {
+      id: true,
+      style: true,
+      creatorId: true,
+      createdAt: true,
+      stats: { select: { chatsCount: true, likesCount: true } },
+      tags: { select: { tag: { select: { slug: true } } } },
+    },
+  });
+  const pageIds = rankForYou(candidates.map((candidate) => ({
+    id: candidate.id,
+    style: candidate.style,
+    creatorId: candidate.creatorId,
+    createdAt: candidate.createdAt,
+    tagSlugs: candidate.tags.map(({ tag }) => tag.slug),
+    chatsCount: candidate.stats?.chatsCount ?? 0,
+    likesCount: candidate.stats?.likesCount ?? 0,
+  })), profile).slice(offset, offset + take).map((candidate) => candidate.id);
+  return orderedPage(where, pageIds, userId);
+}
+
+// Hydrates a page ranked in memory, keeping the rank order.
+async function orderedPage(where: Prisma.CharacterWhereInput, pageIds: string[], userId: string | undefined) {
+  const rows = await prisma.character.findMany({
+    where: { AND: [where, { id: { in: pageIds } }] },
+    include: characterInclude(userId),
+  });
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  return pageIds.flatMap((id) => byId.get(id) ?? []);
+}
+
 type ExploreSort = "for-you" | "popular" | "newest" | "following";
 
 function exploreSort(value: string | null): ExploreSort {
@@ -1348,16 +1477,13 @@ function exploreSort(value: string | null): ExploreSort {
   return "for-you";
 }
 
+// Newest / Following order; Popular (and For You's fallback) ranks by window
+// unless period=all, which is the cumulative order.
 function exploreOrderBy(sort: ExploreSort): Prisma.CharacterOrderByWithRelationInput[] {
   if (sort === "newest" || sort === "following") {
     return [{ createdAt: "desc" }, { id: "asc" }];
   }
-  return [
-    { stats: { chatsCount: "desc" } },
-    { stats: { likesCount: "desc" } },
-    { createdAt: "desc" },
-    { id: "asc" },
-  ];
+  return cumulativePopularOrderBy;
 }
 
 function publicCharacterEnumFilter<T extends string>(value: string | null, allowed: readonly T[]) {
@@ -1382,7 +1508,41 @@ async function getCharacter(request: Request, id: string) {
   if (!character) throw Errors.notFound("Character not found");
 
   await trackEvent("character_viewed", { characterId: character.id }, ctx);
-  return ok({ character: await characterDetailDTO(character, ctx.userId) });
+  return ok({
+    character: {
+      ...(await characterDetailDTO(character, ctx.userId)),
+      voiceSampleAvailable: (await characterVoiceSampleProfile(character.id)) !== null,
+    },
+  });
+}
+
+// SPEC: GET /characters/:id/voice-sample 直接返回可播放的音频字节；可见性与详情页同一判据，
+//   看不到的角色与没有声音的角色一律 404。合成、缓存与计费取舍见 character-voice-sample.ts。
+async function characterVoiceSampleAudio(request: Request, id: string) {
+  const ctx = await getAuthCtx(request);
+  requireAgeGate(ctx);
+  await enforceRateLimit(request, "voiceSample", ctx.userId);
+  const character = await prisma.character.findFirst({
+    where: {
+      id,
+      deletedAt: null,
+      OR: [
+        directCharacterAudienceWhere,
+        ctx.userId ? { creatorId: ctx.userId } : {},
+      ].filter((item) => Object.keys(item).length > 0),
+    },
+    select: { id: true },
+  });
+  if (!character) throw Errors.notFound("Character not found");
+  const sample = await characterVoiceSample(character.id);
+  return new Response(Buffer.from(sample.body), {
+    headers: {
+      "content-type": sample.contentType,
+      "content-length": String(sample.body.byteLength),
+      // 私有角色的试听不能进共享缓存；短 max-age 让声音换版后很快听到新的。
+      "cache-control": "private, max-age=300",
+    },
+  });
 }
 
 async function listCharacterLooks(request: Request, characterId: string) {
@@ -1594,7 +1754,18 @@ async function likeCharacter(request: Request, id: string) {
       });
     }
   });
-  return ok({ liked: true });
+  return ok({ liked: true, ...(await likeTotals(id)) });
+}
+
+// INTENT: 点赞后详情页要显示新计数；返回服务端真实值，不让客户端自行 ±1
+//   （fixture/内部账号的点赞不计入公开计数）。
+async function likeTotals(characterId: string) {
+  const stats = await prisma.characterStats.findUnique({
+    where: { characterId },
+    select: { likesCount: true },
+  });
+  const likesCount = stats?.likesCount ?? 0;
+  return { likesCount, likes: formatCount(likesCount) };
 }
 
 async function unlikeCharacter(request: Request, id: string) {
@@ -1612,7 +1783,7 @@ async function unlikeCharacter(request: Request, id: string) {
       data: { likesCount: { decrement: 1 } },
     });
   }
-  return ok({ liked: false });
+  return ok({ liked: false, ...(await likeTotals(id)) });
 }
 
 async function listTags(request: Request) {
@@ -1716,6 +1887,22 @@ async function createDraft(request: Request) {
   return ok({ draft });
 }
 
+// Suggests wizard fields from one sentence; writes nothing (see character-quick-start.ts).
+async function quickStartDraft(request: Request) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
+  await enforceRateLimit(request, "characterQuickStart", user.id);
+  const { brief } = characterQuickStartRequestSchema.parse(await jsonBody(request));
+  const draft = await generateCharacterQuickStart(brief, {
+    available: env.CHAT_PROVIDER !== "mock",
+    stream: (input) => providers.chat.stream(input),
+    moderate: (content, layer) => moderateText("character_quick_start", user.id, content, layer),
+  });
+  return ok({ draft });
+}
+
 async function updateDraft(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
@@ -1798,8 +1985,9 @@ async function currentDraft(request: Request) {
   const user = requireUser(ctx);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
+  // Edit drafts belong to their Character's Edit entry, never to Create resume.
   const latest = await prisma.characterDraft.findFirst({
-    where: { ownerId: user.id },
+    where: { ownerId: user.id, editsCharacterId: null },
     orderBy: { updatedAt: "desc" },
   });
   const latestDetails = latest
@@ -1815,6 +2003,11 @@ async function currentDraft(request: Request) {
     ? latest
     : null;
   if (!draft) return ok({ draft: null, previewJob: null, asset: null });
+  return ok(await draftResumePayload(draft, user.id));
+}
+
+// The durable half of wizard resume: the draft, its matching preview job and asset.
+async function draftResumePayload(draft: CharacterDraft, userId: string) {
   const storedPreviewJob = draft.previewJobId
     ? await prisma.characterPreviewJob.findFirst({
         where: { id: draft.previewJobId, draftId: draft.id },
@@ -1824,18 +2017,49 @@ async function currentDraft(request: Request) {
         orderBy: { createdAt: "desc" },
       });
   const previewJob = storedPreviewJob && await characterPreviewMatchesDraft(draft, storedPreviewJob.id)
-    ? await previewWithExecutionStatus(storedPreviewJob, user.id)
+    ? await previewWithExecutionStatus(storedPreviewJob, userId)
     : null;
   const asset = previewJob?.resultAssetId
     ? await prisma.mediaAsset.findUnique({ where: { id: previewJob.resultAssetId } })
     : null;
-  return ok({
+  return {
     draft: {
       ...draft,
-      advancedDetails: latestDetails,
+      advancedDetails: readCurrentCharacterDraftDetails(draft.advancedDetails),
     },
     previewJob,
     asset: asset ? mediaDTO(asset) : null,
+  };
+}
+
+// POST characters/:id/edit-draft — CR-06: open (or derive) the owner's edit
+// draft; the Create wizard edits it and its submit appends new versions.
+async function openEditDraft(request: Request, characterId: string) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
+  const { draft, character, published } = await openCharacterEditDraft({ userId: user.id, characterId });
+  const image = character.imageAssetId
+    ? await prisma.mediaAsset.findUnique({ where: { id: character.imageAssetId } })
+    : null;
+  return ok({
+    ...(await draftResumePayload(draft, user.id)),
+    character: {
+      id: character.id,
+      name: character.name,
+      visibility: character.visibility,
+      imageUrl: image ? mediaDTO(image).url : null,
+      // Published: the edit becomes a revision for the Release pipeline; look and voice stay fixed.
+      published,
+      // The wizard compares against these to know whether the current identity still fits.
+      visual: {
+        gender: character.gender,
+        style: character.style,
+        age: character.age,
+        ...wizardVisualProjection(character.appearance),
+      },
+    },
   });
 }
 
@@ -1929,15 +2153,15 @@ async function submitDraft(request: Request, id: string) {
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const body = draftSubmitSchema.parse(await jsonBody(request));
-  const { character } = await submitCharacterDraft({
+  const { character, edited, pendingPublication, visibilityWarning } = await submitCharacterDraft({
     userId: user.id,
     draftId: id,
     visibility: body.visibility,
   });
   // Input moderation already ran synchronously inside the submit action; no async pass.
   // A committed Character remains a successful save when optional telemetry is unavailable.
-  await trackEventBestEffort("character_created", { characterId: character.id }, ctx);
-  return ok({ character });
+  await trackEventBestEffort(edited ? "character_edited" : "character_created", { characterId: character.id }, ctx);
+  return ok({ character, pendingPublication, visibilityWarning });
 }
 
 async function updateDraftTags(request: Request, id: string) {
@@ -2900,6 +3124,15 @@ async function updateMediaCollection(request: Request, collectionId: string) {
   const collection = await prisma.$transaction(async (tx) => {
     const owned = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`SELECT id FROM media_collections WHERE id = ${collectionId} AND "ownerId" = ${user.id} FOR UPDATE`);
     if (!owned.length) throw Errors.notFound("Collection not found");
+    // INVARIANT: 被举报处置撤下的合集，作者不能自己改回公开；只有申诉撤销裁决才会放回。
+    if (
+      body.visibility && body.visibility !== "private" &&
+      await currentModerationEffectOwner(tx, "media_collection", collectionId)
+    ) {
+      throw Errors.forbidden(
+        "This collection was removed from Community after a report. Appeal the decision from Help Desk to restore it.",
+      );
+    }
     if (body.visibility === "public") {
       const items = await tx.mediaCollectionItem.findMany({
         where: { collectionId },
@@ -3966,10 +4199,6 @@ async function library(request: Request, tab: string) {
     // a client-side change to that route would have been silently overridden.
     return ok({ items: groups.map(group => ({ id: group.id, type: "group_chat", title: group.title, status: group.status, description: group.members.map(member => member.name).join(" · ") })), emptyCta: null });
   }
-  if (tab === "packs") {
-    return ok({ items: [], emptyCta: null });
-  }
-
   throw Errors.notFound("Library tab not found");
 }
 

@@ -21,11 +21,12 @@ vi.mock("./SiteFooter", () => ({ SiteFooter: () => null }));
 vi.mock("./CharacterDetailHero", () => ({
   CharacterDetailHero: ({ actions, character }: {
     actions: ReactNode;
-    character: { title: string };
+    character: { title: string; likes: string };
   }) => createElement(
     "section",
     null,
     createElement("h1", null, character.title),
+    createElement("p", { "data-testid": "likes" }, `${character.likes} likes`),
     actions,
   ),
 }));
@@ -68,9 +69,16 @@ describe("CharacterDetailClient like relationship", () => {
         return Response.json({ ok: true, data: { character } });
       }
       mutationMethods.push(init.method);
+      if (String(_input) === "/api/v1/chat/sessions") {
+        return Response.json(
+          { ok: false, error: { code: "forbidden", message: "This Character is unavailable for chat." } },
+          { status: 403 },
+        );
+      }
+      const liked = init.method === "POST";
       return Response.json({
         ok: true,
-        data: { liked: init.method === "POST" },
+        data: { liked, likesCount: liked ? 1 : 0, likes: liked ? "1" : "0" },
       });
     }));
     container = document.createElement("div");
@@ -93,11 +101,145 @@ describe("CharacterDetailClient like relationship", () => {
     await act(async () => findButton("Like")?.click());
     await waitUntil(() => Boolean(findButton("Liked")));
     expect(container.textContent).toContain("Character liked.");
+    expect(container.querySelector('[data-testid="likes"]')?.textContent).toBe("1 likes");
 
     await act(async () => findButton("Liked")?.click());
     await waitUntil(() => Boolean(findButton("Like")));
     expect(container.textContent).toContain("Character like removed.");
+    expect(container.querySelector('[data-testid="likes"]')?.textContent).toBe("0 likes");
     expect(mutationMethods).toEqual(["POST", "DELETE"]);
+  });
+
+  it("shows the server's reason when a chat cannot start", async () => {
+    await act(async () =>
+      root.render(createElement(CharacterDetailClient, { id: "character-1" }))
+    );
+    await waitUntil(() => Boolean(findButton("Chat")));
+    await act(async () => findButton("Chat")?.click());
+    await waitUntil(() => container.textContent?.includes("unavailable for chat") ?? false);
+    expect(container.textContent).not.toContain("Could not start chat");
+  });
+
+  it("resumes the chat a guest asked for once they come back from signup", async () => {
+    window.history.replaceState(null, "", "/characters/character-1?resume=chat");
+    await act(async () =>
+      root.render(createElement(CharacterDetailClient, { id: "character-1" }))
+    );
+    await waitUntil(() => mutationMethods.length > 0);
+    expect(mutationMethods).toEqual(["POST"]);
+    expect(window.location.search).toBe("");
+  });
+
+  it("ends with other characters like this one, never the one being viewed", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).startsWith("/api/v1/characters?")) {
+        return Response.json({ ok: true, data: {
+          items: [character, { ...character, id: "character-2", title: "Blake" }],
+          nextCursor: null,
+        } });
+      }
+      return Response.json({ ok: true, data: { character } });
+    }));
+    await act(async () =>
+      root.render(createElement(CharacterDetailClient, { id: "character-1" }))
+    );
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="character-detail-similar"]')));
+    const similar = container.querySelector('[data-testid="character-detail-similar"]')!;
+    expect(similar.textContent).toContain("Blake");
+    expect(similar.querySelector('a[href="/characters/character-1"]')).toBeNull();
+  });
+
+  it("shares a public character through the system share sheet, and offers no Share for a private one", async () => {
+    const share = vi.fn(async () => undefined);
+    const writeText = vi.fn(async () => undefined);
+    vi.stubGlobal("navigator", { ...navigator, share, clipboard: { writeText } });
+    let visibility = "public";
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ok: true, data: { character: { ...character, visibility } } })));
+    window.history.replaceState(null, "", "/characters/character-1?entryExposureId=e1");
+    await act(async () =>
+      root.render(createElement(CharacterDetailClient, { id: "character-1" }))
+    );
+    await waitUntil(() => Boolean(findButton("Share")));
+    await act(async () => findButton("Share")?.click());
+    expect(share).toHaveBeenCalledWith({ title: "Avery", url: `${window.location.origin}/characters/character-1` });
+    expect(writeText).not.toHaveBeenCalled();
+
+    visibility = "private";
+    await act(async () =>
+      root.render(createElement(CharacterDetailClient, { id: "character-2" }))
+    );
+    await waitUntil(() => Boolean(findButton("Like")));
+    expect(findButton("Share")).toBeUndefined();
+  });
+
+  it("offers Hear voice only for a Character with a voice, and plays it on click without autoplay", async () => {
+    let release: () => void = () => undefined;
+    const sampleFetches: string[] = [];
+    let voiceSampleAvailable = true;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/voice-sample")) {
+        sampleFetches.push(url);
+        await new Promise<void>((resolve) => { release = resolve; });
+        return new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "audio/mpeg" } });
+      }
+      return Response.json({ ok: true, data: { character: { ...character, voiceSampleAvailable } } });
+    }));
+    const played: HTMLAudioElement[] = [];
+    const createObjectURL = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:sample");
+    const play = vi.spyOn(HTMLMediaElement.prototype, "play").mockImplementation(async function (this: HTMLAudioElement) {
+      played.push(this);
+    });
+    const pause = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => undefined);
+    try {
+      await act(async () =>
+        root.render(createElement(CharacterDetailClient, { id: "character-1" }))
+      );
+      await waitUntil(() => Boolean(findButton("Hear voice")));
+      expect(sampleFetches).toEqual([]);
+      expect(play).not.toHaveBeenCalled();
+
+      await act(async () => findButton("Hear voice")?.click());
+      await waitUntil(() => Boolean(findButton("Loading voice...")));
+      await act(async () => release());
+      await waitUntil(() => Boolean(findButton("Stop voice")));
+      expect(sampleFetches).toEqual(["/api/v1/characters/character-1/voice-sample"]);
+      expect(played).toHaveLength(1);
+
+      await act(async () => findButton("Stop voice")?.click());
+      expect(pause).toHaveBeenCalled();
+      await waitUntil(() => Boolean(findButton("Hear voice")));
+      await act(async () => findButton("Hear voice")?.click());
+      await waitUntil(() => Boolean(findButton("Stop voice")));
+      await act(async () => played[1]?.onended?.(new Event("ended")));
+      await waitUntil(() => Boolean(findButton("Hear voice")));
+      // The fetched sample is reused; replay never asks the server again.
+      expect(sampleFetches).toHaveLength(1);
+
+      voiceSampleAvailable = false;
+      await act(async () =>
+        root.render(createElement(CharacterDetailClient, { id: "character-2" }))
+      );
+      await waitUntil(() => Boolean(findButton("Like")));
+      expect(findButton("Hear voice")).toBeUndefined();
+    } finally {
+      play.mockRestore();
+      pause.mockRestore();
+      createObjectURL.mockRestore();
+    }
+  });
+
+  it("returns to Hear voice with a status message when the sample cannot load", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).endsWith("/voice-sample")
+      ? Response.json({ ok: false, error: { code: "not_found", message: "Character has no voice sample" } }, { status: 404 })
+      : Response.json({ ok: true, data: { character: { ...character, voiceSampleAvailable: true } } })));
+    await act(async () =>
+      root.render(createElement(CharacterDetailClient, { id: "character-1" }))
+    );
+    await waitUntil(() => Boolean(findButton("Hear voice")));
+    await act(async () => findButton("Hear voice")?.click());
+    await waitUntil(() => container.textContent?.includes("Could not play this voice sample") ?? false);
+    expect(findButton("Hear voice")).toBeDefined();
   });
 
   function findButton(label: string) {

@@ -5,13 +5,16 @@ write blob only, no DB authority. Image/video attempts persist one durable
 terminal record and enqueue it to Main's BullMQ relay. Character Preview is an
 ordinary `ai.image.generate` Attempt with a Main-owned source projection.
 
-## Playwright-managed image worker
+## Playwright-managed workers
 
-Main's Playwright configuration owns one `start:image` process and one
-Main-side `gen-finalizer` process in addition to its four URL services. The Gen
-process consumes `ai.image.generate` jobs, including Character Preview, from the
-run-scoped Redis/BullMQ namespace. Because the workers have no HTTP ports,
-Playwright 1.61 waits for their stable stdout readiness records and stops them
+Main's Playwright configuration runs Gen's real image and video pipelines from
+source (`packages/main/src/e2e/start-playwright-gen-worker.ts image|video`) plus
+one Main-side `gen-finalizer` process, in addition to its four URL services.
+The image worker consumes `ai.image.generate` jobs, including Character
+Preview, from the run-scoped Redis/BullMQ namespace. Main keeps its production
+profile pins (runner `comfyui`), so the workers run with the `backend` adapter
+while provider I/O uses `createMockGenProviders()`. Because the workers have no
+HTTP ports, Playwright waits for their stdout readiness records and stops them
 with graceful `SIGTERM`. The harness explicitly pins the higher-priority
 `GEN_*` variables so Gen cannot inherit `packages/gen/.env` Redis or provider
 authority. Image/video jobs resume a persisted terminal record before invoking

@@ -209,6 +209,7 @@ export function projectCharacterProductionJourneySnapshot(input: {
   servingState: CharacterProductionJourney["release"]["servingState"];
   currentReleaseId: string | null;
   candidateReleaseId: string | null;
+  pendingRevision: { id: string; revision: number; createdAt: Date } | null;
   activeCommand: NonNullable<
     CharacterProductionJourney["primaryAction"]["command"]
   > | null;
@@ -347,6 +348,14 @@ export function projectCharacterProductionJourneySnapshot(input: {
       servingState: input.servingState,
       currentReleaseId: input.currentReleaseId,
       candidateReleaseId: input.candidateReleaseId,
+      pendingRevision: input.pendingRevision
+        ? {
+            revisionId: input.pendingRevision.id,
+            revision: input.pendingRevision.revision,
+            createdAt: input.pendingRevision.createdAt.toISOString(),
+            deepLink: tabLink("release"),
+          }
+        : null,
     },
   };
 }
@@ -430,13 +439,20 @@ export async function projectCharacterProductionJourneys(
   const projectIds = [...projectByCharacter.values()].map(
     (project) => project.id,
   );
-  const releases =
+  const [releases, revisions] =
     projectIds.length > 0
-      ? await db.characterRelease.findMany({
-          where: { projectId: { in: projectIds } },
-          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-        })
-      : [];
+      ? await Promise.all([
+          db.characterRelease.findMany({
+            where: { projectId: { in: projectIds } },
+            orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+          }),
+          db.characterRevision.findMany({
+            where: { projectId: { in: projectIds } },
+            orderBy: [{ revision: "desc" }, { id: "desc" }],
+            select: { id: true, projectId: true, revision: true, createdAt: true },
+          }),
+        ])
+      : [[], []];
   const releasesByProject = new Map<string, CharacterRelease[]>();
   for (const release of releases) {
     const rows = releasesByProject.get(release.projectId) ?? [];
@@ -492,6 +508,7 @@ export async function projectCharacterProductionJourneys(
   const draftPackByCharacter = new Map<string, CharacterProductionAssetPack>();
   const livePackByCharacter = new Map<string, CharacterProductionAssetPack>();
   const candidateByCharacter = new Map<string, CharacterRelease | null>();
+  const pendingRevisionByCharacter = new Map<string, (typeof revisions)[number]>();
   for (const characterId of ids) {
     const project = projectByCharacter.get(characterId);
     if (!project) continue;
@@ -517,6 +534,29 @@ export async function projectCharacterProductionJourneys(
       ),
     );
     livePackByCharacter.set(characterId, releaseAssetPack(currentRelease));
+    // SPEC: a Character that has a current Release but a Revision newer than
+    // every Revision any of its Releases ever put live has an edit nobody
+    // published yet.
+    // INTENT: a creator edit writes a Revision and never touches Serving, so
+    // without this the operator sees a healthy live Character and the edit sits
+    // unpublished indefinitely. A Revision that did go live and was rolled back
+    // is a decision, not a forgotten edit.
+    if (currentRelease) {
+      const latest = revisions.find((revision) => revision.projectId === project.id);
+      const shipped = characterReleases.filter(
+        (release) => release.publishedAt !== null || release.id === currentRelease.id,
+      );
+      // A legacy Release may pin a Revision id that never existed; then only a
+      // Revision written after that Release counts.
+      const newer = latest && shipped.every((release) => {
+        if (release.revisionId === latest.id) return false;
+        const pinned = revisions.find((revision) => revision.id === release.revisionId);
+        return pinned ? latest.revision > pinned.revision : latest.createdAt > release.createdAt;
+      });
+      if (latest && newer) {
+        pendingRevisionByCharacter.set(characterId, latest);
+      }
+    }
   }
   const candidateAssetIds = [
     ...new Set([
@@ -615,6 +655,7 @@ export async function projectCharacterProductionJourneys(
           "inactive") as CharacterProductionJourney["release"]["servingState"],
         currentReleaseId: serving?.currentReleaseId ?? null,
         candidateReleaseId: candidate?.id ?? null,
+        pendingRevision: pendingRevisionByCharacter.get(characterId) ?? null,
         activeCommand: command
           ? {
               id: command.id,

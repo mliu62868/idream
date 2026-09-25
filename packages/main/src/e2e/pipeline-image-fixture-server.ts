@@ -82,6 +82,11 @@ export const server = createServer(async (request, response) => {
     response.end(JSON.stringify({ ok: true, provider: "pipeline-fixture" }));
     return;
   }
+  if (request.method === "GET" && url.pathname === "/v1/models") {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ object: "list", data: [{ id: "playwright-companion", object: "model" }] }));
+    return;
+  }
   if (request.method !== "POST" || !["/images/generations", "/v1/chat/completions"].includes(url.pathname)) {
     response.writeHead(404, { "content-type": "application/json" });
     response.end(JSON.stringify({ error: { message: "Not found" } }));

@@ -13,6 +13,8 @@ export const chatRuntimeDiagnosticsSchema = z.object({
     fileStore: z.boolean(),
     redis: z.boolean(),
     agentRuntime: z.boolean(),
+    // Model endpoint reachability; turns need it, privacy purges do not.
+    model: z.boolean(),
     fresh: z.boolean(),
     observedAt: z.string().datetime({ offset: true }).nullable(),
     reason: z.string().nullable(),

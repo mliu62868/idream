@@ -14,17 +14,29 @@ import { editChatTurn, getChatSession } from "./turn-ledger";
 
 const prefix = "zt-chat-video-";
 const sourceKeys: string[] = [];
-let originalFlag = false;
+// Chat video needs both flags fully rolled out; other suites share the test DB and may
+// leave either one off or partially rolled out, so this suite owns both and restores them.
+const VIDEO_FLAGS = ["chat_video", "video_gen"] as const;
+let originalFlags: Array<{ key: string; enabled: boolean; rolloutPercent: number } | null> = [];
 const videoQueues = ["ai.video.generate", MAIN_QUEUES.generationTerminalIngest, MAIN_QUEUES.aiFinalize];
+async function enableVideoFlags() {
+  for (const key of VIDEO_FLAGS) {
+    await prisma.featureFlag.upsert({ where: { key }, create: { key, label: key, enabled: true, rolloutPercent: 100, targetRoles: [], targetPlans: [] }, update: { enabled: true, rolloutPercent: 100 } });
+  }
+}
 beforeAll(async () => {
   await purgeTestData(prefix);
-  originalFlag = (await prisma.featureFlag.findUnique({ where: { key: "chat_video" } }))?.enabled ?? false;
-  await prisma.featureFlag.upsert({ where: { key: "chat_video" }, create: { key: "chat_video", label: "Chat video", enabled: true, targetRoles: [], targetPlans: [] }, update: { enabled: true } });
+  originalFlags = await Promise.all(VIDEO_FLAGS.map(key => prisma.featureFlag.findUnique({ where: { key }, select: { key: true, enabled: true, rolloutPercent: true } })));
+  await enableVideoFlags();
 });
-afterEach(async () => { vi.restoreAllMocks(); await prisma.featureFlag.update({ where: { key: "chat_video" }, data: { enabled: true } }); });
+afterEach(async () => { vi.restoreAllMocks(); await enableVideoFlags(); });
 afterAll(async () => {
   await purgeTestData(prefix);
-  await prisma.featureFlag.update({ where: { key: "chat_video" }, data: { enabled: originalFlag } });
+  for (const [index, key] of VIDEO_FLAGS.entries()) {
+    const original = originalFlags[index];
+    if (original) await prisma.featureFlag.update({ where: { key }, data: { enabled: original.enabled, rolloutPercent: original.rolloutPercent } });
+    else await prisma.featureFlag.delete({ where: { key } });
+  }
   for (const key of sourceKeys) await providers.blob.delete({ key });
 });
 

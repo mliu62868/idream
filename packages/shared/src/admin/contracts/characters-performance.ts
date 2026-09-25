@@ -385,6 +385,17 @@ export const characterProductionJourneySchema = z
         servingState: characterServingStateSchema,
         currentReleaseId: adminIdSchema.nullable(),
         candidateReleaseId: adminIdSchema.nullable(),
+        // SPEC: a Revision newer than the one the current Release pins — e.g. the
+        // creator edited a published Character. Null when nothing is waiting.
+        pendingRevision: z
+          .object({
+            revisionId: adminIdSchema,
+            revision: z.number().int().positive(),
+            createdAt: adminIsoDateTimeSchema,
+            deepLink: z.string().startsWith("/admin/characters/"),
+          })
+          .strict()
+          .nullable(),
       })
       .strict(),
   })

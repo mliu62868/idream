@@ -51,6 +51,21 @@ const ACTIVE_COMMAND_STATUSES = ["accepted", "running", "verifying", "failed"];
 //         后台任何一页都看不到它们，尽管系统自己给出的下一步就是
 //         「Reconcile the uncertain downstream effect」。
 const UNRECONCILED_COMMAND_WHERE = { status: "succeeded", needsReconciliation: true } as const;
+
+// SPEC: 同一目标上后来已成功的同类命令，让之前那条失败命令不再是待办。
+// INTENT: 失败行本身是历史证据要保留；但运营重试成功后它仍挂在 Today 里，会被重复排查。
+async function supersededFailedCommandIds(db: TodayReadDb, actorId: string) {
+  const rows = await db.$queryRaw<Array<{ id: string }>>`
+    SELECT f."id" FROM "control_plane_commands" f
+    WHERE f."actorId" = ${actorId} AND f."status" = 'failed'
+      AND EXISTS (
+        SELECT 1 FROM "control_plane_commands" s
+        WHERE s."commandType" = f."commandType" AND s."targetType" = f."targetType"
+          AND s."targetId" = f."targetId" AND s."status" = 'succeeded'
+          AND s."createdAt" > f."createdAt"
+      )`;
+  return rows.map((row) => row.id);
+}
 const RESOLVED_CASE_STATUSES = ["resolved", "closed"];
 const RESOLVED_INCIDENT_STATUSES = ["resolved", "closed"];
 const ACTIVE_RELEASE_STATUSES = ["approved"];
@@ -640,8 +655,11 @@ function projectRow(
       sourceType: row.sourceType,
       sourceId: item.id,
       sourceStatus: item.status as TodayWorkItem["sourceStatus"],
-      title: `${severity} incident: ${item.signature}`,
-      summary: item.suspectedCause ?? `Incident is ${item.status}`,
+      // 签名是去重用的哈希，运营看不懂；标题用疑似原因，签名只留短引用。
+      title: item.suspectedCause
+        ? `${severity} incident: ${item.suspectedCause.split("\n")[0].slice(0, 90)}`
+        : `${severity} incident`,
+      summary: `Incident is ${item.status} · ref ${item.signature.slice(0, 8)}`,
       severity,
       priority: severity === "critical" ? "urgent" : severity === "high" ? "high" : "normal",
       impactSnapshot: asImpact(item.impact),
@@ -1169,7 +1187,7 @@ export async function buildTodayProjection(input: {
     : null;
   const actorCommandWhere = {
     actorId: input.actor.id,
-    id: withoutIds(snoozedCommandIds),
+    id: withoutIds([...snoozedCommandIds, ...await supersededFailedCommandIds(db, input.actor.id)]),
     OR: [{ status: { in: ACTIVE_COMMAND_STATUSES } }, { ...UNRECONCILED_COMMAND_WHERE }],
   } satisfies Prisma.ControlPlaneCommandWhereInput;
   const activeReleaseSelection = releaseReadable
@@ -1501,7 +1519,10 @@ export async function buildTodayAllWork(input: {
   const commandWhere = commandEligible ? {
     actorId: input.actor.id,
     ...(query.status ? { status: query.status } : { OR: commandStatusBranches }),
-    id: withoutIds(idsFor("control_plane_command", "snoozed")),
+    id: withoutIds([
+      ...idsFor("control_plane_command", "snoozed"),
+      ...await supersededFailedCommandIds(db, input.actor.id),
+    ]),
     ...(query.sla ? { leaseExpiresAt: slaWhere } : {}),
   } satisfies Prisma.ControlPlaneCommandWhereInput : null;
   const caseSeverityWhere = query.severity ? CASE_SEVERITY.where(query.severity) : null;

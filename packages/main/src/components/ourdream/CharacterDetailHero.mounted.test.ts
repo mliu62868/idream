@@ -60,6 +60,20 @@ describe("CharacterDetailHero", () => {
     expect(byline?.textContent).toContain("vivid");
   });
 
+  it("links a user-made character's author to their creator page", () => {
+    act(() => {
+      root.render(createElement(CharacterDetailHero, {
+        character: { ...baseCharacter, creator: "Nova", creatorType: "user", creatorId: "user 1" },
+      }));
+    });
+    const link = container.querySelector<HTMLAnchorElement>('a[data-testid="character-detail-creator"]');
+    expect(link?.getAttribute("href")).toBe("/creators/user%201");
+    expect(link?.textContent).toBe("Nova");
+
+    act(() => root.render(createElement(CharacterDetailHero, { character: baseCharacter })));
+    expect(container.querySelector('a[data-testid="character-detail-creator"]')).toBeNull();
+  });
+
   it("omits counts a character has not earned instead of showing zeros", () => {
     act(() => {
       root.render(

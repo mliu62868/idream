@@ -709,7 +709,7 @@ export function SafetyCenterPage({ route }: Readonly<{ route: OurdreamRoute }>) 
   return (
     <main className="min-h-screen bg-[#0d0d0d] font-safety-docs text-[#a6a1a4]">
       <SafetyHeader activePath={activePath} />
-      <div className="mx-auto grid w-full max-w-[1440px] grid-cols-1 px-5 pt-40 lg:grid-cols-[288px_689px] lg:gap-x-[43px] lg:px-8 lg:pt-9 xl:grid-cols-[288px_689px_220px]">
+      <div className="mx-auto grid w-full max-w-[1440px] grid-cols-1 px-5 pt-40 lg:grid-cols-[288px_minmax(0,689px)] lg:gap-x-[43px] lg:px-8 lg:pt-9 xl:grid-cols-[288px_minmax(0,689px)_220px]">
         <SafetySidebar activePath={activePath} />
         <article className="min-w-0">
           <div className="mt-0.5 space-y-2.5">

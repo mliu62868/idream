@@ -1,4 +1,5 @@
 import Image from "next/image";
+import Link from "next/link";
 import type { ReactNode } from "react";
 import { shouldBypassNextImageOptimizer } from "@/lib/image-delivery";
 import type { CharacterCardData } from "@/types/ourdream";
@@ -65,7 +66,13 @@ export function CharacterDetailHero({
           className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-[12px] font-bold leading-4 text-white/70"
           data-testid="character-detail-byline"
         >
-          <span data-testid="character-detail-creator">{character.creator}</span>
+          {character.creatorType === "user" && character.creatorId ? (
+            <Link className="underline-offset-4 hover:text-white hover:underline" data-testid="character-detail-creator" href={`/creators/${encodeURIComponent(character.creatorId)}`}>
+              {character.creator}
+            </Link>
+          ) : (
+            <span data-testid="character-detail-creator">{character.creator}</span>
+          )}
           {hasLikes && <span>{character.likes} likes</span>}
           {hasChats && <span>{character.chats} chats</span>}
           {character.vivid && (

@@ -44,6 +44,7 @@ describe("protected viewer requests", () => {
     );
     expect(anonymousFetcher).toHaveBeenCalledWith("/api/v1/me", {
       cache: "no-store",
+      signal: expect.any(AbortSignal),
     });
   });
 
@@ -53,7 +54,7 @@ describe("protected viewer requests", () => {
     );
 
     await expect(fetchViewerScope(fetcher)).rejects.toThrow(
-      "Viewer authority was incomplete.",
+      "We couldn't confirm your account. Refresh and try again.",
     );
   });
 
@@ -87,6 +88,7 @@ describe("protected viewer requests", () => {
     expect(result.response?.ok).toBe(true);
     expect(fetcher).toHaveBeenNthCalledWith(1, "/api/v1/me", {
       cache: "no-store",
+      signal: expect.any(AbortSignal),
     });
     expect(fetcher).toHaveBeenNthCalledWith(2, "/api/v1/profile", {
       cache: "no-store",
@@ -105,6 +107,14 @@ describe("protected viewer requests", () => {
       fetchProtectedForViewer("/api/v1/chat/sessions", undefined, fetcher),
     ).rejects.toThrow("Viewer authority unavailable.");
     expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("tells the reader in plain words when the viewer check fails without a server message", async () => {
+    const fetcher = vi.fn(async () => new Response("<html>bad gateway</html>", { status: 502 }));
+
+    await expect(
+      fetchProtectedForViewer("/api/v1/chat/sessions", undefined, fetcher),
+    ).rejects.toThrow("We couldn't confirm your account. Refresh and try again.");
   });
 
   it("does not request the protected resource for a malformed authenticated viewer", async () => {

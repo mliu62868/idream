@@ -54,7 +54,7 @@ export async function billingAdjustment(
     const user = await tx.user.findUnique({ where: { id: body.userId } });
     if (!user) throw Errors.notFound("User not found");
     if (Math.abs(body.delta) >= LEDGER_APPROVAL_THRESHOLD) {
-      await enforceApproval("billing.ledger.adjust", body.userId, tx);
+      await enforceApproval("billing.ledger.adjust", body.userId, tx, { delta: body.delta });
     }
     const entry = await postDreamcoinEntry(tx, {
       kind: "admin_adjust",

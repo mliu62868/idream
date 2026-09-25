@@ -104,6 +104,9 @@ export interface VideoModel {
       asset: {
         key?: string;
         seconds: number;
+        /** Decoded frame size; the media asset row needs it to lay the video out. */
+        width?: number;
+        height?: number;
         contentType?: string;
         body?: Uint8Array;
         sourceUrl?: string;

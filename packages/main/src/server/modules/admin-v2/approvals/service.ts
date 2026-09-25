@@ -119,6 +119,11 @@ export async function createApproval(request: Request): Promise<ApprovalMutation
   if (!isPermissionKey(body.permissionKey)) {
     throw Errors.badRequest("Unknown permission key");
   }
+  // 调账审批按金额绑定（enforceApproval 比对 payload.delta），创建时就拒绝匹配不上的请求。
+  if (body.action === "billing.ledger.adjust"
+    && !Number.isSafeInteger((body.payload as { delta?: unknown } | null | undefined)?.delta)) {
+    throw Errors.badRequest("Ledger adjustment approvals must name the integer delta they approve");
+  }
   const permissions = await effectivePermissions(actor.id, actor.role);
   if (!permissions.has(body.permissionKey)) {
     throw Errors.forbidden("Cannot request an action you lack permission for", {

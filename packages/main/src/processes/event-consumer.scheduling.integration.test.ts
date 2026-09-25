@@ -87,7 +87,8 @@ describe("durable event consumer time isolation", () => {
         return Response.json({ ok: true }, { status: 202 });
       }
       if (target.endsWith("/cancel")) {
-        delivered.push("cancel");
+        // The consumer drains every pending row in the shared test DB; count only ours.
+        if (target.includes(encodeURIComponent(`${prefix}cancelled-turn`))) delivered.push("cancel");
         return Response.json({ ok: true, active: false });
       }
       if (target.endsWith("/internal/companion-memory/purge")) {

@@ -319,6 +319,12 @@ const zhValues: Record<string, string> = {
   // 工单队列视图（operationsCaseQuerySchema.view）
   unassigned: "未分配",
   appeals: "申诉",
+  // 举报目标类型（ContentReport.targetType，主站各举报入口写入的值）
+  feed_item: "动态",
+  chat_message: "聊天消息",
+  user_profile: "用户主页",
+  media_collection: "合集",
+  comic: "漫画",
   // 裁决与客户侧动作（CONTENT_REPORT / APPEAL / SUPPORT / BILLING 四组常量）
   duplicate: "重复举报",
   upheld: "维持原判",

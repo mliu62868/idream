@@ -10,6 +10,7 @@ import {
   type PublicFeedItem,
 } from "@/lib/public-api-contracts";
 import { shouldBypassNextImageOptimizer } from "@/lib/image-delivery";
+import { shareOrCopy } from "@/lib/utils";
 import { useAgeGateAccess } from "./AgeGateBoundary";
 import { authHrefForTarget } from "./authRedirect";
 import { countLabel } from "./workspace-helpers";
@@ -257,9 +258,7 @@ export function FeedWorkspace() {
         setStatus(payload.error?.message ?? "Share unavailable.");
         return;
       }
-      const shareUrl = new URL(payload.data.shareUrl, window.location.origin).toString();
-      const copied = await copyShareUrl(shareUrl);
-      setStatus(copied ? "Share link copied." : `Share link: ${shareUrl}`);
+      setStatus(await shareOrCopy(new URL(payload.data.shareUrl, window.location.origin).toString(), "iDream"));
     } catch {
       setStatus("share failed");
     }
@@ -541,16 +540,6 @@ function CollectionFeedCard({
   );
 }
 
-async function copyShareUrl(url: string) {
-  if (!navigator.clipboard?.writeText) return false;
-  try {
-    await navigator.clipboard.writeText(url);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 class FeedLoadError extends Error {}
 
 async function fetchFeedPayload(
@@ -585,8 +574,9 @@ function publicApiErrorMessage(payload: unknown) {
   return typeof message === "string" ? message : undefined;
 }
 
+// resume=chat: the character page starts the chat the guest asked for once they are back.
 function signupUrlForFeedChat(characterId: string) {
-  const next = `/characters/${encodeURIComponent(characterId)}`;
+  const next = `/characters/${encodeURIComponent(characterId)}?resume=chat`;
   return `/signup?next=${encodeURIComponent(next)}`;
 }
 

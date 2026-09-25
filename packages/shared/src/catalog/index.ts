@@ -104,6 +104,8 @@ export const APPEAL_TARGET_TYPES = [
   "feed_item",
   "chat_message",
   "user_profile",
+  "comic",
+  "media_collection",
   "moderation_decision",
   "safety_issue",
   "copyright_likeness",

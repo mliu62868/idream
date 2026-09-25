@@ -22,6 +22,7 @@ import {
 } from "@/server/modules/admin-v2/characters/release-snapshot";
 import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
+import { characterContentHash } from "@/server/modules/admin-v2/shared/character-content-identity";
 import { relationshipWorkspacePath } from "../../../chat/src/agent-runtime/workspace";
 import { redeemCodeHash } from "@/server/lib/redeem-codes";
 const accountErasureCompletionReceiptSource =
@@ -625,12 +626,19 @@ async function seedOwnedIdentityMedia(email: string) {
     detailsMarkdown: "Warm, attentive, and playful in conversation.",
   });
   if (!soul.ok) throw new Error("Owned E2E Character Soul must compile");
+  const openingSnapshot = { firstMessage: "Welcome back. How is your day going?" };
   const content = await prisma.characterContentVersion.create({ data: {
     characterId,
     version: 1,
-    contentHash: soul.snapshot.compiled.fingerprint,
+    // Chat-sourced Generate re-derives this hash; a fixture-only formula would
+    // make the frozen chat content look tampered.
+    contentHash: characterContentHash({
+      personaSnapshot: soul.snapshot,
+      openingSnapshot,
+      appearanceSnapshot: {},
+    }),
     personaSnapshot: soul.snapshot as unknown as Prisma.InputJsonValue,
-    openingSnapshot: { firstMessage: "Welcome back. How is your day going?" },
+    openingSnapshot,
     appearanceSnapshot: {},
     sourceType: "playwright",
   } });
@@ -1377,12 +1385,12 @@ test("help desk submits a tracked support request", async ({ page }) => {
   await expect(page.getByRole("heading", { name: /ask for another review/i })).toBeVisible();
   await page.getByLabel("Target type").selectOption("character");
   await page.getByLabel("Target ID or link").fill(appealTarget);
-  await page.getByLabel("Decision ID").fill(appealDecision);
+  await page.getByLabel("Decision reference").fill(appealDecision);
   await page
     .getByLabel("Appeal details")
     .fill("Please review this character decision again with the attached context.");
   await page.getByRole("button", { name: /submit appeal/i }).click();
-  await expect(page.getByTestId("appeal-status")).toContainText(/Appeal .* submitted/);
+  await expect(page.getByTestId("appeal-status")).toContainText(/Appeal submitted/);
   await expect(page.getByTestId("appeal-status")).toHaveAttribute("role", "status");
   await expect(page.getByTestId("appeal-status")).toHaveAttribute("aria-live", "polite");
 
@@ -1737,7 +1745,7 @@ test("help desk signup redirect preserves anonymous appeal draft", async ({ page
   const appealDetails = appealForm.locator('textarea[name="appealText"]');
   await appealForm.getByLabel("Target type").selectOption("character");
   await appealForm.getByLabel("Target ID or link").fill(targetId);
-  await appealForm.getByLabel("Decision ID").fill(decisionId);
+  await appealForm.getByLabel("Decision reference").fill(decisionId);
   await appealDetails.fill(appealText);
   await appealForm.getByRole("button", { name: /submit appeal/i }).click();
 
@@ -1760,7 +1768,7 @@ test("help desk signup redirect preserves anonymous appeal draft", async ({ page
   await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
   await expect(appealForm.getByLabel("Target type")).toHaveValue("character");
   await expect(appealForm.getByLabel("Target ID or link")).toHaveValue(targetId);
-  await expect(appealForm.getByLabel("Decision ID")).toHaveValue(decisionId);
+  await expect(appealForm.getByLabel("Decision reference")).toHaveValue(decisionId);
   await expect(appealDetails).toHaveValue(appealText);
   await expect(page.getByTestId("appeal-status")).toContainText(/appeal draft was restored/i);
 
@@ -1813,7 +1821,7 @@ test("help desk signup redirect preserves anonymous appeal draft", async ({ page
     .not.toBeNull();
 
   await appealForm.getByRole("button", { name: /submit appeal/i }).click();
-  await expect(page.getByTestId("appeal-status")).toContainText(/Appeal .* submitted/);
+  await expect(page.getByTestId("appeal-status")).toContainText(/Appeal submitted/);
   await expect
     .poll(() =>
       page.evaluate(
@@ -3274,13 +3282,21 @@ test("create UI walks the multi-step builder and shows the character in My AI", 
   const editedName = `${characterName} Edited`;
   const editedDescription = "Edited from My AI to verify created-character management.";
 
-  await originalShell.getByRole("button", { name: "Edit character" }).click();
-  const editForm = originalShell.getByTestId("character-edit-form");
-  await expect(editForm).toBeVisible();
-  await editForm.getByRole("textbox", { name: "Character name" }).fill(editedName);
-  await editForm.getByRole("textbox", { name: "Character description" }).fill(editedDescription);
-  await editForm.getByRole("button", { name: "Save character edit" }).click();
-  await expect(page.getByText("Character updated.")).toBeVisible({ timeout: 10_000 });
+  // CR-06: Edit reopens the full wizard on an edit draft; unchanged looks keep the identity.
+  await originalShell.getByRole("link", { name: "Edit character" }).click();
+  await expect(page).toHaveURL(/\/create\?edit=/);
+  await expect(page.getByRole("heading", { name: `Edit ${characterName}` })).toBeVisible({ timeout: 10_000 });
+  await page.getByPlaceholder("Nova Reyes").fill(editedName);
+  await page.getByTestId("create-next").click();
+  await page.getByTestId("create-next").click();
+  await page.getByLabel("Character promise").fill(editedDescription);
+  await page.getByTestId("create-next").click();
+  await expect(page.getByTestId("edit-identity-kept")).toBeVisible();
+  await page.getByTestId("create-next").click();
+  await page.getByTestId("create-submit").click();
+  await expect(page.getByText(`Saved changes to ${editedName}.`, { exact: false })).toBeVisible({ timeout: 20_000 });
+  await page.goto("/custom");
+  await page.getByRole("button", { name: "created" }).click();
   await expect(originalCard).toContainText(editedName, { timeout: 10_000 });
   await expect(originalCard).toContainText(editedDescription, { timeout: 10_000 });
 
@@ -3357,7 +3373,7 @@ test("created removed character links to a prefilled Help Desk appeal", async ({
   await expect(page.getByTestId("appeal-status")).toContainText(/prefilled from your selected item/i);
 
   await appealForm.getByRole("button", { name: /submit appeal/i }).click();
-  await expect(page.getByTestId("appeal-status")).toContainText(/Appeal .* submitted/);
+  await expect(page.getByTestId("appeal-status")).toContainText(/Appeal submitted/);
 
   const appeal = await prisma.appeal.findFirst({
     where: { userId, targetType: "character", targetId: characterId },
@@ -3434,7 +3450,7 @@ test("create UI resumes a draft and prepares public characters for publication",
   await page.getByTestId("create-next").click();
   const publishStep = page.getByTestId("create-step-publish");
   await expect(publishStep).toBeVisible({ timeout: 10_000 });
-  await publishStep.getByRole("button", { name: "public" }).click();
+  await publishStep.getByRole("button", { name: "Public", exact: true }).click();
   await page.getByTestId("create-submit").click();
   await expect(
     page.getByText(`${characterName} is saved and awaiting publication preparation. Sharing starts after publication.`),
@@ -3469,7 +3485,9 @@ test("character detail signup redirect returns anonymous chat intent to the char
   await page.getByRole("button", { name: "Chat" }).click();
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/signup");
-  expect(new URL(page.url()).searchParams.get("next")).toBe("/characters/melissa-burke");
+  expect(new URL(page.url()).searchParams.get("next")).toBe(
+    "/characters/melissa-burke?resume=chat",
+  );
   const authExploreClass = await page
     .locator("aside")
     .getByRole("link", { name: "Explore" })
@@ -3483,12 +3501,9 @@ test("character detail signup redirect returns anonymous chat intent to the char
   await page.getByRole("button", { name: "Join Free" }).click();
   await completeSignupRecoveryCode(page);
 
-  await expect.poll(() => new URL(page.url()).pathname).toBe("/characters/melissa-burke");
-  await expect(page.getByRole("heading", { name: "Melissa Burke" })).toBeVisible({
-    timeout: 10_000,
-  });
-  await page.getByRole("button", { name: "Chat" }).click();
-  await expect(page).toHaveURL(/\/chat\/[^/]+$/);
+  // The detail page consumes resume=chat and opens the chat the guest asked
+  // for without a second click.
+  await expect(page).toHaveURL(/\/chat\/[^/]+$/, { timeout: 15_000 });
 });
 
 test("character detail like signup redirect returns anonymous intent and persists", async ({
@@ -3820,15 +3835,30 @@ test("chat UI opens Generate with character context and renders chat image attac
     },
   });
 
+  // The attachment's Generate link selects the durable Main Turn and its image,
+  // so Generate opens with that chat context rather than a bare character.
   const attachmentGenerate = assistantBubble.getByRole("link", { name: "Open in Generate" }).first();
-  await expect(attachmentGenerate).toHaveAttribute("href", `/generate?characterId=${characterId}`);
+  const generateTurn = await prisma.chatTurn.findUniqueOrThrow({
+    where: { assistantMessageId: assistantMessageId! }, select: { id: true },
+  });
+  const generateHref = new URL((await attachmentGenerate.getAttribute("href"))!, page.url());
+  expect(generateHref.pathname).toBe("/generate");
+  expect(Object.fromEntries(generateHref.searchParams)).toEqual({
+    characterId,
+    chatSessionId: expect.any(String),
+    chatTurnId: generateTurn.id,
+    chatAttempt: "2",
+    chatMediaAssetId: mediaId,
+  });
   await attachmentGenerate.click();
-  await expect(page).toHaveURL(new RegExp(`/generate\\?characterId=${characterId}$`), {
-    timeout: 10_000,
-  });
-  await expect(page.locator('select[aria-label="Character"]')).toHaveValue(characterId, {
-    timeout: 10_000,
-  });
+  await expect.poll(() => new URL(page.url()).pathname, { timeout: 10_000 }).toBe("/generate");
+  expect(new URL(page.url()).searchParams.get("characterId")).toBe(characterId);
+  const generatorContext = page.getByTestId("generator-context");
+  await expect(generatorContext).toContainText(
+    "The original source and its available character identity are attached.",
+    { timeout: 10_000 },
+  );
+  await expect(generatorContext.getByAltText("Original source image")).toBeVisible();
 });
 
 test("chat hub signup redirect returns anonymous user to the hub", async ({ page }) => {
@@ -4456,7 +4486,7 @@ test("generator UI explains config load failures instead of showing a fake zero 
   ).toBeVisible();
 });
 
-test("generator UI blocks insufficient-balance requests with an upgrade path", async ({ page }) => {
+test("generator UI blocks insufficient-balance requests with a coin store path", async ({ page }) => {
   const { email } = await startSignedInAdultSession(page, "generate-low-balance");
   await clearDreamcoins(email);
   const returnTarget = "/generate?characterId=lola-moonstruck";
@@ -4470,7 +4500,7 @@ test("generator UI blocks insufficient-balance requests with an upgrade path", a
   await expect(insufficientBalance).toContainText("you have 0");
   await expect(insufficientBalance).toHaveAttribute(
     "href",
-    `/upgrade?returnTo=${encodeURIComponent(returnTarget)}`,
+    `/coins?returnTo=${encodeURIComponent(returnTarget)}`,
   );
   await expect(insufficientBalance.getByText("Get coins")).toBeVisible();
   await expect(page.getByRole("button", { name: "Generate" })).toBeDisabled();
@@ -4574,9 +4604,10 @@ test("generator Image Edit queues a variation from a gallery source", async ({ p
   await page.getByRole("textbox", { name: "Edit instructions" }).fill(
     "Change the outfit to a deep red velvet jacket and keep the background unchanged.",
   );
-  await page.getByRole("textbox", { name: "Negative Prompt" }).fill(
-    "visible text, duplicate person",
-  );
+  // Edit instructions are free; a user-written negative prompt is a Premium
+  // control, so a free account sees it locked instead of hitting a 402.
+  await expect(page.getByRole("textbox", { name: "Negative Prompt" })).toBeDisabled();
+  await expect(page.getByText("Negative prompts are a Premium control.")).toBeVisible();
   const createEdit = page.getByRole("button", {
     name: /^Create edit · \d[\d,]* coins$/,
   });
@@ -4603,7 +4634,6 @@ test("generator Image Edit queues a variation from a gallery source", async ({ p
   expect(stored.sourceId).toContain(`media:${sourceMediaId}:variation:`);
   expect(stored.sourceMeta).toMatchObject({ sourceMediaId });
   expect(stored.prompt).toContain("Requested edit: Change the outfit to a deep red velvet jacket");
-  expect(stored.negativePrompt).toContain("visible text, duplicate person");
 
   await drainWorker(page.request, job.id);
   await expect(page.getByText("Generation complete.")).toBeVisible({ timeout: 10_000 });
@@ -4748,7 +4778,13 @@ test("generator UI queues an image job and surfaces completed media in the galle
     )
     .not.toBeNull();
 
+  // The heart flips optimistically; the Liked tab reads the server, so wait
+  // for the like to commit before switching.
+  const likeCommitted = page.waitForResponse((response) =>
+    response.request().method() === "POST" && response.url().endsWith(`/api/v1/media/${generatedMediaId}/like`),
+  );
   await generatedMediaCard.getByRole("button", { name: "Like", exact: true }).click();
+  expect((await likeCommitted).ok()).toBe(true);
   await page.getByRole("button", { name: "Liked" }).click();
   const likedCard = page.locator(`[data-media-id="${generatedMediaId}"]`);
   await expect(likedCard).toBeVisible({ timeout: 10_000 });
@@ -5117,9 +5153,9 @@ test("upgrade UI activates Premium, grants dreamcoins, and unlocks prompt contro
   await expect(page.locator('select[aria-label="Character"]')).toHaveValue("lola-moonstruck");
 
   await page.goto("/profile");
-  await expect(page.getByText(/1,?750 dreamcoins · Premium monthly/)).toBeVisible({
-    timeout: 10_000,
-  });
+  const balanceLink = page.getByTestId("profile-balance-link");
+  await expect(balanceLink).toHaveText(/^1,?750 dreamcoins$/, { timeout: 10_000 });
+  await expect(balanceLink.locator("..")).toContainText("· Premium monthly");
   const billingCard = page.getByTestId("profile-billing-card");
   await expect(billingCard.getByText("Premium monthly")).toBeVisible({ timeout: 10_000 });
   await expect(
@@ -5447,7 +5483,7 @@ test("community shows explicit empty states when public data is unavailable", as
   await expect(page.getByText("Public collections appear here.")).toBeVisible();
 });
 
-test("feed chat signup redirect returns anonymous intent to character detail", async ({
+test("feed chat signup redirect lands the guest in the chat they asked for", async ({
   page,
 }) => {
   await page.request.post("/api/v1/age-gate/accept", {
@@ -5467,7 +5503,7 @@ test("feed chat signup redirect returns anonymous intent to character detail", a
   await melissaFeedCard.getByRole("button", { name: "Chat" }).click();
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/signup");
-  expect(new URL(page.url()).searchParams.get("next")).toBe("/characters/melissa-burke");
+  expect(new URL(page.url()).searchParams.get("next")).toBe("/characters/melissa-burke?resume=chat");
   const authExploreClass = await page
     .locator("aside")
     .getByRole("link", { name: "Explore" })
@@ -5481,12 +5517,8 @@ test("feed chat signup redirect returns anonymous intent to character detail", a
   await page.getByRole("button", { name: "Join Free" }).click();
   await completeSignupRecoveryCode(page);
 
-  await expect.poll(() => new URL(page.url()).pathname).toBe("/characters/melissa-burke");
-  await expect(page.getByRole("heading", { name: "Melissa Burke" })).toBeVisible({
-    timeout: 10_000,
-  });
-  await page.getByRole("button", { name: "Chat" }).click();
-  await expect(page).toHaveURL(/\/chat\/[^/]+$/);
+  // The character page consumes resume=chat and opens the chat the guest asked for.
+  await expect(page).toHaveURL(/\/chat\/[^/]+$/, { timeout: 15_000 });
 });
 
 test("feed like signup redirect returns anonymous intent to focused feed item", async ({
@@ -5907,27 +5939,9 @@ test("profile UI handles redeem, referral, billing, and media actions", async ({
   await expect(page.getByText("Profile updated.")).toBeVisible({ timeout: 10_000 });
   await expect(page.getByText(nextName)).toBeVisible({ timeout: 10_000 });
 
-  await page.getByRole("checkbox", { name: "Product updates" }).uncheck();
   await page.getByRole("checkbox", { name: "Mute Slow Burn" }).check({ timeout: 10_000 });
-  await page.getByRole("button", { name: "Save preferences" }).click();
+  await page.getByRole("button", { name: "Save hidden tags" }).click();
   await expect(page.getByText("Preferences updated.")).toBeVisible({ timeout: 10_000 });
-  await expect
-    .poll(async () => {
-      const user = await prisma.user.findUniqueOrThrow({
-        where: { email },
-        select: { id: true },
-      });
-      const preferences = await prisma.userPreferences.findUnique({
-        where: { userId: user.id },
-        select: { notificationSettings: true },
-      });
-      const notificationSettings = preferences?.notificationSettings as
-        | { productUpdates?: unknown }
-        | null
-        | undefined;
-      return notificationSettings?.productUpdates;
-    })
-    .toBe(false);
   await expect
     .poll(async () => {
       const user = await prisma.user.findUniqueOrThrow({
@@ -5942,9 +5956,6 @@ test("profile UI handles redeem, referral, billing, and media actions", async ({
     })
     .toContain(mutedTagSlug);
   await page.reload();
-  await expect(page.getByRole("checkbox", { name: "Product updates" })).not.toBeChecked({
-    timeout: 10_000,
-  });
   await expect(page.getByRole("checkbox", { name: "Mute Slow Burn" })).toBeChecked({
     timeout: 10_000,
   });
@@ -5979,7 +5990,7 @@ test("profile UI handles redeem, referral, billing, and media actions", async ({
   await expect(page).toHaveURL(/\/upgrade$/);
 
   await page.goto("/profile");
-  await page.getByRole("button", { name: "media", exact: true }).click();
+  await page.getByRole("button", { name: "Media", exact: true }).click();
   const mediaCard = page.locator(`[data-media-id="${mediaId}"]`);
   await expect(mediaCard).toBeVisible({ timeout: 10_000 });
   const blankMediaCard = page.locator(`[data-media-id="${blankMediaId}"]`);
@@ -6026,7 +6037,7 @@ test("profile UI handles redeem, referral, billing, and media actions", async ({
   await expect(collectionCard.getByText("1 item")).toBeVisible();
 
   await page.goto("/profile");
-  await page.getByRole("button", { name: "media", exact: true }).click();
+  await page.getByRole("button", { name: "Media", exact: true }).click();
   await expect(mediaCard).toBeVisible({ timeout: 10_000 });
 
   await mediaCard.getByRole("button", { name: "Report media" }).click();
@@ -6063,11 +6074,15 @@ test("mobile profile media publish links directly to the focused Community colle
   const collectionName = uniqueName("mobile profile collection");
 
   await page.goto("/profile");
-  await page.getByRole("button", { name: "media", exact: true }).click();
+  await page.getByRole("button", { name: "Media", exact: true }).click();
   const mediaCard = page.locator(`[data-media-id="${mediaId}"]`);
   await expect(mediaCard).toBeVisible({ timeout: 10_000 });
 
   await mediaCard.getByLabel("Collection name").fill(collectionName);
+  // Collections start private; publishing is an explicit opt-in.
+  const publishToggle = mediaCard.getByLabel("Publish collection to Community");
+  await expect(publishToggle).not.toBeChecked();
+  await publishToggle.check();
   await mediaCard.getByRole("button", { name: "Create collection from media" }).click();
   await expect(page.getByText("Collection published to Community.")).toBeVisible({
     timeout: 10_000,
@@ -6210,7 +6225,7 @@ test("my ai shows deferred group chat and pack tabs as explicit empty states", a
     "aria-pressed",
     "false",
   );
-  await expect(page.getByRole("button", { name: "packs" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "packs" })).toHaveCount(0);
 
   await page.getByRole("button", { name: "group chats" }).click();
   await expect(page.getByRole("button", { name: "group chats" })).toHaveAttribute(
@@ -6218,13 +6233,11 @@ test("my ai shows deferred group chat and pack tabs as explicit empty states", a
     "true",
   );
   await expect(
-    page.getByRole("heading", { name: "Group chats are not in this beta" }),
+    page.getByRole("heading", { name: "No group chats yet" }),
   ).toBeVisible();
-  await expect(page.getByTestId("library-empty-state").getByRole("link")).toHaveCount(0);
-
-  await page.getByRole("button", { name: "packs" }).click();
-  await expect(page.getByRole("heading", { name: "Packs are not in this beta" })).toBeVisible();
-  await expect(page.getByTestId("library-empty-state").getByRole("link")).toHaveCount(0);
+  await expect(
+    page.getByTestId("library-empty-state").getByRole("link", { name: "Create a group chat" }),
+  ).toHaveAttribute("href", "/chat/groups");
   expect(consoleErrors.filter((message) => !message.includes("favicon"))).toEqual([]);
 });
 
@@ -6239,7 +6252,7 @@ test("profile subroutes deep-link to the matching account panels", async ({ page
     {
       path: "/profile/notifications",
       testId: "profile-notifications-panel",
-      activeLabel: "Product updates",
+      activeLabel: "Save hidden tags",
     },
     {
       path: "/profile/account-management",
@@ -6419,7 +6432,9 @@ test("profile account management signs out sessions and deletes the account", as
   await page.getByLabel("Email").filter({ visible: true }).fill(email);
   await page.getByLabel("Password").filter({ visible: true }).fill("password123");
   await page.getByRole("button", { name: "Login" }).click();
-  await expect(page.getByTestId("auth-status")).toHaveText("Account is not active");
+  await expect(page.getByTestId("auth-status")).toHaveText(
+    `This account was deleted at your request. Erasure completes by ${deletion.graceEndsAt.toISOString().slice(0, 10)}; it can no longer be signed in to.`,
+  );
 
   // INTENT: the browser proves the real 30-day contract above. This run owns
   // its disposable Main DB, Redis namespace, Chat FS, and Blob root, so

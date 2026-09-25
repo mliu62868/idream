@@ -164,7 +164,7 @@ describe("Main-owned Chat façade", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     fetchMock.mockReset();
-    fetchMock.mockResolvedValue(Response.json({ ok: true }, { status: 202 }));
+    fetchMock.mockImplementation(async () => Response.json({ ok: true }, { status: 202 }));
   });
 
   afterAll(async () => {
@@ -194,6 +194,28 @@ describe("Main-owned Chat façade", () => {
       where: { id: { in: [CONTENT_ID, CONTENT_V2_ID] } },
     });
     await prisma.character.delete({ where: { id: CHARACTER_ID } });
+  });
+
+  // SPEC: 客户端错误的 details 与 Main 信封同口径透出（如会话为何只读、去哪继续）；5xx 不透出。
+  it("passes client-error details through the façade envelope", async () => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const response = await proxyChatRequest(authRequest("/api/v1/chat/groups", {
+      method: "POST",
+      headers: { "x-idream-viewer-scope": `user:${USER_ID}` },
+      body: JSON.stringify({}),
+    }), ["chat", "groups"]);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: "bad_request", details: { issues: expect.any(Array) } });
+  });
+
+  it("refuses to open a chat for a different account than the caller states", async () => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const response = await proxyChatRequest(authRequest("/api/v1/chat/sessions", {
+      method: "POST",
+      headers: { "x-idream-viewer-scope": "user:someone-else" },
+      body: JSON.stringify({ characterId: CHARACTER_ID }),
+    }), ["chat", "sessions"]);
+    expect(response.status).toBe(409);
   });
 
   it("keeps session reads in Main even when Chat execution is unavailable", async () => {
@@ -490,7 +512,7 @@ describe("Main-owned Chat façade", () => {
       where: { sessionId_idempotencyKey: { sessionId, idempotencyKey: key } },
     })).resolves.toMatchObject({ assistantStatus: "pending" });
 
-    fetchMock.mockResolvedValue(Response.json({ ok: true }, { status: 202 }));
+    fetchMock.mockImplementation(async () => Response.json({ ok: true }, { status: 202 }));
     await prisma.chatTurn.updateMany({
       where: { sessionId, idempotencyKey: key },
       data: { admissionNextRunAt: new Date(0) },
@@ -548,7 +570,7 @@ describe("Main-owned Chat façade", () => {
       data: { admissionNextRunAt: new Date(1) },
     });
     fetchMock.mockClear();
-    fetchMock.mockResolvedValue(Response.json({ ok: true }, { status: 202 }));
+    fetchMock.mockImplementation(async () => Response.json({ ok: true }, { status: 202 }));
 
     await expect(dispatchPendingChatAgentRuns()).resolves.toEqual({ admitted: 1, pending: 1 });
     expect(fetchMock).toHaveBeenCalledOnce();
@@ -652,7 +674,7 @@ describe("Main-owned Chat façade", () => {
       },
     });
     fetchMock.mockClear();
-    fetchMock.mockResolvedValue(Response.json({ ok: true }, { status: 202 }));
+    fetchMock.mockImplementation(async () => Response.json({ ok: true }, { status: 202 }));
     await prisma.chatTurn.updateMany({
       where: { sessionId, idempotencyKey: key },
       data: { admissionNextRunAt: new Date(0) },
@@ -857,8 +879,16 @@ describe("Main-owned Chat façade", () => {
     });
 
     fetchMock.mockClear();
-    fetchMock.mockResolvedValue(Response.json({ ok: true, active: false }));
-    await expect(dispatchPendingChatEvents({ lane: "lifecycle" })).resolves.toEqual({ delivered: 1, failed: 0 });
+    // A Response body can be read once, so each mocked delivery gets a fresh one: the lane
+    // also delivers other pending rows in the shared test DB before this Turn's row.
+    fetchMock.mockImplementation(async () => Response.json({ ok: true, active: false }));
+    for (let round = 0; round < 20; round += 1) {
+      await dispatchPendingChatEvents({ lane: "lifecycle" });
+      const row = await prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: pending.id } });
+      if (row.status !== "pending") break;
+    }
+    await expect(prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: pending.id } }))
+      .resolves.toMatchObject({ status: "delivered" });
     expect(fetchMock).toHaveBeenCalledWith(
       `${env.CHAT_SERVICE_URL}/internal/agent-runs/${begun.snapshot!.turnId}/1/cancel`,
       expect.objectContaining({ method: "POST" }),

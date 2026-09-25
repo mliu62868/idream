@@ -14,18 +14,21 @@ import {
   ImageIcon,
   Link2,
   LogOut,
+  MessageCircle,
   Pencil,
   Save,
   Scale,
   Search,
+  Sparkles,
   Trash2,
   UserCog,
   Volume2,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { UserPersonaPanel } from "./UserPersonaPanel";
 import { RecoveryCodeCard } from "./AccountRecovery";
 import { AccountAgeVerification } from "./AccountAgeVerification";
+import { AffiliatePanel } from "./AffiliatePanel";
 import { AccountEmailVerification } from "./AccountEmailVerification";
 import {
   isBlankImagePreview,
@@ -33,6 +36,7 @@ import {
   isPrivateMediaUrl,
 } from "@/lib/image-delivery";
 import {
+  parseChatSessionCreateResponse,
   parseLibraryResponse,
   parseMediaCollectionsResponse,
   parseProfileResponse,
@@ -51,6 +55,7 @@ import {
   type AuthorityStatus,
 } from "./authority-state";
 import {
+  apiEnvelopeErrorMessage,
   loadViewerResource,
   requestErrorMessage,
 } from "@/lib/viewer-resource-client";
@@ -59,6 +64,9 @@ import { authHrefForTarget, authNextTargetFromPath } from "./authRedirect";
 import {
   fetchProtectedForViewer,
   invalidateViewerAuthority,
+  isTimeoutError,
+  VIEWER_CHECK_TIMEOUT_MS,
+  VIEWER_UNCONFIRMED_MESSAGE,
   type ViewerFetcher,
 } from "./viewer-auth";
 import { useReportDialog } from "./ReportDialog";
@@ -95,7 +103,6 @@ type MediaCollectionCreatePayload = {
 };
 
 type AuthState = "loading" | "authenticated" | "anonymous" | "error";
-type CharacterEditInput = { name: string; description: string };
 type CollectionVisibility = MediaCollection["visibility"];
 type ProfileWorkspaceProps = {
   routePath: string;
@@ -144,8 +151,33 @@ export function createdCharacterPublicationStatus(input: {
   ) {
     return "awaiting publication";
   }
-  return input.status?.replaceAll("_", " ") ?? "";
+  if (!input.status) return "";
+  return CHARACTER_STATUS_LABELS[input.status] ?? "unavailable";
 }
+
+// INTENT: 用户语言，不回显数据库枚举原值；未知值落到「unavailable」而不是原样透出。
+const CHARACTER_STATUS_LABELS: Record<string, string> = {
+  draft: "draft",
+  approved: "private",
+  rejected: "not approved",
+  removed: "removed",
+  archived: "archived",
+};
+
+const COLLECTION_VISIBILITY_LABELS: Record<string, string> = {
+  private: "private",
+  unlisted: "link only",
+  public: "in Community",
+};
+
+const REFUND_STATE_LABELS: Record<string, string> = {
+  provider_dispatching: "being sent to the payment provider",
+  provider_unknown: "being confirmed with the payment provider",
+  claimable: "ready to claim",
+  awaiting_approval: "awaiting approval",
+  awaiting_payment: "awaiting payment",
+  in_progress: "in progress",
+};
 
 export function accountDeletionLoginHref(payload: unknown) {
   const value = payload as {
@@ -162,15 +194,24 @@ export function accountDeletionLoginHref(payload: unknown) {
   return `/login?${params.toString()}`;
 }
 
+async function failureMessage(response: Response, fallback: string) {
+  return apiEnvelopeErrorMessage(await response.json().catch(() => null)) || fallback;
+}
+
 export function loadProfileForViewer(fetcher: ViewerFetcher = fetch) {
   return fetchProtectedForViewer(
     "/api/v1/profile",
     { cache: "no-store" },
-    fetcher,
+    // Bounded like the /me check before it: this read is the second half of
+    // confirming the owner, and every private request waits on that answer.
+    // The timer starts when this request starts, not while /me is still running.
+    (input, init) => String(input) === "/api/v1/profile"
+      ? fetcher(input, { ...init, signal: AbortSignal.timeout(VIEWER_CHECK_TIMEOUT_MS) })
+      : fetcher(input, init),
   );
 }
 
-const tabs = ["recent", "characters", "created", "presets", "media", "group-chats", "packs"] as const;
+const tabs = ["recent", "characters", "created", "presets", "media", "group-chats"] as const;
 type LibraryTab = (typeof tabs)[number];
 
 function libraryTabFromSearch(search: string): LibraryTab {
@@ -179,13 +220,12 @@ function libraryTabFromSearch(search: string): LibraryTab {
 }
 
 const tabLabels: Record<LibraryTab, string> = {
-  recent: "recent",
-  characters: "characters",
-  created: "created",
-  presets: "presets",
-  media: "media",
-  "group-chats": "group chats",
-  packs: "packs",
+  recent: "Recent",
+  characters: "Characters",
+  created: "Created",
+  presets: "Presets",
+  media: "Media",
+  "group-chats": "Group chats",
 };
 
 function emptyStateForTab(tab: LibraryTab, emptyCta: string | null) {
@@ -229,12 +269,6 @@ function emptyStateForTab(tab: LibraryTab, emptyCta: string | null) {
       ctaHref: "/chat/groups",
       ctaLabel: "Create a group chat",
     },
-    packs: {
-      title: "Packs are not in this beta",
-      copy: "Saved bundles will appear here when packs are enabled. Current beta keeps characters and presets separate.",
-      ctaHref: null,
-      ctaLabel: "",
-    },
   };
   return { ...defaults[tab], ctaHref: emptyCta ?? defaults[tab].ctaHref };
 }
@@ -246,7 +280,7 @@ const profileDeepLinkTargets: Record<string, { selector: string; focusSelector: 
   },
   "/profile/notifications": {
     selector: "[data-testid='profile-notifications-panel']",
-    focusSelector: "[aria-label='Product updates']",
+    focusSelector: "[aria-label='Save hidden tags']",
   },
   "/profile/account-management": {
     selector: "[data-testid='profile-account-management-panel']",
@@ -301,8 +335,9 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
   const requestSerialRef = useRef(0);
   const confirmedOwnerRef = useRef<string | null>(null);
   const isConfirmedOwner = useCallback((ownerId: string) => confirmedOwnerRef.current === ownerId, []);
+  const confirmationRef = useRef<Promise<void> | null>(null);
 
-  const refreshProfile = useCallback(async () => {
+  const confirmProfile = useCallback(async () => {
     const serial = ++requestSerialRef.current;
     confirmedOwnerRef.current = null;
     // A focus event may follow a sign-in in another tab. The cached /me result
@@ -333,9 +368,27 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
       setViewer((current) => ({
         ...current,
         authState: "error",
-        authority: failedAuthorityStatus(current.authority, requestErrorMessage(error, "Account data could not load.")),
+        authority: failedAuthorityStatus(
+          current.authority,
+          isTimeoutError(error) ? VIEWER_UNCONFIRMED_MESSAGE : requestErrorMessage(error, "Account data could not load."),
+        ),
       }));
     }
+  }, []);
+
+  const refreshProfile = useCallback(() => {
+    const confirmation = confirmProfile().finally(() => {
+      if (confirmationRef.current === confirmation) confirmationRef.current = null;
+    });
+    confirmationRef.current = confirmation;
+    return confirmation;
+  }, [confirmProfile]);
+  // INTENT: every refresh clears the confirmed owner first, so a private
+  // request made during one — a panel mounting, a Save clicked just after focus
+  // — waits for the answer instead of being refused. Refusing left each caller
+  // to guess when to ask again; three panels grew their own back-off loops.
+  const ownerConfirmed = useCallback(async () => {
+    while (confirmationRef.current) await confirmationRef.current;
   }, []);
 
   useEffect(() => {
@@ -362,15 +415,17 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
     profileAuthority={viewer.authority}
     refreshProfile={refreshProfile}
     isConfirmedOwner={isConfirmedOwner}
+    ownerConfirmed={ownerConfirmed}
   />;
 }
 
-function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority, refreshProfile, isConfirmedOwner }: Readonly<ProfileWorkspaceProps & {
+function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority, refreshProfile, isConfirmedOwner, ownerConfirmed }: Readonly<ProfileWorkspaceProps & {
   profile: ReturnType<typeof parseProfileResponse> | null;
   authState: AuthState;
   profileAuthority: AuthorityStatus;
   refreshProfile: () => Promise<void>;
   isConfirmedOwner: (ownerId: string) => boolean;
+  ownerConfirmed: () => Promise<void>;
 }>) {
   const { accepted: ageGateAccepted } = useAgeGateAccess();
   const [authTarget, setAuthTarget] = useState("/profile");
@@ -388,7 +443,10 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
   const profileOwnerScope = profile ? `user:${profile.user.id}` : "";
   const ownerId = profile?.user.id;
   const mountedRef = useRef(false);
-  useEffect(() => {
+  // INVARIANT: a layout effect. The account panels below mount in the same
+  // commit as this subtree, and their passive effects run before this
+  // component's — set passively, their first read found it "unmounted".
+  useLayoutEffect(() => {
     mountedRef.current = true;
     return () => { mountedRef.current = false; };
   }, []);
@@ -396,14 +454,20 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
     mountedRef.current && Boolean(ownerId && isConfirmedOwner(ownerId)), [isConfirmedOwner, ownerId]);
   // The cookie may change before focus fires. Bind every private read/write to
   // the server-confirmed owner, and abandon continuations after its subtree ends.
+  // A confirmation in flight is waited out: only one that names another owner
+  // (which remounts this subtree) abandons the request.
   const fetchForOwner = useCallback(async (input: RequestInfo | URL, init?: RequestInit) => {
-    if (!ownerRequestIsCurrent()) throw new DOMException("Account confirmation changed", "AbortError");
+    const confirmCurrentOwner = async () => {
+      if (!ownerRequestIsCurrent()) await ownerConfirmed();
+      if (!ownerRequestIsCurrent()) throw new DOMException("Account confirmation changed", "AbortError");
+    };
+    await confirmCurrentOwner();
     const headers = new Headers(init?.headers);
     headers.set("x-idream-viewer-scope", profileOwnerScope);
     const response = await fetch(input, { ...init, headers });
-    if (!ownerRequestIsCurrent()) throw new DOMException("Account confirmation changed", "AbortError");
+    await confirmCurrentOwner();
     return response;
-  }, [ownerRequestIsCurrent, profileOwnerScope]);
+  }, [ownerConfirmed, ownerRequestIsCurrent, profileOwnerScope]);
   const [tab, setTab] = useState<LibraryTab>(() =>
     typeof window === "undefined" ? "recent" : libraryTabFromSearch(window.location.search),
   );
@@ -674,24 +738,38 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
   // SPEC: 邀请人能看到自己的邀请有没有转化、奖励有没有发。
   // INTENT: /api/v1/referrals 一直返回这些行但没有任何调用方，用户拿到过奖励也无从查证。
   //   只汇总计数，不回显被邀请人的账号标识。
-  async function loadReferralResults() {
+  // INTENT: 进页即读，已经生成过邀请的用户不用再点 Invite 才看到自己的链接。
+  //   链接只在已有邀请行时展示：注册按 code 找邀请行，GET 本身不建行。
+  const loadReferralResults = useCallback(async () => {
     try {
       const response = await fetchForOwner("/api/v1/referrals");
       if (!response.ok) return;
       const payload = (await response.json()) as {
-        data?: { referrals?: Array<{ rewardStatus?: string | null }> };
+        data?: { code?: string; referrals?: Array<{ inviteeId?: string | null; rewardStatus?: string | null }> };
       };
       const rows = payload.data?.referrals ?? [];
-      const rewarded = rows.filter((row) => row.rewardStatus === "granted").length;
+      const code = payload.data?.code;
+      if (rows.length > 0 && code) {
+        setReferralUrl(new URL(`/signup?ref=${encodeURIComponent(code)}`, window.location.origin).toString());
+      }
+      // 未被使用的邀请行本身不是一次注册。
+      const signups = rows.filter((row) => row.inviteeId);
+      const rewarded = signups.filter((row) => row.rewardStatus === "granted").length;
       setReferralResults({
-        total: rows.length,
+        total: signups.length,
         rewarded,
-        pending: rows.length - rewarded,
+        pending: signups.length - rewarded,
       });
     } catch {
       // 邀请链接本身已经可用；结果读取失败不改写它的状态。
     }
-  }
+  }, [fetchForOwner]);
+
+  useEffect(() => {
+    if (!ageGateAccepted || !profileOwnerScope) return;
+    const timer = window.setTimeout(() => void loadReferralResults(), 0);
+    return () => window.clearTimeout(timer);
+  }, [ageGateAccepted, profileOwnerScope, loadReferralResults]);
 
   async function invite() {
     setStatus("");
@@ -852,7 +930,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
     try {
       const response = await fetchForOwner(`/api/v1/media/${id}`, { method: "DELETE" });
       if (!response.ok) {
-        setStatus("Delete failed.");
+        setStatus(await failureMessage(response, "Delete failed."));
         return;
       }
       setStatus("Media deleted.");
@@ -884,54 +962,41 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
     }
   }
 
+  // Authors may always chat with their own Character (the session pins its
+  // current version); open or resume that session directly from My AI.
+  async function startCharacterChat(id: string) {
+    setStatus("");
+    try {
+      const response = await fetchForOwner("/api/v1/chat/sessions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ characterId: id }),
+      });
+      if (!response.ok) {
+        setStatus(await failureMessage(response, "Could not start chat. Please try again."));
+        return;
+      }
+      const payload = parseChatSessionCreateResponse(await response.json());
+      window.location.assign(`/chat/${encodeURIComponent(payload.session.id)}`);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      setStatus("Could not start chat. Please try again.");
+    }
+  }
+
   async function duplicateCharacter(id: string) {
     setStatus("");
     setDeleteConfirmCharacterId(null);
     try {
       const response = await fetchForOwner(`/api/v1/characters/${id}/duplicate`, { method: "POST" });
       if (!response.ok) {
-        setStatus("Duplicate failed.");
+        setStatus(await failureMessage(response, "Duplicate failed."));
         return;
       }
       setStatus("Character duplicated to your created tab.");
       await refreshLibrary(tab);
     } catch {
       setStatus("Network error. Please try again.");
-    }
-  }
-
-  async function updateCharacterDetails(id: string, input: CharacterEditInput) {
-    setStatus("");
-    const name = input.name.trim();
-    const description = input.description.trim();
-    if (!name) {
-      setStatus("Enter a character name.");
-      return false;
-    }
-    if (!description) {
-      setStatus("Enter a character description.");
-      return false;
-    }
-    try {
-      const response = await fetchForOwner(`/api/v1/characters/${id}`, {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name, description }),
-      });
-      const payload = (await response.json()) as {
-        ok?: boolean;
-        error?: { message?: string };
-      };
-      if (!response.ok || payload.ok === false) {
-        setStatus(payload.error?.message ?? "Character update failed.");
-        return false;
-      }
-      setStatus("Character updated.");
-      await refreshLibrary(tab);
-      return true;
-    } catch {
-      setStatus("Network error. Please try again.");
-      return false;
     }
   }
 
@@ -945,7 +1010,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
     try {
       const response = await fetchForOwner(`/api/v1/characters/${id}`, { method: "DELETE" });
       if (!response.ok) {
-        setStatus("Delete failed.");
+        setStatus(await failureMessage(response, "Delete failed."));
         return;
       }
       setStatus("Character deleted.");
@@ -968,7 +1033,8 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
         body: JSON.stringify({ visibility: next }),
       });
       if (!response.ok) {
-        setStatus("Visibility update failed.");
+        // The server says why (e.g. a report must be resolved or appealed first).
+        setStatus(await failureMessage(response, "Visibility update failed."));
         return;
       }
       setStatus(
@@ -1088,7 +1154,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
       ? `Full refund completed · ${refund.reversedDreamcoins.toLocaleString()} Dreamcoins reversed · balance ${refund.balanceAfter.toLocaleString()}`
       : refund.state === "canceled"
         ? `Refund canceled · subscription access and ${refund.reversedDreamcoins.toLocaleString()} Dreamcoins restored`
-        : `Full refund ${refund.state.replaceAll("_", " ")} · access frozen · ${refund.reversedDreamcoins.toLocaleString()} Dreamcoins reversed`
+        : `Full refund ${REFUND_STATE_LABELS[refund.state] ?? "in progress"} · access frozen · ${refund.reversedDreamcoins.toLocaleString()} Dreamcoins reversed`
     : null;
   const isMyAiRoute = routePath.startsWith("/custom");
   const workspaceTitle = isMyAiRoute ? "My AI" : "Profile";
@@ -1327,7 +1393,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
           <h2 className="mb-3 font-bold">Your collections</h2>
           <ul className="grid gap-2 sm:grid-cols-2">
             {mediaCollections.map((collection) => <li key={collection.id}><Link className="block rounded-lg bg-white/5 p-3 text-sm hover:bg-white/10" href={`/community?collection=${encodeURIComponent(collection.id)}`}>
-              {collection.name} · {collection.itemCount} items · {collection.visibility}
+              {collection.name} · {collection.itemCount} items · {COLLECTION_VISIBILITY_LABELS[collection.visibility] ?? "private"}
             </Link></li>)}
           </ul>
         </section>}
@@ -1408,8 +1474,8 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
                   onCreateCollection={createMediaCollection}
                   onAddToCollection={addMediaToCollection}
                   showCharacterActions={isCreatedTab}
-                  onUpdateCharacter={updateCharacterDetails}
                   onDuplicateCharacter={duplicateCharacter}
+                  onStartChat={startCharacterChat}
                   deleteConfirmMediaId={deleteConfirmMediaId}
                   deleteConfirmCharacterId={deleteConfirmCharacterId}
                   onDeleteCharacter={deleteCharacter}
@@ -1508,6 +1574,26 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
               <Link2 className="h-4 w-4" />
               Invite
             </button>
+            {/* The link belongs next to the button that makes it; the page-level status is far away. */}
+            {referralUrl && (
+              <div className="mt-3 flex items-center gap-2">
+                <input
+                  aria-label="Referral link"
+                  className="h-10 min-w-0 flex-1 rounded-[12px] bg-[rgb(36,36,36)] px-3 text-[12px] font-semibold text-[rgb(230,230,230)] outline-none"
+                  readOnly
+                  value={referralUrl}
+                />
+                <button
+                  aria-label="Copy invite link"
+                  className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[rgb(36,36,36)] text-white"
+                  onClick={copyReferralUrl}
+                  title="Copy invite link"
+                  type="button"
+                >
+                  <Copy className="h-4 w-4" />
+                </button>
+              </div>
+            )}
             {referralResults ? (
               <p
                 className="mt-3 text-[12px] font-semibold text-[rgb(170,170,170)]"
@@ -1519,6 +1605,8 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
               </p>
             ) : null}
           </div>
+          {/* AF-01: the commercial affiliate program is separate from the referral reward above. */}
+          {ownerId && <AffiliatePanel key={`affiliate:${ownerId}`} fetcher={fetchForOwner} />}
           <div
             className="rounded-[14px] bg-[rgb(18,18,18)] p-4"
             data-testid="profile-billing-card"
@@ -1571,7 +1659,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
             </div>
           </div>
         </div>
-        {(status || referralUrl) && (
+        {status && (
           <div className="mt-4 space-y-3">
             {status && (
               <div className="flex flex-wrap items-center gap-2">
@@ -1591,25 +1679,6 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
                     View in Community
                   </Link>
                 )}
-              </div>
-            )}
-            {referralUrl && (
-              <div className="flex max-w-xl items-center gap-2">
-                <input
-                  aria-label="Referral link"
-                  className="h-10 min-w-0 flex-1 rounded-[12px] bg-[rgb(18,18,18)] px-3 text-[12px] font-semibold text-[rgb(230,230,230)] outline-none"
-                  readOnly
-                  value={referralUrl}
-                />
-                <button
-                  aria-label="Copy invite link"
-                  className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[rgb(36,36,36)] text-white"
-                  onClick={copyReferralUrl}
-                  title="Copy invite link"
-                  type="button"
-                >
-                  <Copy className="h-4 w-4" />
-                </button>
               </div>
             )}
           </div>
@@ -1647,19 +1716,21 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
             >
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="text-[13px] font-semibold text-white">
-                  Product updates
+                  Notifications & recommendations
                   <p className="mt-1 text-[11px] font-medium leading-4 text-[rgb(114,113,112)]">
-                    Announcements show up in the app. Email subscriptions are not available yet.
+                    Product announcements show up in the app. Email subscriptions are not available yet.
                   </p>
                 </div>
+                {/* 这个按钮只保存下面的 Hide tags；按钮名要说清保存的是什么。 */}
                 <button
+                  aria-label="Save hidden tags"
                   className="inline-flex h-9 items-center gap-2 rounded-full bg-black/30 px-3 text-[12px] font-bold text-white disabled:opacity-50"
                   disabled={!preferencesAuthority.hasSnapshot}
                   onClick={savePreferences}
                   type="button"
                 >
                   <Bell className="h-4 w-4" />
-                  Save preferences
+                  Save hidden tags
                 </button>
               </div>
               {preferencesAuthority.phase === "loading" &&
@@ -1746,8 +1817,8 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
             <p className="mt-2 text-sm leading-6 text-white/60">Confirm your password to replace a recovery code or delete your account.</p>
             <button className="mt-3 rounded-full bg-[rgb(36,36,36)] px-4 py-3 text-sm font-bold disabled:opacity-40" type="button" disabled={securityPending || !securityPassword || !profileOwnerScope} onClick={generateRecoveryCode}>Generate new recovery code</button>
             {savedRecoveryCode && savedRecoveryCode.ownerId === profileOwnerScope.replace(/^user:/, "") && <div className="mt-4"><RecoveryCodeCard key={savedRecoveryCode.code} code={savedRecoveryCode.code} ownerId={savedRecoveryCode.ownerId} /></div>}
-            {ownerId && <AccountEmailVerification key={ownerId} ownerId={ownerId} fetcher={fetchForOwner} />}
-            {ownerId && <AccountAgeVerification key={ownerId} ownerId={ownerId} fetcher={fetchForOwner} />}
+            {ownerId && <AccountEmailVerification key={`email:${ownerId}`} ownerId={ownerId} fetcher={fetchForOwner} />}
+            {ownerId && <AccountAgeVerification key={`age:${ownerId}`} ownerId={ownerId} fetcher={fetchForOwner} />}
             <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
               Delete account
               <span className="mt-1 block text-[11px] font-medium normal-case leading-5 text-[rgb(154,153,152)]">
@@ -1823,8 +1894,8 @@ function LibraryCard({
   onInvalidImagePreview,
   onReport,
   showCharacterActions = false,
-  onUpdateCharacter,
   onDuplicateCharacter,
+  onStartChat,
   deleteConfirmMediaId,
   deleteConfirmCharacterId,
   onDeleteCharacter,
@@ -1847,8 +1918,8 @@ function LibraryCard({
   onInvalidImagePreview: (id: string) => void;
   onReport: (id: string) => void;
   showCharacterActions?: boolean;
-  onUpdateCharacter?: (id: string, input: CharacterEditInput) => Promise<boolean>;
   onDuplicateCharacter?: (id: string) => void;
+  onStartChat?: (id: string) => void;
   deleteConfirmMediaId?: string | null;
   deleteConfirmCharacterId?: string | null;
   onDeleteCharacter?: (id: string) => void;
@@ -1856,12 +1927,8 @@ function LibraryCard({
 }>) {
   const character = item.character;
   const { summary, title } = profileLibraryCardPresentation(item);
-  const [editing, setEditing] = useState(false);
-  const [editName, setEditName] = useState(title);
-  const [editDescription, setEditDescription] = useState(summary ?? "");
-  const [savingEdit, setSavingEdit] = useState(false);
   const [collectionName, setCollectionName] = useState("");
-  const [publishCollection, setPublishCollection] = useState(true);
+  const [publishCollection, setPublishCollection] = useState(false);
   const [selectedCollectionId, setSelectedCollectionId] = useState("");
   const [collectionBusy, setCollectionBusy] = useState(false);
   const contentType = item.contentType?.toLowerCase() ?? "";
@@ -1892,23 +1959,6 @@ function LibraryCard({
       ? characterAppealHref(character?.id ?? item.id, title)
       : null;
   const confirmMediaDelete = isMediaItem && deleteConfirmMediaId === item.id;
-
-  function startCharacterEdit() {
-    setEditName(title);
-    setEditDescription(summary ?? "");
-    setEditing(true);
-  }
-
-  async function saveCharacterEdit() {
-    if (!onUpdateCharacter) return;
-    setSavingEdit(true);
-    const saved = await onUpdateCharacter(item.id, {
-      description: editDescription,
-      name: editName,
-    });
-    setSavingEdit(false);
-    if (saved) setEditing(false);
-  }
 
   async function createCollectionFromMedia() {
     if (!onCreateCollection) return;
@@ -2121,15 +2171,38 @@ function LibraryCard({
               })}
             </span>
           )}
+          {/* INTENT: 计数是别人聊了多少、赞了多少。私有角色的聊天只有本人，印出来会被读成「表现」。 */}
+          {(item.visibility === "public" || item.visibility === "unlisted") && (
+            <span className="text-[11px] font-bold text-[rgb(170,170,170)]" data-testid="created-character-performance">
+              {item.chats ?? "0"} chats · {item.likes ?? "0"} likes
+            </span>
+          )}
           <button
+            aria-label="Chat with character"
+            className="inline-flex h-8 items-center gap-1 rounded-full bg-white px-3 text-[12px] font-black text-[rgb(13,13,13)]"
+            onClick={() => onStartChat?.(character?.id ?? item.id)}
+            type="button"
+          >
+            <MessageCircle className="h-3.5 w-3.5" />
+            Chat
+          </button>
+          <Link
+            aria-label="Generate with character"
+            className="inline-flex h-8 items-center gap-1 rounded-full bg-[rgb(253,95,194)] px-3 text-[12px] font-black text-[rgb(13,13,13)]"
+            href={`/generate?characterId=${encodeURIComponent(character?.id ?? item.id)}`}
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+            Generate
+          </Link>
+          {/* CR-06: edits reuse the full Create wizard and save a new version. */}
+          <Link
             aria-label="Edit character"
             className="inline-flex h-8 items-center gap-1 rounded-full bg-[rgb(46,46,46)] px-3 text-[12px] font-bold text-white"
-            onClick={startCharacterEdit}
-            type="button"
+            href={`/create?edit=${encodeURIComponent(character?.id ?? item.id)}`}
           >
             <Pencil className="h-3.5 w-3.5" />
             Edit
-          </button>
+          </Link>
           <button
             className="inline-flex h-8 items-center gap-1 rounded-full bg-[rgb(46,46,46)] px-3 text-[12px] font-bold text-white"
             onClick={() => onToggleVisibility?.(item.id, item.visibility)}
@@ -2169,49 +2242,6 @@ function LibraryCard({
             {confirmDelete ? "Confirm delete" : <Trash2 className="h-3.5 w-3.5" />}
           </button>
         </div>
-        {editing && (
-          <div
-            className="mt-3 rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-3"
-            data-testid="character-edit-form"
-          >
-            <label className="block text-[11px] font-black uppercase text-[rgb(114,113,112)]">
-              Name
-              <input
-                aria-label="Character name"
-                className="mt-2 h-10 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] normal-case text-white outline-none"
-                onChange={(event) => setEditName(event.target.value)}
-                value={editName}
-              />
-            </label>
-            <label className="mt-3 block text-[11px] font-black uppercase text-[rgb(114,113,112)]">
-              Description
-              <textarea
-                aria-label="Character description"
-                className="mt-2 min-h-24 w-full resize-y rounded-[10px] bg-[rgb(36,36,36)] px-3 py-2 text-[13px] normal-case leading-5 text-white outline-none"
-                onChange={(event) => setEditDescription(event.target.value)}
-                value={editDescription}
-              />
-            </label>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button
-                aria-label="Save character edit"
-                className="inline-flex h-9 items-center justify-center rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)] disabled:opacity-50"
-                disabled={savingEdit}
-                onClick={() => void saveCharacterEdit()}
-                type="button"
-              >
-                {savingEdit ? "Saving..." : "Save"}
-              </button>
-              <button
-                className="inline-flex h-9 items-center justify-center rounded-full bg-[rgb(36,36,36)] px-4 text-[12px] font-bold text-white"
-                onClick={() => setEditing(false)}
-                type="button"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        )}
       </div>
     );
   }

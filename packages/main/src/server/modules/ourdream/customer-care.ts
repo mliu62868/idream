@@ -1,4 +1,4 @@
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { createHash } from "node:crypto";
 import {
   APPEAL_TARGET_TYPES,
@@ -41,10 +41,30 @@ const appealTargetTypeSchema = z.enum(APPEAL_TARGET_TYPES);
 
 const appealCreateSchema = z.object({
   targetType: appealTargetTypeSchema,
-  targetId: z.string().trim().min(1).max(300),
+  targetId: z.string().trim().min(1).max(300).transform(appealTargetIdFromInput),
   appealText: z.string().min(1).max(4_000),
   originalDecisionId: z.string().trim().min(1).max(160).optional(),
 });
+
+// SPEC: 申诉表单接受 id 或站内链接（/characters/<id>、完整 URL、/feed?item=<id>）。
+// INTENT: 用户手上只有页面链接；决定按 targetId 严格相等匹配，所以在入口处还原成 id。
+export function appealTargetIdFromInput(raw: string) {
+  const value = raw.trim();
+  if (!value.includes("/")) return value;
+  let url: URL;
+  try {
+    url = new URL(value, "https://idream.invalid");
+  } catch {
+    return value;
+  }
+  const item = url.searchParams.get("item") ?? url.searchParams.get("collection");
+  if (item) return item;
+  const [, section, id] = url.pathname.split("/");
+  if (id && ["characters", "creators", "comics", "media"].includes(section)) {
+    return decodeURIComponent(id);
+  }
+  return value;
+}
 
 const supportRequestSchema = z.object({
   category: z.enum(SUPPORT_REQUEST_CATEGORIES),
@@ -286,6 +306,18 @@ async function appealTargetOwnedByUser(
       select: { id: true },
     }));
   }
+  if (input.targetType === "comic") {
+    return Boolean(await tx.comic.findFirst({
+      where: { id: input.targetId, creatorId: input.userId },
+      select: { id: true },
+    }));
+  }
+  if (input.targetType === "media_collection") {
+    return Boolean(await tx.mediaCollection.findFirst({
+      where: { id: input.targetId, ownerId: input.userId },
+      select: { id: true },
+    }));
+  }
   return false;
 }
 
@@ -430,6 +462,18 @@ async function customerHelpDeskHistory(request: Request) {
     }),
   ]);
 
+  // SPEC: 客服最后一条对用户可见的消息之后用户还没回应 = 「客服已回复」。
+  // INTENT: 没有站内通知时，这是用户知道该回来看工单的唯一信号；按消息作者判断，不改工单状态。
+  const lastAuthors = supportRequests.length === 0 ? [] : await prisma.$queryRaw<Array<{ requestId: string; author: string }>>`
+    SELECT DISTINCT ON (e."snapshot"->>'supportRequestId')
+           e."snapshot"->>'supportRequestId' AS "requestId", e."snapshot"->>'author' AS "author"
+      FROM "case_evidence" e
+     WHERE e."sourceType" = 'support_message'
+       AND e."snapshot"->>'visibility' = 'customer'
+       AND e."snapshot"->>'supportRequestId' IN (${Prisma.join(supportRequests.map((item) => item.id))})
+     ORDER BY e."snapshot"->>'supportRequestId', e."occurredAt" DESC, e."id" DESC`;
+  const supportRepliedIds = new Set(lastAuthors.filter((row) => row.author === "support").map((row) => row.requestId));
+
   const reportByDecisionId = new Map<string, string>();
   for (const report of reports) {
     reportByDecisionId.set(report.id, report.id);
@@ -457,6 +501,7 @@ async function customerHelpDeskHistory(request: Request) {
       resolution: item.resolvedAt
         ? { outcome: item.status, resolvedAt: item.resolvedAt.toISOString() }
         : null,
+      supportReplied: !item.resolvedAt && supportRepliedIds.has(item.id),
     })),
     reports: reports.map((item) => {
       const latestReview = item.reviews[0];
@@ -469,6 +514,8 @@ async function customerHelpDeskHistory(request: Request) {
         createdAt: item.createdAt.toISOString(),
         decision: latestReview
           ? {
+              // 前台「对此决定申诉」按钮用它预填，用户不必自己找 Decision ID。
+              id: latestReview.id,
               outcome: latestReview.decision,
               decidedAt: latestReview.createdAt.toISOString(),
             }

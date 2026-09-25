@@ -1,14 +1,17 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowLeft, Flag, Heart, MessageCircle, Sparkles } from "lucide-react";
-import { useEffect, useState } from "react";
+import { ArrowLeft, Flag, Heart, Loader2, MessageCircle, Share2, Sparkles, Square, Volume2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import {
   parseCharacterDetailResponse,
   parseCharacterLikeResponse,
+  parseCharacterListResponse,
   parseChatSessionCreateResponse,
   type PublicCharacterDetail,
 } from "@/lib/public-api-contracts";
+import type { CharacterCardData } from "@/types/ourdream";
+import { CharacterCard } from "./CharacterCard";
 import {
   CharacterDetailHero,
 } from "./CharacterDetailHero";
@@ -17,6 +20,8 @@ import { useReportDialog } from "./ReportDialog";
 import { AppSidebar } from "./AppSidebar";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { SiteFooter } from "./SiteFooter";
+import { apiEnvelopeErrorMessage } from "@/lib/viewer-resource-client";
+import { shareOrCopy } from "@/lib/utils";
 
 type CharacterDetail = PublicCharacterDetail;
 
@@ -71,6 +76,20 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
     return () => { document.title = previous; };
   }, [character?.name]);
 
+  const resumedChat = useRef(false);
+  useEffect(() => {
+    if (!character || resumedChat.current) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("resume") !== "chat") return;
+    resumedChat.current = true;
+    params.delete("resume");
+    const query = params.toString();
+    window.history.replaceState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`);
+    void startChat();
+    // startChat reads only `character`, which is the trigger here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [character]);
+
   async function startChat() {
     if (!character) return;
     setBusy(true);
@@ -89,11 +108,12 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
         body: JSON.stringify({ characterId: character.id, ...completeAttribution }),
       });
       if (response.status === 401) {
-        window.location.assign(signupUrlForCurrentCharacter());
+        window.location.assign(signupUrlForCurrentCharacter("chat"));
         return;
       }
       if (!response.ok) {
-        setStatus("Could not start chat. Please try again.");
+        const payload = await response.json().catch(() => null);
+        setStatus(apiEnvelopeErrorMessage(payload) || "Could not start chat. Please try again.");
         return;
       }
       const payload = parseChatSessionCreateResponse(await response.json());
@@ -122,7 +142,11 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
         return;
       }
       const payload = parseCharacterLikeResponse(await response.json());
-      setCharacter({ ...character, liked: payload.liked });
+      setCharacter({
+        ...character,
+        liked: payload.liked,
+        ...(payload.likesCount === undefined ? {} : { likesCount: payload.likesCount, likes: payload.likes ?? String(payload.likesCount) }),
+      });
       setStatus(payload.liked ? "Character liked." : "Character like removed.");
     } catch {
       setStatus("Could not save your like. Please try again.");
@@ -164,6 +188,9 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
                     <Sparkles className="h-4 w-4" />
                     Generate
                   </Link>
+                  {character.voiceSampleAvailable && (
+                    <VoiceSampleButton characterId={character.id} onError={setStatus} />
+                  )}
                   <button
                     className="inline-flex h-12 items-center justify-center gap-2 rounded-full bg-[rgb(36,36,36)] px-5 text-[14px] font-bold text-white"
                     disabled={busy}
@@ -173,6 +200,17 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
                     <Heart className="h-4 w-4" />
                     {character.liked ? "Liked" : "Like"}
                   </button>
+                  {/* 私有角色只有本人看得到，分享出去对方也打不开，所以不给这个按钮。 */}
+                  {(character.visibility === "public" || character.visibility === "unlisted") && (
+                    <button
+                      className="inline-flex h-12 items-center justify-center gap-2 rounded-full bg-[rgb(36,36,36)] px-5 text-[14px] font-bold text-white"
+                      onClick={async () => setStatus(await shareOrCopy(`${window.location.origin}${window.location.pathname}`, character.title))}
+                      type="button"
+                    >
+                      <Share2 className="h-4 w-4" />
+                      Share
+                    </button>
+                  )}
                   <button
                     className="inline-flex h-12 items-center justify-center gap-2 rounded-full bg-[rgb(36,36,36)] px-5 text-[14px] font-bold text-white"
                     disabled={busy}
@@ -195,6 +233,7 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
                     {status}
                   </p>
               )}
+              <SimilarCharacters character={character} />
             </div>
           ) : (
             <div
@@ -216,7 +255,91 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
 }
 
 
-function signupUrlForCurrentCharacter() {
-  const next = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+// SPEC: 开聊前试听角色声音。只在点击时取音频（不自动播放、不在进页时触发合成）；
+//   取回的音频留在内存里，重复播放不再请求。服务端说明见 character-voice-sample.ts。
+function VoiceSampleButton({ characterId, onError }: Readonly<{
+  characterId: string;
+  onError: (message: string) => void;
+}>) {
+  const [state, setState] = useState<"idle" | "loading" | "playing">("idle");
+  const audio = useRef<HTMLAudioElement | null>(null);
+  useEffect(() => () => {
+    audio.current?.pause();
+    if (audio.current) URL.revokeObjectURL(audio.current.src);
+  }, []);
+
+  async function toggle() {
+    if (state === "loading") return;
+    if (state === "playing" && audio.current) {
+      audio.current.pause();
+      audio.current.currentTime = 0;
+      setState("idle");
+      return;
+    }
+    setState("loading");
+    try {
+      if (!audio.current) {
+        const response = await fetch(`/api/v1/characters/${encodeURIComponent(characterId)}/voice-sample`);
+        if (!response.ok) throw new Error(`voice sample ${response.status}`);
+        const element = new Audio(URL.createObjectURL(await response.blob()));
+        element.onended = () => setState("idle");
+        audio.current = element;
+      }
+      await audio.current.play();
+      setState("playing");
+    } catch {
+      setState("idle");
+      onError("Could not play this voice sample. Please try again.");
+    }
+  }
+
+  const Icon = state === "loading" ? Loader2 : state === "playing" ? Square : Volume2;
+  return (
+    <button
+      aria-busy={state === "loading"}
+      className="inline-flex h-12 items-center justify-center gap-2 rounded-full bg-[rgb(36,36,36)] px-5 text-[14px] font-bold text-white"
+      data-testid="character-voice-sample"
+      onClick={toggle}
+      type="button"
+    >
+      <Icon className={`h-4 w-4${state === "loading" ? " animate-spin" : ""}`} />
+      {state === "loading" ? "Loading voice..." : state === "playing" ? "Stop voice" : "Hear voice"}
+    </button>
+  );
+}
+
+// INTENT: 游客点 Chat 被带去注册；回来时带上 resume=chat，详情页自动接着开聊，
+//   用户不必在同一个按钮上点第二次。
+function signupUrlForCurrentCharacter(resume?: "chat") {
+  const params = new URLSearchParams(window.location.search);
+  if (resume) params.set("resume", resume);
+  const query = params.toString();
+  const next = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`;
   return `/signup?next=${encodeURIComponent(next)}`;
+}
+
+// SPEC: the detail page ends with a next step — other public characters of the same style
+// and gender — instead of an empty page below the hero. Reuses the Explore list endpoint.
+function SimilarCharacters({ character }: Readonly<{ character: CharacterDetail }>) {
+  const [cards, setCards] = useState<CharacterCardData[]>([]);
+  useEffect(() => {
+    const controller = new AbortController();
+    const params = new URLSearchParams({ sort: "popular", limit: "7" });
+    if (character.style) params.set("style", character.style);
+    if (character.gender) params.set("gender", character.gender);
+    fetch(`/api/v1/characters?${params.toString()}`, { signal: controller.signal })
+      .then(async (response) => (response.ok ? parseCharacterListResponse(await response.json()).items : []))
+      .then((items) => setCards(items.filter((item) => item.id !== character.id).slice(0, 6)))
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [character.id, character.style, character.gender]);
+  if (cards.length === 0) return null;
+  return (
+    <section aria-label="More like this" className="mt-10" data-testid="character-detail-similar">
+      <h2 className="text-[20px] font-black uppercase">More like this</h2>
+      <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+        {cards.map((card) => <CharacterCard card={card} key={card.id} />)}
+      </div>
+    </section>
+  );
 }

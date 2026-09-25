@@ -75,6 +75,7 @@ describe("ChatSessionClient streaming composer", () => {
   let container: HTMLDivElement;
   let root: Root;
   let sessionMessages: unknown[];
+  let sessionProactiveEnabled: boolean;
   let sessionReads: number;
   let releaseSend: ((response: Response) => void) | undefined;
 
@@ -92,6 +93,7 @@ describe("ChatSessionClient streaming composer", () => {
     });
     FakeEventSource.instances = [];
     sessionMessages = [opening];
+    sessionProactiveEnabled = false;
     sessionReads = 0;
     const sendResponse = new Promise<Response>((resolve) => {
       releaseSend = resolve;
@@ -132,8 +134,9 @@ describe("ChatSessionClient streaming composer", () => {
                 title: "Test chat",
                 characterId: "character-1",
                 memoryEnabled: true,
+                proactiveEnabled: sessionProactiveEnabled,
                 messages: sessionMessages,
-                character: { name: "Avery", canUpdateIdentity: false },
+                character: { name: "Avery", canUpdateIdentity: false, image: "/media/avery-thumb.png" },
               },
             },
           });
@@ -318,6 +321,81 @@ describe("ChatSessionClient streaming composer", () => {
     expect(toggle()?.getAttribute("aria-pressed")).toBe("true");
   });
 
+  // SPEC: 角色发布新版本后，旧会话里发消息 → 打开角色当前会话并带上没发出去的那句话。
+  // INTENT: 以前这里只显示「This chat is no longer active」，用户看到的是聊天突然坏了。
+  it("moves an unsent message to the Character's current chat when the Character was updated", async () => {
+    const handoff = new Map<string, string>();
+    vi.stubGlobal("sessionStorage", {
+      getItem: (key: string) => handoff.get(key) ?? null,
+      setItem: (key: string, value: string) => { handoff.set(key, value); },
+      removeItem: (key: string) => { handoff.delete(key); },
+    });
+    const assign = vi.spyOn(window.location, "assign").mockImplementation(() => {});
+    await mountSession();
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/messages") && init?.method === "POST") {
+        return Response.json({
+          error: "gone",
+          message: "Character has no active Serving Release",
+          details: { reason: "character_release_changed", characterId: "character-1" },
+        }, { status: 410 });
+      }
+      if (url === "/api/v1/chat/sessions" && init?.method === "POST") {
+        expect(JSON.parse(String(init.body))).toEqual({ characterId: "character-1" });
+        return Response.json({ ok: true, data: { session: { id: "session-2" } } });
+      }
+      return originalFetch(input, init);
+    });
+
+    await act(async () => typeMessage("are you still there?"));
+    await act(async () => submitComposer());
+    await waitUntil(() => assign.mock.calls.length > 0);
+    expect(assign).toHaveBeenCalledWith("/chat/session-2");
+    expect([...handoff.values()]).toEqual(["are you still there?"]);
+
+    // Arriving in the new chat: the message waits in the box, sent by nobody yet.
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    vi.mocked(fetch).mockImplementation(async (input, init) =>
+      originalFetch(String(input) === "/api/v1/chat/sessions/session-2" ? "/api/v1/chat/sessions/session-1" : input, init),
+    );
+    handoff.set("idream:chat-release-handoff:session-1", "are you still there?");
+    await mountSession();
+    await waitUntil(() => messageInput()?.value === "are you still there?");
+    expect(container.querySelector('[data-testid="chat-session-status"]')?.textContent)
+      .toContain("This Character was updated, so we opened a new chat.");
+    expect(handoff.size).toBe(1);
+    expect(handoff.has("idream:chat-release-handoff:session-1")).toBe(false);
+    assign.mockRestore();
+  });
+
+  it("keeps the message in place when the Character's current chat cannot be opened", async () => {
+    const assign = vi.spyOn(window.location, "assign").mockImplementation(() => {});
+    await mountSession();
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/messages") && init?.method === "POST") {
+        return Response.json({ error: "gone", details: { reason: "character_release_changed", characterId: "character-1" } }, { status: 410 });
+      }
+      if (url === "/api/v1/chat/sessions" && init?.method === "POST") {
+        return Response.json({ ok: false, error: { code: "gone" } }, { status: 410 });
+      }
+      return originalFetch(input, init);
+    });
+
+    await act(async () => typeMessage("are you still there?"));
+    await act(async () => submitComposer());
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="chat-session-status"]')));
+    expect(container.querySelector('[data-testid="chat-session-status"]')?.textContent)
+      .toContain("This Character was updated, so this chat is now read-only.");
+    expect(messageInput()?.value).toBe("are you still there?");
+    expect(assign).not.toHaveBeenCalled();
+    assign.mockRestore();
+  });
+
   // SPEC: 状态提示和输入框同属一个 sticky 容器。
   // INTENT: 状态段落曾经跟在 sticky 输入框后面的普通流里，长会话时被顶到文档底部、
   //   永远在视口外，点了按钮看起来像没反应。
@@ -410,6 +488,21 @@ describe("ChatSessionClient streaming composer", () => {
     expect(card?.textContent).not.toContain("Retry image");
     expect(card?.querySelector('a[href="/upgrade?returnTo=%2Fchat%2Fsession-1"]')?.textContent)
       .toContain("Get more dreamcoins");
+  });
+
+  it("explains the active-image cap on a failed image turn instead of an unavailable reply", async () => {
+    sessionMessages = [{
+      ...opening,
+      content: "",
+      attachments: [{ id: "attachment-busy", kind: "generated_image", status: "failed", errorCode: "rate_limited" }],
+    }];
+
+    await mountSession();
+
+    const card = container.querySelector('[data-testid="chat-image-attachment-card"]');
+    expect(card?.textContent).toContain("Too many images in progress");
+    expect(card?.textContent).toContain("No coins used");
+    expect(container.textContent).not.toContain("Reply unavailable.");
   });
 
   it("retries a failed image through its exact quote and preserves the key after an uncertain response", async () => {
@@ -900,6 +993,52 @@ describe("ChatSessionClient streaming composer", () => {
     expect(JSON.parse(String(quoted?.[1]?.body))).toMatchObject({ characterId: "character-1", sessionId: "member-1", messageId: "group-old-assistant" });
   });
 
+  it("offers actions on the proactive reply and none on the exchange it superseded", async () => {
+    const sentReply = { ...streamingReply, turnId: "turn-1", content: "Hi.", status: "sent", attempt: 1 };
+    const proactiveReply = {
+      id: "assistant-2", turnId: "turn-2", role: "assistant", content: "The kiln's cooling.",
+      status: "sent", attempt: 1, replyToMessageId: "hidden-directive",
+    };
+    sessionMessages = [opening, { ...userTurn, status: "sent" }, sentReply, proactiveReply];
+    await mountSession();
+    await waitUntil(() => Boolean(container.querySelector('[data-message-id="assistant-2"]')));
+
+    const older = container.querySelector('[data-message-id="assistant-1"]');
+    const olderUser = container.querySelector('[data-message-id="user-1"]');
+    const proactive = container.querySelector('[data-message-id="assistant-2"]');
+    // Main only revises the latest Turn; these would all be 409s.
+    expect(olderUser?.querySelector('[data-testid="chat-edit-message"]')).toBeNull();
+    expect(older?.querySelector('[data-testid="chat-regenerate"]')).toBeNull();
+    expect(older?.querySelector('[data-testid="chat-delete-message"]')).toBeNull();
+    expect(proactive?.querySelector('[data-testid="chat-regenerate"]')).not.toBeNull();
+    expect(proactive?.querySelector('[data-testid="chat-delete-message"]')).not.toBeNull();
+  });
+
+  it("reads new proactive messages while the page stays open", async () => {
+    sessionProactiveEnabled = true;
+    await mountSession();
+    await waitUntil(() => sessionReads > 0);
+    const readsBefore = sessionReads;
+    sessionMessages = [opening, {
+      id: "assistant-2", turnId: "turn-2", role: "assistant", content: "The kiln's cooling.",
+      status: "sent", attempt: 1, replyToMessageId: "hidden-directive",
+    }];
+
+    // Idle page, nothing generating: only the proactive poller is listening.
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    await waitUntil(() => sessionReads > readsBefore);
+    await waitUntil(() => Boolean(container.querySelector('[data-message-id="assistant-2"]')));
+  });
+
+  it("does not poll an idle page without proactive messages", async () => {
+    await mountSession();
+    await waitUntil(() => sessionReads > 0);
+    const readsBefore = sessionReads;
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 20)));
+    expect(sessionReads).toBe(readsBefore);
+  });
+
   it("keeps archived group history readable and deletable without exposing edit or regenerate", async () => {
     await mountGroupSession("archived");
     expect(container.textContent).toContain("This conversation is archived");
@@ -912,7 +1051,44 @@ describe("ChatSessionClient streaming composer", () => {
     expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === "POST" || init?.method === "PATCH")).toBe(false);
   });
 
-  async function mountGroupSession(status: "active" | "archived" = "active") {
+  it("shows the character's cover as a small header avatar", async () => {
+    await mountSession();
+    const avatars = [...container.querySelectorAll('[data-testid="chat-header-avatars"] img')];
+    expect(avatars.map((image) => image.getAttribute("src"))).toEqual(["/media/avery-thumb.png"]);
+  });
+
+  it("shows the latest reply's scene under the header and hides it when there is none", async () => {
+    const scene = (version: number, location: string) => ({
+      schemaVersion: 1, version, location, time: "Late evening", participants: [], emotionalBeat: null, unresolvedThreads: [],
+    });
+    sessionMessages = [
+      { ...opening, sceneVersion: 1, scene: scene(1, "Old harbor") },
+      { id: "user-2", role: "user", content: "Walk with me.", status: "sent" },
+      { id: "assistant-2", turnId: "turn-2", role: "assistant", content: "Sure.", status: "sent", attempt: 1, sceneVersion: 2, scene: scene(2, "Rooftop garden") },
+    ];
+    await mountSession();
+    expect(container.querySelector('[data-testid="chat-scene"]')?.textContent).toBe("Scene · Rooftop garden · Late evening");
+  });
+
+  it("renders no scene line for a conversation without scene state", async () => {
+    await mountSession();
+    expect(container.querySelector('[data-testid="chat-scene"]')).toBeNull();
+  });
+
+  it("tells a new group how to start instead of inventing an opening line", async () => {
+    await mountGroupSession("active", []);
+    const empty = container.querySelector('[data-testid="group-chat-empty"]')?.textContent ?? "";
+    expect(empty).toContain("Send a message to Avery");
+    expect(empty).toContain("@mention Avery, Briar");
+  });
+
+  it("shows every group member's avatar in the header", async () => {
+    await mountGroupSession();
+    const avatars = [...container.querySelectorAll('[data-testid="chat-header-avatars"] img')];
+    expect(avatars.map((image) => image.getAttribute("alt"))).toEqual(["Avery", "Briar"]);
+  });
+
+  async function mountGroupSession(status: "active" | "archived" = "active", messages?: unknown[]) {
     const originalFetch = vi.mocked(fetch).getMockImplementation()!;
     const members = [{ characterId: "character-1", sessionId: "member-1", name: "Avery" }, { characterId: "character-2", sessionId: "member-2", name: "Briar" }];
     vi.mocked(fetch).mockImplementation(async (input, init) => {
@@ -923,7 +1099,8 @@ describe("ChatSessionClient streaming composer", () => {
           id: "group-1", ownerScope: "user:viewer-a", title: "Garden companions", status,
           characterId: selected.characterId, memoryEnabled: selected.characterId === "character-1",
           character: { name: selected.name, canUpdateIdentity: false }, group: { members, selectedSessionId: selected.sessionId },
-          messages: [
+          memberImages: { "character-1": "/media/avery-thumb.png", "character-2": "/media/briar-thumb.png" },
+          messages: messages ?? [
             { id: "group-old-user", role: "user", content: "Avery, come to the garden.", status: "sent", characterId: "character-1", sessionId: "member-1", speakerName: "Avery" },
             { id: "group-old-assistant", turnId: "group-old-turn", role: "assistant", content: "I brought the blue notebook.", status: "sent", attempt: 1, replyToMessageId: "group-old-user", characterId: "character-1", sessionId: "member-1", speakerName: "Avery" },
           ],

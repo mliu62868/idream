@@ -9,7 +9,7 @@ import { parsePublicApiError, parseWorkspaceMediaResponse, type RuntimeWorkspace
 import { useViewerGate } from "@/hooks/useViewerGate";
 import { isAbortError, loadViewerResource } from "@/lib/viewer-resource-client";
 import { useAgeGateAccess } from "./AgeGateBoundary";
-import { comicButton, comicInput, comicPayload } from "./comic-client";
+import { comicButton, comicInput, comicPayload, comicStateLabel } from "./comic-client";
 import { ComicShell } from "./ComicShell";
 import { authHrefForTarget } from "./authRedirect";
 
@@ -190,7 +190,7 @@ export function ComicStudio({ id }: { id?: string }) {
     {loading && <p role="status">Loading draft…</p>}
     {error && <p className="mb-5 text-pink-200" role="alert">{error} {id && <button className="ml-2 underline" onClick={() => void load()} type="button">Reload saved draft</button>}</p>}
     {message && <p className="mb-5 text-emerald-200" role="status">{message}</p>}
-    {comic && <div className="mb-6 rounded-xl border border-white/15 p-4"><p className="font-bold">{comic.status.replaceAll("_", " ")} · Version {comic.version} · {comic.visibility}</p>
+    {comic && <div className="mb-6 rounded-xl border border-white/15 p-4"><p className="font-bold">{comicStateLabel(comic.status, comic.visibility)} · Version {comic.version}</p>
       {comic.reviewNote && <p className="mt-2 text-sm text-neutral-300">Review note: {comic.reviewNote}</p>}
       {["pending_review", "published"].includes(comic.status) && <div className="mt-3 flex flex-wrap items-center gap-4"><button className={comicButton} disabled={writing} onClick={() => void write("withdraw")} type="button">Withdraw Comic</button><p className="text-sm text-neutral-300">Withdraw before editing. Public access ends immediately.</p></div>}
     </div>}

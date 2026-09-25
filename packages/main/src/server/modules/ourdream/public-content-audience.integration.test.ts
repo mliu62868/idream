@@ -649,6 +649,15 @@ describe("public content audience", () => {
       (catalog.data.items as Array<{ id: string }>).map((item) => item.id).sort(),
     ).toEqual(allowedIds);
 
+    // Every shared CHARACTER_STYLES value filters; "other" used to be dropped
+    // and silently returned the unfiltered catalog.
+    const otherStyle = await api("GET", "characters", {
+      ageGate: true,
+      query: { q: suffix, style: "other", limit: 60 },
+    });
+    expectOk(otherStyle);
+    expect(otherStyle.data.items).toEqual([]);
+
     const search = await api("GET", "search/suggest", {
       ageGate: true,
       query: { q: suffix },

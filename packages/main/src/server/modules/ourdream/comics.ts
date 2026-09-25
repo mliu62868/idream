@@ -125,13 +125,13 @@ async function manifestEpisodes(tx: Prisma.TransactionClient, creatorId: string,
   }));
 }
 
-async function lockComic(tx: Prisma.TransactionClient, id: string, expectedVersion: number, ownerId?: string) {
+async function lockComic(tx: Prisma.TransactionClient, id: string, expectedVersion: number | undefined, ownerId?: string) {
   // Comic writers lock their row before sorted media authority locks. Media mutations
   // only read Comic dependencies under their existing media lock, never lock Comic rows.
   await tx.$queryRaw`SELECT id FROM comics WHERE id = ${id} FOR UPDATE`;
   const comic = await tx.comic.findUnique({ where: { id }, include });
   if (!comic || (ownerId && comic.creatorId !== ownerId)) throw Errors.notFound("Comic not found");
-  if (comic.version !== expectedVersion) throw Errors.conflict("Comic changed. Reload before continuing.", { currentVersion: comic.version });
+  if (expectedVersion !== undefined && comic.version !== expectedVersion) throw Errors.conflict("Comic changed. Reload before continuing.", { currentVersion: comic.version });
   return comic;
 }
 
@@ -186,6 +186,19 @@ async function authorAction(request: Request, id: string, creatorId: string, act
   return ok(await detail(comic, creatorId), { headers: noStore });
 }
 
+// SPEC: 把一部已发布的 Comic 撤下（status → withdrawn）。漫画审核面板的「Remove published
+// version」和举报处置（moderation-effect）走同一个实现，所以两条路撤下的结果完全一致。
+// INTENT: expectedVersion 只有审核面板带 —— 它是对着某个版本点的；举报指向的是这部 Comic
+//         本身，不论作者之后改过几版，只要它还在公开就要撤。
+export async function removePublishedComic(tx: Prisma.TransactionClient, id: string, reason: string, expectedVersion?: number) {
+  const before = await lockComic(tx, id, expectedVersion);
+  if (before.status !== "published") throw Errors.conflict("Comic status changed. Reload the review queue.");
+  const after = await tx.comic.update({ where: { id }, data: {
+    status: "withdrawn", publishedAt: null, reviewNote: reason, version: { increment: 1 },
+  }, include });
+  return { before, after };
+}
+
 export async function decideAdminComic(request: Request, id: string) {
   const actor = await actorWithPermission(request, "safety.review.write");
   const body = adminComicDecisionRequestSchema.parse(await adminJsonBody(request, "adminComicDecisionRequestSchema+idempotency-key"));
@@ -195,20 +208,24 @@ export async function decideAdminComic(request: Request, id: string) {
     requestId: request.headers.get("x-request-id") || crypto.randomUUID(),
     commandType: "comic.review", target: { type: "comic", id }, expectedVersion: body.version, payload: body,
     mutate: async (tx) => {
-    let current = await lockComic(tx, id, body.version);
-    if (body.decision === "remove" ? current.status !== "published" : current.status !== "pending_review") {
-      throw Errors.conflict("Comic status changed. Reload the review queue.");
+    let current: ComicRow;
+    let updated: ComicRow;
+    if (body.decision === "remove") {
+      ({ before: current, after: updated } = await removePublishedComic(tx, id, body.reason, body.version));
+    } else {
+      current = await lockComic(tx, id, body.version);
+      if (current.status !== "pending_review") throw Errors.conflict("Comic status changed. Reload the review queue.");
+      if (body.decision === "approve") {
+        await lockCharacterMediaAssetAuthorities(tx, current.episodes.flatMap((episode) => episode.pages.flatMap((page) => page.mediaAssetId ? [page.mediaAssetId] : [])));
+        current = await tx.comic.findUniqueOrThrow({ where: { id }, include });
+        if (!publishable(current) || !publicAuthor(current)) throw Errors.conflict("The author or a Comic page is no longer eligible for publication.");
+      }
+      updated = await tx.comic.update({ where: { id }, data: {
+        status: body.decision === "approve" ? "published" : "draft",
+        publishedAt: body.decision === "approve" ? new Date() : null,
+        reviewNote: body.reason, version: { increment: 1 },
+      }, include });
     }
-    if (body.decision === "approve") {
-      await lockCharacterMediaAssetAuthorities(tx, current.episodes.flatMap((episode) => episode.pages.flatMap((page) => page.mediaAssetId ? [page.mediaAssetId] : [])));
-      current = await tx.comic.findUniqueOrThrow({ where: { id }, include });
-      if (!publishable(current) || !publicAuthor(current)) throw Errors.conflict("The author or a Comic page is no longer eligible for publication.");
-    }
-    const updated = await tx.comic.update({ where: { id }, data: {
-      status: body.decision === "approve" ? "published" : body.decision === "reject" ? "draft" : "withdrawn",
-      publishedAt: body.decision === "approve" ? new Date() : null,
-      reviewNote: body.reason, version: { increment: 1 },
-    }, include });
     await tx.adminAuditLog.create({ data: {
       actorId: actor.id, actorRole: actor.role, action: `comic.${body.decision}`, targetType: "comic", targetId: id,
       reason: body.reason, before: toInputJson({ status: current.status, version: current.version }),

@@ -7,14 +7,16 @@ import type {
   ChatExperiencePreference,
   UserChatPersona,
 } from "@idream/shared/contracts";
-import { chatContextDirectivesSchema, chatExecutionSnapshotSchema, chatExperiencePreferenceSchema, chatTerminalCommitSchema, DEFAULT_CHAT_EXPERIENCE, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
-import { Prisma } from "@prisma/client";
+import { chatContextDirectivesSchema, chatExchangeCompletedV2Schema, chatExchangeCorrectionV2Schema, chatExecutionSnapshotSchema, chatExperiencePreferenceSchema, chatTerminalCommitSchema, DEFAULT_CHAT_EXPERIENCE, MAIN_TO_CHAT_EVENTS, METRIC_PRODUCT_EVENTS } from "@idream/shared/contracts";
+import { Prisma, type RecentChat } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
+import { logger } from "@/server/lib/logger";
 import { isSyntheticMediaAsset } from "@/server/lib/media-asset-authority";
 import { moderateText } from "@/server/moderation/text-authority";
 import { updateGenerationRequestSourceMeta } from "@/server/ai/generation-request-transition";
 import { recordMainToChatEvent } from "@/processes/chat-outbox";
+import { appendCanonicalMetricEvent, appendCanonicalMetricEventsForUser } from "@/server/modules/admin-v2/metrics/event-writer";
 import { isReusablePlatformAssetWhere } from "@/server/modules/ourdream/chat-image-reuse";
 import { generationExecutionErrorCode, latestGenerationAttemptStatuses } from "@/server/modules/ourdream/generation-job-read-model";
 import { entitlementMap } from "@/server/modules/ourdream/subscription-lifecycle";
@@ -114,15 +116,46 @@ export async function createChatSession(
   const activeKey = `${userId}:${characterId}`;
   const existing = await prisma.recentChat.findUnique({ where: { activeKey } });
   if (existing) {
-    if (owner || existing.characterReleaseId === release?.id) {
-      return publicSession(existing);
+    if (existing.characterReleaseId === release?.id) return publicSession(existing);
+    if (owner) {
+      // Only a Release-pinned session behind a different live Release can move;
+      // anything else would take the user-row lock for nothing.
+      if (!release || !existing.characterReleaseId) return publicSession(existing);
+      // Same lock ladder as beginChatTurn, so no reply can start between the
+      // pending-reply check and the re-pin.
+      const repinned = await prisma.$transaction(async (tx) => {
+        const { session } = await lockChatScope(tx, { userId, at: { session: existing.sessionId } });
+        // Archived concurrently: fall through and open the new active session.
+        if (session.activeKey !== activeKey) return null;
+        return repinOwnerSessionToServingRelease(tx, userId, session);
+      });
+      if (repinned) return publicSession(repinned);
     }
-    // INVARIANT: a session keeps its immutable Release pin. When Serving moves,
-    // preserve that history and open a new active session instead of mutating it.
-    await prisma.recentChat.updateMany({
-      where: { sessionId: existing.sessionId, activeKey },
-      data: { status: "archived", activeKey: null },
-    });
+    if (!owner) {
+      // INVARIANT: a session keeps its immutable Release pin. When Serving moves,
+      // preserve that history and open a new active session instead of mutating it.
+      // INTENT: admission only runs Turns of active sessions, so archiving under a
+      // pending reply would leave it spinning forever. Cancelling it would throw
+      // away the answer the user is waiting for, and refusing would block opening
+      // the chat at all. Keep the old session until its reply ends; the next open
+      // moves to the new Release. Locks follow beginChatTurn so no reply can start
+      // between the check and the archive.
+      const kept = await prisma.$transaction(async (tx) => {
+        const { session } = await lockChatScope(tx, { userId, at: { session: existing.sessionId } });
+        if (session.activeKey !== activeKey) return null;
+        const active = await tx.chatTurn.findFirst({
+          where: { sessionId: session.sessionId, assistantStatus: { in: ACTIVE_ASSISTANT_STATES } },
+          select: { id: true },
+        });
+        if (active) return session;
+        await tx.recentChat.update({
+          where: { sessionId: session.sessionId },
+          data: { status: "archived", activeKey: null },
+        });
+        return null;
+      });
+      if (kept) return publicSession(kept);
+    }
   }
 
   try {
@@ -159,7 +192,7 @@ export async function getChatSession(userId: string, sessionId: string) {
   const session = await prisma.recentChat.findFirst({
     where: { sessionId, userId },
     include: {
-      character: { select: { name: true, creatorId: true } },
+      character: { select: { name: true, creatorId: true, imageAsset: { select: { url: true, thumbnailUrl: true } } } },
       turns: {
         orderBy: [{ createdAt: "asc" }, { id: "asc" }],
         include: { attachments: { orderBy: { createdAt: "asc" } } },
@@ -179,9 +212,13 @@ export async function getChatSession(userId: string, sessionId: string) {
   return {
     ...publicSession(session),
     ownerScope: `user:${userId}`,
+    // The open page polls for a check-in only while one can arrive.
+    proactiveEnabled: session.proactiveEnabled,
     character: {
       name: session.character.name,
       canUpdateIdentity: session.character.creatorId === userId,
+      // 聊天页头像：与角色卡同一张封面，小图优先。
+      image: session.character.imageAsset?.thumbnailUrl ?? session.character.imageAsset?.url ?? null,
     },
     messages,
   };
@@ -267,6 +304,8 @@ export async function beginChatTurn(input: {
       orderBy: lockedSession.groupId ? { groupTurn: { ordinal: "desc" } } : [{ createdAt: "desc" }, { id: "desc" }],
       select: { sceneVersion: true, scene: true },
     });
+    // After the idempotent-replay return: a replay must not re-pin or bump contextRevision.
+    const pinnedSession = await repinOwnerSessionToServingRelease(tx, input.userId, lockedSession);
     const now = new Date();
     const turn = await tx.chatTurn.create({
       data: {
@@ -284,10 +323,10 @@ export async function beginChatTurn(input: {
         terminalEvidence: blocked
           ? toJson({ authority: "main_input_moderation", policyCode: moderation.policyCode ?? null })
           : undefined,
-        characterContentVersionId: lockedSession.characterContentVersionId,
-        characterReleaseId: lockedSession.characterReleaseId,
-        characterVisualProfileId: lockedSession.characterVisualProfileId,
-        characterVisualProfileVersion: lockedSession.characterVisualProfileVersion,
+        characterContentVersionId: pinnedSession.characterContentVersionId,
+        characterReleaseId: pinnedSession.characterReleaseId,
+        characterVisualProfileId: pinnedSession.characterVisualProfileId,
+        characterVisualProfileVersion: pinnedSession.characterVisualProfileVersion,
         memoryEnabled: lockedSession.memoryEnabled,
         sceneVersion: previous?.sceneVersion ?? 0,
         scene: previous?.scene ?? undefined,
@@ -308,7 +347,7 @@ export async function beginChatTurn(input: {
     }
     if (!blocked) {
       await tx.chatTurnUsageFact.create({
-        data: { turnId: turn.id, userId: input.userId, productDay: productDay(now) },
+        data: { turnId: turn.id, userId: input.userId, productDay: productDay(now), origin: turn.origin },
       });
     }
     return {
@@ -411,6 +450,9 @@ export async function editChatTurn(userId: string, messageId: string, nextConten
     const contextDirectives = originalSnapshot?.contextDirectives ?? [];
     const experience = originalSnapshot?.experience ?? null;
     const userPersona = originalSnapshot?.userPersona ?? null;
+    // The edit invalidates every earlier attempt; the replacement reply is the
+    // next attempt and makes the exchange count again once it is sent.
+    await appendChatExchangeCorrected(tx, current, { userId, correctionType: "edited", correctionRevision: previousAttempt }, now);
     const edited = await tx.chatTurn.update({
       where: { id: turn.id },
       data: {
@@ -530,8 +572,11 @@ export async function commitChatTerminal(input: ChatTerminalCommit) {
             ? { proactiveUnreadAt: now }
             : {}),
         },
-        select: { userId: true, characterId: true },
+        select: { userId: true, characterId: true, entryExposureId: true, entryJourneyId: true, entryPlacementId: true },
       });
+      if (input.status === "sent" || input.status === "failed" || input.status === "cancelled") {
+        await settleChatTurnUsage(tx, current, input.status, now);
+      }
       if (input.status === "sent") {
         const firstSelectedReply = await tx.chatTurn.updateMany({
           where: { id: input.turnId, statsCountedAt: null },
@@ -544,8 +589,9 @@ export async function commitChatTerminal(input: ChatTerminalCommit) {
           });
         }
         if (current.memoryEnabled) {
-          await scheduleCompanionMemoryProjection(tx, session);
+          await scheduleCompanionMemoryProjection(tx, { userId: session.userId, characterId: session.characterId });
         }
+        if (current.origin === "user") await appendChatExchangeCompleted(tx, current, session, now);
       }
       return { turn: current, duplicate: false };
     }
@@ -607,6 +653,7 @@ export async function cancelChatTurn(userId: string, messageId: string) {
         terminalEvidence: toJson({ authority: "main_user_cancel" }),
       },
     });
+    await settleChatTurnUsage(tx, current, "cancelled", now);
     await recordMainToChatEvent({
       eventId: `chat_agent_run_cancel_${sha256(`${current.id}:${current.attempt}`).slice(0, 40)}`,
       eventType: MAIN_TO_CHAT_EVENTS.agentRunCancelRequestedV1,
@@ -669,6 +716,7 @@ export async function failStalledChatTurn(turnId: string, stalledBefore: Date) {
         terminalEvidence: toJson({ authority: "main_stalled_attempt_reclaim" }),
       },
     });
+    await settleChatTurnUsage(tx, turn, "failed", now);
     await recordMainToChatEvent({
       eventId: `chat_agent_run_cancel_${sha256(`${turn.id}:${turn.attempt}`).slice(0, 40)}`,
       eventType: MAIN_TO_CHAT_EVENTS.agentRunCancelRequestedV1,
@@ -688,6 +736,13 @@ export async function deleteChatMessage(userId: string, messageId: string) {
     if (ACTIVE_ASSISTANT_STATES.includes(current.assistantStatus)) {
       throw Errors.conflict("Cancel the active reply before deleting this chat turn");
     }
+    await appendChatExchangeCorrected(tx, current, {
+      userId,
+      correctionType: "deleted",
+      correctionRevision: current.attempt,
+      sessionId: current.sessionId,
+      messageIds: [current.userMessageId, current.assistantMessageId],
+    }, new Date());
     await redactChatImageSourceText(tx, {
       userId,
       reason: "logical_turn_deleted",
@@ -735,8 +790,20 @@ async function deleteSessionTranscript(tx: Prisma.TransactionClient, userId: str
     if (active) throw Errors.conflict("Cancel the active reply before deleting this chat");
     const turnIds = await tx.chatTurn.findMany({
       where: { sessionId },
-      select: { id: true },
+      select: { id: true, attempt: true, origin: true, statsCountedAt: true, characterContentVersionId: true, userMessageId: true, assistantMessageId: true },
     });
+    const deletedAt = new Date();
+    // One batch: a long session must still delete inside the transaction timeout.
+    await appendCanonicalMetricEventsForUser(tx, userId, turnIds.flatMap((turn) => {
+      const event = chatExchangeCorrectedEvent(turn, {
+        userId,
+        correctionType: "superseded",
+        correctionRevision: turn.attempt,
+        sessionId,
+        messageIds: [turn.userMessageId, turn.assistantMessageId],
+      }, deletedAt);
+      return event ? [event] : [];
+    }));
     await redactChatImageSourceText(tx, {
       userId,
       reason: "session_deleted",
@@ -752,12 +819,22 @@ async function deleteSessionTranscript(tx: Prisma.TransactionClient, userId: str
 }
 
 export async function archiveChatSession(userId: string, sessionId: string) {
-  const session = await requireSession(userId, sessionId);
-  if (session.groupId) throw Errors.conflict("Archive this conversation from its group chat");
-  return publicSession(await prisma.recentChat.update({
-    where: { sessionId: session.sessionId },
-    data: { status: "archived", activeKey: null },
-  }));
+  return prisma.$transaction(async (tx) => {
+    const { session } = await lockChatScope(tx, { userId, at: { session: sessionId } });
+    if (session.groupId) throw Errors.conflict("Archive this conversation from its group chat");
+    // INVARIANT: admission only runs Turns of active sessions, so a reply left
+    // pending here would never be admitted, never end, and the spinner would
+    // outlive the conversation. Same rule as archiving or deleting a group.
+    const active = await tx.chatTurn.findFirst({
+      where: { sessionId: session.sessionId, assistantStatus: { in: ACTIVE_ASSISTANT_STATES } },
+      select: { id: true },
+    });
+    if (active) throw Errors.conflict("Cancel the active reply before archiving this chat");
+    return publicSession(await tx.recentChat.update({
+      where: { sessionId: session.sessionId },
+      data: { status: "archived", activeKey: null },
+    }));
+  });
 }
 
 export async function renameChatSession(userId: string, sessionId: string, title: string) {
@@ -976,6 +1053,52 @@ async function requireActiveSession(userId: string, sessionId: string) {
   return session;
 }
 
+/**
+ * SPEC: the author's own Release-pinned session follows the Character's serving
+ * Release; the next Turn runs on the version the author just published.
+ * INTENT: readers get a new session when Serving moves (their pin is the version
+ * they chose to talk to). The author is the one who changed it, and archiving
+ * their chat on every publish would bury it; re-pinning in place keeps one
+ * conversation, while every existing Turn keeps its own frozen pins (CR-08).
+ * A session whose reply is still pending/generating keeps its pin until the
+ * reply ends. A session without a Release pin (private-era) is left alone: it
+ * already follows the author's saved edits through character-edit.
+ * INVARIANT: caller holds the session row lock (lockChatScope or beginChatTurn).
+ */
+async function repinOwnerSessionToServingRelease<T extends {
+  sessionId: string;
+  characterId: string;
+  characterReleaseId: string | null;
+}>(tx: Prisma.TransactionClient, userId: string, session: T): Promise<T | RecentChat> {
+  if (!session.characterReleaseId) return session;
+  const character = await tx.character.findUnique({
+    where: { id: session.characterId },
+    select: { creatorId: true, serving: { select: { state: true, currentRelease: true } } },
+  });
+  const serving = character?.serving;
+  const release = serving?.state === "live" && serving.currentRelease?.status === "published"
+    ? serving.currentRelease
+    : null;
+  if (character?.creatorId !== userId || !release || release.id === session.characterReleaseId) return session;
+  const active = await tx.chatTurn.findFirst({
+    where: { sessionId: session.sessionId, assistantStatus: { in: ACTIVE_ASSISTANT_STATES } },
+    select: { id: true },
+  });
+  if (active) return session;
+  return tx.recentChat.update({
+    where: { sessionId: session.sessionId },
+    data: {
+      characterReleaseId: release.id,
+      characterContentVersionId: release.characterContentVersionId,
+      characterVisualProfileId: release.visualProfileId,
+      characterVisualProfileVersion: release.visualProfileVersion,
+      releasePinnedAt: new Date(),
+      // Same as the operator Release migration: Chat's cached context is stale.
+      contextRevision: { increment: 1 },
+    },
+  });
+}
+
 async function assertChatSessionServingAuthority(
   tx: Prisma.TransactionClient,
   userId: string,
@@ -998,15 +1121,21 @@ async function assertChatSessionServingAuthority(
   });
   if (!character || character.deletedAt) throw Errors.gone("Character is unavailable");
   if (character.creatorId === userId) return;
-  const publicReleaseIsLive =
+  const publicServingIsLive =
     ["public", "unlisted"].includes(character.visibility) &&
     character.status === "approved" &&
     character.serving?.state === "live" &&
-    character.serving.currentRelease?.id === session.characterReleaseId &&
-    character.serving.currentRelease.status === "published";
-  if (!publicReleaseIsLive) {
-    throw Errors.gone("Character has no active Serving Release");
-  }
+    character.serving.currentRelease?.status === "published";
+  if (publicServingIsLive && character.serving?.currentRelease?.id === session.characterReleaseId) return;
+  // INTENT: a session never leaves its Release pin, so after an update this one
+  // stays read-only. To the reader that is "the Character changed", not "the chat
+  // broke": the reason lets the page open the Character's current chat
+  // (createChatSession) and carry the unsent message over. Nothing was admitted
+  // or charged — this runs before any Turn or usage fact exists.
+  throw Errors.gone(
+    "Character has no active Serving Release",
+    publicServingIsLive ? { reason: "character_release_changed", characterId: session.characterId } : undefined,
+  );
 }
 
 async function requireTurn(userId: string, messageId: string) {
@@ -1029,18 +1158,207 @@ async function assertChatQuota(tx: Prisma.TransactionClient, userId: string) {
   // INTENT: every admitted Turn still writes a usage fact, because a proactive
   // reply costs the same generation capacity and daily operational usage must
   // stay complete. Only what the user chose to send can exhaust their own
-  // allowance, so the join is the difference between the two questions.
+  // allowance.
+  // INVARIANT: the count reads the fact alone. Facts deliberately outlive the
+  // Turn (no FK), so a JOIN to "chat_turns" would hand the allowance back
+  // every time the user deleted a message or a session.
   const [row] = await tx.$queryRaw<Array<{ used: bigint }>>`
     SELECT count(*) AS used
-      FROM "chat_turn_usage_facts" f
-      JOIN "chat_turns" t ON t.id = f."turnId"
-     WHERE f."userId" = ${userId}
-       AND f."productDay" = ${start}::date
-       AND t."origin" = 'user'
+      FROM "chat_turn_usage_facts"
+     WHERE "userId" = ${userId}
+       AND "productDay" = ${start}::date
+       AND "origin" = 'user'
+       AND "voidedAt" IS NULL
   `;
   if (Number(row?.used ?? 0) >= FREE_DAILY_MESSAGES) {
     throw Errors.paymentRequired("Daily free message limit reached");
   }
+}
+
+/**
+ * SPEC: the free allowance counts Turns that gave the user a reply.
+ *
+ * INTENT: charging a Turn that failed makes the user pay for our outage — while
+ * the model was down every send spent 1/30 and delivered nothing.
+ *   - failed: voided.
+ *   - cancelled: voided only while the attempt was never admitted to Chat
+ *     (`admittedAt` null). An admitted attempt is already streaming text to the
+ *     user; voiding it would make "read the reply, then press Stop" free.
+ *   - a Turn that already delivered a reply once (`statsCountedAt`) keeps
+ *     counting even when a later regeneration fails.
+ *   - a later sent attempt (regenerate / edit) restores the count. Only the
+ *     latest Turn can be revised, so this never lets the day exceed the limit
+ *     by more than that one Turn.
+ * INVARIANT: the fact row is never deleted here; operational usage stays whole.
+ */
+export async function settleChatTurnUsage(
+  tx: Prisma.TransactionClient,
+  turn: { id: string; statsCountedAt: Date | null; admittedAt: Date | null },
+  outcome: "sent" | "failed" | "cancelled",
+  at: Date,
+) {
+  if (outcome === "sent") {
+    await tx.chatTurnUsageFact.updateMany({
+      where: { turnId: turn.id, voidedAt: { not: null } },
+      data: { voidedAt: null },
+    });
+    return;
+  }
+  if (turn.statsCountedAt) return;
+  if (outcome === "cancelled" && turn.admittedAt) return;
+  await tx.chatTurnUsageFact.updateMany({
+    where: { turnId: turn.id, voidedAt: null },
+    data: { voidedAt: at },
+  });
+}
+
+const ENGAGEMENT_INACTIVITY_MS_V1 = 30 * 60 * 1_000;
+
+function chatExchangeEventId(turnId: string, attempt: number) {
+  return `chat_exchange:${turnId}:${attempt}`;
+}
+
+/**
+ * SPEC: every sent reply to a user message emits `chat.exchange.completed.v2`
+ * (WPCU, activation, QCE and every chat-based metric read only this event).
+ * INTENT: Chat emitted it from its own ledger until Chat lost its database
+ * (59089e316, 2026-08-28); since then nothing did and every chat metric sat at
+ * zero. Main now owns the Turn, so it records the event in the same
+ * transaction as the terminal commit, through the canonical metric outbox.
+ *   - one event per sent attempt; the projector keeps the highest attempt, so
+ *     a regeneration replaces the earlier reply in the fact.
+ *   - a proactive Turn is not an exchange: the user sent nothing.
+ *   - engagement session: continues the previous exchange of this session
+ *     when this message came within 30 minutes of that reply (the v1 rule the
+ *     Chat ledger used), otherwise starts at this Turn.
+ */
+async function appendChatExchangeCompleted(
+  tx: Prisma.TransactionClient,
+  turn: {
+    id: string;
+    sessionId: string;
+    userMessageId: string;
+    assistantMessageId: string;
+    attempt: number;
+    createdAt: Date;
+    characterContentVersionId: string | null;
+    characterReleaseId: string | null;
+  },
+  session: {
+    userId: string;
+    characterId: string;
+    entryExposureId: string | null;
+    entryJourneyId: string | null;
+    entryPlacementId: string | null;
+  },
+  at: Date,
+) {
+  if (!turn.characterContentVersionId) return;
+  const previous = await tx.chatTurn.findFirst({
+    where: { sessionId: turn.sessionId, id: { not: turn.id }, createdAt: { lte: turn.createdAt }, origin: "user", assistantStatus: "sent" },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    select: { id: true, attempt: true, terminalAt: true },
+  });
+  let engagementSessionId = `eng_${turn.id}`;
+  if (previous?.terminalAt && turn.createdAt.getTime() - previous.terminalAt.getTime() < ENGAGEMENT_INACTIVITY_MS_V1) {
+    const previousEvent = await tx.analyticsEvent.findUnique({
+      where: { sourceService_sourceEventId: { sourceService: "main", sourceEventId: chatExchangeEventId(previous.id, previous.attempt) } },
+      select: { props: true },
+    });
+    const inherited = jsonRecord(previousEvent?.props ?? null).engagementSessionId;
+    if (typeof inherited === "string" && inherited) engagementSessionId = inherited;
+  }
+  // The contract accepts entry attribution only as a complete triple.
+  const entry = session.entryExposureId && session.entryJourneyId && session.entryPlacementId
+    ? { entryExposureId: session.entryExposureId, journeyId: session.entryJourneyId, placementId: session.entryPlacementId }
+    : { entryExposureId: null, journeyId: null, placementId: null };
+  // INVARIANT: 指标是派生数据，不能让一次契约漂移把已生成的回复整轮回滚；
+  //   不合契约就记日志并跳过这条指标（纯 JS 判定，不会污染事务）。
+  const parsed = chatExchangeCompletedV2Schema.safeParse({
+    exchangeId: turn.id,
+    userMessageId: turn.userMessageId,
+    assistantMessageId: turn.assistantMessageId,
+    selectedAssistantMessageId: turn.assistantMessageId,
+    assistantAttemptNo: turn.attempt,
+    isRegeneration: turn.attempt > 1,
+    sessionId: turn.sessionId,
+    engagementSessionId,
+    userId: session.userId,
+    characterId: session.characterId,
+    characterContentVersionId: turn.characterContentVersionId,
+    characterReleaseId: turn.characterReleaseId,
+    ...entry,
+  });
+  if (!parsed.success) {
+    logger.error({ turnId: turn.id, attempt: turn.attempt, issues: parsed.error.issues.slice(0, 5) }, "chat exchange metric outside its contract; skipped");
+    return;
+  }
+  const payload = parsed.data;
+  await appendCanonicalMetricEvent(tx, {
+    sourceEventId: chatExchangeEventId(turn.id, turn.attempt),
+    eventType: METRIC_PRODUCT_EVENTS.chatExchangeCompleted,
+    occurredAt: at,
+    userId: session.userId,
+    context: {
+      characterId: session.characterId,
+      characterContentVersionId: turn.characterContentVersionId,
+      characterReleaseId: turn.characterReleaseId,
+    },
+    payload,
+  });
+}
+
+/**
+ * SPEC: a user edit, message delete or session delete of an exchange that was
+ * already counted emits `chat.exchange.corrected.v2` in the same transaction.
+ * INTENT: the projector marks the exchange fact ineligible for every correction
+ * except `selected`; without this an edited or deleted reply kept counting in
+ * WPCU and activation. Rules carried over from the Chat producer before
+ * 59089e316:
+ *   - edited: revision = the attempt being replaced; the next sent attempt
+ *     (revision + 1) makes the exchange count again; the projector ignores a
+ *     correction older than the fact's attempt, so arrival order does not matter.
+ *   - deleted / superseded (session delete): revision = the current attempt, so
+ *     a late completion of that same attempt cannot revive it.
+ *   - `selected` has no producer: a Turn has one reply, and regeneration
+ *     already replaces it through a higher-attempt completion event.
+ *   - only exchanges that ever produced a completion (user origin, a sent reply,
+ *     a content version) are corrected. A Turn from the 2026-08-28 gap has no
+ *     fact at all; the projector skips a Main correction for it.
+ */
+async function appendChatExchangeCorrected(
+  tx: Prisma.TransactionClient,
+  turn: ExchangeCorrectionTurn,
+  correction: ExchangeCorrection,
+  at: Date,
+) {
+  const event = chatExchangeCorrectedEvent(turn, correction, at);
+  if (event) await appendCanonicalMetricEvent(tx, { ...event, userId: correction.userId });
+}
+
+type ExchangeCorrectionTurn = { id: string; origin: string; statsCountedAt: Date | null; characterContentVersionId: string | null };
+type ExchangeCorrection = {
+  userId: string;
+  correctionType: "edited" | "deleted" | "superseded";
+  correctionRevision: number;
+  sessionId?: string;
+  messageIds?: string[];
+};
+
+function chatExchangeCorrectedEvent(turn: ExchangeCorrectionTurn, correction: ExchangeCorrection, at: Date) {
+  if (turn.origin !== "user" || !turn.statsCountedAt || !turn.characterContentVersionId) return null;
+  // INVARIANT: same as the completion event — a derived metric never rolls back the user's edit.
+  const parsed = chatExchangeCorrectionV2Schema.safeParse({ exchangeId: turn.id, ...correction });
+  if (!parsed.success) {
+    logger.error({ turnId: turn.id, correctionType: correction.correctionType, issues: parsed.error.issues.slice(0, 5) }, "chat exchange correction metric outside its contract; skipped");
+    return null;
+  }
+  return {
+    sourceEventId: `chat_exchange_correction:${turn.id}:${correction.correctionType}:${correction.correctionRevision}`,
+    eventType: METRIC_PRODUCT_EVENTS.chatExchangeCorrected,
+    occurredAt: at,
+    payload: parsed.data,
+  };
 }
 
 function productDay(value: Date): Date {

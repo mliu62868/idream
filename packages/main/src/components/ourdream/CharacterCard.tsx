@@ -91,7 +91,8 @@ export function CharacterCard({
           {!hasLikes && !hasChats && (
             <span className="flex items-center gap-1 text-white/75">
               <SparkleBadgeIcon className="h-3.5 w-3.5" />
-              {card.source === "official" ? "Official" : "New"}
+              {/* The creator label on the right already says "Official"; don't repeat it. */}
+              New
             </span>
           )}
           <span className="ml-auto min-w-0 truncate">{card.creator}</span>

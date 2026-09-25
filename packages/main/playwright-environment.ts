@@ -181,11 +181,8 @@ export function resolvePlaywrightEnvironment(
     CHAT_BFF_SIGNING_SECRET: bffSecret,
     INTERNAL_TOKEN: internalToken,
     MAIN_WEB_URL: mainBaseURL,
-    // "pipeline" retired with the legacy external adapter on 2026-09-12 and now
-    // fails provider vocabulary parsing, which stopped the image worker — and
-    // with it every browser test — before a single spec could run. Browser tests
-    // assert product flow, not pixels, so they take the same mock the video
-    // worker already defaults to.
+    // Main's view of the image adapter (launch readiness). The Gen workers
+    // override it; see playwrightGenWorker.
     GEN_IMAGE_PROVIDER: input.PW_IMAGE_PROVIDER ?? "mock",
     PIPELINE_API_URL: pipelineBaseURL,
     GEN_VIDEO_PROVIDER: input.PW_VIDEO_PROVIDER ?? "mock",
@@ -229,6 +226,35 @@ export function resolvePlaywrightEnvironment(
   };
 }
 
+// Playwright 1.61 supports managed background processes without a port/url;
+// readiness is each worker's startup log. Both workers run Gen's real pipeline
+// from source with its mock provider I/O. Main pins seeded profiles to runner
+// `comfyui`, which Gen only accepts on a `backend` adapter, so the adapter says
+// backend while the provider bodies stay mock. packages/gen/.env defines
+// higher-priority GEN_* aliases; they are pinned explicitly so no worker
+// escapes the run-owned Redis or blob authority.
+function playwrightGenWorker(
+  environment: ResolvedPlaywrightEnvironment,
+  mode: "image" | "video",
+): ManagedPlaywrightWebServer {
+  return {
+    command: `bun src/e2e/start-playwright-gen-worker.ts ${mode}`,
+    reuseExistingServer: false,
+    timeout: 30_000,
+    wait: { stdout: new RegExp(`Playwright ${mode} worker started`) },
+    gracefulShutdown: { signal: "SIGTERM", timeout: 30_000 },
+    env: {
+      ...environment.serviceEnv,
+      GEN_REDIS_URL: environment.redisURL,
+      GEN_IMAGE_PROVIDER: "backend",
+      GEN_VIDEO_PROVIDER: "backend",
+      GEN_MODERATION_PROVIDER: environment.serviceEnv.MODERATION_PROVIDER,
+      GEN_BLOB_PROVIDER: environment.serviceEnv.BLOB_PROVIDER,
+      LOG_LEVEL: "info",
+    },
+  };
+}
+
 export function managedPlaywrightWebServers(
   environment: ResolvedPlaywrightEnvironment,
 ): [
@@ -242,6 +268,17 @@ export function managedPlaywrightWebServers(
   ManagedPlaywrightWebServer,
 ] {
   return [
+    // The fixture also serves the Chat model endpoint; Chat is not ready until
+    // it can reach that endpoint, so the fixture starts first.
+    {
+      command: `bun src/e2e/pipeline-image-fixture-server.ts --port ${environment.pipelinePort}`,
+      url: `${environment.pipelineBaseURL}/health`,
+      reuseExistingServer: false,
+      timeout: 30_000,
+      env: {
+        ...environment.serviceEnv,
+      },
+    },
     {
       command: "bun src/e2e/start-playwright-chat-service.ts",
       url: `${environment.chatBaseURL}/readyz`,
@@ -283,58 +320,8 @@ export function managedPlaywrightWebServers(
         IDREAM_NEXT_TSCONFIG: environment.adminTsconfigPath,
       },
     },
-    {
-      command: `bun src/e2e/pipeline-image-fixture-server.ts --port ${environment.pipelinePort}`,
-      url: `${environment.pipelineBaseURL}/health`,
-      reuseExistingServer: false,
-      timeout: 30_000,
-      env: {
-        ...environment.serviceEnv,
-      },
-    },
-    {
-      // Playwright 1.61 supports managed background processes without a
-      // port/url. Readiness is the Gen entrypoint's stable startup log after
-      // the shared image-generation/character-preview worker is constructed.
-      command: "bun run --cwd ../gen start:image",
-      reuseExistingServer: false,
-      timeout: 30_000,
-      wait: {
-        stdout: /gen\/image workers started/,
-      },
-      gracefulShutdown: {
-        signal: "SIGTERM",
-        timeout: 30_000,
-      },
-      env: {
-        ...environment.serviceEnv,
-        // packages/gen/.env defines higher-priority GEN_* aliases. Pin them
-        // explicitly so this worker cannot escape the run-owned Redis,
-        // provider, pipeline fixture, or blob authority.
-        GEN_REDIS_URL: environment.redisURL,
-        GEN_IMAGE_PROVIDER: environment.serviceEnv.GEN_IMAGE_PROVIDER,
-        GEN_VIDEO_PROVIDER: environment.serviceEnv.GEN_VIDEO_PROVIDER,
-        GEN_MODERATION_PROVIDER: environment.serviceEnv.MODERATION_PROVIDER,
-        GEN_BLOB_PROVIDER: environment.serviceEnv.BLOB_PROVIDER,
-        LOG_LEVEL: "info",
-      },
-    },
-    {
-      command: "bun src/e2e/start-playwright-video-worker.ts",
-      reuseExistingServer: false,
-      timeout: 30_000,
-      wait: { stdout: /Playwright video worker started/ },
-      gracefulShutdown: { signal: "SIGTERM", timeout: 30_000 },
-      env: {
-        ...environment.serviceEnv,
-        GEN_REDIS_URL: environment.redisURL,
-        GEN_IMAGE_PROVIDER: environment.serviceEnv.GEN_IMAGE_PROVIDER,
-        GEN_VIDEO_PROVIDER: "backend",
-        GEN_MODERATION_PROVIDER: environment.serviceEnv.MODERATION_PROVIDER,
-        GEN_BLOB_PROVIDER: environment.serviceEnv.BLOB_PROVIDER,
-        LOG_LEVEL: "info",
-      },
-    },
+    playwrightGenWorker(environment, "image"),
+    playwrightGenWorker(environment, "video"),
     {
       // Gen durably acknowledges completion manifests into Main's outbox.
       // Production uses gen-finalizer to dispatch those manifests onto

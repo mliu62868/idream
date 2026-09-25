@@ -38,6 +38,11 @@ describe("customer support conversation", () => {
     expect(question.data.request).toMatchObject({ status: "waiting_on_user", canReply: true,
       messages: [{ author: "support", body: "Which image failed to save?" }] });
 
+    const flagged = await api("GET", "support/history", { userId: CUSTOMER, ageGate: true });
+    expectOk(flagged);
+    expect(flagged.data.supportRequests.find((item: { ticketId: string }) => item.ticketId === ticketId))
+      .toMatchObject({ supportReplied: true });
+
     const replied = await api("POST", `support/requests/${ticketId}/messages`, {
       userId: CUSTOMER,
       body: { messageId: crypto.randomUUID(), body: "It is image ABC in my gallery." },
@@ -47,6 +52,9 @@ describe("customer support conversation", () => {
       { author: "support", body: "Which image failed to save?" },
       { author: "customer", body: "It is image ABC in my gallery." },
     ] });
+    const answered = await api("GET", "support/history", { userId: CUSTOMER, ageGate: true });
+    expect(answered.data.supportRequests.find((item: { ticketId: string }) => item.ticketId === ticketId))
+      .toMatchObject({ supportReplied: false });
     const queue = await adminV2("GET", "cases", {
       userId: ADMIN, role: "admin", query: { view: "all", status: "in_progress" },
     });

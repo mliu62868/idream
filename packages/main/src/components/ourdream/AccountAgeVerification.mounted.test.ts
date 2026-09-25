@@ -111,8 +111,9 @@ describe("account age verification escape hatch", () => {
     expect(startButton()?.disabled).toBe(false);
   });
 
-  // Profile 在确认账号身份之前会让 fetcher 抛 AbortError，之后带新 fetcher 重跑。
-  it("says nothing while the profile is still confirming which account this is", async () => {
+  // fetchForOwner 只在 Profile 确认了另一个账号时抛 AbortError；确认进行中它自己等待，
+  // 首次加载与重试由 ProfileWorkspace.mounted.test 覆盖。
+  it("says nothing when the profile abandons the read for another account", async () => {
     const aborting: Fetcher = async () => {
       throw new DOMException("Account confirmation changed", "AbortError");
     };
@@ -124,30 +125,6 @@ describe("account age verification escape hatch", () => {
     await mount(confirmed);
     expect(container.textContent).toContain("Verification did not pass");
     expect(container.textContent).not.toContain("Account confirmation changed");
-  });
-
-  // 账号确认结果存在 ref 里，不会触发重渲染，所以「等一个新 fetcher」等不到。
-  it("asks again on its own until the profile confirms the account", async () => {
-    vi.useFakeTimers();
-    try {
-      let aborts = 2;
-      const fetcher: Fetcher = async () => {
-        if (aborts > 0) {
-          aborts -= 1;
-          throw new DOMException("Account confirmation changed", "AbortError");
-        }
-        return ok({ status: "failed" });
-      };
-      await mount(fetcher);
-      expect(container.textContent).toBe("");
-
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(1_000);
-      });
-      expect(container.textContent).toContain("Verification did not pass");
-    } finally {
-      vi.useRealTimers();
-    }
   });
 
   it("keeps the retry available when starting a session fails", async () => {

@@ -54,6 +54,17 @@ describe("email verification and recovery UI", () => {
     expect(fetcher).toHaveBeenCalledOnce();
   });
 
+  // fetchForOwner 只在 Profile 确认了另一个账号时抛 AbortError（确认进行中它自己等待，
+  // 见 ProfileWorkspace.mounted.test）：面板即将卸载，不该把它当失败报出来。
+  it("says nothing when the profile abandons the read for another account", async () => {
+    const fetcher = vi.fn<Fetcher>(async () => { throw new DOMException("Account confirmation changed", "AbortError"); });
+    await act(async () => root.render(createElement(AccountEmailVerification, { ownerId: "owner-a", fetcher })));
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    expect(container.textContent).not.toContain("Account confirmation changed");
+    expect(container.textContent).not.toContain("Could not check email verification");
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
   it("does not display another account's email or allow verification after an owner mismatch", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => ok({ ...account, userId: "owner-b", email: "other@customer.invalid" })));
     await act(async () => root.render(createElement(AccountEmailVerification, { ownerId: "owner-a" })));

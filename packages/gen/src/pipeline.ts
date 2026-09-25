@@ -280,6 +280,9 @@ export async function processVideoGenerate(
           ordinal: 0,
           key: assetKey,
           seconds: output.asset.seconds,
+          ...(output.asset.width && output.asset.height
+            ? { width: output.asset.width, height: output.asset.height }
+            : {}),
           contentType,
           providerKey: output.asset.key ?? null,
         }],

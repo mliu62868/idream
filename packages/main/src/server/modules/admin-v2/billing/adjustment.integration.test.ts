@@ -133,6 +133,36 @@ describe.sequential("Admin v2 ledger adjustment", () => {
     expect(await dreamcoinBalance(targetId)).toBe(42);
   });
 
+  it("refuses a deduction that would take the balance below zero", async () => {
+    const before = await dreamcoinBalance(targetId);
+    const delta = -(before + 1);
+    expectError(
+      await adjust({
+        userId: adminId,
+        role: "admin",
+        idempotencyKey: `${P}overdraw`,
+        body: { userId: targetId, delta, reason: "overdraw attempt", confirmation: `${targetId}:${delta}` },
+      }),
+      409,
+    );
+    await expect(dreamcoinBalance(targetId)).resolves.toBe(before);
+  });
+
+  it("still lets an operator credit a user whose balance is already negative", async () => {
+    const debtorId = `${P}debtor`;
+    await createUser({ id: debtorId });
+    await prisma.dreamcoinLedger.create({ data: {
+      userId: debtorId, delta: -500, balanceAfter: -500, reason: "subscription_refund",
+      sourceId: `${P}debt`, idempotencyKey: `${P}debt`,
+    } });
+    const before = await dreamcoinBalance(debtorId);
+    expectOk(await adjust({
+      userId: adminId, role: "admin", idempotencyKey: `${P}credit-debtor`,
+      body: { userId: debtorId, delta: 100, reason: "goodwill correction", confirmation: `${debtorId}:100` },
+    }));
+    await expect(dreamcoinBalance(debtorId)).resolves.toBe(before + 100);
+  });
+
   it("404s an adjustment against a user that does not exist", async () => {
     expectError(
       await adjust({

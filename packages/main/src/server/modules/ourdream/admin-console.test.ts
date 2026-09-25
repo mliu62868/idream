@@ -4530,6 +4530,9 @@ describe("admin dual-approval hard enforcement (T4)", () => {
         }),
       );
 
+      // an approval for +5000 cannot be spent on a different amount
+      expectError(await adminLedgerAdjust(a1, "admin", { ...big, delta: 99999, confirmation: `${target}:99999` }), 403);
+
       // with approval → ok (consumes credential)
       expectOk(await adminLedgerAdjust(a1, "admin", big));
 

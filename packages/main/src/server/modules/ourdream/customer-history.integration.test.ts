@@ -88,12 +88,13 @@ describe("POST /api/v1/appeals authority", () => {
     }), 400, "bad_request");
     await expect(prisma.appeal.count({ where: { userId: OUTSIDER } })).resolves.toBe(0);
 
+    // A pasted page link resolves to the same target as the bare id.
     const valid = await api("POST", "appeals", {
       userId: CUSTOMER,
       ageGate: true,
       body: {
         targetType: "character",
-        targetId,
+        targetId: `https://example.test/characters/${targetId}?from=share`,
         appealText: "Please review the decision affecting my Character.",
       },
     });
@@ -280,6 +281,7 @@ describe("GET /api/v1/support/history", () => {
         id: reportId,
         status: "closed",
         decision: {
+          id: decided.data.review.id,
           outcome: "closed",
           decidedAt: expect.any(String),
         },

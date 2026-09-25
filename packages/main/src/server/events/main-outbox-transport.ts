@@ -65,6 +65,25 @@ export const MAIN_OUTBOX_TRANSPORT_KNOWN_STATUSES = [
   ...MAIN_OUTBOX_TRANSPORT_TERMINAL_STATUSES,
 ] as const;
 
+/**
+ * SPEC: terminal status of an outbox row whose event type no transport queue
+ * routes. The row is a durable domain record (audit trail, evidence another
+ * reader looks up by aggregate), not work waiting for delivery.
+ * INTENT: main_outbox_events doubles as transport queue and domain event log
+ * with one state machine, so ~270 audit events (generation.request.cancelled,
+ * creative.review.decided, ...) sat "pending" forever — indistinguishable from
+ * a lost delivery and growing without bound. MAIN_OUTBOX_TRANSPORT_QUEUES is
+ * the routing authority: whatever it does not route is recorded, not pending.
+ */
+export const MAIN_OUTBOX_RECORDED_STATUS = "recorded" as const;
+
+export function unroutedPendingMainOutboxWhere(): Prisma.MainOutboxEventWhereInput {
+  return {
+    eventType: { notIn: [...MAIN_OUTBOX_TRANSPORT_EVENT_TYPES] },
+    status: "pending",
+  };
+}
+
 export function pendingMainOutboxTransportWhere(): Prisma.MainOutboxEventWhereInput {
   return {
     eventType: { in: [...MAIN_OUTBOX_TRANSPORT_EVENT_TYPES] },

@@ -45,9 +45,6 @@ export const AGE_VERIFICATION_COPY: Record<
   },
 };
 
-const OWNER_CONFIRM_RETRIES = 10;
-const OWNER_CONFIRM_RETRY_MS = 300;
-
 function isAbort(error: unknown) {
   return error instanceof DOMException && error.name === "AbortError";
 }
@@ -83,39 +80,26 @@ export function AccountAgeVerification({
       return readData(response, parseAgeVerificationStatusResponse);
     };
     return readStatus().then((data) => {
-      if (!alive.current) return true;
+      if (!alive.current) return;
       setStatus(data.status);
       setMessage("");
-      return true;
     }).catch((error: unknown) => {
-      if (!alive.current) return true;
-      // Profile 每次刷新账号身份都会先把已确认的 owner 清空，这期间 fetchForOwner 抛
-      // AbortError。那是生命周期信号不是失败：既不该报给用户，也不能就此放弃——
-      // 确认结果存在 ref 里，不会触发重渲染，等不到「新 fetcher」，只能自己再问一次。
-      if (isAbort(error)) return false;
+      // AbortError 只意味着 Profile 确认的是另一个账号、这个面板即将随之卸载：
+      // 不是失败，不报给用户。确认进行中的请求由 fetchForOwner 自己等待。
+      if (!alive.current || isAbort(error)) return;
       setMessage(
         error instanceof Error
           ? error.message
           : "Age verification status could not be checked. Reload and try again.",
       );
-      return true;
     });
   }, [fetcher]);
 
   useEffect(() => {
     alive.current = true;
-    let attempt = 0;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const ask = () => {
-      void load().then((settled) => {
-        if (settled || !alive.current || (attempt += 1) > OWNER_CONFIRM_RETRIES) return;
-        timer = setTimeout(ask, OWNER_CONFIRM_RETRY_MS);
-      });
-    };
-    ask();
+    void load();
     return () => {
       alive.current = false;
-      if (timer) clearTimeout(timer);
     };
   }, [load, ownerId]);
 

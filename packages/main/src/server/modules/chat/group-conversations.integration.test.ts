@@ -17,11 +17,12 @@ afterAll(async () => {
   await prisma.$disconnect();
 });
 
-async function fixture(count = 2) {
+// `extra` Characters belong to the same owner but start outside the group.
+async function fixture(count = 2, extra = 0) {
   const userId = `${prefix}${randomUUID()}`;
   await createUser({ id: userId });
   const characters = [];
-  for (let index = 0; index < count; index++) {
+  for (let index = 0; index < count + extra; index++) {
     const name = `Group companion ${index + 1}`;
     const character = await createCharacter({ id: `${userId}-c${index}`, creatorId: userId, name, source: "user", visibility: "private" });
     const soul = compileCharacterSoul({ name, age: 28, gender: "female", characterPromise: `I am companion ${index + 1}.`, detailsMarkdown: "A warm and curious adult companion." });
@@ -33,10 +34,13 @@ async function fixture(count = 2) {
     await prisma.character.update({ where: { id: character.id }, data: { currentContentVersionId: content.id } });
     characters.push({ id: character.id, name, contentId: content.id });
   }
-  const group = await createGroupConversation(userId, { title: "Controlled group", characterIds: characters.map(character => character.id) });
+  const group = await createGroupConversation(userId, { title: "Controlled group", characterIds: characters.slice(0, count).map(character => character.id) });
   const members = await prisma.recentChat.findMany({ where: { groupId: group.id }, orderBy: { groupPosition: "asc" } });
   const begin = (index: number, content = `Message for companion ${index + 1}`, idempotencyKey = randomUUID()) => beginChatTurn({ userId, sessionId: members[index].sessionId, content, idempotencyKey });
-  return { userId, characters, group, members, begin };
+  const patch = (body: unknown, scope = `user:${userId}`) => proxyChatRequest(new Request(`http://localhost/api/v1/chat/groups/${group.id}`, {
+    method: "PATCH", headers: { "x-idream-user-id": userId, "x-idream-viewer-scope": scope, "content-type": "application/json" }, body: JSON.stringify(body),
+  }), ["chat", "groups", group.id]);
+  return { userId, characters, group, members, begin, patch };
 }
 
 async function finish(snapshot: NonNullable<Awaited<ReturnType<typeof beginChatTurn>>["snapshot"]>, content = "I am here as myself.") {
@@ -215,7 +219,7 @@ describe("Main group conversation authority", () => {
     expect(a.snapshot!.memoryEnabled).toBe(false); await finish(a.snapshot!);
     const b = await f.begin(1);
     expect(b.snapshot!.memoryEnabled).toBe(true);
-    const transport = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ ok: true }));
+    const transport = vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json({ ok: true }));
     try { await clearCompanionMemory(f.userId, f.characters[0].id); } finally { transport.mockRestore(); }
     expect(await prisma.groupConversation.findUnique({ where: { id: f.group.id } })).toMatchObject({ status: "archived" });
     expect(await prisma.chatTurn.findUnique({ where: { id: b.snapshot!.turnId } })).toMatchObject({ assistantStatus: "cancelled", memoryEnabled: true });
@@ -223,6 +227,53 @@ describe("Main group conversation authority", () => {
     expect(members.map(member => ({ status: member.status, memoryEnabled: member.memoryEnabled }))).toEqual([{ status: "archived", memoryEnabled: false }, { status: "archived", memoryEnabled: true }]);
     await expect(f.begin(1)).rejects.toMatchObject({ status: 410 });
     expect((await getGroupConversation(f.userId, f.group.id)).messages).toHaveLength(4);
+  });
+
+  it("adds a Character who reads the earlier shared transcript, replays the same add once and is removed with the group", async () => {
+    const f = await fixture(2, 1);
+    const added = f.characters[2];
+    const a = await f.begin(0, "The lantern is on the porch.");
+    await finish(a.snapshot!, "I, companion one, lit it.");
+    expect((await f.patch({ addCharacterIds: [added.id] }, "user:someone-else")).status).toBe(409);
+    for (let replay = 0; replay < 2; replay++) {
+      const response = await f.patch({ addCharacterIds: [added.id] });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ id: f.group.id, status: "active", members: [{ characterId: f.characters[0].id }, { characterId: f.characters[1].id }, { characterId: added.id, name: added.name }] });
+    }
+    const members = await prisma.recentChat.findMany({ where: { groupId: f.group.id }, orderBy: { groupPosition: "asc" } });
+    expect(members).toHaveLength(3);
+    expect(members[2]).toMatchObject({ characterId: added.id, characterContentVersionId: added.contentId, groupPosition: 2, activeKey: null, openingMessage: null, status: "active" });
+    expect(await groupSpeakerSession(f.userId, f.group.id, added.id)).toMatchObject({ sessionId: members[2].sessionId });
+    const c = await beginChatTurn({ userId: f.userId, sessionId: members[2].sessionId, content: "Who lit the lantern?", idempotencyKey: randomUUID() });
+    expect(c.snapshot).toMatchObject({ characterId: added.id, group: { ordinal: 2 } });
+    expect(c.snapshot!.group!.members.map(member => member.characterId)).toEqual(f.characters.map(character => character.id));
+    expect(c.snapshot!.recentTurns).toEqual([expect.objectContaining({ turnId: a.snapshot!.turnId, assistantContent: "I, companion one, lit it." })]);
+    await finish(c.snapshot!, "Companion one lit it.");
+    const restored = await getGroupConversation(f.userId, f.group.id, added.id);
+    expect(restored.messages.map(message => message.characterId)).toEqual([f.characters[0].id, f.characters[0].id, added.id, added.id]);
+    expect(restored.group.selectedSessionId).toBe(members[2].sessionId);
+    await deleteGroupChatConversation(f.userId, f.group.id);
+    expect(await prisma.recentChat.findUnique({ where: { sessionId: members[2].sessionId } })).toBeNull();
+    expect(await prisma.chatTurn.count({ where: { sessionId: members[2].sessionId } })).toBe(0);
+  });
+
+  it("rejects additions beyond twelve, unavailable or duplicate Characters and archived groups without adding anyone", async () => {
+    const f = await fixture(11, 2);
+    const other = await fixture(2, 1);
+    const count = () => prisma.recentChat.count({ where: { groupId: f.group.id } });
+    expect((await f.patch({ addCharacterIds: [f.characters[11].id, f.characters[12].id] })).status).toBe(409);
+    expect((await f.patch({ addCharacterIds: [f.characters[11].id, f.characters[11].id] })).status).toBe(400);
+    expect((await f.patch({ addCharacterIds: [other.characters[0].id] })).status).toBe(404);
+    // One unavailable Character fails the whole batch.
+    expect((await other.patch({ addCharacterIds: [other.characters[2].id, f.characters[0].id] })).status).toBe(404);
+    await prisma.character.update({ where: { id: f.characters[12].id }, data: { age: 17 } });
+    expect((await f.patch({ addCharacterIds: [f.characters[12].id] })).status).toBe(404);
+    expect(await count()).toBe(11);
+    expect((await f.patch({ addCharacterIds: [f.characters[11].id] })).status).toBe(200);
+    expect(await count()).toBe(12);
+    await updateGroupConversation(other.userId, other.group.id, { status: "archived" });
+    expect((await other.patch({ addCharacterIds: [other.characters[2].id] })).status).toBe(410);
+    expect(await prisma.recentChat.count({ where: { groupId: other.group.id } })).toBe(2);
   });
 
   it("binds public group reads and writes to the current owner and rejects invalid creation fields with a client error", async () => {

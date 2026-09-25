@@ -70,6 +70,13 @@ export function characterOperationsFacts(
       alert: changedCount > 0,
     },
     {
+      label: "Pending revision",
+      value: data.journey.release.pendingRevision
+        ? `#${data.journey.release.pendingRevision.revision} · ${data.journey.release.pendingRevision.createdAt.slice(0, 10)}`
+        : "None",
+      alert: Boolean(data.journey.release.pendingRevision),
+    },
+    {
       label: "Image pack",
       value: `${visiblePack.completed}/${visiblePack.total}`,
       alert: visiblePack.completed < visiblePack.total,

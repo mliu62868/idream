@@ -710,7 +710,7 @@ const comparisonFeatureRows = [
   {
     area: "Account and pricing",
     ourdream:
-      "Current plan prices and included dreamcoins are loaded from the plan authority below; checkout and billing state live on Upgrade.",
+      "Current plan prices and included dreamcoins are listed below; checkout and billing state live on Upgrade.",
     compare:
       "Compare included credits, chat limits, prepaid access periods, and whether plan changes preserve the current workflow.",
   },

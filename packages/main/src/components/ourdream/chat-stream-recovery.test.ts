@@ -89,6 +89,15 @@ describe("chatStreamLatestReplyFailed", () => {
     ).toBe(true);
   });
 
+  it("leaves an empty failed turn to its attachment card", () => {
+    expect(
+      chatStreamLatestReplyFailed([
+        { role: "user", content: "photo" },
+        { role: "assistant", content: "", status: "failed", attachments: [{ status: "failed" }] },
+      ]),
+    ).toBe(false);
+  });
+
   it("does not keep flagging a healthy session because an older turn failed", () => {
     expect(
       chatStreamLatestReplyFailed([

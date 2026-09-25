@@ -607,6 +607,8 @@ const characterDetailSchema = publicCharacterCardSchema
     liked: z.boolean().optional(),
     style: z.string().optional(),
     gender: z.string().optional(),
+    visibility: z.string().optional(),
+    voiceSampleAvailable: z.boolean().optional(),
   })
   .passthrough();
 
@@ -621,7 +623,11 @@ const chatSessionCreateResponseSchema = successEnvelope(
 );
 
 const characterLikeResponseSchema = successEnvelope(
-  z.object({ liked: z.boolean() }),
+  z.object({
+    liked: z.boolean(),
+    likesCount: z.number().int().nonnegative().optional(),
+    likes: z.string().optional(),
+  }),
 );
 
 const reportResponseSchema = successEnvelope(
@@ -639,6 +645,7 @@ const helpDeskSupportRequestSchema = z
     status: nonEmptyString,
     createdAt: timestamp,
     updatedAt: timestamp,
+    supportReplied: z.boolean().optional(),
     resolution: z
       .object({
         outcome: nonEmptyString,
@@ -659,6 +666,7 @@ const helpDeskReportSchema = z
     createdAt: timestamp,
     decision: z
       .object({
+        id: nonEmptyString,
         outcome: nonEmptyString,
         decidedAt: timestamp,
       })
@@ -1296,6 +1304,9 @@ const libraryItemSchema = z
     prompt: z.string().nullable().optional(),
     visibility: z.string().optional(),
     status: z.string().optional(),
+    // Created 卡上的公开表现；characterDTO 的格式化计数。
+    likes: z.string().optional(),
+    chats: z.string().optional(),
     publicationState: z.enum([
       "pending_review",
       "awaiting_publication",
@@ -1407,13 +1418,16 @@ const chatSessionDetailSchema = z
     title: z.string().nullable(),
     characterId: z.string().optional(),
     memoryEnabled: z.boolean().optional(),
+    proactiveEnabled: z.boolean().optional(),
     status: z.string().optional(),
     group: z.object({ members: z.array(groupChatMemberSchema).min(2).max(12), selectedSessionId: nonEmptyString }).strict().optional(),
+    memberImages: z.record(z.string(), z.string()).optional(),
     messages: z.array(chatMessageSchema),
     character: z
       .object({
         canUpdateIdentity: z.boolean().optional(),
         name: nonEmptyString,
+        image: z.string().nullable().optional(),
       })
       .passthrough(),
   })
@@ -1679,6 +1693,36 @@ export function parseCharacterVoicePreviewResponse(payload: unknown) {
     audioBase64: z.string().min(1).regex(/^[A-Za-z0-9+/]+={0,2}$/),
     durationMs: nonNegativeInteger,
   })), payload, "character voice preview").data;
+}
+
+// Quick Start returns only fields the Create wizard already has; each is optional.
+const characterQuickStartDraftSchema = z.object({
+  name: nonEmptyString.optional(),
+  age: z.number().int().min(18).max(120).optional(),
+  gender: nonEmptyString.optional(),
+  style: nonEmptyString.optional(),
+  appearance: nonEmptyString.optional(),
+  ethnicity: nonEmptyString.optional(),
+  skinTone: nonEmptyString.optional(),
+  eyeColor: nonEmptyString.optional(),
+  faceShape: nonEmptyString.optional(),
+  hair: nonEmptyString.optional(),
+  body: nonEmptyString.optional(),
+  description: nonEmptyString.optional(),
+  firstMessage: nonEmptyString.optional(),
+  personality: nonEmptyString.optional(),
+  occupation: nonEmptyString.optional(),
+  relationship: nonEmptyString.optional(),
+}).strict();
+
+export type CharacterQuickStartDraft = z.infer<typeof characterQuickStartDraftSchema>;
+
+export function parseCharacterQuickStartResponse(payload: unknown) {
+  return parseContract(
+    successEnvelope(z.object({ draft: characterQuickStartDraftSchema })),
+    payload,
+    "character quick start",
+  ).data.draft;
 }
 
 export function parseTemplatesResponse(payload: unknown) {

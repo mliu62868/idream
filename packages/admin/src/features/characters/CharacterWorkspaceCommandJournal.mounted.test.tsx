@@ -202,7 +202,7 @@ describe("Character workspace — 每个命令出口都接到了运营界面", (
     ["future_authority_error", "Unfamiliar provider fault", "这个操作没有完成。"],
   ])("renders a real %s response in Chinese and retains request evidence", async (code, message, headline) => {
     const actual = await vi.importActual<typeof import("@/lib/admin-v2-api")>("@/lib/admin-v2-api");
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ ok: false, error: {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json({ ok: false, error: {
       code, message, requestId: "character-load-500", details: { provider: "main", diagnostic: "schema mismatch" },
     } }, { status: 500 }));
     adminV2Request.mockImplementation((path) => actual.adminV2Request(path));

@@ -26,7 +26,19 @@ describe("immutable admin evidence database guards", () => {
           path.resolve(process.cwd(), `prisma/migrations/${migration}/migration.sql`),
           "utf8",
         );
-        await client.query(sql);
+        // Global setup pre-installs the shared reject_admin_evidence_update() function
+        // (cash capture needs it) but none of its triggers; replay the rest of the
+        // migration from the same boundary global-setup uses.
+        let replay = sql;
+        if (migration === "20260711120000_immutable_admin_evidence") {
+          const installed = await client.query<{ present: boolean }>("SELECT to_regprocedure('reject_admin_evidence_update()') IS NOT NULL AS present");
+          if (installed.rows[0]?.present) {
+            const boundary = sql.indexOf("CREATE TRIGGER analytics_events_immutable\n");
+            if (boundary <= 0) throw new Error("Immutable evidence migration boundary changed");
+            replay = sql.slice(boundary);
+          }
+        }
+        await client.query(replay);
       }
     } finally {
       await client.end();

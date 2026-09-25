@@ -175,6 +175,35 @@ describe("explore: search, filter, sort, pagination", () => {
     expect(ids).toEqual([`${P}c-alpha`, `${P}c-beta`, `${P}c-gamma`]);
   });
 
+  // SPEC (EX-02): For You follows the viewer's own likes / chats; it must not
+  // be Popular under another name once there is a signal.
+  it("ranks for-you by the viewer's liked tags and moves chatted Characters back", async () => {
+    const viewer = `${P}for-you-viewer`;
+    await createUser({ id: viewer });
+    await seedChar({ id: `${P}liked-noir`, name: "ZZQLIKED Noir", creatorId: sys, tagSlug: `${P}noir` });
+    await prisma.characterTag.create({ data: { characterId: `${P}c-gamma`, tagId: `${P}tag-${P}noir` } });
+    await prisma.characterLike.create({ data: { userId: viewer, characterId: `${P}liked-noir` } });
+    await prisma.recentChat.create({ data: {
+      sessionId: `${P}for-you-session`, userId: viewer, characterId: `${P}c-alpha`, title: "Alpha",
+    } });
+    try {
+      const forYou = await api("GET", "characters", { userId: viewer, ageGate: true, query: { q: TOKEN, sort: "for-you", limit: 28 } });
+      const popular = await api("GET", "characters", { userId: viewer, ageGate: true, query: { q: TOKEN, sort: "popular", limit: 28 } });
+      expectOk(forYou);
+      expectOk(popular);
+      const ids = (res: typeof forYou) => (res.data.items as Array<{ id: string }>).map((c) => c.id);
+      expect(ids(forYou)).toEqual([`${P}c-gamma`, `${P}c-beta`, `${P}c-alpha`]);
+      expect(ids(popular)).toEqual([`${P}c-alpha`, `${P}c-beta`, `${P}c-gamma`]);
+      // The offset cursor walks the same total order.
+      const first = await api("GET", "characters", { userId: viewer, ageGate: true, query: { q: TOKEN, sort: "for-you", limit: 2 } });
+      const second = await api("GET", "characters", { userId: viewer, ageGate: true, query: { q: TOKEN, sort: "for-you", limit: 2, cursor: first.data.nextCursor } });
+      expect([...ids(first), ...ids(second)]).toEqual(ids(forYou));
+    } finally {
+      await prisma.characterTag.deleteMany({ where: { characterId: `${P}c-gamma` } });
+      await prisma.recentChat.deleteMany({ where: { userId: viewer } });
+    }
+  });
+
   it("searches by name and sorts by popularity (chats desc)", async () => {
     const res = await api("GET", "characters", {
       ageGate: true,
@@ -183,6 +212,51 @@ describe("explore: search, filter, sort, pagination", () => {
     expectOk(res);
     const ids = (res.data.items as Array<{ id: string }>).map((c) => c.id);
     expect(ids).toEqual([`${P}c-alpha`, `${P}c-beta`, `${P}c-gamma`]);
+  });
+
+  // SPEC (EX-02): "Popular · Month" means chats started and likes given in the
+  // last 30 days; old cumulative heat must not outrank recent heat. period=all
+  // is the cumulative order. For You without a signal serves the default Popular.
+  it("ranks popular by the selected window and keeps cumulative for all time", async () => {
+    const WINDOW = "ZZQWINDOW";
+    const daysAgo = (days: number) => new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    await seedChar({ id: `${P}w-old`, name: `${WINDOW} Old`, creatorId: sys, chats: 500 });
+    await seedChar({ id: `${P}w-mid`, name: `${WINDOW} Mid`, creatorId: sys, chats: 50 });
+    await seedChar({ id: `${P}w-fresh`, name: `${WINDOW} Fresh`, creatorId: sys, chats: 5 });
+    for (const n of [1, 2, 3]) {
+      await createUser({ id: `${P}w-fan-${n}` });
+      // Old heat: three chats and a like, all 60 days ago.
+      await prisma.recentChat.create({ data: {
+        sessionId: `${P}w-old-${n}`, userId: `${P}w-fan-${n}`, characterId: `${P}w-old`, createdAt: daysAgo(60),
+      } });
+    }
+    await prisma.characterLike.create({ data: { userId: `${P}w-fan-1`, characterId: `${P}w-old`, createdAt: daysAgo(60) } });
+    // In the month but not the week.
+    await prisma.recentChat.create({ data: {
+      sessionId: `${P}w-mid-1`, userId: `${P}w-fan-1`, characterId: `${P}w-mid`, createdAt: daysAgo(20),
+    } });
+    // In the week: a like only.
+    await prisma.characterLike.create({ data: { userId: `${P}w-fan-2`, characterId: `${P}w-fresh`, createdAt: daysAgo(2) } });
+
+    const list = async (query: Record<string, string | number>) => {
+      const res = await api("GET", "characters", { ageGate: true, query: { q: WINDOW, limit: 28, ...query } });
+      expectOk(res);
+      return (res.data.items as Array<{ id: string }>).map((c) => c.id);
+    };
+    const month = [`${P}w-mid`, `${P}w-fresh`, `${P}w-old`];
+    expect(await list({ sort: "popular", period: "month" })).toEqual(month);
+    expect(await list({ sort: "popular" })).toEqual(month);
+    // Nothing chatted this week, so likes decide first and cumulative breaks the tie.
+    expect(await list({ sort: "popular", period: "week" })).toEqual([`${P}w-fresh`, `${P}w-old`, `${P}w-mid`]);
+    expect(await list({ sort: "popular", period: "all" })).toEqual([`${P}w-old`, `${P}w-mid`, `${P}w-fresh`]);
+    expect(await list({ sort: "for-you" })).toEqual(month);
+
+    const first = await api("GET", "characters", { ageGate: true, query: { q: WINDOW, sort: "popular", limit: 2 } });
+    const second = await api("GET", "characters", {
+      ageGate: true, query: { q: WINDOW, sort: "popular", limit: 2, cursor: first.data.nextCursor },
+    });
+    const ids = (res: typeof first) => (res.data.items as Array<{ id: string }>).map((c) => c.id);
+    expect([...ids(first), ...ids(second)]).toEqual(month);
   });
 
   it("sorts by newest (createdAt desc)", async () => {
@@ -602,8 +676,9 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
       userId,
       ageGate: true,
       body: {
+        // firstMessage is not part of the identity projection, so the confirmed
+        // identity survives and the persona check is what blocks publishing.
         advancedDetails: {
-          description: "",
           firstMessage: "",
         },
       },
@@ -620,10 +695,7 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
       "Complete the character persona before publishing",
     );
     expect(incompletePersonaSubmit.error?.details).toMatchObject({
-      missingFields: [
-        "description",
-        "firstMessage",
-      ],
+      missingFields: ["firstMessage"],
     });
 
     const completedPersona = await api("PATCH", `character-drafts/${draftId}`, {

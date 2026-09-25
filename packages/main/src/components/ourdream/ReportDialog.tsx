@@ -21,7 +21,7 @@ export type ReportTarget =
   | { kind: "feedItem"; id: string }
   | { kind: "record"; targetType: string; targetId: string };
 
-const REASON_LABELS: Record<ContentReportReason, string> = {
+export const REASON_LABELS: Record<ContentReportReason, string> = {
   underage_content: "Underage or minor-coded content",
   nonconsensual_real_person: "A real person, used without consent",
   harassment_or_hate: "Harassment, hate, or threats",

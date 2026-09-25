@@ -99,7 +99,11 @@ async function routeMainChat(request: Request, segments: string[], userId: strin
     const groupId = path[1];
     if (groupId && path.length === 2) {
       if (method === "GET") return envelope({ session: await getGroupConversation(userId, groupId, new URL(request.url).searchParams.get("speaker") ?? undefined) });
-      if (method === "PATCH") return json(await updateGroupConversation(userId, groupId, body));
+      if (method === "PATCH") {
+        // Same guard as creation: new members are bound to the account the picker was loaded for.
+        if ("addCharacterIds" in body && request.headers.get("x-idream-viewer-scope") !== `user:${userId}`) throw Errors.conflict("Your account changed. Reload before adding Characters");
+        return json(await updateGroupConversation(userId, groupId, body));
+      }
       if (method === "DELETE") {
         await deleteGroupChatConversation(userId, groupId);
         return json({ ok: true });
@@ -125,6 +129,10 @@ async function routeMainChat(request: Request, segments: string[], userId: strin
   if (root === "chat" && path[0] === "sessions" && path.length === 1) {
     if (method === "GET") return json(await listChatSessions(userId));
     if (method === "POST") {
+      // Optional guard: a caller that states which account it is acting for (e.g. the
+      // Release hand-off carrying an unsent draft) must not land in another account.
+      const scope = request.headers.get("x-idream-viewer-scope");
+      if (scope !== null && scope !== `user:${userId}`) throw Errors.conflict("Your account changed. Reload to continue.");
       const session = await createChatSession(userId, {
         characterId: text(body.characterId),
         title: optionalText(body.title),
@@ -305,5 +313,11 @@ function errorResponse(error: unknown): Response {
   const appError = error instanceof AppError
     ? error
     : Errors.internal("The Chat request could not be completed");
-  return json({ error: appError.code, message: appError.message }, appError.status);
+  // Same rule as the Main envelope: client errors carry their details (e.g. why a
+  // chat is gone and where to continue); server errors never do.
+  return json({
+    error: appError.code,
+    message: appError.message,
+    ...(appError.status < 500 && appError.details !== undefined ? { details: appError.details } : {}),
+  }, appError.status);
 }

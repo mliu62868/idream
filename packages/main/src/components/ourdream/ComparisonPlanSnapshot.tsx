@@ -46,8 +46,8 @@ export function ComparisonPlanSnapshot() {
             Current prices and included dreamcoins
           </h2>
           <p className="mt-4 text-[14px] font-medium leading-7 text-[rgb(170,170,170)]">
-            This snapshot is loaded from the same plan authority used by
-            Upgrade and checkout.
+            These are the same live prices you see on Upgrade and at
+            checkout.
           </p>
         </div>
 

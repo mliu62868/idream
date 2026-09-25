@@ -111,8 +111,11 @@ export async function prepareCharacterDraftVoice(input: {
   }
 }
 
-// SPEC: Called only inside the transaction that creates a new user Character.
-// Its voice pointer, profile and private evidence commit with that Character.
+// SPEC: Called only inside the transaction that creates a new user Character,
+// or the one that applies an owner's edit draft. Its voice pointer, profile and
+// private evidence commit with that Character version.
+// INVARIANT: the pointer moves only from the value the caller read
+// (`replacesVoiceId`, null on create); an edit archives the old profile first.
 export async function bindCharacterDraftVoice(tx: {
   mediaAsset: { create(input: Prisma.MediaAssetCreateArgs): Promise<unknown> };
   characterVoiceProfile: { create(input: Prisma.CharacterVoiceProfileCreateArgs): Promise<unknown> };
@@ -121,11 +124,13 @@ export async function bindCharacterDraftVoice(tx: {
   characterId: string;
   userId: string;
   prepared: PreparedCharacterDraftVoice;
+  replacesVoiceId?: string | null;
+  version?: number;
 }) {
   const { characterId, userId, prepared } = input;
   if (prepared.userId !== userId) throw Errors.conflict("Prepared voice belongs to another user");
   const updated = await tx.character.updateMany({
-    where: { id: characterId, creatorId: userId, voiceId: null, deletedAt: null },
+    where: { id: characterId, creatorId: userId, voiceId: input.replacesVoiceId ?? null, deletedAt: null },
     data: { voiceId: prepared.voiceId },
   });
   if (updated.count !== 1) throw Errors.conflict("Character voice changed before the selected voice was saved");
@@ -150,7 +155,7 @@ export async function bindCharacterDraftVoice(tx: {
     }),
   } });
   await tx.characterVoiceProfile.create({ data: {
-    characterId, version: 1, provider: prepared.provider, providerVoiceId: prepared.voiceId,
+    characterId, version: input.version ?? 1, provider: prepared.provider, providerVoiceId: prepared.voiceId,
     model: prepared.model, language: prepared.language, deliverySettings: toInputJson(prepared.delivery),
     status: "active", referenceAssetId: prepared.reference.id, previewAssetId: prepared.preview.id,
     sampleText: prepared.sampleText, createdById: userId,

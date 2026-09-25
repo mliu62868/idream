@@ -37,6 +37,8 @@ describe("ProfileWorkspace media pagination", () => {
   let viewer: string;
   let olderPage: () => Promise<Response>;
   let searchPage: (query: string) => Promise<Response>;
+  let profileHold: Promise<unknown>;
+  let override: ((path: string, init?: RequestInit) => Promise<Response> | undefined) | undefined;
 
   beforeEach(() => {
     window.history.replaceState(null, "", "/custom");
@@ -48,13 +50,18 @@ describe("ProfileWorkspace media pagination", () => {
     searchPage = async () => Response.json({ ok: true, data: {
       items: [mediaItem("image-41")], nextCursor: null,
     } });
+    profileHold = Promise.resolve(true);
+    override = undefined;
     invalidateViewerAuthority();
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       requests.push(path);
+      const overridden = override?.(path, init);
+      if (overridden) return overridden;
       let data: unknown = { items: [] };
       if (path === "/api/v1/me") data = { user: { id: viewer } };
-      else if (path === "/api/v1/profile") data = {
+      else if (path === "/api/v1/profile" && init?.method === "PATCH") data = { user: { displayName: "Renamed" } };
+      else if (path === "/api/v1/profile" && await profileHold) data = {
         user: { id: viewer, displayName: viewer, email: `${viewer}@example.test` },
         balance: 100, subscription: null, billingAccess: null, entitlements: {},
       };
@@ -106,7 +113,7 @@ describe("ProfileWorkspace media pagination", () => {
   async function mountMedia() {
     await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/custom" })));
     await settle();
-    await click(button("media"));
+    await click(button("Media"));
   }
 
   async function setSearch(value: string) {
@@ -189,6 +196,87 @@ describe("ProfileWorkspace media pagination", () => {
     expect(container.textContent).not.toContain("viewer-a");
   });
 
+  // Profile remounts its owner subtree — these panels included — in the commit
+  // that confirms the owner, and child effects run before the parent's. The
+  // first read used to be refused as "not mounted", and each panel carried a
+  // 300ms back-off to paper over it.
+  it("lets the account panels read on the first try in the commit that confirms the owner", async () => {
+    await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/custom" })));
+    await settle();
+    for (const path of ["/api/v1/affiliate/dashboard", "/api/v1/account/email-verification", "/api/v1/age-verification/status"]) {
+      expect(requests, path).toContain(path);
+    }
+  });
+
+  it("holds a write made while focus re-confirms the owner and sends it once the same owner is confirmed", async () => {
+    await mountMedia();
+    let release!: () => void;
+    profileHold = new Promise<void>((resolve) => { release = () => resolve(); }).then(() => true);
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await act(async () => button("Save profile").dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    const fetcher = vi.mocked(globalThis.fetch);
+    const patches = () => fetcher.mock.calls.filter(([input, init]) => String(input) === "/api/v1/profile" && init?.method === "PATCH");
+    expect(patches()).toHaveLength(0);
+    await act(async () => release());
+    await settle();
+    expect(patches()).toHaveLength(1);
+    expect(container.textContent).toContain("Profile updated.");
+    expect(container.textContent).not.toContain("Network error");
+  });
+
+  it("shows a panel's in-flight read as failed when re-confirmation fails, and reloads it once Retry confirms", async () => {
+    let releaseStatus!: () => void;
+    let statusRequests = 0;
+    let profileFails = false;
+    override = (path) => {
+      if (path === "/api/v1/age-verification/status") {
+        statusRequests += 1;
+        if (statusRequests > 1) return Promise.resolve(Response.json({ ok: true, data: { status: "failed" } }));
+        return new Promise((resolve) => { releaseStatus = () => resolve(Response.json({ ok: true, data: { status: "failed" } })); });
+      }
+      if (path === "/api/v1/profile" && profileFails) {
+        return Promise.resolve(Response.json({ ok: false, error: { message: "Profile store is down." } }, { status: 503 }));
+      }
+      return undefined;
+    };
+    await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/custom" })));
+    await settle();
+    profileFails = true;
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await settle();
+    await act(async () => releaseStatus());
+    await settle();
+    expect(container.textContent).toContain("Profile store is down.");
+    profileFails = false;
+    await click(button("Retry"));
+    expect(statusRequests).toBe(2);
+    expect(container.textContent).toContain("Verification did not pass");
+  });
+
+  it.each(["/api/v1/me", "/api/v1/profile"])("gives up on a hung %s during the account check and offers Retry instead of loading forever", async (hung) => {
+    const timeouts: AbortController[] = [];
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation(() => {
+      const controller = new AbortController();
+      timeouts.push(controller);
+      return controller.signal;
+    });
+    try {
+      override = (path, init) => path === hung
+        ? new Promise((_, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal!.reason)))
+        : undefined;
+      await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/custom" })));
+      await settle();
+      expect(timeouts.length).toBeGreaterThan(0);
+      await act(async () => { for (const controller of timeouts) controller.abort(new DOMException("timed out", "TimeoutError")); });
+      await settle();
+      expect(container.textContent).toContain("Account unavailable");
+      expect(container.textContent).toContain("We couldn't confirm your account. Refresh and try again.");
+      expect(button("Retry")).toBeDefined();
+    } finally {
+      timeout.mockRestore();
+    }
+  });
+
   it("preserves an unsaved profile name when focus confirms the same owner", async () => {
     await mountMedia();
     const name = container.querySelector<HTMLInputElement>('[aria-label="Display name"]')!;
@@ -246,7 +334,7 @@ describe("ProfileWorkspace media pagination", () => {
     }));
     await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/custom" })));
     await settle();
-    await click(button("presets"));
+    await click(button("Presets"));
     expect(container.querySelector('[data-media-id="preset-rain"]')?.textContent).toContain("Rainy cafe");
     expect(container.querySelector('[data-media-id="preset-rain"]')?.closest("a")?.getAttribute("href"))
       .toBe("/generate?presetId=preset-rain");
@@ -276,7 +364,7 @@ describe("ProfileWorkspace media pagination", () => {
     window.history.replaceState(null, "", "/custom?tab=media");
     await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/custom" })));
     await settle();
-    expect(button("media").getAttribute("aria-pressed")).toBe("true");
+    expect(button("Media").getAttribute("aria-pressed")).toBe("true");
     expect(container.querySelectorAll("[data-media-id]")).toHaveLength(40);
     expect(requests).not.toContain("/api/v1/library/recent");
   });
@@ -287,7 +375,7 @@ describe("ProfileWorkspace media pagination", () => {
     await mountMedia();
     expect(new URL(window.location.href).searchParams.get("tab")).toBe("media");
     await click(button("Next page"));
-    await click(button("presets"));
+    await click(button("Presets"));
     expect(new URL(window.location.href).searchParams.get("tab")).toBe("presets");
     await act(async () => {
       window.history.replaceState(null, "", "/custom?tab=media");
@@ -298,7 +386,7 @@ describe("ProfileWorkspace media pagination", () => {
       items: [mediaItem("departed-page")], nextCursor: null,
     } })));
     await settle();
-    expect(button("media").getAttribute("aria-pressed")).toBe("true");
+    expect(button("Media").getAttribute("aria-pressed")).toBe("true");
     expect(container.querySelectorAll("[data-media-id]")).toHaveLength(40);
     expect(container.querySelector('[data-media-id="departed-page"]')).toBeNull();
     expect(container.textContent).toContain("Page 1");
@@ -336,10 +424,107 @@ describe("ProfileWorkspace media pagination", () => {
     }));
     await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/custom" })));
     await settle();
-    await click(button("created"));
+    await click(button("Created"));
     expect(container.textContent).toContain("awaiting publication");
     await click(button("Make private"));
     expect(patches).toEqual([{ visibility: "private" }]);
+  });
+
+  it("opens a chat with an owned Character straight from the Created card", async () => {
+    const originalFetch = globalThis.fetch;
+    const sessionRequests: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/v1/library/created") return Response.json({ ok: true, data: { items: [{
+        id: "own-character", name: "Avery", visibility: "private", status: "approved", image: "/user-content/avery.png",
+      }] } });
+      if (String(input) === "/api/v1/chat/sessions" && init?.method === "POST") {
+        sessionRequests.push(JSON.parse(String(init.body)));
+        return Response.json({ ok: true, data: { session: {
+          id: "session-1", title: "Avery", characterId: "own-character", status: "active", memoryEnabled: true, lastMessageAt: null,
+        } } }, { status: 201 });
+      }
+      return originalFetch(input, init);
+    }));
+    const assign = vi.spyOn(window.location, "assign").mockImplementation(() => {});
+    await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/custom" })));
+    await settle();
+    await click(button("Created"));
+    await click(button("Chat with character"));
+    expect(sessionRequests).toEqual([{ characterId: "own-character" }]);
+    expect(assign).toHaveBeenCalledWith("/chat/session-1");
+    assign.mockRestore();
+  });
+
+  it("links each Created Character to Generate and shows audience numbers only for shared ones", async () => {
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/v1/library/created") return Response.json({ ok: true, data: { items: [
+        { id: "public-character", name: "Avery", visibility: "public", status: "approved", publicationState: "live", likes: "12", chats: "1.2K", likesCount: 12, chatsCount: 1200 },
+        { id: "private-character", name: "Blake", visibility: "private", status: "approved", likes: "0", chats: "3", likesCount: 0, chatsCount: 3 },
+      ] } });
+      return originalFetch(input, init);
+    }));
+    await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/custom" })));
+    await settle();
+    await click(button("Created"));
+    expect([...container.querySelectorAll('a[aria-label="Generate with character"]')].map((link) => link.getAttribute("href")))
+      .toEqual(["/generate?characterId=public-character", "/generate?characterId=private-character"]);
+    expect([...container.querySelectorAll('[data-testid="created-character-performance"]')].map((item) => item.textContent))
+      .toEqual(["1.2K chats · 12 likes"]);
+  });
+
+  it("shows the server's reason when publishing a Character fails", async () => {
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/v1/library/created") return Response.json({ ok: true, data: { items: [{
+        id: "held-character", name: "Avery", visibility: "private", status: "approved",
+      }] } });
+      if (String(input) === "/api/v1/characters/held-character" && init?.method === "PATCH") {
+        return Response.json({ ok: false, error: { code: "forbidden",
+          message: "This Character is unavailable for sharing. Resolve its report or appeal first." } }, { status: 403 });
+      }
+      return originalFetch(input, init);
+    }));
+    await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/custom" })));
+    await settle();
+    await click(button("Created"));
+    expect(container.textContent).not.toContain("approved");
+    await click(button("Publish"));
+    expect(container.querySelector('[data-testid="profile-status"]')?.textContent)
+      .toBe("This Character is unavailable for sharing. Resolve its report or appeal first.");
+  });
+
+  it("does not offer a Packs tab and sends its old deep link to Recent", async () => {
+    window.history.replaceState(null, "", "/custom?tab=packs");
+    await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/custom" })));
+    await settle();
+    expect([...container.querySelectorAll("button")].some((item) => item.textContent?.trim() === "packs")).toBe(false);
+    expect(button("Recent").getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("keeps a new collection private unless the owner opts in", async () => {
+    await mountMedia();
+    const publish = container.querySelector<HTMLInputElement>('[aria-label="Publish collection to Community"]');
+    expect(publish).not.toBeNull();
+    expect(publish!.checked).toBe(false);
+  });
+
+  it("shows an existing referral link on load without pressing Invite", async () => {
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/v1/referrals") return Response.json({ ok: true, data: {
+        code: "DREAM-VIEWERA",
+        referrals: [{ inviteeId: null, rewardStatus: "none" }, { inviteeId: "friend", rewardStatus: "granted" }],
+      } });
+      return originalFetch(input, init);
+    }));
+    await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/profile" })));
+    await settle();
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Referral link"]')?.value)
+      .toContain("/signup?ref=DREAM-VIEWERA");
+    expect(container.querySelector('[data-testid="profile-referral-results"]')?.textContent)
+      .toContain("1 signed up with your link · 1 rewarded · 0 awaiting reward.");
+    expect(requests).not.toContain("/api/v1/referrals/invite");
   });
 
   it("retries the failed page without silently returning to the first 40 items", async () => {
@@ -431,8 +616,8 @@ describe("ProfileWorkspace media pagination", () => {
     olderPage = () => pendingPage.promise;
     await mountMedia();
     await click(button("Next page"));
-    await click(button("characters"));
-    await click(button("media"));
+    await click(button("Characters"));
+    await click(button("Media"));
     await act(async () => pendingPage.resolve(Response.json({ ok: true, data: {
       items: [mediaItem("stale-image")], nextCursor: "stale-cursor",
     } })));

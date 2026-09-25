@@ -67,6 +67,29 @@ import { generationContextToken, lockGenerationContext, resolveGenerationContext
 // INVARIANT: 幂等键 / (sourceType,sourceId) 命中已存在的 Job 时，永远解析到同一行并
 // 唤醒它的投递，而不是再建一行 —— 前置快查与 P2002 兜底走同一个 findExistingGenerationJob。
 
+/**
+ * SPEC: a chat photo request uses what the pinned chat route can deliver.
+ * INTENT: the companion picks count and orientation from a tool schema that
+ *   cannot know the route (chat-image-edit: one output, 4:5 or 16:9). Rejecting
+ *   "send a few" or "a square one" failed the whole Turn; the Generator keeps
+ *   its strict quote-bound validation because the user chose those knobs there.
+ */
+export function fitChatImageRequestToRoute(
+  body: GenerationCreateBody,
+  profile: { maxCount: number; allowedOrientations: unknown },
+): GenerationCreateBody {
+  const allowed = jsonStringArray(profile.allowedOrientations);
+  const requested = body.orientation ?? body.controls.orientation;
+  const orientation = requested && allowed.length > 0 && !allowed.includes(requested)
+    ? allowed[0] as NonNullable<GenerationCreateBody["orientation"]>
+    : requested;
+  return {
+    ...body,
+    outputCount: Math.min(body.outputCount, Math.max(1, profile.maxCount)),
+    ...(orientation ? { orientation, controls: { ...body.controls, orientation } } : {}),
+  };
+}
+
 export async function createGenerationJobForUser(
   userId: string,
   body: GenerationCreateBody,
@@ -116,6 +139,9 @@ export async function createGenerationJobForUser(
       !options.requireQuoteAuthority,
   });
   body = plan.body;
+  if (options.source?.sourceType === "chat_image") {
+    body = fitChatImageRequestToRoute(body, plan.profile);
+  }
   if (plan.context && !body.prompt?.trim()) {
     throw Errors.badRequest("Describe the image you want before generating from this source. The original content has no accepted visual direction.");
   }

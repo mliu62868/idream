@@ -65,8 +65,16 @@ export async function adminV2Route<T>(
     });
   } catch (error) {
     if (error instanceof AppError) return fail(error);
-    if (error instanceof ZodError || error instanceof SyntaxError) {
-      return fail(Errors.badRequest("Validation failed", error instanceof ZodError ? error.flatten() : undefined));
+    // 请求体/查询串的校验在 authority 里已转成 AppError；走到这里的 ZodError 可能是路径参数，
+    // 也可能是服务端自身数据不合契约。仍按 400 回给调用方，但一定留日志，契约漂移才看得见。
+    if (error instanceof ZodError) {
+      logger.warn({
+        issues: error.issues.slice(0, 5),
+        method: request.method,
+        path: new URL(request.url).pathname,
+        requestId: request.headers.get("x-request-id"),
+      }, "Admin v2 route rejected data outside its contract");
+      return fail(Errors.badRequest("Validation failed", error.flatten()));
     }
     // INVARIANT: an unexpected authority failure still uses the API envelope;
     // Next's fallback response has no usable error contract for operator recovery.

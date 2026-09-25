@@ -7,7 +7,7 @@ import { SiteFooter } from "./SiteFooter";
 export function ComicShell({ children }: { children: ReactNode }) {
   return <main className="min-h-screen bg-[rgb(13,13,13)] text-white">
     <div className="flex min-h-screen">
-      <AppSidebar activeHref="/community" />
+      <AppSidebar activeHref="/comics" />
       <div className="min-w-0 flex-1 px-4 pb-24 pt-8 md:px-12 md:pt-12">
         <nav aria-label="Comic navigation" className="mb-8 flex flex-wrap gap-5 text-sm font-semibold text-neutral-300">
           <Link className="hover:text-white" href="/comics">Comics</Link>
@@ -18,6 +18,6 @@ export function ComicShell({ children }: { children: ReactNode }) {
         <SiteFooter />
       </div>
     </div>
-    <MobileBottomNav activeHref="/community" />
+    <MobileBottomNav activeHref="/comics" />
   </main>;
 }

@@ -78,6 +78,13 @@ export async function postDreamcoinEntry(
     _sum: { delta: true },
   });
   const balance = aggregate._sum.delta ?? 0;
+  // 人工调账是纠错不是透支：扣减不能把余额打成负数（在行锁之后判断，避免并发穿透）。
+  if (canonical.reason === "admin_adjust" && canonical.delta < 0 && balance + canonical.delta < 0) {
+    throw Errors.conflict("Adjustment would make the balance negative", {
+      balance,
+      delta: canonical.delta,
+    });
+  }
   try {
     const created = await tx.dreamcoinLedger.create({
       data: { ...canonical, balanceAfter: balance + canonical.delta },

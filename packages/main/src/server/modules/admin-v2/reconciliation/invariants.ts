@@ -787,9 +787,10 @@ const sqlChecks: readonly SqlInvariant[] = [
     //   这类领域事件，本就没有消费者，永远停在 pending 是它们的正常归宿。
     //   一条永远报红的不变式等于没有不变式：真正的投递故障会被淹没在噪音里。
     // INVARIANT: 这里收窄的是**考核范围**，不是标准 —— 传输事件漏投仍然立刻报出来。
-    //   那 261 条反映的是另一个问题（同一张表被当成传输队列和领域事件日志两用，
-    //   却只有一套状态机，缺少「本就无消费者」这个终态），那是数据模型决策，
-    //   不该用一条永久红灯来代替。
+    //   无消费者的领域事件现在有自己的终态 `recorded`（event-consumer 的 unrouted_outbox
+    //   lane 按 MAIN_OUTBOX_TRANSPORT_QUEUES 收敛，见 MAIN_OUTBOX_RECORDED_STATUS），
+    //   所以两边用的是同一张路由表：路由表里的类型要么被投递，要么在这里报红；
+    //   路由表外的类型不会停在 pending。
     query: Prisma.sql`
       WITH violations AS (
         SELECT min(id) AS id

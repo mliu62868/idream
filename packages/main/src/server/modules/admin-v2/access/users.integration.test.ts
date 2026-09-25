@@ -182,6 +182,25 @@ describe("idempotent user authority commands", () => {
     await expect(prisma.controlPlaneCommand.count({ where: { actorId, targetId } })).resolves.toBe(0);
   });
 
+  it("refuses to let an admin suspend or demote themselves", async () => {
+    const status = await callStatus(actorId, {
+      status: "suspended",
+      reason: "self lockout attempt",
+      confirmation: `${actorId}:suspended`,
+    }, `${P}self-status-key`, `${P}self-status`);
+    expect(status.status).toBe(409);
+    const role = await callRole(actorId, {
+      role: "support",
+      reason: "self demotion attempt",
+      confirmation: `${actorId}:support`,
+    }, `${P}self-role-key`, `${P}self-role`);
+    expect(role.status).toBe(409);
+    await expect(prisma.user.findUniqueOrThrow({ where: { id: actorId } })).resolves.toMatchObject({
+      role: "admin",
+      status: "active",
+    });
+  });
+
   it("deduplicates role and permission commands without duplicate Audit or Outbox", async () => {
     const targetId = `${P}role-permission-target`;
     await createUser({ id: targetId });

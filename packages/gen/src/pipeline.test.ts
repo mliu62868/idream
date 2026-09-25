@@ -1406,6 +1406,26 @@ describe("processVideoGenerate", () => {
     }));
   });
 
+  // The media_assets row is built from this terminal record; a video without
+  // its measured frame size had width/height NULL for every delivery.
+  it("carries the measured frame size into the terminal record", async () => {
+    const providers = makeProviders();
+    vi.mocked(providers.video.generate).mockResolvedValueOnce({
+      ok: true,
+      data: { asset: { key: "mock/videos/seed_v1.mp4", seconds: 6, width: 768, height: 1152, body: mockVideoMp4Bytes() } },
+    });
+    const deps = makePipelineDeps(providers);
+
+    await processVideoGenerate(videoPayload(), deps);
+
+    expect(deps.acknowledgeTerminalRecord).toHaveBeenCalledWith(expect.objectContaining({
+      terminalRecord: expect.objectContaining({
+        outcome: "succeeded",
+        assets: [expect.objectContaining({ width: 768, height: 1152, seconds: 6 })],
+      }),
+    }));
+  });
+
   it("passes the pinned source image to the video provider", async () => {
     const providers = makeProviders();
     const referenceImages = [{

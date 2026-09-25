@@ -128,3 +128,69 @@ describe("CreatorProfileClient pagination", () => {
     expect(firstPages).toBe(2);
   });
 });
+
+describe("CreatorProfileClient share and report", () => {
+  let root: Root;
+  let container: HTMLDivElement;
+  const posts: Array<{ url: string; body: unknown }> = [];
+  const copied: string[] = [];
+  beforeEach(() => {
+    posts.length = 0;
+    copied.length = 0;
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    vi.stubGlobal("navigator", { ...navigator, share: undefined, clipboard: { writeText: async (text: string) => { copied.push(text); } } });
+  });
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+    vi.unstubAllGlobals();
+  });
+  function stubCreator(isSelf: boolean) {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        posts.push({ url: String(input), body: JSON.parse(String(init.body)) });
+        return Response.json({ ok: true, data: { report: { id: "report-1" } } });
+      }
+      if (String(input).startsWith("/api/v1/comics")) return Response.json({ ok: true, data: { items: [], nextCursor: null } });
+      if (String(input) === "/api/v1/me") return Response.json({ ok: true, data: { user: null, ageGate: { accepted: true } } });
+      return Response.json({ ok: true, data: {
+        creator: { id: "creator-a", displayName: "Creator A", image: null, isFollowing: false, isSelf, stats: { characters: 0, followers: 0, likes: "0", chats: "0" } },
+        characters: [],
+        nextCursor: null,
+      } });
+    }));
+  }
+  async function waitFor(predicate: () => boolean) {
+    const deadline = Date.now() + 2_000;
+    while (!predicate()) {
+      if (Date.now() > deadline) throw new Error(`Timed out: ${container.textContent}`);
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+    }
+  }
+  function button(label: string) {
+    return [...document.querySelectorAll("button")].find((item) => item.textContent?.trim() === label);
+  }
+
+  it("copies the creator link when the system share sheet is unavailable, and reports the profile", async () => {
+    stubCreator(false);
+    await act(async () => root.render(createElement(CreatorProfileClient, { id: "creator-a" })));
+    await waitFor(() => Boolean(button("Share")));
+    await act(async () => button("Share")!.click());
+    await waitFor(() => Boolean(container.textContent?.includes("Share link copied.")));
+    expect(copied).toEqual([`${window.location.origin}/creators/creator-a`]);
+
+    await act(async () => button("Report")!.click());
+    await act(async () => button("Submit report")!.click());
+    await waitFor(() => Boolean(container.textContent?.includes("Report submitted.")));
+    expect(posts).toEqual([{ url: "/api/v1/reports", body: expect.objectContaining({ targetType: "user_profile", targetId: "creator-a" }) }]);
+  });
+
+  it("does not offer to report your own profile", async () => {
+    stubCreator(true);
+    await act(async () => root.render(createElement(CreatorProfileClient, { id: "creator-a" })));
+    await waitFor(() => Boolean(button("Share")));
+    expect(button("Report")).toBeUndefined();
+  });
+});

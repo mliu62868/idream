@@ -58,7 +58,8 @@ describe("main to chat durable outbox", () => {
     const delivered: string[] = [];
     const deliver = async (event: DurableEventEnvelope) => {
       if (event.sourceEventId === memoryId) await blocked;
-      delivered.push(event.eventType);
+      // The lanes drain every pending row in the shared test DB; record only this test's.
+      if (event.sourceEventId.startsWith(eventId)) delivered.push(event.eventType);
     };
     const dispatch = Promise.all([
       dispatchPendingChatEvents({ lane: "memory", batch: 100, deliver }),

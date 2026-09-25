@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { ArrowLeft, ArrowRight, Check, ImageIcon, Loader2, Sparkles, Wand2 } from "lucide-react";
 import { CHARACTER_VISIBILITY, isCatalogMember } from "@idream/shared/catalog";
 import { legacySoulDetailsMarkdown } from "@idream/shared/chat/persona";
@@ -12,15 +12,18 @@ import {
   genderFormOptions,
 } from "@/lib/character-taxonomy";
 import { isPrivateMediaUrl } from "@/lib/image-delivery";
+import { cn } from "@/lib/utils";
 import {
   isRenderableMediaSource,
   parseTemplatesResponse,
+  parseCharacterQuickStartResponse,
   parseCharacterVoiceCatalogResponse,
   parseCharacterVoicePreviewResponse,
   type CharacterVoiceCatalog,
   parseTagListResponse,
   type PublicTagList,
   parseViewerAuthorityResponse,
+  parseChatSessionCreateResponse,
   type PublicCharacterTemplate as CreateTemplate,
 } from "@/lib/public-api-contracts";
 import { useAgeGateAccess } from "./AgeGateBoundary";
@@ -30,7 +33,7 @@ import {
   stashDraftTransfer,
 } from "./draft-transfer";
 import { isRecord } from "./workspace-helpers";
-import { CREATE_SOUL_DETAIL_FIELDS } from "./create-soul-catalog";
+import { CREATE_SOUL_DETAIL_FIELDS } from "@/lib/create-soul-catalog";
 import {
   CREATE_PREVIEW_CANDIDATE_COUNT,
   continueCreatePreviewBatch,
@@ -49,7 +52,9 @@ type DraftPayload = {
   error?: { message?: string };
   data?: {
     draft?: ServerCharacterDraft | null;
-    character?: { id: string; name: string; visibility: string };
+    character?: { id: string; name: string; visibility: string; imageUrl?: string | null; published?: boolean; visual?: CharacterEditVisual };
+    pendingPublication?: boolean;
+    visibilityWarning?: string | null;
     asset?: { id?: string; url: string; isSynthetic?: boolean };
     previewJob?: { id: string; status: string; errorCode?: string | null };
   };
@@ -70,6 +75,42 @@ export type ServerCharacterDraft = {
 };
 
 type PreviewStatus = "idle" | "generating" | "paused" | "complete" | "failed";
+
+// Identity-defining traits of the Character being edited, in the wizard's projection.
+type CharacterEditVisual = {
+  gender: string | null;
+  style: string | null;
+  age: number;
+  appearance: unknown;
+  hair: unknown;
+  body: unknown;
+};
+
+type CharacterEditTarget = {
+  id: string;
+  name: string;
+  imageUrl: string | null;
+  baseline: WizardState;
+  // Published characters save edits as a revision for the Release pipeline; look and voice stay fixed.
+  published: boolean;
+};
+
+const EDIT_IDENTITY_KEYS = ["age", "gender", "style", "appearance", "ethnicity", "skinTone", "eyeColor", "faceShape", "hair", "body"] as const;
+
+/**
+ * SPEC: an edit keeps the Character's confirmed identity while these traits are
+ * unchanged; changing any of them requires a newly confirmed image (the server
+ * enforces the same rule on submit).
+ */
+export function editKeepsIdentity(state: WizardState, baseline: WizardState) {
+  return EDIT_IDENTITY_KEYS.every((key) => state[key] === baseline[key]);
+}
+
+function editCharacterIdFromLocation() {
+  return new URLSearchParams(window.location.search).get("edit")?.trim() ?? "";
+}
+
+const noLocationSubscription = () => () => {};
 
 // Templates store free-form Json; pull a usable string for the draft's prompt-shaped fields.
 function pickString(value: unknown, ...keys: string[]): string {
@@ -226,6 +267,10 @@ function samePreviewInputs(left: WizardState, right: WizardState) {
 
 export function CreateWorkspace() {
   const { accepted: ageGateAccepted } = useAgeGateAccess();
+  // CR-06: /create?edit=<characterId> reuses this wizard on an edit draft.
+  const editCharacterId = useSyncExternalStore(noLocationSubscription, editCharacterIdFromLocation, () => "");
+  const [editTarget, setEditTarget] = useState<CharacterEditTarget | null>(null);
+  const [editError, setEditError] = useState("");
   const [state, setState] = useState<WizardState>(initialCharacterDraft);
   const [preview, setPreview] = useState(DEFAULT_PREVIEW);
   const [previewStatus, setPreviewStatus] = useState<PreviewStatus>("idle");
@@ -237,7 +282,9 @@ export function CreateWorkspace() {
   const [pending, setPending] = useState(false);
   const [hydrated, setHydrated] = useState(false);
   const [viewerScope, setViewerScope] = useState<string | null>(null);
-  const storageKey = viewerScope ? draftStorageKeyForScope(viewerScope) : null;
+  const storageKey = viewerScope
+    ? `${draftStorageKeyForScope(viewerScope)}${editCharacterId ? `:edit:${editCharacterId}` : ""}`
+    : null;
   const [viewerAuthorityState, setViewerAuthorityState] = useState<
     "loading" | "ready" | "error" | "changed"
   >("loading");
@@ -248,6 +295,9 @@ export function CreateWorkspace() {
     "loading" | "ready" | "error"
   >("loading");
   const [templatesAttempt, setTemplatesAttempt] = useState(0);
+  const [quickStartBrief, setQuickStartBrief] = useState("");
+  const [quickStartPending, setQuickStartPending] = useState(false);
+  const [quickStartError, setQuickStartError] = useState("");
   const [voiceCatalog, setVoiceCatalog] = useState<CharacterVoiceCatalog | null>(null);
   const [voiceCatalogError, setVoiceCatalogError] = useState(false);
   const [voiceCatalogAttempt, setVoiceCatalogAttempt] = useState(0);
@@ -468,11 +518,49 @@ export function CreateWorkspace() {
         setStatus(
           applied.previewBatch?.errorMessage ||
           (serverPreviewJob?.errorCode
-            ? `Preview generation failed (${serverPreviewJob.errorCode}). Try again.`
+            ? previewFailedMessage(serverPreviewJob.errorCode)
             : "Preview generation failed. Try again."),
         );
       }
     };
+    if (editCharacterId && viewerScope && !isAnonymousScope(viewerScope)) {
+      void requestApi(`/api/v1/characters/${encodeURIComponent(editCharacterId)}/edit-draft`, {}, "POST", { signal: controller.signal })
+        .then((payload) => {
+          if (controller.signal.aborted) return;
+          const serverDraft = payload.data?.draft;
+          const character = payload.data?.character;
+          const serverState = serverDraft ? wizardStateFromServerDraft(serverDraft) : null;
+          const baseline = serverDraft && character?.visual
+            ? wizardStateFromServerDraft({
+                ...serverDraft,
+                gender: character.visual.gender,
+                style: character.visual.style,
+                appearance: character.visual.appearance,
+                hair: character.visual.hair,
+                body: character.visual.body,
+                advancedDetails: { age: character.visual.age },
+              })
+            : null;
+          if (!serverState || !character || !baseline) throw new Error("This character could not be opened for editing.");
+          setEditTarget({ id: character.id, name: character.name, imageUrl: character.imageUrl ?? null, baseline, published: character.published === true });
+          const local = restored?.draftId === serverState.draftId ? restored : null;
+          applyRestored(
+            { ...(local ?? serverState), visibility: local?.visibility ?? character.visibility },
+            payload.data?.asset ?? null,
+            payload.data?.previewJob ?? null,
+          );
+          if (character.imageUrl && !local?.confirmedPreviewJobId && !serverState.confirmedPreviewJobId) {
+            setPreview(character.imageUrl);
+          }
+        })
+        .catch((error) => {
+          if (!controller.signal.aborted) setEditError(messageFrom(error));
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setHydrated(true);
+        });
+      return () => controller.abort();
+    }
     const recoverMissingCandidate = Boolean(restored?.draftId && restored.step === 3 &&
       !restored.previewBatch && !restored.restoredPreviewCandidate && !restored.confirmedPreviewJobId);
     if (restored) {
@@ -513,7 +601,7 @@ export function CreateWorkspace() {
       if (!controller.signal.aborted) setHydrated(true);
     });
     return () => controller.abort();
-  }, [requestApi, storageKey, viewerScope]);
+  }, [editCharacterId, requestApi, storageKey, viewerScope]);
 
   useEffect(() => {
     if (!hydrated || !storageKey || viewerBlockedRef.current) return;
@@ -622,18 +710,29 @@ export function CreateWorkspace() {
     }
   }
 
-  function applyTemplate(template: CreateTemplate) {
+  // Templates and Quick Start seed the draft the same way: fields are replaced,
+  // any earlier preview is discarded, and the user is then free to edit everything.
+  function prefillDraft(fields: (current: WizardState) => Partial<WizardState>, message: string) {
     setRestoredPreviewReviewId("");
-    // Selecting a template seeds the draft; the user is then free to edit everything (no runtime link).
-    setTemplateId(template.id);
-    const appearance = isRecord(template.appearance) ? template.appearance : {};
-    const face = isRecord(appearance.face) ? appearance.face : appearance;
     setState((current) => ({
       ...current,
       previewBatch: null,
       restoredPreviewCandidate: null,
       confirmedPreviewJobId: "",
       confirmedPreviewUrl: "",
+      ...fields(current),
+    }));
+    setPreview(DEFAULT_PREVIEW);
+    setPreviewStatus("idle");
+    setSelectedPreviewJobId("");
+    setStatus(message);
+  }
+
+  function applyTemplate(template: CreateTemplate) {
+    setTemplateId(template.id);
+    const appearance = isRecord(template.appearance) ? template.appearance : {};
+    const face = isRecord(appearance.face) ? appearance.face : appearance;
+    prefillDraft((current) => ({
       gender: template.gender || current.gender,
       style: template.style || current.style,
       appearance: pickString(face, "prompt", "summary") || current.appearance,
@@ -649,11 +748,46 @@ export function CreateWorkspace() {
         templateDetailsMarkdown(template.advancedDetails) || current.detailsMarkdown,
       firstMessage: pickString(template.advancedDetails, "firstMessage") || current.firstMessage,
       tags: pickTags(template.tags) || current.tags,
-    }));
-    setPreview(DEFAULT_PREVIEW);
-    setPreviewStatus("idle");
-    setSelectedPreviewJobId("");
-    setStatus(`Started from "${template.name}". Edit any field before publishing.`);
+    }), `Started from "${template.name}". Edit any field before publishing.`);
+  }
+
+  async function runQuickStart() {
+    const brief = quickStartBrief.trim();
+    if (!brief || quickStartPending) return;
+    setQuickStartPending(true);
+    setQuickStartError("");
+    try {
+      const draft = parseCharacterQuickStartResponse(
+        await requestApi("/api/v1/character-drafts/quick-start", { brief }),
+      );
+      setTemplateId("");
+      prefillDraft((current) => {
+        let detailsMarkdown = current.detailsMarkdown;
+        if (draft.personality) detailsMarkdown = updateSoulDetail(detailsMarkdown, "Personality", draft.personality);
+        if (draft.occupation) detailsMarkdown = updateSoulDetail(detailsMarkdown, "Occupation", draft.occupation);
+        if (draft.relationship) detailsMarkdown = updateSoulDetail(detailsMarkdown, "Relationship", draft.relationship);
+        return {
+          name: draft.name ?? current.name,
+          age: draft.age ?? current.age,
+          gender: draft.gender ?? current.gender,
+          style: draft.style ?? current.style,
+          appearance: draft.appearance ?? current.appearance,
+          ethnicity: draft.ethnicity ?? current.ethnicity,
+          skinTone: draft.skinTone ?? current.skinTone,
+          eyeColor: draft.eyeColor ?? current.eyeColor,
+          faceShape: draft.faceShape ?? current.faceShape,
+          hair: draft.hair ?? current.hair,
+          body: draft.body ?? current.body,
+          description: draft.description ?? current.description,
+          firstMessage: draft.firstMessage ?? current.firstMessage,
+          detailsMarkdown,
+        };
+      }, "Prefilled from your idea. Review and edit each step before publishing.");
+    } catch (error) {
+      setQuickStartError(messageFrom(error));
+    } finally {
+      setQuickStartPending(false);
+    }
   }
 
   function setIdentityField<K extends keyof WizardState>(key: K, value: WizardState[K]) {
@@ -680,12 +814,16 @@ export function CreateWorkspace() {
     setIdentityField("detailsMarkdown", details);
   }
 
+  const identityKept = editTarget !== null && (editTarget.published || !state.confirmedPreviewJobId) &&
+    editKeepsIdentity(state, editTarget.baseline);
+  const identityReady = editTarget?.published ? identityKept : Boolean(state.confirmedPreviewJobId) || identityKept;
   const nameError = state.name.trim().length < 2 ? "Name needs at least 2 characters." : "";
   const ageError = state.age < 18 || state.age > 120 ? "Age must be between 18 and 120." : "";
   const personaError = requiredPersonaMessage(state);
 
   async function ensureDraft(): Promise<string> {
     if (state.draftId) return state.draftId;
+    if (editCharacterId) throw new Error("This character could not be opened for editing. Reload and try again.");
     const created = await requestApi("/api/v1/character-drafts", {
       name: state.name,
       age: state.age,
@@ -738,7 +876,7 @@ export function CreateWorkspace() {
       setStatus(personaError);
       return;
     }
-    if (step === 3 && !state.confirmedPreviewJobId) {
+    if (step === 3 && !identityReady) {
       setStatus("Choose and confirm an identity image before publishing.");
       return;
     }
@@ -755,8 +893,24 @@ export function CreateWorkspace() {
   }
 
   function back() {
+    goToStep(Math.max(step - 1, 0));
+  }
+
+  function goToStep(target: number) {
     setStatus("");
-    set("step", Math.max(step - 1, 0));
+    set("step", target);
+  }
+
+  async function startChat() {
+    if (!createdCharacterId || pending) return;
+    setPending(true);
+    try {
+      const payload = await requestApi("/api/v1/chat/sessions", { characterId: createdCharacterId });
+      window.location.href = `/chat/${parseChatSessionCreateResponse(payload).session.id}`;
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Could not start chat. Please try again.");
+      setPending(false);
+    }
   }
 
   const runPreviewBatch = useCallback(
@@ -810,7 +964,7 @@ export function CreateWorkspace() {
               asset: candidate,
               errorCode: previewJob?.errorCode,
               errorMessage: previewJob?.errorCode
-                ? `Preview generation failed (${previewJob.errorCode}). Try again.`
+                ? previewFailedMessage(previewJob.errorCode)
                 : undefined,
             };
           },
@@ -966,7 +1120,7 @@ export function CreateWorkspace() {
     // Guard against double-submit: once a character is created, don't reuse the same
     // draft to create a duplicate (the success state already links onward).
     if (pending || createdCharacterId) return;
-    if (!state.confirmedPreviewJobId) {
+    if (!identityReady) {
       set("step", 3);
       setStatus("Choose and confirm an identity image before publishing.");
       return;
@@ -989,8 +1143,18 @@ export function CreateWorkspace() {
         setCreatedCharacterId(character.id);
         setCreatedVisibility(character.visibility);
       }
+      // A refused visibility change leaves the saved edit in place; say so instead of the success line.
+      const visibilityWarning = submitted.data?.visibilityWarning;
       setStatus(
-        character
+        visibilityWarning
+          ? visibilityWarning
+          : character && editTarget && submitted.data?.pendingPublication
+          // A published Character's text edit becomes a Release revision that operators publish from the
+          // Release tab (the production journey flags it). Look and voice are locked, so its images carry over.
+          ? `Saved changes to ${character.name}. They go live after our team publishes the new version; until then, chats keep using the current version.`
+          : character && editTarget
+          ? `Saved changes to ${character.name}. New messages use this version; earlier messages keep the one they were written with.`
+          : character
           ? character.visibility !== "private"
             ? `${character.name} is saved and awaiting publication preparation. Sharing starts after publication.`
             : `Saved ${character.name} to My AI.`
@@ -1019,6 +1183,16 @@ export function CreateWorkspace() {
     } finally {
       setPending(false);
     }
+  }
+
+  if (hydrated && editCharacterId && editError) {
+    return (
+      <section className="mx-auto my-16 max-w-xl rounded-2xl border border-white/10 bg-[rgb(18,18,18)] p-6 text-center" role="alert" data-testid="edit-unavailable">
+        <h1 className="text-lg font-black text-white">This character can&apos;t be edited</h1>
+        <p className="mt-2 text-sm leading-6 text-neutral-300">{editError}</p>
+        <Link href="/custom" className="mt-4 inline-block rounded-full bg-white px-5 py-3 font-bold text-black">Back to My AI</Link>
+      </section>
+    );
   }
 
   if (!hydrated || viewerAuthorityState === "changed") {
@@ -1076,7 +1250,7 @@ export function CreateWorkspace() {
     <section className="px-4 pb-12 pt-10 md:px-[60px] md:pb-16">
       <div className="mx-auto max-w-6xl">
         <h1 className="text-center text-[clamp(28px,6vw,52px)] font-black leading-none text-white">
-          Create Your Dream AI Character
+          {editTarget ? `Edit ${editTarget.name}` : "Create Your Dream AI Character"}
         </h1>
 
         <ol className="mt-8 flex flex-wrap justify-center gap-2" data-testid="create-steps">
@@ -1091,8 +1265,23 @@ export function CreateWorkspace() {
               }`}
               key={label}
             >
-              {index < step ? <Check className="h-3.5 w-3.5" /> : <span>{index + 1}</span>}
-              {label}
+              {index < step ? (
+                // 已完成的步骤可直接跳回（CR-01），未到的步骤仍须按 Next 逐步校验。
+                <button
+                  className="flex items-center gap-2 uppercase"
+                  disabled={pending}
+                  onClick={() => goToStep(index)}
+                  type="button"
+                >
+                  <Check className="h-3.5 w-3.5" />
+                  {label}
+                </button>
+              ) : (
+                <>
+                  <span>{index + 1}</span>
+                  {label}
+                </>
+              )}
             </li>
           ))}
         </ol>
@@ -1101,7 +1290,9 @@ export function CreateWorkspace() {
             的预览栏，iPad 竖屏装不下 —— 整页溢出 141px，且右栏被压到把 select 的
             选中值裁掉（"Female" 显示成 "Femal"）。双栏推到 lg(1024)。 */}
         <div className="mt-8 grid gap-4 lg:grid-cols-[360px_1fr]">
-          <div className="relative aspect-[4/5] w-full max-w-[448px] self-start justify-self-center overflow-hidden rounded-[20px] bg-[rgb(18,18,18)]">
+          {/* On phones the empty silhouette filled the first screen and pushed the form below
+              the fold; show it only once there is a real preview to look at. */}
+          <div className={cn("relative aspect-[4/5] w-full max-w-[448px] self-start justify-self-center overflow-hidden rounded-[20px] bg-[rgb(18,18,18)]", preview === DEFAULT_PREVIEW && "hidden lg:block")}>
             <Image
               alt=""
               className="object-cover object-top"
@@ -1135,7 +1326,50 @@ export function CreateWorkspace() {
           </div>
 
           <div className="rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-4 md:p-6">
-            {step === 0 && (
+            {step === 0 && !editCharacterId && (
+              <form
+                className="mb-4"
+                data-testid="create-quick-start"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void runQuickStart();
+                }}
+              >
+                <label className="block">
+                  <span className="text-[12px] font-bold uppercase leading-4 text-[rgb(114,113,112)]">
+                    Quick start from one sentence
+                  </span>
+                  <div className="mt-2 flex items-center gap-2">
+                    <input
+                      className="min-w-0 flex-1 rounded-[10px] border border-white/10 bg-[rgb(13,13,13)] px-3 py-2 text-[14px] font-semibold leading-6 text-white outline-none focus:border-[rgb(253,95,194)]"
+                      disabled={quickStartPending}
+                      maxLength={500}
+                      onChange={(event) => setQuickStartBrief(event.target.value)}
+                      placeholder="A sharp-tongued, soft-hearted 24-year-old illustrator who works at a café"
+                      value={quickStartBrief}
+                    />
+                    <button
+                      className="flex h-10 shrink-0 items-center gap-1.5 rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)] disabled:opacity-50"
+                      disabled={quickStartPending || quickStartBrief.trim().length < 3}
+                      type="submit"
+                    >
+                      {quickStartPending ? <Loader2 className="size-4 animate-spin" /> : <Wand2 className="size-4" />}
+                      {quickStartPending ? "Drafting…" : "Prefill"}
+                    </button>
+                  </div>
+                </label>
+                <p className="mt-1.5 text-[12px] text-[rgb(170,170,170)]">
+                  Fills in the steps below as a starting point. Nothing is created until you publish.
+                </p>
+                {quickStartError ? (
+                  <p className="mt-1.5 text-[12px] font-semibold text-[rgb(255,140,140)]" role="alert">
+                    {quickStartError}
+                  </p>
+                ) : null}
+              </form>
+            )}
+
+            {step === 0 && !editCharacterId && (
               <div className="mb-4" data-testid="create-templates">
                 <p className="text-[12px] font-bold uppercase leading-4 text-[rgb(114,113,112)]">
                   Start from a template
@@ -1327,13 +1561,14 @@ export function CreateWorkspace() {
                     <select
                       className="min-w-48 flex-1 bg-[rgb(36,36,36)] text-[14px] font-semibold leading-6"
                       data-testid="create-voice-select"
+                      disabled={Boolean(editTarget?.published)}
                       id="create-voice-select"
                       onChange={(event) => selectVoice(event.target.value)}
                       value={state.voiceSelection?.voiceId ?? ""}
                     >
                       <option value="">System default</option>
                       {state.voiceSelection && !voiceCatalog?.items.some((voice) => voice.id === state.voiceSelection?.voiceId) && (
-                        <option value={state.voiceSelection.voiceId}>Saved voice: {state.voiceSelection.voiceId} (unavailable)</option>
+                        <option value={state.voiceSelection.voiceId}>Previously chosen voice (no longer available)</option>
                       )}
                       {voiceCatalog?.items.map((voice) => <option key={voice.id} value={voice.id}>{voice.label}</option>)}
                     </select>
@@ -1347,7 +1582,11 @@ export function CreateWorkspace() {
                       {voicePreviewPending ? "Preparing preview…" : "Preview voice"}
                     </button>
                   </div>
-                  <p className="mt-2 text-[12px] text-[rgb(170,170,170)]">Choose how this character sounds. Personality and speech style stay in their Soul.</p>
+                  <p className="mt-2 text-[12px] text-[rgb(170,170,170)]">
+                    {editTarget?.published
+                      ? "A published character keeps its current voice."
+                      : "Choose how this character sounds. Personality and speech style stay in their Soul."}
+                  </p>
                   {voiceCatalogError && <p className="mt-2 text-[12px]" role="status">Voice choices could not load. <button className="underline" onClick={() => setVoiceCatalogAttempt((attempt) => attempt + 1)} type="button">Retry voices</button></p>}
                   {voicePreviewStatus && <p className="mt-2 text-[12px]" role="status">{voicePreviewStatus}</p>}
                   {voicePreviewUrl && <audio aria-label="Selected voice preview" className="mt-3 w-full" controls src={voicePreviewUrl} />}
@@ -1435,7 +1674,7 @@ export function CreateWorkspace() {
               <div className="grid gap-4" data-testid="create-step-preview">
                 <section className="rounded-[14px] bg-[rgb(36,36,36)] p-4 text-left text-white" data-testid="create-soul-preview">
                   <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
-                    SOUL.md · exact Agent prompt
+                    Personality preview · what your character will follow
                   </p>
                   <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap rounded-[12px] border border-white/10 bg-[rgb(13,13,13)] p-4 font-mono text-[12px] font-medium leading-6 text-white">
                     {renderCharacterSoulMarkdown({
@@ -1447,6 +1686,25 @@ export function CreateWorkspace() {
                     })}
                   </pre>
                 </section>
+                {identityKept && (
+                  <p className="text-[13px] font-semibold text-[rgb(120,220,170)]" data-testid="edit-identity-kept">
+                    {editTarget?.published
+                      ? `Keeping ${state.name}'s current look. Published characters change their Soul and opening here; their look stays fixed.`
+                      : `Keeping ${state.name}'s current identity image. Generate new candidates only if you want to change how they look.`}
+                  </p>
+                )}
+                {editTarget && !identityKept && !state.confirmedPreviewJobId && !editTarget.published && (
+                  <p className="text-[13px] font-semibold text-[rgb(255,184,112)]">
+                    You changed how {state.name} looks. Generate and confirm a new identity image to save.
+                  </p>
+                )}
+                {editTarget?.published ? (
+                  !identityKept && (
+                    <p className="text-[13px] font-semibold text-[rgb(255,184,112)]" data-testid="edit-published-look-locked">
+                      A published character keeps its current look. Undo the appearance changes to save, or duplicate the character to change how it looks.
+                    </p>
+                  )
+                ) : (<>
                 <p className="text-[13px] font-medium text-[rgb(170,170,170)]">
                   {state.restoredPreviewCandidate && !state.previewBatch
                     ? "Your saved preview is ready. Confirm this identity or generate new candidates."
@@ -1604,11 +1862,13 @@ export function CreateWorkspace() {
                   </div>
                 )}
                 {previewStatus === "complete" && (
-                  <p className="text-[13px] font-semibold text-[rgb(120,220,170)]">
-                    {previewCandidates.some((candidate) => candidate.isSynthetic)
-                      ? "Demo samples cannot be confirmed. Connect the real image provider and regenerate."
-                      : "Preview ready."}
-                  </p>
+                  previewCandidates.some((candidate) => candidate.isSynthetic) ? (
+                    <p className="text-[13px] font-semibold text-[rgb(255,184,112)]">
+                      These are placeholder samples and can&apos;t be confirmed. Generate again to get real previews.
+                    </p>
+                  ) : (
+                    <p className="text-[13px] font-semibold text-[rgb(120,220,170)]">Preview ready.</p>
+                  )
                 )}
                 {previewStatus === "failed" && (
                   <p className="text-[13px] font-semibold text-[rgb(255,140,140)]">
@@ -1618,6 +1878,7 @@ export function CreateWorkspace() {
                 {previewStatus === "paused" && (
                   <p className="text-[13px] leading-6 text-neutral-300">Checking is paused. This does not cancel queued work or mean generation failed. Check the saved request again, or confirm an available identity.</p>
                 )}
+                </>)}
               </div>
             )}
 
@@ -1625,7 +1886,11 @@ export function CreateWorkspace() {
               <div className="grid gap-4" data-testid="create-step-publish">
                 <div className="flex items-center gap-2 rounded-[12px] bg-black/25 p-3 text-[13px] font-semibold text-[rgb(120,220,170)]">
                   <Check className="h-4 w-4" />
-                  Identity confirmed. This character is ready to publish.
+                  {identityKept
+                    ? editTarget?.published
+                      ? "Keeping the current look. Changes go live after the new version is published."
+                      : "Keeping the current identity image. Changes save as a new version."
+                    : "Identity confirmed. This character is ready to publish."}
                 </div>
                 <div>
                   <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">Visibility</p>
@@ -1641,7 +1906,7 @@ export function CreateWorkspace() {
                         onClick={() => set("visibility", item)}
                         type="button"
                       >
-                        {item}
+                        {VISIBILITY_LABELS[item]}
                       </button>
                     ))}
                   </div>
@@ -1656,12 +1921,12 @@ export function CreateWorkspace() {
                 <button
                   className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-[linear-gradient(0deg,#ff1cac,#fd5fc2_50%,#ff79d1)] text-[14px] font-black text-white disabled:opacity-70"
                   data-testid="create-submit"
-                  disabled={pending || Boolean(createdCharacterId) || !state.confirmedPreviewJobId}
+                  disabled={pending || Boolean(createdCharacterId) || !identityReady}
                   onClick={() => void submit()}
                   type="button"
                 >
                   <Wand2 className="h-4 w-4" />
-                  {pending ? "Submitting…" : state.visibility === "private" ? "Save character" : "Save for sharing"}
+                  {pending ? "Submitting…" : editTarget ? "Save changes" : state.visibility === "private" ? "Save character" : "Save for sharing"}
                 </button>
               </div>
             )}
@@ -1680,7 +1945,7 @@ export function CreateWorkspace() {
                 <button
                   className="inline-flex h-11 items-center gap-2 rounded-full bg-white px-5 text-[13px] font-black text-[rgb(13,13,13)] disabled:cursor-not-allowed disabled:bg-[rgb(55,55,55)] disabled:text-[rgb(114,113,112)]"
                   data-testid="create-next"
-                  disabled={pending || (step === 3 && !state.confirmedPreviewJobId)}
+                  disabled={pending || (step === 3 && !identityReady)}
                   onClick={() => void next()}
                   type="button"
                 >
@@ -1691,7 +1956,7 @@ export function CreateWorkspace() {
               )}
             </div>
 
-            {step === 3 && !state.confirmedPreviewJobId && (
+            {step === 3 && !identityReady && (
               <p className="mt-3 text-[12px] font-semibold text-[rgb(255,184,112)]">
                 Confirm one identity image to unlock Publish. Your draft stays saved until then.
               </p>
@@ -1725,12 +1990,23 @@ export function CreateWorkspace() {
               </div>
             )}
             {createdCharacterId && createdVisibility !== "private" && (
-              <Link
-                className="mt-4 inline-flex h-10 items-center justify-center rounded-full bg-[rgb(36,36,36)] px-4 text-[13px] font-bold text-white"
-                href="/custom"
-              >
-                View in My AI
-              </Link>
+              <div className="mt-4 flex flex-wrap gap-2">
+                {/* 作者本人在公开发布完成前就可以和自己的角色聊天。 */}
+                <button
+                  className="inline-flex h-10 items-center justify-center gap-2 rounded-full bg-white px-4 text-[13px] font-black text-[rgb(13,13,13)] disabled:opacity-60"
+                  disabled={pending}
+                  onClick={() => void startChat()}
+                  type="button"
+                >
+                  Start chatting
+                </button>
+                <Link
+                  className="inline-flex h-10 items-center justify-center rounded-full bg-[rgb(36,36,36)] px-4 text-[13px] font-bold text-white"
+                  href="/custom"
+                >
+                  View in My AI
+                </Link>
+              </div>
             )}
           </div>
         </div>
@@ -1763,6 +2039,17 @@ function Field({
     </label>
   );
 }
+
+// INTENT: errorCode 只作为联系客服时的参考码，不当作给用户看的原因。
+function previewFailedMessage(errorCode: string) {
+  return `Preview generation failed. Try again. Support reference: ${errorCode}`;
+}
+
+const VISIBILITY_LABELS: Record<string, string> = {
+  private: "Private",
+  unlisted: "Link only",
+  public: "Public",
+};
 
 async function api(
   path: string,

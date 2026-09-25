@@ -9,6 +9,7 @@ import {
   chatAccountErasureCompletedV2PayloadSchema,
 } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
+import { MAIN_OUTBOX_RECORDED_STATUS, unroutedPendingMainOutboxWhere } from "@/server/events/main-outbox-transport";
 import { logger } from "@/server/lib/logger";
 import { dispatchPendingChatEvents } from "./chat-outbox";
 import { projectCanonicalMetricEvent } from "@/server/modules/admin-v2/metrics/projector";
@@ -177,6 +178,15 @@ function normalizedEventOccurredAt(value: string | undefined): string | null {
   return Number.isNaN(occurredAt.getTime()) ? value : occurredAt.toISOString();
 }
 
+/** Settle outbox rows no transport queue routes; see MAIN_OUTBOX_RECORDED_STATUS. */
+export async function recordUnroutedMainOutboxEvents(): Promise<{ recorded: number }> {
+  const result = await prisma.mainOutboxEvent.updateMany({
+    where: unroutedPendingMainOutboxWhere(),
+    data: { status: MAIN_OUTBOX_RECORDED_STATUS },
+  });
+  return { recorded: result.count };
+}
+
 export interface ProductEventDispatchOptions {
   readonly outboxIds?: readonly string[];
   readonly signal?: AbortSignal;
@@ -335,6 +345,7 @@ export function startEventConsumer(): { close(): Promise<void> } {
     },
     { name: "proactive_messages", run: () => dispatchDueProactiveTurns(20, stopping.signal).then(() => undefined) },
     { name: "account_blob_deletion", run: () => dispatchPendingAccountDeletionBlobDeletes({ signal: stopping.signal }) },
+    { name: "unrouted_outbox", run: () => recordUnroutedMainOutboxEvents().then(() => undefined) },
   ].map((lane) => ({ ...lane, inFlight: null as Promise<void> | null }));
   const reconcile = () => {
     if (stopping.signal.aborted) return;

@@ -4,6 +4,7 @@ import {
   canSubmitChatMessage,
   isImmutableOpeningMessage,
   isLocalChatMessageId,
+  latestTurnUserMessageId,
 } from "./chat-message-actions";
 
 describe("chat message action authority", () => {
@@ -40,5 +41,20 @@ describe("chat message action authority", () => {
   it("separates optimistic turns from ids Chat can act on", () => {
     expect(isLocalChatMessageId("local:0f1e2d3c")).toBe(true);
     expect(isLocalChatMessageId("cmsg_0f1e2d3c")).toBe(false);
+  });
+
+  it("treats a proactive reply as the latest Turn, not the older user message", () => {
+    const opening = { id: "opening:s", role: "assistant", replyToMessageId: null };
+    const exchange = [
+      { id: "user-1", role: "user" },
+      { id: "assistant-1", role: "assistant", replyToMessageId: "user-1" },
+    ];
+    expect(latestTurnUserMessageId([opening, ...exchange])).toBe("user-1");
+    // The proactive Turn's user side is hidden; its reply still names it.
+    const proactive = { id: "assistant-2", role: "assistant", replyToMessageId: "hidden-directive" };
+    expect(latestTurnUserMessageId([opening, ...exchange, proactive])).toBe("hidden-directive");
+    // An optimistic send is the latest Turn before any reply exists.
+    expect(latestTurnUserMessageId([...exchange, proactive, { id: "local:x", role: "user" }])).toBe("local:x");
+    expect(latestTurnUserMessageId([opening])).toBeNull();
   });
 });

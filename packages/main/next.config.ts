@@ -57,6 +57,38 @@ const nextConfig: NextConfig = {
     ? { typescript: { tsconfigPath: isolatedTsconfigPath } }
     : {}),
   allowedDevOrigins: ["127.0.0.1"],
+  // SPEC: 全站响应带基础安全头。
+  // INTENT: 这些头原本写在包根的 proxy.ts 里，但 app 在 src/ 下，Next 只认与 app 同级的
+  //   proxy，自 monorepo 迁移起它从未执行过。静态头放在这里不需要额外的请求期运行时；
+  //   年龄门与匿名 id 已由服务端（DB 为权威）负责，不再在边缘重复。
+  // INVARIANT: 只有 /internal-preview 可以被嵌入，而且只允许 Admin 源嵌入（角色工作区用
+  //   iframe 渲染真实前台）；其余页面一律禁止被 frame。
+  async headers() {
+    // 本机开发时后台可能用 localhost 或 127.0.0.1 打开，二者是不同的源，都放行。
+    const adminUrl = process.env.ADMIN_WEB_URL ? new URL(process.env.ADMIN_WEB_URL) : null;
+    const loopbackTwin = adminUrl && ["localhost", "127.0.0.1"].includes(adminUrl.hostname)
+      ? `${adminUrl.protocol}//${adminUrl.hostname === "localhost" ? "127.0.0.1" : "localhost"}${adminUrl.port ? `:${adminUrl.port}` : ""}`
+      : null;
+    const adminOrigin = adminUrl ? [adminUrl.origin, loopbackTwin].filter(Boolean).join(" ") : "'none'";
+    return [
+      {
+        source: "/:path*",
+        headers: [
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+          { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
+        ],
+      },
+      {
+        source: "/((?!internal-preview/).*)",
+        headers: [{ key: "X-Frame-Options", value: "DENY" }],
+      },
+      {
+        source: "/internal-preview/:path*",
+        headers: [{ key: "Content-Security-Policy", value: `frame-ancestors ${adminOrigin}` }],
+      },
+    ];
+  },
   experimental: {
     // Runtime releases are immutable. Keep ISR/fetch entries in memory instead
     // of allowing Next to rewrite .next/server after publication.

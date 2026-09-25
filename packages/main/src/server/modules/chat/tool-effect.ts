@@ -228,6 +228,8 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
     };
   } catch (error) {
     const failure = publicFailure(error);
+    // The attachment keeps only the code; operators need the reason too.
+    logger.warn({ event: "chat_tool_effect_rejected", attachmentId, code: failure.code, reason: failure.message }, "chat tool effect rejected");
     const abandoned = await abandonRequestedToolEffectAttachment(prisma, {
       id: attachmentId,
       attempt: effect.attempt,

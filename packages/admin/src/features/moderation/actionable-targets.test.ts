@@ -2,12 +2,12 @@ import { describe, expect, it } from "vitest";
 import { ACTIONABLE_REPORT_TARGET_TYPES, canActionReportTarget } from "./actionable-targets";
 
 describe("actionable moderation targets", () => {
-  // SPEC: 清单必须与 moderation-effect.ts 的三个分支逐字一致。
-  it("mirrors the three branches the enforcement authority implements", () => {
-    expect([...ACTIONABLE_REPORT_TARGET_TYPES]).toEqual(["character", "media", "feed_item"]);
+  // SPEC: 清单必须与 moderation-effect.ts 的分支逐字一致。
+  it("mirrors the branches the enforcement authority implements", () => {
+    expect([...ACTIONABLE_REPORT_TARGET_TYPES]).toEqual(["character", "media", "feed_item", "comic", "media_collection"]);
   });
 
-  it.each(["character", "media", "feed_item"])("can action %s", (targetType) => {
+  it.each(["character", "media", "feed_item", "comic", "media_collection"])("can action %s", (targetType) => {
     expect(canActionReportTarget(targetType)).toBe(true);
   });
 

@@ -76,8 +76,11 @@ interface MetricEventDescriptor {
 }
 
 const METRIC_EVENT_DESCRIPTORS = new Map<string, MetricEventDescriptor>([
-  [METRIC_PRODUCT_EVENTS.chatExchangeCompleted, { schema: chatExchangeCompletedV2Schema, serverOutcome: true, allowedSources: new Set(["chat"]) }],
-  [METRIC_PRODUCT_EVENTS.chatExchangeCorrected, { schema: chatExchangeCorrectionV2Schema, serverOutcome: true, allowedSources: new Set(["chat"]) }],
+  // Main has owned the Turn and emitted this since Chat lost its database;
+  // "chat" stays valid so events Chat already recorded still re-project.
+  [METRIC_PRODUCT_EVENTS.chatExchangeCompleted, { schema: chatExchangeCompletedV2Schema, serverOutcome: true, allowedSources: new Set(["main", "chat"]) }],
+  // Main records edits and deletes of the Turns it owns; see turn-ledger.ts appendChatExchangeCorrected.
+  [METRIC_PRODUCT_EVENTS.chatExchangeCorrected, { schema: chatExchangeCorrectionV2Schema, serverOutcome: true, allowedSources: new Set(["main", "chat"]) }],
   [METRIC_PRODUCT_EVENTS.customerSignupCompleted, { schema: customerSignupCompletedV2Schema, serverOutcome: true, allowedSources: new Set(["main"]) }],
   [METRIC_PRODUCT_EVENTS.subscriptionActivated, { schema: subscriptionActivatedV2Schema, serverOutcome: true, allowedSources: new Set(["main"]) }],
   [METRIC_PRODUCT_EVENTS.subscriptionEnded, { schema: subscriptionEndedV2Schema, serverOutcome: true, allowedSources: new Set(["main"]) }],
@@ -496,8 +499,34 @@ async function applyEvent(tx: Transaction, event: MetricProductEvent): Promise<M
   if (event.name === METRIC_PRODUCT_EVENTS.chatExchangeCorrected) {
     const payload = chatExchangeCorrectionV2Schema.parse(event.props);
     const existing = await tx.chatExchangeFact.findUnique({ where: { exchangeId: payload.exchangeId } });
-    if (!existing) return { status: "deferred", reason: "awaiting_required_fact" };
-    if (payload.correctionRevision > existing.correctionRevision) {
+    if (!existing) {
+      // INTENT: Main emitted no completion between 59089e316 (2026-08-28) and
+      // turn-ledger's appendChatExchangeCompleted, so a Main correction of a Turn
+      // from that gap has no fact and never will; deferring it retries forever.
+      // A Chat correction may still precede its completion in the old replay.
+      // A Main completion that exists but has not been projected yet (e.g. it hit a
+      // transient error and is backing off) must still be waited for; otherwise the
+      // deleted exchange would later be counted by that completion forever.
+      if (event.sourceService !== "main") return { status: "deferred", reason: "awaiting_required_fact" };
+      const completion = await tx.analyticsEvent.findFirst({
+        where: {
+          sourceService: "main",
+          name: METRIC_PRODUCT_EVENTS.chatExchangeCompleted,
+          sourceEventId: { startsWith: `chat_exchange:${payload.exchangeId}:` },
+        },
+        select: { id: true },
+      });
+      return completion
+        ? { status: "deferred", reason: "awaiting_required_fact" }
+        : { status: "skipped", reason: "exchange_fact_absent" };
+    }
+    // INVARIANT: a correction only speaks for attempts up to its revision. One
+    // that lands after the next attempt's completion is older than the fact
+    // and must not un-count the reply that replaced it, whatever the order.
+    if (
+      payload.correctionRevision >= existing.assistantAttemptNo &&
+      payload.correctionRevision > existing.correctionRevision
+    ) {
       await tx.chatExchangeFact.update({
         where: { id: existing.id },
         data: {

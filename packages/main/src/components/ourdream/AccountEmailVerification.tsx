@@ -73,7 +73,11 @@ export function AccountEmailVerification({ ownerId, fetcher = fetch }: { ownerId
         if (next.userId !== ownerId) throw new Error("Your account changed. Reload before verifying your email.");
         setAccount(next);
       })
-      .catch((error: unknown) => { if (alive.current) setStatus(error instanceof Error ? error.message : "Could not check email verification. Reload and try again."); });
+      .catch((error: unknown) => {
+        // AbortError: Profile confirmed another account and this panel is going away.
+        if (!alive.current || (error instanceof DOMException && error.name === "AbortError")) return;
+        setStatus(error instanceof Error ? error.message : "Could not check email verification. Reload and try again.");
+      });
     return () => { alive.current = false; };
   }, [fetcher, ownerId]);
 

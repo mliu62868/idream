@@ -24,7 +24,7 @@ const LOCAL_BODY_PARSE = /[A-Za-z0-9_]+\s*\.\s*parse\(\s*await\s+jsonBody\(/;
 const UNDECLARED_BODY_READ = /jsonBody\(\s*request\s*\)/;
 /** `someSchema.parse(Object.fromEntries(<url>.searchParams))` — a hand-rolled query door. */
 const LOCAL_QUERY_PARSE =
-  /\.\s*parse\(\s*Object\.fromEntries\([^;]*searchParams/;
+  /(?:\.\s*parse|parseRequestInput)\(\s*(?:contract\.schema,\s*)?Object\.fromEntries\([^;]*searchParams/;
 /** Any manifest-shaped contract ref literal, wherever it appears in the file. */
 const CONTRACT_REF_LITERAL = /"([A-Za-z0-9_]+Schema(?:\+[a-z-]+)*)"/g;
 /** Any manifest-shaped operation id literal, quoted or templated. */

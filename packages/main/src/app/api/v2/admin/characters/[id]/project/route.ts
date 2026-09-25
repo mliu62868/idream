@@ -30,9 +30,18 @@ export async function GET(
     await actorWithPermission(request, "character.project.write", {
       characterId: id,
     });
-    return characterProjectDraftResumeSchema.parse(
+    // 早于向导的旧角色没有满足当前契约的草稿：这是「不可续建」而不是服务端故障，
+    // 明确告诉运营去角色详情页编辑，而不是返回一个看不懂的校验错误。
+    const resume = characterProjectDraftResumeSchema.safeParse(
       await getCharacterProjectDraftForResume(id),
     );
+    if (!resume.success) {
+      throw Errors.conflict(
+        "This Character was not created with the creation wizard, so there is no draft to resume. Edit it from its Character page.",
+        { reason: "draft_not_resumable" },
+      );
+    }
+    return resume.data;
   });
 }
 

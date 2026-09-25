@@ -599,7 +599,10 @@ describe("referrals + account", () => {
 
     const login = await api("POST", "auth/login", { body: { email, password } });
     expectError(login, 403, "forbidden");
-    expect(login.error?.message).toBe("Account is not active");
+    const deletion = await prisma.accountDeletion.findUniqueOrThrow({ where: { userId } });
+    expect(login.error?.message).toBe(
+      `This account was deleted at your request. Erasure completes by ${deletion.graceEndsAt.toISOString().slice(0, 10)}; it can no longer be signed in to.`,
+    );
   });
 
   it("commits account deletion and keeps its Chat erasure intent pending until graceEndsAt", async () => {
@@ -667,10 +670,9 @@ describe("library tabs", () => {
     expect(groupChats.data.items).toEqual([]);
     expect(groupChats.data.emptyCta).toBeNull();
 
+    // Packs are not a product surface; the tab id is unknown, not an empty list.
     const packs = await api("GET", "library/packs", { userId, ageGate: true });
-    expectOk(packs);
-    expect(packs.data.items).toEqual([]);
-    expect(packs.data.emptyCta).toBeNull();
+    expect(packs.status).toBe(404);
 
     const recent = await api("GET", "library/recent", { userId, ageGate: true });
     expectOk(recent);
@@ -937,6 +939,7 @@ describe("tags, likes, duplicate", () => {
 
     const like = await api("POST", `characters/${CHAR}/like`, { userId, ageGate: true });
     expectOk(like);
+    expect(like.data.likesCount).toBe(before.likesCount + 1);
     const duplicate = await api("POST", `characters/${CHAR}/like`, { userId, ageGate: true });
     expectOk(duplicate);
     const liked = await prisma.characterLike.findFirst({ where: { userId, characterId: CHAR } });
@@ -948,6 +951,7 @@ describe("tags, likes, duplicate", () => {
 
     const unlike = await api("DELETE", `characters/${CHAR}/like`, { userId, ageGate: true });
     expectOk(unlike);
+    expect(unlike.data.likesCount).toBe(before.likesCount);
     const stillLiked = await prisma.characterLike.findFirst({ where: { userId, characterId: CHAR } });
     expect(stillLiked).toBeNull();
     expect(

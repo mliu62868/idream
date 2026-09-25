@@ -105,9 +105,13 @@ export async function resolveGenerationPlan(
   );
   const freeCharacterMoment =
     body.mode === "image" && Boolean(body.characterId) && Boolean(body.prompt);
+  // Variation 的场景提示词由系统拼接所以算可信，但它的 negativePrompt 是用户原样填写的，
+  // 只有 chat_image 的负向提示词来自系统，其余来源一律按 Premium 控件收费。
+  const userNegativePrompt =
+    Boolean(body.negativePrompt) && options.source?.sourceType !== "chat_image";
   if (
-    (body.negativePrompt || (body.prompt && !freeCharacterMoment)) &&
-    !systemPromptSource &&
+    (userNegativePrompt ||
+      (body.prompt && !freeCharacterMoment && !systemPromptSource)) &&
     !entitlements.premium_controls
   ) {
     throw Errors.paymentRequired("Custom prompt controls require Premium");

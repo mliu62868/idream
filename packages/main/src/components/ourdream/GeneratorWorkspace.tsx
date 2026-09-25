@@ -905,7 +905,7 @@ export function GeneratorWorkspace() {
   const formUnconfirmed = imageEditMode && selectedEditSource
     ? generationRequest.isVariationUnconfirmed({ mediaId: selectedEditSource.id, outputCount: count, consistencyMode,
       model: modelSelection.explicit ? modelSelection.id : undefined, quote: generationQuote,
-      prompt: prompt.trim(), negativePrompt: negativePrompt.trim() || undefined })
+      prompt: prompt.trim(), negativePrompt: canUsePrompt ? negativePrompt.trim() || undefined : undefined })
     : generationRequest.isSubmissionUnconfirmed(generationBody);
   useEffect(() => {
     if (!config?.viewer.authenticated) return;
@@ -1755,7 +1755,7 @@ export function GeneratorWorkspace() {
         outputCount: formUnconfirmed ? count : outputCount,
         quote: generationQuote,
         prompt: prompt.trim(),
-        negativePrompt: negativePrompt.trim() || undefined,
+        negativePrompt: canUsePrompt ? negativePrompt.trim() || undefined : undefined,
       });
       return;
     }
@@ -2188,7 +2188,7 @@ export function GeneratorWorkspace() {
         if (response.status === 401 && !original && presetEditorType === "setup") {
           const viewerScope = viewerScopeRef.current;
           if (!viewerScope) {
-            setStatus("Viewer authority could not be confirmed. Refresh and try again.");
+            setStatus("We couldn't confirm your account. Refresh and try again.");
             return;
           }
           const draft = {
@@ -3242,11 +3242,13 @@ export function GeneratorWorkspace() {
                 Negative Prompt
                 <input
                   className="mt-2 h-11 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] font-semibold text-white outline-none disabled:text-[rgb(114,113,112)]"
-                  disabled={!imageEditMode && !canUsePrompt}
+                  // INTENT: Image Edit's instructions are free, but its negative prompt is
+                  //   user-written, so Main prices it as a Premium control like any other.
+                  disabled={!canUsePrompt}
                   id="generator-negative-prompt"
                   name="negativePrompt"
                   onChange={(event) => setNegativePrompt(event.target.value)}
-                  placeholder={imageEditMode || canUsePrompt ? "Artifacts to avoid" : "Premium control"}
+                  placeholder={canUsePrompt ? "Artifacts to avoid" : "Premium control"}
                   value={negativePrompt}
                 />
               </label>
@@ -3363,13 +3365,13 @@ export function GeneratorWorkspace() {
               </div>
             )}
 
-            {!imageEditMode && !canUsePrompt && (
+            {!canUsePrompt && (
               <Link
                 className="mt-2 flex items-center justify-between gap-2 rounded-[10px] bg-[rgb(36,36,36)] px-4 py-3 text-[12px] font-semibold text-[rgb(190,190,190)]"
                 href={upgradeHref}
               >
                 <span>
-                  {characterImageMode
+                  {characterImageMode || imageEditMode
                     ? "Negative prompts are a Premium control."
                     : "Custom freeplay prompts and advanced controls are Premium features."}
                 </span>

@@ -5893,6 +5893,18 @@ describe("image generation service contract", () => {
       orientation: variationQuote.defaultOrientation,
       quoteAuthority: quoteAuthority(variationQuote),
     };
+    // 用户自填的 negativePrompt 是 Premium 控件，variation 的系统场景提示词不能替它豁免。
+    const freeNegative = await api("POST", `media/${mediaId}/variation`, {
+      userId,
+      ageGate: true,
+      headers: { "Idempotency-Key": `${variationIdempotencyKey}-free` },
+      body: variationBody,
+    });
+    expect(freeNegative.status).toBe(402);
+    await expect(dreamcoinBalance(userId)).resolves.toBe(balanceBefore);
+    await prisma.entitlement.create({
+      data: { userId, key: "premium_controls", value: true, source: "test" },
+    });
     const variation = await api("POST", `media/${mediaId}/variation`, {
       userId,
       ageGate: true,

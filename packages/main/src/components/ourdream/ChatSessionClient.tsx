@@ -21,6 +21,7 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 import { voiceClipQuoteSchema, type VoiceClipQuote } from "@idream/shared/contracts";
 import {
   parseChatSendResponse,
+  parseChatSessionCreateResponse,
   parseChatSessionDetailResponse,
   parseGenerationRetryQuoteResponse,
   type RuntimeChatAttachment as ChatAttachment,
@@ -40,6 +41,7 @@ import { authHrefForTarget } from "./authRedirect";
 import { LegacyTestAssetBadge } from "./LegacyTestAssetBadge";
 import { useReportDialog } from "./ReportDialog";
 import { chatFailureCopy } from "@/lib/chat-failure-copy";
+import { chatReleaseChangedCharacterId, stashChatReleaseHandoff, takeChatReleaseHandoff } from "@/lib/chat-release-handoff";
 import { chatGenerationHref } from "@/lib/chat-generation-link";
 import { chatVideoSources, isExplicitChatVideoRequest } from "@/lib/chat-video";
 import { ChatVideoComposer, type ChatVideoSubmission } from "./chat/ChatVideoComposer";
@@ -58,6 +60,7 @@ import {
   canSubmitChatMessage,
   isImmutableOpeningMessage,
   isLocalChatMessageId,
+  latestTurnUserMessageId,
   LOCAL_CHAT_MESSAGE_ID_PREFIX,
 } from "./chat-message-actions";
 import {
@@ -92,9 +95,12 @@ type VoiceClipRequestResult = {
 const BLOCKED_ASSISTANT_NOTICE = "I can’t help with that request.";
 const STOPPED_REPLY_STATUS = "cancelled";
 const SPEAKER_SELECT_FAILED = "Couldn't select that Character. Try again.";
+const CHAT_RELEASE_HANDOFF_NOTICE =
+  "This Character was updated, so we opened a new chat. Your unsent message is ready below. The earlier conversation stays in your chats.";
 // A reply is only auto-followed while the reader is parked within this many
 // pixels of the bottom; above that the viewport belongs to the reader.
 const STICK_TO_BOTTOM_SLACK_PX = 120;
+const PROACTIVE_POLL_MS = 60_000;
 const COMPOSER_BUTTON_CLASS =
   "inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-[linear-gradient(0deg,#ff1cac,#fd5fc2_50%,#ff79d1)] text-white disabled:opacity-70";
 
@@ -163,18 +169,24 @@ export function applyLocalStreamState(
   });
 }
 
-// SPEC: Follow the newest message only while the reader is parked at the bottom.
+// SPEC: Follow the newest message only while the reader is parked at it: the end
+//       of the message list sits at most the slack below the viewport bottom.
+//       Only the reader scrolling up releases the pin.
 // INTENT: a stream re-renders on every token; without this the reader is dragged
 //         back down and can never scroll up through the history mid-reply.
-export function chatViewIsPinnedToBottom(viewport: {
-  readonly innerHeight: number;
+//         Measured against the list end, not the page end: the follow-scroll parks
+//         that end above the sticky composer, which on desktop is more than the
+//         slack above the page end, so a page-end rule unpinned the follow itself.
+//         A smooth follow-scroll is also still travelling when the next message
+//         lands, so its own scroll events must not count as the reader leaving.
+export function chatViewPinAfterScroll(input: {
+  readonly wasPinned: boolean;
+  readonly previousScrollY: number;
   readonly scrollY: number;
-  readonly scrollHeight: number;
+  readonly latestBelowViewportPx: number;
 }): boolean {
-  return (
-    viewport.scrollHeight - (viewport.scrollY + viewport.innerHeight) <=
-    STICK_TO_BOTTOM_SLACK_PX
-  );
+  if (input.latestBelowViewportPx <= STICK_TO_BOTTOM_SLACK_PX) return true;
+  return input.wasPinned && input.scrollY >= input.previousScrollY;
 }
 
 const ACTIVE_CHAT_ATTACHMENT_STATUSES = new Set([
@@ -223,6 +235,8 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
   const executionSessionId = group?.selectedSessionId ?? id;
   const sessionPath = `/api/v1/chat/${groupMode ? "groups" : "sessions"}/${encodeURIComponent(id)}`;
   const [canUpdateIdentity, setCanUpdateIdentity] = useState(false);
+  const [characterImage, setCharacterImage] = useState<string | null>(null);
+  const [memberImages, setMemberImages] = useState<Record<string, string>>({});
   // SPEC: 只在这段会话真的能出视频时才给 Video / Animate 入口。
   // INTENT: 后端 GET /api/v1/chat/:id/video 早就返回 capability，前台却一处都没读，
   //   于是 chat_video 关着时按钮照样在、点开才看到「currently unavailable」；群聊更糟，
@@ -231,6 +245,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
   const [videoCapability, setVideoCapability] = useState<{ sessionId: string; enabled: boolean } | null>(null);
   const videoEnabled = ageGateAccepted && !groupMode && videoCapability?.sessionId === id && videoCapability.enabled;
   const [memoryEnabled, setMemoryEnabled] = useState(true);
+  const [proactiveEnabled, setProactiveEnabled] = useState(false);
   const [memoryPending, setMemoryPending] = useState(false);
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
@@ -294,8 +309,16 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
   );
 
   useEffect(() => {
+    let previousScrollY = window.scrollY;
     const onScroll = () => {
-      pinnedToBottomRef.current = chatViewIsPinnedToBottom(chatViewportMetrics());
+      const latestEnd = messagesEndRef.current?.getBoundingClientRect().bottom;
+      pinnedToBottomRef.current = chatViewPinAfterScroll({
+        wasPinned: pinnedToBottomRef.current,
+        previousScrollY,
+        scrollY: window.scrollY,
+        latestBelowViewportPx: latestEnd === undefined ? 0 : latestEnd - window.innerHeight,
+      });
+      previousScrollY = window.scrollY;
       if (pinnedToBottomRef.current) setJumpToLatestVisible(false);
     };
     window.addEventListener("scroll", onScroll, { passive: true });
@@ -361,6 +384,11 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
           applySession(session);
           resumePendingStreams(session.messages);
           setLoadState("ready");
+          const handedOver = groupMode ? null : takeChatReleaseHandoff(id);
+          if (handedOver !== null) {
+            setContent((current) => current || handedOver);
+            setStatus(CHAT_RELEASE_HANDOFF_NOTICE);
+          }
         })
         .catch((error: unknown) => {
           if (cancelled || epoch !== sessionMutationEpochRef.current) return;
@@ -442,8 +470,12 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
 
   useEffect(() => {
     if (!ageGateAccepted) return;
+    const reconciling = hasActiveAttachment || hasGeneratingReply;
     if (
-      (!hasActiveAttachment && !hasGeneratingReply) ||
+      // INTENT: a proactive check-in lands while nobody is sending anything, so
+      // without this the open page only saw it after a refocus. A slow read is
+      // enough — check-ins are hours apart; the list marker covers other pages.
+      (!reconciling && !proactiveEnabled) ||
       pending ||
       editingPending ||
       memoryPending
@@ -479,7 +511,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
         applySession(session);
         resumePendingStreams(session.messages);
         failureCount = 0;
-        if (chatStreamLatestReplyFailed(session.messages)) {
+        if (reconciling && chatStreamLatestReplyFailed(session.messages)) {
           setStatus("Reply failed to load. Please try again.");
         }
       } catch (error) {
@@ -491,7 +523,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
       } finally {
         controller = null;
         if (!cancelled) {
-          schedule(Math.min(12_000, 1_500 * 2 ** failureCount));
+          schedule(reconciling ? Math.min(12_000, 1_500 * 2 ** failureCount) : PROACTIVE_POLL_MS);
         }
       }
     };
@@ -501,7 +533,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
       schedule(0);
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
-    schedule(1_500);
+    schedule(reconciling ? 1_500 : PROACTIVE_POLL_MS);
     return () => {
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
@@ -518,6 +550,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
     id,
     memoryPending,
     pending,
+    proactiveEnabled,
   ]);
 
   function stopVoice() {
@@ -740,11 +773,13 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
         return;
       }
       if (!response.ok) {
+        const failure = await response.json().catch(() => null);
+        const updatedCharacterId = response.status === 410 && !groupMode ? chatReleaseChangedCharacterId(failure) : null;
+        if (updatedCharacterId && await openUpdatedCharacterChat(updatedCharacterId, text)) return;
         setSendOutcomeUnknown(response.status >= 500);
-        setStatus(chatFailureCopy(
-          await response.json().catch(() => null),
-          "Message failed to send. Please try again.",
-        ));
+        setStatus(updatedCharacterId
+          ? "This Character was updated, so this chat is now read-only. Your message is still below. Open the Character again to continue in a new chat."
+          : chatFailureCopy(failure, "Message failed to send. Please try again."));
         setContent(text);
         setMessages(dropOptimisticMessage);
         return;
@@ -788,6 +823,27 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
       setMessages(dropOptimisticMessage);
     } finally {
       setPending(false);
+    }
+  }
+
+  // The old chat keeps its history; the Character's current chat receives the
+  // unsent message. False means nothing moved and the caller keeps the text here.
+  async function openUpdatedCharacterChat(updatedCharacterId: string, draft: string): Promise<boolean> {
+    try {
+      if (!receiptOwnerScope) return false;
+      const response = await fetch("/api/v1/chat/sessions", {
+        method: "POST",
+        // The draft belongs to this account; if another tab switched accounts, refuse.
+        headers: { "content-type": "application/json", "x-idream-viewer-scope": receiptOwnerScope },
+        body: JSON.stringify({ characterId: updatedCharacterId }),
+      });
+      if (!response.ok) return false;
+      const nextId = parseChatSessionCreateResponse(await response.json()).session.id;
+      if (nextId === id || !stashChatReleaseHandoff(nextId, draft)) return false;
+      window.location.assign(`/chat/${encodeURIComponent(nextId)}`);
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -919,7 +975,10 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
     setConversationArchived(session.status === "archived");
     if (session.status === "archived") cancelEdit();
     setCanUpdateIdentity(Boolean(session.character.canUpdateIdentity));
+    setCharacterImage(session.character.image ?? null);
+    setMemberImages(session.memberImages ?? {});
     if (typeof session.memoryEnabled === "boolean") setMemoryEnabled(session.memoryEnabled);
+    setProactiveEnabled(session.proactiveEnabled === true);
   }
 
   async function changeSpeaker(nextCharacterId: string) {
@@ -1417,7 +1476,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
     });
   }
 
-  const latestUserMessageId = newestUserMessageId(messages);
+  const latestUserMessageId = latestTurnUserMessageId(messages);
   const latestReplyInProgress = replyAfterLatestUserInProgress(messages);
   const latestCompletedReply = [...messages].reverse().find(message => message.role === "assistant" && message.status === "sent" && message.turnId && (!group || message.characterId === characterId));
   const videoSources = chatVideoSources(messages, { sessionId: executionSessionId, characterId });
@@ -1434,7 +1493,15 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
             <ArrowLeft className="h-4 w-4" />
             {groupMode ? "Your group chats" : "Explore"}
           </Link>
-          <h1 className="text-[32px] font-black uppercase leading-9">{title}</h1>
+          <div className="flex min-w-0 items-center gap-3">
+            <ChatHeaderAvatars
+              images={group
+                ? group.members.flatMap(member => memberImages[member.characterId] ? [{ id: member.characterId, name: member.name, url: memberImages[member.characterId] }] : [])
+                : characterImage ? [{ id: characterId || "character", name: title, url: characterImage }] : []}
+            />
+            <h1 className="min-w-0 break-words text-[32px] font-black uppercase leading-9">{title}</h1>
+          </div>
+          <ChatSceneLine messages={messages} characterId={group ? characterId ?? undefined : undefined} />
           {loadState === "ready" ? (
             <>
               {group ? <GroupSpeakerControls members={group.members} selectedCharacterId={characterId} disabled={pending || hasGeneratingReply || speakerPending || conversationArchived || sendOutcomeUnknown} onSelect={next => void changeSpeaker(next)} /> : null}
@@ -1481,6 +1548,12 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
                 </section>
               ) : null}
               <div className="mt-6 flex min-h-[55vh] flex-1 flex-col gap-3 rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-4">
+                {/* 群聊没有开场白：说清楚怎么开始，而不是替角色编一句。 */}
+                {group && messages.length === 0 ? (
+                  <p className="m-auto max-w-md text-center text-sm leading-6 text-white/65" data-testid="group-chat-empty">
+                    No messages yet. Send a message to {group.members.find(member => member.characterId === characterId)?.name ?? group.members[0].name}, or @mention {group.members.map(member => member.name).join(", ")} to choose who replies.
+                  </p>
+                ) : null}
                 {messages.map((message) => {
                   const isUser = message.role === "user";
                   const immutableOpening = isImmutableOpeningMessage(message);
@@ -1581,7 +1654,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
                             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white/60 [animation-timing-function:cubic-bezier(0.16,1,0.3,1)] motion-reduce:animate-none" />
                           </span>
                         </>
-                      ) : !isUser && !message.content.trim() ? (
+                      ) : !isUser && !message.content.trim() && !(message.attachments ?? []).length ? (
                         <span aria-label="Assistant reply unavailable" role="status">
                           {message.status === STOPPED_REPLY_STATUS
                             ? "Reply stopped."
@@ -1788,6 +1861,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
         memoryEnabled={memoryEnabled}
         memoryPending={memoryPending}
         onToggleMemory={toggleMemory}
+        onProactiveChange={setProactiveEnabled}
       />
       {reportDialog}
     </main>
@@ -1873,14 +1947,6 @@ function ChatSessionUnavailablePanel({
   );
 }
 
-function chatViewportMetrics() {
-  return {
-    innerHeight: window.innerHeight,
-    scrollY: window.scrollY,
-    scrollHeight: document.documentElement.scrollHeight,
-  };
-}
-
 function chatSessionFetchError(status: number) {
   const error = new Error("Chat session fetch failed") as Error & { status: number };
   error.status = status;
@@ -1894,14 +1960,6 @@ function isChatAuthError(error: unknown) {
     "status" in error &&
     (error as { status?: unknown }).status === 401
   );
-}
-
-function newestUserMessageId(messages: ChatMessage[]) {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message?.role === "user") return message.id;
-  }
-  return null;
 }
 
 function replyAfterLatestUserInProgress(messages: ChatMessage[]) {
@@ -2010,6 +2068,8 @@ function ChatImageAttachmentCard({
   const failed = ["failed", "blocked", "refunded", "rejected"].includes(attachment.status);
   const canRetry = Boolean(attachment.generationJobId) && ["failed", "refunded"].includes(attachment.status);
   const paymentRequired = failed && attachment.errorCode === "payment_required";
+  // Main's active-job cap, not a broken image: nothing was charged or queued.
+  const tooManyActive = failed && attachment.errorCode === "rate_limited";
   const completedUnavailable = attachment.status === "completed" && Boolean(attachment.mediaAssetId);
   return (
     <div
@@ -2026,6 +2086,8 @@ function ChatImageAttachmentCard({
               ? "Image result needs review"
               : paymentRequired
                 ? "Not enough dreamcoins"
+              : tooManyActive
+                ? "Too many images in progress"
               : failed || attachment.status === "proposed" || completedUnavailable
                 ? "Image unavailable"
                 : "Generating image"}
@@ -2047,6 +2109,8 @@ function ChatImageAttachmentCard({
                 : failed || attachment.status === "proposed"
                 ? paymentRequired
                   ? "Add dreamcoins to generate this image."
+                  : tooManyActive
+                  ? "Wait for one to finish, then ask again. No coins used."
                   : canRetry ? "The image could not be completed. Retry uses the current image price." : "The image could not be completed. You can send a new image request in this chat."
                 : "Your image is being prepared. You can keep chatting while it finishes."}
             </p>
@@ -2178,6 +2242,47 @@ function ChatImageAttachmentActions({
         Open in Generate
       </Link> : null}
       {onAnimate ? <button type="button" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-white/10 px-3 text-xs font-bold text-white" onClick={onAnimate}><Video className="size-4" />Animate</button> : null}
+    </div>
+  );
+}
+
+// SPEC: 头部下方一行小字显示当前场景（最新一条带 scene 的回复）；没有场景就不渲染。
+// 群聊每个角色各有自己的场景，只看当前发言角色的回复。
+export function currentChatScene(messages: ChatMessage[], characterId?: string) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== "assistant" || !message.scene) continue;
+    if (characterId && message.characterId !== characterId) continue;
+    return message.scene;
+  }
+  return null;
+}
+
+function ChatSceneLine({ messages, characterId }: { messages: ChatMessage[]; characterId?: string }) {
+  const scene = currentChatScene(messages, characterId);
+  const parts = scene ? [scene.location, scene.time, scene.emotionalBeat].filter((part): part is string => Boolean(part?.trim())) : [];
+  if (!parts.length) return null;
+  return (
+    <p className="mt-2 text-[12px] font-medium leading-5 text-white/55" data-testid="chat-scene">
+      Scene · {parts.join(" · ")}
+    </p>
+  );
+}
+
+// 头部只放角色已有的封面小图；群聊叠成一组，最多 5 个。没有图就不占位。
+function ChatHeaderAvatars({ images }: { images: Array<{ id: string; name: string; url: string }> }) {
+  if (!images.length) return null;
+  return (
+    <div className="flex shrink-0 -space-x-3" data-testid="chat-header-avatars">
+      {images.slice(0, 5).map(image => (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          alt={image.name}
+          className="h-11 w-11 rounded-full border-2 border-[rgb(13,13,13)] bg-[rgb(36,36,36)] object-cover object-top"
+          key={image.id}
+          src={image.url}
+        />
+      ))}
     </div>
   );
 }

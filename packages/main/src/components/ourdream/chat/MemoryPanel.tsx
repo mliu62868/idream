@@ -17,6 +17,7 @@ export function MemoryPanel({
   memoryEnabled,
   memoryPending,
   onToggleMemory,
+  onProactiveChange,
   groupConversation = false,
 }: Readonly<{
   open: boolean;
@@ -26,6 +27,7 @@ export function MemoryPanel({
   memoryEnabled: boolean;
   memoryPending: boolean;
   onToggleMemory: () => void;
+  onProactiveChange?: (enabled: boolean) => void;
   groupConversation?: boolean;
 }>) {
   const [resetting, setResetting] = useState(false);
@@ -127,7 +129,7 @@ export function MemoryPanel({
           </p>
 
           {sessionId ? <ChatContextSettings key={sessionId} sessionId={sessionId} memoryEnabled={memoryEnabled} /> : null}
-          {sessionId && !groupConversation ? <ProactiveSettings key={`proactive-${sessionId}`} sessionId={sessionId} /> : null}
+          {sessionId && !groupConversation ? <ProactiveSettings key={`proactive-${sessionId}`} sessionId={sessionId} onEnabledChange={onProactiveChange} /> : null}
 
           <div className="my-4 h-px bg-[rgb(36,36,36)]" />
 
