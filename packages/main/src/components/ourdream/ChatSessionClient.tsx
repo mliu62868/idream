@@ -1654,7 +1654,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
                             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white/60 [animation-timing-function:cubic-bezier(0.16,1,0.3,1)] motion-reduce:animate-none" />
                           </span>
                         </>
-                      ) : !isUser && !message.content.trim() ? (
+                      ) : !isUser && !message.content.trim() && !(message.attachments ?? []).length ? (
                         <span aria-label="Assistant reply unavailable" role="status">
                           {message.status === STOPPED_REPLY_STATUS
                             ? "Reply stopped."
@@ -2068,6 +2068,8 @@ function ChatImageAttachmentCard({
   const failed = ["failed", "blocked", "refunded", "rejected"].includes(attachment.status);
   const canRetry = Boolean(attachment.generationJobId) && ["failed", "refunded"].includes(attachment.status);
   const paymentRequired = failed && attachment.errorCode === "payment_required";
+  // Main's active-job cap, not a broken image: nothing was charged or queued.
+  const tooManyActive = failed && attachment.errorCode === "rate_limited";
   const completedUnavailable = attachment.status === "completed" && Boolean(attachment.mediaAssetId);
   return (
     <div
@@ -2084,6 +2086,8 @@ function ChatImageAttachmentCard({
               ? "Image result needs review"
               : paymentRequired
                 ? "Not enough dreamcoins"
+              : tooManyActive
+                ? "Too many images in progress"
               : failed || attachment.status === "proposed" || completedUnavailable
                 ? "Image unavailable"
                 : "Generating image"}
@@ -2105,6 +2109,8 @@ function ChatImageAttachmentCard({
                 : failed || attachment.status === "proposed"
                 ? paymentRequired
                   ? "Add dreamcoins to generate this image."
+                  : tooManyActive
+                  ? "Wait for one to finish, then ask again. No coins used."
                   : canRetry ? "The image could not be completed. Retry uses the current image price." : "The image could not be completed. You can send a new image request in this chat."
                 : "Your image is being prepared. You can keep chatting while it finishes."}
             </p>

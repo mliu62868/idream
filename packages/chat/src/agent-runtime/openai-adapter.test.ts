@@ -503,7 +503,7 @@ describe("OpenAI-compatible DSH adapter", () => {
   });
 
   it.each([
-    { label: "commentary around JSON", content: 'Here is the edit: {"instruction":"Move the notebook right of the cup"}' },
+    { label: "commentary around JSON", content: 'Here is the edit: {"instruction":"Move the notebook right of the cup"} Done.' },
     { label: "wrong tool wrapper", content: '{"name":"generate_image_async","arguments":{"instruction":"Move the notebook right of the cup"}}' },
     { label: "unexpected parameter", content: '{"instruction":"Move the notebook right of the cup","unapprovedEffect":"erase history"}' },
     { label: "missing required parameter", content: '{"caption":"The notebook goes on the right"}' },
@@ -612,6 +612,88 @@ describe("OpenAI-compatible DSH adapter", () => {
     expect(chunks).toContainEqual({
       type: "usage", usage: { inputTokens: 30, outputTokens: 6, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 },
     });
+  });
+
+  it("accepts a compatibility payload that follows one in-character line", async () => {
+    // Observed from the local 35B model: a spoken line, then {name, args}.
+    let requests = 0;
+    const adapter = new OpenAiCompatibleAdapter({
+      profile: {
+        tier: "test",
+        adapter: "openai-compatible-v1",
+        provider: "openai",
+        baseUrl: "https://provider.example/v1",
+        model: "deepseek/test",
+        supportsTools: true,
+        maxOutputTokens: 256,
+        timeout: { firstTokenMs: 1_000, idleMs: 1_000 },
+        sampling: { temperature: 0.9, topP: 0.95, repetitionPenalty: 1.05 },
+      },
+      apiKey: "provider-secret",
+      requiredToolName: "generate_image_async",
+      fetch: (async () => {
+        requests += 1;
+        const content = requests === 1
+          ? "One cozy cafe, give me a second."
+          : `Okay, one cozy cafe, me lost in a book.\n\n${JSON.stringify({
+              name: "generate_image_async",
+              args: { prompt: "Woman reading in a warm cozy cafe", orientation: "4:5" },
+            })}`;
+        return new Response([
+          `data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: null }] })}\n\n`,
+          `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`,
+          "data: [DONE]\n\n",
+        ].join(""), { status: 200 });
+      }) as typeof fetch,
+    });
+
+    const chunks: Array<Record<string, unknown>> = [];
+    for await (const chunk of adapter.stream({
+      provider: "openai",
+      model: "deepseek/test",
+      messages: [],
+      tools: [{
+        name: "generate_image_async",
+        description: "Generate an image",
+        parameters: { type: "object", properties: { prompt: { type: "string" } }, required: ["prompt"] },
+      }],
+    })) chunks.push(chunk as unknown as Record<string, unknown>);
+
+    expect(requests).toBe(2);
+    expect(chunks).toContainEqual(expect.objectContaining({
+      type: "tool-call-delta",
+      name: "generate_image_async",
+      argumentsDelta: JSON.stringify({ prompt: "Woman reading in a warm cozy cafe", orientation: "4:5", outputCount: 1 }),
+    }));
+  });
+
+  it("directs the required image from the user request when both forced attempts answer in prose", async () => {
+    let requests = 0;
+    const adapter = adapterFor("https://provider.example/v1", async () => {
+      requests += 1;
+      return new Response(`data: ${JSON.stringify({ choices: [{
+        delta: { content: "Make that 5:4, golden hour looks better wide." },
+        finish_reason: "stop",
+      }] })}\n\n`);
+    }, { requiredToolName: "generate_image_async" });
+    const chunks: StreamChunk[] = [];
+    for await (const chunk of adapter.stream({
+      provider: "openrouter", model: "deepseek/test",
+      messages: [{
+        id: "current-user" as never, role: "user", source: { kind: "user" },
+        content: [{ type: "text", text: "Send me a selfie of you on your balcony at sunset." }],
+      }],
+      tools: [{ name: "generate_image_async", description: "Generate an image", parameters: { type: "object", properties: {} } }],
+    })) chunks.push(chunk);
+
+    expect(requests).toBe(2);
+    expect(chunks.some((chunk) => chunk.type === "text-delta")).toBe(false);
+    expect(chunks).toContainEqual(expect.objectContaining({
+      type: "tool-call-delta",
+      name: "generate_image_async",
+      argumentsDelta: JSON.stringify({ prompt: "Send me a selfie of you on your balcony at sunset.", orientation: "4:5", outputCount: 1 }),
+    }));
+    expect(chunks.at(-1)).toMatchObject({ type: "finish", reason: { kind: "tool-calls" } });
   });
 
   it("rejects an unpinned provider before converting its required-tool JSON", async () => {

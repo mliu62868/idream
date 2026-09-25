@@ -70,11 +70,13 @@ export function chatStreamMessagesNeedReconciliation(
  *         会话里，扫描整个 messages 会让一条正常会话被那条旧记录永远钉上错误提示。
  */
 export function chatStreamLatestReplyFailed(
-  messages: readonly ChatStreamMessage[],
+  messages: readonly (ChatStreamMessage & { readonly attachments?: readonly unknown[] | null })[],
 ) {
   const latest = messages.at(-1);
   if (!latest) return false;
   if (latest.status === "cancelled") return false;
+  // An attachment card already states why this turn has no text.
+  if (latest.attachments?.length) return false;
   return chatStreamMessageIsTerminal(latest) && !latest.content.trim();
 }
 

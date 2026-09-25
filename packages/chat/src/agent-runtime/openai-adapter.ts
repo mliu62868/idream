@@ -126,12 +126,19 @@ function requiredToolArgumentsJson(
   let candidate = content.trim();
   const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/iu.exec(candidate);
   if (fenced) candidate = fenced[1] ?? "";
+  // INTENT: the local model often says one in-character line before the JSON
+  // ("Okay, give me a moment.\n\n{...}"); the trailing object is still the only
+  // action candidate and is validated below exactly like a bare payload.
+  if (!candidate.startsWith("{") && candidate.endsWith("}")) {
+    candidate = candidate.slice(candidate.indexOf("{"));
+  }
   try {
     const parsed = JSON.parse(candidate) as unknown;
     let raw = parsed;
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
       const row = parsed as Record<string, unknown>;
       if (row.name === name && row.arguments !== undefined) raw = row.arguments;
+      if (row.name === name && row.args !== undefined) raw = row.args;
       const fn = row.function && typeof row.function === "object" && !Array.isArray(row.function)
         ? row.function as Record<string, unknown>
         : null;
@@ -329,8 +336,9 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
       return;
     }
 
-    let omission: unknown;
+    let omission: RequiredToolOmission | undefined;
     let totalUsage: TokenUsage | undefined;
+    let argumentsJson: string | null = null;
     for (const jsonCompatibilityMode of [false, true]) {
       const chunks: StreamChunk[] = [];
       try {
@@ -362,47 +370,64 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
         // for a forced native tool. Validate that completed candidate before
         // spending another request; length-limited or mixed tool output is not
         // an alternative complete action, even if its text happens to parse.
-        const argumentsJson = error.finishReason.kind === "stop"
+        argumentsJson = error.finishReason.kind === "stop"
           && !chunks.some((chunk) => chunk.type === "tool-call-delta")
           ? requiredToolArgumentsJson(this.requiredToolName, content)
           : null;
-        if (!argumentsJson) {
-          if (!jsonCompatibilityMode) continue;
+        if (argumentsJson) {
+          logger.info({
+            event: "companion_required_tool_json_compatibility",
+            requiredToolName: this.requiredToolName,
+          }, "converted validated provider JSON into a companion tool call");
           break;
         }
-        const callId = `compat_${createHash("sha256")
-          .update(`${this.requiredToolName}\0${argumentsJson}`)
-          .digest("hex")
-          .slice(0, 24)}` as never;
-        this.requiredToolCompleted = true;
-        logger.info({
-          event: "companion_required_tool_json_compatibility",
-          requiredToolName: this.requiredToolName,
-        }, "converted validated provider JSON into a companion tool call");
-        yield { type: "block-start", index: 0, blockType: "tool-call" };
-        yield {
-          type: "tool-call-delta",
-          index: 0,
-          id: callId,
-          name: this.requiredToolName,
-          argumentsDelta: argumentsJson,
-        };
-        yield {
-          type: "block-end",
-          index: 0,
-          block: {
-            type: "tool-call",
-            id: callId,
-            name: this.requiredToolName,
-            arguments: argumentsJson,
-          },
-        };
-        if (totalUsage) yield { type: "usage", usage: totalUsage };
-        yield { type: "finish", reason: { kind: "tool-calls" }, replayState: error.replayState };
-        return;
       }
     }
-    throw omission;
+    if (!argumentsJson && omission?.finishReason.kind === "stop") {
+      // INTENT: the local model sometimes answers in prose on both forced
+      // attempts. The current user request already names the picture and Main
+      // re-derives authorization from its own frozen copy of that text, so
+      // using it as the direction adds no permission; failing the whole Turn
+      // left the user with "Reply unavailable" for a plain photo request.
+      const userText = textOf(options.messages.findLast((message) => message.source.kind === "user")?.content ?? []);
+      argumentsJson = userText.trim()
+        ? requiredToolArgumentsJson(this.requiredToolName, JSON.stringify(
+            this.requiredToolName === "edit_last_image" ? { instruction: userText } : { prompt: userText },
+          ))
+        : null;
+      if (argumentsJson) {
+        logger.warn({
+          event: "companion_required_tool_user_text_fallback",
+          requiredToolName: this.requiredToolName,
+        }, "provider never produced the required tool; directing it from the user request");
+      }
+    }
+    if (!argumentsJson || !omission) throw omission;
+    const callId = `compat_${createHash("sha256")
+      .update(`${this.requiredToolName}\0${argumentsJson}`)
+      .digest("hex")
+      .slice(0, 24)}` as never;
+    this.requiredToolCompleted = true;
+    yield { type: "block-start", index: 0, blockType: "tool-call" };
+    yield {
+      type: "tool-call-delta",
+      index: 0,
+      id: callId,
+      name: this.requiredToolName,
+      argumentsDelta: argumentsJson,
+    };
+    yield {
+      type: "block-end",
+      index: 0,
+      block: {
+        type: "tool-call",
+        id: callId,
+        name: this.requiredToolName,
+        arguments: argumentsJson,
+      },
+    };
+    if (totalUsage) yield { type: "usage", usage: totalUsage };
+    yield { type: "finish", reason: { kind: "tool-calls" }, replayState: omission.replayState };
   }
 
   private async *streamOnce(

@@ -490,6 +490,21 @@ describe("ChatSessionClient streaming composer", () => {
       .toContain("Get more dreamcoins");
   });
 
+  it("explains the active-image cap on a failed image turn instead of an unavailable reply", async () => {
+    sessionMessages = [{
+      ...opening,
+      content: "",
+      attachments: [{ id: "attachment-busy", kind: "generated_image", status: "failed", errorCode: "rate_limited" }],
+    }];
+
+    await mountSession();
+
+    const card = container.querySelector('[data-testid="chat-image-attachment-card"]');
+    expect(card?.textContent).toContain("Too many images in progress");
+    expect(card?.textContent).toContain("No coins used");
+    expect(container.textContent).not.toContain("Reply unavailable.");
+  });
+
   it("retries a failed image through its exact quote and preserves the key after an uncertain response", async () => {
     const attachment = { id: "failed-image", kind: "generated_image", status: "failed", generationJobId: "job-old", errorCode: "provider_error" };
     sessionMessages = [{ ...opening, attachments: [attachment] }];
