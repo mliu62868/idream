@@ -96,11 +96,14 @@ export async function patchFeatureFlag(request: Request, key: string) {
     mutate: async (tx) => {
       const before = await tx.featureFlag.findUnique({ where: { key } });
       if (before?.hardPolicy) throw Errors.forbidden("Hard safety policy flags cannot be changed");
+      // INVARIANT: 运行时只认 enabled && rolloutPercent === 100；只翻 enabled 时跟着把灰度
+      // 设成全量 / 0，否则「启用」一条 rollout=0 的开关在线上毫无效果。
+      const rolloutPercent = body.rolloutPercent ?? (body.enabled === undefined ? undefined : body.enabled ? 100 : 0);
       const changed = await tx.featureFlag.upsert({
         where: { key },
         update: {
           enabled: body.enabled,
-          rolloutPercent: body.rolloutPercent,
+          rolloutPercent,
           targetRoles: body.targetRoles ? toInputJson(body.targetRoles) : undefined,
           targetPlans: body.targetPlans ? toInputJson(body.targetPlans) : undefined,
           description: body.description,
@@ -111,7 +114,7 @@ export async function patchFeatureFlag(request: Request, key: string) {
           label: key,
           description: body.description,
           enabled: body.enabled ?? false,
-          rolloutPercent: body.rolloutPercent ?? 0,
+          rolloutPercent: rolloutPercent ?? 0,
           targetRoles: toInputJson(body.targetRoles ?? []),
           targetPlans: toInputJson(body.targetPlans ?? []),
         },

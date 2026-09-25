@@ -20,7 +20,7 @@ async function mount(editing: boolean) { await act(async () => root.render(<Admi
 async function submit() { await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }))); }
 it("copies configuration into a disabled replacement draft without publishing evidence", async () => {
   await mount(false); await submit();
-  expect(apiWrite).toHaveBeenCalledWith("/api/v2/admin/generation/model-profiles", "POST", expect.objectContaining({ profileKey: "campaign-image", workflowKey: "text-image", enabled: false, rolloutPercent: 75, runnerConfig: source.runnerConfig }));
+  expect(apiWrite).toHaveBeenCalledWith("/api/v2/admin/generation/model-profiles", "POST", expect.objectContaining({ profileKey: "campaign-image", workflowKey: "text-image", enabled: false, rolloutPercent: 0, runnerConfig: source.runnerConfig }));
   const body = apiWrite.mock.calls[0][2];
   for (const field of ["dryRunSummary", "status", "version", "id"]) expect(body).not.toHaveProperty(field);
   expect(saved).toHaveBeenCalledWith("saved-draft");

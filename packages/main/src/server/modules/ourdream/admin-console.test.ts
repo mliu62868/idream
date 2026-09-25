@@ -1329,6 +1329,8 @@ describe("generation config control plane", () => {
         finishedAt: new Date(),
       },
     });
+    // 历史数据里的半灰度草稿：发布必须全量，否则上一版已归档、新版又不可服务。
+    await prisma.generationModelProfile.update({ where: { id: draft.data.profile.id }, data: { rolloutPercent: 50 } });
     const verifiedPublish = await adminV2("POST", `/api/v2/admin/generation/model-profiles/${draft.data.profile.id}/commands/publish`, {
       userId: admin,
       role: "admin",

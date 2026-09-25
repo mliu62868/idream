@@ -15,6 +15,7 @@ import {
   adminJsonValueSchema,
   adminListResponseSchema,
 } from "./common";
+import { servingRolloutPercentSchema } from "./feature-flags";
 import { generationJobDataScopeSchema } from "./jobs";
 
 /**
@@ -118,7 +119,7 @@ export const generationModelProfileCreateRequestSchema = z
     maxCount: z.number().int().min(1).max(8).default(4),
     concurrencyLimit: z.number().int().min(1).max(100).default(1),
     enabled: z.boolean().default(false),
-    rolloutPercent: z.number().int().min(0).max(100).default(0),
+    rolloutPercent: servingRolloutPercentSchema.default(0),
     dryRunSummary: z.record(z.string(), z.unknown()).optional(),
   })
   .strict();
@@ -147,7 +148,7 @@ export const generationModelProfilePatchRequestSchema = z
     maxCount: z.number().int().min(1).max(8).optional(),
     concurrencyLimit: z.number().int().min(1).max(100).optional(),
     enabled: z.boolean().optional(),
-    rolloutPercent: z.number().int().min(0).max(100).optional(),
+    rolloutPercent: servingRolloutPercentSchema.optional(),
     dryRunSummary: z.record(z.string(), z.unknown()).optional(),
     reason: z.string().trim().min(3).max(2_000).optional(),
     confirmation: z.string().trim().min(1).max(160).optional(),

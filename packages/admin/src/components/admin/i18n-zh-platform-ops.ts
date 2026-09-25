@@ -51,7 +51,6 @@ export const adminZhPlatformOps: Record<string, string> = {
   "Cost multiplier": "费用倍率",
   "Maximum count": "最大生成数量",
   "Concurrency limit": "并发上限",
-  "Rollout percent": "灰度比例",
   "Allowed orientations (comma separated)": "允许的画幅（逗号分隔）",
   "Runner configuration JSON": "运行器配置 JSON",
   "Profile draft save failed": "生成配置草稿保存失败",
