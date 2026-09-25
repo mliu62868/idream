@@ -26,7 +26,9 @@ describe("request JSON primitives", () => {
 
   it("parses an empty body as an empty object and rejects malformed JSON", () => {
     expect(parseJsonText("")).toEqual({});
-    expect(() => parseJsonText("{")).toThrow(SyntaxError);
+    expect(() => parseJsonText("{")).toThrow(
+      expect.objectContaining({ code: "bad_request", status: 400, message: "Invalid JSON body" }),
+    );
   });
 
   it("recognizes records without accepting arrays or null", () => {
