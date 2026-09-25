@@ -99,7 +99,11 @@ async function routeMainChat(request: Request, segments: string[], userId: strin
     const groupId = path[1];
     if (groupId && path.length === 2) {
       if (method === "GET") return envelope({ session: await getGroupConversation(userId, groupId, new URL(request.url).searchParams.get("speaker") ?? undefined) });
-      if (method === "PATCH") return json(await updateGroupConversation(userId, groupId, body));
+      if (method === "PATCH") {
+        // Same guard as creation: new members are bound to the account the picker was loaded for.
+        if ("addCharacterIds" in body && request.headers.get("x-idream-viewer-scope") !== `user:${userId}`) throw Errors.conflict("Your account changed. Reload before adding Characters");
+        return json(await updateGroupConversation(userId, groupId, body));
+      }
       if (method === "DELETE") {
         await deleteGroupChatConversation(userId, groupId);
         return json({ ok: true });

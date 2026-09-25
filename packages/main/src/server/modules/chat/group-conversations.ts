@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { GROUP_CHAT_MAX_MEMBERS, GROUP_CHAT_MIN_MEMBERS, groupChatMemberSchema } from "@idream/shared/contracts";
+import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
@@ -23,21 +24,23 @@ export async function createGroupConversation(userId: string, input: unknown) {
     const pins = [];
     for (const characterId of values.characterIds) pins.push(await chatSessionCharacterPin(userId, characterId, tx));
     const group = await tx.groupConversation.create({ data: { id: randomUUID(), userId, title: values.title } });
-    for (const [position, pin] of pins.entries()) {
-      await tx.recentChat.create({ data: {
-        sessionId: randomUUID(), userId, characterId: pin.character.id,
-        groupId: group.id, groupPosition: position, title: pin.character.name,
-        characterContentVersionId: pin.content.id,
-        characterReleaseId: pin.release?.id ?? null,
-        characterVisualProfileId: pin.visual?.id ?? null,
-        characterVisualProfileVersion: pin.visual?.version ?? null,
-        releasePinnedAt: new Date(),
-        // Single-character greetings did not happen in this new group.
-        openingMessage: null,
-      } });
-    }
+    for (const [position, pin] of pins.entries()) await createGroupMember(tx, userId, group.id, position, pin);
     return { id: group.id, title: group.title };
   });
+}
+
+async function createGroupMember(tx: Prisma.TransactionClient, userId: string, groupId: string, position: number, pin: Awaited<ReturnType<typeof chatSessionCharacterPin>>) {
+  await tx.recentChat.create({ data: {
+    sessionId: randomUUID(), userId, characterId: pin.character.id,
+    groupId, groupPosition: position, title: pin.character.name,
+    characterContentVersionId: pin.content.id,
+    characterReleaseId: pin.release?.id ?? null,
+    characterVisualProfileId: pin.visual?.id ?? null,
+    characterVisualProfileVersion: pin.visual?.version ?? null,
+    releasePinnedAt: new Date(),
+    // Single-character greetings did not happen in this group.
+    openingMessage: null,
+  } });
 }
 
 export async function listGroupConversations(userId: string) {
@@ -119,10 +122,25 @@ export async function getGroupConversation(userId: string, groupId: string, sele
   };
 }
 
+const characterIdsSchema = z.array(z.string().trim().min(1).max(160));
+const updateSchema = z.object({
+  title: z.string().trim().min(1).max(120).optional(),
+  status: z.literal("archived").optional(),
+  addCharacterIds: characterIdsSchema.min(1).max(GROUP_CHAT_MAX_MEMBERS).optional(),
+}).strict().refine(value => !(value.status && value.addCharacterIds), {
+  message: "Add Characters or archive the group, not both",
+}).refine(value => !value.addCharacterIds || new Set(value.addCharacterIds).size === value.addCharacterIds.length, {
+  message: "Choose distinct Characters to add",
+});
+
+// SPEC: PATCH 改名 / 归档 / 追加成员；追加的成员在群尾按顺序得到新的会话，资格与建群同一规则（chatSessionCharacterPin）。
+// INTENT: 只加不减——移除要保留历史发言者身份（getGroupConversation 要求每条历史的 member 仍在），另起一片。
+// INTENT: 已在群内的角色视为已加入：首个响应丢失后的原样重放不重复添加、也不报错。
+// INVARIANT: 锁序同 turn-scope：users → group_conversations → recent_chats；全部校验通过才写入，任一失败整批不加。
 export async function updateGroupConversation(userId: string, groupId: string, input: unknown) {
-  const parsed = z.object({ title: z.string().trim().min(1).max(120).optional(), status: z.literal("archived").optional() }).strict().safeParse(input);
+  const parsed = updateSchema.safeParse(input);
   if (!parsed.success) throw Errors.badRequest("Invalid group conversation update", { issues: parsed.error.issues });
-  const values = parsed.data;
+  const { addCharacterIds, ...values } = parsed.data;
   return prisma.$transaction(async tx => {
     await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${userId} FOR UPDATE`;
     await tx.$queryRaw`SELECT id FROM "group_conversations" WHERE id = ${groupId} FOR UPDATE`;
@@ -131,8 +149,23 @@ export async function updateGroupConversation(userId: string, groupId: string, i
     if (values.status && await tx.chatTurn.count({ where: { groupTurn: { groupId }, assistantStatus: { in: ["pending", "generating"] } } })) {
       throw Errors.conflict("Cancel the active reply before changing this group");
     }
-    if (values.status) await tx.recentChat.updateMany({ where: { groupId, userId }, data: { status: values.status } });
+    if (addCharacterIds) {
+      if (group.status !== "active") throw Errors.gone("Group conversation is unavailable or archived");
+      const current = await tx.recentChat.findMany({ where: { groupId, userId }, select: { characterId: true, groupPosition: true } });
+      const joining = addCharacterIds.filter(id => !current.some(member => member.characterId === id));
+      if (current.length + joining.length > GROUP_CHAT_MAX_MEMBERS) {
+        throw Errors.conflict(`A group can have up to ${GROUP_CHAT_MAX_MEMBERS} Characters`, { remaining: GROUP_CHAT_MAX_MEMBERS - current.length });
+      }
+      const pins = [];
+      for (const characterId of joining) pins.push(await chatSessionCharacterPin(userId, characterId, tx));
+      let position = Math.max(-1, ...current.map(member => member.groupPosition ?? -1)) + 1;
+      for (const pin of pins) await createGroupMember(tx, userId, groupId, position++, pin);
+    }
     await tx.groupConversation.update({ where: { id: groupId }, data: values });
-    return { id: groupId, title: values.title ?? group.title, status: values.status ?? group.status };
+    const members = await tx.recentChat.findMany({ where: { groupId, userId }, orderBy: { groupPosition: "asc" }, select: { characterId: true, sessionId: true, title: true } });
+    return {
+      id: groupId, title: values.title ?? group.title, status: values.status ?? group.status,
+      members: members.map(member => groupChatMemberSchema.parse({ characterId: member.characterId, sessionId: member.sessionId, name: member.title ?? "Character" })),
+    };
   });
 }
