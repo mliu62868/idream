@@ -6,6 +6,7 @@ import {
   generatorShowsSavedLooksEmpty,
   generatorConfigRequestIsCurrent,
   generatorImageEditModelOptions,
+  generatorModelOptionLabels,
   generationRefundCopy,
   generatorRouteAfterRemixExit,
   invalidateGeneratorConfigAuthority,
@@ -27,6 +28,17 @@ import {
   type GenerationFetcher,
 } from "@/lib/generation-write-client";
 import type { RuntimeGenerationQuote } from "@/lib/public-api-contracts";
+
+describe("generator model option labels", () => {
+  it("never repeats the admin profile name and keeps every option distinct", () => {
+    expect(generatorModelOptionLabels([
+      { id: "a", label: "Default image · REDQW21 (Qwen-Image 2.1)" },
+      { id: "b", label: "Second profile" },
+      { id: "c", label: "Chat Image Edit (Qwen-Edit)", referenceMode: "source_only" },
+      { id: "d", label: "Character Image Variation (Qwen-Edit)", referenceMode: "identity_source" },
+    ])).toEqual(["Standard", "Standard 2", "Edit · this image only", "Edit · keep the character"]);
+  });
+});
 
 describe("generator model selection authority", () => {
   const models = [

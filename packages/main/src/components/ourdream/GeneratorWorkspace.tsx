@@ -80,7 +80,7 @@ import {
   type GenerationQuoteRequest,
   type GenerationRequestEffects,
 } from "@/lib/generation-request";
-import { readCurrentGenerationJob, saveCurrentGenerationJob } from "@/lib/generation-current-job";
+import { clearCurrentGenerationJob, readCurrentGenerationJob, saveCurrentGenerationJob } from "@/lib/generation-current-job";
 import { useGenerationRequest } from "@/hooks/useGenerationRequest";
 import { useGenerationReceipts } from "@/hooks/useGenerationReceipts";
 import { useGenerationContext } from "@/hooks/useGenerationContext";
@@ -303,6 +303,25 @@ export function projectGeneratorModelSelection(
         requestModelId: undefined,
         selectValue: "",
       };
+}
+
+// SPEC: the Model picker speaks in what an option does, never the admin profile name.
+// INTENT: profile labels are operator names ("Default image · REDQW21 (Qwen-Image 2.1)");
+//   the config carries no customer-facing name, so the picker derives one from the
+//   only user-meaningful fact it has — whether an edit keeps the character's identity.
+//   Repeats get a number so two options never read the same.
+export function generatorModelOptionLabels(models: readonly GeneratorModelOption[]) {
+  const seen = new Map<string, number>();
+  return models.map((model) => {
+    const base = model.referenceMode === "identity_source"
+      ? "Edit · keep the character"
+      : model.referenceMode === "source_only"
+        ? "Edit · this image only"
+        : "Standard";
+    const count = (seen.get(base) ?? 0) + 1;
+    seen.set(base, count);
+    return count === 1 ? base : `${base} ${count}`;
+  });
 }
 
 export function generatorVideoModeCopy(characterTitle: string) {
@@ -781,6 +800,7 @@ export function GeneratorWorkspace() {
       videoModeEnabled,
     ],
   );
+  const availableModelLabels = useMemo(() => generatorModelOptionLabels(availableModels), [availableModels]);
   const modelSelectionProjection = useMemo(
     () =>
       projectGeneratorModelSelection(
@@ -937,6 +957,8 @@ export function GeneratorWorkspace() {
   //   行」—— 仍挂在 legacy editorial Release 上的角色两者会分叉：有身份档案，
   //   但生成仍退回纯文生图。报价还没回来时按未锁定处理，不知道就不打包票。
   const identityRoutingLocked = Boolean(generationQuote?.identityLocked);
+  // Before the quote lands we know nothing either way; a warning here would flash on every switch.
+  const identityRoutingChecking = generationQuoteRequest !== null && !generationQuote && !generationQuoteError;
   const videoModeCopy = generatorVideoModeCopy(
     selectedCharacter?.title ?? "character",
   );
@@ -1601,6 +1623,21 @@ export function GeneratorWorkspace() {
         headers: { "x-idream-viewer-scope": viewerRequest.scope },
         signal: viewerRequest.controller.signal,
       });
+      // A job this viewer can no longer read will never answer; drop it so the
+      // poll loop stops instead of asking again every 1.8s. Other failures retry.
+      if (response.status === 403 || response.status === 404) {
+        const message = apiPayloadErrorMessage(await response.json().catch(() => null));
+        if (!privateViewerRequestIsCurrent(viewerRequest)) return;
+        setJobs((current) => current.filter((item) => item.id !== jobId));
+        if (currentGenerationJobRef.current === jobId) {
+          currentGenerationJobRef.current = null;
+          clearCurrentGenerationJob(window.sessionStorage);
+          setStatus(response.status === 404
+            ? "This generation is no longer available."
+            : message ?? "You can't view this generation.");
+        }
+        return;
+      }
       if (!response.ok) return;
       const payload = parseGenerationJobDetailResponse(await response.json());
       if (!privateViewerRequestIsCurrent(viewerRequest)) return;
@@ -1764,14 +1801,8 @@ export function GeneratorWorkspace() {
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!formCanSubmit) {
-      if (imageEditMode && !selectedEditSource) {
-        setStatus("Choose a source image to edit.");
-      } else if (imageEditMode && !prompt.trim()) {
-        setStatus("Describe the change you want to make.");
-      }
-      return;
-    }
+    // The disabled button already names what's missing; implicit submits stop here.
+    if (!formCanSubmit) return;
     setStatus("");
     if (imageEditMode && selectedEditSource) {
       await createMediaVariation(selectedEditSource, {
@@ -1943,7 +1974,7 @@ export function GeneratorWorkspace() {
     try {
       const response = await fetch(`/api/v1/media/${id}`, { method: "DELETE" });
       if (!response.ok) {
-        setStatus("Delete failed.");
+        setStatus(apiPayloadErrorMessage(await response.json().catch(() => null)) ?? "Delete failed.");
         void refreshMedia(galleryTab);
         return;
       }
@@ -1963,7 +1994,7 @@ export function GeneratorWorkspace() {
       const response = await fetch(`/api/v1/media/${id}/download`);
       if (!response.ok) {
         downloadWindow?.close();
-        setStatus("Download failed.");
+        setStatus(apiPayloadErrorMessage(await response.json().catch(() => null)) ?? "Download failed.");
         return;
       }
       const payload = (await response.json()) as ApiPayload<{ url: string }>;
@@ -1989,7 +2020,11 @@ export function GeneratorWorkspace() {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ feedbackType, sourceSurface }),
-    });
+    }).catch(() => null);
+    if (!response) {
+      setStatus("Couldn't save identity feedback. Check your connection and try again.");
+      return;
+    }
     const payload = (await response.json().catch(() => null)) as ApiPayload<unknown> | null;
     if (!response.ok || !payload?.ok) {
       setStatus(payload?.error?.message ?? "Couldn't save identity feedback.");
@@ -2016,7 +2051,10 @@ export function GeneratorWorkspace() {
     setPrompt("");
     setImageWorkflow("presets");
     setView("create");
-    setStatus("Describe the next moment. The character identity stays locked.");
+    // Only promise a lock the current quote proved, for this same character.
+    setStatus(identityRoutingLocked && item.characterId === characterId
+      ? "Describe the next moment. The character identity stays locked."
+      : "Describe the next moment.");
     window.setTimeout(() => {
       workspaceTopRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     }, 0);
@@ -2041,7 +2079,11 @@ export function GeneratorWorkspace() {
         label: lookLabel.trim(),
         appearanceDelta: { description: lookDescription.trim() },
       }),
-    });
+    }).catch(() => null);
+    if (!response) {
+      setStatus("Couldn't save this Look. Check your connection and try again.");
+      return;
+    }
     const payload = (await response.json().catch(() => null)) as ApiPayload<unknown> | null;
     if (!response.ok || !payload?.ok) {
       setStatus(payload?.error?.message ?? "Couldn't save this Look.");
@@ -2068,7 +2110,11 @@ export function GeneratorWorkspace() {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ characterId: targetCharacterId }),
-    });
+    }).catch(() => null);
+    if (!response) {
+      setStatus("Couldn't update the character. Check your connection and try again.");
+      return;
+    }
     const payload = (await response.json().catch(() => null)) as ApiPayload<unknown> | null;
     if (!response.ok || !payload?.ok) {
       setStatus(payload?.error?.message ?? "Identity update failed.");
@@ -2339,7 +2385,7 @@ export function GeneratorWorkspace() {
       if (!privateViewerRequestIsCurrent(viewer)) return;
       if (!response.ok) {
         setDeleteConfirmPresetId(null);
-        setStatus("Couldn't delete preset.");
+        setStatus(apiPayloadErrorMessage(await response.json().catch(() => null)) ?? "Couldn't delete preset.");
         void refreshPresets();
         return;
       }
@@ -2817,24 +2863,28 @@ export function GeneratorWorkspace() {
                     <span className="truncate">
                       {identityRoutingLocked
                         ? "Identity locked"
-                        : selectedCharacter?.canEditIdentity
-                          ? "Set up identity image"
-                          : "No locked identity profile"}
+                        : identityRoutingChecking
+                          ? "Checking…"
+                          : selectedCharacter?.canEditIdentity
+                            ? "Set up identity image"
+                            : "Look not locked"}
                     </span>
                   </span>
                   <span className="shrink-0 text-[rgb(170,170,170)]">
                     {identityRoutingLocked
                       ? "We keep them recognizable"
-                      : selectedCharacter?.canEditIdentity
-                        ? "No anchor"
-                        : "Published character"}
+                      : identityRoutingChecking
+                        ? ""
+                        : selectedCharacter?.canEditIdentity
+                          ? "No character image yet"
+                          : "Published character"}
                   </span>
                 </div>
-                {!identityRoutingLocked && (
+                {!identityRoutingLocked && !identityRoutingChecking && (
                   <div className="mt-2 rounded-[10px] border border-[rgb(255,184,112)]/30 bg-[rgb(36,28,18)] p-3 text-[12px] font-semibold leading-5 text-[rgb(255,184,112)]">
                     {selectedCharacter?.canEditIdentity
-                      ? "This legacy character has no confirmed identity image. Set one up before relying on consistent results."
-                      : "This published character is not on the identity-locked route yet. Generation can continue, but visual consistency may vary."}
+                      ? "This character doesn't have a confirmed look yet. In Gallery, choose Use as character image on a result you like to keep them consistent."
+                      : "This character's look isn't locked yet, so they may look a little different from image to image."}
                   </div>
                 )}
                 {anonymousViewer ? (
@@ -3031,9 +3081,9 @@ export function GeneratorWorkspace() {
                   {formUnconfirmed && modelSelection.explicit && !availableModels.some((item) => item.id === modelSelection.id) && (
                     <option value={modelSelection.id}>Original model selection</option>
                   )}
-                  {availableModels.map((item) => (
+                  {availableModels.map((item, index) => (
                     <option key={item.id} value={item.id}>
-                      {item.label}
+                      {availableModelLabels[index]}
                     </option>
                   ))}
                 </select>
@@ -3107,7 +3157,7 @@ export function GeneratorWorkspace() {
                 )}
                 <div className="grid grid-cols-2 gap-2">
                   <PresetSelect
-                    label="Mode preset"
+                    label="Style"
                     onChange={setModePresetId}
                     options={presetsOf("mode")}
                     value={modePresetId}
@@ -3461,6 +3511,8 @@ export function GeneratorWorkspace() {
                       ? "Generator unavailable"
                       : imageEditMode && !selectedEditSource
                         ? "Select a source image"
+                        : (imageEditMode || generationContext.data) && !prompt.trim()
+                          ? imageEditMode || generationContext.data?.sourceMedia ? "Describe the change to continue" : "Describe the image to continue"
                         : estimatedCost === null
                           ? generationQuoteError
                             ? "Exact price unavailable"
@@ -3649,7 +3701,6 @@ export function GeneratorWorkspace() {
                       return <div className="mt-3 rounded-lg bg-black/20 p-3" data-pending-request-key={receipt.key} key={receipt.key}>
                         <p className="text-[13px] font-bold text-white">{receipt.kind === "media_enhancement" ? "Enhance 2×" : receipt.kind === "generation_retry" ? "Generation retry" : receipt.kind === "media_variation" ? "Image edit" : receipt.body.mode === "video" ? "Video" : "Image"} · {quote.outputCount} output{quote.outputCount === 1 ? "" : "s"}{orientation ? ` · ${String(orientation)}` : ""} · {quote.costDreamcoins} coins</p>
                         {typeof receipt.body.prompt === "string" && receipt.body.prompt && <p className="mt-1 break-words text-[12px] text-white/70">{receipt.body.prompt.slice(0, 180)}</p>}
-                        <p className="mt-1 break-all text-[11px] text-white/50">Request {receipt.key}</p>
                         <button className="mt-2 rounded-full bg-white px-4 py-2 text-[12px] font-bold text-black disabled:opacity-50" disabled={busy} type="button"
                           onClick={() => receipt.kind === "media_enhancement" ? void recoverEnhancementReceipt(receipt) : void generationRequest.recoverReceipt(receipt, generationRequestEffects)}>
                           {busy ? "Checking original request…" : "Check original request"}
@@ -3709,7 +3760,9 @@ export function GeneratorWorkspace() {
                         </p>
                       </div>
                       <span className="rounded-full bg-black/30 px-3 py-1 text-[11px] font-bold uppercase text-white">
-                        {job.errorCode === "provider_outcome_unknown" ? "Needs review" : job.status}
+                        {job.errorCode === "provider_outcome_unknown"
+                          ? "Needs review"
+                          : isCatalogMember(GENERATION_JOB_STATUSES, job.status) ? jobStatusLabels[job.status] : job.status}
                       </span>
                     </div>
                     {job.errorCode === "provider_outcome_unknown" && (
@@ -3753,7 +3806,7 @@ export function GeneratorWorkspace() {
                                   retryQuotes[job.id]!.balance
                               ? `Need ${retryQuotes[job.id]!.costDreamcoins} coins · you have ${retryQuotes[job.id]!.balance}.`
                               : retryQuotes[job.id]
-                                ? "Provider hiccup — your coins were refunded. The exact retry price is pinned above."
+                                ? "Your coins for this attempt were refunded. Retry uses the price shown above."
                                 : "Loading the exact retry route and price…"}
                         </p>
                         {retryQuoteFailures[job.id] && (
@@ -3978,7 +4031,11 @@ export function GeneratorWorkspace() {
                   {enhancement.error && <p role="alert" className="text-[13px] text-[rgb(255,168,206)]">{enhancement.error}</p>}
                   {enhancementUnconfirmed && <p className="text-[13px] text-white/70">Check the existing request before starting another enhancement.</p>}
                   {enhancement.quote && !enhancementCost?.affordable && !enhancementUnconfirmed && (
-                    <p className="text-[13px] text-white/70">Need {enhancementCost?.costDreamcoins} coins · you have {enhancement.quote.quote.balance}.</p>
+                    <Link className="flex items-center justify-between gap-2 rounded-[10px] border border-[rgb(255,184,112)]/40 bg-[rgb(36,28,18)] px-4 py-3 text-[12px] font-semibold text-[rgb(255,184,112)]"
+                      data-testid="enhancement-insufficient-balance" href={insufficientBalanceHref}>
+                      <span>Need {enhancementCost?.costDreamcoins} coins · you have {enhancement.quote.quote.balance}.</span>
+                      <span className="rounded-full bg-[rgb(255,48,170)] px-3 py-1 text-[11px] font-black text-white">Get coins</span>
+                    </Link>
                   )}
                   <div className="flex justify-end gap-2">
                     <button type="button" disabled={enhancement.submitting} onClick={closeEnhancement}
@@ -4692,9 +4749,9 @@ function generationModeUnavailableMessage(
     return "Video generation is currently disabled. Your existing creations remain available.";
   }
   if (availability.reason === "no_active_recipe") {
-    return `${mode === "image" ? "Image" : "Video"} generation is temporarily unavailable because generation recipes are not fully configured. Your balance and existing creations remain available.`;
+    return `${mode === "image" ? "Image" : "Video"} generation is temporarily unavailable while we finish setting it up. Your balance and existing creations remain available.`;
   }
-  return `${mode === "image" ? "Image" : "Video"} generation is temporarily unavailable because no active model is configured. Your balance and existing creations remain available.`;
+  return `${mode === "image" ? "Image" : "Video"} generation is temporarily unavailable. Your balance and existing creations remain available.`;
 }
 
 function requestErrorMessage(error: unknown, fallback: string) {
