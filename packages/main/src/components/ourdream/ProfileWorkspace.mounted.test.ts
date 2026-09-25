@@ -514,7 +514,11 @@ describe("ProfileWorkspace media pagination", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input) === "/api/v1/referrals") return Response.json({ ok: true, data: {
         code: "DREAM-VIEWERA",
-        referrals: [{ inviteeId: null, rewardStatus: "none" }, { inviteeId: "friend", rewardStatus: "granted" }],
+        referrals: [
+          { inviteeId: null, rewardStatus: "none" },
+          { inviteeId: "friend", rewardStatus: "granted" },
+          { inviteeId: "another-friend", rewardStatus: "not_eligible" },
+        ],
       } });
       return originalFetch(input, init);
     }));
@@ -523,7 +527,7 @@ describe("ProfileWorkspace media pagination", () => {
     expect(container.querySelector<HTMLInputElement>('[aria-label="Referral link"]')?.value)
       .toContain("/signup?ref=DREAM-VIEWERA");
     expect(container.querySelector('[data-testid="profile-referral-results"]')?.textContent)
-      .toContain("1 signed up with your link · 1 rewarded · 0 awaiting reward.");
+      .toContain("2 signed up with your link · 1 rewarded · 1 past the limit of 10 rewards every 30 days.");
     expect(requests).not.toContain("/api/v1/referrals/invite");
   });
 

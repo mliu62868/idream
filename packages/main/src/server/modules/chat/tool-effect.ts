@@ -20,6 +20,7 @@ import { loadChatAuthoritySnapshot } from "./chat-authority-snapshot";
 import {
   abandonRequestedToolEffectAttachment,
   createToolEffectAttachment,
+  reopenUnreservedFailedToolEffectAttachment,
 } from "./tool-effect-attachment";
 import { chatTurnForEffect } from "./turn-ledger";
 
@@ -51,8 +52,20 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
     name: effect.name,
     arguments: effect.arguments,
   })));
-  const attachmentId = effectAttachmentId(effect);
+  let attachmentId = effectAttachmentId(effect, turn.userContent);
   let prior = await prisma.chatTurnAttachment.findUnique({ where: { id: attachmentId } });
+  if (!prior && effect.effectScope === "turn_action") {
+    // INTENT: attachments made before the identity carried the user's words have
+    // no record of which words they answered. Reusing them keeps a regenerate of
+    // such an old Turn from buying the same image twice; an edit of one of them
+    // still reuses it, as it always did.
+    const legacyId = legacyTurnActionAttachmentId(effect);
+    const legacy = await prisma.chatTurnAttachment.findUnique({ where: { id: legacyId } });
+    if (legacy) {
+      attachmentId = legacyId;
+      prior = legacy;
+    }
+  }
   // An exact historical ACK is a read, with no execution or reattachment.
   if (prior && prior.status !== "requesting" && turn.attempt === effect.attempt && effectAttempt(prior.metadata) === effect.attempt) {
     if (effect.effectScope === "attempt") assertEffectRequest(prior, requestDigest);
@@ -75,7 +88,9 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
       }
       prior = await rebindTurnActionAttempt(prior, effect, requestDigest, turn, action);
     }
-    return existingEffect(prior, requestDigest, effect.effectScope);
+    // A rebind that reopened a never-reserved failure executes below like a new
+    // reservation, with the direction frozen on its first attempt.
+    if (prior.status !== "requesting") return existingEffect(prior, requestDigest, effect.effectScope);
   }
 
   if (effect.effectScope !== "turn_action") {
@@ -248,13 +263,19 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
   }
 }
 
-function effectAttachmentId(effect: ChatToolEffect): string {
-  // INVARIANT: a deterministic product action survives assistant regenerate.
-  // Historical ordinary-call ACKs retain their original attempt identity.
+function effectAttachmentId(effect: ChatToolEffect, userContent: string): string {
+  // INVARIANT: a deterministic product action survives assistant regenerate,
+  // which keeps the user's words; editing them asks for a different picture, so
+  // the frozen words are part of the identity. Historical ordinary-call ACKs
+  // retain their original attempt identity.
   const identity = effect.effectScope === "turn_action"
-    ? `${effect.turnId}:${effect.name}`
+    ? `${effect.turnId}:${effect.name}:${sha256(userContent)}`
     : `${effect.turnId}:${effect.attempt}:${effect.callId}`;
   return `chatfx_${sha256(identity).slice(0, 48)}`;
+}
+
+function legacyTurnActionAttachmentId(effect: ChatToolEffect): string {
+  return `chatfx_${sha256(`${effect.turnId}:${effect.name}`).slice(0, 48)}`;
 }
 
 /** The Turn's own frozen context, or null when it is missing or no longer binds. */
@@ -396,7 +417,7 @@ function effectAttempt(metadata: Prisma.JsonValue): number {
 }
 
 async function rebindTurnActionAttempt(
-  attachment: { id: string; metadata: Prisma.JsonValue },
+  attachment: { id: string; status: string; generationJobId: string | null; metadata: Prisma.JsonValue },
   effect: ChatToolEffect,
   replayRequestDigest: string,
   judged: { attempt: number; userContent: string },
@@ -419,15 +440,16 @@ async function rebindTurnActionAttempt(
     if (current.attempt !== attempt || !["pending", "generating"].includes(current.assistantStatus)) {
       throw Errors.conflict("Required effect replay does not belong to the active Chat attempt");
     }
+    const rebound = { ...metadata, attempt, effect: { ...previousEffect, attempt, replayRequestDigest } };
+    if (
+      attachment.status === "failed" && attachment.generationJobId === null &&
+      await reopenUnreservedFailedToolEffectAttachment(tx, { id: attachment.id, metadata: rebound })
+    ) {
+      return tx.chatTurnAttachment.findUniqueOrThrow({ where: { id: attachment.id } });
+    }
     return tx.chatTurnAttachment.update({
       where: { id: attachment.id },
-      data: {
-        metadata: toJson({
-          ...metadata,
-          attempt,
-          effect: { ...previousEffect, attempt, replayRequestDigest },
-        }),
-      },
+      data: { metadata: toJson(rebound) },
     });
   });
 }

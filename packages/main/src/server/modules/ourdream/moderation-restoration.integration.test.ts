@@ -196,9 +196,10 @@ describe("moderation appeal exact restoration authority", () => {
     const renamed = await api("PATCH", `media/collections/${collectionId}`, {
       userId: ownerId,
       ageGate: true,
-      body: { name: "Renamed", visibility: "unlisted" },
+      body: { name: "Renamed" },
     });
     expectOk(renamed);
+    expect(renamed.data.collection).toMatchObject({ name: "Renamed", visibility: "unlisted" });
   });
 
   it("rejects Character appeal A after decision B became the current effect owner", async () => {

@@ -3,7 +3,7 @@ import { prisma } from "@/server/lib/db";
 import { dispatchV1 } from "@/server/modules/ourdream/service";
 import { postDreamcoinEntry } from "@/server/modules/billing/ledger";
 import { providers } from "@/server/providers";
-import { AGE_GATE_COOKIE_HEADER, api, createCharacter, createUser, dreamcoinBalance, expectOk, grantCoins, purgeTestData } from "@/server/test/helpers";
+import { AGE_GATE_COOKIE_HEADER, api, createCharacter, createUser, dreamcoinBalance, expectOk, grantCoins, purgeTestData, voiceReplyBody } from "@/server/test/helpers";
 
 const P = "zt-voice-replay-";
 let createdVoiceFlag = false;
@@ -47,7 +47,7 @@ describe("voice clip replay settlement", () => {
     await createCharacter({ id: `${userId}-character`, creatorId: userId, source: "user", visibility: "private" });
     await grantVoice(userId, minutes);
     if (coins > 0) await grantCoins(userId, coins, "seed");
-    const body = { characterId: `${userId}-character`, messageId, text: "short" };
+    const body = await voiceReplyBody(userId, { characterId: `${userId}-character`, messageId, text: "short" });
     const first = await api("POST", "generation/voice", { userId, ageGate: true, body });
     expectOk(first, 201);
     const originalRequest = await prisma.voiceClipRequest.findUniqueOrThrow({
@@ -88,7 +88,7 @@ describe("voice clip replay settlement", () => {
     await createCharacter({ id: characterId, creatorId: userId, source: "user", visibility: "private" });
     await grantVoice(userId, 0);
     await grantCoins(userId, 2, "seed");
-    const body = { characterId, messageId, text: "short" };
+    const body = await voiceReplyBody(userId, { characterId, messageId, text: "short" });
     const original = providers.voice.clip.synthesize.bind(providers.voice.clip);
     const providerKeys: string[] = [];
     let started!: () => void;

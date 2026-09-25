@@ -22,6 +22,7 @@ import {
   grantCoins,
   publishCharacterForPublicAudience,
   purgeTestData,
+  voiceReplyBody,
 } from "@/server/test/helpers";
 
 const P = "zt-voicesvc-";
@@ -121,7 +122,7 @@ describe("voice generation service contract", () => {
       synthesize: configuredVoice.clip.synthesize.bind(configuredVoice.clip),
     }, identity: null };
     const operation = api("POST", "generation/voice", {
-      userId, ageGate: true, body: { characterId: CHAR, messageId, text: "Freeze the coherent voice authority" },
+      userId, ageGate: true, body: await voiceReplyBody(userId, { characterId: CHAR, messageId, text: "Freeze the coherent voice authority" }),
     });
     try {
       await Promise.race([readReady, operation.then(() => { throw new Error("Voice request did not reach the permission read"); })]);
@@ -169,17 +170,10 @@ describe("voice generation service contract", () => {
         return synthesize(input);
       });
     try {
+      const body = await voiceReplyBody(userId, { characterId: CHAR, messageId, text: "One durable voice clip" });
       const requests = await Promise.all([
-        api("POST", "generation/voice", {
-          userId,
-          ageGate: true,
-          body: { characterId: CHAR, messageId, text: "One durable voice clip" },
-        }),
-        api("POST", "generation/voice", {
-          userId,
-          ageGate: true,
-          body: { characterId: CHAR, messageId, text: "One durable voice clip" },
-        }),
+        api("POST", "generation/voice", { userId, ageGate: true, body }),
+        api("POST", "generation/voice", { userId, ageGate: true, body }),
       ]);
 
       expect(requests.map((response) => response.status).sort()).toEqual([200, 201]);
@@ -220,11 +214,11 @@ describe("voice generation service contract", () => {
       });
     try {
       const responses = await Promise.all(
-        messageIds.map((messageId) =>
+        messageIds.map(async (messageId) =>
           api("POST", "generation/voice", {
             userId,
             ageGate: true,
-            body: { characterId: CHAR, messageId, text: "One paid clip" },
+            body: await voiceReplyBody(userId, { characterId: CHAR, messageId, text: "One paid clip" }),
           }),
         ),
       );
@@ -270,7 +264,7 @@ describe("voice generation service contract", () => {
       const responsePromise = api("POST", "generation/voice", {
         userId,
         ageGate: true,
-        body: { characterId: CHAR, messageId, text: "One raced clip" },
+        body: await voiceReplyBody(userId, { characterId: CHAR, messageId, text: "One raced clip" }),
       });
       await started;
       await prisma.$transaction((tx) =>
@@ -347,11 +341,11 @@ describe("voice generation service contract", () => {
         return synthesize(input);
       });
     try {
-      const body = {
+      const body = await voiceReplyBody(userId, {
         characterId: CHAR,
         messageId,
         text: "One logical clip across retries",
-      };
+      });
       const failed = await api("POST", "generation/voice", {
         userId,
         ageGate: true,
@@ -422,12 +416,12 @@ describe("voice generation service contract", () => {
       const prewarm = await api("POST", "generation/voice", {
         userId,
         ageGate: true,
-        body: {
+        body: await voiceReplyBody(userId, {
           characterId: CHAR,
           messageId,
           text: "Persist the exact takeover payload",
           intent: "prewarm",
-        },
+        }),
       });
       expect(prewarm.status).toBe(500);
       const initial = await prisma.voiceClipRequest.findUniqueOrThrow({
@@ -446,12 +440,12 @@ describe("voice generation service contract", () => {
       const play = await api("POST", "generation/voice", {
         userId,
         ageGate: true,
-        body: {
+        body: await voiceReplyBody(userId, {
           characterId: CHAR,
           messageId,
           text: "Persist the exact takeover payload",
           intent: "play",
-        },
+        }),
       });
       expect(play.status).toBe(500);
       const playAttempt = await prisma.voiceClipRequest.findUniqueOrThrow({
@@ -513,11 +507,11 @@ describe("voice generation service contract", () => {
         return original(input);
       });
     try {
-      const body = {
+      const body = await voiceReplyBody(userId, {
         characterId: CHAR,
         messageId,
         text: "Replay one durable provider reservation",
-      };
+      });
       const first = await api("POST", "generation/voice", {
         userId,
         ageGate: true,
@@ -580,11 +574,11 @@ describe("voice generation service contract", () => {
       },
     }));
     try {
-      const body = {
+      const body = await voiceReplyBody(userId, {
         characterId: CHAR,
         messageId,
         text: "Keep the original provider authority across a cutover",
-      };
+      });
       const failed = await api("POST", "generation/voice", {
         userId,
         ageGate: true,
@@ -748,11 +742,11 @@ describe("voice generation service contract", () => {
       const response = await api("POST", "generation/voice", {
         userId,
         ageGate: true,
-        body: {
+        body: await voiceReplyBody(userId, {
           characterId: CHAR,
           messageId,
           text: "Speak with the activated Character voice",
-        },
+        }),
       });
 
       expectOk(response, 201);
@@ -817,7 +811,7 @@ describe("voice generation service contract", () => {
     const res = await api("POST", "generation/voice", {
       userId,
       ageGate: true,
-      body: { characterId: CHAR, messageId, text: "Replace the bad cached clip" },
+      body: await voiceReplyBody(userId, { characterId: CHAR, messageId, text: "Replace the bad cached clip" }),
     });
 
     expectOk(res, 201);
@@ -842,7 +836,7 @@ describe("voice generation service contract", () => {
     const res = await api("POST", "generation/voice", {
       userId,
       ageGate: true,
-      body: { characterId: CHAR, messageId: `${P}msg-allow`, text: "Within the free allowance" },
+      body: await voiceReplyBody(userId, { characterId: CHAR, messageId: `${P}msg-allow`, text: "Within the free allowance" }),
     });
     expectOk(res, 201);
     // Covered by the minute allowance → no Dreamcoins spent.
@@ -860,7 +854,7 @@ describe("voice generation service contract", () => {
     const first = await api("POST", "generation/voice", {
       userId,
       ageGate: true,
-      body: { characterId: CHAR, messageId: `${P}usage-1`, text: "short" },
+      body: await voiceReplyBody(userId, { characterId: CHAR, messageId: `${P}usage-1`, text: "short" }),
     });
     expectOk(first, 201);
     expect(await dreamcoinBalance(userId)).toBe(100);
@@ -875,7 +869,7 @@ describe("voice generation service contract", () => {
     const second = await api("POST", "generation/voice", {
       userId,
       ageGate: true,
-      body: { characterId: CHAR, messageId: `${P}usage-2`, text: "short" },
+      body: await voiceReplyBody(userId, { characterId: CHAR, messageId: `${P}usage-2`, text: "short" }),
     });
     expectOk(second, 201);
     expect(await dreamcoinBalance(userId)).toBe(98);
@@ -971,12 +965,12 @@ describe("voice generation service contract", () => {
     const res = await api("POST", "generation/voice", {
       userId,
       ageGate: true,
-      body: {
+      body: await voiceReplyBody(userId, {
         characterId: CHAR,
         messageId: `${P}msg-prewarm-overflow`,
         text: "Do not charge for automatic voice generation.",
         intent: "prewarm",
-      },
+      }),
     });
 
     expectOk(res, 200);
@@ -1023,16 +1017,16 @@ describe("voice generation service contract", () => {
       });
     try {
       const responses = await Promise.all(
-        messageIds.map((messageId) =>
+        messageIds.map(async (messageId) =>
           api("POST", "generation/voice", {
             userId,
             ageGate: true,
-            body: {
+            body: await voiceReplyBody(userId, {
               characterId: CHAR,
               messageId,
               text: "short",
               intent: "prewarm",
-            },
+            }),
           }),
         ),
       );
@@ -1104,7 +1098,7 @@ describe("voice generation service contract", () => {
     const res = await api("POST", "generation/voice", {
       userId,
       ageGate: true,
-      body: { characterId: CHAR, messageId: `${P}msg-stale-sub`, text: "Covered by plan" },
+      body: await voiceReplyBody(userId, { characterId: CHAR, messageId: `${P}msg-stale-sub`, text: "Covered by plan" }),
     });
     expectOk(res, 201);
     expect(await dreamcoinBalance(userId)).toBe(100);
@@ -1120,7 +1114,7 @@ describe("voice generation service contract", () => {
     const included = await api("POST", "generation/voice", {
       userId,
       ageGate: true,
-      body: { characterId: CHAR, messageId: `${P}used-msg`, text: "Hello" },
+      body: await voiceReplyBody(userId, { characterId: CHAR, messageId: `${P}used-msg`, text: "Hello" }),
     });
     expectOk(included, 201);
     expect(await dreamcoinBalance(userId)).toBe(100);
@@ -1128,7 +1122,7 @@ describe("voice generation service contract", () => {
     const res = await api("POST", "generation/voice", {
       userId,
       ageGate: true,
-      body: { characterId: CHAR, messageId: `${P}msg-overflow`, text: "Hello" },
+      body: await voiceReplyBody(userId, { characterId: CHAR, messageId: `${P}msg-overflow`, text: "Hello" }),
     });
     expectOk(res, 201);
     expect(await dreamcoinBalance(userId)).toBe(98);
@@ -1147,7 +1141,7 @@ describe("voice generation service contract", () => {
       const res = await api("POST", "generation/voice", {
         userId,
         ageGate: true,
-        body: { characterId: CHAR, messageId: `${P}msg-flag`, text: "Should be blocked" },
+        body: await voiceReplyBody(userId, { characterId: CHAR, messageId: `${P}msg-flag`, text: "Should be blocked" }),
       });
       expectError(res, 403, "forbidden");
       expect(await prisma.mediaAsset.count({ where: { ownerId: userId, type: "voice" } })).toBe(0);
@@ -1174,14 +1168,14 @@ describe("voice generation service contract", () => {
     const price = (await prisma.pricingRule.findFirstOrThrow({ where: { mode: "voice", status: "active" } })).baseCost;
     try {
       const prewarm = await api("POST", "generation/voice", {
-        userId, ageGate: true, body: { characterId: CHAR, messageId: `${P}msg-free-prewarm`, text: "Nobody pressed Play", intent: "prewarm" },
+        userId, ageGate: true, body: await voiceReplyBody(userId, { characterId: CHAR, messageId: `${P}msg-free-prewarm`, text: "Nobody pressed Play", intent: "prewarm" }),
       });
       expectOk(prewarm, 200);
       expect(prewarm.data).toMatchObject({ reason: "not_entitled" });
       expect(await dreamcoinBalance(userId)).toBe(100);
 
       const played = await api("POST", "generation/voice", {
-        userId, ageGate: true, body: { characterId: CHAR, messageId: `${P}msg-2`, text: "Voice for a free reader" },
+        userId, ageGate: true, body: await voiceReplyBody(userId, { characterId: CHAR, messageId: `${P}msg-2`, text: "Voice for a free reader" }),
       });
       expectOk(played, 201);
       expect(await dreamcoinBalance(userId)).toBe(100 - price);
@@ -1203,7 +1197,7 @@ describe("voice generation service contract", () => {
     const res = await api("POST", "generation/voice", {
       userId,
       ageGate: true,
-      body: { characterId: CHAR, messageId: `${P}msg-3`, text: "Too poor to talk" },
+      body: await voiceReplyBody(userId, { characterId: CHAR, messageId: `${P}msg-3`, text: "Too poor to talk" }),
     });
     expectError(res, 402, "payment_required");
     expect(await prisma.mediaAsset.count({ where: { ownerId: userId, type: "voice" } })).toBe(0);

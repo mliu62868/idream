@@ -12,7 +12,6 @@ import {
   lockMediaAssetAuthority,
 } from "@/server/modules/admin-v2/characters/generation-authority-lock";
 import { jsonRecord } from "./json-values";
-import { directCharacterAudienceWhere } from "./public-content-audience";
 import { mediaViewUrl } from "./public-read-model";
 import { assertNonSyntheticMediaAsset } from "./customer-media-authority";
 import {
@@ -21,7 +20,10 @@ import {
   materializeUserCharacterContentVersion,
 } from "./character-soul";
 
-// SPEC: 用户把一个可见的 Character 复制成自己的私有副本。
+// SPEC: 用户把**自己创建的** Character 复制成新的私有副本。
+// INTENT: 不允许复制他人（含公开 / unlisted / 官方）角色：副本会带走完整 Soul 与
+// advancedDetails，且公开面没有署名，违背 PRD PF-13「Remix 保留作者与来源」。
+// 前台入口也只在 Created 里出现；以后做 Remix 另建带署名的路径。
 //
 // INVARIANT: 副本的身份图是**新的一行 MediaAsset**，只共享底层 blob（shared_immutable
 // locator）。基础自动检查属于同一份不可变 bytes，可继承 passed；拥有权、可见性和
@@ -35,14 +37,7 @@ export async function duplicateCharacterForUser(input: {
   return prisma.$transaction(async (tx) => {
     await lockCharacterGenerationAuthority(tx, id);
     const source = await tx.character.findFirst({
-      where: {
-        id,
-        deletedAt: null,
-        OR: [
-          directCharacterAudienceWhere,
-          { creatorId: userId },
-        ],
-      },
+      where: { id, deletedAt: null, creatorId: userId },
     });
     if (!source) throw Errors.notFound("Character not found");
 

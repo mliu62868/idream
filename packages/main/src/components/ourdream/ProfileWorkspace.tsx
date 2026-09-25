@@ -495,7 +495,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
   const { openReport, reportDialog } = useReportDialog(setStatus);
   const [referralUrl, setReferralUrl] = useState("");
   const [referralResults, setReferralResults] = useState<
-    { total: number; rewarded: number; pending: number } | null
+    { total: number; rewarded: number; unrewarded: number } | null
   >(null);
   const [failedImageIds, setFailedImageIds] = useState<Set<string>>(new Set());
   const [invalidPreviewImageIds, setInvalidPreviewImageIds] = useState<Set<string>>(new Set());
@@ -755,10 +755,11 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
       // 未被使用的邀请行本身不是一次注册。
       const signups = rows.filter((row) => row.inviteeId);
       const rewarded = signups.filter((row) => row.rewardStatus === "granted").length;
+      // 注册即时结算：没拿到奖励的只会是超过邀请奖励上限，不存在「等待中」。
       setReferralResults({
         total: signups.length,
         rewarded,
-        pending: signups.length - rewarded,
+        unrewarded: signups.length - rewarded,
       });
     } catch {
       // 邀请链接本身已经可用；结果读取失败不改写它的状态。
@@ -1601,7 +1602,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
               >
                 {referralResults.total === 0
                   ? "No one has signed up with your link yet."
-                  : `${referralResults.total} signed up with your link · ${referralResults.rewarded} rewarded · ${referralResults.pending} awaiting reward.`}
+                  : `${referralResults.total} signed up with your link · ${referralResults.rewarded} rewarded${referralResults.unrewarded > 0 ? ` · ${referralResults.unrewarded} past the limit of 10 rewards every 30 days` : ""}.`}
               </p>
             ) : null}
           </div>

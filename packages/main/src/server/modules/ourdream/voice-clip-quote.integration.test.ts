@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { providers } from "@/server/providers";
-import { api, createCharacter, createUser, dreamcoinBalance, expectError, expectOk, grantCoins, purgeTestData } from "@/server/test/helpers";
+import { api, createCharacter, createUser, dreamcoinBalance, expectError, expectOk, grantCoins, purgeTestData, voiceReplyBody } from "@/server/test/helpers";
 import { entitlementMap } from "./subscription-lifecycle";
 import { readableCharacter } from "./generation-character-authority";
 import { reclaimExpiredVoiceClip } from "./voice-clip";
@@ -25,7 +25,7 @@ describe("Voice Clip accepted price", () => {
     try {
       const result = await api("POST", "generation/voice", {
         userId, ageGate: true, autoGenerationQuote: false,
-        body: { characterId, messageId: `${P}missing`, text: "Only after accepting the cost", intent: "play" },
+        body: await voiceReplyBody(userId, { characterId, messageId: `${P}missing`, text: "Only after accepting the cost", intent: "play" }),
       });
       expectError(result, 409);
       expect(synthesize).not.toHaveBeenCalled();
@@ -33,15 +33,28 @@ describe("Voice Clip accepted price", () => {
     } finally { synthesize.mockRestore(); }
   });
 
+  it("refuses to voice text that is not a sent reply in one of the caller's sessions", async () => {
+    const synthesize = vi.spyOn(providers.voice.clip, "synthesize");
+    try {
+      const noSession = { characterId, messageId: `${P}free-text`, text: "Say anything I type", intent: "play" };
+      expectError(await api("POST", "generation/voice/quote", { userId, ageGate: true, body: noSession }), 400);
+      expectError(await api("POST", "generation/voice", { userId, ageGate: true, autoGenerationQuote: false, body: noSession }), 400);
+      const unknownMessage = { ...noSession, sessionId: `${P}no-such-session` };
+      expectError(await api("POST", "generation/voice/quote", { userId, ageGate: true, body: unknownMessage }), 404);
+      expect(synthesize).not.toHaveBeenCalled();
+      expect(await prisma.voiceClipRequest.count({ where: { userId, messageId: `${P}free-text` } })).toBe(0);
+    } finally { synthesize.mockRestore(); }
+  });
+
   it("binds a quote to the exact selected reply before any synthesis", async () => {
-    const body = { characterId, messageId: `${P}bound`, text: "The selected reply", intent: "play" };
+    const body = await voiceReplyBody(userId, { characterId, messageId: `${P}bound`, text: "The selected reply", intent: "play" });
     const quoted = await api("POST", "generation/voice/quote", { userId, ageGate: true, body });
     expectOk(quoted);
     const synthesize = vi.spyOn(providers.voice.clip, "synthesize");
     try {
       const result = await api("POST", "generation/voice", {
         userId, ageGate: true, autoGenerationQuote: false,
-        body: { ...body, text: "A different regenerated reply", quoteToken: quoted.data.quote.quoteToken },
+        body: { ...await voiceReplyBody(userId, { ...body, text: "A different regenerated reply" }), quoteToken: quoted.data.quote.quoteToken },
       });
       expectError(result, 409);
       expect(synthesize).not.toHaveBeenCalled();
@@ -49,7 +62,7 @@ describe("Voice Clip accepted price", () => {
   });
 
   it("settles at the accepted rate after pricing changes and preserves free replay after entitlement expiry", async () => {
-    const body = { characterId, messageId: `${P}rate`, text: "An explicitly accepted price", intent: "play" };
+    const body = await voiceReplyBody(userId, { characterId, messageId: `${P}rate`, text: "An explicitly accepted price", intent: "play" });
     const quoted = await api("POST", "generation/voice/quote", { userId, ageGate: true, body });
     expectOk(quoted);
     const price = await prisma.pricingRule.findFirstOrThrow({ where: { mode: "voice", status: "active" } });
@@ -76,7 +89,7 @@ describe("Voice Clip accepted price", () => {
   });
 
   it("keeps accepted terms across failed Play retries without allowing automatic prewarm to spend", async () => {
-    const body = { characterId, messageId: `${P}retry`, text: "One commercial commitment across attempts", intent: "play" };
+    const body = await voiceReplyBody(userId, { characterId, messageId: `${P}retry`, text: "One commercial commitment across attempts", intent: "play" });
     const quoted = await api("POST", "generation/voice/quote", { userId, ageGate: true, body });
     const price = await prisma.pricingRule.findFirstOrThrow({ where: { mode: "voice", status: "active" } });
     const synthesize = vi.spyOn(providers.voice.clip, "synthesize").mockResolvedValueOnce({ ok: false, error: { code: "voice_rate_limited", message: "Retry safely", retryable: true } });
@@ -101,7 +114,7 @@ describe("Voice Clip accepted price", () => {
   });
 
   it("operator reclaim uses the original accepted price even after its quote expires", async () => {
-    const body = { characterId, messageId: `${P}reclaim`, text: "Recover the accepted original request", intent: "play" };
+    const body = await voiceReplyBody(userId, { characterId, messageId: `${P}reclaim`, text: "Recover the accepted original request", intent: "play" });
     const quoted = await api("POST", "generation/voice/quote", { userId, ageGate: true, body });
     const price = await prisma.pricingRule.findFirstOrThrow({ where: { mode: "voice", status: "active" } });
     const synthesize = vi.spyOn(providers.voice.clip, "synthesize").mockRejectedValueOnce(new Error("Controlled durable provider transport interruption"));

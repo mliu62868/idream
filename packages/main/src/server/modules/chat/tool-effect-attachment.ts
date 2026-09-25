@@ -35,7 +35,9 @@ export const TOOL_EFFECT_ATTACHMENT_TRANSITIONS = {
   completed: [],
   // 用户重试同一条聊天图片时复用这条效果身份，附件行不新建（image-retry）。
   // 只有这两个终态可以被重开：blocked / cancelled / completed 是最终答案。
-  failed: ["accepted"],
+  // failed → requesting 只属于「预留阶段就失败、从未产生 Job」的那种，见
+  // reopenUnreservedFailedToolEffectAttachment。
+  failed: ["accepted", "requesting"],
   refunded: ["accepted"],
   blocked: [],
   cancelled: [],
@@ -162,6 +164,27 @@ export async function abandonRequestedToolEffectAttachment(
       metadata: { path: ["attempt"], equals: input.attempt },
     },
     data: { status: "failed", errorCode: input.errorCode },
+  });
+  return changed.count > 0;
+}
+
+/**
+ * SPEC: `failed → requesting` 的条件迁移，仅限从未产生 Generation Job 的附件。
+ *
+ * INTENT: 预留阶段的失败（在途上限、余额不足）描述的是那一刻，不是这张图。它没有 Job，
+ * 也就没有扣费与交付；不重开的话，这一轮之后的每次重生成都只会重放同一张失败卡。
+ * 有 Job 的失败仍只能走 image-retry 的 `failed → accepted`，那里负责结算。
+ *
+ * @returns 是否真的重开；false 表示这条效果已被别的路径推进，调用方必须重读。
+ */
+export async function reopenUnreservedFailedToolEffectAttachment(
+  tx: Prisma.TransactionClient,
+  input: { readonly id: string; readonly metadata: Record<string, unknown> },
+): Promise<boolean> {
+  assertToolEffectAttachmentTransition("failed", "requesting");
+  const changed = await tx.chatTurnAttachment.updateMany({
+    where: { id: input.id, status: "failed", generationJobId: null },
+    data: { status: "requesting", errorCode: null, metadata: toJson(input.metadata) },
   });
   return changed.count > 0;
 }

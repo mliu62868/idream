@@ -2,9 +2,12 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { AppError } from "@/server/lib/errors";
 import {
+  createCharacter,
   createMedia,
   createUser,
   dreamcoinBalance,
+  api,
+  expectOk,
   grantCoins,
   purgeTestData,
 } from "@/server/test/helpers";
@@ -432,6 +435,61 @@ describe("character and media write actions off the HTTP path", () => {
     expect(duplicate.creatorId).toBe(ownerId);
     expect(duplicate.name).toBe("Duplication Source Copy");
     expect(duplicate.visibility).toBe("private");
+  });
+
+  it("quotes a Character image without creating the Character's identity profile", async () => {
+    // A quote is read-only for every viewer, so a stranger's quote cannot rewrite
+    // a creator's identity authority or invalidate their draft asset pack.
+    const userId = `${P}quote-no-profile`;
+    const characterId = `${P}quote-no-profile-char`;
+    await createUser({ id: userId, dataClass: "customer" });
+    await createCharacter({ id: characterId, creatorId: userId, source: "user", visibility: "private", status: "approved" });
+    await prisma.characterVisualProfile.deleteMany({ where: { characterId } });
+
+    const quoted = await api("POST", "generation/quote", {
+      userId,
+      ageGate: true,
+      body: { mode: "image", characterId, controls: {}, presetIds: [], outputCount: 1 },
+    });
+    expectOk(quoted);
+    expect(await prisma.characterVisualProfile.count({ where: { characterId } })).toBe(0);
+  });
+
+  it("never nominates a reader's image as an identity reference for someone else's Character", async () => {
+    const creatorId = `${P}feedback-creator`;
+    const readerId = `${P}feedback-reader`;
+    const characterId = `${P}feedback-foreign-char`;
+    const visualProfileId = `${P}feedback-foreign-profile`;
+    const jobId = `${P}feedback-foreign-job`;
+    const mediaId = `${P}feedback-foreign-media`;
+    await createUser({ id: creatorId });
+    await createUser({ id: readerId });
+    await createCharacter({ id: characterId, creatorId, visibility: "public", status: "approved" });
+    await prisma.characterVisualProfile.create({
+      data: {
+        id: visualProfileId, characterId, version: 1, status: "active", style: "realistic",
+        identityPrompt: "Foreign identity", faceTraits: {}, hairTraits: {}, bodyTraits: {},
+        signatureTraits: {}, styleTraits: {}, anchorAssetIds: [], adapterRefs: {}, createdFrom: "test",
+      },
+    });
+    await prisma.generationJob.create({
+      data: {
+        id: jobId, userId: readerId, characterId, visualProfileId, visualProfileVersion: 1,
+        mode: "image", ...PINNED_RETRY_JOB_AUTHORITY, status: "completed", costDreamcoins: 5,
+        controls: {}, presetIds: [],
+      },
+    });
+    await createMedia({ id: mediaId, ownerId: readerId, sourceJobId: jobId });
+
+    const recorded = await recordMediaIdentityFeedback({
+      userId: readerId,
+      mediaAssetId: mediaId,
+      feedbackType: "identity_match",
+      sourceSurface: "chat",
+    });
+    expect(recorded.feedback.value).toBe("match");
+    expect(recorded.referenceCandidate).toBeNull();
+    expect(await prisma.referenceCandidate.count({ where: { visualProfileId } })).toBe(0);
   });
 
   it("records identity feedback as an event, a feedback row, and asset metadata", async () => {

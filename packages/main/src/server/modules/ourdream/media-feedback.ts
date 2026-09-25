@@ -38,7 +38,14 @@ export async function recordMediaIdentityFeedback(input: {
     },
   });
   if (!job) throw Errors.notFound("Generation job not found for media feedback");
-  const visualProfile = await generationJobVisualProfileForFeedback(job);
+  // INVARIANT: 只有角色作者的反馈能提名身份参考候选；他人（包括对官方角色）的私有图
+  // 不进入该角色的身份池。反馈事件本身照常记录。
+  const characterCreatorId = job.characterId
+    ? (await prisma.character.findUnique({ where: { id: job.characterId }, select: { creatorId: true } }))?.creatorId
+    : null;
+  const visualProfile = characterCreatorId === userId
+    ? await generationJobVisualProfileForFeedback(job)
+    : null;
 
   const value = input.feedbackType === "identity_match" ? "match" : "mismatch";
   const quality = jsonRecord(jsonRecord(asset.metadata).quality);

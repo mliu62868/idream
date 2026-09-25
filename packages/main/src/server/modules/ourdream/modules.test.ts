@@ -382,6 +382,18 @@ describe("profile, preferences, language", () => {
     expectOk(updated);
     expect(updated.data.user.displayName).toBe("Renamed");
 
+    for (const image of ["https://evil.example.com/a.png", "//evil.example.com/a.png", "/\\evil.example.com/a.png", "javascript:alert(1)"]) {
+      expectError(await api("PATCH", "profile", { userId, body: { image } }), 400);
+    }
+    const avatar = await api("PATCH", "profile", {
+      userId,
+      body: { image: "/api/v1/media/own-avatar/content" },
+    });
+    expectOk(avatar);
+    expect(await prisma.user.findUniqueOrThrow({ where: { id: userId } })).toMatchObject({
+      image: "/api/v1/media/own-avatar/content",
+    });
+
     const prefs = await api("PATCH", "me/preferences", {
       userId,
       body: { locale: "fr", mutedTags: ["Teen", "slow burn"] },
@@ -496,7 +508,7 @@ describe("referrals + account", () => {
 
   it("grants give/get dreamcoins when an invitee signs up with a ref code", async () => {
     const inviterId = `${P}ref-inviter`;
-    await createUser({ id: inviterId });
+    await createUser({ id: inviterId, dataClass: "customer" });
     const invite = await api("POST", "referrals/invite", { userId: inviterId });
     expectOk(invite);
     const code = invite.data.referral.code as string;
@@ -542,6 +554,54 @@ describe("referrals + account", () => {
       expect.arrayContaining([firstInviteeId, secondInviteeId]),
     );
     expect(conversions.every((referral) => referral.rewardStatus === "granted")).toBe(true);
+  });
+
+  it.each([
+    { name: "has used up ten rewards in 30 days", dataClass: "customer" as const, status: "active" as const, priorRewards: 10 },
+    { name: "is not an active customer", dataClass: "customer" as const, status: "suspended" as const, priorRewards: 0 },
+    { name: "is an internal account", dataClass: "internal" as const, status: "active" as const, priorRewards: 0 },
+  ])("still welcomes the invitee but pays no inviter reward when the inviter $name", async ({ name, dataClass, status, priorRewards }) => {
+    const slug = name.replace(/\W+/g, "-");
+    const inviterId = `${P}ref-capped-${slug}`;
+    await createUser({ id: inviterId, dataClass, status });
+    const code = `${P}CODE-${slug}`;
+    await prisma.referral.create({ data: { inviterId, code, status: "pending" } });
+    const earlierInvitees = Array.from({ length: priorRewards }, (_, index) => `${inviterId}-earlier-${index}`);
+    for (const id of earlierInvitees) await createUser({ id });
+    await prisma.referral.createMany({ data: earlierInvitees.map((inviteeId) => ({
+      inviterId, inviteeId, code, status: "completed", rewardStatus: "granted",
+    })) });
+    const inviterBefore = await dreamcoinBalance(inviterId);
+
+    const signup = await api("POST", "auth/signup", {
+      ageGate: true,
+      body: { email: `${inviterId}-invitee@example.com`, password: "password123", name: "Invitee", ref: code },
+    });
+    expectOk(signup);
+    const inviteeId = signup.data.user.id as string;
+    expect(await dreamcoinBalance(inviteeId)).toBe(400);
+    expect(await dreamcoinBalance(inviterId)).toBe(inviterBefore);
+    expect(await prisma.referral.findFirstOrThrow({ where: { code, inviteeId } }))
+      .toMatchObject({ status: "completed", rewardStatus: "not_eligible" });
+  });
+
+  it("counts inviter rewards over a rolling 30 days", async () => {
+    const inviterId = `${P}ref-window`;
+    await createUser({ id: inviterId, dataClass: "customer" });
+    const code = `${P}CODE-window`;
+    await prisma.referral.create({ data: { inviterId, code, status: "pending" } });
+    const earlierInvitees = Array.from({ length: 10 }, (_, index) => `${inviterId}-earlier-${index}`);
+    for (const id of earlierInvitees) await createUser({ id });
+    await prisma.referral.createMany({ data: earlierInvitees.map((inviteeId) => ({
+      inviterId, inviteeId, code, status: "completed", rewardStatus: "granted",
+      createdAt: new Date(Date.now() - 31 * 86_400_000),
+    })) });
+    const inviterBefore = await dreamcoinBalance(inviterId);
+    expectOk(await api("POST", "auth/signup", {
+      ageGate: true,
+      body: { email: `${inviterId}-invitee@example.com`, password: "password123", name: "Invitee", ref: code },
+    }));
+    expect(await dreamcoinBalance(inviterId)).toBe(inviterBefore + 150);
   });
 
   it("ignores an unknown ref code without blocking signup", async () => {
@@ -930,6 +990,17 @@ describe("tags, likes, duplicate", () => {
     ).not.toContain(tag.slug);
   });
 
+  it("lets a reader who still owes age verification take back a like they could give", async () => {
+    const userId = `${P}liker-unverified`;
+    await createUser({ id: userId, dataClass: "customer" });
+    await prisma.ageVerification.create({
+      data: { userId, provider: "mock", status: "required", metadata: {} },
+    });
+    expectOk(await api("POST", `characters/${CHAR}/like`, { userId, ageGate: true }));
+    expectOk(await api("DELETE", `characters/${CHAR}/like`, { userId, ageGate: true }));
+    expect(await prisma.characterLike.count({ where: { userId, characterId: CHAR } })).toBe(0);
+  });
+
   it("likes then unlikes a character and adjusts stats", async () => {
     const userId = `${P}liker`;
     await createUser({ id: userId, dataClass: "customer" });
@@ -989,75 +1060,13 @@ describe("tags, likes, duplicate", () => {
     ).toBe(0);
   });
 
-  it("omits a cross-owner primary image whose bytes have no serviceable locator", async () => {
+  it("refuses to duplicate another creator's public Character and its Soul", async () => {
     const userId = `${P}dup`;
     await createUser({ id: userId });
-    const sourceImageAssetId = `${CHAR}-public-avatar`;
-    await prisma.mediaAsset.update({
-      where: { id: sourceImageAssetId },
-      data: {
-        metadata: {
-          source: "editorial_import",
-          synthetic: false,
-          providerKey: `${P}provider-key-without-owned-storage`,
-          platformAsset: { status: "approved" },
-        },
-      },
-    });
     const res = await api("POST", `characters/${CHAR}/duplicate`, { userId, ageGate: true });
-    expectOk(res);
-    expect(res.data.character).toMatchObject({
-      creatorId: userId,
-      visibility: "private",
-      status: "approved",
-    });
-    expect(res.data.character.name).toContain("Copy");
-    expect(res.data.character.imageAssetId).toBeNull();
-
-    const duplicate = await prisma.character.findUniqueOrThrow({
-      where: { id: res.data.character.id as string },
-      include: { imageAsset: true, stats: true },
-    });
-    expect(duplicate.imageAsset).toBeNull();
-    expect(duplicate.stats).toMatchObject({
-      likesCount: 0,
-      chatsCount: 0,
-    });
-    await expect(
-      prisma.character.findUniqueOrThrow({ where: { id: CHAR } }),
-    ).resolves.toMatchObject({ imageAssetId: sourceImageAssetId });
-    await expect(
-      prisma.mediaAsset.findUniqueOrThrow({ where: { id: sourceImageAssetId } }),
-    ).resolves.toMatchObject({
-      id: sourceImageAssetId,
-      ownerId: SYS,
-      characterId: CHAR,
-      deletedAt: null,
-      metadata: {
-        providerKey: `${P}provider-key-without-owned-storage`,
-        platformAsset: { status: "approved" },
-      },
-    });
-
-    const detail = await api("GET", `characters/${duplicate.id}`, {
-      userId,
-      ageGate: true,
-    });
-    expectOk(detail);
-    expect(detail.data.character).toMatchObject({
-      id: duplicate.id,
-      imageAssetId: null,
-      hasImage: false,
-    });
-    await expect(prisma.mediaAsset.count({
-      where: {
-        ownerId: userId,
-        metadata: {
-          path: ["duplicateLineage", "sourceAssetId"],
-          equals: sourceImageAssetId,
-        },
-      },
-    })).resolves.toBe(0);
+    expectError(res, 404, "not_found");
+    expect(await prisma.character.count({ where: { creatorId: userId } })).toBe(0);
+    expect(await prisma.mediaAsset.count({ where: { ownerId: userId } })).toBe(0);
   });
 
   it.each(["unknown", "blocked"] as const)("does not copy an image whose automatic safety result is %s", async (safetyStatus) => {

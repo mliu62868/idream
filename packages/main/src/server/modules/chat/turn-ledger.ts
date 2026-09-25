@@ -31,6 +31,9 @@ import { userChatPersonaForTurn } from "./user-persona";
 
 const BLOCKED_NOTICE = "I can’t help with that request.";
 const ACTIVE_ASSISTANT_STATES = ["pending", "generating"];
+// INTENT: Chat 的 agent 池是全站共享的少量槽位；不设按用户上限时，一个人在多个会话里
+// 并发发送就能占满池子，让其他用户排队。3 个足够覆盖正常的多会话切换。
+const MAX_ACTIVE_TURNS_PER_USER = 3;
 
 export interface BegunChatTurn {
   duplicate: boolean;
@@ -290,6 +293,16 @@ export async function beginChatTurn(input: {
         select: { id: true },
       });
       if (active) throw Errors.conflict("A reply is already generating");
+      // INVARIANT: counted under the user lock taken above, so concurrent sends
+      // from different sessions cannot all slip past the limit.
+      const activeForUser = await tx.chatTurn.count({
+        where: { session: { userId: input.userId }, assistantStatus: { in: ACTIVE_ASSISTANT_STATES } },
+      });
+      if (activeForUser >= MAX_ACTIVE_TURNS_PER_USER) {
+        throw Errors.conflict(
+          `A reply is already generating in ${activeForUser} of your chats. Wait for one to finish, then send again.`,
+        );
+      }
       // SPEC: the daily free allowance counts messages the user chose to send.
       // INTENT: a proactive Turn is the Character reaching out on a schedule the
       // user set once. Charging it spends the allowance on something they did

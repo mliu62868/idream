@@ -227,7 +227,7 @@ describe("tool effect attachment state machine", () => {
     requesting: ["accepted", "failed"],
     accepted: ["completed", "failed", "blocked", "refunded", "cancelled"],
     completed: [],
-    failed: ["accepted"],
+    failed: ["accepted", "requesting"],
     refunded: ["accepted"],
     blocked: [],
     cancelled: [],

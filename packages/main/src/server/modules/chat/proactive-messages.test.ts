@@ -75,6 +75,21 @@ describe("proactive message cadence", () => {
     });
   });
 
+  it("refuses to switch check-ins on for a group member session", async () => {
+    const groupId = `${P}group`;
+    const memberSessionId = `${P}group-member`;
+    await prisma.groupConversation.create({ data: { id: groupId, userId, title: "Proactive group" } });
+    await prisma.recentChat.create({
+      data: { sessionId: memberSessionId, userId, characterId, groupId, groupPosition: 0, status: "active" },
+    });
+    await expect(
+      updateProactiveSettings(userId, memberSessionId, { enabled: true, intervalHours: 12 }),
+    ).rejects.toMatchObject({ status: 404 });
+    await expect(
+      prisma.recentChat.findUniqueOrThrow({ where: { sessionId: memberSessionId } }),
+    ).resolves.toMatchObject({ proactiveEnabled: false, proactiveNextAt: null });
+  });
+
   it("stops scheduling and clears the next time when switched off", async () => {
     await updateProactiveSettings(userId, sessionId, { enabled: true, intervalHours: 12 });
     const off = await updateProactiveSettings(userId, sessionId, { enabled: false });

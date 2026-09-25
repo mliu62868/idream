@@ -201,6 +201,7 @@ import {
   projectPublicImageEditGenerationProfiles,
 } from "./generation-profile-selection";
 import {
+  activeCustomerUserWhere,
   isCustomerEngagementActor,
   mutedTagSlugsForUser,
   normalizeMutedTagSlugs,
@@ -325,6 +326,10 @@ const signupSchema = z.object({
 // ledger idempotencyKey, so replays/retries never double-mint.
 const REFERRAL_INVITEE_BONUS = 150;
 const REFERRAL_INVITER_REWARD = 150;
+// INTENT: 邀请奖励能把一次性小号的注册额度汇集到一个账号上。每个邀请人滚动 30 天内最多
+// 领 10 次，且必须是正常的 active customer；超限只停发邀请人奖励，被邀请人照常注册和领奖。
+const REFERRAL_INVITER_REWARD_LIMIT = 10;
+const REFERRAL_INVITER_REWARD_WINDOW_MS = 30 * 86_400_000;
 
 const loginSchema = z.object({
   email: z
@@ -376,7 +381,10 @@ const presetCreateSchema = z.object({
   visibility: z.enum(["private", "public", "unlisted"]).default("private"),
 });
 
-const mediaCollectionVisibilitySchema = z.enum(["private", "public", "unlisted"]);
+// INTENT: 用户只能在私有与公开之间切换。「unlisted」没有任何写入入口，持链接也读不到
+// （getMediaCollection 只放行公开受众或作者），接受它只会造出一个用户以为能分享、实际打不开
+// 的合集。读路径仍兼容展示系统清理写入的既有 unlisted 行。
+const mediaCollectionVisibilitySchema = z.enum(["private", "public"]);
 
 const generationFeedbackSchema = z.object({
   feedbackType: z.enum(["identity_match", "identity_mismatch"]),
@@ -424,7 +432,16 @@ const mediaCollectionItemSchema = z.object({
 
 const profilePatchSchema = z.object({
   displayName: z.string().trim().min(1).max(80).optional(),
-  image: z.string().url().optional(),
+  // INVARIANT: 头像只能是站内相对路径（如本人 media 的 /api/v1/media/:id/content）。
+  // 外部 URL 会让他人浏览时向任意主机发请求，且 next/image 未配置远程主机会直接渲染失败；
+  // "//" 与反斜杠在浏览器里都会被解析成协议相对的外部地址。
+  image: z
+    .string()
+    .max(2_048)
+    .refine((value) => /^\/(?![/\\])/.test(value) && !value.includes("\\"), {
+      message: "Profile image must be a path on this site",
+    })
+    .optional(),
 });
 
 const preferencesPatchSchema = z.object({
@@ -918,13 +935,27 @@ async function signup(request: Request) {
         where: { code: body.ref, inviteeId: null },
       });
       if (referral && referral.inviterId !== created.id) {
+        // INVARIANT: the inviter row lock serializes concurrent signups on one
+        // code, so the window count cannot be raced past the limit.
+        await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${referral.inviterId} FOR UPDATE`;
+        const inviterEligible = Boolean(await tx.user.findFirst({
+          where: { id: referral.inviterId, ...activeCustomerUserWhere },
+          select: { id: true },
+        })) && await tx.referral.count({
+          where: {
+            inviterId: referral.inviterId,
+            inviteeId: { not: null },
+            rewardStatus: "granted",
+            createdAt: { gte: new Date(Date.now() - REFERRAL_INVITER_REWARD_WINDOW_MS) },
+          },
+        }) < REFERRAL_INVITER_REWARD_LIMIT;
         const conversion = await tx.referral.create({
           data: {
             inviterId: referral.inviterId,
             inviteeId: created.id,
             code: referral.code,
             status: "completed",
-            rewardStatus: "granted",
+            rewardStatus: inviterEligible ? "granted" : "not_eligible",
           },
         });
         await postDreamcoinEntry(tx, {
@@ -935,14 +966,16 @@ async function signup(request: Request) {
           sourceId: conversion.id,
           idempotencyKey: `referral_invitee:${created.id}`,
         });
-        await postDreamcoinEntry(tx, {
-          kind: "referral",
-          beneficiary: "inviter",
-          userId: referral.inviterId,
-          amount: REFERRAL_INVITER_REWARD,
-          sourceId: created.id,
-          idempotencyKey: `referral_inviter:${created.id}`,
-        });
+        if (inviterEligible) {
+          await postDreamcoinEntry(tx, {
+            kind: "referral",
+            beneficiary: "inviter",
+            userId: referral.inviterId,
+            amount: REFERRAL_INVITER_REWARD,
+            sourceId: created.id,
+            idempotencyKey: `referral_inviter:${created.id}`,
+          });
+        }
       }
     }
     await attributeAffiliateSignup(
@@ -1787,11 +1820,11 @@ async function likeTotals(characterId: string) {
   return { likesCount, likes: formatCount(likesCount) };
 }
 
+// INVARIANT: 与 likeCharacter 同一道门——能点的赞必须能取消。
 async function unlikeCharacter(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
   requireAgeGate(ctx);
-  requireAgeVerified(ctx);
   const countsAsEngagement = await isCustomerEngagementActor(user.id);
   const deleted = await prisma.characterLike.deleteMany({
     where: { userId: user.id, characterId: id },
@@ -3062,6 +3095,60 @@ async function getMediaCollection(request: Request, collectionId: string) {
   return ok(data, { headers: { "cache-control": "no-store" } });
 }
 
+// SPEC: 公开合集只让「因它而公开」的媒体随它进退。合集把 private 成员提升为 public_pack 时
+// 打上 publicViaCollection 标记；移出或改私有后，不再属于任何公开合集的带标记成员退回 private。
+// INVARIANT: 不带标记的 public_pack（例如角色发布图、先前已公开的媒体）永不被合集收回；
+// 仍被角色 / 活动 / Comic 引用的媒体也保持公开，否则会拆掉已上线的内容。
+const COLLECTION_PUBLICITY_MARKER = "publicViaCollection";
+
+async function publishMediaForPublicCollection(
+  tx: Prisma.TransactionClient,
+  ownerId: string,
+  mediaAssetIds: readonly string[],
+) {
+  if (mediaAssetIds.length === 0) return;
+  await tx.$executeRaw`
+    UPDATE media_assets
+    SET visibility = 'public_pack',
+        metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(${COLLECTION_PUBLICITY_MARKER}::text, true)
+    WHERE id IN (${Prisma.join(mediaAssetIds)})
+      AND "ownerId" = ${ownerId}
+      AND "deletedAt" IS NULL
+      AND visibility = 'private'`;
+  await tx.mediaAsset.updateMany({
+    where: { id: { in: [...mediaAssetIds] }, ownerId, deletedAt: null },
+    data: { visibility: "public_pack" },
+  });
+}
+
+async function retractCollectionOnlyPublicMedia(
+  tx: Prisma.TransactionClient,
+  ownerId: string,
+  mediaAssetIds: readonly string[],
+) {
+  if (mediaAssetIds.length === 0) return;
+  const candidates = await tx.mediaAsset.findMany({
+    where: {
+      id: { in: [...mediaAssetIds] },
+      ownerId,
+      deletedAt: null,
+      visibility: "public_pack",
+      metadata: { path: [COLLECTION_PUBLICITY_MARKER], equals: true },
+      collections: { none: { collection: { visibility: "public" } } },
+    },
+    select: { id: true },
+  });
+  const ids = candidates.map((asset) => asset.id);
+  await lockCharacterMediaAssetAuthorities(tx, ids);
+  for (const id of ids) {
+    if ((await mediaAssetAuthorityDependencies(tx, id)).length > 0) continue;
+    await tx.$executeRaw`
+      UPDATE media_assets
+      SET visibility = 'private', metadata = metadata - ${COLLECTION_PUBLICITY_MARKER}::text
+      WHERE id = ${id} AND visibility = 'public_pack'`;
+  }
+}
+
 async function removeMediaFromCollection(request: Request, collectionId: string, mediaAssetId: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
@@ -3074,6 +3161,7 @@ async function removeMediaFromCollection(request: Request, collectionId: string,
     const removed = await tx.mediaCollectionItem.deleteMany({ where: { collectionId, mediaAssetId } });
     const remaining = await tx.mediaCollectionItem.count({ where: { collectionId } });
     if (!remaining) await tx.mediaCollection.update({ where: { id: collectionId }, data: { visibility: "private" } });
+    if (removed.count > 0) await retractCollectionOnlyPublicMedia(tx, user.id, [mediaAssetId]);
     const collection = await tx.mediaCollection.findUniqueOrThrow({ where: { id: collectionId }, include: mediaCollectionInclude() });
     return { removed: removed.count > 0, collection };
   });
@@ -3107,10 +3195,7 @@ async function createMediaCollection(request: Request) {
     });
     if (media) {
       if (body.visibility === "public") {
-        await tx.mediaAsset.update({
-          where: { id: media.id },
-          data: { visibility: "public_pack" },
-        });
+        await publishMediaForPublicCollection(tx, user.id, [media.id]);
       }
       await tx.mediaCollectionItem.create({
         data: {
@@ -3166,14 +3251,11 @@ async function updateMediaCollection(request: Request, collectionId: string) {
       for (const item of items) {
         assertPublicCollectionMediaAsset(item.mediaAsset);
       }
-      await tx.mediaAsset.updateMany({
-        where: {
-          ownerId: user.id,
-          deletedAt: null,
-          collections: { some: { collectionId } },
-        },
-        data: { visibility: "public_pack" },
-      });
+      await publishMediaForPublicCollection(
+        tx,
+        user.id,
+        items.map((item) => item.mediaAssetId),
+      );
     }
     await tx.mediaCollection.update({
       where: { id: collectionId },
@@ -3182,6 +3264,17 @@ async function updateMediaCollection(request: Request, collectionId: string) {
         visibility: body.visibility,
       },
     });
+    if (body.visibility === "private") {
+      const members = await tx.mediaCollectionItem.findMany({
+        where: { collectionId },
+        select: { mediaAssetId: true },
+      });
+      await retractCollectionOnlyPublicMedia(
+        tx,
+        user.id,
+        members.map((item) => item.mediaAssetId),
+      );
+    }
     return tx.mediaCollection.findUniqueOrThrow({
       where: { id: collectionId },
       include: mediaCollectionInclude(),
@@ -3210,10 +3303,7 @@ async function addMediaToCollection(request: Request, collectionId: string) {
     const sortOrder = (maximum._max.sortOrder ?? -1) + 1;
     if (collection.visibility === "public") {
       assertPublicCollectionMediaAsset(media);
-      await tx.mediaAsset.update({
-        where: { id: media.id },
-        data: { visibility: "public_pack" },
-      });
+      await publishMediaForPublicCollection(tx, user.id, [media.id]);
     }
     await tx.mediaCollectionItem.upsert({
       where: {
