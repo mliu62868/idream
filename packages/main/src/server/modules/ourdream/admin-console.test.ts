@@ -3573,7 +3573,8 @@ describe("provider ops dashboard", () => {
     expect(row?.completed).toBe(2);
     expect(row?.failed).toBe(1);
     expect(row?.successRate).toBe(67); // round(2/3*100)
-    expect(row?.coinsCost).toBe(15);
+    // 花费只计 completed（failed 的 5 会被退款），平均按 completed 摊。
+    expect(row?.coinsCost).toBe(10);
     expect(row?.avgCostPerJob).toBe(5);
     expect(row?.latencySamples).toBe(2);
     expect(Number(row?.latencyP95Ms)).toBeGreaterThanOrEqual(2000);

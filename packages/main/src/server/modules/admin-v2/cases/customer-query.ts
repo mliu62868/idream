@@ -10,7 +10,7 @@ import {
   paginateAdminKeyset,
 } from "@/server/modules/admin-v2/shared/list-cursor";
 import { caseDto } from "./query";
-import { effectiveSubscriptionStatus, liveSubscriptionWhere } from "@/server/modules/ourdream/subscription-lifecycle";
+import { effectiveSubscriptionStatus } from "@/server/modules/ourdream/subscription-lifecycle";
 
 const ACTIVE_CASE_STATUSES = ["new", "triaged", "in_progress", "waiting", "reopened"];
 

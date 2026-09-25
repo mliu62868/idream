@@ -24,7 +24,7 @@ import {
   paginateAdminKeyset,
 } from "@/server/modules/admin-v2/shared/list-cursor";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
-import { effectiveSubscriptionStatus, liveSubscriptionWhere } from "@/server/modules/ourdream/subscription-lifecycle";
+import { effectiveSubscriptionStatus } from "@/server/modules/ourdream/subscription-lifecycle";
 
 /**
  * SPEC: 用户权威 —— 名录、明细、状态 / 角色 / 权限覆盖三条写命令。
