@@ -156,6 +156,7 @@ import {
 } from "./exposure-context";
 import { createVoiceClip as createDurableVoiceClip, quoteVoiceClip } from "./voice-clip";
 import { getCharacterDraftVoiceCatalog, previewCharacterDraftVoice } from "./character-draft-voice";
+import { characterVoiceSample, characterVoiceSampleProfile } from "./character-voice-sample";
 import { characterQuickStartRequestSchema, generateCharacterQuickStart } from "./character-quick-start";
 import { moderateText } from "@/server/moderation/text-authority";
 import {
@@ -574,6 +575,7 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
   if (resource === "characters") {
     if (!id && method === "GET") return listCharacters(request);
     if (id && !action && method === "GET") return getCharacter(request, id);
+    if (id && action === "voice-sample" && !child && method === "GET") return characterVoiceSampleAudio(request, id);
     if (id && action === "like" && method === "POST") return likeCharacter(request, id);
     if (id && action === "like" && method === "DELETE") return unlikeCharacter(request, id);
     if (id && action === "report" && method === "POST") {
@@ -1489,7 +1491,41 @@ async function getCharacter(request: Request, id: string) {
   if (!character) throw Errors.notFound("Character not found");
 
   await trackEvent("character_viewed", { characterId: character.id }, ctx);
-  return ok({ character: await characterDetailDTO(character, ctx.userId) });
+  return ok({
+    character: {
+      ...(await characterDetailDTO(character, ctx.userId)),
+      voiceSampleAvailable: (await characterVoiceSampleProfile(character.id)) !== null,
+    },
+  });
+}
+
+// SPEC: GET /characters/:id/voice-sample 直接返回可播放的音频字节；可见性与详情页同一判据，
+//   看不到的角色与没有声音的角色一律 404。合成、缓存与计费取舍见 character-voice-sample.ts。
+async function characterVoiceSampleAudio(request: Request, id: string) {
+  const ctx = await getAuthCtx(request);
+  requireAgeGate(ctx);
+  await enforceRateLimit(request, "voiceSample", ctx.userId);
+  const character = await prisma.character.findFirst({
+    where: {
+      id,
+      deletedAt: null,
+      OR: [
+        directCharacterAudienceWhere,
+        ctx.userId ? { creatorId: ctx.userId } : {},
+      ].filter((item) => Object.keys(item).length > 0),
+    },
+    select: { id: true },
+  });
+  if (!character) throw Errors.notFound("Character not found");
+  const sample = await characterVoiceSample(character.id);
+  return new Response(Buffer.from(sample.body), {
+    headers: {
+      "content-type": sample.contentType,
+      "content-length": String(sample.body.byteLength),
+      // 私有角色的试听不能进共享缓存；短 max-age 让声音换版后很快听到新的。
+      "cache-control": "private, max-age=300",
+    },
+  });
 }
 
 async function listCharacterLooks(request: Request, characterId: string) {

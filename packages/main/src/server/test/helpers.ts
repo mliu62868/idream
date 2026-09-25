@@ -59,6 +59,7 @@ export interface ApiResult {
   data: any;
   error: { code?: string; message?: string; details?: any } | undefined;
   json: any;
+  bytes?: Uint8Array;
   headers: Headers;
   setCookies: string[];
 }
@@ -164,12 +165,17 @@ export async function api(
 
   const segments = path.split("/").filter(Boolean);
   const response = await dispatchV1(request, segments);
-  const text = await response.text();
+  // Audio endpoints answer with raw bytes rather than the JSON envelope.
+  const bytes = response.headers.get("content-type")?.startsWith("audio/")
+    ? new Uint8Array(await response.arrayBuffer())
+    : undefined;
+  const text = bytes ? "" : await response.text();
   const json = text ? (JSON.parse(text) as any) : null;
 
   return {
     status: response.status,
-    ok: Boolean(json?.ok),
+    ok: bytes ? response.ok : Boolean(json?.ok),
+    bytes,
     data: json?.data,
     error: json?.error,
     json,

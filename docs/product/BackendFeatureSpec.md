@@ -341,6 +341,7 @@ Use `/api/v1` for product APIs and keep public SEO pages server-rendered separat
 | --- | --- | --- | --- |
 | `GET` | `/api/v1/characters` | Public after age gate | Search, filter, sort, paginate public characters |
 | `GET` | `/api/v1/characters/:id` | Public after age gate | Character detail |
+| `GET` | `/api/v1/characters/:id/voice-sample` | Public after age gate | Audio sample of the Character's bound voice (fixed text, synthesized once per voice profile version, free, rate limited); 404 when not visible or no bound voice |
 | `POST` | `/api/v1/characters/:id/like` | User | Like character |
 | `DELETE` | `/api/v1/characters/:id/like` | User | Unlike character |
 | `POST` | `/api/v1/characters/:id/report` | User/Public optional | Report character |
