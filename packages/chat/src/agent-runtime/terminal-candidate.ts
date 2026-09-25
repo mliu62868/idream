@@ -80,6 +80,22 @@ const CLAIMS_DELIVERY = new RegExp(
   "iu",
 );
 
+/**
+ * SPEC: 一句话承诺了不止一张图。聊天每次只交付一张（线路能力）。
+ *
+ * INTENT: 用户要「三张海滩照」时，模型会顺着说「three different shots」「both angles」，
+ *   实际只到一张。技能提示词已要求只承诺这一张，但真实 35B 样本 5 次里仍有 3 次越界，
+ *   所以这里和 CLAIMS_DELIVERY 一样 fail-closed：命中就丢掉台词，回落到确定性回执。
+ */
+const PROMISES_SEVERAL = new RegExp(
+  [
+    String.raw`\b(?:two|three|four|five|six|seven|eight|nine|ten|\d+|a few|a couple(?: of)?|several|multiple|some|a bunch of|different)\s+(?:(?:more|different|new|quick|cute|hot|sexy|little)\s+)?(?:shots|pics|pictures|photos|selfies|images|snaps|looks|angles|outfits|poses|ways)\b`,
+    String.raw`\bboth (?:angles|shots|pics|pictures|photos|selfies|looks|of them)\b`,
+    String.raw`[两二三四五六七八九十几多]\s*张|[二三四五六七八九十何]\s*枚`,
+  ].join("|"),
+  "iu",
+);
+
 const REQUIRED_IMAGE_LEAD_IN_MAX_CHARS = 400;
 
 /**
@@ -101,6 +117,7 @@ export function acceptableRequiredImageLeadIn(
   if (!requiredImageReplyMatchesUserScript(currentUserText, text)) return null;
   if (EXPOSED_PROCESS.test(text)) return null;
   if (CLAIMS_DELIVERY.test(text)) return null;
+  if (PROMISES_SEVERAL.test(text)) return null;
   if (hasUnexecutedMemorySearchPayload(text)) return null;
   if (isUnexecutedImageToolPayload(text, tools)) return null;
   return text;

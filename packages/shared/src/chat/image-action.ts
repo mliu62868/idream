@@ -44,8 +44,11 @@ export interface RequiredImageAction {
 export const IMAGE_AGENT_TOOL_DEFINITIONS: readonly ChatToolDefinition[] = [
   {
     name: GENERATE_IMAGE_ASYNC_TOOL,
+    // INTENT: chat renders exactly one image per request (the chat route's
+    // capability). Advertising a count or a square format let the Character
+    // promise "three ways" or "both angles" and deliver one.
     description:
-      "Generate and send a photo of yourself to the user. Use whenever the user asks for a picture, selfie, or to see you or a scene.",
+      "Generate and send ONE photo of yourself to the user. Use whenever the user asks for a picture, selfie, or to see you or a scene. Each call delivers exactly one photo: if the user asks for several, send the best one now and say they can ask for the next.",
     parameters: {
       type: "object",
       properties: {
@@ -58,8 +61,7 @@ export const IMAGE_AGENT_TOOL_DEFINITIONS: readonly ChatToolDefinition[] = [
           type: "string",
           description: "Short in-character message to accompany the photo",
         },
-        orientation: { type: "string", enum: ["4:5", "1:1", "16:9"] },
-        outputCount: { type: "integer", minimum: 1, maximum: 4 },
+        orientation: { type: "string", enum: ["4:5", "16:9"], description: "4:5 portrait (default) or 16:9 landscape" },
       },
       required: ["prompt"],
     },

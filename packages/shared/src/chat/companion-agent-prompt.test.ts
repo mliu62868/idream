@@ -82,4 +82,12 @@ describe("Companion Product Agent Contract", () => {
     expect(prompt?.description).toContain("age, hair, eyes, skin, face, body");
     expect(prompt?.description).toContain("Main pins identity/references");
   });
+
+  it("advertises only what one chat image can deliver", () => {
+    const generate = IMAGE_AGENT_TOOL_DEFINITIONS.find((tool) => tool.name === "generate_image_async");
+    const properties = (generate?.parameters as { properties: Record<string, { enum?: string[] }> }).properties;
+    expect(generate?.description).toContain("exactly one photo");
+    expect(properties.outputCount).toBeUndefined();
+    expect(properties.orientation?.enum).toEqual(["4:5", "16:9"]);
+  });
 });

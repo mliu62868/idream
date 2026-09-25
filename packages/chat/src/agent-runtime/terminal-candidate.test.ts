@@ -236,6 +236,11 @@ describe("required image lead-in", () => {
     )).toBe("Elbow-deep in clay tonight — give me a second.");
   });
 
+  it("keeps a line that promises one photo when several were asked for", () => {
+    expect(acceptableRequiredImageLeadIn("A bunch, huh? Bold. I'll send one from the trail — the rest you can ask for.", "Show me a bunch of pictures", tools))
+      .toBe("A bunch, huh? Bold. I'll send one from the trail — the rest you can ask for.");
+  });
+
   it("keeps the user's own writing system", () => {
     expect(acceptableRequiredImageLeadIn("等我把手上的泥洗掉。", "今晚在做什么？发张照片", tools))
       .toBe("等我把手上的泥洗掉。");
@@ -250,6 +255,13 @@ describe("required image lead-in", () => {
     ["answers in another language", "Je te la prépare tout de suite.", "今晚在做什么？发张照片"],
     ["is empty", "   ", "Send a photo."],
     ["runs long", "a".repeat(401), "Send a photo."],
+    // Real 35B lead-ins for multi-photo requests; chat delivers one image.
+    ["promises three shots", "I'll grab three different shots of me by the water before the sun drops.", "Send me three pics"],
+    ["promises a few", "I'll grab a few shots of me getting ready for tonight — different angles.", "Send a few photos"],
+    ["promises both angles", "The couch has that perfect slouch — let me give you both angles.", "Send 2 selfies"],
+    ["promises four looks", "I'll put on four different looks for you.", "I want 4 photos"],
+    ["promises three ways", "I'll give you three ways of me taking it in.", "Send three pics"],
+    ["promises several in Chinese", "等我换身衣服，给你拍三张。", "发三张照片"],
   ])("drops a line that %s", (_case, leadIn, userText) => {
     expect(acceptableRequiredImageLeadIn(leadIn, userText, tools)).toBeNull();
   });
