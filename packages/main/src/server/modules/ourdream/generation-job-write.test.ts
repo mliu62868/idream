@@ -6,6 +6,8 @@ import {
   createMedia,
   createUser,
   dreamcoinBalance,
+  api,
+  expectOk,
   grantCoins,
   purgeTestData,
 } from "@/server/test/helpers";
@@ -433,6 +435,24 @@ describe("character and media write actions off the HTTP path", () => {
     expect(duplicate.creatorId).toBe(ownerId);
     expect(duplicate.name).toBe("Duplication Source Copy");
     expect(duplicate.visibility).toBe("private");
+  });
+
+  it("quotes a Character image without creating the Character's identity profile", async () => {
+    // A quote is read-only for every viewer, so a stranger's quote cannot rewrite
+    // a creator's identity authority or invalidate their draft asset pack.
+    const userId = `${P}quote-no-profile`;
+    const characterId = `${P}quote-no-profile-char`;
+    await createUser({ id: userId, dataClass: "customer" });
+    await createCharacter({ id: characterId, creatorId: userId, source: "user", visibility: "private", status: "approved" });
+    await prisma.characterVisualProfile.deleteMany({ where: { characterId } });
+
+    const quoted = await api("POST", "generation/quote", {
+      userId,
+      ageGate: true,
+      body: { mode: "image", characterId, controls: {}, presetIds: [], outputCount: 1 },
+    });
+    expectOk(quoted);
+    expect(await prisma.characterVisualProfile.count({ where: { characterId } })).toBe(0);
   });
 
   it("never nominates a reader's image as an identity reference for someone else's Character", async () => {
