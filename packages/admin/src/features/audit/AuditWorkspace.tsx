@@ -60,7 +60,7 @@ const FILTER_LABELS: Record<AuditFilterKey, string> = {
 };
 
 export function AuditWorkspace() {
-  const { t } = useAdminI18n();
+  const { t, value } = useAdminI18n();
   const format = useAdminFormat();
   const [records, setRecords] = useState<AuditRecord[] | null>(null);
   // SPEC: 默认折叠 —— 首屏被一次批量操作吃掉是常态，不是例外。
@@ -168,7 +168,8 @@ export function AuditWorkspace() {
     cells: [
       <CopyableId key="id" value={text(row.id)} />,
       <CopyableId key="actor" value={text(row.actorId) || "system"} />,
-      text(row.actorRole) || "—",
+      // Action stays a code (no label table for audit action keys); the role is an enum.
+      text(row.actorRole) ? value(text(row.actorRole)) : "—",
       text(row.action) || "—",
       `${text(row.targetType) || "—"}:${text(row.targetId) || "—"}`,
       format.display(row.reason),

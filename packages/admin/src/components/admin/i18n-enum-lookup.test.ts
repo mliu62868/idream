@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { translateAdmin } from "@/components/admin/i18n-dictionary";
+import { adminValueLabel, translateAdmin } from "@/components/admin/i18n-dictionary";
 
 // SPEC: 22 个调用点写的是 t(value.replaceAll("_", " ")) —— 它们要的是「人读的形态」。
 //       枚举译文按下划线形态存在 zhValues 里。查表必须让两种形态都命中。
@@ -38,5 +38,22 @@ describe("多词枚举的中英查表", () => {
   it("不覆盖精确匹配", () => {
     expect(translateAdmin("zh", "All")).not.toBe("");
     expect(translateAdmin("zh", "All")).toBe(translateAdmin("zh", "All"));
+  });
+});
+
+// SPEC: English has no enum label table — value() humanizes snake / UPPER_SNAKE keys so the
+//       default locale never shows content_report or GRACE_PERIOD to an operator.
+describe("English enum labels", () => {
+  it("humanizes snake and upper snake enum keys", () => {
+    expect(adminValueLabel("en", "content_report")).toBe("Content report");
+    expect(adminValueLabel("en", "GRACE_PERIOD")).toBe("Grace period");
+    expect(adminValueLabel("en", "underage_content")).toBe("Underage content");
+  });
+
+  it("leaves codes, single words and acronyms untouched", () => {
+    expect(adminValueLabel("en", "generation.request.cancelled")).toBe("generation.request.cancelled");
+    expect(adminValueLabel("en", "active")).toBe("active");
+    expect(adminValueLabel("en", "USD")).toBe("USD");
+    expect(adminValueLabel("zh", "content_report")).toBe("内容举报");
   });
 });

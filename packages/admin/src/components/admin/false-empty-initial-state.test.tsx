@@ -12,7 +12,7 @@ import { JobsView } from "../../features/jobs/JobsView";
 
 describe("admin authority initial states", () => {
   it.each([
-    ["jobs", <JobsView key="jobs" />, ["No jobs match the server query.", "Generation Jobs (0)"]],
+    ["jobs", <JobsView key="jobs" permissions={{ retry: false, cancel: false, reconcile: false }} />, ["No jobs match the server query.", "Generation Jobs (0)"]],
     ["recipes", <RecipesListPage key="recipes" />, ["No prompt recipes yet."]],
     ["presets", <PresetsListPage key="presets" />, ["No built-in presets are seeded yet."]],
     ["starters", <StartersListPage canWrite key="starters" />, ["No starter templates yet."]],

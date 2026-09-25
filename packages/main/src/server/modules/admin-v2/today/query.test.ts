@@ -18,11 +18,31 @@ describe("Today authoritative projection", () => {
   const actorId = `today-support-${suffix}`;
   const caseIds = Array.from({ length: 14 }, (_, index) => `today-case-${index}-${suffix}`);
   const incidentId = `today-incident-${suffix}`;
+  const fixtureSubjectId = `today-fixture-subject-${suffix}`;
+  const fixtureCaseId = `today-fixture-case-${suffix}`;
   const now = new Date("2026-07-11T12:00:00.000Z");
 
   beforeAll(async () => {
-    await prisma.user.create({
-      data: { id: actorId, email: `${actorId}@example.test`, role: "support", status: "active" },
+    await prisma.user.createMany({
+      data: [
+        { id: actorId, email: `${actorId}@example.test`, role: "support", status: "active" },
+        { id: fixtureSubjectId, email: `${fixtureSubjectId}@example.test`, role: "user", status: "active", dataClass: "fixture" },
+      ],
+    });
+    // A fixture-account subject must stay out of Today, like its Support tickets do.
+    await prisma.adminCase.create({
+      data: {
+        id: fixtureCaseId,
+        type: "support_request",
+        targetType: "user",
+        targetId: fixtureSubjectId,
+        caseKey: `fixture-${suffix}`,
+        activeKey: adminCaseActiveKey("support_request", "user", fixtureSubjectId, `fixture-${suffix}`),
+        status: "new",
+        priority: "urgent",
+        ownerId: null,
+        slaDueAt: new Date("2026-07-11T13:00:00.000Z"),
+      },
     });
     await prisma.adminCase.createMany({
       data: [
@@ -127,8 +147,8 @@ describe("Today authoritative projection", () => {
     await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: { in: caseIds } } });
     await prisma.adminAuditLog.deleteMany({ where: { targetId: { in: caseIds } } });
     await prisma.opsIncident.deleteMany({ where: { id: incidentId } });
-    await prisma.adminCase.deleteMany({ where: { id: { in: caseIds } } });
-    await prisma.user.deleteMany({ where: { id: actorId } });
+    await prisma.adminCase.deleteMany({ where: { id: { in: [...caseIds, fixtureCaseId] } } });
+    await prisma.user.deleteMany({ where: { id: { in: [actorId, fixtureSubjectId] } } });
     await prisma.$disconnect();
   });
 
@@ -146,6 +166,7 @@ describe("Today authoritative projection", () => {
     expect(projection.nextBestActions.totalCount).toBe(13);
     expect(projection.nextBestActions.items).toHaveLength(10);
     expect(projection.unassigned).toMatchObject({ totalCount: 1 });
+    expect(projection.nextBestActions.items.some((item) => item.sourceId === fixtureCaseId)).toBe(false);
     expect(projection.unassigned.items[0]).toMatchObject({
       sourceId: caseIds[12],
       ownerId: null,

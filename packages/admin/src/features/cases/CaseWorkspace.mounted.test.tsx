@@ -74,7 +74,7 @@ const resolvedDetail = {
     question: "Was the second charge a duplicate?",
     evidenceRefs: ["evidence-1"],
     evidenceLevel: "certified",
-    decision: "actioned",
+    decision: "incident_escalated",
     confidence: null,
     ownerId: "operator-1",
     successCriteria: null,
@@ -337,6 +337,19 @@ describe("CaseWorkspace decision loop", () => {
     await act(async () => verify().click());
     expect(adminV2Request).toHaveBeenCalledWith("/api/v2/admin/cases/case-1/verification", expect.objectContaining({ body: { entityVersion: 4, state: "passed", evidenceRefs: ["evidence-1"] } }));
     expect(container.querySelector("#case-evidence-title")?.closest("section")?.querySelector("details")?.open).toBe(false);
+  });
+
+  it("offers attestation instead of a doomed authority check for actions without a verifier", async () => {
+    const read = adminV2Request.getMockImplementation()!;
+    adminV2Request.mockImplementation(async (path, options) => path === "/api/v2/admin/cases/case-1"
+      ? { ...resolvedDetail, decisions: [{ ...resolvedDetail.decisions[0], decision: "account_guidance_provided" }] }
+      : read(path, options));
+    await mount({ canAssign: false, canDecide: true });
+    const buttons = [...container.querySelectorAll("button")].map((button) => button.textContent);
+    expect(buttons).not.toContain("Verify from authority");
+    expect(buttons).toContain("Attest outcome");
+    // The default Support action (diagnostic_reviewed) has no verifier, so no outcome reference is asked for.
+    expect(container.textContent).not.toContain("Outcome reference");
   });
 
   it("sends a stable assignment key when retrying a lost response", async () => {

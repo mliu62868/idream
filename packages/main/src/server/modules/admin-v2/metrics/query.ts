@@ -18,7 +18,7 @@ import { toInputJson, jsonRecord, jsonStrings } from "../shared/prisma-json";
 import { evaluateMetricCertification, METRIC_DEFINITION_VALIDATOR_VERSION, REQUIRED_METRIC_QUALITY_CHECKS } from "./certification";
 import { METRIC_FORMULA_VALIDATION } from "./formula-validation";
 import { evaluateCanonicalMetrics, type CanonicalMetricDataset, utcCalendarWeekStart } from "./engine";
-import { loadCanonicalMetricDataset, reconcileCanonicalMetricFacts } from "./projector";
+import { loadCanonicalMetricDataset, reconcileCanonicalMetricFacts, type MetricReconciliationReport } from "./projector";
 
 const FRESHNESS_SLO_MS = 60 * 60 * 1_000;
 const OUTCOME_COMPLETENESS_WINDOW_MS = 30 * 24 * 60 * 60 * 1_000;
@@ -149,6 +149,27 @@ export function selectQualityChecksForMetric<T extends MetricQualityCheckRow>(
   return selected;
 }
 
+export function metricQualityChecks(report: MetricReconciliationReport, eligibleFactCount: number) {
+  const freshnessFailed = report.eventLagP95Ms === null || report.eventLagP95Ms > FRESHNESS_SLO_MS;
+  // INVARIANT: checks computed over the scanned fact set are vacuous on an empty set (0 dupes,
+  //            coverage 1 of 0) — report them as unavailable, never as a passed check.
+  const factCheck = (passed: boolean) => report.scannedFactCount === 0 ? "unavailable" as const : passed ? "passed" as const : "failed" as const;
+  return [
+    { key: "server_outcome_completeness", status: report.incompleteOutcomeCount === 0 ? "passed" as const : "failed" as const, observed: report.incompleteOutcomeCount, threshold: "= 0" },
+    { key: "duplicate_effect", status: factCheck(report.duplicateEffectCount === 0), observed: report.duplicateEffectCount, threshold: "= 0" },
+    { key: "impossible_state", status: factCheck(report.impossibleStateCount === 0), observed: report.impossibleStateCount, threshold: "= 0" },
+    { key: "fixture_internal_leakage", status: factCheck(report.fixtureInternalLeakageCount === 0), observed: report.fixtureInternalLeakageCount, threshold: "= 0" },
+    { key: "authoritative_join_coverage", status: factCheck(report.joinCoverage >= 0.99), observed: report.scannedFactCount === 0 ? null : report.joinCoverage, threshold: ">= 0.99" },
+    {
+      key: "event_lag_p95",
+      status: report.eventLagP95Ms === null ? "unavailable" as const : freshnessFailed ? "failed" as const : "passed" as const,
+      observed: report.eventLagP95Ms,
+      threshold: `<= ${FRESHNESS_SLO_MS}ms`,
+    },
+    { key: "eligible_fact_presence", status: eligibleFactCount > 0 ? "passed" as const : "failed" as const, observed: eligibleFactCount, threshold: "> 0" },
+  ];
+}
+
 async function qualityReport(db: MetricDb, asOf: Date) {
   const completenessWindowStart = new Date(asOf.getTime() - OUTCOME_COMPLETENESS_WINDOW_MS);
   // A materialization transaction owns one pg client; keep its reads serial.
@@ -165,20 +186,7 @@ async function qualityReport(db: MetricDb, asOf: Date) {
     qualityState,
     asOf: asOf.toISOString(),
     freshnessSloMs: FRESHNESS_SLO_MS,
-    checks: [
-      { key: "server_outcome_completeness", status: report.incompleteOutcomeCount === 0 ? "passed" : "failed", observed: report.incompleteOutcomeCount, threshold: "= 0" },
-      { key: "duplicate_effect", status: report.duplicateEffectCount === 0 ? "passed" : "failed", observed: report.duplicateEffectCount, threshold: "= 0" },
-      { key: "impossible_state", status: report.impossibleStateCount === 0 ? "passed" : "failed", observed: report.impossibleStateCount, threshold: "= 0" },
-      { key: "fixture_internal_leakage", status: report.fixtureInternalLeakageCount === 0 ? "passed" : "failed", observed: report.fixtureInternalLeakageCount, threshold: "= 0" },
-      { key: "authoritative_join_coverage", status: report.joinCoverage >= 0.99 ? "passed" : "failed", observed: report.joinCoverage, threshold: ">= 0.99" },
-      {
-        key: "event_lag_p95",
-        status: report.eventLagP95Ms === null ? "unavailable" : freshnessFailed ? "failed" : "passed",
-        observed: report.eventLagP95Ms,
-        threshold: `<= ${FRESHNESS_SLO_MS}ms`,
-      },
-      { key: "eligible_fact_presence", status: eligibleFactCount > 0 ? "passed" : "failed", observed: eligibleFactCount, threshold: "> 0" },
-    ],
+    checks: metricQualityChecks(report, eligibleFactCount),
   });
 }
 

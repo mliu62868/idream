@@ -305,6 +305,20 @@ export function ChatOpsWorkspace({
   const degraded = authorities.filter((authority) => states[authority].error ||
     states[authority].data?.configured === false);
   const overview = states.overview.data?.overview ?? null;
+  // SPEC: Sessions / Usage lists are customer-scoped; when they come back empty on an
+  //       unfiltered view, say how many internal/test rows the scope left out (the overview
+  //       already counts them) instead of claiming nothing exists.
+  const scopeExcluded = (overview?.dataScope as { excluded?: Record<string, unknown> } | undefined)?.excluded ?? {};
+  const excludedSum = (...keys: string[]) => keys.reduce((sum, key) => {
+    const count = scopeExcluded[key];
+    return sum + (typeof count === "number" ? count : 0);
+  }, 0);
+  const sessionsExcluded = query.userId || query.characterId || query.releasePin !== "all"
+    ? 0
+    : query.sessionStatus === "all"
+      ? excludedSum("activeSessions", "archivedSessions")
+      : excludedSum(`${query.sessionStatus}Sessions`);
+  const usageExcluded = query.userId ? 0 : excludedSum("usageRowsToday");
   return (
     <section className="space-y-5">
       <PageHeader
@@ -469,8 +483,11 @@ export function ChatOpsWorkspace({
             empty={
               query.userId
                 ? "No chat usage matches this user"
-                : "No chat usage exists for the current product day"
+                : usageExcluded > 0
+                  ? "No customer chat usage for the current product day"
+                  : "No chat usage exists for the current product day"
             }
+            excluded={usageExcluded}
             rows={states.usage.data?.items ?? []}
             state={states.usage}
           />
@@ -496,10 +513,10 @@ export function ChatOpsWorkspace({
           />
           <AuthorityTable
             authority="sessions"
-            empty={canonicalListEmptyTitle(
-              "chat_sessions",
-              sessionFiltered(query),
-            )}
+            empty={sessionsExcluded > 0
+              ? "No customer chat sessions"
+              : canonicalListEmptyTitle("chat_sessions", sessionFiltered(query))}
+            excluded={sessionsExcluded}
             rows={states.sessions.data?.items ?? []}
             state={states.sessions}
           />
@@ -1178,11 +1195,13 @@ function SessionPinMigration({ canMigrate, onDone, rows }: {
 function AuthorityTable({
   authority,
   empty,
+  excluded = 0,
   rows,
   state,
 }: {
   authority: Exclude<ChatOpsAuthority, "overview">;
   empty: string;
+  excluded?: number;
   rows: Row[];
   state: AuthorityState;
 }) {
@@ -1193,7 +1212,9 @@ function AuthorityTable({
   if (!rows.length)
     return (
       <EmptyState
-        hint={t("The Chat Service authority returned no records.")}
+        hint={excluded > 0
+          ? t("{count} internal or test records are outside the customer scope and not listed.", { count: excluded })
+          : t("The Chat Service authority returned no records.")}
         title={t(empty)}
       />
     );

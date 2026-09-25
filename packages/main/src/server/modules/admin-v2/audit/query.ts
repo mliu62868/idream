@@ -10,19 +10,28 @@ import {
 export async function auditLog(request: Request) {
   await actorWithPermission(request, "audit.read");
   const query = queryParams(request, "GET /api/v2/admin/audit-log");
-  const { search, action, actorId, targetType, limit } = query;
-  const queryIdentity = { search, action, actorId, targetType };
+  const { search, action, actorId, targetType, commandId, limit } = query;
+  const queryIdentity = { search, action, actorId, targetType, commandId };
+  // INTENT: an unknown command id falls back to matching it as a requestId, which yields an
+  //         honest empty list instead of silently ignoring the filter.
+  const command = commandId
+    ? await prisma.controlPlaneCommand.findUnique({ where: { id: commandId }, select: { requestId: true } })
+    : null;
+  const contains = (value: string) => ({ contains: value, mode: "insensitive" as const });
   const where: Prisma.AdminAuditLogWhereInput = {
     action,
     actorId,
     targetType,
+    requestId: commandId ? (command?.requestId ?? commandId) : undefined,
     OR: search
       ? [
-          { id: { contains: search } },
-          { action: { contains: search } },
-          { actorId: { contains: search } },
-          { targetId: { contains: search } },
-          { reason: { contains: search } },
+          { id: contains(search) },
+          { action: contains(search) },
+          { actorId: contains(search) },
+          { targetType: contains(search) },
+          { targetId: contains(search) },
+          { reason: contains(search) },
+          { requestId: contains(search) },
         ]
       : undefined,
   };

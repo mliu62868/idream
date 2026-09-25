@@ -265,7 +265,11 @@ export const navItems: NavItem[] = [
   targetItem({ id: "ops/invariants", label: "Data Integrity", href: "/admin/ops/invariants", icon: ListChecks, group: "Platform Operations", read: readForOperations("GET /api/v2/admin/reconciliation/invariants"),
     render: (ctx) => <InvariantsWorkspace canRead={ctx.canRead} /> }),
   item({ id: "generation/jobs", label: "Generation Jobs", href: "/admin/ops/jobs", icon: Activity, group: "Platform Operations", read: readForOperations("GET /api/v2/admin/jobs"),
-    render: () => <GenerationJobsWorkspace /> }),
+    render: (ctx) => <GenerationJobsWorkspace permissions={{
+      retry: adminV2OperationAllowed("POST /api/v2/admin/jobs/:id/commands/retry", ctx.permissions),
+      cancel: adminV2OperationAllowed("POST /api/v2/admin/generation/requests/:id/commands/cancel", ctx.permissions),
+      reconcile: adminV2OperationAllowed("POST /api/v2/admin/jobs/:id/commands/reconcile-unknown", ctx.permissions),
+    }} /> }),
   item({ id: "generation/dead-letter", label: "Dead-letter", href: "/admin/ops/jobs?view=dead-letter", icon: Inbox, group: "Platform Operations", read: readForOperations("GET /api/v2/admin/generation/dead-letter"), navigation: "tool",
     render: (ctx) => <DeadLetterWorkspace permissions={{
       requeue: ctx.permissions.has("generation.job.requeue"),

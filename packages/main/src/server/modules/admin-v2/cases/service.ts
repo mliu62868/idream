@@ -5,6 +5,7 @@ import {
   CONTENT_EFFECT_REVIEW_DECISIONS,
   CONTENT_REPORT_CASE_DECISIONS,
   SUPPORT_CASE_ACTIONS,
+  caseActionHasAuthorityVerifier,
 } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
@@ -1136,7 +1137,7 @@ export async function recordCustomerCaseAction(input: {
     | "subscription_corrected";
   readonly summary: string;
   readonly evidenceRefs: readonly string[];
-  readonly outcomeRef: string;
+  readonly outcomeRef?: string;
   readonly requestId: string;
 }, db?: Prisma.TransactionClient) {
   const execute = async (tx: Prisma.TransactionClient) => {
@@ -1166,8 +1167,13 @@ export async function recordCustomerCaseAction(input: {
     const currentResolution = current.resolution && typeof current.resolution === "object" && !Array.isArray(current.resolution)
       ? current.resolution as Record<string, unknown>
       : {};
-    let canonicalOutcomeRef = input.outcomeRef;
-    if (input.action === "incident_escalated") {
+    // INTENT: attested actions (no downstream verifier) carry no outcomeRef — a placeholder
+    //         reference would only pretend there is something to verify.
+    let canonicalOutcomeRef = input.outcomeRef ?? null;
+    if (caseActionHasAuthorityVerifier(input.action) && !input.outcomeRef) {
+      throw Errors.badRequest("This action needs the downstream outcome reference", { action: input.action });
+    }
+    if (input.action === "incident_escalated" && input.outcomeRef) {
       const incidentId = input.outcomeRef.startsWith("incident:") ? input.outcomeRef.slice("incident:".length) : input.outcomeRef;
       const incident = await tx.opsIncident.findUnique({ where: { id: incidentId }, select: { id: true } });
       if (!incident) throw Errors.badRequest("Incident escalation outcomeRef must identify an existing Incident");

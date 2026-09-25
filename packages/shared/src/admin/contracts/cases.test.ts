@@ -26,4 +26,16 @@ describe("typed Case command contracts", () => {
     expect(customerCaseActionRequestSchema.safeParse({ ...input, action: "actioned" }).success).toBe(false);
     expect(customerCaseActionRequestSchema.safeParse({ ...input, action: "restore_access" }).success).toBe(false);
   });
+
+  it("requires an outcome reference only for actions with a downstream verifier", () => {
+    const input = {
+      entityVersion: 2,
+      summary: "Walked the customer through the account settings.",
+      evidenceRefs: ["evidence-1"],
+    };
+    expect(customerCaseActionRequestSchema.safeParse({ ...input, action: "account_guidance_provided" }).success).toBe(true);
+    expect(customerCaseActionRequestSchema.safeParse({ ...input, action: "reply_requested" }).success).toBe(true);
+    expect(customerCaseActionRequestSchema.safeParse({ ...input, action: "refund_requested" }).success).toBe(false);
+    expect(customerCaseActionRequestSchema.safeParse({ ...input, action: "refund_requested", outcomeRef: "refund:l-1" }).success).toBe(true);
+  });
 });

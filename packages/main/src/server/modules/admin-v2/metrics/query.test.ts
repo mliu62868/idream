@@ -8,6 +8,7 @@ import {
   getMetricQualityReport,
   getMetricReconciliationReport,
   materializeMetricSnapshots,
+  metricQualityChecks,
   publishMetricRegistrySnapshots,
   selectQualityChecksForMetric,
 } from "./query";
@@ -56,6 +57,28 @@ describe("Admin v2 canonical metrics query", () => {
       headers: { "x-idream-user-id": analystId, "x-idream-role": "analyst" },
     } : undefined);
   }
+
+  it("never reports a fact-set check as passed when no facts were scanned", () => {
+    const empty = {
+      asOf: new Date(), incompleteOutcomeCount: 0, duplicateEffectCount: 0, impossibleStateCount: 0,
+      fixtureInternalLeakageCount: 0, joinCoverage: 1, userJoinCoverage: 1, characterJoinCoverage: 1,
+      contentVersionJoinCoverage: 1, releaseJoinCoverage: 1, eventLagP95Ms: null, scannedFactCount: 0,
+      qualityState: "certified" as const,
+    };
+    const status = (checks: ReturnType<typeof metricQualityChecks>) => Object.fromEntries(checks.map((check) => [check.key, check.status]));
+    expect(status(metricQualityChecks(empty, 0))).toMatchObject({
+      duplicate_effect: "unavailable",
+      impossible_state: "unavailable",
+      fixture_internal_leakage: "unavailable",
+      authoritative_join_coverage: "unavailable",
+      eligible_fact_presence: "failed",
+    });
+    expect(metricQualityChecks(empty, 0).find((check) => check.key === "authoritative_join_coverage")?.observed).toBeNull();
+    expect(status(metricQualityChecks({ ...empty, scannedFactCount: 3 }, 3))).toMatchObject({
+      duplicate_effect: "passed",
+      authoritative_join_coverage: "passed",
+    });
+  });
 
   it("keeps a metric blocked while any quarantine in the quality window remains unresolved", () => {
     const metricKey = "activation.generation_7d";

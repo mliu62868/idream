@@ -444,4 +444,7 @@ export const adminZhCustomers: Record<string, string> = {
   "This queue view is empty": "这个队列视图是空的",
   "A queue view is a scope, not a filter — work outside it is still waiting.": "队列视图划定的是范围而不是筛选条件；范围之外的工作仍在等人处理。",
   "Open {view}": "去看{view}",
+  // 无下游验证器的客服处置：运营自证，不填结果引用。
+  "Attestation note (this action leaves no downstream record to verify)": "自证说明（此处置没有可供验证的下游记录）",
+  "Attest outcome": "确认处置结果",
 };

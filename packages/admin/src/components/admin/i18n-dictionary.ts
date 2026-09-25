@@ -455,7 +455,17 @@ export function hasAdminZh(key: string): boolean {
 }
 
 export function adminValueLabel(locale: AdminLocale, key: string) {
-  return locale === "zh" ? (zhValues[key] ?? key) : key;
+  return locale === "zh" ? (zhValues[key] ?? key) : humanizeEnumValue(key);
+}
+
+// SPEC: English has no enum label table, so value() humanizes snake / UPPER_SNAKE enum keys
+//       (content_report → "Content report", GRACE_PERIOD → "Grace period").
+// INVARIANT: only keys that contain an underscore and nothing but word characters — dotted
+//            action codes, ids, single words and acronyms (USD) pass through unchanged.
+function humanizeEnumValue(key: string) {
+  if (!/^[A-Za-z][A-Za-z0-9]*(_[A-Za-z0-9]+)+$/.test(key)) return key;
+  const words = key.toLowerCase().replaceAll("_", " ");
+  return words[0]!.toUpperCase() + words.slice(1);
 }
 
 export function adminDateLocale(locale: AdminLocale) {
