@@ -116,8 +116,8 @@ export const adminZhGrowth: Record<string, string> = {
   "Grant restored": "授予已还原",
   "It never expires.": "它永不过期。",
   "It stops working at {when}.": "它在 {when} 失效。",
-  "No active version of this rule key is loaded here, so the price it replaces is unknown.":
-    "当前页面里没有这个规则键的在售版本，因此它顶掉的价格未知。",
+  "No active price for this mode is loaded here, so the price it replaces is unknown.":
+    "当前页面里没有这个模式的在售价格，因此它顶掉的价格未知。",
   "No provider payout recorded yet": "尚无 provider 打款记录",
   "Paid out": "已打款",
   "Payout in progress": "打款进行中",

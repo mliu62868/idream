@@ -359,7 +359,7 @@ function PricingLoading() {
 /**
  * SPEC: 发布时说清楚它顶掉的是哪一版、那一版现在的价格是多少。
  *
- * INTENT: 表是一列平铺的版本，同一个 ruleKey 的 draft 和 active 可能隔着好几行。
+ * INTENT: 表是一列平铺的版本，同一个 mode 的 draft 和 active 可能隔着好几行。
  * 运营发布 v4 之前，得自己在表里找 v3 —— 那正是「改一个价格，影响面是什么」这个问题
  * 唯一能从现有契约里如实回答的部分。
  * INVARIANT: 契约里没有「当前有多少人在这个价位」，也没有商品关联，所以这里一个字都不提。
@@ -374,12 +374,13 @@ export function replacedVersionNote(
   if (action === "rollback") {
     return t("The version this restores is decided by the authority, not by this page.");
   }
-  const ruleKey = text(row.ruleKey);
+  // INVARIANT: 发布按 mode 顶掉在售规则（每个 mode 恰好一条 active），不按 ruleKey。
+  const mode = text(row.mode);
   const active = (rows ?? []).find(
-    (candidate) => text(candidate.ruleKey) === ruleKey && text(candidate.status) === "active",
+    (candidate) => text(candidate.mode) === mode && text(candidate.status) === "active",
   );
   if (!active) {
-    return t("No active version of this rule key is loaded here, so the price it replaces is unknown.");
+    return t("No active price for this mode is loaded here, so the price it replaces is unknown.");
   }
   return t("Replaces the live version {version}, priced at {base} base Dreamcoins × {multiplier}.", {
     base: slot(active.baseCost),

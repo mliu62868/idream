@@ -190,6 +190,11 @@ describe.sequential("Admin v2 pricing control plane", () => {
 
   it("publishes and rolls back with audit, keeping one active rule per mode", async () => {
     const ruleKey = `${P}video_base`;
+    // 夹具遵守「每个 mode 恰好一条 active」：先让种子 video 规则早早退场，v1 才是唯一在售。
+    await prisma.pricingRule.updateMany({
+      where: { mode: "video", status: "active" },
+      data: { status: "archived", archivedAt: new Date(Date.now() - 60_000) },
+    });
     await prisma.pricingRule.create({
       data: {
         id: `${P}pricing-v1`,
@@ -354,6 +359,37 @@ describe.sequential("Admin v2 pricing control plane", () => {
         fromVersion: 2,
         toVersion: 1,
       });
+  });
+
+  // SPEC: 发布按 mode 顶掉在售规则，所以换一个 ruleKey 发布后，回滚必须恢复被顶掉的那条。
+  it("rolls back a cross-ruleKey publish to the rule it replaced for the same mode", async () => {
+    await restoreSeedPricingAuthorities();
+    const ruleKey = `${P}voice_promo`;
+    const draft = await createRule({
+      userId: adminId,
+      role: "admin",
+      body: { ruleKey, label: "Voice promo", mode: "voice", baseCost: 1, reason: "voice promo draft", confirmation: ruleKey },
+    });
+    expectOk(draft);
+    const draftId = draft.data.rule.id as string;
+    expectError(await ruleCommand(rollbackRoute, {
+      method: "POST", suffix: "/rollback", id: draftId, userId: adminId, role: "admin",
+      body: { reason: "draft is not live", confirmation: draftId },
+    }), 400, "bad_request");
+    expectOk(await ruleCommand(publishRoute, {
+      method: "POST", suffix: "/publish", id: draftId, userId: adminId, role: "admin",
+      body: { reason: "voice promo live", confirmation: draftId },
+    }));
+    expect(await prisma.pricingRule.findUnique({ where: { id: "seed-pricing-voice-default-v1" } }))
+      .toMatchObject({ status: "archived" });
+
+    const rolledBack = await ruleCommand(rollbackRoute, {
+      method: "POST", suffix: "/rollback", id: draftId, userId: adminId, role: "admin",
+      body: { reason: "voice promo ended", confirmation: draftId },
+    });
+    expectOk(rolledBack);
+    expect(rolledBack.data.rule).toMatchObject({ id: "seed-pricing-voice-default-v1", status: "active" });
+    expect(await prisma.pricingRule.count({ where: { mode: "voice", status: "active" } })).toBe(1);
   });
 
   it("replays an exact create command instead of versioning a second draft", async () => {
