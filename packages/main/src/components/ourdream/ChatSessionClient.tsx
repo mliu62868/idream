@@ -707,7 +707,8 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
     }
     const mentionedName = group?.members.find(member => member.characterId === mentioned)?.name;
     const videoText = mentionedName ? text.slice(mentionedName.length + 1).replace(/^[,:]\s*/, "").trim() : text;
-    if (isExplicitChatVideoRequest(videoText) && receiptOwnerScope) {
+    // With video unavailable here the words are just roleplay and go to the character.
+    if (videoEnabled && isExplicitChatVideoRequest(videoText) && receiptOwnerScope) {
       openVideoRequest(undefined, videoText);
       return;
     }
@@ -1521,7 +1522,6 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
                       return <li key={receipt.key} data-pending-request-key={receipt.key} className="flex flex-wrap items-center justify-between gap-3">
                         <div className="min-w-0">
                           <p className="text-sm font-semibold">{receipt.kind === "generation_retry" ? "Media retry" : receipt.kind === "chat_video" ? "Chat video" : receipt.kind === "media_variation" ? "Image variation" : receipt.kind === "media_enhancement" ? "Image enhancement" : "Generation"} · {quote.costDreamcoins} coins</p>
-                          <p className="mt-1 break-all text-xs text-white/65">Request {receipt.key}</p>
                         </div>
                         <button type="button" className="min-h-11 rounded-full bg-white px-4 py-2 text-sm font-bold text-[rgb(13,13,13)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white disabled:opacity-50"
                           disabled={checking} onClick={() => void checkGenerationReceipt(receipt)}>{checking ? "Checking…" : "Check original request"}</button>

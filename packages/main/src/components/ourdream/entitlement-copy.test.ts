@@ -37,7 +37,7 @@ describe("entitlement copy", () => {
         true,
       ),
     ).toBe(
-      "Unlimited text messages · 120 voice minutes per billing period · Premium models · Advanced generation controls.",
+      "Unlimited text messages · 120 voice minutes per billing period · Advanced generation controls.",
     );
   });
 

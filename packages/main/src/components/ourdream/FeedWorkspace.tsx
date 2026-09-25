@@ -211,7 +211,7 @@ export function FeedWorkspace() {
           window.location.assign(authHrefForTarget("/signup", feedItemReturnTarget(itemId)));
           return;
         }
-        setStatus(payload.error?.message ?? "like failed");
+        setStatus(payload.error?.message ?? "Could not save your like. Please try again.");
       }
     } catch {
       setLikedIds((current) => {
@@ -220,7 +220,7 @@ export function FeedWorkspace() {
         else next.delete(itemId);
         return next;
       });
-      setStatus("like failed");
+      setStatus("Could not save your like. Please try again.");
     } finally {
       setLikePending((current) => {
         const next = new Set(current);
@@ -260,7 +260,7 @@ export function FeedWorkspace() {
       }
       setStatus(await shareOrCopy(new URL(payload.data.shareUrl, window.location.origin).toString(), "iDream"));
     } catch {
-      setStatus("share failed");
+      setStatus("Could not share this item. Please try again.");
     }
   }
 

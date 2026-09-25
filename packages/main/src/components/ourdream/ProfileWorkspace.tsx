@@ -846,7 +846,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
         body: JSON.stringify({ mutedTags }),
       });
       if (response.ok) setPreferencesAuthority(readyAuthorityStatus());
-      setStatus(response.ok ? "Preferences updated." : "Preferences update failed.");
+      setStatus(response.ok ? "Preferences updated." : apiEnvelopeErrorMessage(await response.json().catch(() => null)) ?? "Preferences could not be saved. Please try again.");
     } catch {
       setStatus("Network error. Please try again.");
     }
@@ -866,7 +866,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
         window.location.href = "/login";
         return;
       }
-      setStatus("Sign out failed.");
+      setStatus(apiEnvelopeErrorMessage(await response.json().catch(() => null)) ?? "Could not sign out other devices. Please try again.");
     } catch {
       setStatus("Network error. Please try again.");
     }
@@ -946,7 +946,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
     try {
       const response = await fetchForOwner(`/api/v1/media/${id}/download`);
       if (!response.ok) {
-        setStatus("Download failed.");
+        setStatus(apiEnvelopeErrorMessage(await response.json().catch(() => null)) ?? "Download failed. Please try again.");
         return;
       }
       const payload = (await response.json()) as { data?: { url?: string } };

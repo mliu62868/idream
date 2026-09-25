@@ -160,13 +160,13 @@ export function CollectionDetail({ id, onChanged }: { id: string; onChanged?: ()
       {error && <div role="alert" className="mb-3 text-sm text-rose-300"><p>{error}</p><button disabled={busy} onClick={() => void load(retryCursor)} type="button">Retry collection</button></div>}
       {busy && <p role="status" className="mb-3 text-sm text-white/60">Loading collection…</p>}
       {detail && <>
-        <p className="mb-4 text-sm text-white/60">{detail.collection.itemCount} items · {detail.collection.visibility}</p>
+        <p className="mb-4 text-sm text-white/60">{detail.collection.itemCount} items · {detail.collection.visibility === "public" ? "Public in Community" : "Private"}</p>
         {detail.canManage && <form className="mb-5 flex flex-wrap items-end gap-3" onSubmit={(event) => { event.preventDefault(); void mutate(); }}>
           <label className="grid gap-1 text-sm">Collection name<input className="rounded border border-white/20 bg-transparent p-2 text-base" disabled={busy} maxLength={80} onChange={(event) => { draftRef.current.name = event.target.value; setName(event.target.value); }} value={name} /></label>
           <label className="flex gap-2 py-2 text-sm"><input checked={isPublic} disabled={busy} onChange={(event) => { draftRef.current.isPublic = event.target.checked; setIsPublic(event.target.checked); }} type="checkbox" />Public in Community</label>
           <button className="rounded bg-white/10 px-3 py-2 text-sm" disabled={busy || !name.trim()} type="submit">Save collection</button>
         </form>}
-        {detail.items.length === 0 ? <p className="text-sm">This collection is empty. Add media from <Link className="underline" href="/profile?tab=media">your Gallery</Link>.</p> : <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {detail.items.length === 0 ? <p className="text-sm">This collection is empty.{detail.canManage ? <> Add media from <Link className="underline" href="/profile?tab=media">your Gallery</Link>.</> : null}</p> : <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {detail.items.map((item, index) => <article className="overflow-hidden rounded-xl border border-white/10 p-2" data-testid="collection-detail-item" data-media-id={item.id} key={item.id}>
             {!item.url ? <div className="grid aspect-square place-items-center text-sm text-white/60">Media unavailable</div> : item.type === "video" ? <video aria-label={`Collection video ${index + 1}`} className="aspect-square w-full object-contain" controls playsInline preload="metadata" src={item.url} /> : item.type === "voice" ? <audio aria-label={`Collection audio ${index + 1}`} className="w-full" controls preload="metadata" src={item.url} /> : (
               // Native media keeps the same authenticated content URL as Gallery and supports mixed collections.

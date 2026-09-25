@@ -79,7 +79,7 @@ describe("Help Desk support conversation", () => {
     await settle(); await click("View conversation");
     resolved = true;
     await click("Refresh conversation");
-    expect(container.textContent).toContain("Status: resolved");
+    expect(container.textContent).toContain("Status: Resolved");
     expect([...container.querySelectorAll("span")].some((node) => node.textContent === "Resolved")).toBe(true);
     expect(container.querySelector("textarea")).toBeNull();
   });

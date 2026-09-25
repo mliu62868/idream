@@ -172,7 +172,7 @@ export function ComicStudio({ id }: { id?: string }) {
       markDirty(false); setComic(result); setManifest(manifestFromComic(result));
       setWriting(false);
       if (!id) { window.location.assign(`/creator-studio/comics/${encodeURIComponent(result.id)}`); return; }
-      setMessage(action === "save" ? "Draft saved." : action === "submit" ? "Submitted for review. This version stays locked until a decision or withdrawal." : "Comic withdrawn. Readers can no longer open it; you can edit the draft now.");
+      setMessage(action === "save" ? "Draft saved." : action === "submit" ? "Submitted for review. This version stays locked until a decision or withdrawal." : "Comic withdrawn. Readers can no longer open it; edit and save the draft to submit again.");
     } catch (cause) {
       if (isAbortError(cause)) return;
       setWriting(false);
@@ -237,7 +237,11 @@ export function ComicStudio({ id }: { id?: string }) {
     <div className="sticky bottom-16 mt-8 flex flex-wrap items-center gap-3 border-t border-white/15 bg-[rgb(13,13,13)] py-4 md:bottom-0">
       <button className={`${comicButton} bg-white text-black hover:bg-neutral-200`} disabled={disabled} onClick={() => void write("save")} type="button">{writing ? "Saving…" : "Save draft"}</button>
       {comic?.status === "draft" && <button className={comicButton} disabled={writing || dirty || comic.visibility === "private" || pageCount === 0} onClick={() => void write("submit")} type="button">Submit for review</button>}
-      <p className="text-sm text-neutral-300">{dirty ? "Unsaved changes. Save before submitting." : `${pageCount} pages · ${manifest.episodes.length} chapters`}</p>
+      <p className="text-sm text-neutral-300">{dirty ? "Unsaved changes. Save before submitting."
+        : comic?.status === "withdrawn" ? "Withdrawn. Save the draft to submit it again."
+        : comic?.status === "draft" && pageCount === 0 ? "Add at least one page to submit."
+        : comic?.status === "draft" && comic.visibility === "private" ? "Private Comics stay with you. Choose Public or Unlisted and save to submit."
+        : `${pageCount} ${pageCount === 1 ? "page" : "pages"} · ${manifest.episodes.length} ${manifest.episodes.length === 1 ? "chapter" : "chapters"}`}</p>
     </div>
   </div></ComicShell>;
 }

@@ -119,7 +119,7 @@ export function ChatContextSettings({ sessionId, memoryEnabled }: Readonly<{ ses
         {pins.map((item) => (
           <div key={item.id} className="mt-3 rounded-xl bg-white/5 p-3">
             <p className="whitespace-pre-wrap break-words text-[13px]">{item.content}</p>
-            <p className="mt-1 text-[11px] text-[rgb(170,170,170)]">Saved by you · Version {item.version}</p>
+            <p className="mt-1 text-[11px] text-[rgb(170,170,170)]">Saved by you</p>
             <div className="mt-2 flex gap-2">
               <button className={buttonClass} disabled={disabled} onClick={() => { setEditingPin(item); setPinText(item.content); }} type="button">Edit pin</button>
               <button className={buttonClass} disabled={disabled} onClick={() => void remove(item)} type="button">Remove pin</button>
@@ -135,7 +135,7 @@ export function ChatContextSettings({ sessionId, memoryEnabled }: Readonly<{ ses
       <div>
         <h3 className="text-[13px] font-bold">Custom instructions</h3>
         <p className="mt-1 text-[12px] leading-4 text-[rgb(170,170,170)]">Your interaction preferences for this character, including new chats. These remain active with memory off; they cannot change the character&apos;s identity or authorize media generation.</p>
-        {custom ? <p className="mt-1 text-[11px] text-[rgb(170,170,170)]">Saved by you · Version {custom.version}</p> : null}
+        {custom ? <p className="mt-1 text-[11px] text-[rgb(170,170,170)]">Saved by you</p> : null}
         <textarea aria-label="Custom instructions" className={inputClass} disabled={disabled} maxLength={CHAT_INSTRUCTION_MAX_CHARS} onChange={(event) => setInstructions(event.target.value)} placeholder="How would you like to interact?" rows={4} value={instructions} />
         <div className="mt-2 flex gap-2">
           <button className={buttonClass} data-testid="chat-instructions-save" disabled={disabled || !instructions.trim() || instructions.trim() === custom?.content} onClick={() => void save("custom_instruction", instructions, custom)} type="button">Save instructions</button>

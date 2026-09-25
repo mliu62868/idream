@@ -22,7 +22,7 @@ Use the appeal form in the Help Desk when you want a decision reviewed. Include 
 
 ## External contact details
 
-Operator names, postal addresses, email addresses, and external community channels appear only when this deployment has explicitly configured them. Until then, the local Help Desk is the public contact authority.
+We list other contact channels here only once they are staffed. Until then, the Help Desk is the way to reach us, and every request there gets a reference you can follow up on.
 `,
   },
   {
@@ -33,7 +33,7 @@ Operator names, postal addresses, email addresses, and external community channe
     markdown: `
 ## What this center covers
 
-These pages describe the product rules and the controls currently available in this deployment. They are maintained with the application rather than copied from another operator.
+These pages describe iDream's rules and the controls you can use today. They are kept in step with the product, so they only describe what actually works.
 
 ## Product boundaries
 
@@ -71,19 +71,19 @@ The appeal is stored as its own product record with a status. Do not resubmit an
     markdown: `
 ## Before publication
 
-Character and media workflows record safety and publication state. A generated or submitted item is not public merely because a file exists; the serving path also requires the appropriate approved or published authority.
+Every character and image keeps track of whether it has been checked and published. Creating or generating something does not make it public; it appears in discovery only after it has been approved and published.
 
 ## Operator review
 
-Items that require a decision enter the administration review workflows. Decisions, reasons, and state transitions are stored separately from public serving state so a draft cannot silently become live.
+Anything that needs a decision goes to our review team. Their decisions and reasons are recorded, and nothing goes live until a reviewer has approved it.
 
 ## Reports and appeals
 
-Users can create reports against supported target types. Appeals are separate records linked to the disputed target or decision. Use [How to report](/reporting/how-to-report) for the reporting path.
+You can report characters, messages, media, collections, Comics, and profiles. An appeal is kept with the decision it disputes, so the reviewer sees the full history. Use [How to report](/reporting/how-to-report) for the reporting path.
 
-## Provider configuration
+## Services we use
 
-This deployment may use local or configured providers for generation and verification. A provider name is not presented as a public operating fact unless it is explicitly configured.
+Images, voice, and verification may be produced by services we run or by partners we work with. We name a partner only when that partnership is in place.
 `,
   },
   {
@@ -98,7 +98,7 @@ Characters must identify as adults. Conflicting age fields, underage terms, or m
 
 ## Public readiness
 
-A public character also needs a valid serving release, required media placements, and passing publication state. Missing or stale assets can keep an otherwise valid draft out of discovery.
+A public character also needs its required images and a published version. If an image is missing or out of date, the character stays out of discovery until it is fixed.
 
 ## Originality and target safety
 
@@ -136,23 +136,23 @@ Use the target's Report action for content issues and the [Help Desk](/helpdesk)
     path: "/policies/age-verification",
     title: "Age access and verification",
     description:
-      "How the adult access gate, account state, character age, and configured verification workflow interact.",
+      "How the adult confirmation, character ages, and any extra age check work together.",
     markdown: `
 ## Adult access gate
 
-The public experience requires an adult-content acceptance state. That state is tied to the current browser and, when signed in, to the current account authority.
+You confirm you are an adult before browsing. That confirmation is remembered in this browser and, once you sign in, on your account.
 
 ## Character age
 
-Character creation requires an adult age. A character with a missing, conflicting, or under-18 age cannot qualify for public serving.
+Character creation requires an adult age. A character with a missing, conflicting, or under-18 age cannot be made public.
 
 ## Additional verification
 
-Some mature actions may require a separate verified account state. When a verification provider is configured, the product creates a provider session and records only the resulting workflow state needed by the application.
+In some places, certain features need an extra age check. When that applies, we keep only the result of the check, not your documents.
 
 ## Problems with verification
 
-Use the [Help Desk](/helpdesk) and include the local verification or request identifier shown by the product.
+Use the [Help Desk](/helpdesk) and include any reference shown on the verification screen.
 `,
   },
   {
@@ -161,7 +161,7 @@ Use the [Help Desk](/helpdesk) and include the local verification or request ide
     description:
       "Rules for uploads, fictional character identity, attribution, and reports about ownership or likeness.",
     markdown: `
-## Upload authority
+## Only share what you may use
 
 Only upload or publish media and text you have permission to use. Generated output does not erase obligations attached to source images or reference material.
 
@@ -217,15 +217,15 @@ An empty library, chat list, gallery, or billing state must come from a validate
 
 ## We do not treat drafts as live content
 
-Public serving requires its own publication authority. A generated file, CMS template, or approved candidate is not automatically a live placement.
+Content goes live only when it is published. A generated image, a template, or an approved candidate is not public on its own.
 
 ## We keep account data scoped
 
-Browser drafts, pending actions, private media, and server reads are scoped to the current viewer. A user switch clears or revalidates private state.
+Drafts, pending actions, and private media belong to the account that made them. If you switch accounts, the page clears or reloads anything private.
 
 ## We preserve history during repair
 
-Invalid legacy content is retained as a draft or provenance record where possible; it is not silently presented as current truth.
+When older content has to be fixed, we keep it as a draft with its history rather than quietly showing it as current.
 `,
   },
   {
@@ -234,17 +234,17 @@ Invalid legacy content is retained as a draft or provenance record where possibl
     description:
       "The first-principles rules used to keep public content, private data, and operator actions truthful.",
     markdown: `
-## One authority for each fact
+## One answer for each question
 
-Identity, publication, billing, generation, and search distribution each have a named source of truth. Similar-looking states are not treated as interchangeable.
+Your identity, what is published, your balance, and your generations each have a single record that the whole product reads, so different pages never disagree.
 
 ## Fail closed without inventing
 
-When an authority is unavailable, the product shows a retryable unavailable state or a last known validated public result. It does not convert the failure into a convincing empty page.
+When something cannot be loaded, we say so and offer a retry, or show the last confirmed result. We never show an empty page that looks real.
 
 ## Preserve provenance
 
-Cold-start assets, operator edits, generated candidates, and public placements keep their source and lifecycle history.
+Images and edits keep a record of where they came from and how they changed.
 
 ## Make recovery explicit
 
@@ -278,19 +278,19 @@ Submission creates a stored report record. Avoid filing repeated copies for the 
     markdown: `
 ## Account-scoped data
 
-Sessions, private chats, drafts, presets, private media, entitlements, and billing records are read through the authenticated account boundary. Public APIs use separate qualification rules.
+Your chats, drafts, presets, private media, plan, and billing records are only available when you are signed in to your account. Public pages follow separate rules.
 
 ## Public content
 
-Only content with public visibility and the required approved or published serving state is eligible for public discovery. Source and creator provenance are kept separate from private account fields.
+Only content that is public, approved, and published can appear in discovery. Creator credits are shown without exposing private account details.
 
-## Configured providers
+## Services we use
 
-Generation, payment, storage, or verification requests may be sent to the provider configured for this deployment. The interface does not claim a particular provider is active unless runtime configuration confirms it.
+To generate media, take payments, store files, or verify age, we may send the needed data to a service we use for that job. We name a service only when it is actually in use.
 
 ## Controls
 
-Profile and support surfaces provide current account-management, preference, export, deletion, and diagnostic-consent workflows where implemented.
+Profile and the Help Desk let you manage your account and preferences, and delete your account.
 `,
   },
   {
@@ -301,11 +301,11 @@ Profile and support surfaces provide current account-management, preference, exp
     markdown: `
 ## Discovery preferences
 
-Use profile preferences and tag controls to shape public discovery. The server applies account-scoped preference state rather than sharing browser state across users.
+Use your profile preferences and muted tags to shape what you see. They are saved to your account, so they follow you across devices.
 
 ## Conversation actions
 
-Supported chat actions include editing or deleting eligible user messages, regeneration, memory review, and session deletion. Each action is checked against the current session owner.
+In a chat you can edit or delete your messages, regenerate a reply, review what the character remembers, and delete the conversation. Only you can do this to your chats.
 
 ## Reports and appeals
 
@@ -313,7 +313,7 @@ Use Report on supported targets and the appeal form in the [Help Desk](/helpdesk
 
 ## Account management
 
-Use Profile for the account controls currently exposed by this deployment.
+Use Profile to change your account settings, sign out other devices, or delete your account.
 `,
   },
   {

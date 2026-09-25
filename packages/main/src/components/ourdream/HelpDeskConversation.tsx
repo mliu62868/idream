@@ -87,7 +87,7 @@ function ConversationContent({ conversation, busy, error, draft, ticketId, onLoa
     {!busy ? <button className="font-bold text-white" onClick={onLoad} type="button">Refresh conversation</button> : null}
     {conversation ? <>
       <p className="whitespace-pre-wrap break-words">{conversation.description}</p>
-      <p>Status: {conversation.status.replaceAll("_", " ")}</p>
+      <p>Status: {ticketStatusLabel(conversation.status)}</p>
       {conversation.messages.map((message) => <div className="rounded-lg bg-white/5 p-3" key={message.id}>
         <p className="font-bold text-white">{message.author === "customer" ? "You" : "Support"} <time className="ml-2 font-normal text-white/50" dateTime={message.createdAt}>{new Date(message.createdAt).toLocaleString("en-US")}</time></p>
         <p className="whitespace-pre-wrap break-words">{message.body}</p>
@@ -97,7 +97,20 @@ function ConversationContent({ conversation, busy, error, draft, ticketId, onLoa
           <textarea aria-label={`Reply to ${ticketId}`} className="mt-2 min-h-24 w-full rounded-lg border border-white/10 bg-[rgb(36,36,36)] p-3 font-normal text-white" disabled={busy} maxLength={2000} onChange={(event) => onDraft(event.target.value)} value={draft} />
         </label>
         <button className="rounded-full bg-[rgb(253,95,194)] px-4 py-2 font-bold text-white disabled:opacity-50" disabled={busy || !draft.trim()} type="submit">Send reply</button>
-      </form> : <p>This request is {conversation.status}. You can submit a new support request if you need more help.</p>}
+      </form> : <p>This request is {ticketStatusLabel(conversation.status).toLowerCase()}. You can submit a new support request if you need more help.</p>}
     </> : null}
   </div>;
+}
+
+// Written from the customer's side: "waiting on user" is "waiting for your reply".
+const TICKET_STATUS_LABELS: Record<string, string> = {
+  received: "Received",
+  open: "Open",
+  waiting_on_user: "Waiting for your reply",
+  resolved: "Resolved",
+  closed: "Closed",
+};
+
+export function ticketStatusLabel(status: string) {
+  return TICKET_STATUS_LABELS[status] ?? status.replaceAll("_", " ");
 }

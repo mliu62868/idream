@@ -57,9 +57,8 @@ export function configuredEntitlementBenefits(
     benefits.push("Video generation");
   }
 
-  if (enabled(values, "premiumModels", "premium_models")) {
-    benefits.push("Premium models");
-  }
+  // INVARIANT: premiumModels is not listed. No Chat or generation path reads it
+  // (every plan uses the same models), so advertising it would sell nothing.
 
   if (enabled(values, "premiumControls", "premium_controls")) {
     benefits.push("Advanced generation controls");

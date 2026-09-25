@@ -923,6 +923,7 @@ export function HelpDeskWorkspace() {
             {submitting ? "Submitting..." : "Submit request"}
             <Send className="h-4 w-4" />
           </button>
+            <ShortFieldHint fields={[["Subject", subject, 3], ["Description", description, 10]]} />
 
           {status && (
             <p
@@ -1015,6 +1016,7 @@ export function HelpDeskWorkspace() {
               {appealSubmitting ? "Submitting..." : "Submit appeal"}
               <Scale className="h-4 w-4" />
             </button>
+            <ShortFieldHint fields={[["Target", appealTargetId, 3], ["Appeal", appealText, 10]]} />
           </form>
 
           {appealStatus && (
@@ -1174,6 +1176,7 @@ export function HelpDeskWorkspace() {
                 {feedbackSubmitting ? "Submitting..." : "Submit idea"}
                 <Plus className="h-4 w-4" />
               </button>
+            <ShortFieldHint fields={[["Title", feedbackTitle, 3], ["Description", feedbackDescription, 10]]} />
             </form>
 
             {feedbackStatus && (
@@ -1591,6 +1594,7 @@ function supportCategoryLabel(value: string) {
 }
 
 function historyStatusLabel(value: string) {
+  if (value === "waiting_on_user") return "Waiting for your reply";
   return value
     .split("_")
     .filter(Boolean)
@@ -1998,4 +2002,15 @@ function feedbackStatusLabel(status: string) {
   return isCatalogMember(PRODUCT_FEEDBACK_STATUSES, status)
     ? feedbackStatusLabels[status]
     : feedbackStatusLabels.under_review;
+}
+
+// The submit buttons stay disabled below these minimums; say which field is short
+// once the reader has started typing, instead of a silently grey button.
+function ShortFieldHint({ fields }: { fields: ReadonlyArray<readonly [label: string, value: string, min: number]> }) {
+  if (fields.every(([, value]) => !value.trim())) return null;
+  for (const [label, value, min] of fields) {
+    const short = min - value.trim().length;
+    if (short > 0) return <p className="mt-2 text-xs text-white/60" role="status">{label} needs {short} more character{short === 1 ? "" : "s"}.</p>;
+  }
+  return null;
 }

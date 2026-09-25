@@ -138,7 +138,7 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
         return;
       }
       if (!response.ok) {
-        setStatus("Could not save your like. Please try again.");
+        setStatus(apiEnvelopeErrorMessage(await response.json().catch(() => null)) ?? "Could not save your like. Please try again.");
         return;
       }
       const payload = parseCharacterLikeResponse(await response.json());

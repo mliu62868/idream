@@ -1,5 +1,6 @@
 "use client";
 
+import { apiEnvelopeErrorMessage } from "@/lib/viewer-resource-client";
 import Image from "next/image";
 import Link from "next/link";
 import { ArrowLeft, Flag, HeartHandshake, Share2 } from "lucide-react";
@@ -126,7 +127,7 @@ function CreatorProfileContent({ id }: Readonly<{ id: string }>) {
           );
           return;
         }
-        setStatus("Could not update follow. Please try again.");
+        setStatus(apiEnvelopeErrorMessage(await response.json().catch(() => null)) ?? "Could not update follow. Please try again.");
         return;
       }
       const authority = parseFollowMutationResponse(await response.json());
