@@ -51,7 +51,8 @@ export async function updateProactiveSettings(
     );
   }
   const updated = await prisma.recentChat.updateMany({
-    where: { sessionId, userId, status: "active" },
+    // INVARIANT: 主动消息只属于单聊；群聊成员会话写进去会把主动 Turn 混入群聊记录。
+    where: { sessionId, userId, status: "active", groupId: null },
     data: {
       proactiveEnabled: enabled,
       proactiveIntervalHours: intervalHours,
