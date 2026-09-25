@@ -19,6 +19,7 @@ import { PageHeader } from "@/components/admin/ui/PageHeader";
 import { emptyPageInfo, Pagination, type PageInfo } from "@/components/admin/ui/Pagination";
 import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { useToast } from "@/components/admin/ui/Toast";
+import { ApprovalRequiredNotice, isDualApprovalRequired, type BlockedApproval } from "./ApprovalRequired";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { canonicalListEmptyTitle } from "@/features/compatibility-lists/empty-state";
@@ -99,6 +100,7 @@ export function ApprovalsWorkspace({ canReview, canToggleEnforcement = false }: 
   const [errorCause, setErrorCause] = useState<unknown>(undefined);
   const [refreshedAt, setRefreshedAt] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
+  const [blockedDisable, setBlockedDisable] = useState<BlockedApproval | null>(null);
   // SPEC: 「上一页」走自己走过的游标回头，不给后端发 `before`。
   // INTENT: 审批列表还是单向 keyset（响应里没有 startCursor / hasPreviousPage）。
   //         翻页栈是本地的，所以第一页时 hasPrevious 为假 —— 置灰而不是给一个会 400 的按钮。
@@ -229,11 +231,21 @@ export function ApprovalsWorkspace({ canReview, canToggleEnforcement = false }: 
       reasonLabel: t("Reason"),
       submitLabel: t("Confirm"),
       onSubmit: async (reason) => {
-        await apiWrite(`/api/v2/admin/feature-flags/${DUAL_APPROVAL_FLAG}`, "PATCH", {
-          enabled: next,
-          reason,
-          confirmation: `${DUAL_APPROVAL_FLAG}:${next ? "enabled" : "disabled"}`,
-        });
+        try {
+          await apiWrite(`/api/v2/admin/feature-flags/${DUAL_APPROVAL_FLAG}`, "PATCH", {
+            enabled: next,
+            reason,
+            confirmation: `${DUAL_APPROVAL_FLAG}:${next ? "enabled" : "disabled"}`,
+          });
+        } catch (error) {
+          // 关闭双人复核本身要被批准：被拦下时就地给出申请入口。
+          if (!next && isDualApprovalRequired(error)) {
+            setBlockedDisable({ permissionKey: "config.feature_flag.write", action: "config.feature_flag.write", targetType: "feature_flag", targetId: DUAL_APPROVAL_FLAG, payload: {}, reason });
+            return;
+          }
+          throw error;
+        }
+        setBlockedDisable(null);
         toast({ tone: "success", title: next ? t("Dual approval turned on") : t("Dual approval turned off") });
         void load(query);
       },
@@ -325,6 +337,14 @@ export function ApprovalsWorkspace({ canReview, canToggleEnforcement = false }: 
             {data.enforcementEnabled ? t("Turn off dual approval") : t("Turn on dual approval")}
           </GhostButton>
         </div>
+      ) : null}
+      {blockedDisable ? (
+        <ApprovalRequiredNotice
+          blocked={blockedDisable}
+          message={t("Turning dual approval off needs a second operator's approval.")}
+          onRequested={() => { setBlockedDisable(null); void load(query); }}
+          testId="approvals-disable-blocked"
+        />
       ) : null}
       {!data && loading ? (
         <div className="rounded-lg border p-4" role="status">

@@ -204,13 +204,15 @@ export async function publishPricingRule(
           effectiveFrom: effectiveFrom.toISOString(),
         });
       }
+      // INVARIANT: 被顶掉的规则 archivedAt 与新规则 publishedAt 是同一时刻 —— 回滚靠它找「上一任」。
+      const now = new Date();
       await tx.pricingRule.updateMany({
         where: { mode: rule.mode, status: "active" },
-        data: { status: "archived", archivedAt: new Date() },
+        data: { status: "archived", archivedAt: now },
       });
       const published = await tx.pricingRule.update({
         where: { id },
-        data: { status: "active", effectiveFrom, publishedAt: new Date(), archivedAt: null },
+        data: { status: "active", effectiveFrom, publishedAt: now, archivedAt: null },
       });
       const after = pricingAuditSnapshot(published);
       await persistPricingMutation(tx, request, actor, requestId, {
@@ -253,11 +255,19 @@ export async function rollbackPricingRule(
       if (!current) throw Errors.notFound("Pricing rule not found");
       assertTargetConfirmation(body.confirmation, current.id);
       if (current.status !== "active") throw Errors.badRequest("Only the active pricing rule can be rolled back");
-      // INVARIANT: publish 按 mode 归档（每个 mode 恰好一条 active），所以回滚也按 mode 找
-      // 最近被归档的那条 —— 即这次发布顶掉的规则，不论它的 ruleKey 是否相同。
+      // INVARIANT: 回滚恢复的是「当前规则上线那一刻被它顶掉的那条」（同 mode，不论 ruleKey）：
+      //   它在当前规则 publishedAt 之前上线、并在那一刻被归档。恢复时不改写 publishedAt，
+      //   于是连续回滚会一路往回走（C→B→A），被回滚掉的规则永远不会被再次恢复。
+      if (!current.publishedAt) throw Errors.notFound("No previous pricing rule version to roll back to");
       const previous = await tx.pricingRule.findFirst({
-        where: { mode: current.mode, status: "archived", id: { not: current.id } },
-        orderBy: [{ archivedAt: { sort: "desc", nulls: "last" } }, { version: "desc" }],
+        where: {
+          mode: current.mode,
+          status: "archived",
+          id: { not: current.id },
+          OR: [{ publishedAt: { lt: current.publishedAt } }, { publishedAt: null }],
+          archivedAt: { gte: current.publishedAt },
+        },
+        orderBy: [{ publishedAt: { sort: "desc", nulls: "last" } }, { archivedAt: "desc" }],
       });
       if (!previous) throw Errors.notFound("No previous pricing rule version to roll back to");
       await tx.pricingRule.updateMany({
@@ -266,7 +276,7 @@ export async function rollbackPricingRule(
       });
       const restored = await tx.pricingRule.update({
         where: { id: previous.id },
-        data: { status: "active", publishedAt: new Date(), archivedAt: null },
+        data: { status: "active", archivedAt: null },
       });
       await persistPricingMutation(tx, request, actor, requestId, {
         audit: {

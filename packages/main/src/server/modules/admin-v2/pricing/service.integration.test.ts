@@ -392,6 +392,34 @@ describe.sequential("Admin v2 pricing control plane", () => {
     expect(await prisma.pricingRule.count({ where: { mode: "voice", status: "active" } })).toBe(1);
   });
 
+  // SPEC: 连续回滚一路往回走（C→B→A），不会把刚被回滚掉的价格又恢复回来。
+  it("walks back through successive rollbacks instead of ping-ponging", async () => {
+    await restoreSeedPricingAuthorities();
+    const publish = async (suffix: string, baseCost: number) => {
+      const ruleKey = `${P}voice_chain_${suffix}`;
+      const draft = await createRule({
+        userId: adminId, role: "admin",
+        body: { ruleKey, label: `Voice ${suffix}`, mode: "voice", baseCost, reason: "chain draft", confirmation: ruleKey },
+      });
+      expectOk(draft);
+      const id = draft.data.rule.id as string;
+      expectOk(await ruleCommand(publishRoute, { method: "POST", suffix: "/publish", id, userId: adminId, role: "admin", body: { reason: "chain live", confirmation: id } }));
+      return id;
+    };
+    const rollback = async (id: string) => {
+      const result = await ruleCommand(rollbackRoute, { method: "POST", suffix: "/rollback", id, userId: adminId, role: "admin", body: { reason: "chain rollback", confirmation: id } });
+      expectOk(result);
+      return result.data.rule.id as string;
+    };
+    const b = await publish("b", 3);
+    const c = await publish("c", 4);
+    expect(await rollback(c)).toBe(b);
+    expect(await rollback(b)).toBe("seed-pricing-voice-default-v1");
+    const d = await publish("d", 5);
+    expect(await rollback(d)).toBe("seed-pricing-voice-default-v1");
+    expect(await prisma.pricingRule.count({ where: { mode: "voice", status: "active" } })).toBe(1);
+  });
+
   it("replays an exact create command instead of versioning a second draft", async () => {
     const ruleKey = `${P}replayed`;
     const idempotencyKey = `${P}replayed-key`;
@@ -543,6 +571,8 @@ describe.sequential("Admin v2 pricing control plane", () => {
   });
 });
 
+const SEEDED_AT = new Date("2026-09-01T00:00:00.000Z");
+
 async function seedPricingRule(input: {
   id: string;
   ruleKey: string;
@@ -556,8 +586,9 @@ async function seedPricingRule(input: {
       label: input.ruleKey,
       mode: "voice",
       multiplier: 1,
-      publishedAt: input.status === "active" ? new Date() : null,
-      archivedAt: input.status === "archived" ? new Date() : null,
+      // 同一时刻：被顶掉的规则在当前规则上线那一刻归档（回滚据此认上一任）。
+      publishedAt: input.status === "active" ? SEEDED_AT : null,
+      archivedAt: input.status === "archived" ? SEEDED_AT : null,
     },
   });
 }

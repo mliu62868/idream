@@ -1,3 +1,4 @@
+import { DUAL_APPROVAL_FLAG, enforceApproval } from "@/server/modules/admin-v2/approvals/enforcement";
 import { randomUUID } from "node:crypto";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
@@ -96,6 +97,11 @@ export async function patchFeatureFlag(request: Request, key: string) {
     mutate: async (tx) => {
       const before = await tx.featureFlag.findUnique({ where: { key } });
       if (before?.hardPolicy) throw Errors.forbidden("Hard safety policy flags cannot be changed");
+      // INVARIANT: 双人复核开着时，关掉它本身也要第二个人批准 —— 否则一个人先关开关再单人发布，
+      //   整套复核形同虚设。打开它不需要批准（只会更严）。
+      if (key === DUAL_APPROVAL_FLAG && before?.enabled && body.enabled === false) {
+        await enforceApproval("config.feature_flag.write", key, tx);
+      }
       // INVARIANT: 运行时只认 enabled && rolloutPercent === 100；只翻 enabled 时跟着把灰度
       // 设成全量 / 0，否则「启用」一条 rollout=0 的开关在线上毫无效果。
       const rolloutPercent = body.rolloutPercent ?? (body.enabled === undefined ? undefined : body.enabled ? 100 : 0);

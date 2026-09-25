@@ -126,4 +126,17 @@ describe("customer support conversation", () => {
     expectOk(detail);
     expect(detail.data.request).toMatchObject({ status: "closed", canReply: false, messages: [{ body: "Your download is ready." }] });
   });
+
+  it("refuses a stale reply to a request another operator already resolved instead of reopening it", async () => {
+    const ticketId = await fileRequest();
+    expectOk(await adminV2("PATCH", `support/requests/${ticketId}`, {
+      userId: ADMIN, role: "admin", body: { status: "resolved", customerMessage: "Fixed on our side.", reason: "Resolved", confirmation: ticketId },
+    }));
+    expectError(await adminV2("PATCH", `support/requests/${ticketId}`, {
+      userId: ADMIN, role: "admin", body: { status: "waiting_on_user", customerMessage: "Late reply from a stale panel.", reason: "Customer-visible support reply", confirmation: ticketId },
+    }), 409, "conflict");
+    const detail = await api("GET", `support/requests/${ticketId}`, { userId: CUSTOMER });
+    expectOk(detail);
+    expect(detail.data.request).toMatchObject({ status: "resolved", messages: [{ body: "Fixed on our side." }] });
+  });
 });

@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import type {
   ContentTagCreateRequest,
   ContentTagMergeRequest,
@@ -54,34 +55,42 @@ export async function createTag(input: {
   if (body.confirmation !== slug) {
     throw Errors.badRequest("Confirmation did not match tag slug", { expected: slug });
   }
-  if (await prisma.tag.findUnique({ where: { slug } })) {
-    throw Errors.conflict("A tag with this slug already exists", { slug });
+  // INVARIANT: 标签与审计同一事务；并发同 slug 撞唯一约束时报 409 而不是 500。
+  try {
+    const created = await prisma.$transaction(async (tx) => {
+      const tag = await tx.tag.create({
+        data: {
+          slug,
+          label: body.label,
+          category: body.category || null,
+          isSensitive: body.isSensitive ?? false,
+          isMutedByDefault: body.isMutedByDefault ?? false,
+        },
+      });
+      const view = {
+        id: tag.id,
+        slug: tag.slug,
+        label: tag.label,
+        category: tag.category,
+        isSensitive: tag.isSensitive,
+        isMutedByDefault: tag.isMutedByDefault,
+      };
+      await writeContentAudit(request, actor, {
+        action: "content.tag.create",
+        targetType: "tag",
+        targetId: tag.id,
+        reason: body.reason,
+        after: view,
+      }, tx);
+      return view;
+    });
+    return { tag: created };
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      throw Errors.conflict("A tag with this slug already exists", { slug });
+    }
+    throw error;
   }
-  const tag = await prisma.tag.create({
-    data: {
-      slug,
-      label: body.label,
-      category: body.category || null,
-      isSensitive: body.isSensitive ?? false,
-      isMutedByDefault: body.isMutedByDefault ?? false,
-    },
-  });
-  const created = {
-    id: tag.id,
-    slug: tag.slug,
-    label: tag.label,
-    category: tag.category,
-    isSensitive: tag.isSensitive,
-    isMutedByDefault: tag.isMutedByDefault,
-  };
-  await writeContentAudit(request, actor, {
-    action: "content.tag.create",
-    targetType: "tag",
-    targetId: tag.id,
-    reason: body.reason,
-    after: created,
-  });
-  return { tag: created };
 }
 
 export async function patchTag(input: {

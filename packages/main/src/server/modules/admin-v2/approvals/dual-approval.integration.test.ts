@@ -98,6 +98,11 @@ describe("dual approval", () => {
       role: "admin",
       body: { ...pricingApproval, payload: { baseCost: 4 }, reason: "unbound approval", confirmation: `${rule.id}:config.pricing.publish` },
     }), 400, "bad_request");
+    expectError(await adminV2("POST", "approvals", {
+      userId: requester,
+      role: "admin",
+      body: { ...pricingApproval, payload: { baseCost: "4", multiplier: 1, version: 1 }, reason: "stringly approval", confirmation: `${rule.id}:config.pricing.publish` },
+    }), 400, "bad_request");
 
     await requestAndApprove({ ...pricingApproval, payload: { baseCost: 4, multiplier: 1, version: 1 } });
     expectOk(await adminV2("PATCH", `pricing/rules/${rule.id}`, { userId: requester, role: "admin", body: { baseCost: 400 } }));
@@ -133,5 +138,18 @@ describe("dual approval", () => {
     const big = await create(`${P}BIG`, 2000, 1);
     expectOk(big);
     codes.push(big.data.id);
+  });
+  // INVARIANT: 开着的双人复核不能被一个人关掉（放在最后：它会关掉开关）。
+  it("needs an approval to switch dual approval off", async () => {
+    const disable = () => adminV2("PATCH", `feature-flags/${DUAL_APPROVAL_FLAG}`, {
+      userId: requester,
+      role: "admin",
+      body: { enabled: false, reason: "turn off review", confirmation: `${DUAL_APPROVAL_FLAG}:disabled` },
+    });
+    expectError(await disable(), 403);
+    expect(await prisma.featureFlag.findUnique({ where: { key: DUAL_APPROVAL_FLAG } })).toMatchObject({ enabled: true });
+    await requestAndApprove({ permissionKey: "config.feature_flag.write", action: "config.feature_flag.write", targetType: "feature_flag", targetId: DUAL_APPROVAL_FLAG, payload: {} });
+    expectOk(await disable());
+    expect(await prisma.featureFlag.findUnique({ where: { key: DUAL_APPROVAL_FLAG } })).toMatchObject({ enabled: false });
   });
 });

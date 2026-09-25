@@ -267,6 +267,11 @@ export async function patchSupportRequest(request: Request, ticketId: string) {
       if (body.status === "closed" && before.status !== "resolved") {
         throw Errors.conflict("Resolve the support request before closing it");
       }
+      // INVARIANT: 回复只发给还开着的工单。客服面板按加载时的状态附带 waiting_on_user；
+      //   若期间别人已解决，照写会把工单悄悄重开并清掉 resolvedAt。
+      if (body.customerMessage && (before.status === "resolved" || before.status === "closed")) {
+        throw Errors.conflict("This support request was already resolved; reopen it before replying");
+      }
       const updated = await tx.supportRequest.update({
         where: { ticketId },
         data: {

@@ -125,6 +125,7 @@ export const adminZhSystem: Record<string, string> = {
   "Dual approval is on.": "双人复核已开启。",
   "Turn on dual approval": "开启双人复核",
   "Turn off dual approval": "关闭双人复核",
+  "Turning dual approval off needs a second operator's approval.": "关闭双人复核本身需要另一位运营批准。",
   "Dual approval turned on": "双人复核已开启",
   "Dual approval turned off": "双人复核已关闭",
   "From the next request, high-risk writes (large ledger adjustments, large redeem codes, pricing and coin offer publishes) are refused until a second operator approves them.":

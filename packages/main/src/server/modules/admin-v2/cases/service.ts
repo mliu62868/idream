@@ -1,3 +1,4 @@
+import { effectiveSubscriptionStatus } from "@/server/modules/ourdream/subscription-lifecycle";
 import type { Appeal, ContentReport, Prisma, PrismaClient, SupportRequest } from "@prisma/client";
 import {
   APPEAL_CASE_DECISIONS,
@@ -983,8 +984,10 @@ async function deriveCaseOutcomeVerification(
     const match = /^subscription:([^:]+):([^:]+)$/.exec(outcomeRef);
     if (!match) return { passed: false, evidence: null, blocker: "subscription_outcome_requires_id_and_expected_status" } as const;
     const subscription = await tx.subscription.findUnique({ where: { id: match[1] } });
-    return subscription?.userId === current.targetId && subscription.status === match[2]
-      ? { passed: true, evidence: `subscription:${subscription.id}:${subscription.status}`, blocker: null } as const
+    // 与后台展示同一口径：已过期但尚未惰性对账的 active 行按 expired 验证。
+    const status = subscription ? effectiveSubscriptionStatus(subscription) : null;
+    return subscription?.userId === current.targetId && status === match[2]
+      ? { passed: true, evidence: `subscription:${subscription.id}:${status}`, blocker: null } as const
       : { passed: false, evidence: null, blocker: "subscription_outcome_does_not_match_case_authority" } as const;
   }
   return { passed: false, evidence: null, blocker: `no_automatic_verifier_for_${actionName}` } as const;

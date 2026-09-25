@@ -132,7 +132,8 @@ export async function createApproval(request: Request): Promise<ApprovalMutation
     const payload = (body.payload ?? {}) as Record<string, unknown>;
     const missing = boundFields.filter((field) => {
       const value = payload[field];
-      return !(typeof value === "number" && Number.isFinite(value)) && typeof value !== "string";
+      // 唯一允许的字符串是兑换码的 "unlimited"；"1000" 这类字符串数字永远比不上 number，只会造出一张批了也用不了的单。
+      return !(typeof value === "number" && Number.isFinite(value)) && value !== "unlimited";
     });
     if (missing.length > 0) {
       throw Errors.badRequest("Approval payload must name the exact values it approves", { action: body.action, missing });
