@@ -389,10 +389,13 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
       // re-derives authorization from its own frozen copy of that text, so
       // using it as the direction adds no permission; failing the whole Turn
       // left the user with "Reply unavailable" for a plain photo request.
-      const userText = textOf(options.messages.findLast((message) => message.source.kind === "user")?.content ?? []);
-      argumentsJson = userText.trim()
+      const userText = textOf(options.messages.findLast((message) => message.source.kind === "user")?.content ?? [])
+        .trim().slice(0, 1_000);
+      // The prompt schema needs 12+ characters; "selfie pls" is still a clear request.
+      const direction = userText.length >= 12 ? userText : `A photo: ${userText}`;
+      argumentsJson = userText
         ? requiredToolArgumentsJson(this.requiredToolName, JSON.stringify(
-            this.requiredToolName === "edit_last_image" ? { instruction: userText } : { prompt: userText },
+            this.requiredToolName === "edit_last_image" ? { instruction: userText } : { prompt: direction },
           ))
         : null;
       if (argumentsJson) {

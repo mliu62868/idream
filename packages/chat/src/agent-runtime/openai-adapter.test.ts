@@ -696,6 +696,22 @@ describe("OpenAI-compatible DSH adapter", () => {
     expect(chunks.at(-1)).toMatchObject({ type: "finish", reason: { kind: "tool-calls" } });
   });
 
+  it("keeps a very short photo request usable as the fallback direction", async () => {
+    const adapter = adapterFor("https://provider.example/v1", async () => new Response(`data: ${JSON.stringify({ choices: [{
+      delta: { content: "Hold still." }, finish_reason: "stop",
+    }] })}\n\n`), { requiredToolName: "generate_image_async" });
+    const chunks: StreamChunk[] = [];
+    for await (const chunk of adapter.stream({
+      provider: "openrouter", model: "deepseek/test",
+      messages: [{ id: "current-user" as never, role: "user", source: { kind: "user" }, content: [{ type: "text", text: "selfie pls" }] }],
+      tools: [{ name: "generate_image_async", description: "Generate an image", parameters: { type: "object", properties: {} } }],
+    })) chunks.push(chunk);
+    expect(chunks).toContainEqual(expect.objectContaining({
+      type: "tool-call-delta",
+      argumentsDelta: JSON.stringify({ prompt: "A photo: selfie pls", orientation: "4:5", outputCount: 1 }),
+    }));
+  });
+
   it("rejects an unpinned provider before converting its required-tool JSON", async () => {
     let requests = 0;
     const adapter = new OpenAiCompatibleAdapter({
