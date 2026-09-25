@@ -84,7 +84,7 @@ describe("catalog", () => {
       "feature",
       "other",
     ]);
-    expect(APPEAL_TARGET_TYPES).toHaveLength(8);
+    expect(APPEAL_TARGET_TYPES).toHaveLength(10);
     expect(APPEAL_TARGET_TYPES).toContain("copyright_likeness");
   });
 

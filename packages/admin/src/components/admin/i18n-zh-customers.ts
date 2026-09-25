@@ -384,6 +384,8 @@ export const adminZhCustomers: Record<string, string> = {
   "Reporter": "举报人",
   "Reporter statement": "举报人陈述",
   "No takedown": "无法处置",
+  "Handle account": "去处理账号",
+  "Accounts are suspended or restored in Team Access. Close this report after handling the account there.": "账号的停用与恢复在「团队访问」里操作；处理完账号后再关闭这条举报。",
   "Takedown is not implemented for this target type; only closing the report is available.":
     "这类目标还没有实现处置动作，只能把举报关闭。点「处置」会让整笔裁决回滚。",
   // 只数得清已加载的这一页，所以中文也必须带上「本页」。

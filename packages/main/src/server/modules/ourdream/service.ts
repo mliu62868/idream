@@ -56,6 +56,7 @@ import {
   unfollowUser,
 } from "./discovery";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import { currentModerationEffectOwner } from "@/server/modules/admin-v2/moderation/moderation-effect";
 import { listActiveTemplates } from "./character-templates";
 import { isReusablePlatformAssetWhere } from "@/server/modules/ourdream/chat-image-reuse";
 import { generationContextSelectorSchema, generationContextToken, generationContextSource, loadGenerationContext, resolveGenerationContext, signGenerationContext } from "./generation-context";
@@ -3071,6 +3072,15 @@ async function updateMediaCollection(request: Request, collectionId: string) {
   const collection = await prisma.$transaction(async (tx) => {
     const owned = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`SELECT id FROM media_collections WHERE id = ${collectionId} AND "ownerId" = ${user.id} FOR UPDATE`);
     if (!owned.length) throw Errors.notFound("Collection not found");
+    // INVARIANT: 被举报处置撤下的合集，作者不能自己改回公开；只有申诉撤销裁决才会放回。
+    if (
+      body.visibility && body.visibility !== "private" &&
+      await currentModerationEffectOwner(tx, "media_collection", collectionId)
+    ) {
+      throw Errors.forbidden(
+        "This collection was removed from Community after a report. Appeal the decision from Help Desk to restore it.",
+      );
+    }
     if (body.visibility === "public") {
       const items = await tx.mediaCollectionItem.findMany({
         where: { collectionId },

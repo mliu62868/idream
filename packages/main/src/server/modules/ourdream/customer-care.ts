@@ -57,7 +57,7 @@ export function appealTargetIdFromInput(raw: string) {
   } catch {
     return value;
   }
-  const item = url.searchParams.get("item");
+  const item = url.searchParams.get("item") ?? url.searchParams.get("collection");
   if (item) return item;
   const [, section, id] = url.pathname.split("/");
   if (id && ["characters", "creators", "comics", "media"].includes(section)) {
@@ -302,6 +302,18 @@ async function appealTargetOwnedByUser(
   }
   if (input.targetType === "media") {
     return Boolean(await tx.mediaAsset.findFirst({
+      where: { id: input.targetId, ownerId: input.userId },
+      select: { id: true },
+    }));
+  }
+  if (input.targetType === "comic") {
+    return Boolean(await tx.comic.findFirst({
+      where: { id: input.targetId, creatorId: input.userId },
+      select: { id: true },
+    }));
+  }
+  if (input.targetType === "media_collection") {
+    return Boolean(await tx.mediaCollection.findFirst({
       where: { id: input.targetId, ownerId: input.userId },
       select: { id: true },
     }));

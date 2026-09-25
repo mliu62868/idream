@@ -103,7 +103,7 @@ async function overturnMediaAppeal(input: {
 async function actionTarget(input: {
   adminId: string;
   reporterId: string;
-  targetType: "character" | "media";
+  targetType: "character" | "media" | "comic" | "media_collection";
   targetId: string;
 }) {
   const report = await prisma.contentReport.create({
@@ -134,6 +134,73 @@ async function actionTarget(input: {
 }
 
 describe("moderation appeal exact restoration authority", () => {
+  it("takes a reported Comic down through the review panel's removal and restores it on an owner appeal", async () => {
+    const reporterId = `${P}reporter-comic`;
+    const ownerId = `${P}owner-comic`;
+    const adminId = `${P}admin-comic`;
+    const comicId = `${P}comic`;
+    await createUser({ id: reporterId, dataClass: "customer" });
+    await createUser({ id: ownerId, dataClass: "customer" });
+    await createUser({ id: adminId, role: "admin", dataClass: "internal" });
+    const publishedAt = new Date("2026-09-01T00:00:00.000Z");
+    await prisma.comic.create({ data: {
+      id: comicId, creatorId: ownerId, title: "Reported Comic", visibility: "public", status: "published", publishedAt,
+    } });
+
+    const decisionId = await actionTarget({ adminId, reporterId, targetType: "comic", targetId: comicId });
+    await expect(prisma.comic.findUniqueOrThrow({ where: { id: comicId } })).resolves.toMatchObject({
+      status: "withdrawn", publishedAt: null, reviewNote: "Removed after a content report.", version: 2,
+    });
+
+    const appeal = await api("POST", "appeals", {
+      userId: ownerId,
+      ageGate: true,
+      body: { targetType: "comic", targetId: `/comics/${comicId}`, appealText: "This Comic follows the rules." },
+    });
+    expectOk(appeal);
+    expect(appeal.data.appeal).toMatchObject({ originalDecisionId: decisionId });
+    expectOk(await overturnMediaAppeal({ adminId, appealId: appeal.data.appeal.id as string }));
+    await expect(prisma.comic.findUniqueOrThrow({ where: { id: comicId } })).resolves.toMatchObject({
+      status: "published", publishedAt, reviewNote: null, version: 3,
+    });
+  });
+
+  it("takes a reported Collection out of Community, keeps its owner from re-publishing, and restores it on appeal", async () => {
+    const reporterId = `${P}reporter-collection`;
+    const ownerId = `${P}owner-collection`;
+    const adminId = `${P}admin-collection`;
+    const collectionId = `${P}collection`;
+    await createUser({ id: reporterId, dataClass: "customer" });
+    await createUser({ id: ownerId, dataClass: "customer" });
+    await createUser({ id: adminId, role: "admin", dataClass: "internal" });
+    await prisma.mediaCollection.create({ data: { id: collectionId, ownerId, name: "Reported Collection", visibility: "unlisted" } });
+
+    await actionTarget({ adminId, reporterId, targetType: "media_collection", targetId: collectionId });
+    await expect(prisma.mediaCollection.findUniqueOrThrow({ where: { id: collectionId } }))
+      .resolves.toMatchObject({ visibility: "private" });
+    expectError(await api("PATCH", `media/collections/${collectionId}`, {
+      userId: ownerId,
+      ageGate: true,
+      body: { visibility: "public" },
+    }), 403);
+
+    const appeal = await api("POST", "appeals", {
+      userId: ownerId,
+      ageGate: true,
+      body: { targetType: "media_collection", targetId: `/community?collection=${collectionId}`, appealText: "This collection follows the rules." },
+    });
+    expectOk(appeal);
+    expectOk(await overturnMediaAppeal({ adminId, appealId: appeal.data.appeal.id as string }));
+    await expect(prisma.mediaCollection.findUniqueOrThrow({ where: { id: collectionId } }))
+      .resolves.toMatchObject({ visibility: "unlisted" });
+    const renamed = await api("PATCH", `media/collections/${collectionId}`, {
+      userId: ownerId,
+      ageGate: true,
+      body: { name: "Renamed", visibility: "unlisted" },
+    });
+    expectOk(renamed);
+  });
+
   it("rejects Character appeal A after decision B became the current effect owner", async () => {
     const ownerId = `${P}owner-character-a-b`;
     const adminId = `${P}admin-character-a-b`;
