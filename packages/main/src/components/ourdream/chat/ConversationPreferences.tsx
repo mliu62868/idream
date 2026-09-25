@@ -110,8 +110,12 @@ export function ConversationPreferences({ sessionId }: Readonly<{ sessionId: str
 async function readResponse(response: Response) {
   const raw: unknown = await response.json().catch(() => null);
   if (!response.ok) {
-    const parsed = z.object({ error: z.object({ message: z.string() }) }).safeParse(raw);
-    throw new Error(parsed.success ? parsed.data.error.message : "Conversation preferences could not load or save. Please try again.");
+    // The Chat façade answers { error: code, message }; its 409/410 messages
+    // (archived chat, changed elsewhere) are written for the reader.
+    const parsed = z.object({ message: z.string() }).safeParse(raw);
+    throw new Error(parsed.success && (response.status === 409 || response.status === 410)
+      ? parsed.data.message
+      : "Conversation preferences could not load or save. Please try again.");
   }
   return responseSchema.parse(raw);
 }

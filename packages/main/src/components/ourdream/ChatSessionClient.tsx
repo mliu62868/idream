@@ -427,8 +427,9 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
       const epoch = ++sessionMutationEpochRef.current;
       suspendGenerationReceipts(true);
       setReceiptOwnerScope(null);
-      stopVoice();
-      setLoadState("loading");
+      // INTENT: re-validate in the background. Swapping the conversation for a
+      // spinner on every window focus dropped the scroll position, the composer
+      // and any playing voice; the page only changes when the owner check fails.
       void fetchSession(signal).then((session) => {
         if (signal.aborted || epoch !== sessionMutationEpochRef.current) return;
         applySession(session);
@@ -436,6 +437,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
         resumePendingStreams(session.messages);
       }).catch((error: unknown) => {
         if (signal.aborted || epoch !== sessionMutationEpochRef.current) return;
+        stopVoice();
         setTitle("Chat");
         setLoadState(isChatAuthError(error) ? "signed-out" : "error");
       });
@@ -1487,7 +1489,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
             <>
               {group ? <GroupSpeakerControls members={group.members} selectedCharacterId={characterId} disabled={pending || hasGeneratingReply || speakerPending || conversationArchived || sendOutcomeUnknown} onSelect={next => void changeSpeaker(next)} /> : null}
               {group && sendOutcomeUnknown ? <p role="status" className="mt-3 text-sm text-white/80">The last request is unconfirmed. Retry the same message to check it before choosing another speaker.</p> : null}
-              {conversationArchived ? <p className="mt-3 text-sm text-white/80">This conversation is archived. Its history stays readable.</p> : null}
+              {conversationArchived ? <p className="mt-3 text-sm text-white/80">This conversation is archived. Its history stays readable.{!group && characterId ? <> <Link className="font-bold underline" href={`/characters/${encodeURIComponent(characterId)}`}>Start a new chat</Link></> : group ? <> <Link className="font-bold underline" href="/chat/groups">Start a new group</Link></> : null}</p> : null}
               <ChatHeaderControls
                 generateHref={chatGenerationHref({ characterId, sessionId: executionSessionId, message: latestCompletedReply })}
                 memoryEnabled={memoryEnabled}
@@ -1656,7 +1658,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
                               characterId={message.characterId ?? characterId}
                               generateHref={chatGenerationHref({ characterId: message.characterId ?? characterId, sessionId: message.sessionId ?? executionSessionId, message, mediaAssetId: attachment.mediaAssetId })}
                               key={attachment.id}
-                              paymentHref={upgradeHrefForChatSession(id)}
+                              paymentHref={upgradeHrefForChatSession(id, groupMode)}
                               onAddToIdentity={
                                 attachment.mediaAssetId
                                   ? () => addAttachmentToIdentity(attachment.mediaAssetId as string, message.characterId ?? characterId)

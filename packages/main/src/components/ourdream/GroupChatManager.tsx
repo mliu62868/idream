@@ -54,6 +54,9 @@ function GroupChats({ viewer }: { viewer: ViewerGate }) {
   const [searched, setSearched] = useState("");
   const [pending, setPending] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  // Archiving cannot be undone (the group stays readable but never takes new
+  // messages), so it asks once like delete does.
+  const [confirmArchive, setConfirmArchive] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<{ id: string; title: string } | null>(null);
   const [status, setStatus] = useState("");
   // The picker serves either the new group or an existing group gaining members.
@@ -151,7 +154,8 @@ function GroupChats({ viewer }: { viewer: ViewerGate }) {
   async function changeGroup(group: Group, change: "delete" | { status: "archived" } | { title: string }) {
     if (pending) return;
     const deleting = change === "delete";
-    if (deleting && confirmDelete !== group.id) { setConfirmDelete(group.id); return; }
+    if (deleting && confirmDelete !== group.id) { setConfirmArchive(null); setConfirmDelete(group.id); return; }
+    if (change !== "delete" && "status" in change && confirmArchive !== group.id) { setConfirmDelete(null); setConfirmArchive(group.id); return; }
     setPending(true); setStatus("");
     try {
       const response = await viewer.fetch(`/api/v1/chat/groups/${encodeURIComponent(group.id)}`, {
@@ -161,6 +165,7 @@ function GroupChats({ viewer }: { viewer: ViewerGate }) {
       });
       if (!response.ok) { setStatus(chatFailureCopy(await response.json().catch(() => null), "The group could not be updated")); return; }
       setConfirmDelete(null);
+      setConfirmArchive(null);
       setRenaming(null);
       await groups.refresh();
     } catch { setStatus("The result could not be confirmed. Reload to check the group."); }
@@ -231,7 +236,8 @@ function GroupChats({ viewer }: { viewer: ViewerGate }) {
           <div className="mt-3 flex flex-wrap gap-2">
             {renaming?.id !== group.id ? <button className={button} disabled={pending} onClick={() => setRenaming({ id: group.id, title: group.title })}>Rename</button> : null}
             {group.status === "active" && group.members.length < GROUP_CHAT_MAX_MEMBERS ? <button className={button} disabled={pending || adding?.id === group.id} onClick={() => startAdding(group)}>Add character</button> : null}
-            {group.status === "active" ? <button className={button} disabled={pending} onClick={() => void changeGroup(group, { status: "archived" })}>Archive</button> : null}
+            {group.status === "active" ? <button className={button} disabled={pending} onClick={() => void changeGroup(group, { status: "archived" })}>{confirmArchive === group.id ? "Confirm archive · can't be undone" : "Archive"}</button> : null}
+            {confirmArchive === group.id ? <button className={button} onClick={() => setConfirmArchive(null)}>Keep active</button> : null}
             <button className={button} disabled={pending} onClick={() => void changeGroup(group, "delete")}>{confirmDelete === group.id ? "Confirm delete group and history" : "Delete group"}</button>
             {confirmDelete === group.id ? <button className={button} onClick={() => setConfirmDelete(null)}>Keep group</button> : null}
           </div>

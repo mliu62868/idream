@@ -57,7 +57,19 @@ const CHAT_FAILURE_COPY: Readonly<Record<string, string>> = {
 export function chatFailureCopy(payload: unknown, fallback: string): string {
   const code = chatFailureCode(payload);
   if (!code) return fallback;
+  if (code === "conflict") return userFacingConflict(payload) ?? fallback;
   return CHAT_FAILURE_COPY[code] ?? fallback;
+}
+
+// Main's `conflict` messages mix reader guidance with internal invariants, so
+// only the ones written for the reader (what to do next) are shown verbatim.
+const USER_FACING_CONFLICT = /^(A reply is already generating|Cancel the active reply before |Companion memory is changing|[^.]* changed elsewhere\.|Your account changed\.|Your chat persona changed|(Archive|Delete|Rename) this conversation from its group chat|The selected image belongs to a different chat|There is no delivered Chat image to edit)/u;
+
+function userFacingConflict(payload: unknown): string | null {
+  const error = (payload as { error?: unknown }).error;
+  const message = error && typeof error === "object" ? (error as { message?: unknown }).message : (payload as { message?: unknown }).message;
+  if (typeof message !== "string" || !USER_FACING_CONFLICT.test(message)) return null;
+  return /[.!?]$/u.test(message) ? message : `${message}.`;
 }
 
 /** Main's product errors and Chat's stream errors use distinct envelopes. */

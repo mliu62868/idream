@@ -109,11 +109,18 @@ export function ComicStudio({ id }: { id?: string }) {
   // The reads start on the next task: both set loading state on their way out,
   // and setting state synchronously from an effect cascades renders.
   const confirmed = viewer.identity !== null;
+  const anonymous = viewer.identity?.kind === "anonymous";
   useEffect(() => {
     if (!accepted || !confirmed) return;
+    // The gate issues no ticket to a signed-out viewer, so the reads below would
+    // never start; send them to sign in the same way a 401 does.
+    if (anonymous) {
+      window.location.assign(authHrefForTarget("/login", id ? `/creator-studio/comics/${encodeURIComponent(id)}` : "/creator-studio/comics/new"));
+      return;
+    }
     const start = window.setTimeout(() => { void load(); void loadGallery(); }, 0);
     return () => window.clearTimeout(start);
-  }, [accepted, confirmed, load, loadGallery]);
+  }, [accepted, anonymous, confirmed, id, load, loadGallery]);
 
   const identity = viewer.identity;
   const seenIdentity = useRef(identity);

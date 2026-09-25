@@ -28,6 +28,8 @@ export function ChatSessionListDrawer({
   const [retryIndex, setRetryIndex] = useState(0);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [deleteConfirmSessionId, setDeleteConfirmSessionId] = useState<string | null>(null);
+  // Archive is one-way (history stays readable, no new messages), so it asks once.
+  const [archiveConfirmSessionId, setArchiveConfirmSessionId] = useState<string | null>(null);
   // Inline rename: editingId marks the row in edit mode, draft holds the input value.
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -71,8 +73,13 @@ export function ChatSessionListDrawer({
   }, [open, retryIndex, currentSessionId]);
 
   async function archive(sessionId: string) {
-    const epoch = scopeEpoch.current;
     setDeleteConfirmSessionId(null);
+    if (archiveConfirmSessionId !== sessionId) {
+      setArchiveConfirmSessionId(sessionId);
+      return;
+    }
+    setArchiveConfirmSessionId(null);
+    const epoch = scopeEpoch.current;
     setBusyId(sessionId);
     try {
       const res = await fetch(
@@ -143,6 +150,7 @@ export function ChatSessionListDrawer({
 
   async function remove(sessionId: string) {
     const epoch = scopeEpoch.current;
+    setArchiveConfirmSessionId(null);
     if (deleteConfirmSessionId !== sessionId) {
       setDeleteConfirmSessionId(sessionId);
       setError(null);
@@ -314,15 +322,17 @@ export function ChatSessionListDrawer({
                   <Pencil className="h-4 w-4" />
                 </button>
                 <button
-                  aria-label="Archive chat"
-                  className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-[rgb(170,170,170)] hover:bg-black/40 hover:text-white disabled:opacity-50"
+                  aria-label={archiveConfirmSessionId === row.id ? "Confirm archive chat" : "Archive chat"}
+                  className={`inline-flex h-8 shrink-0 items-center justify-center rounded-full text-[rgb(170,170,170)] hover:bg-black/40 hover:text-white disabled:opacity-50 ${
+                    archiveConfirmSessionId === row.id ? "min-w-[76px] px-2 text-[11px] font-bold uppercase" : "w-8"
+                  }`}
                   data-testid="session-archive"
                   disabled={busyId === row.id || row.status === "archived"}
                   onClick={() => archive(row.id)}
-                  title="Archive chat"
+                  title={archiveConfirmSessionId === row.id ? "Archive for good? History stays readable, new messages stop." : "Archive chat"}
                   type="button"
                 >
-                  <Archive className="h-4 w-4" />
+                  {archiveConfirmSessionId === row.id ? "Archive?" : <Archive className="h-4 w-4" />}
                 </button>
                 <button
                   aria-label={

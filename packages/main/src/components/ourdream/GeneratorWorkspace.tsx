@@ -441,10 +441,14 @@ export function generatorShowsSavedLooksEmpty(
 export function removeGeneratorCharacterViewerAuthority(
   characters: readonly CharacterCardData[],
 ) {
-  return characters.map((character) => ({
-    ...character,
-    canEditIdentity: false,
-  }));
+  // User-made characters may be the previous viewer's private ones; the
+  // refresh that follows re-lists whichever of them the new viewer may see.
+  return characters
+    .filter((character) => character.source !== "user")
+    .map((character) => ({
+      ...character,
+      canEditIdentity: false,
+    }));
 }
 
 export function GeneratorWorkspace() {
@@ -1451,10 +1455,23 @@ export function GeneratorWorkspace() {
     charactersRequestSerialRef.current = requestSerial;
     setCharactersAuthority(loadingAuthorityStatus);
     try {
-      const response = await fetch("/api/v1/characters?limit=12", {
-        cache: "no-store",
-        signal: controller.signal,
-      });
+      // SPEC: the picker offers the viewer's own characters first, then the
+      // public catalog. A signed-out viewer's 401 on Created just leaves it out.
+      const [response, created] = await Promise.all([
+        fetch("/api/v1/characters?limit=60", {
+          cache: "no-store",
+          signal: controller.signal,
+        }),
+        fetch("/api/v1/library/created", {
+          cache: "no-store",
+          signal: controller.signal,
+        })
+          .then(async (res) => (res.ok ? parseGeneratorCharactersResponse(await res.json()).items : []))
+          .catch((error: unknown) => {
+            if (error instanceof DOMException && error.name === "AbortError") throw error;
+            return [] as CharacterCardData[];
+          }),
+      ]);
       const raw = await response.json().catch(() => null);
       if (
         controller.signal.aborted ||
@@ -1475,7 +1492,13 @@ export function GeneratorWorkspace() {
       // Keep it independent from concurrent viewer-scope resets and also clear
       // stale intent when this workspace is reached without the route param.
       setRemixFeedItemId(nextRemixFeedItemId);
-      const listedItems = parseGeneratorCharactersResponse(raw).items;
+      const ownItems = created.filter((character) => character.hasImage !== false);
+      const listedItems = [
+        ...ownItems,
+        ...parseGeneratorCharactersResponse(raw).items.filter(
+          (character) => !ownItems.some((own) => own.id === character.id),
+        ),
+      ];
       const desiredListed = Boolean(
         desired && listedItems.some((character) => character.id === desired),
       );

@@ -635,7 +635,7 @@ describe("Chat embedded companion runtime", () => {
 
     expect(adapter.calls).toBe(1);
     expect(connection.candidates[0]).toMatchObject({
-      content: "好，图片请求已确认。",
+      content: "等我一下……",
       acknowledgement: { version: "image-action-ack-1", locale: "zh" },
     });
     expect(connection.events).not.toContainEqual(expect.objectContaining({
@@ -682,7 +682,7 @@ describe("Chat embedded companion runtime", () => {
 
     expect(adapter.calls).toBe(1);
     expect(connection.candidates[0]).toMatchObject({
-      content: "Okay, your image request is confirmed.",
+      content: "Give me a moment…",
     });
     expect(connection.events).not.toContainEqual(expect.objectContaining({
       type: "text_delta",

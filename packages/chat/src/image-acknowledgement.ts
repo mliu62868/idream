@@ -1,19 +1,22 @@
 // Main has accepted the request; this copy must never claim delivery is complete.
+// INTENT: it stands in for the character's own line, so it reads as something a
+// person says while reaching for the camera, not as a system receipt — the
+// attachment card below already shows the progress and the price.
 export const IMAGE_ACKNOWLEDGEMENT_VERSION = "image-action-ack-1" as const;
 
 const replies = {
-  en: "Okay, your image request is confirmed.",
-  zh: "好，图片请求已确认。",
-  ja: "はい、画像のリクエストを受け付けました。",
-  ko: "네, 이미지 요청이 접수되었어요.",
-  ru: "Хорошо, запрос на изображение принят.",
-  ar: "حسنًا، تم قبول طلب الصورة.",
-  hi: "ठीक है, तस्वीर का अनुरोध स्वीकार कर लिया गया है।",
-  es: "De acuerdo, tu solicitud de imagen está confirmada.",
-  fr: "D’accord, ta demande d’image est confirmée.",
-  de: "Okay, deine Bildanfrage ist bestätigt.",
-  pt: "Certo, seu pedido de imagem está confirmado.",
-  it: "Va bene, la tua richiesta di immagine è confermata.",
+  en: "Give me a moment…",
+  zh: "等我一下……",
+  ja: "ちょっと待ってね…",
+  ko: "잠깐만 기다려 줘…",
+  ru: "Дай мне минутку…",
+  ar: "امنحني لحظة…",
+  hi: "बस एक पल…",
+  es: "Dame un momento…",
+  fr: "Laisse-moi une seconde…",
+  de: "Gib mir einen Moment…",
+  pt: "Me dá um segundinho…",
+  it: "Dammi un attimo…",
 } as const;
 
 export function imageAcknowledgement(userText: string, userLocale: string) {

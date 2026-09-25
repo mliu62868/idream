@@ -89,7 +89,7 @@ describe("MemoryPanel clear", () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       if (init?.method === "POST") {
         posts += 1;
-        if (posts === 1) return Response.json({ error: { message: "Temporary failure" } }, { status: 503 });
+        if (posts === 1) return Response.json({ error: "internal", message: "The Chat request could not be completed" }, { status: 503 });
         return Response.json({ item: { id: "pin-1", kind: "pinned_memory", content: "My tea is lapsang.", version: 1 } });
       }
       return Response.json({ items: [] });
@@ -99,7 +99,7 @@ describe("MemoryPanel clear", () => {
     await fill("Pinned memory", "My tea is lapsang.");
     const add = () => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Add pin")!;
     await click(add());
-    expect(container.textContent).toContain("Temporary failure");
+    expect(container.textContent).toContain("Couldn't load or save your chat settings. Please try again.");
     expect(container.querySelector<HTMLTextAreaElement>('[aria-label="Pinned memory"]')?.value).toBe("My tea is lapsang.");
     await click(add());
     const requests = fetchMock.mock.calls.filter(([, init]) => init?.method === "POST");

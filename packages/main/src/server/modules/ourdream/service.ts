@@ -1391,12 +1391,26 @@ async function listCharacters(request: Request) {
     where.creatorId = { in: followedCreatorIds };
   }
 
+  // SPEC: every word of the query must match the name, description, a tag or
+  // the style, so "slow-burn elf" finds an elf tagged slow-burn.
   const nameFilter = nameMatch(q);
   if (nameFilter) {
-    where.OR = [
-      { name: nameFilter },
-      { description: { contains: q.trim(), mode: "insensitive" } },
-    ];
+    const terms = nameFilter.contains.split(" ").slice(0, 6);
+    (where.AND as Prisma.CharacterWhereInput[]).push(
+      ...terms.map((term): Prisma.CharacterWhereInput => ({
+        OR: [
+          { name: { contains: term, mode: "insensitive" } },
+          { description: { contains: term, mode: "insensitive" } },
+          { tags: { some: { tag: { OR: [
+            { slug: slugify(term) },
+            { label: { equals: term, mode: "insensitive" } },
+          ] } } } },
+          ...(CHARACTER_STYLES as readonly string[]).includes(term.toLowerCase())
+            ? [{ style: term.toLowerCase() } as Prisma.CharacterWhereInput]
+            : [],
+        ],
+      })),
+    );
   }
 
   const forYouProfile = sort === "for-you" && ctx.userId ? await loadForYouProfile(ctx.userId) : null;
@@ -1851,6 +1865,9 @@ async function suggest(request: Request) {
         isMutedByDefault: false,
         label: { contains: normalized, mode: "insensitive" },
         slug: mutedTagSlugs.length > 0 ? { notIn: mutedTagSlugs } : undefined,
+        // Explore drops a tag chip with no public character, so suggesting one
+        // would open an unfiltered list.
+        characters: { some: { character: publicCharacterAudienceWhere } },
       },
       orderBy: [{ category: "asc" }, { label: "asc" }],
       take: 8,

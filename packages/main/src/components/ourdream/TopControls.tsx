@@ -220,7 +220,7 @@ export function TopControls({
               className="min-w-0 flex-1 bg-transparent text-white outline-none placeholder:text-[rgb(170,170,170)]"
               name="character-search"
               onChange={(event) => onQueryChange?.(event.target.value)}
-              placeholder="Try 'slow-burn elf' or 'anime adventurer'"
+              placeholder="Search by name, tag or style"
               value={query}
             />
           </label>

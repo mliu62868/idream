@@ -70,7 +70,7 @@ describe("truthful public UI states", () => {
       "Create Your Dream AI Girl",
     );
     expect(source("TopControls.tsx")).toContain(
-      "Try 'slow-burn elf' or 'anime adventurer'",
+      "Search by name, tag or style",
     );
     expect(source("TopControls.tsx")).not.toContain("Petite asian");
   });

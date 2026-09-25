@@ -805,13 +805,20 @@ export function CreateWorkspace() {
     setSelectedPreviewJobId("");
   }
 
+  // INVARIANT: matches the server's visualAdvancedDetailsChanged — the opening
+  // line and Soul text are not in the preview prompt, so editing them keeps the
+  // confirmed face instead of forcing a new round of candidates.
+  function setSoulField(key: "firstMessage" | "detailsMarkdown", value: string) {
+    setState((current) => ({ ...current, [key]: value }));
+  }
+
   function updateGuidedSoul(label: string, value: string) {
     const details = updateSoulDetail(state.detailsMarkdown, label, value);
     if (details.length > 24_000) {
       setStatus("Additional details must be 24,000 characters or fewer.");
       return;
     }
-    setIdentityField("detailsMarkdown", details);
+    setSoulField("detailsMarkdown", details);
   }
 
   const identityKept = editTarget !== null && (editTarget.published || !state.confirmedPreviewJobId) &&
@@ -1598,7 +1605,7 @@ export function CreateWorkspace() {
                   <textarea
                     className="mt-3 min-h-20 w-full rounded-[12px] border border-white/10 bg-[rgb(13,13,13)] p-4 text-[14px] font-medium leading-6 text-white outline-none"
                     maxLength={4000}
-                    onChange={(event) => setIdentityField("firstMessage", event.target.value)}
+                    onChange={(event) => setSoulField("firstMessage", event.target.value)}
                     placeholder="There you are. What has been on your mind tonight?"
                     value={state.firstMessage}
                   />
@@ -1610,7 +1617,7 @@ export function CreateWorkspace() {
                   <textarea
                     className="mt-3 min-h-56 w-full rounded-[12px] border border-white/10 bg-[rgb(13,13,13)] p-4 font-mono text-[13px] font-medium leading-6 text-white outline-none"
                     maxLength={24000}
-                    onChange={(event) => setIdentityField("detailsMarkdown", event.target.value)}
+                    onChange={(event) => setSoulField("detailsMarkdown", event.target.value)}
                     placeholder={"## Personality and voice\nWarm, teasing, concise, emotionally attentive.\n\n## Background\nHow you met and what shaped this character."}
                     value={state.detailsMarkdown}
                   />

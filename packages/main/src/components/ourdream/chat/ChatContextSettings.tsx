@@ -154,9 +154,12 @@ async function readResponse(response: Response): Promise<Record<string, unknown>
   const raw: unknown = await response.json().catch(() => null);
   const object = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : null;
   if (!response.ok) {
-    const error = object?.error;
-    const message = error && typeof error === "object" && "message" in error ? error.message : null;
-    throw new Error(typeof message === "string" ? message : "Couldn't load or save your chat settings. Please try again.");
+    // The Chat façade answers { error: code, message }; its 409/410 messages
+    // (pin limit, archived chat, changed elsewhere) are written for the reader.
+    const message = object?.message;
+    throw new Error(typeof message === "string" && (response.status === 409 || response.status === 410)
+      ? message
+      : "Couldn't load or save your chat settings. Please try again.");
   }
   if (!object) throw new Error("Chat settings response was incomplete.");
   return object;

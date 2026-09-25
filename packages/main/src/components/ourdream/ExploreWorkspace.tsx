@@ -67,8 +67,10 @@ export function ExploreWorkspace() {
       requestSerial.current = serial;
       const requestParams = new URLSearchParams(params);
       if (cursor) requestParams.set("cursor", cursor);
-      if (cursor) setLoadingMore(true);
-      else setLoading(true);
+      // A fresh first page supersedes any in-flight "load more", whose finally
+      // will see a stale serial and leave its flag alone.
+      setLoadingMore(Boolean(cursor));
+      if (!cursor) setLoading(true);
       setError(null);
 
       try {

@@ -46,4 +46,12 @@ describe("chatFailureCopy", () => {
     expect(chatFailureCopy({ error: "some_code_we_never_registered" }, FALLBACK)).toBe(FALLBACK);
     expect(chatFailureCopy({}, FALLBACK)).toBe(FALLBACK);
   });
+
+  it("shows Main conflicts written for the reader, never internal invariants", () => {
+    expect(chatFailureCopy({ error: { code: "conflict", message: "Cancel the active reply before deleting this chat" } }, FALLBACK))
+      .toBe("Cancel the active reply before deleting this chat.");
+    expect(chatFailureCopy({ error: { code: "conflict", message: "Conversation preferences changed elsewhere. Reload before saving" } }, FALLBACK))
+      .toBe("Conversation preferences changed elsewhere. Reload before saving.");
+    expect(chatFailureCopy({ error: { code: "conflict", message: "Terminal commit lost the active attempt CAS" } }, FALLBACK)).toBe(FALLBACK);
+  });
 });

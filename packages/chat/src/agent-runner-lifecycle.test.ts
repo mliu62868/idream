@@ -304,7 +304,7 @@ describe("AgentRun account-erasure drain", () => {
           outputCount: 1,
         },
       });
-      const content = "好，图片请求已确认。";
+      const content = "等我一下……";
       await port.emit({
         invocationId: invocation.invocationId,
         attemptId: invocation.attemptId,
@@ -347,7 +347,7 @@ describe("AgentRun account-erasure drain", () => {
     const streamPayloads = stream.appendStreamEvent.mock.calls.map(([, event]) => event);
     expect(streamPayloads).toContainEqual(expect.objectContaining({
       type: "delta",
-      delta: "好，图片请求已确认。",
+      delta: "等我一下……",
     }));
     expect(store.writeAgentRunProposal).toHaveBeenCalledWith(
       "turn-1",
@@ -355,7 +355,7 @@ describe("AgentRun account-erasure drain", () => {
       expect.objectContaining({
         terminal: expect.objectContaining({
           status: "sent",
-          content: "好，图片请求已确认。",
+          content: "等我一下……",
           model: "test-model",
           terminalEvidence: expect.objectContaining({
             authority: "dsh_terminal_candidate",

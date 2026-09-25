@@ -40,7 +40,7 @@ describe("Conversation preferences", () => {
   it("retains an unsaved choice after a conflicting save and permits reloading the current version", async () => {
     let reads = 0;
     vi.stubGlobal("fetch", vi.fn(async (_url, init) => init?.method === "PUT"
-      ? Response.json({ error: { message: "Changed elsewhere" } }, { status: 409 })
+      ? Response.json({ error: "conflict", message: "Changed elsewhere" }, { status: 409 })
       : Response.json({ settings: { responseLength: ++reads === 1 ? "auto" : "short", interactionIntensity: "balanced", version: reads }, editable: true })));
     await render();
     expect(field("Scene direction").value).toBe("follow");
