@@ -277,9 +277,9 @@ describe("PreparedTurn budget", () => {
           ? { kind: "user" as const }
           : message.role === "assistant"
             ? { kind: "model" as const, provider: profile.provider, model: profile.model }
-            : { kind: "plugin", plugin: "idream", form: message.sourceKind === "plugin" ? "context" : "replay" } as never,
+            : { kind: "idream" as const, context: message.sourceKind === "plugin" ? "snapshot" as const : "replay" as const },
         content: [{ type: "text" as const, text: message.content }],
-      })),
+      }) as never),
       tools: prepared.tools,
     })) chunks.push(chunk);
 

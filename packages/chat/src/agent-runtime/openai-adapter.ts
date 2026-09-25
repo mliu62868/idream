@@ -5,7 +5,7 @@ import {
   type ContentBlock,
   type FinishReason,
   type GenerateOptions,
-  type Message,
+  type RequestMessage,
   type StreamChunk,
   type TokenUsage,
 } from "@deepseek-ai/dsh-llm";
@@ -78,24 +78,31 @@ function textOf(blocks: readonly ContentBlock[]): string {
     .join("\n");
 }
 
-function modelInputMessages(system: string | undefined, messages: readonly Message[]): ModelInputMessage[] {
+function modelInputMessages(system: string | undefined, messages: readonly RequestMessage[]): ModelInputMessage[] {
+  // Loop-built requests carry the system prompt as system-role messages; only
+  // one-shot callers use `system`. Empty system nodes send no prompt.
+  const prompt = [system, ...messages.map((message) => message.role === "system" ? textOf(message.content) : "")]
+    .filter(Boolean)
+    .join("\n\n");
   const output: ModelInputMessage[] = [];
-  if (system) output.push({ id: "system", sourceKind: "plugin", role: "system", content: system });
-  for (const message of messages) {
+  if (prompt) output.push({ id: "system", sourceKind: "plugin", role: "system", content: prompt });
+  for (const [index, message] of messages.entries()) {
+    // INTENT: developer messages only announce tool additions/removals; this
+    // route declares the complete tool list on every request instead.
+    if (message.role === "system" || message.role === "developer") continue;
+    if (!message.source) {
+      output.push({ id: `input:${index}`, sourceKind: "current_user", role: "user", content: textOf(message.content) });
+      continue;
+    }
     const sourceKind = message.source.kind === "user" ? "current_user"
-      : message.source.kind === "plugin" && "form" in message.source
-        && ["snapshot", "recall", "context"].includes(String(message.source.form))
-        ? "plugin" : "replay";
-    const toolResult = message.content.find(
-      (block): block is Extract<ContentBlock, { type: "tool-result" }> => block.type === "tool-result",
-    );
-    if (toolResult) {
+      : message.source.kind === "idream" && message.source.context !== "replay" ? "plugin" : "replay";
+    if (message.role === "tool") {
       output.push({
         id: String(message.id),
         sourceKind,
         role: "tool",
-        tool_call_id: String(toolResult.toolCallId),
-        content: textOf(toolResult.content),
+        tool_call_id: String(message.toolCallId),
+        content: textOf(message.content),
       });
       continue;
     }
@@ -111,7 +118,6 @@ function modelInputMessages(system: string | undefined, messages: readonly Messa
       id: String(message.id),
       sourceKind,
       role: message.role,
-      toolSource: message.source.kind === "tool",
       content,
       ...(message.role === "assistant" && toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
     });
@@ -389,7 +395,7 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
       // re-derives authorization from its own frozen copy of that text, so
       // using it as the direction adds no permission; failing the whole Turn
       // left the user with "Reply unavailable" for a plain photo request.
-      const userText = textOf(options.messages.findLast((message) => message.source.kind === "user")?.content ?? [])
+      const userText = textOf(options.messages.findLast((message) => message.role === "user" && (!message.source || message.source.kind === "user"))?.content ?? [])
         .trim().slice(0, 1_000);
       // The prompt schema needs 12+ characters; "selfie pls" is still a clear request.
       const direction = userText.length >= 12 ? userText : `A photo: ${userText}`;

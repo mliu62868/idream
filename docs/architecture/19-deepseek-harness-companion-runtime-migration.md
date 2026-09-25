@@ -8,7 +8,7 @@
 
 原决策把 Companion Chat 的模型循环放在独立 `packages/chat-agent` 中；该进程边界已经由 ADR-21 删除。以下保留的是仍有效的 DSH/igrep 执行约束：
 
-- `@deepseek-ai/dsh-*` 固定 `0.1.1-rc.2`。
+- `@deepseek-ai/dsh-*` 固定 `0.1.7-rc.2`。
 - official igrep plugin 管理通用 companion memory。
 - Chat 负责把 Main 的不可变执行快照编译成 PreparedTurn，并接收 DSH 事件。
 - DSH 不拥有产品 Turn、Scene、余额、Generation、附件或结算。

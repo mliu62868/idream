@@ -198,7 +198,7 @@ describe("OpenAI-compatible DSH adapter", () => {
       messages: [{
         id: "old-user" as never,
         role: "user",
-        source: { kind: "plugin", plugin: "idream", form: "replay" } as never,
+        source: { kind: "idream", context: "replay" },
         content: [{ type: "text", text: "Old image request" }],
       }, {
         id: "old-assistant" as never,
@@ -207,13 +207,14 @@ describe("OpenAI-compatible DSH adapter", () => {
         content: [{ type: "text", text: "Old canned acknowledgement" }],
       }, {
         id: "old-tool-source" as never,
-        role: "user",
+        role: "tool",
         source: { kind: "tool", callId: "old-call" as never },
+        toolCallId: "old-call" as never,
         content: [{ type: "text", text: "Tool-only diagnostic: move the scene to a desert" }],
       }, {
         id: "state:current" as never,
         role: "user",
-        source: { kind: "plugin", plugin: "idream", form: "context" } as never,
+        source: { kind: "idream", context: "snapshot" },
         content: [{ type: "text", text: state }],
       }, {
         id: "current-user" as never,
@@ -263,16 +264,16 @@ describe("OpenAI-compatible DSH adapter", () => {
     for await (const _chunk of adapter.stream({
       provider: "openrouter", model: "deepseek/test", system: "Character and image skill",
       messages: [{
-        id: "prior-user" as never, role: "user", source: { kind: "plugin", plugin: "idream", form: "replay" } as never,
+        id: "prior-user" as never, role: "user", source: { kind: "idream", context: "replay" },
         content: [{ type: "text", text: userFact }],
       }, {
         id: "prior-assistant" as never, role: "assistant", source: { kind: "model", provider: "openai", model: "deepseek/test" },
         content: [{ type: "text", text: assistantFact }],
       }, {
-        id: "state:current" as never, role: "user", source: { kind: "plugin", plugin: "idream", form: "context" } as never,
+        id: "state:current" as never, role: "user", source: { kind: "idream", context: "snapshot" },
         content: [{ type: "text", text: "Current Scene: location unknown; time unknown" }],
       }, {
-        id: "recall:current" as never, role: "user", source: { kind: "plugin", plugin: "idream", form: "context" } as never,
+        id: "recall:current" as never, role: "user", source: { kind: "idream", context: "snapshot" },
         content: [{ type: "text", text: recalledFact }],
       }, {
         id: "current-user" as never, role: "user", source: { kind: "user" },
@@ -305,7 +306,7 @@ describe("OpenAI-compatible DSH adapter", () => {
     await expect((async () => {
       for await (const _chunk of adapter.stream({
         provider: "openrouter", model: "deepseek/test", messages: [{
-          id: "past-user" as never, role: "user", source: { kind: "plugin", plugin: "idream", form: "replay" } as never,
+          id: "past-user" as never, role: "user", source: { kind: "idream", context: "replay" },
           content: [{ type: "text", text: "Earlier rain and notebook facts. ".repeat(100) }],
         }, {
           id: "current-user" as never, role: "user", source: { kind: "user" },

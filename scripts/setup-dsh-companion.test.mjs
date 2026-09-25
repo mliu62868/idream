@@ -180,8 +180,7 @@ test("setup materializes both official profiles, dumps with the same DSH_HOME, a
       "package.json",
     ));
     assert.deepEqual(manifest.dsh.profile.bundles, ["@igrep/dsh-plugin"]);
-    assert.equal(manifest.dependencies["@deepseek-ai/dsh-llm"], DSH_VERSION);
-    assert.equal(manifest.dependencies["@deepseek-ai/dsh-tools"], DSH_VERSION);
+    for (const peer of PLUGIN_PEERS) assert.equal(manifest.dependencies[peer], DSH_VERSION);
   }
   assert.equal(
     fixture.calls.filter((call) => identifyCall(call.command, call.args) === "dsh plugin install").length,
@@ -373,6 +372,13 @@ test("fails closed on runtime, igrep, Python, command, and plugin identity misma
   });
 });
 
+const PLUGIN_PEERS = [
+  "@deepseek-ai/dsh-llm",
+  "@deepseek-ai/dsh-tools",
+  "@deepseek-ai/dsh-spill-policy",
+  "@deepseek-ai/dsh-compaction-basic",
+];
+
 function createFixture(options = {}) {
   const fs = createMemoryFs();
   const calls = [];
@@ -531,10 +537,7 @@ function seedPluginSource(fs, version, peerRange) {
       name: "@igrep/dsh-plugin",
       version,
       dsh: { bundle: { patch: "cordis.patch.yml" } },
-      peerDependencies: {
-        "@deepseek-ai/dsh-llm": peerRange,
-        "@deepseek-ai/dsh-tools": peerRange,
-      },
+      peerDependencies: Object.fromEntries(PLUGIN_PEERS.map((peer) => [peer, peerRange])),
     }),
   );
   fs.seed(path.join(PLUGIN_SOURCE, "cordis.patch.yml"), "- id: igrep-dsh\n");
@@ -567,12 +570,9 @@ function materializeProfile(fs, profile, pluginPath, peerVersion = DSH_VERSION) 
     path.join(installed, "cordis.patch.yml"),
     fs.readFileSync(path.join(PLUGIN_SOURCE, "cordis.patch.yml"), "utf8"),
   );
-  for (const peerPackage of [
-    "@deepseek-ai/dsh-llm",
-    "@deepseek-ai/dsh-tools",
-  ]) {
+  for (const peerPackage of PLUGIN_PEERS) {
     fs.seed(
-      path.join(DSH_HOME, "profiles", "node_modules", ...peerPackage.split("/"), "package.json"),
+      path.join(profileDir, "node_modules", ...peerPackage.split("/"), "package.json"),
       JSON.stringify({ name: peerPackage, version: peerVersion }),
     );
   }

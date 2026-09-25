@@ -341,7 +341,7 @@ export function createReadinessProbe(
     }
     const current = (async () => {
     const cordis = await packageVersion("@deepseek-ai/cordis");
-    if (cordis !== "4.0.1") throw new Error(`Cordis version drifted to ${cordis}`);
+    if (cordis !== "4.0.4") throw new Error(`Cordis version drifted to ${cordis}`);
     const versions = await Promise.all(COMPANION_CORE_PACKAGES.map(packageVersion));
     const drift = COMPANION_CORE_PACKAGES.filter((_name, index) => versions[index] !== COMPANION_DSH_VERSION);
     if (drift.length > 0) throw new Error(`DSH core version drift: ${drift.join(", ")}`);

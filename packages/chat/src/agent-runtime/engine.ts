@@ -2,9 +2,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { Context } from "@deepseek-ai/cordis";
 import type { AgentRegistry } from "@deepseek-ai/dsh-agent";
 import {
-  CallId,
   LlmAdapter,
   MessageId,
+  ToolCallId,
   freezeMessage,
   type AssistantMessage,
   type LlmFailure,
@@ -13,8 +13,8 @@ import {
   type ToolResultMessage,
   type UserMessage,
 } from "@deepseek-ai/dsh-llm";
-import { Session, SessionId, type SessionEvent, type TurnEndReason } from "@deepseek-ai/dsh-session";
-import { type JsonValue, type ToolDefinition } from "@deepseek-ai/dsh-tools";
+import { Session, SessionId, SessionSeq, type SessionEvent, type TurnEndReason } from "@deepseek-ai/dsh-session";
+import { type ToolDefinition } from "@deepseek-ai/dsh-tools";
 import { type CompanionReadiness } from "@idream/shared/chat/companion-runtime";
 import {
   companionEventSchema,
@@ -289,6 +289,14 @@ function invocationFailure(input: {
   };
 }
 
+declare module "@deepseek-ai/dsh-llm" {
+  interface MessageSourceMap {
+    // DSH has no catch-all plugin source; producers declare their own kind.
+    // Any kind other than "user" stays invisible to igrep ingest.
+    idream: { kind: "idream"; context: "replay" | "snapshot" | "recall" };
+  }
+}
+
 function seedMessage(
   message: PreparedTurnMessage,
   profile: PreparedTurnProfile,
@@ -303,7 +311,7 @@ function seedMessage(
         ...(message.content ? [{ type: "text" as const, text: message.content }] : []),
         ...(message.tool_calls ?? []).map((call) => ({
           type: "tool-call" as const,
-          id: CallId(call.id),
+          id: ToolCallId(call.id),
           name: call.function.name,
           arguments: call.function.arguments,
         })),
@@ -313,20 +321,17 @@ function seedMessage(
   if (message.role === "tool") {
     return freezeMessage({
       id: MessageId(message.id),
-      role: "user" as const,
-      source: { kind: "tool" as const, callId: CallId(message.tool_call_id) },
-      content: [{
-        type: "tool-result" as const,
-        toolCallId: CallId(message.tool_call_id),
-        content: [{ type: "text" as const, text: message.content }],
-        isError: false,
-      }],
+      role: "tool" as const,
+      source: { kind: "tool" as const, callId: ToolCallId(message.tool_call_id) },
+      toolCallId: ToolCallId(message.tool_call_id),
+      content: [{ type: "text" as const, text: message.content }],
+      isError: false,
     });
   }
   return freezeMessage({
     id: MessageId(message.id),
     role: "user" as const,
-    source: { kind: "plugin" as const, plugin: "idream", form } as never,
+    source: { kind: "idream" as const, context: form },
     content: [{ type: "text" as const, text: message.content }],
   });
 }
@@ -406,9 +411,9 @@ export function buildReplaySeed(
       if (assistantInStep) closeStep();
       open();
       const message = seedMessage(item, invocation.preparedTurn.profile) as AssistantMessage;
-      seed.append("assistant/message", { turn, step, message }, {
+      // Replayed history has no provider stream of its own to embed.
+      seed.append("assistant/message", { turn, step, message, stream: [] }, {
         surfaceOp: "append",
-        sourceEventSeqs: [],
       });
       assistantInStep = true;
       for (const call of item.tool_calls ?? []) {
@@ -416,7 +421,7 @@ export function buildReplaySeed(
         seed.append("tool/call", {
           turn,
           step,
-          callId: CallId(call.id),
+          callId: ToolCallId(call.id),
           name: call.function.name,
           arguments: call.function.arguments,
         });
@@ -439,7 +444,7 @@ export function buildReplaySeed(
     if (pendingCalls.size === 0) closeStep();
   }
   closeTurn();
-  return seed.events;
+  return Array.from({ length: seed.seq }, (_, seq) => seed.eventAt(SessionSeq(seq))!);
 }
 
 class ToolBridge {
@@ -807,28 +812,33 @@ export class CompanionEngine {
         yield { type: "finish", reason: { kind: "stop" } };
       }, { prepend: true });
 
+      // Live chunks are transient Agent frames; the durable assistant/message
+      // that embeds the same stream is appended before the attempt's end frame.
+      ctx.on("agent/assistant-stream", ({ frame }) => {
+        if (frame.type !== "chunk") return;
+        const chunk = frame.chunk;
+        if (chunk.type === "text-delta" && chunk.text) {
+          currentStepText += chunk.text;
+          // Required image replies are short and have deterministic language /
+          // process-exposure checks. Buffer them until terminal validation so
+          // invalid prose never leaks into user-visible SSE as provisional text.
+          if (!invocation.preparedTurn.requiredAction) {
+            event({ type: "text_delta", delta: chunk.text });
+          }
+        }
+        if (chunk.type === "finish") {
+          latestFinish = chunk;
+          providerAttribution = wireAttribution(chunk) ?? providerAttribution;
+        }
+      });
+
       ctx.on("session/event", (_session, sessionEvent) => {
         // Cordis can surface the same durable Session event through more than
         // one publication path when plugins observe the log. User-visible SSE
         // is keyed by the Session seq, so one durable event is emitted once.
         if (seenSessionEventSeqs.has(sessionEvent.seq)) return;
         seenSessionEventSeqs.add(sessionEvent.seq);
-        if (sessionEvent.type === "assistant/chunk") {
-          const chunk = sessionEvent.data.chunk;
-          if (chunk.type === "text-delta" && chunk.text) {
-            currentStepText += chunk.text;
-            // Required image replies are short and have deterministic language /
-            // process-exposure checks. Buffer them until terminal validation so
-            // invalid prose never leaks into user-visible SSE as provisional text.
-            if (!invocation.preparedTurn.requiredAction) {
-              event({ type: "text_delta", delta: chunk.text });
-            }
-          }
-          if (chunk.type === "finish") {
-            latestFinish = chunk;
-            providerAttribution = wireAttribution(chunk) ?? providerAttribution;
-          }
-        } else if (sessionEvent.type === "assistant/message") {
+        if (sessionEvent.type === "assistant/message") {
           latestAssistant = sessionEvent.data.message;
           // DSH's completion anchor carries usage for one model request. A
           // tool round trip adds another request; Main records the whole Turn.
@@ -990,7 +1000,7 @@ export class CompanionEngine {
                   // JSON value or the next step may claim an effect happened.
                   throw new Error(`${result.error.code}: ${result.error.message}`);
                 }
-                return { payload: JSON.stringify(result) } satisfies JsonValue;
+                return { payload: JSON.stringify(result) };
               },
             };
             agentCtx.tools.register(definition);

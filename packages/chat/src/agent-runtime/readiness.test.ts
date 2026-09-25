@@ -44,7 +44,7 @@ const successfulRuntimeEvidence = {
   instance: runtimeInstance,
   readBootstrapState: async () => ({
     schemaVersion: 2 as const,
-    pins: { dsh: "0.1.1-rc.2", plugin: "0.1.0" },
+    pins: { dsh: "0.1.7-rc.2", plugin: "0.1.0" },
     profiles: {
       normal: {
         name: "idream-companion-memory",
@@ -98,7 +98,7 @@ describe("fail-closed companion readiness", () => {
     expect(readiness).toMatchObject({
       ready: true,
       productPromptVersion: "companion-product-1",
-      dshVersion: "0.1.1-rc.2",
+      dshVersion: "0.1.7-rc.2",
       dshCommit: "b150a551b8d465e31e418e1b2eaf5e79bbb7d28e",
       igrepVersion: "0.1.134",
       pluginVersion: "0.1.0",

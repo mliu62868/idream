@@ -3,6 +3,7 @@ import { AgentRegistry } from "@deepseek-ai/dsh-agent";
 import { AgentLoop } from "@deepseek-ai/dsh-agent-loop";
 import { LlmRuntime } from "@deepseek-ai/dsh-llm";
 import { SessionStore } from "@deepseek-ai/dsh-session";
+import { SessionProjectionRegistry } from "@deepseek-ai/dsh-session-projection";
 import { SystemPrompt } from "@deepseek-ai/dsh-system-prompt";
 import * as ToolTimeoutPolicy from "@deepseek-ai/dsh-tool-call-timeout-policy";
 import { ToolRuntime } from "@deepseek-ai/dsh-tools";
@@ -24,12 +25,12 @@ export const COMPANION_CORE_PACKAGES = [
   "@deepseek-ai/dsh-agent-loop",
   "@deepseek-ai/dsh-attachment",
   "@deepseek-ai/dsh-brand",
-  "@deepseek-ai/dsh-code-runtime",
   "@deepseek-ai/dsh-invariants",
   "@deepseek-ai/dsh-llm",
   "@deepseek-ai/dsh-scope",
   "@deepseek-ai/dsh-session",
   "@deepseek-ai/dsh-session-persistence",
+  "@deepseek-ai/dsh-session-projection",
   "@deepseek-ai/dsh-settings",
   "@deepseek-ai/dsh-system-prompt",
   "@deepseek-ai/dsh-timeout",
@@ -93,6 +94,11 @@ interface CompanionCompositionInput {
 const COMPANION_EXECUTION_PLUGINS = [
   { name: "llm", install: async (ctx: Context) => { await ctx.plugin(LlmRuntime); } },
   { name: "session", install: async (ctx: Context) => { await ctx.plugin(SessionStore); } },
+  // AgentLoop injects this registry; no idream unit registers into it.
+  {
+    name: "session-projections",
+    install: async (ctx: Context) => { await ctx.plugin(SessionProjectionRegistry); },
+  },
   {
     name: "system-prompt",
     install: async (ctx: Context) => { await ctx.plugin(SystemPrompt, SYSTEM_PROMPT_OPTIONS); },
@@ -219,7 +225,7 @@ export function companionCompositionManifest(
   }
   return {
     schemaVersion: 2,
-    cordisVersion: "4.0.1",
+    cordisVersion: "4.0.4",
     dshVersion: COMPANION_DSH_VERSION,
     pluginVersion: COMPANION_IGREP_PLUGIN_VERSION,
     pluginOrder: COMPANION_EXECUTION_PLUGIN_ORDER,

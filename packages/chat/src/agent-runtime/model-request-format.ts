@@ -2,7 +2,7 @@ import type { ChatToolDefinition } from "@idream/shared";
 import type { PreparedTurnMessage } from "./contracts";
 
 // DSH can attach tool provenance even to plain text, without a tool-result block.
-export type ModelInputMessage = PreparedTurnMessage & { toolSource?: boolean };
+export type ModelInputMessage = PreparedTurnMessage;
 
 function contextSource(message: ModelInputMessage): string | null {
   if (message.id.startsWith("state:")) return "scene_state";
@@ -48,8 +48,7 @@ function openAiMessages(messages: readonly ModelInputMessage[]): unknown[] {
   );
   const hasToolProtocol = messages.some((message) =>
     message.role === "tool"
-      || ("tool_calls" in message && Boolean(message.tool_calls?.length))
-      || message.toolSource,
+      || ("tool_calls" in message && Boolean(message.tool_calls?.length)),
   );
   if (currentIndex >= 0 && !hasToolProtocol) {
     const current = messages[currentIndex]!;
@@ -108,7 +107,7 @@ function requiredToolMessages(
   // cross-speaker sequence and source IDs: grouping by speaker loses the order
   // needed to distinguish an earlier action from a later correction.
   const continuity = messages.slice(0, currentIndex).flatMap((message) => {
-    if (message === state || message.role === "system" || message.role === "tool" || message.toolSource || !message.content) return [];
+    if (message === state || message.role === "system" || message.role === "tool" || !message.content) return [];
     return [{
       id: message.id,
       source: contextSource(message) ?? "conversation",

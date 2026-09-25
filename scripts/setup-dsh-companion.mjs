@@ -6,11 +6,11 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-export const DSH_VERSION = "0.1.1-rc.2";
+export const DSH_VERSION = "0.1.7-rc.2";
 export const IGREP_PLUGIN_VERSION = "0.1.0";
-// INTENT: igrep 0.1.134 still publishes this prerelease peer range. The owned
-// profiles pin rc.2 explicitly and live readiness proves compatibility.
-export const IGREP_PLUGIN_DSH_PEER_RANGE = "^0.1.0-rc.7";
+// INTENT: igrep 0.1.148 publishes this range for every DSH peer. The owned
+// profiles pin DSH_VERSION explicitly and live readiness proves compatibility.
+export const IGREP_PLUGIN_DSH_PEER_RANGE = ">=0.1.7-alpha.1 <0.2.0";
 export const PROFILE_NAMES = Object.freeze({
   normal: "idream-companion-memory",
   private: "idream-companion-private",
@@ -20,6 +20,8 @@ const PLUGIN_PACKAGE = "@igrep/dsh-plugin";
 const PLUGIN_PEERS = Object.freeze([
   "@deepseek-ai/dsh-llm",
   "@deepseek-ai/dsh-tools",
+  "@deepseek-ai/dsh-spill-policy",
+  "@deepseek-ai/dsh-compaction-basic",
 ]);
 const STATE_FILENAME = "idream-companion-bootstrap.json";
 const STATE_SCHEMA_VERSION = 2;
@@ -533,8 +535,7 @@ function validateProfile(discovery, fs, dshHome) {
   }
   const peerManifestPaths = PLUGIN_PEERS.map((peerPackage) => {
     const peerManifestPath = path.join(
-      dshHome,
-      "profiles",
+      profileDir,
       "node_modules",
       ...peerPackage.split("/"),
       "package.json",

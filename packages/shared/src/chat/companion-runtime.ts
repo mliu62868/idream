@@ -3,7 +3,7 @@ import { COMPANION_PRODUCT_PROMPT_VERSION } from "./companion-agent-prompt";
 
 // Shared contains only Main ↔ Chat contracts and operator evidence.
 export const COMPANION_RUNTIME_PROTOCOL_VERSION = 2 as const;
-export const COMPANION_DSH_VERSION = "0.1.1-rc.2" as const;
+export const COMPANION_DSH_VERSION = "0.1.7-rc.2" as const;
 export const COMPANION_DSH_COMMIT =
   "b150a551b8d465e31e418e1b2eaf5e79bbb7d28e" as const;
 export const COMPANION_IGREP_PLUGIN_VERSION = "0.1.0" as const;

@@ -373,7 +373,7 @@ describe("Chat embedded companion runtime", () => {
             async execute() { if (name !== "memory_search") writes += 1; return {}; },
           });
         }
-        ctx.on("agent/session-start", async ({ agent }) => {
+        ctx.on("agent/created", async ({ agent }) => {
           for (const name of ["memory_record", "unexpected_plugin_tool"]) {
             const result = await ctx.tools.execute({ name, arguments: {}, callId: `blocked-${name}` as never, agent, signal: new AbortController().signal });
             denied.push(result.isError === true);
@@ -454,7 +454,7 @@ describe("Chat embedded companion runtime", () => {
     await runtime.run(normalInvocation(), connection.runtimePort);
     expect(executed).toBe(1);
     expect(adapter.requests).toHaveLength(2);
-    expect(JSON.stringify(adapter.requests[1].messages)).toContain('"tool-result"');
+    expect(JSON.stringify(adapter.requests[1].messages)).toContain('"role":"tool"');
     expect(connection.candidates[0]?.content).toBe(`We chose ${recallMarker}.`);
     expect(connection.candidates[0]?.usage).toEqual(expected);
     expect(connection.events.some(event => event.type === "failed")).toBe(false);
