@@ -72,11 +72,10 @@ export async function assertDraftOwner(id: string, userId: string) {
 // opening line and Soul markdown. A model that renders text well answered with
 // character sheets: the persona typed out beside the portrait. The name is left
 // out for the same reason — it is not a visual trait and invites a caption.
-// INVARIANT: firstMessage, detailsMarkdown and voiceSelection never reach the
-// prompt — exactly the fields service.ts visualAdvancedDetailsChanged treats as
-// not changing the identity image. age and description are placed explicitly.
-const NOT_GENERIC_DETAILS = new Set(["voiceSelection", "firstMessage", "detailsMarkdown", "description", "age"]);
-
+// INVARIANT: from the details only age and description reach the prompt, read
+// through the same adapter as every other draft read, so legacy persona keys
+// (personality, backstory, tone…) never do. service.ts
+// visualAdvancedDetailsChanged treats exactly description as visual.
 function traitPhrases(value: unknown): string {
   return Object.entries(jsonRecord(value))
     .flatMap(([key, raw]) => {
@@ -90,20 +89,16 @@ function traitPhrases(value: unknown): string {
 }
 
 export function characterPreviewPrompt(draft: Pick<CharacterDraft, "style" | "gender" | "appearance" | "hair" | "body" | "advancedDetails">) {
-  const details = jsonRecord(draft.advancedDetails);
-  const otherDetails = Object.fromEntries(Object.entries(details).filter(([key]) => !NOT_GENERIC_DETAILS.has(key)));
+  const { age, description } = readCurrentCharacterDraftDetails(draft.advancedDetails);
   const appearance = traitPhrases(draft.appearance);
   const hair = traitPhrases(draft.hair);
   const body = traitPhrases(draft.body);
-  const extra = traitPhrases(otherDetails);
-  const age = typeof details.age === "number" ? details.age : null;
-  const concept = typeof details.description === "string" ? details.description.trim() : "";
+  const concept = description?.trim() ?? "";
   return [
     `${draft.style ?? "realistic"} portrait photo of one adult ${draft.gender ?? "female"}${age ? `, ${age} years old` : ""}`,
     appearance ? `Appearance: ${appearance}` : null,
     hair ? `Hair: ${hair}` : null,
     body ? `Body: ${body}` : null,
-    extra ? `Details: ${extra}` : null,
     concept ? `Mood and setting inspired by: ${concept}` : null,
     "single subject, clear face, identity reference portrait, photo only, no text, no captions, no lettering",
   ].filter((part): part is string => Boolean(part)).join(". ");

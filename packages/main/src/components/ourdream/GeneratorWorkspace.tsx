@@ -459,11 +459,13 @@ export function generatorShowsSavedLooksEmpty(
 
 export function removeGeneratorCharacterViewerAuthority(
   characters: readonly CharacterCardData[],
+  viewerChanged = false,
 ) {
-  // User-made characters may be the previous viewer's private ones; the
-  // refresh that follows re-lists whichever of them the new viewer may see.
+  // A confirmed account change also drops user-made characters, which may be
+  // the previous viewer's private ones; the refresh that follows re-lists the
+  // ones the new viewer may see. A mere re-check (focus) only removes edit rights.
   return characters
-    .filter((character) => character.source !== "user")
+    .filter((character) => !viewerChanged || character.source !== "user")
     .map((character) => ({
       ...character,
       canEditIdentity: false,
@@ -1031,7 +1033,7 @@ export function GeneratorWorkspace() {
       charactersRequestSerialRef.current += 1;
       charactersRequestControllerRef.current?.abort();
       charactersRequestControllerRef.current = null;
-      setCharacters(removeGeneratorCharacterViewerAuthority);
+      setCharacters((current) => removeGeneratorCharacterViewerAuthority(current, refresh));
       invalidateLookScope();
       if (refresh) {
         setCharactersRefreshNonce((current) => current + 1);
@@ -1488,7 +1490,14 @@ export function GeneratorWorkspace() {
           cache: "no-store",
           signal: controller.signal,
         })
-          .then(async (res) => (res.ok ? parseGeneratorCharactersResponse(await res.json()).items : []))
+          // Only approved ones can be generated with; a rejected or taken-down
+          // character would fail on submit.
+          .then(async (res) => {
+            if (!res.ok) return [];
+            const raw = await res.json() as { data?: { items?: Array<{ status?: unknown }> } };
+            const items = raw.data?.items?.filter((item) => item.status === "approved") ?? [];
+            return parseGeneratorCharactersResponse({ ...raw, data: { ...raw.data, items } }).items;
+          })
           .catch((error: unknown) => {
             if (error instanceof DOMException && error.name === "AbortError") throw error;
             return [] as CharacterCardData[];
@@ -1623,18 +1632,16 @@ export function GeneratorWorkspace() {
         headers: { "x-idream-viewer-scope": viewerRequest.scope },
         signal: viewerRequest.controller.signal,
       });
-      // A job this viewer can no longer read will never answer; drop it so the
-      // poll loop stops instead of asking again every 1.8s. Other failures retry.
-      if (response.status === 403 || response.status === 404) {
-        const message = apiPayloadErrorMessage(await response.json().catch(() => null));
+      // A job that no longer exists will never answer; drop it so the poll loop
+      // stops instead of asking again every 1.8s. Other failures (including a
+      // recoverable 403) retry.
+      if (response.status === 404) {
         if (!privateViewerRequestIsCurrent(viewerRequest)) return;
         setJobs((current) => current.filter((item) => item.id !== jobId));
         if (currentGenerationJobRef.current === jobId) {
           currentGenerationJobRef.current = null;
           clearCurrentGenerationJob(window.sessionStorage);
-          setStatus(response.status === 404
-            ? "This generation is no longer available."
-            : message ?? "You can't view this generation.");
+          setStatus("This generation is no longer available.");
         }
         return;
       }

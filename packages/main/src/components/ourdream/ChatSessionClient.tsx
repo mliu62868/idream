@@ -256,6 +256,10 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
     useState<string | null>(null);
   const [retryingImageIds, setRetryingImageIds] = useState<ReadonlySet<string>>(() => new Set());
   const [receiptOwnerScope, setReceiptOwnerScope] = useState<string | null>(null);
+  // The focus re-check clears the scope while it asks; this keeps the last one
+  // so a network blip can hand it back instead of hiding pending receipts.
+  const receiptOwnerScopeRef = useRef<string | null>(null);
+  useEffect(() => { if (receiptOwnerScope) receiptOwnerScopeRef.current = receiptOwnerScope; }, [receiptOwnerScope]);
   const [receiptWarning, setReceiptWarning] = useState("");
   const [videoForm, setVideoForm] = useState<{ conversationId: string; ownerScope: string; sourceId?: string; prompt?: string; characterId: string | null } | null>(null);
   const {
@@ -425,6 +429,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
       controller = new AbortController();
       const signal = controller.signal;
       const epoch = ++sessionMutationEpochRef.current;
+      const scopeBefore = receiptOwnerScopeRef.current;
       suspendGenerationReceipts(true);
       setReceiptOwnerScope(null);
       // INTENT: re-validate in the background. Swapping the conversation for a
@@ -437,6 +442,16 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
         resumePendingStreams(session.messages);
       }).catch((error: unknown) => {
         if (signal.aborted || epoch !== sessionMutationEpochRef.current) return;
+        // Only a failed owner check (signed out, or this chat is not readable
+        // any more) replaces the page; a network blip keeps the conversation.
+        const status = (error as { status?: unknown }).status;
+        if (!isChatAuthError(error) && status !== 403 && status !== 404) {
+          if (scopeBefore) {
+            resumeGenerationReceipts(scopeBefore);
+            setReceiptOwnerScope(scopeBefore);
+          }
+          return;
+        }
         stopVoice();
         setTitle("Chat");
         setLoadState(isChatAuthError(error) ? "signed-out" : "error");
@@ -769,6 +784,9 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
         return;
       }
       const payload = parseChatSendResponse(await response.json());
+      // A focus re-check that started before this send was accepted would
+      // otherwise land afterwards and replace the new turn with an older snapshot.
+      sessionMutationEpochRef.current += 1;
       const userMessage = payload.userMessage;
       const assistant = payload.assistant;
       const streamUrl = payload.streamUrl;

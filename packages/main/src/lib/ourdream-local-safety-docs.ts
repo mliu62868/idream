@@ -22,7 +22,7 @@ Use the appeal form in the Help Desk when you want a decision reviewed. Include 
 
 ## External contact details
 
-We list other contact channels here only once they are staffed. Until then, the Help Desk is the way to reach us, and every request there gets a reference you can follow up on.
+We list other contact channels here only once they are staffed. Until then, the Help Desk is the way to reach us, and your requests there get a reference you can follow up on.
 `,
   },
   {
@@ -75,7 +75,7 @@ Every character and image keeps track of whether it has been checked and publish
 
 ## Operator review
 
-Anything that needs a decision goes to our review team. Their decisions and reasons are recorded, and nothing goes live until a reviewer has approved it.
+Anything that needs a decision goes to review. Decisions and reasons are recorded, and nothing goes live until it has passed review and been published.
 
 ## Reports and appeals
 
@@ -236,7 +236,7 @@ When older content has to be fixed, we keep it as a draft with its history rathe
     markdown: `
 ## One answer for each question
 
-Your identity, what is published, your balance, and your generations each have a single record that the whole product reads, so different pages never disagree.
+Your identity, what is published, your balance, and your generations each have a single record that the whole product reads, so different pages show the same answer.
 
 ## Fail closed without inventing
 

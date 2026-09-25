@@ -1327,6 +1327,30 @@ async function ageVerificationWebhook(request: Request, provider: string) {
   return ok({ processed: true });
 }
 
+// SPEC: every word of the query must match the name, description, a tag or the
+// style, so "slow-burn elf" finds an elf tagged slow-burn; the whole query may
+// also name one tag ("slow burn"). Explore and the search dropdown share it.
+function characterSearchWhere(q: string): Prisma.CharacterWhereInput | null {
+  const nameFilter = nameMatch(q);
+  if (!nameFilter) return null;
+  const terms = nameFilter.contains.split(" ").slice(0, 6);
+  const tagNamed = (text: string): Prisma.CharacterWhereInput => ({ tags: { some: { tag: { OR: [
+    { slug: slugify(text) },
+    { label: { equals: text, mode: "insensitive" } },
+  ] } } } });
+  return { OR: [
+    ...(terms.length > 1 ? [tagNamed(nameFilter.contains)] : []),
+    { AND: terms.map((term): Prisma.CharacterWhereInput => ({ OR: [
+      { name: { contains: term, mode: "insensitive" } },
+      { description: { contains: term, mode: "insensitive" } },
+      tagNamed(term),
+      ...(CHARACTER_STYLES as readonly string[]).includes(term.toLowerCase())
+        ? [{ style: term.toLowerCase() } as Prisma.CharacterWhereInput]
+        : [],
+    ] })) },
+  ] };
+}
+
 async function listCharacters(request: Request) {
   const ctx = await getAuthCtx(request);
   requireAgeGate(ctx);
@@ -1391,27 +1415,8 @@ async function listCharacters(request: Request) {
     where.creatorId = { in: followedCreatorIds };
   }
 
-  // SPEC: every word of the query must match the name, description, a tag or
-  // the style, so "slow-burn elf" finds an elf tagged slow-burn.
-  const nameFilter = nameMatch(q);
-  if (nameFilter) {
-    const terms = nameFilter.contains.split(" ").slice(0, 6);
-    (where.AND as Prisma.CharacterWhereInput[]).push(
-      ...terms.map((term): Prisma.CharacterWhereInput => ({
-        OR: [
-          { name: { contains: term, mode: "insensitive" } },
-          { description: { contains: term, mode: "insensitive" } },
-          { tags: { some: { tag: { OR: [
-            { slug: slugify(term) },
-            { label: { equals: term, mode: "insensitive" } },
-          ] } } } },
-          ...(CHARACTER_STYLES as readonly string[]).includes(term.toLowerCase())
-            ? [{ style: term.toLowerCase() } as Prisma.CharacterWhereInput]
-            : [],
-        ],
-      })),
-    );
-  }
+  const searchWhere = characterSearchWhere(q);
+  if (searchWhere) (where.AND as Prisma.CharacterWhereInput[]).push(searchWhere);
 
   const forYouProfile = sort === "for-you" && ctx.userId ? await loadForYouProfile(ctx.userId) : null;
   // INTENT: For You without a signal is the default Popular (the month window),
@@ -1840,7 +1845,7 @@ async function suggest(request: Request) {
         AND: [
           publicCharacterAudienceWhere,
           {
-            name: { contains: normalized, mode: "insensitive" },
+            ...characterSearchWhere(normalized),
             NOT:
               mutedTagSlugs.length > 0
                 ? {
@@ -1928,8 +1933,9 @@ async function updateDraft(request: Request, id: string) {
   const body = draftPatchSchema.parse(await jsonBody(request));
   const currentDraft = await assertDraftOwner(id, user.id);
   const currentDetails = readCurrentCharacterDraftDetails(currentDraft.advancedDetails);
+  // The name is not a visual trait and stays out of the preview prompt, so
+  // renaming keeps the confirmed face.
   const identityChanged =
-    (body.name !== undefined && body.name !== currentDraft.name) ||
     (body.gender !== undefined && body.gender !== currentDraft.gender) ||
     (body.style !== undefined && body.style !== currentDraft.style) ||
     (body.age !== undefined && body.age !== currentDetails.age) ||
@@ -1979,22 +1985,12 @@ function visualAdvancedDetailsChanged(
   next: Record<string, unknown> | undefined,
   current: unknown,
 ) {
-  if (!next) return false;
-  const visual = (value: unknown) => {
-    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-    const record = { ...(value as Record<string, unknown>) };
-    // These fields affect delivery/persona presentation but not the identity image.
-    delete record.firstMessage;
-    delete record.voiceSelection;
-    delete record.detailsMarkdown;
-    return record;
-  };
-  const currentRecord = current && typeof current === "object" && !Array.isArray(current)
-    ? current as Record<string, unknown>
-    : {};
-  // PATCH carries a partial details object; compare the post-merge visual
-  // projection so a voice-only update does not invalidate an identity.
-  return !canonicalJsonEqual(visual({ ...currentRecord, ...next }), visual(currentRecord));
+  // INVARIANT: description is the only advancedDetails field in the preview
+  // prompt (character-draft-write.ts characterPreviewPrompt); age is compared
+  // separately. Everything else — opening line, Soul text, voice — is not.
+  if (!next || !("description" in next)) return false;
+  const nextDescription = typeof next.description === "string" ? next.description.trim() : "";
+  return nextDescription !== (readCurrentCharacterDraftDetails(current).description?.trim() ?? "");
 }
 
 async function currentDraft(request: Request) {
@@ -2036,6 +2032,13 @@ async function draftResumePayload(draft: CharacterDraft, userId: string) {
   const previewJob = storedPreviewJob && await characterPreviewMatchesDraft(draft, storedPreviewJob.id)
     ? await previewWithExecutionStatus(storedPreviewJob, userId)
     : null;
+  // A confirmed preview that no longer matches (its prompt predates the current
+  // format, or a visual trait changed) must not read back as "confirmed" with no
+  // image; drop the confirmation so the wizard asks for a fresh choice.
+  if (draft.previewJobId && !previewJob) {
+    await prisma.characterDraft.updateMany({ where: { id: draft.id, previewJobId: draft.previewJobId }, data: { previewJobId: null } });
+    draft = { ...draft, previewJobId: null };
+  }
   const asset = previewJob?.resultAssetId
     ? await prisma.mediaAsset.findUnique({ where: { id: previewJob.resultAssetId } })
     : null;

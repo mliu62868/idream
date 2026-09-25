@@ -802,10 +802,10 @@ export function CreateWorkspace() {
     setSelectedPreviewJobId("");
   }
 
-  // INVARIANT: matches the server's visualAdvancedDetailsChanged — the opening
-  // line and Soul text are not in the preview prompt, so editing them keeps the
-  // confirmed face instead of forcing a new round of candidates.
-  function setSoulField(key: "firstMessage" | "detailsMarkdown", value: string) {
+  // INVARIANT: matches the server's updateDraft identity check — the name, the
+  // opening line and Soul text are not in the preview prompt, so editing them
+  // keeps the confirmed face instead of forcing a new round of candidates.
+  function setSoulField(key: "name" | "firstMessage" | "detailsMarkdown", value: string) {
     setState((current) => ({ ...current, [key]: value }));
   }
 
@@ -1445,7 +1445,7 @@ export function CreateWorkspace() {
                 <Field label="Name">
                   <input
                     className={FIELD_LEAD_INPUT_CLASS}
-                    onChange={(event) => setIdentityField("name", event.target.value)}
+                    onChange={(event) => setSoulField("name", event.target.value)}
                     maxLength={80}
                     placeholder="Nova Reyes"
                     value={state.name}
@@ -1821,7 +1821,7 @@ export function CreateWorkspace() {
                     {state.confirmedPreviewJobId ? (
                       <p className="flex items-center gap-2 text-[13px] font-semibold text-[rgb(120,220,170)]">
                         <Check className="h-4 w-4" />
-                        Identity confirmed. Future images will keep this face.
+                        Identity confirmed. This is now the character&apos;s face.
                       </p>
                     ) : (
                       <p className="text-[13px] font-semibold text-white">

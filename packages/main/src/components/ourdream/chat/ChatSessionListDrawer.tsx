@@ -1,5 +1,6 @@
 "use client";
 
+import { chatFailureCopy } from "@/lib/chat-failure-copy";
 import { Archive, Compass, Pencil, Plus, Trash2, X } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
@@ -93,7 +94,7 @@ export function ChatSessionListDrawer({
             row.id === sessionId ? { ...row, status: "archived" } : row,
           ),
         );
-      } else setError("Couldn't archive this chat.");
+      } else setError(chatFailureCopy(await res.json().catch(() => null), "Couldn't archive this chat."));
     } catch {
       if (epoch === scopeEpoch.current) setError("Couldn't archive this chat.");
     } finally {
@@ -103,6 +104,7 @@ export function ChatSessionListDrawer({
 
   function startRename(sessionId: string, currentTitle: string | null) {
     setDeleteConfirmSessionId(null);
+    setArchiveConfirmSessionId(null);
     setEditingId(sessionId);
     setDraft(currentTitle ?? "");
     setError(null);
@@ -139,7 +141,7 @@ export function ChatSessionListDrawer({
         );
         cancelRename();
       } else if (epoch === scopeEpoch.current) {
-        setError("Couldn't rename this chat.");
+        setError(chatFailureCopy(await res.json().catch(() => null), "Couldn't rename this chat."));
       }
     } catch {
       if (epoch === scopeEpoch.current) setError("Couldn't rename this chat.");
@@ -168,7 +170,7 @@ export function ChatSessionListDrawer({
         if (sessionId === currentSessionId) {
           window.location.assign("/chat");
         }
-      } else setError("Couldn't delete this chat.");
+      } else setError(chatFailureCopy(await res.json().catch(() => null), "Couldn't delete this chat."));
     } catch {
       if (epoch === scopeEpoch.current) setError("Couldn't delete this chat.");
     } finally {
@@ -180,6 +182,7 @@ export function ChatSessionListDrawer({
 
   function closeDrawer() {
     setDeleteConfirmSessionId(null);
+    setArchiveConfirmSessionId(null);
     onClose();
   }
 
