@@ -116,6 +116,12 @@ export const adminZhGrowth: Record<string, string> = {
   "Grant restored": "授予已还原",
   "It never expires.": "它永不过期。",
   "It stops working at {when}.": "它在 {when} 失效。",
+  "Publishing {name} at this price needs a second approver. Submit an approval request; once approved, publish it again. Editing the draft afterwards voids the approval.":
+    "按这个价格发布 {name} 需要第二位审批人。请提交审批申请，批准后再发布一次。批准后再改草稿，这条批准即失效。",
+  "Publishing {name} needs a second approver. Submit an approval request; once approved, publish it again.":
+    "发布 {name} 需要第二位审批人。请提交审批申请，批准后再发布一次。",
+  "A code worth {coins} Dreamcoins (max uses: {uses}) needs a second approver. Submit an approval request; once approved, create the same code again.":
+    "面额 {coins} 梦币（可用次数：{uses}）的兑换码需要第二位审批人。请提交审批申请，批准后再创建同样的码。",
   "No active price for this mode is loaded here, so the price it replaces is unknown.":
     "当前页面里没有这个模式的在售价格，因此它顶掉的价格未知。",
   "No provider payout recorded yet": "尚无 provider 打款记录",

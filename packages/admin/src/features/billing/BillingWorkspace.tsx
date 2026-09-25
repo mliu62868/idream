@@ -5,7 +5,7 @@ import type { FormEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { BadgeDollarSign, Loader2, ReceiptText, X } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
-import { AdminV2RequestError } from "@/lib/admin-v2-api";
+import { ApprovalRequiredNotice, isDualApprovalRequired } from "@/features/approvals/ApprovalRequired";
 import {
   adminBillingSubscriptionListResponseSchema,
   adminSubscriptionRefundCommandResponseSchema,
@@ -21,7 +21,7 @@ import { useAdminFormat, text } from "@/components/admin/ui/format";
 import { emptyPageInfo, Pagination, type PageInfo } from "@/components/admin/ui/Pagination";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
 import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
-import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
+import { useToast } from "@/components/admin/ui/Toast";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { canonicalListEmptyTitle } from "@/features/compatibility-lists/empty-state";
@@ -103,7 +103,6 @@ export function BillingWorkspace({
   const { t, value: valueLabel } = useAdminI18n();
   const format = useAdminFormat();
   const { toast } = useToast();
-  const failureToast = useFailureToast();
   // INVARIANT: server and first browser render use identical state. URL-owned
   // filters are restored after hydration so bookmarked operator views stay safe.
   const [query, setQuery] = useState<BillingQuery>(defaultBillingQuery);
@@ -113,7 +112,6 @@ export function BillingWorkspace({
   const [reconciliationState, setReconciliationState] = useState<AuthorityState<BillingReconciliation>>(emptyAuthorityState);
   const [adjustment, setAdjustment] = useState<AdjustmentDraft>(emptyAdjustment);
   const [blockedAdjustment, setBlockedAdjustment] = useState<BlockedAdjustment | null>(null);
-  const [approvalPending, setApprovalPending] = useState(false);
   const [refundReferences, setRefundReferences] = useState<Record<string, string>>({});
   const [view, setView] = useState<BillingView>("pending");
   const adjustmentPanel = useRef<HTMLDetailsElement>(null);
@@ -312,29 +310,6 @@ export function BillingWorkspace({
         navigate(next, "replace");
       },
     });
-  }
-
-  async function requestAdjustmentApproval(blocked: BlockedAdjustment) {
-    setApprovalPending(true);
-    try {
-      // SPEC: enforceApproval matches action + targetId + payload.delta, so this
-      //       request unlocks exactly the adjustment that was refused.
-      await apiWrite("/api/v2/admin/approvals", "POST", {
-        permissionKey: "billing.ledger.adjust",
-        action: "billing.ledger.adjust",
-        targetType: "user",
-        targetId: blocked.userId,
-        payload: { delta: blocked.delta },
-        reason: blocked.reason,
-        confirmation: `${blocked.userId}:billing.ledger.adjust`,
-      });
-      setBlockedAdjustment(null);
-      toast({ tone: "success", title: t("Approval requested for {user}. Run the same adjustment again once it is approved.", { user: blocked.userId }) });
-    } catch (error) {
-      failureToast(error);
-    } finally {
-      setApprovalPending(false);
-    }
   }
 
   function requestRefundAcknowledgement(checkout: BillingRecord) {
@@ -666,10 +641,14 @@ export function BillingWorkspace({
             <Field label="Adjustment delta" onChange={(delta) => setAdjustment((current) => ({ ...current, delta }))} value={adjustment.delta} />
           </div>
           {blockedAdjustment ? (
-            <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-[var(--ad-border)] bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]" data-testid="billing-adjustment-approval-required" role="status">
-              <p>{t("Adjusting {delta} for {user} needs a second approver. Submit an approval request; once approved, run the same adjustment again.", { delta: String(blockedAdjustment.delta), user: blockedAdjustment.userId })}</p>
-              <button className="inline-flex min-h-11 items-center rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-4 text-sm font-semibold disabled:opacity-50" disabled={approvalPending} onClick={() => void requestAdjustmentApproval(blockedAdjustment)} type="button">{t("Request approval")}</button>
-            </div>
+            <ApprovalRequiredNotice
+              // SPEC: enforceApproval matches action + targetId + payload.delta, so this
+              //       request unlocks exactly the adjustment that was refused.
+              blocked={{ permissionKey: "billing.ledger.adjust", action: "billing.ledger.adjust", targetType: "user", targetId: blockedAdjustment.userId, payload: { delta: blockedAdjustment.delta }, reason: blockedAdjustment.reason }}
+              message={t("Adjusting {delta} for {user} needs a second approver. Submit an approval request; once approved, run the same adjustment again.", { delta: String(blockedAdjustment.delta), user: blockedAdjustment.userId })}
+              onRequested={() => setBlockedAdjustment(null)}
+              testId="billing-adjustment-approval-required"
+            />
           ) : null}
         </details>
       ) : null}
@@ -964,9 +943,6 @@ function coinCell(
     : format.display(value);
 }
 
-function isDualApprovalRequired(error: unknown) {
-  return error instanceof AdminV2RequestError && error.status === 403 && error.message.startsWith("Dual approval required");
-}
 
 function canAdjustLedger(draft: AdjustmentDraft) {
   return Boolean(draft.userId.trim() && parseLedgerAdjustmentDelta(draft.delta) !== null);

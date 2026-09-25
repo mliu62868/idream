@@ -19,6 +19,7 @@ import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
+import { ApprovalRequiredNotice, isDualApprovalRequired, type BlockedApproval } from "@/features/approvals/ApprovalRequired";
 import {
   defaultPromoQuery,
   PROMO_PAGE_SIZE,
@@ -316,6 +317,7 @@ function RedeemCodeForm({ onCreated }: { onCreated: () => void }) {
   const [reason, setReason] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [busy, setBusy] = useState(false);
+  const [blocked, setBlocked] = useState<BlockedApproval | null>(null);
   const trimmedCode = code.trim();
   const dreamcoinValue = strictIntegerFromText(coins, 1, 1_000_000);
   const maxRedemptionsValue = maxRedemptions.trim()
@@ -352,10 +354,23 @@ function RedeemCodeForm({ onCreated }: { onCreated: () => void }) {
       setExpiresAt("");
       setReason("");
       setConfirmation("");
+      setBlocked(null);
       toast({ tone: "success", title: t("Redeem code {code} created", { code: trimmedCode }) });
       onCreated();
     } catch (cause) {
       // INTENT: 失败时不清表单——码、面额、原因、确认串全留着，重试只差再点一次。
+      if (isDualApprovalRequired(cause) && dreamcoinValue !== null) {
+        // INVARIANT: 码是机密不进审批单；批准绑定面额与次数，与服务端 redeemCodeApprovalPayload 一致。
+        setBlocked({
+          permissionKey: "growth.promo.write",
+          action: "promo.redeem_code.create",
+          targetType: "redeem_code",
+          targetId: "redeem_code",
+          payload: { dreamcoins: dreamcoinValue, maxRedemptions: maxRedemptionsValue ?? "unlimited" },
+          reason: reason.trim(),
+        });
+        return;
+      }
       failureToast(cause);
     } finally {
       setBusy(false);
@@ -423,6 +438,14 @@ function RedeemCodeForm({ onCreated }: { onCreated: () => void }) {
 
           {t("Expiry must be a valid date and time.")}
         </p>
+      ) : null}
+      {blocked ? (
+        <ApprovalRequiredNotice
+          blocked={blocked}
+          message={t("A code worth {coins} Dreamcoins (max uses: {uses}) needs a second approver. Submit an approval request; once approved, create the same code again.", { coins: String(blocked.payload.dreamcoins), uses: blocked.payload.maxRedemptions === "unlimited" ? t("Unlimited") : String(blocked.payload.maxRedemptions) })}
+          onRequested={() => setBlocked(null)}
+          testId="redeem-code-approval-required"
+        />
       ) : null}
       {dreamcoinValue !== null ? (
         <CodeLiability

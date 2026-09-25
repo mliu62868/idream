@@ -191,7 +191,12 @@ export async function publishPricingRule(
       if (!rule) throw Errors.notFound("Pricing rule not found");
       assertTargetConfirmation(body.confirmation, rule.id);
       if (rule.status !== "draft") throw Errors.badRequest("Only draft pricing rules can be published");
-      await enforceApproval("config.pricing.publish", id, tx);
+      // INVARIANT: 批准绑定价格本身：批准之后再改草稿（baseCost / multiplier）就不再匹配。
+      await enforceApproval("config.pricing.publish", id, tx, {
+        baseCost: rule.baseCost,
+        multiplier: rule.multiplier,
+        version: rule.version,
+      });
       const previous = await tx.pricingRule.findFirst({ where: { mode: rule.mode, status: "active" } });
       const effectiveFrom = body.effectiveFrom ? new Date(body.effectiveFrom) : (rule.effectiveFrom ?? new Date());
       if (effectiveFrom.getTime() > Date.now()) {

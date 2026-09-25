@@ -30,6 +30,13 @@ import { DUAL_APPROVAL_FLAG } from "./enforcement";
  *         审批方不能是请求方，已裁决的请求不可再裁决。凭据一次性，消费在 enforcement.ts。
  */
 
+// SPEC: 这些动作的批准只对 payload 里这组值有效（enforcement.ts approvalCoversPayload）。
+const PAYLOAD_BOUND_APPROVALS: Record<string, readonly string[]> = {
+  "billing.ledger.adjust": ["delta"],
+  "config.pricing.publish": ["baseCost", "multiplier", "version"],
+  "promo.redeem_code.create": ["dreamcoins", "maxRedemptions"],
+};
+
 type ApprovalListResponse = z.infer<typeof approvalListResponseSchema>;
 type ApprovalMutationResponse = z.infer<typeof approvalMutationResponseSchema>;
 type ApprovalCreateBody = AdminV2RequestBody<"approvalCreateRequestSchema">;
@@ -119,10 +126,17 @@ export async function createApproval(request: Request): Promise<ApprovalMutation
   if (!isPermissionKey(body.permissionKey)) {
     throw Errors.badRequest("Unknown permission key");
   }
-  // 调账审批按金额绑定（enforceApproval 比对 payload.delta），创建时就拒绝匹配不上的请求。
-  if (body.action === "billing.ledger.adjust"
-    && !Number.isSafeInteger((body.payload as { delta?: unknown } | null | undefined)?.delta)) {
-    throw Errors.badRequest("Ledger adjustment approvals must name the integer delta they approve");
+  // 按参数绑定的审批（enforceApproval 比对 payload），创建时就拒绝匹配不上的请求。
+  const boundFields = PAYLOAD_BOUND_APPROVALS[body.action];
+  if (boundFields) {
+    const payload = (body.payload ?? {}) as Record<string, unknown>;
+    const missing = boundFields.filter((field) => {
+      const value = payload[field];
+      return !(typeof value === "number" && Number.isFinite(value)) && typeof value !== "string";
+    });
+    if (missing.length > 0) {
+      throw Errors.badRequest("Approval payload must name the exact values it approves", { action: body.action, missing });
+    }
   }
   const permissions = await effectivePermissions(actor.id, actor.role);
   if (!permissions.has(body.permissionKey)) {
@@ -181,10 +195,7 @@ export async function approveApproval(
       { permission: approval.permissionKey },
     );
   }
-  const updated = await prisma.adminActionRequest.update({
-    where: { id },
-    data: { status: "approved", approvedById: actor.id, decidedAt: new Date() },
-  });
+  const updated = await decidePending(id, { status: "approved", approvedById: actor.id });
   await writeAudit(request, actor, {
     action: "admin.approval.approve",
     targetType: approval.targetType,
@@ -212,10 +223,7 @@ export async function rejectApproval(
   if (approval.status !== "pending") {
     throw Errors.badRequest("Approval request is not pending");
   }
-  const updated = await prisma.adminActionRequest.update({
-    where: { id },
-    data: { status: "rejected", approvedById: actor.id, decidedAt: new Date() },
-  });
+  const updated = await decidePending(id, { status: "rejected", approvedById: actor.id });
   await writeAudit(request, actor, {
     action: "admin.approval.reject",
     targetType: approval.targetType,
@@ -225,6 +233,17 @@ export async function rejectApproval(
     after: { status: "rejected", requestId: updated.id },
   });
   return { request: serializeApproval(updated) };
+}
+
+// INVARIANT: 裁决是 CAS —— 只有仍是 pending 的请求能被裁决；两位审批人并发点击时，
+// 后到的那个拿 409，而不是把 approved 覆盖成 rejected（或反之）。
+async function decidePending(id: string, data: { status: "approved" | "rejected"; approvedById: string }) {
+  const decided = await prisma.adminActionRequest.updateMany({
+    where: { id, status: "pending" },
+    data: { ...data, decidedAt: new Date() },
+  });
+  if (decided.count !== 1) throw Errors.conflict("Approval request was already decided");
+  return prisma.adminActionRequest.findUniqueOrThrow({ where: { id } });
 }
 
 function assertConfirmation(value: string, target: string) {

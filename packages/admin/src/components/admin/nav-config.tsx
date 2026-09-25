@@ -321,7 +321,7 @@ export const navItems: NavItem[] = [
     /> }),
 
   item({ id: "approvals", label: "Approvals", href: "/admin/system/approvals", icon: ClipboardCheck, group: "System", read: readForOperations("GET /api/v2/admin/approvals"),
-    render: (ctx) => <ApprovalsWorkspace canReview={ctx.permissions.has("admin.approval.review")} /> }),
+    render: (ctx) => <ApprovalsWorkspace canReview={ctx.permissions.has("admin.approval.review")} canToggleEnforcement={ctx.permissions.has("config.feature_flag.write")} /> }),
   item({ id: "system/access", label: "Team Access", href: "/admin/system/access", icon: Users, group: "System", read: readForOperations("GET /api/v2/admin/users"),
     render: (ctx) => <AccessWorkspace permissions={{
       changeStatus: ctx.permissions.has("user.status.write"),
