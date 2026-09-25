@@ -58,7 +58,7 @@ describe("feature flag authority", () => {
 
   it("pairs rollout with enabled so an enable toggle actually serves traffic", async () => {
     const key = `${P}rollout-pair`;
-    await prisma.featureFlag.create({ data: { key, label: key, enabled: false, rolloutPercent: 0 } });
+    await prisma.featureFlag.create({ data: { key, label: key, enabled: false, rolloutPercent: 0, targetRoles: [], targetPlans: [] } });
     const on = await patchFlag(key, true, `${P}pair-on`, `${P}pair-on-key`);
     expect((await on.json()).data.flag).toMatchObject({ enabled: true, rolloutPercent: 100 });
     const off = await patchFlag(key, false, `${P}pair-off`, `${P}pair-off-key`);
