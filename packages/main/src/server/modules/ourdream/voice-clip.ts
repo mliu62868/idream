@@ -10,7 +10,8 @@ import {
   requireUser,
 } from "@/server/lib/auth";
 import { prisma } from "@/server/lib/db";
-import { Errors } from "@/server/lib/errors";
+import { AppError, Errors } from "@/server/lib/errors";
+import { jsonBody } from "@/server/lib/request-json";
 import { env } from "@/server/lib/env";
 import { generationCostFromAuthority, resolveGenerationPricingAuthority } from "@/server/lib/generation-pricing";
 import { ok } from "@/server/lib/http";
@@ -30,11 +31,14 @@ import {
   type ChatMessageVoiceAuthority,
 } from "@/server/bff/chat-proxy";
 
+// INVARIANT: 只朗读 Main 账本里已发送的回复。sessionId 必填、朗读文本只取 Chat 权威
+// 文本；客户端 text 仅作兼容字段，不进入合成——否则这个接口就是任意文本的 TTS，
+// 能用他人角色（含克隆声音）说任何话。
 const voiceClipSchema = z.object({
   characterId: z.string().min(1),
   messageId: z.string().min(1),
-  sessionId: z.string().min(1).optional(),
-  text: z.string().trim().min(1).max(2_000),
+  sessionId: z.string().min(1),
+  text: z.string().trim().max(2_000).optional(),
   intent: z.enum(["play", "prewarm"]).default("play"),
   quoteToken: z.string().min(1).max(8192).nullish(),
 });
@@ -159,30 +163,29 @@ async function resolveVoiceClipInput(
   const user = requireUser(ctx);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
-  const body = voiceClipSchema.parse(await request.json());
-  const messageAuthority = body.sessionId
-    ? await (deps.messageVoiceAuthority ?? fetchChatMessageVoiceAuthority)(request, {
-        sessionId: body.sessionId,
-        messageId: body.messageId,
-        testOnlyText: body.text,
-        characterId: body.characterId,
-      }).catch((cause) => {
-        throw Errors.unavailable("Chat message authority is unavailable for Voice", {
-          cause: cause instanceof Error ? cause.message : String(cause),
-        });
-      })
-    : null;
-  if (messageAuthority && messageAuthority.characterId !== body.characterId) {
+  const body = voiceClipSchema.parse(await jsonBody(request));
+  const messageAuthority = await (deps.messageVoiceAuthority ?? fetchChatMessageVoiceAuthority)(request, {
+    sessionId: body.sessionId,
+    messageId: body.messageId,
+    testOnlyText: body.text,
+    characterId: body.characterId,
+  }).catch((cause) => {
+    if (cause instanceof AppError && cause.status < 500) throw cause;
+    throw Errors.unavailable("Chat message authority is unavailable for Voice", {
+      cause: cause instanceof Error ? cause.message : String(cause),
+    });
+  });
+  if (messageAuthority.characterId !== body.characterId) {
     throw Errors.conflict("Voice message belongs to another Character");
   }
-  const authoritativeText = messageAuthority?.text ?? body.text;
-  const authoritativeScene = messageAuthority?.scene ?? null;
+  const authoritativeText = messageAuthority.text;
+  const authoritativeScene = messageAuthority.scene ?? null;
   const synthesisPayload = voiceClipSynthesisPayloadSchema.parse({
     version: 1,
     text: authoritativeText,
-    sessionId: body.sessionId ?? null,
+    sessionId: body.sessionId,
     intent: body.intent,
-    sceneVersion: messageAuthority?.sceneVersion ?? 0,
+    sceneVersion: messageAuthority.sceneVersion ?? 0,
     scene: authoritativeScene,
   });
   const requestFingerprint = canonicalJsonHash({
@@ -190,9 +193,9 @@ async function resolveVoiceClipInput(
     userId: user.id,
     characterId: body.characterId,
     messageId: body.messageId,
-    sessionId: body.sessionId ?? null,
+    sessionId: body.sessionId,
     text: authoritativeText,
-    sceneVersion: messageAuthority?.sceneVersion ?? 0,
+    sceneVersion: messageAuthority.sceneVersion ?? 0,
     scene: authoritativeScene,
   });
   return { user, body, synthesisPayload, requestFingerprint };

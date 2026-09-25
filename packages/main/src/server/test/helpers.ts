@@ -580,6 +580,38 @@ export async function grantCoins(userId: string, delta: number, reason = "test_g
   });
 }
 
+// SPEC: Voice 只朗读账本里已发送的助手回复。按 messageId 种一条回复并把 sessionId 填进
+// 请求体；同一 messageId 以新文本再调用即改写该回复，等同于用户重新生成了它。
+export async function voiceReplyBody<T extends { characterId: string; messageId: string; text: string }>(
+  userId: string,
+  body: T,
+): Promise<T & { sessionId: string }> {
+  const sessionId = `${body.messageId}-voice-session`;
+  await prisma.recentChat.upsert({
+    where: { sessionId },
+    create: { sessionId, userId, characterId: body.characterId },
+    update: {},
+  });
+  await prisma.chatTurn.upsert({
+    where: { id: `${body.messageId}-voice-turn` },
+    create: {
+      id: `${body.messageId}-voice-turn`,
+      sessionId,
+      idempotencyKey: `${body.messageId}-voice-fixture`,
+      requestHash: `${body.messageId}-voice-request`,
+      userMessageId: `${body.messageId}-voice-user`,
+      assistantMessageId: body.messageId,
+      userContent: "Read the reply aloud.",
+      assistantContent: body.text,
+      assistantStatus: "sent",
+      memoryEnabled: true,
+      terminalAt: new Date(),
+    },
+    update: { assistantContent: body.text },
+  });
+  return { ...body, sessionId };
+}
+
 export async function dreamcoinBalance(userId: string) {
   const aggregate = await prisma.dreamcoinLedger.aggregate({
     where: { userId },
