@@ -41,7 +41,10 @@ export function CharacterDetailHero({
         <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(8,8,8,.88)_0%,rgba(8,8,8,.48)_48%,rgba(8,8,8,.08)_78%),linear-gradient(0deg,rgba(8,8,8,.84)_0%,transparent_58%)]" />
       </div>
 
-      <div className="absolute inset-x-0 bottom-0 flex max-w-3xl flex-col justify-end p-6 lg:inset-y-0 lg:bottom-auto lg:p-12">
+      {/* Below lg the actions wrap to several rows; an overlay pinned to the image
+          bottom grew upward and clipped the name, so the copy starts over the
+          image's lower edge and grows down instead. */}
+      <div className="relative -mt-48 flex max-w-3xl flex-col justify-end p-6 lg:absolute lg:inset-x-0 lg:inset-y-0 lg:mt-0 lg:p-12">
         <p className="text-[12px] font-black uppercase leading-4 text-[rgb(253,95,194)]">
           {character.style ?? "realistic"} companion
         </p>
@@ -73,8 +76,8 @@ export function CharacterDetailHero({
           ) : (
             <span data-testid="character-detail-creator">{character.creator}</span>
           )}
-          {hasLikes && <span>{character.likes} likes</span>}
-          {hasChats && <span>{character.chats} chats</span>}
+          {hasLikes && <span>{character.likes} {character.likesCount === 1 ? "like" : "likes"}</span>}
+          {hasChats && <span>{character.chats} {character.chatsCount === 1 ? "chat" : "chats"}</span>}
           {character.vivid && (
             <span className="rounded-full bg-[rgb(253,95,194)] px-2 py-1 text-[10px] font-black uppercase leading-3 text-[rgb(13,13,13)]">
               vivid
