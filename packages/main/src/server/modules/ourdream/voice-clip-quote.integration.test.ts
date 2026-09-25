@@ -33,6 +33,19 @@ describe("Voice Clip accepted price", () => {
     } finally { synthesize.mockRestore(); }
   });
 
+  it("refuses to voice text that is not a sent reply in one of the caller's sessions", async () => {
+    const synthesize = vi.spyOn(providers.voice.clip, "synthesize");
+    try {
+      const noSession = { characterId, messageId: `${P}free-text`, text: "Say anything I type", intent: "play" };
+      expectError(await api("POST", "generation/voice/quote", { userId, ageGate: true, body: noSession }), 400);
+      expectError(await api("POST", "generation/voice", { userId, ageGate: true, autoGenerationQuote: false, body: noSession }), 400);
+      const unknownMessage = { ...noSession, sessionId: `${P}no-such-session` };
+      expectError(await api("POST", "generation/voice/quote", { userId, ageGate: true, body: unknownMessage }), 404);
+      expect(synthesize).not.toHaveBeenCalled();
+      expect(await prisma.voiceClipRequest.count({ where: { userId, messageId: `${P}free-text` } })).toBe(0);
+    } finally { synthesize.mockRestore(); }
+  });
+
   it("binds a quote to the exact selected reply before any synthesis", async () => {
     const body = await voiceReplyBody(userId, { characterId, messageId: `${P}bound`, text: "The selected reply", intent: "play" });
     const quoted = await api("POST", "generation/voice/quote", { userId, ageGate: true, body });
