@@ -305,10 +305,10 @@ describe("CaseWorkspace decision loop", () => {
     vi.restoreAllMocks();
   });
 
-  async function mount(permissions: { canAssign: boolean; canDecide: boolean }) {
-    container.innerHTML = renderToString(<CaseWorkspace canAssign={permissions.canAssign} canDecide={permissions.canDecide} initialCaseId="case-1" />);
+  async function mount(permissions: { canAssign: boolean; canDecide: boolean; actorId?: string }) {
+    container.innerHTML = renderToString(<CaseWorkspace actorId={permissions.actorId} canAssign={permissions.canAssign} canDecide={permissions.canDecide} initialCaseId="case-1" />);
     await act(async () => {
-      root = hydrateRoot(container, <CaseWorkspace canAssign={permissions.canAssign} canDecide={permissions.canDecide} initialCaseId="case-1" />);
+      root = hydrateRoot(container, <CaseWorkspace actorId={permissions.actorId} canAssign={permissions.canAssign} canDecide={permissions.canDecide} initialCaseId="case-1" />);
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     await waitUntil(() => container.querySelector("#case-detail-title") !== null);
@@ -378,6 +378,23 @@ describe("CaseWorkspace decision loop", () => {
     const requests = adminV2Request.mock.calls.filter(([path]) => path.endsWith("/assignment"));
     expect(requests[0]?.[1]).toMatchObject({ method: "POST", idempotencyKey: expect.any(String) });
     expect(requests[1]?.[1]).toEqual(requests[0]?.[1]);
+  });
+
+  it("assigns the case to the signed-in operator in one click and links a ticket to its customer reply", async () => {
+    const read = adminV2Request.getMockImplementation()!;
+    adminV2Request.mockImplementation(async (path, options) => {
+      if (path.endsWith("/assignment")) return { caseId: "case-1", version: 5 };
+      if (path === "/api/v2/admin/cases/case-1") return { ...resolvedDetail, case: { ...resolvedCase, status: "in_progress", ownerId: null, caseKey: "ticket:SUP-TEST123" } };
+      return read(path, options);
+    });
+    await mount({ canAssign: true, canDecide: false, actorId: "operator-7" });
+    const reply = [...container.querySelectorAll("a")].find((link) => link.textContent === "Reply to customer");
+    expect(reply?.getAttribute("href")).toBe("/admin/support?ticket=SUP-TEST123");
+    const assign = [...container.querySelectorAll("button")].find((button) => button.textContent === "Assign to me")!;
+    await act(async () => assign.click());
+    await waitUntil(() => adminV2Request.mock.calls.some(([path]) => path.endsWith("/assignment")));
+    const [, options] = adminV2Request.mock.calls.find(([path]) => path.endsWith("/assignment"))!;
+    expect(options).toMatchObject({ method: "POST", body: expect.objectContaining({ ownerId: "operator-7" }) });
   });
 
   it.each(["resolved", "closed"])("requires reopening a %s case before assigning it", async (status) => {

@@ -202,6 +202,7 @@ export const navItems: NavItem[] = [
 
   item({ id: "cases", label: "Cases", href: "/admin/cases?view=mine", icon: Ticket, group: "Customers & Support", read: readForOperations("GET /api/v2/admin/cases"),
     render: (ctx) => <CaseWorkspace
+      actorId={ctx.actorId}
       canAssign={ctx.permissions.has("case.assign")}
       canDecide={ctx.permissions.has("case.decide")}
       initialCaseId={detailId(ctx.view)}

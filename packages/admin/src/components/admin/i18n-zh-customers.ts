@@ -216,6 +216,9 @@ export const adminZhCustomers: Record<string, string> = {
   "One view of recent chats, generations, billing, Cases, and operator history.":
     "在一个视图里统一查看近期聊天、生成、计费、工单与运营历史。",
   "Open Customer 360": "打开客户全景",
+  "Reply to customer": "回复客户",
+  "Assign to me": "分配给我",
+  "Case assigned to you": "已分配给你",
   "Open all Cases for this customer": "查看该客户的全部工单",
   "Operator history ({count})": "运营操作历史（{count}）",
   "Outcome reference": "结果引用",
