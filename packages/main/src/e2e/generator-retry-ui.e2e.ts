@@ -228,7 +228,7 @@ test("generator explains unavailable model authority without fake controls", asy
   await page.goto("/generate");
 
   await expect(page.getByTestId("generator-mode-unavailable")).toContainText(
-    "no active model is configured",
+    "Image generation is temporarily unavailable.",
   );
   await expect(page.getByText("100 coins", { exact: true })).toBeVisible();
   await expect(page.getByText("Unavailable", { exact: true })).toBeVisible();
@@ -290,7 +290,7 @@ test("generator fails closed when generation recipes are incomplete", async ({
   await page.goto("/generate");
 
   await expect(page.getByTestId("generator-mode-unavailable")).toContainText(
-    "generation recipes are not fully configured",
+    "temporarily unavailable while we finish setting it up",
   );
   await expect(
     page.getByRole("button", { name: "Image generation unavailable" }),

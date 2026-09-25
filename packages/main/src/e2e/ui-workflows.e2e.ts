@@ -2658,7 +2658,7 @@ test("explore character grid exposes retryable load errors and empty results", a
 
   allowCharacters = false;
   await page
-    .locator('input[aria-label="Search characters"][placeholder^="Try"]')
+    .locator('input[aria-label="Search characters"][placeholder^="Search by"]')
     .fill(`E2E Missing ${Date.now()} ${Math.floor(Math.random() * 1e6)}`);
 
   await expect(status).toContainText("Could not load characters.", { timeout: 10_000 });
@@ -4358,6 +4358,9 @@ test("chat session drawer renames, archives, and redirects after deleting the cu
   await sessionRow.getByRole("textbox", { name: "Rename chat" }).press("Enter");
   await expect(sessionRow.getByText(renamedTitle)).toBeVisible({ timeout: 10_000 });
 
+  // Archive is one-way, so the drawer asks once before doing it.
+  await sessionRow.getByTestId("session-archive").click();
+  await expect(sessionRow.getByTestId("session-archive")).toHaveAccessibleName("Confirm archive chat");
   await sessionRow.getByTestId("session-archive").click();
   await expect(sessionRow.getByText("Archived")).toBeVisible({ timeout: 10_000 });
 
@@ -4905,14 +4908,14 @@ test("generator user-preset round-trip and bulk media route are wired", async ({
     await page.goto("/generate");
     await page.getByTestId("generator-advanced-toggle").click();
     await expect(page.getByTestId("my-presets")).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByLabel("Style", { exact: true })).toBeVisible();
+    await expect(page.getByTestId("preset-select-style")).toBeVisible();
     const backgroundSelect = page.getByTestId("preset-select-background");
     await expect(backgroundSelect.locator(`option[value="${communityBackgroundId}"]`)).toHaveText(
       "Community · Community Neon Rooftop",
     );
     await backgroundSelect.selectOption(communityBackgroundId);
     await expect(backgroundSelect).toHaveValue(communityBackgroundId);
-    await page.getByLabel("Style", { exact: true }).selectOption("seed-preset-mode-realistic");
+    await page.getByTestId("preset-select-style").selectOption("seed-preset-mode-realistic");
     await backgroundSelect.selectOption("seed-preset-background-studio");
     await page.getByTestId("my-presets").getByLabel("Preset name").fill(presetLabel);
     await page.getByTestId("my-presets").getByRole("button", { name: "Save" }).click();
@@ -4924,7 +4927,7 @@ test("generator user-preset round-trip and bulk media route are wired", async ({
     await expect(page.getByText(`Applied preset "${presetLabel}".`)).toBeVisible({
       timeout: 10_000,
     });
-    await expect(page.getByLabel("Style", { exact: true })).toHaveValue("seed-preset-mode-realistic");
+    await expect(page.getByTestId("preset-select-style")).toHaveValue("seed-preset-mode-realistic");
     await expect(page.getByLabel("Background")).toHaveValue("seed-preset-background-studio");
 
     const list = await ctx.get("/api/v1/generation/presets?scope=user");
