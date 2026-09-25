@@ -596,7 +596,10 @@ describe("OpenAI-compatible DSH adapter", () => {
     expect(requests.map(request => request.max_tokens)).toEqual([256, 256]);
     expect(requests[1]).toMatchObject({ temperature: 0 });
     expect(JSON.stringify(requests[1]?.messages)).toContain("Provider compatibility mode");
-    expect(chunks.some((chunk) => chunk.type === "text-delta")).toBe(false);
+    // The first attempt's spoken line is replayed for the engine to validate.
+    expect(chunks.filter((chunk) => chunk.type === "text-delta")).toEqual([
+      { type: "text-delta", index: 1, text: "I will send one." },
+    ]);
     expect(chunks).toContainEqual(expect.objectContaining({
       type: "tool-call-delta",
       name: "generate_image_async",
@@ -688,7 +691,10 @@ describe("OpenAI-compatible DSH adapter", () => {
     })) chunks.push(chunk);
 
     expect(requests).toBe(2);
-    expect(chunks.some((chunk) => chunk.type === "text-delta")).toBe(false);
+    // The first attempt's line still reaches the engine, which decides whether to use it.
+    expect(chunks.filter((chunk) => chunk.type === "text-delta").map((chunk) => chunk.text)).toEqual([
+      "Make that 5:4, golden hour looks better wide.",
+    ]);
     expect(chunks).toContainEqual(expect.objectContaining({
       type: "tool-call-delta",
       name: "generate_image_async",

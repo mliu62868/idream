@@ -345,6 +345,18 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
     let omission: RequiredToolOmission | undefined;
     let totalUsage: TokenUsage | undefined;
     let argumentsJson: string | null = null;
+    // SPEC: the prose of a first forced attempt that skipped the tool is kept and
+    // replayed as this step's line, beside whichever tool call finally arrives.
+    // INTENT: the local model often answers the forced request in character first
+    // and only calls the tool on the retry, which carries no text. Dropping that
+    // line left every such photo turn with the neutral acknowledgement. The engine
+    // still validates it (length, language, no delivery claim) before using it.
+    let omittedLine = "";
+    const lineChunks = function* (index: number): Generator<StreamChunk> {
+      yield { type: "block-start", index, blockType: "text" };
+      yield { type: "text-delta", index, text: omittedLine };
+      yield { type: "block-end", index, block: { type: "text", text: omittedLine } };
+    };
     for (const jsonCompatibilityMode of [false, true]) {
       const chunks: StreamChunk[] = [];
       try {
@@ -359,8 +371,14 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
             };
           } else chunks.push(chunk);
         }
-        for (const chunk of requiredToolOnlyChunks(chunks, this.requiredToolName)) {
-          if (chunk.type === "finish" && totalUsage) yield { type: "usage", usage: totalUsage };
+        const kept = requiredToolOnlyChunks(chunks, this.requiredToolName);
+        const saidSomething = kept.some((chunk) => chunk.type === "text-delta" && chunk.text.trim());
+        const nextIndex = 1 + Math.max(-1, ...kept.flatMap((chunk) => "index" in chunk ? [chunk.index] : []));
+        for (const chunk of kept) {
+          if (chunk.type === "finish") {
+            if (omittedLine && !saidSomething) yield* lineChunks(nextIndex);
+            if (totalUsage) yield { type: "usage", usage: totalUsage };
+          }
           yield chunk;
         }
         return;
@@ -380,6 +398,7 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
           && !chunks.some((chunk) => chunk.type === "tool-call-delta")
           ? requiredToolArgumentsJson(this.requiredToolName, content)
           : null;
+        if (!jsonCompatibilityMode && !argumentsJson && error.finishReason.kind === "stop") omittedLine = content.trim();
         if (argumentsJson) {
           logger.info({
             event: "companion_required_tool_json_compatibility",
@@ -435,6 +454,7 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
         arguments: argumentsJson,
       },
     };
+    if (omittedLine) yield* lineChunks(1);
     if (totalUsage) yield { type: "usage", usage: totalUsage };
     yield { type: "finish", reason: { kind: "tool-calls" }, replayState: omission.replayState };
   }
