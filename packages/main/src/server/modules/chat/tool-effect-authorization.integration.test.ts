@@ -5,6 +5,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/server/lib/db";
+import { Errors } from "@/server/lib/errors";
 import { recordGenerationAttemptEvent } from "@/server/ai/generation-attempt-events";
 import { transitionGenerationRequest } from "@/server/ai/generation-request-transition";
 import { reserveInitialGenerationAttempt, reserveRetryGenerationAttempt } from "@/server/modules/generation/generation-attempt-authority";
@@ -410,6 +411,61 @@ describe("Main image action authorization", () => {
     expect(generated).toHaveBeenCalledTimes(1);
     const attachment = await prisma.chatTurnAttachment.findFirstOrThrow({ where: { turnId: snapshot.turnId } });
     expect(attachment.metadata).toMatchObject({ attempt: regenerated.attempt });
+  });
+
+  it("makes a new picture when the latest request is edited into a different picture, and reuses it again on regenerate", async () => {
+    const { userId, begin, generated } = await fixture();
+    const { snapshot } = await begin("Send me a photo by the cafe window.");
+    if (!snapshot) throw new Error("Missing snapshot");
+    const call = effect(snapshot);
+    const window = await applyChatToolEffect(call);
+    expect(window).toMatchObject({ accepted: true, duplicate: false });
+    await complete(snapshot);
+    await prisma.mainOutboxEvent.updateMany({ where: { aggregateId: `${userId}:${snapshot.characterId}` }, data: { status: "delivered", deliveredAt: new Date() } });
+
+    const edited = await editChatTurn(userId, snapshot.userMessageId, "Send me a photo on the beach at sunset.");
+    if (!edited.snapshot) throw new Error("Missing edited snapshot");
+    const beachCall = { ...call, attempt: edited.attempt, callId: randomUUID(), arguments: { prompt: "One person on a beach at sunset.", orientation: "4:5" as const, outputCount: 1 } };
+    const beach = await applyChatToolEffect(beachCall);
+    expect(beach).toMatchObject({ accepted: true, duplicate: false });
+    expect(beach.attachmentId).not.toBe(window.attachmentId);
+    expect(generated).toHaveBeenCalledTimes(2);
+    expect(generated.mock.calls[1]?.[0].promptHint).toContain("beach at sunset");
+    const view = await getChatSession(userId, snapshot.sessionId);
+    const reply = view.messages.find((message) => message.id === snapshot.assistantMessageId) as { attachments: Array<{ id: string }> } | undefined;
+    expect(reply?.attachments.map((attachment) => attachment.id)).toEqual([beach.attachmentId]);
+
+    await complete(edited.snapshot);
+    await prisma.mainOutboxEvent.updateMany({ where: { aggregateId: `${userId}:${snapshot.characterId}` }, data: { status: "delivered", deliveredAt: new Date() } });
+    const regenerated = await regenerateChatTurn(userId, snapshot.assistantMessageId);
+    expect(await applyChatToolEffect({ ...beachCall, attempt: regenerated.attempt, callId: randomUUID() })).toMatchObject({
+      accepted: true, duplicate: true, attachmentId: beach.attachmentId,
+    });
+    expect(generated).toHaveBeenCalledTimes(2);
+    expect(await prisma.generationJob.count({ where: { userId } })).toBe(2);
+  });
+
+  it("runs a picture again on regenerate when its first try failed before anything was reserved", async () => {
+    const { userId, begin, generated } = await fixture();
+    const { snapshot } = await begin("Send me a photo by the cafe window.");
+    if (!snapshot) throw new Error("Missing snapshot");
+    const call = effect(snapshot);
+    generated.mockImplementationOnce(async () => { throw Errors.rateLimited("Too many active generation jobs"); });
+    const refused = await applyChatToolEffect(call);
+    expect(refused).toMatchObject({ accepted: false, duplicate: false, error: { code: "rate_limited" } });
+    // The same attempt keeps its answer: nothing is retried behind the reader's back.
+    expect(await applyChatToolEffect({ ...call, callId: randomUUID() })).toMatchObject({ accepted: false, duplicate: true });
+    expect(generated).toHaveBeenCalledTimes(1);
+    await complete(snapshot);
+
+    const regenerated = await regenerateChatTurn(userId, snapshot.assistantMessageId);
+    const retried = await applyChatToolEffect({ ...call, attempt: regenerated.attempt, callId: randomUUID() });
+    expect(retried).toMatchObject({ accepted: true, duplicate: false, attachmentId: refused.attachmentId });
+    expect(generated).toHaveBeenCalledTimes(2);
+    expect(await prisma.chatTurnAttachment.findUniqueOrThrow({ where: { id: refused.attachmentId } })).toMatchObject({
+      status: "accepted", errorCode: null, metadata: expect.objectContaining({ attempt: regenerated.attempt }),
+    });
+    expect(await prisma.generationJob.count({ where: { userId } })).toBe(1);
   });
 
   it.each(["Yes, please.", "No, let's talk about coffee."])("uses only the persisted previous offer for a short reply: %s", async reply => {
