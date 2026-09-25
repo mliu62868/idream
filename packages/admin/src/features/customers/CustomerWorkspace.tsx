@@ -2,6 +2,7 @@
 
 import { useAdminI18n } from "@/components/admin/i18n";
 import Link from "next/link";
+import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   customer360Schema,
@@ -25,7 +26,6 @@ import {
   type CustomerWorkspaceUrlState,
 } from "./query";
 import {
-  EmptyWorkspace,
   fieldClass,
   LoadingWorkspace,
   RelativeTime,
@@ -209,7 +209,10 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
                 </li>
               ))}
             </ul>
-          ) : listError ? null : <EmptyWorkspace filtered={Boolean(query.search || query.status)} onClear={() => applyQuery(defaultCustomerQuery)} />}
+          ) : listError ? null : (query.search || query.status
+            ? <EmptyState kind="filtered" onClearFilters={() => applyQuery(defaultCustomerQuery)} title={t("No customers match these filters")} />
+            // INTENT: 这里是客户名册，不是待办队列 —— 空的时候要说清楚测试/内部账号去哪了。
+            : <EmptyState hint={t("Internal and test accounts are not customers; find them in Team Access.")} title={t("No customer accounts yet")} />)}
           {list && list.items.length > 0 ? (
             <div className="border-t border-[var(--ad-border)] p-4">
               <Pagination
@@ -247,7 +250,7 @@ function CustomerInspector({ detail, onClose }: { detail: Customer360; onClose: 
     <aside aria-labelledby="customer-detail-title" className="space-y-5 rounded-xl bg-[var(--ad-surface)] p-5 lg:sticky lg:top-40">
       {/* SPEC: 封禁 / 注销状态必须出现在详情头 —— 列表里有、详情里没有，等于客服点开一个已封禁
           的客户后看不到他被封了，照常按正常流程答复。开户时间同理：是分辨"新号刷量"的第一眼依据。 */}
-      <header className="flex items-start justify-between gap-4"><div className="min-w-0"><p className="truncate font-mono text-xs text-[var(--ad-text-muted)]">{detail.customer.id}</p><h3 className="mt-1 text-lg font-semibold" id="customer-detail-title">{detail.customer.displayName ?? detail.customer.email}</h3><p className="break-all text-xs text-[var(--ad-text-muted)]">{detail.customer.email}</p><div className="mt-2 flex flex-wrap items-center gap-2"><StatusBadge value={detail.customer.status} /><span className="text-xs text-[var(--ad-text-muted)]">{t("Customer since")} <time dateTime={detail.customer.createdAt}>{format.date(detail.customer.createdAt)}</time></span></div></div><button aria-label={t("Close customer detail")} className="grid min-h-11 min-w-11 place-items-center rounded-md hover:bg-black/[0.04]" onClick={onClose} type="button"><ArrowLeft className="h-4 w-4" /></button></header>
+      <header className="flex items-start justify-between gap-4"><div className="min-w-0"><p className="truncate font-mono text-xs text-[var(--ad-text-muted)]">{detail.customer.id}</p><h3 className="mt-1 text-lg font-semibold" id="customer-detail-title">{detail.customer.displayName ?? detail.customer.email}</h3><p className="break-all text-xs text-[var(--ad-text-muted)]">{detail.customer.email}</p>{/* SPEC: 客服从客户全景直接去做最常见的两件事：补偿/调账、封禁或恢复账号。 */}<p className="mt-2 flex flex-wrap gap-3 text-xs"><Link className="font-semibold underline" href={`/admin/customer-ops/billing?billingView=ledger&billingSearch=${encodeURIComponent(detail.customer.id)}`}>{t("Adjust balance")}</Link><Link className="font-semibold underline" href={`/admin/system/access?accessSearch=${encodeURIComponent(detail.customer.email)}`}>{t("Account status")}</Link></p><div className="mt-2 flex flex-wrap items-center gap-2"><StatusBadge value={detail.customer.status} /><span className="text-xs text-[var(--ad-text-muted)]">{t("Customer since")} <time dateTime={detail.customer.createdAt}>{format.date(detail.customer.createdAt)}</time></span></div></div><button aria-label={t("Close customer detail")} className="grid min-h-11 min-w-11 place-items-center rounded-md hover:bg-black/[0.04]" onClick={onClose} type="button"><ArrowLeft className="h-4 w-4" /></button></header>
       <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4"><ListStat label={t("Balance")} value={format.dreamcoins(detail.overview.balanceDreamcoins)} /><ListStat label={t("Active Cases")} value={detail.overview.activeCaseCount} /><ListStat label={t("Failed 30d")} value={detail.overview.failedGenerationCount30d} /><ListStat label={t("Last active")} value={detail.overview.lastActiveAt ? <RelativeTime referenceTime={detail.asOf} value={detail.overview.lastActiveAt} /> : "—"} /></dl>
       <DetailSection href={`/admin/customer-ops/billing?billingView=subscriptions&billingSearch=${encodeURIComponent(detail.customer.id)}`} title={t("Subscription")}>{subscription ? <div className="space-y-1 text-sm"><p className="flex flex-wrap items-center gap-2"><strong>{subscription.plan.name}</strong><StatusBadge value={subscription.status} /><span className="text-xs text-[var(--ad-text-muted)]">{value(subscription.plan.billingPeriod)}</span></p><p className="text-xs text-[var(--ad-text-muted)]">{subscription.currentPeriodEnd ? <>{subscriptionPeriodLabel(subscription, detail.asOf, t)} <time dateTime={subscription.currentPeriodEnd}>{format.date(subscription.currentPeriodEnd)}</time></> : t("No period end on record")}</p>{subscription.cancelAtPeriodEnd ? <p className="text-xs text-[var(--ad-yellow-text)]">{t("Cancellation is already scheduled; it will not renew.")}</p> : null}</div> : <p className="text-sm text-[var(--ad-text-muted)]">{t("No subscription")}</p>}</DetailSection>
       <DetailSection href={`/admin/ops/chat?chatUserId=${encodeURIComponent(detail.customer.id)}&chatSessionStatus=all`} title={t("Recent chats ({count})", { count: detail.recentChats.length })}>{detail.recentChats.length === 0 ? <EmptyRows /> : <ul className="space-y-2">{detail.recentChats.slice(0, 8).map((row) => <li className="flex justify-between gap-3 text-xs" key={row.sessionId}><Link className="truncate font-semibold underline" href={`/admin/ops/chat?chatUserId=${encodeURIComponent(detail.customer.id)}&chatCharacterId=${encodeURIComponent(row.characterId)}&chatSessionStatus=all`} title={row.sessionId}>{row.characterName}</Link><span className="shrink-0 text-[var(--ad-text-muted)]">{row.lastMessageAt ? <RelativeTime referenceTime={detail.asOf} value={row.lastMessageAt} /> : "—"}</span></li>)}</ul>}</DetailSection>

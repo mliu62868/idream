@@ -217,6 +217,11 @@ export const adminZhCustomers: Record<string, string> = {
   "One view of recent chats, generations, billing, Cases, and operator history.":
     "在一个视图里统一查看近期聊天、生成、计费、工单与运营历史。",
   "Open Customer 360": "打开客户全景",
+  "No customers match these filters": "没有符合筛选条件的客户",
+  "No customer accounts yet": "还没有客户账号",
+  "Internal and test accounts are not customers; find them in Team Access.": "内部与测试账号不算客户，可在「团队访问」中查找。",
+  "Adjust balance": "调整余额",
+  "Account status": "账号状态",
   "Reply to customer": "回复客户",
   "Assign to me": "分配给我",
   "Case assigned to you": "已分配给你",

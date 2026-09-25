@@ -244,6 +244,9 @@ describe("CustomerWorkspace 360", () => {
     expect(hrefs).toContain("/admin/ops/chat?chatUserId=user-1&chatSessionStatus=all");
     expect(hrefs).toContain("/admin/system/audit?auditSearch=user-1");
     expect(hrefs).toContain("/admin/system/audit?auditSearch=audit-1");
+    const quick = (label: string) => [...container.querySelectorAll("a")].find((link) => link.textContent === label)?.getAttribute("href");
+    expect(quick("Adjust balance")).toBe("/admin/customer-ops/billing?billingView=ledger&billingSearch=user-1");
+    expect(quick("Account status")).toMatch(/^\/admin\/system\/access\?accessSearch=/);
   });
 
   function findButton(label: string) {
