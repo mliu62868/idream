@@ -9,8 +9,7 @@ import type { SupportRequestCategory } from "@idream/shared/catalog";
 //   memory: chat/MemoryPanel.tsx, chat/ChatContextSettings.tsx
 //   deletion: ProfileWorkspace.tsx "Delete account" copy
 //   publishing: ProfileWorkspace.tsx toggleCharacterVisibility, character-edit.ts
-// INTENT: no article on whether free accounts can spend coins on voice — the
-// product docs contradict each other on it, and a wrong answer is worse than none.
+//   voice: ourdream/voice-clip.ts (free readers pay per clip, system default voice)
 
 export type HelpArticle = {
   id: string;
@@ -139,6 +138,14 @@ export const helpTopics: readonly HelpTopic[] = [
           "In Memory settings choose \"Clear memory\", then \"Confirm clear\". This clears learned memories and pinned facts, moves your current chats with that character to the archive (they stay readable) and starts a new conversation. Custom instructions are kept until you remove them.",
         links: [{ href: "/chat", label: "Your chats" }],
         keywords: "reset relationship restart wrong memory",
+      },
+      {
+        id: "voice-replies",
+        question: "Can I hear a character's replies out loud?",
+        answer:
+          "Yes. Press Play on a reply. Premium and Deluxe use your monthly voice minutes first and speak in the character's own voice. Without a voice plan every clip is paid in Dreamcoins with the standard voice, and you see the price before it plays. Replaying a clip you already heard is free.",
+        links: [{ href: "/upgrade", label: "Compare plans" }],
+        keywords: "voice audio listen speak tts play sound",
       },
     ],
   },
