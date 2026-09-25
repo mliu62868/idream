@@ -229,7 +229,7 @@ export class AttemptWorkspaceStore {
     identity: { userId: string; characterId: string },
     fence: CompanionWorkspaceRebuildFence,
     options: { seed: "empty" | "canonical" },
-    build: (workspace: string) => Promise<{ sessions: number; messages: number }>,
+    build: (workspace: string, transcriptsRoot: string) => Promise<{ sessions: number; messages: number }>,
     signal?: AbortSignal,
   ): Promise<PreparedRelationshipRebuild> {
     const parsedFence = companionWorkspaceRebuildFenceSchema.parse(fence);
@@ -274,7 +274,17 @@ export class AttemptWorkspaceStore {
       for (const path of [candidatesRoot, candidateRoot, workspace, memory]) {
         await chmod(path, 0o700);
       }
-      const result = await build(workspace);
+      // SPEC: igrep binds a session to the transcript path it first ingested,
+      // so every candidate of this relationship writes transcripts here. The
+      // user lock serializes prepares; the bytes never outlive the build.
+      const transcriptsRoot = join(relationshipRoot, ".rebuild-transcripts");
+      await rm(transcriptsRoot, { recursive: true, force: true });
+      let result: { sessions: number; messages: number };
+      try {
+        result = await build(workspace, transcriptsRoot);
+      } finally {
+        await rm(transcriptsRoot, { recursive: true, force: true });
+      }
       signal?.throwIfAborted();
       const manifest: RelationshipRebuildCandidateManifest = {
         rebuildId,

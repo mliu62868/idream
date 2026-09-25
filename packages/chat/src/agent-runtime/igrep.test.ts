@@ -12,6 +12,7 @@ import {
   type JsonCommandOptions,
 } from "./igrep";
 import { AttemptWorkspaceStore, relationshipWorkspacePath } from "./workspace";
+import { BoundedCommandError } from "./bounded-command";
 
 const temporary: string[] = [];
 
@@ -640,6 +641,61 @@ describe("igrep Main source admission", () => {
     const relationship = relationshipWorkspacePath(canonicalRoot, identity.userId, identity.characterId);
     expect(await readFile(join(relationship, ".igrep", "existing-canonical.txt"), "utf8")).toBe("last admitted source");
     expect(await readdir(join(relationship, ".rebuild-candidates"))).toEqual([]);
+  });
+
+  // igrep >= 0.1.148 refuses a session re-ingested from another transcript path.
+  const maintainedStatus = { status: async () => ({
+    dialogueFiles: 1, pendingProfileRows: 0, processedProfileRows: 4, lastMaintainAt: "2026-09-25T00:00:00.000Z",
+  }) };
+  it("keeps one transcript path per session across candidates and discards its bytes", async () => {
+    const workspace = await fixture();
+    const identity = { userId: request.userId, characterId: request.characterId };
+    const canonicalRoot = join(workspace, "canonical");
+    const store = new AttemptWorkspaceStore({ canonicalRoot, privateRoot: join(workspace, "private") });
+    const transcripts: string[] = [];
+    const builder = new IgrepMemoryBuilder("igrep", maintainedStatus, async (options) => {
+      if (options.args[1] !== "ingest") return { ok: true };
+      transcripts.push(options.args[options.args.indexOf("--transcript") + 1]!);
+      return fixtureIngest(options);
+    });
+    const fences = ["1", "2"].map((version) => ({
+      mutationId: `m${version}`, authorityVersion: version, claimToken: `${version.repeat(8)}-${version.repeat(4)}-4${version.repeat(3)}-8${version.repeat(3)}-${version.repeat(12)}`,
+    }));
+    const first = await store.prepareRelationshipRebuild(identity, fences[0]!, { seed: "empty" },
+      (candidate, root) => builder.build(candidate, request, undefined, root));
+    await store.promoteRelationshipRebuild({ ...identity, rebuildId: first.rebuildId, fence: fences[0]! });
+    await store.prepareRelationshipRebuild(identity, fences[1]!, { seed: "canonical" },
+      (candidate, root) => builder.build(candidate, request, undefined, root));
+    const relationship = relationshipWorkspacePath(canonicalRoot, identity.userId, identity.characterId);
+    expect(transcripts).toHaveLength(2);
+    expect(transcripts[1]).toBe(transcripts[0]);
+    expect(dirname(transcripts[0]!)).toBe(join(relationship, ".rebuild-transcripts"));
+    await expect(stat(join(relationship, ".rebuild-transcripts"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rebuilds a project candidate whose canonical seed refuses an ingest", async () => {
+    const workspace = await fixture();
+    await writeFile(join(workspace, ".igrep", "stale-seed.txt"), "registered to an old path");
+    const calls: string[][] = [];
+    const builder = new IgrepMemoryBuilder("igrep", maintainedStatus, async (options) => {
+      calls.push(options.args.slice(1, 2).concat(options.args.includes("--rebuild") ? ["--rebuild"] : []));
+      if (options.args[1] !== "ingest") return { ok: true };
+      if (calls.length === 1) throw new BoundedCommandError("exit_nonzero", "refused");
+      return fixtureIngest(options);
+    });
+    await expect(builder.build(workspace, request)).resolves.toMatchObject({ sourceReady: true, derivation: "accepted" });
+    expect(calls).toEqual([["ingest"], ["ingest"], ["maintain", "--rebuild"], ["doctor"]]);
+    await expect(stat(join(workspace, ".igrep", "stale-seed.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expectSources(workspace, request);
+  });
+
+  it("does not turn a timed-out project ingest into a rebuild", async () => {
+    const workspace = await fixture();
+    const builder = new IgrepMemoryBuilder("igrep", sourceOnlyStatus, async (options) => {
+      if (options.args[1] === "ingest") throw new BoundedCommandError("timeout", "slow");
+      return { ok: true };
+    });
+    await expect(builder.build(workspace, request)).rejects.toMatchObject({ code: "timeout" });
   });
 
   it("honors cancellation before scanning or recovering a rejected candidate", async () => {

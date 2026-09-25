@@ -88,6 +88,7 @@ export interface CompanionEngineOptions {
       workspace: string,
       request: CompanionWorkspaceRebuildSource,
       signal?: AbortSignal,
+      transcriptsRoot?: string,
     ): Promise<{ sessions: number; messages: number }>;
   };
   maxSteps?: number;
@@ -1200,7 +1201,7 @@ export class CompanionEngine {
       request,
       request.fence,
       { seed: request.mode === "project" ? "canonical" : "empty" },
-      (workspace) => this.options.memoryBuilder!.build(workspace, request, signal),
+      (workspace, transcriptsRoot) => this.options.memoryBuilder!.build(workspace, request, signal, transcriptsRoot),
       signal,
     );
   }

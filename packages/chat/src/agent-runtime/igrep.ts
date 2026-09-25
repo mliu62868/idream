@@ -16,6 +16,7 @@ import {
   type CompanionWorkspaceRebuildSource,
 } from "./rebuild-source";
 import {
+  BoundedCommandError,
   invalidBoundedCommandOutput,
   runBoundedTextCommand,
 } from "./bounded-command";
@@ -314,6 +315,7 @@ export class IgrepMemoryBuilder {
     workspace: string,
     input: CompanionWorkspaceRebuildSource,
     signal?: AbortSignal,
+    transcriptsRoot = join(workspace, ".idream-rebuild-transcripts"),
   ): Promise<{
     sessions: number;
     messages: number;
@@ -324,9 +326,9 @@ export class IgrepMemoryBuilder {
     const source = "kind" in input ? input : companionWorkspaceRebuildSchema.parse(input);
     const metrics = rebuildSourceMetrics(source);
     await memorySourceRoot(workspace);
-    // The transcript is transport input, not canonical memory. Keep it beside
-    // the candidate .igrep so atomic promotion cannot retain a second copy.
-    const transcriptsRoot = join(workspace, ".idream-rebuild-transcripts");
+    // The transcript is transport input, not canonical memory; it never lives
+    // inside .igrep. igrep binds each session to the transcript path it first
+    // ingested, so callers pass a root that is stable across candidates.
     await mkdir(transcriptsRoot, { recursive: true, mode: 0o700 });
     await chmod(transcriptsRoot, 0o700);
     const sessions: IngestedMemorySource[] = [];
@@ -377,10 +379,30 @@ export class IgrepMemoryBuilder {
       }
       return dialoguePath;
     };
+    // Main sends the relationship's whole history in both modes, so a project
+    // that the canonical seed refuses can become a rebuild of this candidate.
+    let mode = source.mode;
     const ingestSource = async (session: Parameters<typeof ingest>[0]) => {
       const expected = await memorySourceFingerprint(session.transcriptPath, "transcript", session.sessionId, signal);
       if (expected.rows !== session.messageCount) throw new Error("Main memory transcript row count changed");
-      const dialoguePath = await ingest(session);
+      let dialoguePath: string;
+      try {
+        dialoguePath = await ingest(session);
+      } catch (error) {
+        // INTENT: the seed refuses a session registered to another transcript
+        // path (every candidate before stable transcript roots) or whose
+        // published prefix was rewritten. Both are recovered by re-deriving
+        // from Main's history; any other failure stays a failure.
+        if (mode !== "project" || !(error instanceof BoundedCommandError) || error.code !== "exit_nonzero") {
+          throw error;
+        }
+        mode = "rebuild";
+        logger.warn({ event: "companion_memory_project_fell_back_to_rebuild" }, "canonical seed refused an ingest; rebuilding the candidate from Main history");
+        await rm(join(workspace, ".igrep"), { recursive: true, force: true });
+        await mkdir(join(workspace, ".igrep"), { recursive: true, mode: 0o700 });
+        for (const earlier of sessions) earlier.dialoguePath = await ingest(earlier);
+        dialoguePath = await ingest(session);
+      }
       sessions.push({ ...session, dialoguePath, expectedDigest: expected.digest });
     };
     if ("kind" in source) {
@@ -443,7 +465,7 @@ export class IgrepMemoryBuilder {
       const before = await verifyMemorySourceCorpus(workspace, sessions, signal);
       await this.run({
         command: this.command,
-        args: ["mem", "maintain", "--workspace", workspace, ...(source.mode === "rebuild" ? ["--rebuild"] : [])],
+        args: ["mem", "maintain", "--workspace", workspace, ...(mode === "rebuild" ? ["--rebuild"] : [])],
         timeoutMs: 300_000,
         signal,
       });

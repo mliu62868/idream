@@ -260,6 +260,26 @@ test("--check fails closed when profile inputs drift after setup", () => {
   assert.deepEqual(fixture.fs.mutations, []);
 });
 
+test("setup installs the peers that profile packages import", () => {
+  const fixture = createFixture({ materialized: false, unsatisfiedToolsPeer: true });
+  runDshCompanionBootstrap({ check: false }, fixture.dependencies);
+  for (const profile of Object.values(PROFILE_NAMES)) {
+    const manifest = fixture.fs.readJson(path.join(DSH_HOME, "profiles", profile, "package.json"));
+    assert.equal(manifest.dependencies["@deepseek-ai/cordis"], "~4.0.4");
+  }
+  runDshCompanionBootstrap({ check: true }, fixture.dependencies);
+});
+
+test("--check fails closed when a profile package imports a missing peer", () => {
+  const fixture = createFixture({ materialized: false });
+  runDshCompanionBootstrap({ check: false }, fixture.dependencies);
+  declareToolsPeer(fixture.fs, PROFILE_NAMES.normal);
+  assert.throws(
+    () => runDshCompanionBootstrap({ check: true }, fixture.dependencies),
+    (error) => error?.code === "PLUGIN_PEER_MISSING",
+  );
+});
+
 test("--check recomputes and rejects a changed effective DSH dump", () => {
   const fixture = createFixture({ materialized: false });
   runDshCompanionBootstrap({ check: false }, fixture.dependencies);
@@ -446,13 +466,22 @@ function createFixture(options = {}) {
         PLUGIN_SOURCE,
         options.peerVersion ?? DSH_VERSION,
       );
+      if (options.unsatisfiedToolsPeer) declareToolsPeer(fs, profile);
       return success(JSON.stringify({
         package: "@igrep/dsh-plugin",
         profile,
         action: "installed",
       }));
     }
-    if (label === "dsh plugin install") return success("installed\n");
+    if (label === "dsh plugin install") {
+      const profileDir = path.join(DSH_HOME, "profiles", readArg(args, "--profile"));
+      const manifest = JSON.parse(fs.readFileSync(path.join(profileDir, "package.json"), "utf8"));
+      for (const [name, version] of Object.entries(manifest.dependencies ?? {})) {
+        const installed = path.join(profileDir, "node_modules", ...name.split("/"), "package.json");
+        if (!fs.existsSync(installed)) fs.seed(installed, JSON.stringify({ name, version }));
+      }
+      return success("installed\n");
+    }
     if (label === "dsh dump") {
       const profile = readArg(args, "--profile");
       const capabilities = profile === PROFILE_NAMES.private
@@ -576,6 +605,17 @@ function materializeProfile(fs, profile, pluginPath, peerVersion = DSH_VERSION) 
       JSON.stringify({ name: peerPackage, version: peerVersion }),
     );
   }
+}
+
+function declareToolsPeer(fs, profile) {
+  fs.seed(
+    path.join(DSH_HOME, "profiles", profile, "node_modules", "@deepseek-ai", "dsh-tools", "package.json"),
+    JSON.stringify({
+      name: "@deepseek-ai/dsh-tools",
+      version: DSH_VERSION,
+      peerDependencies: { "@deepseek-ai/cordis": "~4.0.4" },
+    }),
+  );
 }
 
 function createMemoryFs() {

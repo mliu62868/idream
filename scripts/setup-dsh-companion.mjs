@@ -380,7 +380,7 @@ function setupProfiles(discoveries, dependencies, dshHome) {
       dependencies.fs,
       dshHome,
     );
-    runCommand(
+    const installProfile = () => runCommand(
       dependencies,
       `dsh plugin install for ${discovery.profileName}`,
       "pnpm",
@@ -394,6 +394,19 @@ function setupProfiles(discoveries, dependencies, dshHome) {
       ),
       dshEnvironment(dependencies.env, dshHome),
     );
+    installProfile();
+    // INTENT: DSH >= 0.1.7 installs only a plugin's own packages and expects
+    // its host to provide DSH core. Chat imports the plugin straight from the
+    // profile, so the profile must hold the peer graph those packages import.
+    for (let round = 0; ; round += 1) {
+      const missing = missingProfilePeers(discovery, dependencies.fs, dshHome);
+      if (missing.length === 0) break;
+      if (round >= 8) {
+        throw new BootstrapError("PLUGIN_PEER_MISSING", `${discovery.profileName} peer graph did not close`);
+      }
+      addProfileDependencies(discovery, Object.fromEntries(missing), dependencies.fs, dshHome);
+      installProfile();
+    }
     const configDigest = dumpProfileConfigDigest(
       discovery,
       dependencies,
@@ -533,6 +546,13 @@ function validateProfile(discovery, fs, dshHome) {
       `${PLUGIN_PACKAGE} bundle patch is missing from ${discovery.profileName}`,
     );
   }
+  const missingPeers = missingProfilePeers(discovery, fs, dshHome);
+  if (missingPeers.length > 0) {
+    throw new BootstrapError(
+      "PLUGIN_PEER_MISSING",
+      `${discovery.profileName} cannot import ${missingPeers.map(([name]) => name).join(", ")}`,
+    );
+  }
   const peerManifestPaths = PLUGIN_PEERS.map((peerPackage) => {
     const peerManifestPath = path.join(
       profileDir,
@@ -560,6 +580,42 @@ function validateProfile(discovery, fs, dshHome) {
     installedPatchPath,
     peerManifestPaths,
   };
+}
+
+/**
+ * Walk the profile's hoisted node_modules from its manifest and return every
+ * required peer that no installed package provides, with the first requested
+ * range. Regular dependencies absent at top level are nested, not missing.
+ */
+function missingProfilePeers(discovery, fs, dshHome) {
+  const profileDir = path.join(dshHome, "profiles", discovery.profileName);
+  const manifest = readJsonFile(fs, path.join(profileDir, "package.json"), "PROFILE_MANIFEST_INVALID");
+  const seen = new Set();
+  const missing = new Map();
+  const queue = Object.keys(manifest.dependencies ?? {});
+  while (queue.length > 0) {
+    const name = queue.shift();
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const packagePath = path.join(profileDir, "node_modules", ...name.split("/"), "package.json");
+    if (!fs.existsSync(packagePath)) continue;
+    const installed = readJsonFile(fs, packagePath, "PLUGIN_PEER_MISSING");
+    queue.push(...Object.keys(installed.dependencies ?? {}));
+    for (const [peer, range] of Object.entries(installed.peerDependencies ?? {})) {
+      if (installed.peerDependenciesMeta?.[peer]?.optional) continue;
+      const peerPath = path.join(profileDir, "node_modules", ...peer.split("/"), "package.json");
+      if (fs.existsSync(peerPath)) queue.push(peer);
+      else if (!missing.has(peer)) missing.set(peer, range);
+    }
+  }
+  return [...missing.entries()].sort(([left], [right]) => left.localeCompare(right));
+}
+
+function addProfileDependencies(discovery, additions, fs, dshHome) {
+  const manifestPath = path.join(dshHome, "profiles", discovery.profileName, "package.json");
+  const manifest = readJsonFile(fs, manifestPath, "PROFILE_MANIFEST_INVALID");
+  manifest.dependencies = { ...(manifest.dependencies ?? {}), ...additions };
+  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
 }
 
 function writeOwnedMinimalProfileManifest(discovery, fs, dshHome) {
