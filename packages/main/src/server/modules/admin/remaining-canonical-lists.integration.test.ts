@@ -14,6 +14,8 @@ describe("remaining canonical admin lists", () => {
   const token = `remaining-${suffix}`;
   const actorId = `remaining-admin-${suffix}`;
   const ids = (kind: string) => [0, 1].map((index) => `${token}-${kind}-${index}`);
+  const requestId = `request-only-${randomUUID()}`;
+  const commandId = `${token}-command`;
 
   type ListEnvelope = { data?: Record<string, unknown>; error?: unknown };
 
@@ -47,8 +49,20 @@ describe("remaining canonical admin lists", () => {
       targetType: "test",
       targetId: `${token}-audit-target-${index}`,
       reason: token,
+      requestId: index === 0 ? requestId : null,
       createdAt: new Date(Date.UTC(2026, 6, 11, 11, index)),
     })) });
+    await prisma.controlPlaneCommand.create({ data: {
+      id: commandId,
+      scope: "admin_v2",
+      idempotencyKey: commandId,
+      commandType: "test.audit.deep_link",
+      targetType: "test",
+      targetId: token,
+      actorId,
+      requestId,
+      requestHash: token,
+    } });
     await prisma.featureFlag.createMany({ data: ids("flag").map((key) => ({
       key,
       label: `${token} flag`,
@@ -62,6 +76,7 @@ describe("remaining canonical admin lists", () => {
   afterAll(async () => {
     await prisma.featureFlag.deleteMany({ where: { key: { startsWith: token } } });
     await prisma.adminAuditLog.deleteMany({ where: { id: { in: ids("audit") } } });
+    await prisma.controlPlaneCommand.deleteMany({ where: { id: commandId } });
     await prisma.character.deleteMany({ where: { id: { in: ids("character") } } });
     await prisma.user.deleteMany({ where: { id: actorId } });
     await prisma.$disconnect();
@@ -109,6 +124,18 @@ describe("remaining canonical admin lists", () => {
   it("rejects malformed Audit queries at the boundary", async () => {
     await expect(call("/api/v2/admin/audit-log", "limit=1junk")).resolves.toMatchObject({ status: 400 });
     await expect(call("/api/v2/admin/audit-log", "unknown=value")).resolves.toMatchObject({ status: 400 });
+  });
+
+  it("searches Audit case-insensitively across request ids and narrows to a command deep link", async () => {
+    const itemIds = async (query: string) => {
+      const result = await call("/api/v2/admin/audit-log", query);
+      expect(result.status, JSON.stringify(result.body)).toBe(200);
+      return (result.body.data as { items: Array<{ id: string }> }).items.map((item) => item.id).sort();
+    };
+    expect(await itemIds(`search=${encodeURIComponent(token.toUpperCase())}`)).toEqual(ids("audit"));
+    expect(await itemIds(`search=${encodeURIComponent(requestId.toUpperCase())}`)).toEqual([ids("audit")[0]]);
+    expect(await itemIds(`commandId=${encodeURIComponent(commandId)}`)).toEqual([ids("audit")[0]]);
+    expect(await itemIds(`commandId=${encodeURIComponent(`${token}-missing`)}`)).toEqual([]);
   });
 
   it("continues from encoded sort keys when the cursor row is deleted", async () => {

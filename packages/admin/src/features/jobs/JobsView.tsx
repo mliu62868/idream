@@ -59,7 +59,11 @@ const FILTER_LABELS: Record<GenerationJobFilterKey, string> = {
   sort: "Sort",
 };
 
-export function JobsView() {
+// SPEC: every write here is gated by its manifest operation; support / moderator roles only hold
+//       generation.job.read and must not be shown a button that 403s after the confirmation.
+export type JobsViewPermissions = { readonly retry: boolean; readonly cancel: boolean; readonly reconcile: boolean };
+
+export function JobsView({ permissions }: { readonly permissions: JobsViewPermissions }) {
   const { t, value } = useAdminI18n();
   const format = useAdminFormat();
   const [jobs, setJobs] = useState(() => createAuthorityState<GenerationJobListResponse>());
@@ -212,7 +216,7 @@ export function JobsView() {
           label="Details"
           onClick={(event) => openJobDetail(item.id, event.currentTarget)}
         />
-        {item.requestOutcome === "failed" ? (
+        {permissions.retry && item.requestOutcome === "failed" ? (
           <IconAction
             icon={<RefreshCcw className="h-4 w-4" />}
             label="Retry"
@@ -246,7 +250,7 @@ export function JobsView() {
             INVARIANT: 显示条件按 legacyStatus 取，和后端允许的迁移源
             `["queued","moderating_input","running","moderating_output"]` 逐字对齐——
             按 requestOutcome 判会把 needs_reconciliation 这类也放进来，点下去必然 conflict。 */}
-        {isGenerationRequestCancellableStatus(item.legacyStatus) ? (
+        {permissions.cancel && isGenerationRequestCancellableStatus(item.legacyStatus) ? (
           <IconAction
             icon={<Ban className="h-4 w-4" />}
             // INVARIANT: 不要用通用的 "Cancel"。它在字典里是「取消」，和弹窗上那个"取消/不做了"
@@ -403,6 +407,7 @@ export function JobsView() {
 
       {selectedJobId ? (
         <GenerationJobInspector
+          canReconcile={permissions.reconcile}
           detail={detail}
           error={detailError}
           jobId={selectedJobId}
@@ -433,7 +438,8 @@ function UnknownReviewCell({ item }: { item: GenerationJobListItem }) {
   );
 }
 
-function GenerationJobInspector({ detail, error, jobId, loading, onClose, onReconciled }: {
+function GenerationJobInspector({ canReconcile, detail, error, jobId, loading, onClose, onReconciled }: {
+  canReconcile: boolean;
   detail: GenerationJobDetailResponse | null;
   error: string | null;
   jobId: string;
@@ -476,6 +482,7 @@ function GenerationJobInspector({ detail, error, jobId, loading, onClose, onReco
             <Metric label="Freshness" value={value(detail.freshness)} meta={format.dateTime(detail.asOf)} />
           </div>
           <UnknownGenerationReconciliationControls
+            canReconcile={canReconcile}
             detail={detail}
             onReconciled={onReconciled}
           />

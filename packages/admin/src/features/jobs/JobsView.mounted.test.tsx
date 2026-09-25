@@ -48,7 +48,7 @@ describe("JobsView request cancellation", () => {
   });
 
   it("sends the authoritative cancel command and reloads the list", async () => {
-    await act(async () => root.render(<ToastProvider><JobsView /></ToastProvider>));
+    await act(async () => root.render(<ToastProvider><JobsView permissions={allowed} /></ToastProvider>));
     await waitUntil(() => findButton("Abort") !== null);
     await click(findButton("Abort"));
 
@@ -73,7 +73,19 @@ describe("JobsView request cancellation", () => {
     await waitUntil(() => apiGet.mock.calls.length >= 2);
     expect(document.body.textContent).toContain("8 Dreamcoins refunded");
   });
+
+  it("hides Abort and Retry from a read-only role instead of letting the server 403 them", async () => {
+    const running = jobList("running");
+    apiGet.mockResolvedValue({ ...running, items: [...running.items, { ...jobList("failed").items[0]!, id: "job-2" }] });
+    const readOnly = { retry: false, cancel: false, reconcile: false };
+    await act(async () => root.render(<ToastProvider><JobsView permissions={readOnly} /></ToastProvider>));
+    await waitUntil(() => findButton("Details") !== null);
+    expect(findButton("Abort")).toBeNull();
+    expect(findButton("Retry")).toBeNull();
+  });
 });
+
+const allowed = { retry: true, cancel: true, reconcile: true };
 
 function jobList(legacyStatus: "running" | "failed") {
   return {

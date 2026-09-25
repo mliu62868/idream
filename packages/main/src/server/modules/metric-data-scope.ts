@@ -280,3 +280,28 @@ export function operationalMediaAssetPlacementWhere(
     ],
   };
 }
+
+// INTENT: AdminCase has no user relation — for these target types targetId is the subject
+//         user's id. Cases whose subject is a fixture/audit account leave the operational
+//         queues (Today, Cases list) the same way the Support queue drops their tickets.
+//         Cases without a resolvable subject user (content, characters) stay in.
+export const USER_SUBJECT_CASE_TARGET_TYPES = ["user", "user_profile"];
+
+export async function operationalAdminCaseWhere(
+  db: Pick<Prisma.TransactionClient, "$queryRaw">,
+): Promise<Prisma.AdminCaseWhereInput> {
+  const rows = await db.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT DISTINCT subject.id
+    FROM "admin_cases" admin_case
+    JOIN "users" subject ON subject.id = admin_case."targetId"
+    WHERE admin_case."targetType" IN (${Prisma.join(USER_SUBJECT_CASE_TARGET_TYPES)})
+      AND subject."dataClass" NOT IN (${OPERATIONAL_USER_DATA_CLASS_SQL})
+  `);
+  if (rows.length === 0) return {};
+  return {
+    NOT: {
+      targetType: { in: USER_SUBJECT_CASE_TARGET_TYPES },
+      targetId: { in: rows.map((row) => row.id) },
+    },
+  };
+}

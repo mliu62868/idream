@@ -42,6 +42,7 @@ export function auditListPath(query: AuditQuery) {
   setQueryValue(params, "action", query.action);
   setQueryValue(params, "actorId", query.actorId);
   setQueryValue(params, "targetType", query.targetType);
+  setQueryValue(params, "commandId", query.commandId);
   setQueryValue(params, "cursor", query.cursor);
   params.set("limit", String(query.limit));
   return `/api/v2/admin/audit-log?${params.toString()}`;

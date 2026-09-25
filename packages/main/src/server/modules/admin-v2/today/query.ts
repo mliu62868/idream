@@ -26,6 +26,7 @@ import { env } from "@/server/lib/env";
 import { AppError } from "@/server/lib/errors";
 import { fail, ok } from "@/server/lib/http";
 import { actorWithPermission, queryParams } from "@/server/modules/admin-v2/shared/authority";
+import { operationalAdminCaseWhere } from "@/server/modules/metric-data-scope";
 import {
   CASE_SEVERITY,
   COMMAND_FAILED_STATUSES,
@@ -833,12 +834,16 @@ function queue(
   };
 }
 
-function scopedCaseWhere(
+async function scopedCaseWhere(
+  db: TodayReadDb,
   actor: { id: string; role: string },
   permissions: ReadonlySet<AdminPermissionKey>,
-): Prisma.AdminCaseWhereInput | null {
+): Promise<Prisma.AdminCaseWhereInput | null> {
   if (!permissions.has("case.read")) return null;
-  return actor.role === "support" ? { type: { in: ["support_request", "billing_dispute"] } } : {};
+  const operational = await operationalAdminCaseWhere(db);
+  return actor.role === "support"
+    ? { AND: [operational, { type: { in: ["support_request", "billing_dispute"] } }] }
+    : operational;
 }
 
 function readableCommandWhere(permissions: ReadonlySet<AdminPermissionKey>): Prisma.ControlPlaneCommandWhereInput | null {
@@ -1149,7 +1154,7 @@ export async function buildTodayProjection(input: {
   const endOfToday = new Date(now);
   endOfToday.setUTCHours(23, 59, 59, 999);
   const recentCutoff = new Date(now.getTime() - 24 * 60 * 60 * 1_000);
-  const caseScope = scopedCaseWhere(input.actor, input.permissions);
+  const caseScope = await scopedCaseWhere(db, input.actor, input.permissions);
   const incidentReadable = input.permissions.has("ops.incident.read");
   const releaseReadable = input.permissions.has("character.release.read");
   const creativeReadable = input.permissions.has("creative.run.read");
@@ -1460,7 +1465,7 @@ export async function buildTodayAllWork(input: {
       asOf: now.toISOString(), freshness: "fresh", workMode, rankingPolicyVersion: RANKING_POLICY_VERSION,
     });
   }
-  const caseScope = scopedCaseWhere(input.actor, input.permissions);
+  const caseScope = await scopedCaseWhere(db, input.actor, input.permissions);
   const requestedOwnerId = query.ownerId ?? (query.owner === "mine" ? input.actor.id : query.owner === "unassigned" ? null : undefined);
   const ownerWhere = requestedOwnerId === undefined ? {} : { ownerId: requestedOwnerId };
   const slaWhere = query.sla === "none" ? null : query.sla === "overdue" ? { lt: now } : (() => {

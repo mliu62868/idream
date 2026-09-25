@@ -265,7 +265,7 @@ describe("SupportWorkspace customer replies", () => {
     await act(async () => [...dialog.querySelectorAll("button")].find((node) => node.textContent?.trim() === "Confirm")!.click());
     await waitUntil(() => container.textContent?.includes("Which image failed?") === true);
     expect(container.querySelector("textarea")?.value).toBe("Draft guidance to send later.");
-    expect(container.textContent).toContain("waiting_on_user");
+    expect(container.textContent).toContain("Charged twice · Waiting on user");
   });
 });
 

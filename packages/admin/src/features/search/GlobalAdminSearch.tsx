@@ -94,7 +94,7 @@ export function GlobalAdminSearch({
 }: {
   permissions: ReadonlySet<AdminPermissionKey>;
 }) {
-  const { t } = useAdminI18n();
+  const { t, value } = useAdminI18n();
   const listboxId = useId();
   const requestId = useRef(0);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -317,7 +317,7 @@ export function GlobalAdminSearch({
                     >
                       <span className="grid gap-1">
                         <span className="flex items-center justify-between gap-3"><strong className="truncate text-sm">{item.title}</strong><span className="rounded-full bg-black/[0.05] px-2 py-0.5 text-[10px] uppercase text-[var(--ad-text-muted)]">{t(item.kind.replaceAll("_", " "))}</span></span>
-                        <span className="truncate text-xs text-[var(--ad-text-muted)]">{item.subtitle} · {item.status}</span>
+                        <span className="truncate text-xs text-[var(--ad-text-muted)]">{item.subtitle} · {value(item.status)}</span>
                       </span>
                     </PaletteOptionRow>
                   );

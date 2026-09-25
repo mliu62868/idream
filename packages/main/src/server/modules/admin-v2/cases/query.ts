@@ -6,6 +6,11 @@ import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import { actorWithPermission, queryParams } from "@/server/modules/admin-v2/shared/authority";
 import { adminAuditDto } from "@/server/modules/admin-v2/shared/dto";
+import {
+  OPERATIONAL_USER_DATA_CLASS_SQL,
+  USER_SUBJECT_CASE_TARGET_TYPES,
+  operationalAdminCaseWhere,
+} from "@/server/modules/metric-data-scope";
 
 function record(value: Prisma.JsonValue | null) {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -140,15 +145,18 @@ function encodeCaseCursor(row: { updatedAt: Date; id: string }) {
   return Buffer.from(JSON.stringify({ updatedAt: row.updatedAt.toISOString(), id: row.id }), "utf8").toString("base64url");
 }
 
+// INVARIANT: mine / unassigned / overdue are work queues — terminal cases never appear there,
+// matching Today's active-case set. recently_resolved / all keep them.
+const TERMINAL_CASE_STATUSES = ["resolved", "closed"];
+const ACTIVE_QUEUE_VIEWS = new Set(["mine", "unassigned", "overdue"]);
+
 function scopedCaseWhere(role: string, view: string, actorId: string): Prisma.AdminCaseWhereInput {
   const where: Prisma.AdminCaseWhereInput = {};
   if (role === "support") where.type = { in: ["support_request", "billing_dispute"] };
   if (view === "mine") where.ownerId = actorId;
   if (view === "unassigned") where.ownerId = null;
-  if (view === "overdue") {
-    where.slaDueAt = { lt: new Date() };
-    where.status = { notIn: ["resolved", "closed"] };
-  }
+  if (view === "overdue") where.slaDueAt = { lt: new Date() };
+  if (ACTIVE_QUEUE_VIEWS.has(view)) where.status = { notIn: TERMINAL_CASE_STATUSES };
   if (view === "appeals") where.type = "appeal";
   if (view === "recently_resolved") {
     where.status = { in: ["resolved", "closed"] };
@@ -190,10 +198,18 @@ async function searchedCasePage(input: {
   }
   if (input.query.view === "mine") conditions.push(Prisma.sql`admin_case."ownerId" = ${input.actorId}`);
   if (input.query.view === "unassigned") conditions.push(Prisma.sql`admin_case."ownerId" IS NULL`);
-  if (input.query.view === "overdue") {
-    conditions.push(Prisma.sql`admin_case."slaDueAt" < NOW()`);
-    conditions.push(Prisma.sql`admin_case.status NOT IN ('resolved', 'closed')`);
+  if (input.query.view === "overdue") conditions.push(Prisma.sql`admin_case."slaDueAt" < NOW()`);
+  if (ACTIVE_QUEUE_VIEWS.has(input.query.view)) {
+    conditions.push(Prisma.sql`admin_case.status NOT IN (${Prisma.join(TERMINAL_CASE_STATUSES)})`);
   }
+  conditions.push(Prisma.sql`NOT (
+    admin_case."targetType" IN (${Prisma.join(USER_SUBJECT_CASE_TARGET_TYPES)})
+    AND EXISTS (
+      SELECT 1 FROM "users" subject
+      WHERE subject.id = admin_case."targetId"
+        AND subject."dataClass" NOT IN (${OPERATIONAL_USER_DATA_CLASS_SQL})
+    )
+  )`);
   if (input.query.view === "appeals") conditions.push(Prisma.sql`admin_case.type = 'appeal'`);
   if (input.query.view === "recently_resolved") {
     conditions.push(Prisma.sql`admin_case.status IN ('resolved', 'closed')`);
@@ -238,6 +254,7 @@ export async function listCases(request: Request) {
   const where: Prisma.AdminCaseWhereInput = {
     AND: [
       scope,
+      await operationalAdminCaseWhere(prisma),
       {
         type: query.type,
         status: query.status,

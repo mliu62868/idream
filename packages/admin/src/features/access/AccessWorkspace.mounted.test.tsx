@@ -154,7 +154,7 @@ describe("role and grant bundle commands", () => {
       .map((button) => button.getAttribute("aria-label"))
       .filter((label): label is string => Boolean(label?.startsWith("Revoke ")));
 
-    expect(revokeLabels).toEqual(["Revoke creative_operator"]);
+    expect(revokeLabels).toEqual(["Revoke Creative operator"]);
   });
 
   it("sends the role command with the confirmation string the authority compares", async () => {
@@ -209,7 +209,7 @@ describe("role and grant bundle commands", () => {
 
   it("revokes a bundle with a DELETE that still carries reason and confirmation", async () => {
     await mountWithTarget();
-    await clickButton("Revoke creative_operator");
+    await clickButton("Revoke Creative operator");
     await confirmDialog("Left the creative rota", "user-9:creative_operator:revoke");
 
     await waitUntil(() => apiWrite.mock.calls.length > 0);

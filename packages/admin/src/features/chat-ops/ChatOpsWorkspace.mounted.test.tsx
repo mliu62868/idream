@@ -287,6 +287,26 @@ describe("ChatOpsWorkspace Main to Chat failed-delivery operations", () => {
     await waitUntil(() => container.textContent?.includes("Chat Service connected") === true);
   });
 
+  it("names the customer scope when sessions and usage are empty only because of it", async () => {
+    apiGet.mockImplementation(async (path: string) => {
+      if (path.endsWith("/chat/overview")) {
+        const base = chatReadFixtures.get(path) as { overview: Record<string, unknown> };
+        return { ...base, overview: { ...base.overview, dataScope: { excluded: { activeSessions: 74, usageRowsToday: 5 } } } };
+      }
+      if (path.includes("/chat/sessions?") || path.includes("/chat/usage?")) return { configured: true, items: [], pageInfo };
+      return chatReadFixtures.get(path);
+    });
+
+    await act(async () => {
+      root.render(<ChatOpsWorkspace canRead />);
+    });
+    await waitUntil(() => container.textContent?.includes("No customer chat sessions") === true);
+    expect(container.textContent).toContain("74 internal or test records are outside the customer scope and not listed.");
+    expect(container.textContent).toContain("No customer chat usage for the current product day");
+    expect(container.textContent).toContain("5 internal or test records are outside the customer scope and not listed.");
+    expect(container.textContent).not.toContain("No chat usage exists for the current product day");
+  });
+
   it("counts an authority request failure as degraded", async () => {
     apiGet.mockImplementation(async (path: string) => {
       if (path.endsWith("/provider-health")) throw new Error("Provider diagnostics unavailable");

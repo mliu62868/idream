@@ -1345,4 +1345,9 @@ export const adminZhPlatformOps: Record<string, string> = {
   "Voice usage and charged Dreamcoins do not reconcile": "语音用量与梦币扣款无法对账",
   "A voice request has an unknown provider outcome or expired lease": "语音请求的供应商结果未知或执行租约已过期",
   "Check the provider receipt with engineering before retrying the sampled voice request": "先与工程核对供应商回执，再决定是否重试这些语音请求",
+  // Chat 会话 / 用量只列客户口径；空表时说清楚被口径排除了多少。
+  "No customer chat sessions": "没有客户 Chat 会话",
+  "No customer chat usage for the current product day": "当前产品日没有客户 Chat 用量",
+  "{count} internal or test records are outside the customer scope and not listed.": "另有 {count} 条内部或测试记录不属于客户口径，未列出。",
+  "Recording this decision needs the generation requeue permission.": "记录这项决定需要生成任务重新入队权限。",
 };

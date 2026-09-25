@@ -29,7 +29,7 @@ const detail = {
 describe("Unknown Generation reconciliation controls", () => {
   it("surfaces both audited operator resolutions without implying the Attempt changes", () => {
     const html = renderToStaticMarkup(
-      <UnknownGenerationReconciliationControls
+      <UnknownGenerationReconciliationControls canReconcile
         detail={detail}
         onReconciled={() => undefined}
       />,
@@ -39,6 +39,21 @@ describe("Unknown Generation reconciliation controls", () => {
     expect(html).toContain("Attempt 2 stays unknown");
     expect(html).toContain("Remain unknown and review later");
     expect(html).toContain("Confirm failed and refund");
+  });
+
+  it("shows the decision state but no commands to a role without requeue permission", () => {
+    const html = renderToStaticMarkup(
+      <UnknownGenerationReconciliationControls
+        canReconcile={false}
+        detail={detail}
+        onReconciled={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("Attempt 2 stays unknown");
+    expect(html).toContain("Recording this decision needs the generation requeue permission.");
+    expect(html).not.toContain("Remain unknown and review later");
+    expect(html).not.toContain("Confirm failed and refund");
   });
 
   it("pins provider and terminal-record evidence into the command", () => {
@@ -57,7 +72,7 @@ describe("Unknown Generation reconciliation controls", () => {
 
   it("surfaces validated recovered success and due operator work", () => {
     const html = renderToStaticMarkup(
-      <UnknownGenerationReconciliationControls
+      <UnknownGenerationReconciliationControls canReconcile
         detail={{
           ...detail,
           unknownTerminalEvidence: {
@@ -96,7 +111,7 @@ describe("Unknown Generation reconciliation controls", () => {
 
   it("hides reconciliation controls after a terminal operator resolution", () => {
     const html = renderToStaticMarkup(
-      <UnknownGenerationReconciliationControls
+      <UnknownGenerationReconciliationControls canReconcile
         detail={{
           ...detail,
           unknownReconciliations: [{
@@ -122,7 +137,7 @@ describe("Unknown Generation reconciliation controls", () => {
 
   it("offers only continued review when verified late success cannot be adopted after refund", () => {
     const html = renderToStaticMarkup(
-      <UnknownGenerationReconciliationControls
+      <UnknownGenerationReconciliationControls canReconcile
         detail={{
           ...detail,
           unknownTerminalEvidence: {
@@ -150,7 +165,7 @@ describe("Unknown Generation reconciliation controls", () => {
 
 
 it("offers only compensation after Main validates a zero-refund automatic failure", () => {
-  const html = renderToStaticMarkup(<UnknownGenerationReconciliationControls detail={{
+  const html = renderToStaticMarkup(<UnknownGenerationReconciliationControls canReconcile detail={{
     ...detail,
     request: { ...detail.request, requestOutcome: "failed" },
     unknownTerminalEvidence: { attemptId: "attempt-unknown-1", outcome: "succeeded", transportStatus: "unknown", terminalRecordRef: "late.json", terminalRecordChecksum: "a".repeat(64), artifactCount: 1, adoptable: true, adoptionBlockReason: null },

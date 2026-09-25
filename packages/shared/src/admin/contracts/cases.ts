@@ -96,15 +96,35 @@ export const caseVerificationRequestSchema = z
     }
   });
 
+// SPEC: only these actions leave a downstream record (incident / ledger / subscription) that
+//       "Verify from authority" can read. The rest are operator-attested: no outcomeRef, and
+//       the case resolves through an audited attestation (verificationState "overridden").
+// INVARIANT: must match the verifiers in Main's deriveCaseOutcomeVerification.
+export const CASE_ACTIONS_WITH_AUTHORITY_VERIFIER = [
+  "incident_escalated",
+  "ledger_reconciled",
+  "refund_requested",
+  "subscription_corrected",
+] as const;
+
+export function caseActionHasAuthorityVerifier(action: string | null | undefined) {
+  return (CASE_ACTIONS_WITH_AUTHORITY_VERIFIER as readonly string[]).includes(action ?? "");
+}
+
 export const customerCaseActionRequestSchema = z
   .object({
     entityVersion: z.number().int().nonnegative(),
     action: z.enum([...SUPPORT_CASE_ACTIONS, ...BILLING_CASE_ACTIONS]),
     summary: z.string().trim().min(1).max(4_000),
     evidenceRefs: z.array(adminIdSchema).min(1),
-    outcomeRef: z.string().trim().min(1).max(500),
+    outcomeRef: z.string().trim().min(1).max(500).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if (caseActionHasAuthorityVerifier(value.action) && !value.outcomeRef) {
+      ctx.addIssue({ code: "custom", path: ["outcomeRef"], message: "This action needs the downstream outcome reference" });
+    }
+  });
 
 export const operationsCaseTypeSchema = z.enum([
   "support_request",

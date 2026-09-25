@@ -7,6 +7,9 @@ export const auditLogQuerySchema = z
     action: z.string().trim().min(1).max(160).optional(),
     actorId: z.string().trim().min(1).max(160).optional(),
     targetType: z.string().trim().min(1).max(160).optional(),
+    // SPEC: deep links from Today / command receipts — narrows to the rows the command's
+    //       request wrote (audit rows carry the command's requestId).
+    commandId: z.string().trim().min(1).max(160).optional(),
     limit: z.coerce.number().int().min(1).max(100).default(80),
     cursor: z.string().trim().min(1).optional(),
     before: z.string().trim().min(1).optional(),

@@ -170,7 +170,6 @@ describe("Support and billing Case depth", () => {
       action: "diagnostic_reviewed",
       summary: "Confirmed the delivery URL is no longer available.",
       evidenceRefs: [evidence.id],
-      outcomeRef: `diagnostic:${supportRequestId}`,
       requestId: `case-action-${suffix}`,
     });
     expect(updated).toMatchObject({ status: "in_progress", verificationState: "pending" });
@@ -178,7 +177,18 @@ describe("Support and billing Case depth", () => {
       summary: "Confirmed the delivery URL is no longer available.",
       decision: "diagnostic_reviewed",
       verification: { state: "pending" },
+      // Attested action: no placeholder reference pretending there is a downstream record.
+      actions: [expect.objectContaining({ action: "diagnostic_reviewed", outcomeRef: null })],
     });
+    await expect(recordCustomerCaseAction({
+      caseId: supportCase.id,
+      actor: { id: actorId, role: "support" },
+      expectedVersion: updated.version,
+      action: "incident_escalated",
+      summary: "Escalation without the incident it points at.",
+      evidenceRefs: [evidence.id],
+      requestId: `case-action-missing-ref-${suffix}`,
+    })).rejects.toMatchObject({ code: "bad_request" });
     expect(updated.version).toBe(supportCase.version + 1);
     expect(await prisma.decisionRecord.count({ where: { sourceType: "admin_case", sourceId: supportCase.id } })).toBe(1);
     await expect(verifyReviewCase({

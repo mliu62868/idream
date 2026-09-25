@@ -47,9 +47,13 @@ export function unknownGenerationEvidenceRefs(
 }
 
 export function UnknownGenerationReconciliationControls({
+  canReconcile,
   detail,
   onReconciled,
 }: {
+  // SPEC: roles with only generation.job.read see the decision state but get no buttons —
+  //       the server would 403 after they typed the confirmation.
+  readonly canReconcile: boolean;
   readonly detail: GenerationJobDetailResponse;
   readonly onReconciled: (
     result: UnknownGenerationReconciliationResult,
@@ -270,7 +274,11 @@ export function UnknownGenerationReconciliationControls({
               {t("Recovered success is verified, but this Request was already refunded. Adoption and failure confirmation are unavailable; only an audited future review may be recorded.")}
             </p>
           ) : null}
-          {intent ? (
+          {!canReconcile ? (
+            <p className="mt-3 text-xs text-amber-900/80" data-testid="unknown-reconciliation-read-only">
+              {t("Recording this decision needs the generation requeue permission.")}
+            </p>
+          ) : intent ? (
             <div className="mt-3 rounded-md border border-amber-500/30 bg-white/70 p-3">
               <p className="text-xs text-amber-950">
                 {t("A durable reconciliation command is saved with status {status}.", {
