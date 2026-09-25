@@ -989,75 +989,13 @@ describe("tags, likes, duplicate", () => {
     ).toBe(0);
   });
 
-  it("omits a cross-owner primary image whose bytes have no serviceable locator", async () => {
+  it("refuses to duplicate another creator's public Character and its Soul", async () => {
     const userId = `${P}dup`;
     await createUser({ id: userId });
-    const sourceImageAssetId = `${CHAR}-public-avatar`;
-    await prisma.mediaAsset.update({
-      where: { id: sourceImageAssetId },
-      data: {
-        metadata: {
-          source: "editorial_import",
-          synthetic: false,
-          providerKey: `${P}provider-key-without-owned-storage`,
-          platformAsset: { status: "approved" },
-        },
-      },
-    });
     const res = await api("POST", `characters/${CHAR}/duplicate`, { userId, ageGate: true });
-    expectOk(res);
-    expect(res.data.character).toMatchObject({
-      creatorId: userId,
-      visibility: "private",
-      status: "approved",
-    });
-    expect(res.data.character.name).toContain("Copy");
-    expect(res.data.character.imageAssetId).toBeNull();
-
-    const duplicate = await prisma.character.findUniqueOrThrow({
-      where: { id: res.data.character.id as string },
-      include: { imageAsset: true, stats: true },
-    });
-    expect(duplicate.imageAsset).toBeNull();
-    expect(duplicate.stats).toMatchObject({
-      likesCount: 0,
-      chatsCount: 0,
-    });
-    await expect(
-      prisma.character.findUniqueOrThrow({ where: { id: CHAR } }),
-    ).resolves.toMatchObject({ imageAssetId: sourceImageAssetId });
-    await expect(
-      prisma.mediaAsset.findUniqueOrThrow({ where: { id: sourceImageAssetId } }),
-    ).resolves.toMatchObject({
-      id: sourceImageAssetId,
-      ownerId: SYS,
-      characterId: CHAR,
-      deletedAt: null,
-      metadata: {
-        providerKey: `${P}provider-key-without-owned-storage`,
-        platformAsset: { status: "approved" },
-      },
-    });
-
-    const detail = await api("GET", `characters/${duplicate.id}`, {
-      userId,
-      ageGate: true,
-    });
-    expectOk(detail);
-    expect(detail.data.character).toMatchObject({
-      id: duplicate.id,
-      imageAssetId: null,
-      hasImage: false,
-    });
-    await expect(prisma.mediaAsset.count({
-      where: {
-        ownerId: userId,
-        metadata: {
-          path: ["duplicateLineage", "sourceAssetId"],
-          equals: sourceImageAssetId,
-        },
-      },
-    })).resolves.toBe(0);
+    expectError(res, 404, "not_found");
+    expect(await prisma.character.count({ where: { creatorId: userId } })).toBe(0);
+    expect(await prisma.mediaAsset.count({ where: { ownerId: userId } })).toBe(0);
   });
 
   it.each(["unknown", "blocked"] as const)("does not copy an image whose automatic safety result is %s", async (safetyStatus) => {
