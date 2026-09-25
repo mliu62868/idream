@@ -1302,6 +1302,9 @@ const libraryItemSchema = z
     prompt: z.string().nullable().optional(),
     visibility: z.string().optional(),
     status: z.string().optional(),
+    // Created 卡上的公开表现；characterDTO 的格式化计数。
+    likes: z.string().optional(),
+    chats: z.string().optional(),
     publicationState: z.enum([
       "pending_review",
       "awaiting_publication",
