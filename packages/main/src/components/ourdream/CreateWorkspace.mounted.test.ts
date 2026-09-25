@@ -640,6 +640,21 @@ describe("CreateWorkspace quick start", () => {
     expect(container.querySelector<HTMLButtonElement>('[data-testid="create-quick-start"] button')?.disabled).toBe(false);
   });
 
+  it("turns an HTML outage page into a plain retry message, not a parser error or a sign-in prompt", async () => {
+    quickStart = () => new Response("<!doctype html><title>502</title>", { status: 502, headers: { "content-type": "text/html" } });
+    await submitBrief("A café illustrator");
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="create-quick-start"] [role="alert"]')));
+    expect(container.querySelector('[data-testid="create-quick-start"] [role="alert"]')?.textContent).toBe(
+      "Something went wrong. Check your connection and try again.",
+    );
+  });
+
+  it("caps the Name field at the server's 80 characters", async () => {
+    await act(async () => root.render(createElement(CreateWorkspace)));
+    await waitUntil(() => [...container.querySelectorAll("label")].some(item => item.querySelector("span")?.textContent === "Name"));
+    expect(nameInput().maxLength).toBe(80);
+  });
+
   async function waitUntil(predicate: () => boolean) {
     const deadline = Date.now() + 2_000;
     while (!predicate()) {
