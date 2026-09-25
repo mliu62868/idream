@@ -15,6 +15,7 @@ import {
   customerUserWhere,
 } from "@/server/modules/metric-data-scope";
 import { actorWithPermission, queryParams } from "@/server/modules/admin-v2/shared/authority";
+import { liveSubscriptionWhere } from "@/server/modules/ourdream/subscription-lifecycle";
 
 type WindowQuery = { readonly from?: string; readonly to?: string };
 
@@ -84,7 +85,7 @@ export async function adminDashboard(request: Request) {
       }),
     }),
     prisma.subscription.count({
-      where: customerSubscriptionWhere({ status: "active" }),
+      where: customerSubscriptionWhere(liveSubscriptionWhere()),
     }),
     prisma.featureFlag.findMany({ orderBy: { key: "asc" }, take: 8 }),
     prisma.featureFlag.count(),

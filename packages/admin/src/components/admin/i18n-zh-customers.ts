@@ -40,6 +40,7 @@ export const adminZhCustomers: Record<string, string> = {
   "A resolved case goes back to the active queue, or a recurrence is filed against it.":
     "已解决的工单会回到活跃队列，或据此新建一条复发记录。",
   "Access ends": "访问权限结束于",
+  "Period ended": "周期已结束于",
   "Acknowledge refund": "确认退款记录",
   "Active Cases": "活跃工单",
   "Activity could not be added": "活动添加失败",

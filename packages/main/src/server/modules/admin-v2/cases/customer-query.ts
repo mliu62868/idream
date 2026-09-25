@@ -10,6 +10,7 @@ import {
   paginateAdminKeyset,
 } from "@/server/modules/admin-v2/shared/list-cursor";
 import { caseDto } from "./query";
+import { effectiveSubscriptionStatus, liveSubscriptionWhere } from "@/server/modules/ourdream/subscription-lifecycle";
 
 const ACTIVE_CASE_STATUSES = ["new", "triaged", "in_progress", "waiting", "reopened"];
 
@@ -64,8 +65,8 @@ export async function listCustomers(request: Request) {
           where: { userId: { in: customerIds }, status: { in: ["failed", "blocked"] }, createdAt: { gte: since30d } },
           _count: { _all: true },
         }),
-        prisma.$queryRaw<Array<{ userId: string; status: string }>>(Prisma.sql`
-          SELECT DISTINCT ON ("userId") "userId", status
+        prisma.$queryRaw<Array<{ userId: string; status: string; currentPeriodEnd: Date | null }>>(Prisma.sql`
+          SELECT DISTINCT ON ("userId") "userId", status, "currentPeriodEnd"
           FROM subscriptions
           WHERE "userId" IN (${Prisma.join(customerIds)})
           ORDER BY "userId", "updatedAt" DESC, id DESC
@@ -80,7 +81,8 @@ export async function listCustomers(request: Request) {
   const balances = new Map(ledgerRows.map((row) => [row.userId, row.balanceAfter]));
   const cases = new Map(caseCounts.map((row) => [row.targetId, row._count._all]));
   const failures = new Map(failureCounts.map((row) => [row.userId, row._count._all]));
-  const subscriptions = new Map(subscriptionRows.map((row) => [row.userId, row.status]));
+  // 过期是惰性的：周期已结束但还没被触达的行按产品口径读成 expired。
+  const subscriptions = new Map(subscriptionRows.map((row) => [row.userId, effectiveSubscriptionStatus(row)]));
   const lastActivities = new Map(chatActivity.map((row) => [row.userId, row._max.lastMessageAt]));
   const items = pageRows.map((customer) => {
     const lastActiveAt = lastActivities.get(customer.id);
@@ -180,7 +182,7 @@ export async function getCustomer360(request: Request, customerId: string) {
     subscription: subscription
       ? {
           id: subscription.id,
-          status: subscription.status,
+          status: effectiveSubscriptionStatus(subscription),
           currentPeriodEnd: subscription.currentPeriodEnd?.toISOString() ?? null,
           cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
           plan: {
