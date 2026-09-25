@@ -508,7 +508,7 @@ describe("referrals + account", () => {
 
   it("grants give/get dreamcoins when an invitee signs up with a ref code", async () => {
     const inviterId = `${P}ref-inviter`;
-    await createUser({ id: inviterId });
+    await createUser({ id: inviterId, dataClass: "customer" });
     const invite = await api("POST", "referrals/invite", { userId: inviterId });
     expectOk(invite);
     const code = invite.data.referral.code as string;
@@ -554,6 +554,54 @@ describe("referrals + account", () => {
       expect.arrayContaining([firstInviteeId, secondInviteeId]),
     );
     expect(conversions.every((referral) => referral.rewardStatus === "granted")).toBe(true);
+  });
+
+  it.each([
+    { name: "has used up ten rewards in 30 days", dataClass: "customer" as const, status: "active" as const, priorRewards: 10 },
+    { name: "is not an active customer", dataClass: "customer" as const, status: "suspended" as const, priorRewards: 0 },
+    { name: "is an internal account", dataClass: "internal" as const, status: "active" as const, priorRewards: 0 },
+  ])("still welcomes the invitee but pays no inviter reward when the inviter $name", async ({ name, dataClass, status, priorRewards }) => {
+    const slug = name.replace(/\W+/g, "-");
+    const inviterId = `${P}ref-capped-${slug}`;
+    await createUser({ id: inviterId, dataClass, status });
+    const code = `${P}CODE-${slug}`;
+    await prisma.referral.create({ data: { inviterId, code, status: "pending" } });
+    const earlierInvitees = Array.from({ length: priorRewards }, (_, index) => `${inviterId}-earlier-${index}`);
+    for (const id of earlierInvitees) await createUser({ id });
+    await prisma.referral.createMany({ data: earlierInvitees.map((inviteeId) => ({
+      inviterId, inviteeId, code, status: "completed", rewardStatus: "granted",
+    })) });
+    const inviterBefore = await dreamcoinBalance(inviterId);
+
+    const signup = await api("POST", "auth/signup", {
+      ageGate: true,
+      body: { email: `${inviterId}-invitee@example.com`, password: "password123", name: "Invitee", ref: code },
+    });
+    expectOk(signup);
+    const inviteeId = signup.data.user.id as string;
+    expect(await dreamcoinBalance(inviteeId)).toBe(400);
+    expect(await dreamcoinBalance(inviterId)).toBe(inviterBefore);
+    expect(await prisma.referral.findFirstOrThrow({ where: { code, inviteeId } }))
+      .toMatchObject({ status: "completed", rewardStatus: "not_eligible" });
+  });
+
+  it("counts inviter rewards over a rolling 30 days", async () => {
+    const inviterId = `${P}ref-window`;
+    await createUser({ id: inviterId, dataClass: "customer" });
+    const code = `${P}CODE-window`;
+    await prisma.referral.create({ data: { inviterId, code, status: "pending" } });
+    const earlierInvitees = Array.from({ length: 10 }, (_, index) => `${inviterId}-earlier-${index}`);
+    for (const id of earlierInvitees) await createUser({ id });
+    await prisma.referral.createMany({ data: earlierInvitees.map((inviteeId) => ({
+      inviterId, inviteeId, code, status: "completed", rewardStatus: "granted",
+      createdAt: new Date(Date.now() - 31 * 86_400_000),
+    })) });
+    const inviterBefore = await dreamcoinBalance(inviterId);
+    expectOk(await api("POST", "auth/signup", {
+      ageGate: true,
+      body: { email: `${inviterId}-invitee@example.com`, password: "password123", name: "Invitee", ref: code },
+    }));
+    expect(await dreamcoinBalance(inviterId)).toBe(inviterBefore + 150);
   });
 
   it("ignores an unknown ref code without blocking signup", async () => {

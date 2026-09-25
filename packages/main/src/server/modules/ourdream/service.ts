@@ -201,6 +201,7 @@ import {
   projectPublicImageEditGenerationProfiles,
 } from "./generation-profile-selection";
 import {
+  activeCustomerUserWhere,
   isCustomerEngagementActor,
   mutedTagSlugsForUser,
   normalizeMutedTagSlugs,
@@ -325,6 +326,10 @@ const signupSchema = z.object({
 // ledger idempotencyKey, so replays/retries never double-mint.
 const REFERRAL_INVITEE_BONUS = 150;
 const REFERRAL_INVITER_REWARD = 150;
+// INTENT: 邀请奖励能把一次性小号的注册额度汇集到一个账号上。每个邀请人滚动 30 天内最多
+// 领 10 次，且必须是正常的 active customer；超限只停发邀请人奖励，被邀请人照常注册和领奖。
+const REFERRAL_INVITER_REWARD_LIMIT = 10;
+const REFERRAL_INVITER_REWARD_WINDOW_MS = 30 * 86_400_000;
 
 const loginSchema = z.object({
   email: z
@@ -930,13 +935,27 @@ async function signup(request: Request) {
         where: { code: body.ref, inviteeId: null },
       });
       if (referral && referral.inviterId !== created.id) {
+        // INVARIANT: the inviter row lock serializes concurrent signups on one
+        // code, so the window count cannot be raced past the limit.
+        await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${referral.inviterId} FOR UPDATE`;
+        const inviterEligible = Boolean(await tx.user.findFirst({
+          where: { id: referral.inviterId, ...activeCustomerUserWhere },
+          select: { id: true },
+        })) && await tx.referral.count({
+          where: {
+            inviterId: referral.inviterId,
+            inviteeId: { not: null },
+            rewardStatus: "granted",
+            createdAt: { gte: new Date(Date.now() - REFERRAL_INVITER_REWARD_WINDOW_MS) },
+          },
+        }) < REFERRAL_INVITER_REWARD_LIMIT;
         const conversion = await tx.referral.create({
           data: {
             inviterId: referral.inviterId,
             inviteeId: created.id,
             code: referral.code,
             status: "completed",
-            rewardStatus: "granted",
+            rewardStatus: inviterEligible ? "granted" : "not_eligible",
           },
         });
         await postDreamcoinEntry(tx, {
@@ -947,14 +966,16 @@ async function signup(request: Request) {
           sourceId: conversion.id,
           idempotencyKey: `referral_invitee:${created.id}`,
         });
-        await postDreamcoinEntry(tx, {
-          kind: "referral",
-          beneficiary: "inviter",
-          userId: referral.inviterId,
-          amount: REFERRAL_INVITER_REWARD,
-          sourceId: created.id,
-          idempotencyKey: `referral_inviter:${created.id}`,
-        });
+        if (inviterEligible) {
+          await postDreamcoinEntry(tx, {
+            kind: "referral",
+            beneficiary: "inviter",
+            userId: referral.inviterId,
+            amount: REFERRAL_INVITER_REWARD,
+            sourceId: created.id,
+            idempotencyKey: `referral_inviter:${created.id}`,
+          });
+        }
       }
     }
     await attributeAffiliateSignup(
