@@ -14,6 +14,7 @@ import {
   ImageIcon,
   Link2,
   LogOut,
+  Maximize2,
   MessageCircle,
   Pencil,
   Save,
@@ -273,7 +274,10 @@ function emptyStateForTab(tab: LibraryTab, emptyCta: string | null) {
   return { ...defaults[tab], ctaHref: emptyCta ?? defaults[tab].ctaHref };
 }
 
-const profileDeepLinkTargets: Record<string, { selector: string; focusSelector: string }> = {
+const profileDeepLinkTargets: Record<
+  string,
+  { selector: string; focusSelector: string; block?: ScrollLogicalPosition }
+> = {
   "/profile/redeem-code": {
     selector: "[data-testid='profile-redeem-panel']",
     focusSelector: "[aria-label='Redeem code input']",
@@ -282,8 +286,16 @@ const profileDeepLinkTargets: Record<string, { selector: string; focusSelector: 
     selector: "[data-testid='profile-notifications-panel']",
     focusSelector: "[aria-label='Save hidden tags']",
   },
+  // INTENT: 这条深链承接「登出所有设备」「丢了恢复码」等账号操作，落点是面板顶部的
+  //   Sign out，而不是面板底部的删号框——居中高面板会把 Sign out 滚出视口上方。
   "/profile/account-management": {
     selector: "[data-testid='profile-account-management-panel']",
+    focusSelector: "[aria-label='Sign out all sessions']",
+    block: "start",
+  },
+  // 只有真要删号的人（帮助中心「How do I delete my account?」）才被送到 DELETE 框前。
+  "/profile/account-management#delete-account": {
+    selector: "#delete-account",
     focusSelector: "[aria-label='Delete confirmation']",
   },
   // 被年龄验证锁住的用户从错误文案和 /age-verification/return 落到这里，
@@ -303,7 +315,9 @@ const DEEP_LINK_ATTEMPTS = 30;
 //   用户到了却看不到按钮，和提示渲染在视口外是同一类失败。改成等目标出现；
 //   用户自己滚了就不再抢滚动条。
 function focusProfileDeepLink() {
-  const target = profileDeepLinkTargets[window.location.pathname];
+  const target =
+    profileDeepLinkTargets[window.location.pathname + window.location.hash] ??
+    profileDeepLinkTargets[window.location.pathname];
   if (!target) return;
   const landedAt = window.scrollY;
   let attempts = 0;
@@ -312,7 +326,7 @@ function focusProfileDeepLink() {
     if (window.scrollY !== landedAt) return;
     const panel = document.querySelector<HTMLElement>(target.selector);
     if (panel) {
-      panel.scrollIntoView({ block: "center" });
+      panel.scrollIntoView({ block: target.block ?? "center" });
       document.querySelector<HTMLElement>(target.focusSelector)?.focus({ preventScroll: true });
       return;
     }
@@ -428,6 +442,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
   ownerConfirmed: () => Promise<void>;
 }>) {
   const { accepted: ageGateAccepted } = useAgeGateAccess();
+  const isMyAiRoute = routePath.startsWith("/custom");
   const [authTarget, setAuthTarget] = useState("/profile");
   const balance = profile?.balance ?? null;
   const subscription = profile?.subscription ?? null;
@@ -492,7 +507,10 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
   const [deleteConfirmMediaId, setDeleteConfirmMediaId] = useState<string | null>(null);
   const [deleteConfirmCharacterId, setDeleteConfirmCharacterId] = useState<string | null>(null);
   const [status, setStatus] = useState("");
-  const { openReport, reportDialog } = useReportDialog(setStatus);
+  // INTENT: 库卡片的回执单独一条，渲染在卡片网格上方；和账号操作共用页面级 status 时，
+  //   它落在全部卡片与 Billing 之后，手机上点完卡片操作根本看不到结果。
+  const [libraryStatus, setLibraryStatus] = useState("");
+  const { openReport, reportDialog } = useReportDialog(setLibraryStatus);
   const [referralUrl, setReferralUrl] = useState("");
   const [referralResults, setReferralResults] = useState<
     { total: number; rewarded: number; unrewarded: number } | null
@@ -674,10 +692,11 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
   }, []);
 
   useEffect(() => {
-    if (!ageGateAccepted || !profileOwnerScope) return;
+    // Hidden tags live only in the Profile account area.
+    if (!ageGateAccepted || !profileOwnerScope || isMyAiRoute) return;
     const timer = window.setTimeout(() => void refreshPreferences(), 0);
     return () => window.clearTimeout(timer);
-  }, [ageGateAccepted, profileOwnerScope, refreshPreferences]);
+  }, [ageGateAccepted, isMyAiRoute, profileOwnerScope, refreshPreferences]);
 
   const deepLinkFocusReady =
     routePath !== "/profile/notifications" || preferencesAuthority.hasSnapshot;
@@ -767,10 +786,10 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
   }, [fetchForOwner]);
 
   useEffect(() => {
-    if (!ageGateAccepted || !profileOwnerScope) return;
+    if (!ageGateAccepted || !profileOwnerScope || isMyAiRoute) return;
     const timer = window.setTimeout(() => void loadReferralResults(), 0);
     return () => window.clearTimeout(timer);
-  }, [ageGateAccepted, profileOwnerScope, loadReferralResults]);
+  }, [ageGateAccepted, isMyAiRoute, profileOwnerScope, loadReferralResults]);
 
   async function invite() {
     setStatus("");
@@ -922,51 +941,51 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
   }
 
   async function deleteMedia(id: string) {
-    setStatus("");
+    setLibraryStatus("");
     if (deleteConfirmMediaId !== id) {
       setDeleteConfirmMediaId(id);
-      setStatus("Press Confirm delete to remove this media.");
+      setLibraryStatus("Press Confirm delete to remove this media.");
       return;
     }
     try {
       const response = await fetchForOwner(`/api/v1/media/${id}`, { method: "DELETE" });
       if (!response.ok) {
-        setStatus(await failureMessage(response, "Delete failed."));
+        setLibraryStatus(await failureMessage(response, "Delete failed."));
         return;
       }
-      setStatus("Media deleted.");
+      setLibraryStatus("Media deleted.");
       setDeleteConfirmMediaId(null);
       await refreshLibrary(tab);
     } catch {
-      setStatus("Network error. Please try again.");
+      setLibraryStatus("Network error. Please try again.");
     }
   }
 
   async function downloadMedia(id: string) {
-    setStatus("");
+    setLibraryStatus("");
     try {
       const response = await fetchForOwner(`/api/v1/media/${id}/download`);
       if (!response.ok) {
-        setStatus(apiEnvelopeErrorMessage(await response.json().catch(() => null)) ?? "Download failed. Please try again.");
+        setLibraryStatus(apiEnvelopeErrorMessage(await response.json().catch(() => null)) ?? "Download failed. Please try again.");
         return;
       }
       const payload = (await response.json()) as { data?: { url?: string } };
       if (!ownerRequestIsCurrent()) return;
       if (payload.data?.url) {
         triggerDownload(payload.data.url);
-        setStatus("Download started.");
+        setLibraryStatus("Download started.");
       } else {
-        setStatus("Download failed.");
+        setLibraryStatus("Download failed.");
       }
     } catch {
-      setStatus("Network error. Please try again.");
+      setLibraryStatus("Network error. Please try again.");
     }
   }
 
   // Authors may always chat with their own Character (the session pins its
   // current version); open or resume that session directly from My AI.
   async function startCharacterChat(id: string) {
-    setStatus("");
+    setLibraryStatus("");
     try {
       const response = await fetchForOwner("/api/v1/chat/sessions", {
         method: "POST",
@@ -974,57 +993,57 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
         body: JSON.stringify({ characterId: id }),
       });
       if (!response.ok) {
-        setStatus(await failureMessage(response, "Could not start chat. Please try again."));
+        setLibraryStatus(await failureMessage(response, "Could not start chat. Please try again."));
         return;
       }
       const payload = parseChatSessionCreateResponse(await response.json());
       window.location.assign(`/chat/${encodeURIComponent(payload.session.id)}`);
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
-      setStatus("Could not start chat. Please try again.");
+      setLibraryStatus("Could not start chat. Please try again.");
     }
   }
 
   async function duplicateCharacter(id: string) {
-    setStatus("");
+    setLibraryStatus("");
     setDeleteConfirmCharacterId(null);
     try {
       const response = await fetchForOwner(`/api/v1/characters/${id}/duplicate`, { method: "POST" });
       if (!response.ok) {
-        setStatus(await failureMessage(response, "Duplicate failed."));
+        setLibraryStatus(await failureMessage(response, "Duplicate failed."));
         return;
       }
-      setStatus("Character duplicated to your created tab.");
+      setLibraryStatus("Character duplicated to your created tab.");
       await refreshLibrary(tab);
     } catch {
-      setStatus("Network error. Please try again.");
+      setLibraryStatus("Network error. Please try again.");
     }
   }
 
   async function deleteCharacter(id: string) {
-    setStatus("");
+    setLibraryStatus("");
     if (deleteConfirmCharacterId !== id) {
       setDeleteConfirmCharacterId(id);
-      setStatus("Press Confirm delete to remove this character.");
+      setLibraryStatus("Press Confirm delete to remove this character.");
       return;
     }
     try {
       const response = await fetchForOwner(`/api/v1/characters/${id}`, { method: "DELETE" });
       if (!response.ok) {
-        setStatus(await failureMessage(response, "Delete failed."));
+        setLibraryStatus(await failureMessage(response, "Delete failed."));
         return;
       }
-      setStatus("Character deleted.");
+      setLibraryStatus("Character deleted.");
       setDeleteConfirmCharacterId(null);
       await refreshLibrary(tab);
     } catch {
-      setStatus("Network error. Please try again.");
+      setLibraryStatus("Network error. Please try again.");
     }
   }
 
   async function toggleCharacterVisibility(id: string, current?: string) {
     // Withdraw either kind of shared Character; private characters enter publication preparation.
-    setStatus("");
+    setLibraryStatus("");
     setDeleteConfirmCharacterId(null);
     const next = current === "public" || current === "unlisted" ? "private" : "public";
     try {
@@ -1035,17 +1054,17 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
       });
       if (!response.ok) {
         // The server says why (e.g. a report must be resolved or appealed first).
-        setStatus(await failureMessage(response, "Visibility update failed."));
+        setLibraryStatus(await failureMessage(response, "Visibility update failed."));
         return;
       }
-      setStatus(
+      setLibraryStatus(
         next === "public"
           ? "Character is saved and awaiting publication preparation. Sharing starts after publication."
           : "Character set to private.",
       );
       await refreshLibrary(tab);
     } catch {
-      setStatus("Network error. Please try again.");
+      setLibraryStatus("Network error. Please try again.");
     }
   }
 
@@ -1053,11 +1072,11 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
     mediaAssetId: string,
     input: { name: string; visibility: CollectionVisibility },
   ) {
-    setStatus("");
+    setLibraryStatus("");
     setPublishedCollectionHref("");
     const name = input.name.trim();
     if (!name) {
-      setStatus("Name the collection first.");
+      setLibraryStatus("Name the collection first.");
       return;
     }
     try {
@@ -1072,7 +1091,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
       });
       const payload = (await response.json()) as MediaCollectionCreatePayload;
       if (!response.ok || payload.ok === false) {
-        setStatus(payload.error?.message ?? "Collection create failed.");
+        setLibraryStatus(payload.error?.message ?? "Collection create failed.");
         return;
       }
       if (input.visibility === "public") {
@@ -1081,7 +1100,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
           collectionId ? `/community?collection=${encodeURIComponent(collectionId)}` : "/community",
         );
       }
-      setStatus(
+      setLibraryStatus(
         input.visibility === "public"
           ? "Collection published to Community."
           : "Collection created.",
@@ -1089,14 +1108,14 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
       await refreshMediaCollections();
       await refreshLibrary(tab);
     } catch {
-      setStatus("Network error. Please try again.");
+      setLibraryStatus("Network error. Please try again.");
     }
   }
 
   async function addMediaToCollection(mediaAssetId: string, collectionId: string) {
-    setStatus("");
+    setLibraryStatus("");
     if (!collectionId) {
-      setStatus("Choose a collection first.");
+      setLibraryStatus("Choose a collection first.");
       return;
     }
     try {
@@ -1110,14 +1129,14 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
         error?: { message?: string };
       };
       if (!response.ok || payload.ok === false) {
-        setStatus(payload.error?.message ?? "Could not add media to collection.");
+        setLibraryStatus(payload.error?.message ?? "Could not add media to collection.");
         return;
       }
-      setStatus("Added to collection.");
+      setLibraryStatus("Added to collection.");
       await refreshMediaCollections();
       await refreshLibrary(tab);
     } catch {
-      setStatus("Network error. Please try again.");
+      setLibraryStatus("Network error. Please try again.");
     }
   }
 
@@ -1157,7 +1176,6 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
         ? `Refund canceled · subscription access and ${refund.reversedDreamcoins.toLocaleString()} Dreamcoins restored`
         : `Full refund ${REFUND_STATE_LABELS[refund.state] ?? "in progress"} · access frozen · ${refund.reversedDreamcoins.toLocaleString()} Dreamcoins reversed`
     : null;
-  const isMyAiRoute = routePath.startsWith("/custom");
   const workspaceTitle = isMyAiRoute ? "My AI" : "Profile";
   const authRequiredTitle = isMyAiRoute ? "Sign in to open My AI" : "Sign in to open Profile";
   const authRequiredCopy = isMyAiRoute
@@ -1180,6 +1198,8 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
     setItems([]);
     setEmptyCta(null);
     setLibraryAuthority(initialAuthorityStatus());
+    // A receipt about the previous tab's cards would read as one about these.
+    setLibraryStatus("");
     setTab(nextTab);
   }, [query, tab]);
 
@@ -1416,6 +1436,26 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
           </p>
         ) : null}
         <div className="mt-4 rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-6">
+          {libraryStatus && (
+            <div className="mb-4 flex flex-wrap items-center gap-2">
+              <p
+                aria-live="polite"
+                className="text-[13px] font-semibold text-[rgb(170,170,170)]"
+                data-testid="profile-library-status"
+                role="status"
+              >
+                {libraryStatus}
+              </p>
+              {publishedCollectionHref && libraryStatus === "Collection published to Community." && (
+                <Link
+                  className="inline-flex h-8 items-center justify-center rounded-full bg-[rgb(36,36,36)] px-3 text-[12px] font-bold text-white"
+                  href={publishedCollectionHref}
+                >
+                  View in Community
+                </Link>
+              )}
+            </div>
+          )}
           {libraryAuthority.phase === "error" ? (
             <ProfileAuthorityNotice
               hasSnapshot={libraryAuthority.hasSnapshot}
@@ -1531,322 +1571,314 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
             </nav>
           ) : null}
         </div>
-      </div>
-      {reportDialog}
-        <div className="mt-6 grid gap-3 md:grid-cols-3">
-          <label
-            className="rounded-[14px] bg-[rgb(18,18,18)] p-4 text-[12px] font-bold uppercase text-[rgb(114,113,112)]"
-            data-testid="profile-redeem-panel"
-            id="redeem-code"
-          >
-            Redeem
-            <div className="mt-2 flex gap-2">
-              <input
-                aria-label="Redeem code input"
-                className="min-w-0 flex-1 rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] normal-case text-white outline-none"
-                onChange={(event) => setRedeemCode(event.target.value)}
-                /* 单字段输入框按 Enter 就该提交；这里不是 form，只有一个图标按钮，
-                   不接这个键等于让用户以为兑换码没被接受。 */
-                onKeyDown={(event) => {
-                  if (event.key !== "Enter") return;
-                  event.preventDefault();
-                  void redeem();
-                }}
-                placeholder="Enter code"
-                value={redeemCode}
-              />
-              <button
-                aria-label="Redeem code"
-                className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white text-[rgb(13,13,13)]"
-                onClick={redeem}
-                type="button"
-              >
-                <Gift className="h-4 w-4" />
-              </button>
-            </div>
-          </label>
-          <div className="rounded-[14px] bg-[rgb(18,18,18)] p-4">
-            <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">Referral</p>
-            <button
-              className="mt-2 inline-flex h-10 items-center gap-2 rounded-full bg-[rgb(36,36,36)] px-4 text-[13px] font-bold text-white"
-              onClick={invite}
-              type="button"
+        {reportDialog}
+        {/* SPEC: My AI（/custom）是资产库；兑换、邀请、Billing、账号设置和删号只在 Profile。 */}
+        {!isMyAiRoute && (
+          <>
+          <div className="mt-6 grid gap-3 md:grid-cols-2">
+            <label
+              className="rounded-[14px] bg-[rgb(18,18,18)] p-4 text-[12px] font-bold uppercase text-[rgb(114,113,112)]"
+              data-testid="profile-redeem-panel"
+              id="redeem-code"
             >
-              <Link2 className="h-4 w-4" />
-              Invite
-            </button>
-            {/* The link belongs next to the button that makes it; the page-level status is far away. */}
-            {referralUrl && (
-              <div className="mt-3 flex items-center gap-2">
+              Redeem
+              <div className="mt-2 flex gap-2">
                 <input
-                  aria-label="Referral link"
-                  className="h-10 min-w-0 flex-1 rounded-[12px] bg-[rgb(36,36,36)] px-3 text-[12px] font-semibold text-[rgb(230,230,230)] outline-none"
-                  readOnly
-                  value={referralUrl}
+                  aria-label="Redeem code input"
+                  className="min-w-0 flex-1 rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] normal-case text-white outline-none"
+                  onChange={(event) => setRedeemCode(event.target.value)}
+                  /* 单字段输入框按 Enter 就该提交；这里不是 form，只有一个图标按钮，
+                     不接这个键等于让用户以为兑换码没被接受。 */
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter") return;
+                    event.preventDefault();
+                    void redeem();
+                  }}
+                  placeholder="Enter code"
+                  value={redeemCode}
                 />
                 <button
-                  aria-label="Copy invite link"
-                  className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[rgb(36,36,36)] text-white"
-                  onClick={copyReferralUrl}
-                  title="Copy invite link"
+                  aria-label="Redeem code"
+                  className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white text-[rgb(13,13,13)]"
+                  onClick={redeem}
                   type="button"
                 >
-                  <Copy className="h-4 w-4" />
+                  <Gift className="h-4 w-4" />
                 </button>
               </div>
-            )}
-            {referralResults ? (
-              <p
-                className="mt-3 text-[12px] font-semibold text-[rgb(170,170,170)]"
-                data-testid="profile-referral-results"
+            </label>
+            <div className="rounded-[14px] bg-[rgb(18,18,18)] p-4">
+              <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">Referral</p>
+              <button
+                className="mt-2 inline-flex h-10 items-center gap-2 rounded-full bg-[rgb(36,36,36)] px-4 text-[13px] font-bold text-white"
+                onClick={invite}
+                type="button"
               >
-                {referralResults.total === 0
-                  ? "No one has signed up with your link yet."
-                  : `${referralResults.total} signed up with your link · ${referralResults.rewarded} rewarded${referralResults.unrewarded > 0 ? ` · ${referralResults.unrewarded} past the limit of 10 rewards every 30 days` : ""}.`}
-              </p>
-            ) : null}
-          </div>
-          {/* AF-01: the commercial affiliate program is separate from the referral reward above. */}
-          {ownerId && <AffiliatePanel key={`affiliate:${ownerId}`} fetcher={fetchForOwner} />}
-          <div
-            className="rounded-[14px] bg-[rgb(18,18,18)] p-4"
-            data-testid="profile-billing-card"
-            id="billing"
-          >
-            <p className="text-[13px] font-black uppercase text-white">
-              Billing &amp; access
-            </p>
-            <p className="mt-2 text-[12px] font-bold text-[rgb(170,170,170)]">
-              {plan ?? "Plan unavailable"}
-            </p>
-            <p className="mt-1 text-[12px] font-medium text-[rgb(170,170,170)]">{billingStatus}</p>
-            {refund && refundStatus ? (
-              <div className="mt-3 rounded-[10px] bg-[rgb(29,29,29)] p-3" data-testid="profile-refund-status">
-                <p className="text-[12px] font-bold text-white">{refundStatus}</p>
-                <p className="mt-1 text-[11px] font-medium text-[rgb(170,170,170)]">
-                  Refund reference {refund.reference}
-                </p>
-                {refund.claimUrl ? (
-                  <a className="mt-2 inline-flex h-9 items-center justify-center rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]" href={refund.claimUrl} rel="noreferrer" target="_blank">
-                    Claim refund
-                  </a>
-                ) : null}
-              </div>
-            ) : null}
-            <div className="mt-3 flex flex-wrap gap-2">
-              {!plan && profileAuthority.phase === "error" ? (
-                <button
-                  className="inline-flex h-9 items-center justify-center rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]"
-                  onClick={() => void refreshProfile()}
-                  type="button"
-                >
-                  Retry account data
-                </button>
-              ) : subscription ? (
-                <Link
-                  className="inline-flex h-9 items-center justify-center rounded-full bg-[rgb(36,36,36)] px-4 text-[12px] font-bold text-white"
-                  href="/upgrade"
-                >
-                  Change plan
-                </Link>
-              ) : (
-                <Link
-                  className="inline-flex h-9 items-center justify-center rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]"
-                  href="/upgrade"
-                >
-                  Compare plans
-                </Link>
-              )}
-            </div>
-          </div>
-        </div>
-        {status && (
-          <div className="mt-4 space-y-3">
-            {status && (
-              <div className="flex flex-wrap items-center gap-2">
-                <p
-                  aria-live="polite"
-                  className="text-[13px] font-semibold text-[rgb(170,170,170)]"
-                  data-testid="profile-status"
-                  role="status"
-                >
-                  {status}
-                </p>
-                {publishedCollectionHref && status === "Collection published to Community." && (
-                  <Link
-                    className="inline-flex h-8 items-center justify-center rounded-full bg-[rgb(36,36,36)] px-3 text-[12px] font-bold text-white"
-                    href={publishedCollectionHref}
+                <Link2 className="h-4 w-4" />
+                Invite
+              </button>
+              {/* The link belongs next to the button that makes it; the page-level status is far away. */}
+              {referralUrl && (
+                <div className="mt-3 flex items-center gap-2">
+                  <input
+                    aria-label="Referral link"
+                    className="h-10 min-w-0 flex-1 rounded-[12px] bg-[rgb(36,36,36)] px-3 text-[12px] font-semibold text-[rgb(230,230,230)] outline-none"
+                    readOnly
+                    value={referralUrl}
+                  />
+                  <button
+                    aria-label="Copy invite link"
+                    className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[rgb(36,36,36)] text-white"
+                    onClick={copyReferralUrl}
+                    title="Copy invite link"
+                    type="button"
                   >
-                    View in Community
+                    <Copy className="h-4 w-4" />
+                  </button>
+                </div>
+              )}
+              {referralResults ? (
+                <p
+                  className="mt-3 text-[12px] font-semibold text-[rgb(170,170,170)]"
+                  data-testid="profile-referral-results"
+                >
+                  {referralResults.total === 0
+                    ? "No one has signed up with your link yet."
+                    : `${referralResults.total} signed up with your link · ${referralResults.rewarded} rewarded${referralResults.unrewarded > 0 ? ` · ${referralResults.unrewarded} past the limit of 10 rewards every 30 days` : ""}.`}
+                </p>
+              ) : null}
+            </div>
+            {/* AF-01: the commercial affiliate program is separate from the referral reward above. */}
+            {ownerId && <AffiliatePanel key={`affiliate:${ownerId}`} fetcher={fetchForOwner} />}
+            <div
+              className="rounded-[14px] bg-[rgb(18,18,18)] p-4"
+              data-testid="profile-billing-card"
+              id="billing"
+            >
+              <p className="text-[13px] font-black uppercase text-white">
+                Billing &amp; access
+              </p>
+              <p className="mt-2 text-[12px] font-bold text-[rgb(170,170,170)]">
+                {plan ?? "Plan unavailable"}
+              </p>
+              <p className="mt-1 text-[12px] font-medium text-[rgb(170,170,170)]">{billingStatus}</p>
+              {refund && refundStatus ? (
+                <div className="mt-3 rounded-[10px] bg-[rgb(29,29,29)] p-3" data-testid="profile-refund-status">
+                  <p className="text-[12px] font-bold text-white">{refundStatus}</p>
+                  <p className="mt-1 text-[11px] font-medium text-[rgb(170,170,170)]">
+                    Refund reference {refund.reference}
+                  </p>
+                  {refund.claimUrl ? (
+                    <a className="mt-2 inline-flex h-9 items-center justify-center rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]" href={refund.claimUrl} rel="noreferrer" target="_blank">
+                      Claim refund
+                    </a>
+                  ) : null}
+                </div>
+              ) : null}
+              <div className="mt-3 flex flex-wrap gap-2">
+                {!plan && profileAuthority.phase === "error" ? (
+                  <button
+                    className="inline-flex h-9 items-center justify-center rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]"
+                    onClick={() => void refreshProfile()}
+                    type="button"
+                  >
+                    Retry account data
+                  </button>
+                ) : subscription ? (
+                  <Link
+                    className="inline-flex h-9 items-center justify-center rounded-full bg-[rgb(36,36,36)] px-4 text-[12px] font-bold text-white"
+                    href="/upgrade"
+                  >
+                    Change plan
+                  </Link>
+                ) : (
+                  <Link
+                    className="inline-flex h-9 items-center justify-center rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]"
+                    href="/upgrade"
+                  >
+                    Compare plans
                   </Link>
                 )}
               </div>
-            )}
+            </div>
           </div>
-        )}
-        <div className="mt-6 grid gap-3 md:grid-cols-2">
-          <div className="rounded-[14px] bg-[rgb(18,18,18)] p-4">
-            <p className="flex items-center gap-2 text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
-              <UserCog className="h-4 w-4" />
-              Account settings
-            </p>
-            <label className="mt-3 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
-              Display name
-              <div className="mt-2 flex gap-2">
-                <input
-                  aria-label="Display name"
-                  className="min-w-0 flex-1 rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] normal-case text-white outline-none"
-                  onChange={(event) => setProfileName(event.target.value)}
-                  value={profileName}
-                />
-                <button
-                  aria-label="Save profile"
-                  className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white text-[rgb(13,13,13)]"
-                  onClick={saveProfile}
-                  type="button"
-                >
-                  <Save className="h-4 w-4" />
-                </button>
-              </div>
-            </label>
-            {profileOwnerScope ? <UserPersonaPanel key={profileOwnerScope} ownerScope={profileOwnerScope} /> : null}
-            <div
-              className="mt-4 rounded-[10px] bg-[rgb(36,36,36)] p-3"
-              data-testid="profile-notifications-panel"
-              id="notifications"
+          {status && (
+            <p
+              aria-live="polite"
+              className="mt-4 text-[13px] font-semibold text-[rgb(170,170,170)]"
+              data-testid="profile-status"
+              role="status"
             >
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="text-[13px] font-semibold text-white">
-                  Notifications & recommendations
-                  <p className="mt-1 text-[11px] font-medium leading-4 text-[rgb(114,113,112)]">
-                    Product announcements show up in the app. Email subscriptions are not available yet.
-                  </p>
-                </div>
-                {/* 这个按钮只保存下面的 Hide tags；按钮名要说清保存的是什么。 */}
-                <button
-                  aria-label="Save hidden tags"
-                  className="inline-flex h-9 items-center gap-2 rounded-full bg-black/30 px-3 text-[12px] font-bold text-white disabled:opacity-50"
-                  disabled={!preferencesAuthority.hasSnapshot}
-                  onClick={savePreferences}
-                  type="button"
-                >
-                  <Bell className="h-4 w-4" />
-                  Save hidden tags
-                </button>
-              </div>
-              {preferencesAuthority.phase === "loading" &&
-              !preferencesAuthority.hasSnapshot ? (
-                <p className="mt-3 text-[12px] font-semibold text-[rgb(170,170,170)]">
-                  Loading saved preferences…
-                </p>
-              ) : null}
-              {preferencesAuthority.phase === "error" ? (
-                <ProfileAuthorityNotice
-                  hasSnapshot={preferencesAuthority.hasSnapshot}
-                  message={
-                    preferencesAuthority.error ?? "Preferences could not load."
-                  }
-                  onRetry={() => void refreshPreferences()}
-                />
-              ) : null}
-              {preferenceTagsAuthority.phase === "error" ? (
-                <ProfileAuthorityNotice
-                  hasSnapshot={preferenceTagsAuthority.hasSnapshot}
-                  message={
-                    preferenceTagsAuthority.error ??
-                    "Preference tags could not load."
-                  }
-                  onRetry={() => void refreshPreferences()}
-                />
-              ) : null}
-              {preferenceTagsAuthority.phase === "loading" &&
-              !preferenceTagsAuthority.hasSnapshot ? (
-                <p className="mt-3 text-[12px] font-semibold text-[rgb(170,170,170)]">
-                  Loading available tags…
-                </p>
-              ) : null}
-              {preferenceTags.length > 0 ? (
-                <div className="mt-4 border-t border-white/10 pt-3">
-                  {/* 这里列的是「可以屏蔽的标签」，勾上才是屏蔽。原标题 "Muted tags"
-                      会被读成「以下标签已被屏蔽」，而复选框默认全是空的。 */}
-                  <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
-                    Hide tags
-                  </p>
-                  <p className="mt-1 text-[11px] font-medium leading-4 text-[rgb(114,113,112)]">
-                    Tick a tag to keep it out of your recommendations.
-                  </p>
-                  <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                    {preferenceTags.map((tag) => (
-                      <label
-                        className="flex min-h-9 items-center gap-2 rounded-[8px] bg-black/20 px-3 text-[12px] font-semibold text-white"
-                        key={tag.slug}
-                      >
-                        <input
-                          aria-label={`Mute ${tag.label}`}
-                          checked={mutedTags.includes(tag.slug)}
-                          className="h-4 w-4 accent-[rgb(253,95,194)]"
-                          onChange={(event) => toggleMutedTag(tag.slug, event.target.checked)}
-                          type="checkbox"
-                        />
-                        <span className="min-w-0 truncate">{tag.label}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-            </div>
-          </div>
-          <div
-            className="rounded-[14px] bg-[rgb(18,18,18)] p-4"
-            data-testid="profile-account-management-panel"
-            id="account-management"
-          >
-            <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
-              Account management
+              {status}
             </p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button
-                className="inline-flex h-10 items-center gap-2 rounded-full bg-[rgb(36,36,36)] px-4 text-[13px] font-bold text-white"
-                onClick={signOutEverywhere}
-                type="button"
+          )}
+          <div className="mt-6 grid gap-3 md:grid-cols-2">
+            <div className="rounded-[14px] bg-[rgb(18,18,18)] p-4">
+              <p className="flex items-center gap-2 text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
+                <UserCog className="h-4 w-4" />
+                Account settings
+              </p>
+              <label className="mt-3 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
+                Display name
+                <div className="mt-2 flex gap-2">
+                  <input
+                    aria-label="Display name"
+                    className="min-w-0 flex-1 rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] normal-case text-white outline-none"
+                    onChange={(event) => setProfileName(event.target.value)}
+                    value={profileName}
+                  />
+                  <button
+                    aria-label="Save profile"
+                    className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white text-[rgb(13,13,13)]"
+                    onClick={saveProfile}
+                    type="button"
+                  >
+                    <Save className="h-4 w-4" />
+                  </button>
+                </div>
+              </label>
+              {profileOwnerScope ? <UserPersonaPanel key={profileOwnerScope} ownerScope={profileOwnerScope} /> : null}
+              <div
+                className="mt-4 rounded-[10px] bg-[rgb(36,36,36)] p-3"
+                data-testid="profile-notifications-panel"
+                id="notifications"
               >
-                <LogOut className="h-4 w-4" />
-                Sign out all sessions
-              </button>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="text-[13px] font-semibold text-white">
+                    Recommendations · Hidden tags
+                    <p className="mt-1 text-[11px] font-medium leading-4 text-[rgb(114,113,112)]">
+                      Product announcements show up in the app. Email subscriptions are not available yet.
+                    </p>
+                  </div>
+                  {/* 这个按钮只保存下面的 Hide tags；按钮名要说清保存的是什么。 */}
+                  <button
+                    aria-label="Save hidden tags"
+                    className="inline-flex h-9 items-center gap-2 rounded-full bg-black/30 px-3 text-[12px] font-bold text-white disabled:opacity-50"
+                    disabled={!preferencesAuthority.hasSnapshot}
+                    onClick={savePreferences}
+                    type="button"
+                  >
+                    <Bell className="h-4 w-4" />
+                    Save hidden tags
+                  </button>
+                </div>
+                {preferencesAuthority.phase === "loading" &&
+                !preferencesAuthority.hasSnapshot ? (
+                  <p className="mt-3 text-[12px] font-semibold text-[rgb(170,170,170)]">
+                    Loading saved preferences…
+                  </p>
+                ) : null}
+                {preferencesAuthority.phase === "error" ? (
+                  <ProfileAuthorityNotice
+                    hasSnapshot={preferencesAuthority.hasSnapshot}
+                    message={
+                      preferencesAuthority.error ?? "Preferences could not load."
+                    }
+                    onRetry={() => void refreshPreferences()}
+                  />
+                ) : null}
+                {preferenceTagsAuthority.phase === "error" ? (
+                  <ProfileAuthorityNotice
+                    hasSnapshot={preferenceTagsAuthority.hasSnapshot}
+                    message={
+                      preferenceTagsAuthority.error ??
+                      "Preference tags could not load."
+                    }
+                    onRetry={() => void refreshPreferences()}
+                  />
+                ) : null}
+                {preferenceTagsAuthority.phase === "loading" &&
+                !preferenceTagsAuthority.hasSnapshot ? (
+                  <p className="mt-3 text-[12px] font-semibold text-[rgb(170,170,170)]">
+                    Loading available tags…
+                  </p>
+                ) : null}
+                {preferenceTags.length > 0 ? (
+                  <div className="mt-4 border-t border-white/10 pt-3">
+                    {/* 这里列的是「可以屏蔽的标签」，勾上才是屏蔽。原标题 "Muted tags"
+                        会被读成「以下标签已被屏蔽」，而复选框默认全是空的。 */}
+                    <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
+                      Hide tags
+                    </p>
+                    <p className="mt-1 text-[11px] font-medium leading-4 text-[rgb(114,113,112)]">
+                      Tick a tag to keep it out of your recommendations.
+                    </p>
+                    <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                      {preferenceTags.map((tag) => (
+                        <label
+                          className="flex min-h-9 items-center gap-2 rounded-[8px] bg-black/20 px-3 text-[12px] font-semibold text-white"
+                          key={tag.slug}
+                        >
+                          <input
+                            aria-label={`Mute ${tag.label}`}
+                            checked={mutedTags.includes(tag.slug)}
+                            className="h-4 w-4 accent-[rgb(253,95,194)]"
+                            onChange={(event) => toggleMutedTag(tag.slug, event.target.checked)}
+                            type="checkbox"
+                          />
+                          <span className="min-w-0 truncate">{tag.label}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
             </div>
-            <label className="mt-4 block text-sm font-bold">Current password<input className="mt-2 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 py-3 text-sm" aria-label="Current account password" autoComplete="current-password" type="password" value={securityPassword} onChange={(event) => setSecurityPassword(event.target.value)} /></label>
-            <p className="mt-2 text-sm leading-6 text-white/60">Confirm your password to replace a recovery code or delete your account.</p>
-            <button className="mt-3 rounded-full bg-[rgb(36,36,36)] px-4 py-3 text-sm font-bold disabled:opacity-40" type="button" disabled={securityPending || !securityPassword || !profileOwnerScope} onClick={generateRecoveryCode}>Generate new recovery code</button>
-            {savedRecoveryCode && savedRecoveryCode.ownerId === profileOwnerScope.replace(/^user:/, "") && <div className="mt-4"><RecoveryCodeCard key={savedRecoveryCode.code} code={savedRecoveryCode.code} ownerId={savedRecoveryCode.ownerId} /></div>}
-            {ownerId && <AccountEmailVerification key={`email:${ownerId}`} ownerId={ownerId} fetcher={fetchForOwner} />}
-            {ownerId && <AccountAgeVerification key={`age:${ownerId}`} ownerId={ownerId} fetcher={fetchForOwner} />}
-            <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
-              Delete account
-              <span className="mt-1 block text-[11px] font-medium normal-case leading-5 text-[rgb(154,153,152)]">
-                Access ends immediately and all sessions are signed out. Erasure begins after 30 days; this grace period does not provide self-service cancellation or restoration.
-              </span>
-              <span className="mt-2 block text-[12px] font-medium normal-case leading-6 text-white/65">Chats, memories, private characters, drafts and owned media are erased. Your published characters, posts and collections are removed from this service as erasure completes; copies already downloaded by other people cannot be recalled. Remaining dreamcoins and paid access become unusable, and deletion does not request a refund. Minimal de-identified transaction records and legally required evidence may be retained; an active retention requirement may delay erasure. You receive a private status link that works after logout. Interrupted work retries automatically.</span>
-              <div className="mt-2 flex gap-2">
-                <input
-                  aria-label="Delete confirmation"
-                  className="min-w-0 flex-1 rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] normal-case text-white outline-none"
-                  onChange={(event) => setDeleteConfirm(event.target.value)}
-                  placeholder="Type DELETE"
-                  value={deleteConfirm}
-                />
+            <div
+              className="scroll-mt-20 rounded-[14px] bg-[rgb(18,18,18)] p-4"
+              data-testid="profile-account-management-panel"
+              id="account-management"
+            >
+              <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
+                Account management
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
                 <button
-                  className="inline-flex h-10 items-center gap-2 rounded-full bg-[rgb(120,25,40)] px-4 text-[12px] font-black text-white disabled:opacity-40"
-                  disabled={deleteConfirm !== "DELETE" || !securityPassword || securityPending || !profileOwnerScope}
-                  onClick={requestAccountDeletion}
+                  aria-label="Sign out all sessions"
+                  className="inline-flex h-10 items-center gap-2 rounded-full bg-[rgb(36,36,36)] px-4 text-[13px] font-bold text-white"
+                  onClick={signOutEverywhere}
                   type="button"
                 >
-                  <Trash2 className="h-4 w-4" />
-                  Delete
+                  <LogOut className="h-4 w-4" />
+                  Sign out all sessions
                 </button>
               </div>
-            </label>
+              <label className="mt-4 block text-sm font-bold">Current password<input className="mt-2 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 py-3 text-sm" aria-label="Current account password" autoComplete="current-password" type="password" value={securityPassword} onChange={(event) => setSecurityPassword(event.target.value)} /></label>
+              <p className="mt-2 text-sm leading-6 text-white/60">Confirm your password to replace a recovery code or delete your account.</p>
+              <button className="mt-3 rounded-full bg-[rgb(36,36,36)] px-4 py-3 text-sm font-bold disabled:opacity-40" type="button" disabled={securityPending || !securityPassword || !profileOwnerScope} onClick={generateRecoveryCode}>Generate new recovery code</button>
+              {savedRecoveryCode && savedRecoveryCode.ownerId === profileOwnerScope.replace(/^user:/, "") && <div className="mt-4"><RecoveryCodeCard key={savedRecoveryCode.code} code={savedRecoveryCode.code} ownerId={savedRecoveryCode.ownerId} /></div>}
+              {ownerId && <AccountEmailVerification key={`email:${ownerId}`} ownerId={ownerId} fetcher={fetchForOwner} />}
+              {ownerId && <AccountAgeVerification key={`age:${ownerId}`} ownerId={ownerId} fetcher={fetchForOwner} />}
+              <label className="mt-4 block scroll-mt-20 text-[12px] font-bold uppercase text-[rgb(114,113,112)]" id="delete-account">
+                Delete account
+                <span className="mt-1 block text-[11px] font-medium normal-case leading-5 text-[rgb(154,153,152)]">
+                  Access ends immediately and all sessions are signed out. Erasure begins after 30 days; this grace period does not provide self-service cancellation or restoration.
+                </span>
+                <span className="mt-2 block text-[12px] font-medium normal-case leading-6 text-white/65">Chats, memories, private characters, drafts and owned media are erased. Your published characters, posts and collections are removed from this service as erasure completes; copies already downloaded by other people cannot be recalled. Remaining dreamcoins and paid access become unusable, and deletion does not request a refund. Minimal de-identified transaction records and legally required evidence may be retained; an active retention requirement may delay erasure. You receive a private status link that works after logout. Interrupted work retries automatically.</span>
+                <div className="mt-2 flex gap-2">
+                  <input
+                    aria-label="Delete confirmation"
+                    className="min-w-0 flex-1 rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] normal-case text-white outline-none"
+                    onChange={(event) => setDeleteConfirm(event.target.value)}
+                    placeholder="Type DELETE"
+                    value={deleteConfirm}
+                  />
+                  <button
+                    className="inline-flex h-10 items-center gap-2 rounded-full bg-[rgb(120,25,40)] px-4 text-[12px] font-black text-white disabled:opacity-40"
+                    disabled={deleteConfirm !== "DELETE" || !securityPassword || securityPending || !profileOwnerScope}
+                    onClick={requestAccountDeletion}
+                    type="button"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    Delete
+                  </button>
+                </div>
+              </label>
+            </div>
           </div>
-        </div>
+          </>
+        )}
+      </div>
     </section>
   );
 }
@@ -1932,6 +1964,8 @@ function LibraryCard({
   const [publishCollection, setPublishCollection] = useState(false);
   const [selectedCollectionId, setSelectedCollectionId] = useState("");
   const [collectionBusy, setCollectionBusy] = useState(false);
+  // INTENT: 加入合集是低频操作；整套表单常驻每张卡，手机上的媒体库会被撑到九千多像素高。
+  const [collectionOpen, setCollectionOpen] = useState(false);
   const contentType = item.contentType?.toLowerCase() ?? "";
   const isAudioItem =
     item.type === "voice" || item.type === "audio" || contentType.startsWith("audio/");
@@ -1960,6 +1994,8 @@ function LibraryCard({
       ? characterAppealHref(character?.id ?? item.id, title)
       : null;
   const confirmMediaDelete = isMediaItem && deleteConfirmMediaId === item.id;
+  // 缩略图是 4:3 顶部裁切；原图只能靠这个链接看全。
+  const fullImageUrl = item.type === "image" && !mediaUnavailable ? item.url ?? source : undefined;
 
   async function createCollectionFromMedia() {
     if (!onCreateCollection) return;
@@ -2067,6 +2103,18 @@ function LibraryCard({
               >
                 <Download className="h-4 w-4" />
               </button>
+              {fullImageUrl && (
+                <a
+                  aria-label="Open full image"
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-black/30 text-white"
+                  href={fullImageUrl}
+                  rel="noopener noreferrer"
+                  target="_blank"
+                  title="Open full image"
+                >
+                  <Maximize2 className="h-4 w-4" />
+                </a>
+              )}
               <button
                 aria-label="Report media"
                 className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-black/30 text-white"
@@ -2088,13 +2136,18 @@ function LibraryCard({
                 {confirmMediaDelete ? "Confirm delete" : <Trash2 className="h-4 w-4" />}
               </button>
             </div>
-            <div className="rounded-[12px] border border-white/10 bg-black/20 p-3">
-              <div className="flex items-center gap-2 text-[11px] font-black uppercase text-[rgb(170,170,170)]">
-                <FolderPlus className="h-3.5 w-3.5" />
-                Collection
-              </div>
+            <button
+              aria-expanded={collectionOpen}
+              className="inline-flex h-9 w-fit items-center gap-2 rounded-full bg-black/30 px-3 text-[12px] font-bold text-white"
+              onClick={() => setCollectionOpen((open) => !open)}
+              type="button"
+            >
+              <FolderPlus className="h-3.5 w-3.5" />
+              Add to collection
+            </button>
+            {collectionOpen && <div className="grid gap-3 rounded-[12px] border border-white/10 bg-black/20 p-3">
               {(collections?.length ?? 0) > 0 && (
-                <div className="mt-3 flex gap-2">
+                <div className="flex gap-2">
                   <select
                     aria-label="Existing collection"
                     className="min-w-0 flex-1 rounded-[10px] bg-[rgb(18,18,18)] px-3 text-[12px] font-semibold text-white outline-none"
@@ -2118,7 +2171,7 @@ function LibraryCard({
                   </button>
                 </div>
               )}
-              <div className="mt-3 grid gap-2">
+              <div className="grid gap-2">
                 <input
                   aria-label="Collection name"
                   className="h-9 rounded-[10px] bg-[rgb(18,18,18)] px-3 text-[12px] font-semibold text-white outline-none placeholder:text-[rgb(114,113,112)]"
@@ -2146,7 +2199,7 @@ function LibraryCard({
                   {collectionBusy ? "Saving..." : "Create collection"}
                 </button>
               </div>
-            </div>
+            </div>}
           </div>
         )}
       </div>
