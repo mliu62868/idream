@@ -516,10 +516,7 @@ export function CreateWorkspace() {
       } else if (applied.previewBatch?.phase === "failed" || serverPreviewJob?.status === "failed") {
         setPreviewStatus("failed");
         setStatus(
-          applied.previewBatch?.errorMessage ||
-          (serverPreviewJob?.errorCode
-            ? previewFailedMessage(serverPreviewJob.errorCode)
-            : "Preview generation failed. Try again."),
+          applied.previewBatch?.errorMessage || PREVIEW_FAILED_MESSAGE,
         );
       }
     };
@@ -970,9 +967,7 @@ export function CreateWorkspace() {
               status: normalizePreviewJobStatus(previewJob?.status),
               asset: candidate,
               errorCode: previewJob?.errorCode,
-              errorMessage: previewJob?.errorCode
-                ? previewFailedMessage(previewJob.errorCode)
-                : undefined,
+              errorMessage: previewJob?.errorCode ? PREVIEW_FAILED_MESSAGE : undefined,
             };
           },
           persist: (batch) => {
@@ -1451,6 +1446,7 @@ export function CreateWorkspace() {
                   <input
                     className={FIELD_LEAD_INPUT_CLASS}
                     onChange={(event) => setIdentityField("name", event.target.value)}
+                    maxLength={80}
                     placeholder="Nova Reyes"
                     value={state.name}
                   />
@@ -1825,7 +1821,7 @@ export function CreateWorkspace() {
                     {state.confirmedPreviewJobId ? (
                       <p className="flex items-center gap-2 text-[13px] font-semibold text-[rgb(120,220,170)]">
                         <Check className="h-4 w-4" />
-                        Identity confirmed. Future images will use this character anchor.
+                        Identity confirmed. Future images will keep this face.
                       </p>
                     ) : (
                       <p className="text-[13px] font-semibold text-white">
@@ -2047,10 +2043,8 @@ function Field({
   );
 }
 
-// INTENT: errorCode 只作为联系客服时的参考码，不当作给用户看的原因。
-function previewFailedMessage(errorCode: string) {
-  return `Preview generation failed. Try again. Support reference: ${errorCode}`;
-}
+// INTENT: 不附 errorCode —— 它是内部枚举不是可查的单号，客服拿它什么也查不到。
+const PREVIEW_FAILED_MESSAGE = "Preview generation failed. Try again.";
 
 const VISIBILITY_LABELS: Record<string, string> = {
   private: "Private",
@@ -2091,12 +2085,13 @@ async function api(
     window.location.href = `/signup?next=${next || "%2Fcreate"}`;
     throw new Error("Sign in to create a character. Redirecting…");
   }
-  const payload = (await response.json()) as DraftPayload;
+  // Outage pages come back as HTML; never show the JSON parser's complaint.
+  const payload = ((await response.json().catch(() => null)) ?? {}) as DraftPayload;
   if (response.status === 409 && payload.error?.message?.startsWith("Your account changed")) {
     options?.onViewerChanged?.();
   }
   if (!response.ok || payload.ok === false) {
-    throw new Error(payload.error?.message ?? "Sign in, accept the age gate, then try again.");
+    throw new Error(payload.error?.message ?? GENERIC_FAILURE_MESSAGE);
   }
   return payload;
 }
@@ -2222,8 +2217,11 @@ function draftString(value: unknown, maximumLength: number) {
     : "";
 }
 
+// 401 is handled before this in api(); anyone reaching the fallback is already signed in.
+const GENERIC_FAILURE_MESSAGE = "Something went wrong. Check your connection and try again.";
+
 function messageFrom(error: unknown) {
-  return error instanceof Error ? error.message : "Sign in, accept the age gate, then try again.";
+  return error instanceof Error ? error.message : GENERIC_FAILURE_MESSAGE;
 }
 
 function normalizedTags(value: string) {

@@ -289,7 +289,7 @@ describe("GeneratorWorkspace media journeys", () => {
     await act(async () => vi.advanceTimersByTimeAsync(2_000));
     expect(container.querySelector('[data-media-id="video-1"]')).not.toBeNull();
     expect(container.querySelector('[data-media-id="image-1"]')).toBeNull();
-    expect(container.querySelector('[data-generation-job-id="other-candidate"]')?.textContent).toContain("completed");
+    expect(container.querySelector('[data-generation-job-id="other-candidate"]')?.textContent).toContain("Completed");
     expect(container.textContent).not.toContain("Generation complete.");
     expect(container.querySelector('video source[src="/user-content/my-video-result.mp4"]')).toBeNull();
     videoCompleted = true;
@@ -1043,7 +1043,8 @@ describe("GeneratorWorkspace media journeys", () => {
     });
     await settle();
     expect(select.value).toBe(modelId);
-    expect(select.options[select.selectedIndex].textContent).toBe(modelLabel);
+    expect(select.options[select.selectedIndex].textContent).toBe("Standard");
+    expect(container.textContent).not.toContain(modelLabel);
     expect(quoteBodies.at(-1)).toMatchObject({ mode, controls: { model: modelId } });
     expect(select.querySelector('option[value=""]')?.textContent).toBe(autoLabel);
 
@@ -1141,7 +1142,107 @@ describe("GeneratorWorkspace media journeys", () => {
     expect(seventh).not.toBeNull();
     await click(seventh!);
     expect(requests).toContain("/api/v1/media/image-7/variation/quote");
-    expect(container.textContent).toContain("Create edit · 5 coins");
+    // A disabled button names what is missing instead of going silently grey.
+    const submitButton = container.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+    expect(submitButton.disabled).toBe(true);
+    expect(submitButton.textContent).toBe("Describe the change to continue");
+    const prompt = container.querySelector<HTMLTextAreaElement>("#generator-prompt")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(prompt, "Make the jacket red.");
+      prompt.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await settle();
+    expect(submitButton.disabled).toBe(false);
+    expect(submitButton.textContent).toBe("Create edit · 5 coins");
+  });
+
+  it("names edit models by what they keep, never by their admin profile name", async () => {
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/v1/generation/config") return Response.json({ ok: true, data: { ...config, image: { ...config.image, editModels: [
+        { id: "edit-model", label: "Chat Image Edit (Qwen-Edit)", maxCount: 1, costMultiplier: 1, entitlement: null, referenceMode: "source_only" },
+        { id: "identity-edit", label: "Character Image Variation (Qwen-Edit)", maxCount: 1, costMultiplier: 1, entitlement: null, referenceMode: "identity_source" },
+      ] } } });
+      if (String(input).startsWith("/api/v1/media?")) {
+        const response = await originalFetch(input, init);
+        const payload = await response.json();
+        return Response.json({ ...payload, data: { ...payload.data, items: payload.data.items.map((item: ReturnType<typeof mediaItem>) => ({ ...item, imageEditModelIds: ["edit-model", "identity-edit"] })) } });
+      }
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(button("Image Edit"));
+    await click(container.querySelector('[data-testid="image-edit-source-card"][data-media-id="image-1"]')!);
+    const options = [...container.querySelectorAll<HTMLOptionElement>('[aria-label="Model"] option')].map((option) => option.textContent);
+    expect(options).toEqual(["Auto (identity-aware)", "Edit · this image only", "Edit · keep the character"]);
+    expect(container.textContent).not.toContain("Qwen");
+  });
+
+  it("says Checking while the quote is out and only warns once the quote proves no lock", async () => {
+    const originalFetch = globalThis.fetch;
+    const pendingQuote = deferredResponse();
+    const model = { id: "image-model", label: "Default image · REDQW21", maxCount: 1, costMultiplier: 1, entitlement: null };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/generation/config") return Response.json({ ok: true, data: {
+        ...config, pricing: { ...config.pricing, image: { baseCost: 5, maxCount: 1 } },
+        image: { ...config.image, availability: { state: "available" }, orientations: ["4:5"], models: [model],
+          recipes: ["character", "freeplay"].map((useCase) => ({ id: `image-${useCase}`, rowId: `image-${useCase}-v1`, label: "Image", mode: "image", useCase, version: 1 })) },
+      } });
+      if (path.startsWith("/api/v1/characters?")) return Response.json({ ok: true, data: {
+        items: [{ id: "character", title: "Mira", age: "28", description: "Photographer",
+          likes: "0", chats: "0", creator: "iDream", image: "/user-content/portrait.png" }], nextCursor: null,
+      } });
+      if (path === "/api/v1/generation/quote") return pendingQuote.promise;
+      return originalFetch(input, init);
+    }));
+    await mount();
+    expect(container.textContent).toContain("Checking…");
+    expect(container.textContent).not.toContain("look isn't locked");
+    pendingQuote.resolve(Response.json({ ok: true, data: { quote: { ...quote, profileId: "image-model", identityLocked: false } } }));
+    await settle();
+    expect(container.textContent).toContain("This character's look isn't locked yet");
+    expect(container.textContent).not.toMatch(/anchor|legacy|identity-locked route/);
+  });
+
+  it("stops polling a job the server no longer lets this viewer read", async () => {
+    saveCurrentGenerationJob(window.sessionStorage, config.viewer.scope, "gone-job");
+    const originalFetch = globalThis.fetch;
+    const detailReads: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.startsWith("/api/v1/generation/jobs?")) return Response.json({ ok: true, data: {
+        items: [{ id: "gone-job", status: "running", mode: "image", errorCode: null, costDreamcoins: 5, outputCount: 1, createdAt: new Date().toISOString() }],
+      } });
+      if (path === "/api/v1/generation/jobs/gone-job") {
+        detailReads.push(path);
+        return Response.json({ ok: false, error: { code: "not_found", message: "Generation job not found" } }, { status: 404 });
+      }
+      return originalFetch(input, init);
+    }));
+    vi.useFakeTimers();
+    await act(async () => root.render(createElement(GeneratorWorkspace)));
+    await act(async () => vi.advanceTimersByTimeAsync(100));
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    expect(container.textContent).toContain("This generation is no longer available.");
+    expect(container.querySelector('[data-generation-job-id="gone-job"]')).toBeNull();
+    expect(detailReads.length).toBeLessThanOrEqual(2);
+    expect(window.sessionStorage.getItem("idream:generation:current-job")).toBeNull();
+  });
+
+  it("shows the server's reason when a download is refused", async () => {
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/v1/media/image-1/download") {
+        return Response.json({ ok: false, error: { code: "forbidden", message: "Downloads are not available on your plan." } }, { status: 403 });
+      }
+      return originalFetch(input, init);
+    }));
+    vi.stubGlobal("open", vi.fn(() => null));
+    await mount();
+    const card = container.querySelector('[data-testid="gallery-media-card"][data-media-id="image-1"]')!;
+    await click(card.querySelector('button[aria-label="Download"]')!);
+    expect(container.textContent).toContain("Downloads are not available on your plan.");
   });
 
   it("locks the Image Edit negative prompt for accounts without Premium controls", async () => {

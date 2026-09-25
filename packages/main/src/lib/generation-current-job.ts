@@ -24,3 +24,12 @@ export function saveCurrentGenerationJob(storage: JobStorage, scope: string | nu
     // In-memory tracking still works when the browser disables storage.
   }
 }
+
+// A job the server no longer lets this viewer read must not be restored on reload.
+export function clearCurrentGenerationJob(storage: Pick<Storage, "removeItem">) {
+  try {
+    storage.removeItem(STORAGE_KEY);
+  } catch {
+    // Nothing to clear when the browser disables storage.
+  }
+}

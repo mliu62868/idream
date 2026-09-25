@@ -4905,14 +4905,14 @@ test("generator user-preset round-trip and bulk media route are wired", async ({
     await page.goto("/generate");
     await page.getByTestId("generator-advanced-toggle").click();
     await expect(page.getByTestId("my-presets")).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByLabel("Mode preset")).toBeVisible();
+    await expect(page.getByLabel("Style", { exact: true })).toBeVisible();
     const backgroundSelect = page.getByTestId("preset-select-background");
     await expect(backgroundSelect.locator(`option[value="${communityBackgroundId}"]`)).toHaveText(
       "Community · Community Neon Rooftop",
     );
     await backgroundSelect.selectOption(communityBackgroundId);
     await expect(backgroundSelect).toHaveValue(communityBackgroundId);
-    await page.getByLabel("Mode preset").selectOption("seed-preset-mode-realistic");
+    await page.getByLabel("Style", { exact: true }).selectOption("seed-preset-mode-realistic");
     await backgroundSelect.selectOption("seed-preset-background-studio");
     await page.getByTestId("my-presets").getByLabel("Preset name").fill(presetLabel);
     await page.getByTestId("my-presets").getByRole("button", { name: "Save" }).click();
@@ -4924,7 +4924,7 @@ test("generator user-preset round-trip and bulk media route are wired", async ({
     await expect(page.getByText(`Applied preset "${presetLabel}".`)).toBeVisible({
       timeout: 10_000,
     });
-    await expect(page.getByLabel("Mode preset")).toHaveValue("seed-preset-mode-realistic");
+    await expect(page.getByLabel("Style", { exact: true })).toHaveValue("seed-preset-mode-realistic");
     await expect(page.getByLabel("Background")).toHaveValue("seed-preset-background-studio");
 
     const list = await ctx.get("/api/v1/generation/presets?scope=user");

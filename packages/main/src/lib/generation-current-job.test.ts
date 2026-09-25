@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { readCurrentGenerationJob, saveCurrentGenerationJob } from "./generation-current-job";
+import { clearCurrentGenerationJob, readCurrentGenerationJob, saveCurrentGenerationJob } from "./generation-current-job";
 
 function tabStorage() {
   const data = new Map<string, string>();
@@ -29,5 +29,16 @@ describe("the current generation request", () => {
       setItem: () => { throw new Error("quota exceeded"); } };
     expect(readCurrentGenerationJob(storage, "owner-a")).toBeNull();
     expect(() => saveCurrentGenerationJob(storage, "owner-a", "job")).not.toThrow();
+    expect(() => clearCurrentGenerationJob({ removeItem: () => { throw new Error("storage disabled"); } })).not.toThrow();
+  });
+
+  it("forgets a job once it is cleared", () => {
+    const data = new Map<string, string>();
+    const storage = { getItem: (key: string) => data.get(key) ?? null,
+      setItem: (key: string, value: string) => { data.set(key, value); },
+      removeItem: (key: string) => { data.delete(key); } };
+    saveCurrentGenerationJob(storage, "owner-a", "gone-job");
+    clearCurrentGenerationJob(storage);
+    expect(readCurrentGenerationJob(storage, "owner-a")).toBeNull();
   });
 });
