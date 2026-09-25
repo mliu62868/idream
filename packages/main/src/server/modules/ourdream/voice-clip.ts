@@ -247,7 +247,6 @@ export async function quoteVoiceClip(request: Request, deps: VoiceClipDependenci
     : await deps.entitlementMap(input.user.id);
   if (!accepted) {
     if (!(await featureFlagEnabled("voice_gen"))) throw Errors.forbidden("Voice generation is disabled");
-    if (entitlements.voice_enabled !== true) throw Errors.paymentRequired("Voice playback requires a plan with voice enabled", { entitlement: "voice_enabled" });
     const character = await deps.readableCharacter(input.body.characterId, input.user.id);
     if (character.age < 18) throw Errors.badRequest("Character is not eligible for voice", { policyCode: "UNDERAGE" });
   }
@@ -294,12 +293,13 @@ export async function createVoiceClip(request: Request, deps: VoiceClipDependenc
   const entitlements = acceptedBilling
     ? { voice_enabled: true, voice_minutes: acceptedBilling.allowanceMinutes }
     : await deps.entitlementMap(user.id);
-  if (!previouslyDelivered && entitlements.voice_enabled !== true) {
-    if (prewarming) return ok(voicePrewarmSkipped(body.messageId, "not_entitled"));
-    throw Errors.paymentRequired(
-      "Voice playback requires a plan with voice enabled",
-      { entitlement: "voice_enabled" },
-    );
+  // SPEC: a reader without a voice plan may still press Play. They have no
+  //   minutes, so every clip is quoted and paid in Dreamcoins (signup bonus
+  //   included), and it uses the cheapest voice route (see voiceAuthority).
+  // INTENT: automatic prewarm stays plan-only; for them it would be synthesis
+  //   nobody asked to pay for.
+  if (!previouslyDelivered && entitlements.voice_enabled !== true && prewarming) {
+    return ok(voicePrewarmSkipped(body.messageId, "not_entitled"));
   }
 
   const character = await deps.readableCharacter(body.characterId, user.id);
@@ -361,8 +361,11 @@ export async function createVoiceClip(request: Request, deps: VoiceClipDependenc
     });
   }
 
+  // A retry of an existing request keeps its pinned provider payload (see
+  // claimVoiceRequest), so this choice is made once, on the first Play.
   const voiceAuthority = await resolveCharacterVoiceAuthority({
     characterId: character.id,
+    systemDefaultOnly: entitlements.voice_enabled !== true,
   });
   const proposedProviderPayload = pinnedVoiceProviderPayloadSchema.parse({
     providerKey: voiceAuthority.providerKey,

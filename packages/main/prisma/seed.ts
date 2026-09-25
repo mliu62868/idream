@@ -846,7 +846,7 @@ async function seedAdminControlPlane() {
       enabled: true,
       rolloutPercent: 100,
       targetRoles: [],
-      targetPlans: ["premium", "deluxe"],
+      targetPlans: ["free", "premium", "deluxe"],
       hardPolicy: false,
     },
   });

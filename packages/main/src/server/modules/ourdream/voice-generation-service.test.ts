@@ -1156,19 +1156,43 @@ describe("voice generation service contract", () => {
     }
   });
 
-  it("requires the voice_enabled entitlement", async () => {
-    const userId = `${P}nogate-user`;
+  it("lets a reader without a voice plan pay per clip with the standard voice, never the Character clone", async () => {
+    const userId = `${P}free-voice-user`;
+    const referenceAssetId = `${P}free-voice-reference`;
+    const providerVoiceId = `${P}free-voice-clone`;
     await createUser({ id: userId });
     await grantCoins(userId, 100, "seed");
+    await prisma.mediaAsset.create({ data: {
+      id: referenceAssetId, ownerId: SYS, characterId: CHAR, type: "audio", url: `/api/v1/media/${referenceAssetId}/content`,
+      contentType: "audio/wav", visibility: "private", safetyStatus: "passed", metadata: {},
+    } });
+    await prisma.characterVoiceProfile.create({ data: {
+      characterId: CHAR, version: 1, provider: "pocket_tts", providerVoiceId, model: "pocket-tts", language: "english",
+      status: "active", referenceAssetId, sampleText: "The Character's own voice", createdById: SYS,
+    } });
+    await prisma.character.update({ where: { id: CHAR }, data: { voiceId: providerVoiceId } });
+    const price = (await prisma.pricingRule.findFirstOrThrow({ where: { mode: "voice", status: "active" } })).baseCost;
+    try {
+      const prewarm = await api("POST", "generation/voice", {
+        userId, ageGate: true, body: { characterId: CHAR, messageId: `${P}msg-free-prewarm`, text: "Nobody pressed Play", intent: "prewarm" },
+      });
+      expectOk(prewarm, 200);
+      expect(prewarm.data).toMatchObject({ reason: "not_entitled" });
+      expect(await dreamcoinBalance(userId)).toBe(100);
 
-    const res = await api("POST", "generation/voice", {
-      userId,
-      ageGate: true,
-      body: { characterId: CHAR, messageId: `${P}msg-2`, text: "No voice for you" },
-    });
-    expectError(res, 402, "payment_required");
-    expect(await dreamcoinBalance(userId)).toBe(100);
-    expect(await prisma.mediaAsset.count({ where: { ownerId: userId, type: "voice" } })).toBe(0);
+      const played = await api("POST", "generation/voice", {
+        userId, ageGate: true, body: { characterId: CHAR, messageId: `${P}msg-2`, text: "Voice for a free reader" },
+      });
+      expectOk(played, 201);
+      expect(await dreamcoinBalance(userId)).toBe(100 - price);
+      expect((await prisma.voiceClipRequest.findUniqueOrThrow({
+        where: { userId_messageId: { userId, messageId: `${P}msg-2` } }, select: { providerPayload: true },
+      })).providerPayload).toMatchObject({ voiceAuthority: "system_default", characterVoiceProfileVersion: null });
+    } finally {
+      await prisma.character.update({ where: { id: CHAR }, data: { voiceId: null } });
+      await prisma.characterVoiceProfile.deleteMany({ where: { providerVoiceId } });
+      await prisma.mediaAsset.deleteMany({ where: { id: referenceAssetId } });
+    }
   });
 
   it("rejects when the wallet cannot cover the clip", async () => {

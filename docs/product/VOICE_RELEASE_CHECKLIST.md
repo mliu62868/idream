@@ -120,7 +120,7 @@ and §29 below). This checklist covers the remaining steps to reach a
 
 | Knob | Where | Default |
 | --- | --- | --- |
-| Voice on/off, rollout, target plans | `voice_gen` feature flag (admin) | enabled, premium+deluxe |
+| Voice on/off, rollout, target plans | `voice_gen` feature flag (admin) | enabled, free+premium+deluxe (free: per-clip coins, system default voice only, no prewarm) |
 | Overflow price per clip | `PricingRule` mode `voice` (admin) | 2 Dreamcoins |
 | Free minutes per plan | plan `voiceMinutes` feature | 30 / 120 / 360 / 1440 |
 | Default delivery model | `POCKET_TTS_MODEL` | `pocket-tts` |

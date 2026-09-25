@@ -67,7 +67,9 @@ export async function getVoiceDefaultSettings(): Promise<VoiceDefaultSettings> {
 
 // A permission read may predate an Admin activation. Resolve the pointer,
 // profile and defaults from one database snapshot, never from caller-held fields.
-export async function resolveCharacterVoiceAuthority(input: { characterId: string }) {
+// systemDefaultOnly: the reader has no voice plan, so they hear the cheapest
+// route — the system default voice for the Character's gender, never a clone.
+export async function resolveCharacterVoiceAuthority(input: { characterId: string; systemDefaultOnly?: boolean }) {
   return prisma.$transaction(async (tx) => {
     const character = await tx.character.findFirst({
         where: { id: input.characterId, deletedAt: null },
@@ -100,7 +102,7 @@ export async function resolveCharacterVoiceAuthority(input: { characterId: strin
       activeProfile,
       systemDefaults: defaults,
     };
-    if (activeProfile) {
+    if (activeProfile && !input.systemDefaultOnly) {
       return {
         ...workspace,
         providerKey: activeProfile.provider,

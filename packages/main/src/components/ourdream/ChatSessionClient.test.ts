@@ -4,7 +4,6 @@ import {
   chatAttachmentCostLabel,
   chatUpgradeLinkLabel,
   chatViewPinAfterScroll,
-  voicePaymentRequiredReason,
 } from "./ChatSessionClient";
 
 const streamingReply = {
@@ -19,21 +18,7 @@ describe("chat upgrade reason", () => {
     expect(chatUpgradeLinkLabel("messages")).toBe(
       "Upgrade for unlimited messages",
     );
-    expect(chatUpgradeLinkLabel("voice")).toBe("Upgrade for voice access");
     expect(chatUpgradeLinkLabel("dreamcoins")).toBe("Get more dreamcoins");
-  });
-
-  it("distinguishes a missing voice plan from exhausted paid usage", () => {
-    expect(
-      voicePaymentRequiredReason({
-        error: { details: { entitlement: "voice_enabled" } },
-      }),
-    ).toBe("not_entitled");
-    expect(
-      voicePaymentRequiredReason({
-        error: { details: { cost: 12, required: 12 } },
-      }),
-    ).toBe("insufficient_balance");
   });
 });
 

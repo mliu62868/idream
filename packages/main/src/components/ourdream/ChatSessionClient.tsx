@@ -76,7 +76,7 @@ import {
 import { GroupSpeakerControls, mentionedGroupCharacter } from "./chat/GroupSpeakerControls";
 
 type ChatLoadState = "loading" | "ready" | "signed-out" | "error";
-type ChatUpgradeReason = "dreamcoins" | "messages" | "voice";
+type ChatUpgradeReason = "dreamcoins" | "messages";
 
 type VoiceClipRequestResult = {
   url: string | null;
@@ -87,7 +87,6 @@ type VoiceClipRequestResult = {
     | "disabled"
     | "failed"
     | "insufficient_balance"
-    | "not_entitled"
     | "confirmation_required"
     | null;
 };
@@ -110,18 +109,8 @@ type LocalStreamState = {
 };
 
 export function chatUpgradeLinkLabel(reason: ChatUpgradeReason) {
-  if (reason === "voice") return "Upgrade for voice access";
   if (reason === "dreamcoins") return "Get more dreamcoins";
   return "Upgrade for unlimited messages";
-}
-
-export function voicePaymentRequiredReason(payload: unknown) {
-  const details = (
-    payload as { error?: { details?: { entitlement?: unknown } } }
-  )?.error?.details;
-  return details?.entitlement === "voice_enabled"
-    ? ("not_entitled" as const)
-    : ("insufficient_balance" as const);
 }
 
 function upgradeHrefForChatSession(sessionId: string, groupMode = false) {
@@ -593,7 +582,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
           });
           const payload = await quoted.json().catch(() => null);
           if (!receiptContext.isCurrent()) return { url: null, reason: "failed" };
-          if (quoted.status === 402) return { url: null, reason: voicePaymentRequiredReason(payload) };
+          if (quoted.status === 402) return { url: null, reason: "insufficient_balance" };
           if (!quoted.ok) return { url: null, reason: "failed", errorMessage: chatFailureCopy(payload, "Voice price could not load. Press Play to check again.") };
           const quote = voiceClipQuoteSchema.parse(payload?.data?.quote);
           if (!quote.accepted && !quote.alreadyDelivered) {
@@ -607,15 +596,12 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
           headers,
           body: JSON.stringify({ ...body, quoteToken: acceptedQuoteToken }),
         });
-        if (response.status === 402) {
-          const payload = await response.json().catch(() => null);
-          return { url: null, reason: voicePaymentRequiredReason(payload) };
-        }
+        if (response.status === 402) return { url: null, reason: "insufficient_balance" };
         if (!response.ok) return { url: null, reason: "failed", errorMessage: chatFailureCopy(await response.json().catch(() => null), "Voice playback could not be confirmed. Press Play to check the original request.") };
         const payload = (await response.json()) as {
           data?: {
             contentUrl?: string;
-            reason?: "allowance_exhausted" | "disabled" | "not_entitled";
+            reason?: "allowance_exhausted" | "disabled";
           };
         };
         if (!receiptContext.isCurrent()) return { url: null, reason: "failed" };
@@ -663,11 +649,6 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
       if (playbackIntent !== voicePlaybackIntentRef.current) return;
       if (result.reason === "confirmation_required" && result.quote) {
         setVoiceConfirmation({ messageId, text, quote: result.quote });
-        return;
-      }
-      if (result.reason === "not_entitled") {
-        setUpgradeReason("voice");
-        setStatus("Voice playback needs a plan with voice enabled.");
         return;
       }
       if (result.reason === "insufficient_balance") {
@@ -1744,7 +1725,9 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
                           <p className="font-semibold">{voiceConfirmation.quote.maxCostDreamcoins === 0
                             ? "Play using your included voice minutes · no coin charge"
                             : `Play voice · up to ${voiceConfirmation.quote.maxCostDreamcoins} Dreamcoins`}</p>
-                          <p className="mt-1 text-white/80">Included minutes are used first. If they do not cover this clip, the charge will not exceed this amount. Your balance: {voiceConfirmation.quote.balance} coins.</p>
+                          <p className="mt-1 text-white/80">{voiceConfirmation.quote.allowanceMinutes > 0
+                            ? "Included minutes are used first. If they do not cover this clip, the charge will not exceed this amount."
+                            : "Paid per clip with the standard voice. Premium adds monthly voice minutes and the Character's own voice."} Your balance: {voiceConfirmation.quote.balance} coins.</p>
                           <div className="mt-3 flex flex-wrap gap-2">
                             <button type="button" data-testid="chat-confirm-voice" className="min-h-11 rounded-full bg-white px-4 py-2 font-bold text-[rgb(13,13,13)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
                               onClick={() => void playMessage(voiceConfirmation.messageId, voiceConfirmation.text, voiceConfirmation.quote.quoteToken!)}>Confirm and play</button>
