@@ -42,7 +42,8 @@ const listSelect = {
   createdAt: true,
   // Explore 挂牌资格要看这三项：官方角色只有 live 且发布版本已发布时才能改挂牌。
   source: true,
-  serving: { select: { state: true, currentRelease: { select: { status: true } } } },
+  // version 随行下发：官方角色改挂牌要带 entityVersion 做乐观锁，列表不给就只能 409。
+  serving: { select: { state: true, version: true, currentRelease: { select: { status: true } } } },
   imageAsset: { select: { id: true, url: true, thumbnailUrl: true } },
   visualProfiles: {
     where: { status: "active" },
@@ -174,6 +175,7 @@ function contentCharacterListItem(row: ListRow): ContentCharacterListItem {
     status: row.status,
     visibility: row.visibility,
     creatorId: row.creatorId,
+    source: row.source,
     createdAt: row.createdAt.toISOString(),
     imageAsset: row.imageAsset
       ? {
@@ -185,6 +187,7 @@ function contentCharacterListItem(row: ListRow): ContentCharacterListItem {
     visualProfile: visualProfile ?? null,
     stats: row.stats ?? null,
     servingState: row.serving?.state ?? null,
+    servingVersion: row.serving?.version ?? null,
     exploreListing: exploreListingEligibility({
       id: row.id,
       source: row.source,

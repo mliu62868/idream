@@ -73,6 +73,8 @@ export const contentCharacterListItemSchema = z.object({
   status: shortText(40),
   visibility: shortText(40),
   creatorId: adminIdSchema.nullable(),
+  // 官方角色的状态 / 可见性归 Release 与 Serving 管，前端据此禁用「移除」。
+  source: shortText(40),
   createdAt: adminIsoDateTimeSchema,
   imageAsset: contentCharacterImageSchema.nullable(),
   visualProfile: contentCharacterVisualSummarySchema.nullable(),
@@ -82,6 +84,8 @@ export const contentCharacterListItemSchema = z.object({
   //         显示「已暂停」、在这张表的状态列显示「已归档」——同一件事两个词，运营会以为
   //         有人把它归档了。把 Serving 状态一起下发，状态列旁边就能说清楚它到底停在哪一步。
   servingState: shortText(40).nullable(),
+  // SPEC: 官方角色改 Explore 挂牌时要回传的 entityVersion（Serving 乐观锁）。
+  servingVersion: z.number().int().nullable(),
   exploreListing: contentCharacterExploreListingSchema,
 }).strict();
 

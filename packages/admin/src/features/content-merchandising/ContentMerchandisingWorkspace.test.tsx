@@ -137,6 +137,71 @@ describe("Content merchandising takedown targets", () => {
   });
 });
 
+describe("Content merchandising official rows", () => {
+  const officialLive = {
+    id: "official-1",
+    name: "Official",
+    visibility: "public",
+    status: "approved",
+    source: "official",
+    servingState: "live",
+    servingVersion: 7,
+    exploreListing: {
+      canUnlist: true,
+      canMakePrivate: false,
+      blockedReason: "private_needs_serving_command",
+      repairDeepLink: "/admin/characters/official-1?tab=release",
+    },
+  };
+
+  // SPEC: 官方角色改挂牌要回传 Serving 版本，否则服务端 entityVersion 校验必回 409。
+  it("sends the serving version with an official unlist", () => {
+    const issued: unknown[][] = [];
+    const row = characterTableRow(officialLive, true, (...args) => issued.push(args));
+    const unlist = buttons(row.cells.at(-1)).find((button) =>
+      JSON.stringify(button.props.children).includes("Unlist"),
+    );
+    unlist?.props.onClick();
+    expect(issued).toEqual([["official-1", "visibility", "unlisted", 7]]);
+  });
+
+  // SPEC: 官方角色的 status 归 Release / Serving 管，「移除」必 409 —— 点之前就禁用并给出去处。
+  it("disables Remove on an official row and links to its release", () => {
+    const row = characterTableRow(officialLive, true, () => undefined);
+    const html = renderToStaticMarkup(<div>{row.cells.at(-1)}</div>);
+    const remove = buttons(row.cells.at(-1)).find((button) =>
+      JSON.stringify(button.props.children).includes("Remove"),
+    );
+    expect(remove?.props.disabled).toBe(true);
+    expect(html).toContain("An official Character is taken down through its release, not removed here.");
+    expect(html).toContain('href="/admin/characters/official-1?tab=release"');
+  });
+
+  it("keeps Remove available for a user character", () => {
+    const row = characterTableRow(
+      { ...officialLive, source: "user", exploreListing: { canUnlist: true, canMakePrivate: true, blockedReason: null, repairDeepLink: null } },
+      true,
+      () => undefined,
+    );
+    const remove = buttons(row.cells.at(-1)).find((button) =>
+      JSON.stringify(button.props.children).includes("Remove"),
+    );
+    expect(remove?.props.disabled).toBe(false);
+  });
+});
+
+type ButtonElement = { type: unknown; props: { children?: unknown; disabled?: boolean; onClick: () => void } };
+
+function buttons(node: unknown): ButtonElement[] {
+  if (Array.isArray(node)) return node.flatMap(buttons);
+  if (!node || typeof node !== "object" || !("props" in node)) return [];
+  const element = node as ButtonElement;
+  return [
+    ...(element.type === "button" ? [element] : []),
+    ...buttons(element.props.children),
+  ];
+}
+
 describe("Content merchandising permissions", () => {
   it("renders independent authority freshness and read-only state", () => {
     const html = renderToStaticMarkup(

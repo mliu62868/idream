@@ -186,6 +186,29 @@ describe("content merchandising commands", () => {
     ).resolves.toBe(0);
   });
 
+  // SPEC: 列表行带 source 与 Serving 版本 —— 前端据此禁用官方「移除」、为改挂牌回传 entityVersion。
+  it("lists the source and serving version needed by row commands", async () => {
+    const characterId = `${P}list-official`;
+    await createCharacter({
+      id: characterId,
+      creatorId: actorId,
+      source: "official",
+      name: `${P}list-official`,
+      visibility: "public",
+      status: "approved",
+    });
+    await prisma.characterServing.create({ data: { characterId, version: 3 } });
+
+    const listed = await adminV2Api("GET", `/api/v2/admin/content/characters?search=${P}list-official`, {
+      userId: actorId,
+      role: "admin",
+    });
+    expectOk(listed);
+    expect(listed.data.items).toEqual([
+      expect.objectContaining({ id: characterId, source: "official", servingVersion: 3 }),
+    ]);
+  });
+
   it("attaches curated tags to a character, including official ones", async () => {
     // SPEC: 分类法链路此前缺「挂载」这一环——标签只能随创建写一次，且唯一入口没有前端。
     // INTENT: 官方角色恰恰是需要打标签的那批（16 个目录角色都是 official），所以这条命令
