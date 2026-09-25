@@ -25,6 +25,7 @@ export function ExploreWorkspace() {
   const [availableCategories, setAvailableCategories] = useState<readonly string[]>(["All"]);
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState("for-you");
+  const [period, setPeriod] = useState("month");
   const [gender, setGender] = useState("female");
   const [style, setStyle] = useState("any");
   const [age, setAge] = useState("any");
@@ -42,6 +43,7 @@ export function ExploreWorkspace() {
 
   const params = useMemo(() => {
     const next = new URLSearchParams({ sort, limit: String(limit) });
+    if (sort === "popular") next.set("period", period);
     if (debouncedQuery.trim()) next.set("q", debouncedQuery.trim());
     if (activeCategory !== "All") next.set("tags", categoryParam(activeCategory));
     if (gender !== "any") next.set("gender", gender);
@@ -56,7 +58,7 @@ export function ExploreWorkspace() {
     }
     if (age === "35+") next.set("age_min", "35");
     return next;
-  }, [activeCategory, age, debouncedQuery, gender, limit, sort, style]);
+  }, [activeCategory, age, debouncedQuery, gender, limit, period, sort, style]);
 
   const loadCharacters = useCallback(
     async (cursor?: string) => {
@@ -115,6 +117,7 @@ export function ExploreWorkspace() {
       setQuery(initial.query);
       setDebouncedQuery(initial.query);
       setSort(initial.sort);
+      setPeriod(initial.period);
       setGender(initial.gender);
       setStyle(initial.style);
       setAge(initial.age);
@@ -181,6 +184,7 @@ export function ExploreWorkspace() {
     const urlParams = new URLSearchParams();
     if (debouncedQuery.trim()) urlParams.set("q", debouncedQuery.trim());
     if (sort !== "for-you") urlParams.set("sort", sort);
+    if (sort === "popular" && period !== "month") urlParams.set("period", period);
     if (gender !== "female") urlParams.set("gender", gender);
     if (style !== "any") urlParams.set("style", style);
     if (activeCategory !== "All") urlParams.set("tags", categoryParam(activeCategory));
@@ -200,7 +204,7 @@ export function ExploreWorkspace() {
     if (`${window.location.pathname}${window.location.search}` !== nextUrl) {
       window.history.replaceState(null, "", nextUrl);
     }
-  }, [activeCategory, age, debouncedQuery, gender, initialized, limit, sort, style]);
+  }, [activeCategory, age, debouncedQuery, gender, initialized, limit, period, sort, style]);
 
   const emptyState =
     sort === "following"
@@ -228,9 +232,11 @@ export function ExploreWorkspace() {
         onAgeChange={setAge}
         onGenderChange={setGender}
         onQueryChange={setQuery}
+        onPeriodChange={setPeriod}
         onSortChange={setSort}
         onStyleChange={setStyle}
         query={query}
+        period={period}
         sort={sort}
         style={style}
       />
@@ -271,6 +277,7 @@ function parseExploreSearchParams(search: string) {
     gender: enumParam(params.get("gender"), GENDER_FILTER_VALUES, "female"),
     limit: clampLimit(params.get("limit")),
     query: params.get("q") ?? "",
+    period: enumParam(params.get("period"), ["week", "month", "all"], "month"),
     sort: enumParam(params.get("sort"), ["for-you", "popular", "newest", "following"], "for-you"),
     style: enumParam(params.get("style"), CHARACTER_STYLE_FILTER_VALUES, "any"),
   };

@@ -214,6 +214,51 @@ describe("explore: search, filter, sort, pagination", () => {
     expect(ids).toEqual([`${P}c-alpha`, `${P}c-beta`, `${P}c-gamma`]);
   });
 
+  // SPEC (EX-02): "Popular · Month" means chats started and likes given in the
+  // last 30 days; old cumulative heat must not outrank recent heat. period=all
+  // is the cumulative order. For You without a signal serves the default Popular.
+  it("ranks popular by the selected window and keeps cumulative for all time", async () => {
+    const WINDOW = "ZZQWINDOW";
+    const daysAgo = (days: number) => new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    await seedChar({ id: `${P}w-old`, name: `${WINDOW} Old`, creatorId: sys, chats: 500 });
+    await seedChar({ id: `${P}w-mid`, name: `${WINDOW} Mid`, creatorId: sys, chats: 50 });
+    await seedChar({ id: `${P}w-fresh`, name: `${WINDOW} Fresh`, creatorId: sys, chats: 5 });
+    for (const n of [1, 2, 3]) {
+      await createUser({ id: `${P}w-fan-${n}` });
+      // Old heat: three chats and a like, all 60 days ago.
+      await prisma.recentChat.create({ data: {
+        sessionId: `${P}w-old-${n}`, userId: `${P}w-fan-${n}`, characterId: `${P}w-old`, createdAt: daysAgo(60),
+      } });
+    }
+    await prisma.characterLike.create({ data: { userId: `${P}w-fan-1`, characterId: `${P}w-old`, createdAt: daysAgo(60) } });
+    // In the month but not the week.
+    await prisma.recentChat.create({ data: {
+      sessionId: `${P}w-mid-1`, userId: `${P}w-fan-1`, characterId: `${P}w-mid`, createdAt: daysAgo(20),
+    } });
+    // In the week: a like only.
+    await prisma.characterLike.create({ data: { userId: `${P}w-fan-2`, characterId: `${P}w-fresh`, createdAt: daysAgo(2) } });
+
+    const list = async (query: Record<string, string | number>) => {
+      const res = await api("GET", "characters", { ageGate: true, query: { q: WINDOW, limit: 28, ...query } });
+      expectOk(res);
+      return (res.data.items as Array<{ id: string }>).map((c) => c.id);
+    };
+    const month = [`${P}w-mid`, `${P}w-fresh`, `${P}w-old`];
+    expect(await list({ sort: "popular", period: "month" })).toEqual(month);
+    expect(await list({ sort: "popular" })).toEqual(month);
+    // Nothing chatted this week, so likes decide first and cumulative breaks the tie.
+    expect(await list({ sort: "popular", period: "week" })).toEqual([`${P}w-fresh`, `${P}w-old`, `${P}w-mid`]);
+    expect(await list({ sort: "popular", period: "all" })).toEqual([`${P}w-old`, `${P}w-mid`, `${P}w-fresh`]);
+    expect(await list({ sort: "for-you" })).toEqual(month);
+
+    const first = await api("GET", "characters", { ageGate: true, query: { q: WINDOW, sort: "popular", limit: 2 } });
+    const second = await api("GET", "characters", {
+      ageGate: true, query: { q: WINDOW, sort: "popular", limit: 2, cursor: first.data.nextCursor },
+    });
+    const ids = (res: typeof first) => (res.data.items as Array<{ id: string }>).map((c) => c.id);
+    expect([...ids(first), ...ids(second)]).toEqual(month);
+  });
+
   it("sorts by newest (createdAt desc)", async () => {
     const res = await api("GET", "characters", {
       ageGate: true,

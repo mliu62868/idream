@@ -12,6 +12,7 @@ import {
   Plus,
   RefreshCw,
   Scale,
+  Search,
   Send,
   Sparkles,
   ThumbsUp,
@@ -56,6 +57,7 @@ import {
 import { fetchViewerScope } from "./viewer-auth";
 import { isRecord } from "./workspace-helpers";
 import { HelpDeskConversation } from "./HelpDeskConversation";
+import { filterHelpTopics, type HelpTopic } from "./help-articles";
 import { REASON_LABELS } from "./ReportDialog";
 import { CONTENT_REPORT_REASONS } from "@idream/shared/contracts";
 
@@ -192,29 +194,6 @@ const INITIAL_APPEAL_DRAFT: AppealDraft = {
   decisionId: "",
   text: "",
 };
-
-const faqs = [
-  {
-    question: "I cannot start chat or generation.",
-    answer:
-      "Check that the age gate is accepted and that you are signed in. Generation requires enough dreamcoins and an available model; plan entitlements may control access to specific models.",
-  },
-  {
-    question: "Where can I see billing and access?",
-    answer:
-      "Open Profile → Billing & access to see your current plan, balance, and benefits end date. Current purchases are prepaid for one selected period and do not renew automatically.",
-  },
-  {
-    question: "How do I report a character or media item?",
-    answer:
-      "Use the Report action on the character, feed item, community card, or generated media. Those reports go to the moderation queue.",
-  },
-  {
-    question: "Can support inspect my account context?",
-    answer:
-      "Only attach diagnostics when you want the team to use account, browser, and recent workflow metadata to debug your issue.",
-  },
-] as const;
 
 const roadmapItems = [
   {
@@ -864,8 +843,9 @@ export function HelpDeskWorkspace() {
         </div>
 
         <form
-          className="rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-5"
+          className="scroll-mt-20 rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-5"
           data-testid="helpdesk-form"
+          id="support-request"
           onSubmit={submitRequest}
         >
           <div className="flex items-start justify-between gap-4">
@@ -1065,26 +1045,14 @@ export function HelpDeskWorkspace() {
       </section>
 
       <section className="mt-10 grid gap-4 lg:grid-cols-[minmax(0,1fr)_420px]">
-        <div>
-          <h2 className="text-[24px] font-black uppercase leading-7 text-white">
-            FAQ
-          </h2>
-          <div className="mt-4 grid gap-3">
-            {faqs.map((item) => (
-              <article
-                className="rounded-[12px] border border-white/10 bg-[rgb(18,18,18)] p-5"
-                key={item.question}
-              >
-                <h3 className="text-[17px] font-black leading-6 text-white">
-                  {item.question}
-                </h3>
-                <p className="mt-3 text-[13px] font-medium leading-6 text-[rgb(170,170,170)]">
-                  {item.answer}
-                </p>
-              </article>
-            ))}
-          </div>
-        </div>
+        <HelpArticles
+          onStillStuck={(topic) => {
+            setSupportDraftField("category", topic.supportCategory);
+            const form = document.getElementById("support-request");
+            form?.scrollIntoView({ block: "start" });
+            form?.querySelector<HTMLInputElement>('[name="subject"]')?.focus();
+          }}
+        />
 
         <div>
           <div className="flex items-center justify-between gap-4">
@@ -1302,6 +1270,79 @@ export function HelpDeskWorkspace() {
           </div>
         </div>
       </section>
+    </div>
+  );
+}
+
+function HelpArticles({ onStillStuck }: Readonly<{ onStillStuck: (topic: HelpTopic) => void }>) {
+  const [query, setQuery] = useState("");
+  const topics = filterHelpTopics(query);
+  const filtering = query.trim().length > 0;
+  return (
+    <div data-testid="help-articles">
+      <h2 className="text-[24px] font-black uppercase leading-7 text-white">
+        Help articles
+      </h2>
+      <label className="mt-4 flex h-10 items-center gap-2 rounded-full bg-[rgb(36,36,36)] px-4 text-[13px] text-[rgb(170,170,170)] focus-within:ring-2 focus-within:ring-white/50">
+        <Search aria-hidden="true" className="h-4 w-4 shrink-0" />
+        <input
+          aria-label="Search help articles"
+          className="min-w-0 flex-1 bg-transparent text-white outline-none placeholder:text-[rgb(114,113,112)]"
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Try 'password', 'refund' or 'memory'"
+          value={query}
+        />
+      </label>
+      {topics.length === 0 ? (
+        <div className="mt-4 rounded-[12px] border border-white/10 bg-[rgb(18,18,18)] p-5 text-[13px] font-medium leading-6 text-[rgb(170,170,170)]">
+          No article matches &ldquo;{query.trim()}&rdquo;.{" "}
+          <a className="font-bold text-white underline" href="#support-request">
+            Submit an issue
+          </a>{" "}
+          and we&apos;ll look into it.
+        </div>
+      ) : null}
+      {topics.map((topic) => (
+        <section aria-label={topic.title} className="mt-6" key={topic.id}>
+          <h3 className="text-[13px] font-black uppercase leading-4 text-[rgb(253,95,194)]">
+            {topic.title}
+          </h3>
+          <div className="mt-3 grid gap-2">
+            {topic.articles.map((article) => (
+              <details
+                className="group rounded-[12px] border border-white/10 bg-[rgb(18,18,18)] px-5 py-4"
+                // Remount when filtering starts or stops so matches open and the full list closes.
+                key={`${article.id}:${filtering}`}
+                open={filtering || undefined}
+              >
+                <summary className="cursor-pointer list-none text-[15px] font-black leading-6 text-white">
+                  {article.question}
+                </summary>
+                <p className="mt-3 text-[13px] font-medium leading-6 text-[rgb(170,170,170)]">
+                  {article.answer}
+                </p>
+                {article.links.length > 0 ? (
+                  <p className="mt-3 flex flex-wrap gap-3 text-[13px] font-bold">
+                    {article.links.map((link) => (
+                      <Link className="inline-flex items-center gap-1 text-white underline underline-offset-4" href={link.href} key={link.href}>
+                        {link.label}
+                        <ArrowRight aria-hidden="true" className="h-3.5 w-3.5" />
+                      </Link>
+                    ))}
+                  </p>
+                ) : null}
+              </details>
+            ))}
+          </div>
+          <button
+            className="mt-2 text-[12px] font-bold text-[rgb(170,170,170)] underline underline-offset-4 hover:text-white"
+            onClick={() => onStillStuck(topic)}
+            type="button"
+          >
+            Still stuck? Contact support about {topic.title.toLowerCase()}
+          </button>
+        </section>
+      ))}
     </div>
   );
 }
