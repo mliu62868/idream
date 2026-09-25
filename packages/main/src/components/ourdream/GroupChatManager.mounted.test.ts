@@ -93,4 +93,24 @@ describe("GroupChatManager add members", () => {
     expect(container.textContent).toContain("Ava · Bea · Cleo");
     expect(button("Create group chat")).toBeTruthy();
   });
+
+  it("keeps the new-group picks when the owner opens and cancels Add character", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: RequestInfo | URL) => {
+      const path = String(url);
+      if (path === "/api/v1/me") return envelope({ user: { id: "owner", email: "owner@example.test", displayName: "owner", image: null }, ageGate: { accepted: true } });
+      if (path.startsWith("/api/v1/chat/groups/candidates")) return Response.json({ items: [
+        { id: "a", name: "Ava", description: "", owned: true }, { id: "c", name: "Cleo", description: "", owned: false },
+      ], nextCursor: null });
+      return Response.json({ ownerScope: "user:owner", groups: [{ id: "group-1", title: "Trio", status: "active", members: [{ characterId: "b", sessionId: "sb", name: "Bea" }] }] });
+    }));
+    await act(async () => root.render(createElement(GroupChatManager)));
+    await until(() => Boolean(button("Add character")));
+    const option = (name: string) => [...container.querySelectorAll("label")].find(label => label.textContent?.startsWith(name))!.querySelector("input")!;
+    await until(() => Boolean([...container.querySelectorAll("label")].find(label => label.textContent?.startsWith("Cleo"))));
+    await act(async () => option("Cleo").click());
+    await act(async () => button("Add character").click());
+    expect(option("Cleo").checked).toBe(false);
+    await act(async () => button("Cancel").click());
+    expect(option("Cleo").checked).toBe(true);
+  });
 });

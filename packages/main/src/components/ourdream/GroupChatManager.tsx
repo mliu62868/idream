@@ -58,6 +58,7 @@ function GroupChats({ viewer }: { viewer: ViewerGate }) {
   const [status, setStatus] = useState("");
   // The picker serves either the new group or an existing group gaining members.
   const [adding, setAdding] = useState<Group | null>(null);
+  const createDraftRef = useRef<Candidate[]>([]);
   const pickerRef = useRef<HTMLElement>(null);
 
   const groups = useViewerResource({
@@ -124,8 +125,10 @@ function GroupChats({ viewer }: { viewer: ViewerGate }) {
     finally { setPending(false); }
   }
 
+  // The picker is shared with group creation; keep that draft while adding.
   function startAdding(group: Group | null) {
-    setAdding(group); setSelected([]); setStatus("");
+    if (group && !adding) createDraftRef.current = selected;
+    setAdding(group); setSelected(group ? [] : createDraftRef.current); setStatus("");
     if (group) pickerRef.current?.scrollIntoView?.({ block: "start" });
   }
 
@@ -139,7 +142,7 @@ function GroupChats({ viewer }: { viewer: ViewerGate }) {
       });
       if (!response.ok) { setStatus(chatFailureCopy(await response.json().catch(() => null), "These Characters could not be added. Check the group and try again.")); return; }
       setStatus(`Added ${selected.map(item => item.name).join(", ")} to ${adding.title}.`);
-      setAdding(null); setSelected([]);
+      setAdding(null); setSelected(createDraftRef.current);
       await groups.refresh();
     } catch { setStatus("The result could not be confirmed. Reload to check the group."); }
     finally { setPending(false); }
