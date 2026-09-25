@@ -91,7 +91,7 @@ describe("truthful public UI states", () => {
       "shadow-[2px_2px_8px_3px_rgba(0,0,0,0.25)] md:block",
     );
     expect(source("CharacterDetailHero.tsx")).toContain(
-      "p-6 lg:inset-y-0 lg:bottom-auto lg:p-12",
+      "p-6 lg:absolute lg:inset-x-0 lg:inset-y-0 lg:mt-0 lg:p-12",
     );
     expect(source("CharacterDetailHero.tsx")).toContain(
       "leading-[0.95] lg:text-[72px]",
