@@ -771,6 +771,8 @@ describe("Character Asset Studio bootstrap route projection", () => {
     await waitUntil(() => adminV2Request.mock.calls.some(([path, options]) => path === "/api/v2/admin/creative/runs" && options?.method === "POST"));
     const request = adminV2Request.mock.calls.find(([path, options]) => path === "/api/v2/admin/creative/runs" && options?.method === "POST")?.[1]?.body;
     expect(request).toMatchObject({ purpose, profileId: "profile-reference-v1", orientation: expected });
+    // A vague brief made the identity-edit route return copies of the reference.
+    expect((request as { brief: string }).brief).toMatch(/alone.*no other people/);
     expect(container.textContent).toContain(`Aspect ratio: ${expected ?? "Default"}`);
   });
 

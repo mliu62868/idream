@@ -127,25 +127,19 @@ export function CharacterAssetStudio({
       nextIncompleteCharacterAssetPurpose(data.journey) ??
       "character_chat",
   );
+  // SPEC: a brief is generation input, not UI copy — it stays English in every
+  //   locale (like the Run title below) and names a concrete framing.
+  // INTENT: the qualified identity route edits the locked reference image. A
+  //   vague brief ("a cinematic hero scene") gave back three near-copies of the
+  //   reference for the three placements; a concrete setting, framing and light
+  //   gives three distinct, on-identity images.
   const [briefs, setBriefs] = useState<Record<CharacterAssetPurpose, string>>(
     () => ({
       character_cover: data.visual.identityBootstrap.allowed
-        ? t(
-            "Create the first definitive portrait of {name} from the approved visual direction. This portrait will define the identity for future images.",
-            { name: subject.name },
-          )
-        : t(
-            "Create a definitive primary portrait of {name}, preserving the locked identity and personality.",
-            { name: subject.name },
-          ),
-      character_hero: t(
-        "Create a cinematic but natural hero scene for {name}, preserving the locked identity and personality.",
-        { name: subject.name },
-      ),
-      character_chat: t(
-        "Create a warm, candid conversational moment with {name}, preserving the locked identity and emotional presence.",
-        { name: subject.name },
-      ),
+        ? `Create the first definitive portrait of ${subject.name} from the approved visual direction. This portrait will define the identity for future images.`
+        : `Head-and-shoulders portrait of ${subject.name} facing the camera, soft even studio light, plain neutral backdrop, relaxed confident smile, sharp focus on the face.`,
+      character_hero: `Full-body shot of ${subject.name} alone in a stylish city apartment at golden hour, warm window light, relaxed confident pose, wide cinematic framing, no other people anywhere in the scene.`,
+      character_chat: `Candid close-up selfie of ${subject.name} alone, curled up on a cozy sofa at home in the evening, warm lamp light, casual comfortable clothes, playful smile at the camera, no other people.`,
     }),
   );
   const [negativePrompts, setNegativePrompts] = useState<

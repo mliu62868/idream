@@ -116,8 +116,6 @@ export const adminZhCharacters: Record<string, string> = {
   "Correct the highlighted fields to continue.": "修正高亮字段后即可继续。",
   "Creating saves a private, inactive draft. It does not publish a Release or change what customers see. Next, establish the portrait identity.":
     "创建后只会保存为私密、停用的草稿，不会发布 Release，也不会改变用户当前看到的内容。下一步是建立肖像身份。",
-  "Create the first definitive portrait of {name} from the approved visual direction. This portrait will define the identity for future images.":
-    "依据已确认的视觉方向，为 {name} 创建第一张定稿肖像；这张肖像将定义后续图片使用的角色身份。",
   "Candidate could not be adopted": "候选身份采用失败",
   "Candidate {number} from run {run}": "第 {run} 次创作的候选图 {number}",
   "Characters with an activated voice keep it. Already generated audio is not replaced.":
@@ -512,16 +510,10 @@ export const adminZhCharacters: Record<string, string> = {
   "Create Character": "创建角色",
   "Create a Character image": "创建角色图片",
   "Create a Character image first": "请先创建角色图片",
-  "Create a cinematic but natural hero scene for {name}, preserving the locked identity and personality.":
-    "为 {name} 创建一个有电影感但自然的角色主视觉场景，保持已锁定的视觉身份与角色气质。",
   "Create a current, sealed visual identity version":
     "创建当前有效且已封存的视觉身份版本",
-  "Create a definitive primary portrait of {name}, preserving the locked identity and personality.":
-    "为 {name} 创建一张明确的主肖像，保持已锁定的视觉身份与角色气质。",
   "Create a reviewed candidate without changing the live voice.":
     "先创建可审核的候选声音，不会直接改变线上声音。",
-  "Create a warm, candid conversational moment with {name}, preserving the locked identity and emotional presence.":
-    "为 {name} 创建一个温暖、自然的聊天瞬间，保持已锁定的视觉身份与情感临场感。",
   "Create and seal a Visual Identity before evaluating an image route.":
     "评测图片路线前，请先创建并封存视觉身份。",
   "Create character template": "创建角色模板",
