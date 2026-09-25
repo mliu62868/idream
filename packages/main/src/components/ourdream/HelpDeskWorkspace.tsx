@@ -1539,8 +1539,15 @@ function reportReasonLabel(value: string) {
   return isCatalogMember(CONTENT_REPORT_REASONS, value) ? REASON_LABELS[value] : "Report";
 }
 
+// 只能被举报、不在申诉目标枚举里的类型；历史列表同样要叫得出名字。
+const reportOnlyTargetTypeLabels: Record<string, string> = {
+  comic: "Comic",
+  media_collection: "Collection",
+};
+
 function targetTypeLabel(value: string) {
-  return isCatalogMember(APPEAL_TARGET_TYPES, value) ? appealTargetTypeLabels[value] : "Content";
+  if (isCatalogMember(APPEAL_TARGET_TYPES, value)) return appealTargetTypeLabels[value];
+  return reportOnlyTargetTypeLabels[value] ?? "Content";
 }
 
 function supportCategoryLabel(value: string) {

@@ -43,6 +43,29 @@ function button(label: string) { return [...container.querySelectorAll("button")
 async function click(target: HTMLButtonElement) { expect(target).toBeTruthy(); await act(async () => target.click()); }
 
 describe("Comic workspace authority and saved order", () => {
+  it("lets a reader report someone else's Comic, and never shows Report on the author's own", async () => {
+    const reports: unknown[] = [];
+    let author = false;
+    vi.stubGlobal("fetch", vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      if (String(url) === "/api/v1/me") return viewer(author ? "author-a" : "reader-b");
+      if (init?.method === "POST") { reports.push(JSON.parse(String(init.body))); return envelope({ report: { id: "report-1" } }); }
+      return envelope(comic(author));
+    }));
+    await act(async () => root.render(createElement(ComicReader, { id: "comic-a" })));
+    await until(() => Boolean(button("Report Comic")));
+    await click(button("Report Comic"));
+    await click(button("Submit report"));
+    await until(() => container.textContent?.includes("Report submitted.") ?? false);
+    expect(reports).toEqual([expect.objectContaining({ targetType: "comic", targetId: "comic-a" })]);
+
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    author = true;
+    await act(async () => root.render(createElement(ComicReader, { id: "comic-a" })));
+    await until(() => container.textContent?.includes("Manage Comic") ?? false);
+    expect(button("Report Comic")).toBeUndefined();
+  });
+
   it("reads pages in manifest order and drops revoked content when the reader regains focus", async () => {
     let withdrawn = false;
     // The reader is gated too: `canManage` makes this a public read whose answer

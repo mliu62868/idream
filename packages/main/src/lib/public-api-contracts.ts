@@ -607,6 +607,7 @@ const characterDetailSchema = publicCharacterCardSchema
     liked: z.boolean().optional(),
     style: z.string().optional(),
     gender: z.string().optional(),
+    visibility: z.string().optional(),
   })
   .passthrough();
 

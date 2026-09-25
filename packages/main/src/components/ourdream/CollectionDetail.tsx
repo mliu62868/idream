@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useAgeGateAccess } from "./AgeGateBoundary";
+import { useReportDialog } from "./ReportDialog";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   parseMediaCollectionDetailResponse,
@@ -9,6 +10,7 @@ import {
   parsePublicApiError,
   type CollectionDetail as CollectionDetailData,
 } from "@/lib/public-api-contracts";
+import { shareOrCopy } from "@/lib/utils";
 
 export function CollectionDetail({ id, onChanged }: { id: string; onChanged?: () => void }) {
   const { accepted } = useAgeGateAccess();
@@ -27,6 +29,7 @@ export function CollectionDetail({ id, onChanged }: { id: string; onChanged?: ()
   const completionRef = useRef("");
   const onChangedRef = useRef(onChanged);
   const busy = loading || writing;
+  const { openReport, reportDialog } = useReportDialog(setStatus);
 
   useEffect(() => { onChangedRef.current = onChanged; }, [onChanged]);
 
@@ -147,6 +150,8 @@ export function CollectionDetail({ id, onChanged }: { id: string; onChanged?: ()
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-xl font-bold">{detail?.collection.name ?? "Collection details"}</h2>
         <div className="flex gap-4 text-sm">
+          {detail && detail.collection.visibility !== "private" && <button onClick={async () => setStatus(await shareOrCopy(`${window.location.origin}/community?collection=${encodeURIComponent(id)}`, detail.collection.name))} type="button">Share collection</button>}
+          {detail && !detail.canManage && <button onClick={() => openReport({ kind: "record", targetType: "media_collection", targetId: id })} type="button">Report collection</button>}
           <button disabled={busy} onClick={() => void load()} type="button">Refresh collection</button>
           <Link href="/community">All collections</Link>
         </div>
@@ -173,6 +178,7 @@ export function CollectionDetail({ id, onChanged }: { id: string; onChanged?: ()
         </div>}
         {detail.nextCursor && <button className="mt-4 rounded bg-white/10 px-4 py-2 text-sm" disabled={busy} onClick={() => void load(detail.nextCursor)} type="button">Load more items</button>}
       </>}
+      {reportDialog}
     </section>
   );
 }

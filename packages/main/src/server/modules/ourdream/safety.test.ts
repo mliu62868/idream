@@ -438,6 +438,30 @@ describe("admin moderation queue + audit", () => {
     expect(reportIds).toHaveLength(100);
   });
 
+  it("queues reports from the Comic, Collection, and creator profile entry points", async () => {
+    // The queue only shows reports from operational (customer) accounts.
+    const reporter = `${P}u-surface-reporter`;
+    await createUser({ id: reporter, dataClass: "customer" });
+    const admin = await freshUser("surface-admin", "admin");
+    for (const targetType of ["comic", "media_collection", "user_profile"]) {
+      const targetId = `${P}${targetType}-target`;
+      expectOk(await api("POST", "reports", {
+        userId: reporter,
+        ageGate: true,
+        body: { targetType, targetId, category: "spam" },
+      }));
+      const queue = await adminV2("GET", "moderation/queue", {
+        userId: admin,
+        role: "admin",
+        query: { targetType },
+      });
+      expectOk(queue);
+      expect(queue.data.reports).toEqual([
+        expect.objectContaining({ targetType, targetId, category: "spam", status: "open" }),
+      ]);
+    }
+  });
+
   it("requires admin and records an audited decision that actions the target", async () => {
     const reporter = `${P}u-admin-reporter`;
     await createUser({ id: reporter, dataClass: "customer" });
