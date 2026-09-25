@@ -335,7 +335,7 @@ describe("GET /api/v1/support/history", () => {
         outcome: "upheld",
         notes: "private appeal note",
         reason: "The original decision was verified",
-        confirmation: "UPHOLD",
+        confirmation: `${appealId}:uphold`,
       },
     }));
 

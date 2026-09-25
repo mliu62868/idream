@@ -54,7 +54,7 @@ async function setupActionedMedia(
         decision: "actioned",
         policyCode: "other_prohibited_content",
         reason: "The report was confirmed after review",
-        confirmation: "TAKEDOWN",
+        confirmation: `${report.id}:takedown`,
       },
     },
   );
@@ -95,7 +95,7 @@ async function overturnMediaAppeal(input: {
     body: {
       outcome: "overturned",
       reason: "The original media decision was incorrect",
-      confirmation: "OVERTURN",
+      confirmation: `${input.appealId}:overturn`,
     },
   });
 }
@@ -125,7 +125,7 @@ async function actionTarget(input: {
         decision: "actioned",
         policyCode: "other_prohibited_content",
         reason: "The report was confirmed after review",
-        confirmation: "TAKEDOWN",
+        confirmation: `${report.id}:takedown`,
       },
     },
   );
@@ -247,7 +247,7 @@ describe("moderation appeal exact restoration authority", () => {
         body: {
           outcome: "overturned",
           reason: "Decision A was incorrect",
-          confirmation: "OVERTURN",
+          confirmation: `${appealId}:overturn`,
         },
       },
     );
@@ -318,7 +318,7 @@ describe("moderation appeal exact restoration authority", () => {
         body: {
           outcome: "overturned",
           reason: "The moderation action was incorrect",
-          confirmation: "OVERTURN",
+          confirmation: `${appealId}:overturn`,
         },
       },
     );
@@ -388,7 +388,7 @@ describe("moderation appeal exact restoration authority", () => {
         body: {
           outcome: "overturned",
           reason: "The legacy decision was incorrect",
-          confirmation: "OVERTURN",
+          confirmation: `${appealId}:overturn`,
         },
       }),
       409,
@@ -463,7 +463,7 @@ describe("moderation appeal exact restoration authority", () => {
           decision: "actioned",
           policyCode: "other_prohibited_content",
           reason: "The character report was confirmed after review",
-          confirmation: "TAKEDOWN",
+          confirmation: `${report.id}:takedown`,
         },
       },
     );
@@ -491,7 +491,7 @@ describe("moderation appeal exact restoration authority", () => {
       body: {
         outcome: "overturned",
         reason: "The original character decision was incorrect",
-        confirmation: "OVERTURN",
+        confirmation: `${appealId}:overturn`,
       },
     }));
     await expect(prisma.mainOutboxEvent.count({

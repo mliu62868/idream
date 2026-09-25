@@ -211,8 +211,9 @@ export async function moderationDecision(
     request,
     "moderationReportDecisionRequestSchema+idempotency-key",
   ) as ReportDecisionBody;
-  if (body.decision === "actioned" && body.confirmation !== reportId && body.confirmation !== "TAKEDOWN") {
-    throw Errors.badRequest("Actioned decisions require target confirmation");
+  // INVARIANT: 确认串绑定目标 —— 常量 TAKEDOWN 对任何举报都成立，等于没有确认。
+  if (body.decision === "actioned" && body.confirmation !== `${reportId}:takedown`) {
+    throw Errors.badRequest(`Actioned decisions require confirmation ${reportId}:takedown`);
   }
   const requestId = requestIdOf(request);
   return await executeAtomicIdempotentMutation({
@@ -293,8 +294,8 @@ export async function appealDecision(
     request,
     "moderationAppealDecisionRequestSchema+idempotency-key",
   ) as AppealDecisionBody;
-  const expectedConfirmation = appealOutcomeConfirmation(body.outcome);
-  if (body.confirmation !== expectedConfirmation && body.confirmation !== appealId) {
+  const expectedConfirmation = `${appealId}:${appealOutcomeConfirmation(body.outcome)}`;
+  if (body.confirmation !== expectedConfirmation) {
     throw Errors.badRequest(`Appeal decision requires confirmation ${expectedConfirmation}`);
   }
   const requestId = requestIdOf(request);
@@ -374,9 +375,10 @@ export async function appealDecision(
   }) as AppealDecisionResponse;
 }
 
+// 确认串是 `${appealId}:<verb>`：既绑目标也绑结果，同一申诉敲错结果不会通过。
 function appealOutcomeConfirmation(outcome: AppealDecisionBody["outcome"]) {
-  if (outcome === "upheld") return "UPHOLD";
-  if (outcome === "overturned") return "OVERTURN";
-  if (outcome === "modified") return "MODIFY";
-  return "REOPEN";
+  if (outcome === "upheld") return "uphold";
+  if (outcome === "overturned") return "overturn";
+  if (outcome === "modified") return "modify";
+  return "reopen";
 }

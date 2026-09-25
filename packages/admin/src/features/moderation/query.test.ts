@@ -13,8 +13,10 @@ describe("moderation query", () => {
   it("preserves route state and exact high-risk confirmations", () => {
     const query = moderationQueryFromSearch("");
     expect(moderationWorkspaceUrl("/admin/moderation", "?view=queue", query)).toBe("/admin/moderation?view=queue");
-    expect(moderationDecisionConfirmation("action", "report-1")).toBe("TAKEDOWN");
+    expect(moderationDecisionConfirmation("action", "report-1")).toBe("report-1:takedown");
     expect(moderationDecisionConfirmation("close", "report-1")).toBe("report-1");
-    expect(moderationDecisionConfirmation("overturn", "appeal-1")).toBe("OVERTURN");
+    expect(moderationDecisionConfirmation("overturn", "appeal-1")).toBe("appeal-1:overturn");
+    expect(moderationDecisionConfirmation("uphold", "appeal-1")).toBe("appeal-1:uphold");
+    expect(moderationDecisionConfirmation("modify", "appeal-1")).toBe("appeal-1:modify");
   });
 });

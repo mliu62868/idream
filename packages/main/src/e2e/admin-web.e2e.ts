@@ -841,7 +841,7 @@ test("admin moderation resolves appeals from the web queue", async ({ page }) =>
 
     await expect(page.getByRole("heading", { name: `Overturn appeal ${appeal.id}` })).toBeVisible();
     await page.getByRole("textbox", { name: "Reason", exact: true }).fill("Appeal accepted from admin web E2E");
-    await page.getByRole("textbox", { name: "Confirmation", exact: true }).fill("OVERTURN");
+    await page.getByRole("textbox", { name: "Confirmation", exact: true }).fill(`${appeal.id}:overturn`);
     await page.getByRole("button", { name: "Confirm" }).click();
 
     await expect(appealRow).toHaveCount(0, { timeout: 10_000 });
