@@ -608,6 +608,7 @@ const characterDetailSchema = publicCharacterCardSchema
     style: z.string().optional(),
     gender: z.string().optional(),
     visibility: z.string().optional(),
+    voiceSampleAvailable: z.boolean().optional(),
   })
   .passthrough();
 
