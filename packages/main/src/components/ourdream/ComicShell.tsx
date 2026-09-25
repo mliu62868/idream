@@ -15,7 +15,7 @@ export function ComicShell({ children }: { children: ReactNode }) {
         <nav aria-label="Comic navigation" className="mb-8 flex flex-wrap gap-5 text-sm font-semibold text-neutral-300">
           <Link className="hover:text-white" href="/comics">Comics</Link>
           <Link className="hover:text-white" href="/creator-studio/comics">Your Comics</Link>
-          <Link className="hover:text-white" href="/profile?tab=media">Gallery</Link>
+          <Link className="hover:text-white" href="/custom?tab=media">Gallery</Link>
         </nav>
         {children}
         <SiteFooter />

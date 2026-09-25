@@ -85,6 +85,16 @@ describe("collection details and membership", () => {
     expect(await prisma.mediaCollectionItem.count({ where: { collectionId: second, mediaAssetId: mediaIds[0] } })).toBe(1);
   });
 
+  it("keeps media public that its owner made public themselves after a collection shared it", async () => {
+    const mediaId = `${prefix}owner-chose-public`;
+    await createMedia({ id: mediaId, ownerId: owner, visibility: "private" });
+    const created = await api("POST", "media/collections", { ...owned, body: { name: "Chosen", visibility: "public", mediaAssetId: mediaId } });
+    expectOk(created, 201);
+    expectOk(await api("POST", "media/bulk", { ...owned, body: { ids: [mediaId], action: "visibility", visibility: "public_pack" } }));
+    expectOk(await api("DELETE", `media/collections/${created.data.collection.id}/items/${mediaId}`, owned));
+    expect(await prisma.mediaAsset.findUniqueOrThrow({ where: { id: mediaId } })).toMatchObject({ visibility: "public_pack" });
+  });
+
   it("takes media back to private when it was public only because of a collection that no longer shares it", async () => {
     const viaCollection = `${prefix}retract-private-origin`;
     const alreadyPublic = `${prefix}retract-already-public`;

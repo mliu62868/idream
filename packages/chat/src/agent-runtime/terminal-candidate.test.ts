@@ -241,6 +241,11 @@ describe("required image lead-in", () => {
       .toBe("A bunch, huh? Bold. I'll send one from the trail — the rest you can ask for.");
   });
 
+  it("drops a line that carries a tool payload or hidden thinking", () => {
+    expect(acceptableRequiredImageLeadIn('Mm, one sec.\n\n{"name":"edit_last_image","args":{"instruction":"red"}}', "Make it red", tools)).toBeNull();
+    expect(acceptableRequiredImageLeadIn("<think>\nok\n</think>\nSure babe, one sec.", "Send a photo", tools)).toBeNull();
+  });
+
   it("keeps the user's own writing system", () => {
     expect(acceptableRequiredImageLeadIn("等我把手上的泥洗掉。", "今晚在做什么？发张照片", tools))
       .toBe("等我把手上的泥洗掉。");

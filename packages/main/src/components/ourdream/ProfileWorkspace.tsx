@@ -298,6 +298,13 @@ const profileDeepLinkTargets: Record<
     selector: "#delete-account",
     focusSelector: "[aria-label='Delete confirmation']",
   },
+  // Checkout and Upgrade return here; the panel renders after a fetch, so the
+  // browser's own anchor jump has already missed it.
+  "/profile#billing": {
+    selector: "#billing",
+    focusSelector: "#billing a, #billing button",
+    block: "start",
+  },
   // 被年龄验证锁住的用户从错误文案和 /age-verification/return 落到这里，
   // 要直接看到重试按钮，而不是 Account management 顶部的「Type DELETE」。
   "/profile/age-verification": {
@@ -315,15 +322,18 @@ const DEEP_LINK_ATTEMPTS = 30;
 //   用户到了却看不到按钮，和提示渲染在视口外是同一类失败。改成等目标出现；
 //   用户自己滚了就不再抢滚动条。
 function focusProfileDeepLink() {
-  const target =
-    profileDeepLinkTargets[window.location.pathname + window.location.hash] ??
-    profileDeepLinkTargets[window.location.pathname];
+  const hashTarget = window.location.hash
+    ? profileDeepLinkTargets[window.location.pathname + window.location.hash]
+    : undefined;
+  const target = hashTarget ?? profileDeepLinkTargets[window.location.pathname];
   if (!target) return;
   const landedAt = window.scrollY;
   let attempts = 0;
   let timer: number | undefined;
   const tick = () => {
-    if (window.scrollY !== landedAt) return;
+    // The browser's own hash jump moves the page too; only a plain link treats
+    // a scroll as the reader taking over.
+    if (!hashTarget && window.scrollY !== landedAt) return;
     const panel = document.querySelector<HTMLElement>(target.selector);
     if (panel) {
       panel.scrollIntoView({ block: target.block ?? "center" });
@@ -1651,7 +1661,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
             {/* AF-01: the commercial affiliate program is separate from the referral reward above. */}
             {ownerId && <AffiliatePanel key={`affiliate:${ownerId}`} fetcher={fetchForOwner} />}
             <div
-              className="rounded-[14px] bg-[rgb(18,18,18)] p-4"
+              className="scroll-mt-20 rounded-[14px] bg-[rgb(18,18,18)] p-4"
               data-testid="profile-billing-card"
               id="billing"
             >

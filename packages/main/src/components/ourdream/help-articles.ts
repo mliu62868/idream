@@ -190,7 +190,7 @@ export const helpTopics: readonly HelpTopic[] = [
         question: "How do I publish my character?",
         answer:
           "In your profile's Created tab choose Publish. The character shows \"awaiting publication preparation\" and appears in Explore once publication is complete. \"Make private\" takes it out of Explore again. If something blocks publishing, such as an open report, the reason is shown there.",
-        links: [{ href: "/profile?tab=created", label: "Created characters" }],
+        links: [{ href: "/custom?tab=created", label: "Created characters" }],
         keywords: "public share explore visibility private",
       },
       {
@@ -198,7 +198,7 @@ export const helpTopics: readonly HelpTopic[] = [
         question: "Can I edit a character after creating it?",
         answer:
           "Yes: choose Edit on the character in your Created tab. A published character keeps its current look and voice; to change those, Duplicate it and edit the copy. Text changes to a published character go out as a new revision while the current version keeps serving.",
-        links: [{ href: "/profile?tab=created", label: "Created characters" }],
+        links: [{ href: "/custom?tab=created", label: "Created characters" }],
         keywords: "change update appearance voice duplicate",
       },
       {

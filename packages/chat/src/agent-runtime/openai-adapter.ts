@@ -158,6 +158,14 @@ function requiredToolArgumentsJson(
   }
 }
 
+// The words the character says before any payload: hidden thinking and
+// everything from the first "{" (a valid or broken tool JSON) are not dialogue.
+export function spokenLineBeforePayload(content: string): string {
+  const withoutThinking = content.replace(/<think>[\s\S]*?(?:<\/think>|$)/giu, "");
+  const brace = withoutThinking.indexOf("{");
+  return (brace === -1 ? withoutThinking : withoutThinking.slice(0, brace)).trim();
+}
+
 /**
  * SPEC: 必需工具这一轮，只放行该工具的块，外加模型在同一步说的台词。
  *
@@ -398,7 +406,7 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
           && !chunks.some((chunk) => chunk.type === "tool-call-delta")
           ? requiredToolArgumentsJson(this.requiredToolName, content)
           : null;
-        if (!jsonCompatibilityMode && !argumentsJson && error.finishReason.kind === "stop") omittedLine = content.trim();
+        if (!jsonCompatibilityMode && error.finishReason.kind === "stop") omittedLine = spokenLineBeforePayload(content);
         if (argumentsJson) {
           logger.info({
             event: "companion_required_tool_json_compatibility",

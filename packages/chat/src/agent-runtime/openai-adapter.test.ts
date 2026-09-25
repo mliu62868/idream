@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GenerateOptions, StreamChunk } from "@deepseek-ai/dsh-llm";
-import { OpenAiCompatibleAdapter, type OpenAiCompatibleAdapterOptions } from "./openai-adapter";
+import { OpenAiCompatibleAdapter, spokenLineBeforePayload, type OpenAiCompatibleAdapterOptions } from "./openai-adapter";
 
 const servers: Server[] = [];
 
@@ -669,6 +669,16 @@ describe("OpenAI-compatible DSH adapter", () => {
       name: "generate_image_async",
       argumentsDelta: JSON.stringify({ prompt: "Woman reading in a warm cozy cafe", orientation: "4:5", outputCount: 1 }),
     }));
+    // The first attempt's line (not the JSON) rides along for the engine to validate.
+    expect(chunks.filter((chunk) => chunk.type === "text-delta").map((chunk) => chunk.text)).toEqual([
+      "One cozy cafe, give me a second.",
+    ]);
+  });
+
+  it("keeps only the spoken words before a payload", () => {
+    expect(spokenLineBeforePayload('Okay, one sec.\n\n{"name":"generate_image_async","args":{}}')).toBe("Okay, one sec.");
+    expect(spokenLineBeforePayload("<think>plan the shot</think>Hold still.")).toBe("Hold still.");
+    expect(spokenLineBeforePayload('{"prompt":"beach"}')).toBe("");
   });
 
   it("directs the required image from the user request when both forced attempts answer in prose", async () => {

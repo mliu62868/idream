@@ -3868,6 +3868,14 @@ async function bulkMedia(request: Request) {
       },
       data: { visibility: targetVisibility },
     });
+    // The owner chose this visibility themselves, so a collection leaving must
+    // no longer take it back (see COLLECTION_PUBLICITY_MARKER).
+    const ids = current.map((asset) => asset.id);
+    if (ids.length > 0) {
+      await tx.$executeRaw`
+        UPDATE media_assets SET metadata = metadata - ${COLLECTION_PUBLICITY_MARKER}::text
+        WHERE id IN (${Prisma.join(ids)}) AND "ownerId" = ${user.id} AND metadata ? ${COLLECTION_PUBLICITY_MARKER}::text`;
+    }
     return result.count;
   });
   return ok({ updated });

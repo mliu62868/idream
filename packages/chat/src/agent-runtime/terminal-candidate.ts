@@ -116,6 +116,8 @@ export function acceptableRequiredImageLeadIn(
   if (text.length > REQUIRED_IMAGE_LEAD_IN_MAX_CHARS) return null;
   if (!requiredImageReplyMatchesUserScript(currentUserText, text)) return null;
   if (EXPOSED_PROCESS.test(text)) return null;
+  // A line carrying a tool payload or hidden thinking is not dialogue.
+  if (/[{}]|<\/?think/iu.test(text)) return null;
   if (CLAIMS_DELIVERY.test(text)) return null;
   if (PROMISES_SEVERAL.test(text)) return null;
   if (hasUnexecutedMemorySearchPayload(text)) return null;

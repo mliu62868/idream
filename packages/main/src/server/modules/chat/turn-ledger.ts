@@ -294,15 +294,9 @@ export async function beginChatTurn(input: {
       });
       if (active) throw Errors.conflict("A reply is already generating");
       // INVARIANT: counted under the user lock taken above, so concurrent sends
-      // from different sessions cannot all slip past the limit.
-      const activeForUser = await tx.chatTurn.count({
-        where: { session: { userId: input.userId }, assistantStatus: { in: ACTIVE_ASSISTANT_STATES } },
-      });
-      if (activeForUser >= MAX_ACTIVE_TURNS_PER_USER) {
-        throw Errors.conflict(
-          `A reply is already generating in ${activeForUser} of your chats. Wait for one to finish, then send again.`,
-        );
-      }
+      // from different sessions cannot all slip past the limit. A scheduled
+      // proactive Turn neither counts nor is refused here.
+      if (input.origin !== "proactive") await assertUserReplyCapacity(tx, input.userId);
       // SPEC: the daily free allowance counts messages the user chose to send.
       // INTENT: a proactive Turn is the Character reaching out on a schedule the
       // user set once. Charging it spends the allowance on something they did
@@ -378,6 +372,21 @@ export async function beginChatTurn(input: {
   );
 }
 
+// SPEC: one user has at most MAX_ACTIVE_TURNS_PER_USER replies generating at
+// once across chats, whether from a send, a regenerate or an edit.
+// INTENT: proactive Turns are the Character's own check-ins; counting them would
+// refuse a message the user actually typed.
+async function assertUserReplyCapacity(tx: Prisma.TransactionClient, userId: string) {
+  const activeForUser = await tx.chatTurn.count({
+    where: { session: { userId }, origin: { not: "proactive" }, assistantStatus: { in: ACTIVE_ASSISTANT_STATES } },
+  });
+  if (activeForUser >= MAX_ACTIVE_TURNS_PER_USER) {
+    throw Errors.conflict(
+      `A reply is already generating in ${activeForUser} of your chats. Wait for one to finish, then send again.`,
+    );
+  }
+}
+
 export async function regenerateChatTurn(userId: string, messageId: string) {
   const turn = await requireTurn(userId, messageId);
   const updated = await prisma.$transaction(async (tx) => {
@@ -388,6 +397,7 @@ export async function regenerateChatTurn(userId: string, messageId: string) {
     if (ACTIVE_ASSISTANT_STATES.includes(current.assistantStatus)) {
       throw Errors.conflict("A reply is already generating");
     }
+    await assertUserReplyCapacity(tx, userId);
     const previousAttempt = current.attempt;
     const originalSnapshot = current.executionSnapshot ? chatExecutionSnapshotSchema.parse(current.executionSnapshot) : null;
     const contextDirectives = originalSnapshot?.contextDirectives ?? [];
@@ -450,6 +460,7 @@ export async function editChatTurn(userId: string, messageId: string, nextConten
     if (ACTIVE_ASSISTANT_STATES.includes(current.assistantStatus)) {
       throw Errors.conflict("A reply is already generating");
     }
+    if (!blocked) await assertUserReplyCapacity(tx, userId);
     const sceneAnchor = await previousCommittedScene(tx, current);
     await redactChatImageSourceText(tx, {
       userId,

@@ -499,6 +499,16 @@ describe("replies generating at once for one user", () => {
     await expect(refused).rejects.toThrow(/^A reply is already generating in 3 of your chats\./);
     expect(await prisma.chatTurn.count({ where: { sessionId: others[2]!.sessionId } })).toBe(0);
   });
+
+  it("applies the same limit to regenerate and edit", async () => {
+    const first = await fixture();
+    const done = await send(first, "Morning.");
+    await commitSent(done.snapshot!, "Morning to you.");
+    const others = [await fixture(first.userId), await fixture(first.userId), await fixture(first.userId)];
+    for (const f of others) await send(f);
+    await expect(regenerateChatTurn(first.userId, done.assistant.id)).rejects.toThrow(/^A reply is already generating in 3 of your chats\./);
+    await expect(editChatTurn(first.userId, done.userMessage.id, "Evening.")).rejects.toThrow(/^A reply is already generating in 3 of your chats\./);
+  });
 });
 
 describe("archiving a session", () => {
