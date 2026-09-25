@@ -127,6 +127,8 @@ const appealTargetTypeLabels: Record<AppealTargetType, string> = {
   feed_item: "Feed item",
   chat_message: "Chat message",
   user_profile: "User profile",
+  comic: "Comic",
+  media_collection: "Collection",
   moderation_decision: "Moderation decision",
   safety_issue: "Safety issue",
   copyright_likeness: "Copyright / likeness",
@@ -1580,15 +1582,8 @@ function reportReasonLabel(value: string) {
   return isCatalogMember(CONTENT_REPORT_REASONS, value) ? REASON_LABELS[value] : "Report";
 }
 
-// 只能被举报、不在申诉目标枚举里的类型；历史列表同样要叫得出名字。
-const reportOnlyTargetTypeLabels: Record<string, string> = {
-  comic: "Comic",
-  media_collection: "Collection",
-};
-
 function targetTypeLabel(value: string) {
-  if (isCatalogMember(APPEAL_TARGET_TYPES, value)) return appealTargetTypeLabels[value];
-  return reportOnlyTargetTypeLabels[value] ?? "Content";
+  return isCatalogMember(APPEAL_TARGET_TYPES, value) ? appealTargetTypeLabels[value] : "Content";
 }
 
 function supportCategoryLabel(value: string) {

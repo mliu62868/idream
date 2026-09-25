@@ -28,7 +28,8 @@ import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { useToast } from "@/components/admin/ui/Toast";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
-import { canActionReportTarget } from "./actionable-targets";
+import { accessWorkspaceUrl, defaultAccessQuery } from "@/features/access/query";
+import { canActionReportTarget, REPORT_TARGET_TYPE_FILTERS } from "./actionable-targets";
 import { siblingReportCounts } from "./sibling-reports";
 import {
   defaultModerationQuery,
@@ -293,7 +294,7 @@ export function ModerationWorkspace({ canDecide, canReadComics = false, canRevie
           onChange={(targetType) =>
             setDraft((value) => ({ ...value, targetType }))
           }
-          options={["", "character", "media", "message"]}
+          options={REPORT_TARGET_TYPE_FILTERS}
           value={draft.targetType}
         />
         <div className="flex items-end gap-2">
@@ -555,7 +556,7 @@ function reportRows(
         format.dateTime(row.createdAt),
         canDecide ? (
           <div className="flex gap-1">
-            {/* SPEC: 裁定端只实现了 character / media / feed_item 三类处置。
+            {/* SPEC: 裁定端实现的处置类型见 actionable-targets.ts。
                 INTENT: 举报提交端对 targetType 是故意宽松的自由字符串，于是队列里会出现
                 `chat_message` 这种没有处置实现的目标（实测 6 条真实 open 举报里有 1 条，
                 另有同类是队友的审计探针）。主站每条聊天消息都有举报按钮且提交成功，只会更多。
@@ -581,6 +582,16 @@ function reportRows(
                 })
               }
             />
+            ) : format.text(row.targetType) === "user_profile" ? (
+              // INTENT: 举报一个人不等于下架一件内容；账号处置只有 Team Access 的停用/恢复这一条
+              //         受审计的通道，这里带路过去，不在举报队列里另造一个封号按钮。
+              <a
+                className="self-center whitespace-nowrap text-xs underline underline-offset-4"
+                href={accessWorkspaceUrl("/admin/system/access", "", { ...defaultAccessQuery, search: format.text(row.targetId) })}
+                title={t("Accounts are suspended or restored in Team Access. Close this report after handling the account there.")}
+              >
+                {t("Handle account")}
+              </a>
             ) : (
               <span
                 className="self-center whitespace-nowrap text-xs text-[var(--ad-text-muted)]"

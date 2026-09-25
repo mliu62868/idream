@@ -315,6 +315,25 @@ describe("ModerationWorkspace decision evidence", () => {
     ).not.toBeNull();
   });
 
+  it("offers takedown for Comics and Collections, routes a reported profile to Team Access, and filters by real target types", async () => {
+    const report = (id: string, targetType: string) => ({
+      id, targetType, targetId: `${targetType}-1`, category: "spam", status: "open", priority: 3, createdAt: "2026-09-24T09:00:00.000Z",
+    });
+    await mount({ reports: [report("report-comic", "comic"), report("report-collection", "media_collection"), report("report-profile", "user_profile")] });
+    await waitUntil(() => container.textContent?.includes("report-profile") === true);
+    const row = (id: string) => [...container.querySelectorAll("tr")].find((node) => node.textContent?.includes(id));
+
+    expect(findButton("Action", row("report-comic"))).not.toBeNull();
+    expect(findButton("Action", row("report-collection"))).not.toBeNull();
+    expect(findButton("Action", row("report-profile"))).toBeNull();
+    expect(row("report-profile")?.querySelector("a")?.getAttribute("href")).toBe("/admin/system/access?accessSearch=user_profile-1");
+
+    const filter = [...container.querySelectorAll("label")].find((label) => label.textContent?.startsWith("Target type"))?.querySelector("select");
+    expect([...(filter?.options ?? [])].map((option) => option.value)).toEqual([
+      "", "character", "media", "feed_item", "comic", "media_collection", "user_profile", "chat_message",
+    ]);
+  });
+
   it("collapses a long statement without losing a single word of it", async () => {
     await mount({
       reports: [

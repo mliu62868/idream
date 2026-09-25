@@ -7,6 +7,7 @@ import {
   lockCharacterGenerationAuthority,
   lockMediaAssetAuthority,
 } from "@/server/modules/admin-v2/characters/generation-authority-lock";
+import { removePublishedComic } from "@/server/modules/ourdream/comics";
 
 /**
  * SPEC: 一条 "actioned" 裁决对目标做了什么，以及一条 overturned 申诉如何精确撤销它。
@@ -51,6 +52,28 @@ const mediaModerationActionSnapshotSchema = z
   })
   .strict();
 
+const comicModerationActionSnapshotSchema = z
+  .object({
+    version: z.literal(1),
+    targetType: z.literal("comic"),
+    moderationDecisionId: z.string().min(1),
+    previousModerationDecisionId: z.string().min(1).nullable(),
+    before: z.object({ status: z.literal("published"), publishedAt: z.string().nullable() }).strict(),
+    after: z.object({ status: z.literal("withdrawn"), version: z.number().int() }).strict(),
+  })
+  .strict();
+
+const collectionModerationActionSnapshotSchema = z
+  .object({
+    version: z.literal(1),
+    targetType: z.literal("media_collection"),
+    moderationDecisionId: z.string().min(1),
+    previousModerationDecisionId: z.string().min(1).nullable(),
+    before: z.object({ visibility: z.string().min(1) }).strict(),
+    after: z.object({ visibility: z.literal("private") }).strict(),
+  })
+  .strict();
+
 type ModerationDatabase = Prisma.TransactionClient | typeof prisma;
 
 export type ModerationTargetRestoration = {
@@ -68,7 +91,11 @@ function moderationEffectOwnerId(targetType: string, targetId: string) {
   return `moderation_effect_owner:${targetType}:${targetId}`;
 }
 
-async function currentModerationEffectOwner(
+/**
+ * 当前对该目标生效的处置裁决；null 表示没有处置在生效。
+ * 合集的公开写入用它拒绝作者把被撤下的合集自行重新公开 —— 撤回只能走申诉。
+ */
+export async function currentModerationEffectOwner(
   db: ModerationDatabase,
   targetType: string,
   targetId: string,
@@ -202,7 +229,73 @@ export async function applyModerationAction(
     );
     return;
   }
+  if (targetType === "comic") {
+    const previousModerationDecisionId = await currentModerationEffectOwner(db, "comic", targetId);
+    const { before, after } = await removePublishedComic(
+      db,
+      targetId,
+      "Removed after a content report.",
+    );
+    await recordModerationActionSnapshot(db, "comic", targetId, comicModerationActionSnapshotSchema.parse({
+      version: 1,
+      targetType: "comic",
+      moderationDecisionId,
+      previousModerationDecisionId,
+      before: { status: before.status, publishedAt: before.publishedAt?.toISOString() ?? null },
+      after: { status: after.status, version: after.version },
+    }));
+    return;
+  }
+  if (targetType === "media_collection") {
+    // INTENT: 撤下 = 改回 private，与作者自己取消公开、以及 underage 自动下架（reports.ts）
+    //         落到同一个状态；effect owner 挡住作者自行重新公开（service.ts 合集写入）。
+    await db.$queryRaw`SELECT id FROM media_collections WHERE id = ${targetId} FOR UPDATE`;
+    const collection = await db.mediaCollection.findUnique({
+      where: { id: targetId },
+      select: { visibility: true },
+    });
+    if (!collection) throw Errors.conflict("Moderation Collection target no longer exists");
+    const previousModerationDecisionId = await currentModerationEffectOwner(db, "media_collection", targetId);
+    const snapshot = collectionModerationActionSnapshotSchema.parse({
+      version: 1,
+      targetType: "media_collection",
+      moderationDecisionId,
+      previousModerationDecisionId,
+      before: { visibility: collection.visibility },
+      after: { visibility: "private" },
+    });
+    await db.mediaCollection.update({
+      where: { id: targetId },
+      data: { visibility: snapshot.after.visibility },
+    });
+    await recordModerationActionSnapshot(db, "media_collection", targetId, snapshot);
+    return;
+  }
   throw Errors.badRequest(`Unsupported moderation target type: ${targetType}`);
+}
+
+async function recordModerationActionSnapshot(
+  db: ModerationDatabase,
+  targetType: "comic" | "media_collection",
+  targetId: string,
+  snapshot: { moderationDecisionId: string },
+) {
+  await db.moderationEvent.create({
+    data: {
+      id: mediaModerationActionSnapshotId(snapshot.moderationDecisionId),
+      targetType,
+      targetId,
+      layer: "admin_decision_effect",
+      status: "actioned",
+      policyCode: "moderation_action_snapshot_v1",
+      details: toInputJson(snapshot),
+    },
+  });
+  await setModerationEffectOwner(db, {
+    targetType,
+    targetId,
+    moderationDecisionId: snapshot.moderationDecisionId,
+  });
 }
 
 async function applyCharacterModerationAction(
@@ -377,6 +470,9 @@ async function restoreAppealTarget(
       restoredTargetId: targetId,
     };
   }
+  if ((targetType === "comic" || targetType === "media_collection") && moderationDecisionId) {
+    return restoreSnapshotModerationAction(db, targetType, targetId, moderationDecisionId);
+  }
   if (targetType === "user_profile") {
     const result = await db.user.updateMany({
       where: { id: targetId, status: { not: "deleted" } },
@@ -389,6 +485,75 @@ async function restoreAppealTarget(
     };
   }
   return { targetRestored: false, restoredTargetType: targetType, restoreReason: "manual_followup_required" };
+}
+
+async function snapshotEvidence<T extends z.ZodType<{ moderationDecisionId: string }>>(
+  db: ModerationDatabase,
+  targetType: string,
+  targetId: string,
+  moderationDecisionId: string,
+  schema: T,
+): Promise<z.output<T>> {
+  const currentOwner = await currentModerationEffectOwner(db, targetType, targetId);
+  if (currentOwner !== moderationDecisionId) {
+    throw Errors.conflict(`Another action superseded this ${targetType} decision`);
+  }
+  const evidence = await db.moderationEvent.findUnique({
+    where: { id: mediaModerationActionSnapshotId(moderationDecisionId) },
+  });
+  if (
+    !evidence ||
+    evidence.targetType !== targetType ||
+    evidence.targetId !== targetId ||
+    evidence.layer !== "admin_decision_effect" ||
+    evidence.status !== "actioned"
+  ) {
+    throw Errors.conflict(`${targetType} moderation action snapshot is unavailable`);
+  }
+  const parsed = schema.safeParse(evidence.details);
+  if (!parsed.success || parsed.data.moderationDecisionId !== moderationDecisionId) {
+    throw Errors.conflict(`${targetType} moderation action snapshot is inconsistent`);
+  }
+  return parsed.data;
+}
+
+// INVARIANT: 只在目标仍停在处置后的状态时回滚；作者之后动过（改版、自己取消公开后再改）就冲突，
+//            交给人工，不把一个没人批准过的状态推回公开。
+async function restoreSnapshotModerationAction(
+  db: ModerationDatabase,
+  targetType: "comic" | "media_collection",
+  targetId: string,
+  moderationDecisionId: string,
+): Promise<ModerationTargetRestoration> {
+  let restored: number;
+  let previousModerationDecisionId: string | null;
+  if (targetType === "comic") {
+    await db.$queryRaw`SELECT id FROM comics WHERE id = ${targetId} FOR UPDATE`;
+    const snapshot = await snapshotEvidence(db, targetType, targetId, moderationDecisionId, comicModerationActionSnapshotSchema);
+    previousModerationDecisionId = snapshot.previousModerationDecisionId;
+    ({ count: restored } = await db.comic.updateMany({
+      where: { id: targetId, status: snapshot.after.status, version: snapshot.after.version },
+      data: {
+        status: snapshot.before.status,
+        publishedAt: snapshot.before.publishedAt ? new Date(snapshot.before.publishedAt) : new Date(),
+        reviewNote: null,
+        version: { increment: 1 },
+      },
+    }));
+  } else {
+    await db.$queryRaw`SELECT id FROM media_collections WHERE id = ${targetId} FOR UPDATE`;
+    const snapshot = await snapshotEvidence(db, targetType, targetId, moderationDecisionId, collectionModerationActionSnapshotSchema);
+    previousModerationDecisionId = snapshot.previousModerationDecisionId;
+    ({ count: restored } = await db.mediaCollection.updateMany({
+      where: { id: targetId, visibility: snapshot.after.visibility },
+      data: { visibility: snapshot.before.visibility },
+    }));
+  }
+  if (restored !== 1) {
+    throw Errors.conflict(`${targetType} changed after the moderation action; the appeal was not applied`);
+  }
+  await setModerationEffectOwner(db, { targetType, targetId, moderationDecisionId: previousModerationDecisionId });
+  return { targetRestored: true, restoredTargetType: targetType, restoredTargetId: targetId };
 }
 
 async function restoreCharacterModerationAction(
