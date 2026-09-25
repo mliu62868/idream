@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { announcementWindowOrdered, localInputToIso } from "./announcements-schedule";
+import { announcementWindowOrdered, isoToLocalInput, localInputToIso } from "./announcements-schedule";
 
 describe("announcement schedule inputs", () => {
   // INVARIANT: datetime-local 是本地墙上时间。把它当成 UTC 会整体偏移一个时区，
@@ -8,6 +8,13 @@ describe("announcement schedule inputs", () => {
     const iso = localInputToIso("2026-09-20T09:00");
     expect(iso).not.toBeNull();
     expect(new Date(iso!).getTime()).toBe(new Date(2026, 8, 20, 9, 0).getTime());
+  });
+
+  // 编辑已有公告要把存下的 ISO 回填进 datetime-local，往返必须回到同一时刻。
+  it("round-trips a stored ISO value back into the local input", () => {
+    const iso = localInputToIso("2026-09-20T09:00")!;
+    expect(isoToLocalInput(iso)).toBe("2026-09-20T09:00");
+    expect(isoToLocalInput(null)).toBe("");
   });
 
   it("treats an empty or unparsable value as no bound", () => {

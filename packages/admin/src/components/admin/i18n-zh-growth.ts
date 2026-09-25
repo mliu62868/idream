@@ -202,6 +202,10 @@ export const adminZhGrowth: Record<string, string> = {
   "Create announcement": "创建公告",
   // 创建公告按钮置灰时逐条说明还缺什么。
   "Still needed before you can create it:": "还差这些才能创建：",
+  "Still needed before you can save it:": "还差这些才能保存：",
+  "the announcement ID typed to confirm": "敲入公告 ID 作为确认",
+  "Edit announcement": "编辑公告",
+  "Saved “{title}”.": "已保存「{title}」。",
   "a title": "标题",
   "body text": "正文",
   "a reason of at least 3 characters": "至少 3 个字符的原因",

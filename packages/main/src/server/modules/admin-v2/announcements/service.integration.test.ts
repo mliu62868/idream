@@ -113,6 +113,15 @@ describe("Admin v2 announcements", () => {
     expect(wrongConfirmation.status).toBe(400);
     expect(wrongConfirmation.error?.code).toBe("bad_request");
 
+    // 编辑正文 / 标题：审计要留下每个变化字段的前后值，未变的字段不进审计。
+    expectAdminV2Ok(await patch({ title: "Launch sale v2", body: "60% off this week", level: "promo", reason: "fix copy", confirmation: id }));
+    const edit = await prisma.adminAuditLog.findFirst({
+      where: { action: "growth.announcement.update", targetId: id },
+      orderBy: { createdAt: "desc" },
+    });
+    expect(edit?.before).toEqual({ title: "Launch sale", body: "50% off this week" });
+    expect(edit?.after).toEqual({ title: "Launch sale v2", body: "60% off this week" });
+
     expectAdminV2Ok(await patch({ active: false, reason: "pause promo", confirmation: id }));
     const pub2 = await api("GET", "announcements", {});
     expect((pub2.data.items as Array<{ id: string }>).some((item) => item.id === id)).toBe(false);

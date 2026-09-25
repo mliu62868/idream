@@ -3,7 +3,7 @@
 // SPEC: 公告/banner 后台面板（ADMIN_CONSOLE_PLAN §3）。新建 / 启停 / 删除，写后 refetch。
 // INTENT: 自取数、无 props；样式对齐 TagsView。启停/删除经 inline typed confirmation。
 import { useCallback, useEffect, useState } from "react";
-import { Loader2, Plus, RefreshCcw, Search, Trash2 } from "lucide-react";
+import { Loader2, Pencil, Plus, RefreshCcw, Search, Trash2 } from "lucide-react";
 import type { AdminPageInfo } from "@idream/shared/admin";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
@@ -12,7 +12,7 @@ import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestErr
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { useAdminFormat } from "@/components/admin/ui/format";
-import { announcementWindowOrdered, localInputToIso } from "@/features/announcements-schedule";
+import { announcementWindowOrdered, isoToLocalInput, localInputToIso } from "@/features/announcements-schedule";
 import { Pagination } from "@/components/admin/ui/Pagination";
 import { StatusPill } from "@/components/admin/ui/StatusPill";
 import {
@@ -62,6 +62,7 @@ export function AnnouncementsView() {
   const [error, setError] = useState<{ message: string; cause: unknown } | null>(null);
   const [actionDraft, setActionDraft] = useState<AnnouncementActionDraft | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
+  const [editing, setEditing] = useState<Announcement | null>(null);
   const { feedback, reportSuccess, clearFeedback } = useWriteFeedback();
   const [query, setQuery] = useState<AnnouncementQuery>({ announcementSearch: "", announcementLevel: "", announcementActive: "", announcementCursor: "" });
   const [pageInfo, setPageInfo] = useState<AdminPageInfo>({ endCursor: null, hasNextPage: false });
@@ -169,6 +170,18 @@ export function AnnouncementsView() {
       <span className="text-xs text-[var(--ad-text-muted)]" key="window">{announcementWindowLabel(item, t, format)}</span>,
       <div className="flex justify-end gap-2" key="actions">
         <button
+          aria-label={t("Edit announcement")}
+          className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs"
+          disabled={actionBusy}
+          onClick={() => {
+            clearFeedback();
+            setEditing(item);
+          }}
+          type="button"
+        >
+          <Pencil className="h-3.5 w-3.5" />
+        </button>
+        <button
           className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs"
           disabled={actionBusy}
           onClick={() => startAction("toggle", item)}
@@ -219,7 +232,16 @@ export function AnnouncementsView() {
       <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
       {error ? <AuthorityRequestError cause={error.cause} message={error.message} onRetry={() => void load()} /> : null}
 
-      <CreateAnnouncementForm onCreated={reportSuccess} reload={load} />
+      <AnnouncementForm
+        editing={editing}
+        key={editing?.id ?? "create"}
+        onCancel={() => setEditing(null)}
+        onSaved={(message) => {
+          setEditing(null);
+          reportSuccess(message);
+        }}
+        reload={load}
+      />
 
       {actionDraft ? (
         <section className="rounded-lg border border-[var(--ad-yellow-text)]/20 bg-[var(--ad-yellow-bg)] p-3">
@@ -324,28 +346,57 @@ function announcementWindowLabel(
     : t("Until {to}", { to: format.dateTime(item.endsAt) });
 }
 
-function CreateAnnouncementForm({ onCreated, reload }: { onCreated: (message: string) => void; reload: () => void }) {
+// SPEC: 新建与编辑共用一张表单；editing 非空时回填已有值并走 PATCH（确认串是公告 id）。
+// INTENT: 服务端 PATCH 一直支持改标题 / 正文 / 级别 / 链接 / 时间窗，后台却只发 active，
+//         写错一个字只能删了重建。启停仍走行内的启用 / 停用，不在这张表单里。
+function AnnouncementForm({
+  editing,
+  onSaved,
+  onCancel,
+  reload,
+}: {
+  editing: Announcement | null;
+  onSaved: (message: string) => void;
+  onCancel: () => void;
+  reload: () => void;
+}) {
   const { t, value: valueLabel } = useAdminI18n();
-  const [title, setTitle] = useState("");
-  const [body, setBody] = useState("");
-  const [href, setHref] = useState("");
-  const [level, setLevel] = useState<"info" | "promo" | "warning">("info");
+  const [title, setTitle] = useState(editing?.title ?? "");
+  const [body, setBody] = useState(editing?.body ?? "");
+  const [href, setHref] = useState(editing?.href ?? "");
+  const [level, setLevel] = useState<"info" | "promo" | "warning">(editing?.level ?? "info");
   const [active, setActive] = useState(true);
   // SPEC: 时间窗一直存在于契约、存储、公开过滤器和更新服务里，只有后台没有入口。
   // INTENT: 没有入口就没人能排期公告（发版公告、活动开始/结束都要它），而且上面那列
   //         「在展示 / 已启用但不在窗口内」也永远只能显示前者——补上入口这两件事才同时成立。
-  const [startsAt, setStartsAt] = useState("");
-  const [endsAt, setEndsAt] = useState("");
+  const [startsAt, setStartsAt] = useState(isoToLocalInput(editing?.startsAt ?? null));
+  const [endsAt, setEndsAt] = useState(isoToLocalInput(editing?.endsAt ?? null));
   const [reason, setReason] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const trimmedTitle = title.trim();
+  const expectedConfirmation = editing ? editing.id : trimmedTitle;
 
-  async function create() {
+  async function submit() {
     setBusy(true);
     setErr(null);
     try {
+      if (editing) {
+        await apiWrite(`/api/v2/admin/announcements/${editing.id}`, "PATCH", {
+          title: trimmedTitle,
+          body: body.trim(),
+          href: href.trim() || null,
+          level,
+          startsAt: localInputToIso(startsAt),
+          endsAt: localInputToIso(endsAt),
+          reason: reason.trim(),
+          confirmation: confirmation.trim(),
+        });
+        reload();
+        onSaved(t("Saved “{title}”.", { title: trimmedTitle }));
+        return;
+      }
       await apiWrite("/api/v2/admin/announcements", "POST", {
         title: title.trim(),
         body: body.trim(),
@@ -366,7 +417,7 @@ function CreateAnnouncementForm({ onCreated, reload }: { onCreated: (message: st
       setReason("");
       setConfirmation("");
       reload();
-      onCreated(
+      onSaved(
         !active
           ? t("Created “{title}”. Activate it when you want it on the site.", { title: trimmedTitle })
           : startsAt || endsAt
@@ -387,7 +438,9 @@ function CreateAnnouncementForm({ onCreated, reload }: { onCreated: (message: st
   if (trimmedTitle.length === 0) missing.push("a title");
   if (body.trim().length === 0) missing.push("body text");
   if (reason.trim().length < 3) missing.push("a reason of at least 3 characters");
-  if (trimmedTitle.length > 0 && confirmation.trim() !== trimmedTitle) {
+  if (editing && confirmation.trim() !== editing.id) {
+    missing.push("the announcement ID typed to confirm");
+  } else if (!editing && trimmedTitle.length > 0 && confirmation.trim() !== trimmedTitle) {
     missing.push("the title typed again to confirm");
   }
   // 窗口反了就别发出去 —— 权威不校验先后，这条会被存下来然后永远不显示。
@@ -396,7 +449,10 @@ function CreateAnnouncementForm({ onCreated, reload }: { onCreated: (message: st
 
   return (
     <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-      <h2 className="text-sm font-semibold">{t("Create announcement")}</h2>
+      <h2 className="text-sm font-semibold">
+        {editing ? t("Edit announcement") : t("Create announcement")}
+        {editing ? <span className="ml-2 font-mono text-xs font-normal text-[var(--ad-text-muted)]">{editing.id}</span> : null}
+      </h2>
       <p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t("An in-product banner — this is the site-wide broadcast channel. Active means visible to everyone.")}</p>
       <div className="mt-3 grid gap-3 md:grid-cols-2">
         <input className={inputClass} onChange={(e) => setTitle(e.target.value)} placeholder={t("Title")} value={title} />
@@ -425,10 +481,12 @@ function CreateAnnouncementForm({ onCreated, reload }: { onCreated: (message: st
           <option value="promo">{valueLabel("promo")}</option>
           <option value="warning">{valueLabel("warning")}</option>
         </select>
-        <label className="flex items-center gap-2 text-sm text-[var(--ad-text-muted)]">
-          <input checked={active} onChange={(e) => setActive(e.target.checked)} type="checkbox" />
-          {t("Active immediately")}
-        </label>
+        {editing ? null : (
+          <label className="flex items-center gap-2 text-sm text-[var(--ad-text-muted)]">
+            <input checked={active} onChange={(e) => setActive(e.target.checked)} type="checkbox" />
+            {t("Active immediately")}
+          </label>
+        )}
         <input
           className={inputClass}
           onChange={(e) => setReason(e.target.value)}
@@ -437,25 +495,34 @@ function CreateAnnouncementForm({ onCreated, reload }: { onCreated: (message: st
         />
         <input
           aria-label={t("Announcement create confirmation")}
-          className={inputClass}
+          className={editing ? `${inputClass} font-mono` : inputClass}
           onChange={(e) => setConfirmation(e.target.value)}
-          placeholder={t("Type title to confirm")}
+          placeholder={editing ? expectedConfirmation : t("Type title to confirm")}
           value={confirmation}
         />
+        {editing ? (
+          <button
+            className="rounded-md inline-flex h-10 items-center justify-center border border-[var(--ad-border)] px-3 text-sm"
+            onClick={onCancel}
+            type="button"
+          >
+            {t("Cancel")}
+          </button>
+        ) : null}
         <button
           aria-describedby={missing.length > 0 ? "announcement-create-missing" : undefined}
           className="inline-flex h-10 items-center justify-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
           disabled={!canCreate}
-          onClick={() => void create()}
+          onClick={() => void submit()}
           type="button"
         >
-          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-          {t("Create")}
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : editing ? <Pencil className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+          {editing ? t("Save changes") : t("Create")}
         </button>
       </div>
       {missing.length > 0 ? (
         <div className="mt-2 text-xs text-[var(--ad-text-muted)]" id="announcement-create-missing">
-          {t("Still needed before you can create it:")}
+          {editing ? t("Still needed before you can save it:") : t("Still needed before you can create it:")}
           <ul className="mt-1 list-disc pl-5">
             {missing.map((requirement) => <li key={requirement}>{t(requirement)}</li>)}
           </ul>
