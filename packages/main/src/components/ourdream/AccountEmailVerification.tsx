@@ -44,6 +44,8 @@ function useEmailChallenge() {
     failed(error: unknown) {
       setNow(Date.now());
       if (!(error instanceof EmailRequestError) || error.status !== 429) setChallenge(null);
+      // Email delivery being down (503) sent nothing, so there is nothing to wait out.
+      if (error instanceof EmailRequestError && error.status === 503 && error.retryAfterMs <= 0) { setResendAt(0); return; }
       setResendAt(Date.now() + (error instanceof EmailRequestError && error.retryAfterMs > 0 ? error.retryAfterMs : 60_000));
     },
     clear() { setChallenge(null); setResendAt(0); setNow(Date.now()); },

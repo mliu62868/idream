@@ -101,7 +101,7 @@ describe("Community character follow affordance", () => {
   it("does not offer Follow or Following on the viewer's own character", () => {
     const html = renderCharacterCard(character({ canEditIdentity: true }));
 
-    expect(html).toContain("Your character");
+    expect(html).toContain("View character");
     expect(html).not.toContain(">Follow<");
     expect(html).not.toContain(">Following<");
   });

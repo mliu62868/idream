@@ -4,7 +4,7 @@
 //       显示最靠前一条；可关闭（localStorage 记 dismissed id）；无公告 → null。
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowRight, ExternalLink, RefreshCw, X } from "lucide-react";
+import { ArrowRight, ExternalLink, X } from "lucide-react";
 import {
   isSafeExternalHref,
   isSafeInternalPath,
@@ -32,7 +32,6 @@ export function AnnouncementBanner() {
   const [loadState, setLoadState] = useState<
     "loading" | "ready" | "error"
   >("loading");
-  const [loadAttempt, setLoadAttempt] = useState(0);
 
   useEffect(() => {
     if (!ageGateAccepted) return;
@@ -55,33 +54,12 @@ export function AnnouncementBanner() {
     return () => {
       cancelled = true;
     };
-  }, [ageGateAccepted, loadAttempt]);
+  }, [ageGateAccepted]);
 
   const next = items.find((item) => !dismissed.includes(item.id));
-  if (loadState === "error") {
-    return (
-      <div
-        className="border-b border-white/10 bg-neutral-900 text-white"
-        data-testid="announcement-unavailable"
-        role="status"
-      >
-        <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-2 text-xs">
-          <span>Announcements are temporarily unavailable.</span>
-          <button
-            className="inline-flex items-center gap-1.5 rounded px-2 py-1 font-semibold hover:bg-white/10"
-            onClick={() => {
-              setLoadState("loading");
-              setLoadAttempt((attempt) => attempt + 1);
-            }}
-            type="button"
-          >
-            <RefreshCw className="h-3.5 w-3.5" />
-            Retry
-          </button>
-        </div>
-      </div>
-    );
-  }
+  // Announcements are optional; a failed read hides the banner instead of
+  // pinning an outage strip to the top of every page.
+  if (loadState === "error") return null;
   if (!next) return null;
 
   function dismiss(id: string) {

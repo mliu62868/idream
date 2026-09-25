@@ -9,6 +9,7 @@ vi.mock("./AppSidebar", () => ({ AppSidebar: () => null }));
 vi.mock("./MobileBottomNav", () => ({ MobileBottomNav: () => null }));
 import { GroupChatManager } from "./GroupChatManager";
 import { invalidateViewerAuthority } from "./viewer-auth";
+vi.mock("./AppTopbar", () => ({ AppTopbar: () => null }));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let container: HTMLDivElement;

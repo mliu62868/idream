@@ -119,7 +119,7 @@ describe("truthful public UI states", () => {
   });
 
   it("renders the owned wordmark without waiting for a reference-site logo", () => {
-    expect(source("OurdreamRoutePage.tsx")).toMatch(/<span[^>]*>iDream<\/span>/);
+    expect(source("AppTopbar.tsx")).toMatch(/<span[^>]*>iDream<\/span>/);
     expect(source("OurdreamRoutePage.tsx")).not.toContain("/ourdream-logo.svg");
   });
 

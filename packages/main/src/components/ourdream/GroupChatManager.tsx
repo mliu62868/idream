@@ -7,6 +7,7 @@ import { groupChatMemberSchema, GROUP_CHAT_MAX_MEMBERS } from "@idream/shared/co
 import { useViewerGate, type ViewerGate } from "@/hooks/useViewerGate";
 import { useViewerResource } from "@/hooks/useViewerResource";
 import { AppSidebar } from "./AppSidebar";
+import { AppTopbar } from "./AppTopbar";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { useAgeGateAccess } from "./AgeGateBoundary";
 import { authHrefForTarget } from "./authRedirect";
@@ -30,7 +31,8 @@ export function GroupChatManager() {
   const viewer = useViewerGate();
   return <main className="min-h-screen bg-[rgb(13,13,13)] text-white"><div className="flex min-h-screen">
     <AppSidebar activeHref="/chat" />
-    <section className="min-w-0 flex-1 px-4 py-8 pb-24 md:px-[60px]">
+    <div className="min-w-0 flex-1"><AppTopbar activeHref="/chat" currentPath="/chat/groups" />
+    <section className="px-4 py-8 pb-24 md:px-[60px]">
       <Link className="text-sm font-bold text-white/65 underline" href="/chat">Your chats</Link>
       <h1 className="mt-4 text-3xl font-black uppercase">Group chats</h1>
       <p className="mt-2 max-w-2xl text-sm leading-6 text-white/65">Bring 2–12 Characters into one conversation. Choose who replies each time; every Character keeps their own identity and memory.</p>
@@ -43,7 +45,7 @@ export function GroupChatManager() {
       {accepted && viewer.identity?.kind === "user"
         ? <GroupChats key={viewer.identity.scope} viewer={viewer} />
         : null}
-    </section>
+    </section></div>
   </div><MobileBottomNav activeHref="/chat" /></main>;
 }
 

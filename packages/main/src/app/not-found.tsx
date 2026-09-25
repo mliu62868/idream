@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { ArrowRight, Compass } from "lucide-react";
 import { AppSidebar } from "@/components/ourdream/AppSidebar";
+import { AppTopbar } from "@/components/ourdream/AppTopbar";
 import { MobileBottomNav } from "@/components/ourdream/MobileBottomNav";
 import { SiteFooter } from "@/components/ourdream/SiteFooter";
 
@@ -24,6 +25,7 @@ export default function NotFound() {
       <div className="flex min-h-screen w-full">
         <AppSidebar activeHref="" />
         <div className="min-w-0 flex-1 pb-20 md:pb-12">
+          <AppTopbar activeHref="" currentPath="/" />
           <section className="grid min-h-[60vh] place-items-center px-4 py-16 md:px-[60px]">
             <div className="mx-auto max-w-xl text-center">
               <p className="text-[12px] font-black uppercase tracking-wide text-[rgb(253,95,194)]">

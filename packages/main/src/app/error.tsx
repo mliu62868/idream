@@ -28,8 +28,8 @@ export default function ErrorPage({
           This page could not load
         </h1>
         <p className="mt-5 text-[15px] font-medium leading-7 text-[rgb(170,170,170)]">
-          Your account data was not replaced with placeholders. Retry the
-          authoritative request, or return to Explore.
+          Something went wrong on our side. Nothing in your account was
+          changed. Try again, or go back to Explore.
         </p>
         {error.digest ? (
           <p className="mt-3 font-mono text-[11px] text-white/45">

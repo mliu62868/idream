@@ -24,6 +24,7 @@ export function AuthWorkspace({
   const [pending, setPending] = useState(false);
   const [interactive, setInteractive] = useState(false);
   const [loginRecoveryHref, setLoginRecoveryHref] = useState("/login");
+  const [signupHref, setSignupHref] = useState("/signup");
   const [recovering, setRecovering] = useState(false);
   const [recoveryCode, setRecoveryCode] = useState<{ code: string; ownerId: string } | null>(null);
   const deletionReceipt = useSyncExternalStore(
@@ -56,7 +57,12 @@ export function AuthWorkspace({
   }, []);
 
   useEffect(() => {
-    const frame = window.requestAnimationFrame(() => setInteractive(true));
+    // The cross-links keep ?next= so switching forms still returns to the task.
+    const frame = window.requestAnimationFrame(() => {
+      setInteractive(true);
+      setLoginRecoveryHref(authLoginRecoveryHref());
+      setSignupHref(authSignupHref());
+    });
     void redirectIfAlreadyAuthenticated();
     return () => window.cancelAnimationFrame(frame);
   }, [redirectIfAlreadyAuthenticated]);
@@ -76,14 +82,20 @@ export function AuthWorkspace({
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(
-          mode === "signup" ? { email, password, name, ref } : { email, password },
+          // A blank display name is optional, not an invalid one.
+          mode === "signup" ? { email, password, name: name.trim() || undefined, ref } : { email, password },
         ),
       });
-      const payload = (await response.json()) as {
+      const payload = (await response.json().catch(() => null)) as {
         ok: boolean;
         error?: { message: string; details?: { fieldErrors?: Record<string, string[]> } };
         data?: { recoveryCode?: string; user?: { id: string } };
-      };
+      } | null;
+      if (!payload) {
+        // A non-JSON answer is our outage (gateway page), not the reader's network.
+        setStatus("Something went wrong on our side. Please try again in a moment.");
+        return;
+      }
       if (!response.ok || !payload.ok) {
         if (await redirectIfAlreadyAuthenticated()) return;
         setLoginRecoveryHref(authLoginRecoveryHref());
@@ -122,8 +134,9 @@ export function AuthWorkspace({
             {mode === "signup" ? "Create your iDream account" : "Log in to iDream"}
           </h1>
           <p className="mt-5 max-w-xl text-[15px] font-medium leading-7 text-[rgb(170,170,170)]">
-            Sign in to unlock Create, Chat, Generate, My AI, dreamcoins, and
-            checkout across your account.
+            {mode === "signup"
+              ? "Join free to unlock Create, Chat, Generate, My AI, and dreamcoins across your account."
+              : "Log in to unlock Create, Chat, Generate, My AI, dreamcoins, and checkout across your account."}
           </p>
         </div>
         <form
@@ -214,6 +227,17 @@ export function AuthWorkspace({
               )}
             </div>
           )}
+          {!shouldShowSignupLoginRecovery && (
+            <p className="mt-4 text-[13px] font-medium text-[rgb(170,170,170)]">
+              {mode === "signup" ? "Already have an account? " : "New to iDream? "}
+              <Link
+                className="font-black text-white underline decoration-white/30 underline-offset-4 hover:decoration-white"
+                href={mode === "signup" ? loginRecoveryHref : signupHref}
+              >
+                {mode === "signup" ? "Log in" : "Join free"}
+              </Link>
+            </p>
+          )}
         </form>
       </div>
     </section>
@@ -223,6 +247,11 @@ export function AuthWorkspace({
 function authRedirectTarget() {
   const next = new URLSearchParams(window.location.search).get("next");
   return safeInternalAuthRedirect(next, window.location.origin);
+}
+
+function authSignupHref() {
+  const target = authRedirectTarget();
+  return target === "/" ? "/signup" : authHrefForTarget("/signup", target);
 }
 
 function authLoginRecoveryHref() {

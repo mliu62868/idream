@@ -41,8 +41,7 @@ export function AppSidebar({
     <aside className="hidden h-screen w-[220px] shrink-0 md:flex md:sticky md:top-0 md:z-30">
       <div className="flex h-screen w-[220px] flex-col overflow-hidden rounded-r-[24px] bg-[rgb(18,18,18)] px-0 pb-4 pt-2">
         <div className="flex h-11 items-center justify-between px-5">
-          <span className="text-[24px] font-black tracking-tight text-white">iDream</span>
-          <span className="h-4 w-4 rounded-[4px] border border-[rgb(114,113,112)]" />
+          <Link className="text-[24px] font-black tracking-tight text-white" href="/">iDream</Link>
         </div>
 
         <nav className="mt-4 flex flex-col gap-1 px-3">

@@ -840,7 +840,7 @@ export function CommunityWorkspace() {
                     </p>
                     <p className="mt-2 text-[12px] font-medium text-[rgb(170,170,170)]">
                       {countLabel(collection.itemCount ?? 0, "item")}
-                      {collection.ownerName ? ` · by ${collection.ownerName}` : ""}
+                      {collection.ownerName ? ` · by ${collection.ownerType === "official" ? "iDream" : collection.ownerName}` : ""}
                     </p>
                   </div>
                 </Link>
@@ -1070,14 +1070,15 @@ export function CommunityCharacterCard({
           )}
         </p>
         <div className="mt-4 flex gap-2">
-          {character.source === "official" || !character.creatorId ? (
-            <span className="inline-flex h-9 flex-1 items-center justify-center rounded-full bg-[rgb(36,36,36)] text-[12px] font-black text-white">
-              Official
-            </span>
-          ) : character.canEditIdentity ? (
-            <span className="inline-flex h-9 flex-1 items-center justify-center rounded-full bg-[rgb(36,36,36)] text-[12px] font-black text-white">
-              Your character
-            </span>
+          {/* Nothing to follow on official or own characters; the slot opens the
+              character instead of showing a pill that looks like a button. */}
+          {character.source === "official" || !character.creatorId || character.canEditIdentity ? (
+            <Link
+              className="inline-flex h-9 flex-1 items-center justify-center rounded-full bg-white text-[12px] font-black text-[rgb(13,13,13)]"
+              href={`/characters/${encodeURIComponent(character.id)}`}
+            >
+              View character
+            </Link>
           ) : (
             <button
               className={`inline-flex h-9 flex-1 items-center justify-center gap-2 rounded-full text-[12px] font-black ${

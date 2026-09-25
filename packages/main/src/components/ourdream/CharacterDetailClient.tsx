@@ -18,6 +18,7 @@ import {
 import { useAgeGateAccess } from "./AgeGateBoundary";
 import { useReportDialog } from "./ReportDialog";
 import { AppSidebar } from "./AppSidebar";
+import { AppTopbar } from "./AppTopbar";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { SiteFooter } from "./SiteFooter";
 import { apiEnvelopeErrorMessage } from "@/lib/viewer-resource-client";
@@ -159,7 +160,9 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
     <main className="min-h-screen bg-[rgb(13,13,13)] text-white">
       <div className="flex min-h-screen w-full">
         <AppSidebar activeHref="/" />
-        <section className="min-w-0 flex-1 px-4 py-8 pb-24 md:px-[60px] md:py-12">
+        <div className="min-w-0 flex-1">
+          <AppTopbar activeHref="/" currentPath={`/characters/${id}`} />
+          <section className="px-4 py-8 pb-24 md:px-[60px] md:py-12">
           <Link
             className="inline-flex items-center gap-2 text-[13px] font-bold text-[rgb(170,170,170)] hover:text-white"
             href="/"
@@ -246,6 +249,7 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
             </div>
           )}
         </section>
+        </div>
       </div>
       <SiteFooter />
       <MobileBottomNav activeHref="/" />

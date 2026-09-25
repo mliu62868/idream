@@ -144,7 +144,7 @@ function AuthNavContent() {
   return (
     <>
       <Link
-        className="hidden text-[12px] font-bold leading-4 text-white md:block"
+        className="text-[12px] font-bold leading-4 text-white"
         href={loginHref}
       >
         Login

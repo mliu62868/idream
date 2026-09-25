@@ -13,6 +13,7 @@ import {
 import { shareOrCopy } from "@/lib/utils";
 import type { CharacterCardData } from "@/types/ourdream";
 import { AppSidebar } from "./AppSidebar";
+import { AppTopbar } from "./AppTopbar";
 import { useAgeGateAccess } from "./AgeGateBoundary";
 import { CharacterCard } from "./CharacterCard";
 import { ComicDiscovery } from "./ComicCatalog";
@@ -166,7 +167,9 @@ function CreatorProfileContent({ id }: Readonly<{ id: string }>) {
     <main className="min-h-screen bg-[rgb(13,13,13)] text-white">
       <div className="flex min-h-screen w-full">
         <AppSidebar activeHref="/community" />
-        <section className="min-w-0 flex-1 px-4 py-8 pb-24 md:px-[60px] md:py-12">
+        <div className="min-w-0 flex-1">
+          <AppTopbar activeHref="/community" currentPath={`/creators/${id}`} />
+          <section className="px-4 py-8 pb-24 md:px-[60px] md:py-12">
           <Link
             className="inline-flex items-center gap-2 text-[13px] font-bold text-[rgb(170,170,170)] hover:text-white"
             href="/community"
@@ -215,6 +218,16 @@ function CreatorProfileContent({ id }: Readonly<{ id: string }>) {
                     <Share2 className="h-4 w-4" />
                     Share
                   </button>
+                  {creator.isSelf && (
+                    <>
+                      <Link className="inline-flex h-10 items-center justify-center rounded-full bg-[rgb(36,36,36)] px-4 text-[13px] font-bold text-white" href="/profile">
+                        Edit profile
+                      </Link>
+                      <Link className="inline-flex h-10 items-center justify-center rounded-full bg-white px-5 text-[13px] font-black text-[rgb(13,13,13)]" href="/create">
+                        Create a character
+                      </Link>
+                    </>
+                  )}
                   {!creator.isSelf && (
                     <button
                       className="inline-flex h-10 items-center justify-center gap-2 rounded-full bg-[rgb(36,36,36)] px-4 text-[13px] font-bold text-white"
@@ -280,7 +293,9 @@ function CreatorProfileContent({ id }: Readonly<{ id: string }>) {
               )}
               {characters.length === 0 && (
                 <p className="mt-8 text-[13px] font-medium text-[rgb(170,170,170)]">
-                  This creator has no public characters yet.
+                  {creator?.isSelf
+                    ? "You have no public characters yet. Publish one from My AI to show it here."
+                    : "This creator has no public characters yet."}
                 </p>
               )}
               <ComicDiscovery creatorId={id} />
@@ -305,6 +320,7 @@ function CreatorProfileContent({ id }: Readonly<{ id: string }>) {
             </p>
           )}
         </section>
+        </div>
       </div>
       <SiteFooter />
       <MobileBottomNav activeHref="/community" />

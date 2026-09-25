@@ -28,8 +28,8 @@ export default function GlobalError({
             We could not open iDream
           </h1>
           <p className="mt-5 text-sm leading-7 text-white/65">
-            Nothing was substituted or discarded. Retry the application shell
-            to reconnect to the current data authority.
+            Something went wrong on our side. Nothing in your account was
+            changed. Try again in a moment.
           </p>
           {error.digest ? (
             <p className="mt-3 font-mono text-xs text-white/45">

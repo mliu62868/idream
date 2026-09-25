@@ -21,12 +21,11 @@ import type { ResourceLibrary } from "@/lib/resource-library";
 import { toSafetyHref } from "@/lib/ourdream-safety-data";
 import type { OurdreamRoute } from "@/types/ourdream";
 import { AppSidebar } from "./AppSidebar";
+import { AppTopbar } from "./AppTopbar";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { SafetyCenterPage } from "./SafetyCenterPage";
 import { SiteFooter } from "./SiteFooter";
-import { AuthNav } from "./AuthNav";
 import { AuthWorkspace } from "./AuthWorkspace";
-import { AppSearch } from "./AppSearch";
 import { ChatHubWorkspace } from "./ChatHubWorkspace";
 import { ComparisonPlanSnapshot } from "./ComparisonPlanSnapshot";
 import { CommunityWorkspace } from "./CommunityWorkspace";
@@ -37,7 +36,6 @@ import { HelpDeskWorkspace } from "./HelpDeskWorkspace";
 import { ProfileWorkspace } from "./ProfileWorkspace";
 import { PublicCharacterStrip } from "./PublicCharacterStrip";
 import { UpgradeWorkspace } from "./UpgradeWorkspace";
-import { MobileAppMenu } from "./MobileAppMenu";
 
 function activeHrefForPath(path: string) {
   if (path === "/login" || path === "/signup") return "";
@@ -77,26 +75,6 @@ function activeHrefForPath(path: string) {
   }
   if (path.startsWith("/upgrade")) return "/upgrade";
   return "/";
-}
-
-function AppTopbar({
-  activeHref,
-  currentPath,
-}: Readonly<{ activeHref: string; currentPath: string }>) {
-  return (
-    <header className="sticky top-0 z-40 h-14 w-full bg-[rgba(13,13,13,0.62)] backdrop-blur-xl">
-      <div className="flex h-14 items-center justify-between gap-3 px-4 md:px-[60px]">
-        <MobileAppMenu activeHref={activeHref} currentPath={currentPath} />
-        <Link className="hidden md:block" href="/">
-          <span className="text-[24px] font-black tracking-tight text-white">iDream</span>
-        </Link>
-        <AppSearch />
-        <div className="flex items-center gap-3">
-          <AuthNav />
-        </div>
-      </div>
-    </header>
-  );
 }
 
 export function RouteShell({

@@ -32,6 +32,7 @@ vi.mock("./CharacterDetailHero", () => ({
 }));
 
 import { CharacterDetailClient } from "./CharacterDetailClient";
+vi.mock("./AppTopbar", () => ({ AppTopbar: () => null }));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 

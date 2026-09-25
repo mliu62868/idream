@@ -11,6 +11,7 @@ vi.mock("./MobileBottomNav", () => ({ MobileBottomNav: () => null }));
 vi.mock("./SiteFooter", () => ({ SiteFooter: () => null }));
 vi.mock("./CharacterCard", () => ({ CharacterCard: ({ card }: { card: { id: string; title: string } }) => createElement("a", { href: `/characters/${card.id}` }, card.title) }));
 import { CreatorProfileClient } from "./CreatorProfileClient";
+vi.mock("./AppTopbar", () => ({ AppTopbar: () => null }));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
