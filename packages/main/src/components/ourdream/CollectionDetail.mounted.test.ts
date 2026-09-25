@@ -218,4 +218,28 @@ describe("CollectionDetail", () => {
     expect(container.textContent).toContain("original media stays in your Gallery");
     expect(fetcher).toHaveBeenCalledWith("/api/v1/media/collections/a/items/first", expect.objectContaining({ method: "DELETE" }));
   });
+
+  it("lets a viewer share and report someone else's public collection, but never report their own or share a private one", async () => {
+    const copied: string[] = [];
+    const reports: unknown[] = [];
+    vi.stubGlobal("navigator", { ...navigator, share: undefined, clipboard: { writeText: async (text: string) => { copied.push(text); } } });
+    let owner = false;
+    vi.stubGlobal("fetch", vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "POST") { reports.push(JSON.parse(String(init.body))); return Response.json({ ok: true, data: { report: { id: "report-1" } } }); }
+      return page("a", ["first"], null, owner);
+    }));
+    await render(); await waitFor(() => container.textContent?.includes("Share collection") ?? false);
+    await click("Share collection");
+    await waitFor(() => container.textContent?.includes("Share link copied.") ?? false);
+    expect(copied).toEqual([`${window.location.origin}/community?collection=a`]);
+    await click("Report collection");
+    await click("Submit report");
+    await waitFor(() => container.textContent?.includes("Report submitted.") ?? false);
+    expect(reports).toEqual([expect.objectContaining({ targetType: "media_collection", targetId: "a" })]);
+
+    owner = true;
+    await render("b"); await waitFor(() => Boolean(container.querySelector("form")));
+    expect(container.textContent).not.toContain("Report collection");
+    expect(container.textContent).not.toContain("Share collection");
+  });
 });

@@ -455,6 +455,24 @@ describe("ProfileWorkspace media pagination", () => {
     assign.mockRestore();
   });
 
+  it("links each Created Character to Generate and shows audience numbers only for shared ones", async () => {
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/v1/library/created") return Response.json({ ok: true, data: { items: [
+        { id: "public-character", name: "Avery", visibility: "public", status: "approved", publicationState: "live", likes: "12", chats: "1.2K", likesCount: 12, chatsCount: 1200 },
+        { id: "private-character", name: "Blake", visibility: "private", status: "approved", likes: "0", chats: "3", likesCount: 0, chatsCount: 3 },
+      ] } });
+      return originalFetch(input, init);
+    }));
+    await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/custom" })));
+    await settle();
+    await click(button("Created"));
+    expect([...container.querySelectorAll('a[aria-label="Generate with character"]')].map((link) => link.getAttribute("href")))
+      .toEqual(["/generate?characterId=public-character", "/generate?characterId=private-character"]);
+    expect([...container.querySelectorAll('[data-testid="created-character-performance"]')].map((item) => item.textContent))
+      .toEqual(["1.2K chats · 12 likes"]);
+  });
+
   it("shows the server's reason when publishing a Character fails", async () => {
     const originalFetch = globalThis.fetch;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

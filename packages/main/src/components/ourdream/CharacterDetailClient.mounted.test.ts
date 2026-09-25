@@ -149,6 +149,29 @@ describe("CharacterDetailClient like relationship", () => {
     expect(similar.querySelector('a[href="/characters/character-1"]')).toBeNull();
   });
 
+  it("shares a public character through the system share sheet, and offers no Share for a private one", async () => {
+    const share = vi.fn(async () => undefined);
+    const writeText = vi.fn(async () => undefined);
+    vi.stubGlobal("navigator", { ...navigator, share, clipboard: { writeText } });
+    let visibility = "public";
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ok: true, data: { character: { ...character, visibility } } })));
+    window.history.replaceState(null, "", "/characters/character-1?entryExposureId=e1");
+    await act(async () =>
+      root.render(createElement(CharacterDetailClient, { id: "character-1" }))
+    );
+    await waitUntil(() => Boolean(findButton("Share")));
+    await act(async () => findButton("Share")?.click());
+    expect(share).toHaveBeenCalledWith({ title: "Avery", url: `${window.location.origin}/characters/character-1` });
+    expect(writeText).not.toHaveBeenCalled();
+
+    visibility = "private";
+    await act(async () =>
+      root.render(createElement(CharacterDetailClient, { id: "character-2" }))
+    );
+    await waitUntil(() => Boolean(findButton("Like")));
+    expect(findButton("Share")).toBeUndefined();
+  });
+
   function findButton(label: string) {
     return [...container.querySelectorAll("button")].find(
       (button) => button.textContent?.trim() === label,

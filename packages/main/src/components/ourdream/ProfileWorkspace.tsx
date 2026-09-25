@@ -19,6 +19,7 @@ import {
   Save,
   Scale,
   Search,
+  Sparkles,
   Trash2,
   UserCog,
   Volume2,
@@ -2170,6 +2171,12 @@ function LibraryCard({
               })}
             </span>
           )}
+          {/* INTENT: 计数是别人聊了多少、赞了多少。私有角色的聊天只有本人，印出来会被读成「表现」。 */}
+          {(item.visibility === "public" || item.visibility === "unlisted") && (
+            <span className="text-[11px] font-bold text-[rgb(170,170,170)]" data-testid="created-character-performance">
+              {item.chats ?? "0"} chats · {item.likes ?? "0"} likes
+            </span>
+          )}
           <button
             aria-label="Chat with character"
             className="inline-flex h-8 items-center gap-1 rounded-full bg-white px-3 text-[12px] font-black text-[rgb(13,13,13)]"
@@ -2179,6 +2186,14 @@ function LibraryCard({
             <MessageCircle className="h-3.5 w-3.5" />
             Chat
           </button>
+          <Link
+            aria-label="Generate with character"
+            className="inline-flex h-8 items-center gap-1 rounded-full bg-[rgb(253,95,194)] px-3 text-[12px] font-black text-[rgb(13,13,13)]"
+            href={`/generate?characterId=${encodeURIComponent(character?.id ?? item.id)}`}
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+            Generate
+          </Link>
           {/* CR-06: edits reuse the full Create wizard and save a new version. */}
           <Link
             aria-label="Edit character"

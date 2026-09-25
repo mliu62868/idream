@@ -95,6 +95,23 @@ describe("HelpDeskHistoryPanel", () => {
     expect(html).toContain("report-1");
   });
 
+  it("names the Comic and Collection targets a customer reported", () => {
+    const report = (id: string, targetType: string) => ({
+      id, targetType, targetId: `${targetType}-1`, category: "spam", status: "open",
+      createdAt: "2026-09-24T10:00:00.000Z", decision: null, appealIds: [],
+    });
+    const html = renderToStaticMarkup(createElement(HelpDeskHistoryPanel, {
+      authenticated: true,
+      loading: false,
+      error: "",
+      onRefresh: vi.fn(),
+      history: { supportRequests: [], reports: [report("r1", "comic"), report("r2", "media_collection")], appeals: [] },
+    }));
+    expect(html).toContain("Comic · ");
+    expect(html).toContain("Collection · ");
+    expect(html).not.toContain("Content · ");
+  });
+
   it("offers an appeal prefilled with the decision it came from", () => {
     const onAppeal = vi.fn();
     const report = {

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowLeft, Flag, Heart, MessageCircle, Sparkles } from "lucide-react";
+import { ArrowLeft, Flag, Heart, MessageCircle, Share2, Sparkles } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   parseCharacterDetailResponse,
@@ -21,6 +21,7 @@ import { AppSidebar } from "./AppSidebar";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { SiteFooter } from "./SiteFooter";
 import { apiEnvelopeErrorMessage } from "@/lib/viewer-resource-client";
+import { shareOrCopy } from "@/lib/utils";
 
 type CharacterDetail = PublicCharacterDetail;
 
@@ -196,6 +197,17 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
                     <Heart className="h-4 w-4" />
                     {character.liked ? "Liked" : "Like"}
                   </button>
+                  {/* 私有角色只有本人看得到，分享出去对方也打不开，所以不给这个按钮。 */}
+                  {(character.visibility === "public" || character.visibility === "unlisted") && (
+                    <button
+                      className="inline-flex h-12 items-center justify-center gap-2 rounded-full bg-[rgb(36,36,36)] px-5 text-[14px] font-bold text-white"
+                      onClick={async () => setStatus(await shareOrCopy(`${window.location.origin}${window.location.pathname}`, character.title))}
+                      type="button"
+                    >
+                      <Share2 className="h-4 w-4" />
+                      Share
+                    </button>
+                  )}
                   <button
                     className="inline-flex h-12 items-center justify-center gap-2 rounded-full bg-[rgb(36,36,36)] px-5 text-[14px] font-bold text-white"
                     disabled={busy}

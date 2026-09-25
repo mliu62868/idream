@@ -2,19 +2,21 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { ArrowLeft, HeartHandshake } from "lucide-react";
+import { ArrowLeft, Flag, HeartHandshake, Share2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   parseCreatorResponse,
   parseFollowMutationResponse,
   type PublicCreator,
 } from "@/lib/public-api-contracts";
+import { shareOrCopy } from "@/lib/utils";
 import type { CharacterCardData } from "@/types/ourdream";
 import { AppSidebar } from "./AppSidebar";
 import { useAgeGateAccess } from "./AgeGateBoundary";
 import { CharacterCard } from "./CharacterCard";
 import { ComicDiscovery } from "./ComicCatalog";
 import { MobileBottomNav } from "./MobileBottomNav";
+import { useReportDialog } from "./ReportDialog";
 import { SiteFooter } from "./SiteFooter";
 import { authHrefForTarget } from "./authRedirect";
 
@@ -36,6 +38,7 @@ function CreatorProfileContent({ id }: Readonly<{ id: string }>) {
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [morePending, setMorePending] = useState(false);
   const moreRequest = useRef<AbortController | null>(null);
+  const { openReport, reportDialog } = useReportDialog(setStatus);
 
   useEffect(() => {
     if (!ageGateAccepted) return;
@@ -202,23 +205,43 @@ function CreatorProfileContent({ id }: Readonly<{ id: string }>) {
                       : ""}
                   </p>
                 </div>
-                {!creator.isSelf && (
+                <div className="ml-auto flex flex-wrap gap-2">
                   <button
-                    aria-pressed={creator.isFollowing}
-                    className={`ml-auto inline-flex h-10 items-center justify-center gap-2 rounded-full px-5 text-[13px] font-black ${
-                      creator.isFollowing
-                        ? "bg-[rgb(36,36,36)] text-white"
-                        : "bg-white text-[rgb(13,13,13)]"
-                    }`}
-                    data-testid="creator-follow"
-                    disabled={followPending}
-                    onClick={() => void toggleFollow()}
+                    className="inline-flex h-10 items-center justify-center gap-2 rounded-full bg-[rgb(36,36,36)] px-4 text-[13px] font-bold text-white"
+                    onClick={async () => setStatus(await shareOrCopy(`${window.location.origin}/creators/${encodeURIComponent(id)}`, creator.displayName))}
                     type="button"
                   >
-                    <HeartHandshake className="h-4 w-4" />
-                    {creator.isFollowing ? "Following" : "Follow"}
+                    <Share2 className="h-4 w-4" />
+                    Share
                   </button>
-                )}
+                  {!creator.isSelf && (
+                    <button
+                      className="inline-flex h-10 items-center justify-center gap-2 rounded-full bg-[rgb(36,36,36)] px-4 text-[13px] font-bold text-white"
+                      onClick={() => openReport({ kind: "record", targetType: "user_profile", targetId: creator.id })}
+                      type="button"
+                    >
+                      <Flag className="h-4 w-4" />
+                      Report
+                    </button>
+                  )}
+                  {!creator.isSelf && (
+                    <button
+                      aria-pressed={creator.isFollowing}
+                      className={`inline-flex h-10 items-center justify-center gap-2 rounded-full px-5 text-[13px] font-black ${
+                        creator.isFollowing
+                          ? "bg-[rgb(36,36,36)] text-white"
+                          : "bg-white text-[rgb(13,13,13)]"
+                      }`}
+                      data-testid="creator-follow"
+                      disabled={followPending}
+                      onClick={() => void toggleFollow()}
+                      type="button"
+                    >
+                      <HeartHandshake className="h-4 w-4" />
+                      {creator.isFollowing ? "Following" : "Follow"}
+                    </button>
+                  )}
+                </div>
               </header>
 
               {status && (
@@ -284,6 +307,7 @@ function CreatorProfileContent({ id }: Readonly<{ id: string }>) {
       </div>
       <SiteFooter />
       <MobileBottomNav activeHref="/community" />
+      {reportDialog}
     </main>
   );
 }
