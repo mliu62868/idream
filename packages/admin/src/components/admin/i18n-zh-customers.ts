@@ -30,8 +30,8 @@ export const adminZhCustomers: Record<string, string> = {
   "Close conversation": "收起对话",
   "Support conversation could not load": "客服对话加载失败",
   "Loading conversation…": "正在加载对话…",
-  "Reply to support request {id}": "回复客服工单 {id}",
   "Send reply": "发送回复",
+  "Reply sent to {id}": "已回复 {id}，工单转为等待客户",
   "Refresh conversation": "刷新对话",
   "Case Detail": "案件详情",
   ". This records an already-completed provider refund and closes the late-settlement exception; it does not issue a refund.":

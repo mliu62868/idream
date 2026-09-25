@@ -267,6 +267,23 @@ describe("SupportWorkspace customer replies", () => {
     expect(container.querySelector("textarea")?.value).toBe("Draft guidance to send later.");
     expect(container.textContent).toContain("waiting_on_user");
   });
+
+  it("sends a customer reply in one click and moves an open ticket to waiting on the customer", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => Response.json({ ok: true, data: String(input).includes("/support/requests/")
+      ? { request: { ticketId: "SUP-CLOCK-1", subject: "Charged twice", description: "Customer intake", status: "open", canReply: true, createdAt: "2026-09-02T12:00:00.000Z", updatedAt: "2026-09-02T12:00:00.000Z", messages: [] } }
+      : { items: [] } })));
+    apiWrite.mockReset();
+    apiWrite.mockResolvedValue({});
+    await mount();
+    await act(async () => [...container.querySelectorAll("button")].find((node) => node.textContent?.trim() === "SUP-CLOCK-1")!.click());
+    await waitUntil(() => container.querySelector('textarea[aria-label="Message to customer"]') !== null);
+    await change(container.querySelector('textarea[aria-label="Message to customer"]')!, "We refunded the duplicate charge.");
+    await act(async () => [...container.querySelectorAll("button")].find((node) => node.textContent?.trim() === "Send reply")!.click());
+    await waitUntil(() => apiWrite.mock.calls.length === 1);
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(apiWrite.mock.calls[0][0]).toBe("/api/v2/admin/support/requests/SUP-CLOCK-1");
+    expect(apiWrite.mock.calls[0][2]).toMatchObject({ customerMessage: "We refunded the duplicate charge.", confirmation: "SUP-CLOCK-1", status: "waiting_on_user" });
+  });
 });
 
 const baseTicket = {

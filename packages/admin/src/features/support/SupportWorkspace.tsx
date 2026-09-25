@@ -22,7 +22,7 @@ import {
 } from "@idream/shared/admin";
 import type { SupportConversation } from "@idream/shared/contracts";
 import { apiGet, apiWrite } from "@/components/admin/api";
-import { GhostButton } from "@/components/admin/ui/buttons";
+import { GhostButton, PrimaryButton } from "@/components/admin/ui/buttons";
 import { StatusPill } from "@/components/admin/ui/StatusPill";
 import { adminV2Request } from "@/lib/admin-v2-api";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
@@ -562,7 +562,9 @@ function SupportConversationPanel({ ticketId, canWrite, canViewPlaintext, refres
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<unknown>(null);
   const [loading, setLoading] = useState(false);
-  const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
+  const [sending, setSending] = useState(false);
+  const { toast } = useToast();
+  const failureToast = useFailureToast();
   const gate = useRef(createLatestRequestGate());
   const section = useRef<HTMLElement>(null);
   const load = useCallback(async () => {
@@ -589,21 +591,28 @@ function SupportConversationPanel({ ticketId, canWrite, canViewPlaintext, refres
     };
   }, [load, refreshRevision]);
 
-  function reply() {
+  // INTENT: 回复客户是客服最高频的动作，按下「发送」就是意图本身 —— 不再弹确认框让人重敲工单号、
+  //         编一条审计原因。确认串与原因照旧随请求送达，服务端契约不变。
+  // SPEC: 回复后工单进入「等待客户」；客户再回复时前台会把它改回 open（customer-care.ts）。
+  async function reply() {
     const customerMessage = draft.trim();
-    if (!customerMessage || !canWrite) return;
-    setConfirmation({
-      title: t("Reply to support request {id}", { id: ticketId }),
-      summary: <p className="whitespace-pre-wrap break-words">{customerMessage}</p>,
-      destructive: { expectedName: ticketId, inputLabel: "Confirmation" },
-      reasonLabel: "Reason", submitLabel: "Send reply",
-      onSubmit: async (reason) => {
-        await apiWrite(`/api/v2/admin/support/requests/${encodeURIComponent(ticketId)}`, "PATCH", {
-          customerMessage, reason, confirmation: ticketId,
-        });
-        setDraft(""); await load(); onUpdated();
-      },
-    });
+    if (!customerMessage || !canWrite || !conversation) return;
+    setSending(true);
+    try {
+      await apiWrite(`/api/v2/admin/support/requests/${encodeURIComponent(ticketId)}`, "PATCH", {
+        customerMessage,
+        reason: "Customer-visible support reply",
+        confirmation: ticketId,
+        ...(conversation.status === "received" || conversation.status === "open" ? { status: "waiting_on_user" } : {}),
+      });
+      setDraft("");
+      toast({ tone: "success", title: t("Reply sent to {id}", { id: ticketId }) });
+      await load(); onUpdated();
+    } catch (cause) {
+      failureToast(cause);
+    } finally {
+      setSending(false);
+    }
   }
   return <section className="space-y-4 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5" ref={section}>
     <div className="flex items-center justify-between gap-3"><h2 className="font-semibold">{t("Support conversation")} · {ticketId}</h2><GhostButton onClick={onClose}>{t("Close conversation")}</GhostButton></div>
@@ -618,10 +627,10 @@ function SupportConversationPanel({ ticketId, canWrite, canViewPlaintext, refres
           <p className="mt-1 whitespace-pre-wrap break-words text-sm">{message.body}</p>
         </article>)}
       </div>
-      {canWrite && conversation.canReply ? <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); reply(); }}>
+      {canWrite && conversation.canReply ? <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); void reply(); }}>
         <label className="grid gap-2 text-sm font-medium">{t("Message to customer")}<textarea aria-label={t("Message to customer")} className="min-h-28 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3" maxLength={2000} onChange={(event) => setDraft(event.target.value)} value={draft} /></label>
         <p className="text-xs text-[var(--ad-text-muted)]">{t("Visible to the customer in Help Desk. Internal reasons stay private.")}</p>
-        <GhostButton disabled={!draft.trim() || loading} type="submit">{t("Send reply")}</GhostButton>
+        <PrimaryButton disabled={!draft.trim() || loading || sending} type="submit">{t("Send reply")}</PrimaryButton>
       </form> : null}
       <GhostButton disabled={loading} onClick={() => void load()}>{t("Refresh conversation")}</GhostButton>
       {canViewPlaintext ? <details className="rounded-md border border-[var(--ad-border)] p-3">
@@ -629,7 +638,6 @@ function SupportConversationPanel({ ticketId, canWrite, canViewPlaintext, refres
         <PlaintextAccessPanel initialTicketId={ticketId} />
       </details> : null}
     </> : null}
-    {confirmation ? <ConfirmDialog onClose={() => setConfirmation(null)} spec={confirmation} /> : null}
   </section>;
 }
 
