@@ -4633,6 +4633,16 @@ describe("admin generation metrics rollup (P3)", () => {
         costDreamcoins: 7,
       },
     });
+    // 取消的任务从未扣费：既不算产量也不算花费。
+    await prisma.generationJob.create({
+      data: {
+        ...base,
+        id: `${P}metrics-job-cancelled`,
+        sourceId: `${P}metrics-src-cancelled`,
+        status: "cancelled",
+        costDreamcoins: 5,
+      },
+    });
 
     const forbidden = await adminV2("GET", "/api/v2/admin/generation/metrics", {
       userId: support,
@@ -4652,11 +4662,12 @@ describe("admin generation metrics rollup (P3)", () => {
     const profileRow = metrics.data.profiles.find(
       (row: { profileId: string }) => row.profileId === profileId,
     );
+    // 花费只计 completed：failed 的 7 会被退款，cancelled 的 5 从未扣费。
     expect(profileRow).toMatchObject({
       total: 2,
       completed: 1,
       failed: 1,
-      costDreamcoins: 14,
+      costDreamcoins: 7,
     });
     expect(profileRow.avgDurationMs).toBeGreaterThanOrEqual(0);
     const recipeRow = metrics.data.recipes.find(

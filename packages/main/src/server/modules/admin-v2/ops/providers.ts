@@ -12,6 +12,7 @@ import {
   operationalGenerationJobWhere,
 } from "@/server/modules/metric-data-scope";
 import { actorWithPermission, queryParams } from "@/server/modules/admin-v2/shared/authority";
+import { chargedCost, COUNTED_STATUS } from "@/server/modules/admin-v2/generation/metrics";
 
 const DEFAULT_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 const LATENCY_SAMPLE_LIMIT = 5_000;
@@ -30,7 +31,8 @@ export async function getProviderOperations(request: Request) {
   const [grouped, completedJobs] = await Promise.all([
     prisma.generationJob.groupBy({
       by: ["provider", "status"],
-      where: operationalGenerationJobWhere({ createdAt }),
+      // 与生成指标同一口径：取消的不计，花费只计 completed。
+      where: operationalGenerationJobWhere({ createdAt, status: COUNTED_STATUS }),
       _count: { _all: true },
       _sum: { costDreamcoins: true },
     }),
@@ -55,7 +57,7 @@ export async function getProviderOperations(request: Request) {
     const value = stats.get(provider) ??
       { total: 0, completed: 0, failed: 0, blocked: 0, coinsCost: 0 };
     value.total += row._count._all;
-    value.coinsCost += row._sum.costDreamcoins ?? 0;
+    value.coinsCost += chargedCost(row.status, row._sum.costDreamcoins);
     if (row.status === "completed") value.completed += row._count._all;
     if (row.status === "failed") value.failed += row._count._all;
     if (row.status === "blocked") value.blocked += row._count._all;
@@ -82,8 +84,8 @@ export async function getProviderOperations(request: Request) {
           provider,
           ...value,
           successRate: finished > 0 ? Math.round((value.completed / finished) * 100) : null,
-          avgCostPerJob: value.total > 0
-            ? Math.round((value.coinsCost / value.total) * 10) / 10
+          avgCostPerJob: value.completed > 0
+            ? Math.round((value.coinsCost / value.completed) * 10) / 10
             : 0,
           latencyP50Ms: percentile(sorted, 50),
           latencyP95Ms: percentile(sorted, 95),

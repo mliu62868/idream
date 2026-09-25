@@ -77,6 +77,23 @@ describe("provider operations rollup", () => {
     ]);
   });
 
+  // SPEC: 取消的任务在查询层就被排除；花费只计 completed，平均按 completed 摊。
+  it("excludes cancelled jobs and counts only completed cost", async () => {
+    mocks.groupGenerationJobs.mockResolvedValue([
+      { provider: "backend", status: "completed", _count: { _all: 2 }, _sum: { costDreamcoins: 10 } },
+      { provider: "backend", status: "failed", _count: { _all: 2 }, _sum: { costDreamcoins: 10 } },
+    ]);
+
+    const payload = await getProviderOperations(new Request(url));
+
+    expect(mocks.groupGenerationJobs.mock.calls[0]?.[0]).toMatchObject({
+      where: { AND: [expect.anything(), { status: { not: "cancelled" } }] },
+    });
+    expect(payload.providers).toEqual([
+      expect.objectContaining({ total: 4, completed: 2, failed: 2, coinsCost: 10, avgCostPerJob: 5 }),
+    ]);
+  });
+
   it("rejects an unparsable window instead of silently widening it", async () => {
     await expect(getProviderOperations(new Request(`${url}?from=not-a-date`)))
       .rejects.toMatchObject({ status: 400 });

@@ -21,6 +21,14 @@ function emptyBuckets(): StatusBuckets {
   return { total: 0, completed: 0, failed: 0, blocked: 0 };
 }
 
+// SPEC: 取消的任务从未扣费（settlement not_required），不算产量也不算花费；
+//       花费只计 completed —— failed / blocked 会被退款，计进去就是把退回去的钱当成本。
+// INVARIANT: 两期（本期 / 上一期）用同一口径，同比才有意义。
+export const COUNTED_STATUS = { not: "cancelled" } as const;
+export function chargedCost(status: string, cost: number | null) {
+  return status === "completed" ? cost ?? 0 : 0;
+}
+
 function bucketFor(status: string, buckets: StatusBuckets, count: number) {
   buckets.total += count;
   if (status === "completed") buckets.completed += count;
@@ -53,19 +61,19 @@ export async function getGenerationMetrics(request: Request) {
   ] = await Promise.all([
     prisma.generationJob.groupBy({
       by: ["profileId", "profileVersion", "status"],
-      where: operationalGenerationJobWhere({ createdAt: { gte: since } }),
+      where: operationalGenerationJobWhere({ createdAt: { gte: since }, status: COUNTED_STATUS }),
       _count: { _all: true },
       _sum: { costDreamcoins: true },
     }),
     prisma.generationJob.groupBy({
       by: ["recipeId", "status"],
-      where: operationalGenerationJobWhere({ createdAt: { gte: since } }),
+      where: operationalGenerationJobWhere({ createdAt: { gte: since }, status: COUNTED_STATUS }),
       _count: { _all: true },
       _sum: { costDreamcoins: true },
     }),
     prisma.generationJob.groupBy({
       by: ["sourceType", "status"],
-      where: operationalGenerationJobWhere({ createdAt: { gte: since } }),
+      where: operationalGenerationJobWhere({ createdAt: { gte: since }, status: COUNTED_STATUS }),
       _count: { _all: true },
       _sum: { costDreamcoins: true },
     }),
@@ -105,7 +113,7 @@ export async function getGenerationMetrics(request: Request) {
     }),
     prisma.generationJob.groupBy({
       by: ["status"],
-      where: operationalGenerationJobWhere({ createdAt: previousRange }),
+      where: operationalGenerationJobWhere({ createdAt: previousRange, status: COUNTED_STATUS }),
       _count: { _all: true },
       _sum: { costDreamcoins: true },
     }),
@@ -142,7 +150,7 @@ export async function getGenerationMetrics(request: Request) {
       costDreamcoins: 0,
     };
     bucketFor(row.status, entry, row._count._all);
-    entry.costDreamcoins += row._sum.costDreamcoins ?? 0;
+    entry.costDreamcoins += chargedCost(row.status, row._sum.costDreamcoins);
     profileMap.set(key, entry);
   }
 
@@ -165,7 +173,7 @@ export async function getGenerationMetrics(request: Request) {
     const entry = recipeMap.get(row.recipeId) ??
       { ...emptyBuckets(), recipeId: row.recipeId, costDreamcoins: 0 };
     bucketFor(row.status, entry, row._count._all);
-    entry.costDreamcoins += row._sum.costDreamcoins ?? 0;
+    entry.costDreamcoins += chargedCost(row.status, row._sum.costDreamcoins);
     recipeMap.set(row.recipeId, entry);
   }
 
@@ -174,7 +182,7 @@ export async function getGenerationMetrics(request: Request) {
     const entry = sourceMap.get(row.sourceType) ??
       { ...emptyBuckets(), sourceType: row.sourceType, costDreamcoins: 0 };
     bucketFor(row.status, entry, row._count._all);
-    entry.costDreamcoins += row._sum.costDreamcoins ?? 0;
+    entry.costDreamcoins += chargedCost(row.status, row._sum.costDreamcoins);
     sourceMap.set(row.sourceType, entry);
   }
 
@@ -193,7 +201,7 @@ export async function getGenerationMetrics(request: Request) {
   let previousCost = 0;
   for (const row of previousByStatus) {
     bucketFor(row.status, previousTotals, row._count._all);
-    previousCost += row._sum.costDreamcoins ?? 0;
+    previousCost += chargedCost(row.status, row._sum.costDreamcoins);
   }
 
   return {

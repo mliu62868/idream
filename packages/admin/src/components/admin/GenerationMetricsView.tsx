@@ -386,6 +386,8 @@ function HeadlineBand({
           value={formatPercent(currentCtr)}
         />
       </div>
+      {/* INVARIANT: 与服务端 metrics.ts 的口径同句：cancelled 不计，花费只计 completed。 */}
+      <p className="mt-2 text-xs text-[var(--ad-text-muted)]">{t("Cancelled generations are left out of every number here. Cost counts completed generations only; failed and blocked ones are refunded.")}</p>
     </section>
   );
 }

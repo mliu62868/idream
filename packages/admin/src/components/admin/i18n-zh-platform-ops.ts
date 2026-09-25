@@ -1096,7 +1096,9 @@ export const adminZhPlatformOps: Record<string, string> = {
   "Entries": "条目数",
   "Success rate %": "成功率 %",
   "Coins cost": "币消耗",
-  "Avg cost / request": "每条请求平均消耗",
+  "Avg cost / completed request": "每条已完成请求平均消耗",
+  "Cancelled generations are left out of every number here. Cost counts completed generations only; failed and blocked ones are refunded.":
+    "已取消的生成不计入这里的任何数字。花费只计已完成的生成；失败和被拦截的会被退款。",
   "Latency p50 (ms)": "延迟 p50（毫秒）",
   "Latency p95 (ms)": "延迟 p95（毫秒）",
   "Latency samples": "延迟样本数",
