@@ -2100,6 +2100,13 @@ export const ADMIN_V2_API_OPERATIONS = [
   ),
   operation(
     "POST",
+    "/api/v2/admin/content/tags",
+    allOf("content.tag.write"),
+    "contentTagCreateRequestSchema",
+    "contentTagPatchResponseSchema",
+  ),
+  operation(
+    "POST",
     "/api/v2/admin/content/tags/merge",
     allOf("content.tag.write"),
     "contentTagMergeRequestSchema",

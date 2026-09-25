@@ -6,6 +6,7 @@ import { useAdminI18n } from "@/components/admin/i18n";
 import { requestErrorMessage } from "@/components/admin/section-kit";
 import { FormPage, FormSection, Field, FormFooter, INPUT_CLASS, TEXTAREA_CLASS } from "@/components/admin/ui/FormPage";
 import { GhostButton, PrimaryButton } from "@/components/admin/ui/buttons";
+import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { SCOPES, STARTER_GENDERS, STARTER_STYLES, STARTERS_LIST, starterPayload, tagsFromText, type StarterDraft } from "./starters-api";
 
 const EMPTY_DRAFT: StarterDraft = {
@@ -18,7 +19,7 @@ const EMPTY_DRAFT: StarterDraft = {
 
 // SPEC: 全屏新建页 —— 基本信息→分类→摘要与标签→提交；AI 辅助一句话灵感填充。
 // INVARIANTS: 校验就地提示；成功跳详情页。
-export function StartersNewPage() {
+export function StartersNewPage({ canWrite, canAssist }: { canWrite: boolean; canAssist: boolean }) {
   const { t, value } = useAdminI18n();
   const [draft, setDraft] = useState<StarterDraft>(EMPTY_DRAFT);
   const [seed, setSeed] = useState("");
@@ -59,7 +60,7 @@ export function StartersNewPage() {
     }
   }
 
-  const canSubmit = !creating && draft.name.trim().length >= 1;
+  const canSubmit = canWrite && !creating && draft.name.trim().length >= 1;
 
   // INVARIANT: 网络失败后再点一次不能建出第二份模板 —— 键由 idempotency-key-lifecycle
   // 的账本按「同一份草稿」复用，这一页自己不持有键。
@@ -86,7 +87,8 @@ export function StartersNewPage() {
       backLabel={t("Back to starter templates")}
       title={t("New starter template")}
     >
-      <FormSection hint={t("One-line inspiration — AI fills description and tags.")} title={t("AI assist")}>
+      {canWrite ? null : <PermissionNotice permission="content.template.write" />}
+      {canAssist ? <FormSection hint={t("One-line inspiration — AI fills description and tags.")} title={t("AI assist")}>
         <Field full label={t("Inspiration")}>
           <div className="flex gap-2">
             <input className={INPUT_CLASS} onChange={(e) => setSeed(e.target.value)} value={seed} />
@@ -101,7 +103,7 @@ export function StartersNewPage() {
             {assistError}
           </p>
         ) : null}
-      </FormSection>
+      </FormSection> : null}
       <FormSection title={t("Basic info")}>
         <Field label={t("Name (≥1)")}>
           <input className={INPUT_CLASS} onChange={(e) => patch({ name: e.target.value })} value={draft.name} />

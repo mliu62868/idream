@@ -759,6 +759,11 @@ export const adminZhCharacters: Record<string, string> = {
   Margin: "边际",
   Meet: "认识",
   "Merge tags": "合并标签",
+  "New tag": "新建标签",
+  "Create tag": "创建标签",
+  "Creates the tag {slug}.": "将创建标签 {slug}。",
+  "Created tag {slug}.": "已创建标签 {slug}。",
+  "A tag label needs Latin letters or digits to form its slug.": "标签名需要包含拉丁字母或数字，才能生成 slug。",
   "Merged — moved {count} character link(s).":
     "已合并——迁移了 {count} 个角色关联。",
   "Mobile and desktop preview plus five-turn conversation review":

@@ -8,6 +8,7 @@ import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDi
 import { FormSection, Field, INPUT_CLASS, TEXTAREA_CLASS } from "@/components/admin/ui/FormPage";
 import { DangerButton, GhostButton, PrimaryButton } from "@/components/admin/ui/buttons";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
+import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { EngineeringDetails } from "@/components/admin/generation/EngineeringDetails";
 import { LoadingWorkspace } from "@/features/operations/WorkspaceUi";
 import { InfoGrid, WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
@@ -48,7 +49,7 @@ function draftFromRow(row: Starter): StarterDraft {
   };
 }
 
-export function StartersDetailPage({ id }: { id: string }) {
+export function StartersDetailPage({ id, canWrite }: { id: string; canWrite: boolean }) {
   const { t, value } = useAdminI18n();
   const [rows, setRows] = useState<Starter[]>([]);
   const [loading, setLoading] = useState(true);
@@ -165,8 +166,9 @@ export function StartersDetailPage({ id }: { id: string }) {
     );
   }
 
-  const actions =
-    mode === "edit" ? (
+  const actions = !canWrite ? (
+      <PermissionNotice permission="content.template.write" />
+    ) : mode === "edit" ? (
       <>
         <GhostButton onClick={cancelEdit}>{t("Cancel")}</GhostButton>
         <PrimaryButton onClick={() => setPending("save")}>{t("Save changes")}</PrimaryButton>

@@ -178,6 +178,25 @@ describe("character template library service (feature B)", () => {
     expect(denied.status).toBe(403);
   });
 
+  // SPEC: 编辑页清空 summary / gender / style 发 null，服务端必须真的清掉（此前 undefined 被当成「不改」）。
+  it("clears summary, gender and style when the patch sends null", async () => {
+    const admin = await setupAdmin("clear");
+    const created = await call("POST", TEMPLATES, {
+      userId: admin,
+      role: "admin",
+      body: { name: "Clearable", summary: "Short bio", gender: "female", style: "anime", reason: "seed clearable" },
+    });
+    expect(created.status).toBe(200);
+
+    const cleared = await call("PATCH", `${TEMPLATES}/${created.data.template.id}`, {
+      userId: admin,
+      role: "admin",
+      body: { summary: null, gender: null, style: null, reason: "clear optional fields" },
+    });
+    expect(cleared.status).toBe(200);
+    expect(cleared.data.template).toMatchObject({ summary: null, gender: null, style: null });
+  });
+
   it("updateTemplate not found -> 404", async () => {
     const admin = await setupAdmin("update-404");
     const result = await call("PATCH", `${TEMPLATES}/${P}does-not-exist`, {

@@ -62,12 +62,14 @@ export function tagsFromText(text: string): string[] {
   return text.split(",").map((tag) => tag.trim()).filter(Boolean).slice(0, 12);
 }
 
+// INVARIANT: 空的 summary / gender / style 发 null —— 编辑页清空这些字段必须真的清掉，
+//            发 undefined 服务端会当成「不改」，而页面却提示已保存。
 export function starterPayload(draft: StarterDraft): Record<string, unknown> {
   return {
     name: draft.name.trim(),
-    summary: draft.summary.trim() || undefined,
-    gender: draft.gender.trim() || undefined,
-    style: draft.style.trim() || undefined,
+    summary: draft.summary.trim() || null,
+    gender: draft.gender.trim() || null,
+    style: draft.style.trim() || null,
     scope: draft.scope,
     tags: tagsFromText(draft.tags),
     appearance: {

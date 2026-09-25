@@ -1,4 +1,5 @@
 import type {
+  ContentTagCreateRequest,
   ContentTagMergeRequest,
   ContentTagPatchRequest,
   ContentTagQuery,
@@ -6,6 +7,7 @@ import type {
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import type { AdminActor } from "../shared/authority";
+import { tagSlug } from "../characters/creation";
 import { writeContentAudit } from "./audit";
 
 // SPEC: 标签分类法治理 —— admin 侧标签的列表 / 编辑 / 合并。
@@ -37,6 +39,49 @@ export async function listAdminTags(query: ContentTagQuery) {
       characterCount: tag._count.characters,
     })),
   };
+}
+
+// SPEC: 新建标签。slug 与角色创建时隐式建标签用同一个派生函数，两条入口不会造出两种 slug。
+// INVARIANT: confirmation === 派生 slug；slug 已存在则 409（不静默复用，运营要知道它已在词表里）。
+export async function createTag(input: {
+  request: Request;
+  actor: AdminActor;
+  body: ContentTagCreateRequest;
+}) {
+  const { request, actor, body } = input;
+  const slug = tagSlug(body.label);
+  if (!slug) throw Errors.badRequest("Tag label must contain letters or digits");
+  if (body.confirmation !== slug) {
+    throw Errors.badRequest("Confirmation did not match tag slug", { expected: slug });
+  }
+  if (await prisma.tag.findUnique({ where: { slug } })) {
+    throw Errors.conflict("A tag with this slug already exists", { slug });
+  }
+  const tag = await prisma.tag.create({
+    data: {
+      slug,
+      label: body.label,
+      category: body.category || null,
+      isSensitive: body.isSensitive ?? false,
+      isMutedByDefault: body.isMutedByDefault ?? false,
+    },
+  });
+  const created = {
+    id: tag.id,
+    slug: tag.slug,
+    label: tag.label,
+    category: tag.category,
+    isSensitive: tag.isSensitive,
+    isMutedByDefault: tag.isMutedByDefault,
+  };
+  await writeContentAudit(request, actor, {
+    action: "content.tag.create",
+    targetType: "tag",
+    targetId: tag.id,
+    reason: body.reason,
+    after: created,
+  });
+  return { tag: created };
 }
 
 export async function patchTag(input: {

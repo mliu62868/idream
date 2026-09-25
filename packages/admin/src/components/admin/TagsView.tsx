@@ -10,13 +10,14 @@
 // label，confirmation 仍自动填充为 `${sourceId}:${targetId}`（mergeTags 要求的精确格式）。
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { GitMerge, Loader2, Pencil, RefreshCcw, Save, X } from "lucide-react";
+import { GitMerge, Loader2, Pencil, Plus, RefreshCcw, Save, X } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
+import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { FilterBar } from "@/components/admin/ui/FilterBar";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
@@ -49,7 +50,8 @@ type EditDraft = {
 const inputClass =
   "rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]";
 
-export function TagsView() {
+// INVARIANT: 页面按 content.read 可读；编辑 / 合并 / 新建只在 content.tag.write 时出现。
+export function TagsView({ canWrite }: { canWrite: boolean }) {
   const { t } = useAdminI18n();
   const [authority, setAuthority] = useState(() => createAuthorityState<TagRow[]>());
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -126,7 +128,7 @@ export function TagsView() {
     id: tag.id,
     cells: editingId === tag.id
       ? editingCells(tag, draft, setDraft, () => setEditingId(null), () => setRenaming(true), t)
-      : readOnlyCells(tag, () => startEdit(tag), t),
+      : readOnlyCells(tag, canWrite ? () => startEdit(tag) : null, t),
   }));
 
   const renameSpec: ConfirmSpec | null =
@@ -180,9 +182,11 @@ export function TagsView() {
         title={t("Taxonomy")}
       />
       <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
+      {canWrite ? null : <PermissionNotice permission="content.tag.write" />}
       {authority.error ? <AuthorityRequestError cause={authority.cause} message={authority.error} onRetry={() => void load()} snapshotAt={authority.data ? authority.refreshedAt : null} /> : null}
 
-      {authority.data ? <MergeSection onMerged={reportSuccess} reload={load} tags={tags} /> : null}
+      {authority.data && canWrite ? <CreateTagSection onCreated={reportSuccess} reload={load} /> : null}
+      {authority.data && canWrite ? <MergeSection onMerged={reportSuccess} reload={load} tags={tags} /> : null}
 
       {authority.error && authority.data === null ? null : (
         <section className="space-y-3">
@@ -244,7 +248,7 @@ export function TagsView() {
 
 type Translate = ReturnType<typeof useAdminI18n>["t"];
 
-function readOnlyCells(tag: TagRow, onStartEdit: () => void, t: Translate) {
+function readOnlyCells(tag: TagRow, onStartEdit: (() => void) | null, t: Translate) {
   return [
     <span className="font-mono text-xs" key="slug">{tag.slug}</span>,
     tag.label,
@@ -252,15 +256,17 @@ function readOnlyCells(tag: TagRow, onStartEdit: () => void, t: Translate) {
     tag.characterCount,
     tag.isSensitive ? t("yes") : t("no"),
     tag.isMutedByDefault ? t("yes") : t("no"),
-    <button
-      className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs"
-      key="edit"
-      onClick={onStartEdit}
-      type="button"
-    >
-      <Pencil className="h-3.5 w-3.5" />
-      {t("Edit")}
-    </button>,
+    onStartEdit ? (
+      <button
+        className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs"
+        key="edit"
+        onClick={onStartEdit}
+        type="button"
+      >
+        <Pencil className="h-3.5 w-3.5" />
+        {t("Edit")}
+      </button>
+    ) : <span key="edit">—</span>,
   ];
 }
 
@@ -324,6 +330,89 @@ function editingCells(
       </button>
     </div>,
   ];
+}
+
+// SPEC: slug 派生规则与服务端 tagSlug（characters/creation.ts）一致；确认串就是它。
+export function tagSlugPreview(label: string) {
+  return label
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9-]/g, "")
+    .replace(/^-+|-+$/g, "");
+}
+
+function CreateTagSection({
+  onCreated,
+  reload,
+}: {
+  onCreated: (message: string) => void;
+  reload: () => void;
+}) {
+  const { t } = useAdminI18n();
+  const [label, setLabel] = useState("");
+  const [category, setCategory] = useState("");
+  const [confirming, setConfirming] = useState(false);
+  const slug = tagSlugPreview(label);
+
+  const confirmSpec: ConfirmSpec | null = confirming && slug
+    ? {
+        title: t("New tag"),
+        summary: t("Creates the tag {slug}.", { slug }),
+        submitLabel: t("Create tag"),
+        onSubmit: async (reason) => {
+          await apiWrite("/api/v2/admin/content/tags", "POST", {
+            label: label.trim(),
+            category: category.trim() || null,
+            reason,
+            confirmation: slug,
+          });
+          onCreated(t("Created tag {slug}.", { slug }));
+          setLabel("");
+          setCategory("");
+          await reload();
+        },
+      }
+    : null;
+
+  return (
+    <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
+      <h2 className="text-sm font-semibold">{t("New tag")}</h2>
+      <div className="mt-3 grid gap-3 md:grid-cols-3">
+        <input
+          aria-label={t("Label")}
+          className={inputClass}
+          maxLength={80}
+          onChange={(event) => setLabel(event.target.value)}
+          placeholder={t("Label")}
+          value={label}
+        />
+        <input
+          aria-label={t("Category (blank=none)")}
+          className={inputClass}
+          maxLength={40}
+          onChange={(event) => setCategory(event.target.value)}
+          placeholder={t("Category (blank=none)")}
+          value={category}
+        />
+        <button
+          className="inline-flex h-10 items-center justify-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
+          disabled={!slug}
+          onClick={() => setConfirming(true)}
+          type="button"
+        >
+          <Plus className="h-4 w-4" />
+          {t("Create tag")}
+        </button>
+      </div>
+      {label.trim() && !slug ? (
+        <p className="mt-2 text-xs text-[var(--ad-red-text)]">{t("A tag label needs Latin letters or digits to form its slug.")}</p>
+      ) : slug ? (
+        <p className="mt-2 font-mono text-xs text-[var(--ad-text-muted)]">slug: {slug}</p>
+      ) : null}
+      {confirmSpec ? <ConfirmDialog onClose={() => setConfirming(false)} spec={confirmSpec} /> : null}
+    </section>
+  );
 }
 
 function MergeSection({

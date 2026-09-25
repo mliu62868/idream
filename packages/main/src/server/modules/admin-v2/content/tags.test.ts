@@ -64,6 +64,41 @@ describe("admin tag taxonomy governance", () => {
     expect((audit?.after as { isSensitive?: boolean })?.isSensitive).toBe(true);
   });
 
+  // SPEC: Taxonomy 能直接建标签；slug 由 label 派生，确认串必须等于该 slug，重复 409。
+  it("creates a tag with a derived slug and audits it", async () => {
+    const admin = await setupActor("admin", "create");
+    const body = { label: "zt tags Created", category: "mood", reason: "add missing tag", confirmation: `${P}created` };
+
+    const response = await adminV2Api("POST", "/api/v2/admin/content/tags", { userId: admin, role: "admin", body });
+    expect(response.status, JSON.stringify(response.json)).toBe(200);
+    expect(response.data.tag).toMatchObject({ slug: `${P}created`, label: "zt tags Created", category: "mood", isSensitive: false });
+
+    const audit = await prisma.adminAuditLog.findFirst({ where: { action: "content.tag.create", targetId: response.data.tag.id } });
+    expect((audit?.after as { slug?: string })?.slug).toBe(`${P}created`);
+
+    const duplicate = await adminV2Api("POST", "/api/v2/admin/content/tags", { userId: admin, role: "admin", body });
+    expect(duplicate.status).toBe(409);
+  });
+
+  it("rejects tag creation with a mismatched confirmation or without content.tag.write", async () => {
+    const admin = await setupActor("admin", "create-guard");
+    const mismatch = await adminV2Api("POST", "/api/v2/admin/content/tags", {
+      userId: admin,
+      role: "admin",
+      body: { label: "zt tags guard", reason: "wrong confirmation", confirmation: "CREATE" },
+    });
+    expect(mismatch.status).toBe(400);
+
+    const analyst = await setupActor("analyst", "create-guard");
+    const forbidden = await adminV2Api("POST", "/api/v2/admin/content/tags", {
+      userId: analyst,
+      role: "analyst",
+      body: { label: "zt tags guard", reason: "should be blocked", confirmation: `${P}guard` },
+    });
+    expect(forbidden.status).toBe(403);
+    expect(await prisma.tag.findUnique({ where: { slug: `${P}guard` } })).toBeNull();
+  });
+
   it("rejects tag metadata edits when confirmation does not match the tag", async () => {
     const admin = await setupActor("admin", "patch-confirm");
     const tag = await createTag("patch-confirm", { isSensitive: false });
