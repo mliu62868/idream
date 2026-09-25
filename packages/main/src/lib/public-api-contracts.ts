@@ -1690,6 +1690,36 @@ export function parseCharacterVoicePreviewResponse(payload: unknown) {
   })), payload, "character voice preview").data;
 }
 
+// Quick Start returns only fields the Create wizard already has; each is optional.
+const characterQuickStartDraftSchema = z.object({
+  name: nonEmptyString.optional(),
+  age: z.number().int().min(18).max(120).optional(),
+  gender: nonEmptyString.optional(),
+  style: nonEmptyString.optional(),
+  appearance: nonEmptyString.optional(),
+  ethnicity: nonEmptyString.optional(),
+  skinTone: nonEmptyString.optional(),
+  eyeColor: nonEmptyString.optional(),
+  faceShape: nonEmptyString.optional(),
+  hair: nonEmptyString.optional(),
+  body: nonEmptyString.optional(),
+  description: nonEmptyString.optional(),
+  firstMessage: nonEmptyString.optional(),
+  personality: nonEmptyString.optional(),
+  occupation: nonEmptyString.optional(),
+  relationship: nonEmptyString.optional(),
+}).strict();
+
+export type CharacterQuickStartDraft = z.infer<typeof characterQuickStartDraftSchema>;
+
+export function parseCharacterQuickStartResponse(payload: unknown) {
+  return parseContract(
+    successEnvelope(z.object({ draft: characterQuickStartDraftSchema })),
+    payload,
+    "character quick start",
+  ).data.draft;
+}
+
 export function parseTemplatesResponse(payload: unknown) {
   return parseContract(
     templatesResponseSchema,

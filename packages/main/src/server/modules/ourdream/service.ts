@@ -156,6 +156,8 @@ import {
 } from "./exposure-context";
 import { createVoiceClip as createDurableVoiceClip, quoteVoiceClip } from "./voice-clip";
 import { getCharacterDraftVoiceCatalog, previewCharacterDraftVoice } from "./character-draft-voice";
+import { characterQuickStartRequestSchema, generateCharacterQuickStart } from "./character-quick-start";
+import { moderateText } from "@/server/moderation/text-authority";
 import {
   AFFILIATE_ATTRIBUTION_WINDOW_DAYS,
   AFFILIATE_TERMS_PATH,
@@ -657,6 +659,7 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
 
   if (resource === "character-drafts") {
     if (!id && method === "POST") return createDraft(request);
+    if (id === "quick-start" && !action && method === "POST") return quickStartDraft(request);
     if (id === "current" && !action && method === "GET") return currentDraft(request);
     if (id && !action && method === "PATCH") return updateDraft(request, id);
     if (id && action === "preview" && method === "POST") return previewDraft(request, id);
@@ -1828,6 +1831,22 @@ async function createDraft(request: Request) {
     },
   });
   await trackEvent("character_create_started", { draftId: draft.id }, ctx);
+  return ok({ draft });
+}
+
+// Suggests wizard fields from one sentence; writes nothing (see character-quick-start.ts).
+async function quickStartDraft(request: Request) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
+  await enforceRateLimit(request, "characterQuickStart", user.id);
+  const { brief } = characterQuickStartRequestSchema.parse(await jsonBody(request));
+  const draft = await generateCharacterQuickStart(brief, {
+    available: env.CHAT_PROVIDER !== "mock",
+    stream: (input) => providers.chat.stream(input),
+    moderate: (content, layer) => moderateText("character_quick_start", user.id, content, layer),
+  });
   return ok({ draft });
 }
 

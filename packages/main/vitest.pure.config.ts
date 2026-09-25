@@ -49,6 +49,7 @@ export default defineConfig({
       "src/server/modules/admin-v2/shared/finite-state-authority-inventory.test.ts",
       "src/server/modules/generation/generation-runner-vocabulary.test.ts",
       "src/server/modules/ourdream/architecture-boundaries.test.ts",
+      "src/server/modules/ourdream/character-quick-start.test.ts",
       "src/server/modules/ourdream/generation-prompt.test.ts",
       "src/server/modules/ourdream/generation-context.test.ts",
       "src/server/modules/ourdream/voice-clip-quote.test.ts",

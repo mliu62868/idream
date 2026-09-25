@@ -556,3 +556,95 @@ describe("CreateWorkspace identity confirmation", () => {
     }
   }
 });
+
+describe("CreateWorkspace quick start", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let quickStart: () => Response;
+  const storageKey = draftStorageKeyForScope("user:creator-1");
+
+  beforeEach(() => {
+    const entries = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => entries.get(key) ?? null,
+      setItem: (key: string, value: string) => entries.set(key, value),
+      removeItem: (key: string) => entries.delete(key),
+      clear: () => entries.clear(),
+    });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/v1/me") {
+        return Response.json({ ok: true, data: { user: { id: "creator-1" }, anonymousId: null } });
+      }
+      if (url === "/api/v1/character-drafts/quick-start") return quickStart();
+      if (url === "/api/v1/character-templates") return Response.json({ ok: true, data: { items: [] } });
+      return Response.json({ ok: true, data: {} });
+    }));
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+    window.localStorage.clear();
+    vi.unstubAllGlobals();
+  });
+
+  async function submitBrief(brief: string) {
+    await act(async () => root.render(createElement(CreateWorkspace)));
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="create-quick-start"] input')));
+    const input = container.querySelector<HTMLInputElement>('[data-testid="create-quick-start"] input')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, brief);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="create-quick-start"] button')!.click());
+  }
+
+  function nameInput() {
+    const label = [...container.querySelectorAll("label")].find(item => item.querySelector("span")?.textContent === "Name");
+    return label!.querySelector("input")!;
+  }
+
+  it("prefills the wizard through the template path and leaves every field editable", async () => {
+    quickStart = () => Response.json({ ok: true, data: { draft: {
+      name: "Mira", age: 24, gender: "female", style: "anime", hair: "Short auburn curls",
+      description: "A café illustrator.", firstMessage: "Back again?",
+      occupation: "Illustrator", relationship: "Friend",
+    } } });
+    await submitBrief("A café illustrator");
+    await waitUntil(() => container.querySelector('[data-testid="create-status"]')?.textContent?.includes("Prefilled") === true);
+    expect(nameInput().value).toBe("Mira");
+    const posted = vi.mocked(fetch).mock.calls.find(([input]) => String(input) === "/api/v1/character-drafts/quick-start");
+    expect(JSON.parse(String(posted?.[1]?.body))).toEqual({ brief: "A café illustrator" });
+    const saved = JSON.parse(window.localStorage.getItem(storageKey)!);
+    expect(saved).toMatchObject({ step: 0, age: 24, style: "anime", hair: "Short auburn curls", firstMessage: "Back again?" });
+    expect(saved.detailsMarkdown).toBe("## Occupation\nIllustrator\n\n## Relationship\nFriend");
+    // Nothing was created: the only write was the quick-start request itself.
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method && init.method !== "GET")).toHaveLength(1);
+  });
+
+  it("shows a retryable failure and keeps the draft untouched", async () => {
+    quickStart = () => Response.json(
+      { ok: false, error: { code: "unavailable", message: "Quick Start could not reach the character model. Try again." } },
+      { status: 503 },
+    );
+    await submitBrief("A café illustrator");
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="create-quick-start"] [role="alert"]')));
+    expect(container.querySelector('[data-testid="create-quick-start"] [role="alert"]')?.textContent).toBe(
+      "Quick Start could not reach the character model. Try again.",
+    );
+    expect(nameInput().value).toBe("");
+    expect(container.querySelector<HTMLButtonElement>('[data-testid="create-quick-start"] button')?.disabled).toBe(false);
+  });
+
+  async function waitUntil(predicate: () => boolean) {
+    const deadline = Date.now() + 2_000;
+    while (!predicate()) {
+      if (Date.now() >= deadline) throw new Error(`Create workspace did not load: ${container.textContent}`);
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+    }
+  }
+});

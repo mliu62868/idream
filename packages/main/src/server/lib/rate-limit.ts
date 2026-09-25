@@ -37,6 +37,8 @@ export const RATE_LIMITS = {
   eventTrack: { limit: 300, windowMs: 60 * 60_000 },
   // 推广点击：匿名开放写。一个真实访客一小时点不了几十次推广链接。
   affiliateClick: { limit: 30, windowMs: 60 * 60_000 },
+  // 一句话建角色：每次都是一次真实模型推理，与在线聊天共用同一个本地模型。
+  characterQuickStart: { limit: 20, windowMs: 60 * 60_000 },
 } as const satisfies Record<string, RateLimitPolicy>;
 
 export type RateLimitScope = keyof typeof RATE_LIMITS;

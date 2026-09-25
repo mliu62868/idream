@@ -16,6 +16,7 @@ import { cn } from "@/lib/utils";
 import {
   isRenderableMediaSource,
   parseTemplatesResponse,
+  parseCharacterQuickStartResponse,
   parseCharacterVoiceCatalogResponse,
   parseCharacterVoicePreviewResponse,
   type CharacterVoiceCatalog,
@@ -32,7 +33,7 @@ import {
   stashDraftTransfer,
 } from "./draft-transfer";
 import { isRecord } from "./workspace-helpers";
-import { CREATE_SOUL_DETAIL_FIELDS } from "./create-soul-catalog";
+import { CREATE_SOUL_DETAIL_FIELDS } from "@/lib/create-soul-catalog";
 import {
   CREATE_PREVIEW_CANDIDATE_COUNT,
   continueCreatePreviewBatch,
@@ -294,6 +295,9 @@ export function CreateWorkspace() {
     "loading" | "ready" | "error"
   >("loading");
   const [templatesAttempt, setTemplatesAttempt] = useState(0);
+  const [quickStartBrief, setQuickStartBrief] = useState("");
+  const [quickStartPending, setQuickStartPending] = useState(false);
+  const [quickStartError, setQuickStartError] = useState("");
   const [voiceCatalog, setVoiceCatalog] = useState<CharacterVoiceCatalog | null>(null);
   const [voiceCatalogError, setVoiceCatalogError] = useState(false);
   const [voiceCatalogAttempt, setVoiceCatalogAttempt] = useState(0);
@@ -706,18 +710,29 @@ export function CreateWorkspace() {
     }
   }
 
-  function applyTemplate(template: CreateTemplate) {
+  // Templates and Quick Start seed the draft the same way: fields are replaced,
+  // any earlier preview is discarded, and the user is then free to edit everything.
+  function prefillDraft(fields: (current: WizardState) => Partial<WizardState>, message: string) {
     setRestoredPreviewReviewId("");
-    // Selecting a template seeds the draft; the user is then free to edit everything (no runtime link).
-    setTemplateId(template.id);
-    const appearance = isRecord(template.appearance) ? template.appearance : {};
-    const face = isRecord(appearance.face) ? appearance.face : appearance;
     setState((current) => ({
       ...current,
       previewBatch: null,
       restoredPreviewCandidate: null,
       confirmedPreviewJobId: "",
       confirmedPreviewUrl: "",
+      ...fields(current),
+    }));
+    setPreview(DEFAULT_PREVIEW);
+    setPreviewStatus("idle");
+    setSelectedPreviewJobId("");
+    setStatus(message);
+  }
+
+  function applyTemplate(template: CreateTemplate) {
+    setTemplateId(template.id);
+    const appearance = isRecord(template.appearance) ? template.appearance : {};
+    const face = isRecord(appearance.face) ? appearance.face : appearance;
+    prefillDraft((current) => ({
       gender: template.gender || current.gender,
       style: template.style || current.style,
       appearance: pickString(face, "prompt", "summary") || current.appearance,
@@ -733,11 +748,46 @@ export function CreateWorkspace() {
         templateDetailsMarkdown(template.advancedDetails) || current.detailsMarkdown,
       firstMessage: pickString(template.advancedDetails, "firstMessage") || current.firstMessage,
       tags: pickTags(template.tags) || current.tags,
-    }));
-    setPreview(DEFAULT_PREVIEW);
-    setPreviewStatus("idle");
-    setSelectedPreviewJobId("");
-    setStatus(`Started from "${template.name}". Edit any field before publishing.`);
+    }), `Started from "${template.name}". Edit any field before publishing.`);
+  }
+
+  async function runQuickStart() {
+    const brief = quickStartBrief.trim();
+    if (!brief || quickStartPending) return;
+    setQuickStartPending(true);
+    setQuickStartError("");
+    try {
+      const draft = parseCharacterQuickStartResponse(
+        await requestApi("/api/v1/character-drafts/quick-start", { brief }),
+      );
+      setTemplateId("");
+      prefillDraft((current) => {
+        let detailsMarkdown = current.detailsMarkdown;
+        if (draft.personality) detailsMarkdown = updateSoulDetail(detailsMarkdown, "Personality", draft.personality);
+        if (draft.occupation) detailsMarkdown = updateSoulDetail(detailsMarkdown, "Occupation", draft.occupation);
+        if (draft.relationship) detailsMarkdown = updateSoulDetail(detailsMarkdown, "Relationship", draft.relationship);
+        return {
+          name: draft.name ?? current.name,
+          age: draft.age ?? current.age,
+          gender: draft.gender ?? current.gender,
+          style: draft.style ?? current.style,
+          appearance: draft.appearance ?? current.appearance,
+          ethnicity: draft.ethnicity ?? current.ethnicity,
+          skinTone: draft.skinTone ?? current.skinTone,
+          eyeColor: draft.eyeColor ?? current.eyeColor,
+          faceShape: draft.faceShape ?? current.faceShape,
+          hair: draft.hair ?? current.hair,
+          body: draft.body ?? current.body,
+          description: draft.description ?? current.description,
+          firstMessage: draft.firstMessage ?? current.firstMessage,
+          detailsMarkdown,
+        };
+      }, "Prefilled from your idea. Review and edit each step before publishing.");
+    } catch (error) {
+      setQuickStartError(messageFrom(error));
+    } finally {
+      setQuickStartPending(false);
+    }
   }
 
   function setIdentityField<K extends keyof WizardState>(key: K, value: WizardState[K]) {
@@ -1276,6 +1326,49 @@ export function CreateWorkspace() {
           </div>
 
           <div className="rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-4 md:p-6">
+            {step === 0 && !editCharacterId && (
+              <form
+                className="mb-4"
+                data-testid="create-quick-start"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void runQuickStart();
+                }}
+              >
+                <label className="block">
+                  <span className="text-[12px] font-bold uppercase leading-4 text-[rgb(114,113,112)]">
+                    Quick start from one sentence
+                  </span>
+                  <div className="mt-2 flex items-center gap-2">
+                    <input
+                      className="min-w-0 flex-1 rounded-[10px] border border-white/10 bg-[rgb(13,13,13)] px-3 py-2 text-[14px] font-semibold leading-6 text-white outline-none focus:border-[rgb(253,95,194)]"
+                      disabled={quickStartPending}
+                      maxLength={500}
+                      onChange={(event) => setQuickStartBrief(event.target.value)}
+                      placeholder="A sharp-tongued, soft-hearted 24-year-old illustrator who works at a café"
+                      value={quickStartBrief}
+                    />
+                    <button
+                      className="flex h-10 shrink-0 items-center gap-1.5 rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)] disabled:opacity-50"
+                      disabled={quickStartPending || quickStartBrief.trim().length < 3}
+                      type="submit"
+                    >
+                      {quickStartPending ? <Loader2 className="size-4 animate-spin" /> : <Wand2 className="size-4" />}
+                      {quickStartPending ? "Drafting…" : "Prefill"}
+                    </button>
+                  </div>
+                </label>
+                <p className="mt-1.5 text-[12px] text-[rgb(170,170,170)]">
+                  Fills in the steps below as a starting point. Nothing is created until you publish.
+                </p>
+                {quickStartError ? (
+                  <p className="mt-1.5 text-[12px] font-semibold text-[rgb(255,140,140)]" role="alert">
+                    {quickStartError}
+                  </p>
+                ) : null}
+              </form>
+            )}
+
             {step === 0 && !editCharacterId && (
               <div className="mb-4" data-testid="create-templates">
                 <p className="text-[12px] font-bold uppercase leading-4 text-[rgb(114,113,112)]">
