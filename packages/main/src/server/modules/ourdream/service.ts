@@ -275,6 +275,13 @@ import {
 } from "./character-draft-write";
 import { openCharacterEditDraft, wizardVisualProjection } from "./character-edit";
 import { loadForYouProfile, rankForYou, type ForYouProfile } from "./for-you-ranking";
+import {
+  cumulativePopularOrderBy,
+  DEFAULT_POPULAR_PERIOD,
+  popularPeriod,
+  windowedPopularPageIds,
+  type PopularPeriod,
+} from "./popular-ranking";
 import { duplicateCharacterForUser } from "./character-duplicate";
 import { updateCharacterForUser } from "./character-update";
 import { recordMediaIdentityFeedback } from "./media-feedback";
@@ -1387,15 +1394,23 @@ async function listCharacters(request: Request) {
   }
 
   const forYouProfile = sort === "for-you" && ctx.userId ? await loadForYouProfile(ctx.userId) : null;
+  // INTENT: For You without a signal is the default Popular (the month window),
+  // the same list a viewer gets by picking Popular with no period.
+  const period: PopularPeriod | null =
+    sort === "popular" ? popularPeriod(url.searchParams.get("period"))
+    : sort === "for-you" && !forYouProfile ? DEFAULT_POPULAR_PERIOD
+    : null;
   const characters = forYouProfile
     ? await forYouPage(where, forYouProfile, cursor, limit + 1, ctx.userId)
-    : await prisma.character.findMany({
-        where,
-        include: characterInclude(ctx.userId),
-        orderBy: exploreOrderBy(sort),
-        skip: cursor,
-        take: limit + 1,
-      });
+    : period && period !== "all"
+      ? await orderedPage(where, await windowedPopularPageIds(where, period, cursor, limit + 1), ctx.userId)
+      : await prisma.character.findMany({
+          where,
+          include: characterInclude(ctx.userId),
+          orderBy: exploreOrderBy(sort),
+          skip: cursor,
+          take: limit + 1,
+        });
 
   const page = characters
     .slice(0, limit)
@@ -1436,6 +1451,11 @@ async function forYouPage(
     chatsCount: candidate.stats?.chatsCount ?? 0,
     likesCount: candidate.stats?.likesCount ?? 0,
   })), profile).slice(offset, offset + take).map((candidate) => candidate.id);
+  return orderedPage(where, pageIds, userId);
+}
+
+// Hydrates a page ranked in memory, keeping the rank order.
+async function orderedPage(where: Prisma.CharacterWhereInput, pageIds: string[], userId: string | undefined) {
   const rows = await prisma.character.findMany({
     where: { AND: [where, { id: { in: pageIds } }] },
     include: characterInclude(userId),
@@ -1451,17 +1471,13 @@ function exploreSort(value: string | null): ExploreSort {
   return "for-you";
 }
 
-// Popular order; also For You's fallback when the viewer has no signal yet.
+// Newest / Following order; Popular (and For You's fallback) ranks by window
+// unless period=all, which is the cumulative order.
 function exploreOrderBy(sort: ExploreSort): Prisma.CharacterOrderByWithRelationInput[] {
   if (sort === "newest" || sort === "following") {
     return [{ createdAt: "desc" }, { id: "asc" }];
   }
-  return [
-    { stats: { chatsCount: "desc" } },
-    { stats: { likesCount: "desc" } },
-    { createdAt: "desc" },
-    { id: "asc" },
-  ];
+  return cumulativePopularOrderBy;
 }
 
 function publicCharacterEnumFilter<T extends string>(value: string | null, allowed: readonly T[]) {

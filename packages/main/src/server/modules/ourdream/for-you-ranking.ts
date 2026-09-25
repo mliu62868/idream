@@ -6,11 +6,14 @@ import { communityFollowedCreatorIds } from "./discovery";
 //   liked Character: each of its tags / its style +2; chatted Character: +1.
 //   A Character by a creator the viewer follows: +3.
 // Ordering: not-yet-chatted first (discovery, not re-surfacing), then score,
-// then the Popular keys (chats, likes, newest, id). The last key is unique, so
-// the order is total and the offset cursor stays stable between pages.
+// then the all-time Popular keys (chats, likes, newest, id). The last key is
+// unique, so the order is total and the offset cursor stays stable between pages.
+// INTENT: ties fall back to all-time counts, not the Popular window — they
+// only order Characters the profile scores equally, and a window would add
+// two more queries for that.
 // INTENT: no signal (anonymous or a brand-new account) returns null and the
-// caller serves Popular — there is nothing personal to rank by, and saying
-// "For You" over an empty profile would be a pretence either way.
+// caller serves the default Popular (month window) — there is nothing personal
+// to rank by, and saying "For You" over an empty profile would be a pretence.
 
 const LIKE_WEIGHT = 2;
 const CHAT_WEIGHT = 1;

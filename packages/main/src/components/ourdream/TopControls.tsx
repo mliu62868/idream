@@ -15,9 +15,16 @@ import { MobileAppMenu } from "./MobileAppMenu";
 
 const sortOptions = [
   { value: "for-you", label: "For You" },
-  { value: "popular", label: "Popular · Month" },
+  { value: "popular", label: "Popular" },
   { value: "newest", label: "Newest" },
   { value: "following", label: "Following" },
+] as const;
+
+// Mirrors the server's POPULAR_PERIODS: the label is the window the list is ranked by.
+const periodOptions = [
+  { value: "week", label: "Week" },
+  { value: "month", label: "Month" },
+  { value: "all", label: "All time" },
 ] as const;
 
 const ageOptions = [
@@ -68,12 +75,14 @@ export function TopControls({
   categories = categoryFilters,
   query = "",
   sort = "popular",
+  period = "month",
   gender = "female",
   style = "any",
   age = "any",
   onCategoryChange,
   onQueryChange,
   onSortChange,
+  onPeriodChange,
   onGenderChange,
   onStyleChange,
   onAgeChange,
@@ -82,18 +91,23 @@ export function TopControls({
   categories?: readonly string[];
   query?: string;
   sort?: string;
+  period?: string;
   gender?: string;
   style?: string;
   age?: string;
   onCategoryChange?: (category: string) => void;
   onQueryChange?: (query: string) => void;
   onSortChange?: (sort: string) => void;
+  onPeriodChange?: (period: string) => void;
   onGenderChange?: (gender: string) => void;
   onStyleChange?: (style: string) => void;
   onAgeChange?: (age: string) => void;
 }>) {
   const [sortMenuOpen, setSortMenuOpen] = useState(false);
-  const sortLabel = sortOptions.find((option) => option.value === sort)?.label ?? "For You";
+  const periodLabel = periodOptions.find((option) => option.value === period)?.label ?? "Month";
+  const optionLabel = (value: string, label: string) =>
+    value === "popular" ? `${label} · ${periodLabel}` : label;
+  const sortLabel = optionLabel(sort, sortOptions.find((option) => option.value === sort)?.label ?? "For You");
 
   return (
     <>
@@ -179,11 +193,22 @@ export function TopControls({
                       role="menuitem"
                       type="button"
                     >
-                      {option.label}
+                      {optionLabel(option.value, option.label)}
                       {selected ? <Check className="h-3.5 w-3.5" /> : null}
                     </button>
                   );
                 })}
+              </div>
+            ) : null}
+            {sort === "popular" ? (
+              <div className="ml-2">
+                <SelectPill
+                  ariaLabel="Popular period"
+                  name="period"
+                  onChange={onPeriodChange}
+                  options={periodOptions}
+                  value={period}
+                />
               </div>
             ) : null}
           </div>
