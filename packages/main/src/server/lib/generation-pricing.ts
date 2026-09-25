@@ -1,5 +1,7 @@
 // SPEC: 生成计价单一实现（SSoT）：每个 mode 必须恰好有一个 active
-//       PricingRule，cost = ceil(base * outputCount * multiplier)。
+//       PricingRule，cost = ceil(base * outputCount * ruleMultiplier * profileMultiplier)。
+// INTENT: 规则 multiplier 是运营在 Admin 定价页可编辑的「base × multiplier」，
+//         必须真实参与扣款；profile multiplier 是调用方（生成档位）的额外倍率。
 // INVARIANT: 缺失或重复 active 规则都必须 fail closed；绝不能猜规则或用历史常量扣款。
 // NOTE: 报价握手用来钉住这条规则的 pricingFingerprint 不在这里 —— 它是生成报价
 // 协议的一部分，与 routeFingerprint 一起住在
@@ -14,6 +16,7 @@ export type GenerationPricingAuthority = {
   readonly ruleKey: string;
   readonly version: number;
   readonly baseCost: number;
+  readonly multiplier: number;
   readonly effectiveFrom: Date | null;
   readonly updatedAt: Date;
 };
@@ -33,6 +36,7 @@ export async function resolveGenerationPricingAuthority(
       ruleKey: true,
       version: true,
       baseCost: true,
+      multiplier: true,
       effectiveFrom: true,
       updatedAt: true,
     },
@@ -52,7 +56,7 @@ export function generationCostFromAuthority(
   outputCount: number,
   multiplier = 1,
 ): number {
-  return Math.ceil(authority.baseCost * outputCount * multiplier);
+  return Math.ceil(authority.baseCost * outputCount * authority.multiplier * multiplier);
 }
 
 export async function generationCostDreamcoins(
