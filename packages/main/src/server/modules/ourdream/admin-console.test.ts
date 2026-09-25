@@ -622,7 +622,7 @@ describe("admin appeal queue", () => {
         body: {
           outcome: "overturned",
           reason: "The original content decision was incorrect",
-          confirmation: "OVERTURN",
+          confirmation: `${appeal.id}:overturn`,
         },
       },
     );
@@ -678,7 +678,7 @@ describe("admin appeal queue", () => {
         body: {
           outcome: "overturned",
           reason: "The original decision was incorrect",
-          confirmation: "OVERTURN",
+          confirmation: `${appeal.id}:overturn`,
         },
       }),
       409,
@@ -740,7 +740,7 @@ describe("admin appeal queue", () => {
         body: {
           outcome: "overturned",
           reason: "Support cannot resolve appeals",
-          confirmation: "OVERTURN",
+          confirmation: `${appeal.id}:overturn`,
         },
       }),
       403,
@@ -751,7 +751,7 @@ describe("admin appeal queue", () => {
       outcome: "overturned",
       notes: "The original decision is overturned.",
       reason: "Appeal accepted after reviewer check",
-      confirmation: "OVERTURN",
+      confirmation: `${appeal.id}:overturn`,
     } as const;
     const resolved = await adminV2("POST", `moderation/appeals/${appeal.id}/decision`, {
       userId: admin,
@@ -819,7 +819,7 @@ describe("admin appeal queue", () => {
         body: {
           outcome: "upheld",
           reason: "Duplicate terminal appeal decision",
-          confirmation: "UPHOLD",
+          confirmation: `${appeal.id}:uphold`,
         },
       }),
       409,
@@ -863,7 +863,7 @@ describe("admin appeal queue", () => {
           body: {
             outcome: "overturned",
             reason: "Appeal accepted after reviewer check",
-            confirmation: "OVERTURN",
+            confirmation: `${appeal.id}:overturn`,
           },
         },
       );

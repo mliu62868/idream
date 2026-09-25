@@ -73,6 +73,8 @@ export const contentCharacterListItemSchema = z.object({
   status: shortText(40),
   visibility: shortText(40),
   creatorId: adminIdSchema.nullable(),
+  // 官方角色的状态 / 可见性归 Release 与 Serving 管，前端据此禁用「移除」。
+  source: shortText(40),
   createdAt: adminIsoDateTimeSchema,
   imageAsset: contentCharacterImageSchema.nullable(),
   visualProfile: contentCharacterVisualSummarySchema.nullable(),
@@ -82,6 +84,8 @@ export const contentCharacterListItemSchema = z.object({
   //         显示「已暂停」、在这张表的状态列显示「已归档」——同一件事两个词，运营会以为
   //         有人把它归档了。把 Serving 状态一起下发，状态列旁边就能说清楚它到底停在哪一步。
   servingState: shortText(40).nullable(),
+  // SPEC: 官方角色改 Explore 挂牌时要回传的 entityVersion（Serving 乐观锁）。
+  servingVersion: z.number().int().nullable(),
   exploreListing: contentCharacterExploreListingSchema,
 }).strict();
 
@@ -472,11 +476,13 @@ const contentTemplateAdvancedDetailsSchema = z.object({
   firstMessage: z.string().trim().max(4_000).default(""),
 }).strict();
 
+// INVARIANT: summary / gender / style 传 null 表示清空（编辑页把空输入映射成 null），
+//            不传表示不改。
 export const contentTemplateCreateRequestSchema = z.object({
   name: z.string().trim().min(1).max(80),
-  summary: z.string().trim().max(200).optional(),
-  gender: z.string().trim().max(40).optional(),
-  style: z.string().trim().max(60).optional(),
+  summary: z.string().trim().max(200).nullable().optional(),
+  gender: z.string().trim().max(40).nullable().optional(),
+  style: z.string().trim().max(60).nullable().optional(),
   appearance: templateRecordSchema.default({}),
   advancedDetails: contentTemplateAdvancedDetailsSchema.default({
     detailsMarkdown: "",
@@ -491,9 +497,9 @@ export const contentTemplateCreateRequestSchema = z.object({
 
 export const contentTemplateUpdateRequestSchema = z.object({
   name: z.string().trim().min(1).max(80).optional(),
-  summary: z.string().trim().max(200).optional(),
-  gender: z.string().trim().max(40).optional(),
-  style: z.string().trim().max(60).optional(),
+  summary: z.string().trim().max(200).nullable().optional(),
+  gender: z.string().trim().max(40).nullable().optional(),
+  style: z.string().trim().max(60).nullable().optional(),
   appearance: templateRecordSchema.optional(),
   advancedDetails: contentTemplateAdvancedDetailsSchema.optional(),
   tags: z.array(z.string().trim().min(1).max(40)).max(12).optional(),
@@ -532,6 +538,17 @@ export const contentTagListResponseSchema = z.object({
   items: z.array(contentTagSchema.extend({
     characterCount: z.number().int().nonnegative(),
   }).strict()),
+}).strict();
+
+// SPEC: 运营直接造一个标签。slug 由 label 派生，confirmation 必须等于派生出的 slug。
+// INTENT: 此前标签只能随角色创建隐式 upsert，Taxonomy 能改能并却不能建。
+export const contentTagCreateRequestSchema = z.object({
+  label: z.string().trim().min(1).max(80),
+  category: z.string().trim().max(40).nullable().optional(),
+  isSensitive: z.boolean().optional(),
+  isMutedByDefault: z.boolean().optional(),
+  reason: reasonSchema,
+  confirmation: confirmationSchema,
 }).strict();
 
 // SPEC: 至少一个可变字段 + reason；category 可为 null（清除分类）。
@@ -618,6 +635,7 @@ export type ContentTemplateCreateRequest = z.infer<typeof contentTemplateCreateR
 export type ContentTemplateUpdateRequest = z.infer<typeof contentTemplateUpdateRequestSchema>;
 export type ContentTemplateActiveRequest = z.infer<typeof contentTemplateActiveRequestSchema>;
 export type ContentTagQuery = z.infer<typeof contentTagQuerySchema>;
+export type ContentTagCreateRequest = z.infer<typeof contentTagCreateRequestSchema>;
 export type ContentTagPatchRequest = z.infer<typeof contentTagPatchRequestSchema>;
 export type ContentTagMergeRequest = z.infer<typeof contentTagMergeRequestSchema>;
 export type ContentCharacterAssistRequest = z.infer<typeof contentCharacterAssistRequestSchema>;

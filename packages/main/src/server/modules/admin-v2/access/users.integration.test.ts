@@ -201,6 +201,55 @@ describe("idempotent user authority commands", () => {
     });
   });
 
+  // SPEC: 权限覆盖和状态 / 角色走同一道自我保护 —— 不能给自己加减权限，也不能撤掉最后一个能管权限的管理员。
+  it("refuses self permission overrides and revoking user.role.write from the last admin", async () => {
+    const selfGrant = await callPermission(actorId, {
+      permissionKey: "billing.ledger.adjust",
+      effect: "grant",
+      reason: "self grant attempt",
+      confirmation: `${actorId}:billing.ledger.adjust:grant`,
+    }, `${P}self-permission-key`, `${P}self-permission`);
+    expect(selfGrant.status).toBe(409);
+    await expect(prisma.adminUserPermission.count({ where: { userId: actorId } })).resolves.toBe(0);
+
+    // 最后一个管理员：由一个经覆盖获得 user.role.write 的非 admin 操作者去撤他的权限，
+    // 其余 active admin 都被视作已撤权（fixture 行结束即删）。
+    const lastAdmin = `${P}last-admin`;
+    const operator = `${P}role-operator`;
+    await createUser({ id: lastAdmin, role: "admin" });
+    await createUser({ id: operator, role: "ops" });
+    const admins = await prisma.user.findMany({
+      where: { role: "admin", status: "active", deletedAt: null, id: { not: lastAdmin } },
+      select: { id: true },
+    });
+    const fixture = [
+      { userId: operator, permissionKey: "user.role.write", effect: "grant" },
+      ...admins.map((admin) => ({ userId: admin.id, permissionKey: "user.role.write", effect: "revoke" })),
+    ].map((row) => ({ ...row, reason: `${P}fixture`, createdById: actorId }));
+    await prisma.adminUserPermission.createMany({ data: fixture, skipDuplicates: true });
+    try {
+      const response = await userPermissionsWriteRoute(new Request(`http://localhost/api/v2/admin/users/${lastAdmin}/permissions`, {
+        method: "POST",
+        headers: {
+          "x-idream-user-id": operator,
+          "x-idream-role": "ops",
+          "content-type": "application/json",
+          "idempotency-key": `${P}last-admin-key`,
+        },
+        body: JSON.stringify({
+          permissionKey: "user.role.write",
+          effect: "revoke",
+          reason: "lock out last admin",
+          confirmation: `${lastAdmin}:user.role.write:revoke`,
+        }),
+      }), { params: Promise.resolve({ id: lastAdmin }) });
+      expect(response.status).toBe(409);
+      await expect(prisma.adminUserPermission.count({ where: { userId: lastAdmin } })).resolves.toBe(0);
+    } finally {
+      await prisma.adminUserPermission.deleteMany({ where: { reason: `${P}fixture` } });
+    }
+  });
+
   it("deduplicates role and permission commands without duplicate Audit or Outbox", async () => {
     const targetId = `${P}role-permission-target`;
     await createUser({ id: targetId });

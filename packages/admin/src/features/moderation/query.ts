@@ -53,10 +53,9 @@ export function moderationDecisionConfirmation(
   kind: "action" | "close" | "uphold" | "overturn" | "modify" | "media_pass" | "media_block",
   id: string,
 ) {
-  if (kind === "action") return "TAKEDOWN";
-  if (kind === "uphold") return "UPHOLD";
-  if (kind === "overturn") return "OVERTURN";
-  if (kind === "modify") return "MODIFY";
+  // INVARIANT: 与服务端 decision.ts 同一格式——确认串绑定目标 id 与动作，不是全局常量。
+  if (kind === "action") return `${id}:takedown`;
+  if (kind === "uphold" || kind === "overturn" || kind === "modify") return `${id}:${kind}`;
   return id;
 }
 

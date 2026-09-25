@@ -174,12 +174,16 @@ export async function patchAnnouncement(request: Request, id: string) {
   const next = [...items];
   next[index] = updated;
   await writeAnnouncements(next);
+  // INVARIANT: 审计记录每个实际变化字段的前后值 —— 改了标题 / 正文 / 时间窗却只留 active/level，
+  //            事后无从得知公告原来写的是什么。
+  const changed = (["title", "body", "level", "active", "startsAt", "endsAt", "href"] as const)
+    .filter((key) => before[key] !== updated[key]);
   await writeAudit(request, actor, {
     action: "growth.announcement.update",
     targetId: id,
     reason: body.reason,
-    before: { active: before.active, level: before.level },
-    after: { active: updated.active, level: updated.level },
+    before: Object.fromEntries(changed.map((key) => [key, before[key]])),
+    after: Object.fromEntries(changed.map((key) => [key, updated[key]])),
   });
   return { announcement: withServingState(updated) };
 }

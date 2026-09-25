@@ -259,7 +259,13 @@ export function ContentMerchandisingWorkspace({
     }
   }
 
-  function command(id: string, field: "visibility" | "status", value: string) {
+  // entityVersion：官方角色改挂牌消费 Serving 乐观锁版本；不带就是必然 409。
+  function command(
+    id: string,
+    field: "visibility" | "status",
+    value: string,
+    entityVersion?: number,
+  ) {
     const expected = `${id}:${field}:${value}`;
     setConfirmSpec({
       title: field === "visibility"
@@ -283,7 +289,12 @@ export function ContentMerchandisingWorkspace({
         await apiWrite(
           `/api/v2/admin/content/characters/${encodeURIComponent(id)}/${field}`,
           "POST",
-          { [field]: value, reason: commandReason, confirmation: expected },
+          {
+            [field]: value,
+            ...(field === "visibility" && entityVersion !== undefined ? { entityVersion } : {}),
+            reason: commandReason,
+            confirmation: expected,
+          },
         );
         toast({
           tone: "success",
@@ -916,6 +927,9 @@ export const EXPLORE_LISTING_BLOCKED_COPY = {
     "An official Character leaves the catalog through Pause or Retire on its release, not by going private here.",
 } as const satisfies Record<string, string>;
 
+export const OFFICIAL_REMOVE_BLOCKED_COPY =
+  "An official Character is taken down through its release, not removed here.";
+
 // SPEC: 枚举走字典、时间走 format —— 和后台其他表一致。
 // INTENT: 这张表原来所有单元格都走同一个 `cell()` 直接 String() 出去，于是中文界面上
 //         性别 / 风格 / 可见性 / 状态 印的是 female / realistic / unlisted / approved，
@@ -924,7 +938,12 @@ export const EXPLORE_LISTING_BLOCKED_COPY = {
 export function characterTableRow(
   row: Row,
   canWrite: boolean,
-  command: (id: string, field: "visibility" | "status", value: string) => void,
+  command: (
+    id: string,
+    field: "visibility" | "status",
+    value: string,
+    entityVersion?: number,
+  ) => void,
   valueLabel: (value: string) => string = (value) => value,
   dateTime: (value: unknown) => string = (value) => cell(value),
 ): DataTableRow {
@@ -936,10 +955,17 @@ export function characterTableRow(
   const eligibility = listing.success ? listing.data : null;
   const canUnlist = canWrite && (eligibility?.canUnlist ?? true);
   const canMakePrivate = canWrite && (eligibility?.canMakePrivate ?? true);
+  const servingVersion = typeof row.servingVersion === "number" ? row.servingVersion : undefined;
+  // 官方角色的 status 归 Release / Serving 管，服务端 rejectOfficialCharacter 必回 409。
+  const official = row.source === "official";
+  const canRemove = canWrite && !official;
   const blockedReasonId = `explore-listing-blocked-${id}`;
   const blockedReason = eligibility && (!canUnlist || !canMakePrivate)
     ? eligibility.blockedReason
     : null;
+  const repairDeepLink = eligibility?.repairDeepLink ??
+    (official ? `/admin/characters/${id}?tab=release` : null);
+  const blocked = Boolean(blockedReason) || official;
   const actions: ReactNode = (
     <div className="flex flex-col gap-1">
       <div className="flex gap-2">
@@ -947,7 +973,7 @@ export function characterTableRow(
           aria-describedby={blockedReason ? blockedReasonId : undefined}
           className="rounded border border-[var(--ad-border)] px-2 py-1 text-xs disabled:opacity-50"
           disabled={!canUnlist}
-          onClick={() => command(id, "visibility", "unlisted")}
+          onClick={() => command(id, "visibility", "unlisted", servingVersion)}
           type="button"
         >
 
@@ -957,15 +983,16 @@ export function characterTableRow(
           aria-describedby={blockedReason ? blockedReasonId : undefined}
           className="rounded border border-[var(--ad-border)] px-2 py-1 text-xs disabled:opacity-50"
           disabled={!canMakePrivate}
-          onClick={() => command(id, "visibility", "private")}
+          onClick={() => command(id, "visibility", "private", servingVersion)}
           type="button"
         >
 
           <AdminText text="Make private" />
         </button>
         <button
+          aria-describedby={official ? blockedReasonId : undefined}
           className="rounded border border-[var(--ad-border)] px-2 py-1 text-xs disabled:opacity-50"
-          disabled={!canWrite}
+          disabled={!canRemove}
           onClick={() => command(id, "status", "removed")}
           type="button"
         >
@@ -973,13 +1000,21 @@ export function characterTableRow(
           <AdminText text="Remove" />
         </button>
       </div>
-      {blockedReason ? (
+      {blocked ? (
         <p className="text-[11px] text-[var(--ad-text-muted)]" id={blockedReasonId}>
-          <AdminText text={EXPLORE_LISTING_BLOCKED_COPY[blockedReason]} />
-          {eligibility?.repairDeepLink ? (
+          {blockedReason ? (
+            <AdminText text={EXPLORE_LISTING_BLOCKED_COPY[blockedReason]} />
+          ) : null}
+          {official ? (
+            <>
+              {blockedReason ? " " : null}
+              <AdminText text={OFFICIAL_REMOVE_BLOCKED_COPY} />
+            </>
+          ) : null}
+          {repairDeepLink ? (
             <>
               {" "}
-              <Link className="underline" href={eligibility.repairDeepLink}>
+              <Link className="underline" href={repairDeepLink}>
                 <AdminText text="Open release" />
               </Link>
             </>

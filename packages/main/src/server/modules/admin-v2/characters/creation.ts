@@ -20,7 +20,7 @@ function commandScope(actorId: string) {
   return `${env.APP_ENV}:${actorId}:${CREATE_COMMAND}`;
 }
 
-function tagSlug(value: string) {
+export function tagSlug(value: string) {
   return value
     .trim()
     .toLowerCase()

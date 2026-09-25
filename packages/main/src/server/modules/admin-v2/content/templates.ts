@@ -165,7 +165,8 @@ export async function updateTemplate(input: {
   if (touchesText) {
     await moderateTemplate(id, {
       name: body.name ?? existing.name,
-      summary: body.summary ?? existing.summary,
+      // null 是「清空」，不能被 ?? 当成「没改」退回旧值。
+      summary: body.summary !== undefined ? body.summary : existing.summary,
       advancedDetails: body.advancedDetails ?? existing.advancedDetails,
       tags: body.tags ?? (existing.tags as string[]),
     });

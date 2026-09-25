@@ -179,9 +179,13 @@ export const navItems: NavItem[] = [
   item({ id: "content/official", label: "Characters", href: "/admin/characters", icon: UserRound, group: "Characters", read: readForOperations("GET /api/v2/admin/characters/:id", "GET /api/v2/admin/characters/portfolio"), chrome: "compact",
     render: (ctx) => <CharacterWorkspace actorId={ctx.actorId} permissions={ctx.permissions} view={ctx.view} /> }),
   item({ id: "content/templates", label: "Character Starters", href: "/admin/characters/starters", icon: Sparkles, group: "Characters", read: readForOperations("GET /api/v2/admin/content/templates"),
-    render: (ctx) => <StartersSection view={ctx.view} /> }),
+    render: (ctx) => <StartersSection
+      canAssist={ctx.permissions.has("content.official.write")}
+      canWrite={ctx.permissions.has("content.template.write")}
+      view={ctx.view}
+    /> }),
   item({ id: "content/tags", label: "Taxonomy", href: "/admin/characters/taxonomy", icon: Flag, group: "Characters", read: readForOperations("GET /api/v2/admin/content/tags"),
-    render: () => <TagsView /> }),
+    render: (ctx) => <TagsView canWrite={ctx.permissions.has("content.tag.write")} /> }),
 
   item({ id: "content/assets", label: "Operational Assets", href: "/admin/creative/library", icon: ImageIcon, group: "Content Operations", read: readForOperations("GET /api/v2/admin/assets"),
     render: (ctx) => <AssetsSection canReview={ctx.permissions.has("content.asset.review")} view={ctx.view} /> }),

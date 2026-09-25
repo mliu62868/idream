@@ -16,6 +16,17 @@ export function localInputToIso(value: string): string | null {
 }
 
 /**
+ * 反方向：把存下来的 ISO 串还原成 datetime-local 能回填的本地墙上时间（编辑已有公告时用）。
+ */
+export function isoToLocalInput(value: string | null): string {
+  if (!value) return "";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "";
+  const local = new Date(parsed.getTime() - parsed.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
+/**
  * INVARIANT: 结束早于开始的窗口永远不会展示。权威不校验先后（`activeAnnouncements`
  * 只是两个独立的比较），所以这条得在发出去之前挡住，否则运营会得到一条存成功、
  * 却永远看不见的公告，而且没有任何提示。

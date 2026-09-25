@@ -57,7 +57,7 @@ describe("appeal overturn refusal carries the authority's own reason", () => {
       `/api/v2/admin/moderation/appeals/${appealId}/decision`,
       {
         ...admin,
-        body: { outcome: "overturned", reason: "Customer appeal accepted", confirmation: appealId },
+        body: { outcome: "overturned", reason: "Customer appeal accepted", confirmation: `${appealId}:overturn` },
       },
     );
     expect(response.status).toBe(409);

@@ -11,6 +11,7 @@ import { CardGrid, EntityCard } from "@/components/admin/ui/CardGrid";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { Pagination } from "@/components/admin/ui/Pagination";
 import { PrimaryButton } from "@/components/admin/ui/buttons";
+import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { LoadingWorkspace } from "@/features/operations/WorkspaceUi";
 import type { AdminPageInfo } from "@idream/shared/admin";
 import {
@@ -36,7 +37,7 @@ const PAGE_SIZE = 25;
 
 // SPEC: 角色模板列表页 —— 搜索/筛选 + 卡片网格（无图 monogram、范围·排序·标签数、上/下线状态）。
 // INTENT: 浏览页只浏览；创建在 /new，详情在 /<id>（spec §7 列表页）。
-export function StartersListPage() {
+export function StartersListPage({ canWrite }: { canWrite: boolean }) {
   const { t, value } = useAdminI18n();
   const [authority, setAuthority] = useState(() => createAuthorityState<StartersResponse>());
   const [search, setSearch] = useState("");
@@ -95,13 +96,15 @@ export function StartersListPage() {
   return (
     <div>
       <PageHeader
-        action={
+        action={canWrite ? (
           <Link href="/admin/content/templates/new">
             <PrimaryButton>
               <Plus className="h-4 w-4" /> {t("New starter template")}
             </PrimaryButton>
           </Link>
-        }
+        ) : (
+          <PermissionNotice permission="content.template.write" />
+        )}
         purpose={t("Manage starter templates for user character creation.")}
         title={t("Character Starters")}
       />
@@ -141,7 +144,7 @@ export function StartersListPage() {
         <LoadingWorkspace label="Loading starter templates…" />
       ) : authority.data && rows.length === 0 ? (
         <EmptyState
-          action={filtered ? undefined : (
+          action={filtered || !canWrite ? undefined : (
             <Link href="/admin/content/templates/new">
               <PrimaryButton>
                 <Plus className="h-4 w-4" /> {t("New starter template")}

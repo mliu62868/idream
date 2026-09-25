@@ -267,24 +267,34 @@ export async function getUserDetail(request: Request, userId: string) {
 }
 
 // SPEC: 后台不能把自己锁在门外。
-// INVARIANT: 管理员不能改自己的状态/角色；任何写入之后至少还剩一个 active admin。
-//   否则一次误操作或一个被盗账号就能锁死整个后台，只能直接改库恢复。
+// INVARIANT: 管理员不能改自己的状态/角色/权限覆盖；任何写入之后至少还剩一个能管权限的 active admin。
+//   否则一次误操作或一个被盗账号就能锁死整个后台（或给自己加任意权限），只能直接改库恢复。
+//   「能管权限」= role admin 且没有 user.role.write 的 revoke 覆盖。
 async function assertKeepsAdminAccess(
   tx: Prisma.TransactionClient,
   actorId: string,
   target: { id: string; role: string; status: string },
-  next: { role: string; status: string },
+  next: { role: string; status: string; revokesRoleWrite?: boolean },
 ) {
   if (target.id === actorId) {
-    throw Errors.conflict("You cannot change your own status or role");
+    throw Errors.conflict("You cannot change your own status, role, or permissions");
   }
   const losesAdmin = target.role === "admin" && target.status === "active"
-    && (next.role !== "admin" || next.status !== "active");
+    && (next.role !== "admin" || next.status !== "active" || next.revokesRoleWrite === true);
   if (!losesAdmin) return;
   // 锁住全部 active admin 行，两个管理员同时互相降级时第二个会看到第一个的结果。
   await tx.$queryRaw`SELECT "id" FROM "users" WHERE "role" = 'admin' AND "status" = 'active' AND "deletedAt" IS NULL FOR UPDATE`;
+  const revoked = await tx.adminUserPermission.findMany({
+    where: { permissionKey: "user.role.write", effect: "revoke" },
+    select: { userId: true },
+  });
   const others = await tx.user.count({
-    where: { role: "admin", status: "active", deletedAt: null, id: { not: target.id } },
+    where: {
+      role: "admin",
+      status: "active",
+      deletedAt: null,
+      id: { notIn: [target.id, ...revoked.map((row) => row.userId)] },
+    },
   });
   if (others === 0) throw Errors.conflict("At least one active admin must remain");
 }
@@ -414,8 +424,16 @@ export async function setUserPermission(request: Request, userId: string) {
     userId,
     payload: body,
     execute: async (tx, requestId) => {
+      await tx.$queryRaw(
+        Prisma.sql`SELECT "id" FROM "users" WHERE "id" = ${userId} FOR UPDATE`,
+      );
       const user = await tx.user.findUnique({ where: { id: userId } });
       if (!user) throw Errors.notFound("User not found");
+      await assertKeepsAdminAccess(tx, actor.id, user, {
+        role: user.role,
+        status: user.status,
+        revokesRoleWrite: body.permissionKey === "user.role.write" && body.effect === "revoke",
+      });
       const before = await tx.adminUserPermission.findFirst({
         where: { userId, permissionKey: body.permissionKey },
       });

@@ -35,14 +35,14 @@ describe("starterPayload", () => {
     ).toEqual(Array.from({ length: 12 }, (_, i) => `tag${i}`));
   });
 
-  it("falls back to sortOrder 0 on garbage, drops empty optional fields", () => {
+  it("falls back to sortOrder 0 on garbage, sends empty optional fields as null so edits clear them", () => {
     const payload = starterPayload({
       name: "A", summary: "", gender: "", style: "",
       scope: "built_in", tags: "", sortOrder: "x", reason: "abc", ...creativeFields,
     });
     expect(payload.sortOrder).toBe(0);
-    expect(payload.summary).toBeUndefined();
-    expect(payload.gender).toBeUndefined();
-    expect(payload.style).toBeUndefined();
+    expect(payload.summary).toBeNull();
+    expect(payload.gender).toBeNull();
+    expect(payload.style).toBeNull();
   });
 });

@@ -493,6 +493,19 @@ describe("admin moderation queue + audit", () => {
       expect.objectContaining({ id: reportId }),
     ]);
 
+    // 确认串绑定目标：全局常量 TAKEDOWN 对任何举报都成立，必须被拒。
+    const constantConfirmation = await adminV2("POST", `moderation/reports/${reportId}/decision`, {
+      userId: admin,
+      role: "admin",
+      body: {
+        decision: "actioned",
+        policyCode: "prohibited_content",
+        reason: "policy violation confirmed",
+        confirmation: "TAKEDOWN",
+      },
+    });
+    expect(constantConfirmation.status).toBe(400);
+
     const decision = await adminV2("POST", `moderation/reports/${reportId}/decision`, {
       userId: admin,
       role: "admin",
@@ -501,7 +514,7 @@ describe("admin moderation queue + audit", () => {
         policyCode: "prohibited_content",
         notes: "removed",
         reason: "policy violation confirmed",
-        confirmation: "TAKEDOWN",
+        confirmation: `${reportId}:takedown`,
       },
     });
     expectOk(decision);
@@ -577,7 +590,7 @@ describe("admin moderation queue + audit", () => {
         body: {
           outcome: "overturned",
           reason: "The removal decision was incorrect after a second review",
-          confirmation: "OVERTURN",
+          confirmation: `${appeal.data.appeal.id as string}:overturn`,
         },
       },
     );
@@ -622,7 +635,7 @@ describe("admin moderation queue + audit", () => {
             policyCode: "prohibited_content",
             notes: "removed",
             reason: "policy violation confirmed",
-            confirmation: "TAKEDOWN",
+            confirmation: `${report.id}:takedown`,
           },
         },
       );

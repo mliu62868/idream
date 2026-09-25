@@ -256,6 +256,7 @@ export const adminZhCreative: Record<string, string> = {
   // Explore 挂牌资格：权威随行下发原因码，这里是运营看的话术。
   "This Character is not live, so its Explore listing cannot change here.": "该角色未上线，这里改不了它的 Explore 挂牌。",
   "An official Character leaves the catalog through Pause or Retire on its release, not by going private here.": "官方角色要离开公开目录，请在发布版本页用暂停或停用，而不是在这里设为私密。",
+  "An official Character is taken down through its release, not removed here.": "官方角色的下架走发布版本，不在这里移除。",
   "Open this Character's release": "打开该角色的发布版本",
   "Open Creative Run review": "打开创意批次审核",
   "Open an image to review it. Creating a new batch never changes the live character automatically.":
