@@ -382,6 +382,18 @@ describe("profile, preferences, language", () => {
     expectOk(updated);
     expect(updated.data.user.displayName).toBe("Renamed");
 
+    for (const image of ["https://evil.example.com/a.png", "//evil.example.com/a.png", "/\\evil.example.com/a.png", "javascript:alert(1)"]) {
+      expectError(await api("PATCH", "profile", { userId, body: { image } }), 400);
+    }
+    const avatar = await api("PATCH", "profile", {
+      userId,
+      body: { image: "/api/v1/media/own-avatar/content" },
+    });
+    expectOk(avatar);
+    expect(await prisma.user.findUniqueOrThrow({ where: { id: userId } })).toMatchObject({
+      image: "/api/v1/media/own-avatar/content",
+    });
+
     const prefs = await api("PATCH", "me/preferences", {
       userId,
       body: { locale: "fr", mutedTags: ["Teen", "slow burn"] },
@@ -928,6 +940,17 @@ describe("tags, likes, duplicate", () => {
     expect(
       (personalized.data.tags as Array<{ slug: string }>).map((item) => item.slug),
     ).not.toContain(tag.slug);
+  });
+
+  it("lets a reader who still owes age verification take back a like they could give", async () => {
+    const userId = `${P}liker-unverified`;
+    await createUser({ id: userId, dataClass: "customer" });
+    await prisma.ageVerification.create({
+      data: { userId, provider: "mock", status: "required", metadata: {} },
+    });
+    expectOk(await api("POST", `characters/${CHAR}/like`, { userId, ageGate: true }));
+    expectOk(await api("DELETE", `characters/${CHAR}/like`, { userId, ageGate: true }));
+    expect(await prisma.characterLike.count({ where: { userId, characterId: CHAR } })).toBe(0);
   });
 
   it("likes then unlikes a character and adjusts stats", async () => {

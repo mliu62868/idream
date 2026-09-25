@@ -424,7 +424,16 @@ const mediaCollectionItemSchema = z.object({
 
 const profilePatchSchema = z.object({
   displayName: z.string().trim().min(1).max(80).optional(),
-  image: z.string().url().optional(),
+  // INVARIANT: 头像只能是站内相对路径（如本人 media 的 /api/v1/media/:id/content）。
+  // 外部 URL 会让他人浏览时向任意主机发请求，且 next/image 未配置远程主机会直接渲染失败；
+  // "//" 与反斜杠在浏览器里都会被解析成协议相对的外部地址。
+  image: z
+    .string()
+    .max(2_048)
+    .refine((value) => /^\/(?![/\\])/.test(value) && !value.includes("\\"), {
+      message: "Profile image must be a path on this site",
+    })
+    .optional(),
 });
 
 const preferencesPatchSchema = z.object({
@@ -1782,11 +1791,11 @@ async function likeTotals(characterId: string) {
   return { likesCount, likes: formatCount(likesCount) };
 }
 
+// INVARIANT: 与 likeCharacter 同一道门——能点的赞必须能取消。
 async function unlikeCharacter(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
   requireAgeGate(ctx);
-  requireAgeVerified(ctx);
   const countsAsEngagement = await isCustomerEngagementActor(user.id);
   const deleted = await prisma.characterLike.deleteMany({
     where: { userId: user.id, characterId: id },
