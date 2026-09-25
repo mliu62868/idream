@@ -148,7 +148,7 @@ export function AffiliatePanel({ fetcher }: Readonly<{ fetcher: Fetcher }>) {
           <label className="flex items-start gap-2 text-[12px] text-[rgb(170,170,170)]">
             <input checked={accepted} className="mt-0.5" onChange={(event) => setAccepted(event.target.checked)} type="checkbox" />
             <span>
-              I accept the <Link className="text-white underline" href={dashboard.terms.path}>{dashboard.terms.title}</Link> terms.
+              I accept the <Link className="text-white underline" href={dashboard.terms.path}>{dashboard.terms.title}</Link>.
             </span>
           </label>
           <button
