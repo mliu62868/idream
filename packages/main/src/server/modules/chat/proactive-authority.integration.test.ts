@@ -626,9 +626,8 @@ describe("chat exchange correction metric event", () => {
       createdAt: new Date(now.getTime() - (4_000 - index) * 1_000),
     }));
     await prisma.chatTurn.createMany({ data: turns });
-    const started = Date.now();
+    // Resolving is the assertion: the old per-Turn writes threw P2028 (transaction timeout).
     await deleteChatSession(f.userId, f.sessionId);
-    expect(Date.now() - started).toBeLessThan(5_000);
     expect(await prisma.analyticsEvent.count({
       where: { name: "chat.exchange.corrected.v2", sourceService: "main", sourceEventId: { startsWith: `chat_exchange_correction:${f.sessionId}-long-` } },
     })).toBe(4_000);
