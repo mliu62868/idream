@@ -408,7 +408,7 @@ function CreateTagSection({
       {label.trim() && !slug ? (
         <p className="mt-2 text-xs text-[var(--ad-red-text)]">{t("A tag label needs Latin letters or digits to form its slug.")}</p>
       ) : slug ? (
-        <p className="mt-2 font-mono text-xs text-[var(--ad-text-muted)]">slug: {slug}</p>
+        <p className="mt-2 font-mono text-xs text-[var(--ad-text-muted)]">{t("slug")}: {slug}</p>
       ) : null}
       {confirmSpec ? <ConfirmDialog onClose={() => setConfirming(false)} spec={confirmSpec} /> : null}
     </section>

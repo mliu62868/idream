@@ -49,6 +49,22 @@ describe("Character overview settings writes", () => {
     );
   });
 
+  // SPEC: 服务端 tagIds.max(24)；到上限后未选的标签不可点，并说明原因，而不是保存时吃 400。
+  it("caps the selection at 24 tags with a visible hint", async () => {
+    const items = Array.from({ length: 26 }, (_, index) => ({ id: `tag-${index}`, label: `Tag ${index}`, category: null, isSensitive: false }));
+    api.apiGet.mockImplementation(async (path: string) => path.startsWith("/api/v2/admin/content/tags")
+      ? { items }
+      : { character: { tags: items.slice(0, 23).map(({ id, label }) => ({ id, label })) } });
+    await act(async () => root.render(<CharacterTagsPanel canWrite characterId="character-1" />));
+    await settle();
+    await act(async () => button("Tag 23").click());
+    expect(container.textContent).toContain("24 of 24 tags selected — deselect one to add another.");
+    expect(button("Tag 24").disabled).toBe(true);
+    expect(button("Tag 0").disabled).toBe(false);
+    await act(async () => button("Save tags").click());
+    expect(api.apiWrite.mock.calls[0][2].tagIds).toHaveLength(24);
+  });
+
   it("confirms the in-chat image switch without a reason field", async () => {
     api.apiGet.mockResolvedValue({ chatImageToolEnabled: true });
     api.apiWrite.mockResolvedValue({});

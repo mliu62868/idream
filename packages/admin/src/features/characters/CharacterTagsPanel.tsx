@@ -28,6 +28,10 @@ type TagRow = {
 // v2 的角色详情契约把标签投影成扁平行（id/slug/label/category），不再透出 CharacterTag 关联行。
 type CharacterTag = { id: string; label: string };
 
+// INVARIANT: 与契约 contentCharacterTagsRequestSchema.tagIds.max(24) 同一上限 ——
+//            过去前端不限，选到第 25 个时保存直接吃一个裸 zod 400。
+export const MAX_CHARACTER_TAGS = 24;
+
 export function characterTagSelectionChanged(
   saved: readonly string[],
   draft: readonly string[],
@@ -90,9 +94,12 @@ export function CharacterTagsPanel({
     setDraft((current) =>
       current.includes(tagId)
         ? current.filter((id) => id !== tagId)
-        : [...current, tagId],
+        : current.length >= MAX_CHARACTER_TAGS
+          ? current
+          : [...current, tagId],
     );
   }
+  const atLimit = draft.length >= MAX_CHARACTER_TAGS;
 
   async function save() {
     setSaving(true);
@@ -152,6 +159,7 @@ export function CharacterTagsPanel({
         <div className="mt-3 flex flex-wrap gap-2">
           {vocabulary.map((tag) => {
             const selected = draft.includes(tag.id);
+            const blocked = !canWrite || (atLimit && !selected);
             return (
               <button
                 aria-pressed={selected}
@@ -160,9 +168,9 @@ export function CharacterTagsPanel({
                   selected
                     ? "border-[var(--ad-ink)] bg-[var(--ad-ink)] font-semibold text-[var(--ad-surface)]"
                     : "border-[var(--ad-border)] text-[var(--ad-text-muted)]",
-                  !canWrite && "cursor-not-allowed opacity-50",
+                  blocked && "cursor-not-allowed opacity-50",
                 )}
-                disabled={!canWrite}
+                disabled={blocked}
                 key={tag.id}
                 onClick={() => toggle(tag.id)}
                 type="button"
@@ -178,6 +186,13 @@ export function CharacterTagsPanel({
           })}
         </div>
       )}
+      {canWrite && vocabulary && vocabulary.length > 0 ? (
+        <p className={cn("mt-3 text-xs", atLimit ? "text-[var(--ad-yellow-text)]" : "text-[var(--ad-text-muted)]")} role="status">
+          {atLimit
+            ? t("{count} of {max} tags selected — deselect one to add another.", { count: draft.length, max: MAX_CHARACTER_TAGS })
+            : t("{count} of {max} tags selected", { count: draft.length, max: MAX_CHARACTER_TAGS })}
+        </p>
+      ) : null}
       {!canWrite ? (
         <p className="mt-3 text-xs text-[var(--ad-text-muted)]">
           {t("Read only · content.tag.write is not granted")}

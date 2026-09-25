@@ -759,6 +759,8 @@ export const adminZhCharacters: Record<string, string> = {
   Margin: "边际",
   Meet: "认识",
   "Merge tags": "合并标签",
+  "{count} of {max} tags selected": "已选 {count} / {max} 个标签",
+  "{count} of {max} tags selected — deselect one to add another.": "已选 {count} / {max} 个标签——取消一个才能再加。",
   "New tag": "新建标签",
   "Create tag": "创建标签",
   "Creates the tag {slug}.": "将创建标签 {slug}。",
