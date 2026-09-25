@@ -2916,6 +2916,7 @@ async function listMedia(request: Request) {
           sourceMeta: true,
         },
       },
+      character: { select: { name: true } },
     },
     orderBy: { createdAt: "desc" },
     skip: offset,
@@ -4228,6 +4229,7 @@ async function library(request: Request, tab: string) {
             { contentType: { not: "application/vnd.idream.pocket-tts-preset+json" } },
           ],
         },
+        include: { character: { select: { name: true } } },
         orderBy: { createdAt: "desc" },
         take: 12,
       }),
@@ -4839,6 +4841,7 @@ function mediaDTO(asset: {
   metadata?: Prisma.JsonValue;
   liked: boolean;
   createdAt: Date;
+  character?: { name: string } | null;
   sourceJob?: {
     characterId?: string | null;
     sourceType: string;
@@ -4859,6 +4862,8 @@ function mediaDTO(asset: {
   return {
     id: asset.id,
     characterId,
+    // Lets the gallery title a card by who is in it instead of "Generated image".
+    ...(asset.character?.name ? { characterName: asset.character.name } : {}),
     canEditIdentity: Boolean(characterId && options.editableCharacterIds?.has(characterId)),
     imageEditModelIds: options.imageEditModelIds ?? [],
     enhanceEligible: isEnhanceEligible(asset),

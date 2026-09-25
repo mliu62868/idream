@@ -1314,6 +1314,7 @@ const libraryItemSchema = z
       "not_public",
     ]).optional(),
     character: libraryCharacterSchema.optional(),
+    characterName: z.string().optional(),
   })
   .passthrough();
 

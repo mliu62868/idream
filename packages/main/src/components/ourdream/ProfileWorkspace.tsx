@@ -128,7 +128,7 @@ export function profileLibraryCardPresentation(item: LibraryItem) {
       (typeof item.label === "string" ? item.label : undefined) ??
       character?.title ??
       character?.name ??
-      (isMediaItem ? fallbackMediaTitle : item.id),
+      (isMediaItem ? item.characterName ?? fallbackMediaTitle : item.id),
     // INTENT: Generated media prompts contain identity-lock and runtime instructions.
     // Keep those searchable, but do not expose implementation text as customer-facing card copy.
     summary: isMediaItem ? null : item.prompt ?? item.description ?? null,
