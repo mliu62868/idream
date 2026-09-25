@@ -1329,6 +1329,8 @@ describe("generation config control plane", () => {
         finishedAt: new Date(),
       },
     });
+    // 历史数据里的半灰度草稿：发布必须全量，否则上一版已归档、新版又不可服务。
+    await prisma.generationModelProfile.update({ where: { id: draft.data.profile.id }, data: { rolloutPercent: 50 } });
     const verifiedPublish = await adminV2("POST", `/api/v2/admin/generation/model-profiles/${draft.data.profile.id}/commands/publish`, {
       userId: admin,
       role: "admin",
@@ -3571,7 +3573,8 @@ describe("provider ops dashboard", () => {
     expect(row?.completed).toBe(2);
     expect(row?.failed).toBe(1);
     expect(row?.successRate).toBe(67); // round(2/3*100)
-    expect(row?.coinsCost).toBe(15);
+    // 花费只计 completed（failed 的 5 会被退款），平均按 completed 摊。
+    expect(row?.coinsCost).toBe(10);
     expect(row?.avgCostPerJob).toBe(5);
     expect(row?.latencySamples).toBe(2);
     expect(Number(row?.latencyP95Ms)).toBeGreaterThanOrEqual(2000);
@@ -4199,7 +4202,7 @@ describe("admin dual-approval (F5)", () => {
           action: "config.pricing.publish",
           targetType: "pricing_rule",
           targetId,
-          payload: { baseCost: 4 },
+          payload: { baseCost: 4, multiplier: 1, version: 1 },
           reason: "drop image price",
           confirmation: requestConfirmation,
         },
@@ -4215,7 +4218,7 @@ describe("admin dual-approval (F5)", () => {
         action: "config.pricing.publish",
         targetType: "pricing_rule",
         targetId,
-        payload: { baseCost: 4 },
+        payload: { baseCost: 4, multiplier: 1, version: 1 },
         reason: "drop image price",
         confirmation: "REQUEST",
       },
@@ -4230,7 +4233,7 @@ describe("admin dual-approval (F5)", () => {
         action: "config.pricing.publish",
         targetType: "pricing_rule",
         targetId,
-        payload: { baseCost: 4 },
+        payload: { baseCost: 4, multiplier: 1, version: 1 },
         reason: "drop image price",
         confirmation: requestConfirmation,
       },
@@ -4631,6 +4634,16 @@ describe("admin generation metrics rollup (P3)", () => {
         costDreamcoins: 7,
       },
     });
+    // 取消的任务从未扣费：既不算产量也不算花费。
+    await prisma.generationJob.create({
+      data: {
+        ...base,
+        id: `${P}metrics-job-cancelled`,
+        sourceId: `${P}metrics-src-cancelled`,
+        status: "cancelled",
+        costDreamcoins: 5,
+      },
+    });
 
     const forbidden = await adminV2("GET", "/api/v2/admin/generation/metrics", {
       userId: support,
@@ -4650,11 +4663,12 @@ describe("admin generation metrics rollup (P3)", () => {
     const profileRow = metrics.data.profiles.find(
       (row: { profileId: string }) => row.profileId === profileId,
     );
+    // 花费只计 completed：failed 的 7 会被退款，cancelled 的 5 从未扣费。
     expect(profileRow).toMatchObject({
       total: 2,
       completed: 1,
       failed: 1,
-      costDreamcoins: 14,
+      costDreamcoins: 7,
     });
     expect(profileRow.avgDurationMs).toBeGreaterThanOrEqual(0);
     const recipeRow = metrics.data.recipes.find(

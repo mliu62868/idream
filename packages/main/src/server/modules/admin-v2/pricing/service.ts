@@ -191,7 +191,12 @@ export async function publishPricingRule(
       if (!rule) throw Errors.notFound("Pricing rule not found");
       assertTargetConfirmation(body.confirmation, rule.id);
       if (rule.status !== "draft") throw Errors.badRequest("Only draft pricing rules can be published");
-      await enforceApproval("config.pricing.publish", id, tx);
+      // INVARIANT: 批准绑定价格本身：批准之后再改草稿（baseCost / multiplier）就不再匹配。
+      await enforceApproval("config.pricing.publish", id, tx, {
+        baseCost: rule.baseCost,
+        multiplier: rule.multiplier,
+        version: rule.version,
+      });
       const previous = await tx.pricingRule.findFirst({ where: { mode: rule.mode, status: "active" } });
       const effectiveFrom = body.effectiveFrom ? new Date(body.effectiveFrom) : (rule.effectiveFrom ?? new Date());
       if (effectiveFrom.getTime() > Date.now()) {
@@ -247,9 +252,12 @@ export async function rollbackPricingRule(
       const current = await tx.pricingRule.findUnique({ where: { id } });
       if (!current) throw Errors.notFound("Pricing rule not found");
       assertTargetConfirmation(body.confirmation, current.id);
+      if (current.status !== "active") throw Errors.badRequest("Only the active pricing rule can be rolled back");
+      // INVARIANT: publish 按 mode 归档（每个 mode 恰好一条 active），所以回滚也按 mode 找
+      // 最近被归档的那条 —— 即这次发布顶掉的规则，不论它的 ruleKey 是否相同。
       const previous = await tx.pricingRule.findFirst({
-        where: { ruleKey: current.ruleKey, status: "archived", version: { lt: current.version } },
-        orderBy: { version: "desc" },
+        where: { mode: current.mode, status: "archived", id: { not: current.id } },
+        orderBy: [{ archivedAt: { sort: "desc", nulls: "last" } }, { version: "desc" }],
       });
       if (!previous) throw Errors.notFound("No previous pricing rule version to roll back to");
       await tx.pricingRule.updateMany({

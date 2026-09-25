@@ -16,6 +16,7 @@ import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
+import { ApprovalRequiredNotice, isDualApprovalRequired, type BlockedApproval } from "@/features/approvals/ApprovalRequired";
 import { CoinOffersPanel } from "./CoinOffersPanel";
 import {
   canCreatePricingRule,
@@ -59,6 +60,7 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
   const [coinOffersOpen, setCoinOffersOpen] = useState(false);
   const coinOffersRef = useRef<HTMLDetailsElement>(null);
   const [editing, setEditing] = useState<PricingEdit | null>(null);
+  const [blockedPublish, setBlockedPublish] = useState<{ name: string; approval: BlockedApproval } | null>(null);
   const requestGate = useRef(createLatestRequestGate());
 
   const load = useCallback(async (next: PricingQuery) => {
@@ -215,11 +217,27 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
       },
       submitLabel: capitalize(action),
       onSubmit: async (reason) => {
-        await apiWrite(
-          `/api/v2/admin/pricing/rules/${encodeURIComponent(id)}/${action}`,
-          "POST",
-          { reason, confirmation: id },
-        );
+        try {
+          await apiWrite(
+            `/api/v2/admin/pricing/rules/${encodeURIComponent(id)}/${action}`,
+            "POST",
+            { reason, confirmation: id },
+          );
+        } catch (error) {
+          if (action !== "publish" || !isDualApprovalRequired(error)) throw error;
+          // INVARIANT: 批准绑定这一版的价格（服务端 enforceApproval 比对 baseCost / multiplier / version），
+          //            之后再改草稿，这条批准就不再匹配。
+          setBlockedPublish({ name, approval: {
+            permissionKey: "config.pricing.write",
+            action: "config.pricing.publish",
+            targetType: "pricing_rule",
+            targetId: id,
+            payload: { baseCost: Number(row.baseCost), multiplier: Number(row.multiplier), version: Number(row.version) },
+            reason,
+          } });
+          return;
+        }
+        if (action === "publish") setBlockedPublish(null);
         toast({
           tone: "success",
           title:
@@ -246,6 +264,7 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
         <div className="flex items-end gap-2"><button className="min-h-11 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white" type="submit">{t("Apply")}</button>{filtered ? <button aria-label={t("Clear pricing filters")} className="grid min-h-11 min-w-11 place-items-center rounded-md border border-[var(--ad-border)]" onClick={clearFilters} type="button"><X className="h-4 w-4" /></button> : null}</div>
       </form>
 
+      {blockedPublish ? <ApprovalRequiredNotice blocked={blockedPublish.approval} message={t("Publishing {name} at this price needs a second approver. Submit an approval request; once approved, publish it again. Editing the draft afterwards voids the approval.", { name: blockedPublish.name })} onRequested={() => setBlockedPublish(null)} testId="pricing-publish-approval-required" /> : null}
       {editing ? <PricingEditForm busy={writing} edit={editing} onCancel={() => setEditing(null)} onChange={setEditing} onSave={saveEdit} /> : null}
       {error ? <AuthorityRequestError cause={errorCause} message={error} onRetry={() => void load(query)} snapshotAt={rows ? refreshedAt : null} /> : null}
       {loading && rows === null ? <PricingLoading /> : rows?.length === 0 ? <EmptyState action={filtered ? <button className="min-h-11 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" onClick={clearFilters} type="button">{t("Clear filters")}</button> : undefined} hint={filtered ? "The complete authority query returned no pricing versions." : "Create a versioned pricing draft before publishing a customer-facing price."} title={filtered ? "No pricing rules match these filters" : "No pricing rules exist yet"} /> : rows ? <PricingTable canWrite={canWrite} onAction={confirmVersionAction} onEdit={(row) => setEditing(pricingEditFromRow(row))} rows={rows} /> : null}
@@ -359,7 +378,7 @@ function PricingLoading() {
 /**
  * SPEC: 发布时说清楚它顶掉的是哪一版、那一版现在的价格是多少。
  *
- * INTENT: 表是一列平铺的版本，同一个 ruleKey 的 draft 和 active 可能隔着好几行。
+ * INTENT: 表是一列平铺的版本，同一个 mode 的 draft 和 active 可能隔着好几行。
  * 运营发布 v4 之前，得自己在表里找 v3 —— 那正是「改一个价格，影响面是什么」这个问题
  * 唯一能从现有契约里如实回答的部分。
  * INVARIANT: 契约里没有「当前有多少人在这个价位」，也没有商品关联，所以这里一个字都不提。
@@ -374,12 +393,13 @@ export function replacedVersionNote(
   if (action === "rollback") {
     return t("The version this restores is decided by the authority, not by this page.");
   }
-  const ruleKey = text(row.ruleKey);
+  // INVARIANT: 发布按 mode 顶掉在售规则（每个 mode 恰好一条 active），不按 ruleKey。
+  const mode = text(row.mode);
   const active = (rows ?? []).find(
-    (candidate) => text(candidate.ruleKey) === ruleKey && text(candidate.status) === "active",
+    (candidate) => text(candidate.mode) === mode && text(candidate.status) === "active",
   );
   if (!active) {
-    return t("No active version of this rule key is loaded here, so the price it replaces is unknown.");
+    return t("No active price for this mode is loaded here, so the price it replaces is unknown.");
   }
   return t("Replaces the live version {version}, priced at {base} base Dreamcoins × {multiplier}.", {
     base: slot(active.baseCost),

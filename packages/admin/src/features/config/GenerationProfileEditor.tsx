@@ -9,12 +9,13 @@ import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestErr
 import { fieldClass, textAreaClass, WorkspaceButton } from "@/features/operations/WorkspaceUi";
 
 type Profile = Record<string, unknown>;
-const defaults = { profileKey: "", label: "", mode: "image", runner: "comfyui", pipelineModel: "", workflowKey: "", sourceModelPath: "", convertedModelPath: "", modelFormat: "safetensors", defaultWidth: 768, defaultHeight: 1024, allowedOrientations: ["1:1", "2:3", "3:2"], steps: 28, sampler: "euler", scheduler: "model_default", cfgScale: 1, costMultiplier: 1, requiredEntitlement: "", maxCount: 4, concurrencyLimit: 1, rolloutPercent: 0 };
+// INTENT: 没有 rolloutPercent 字段 —— 灰度只有关 / 全量两档，发布即全量服务，草稿恒为 0。
+const defaults = { profileKey: "", label: "", mode: "image", runner: "comfyui", pipelineModel: "", workflowKey: "", sourceModelPath: "", convertedModelPath: "", modelFormat: "safetensors", defaultWidth: 768, defaultHeight: 1024, allowedOrientations: ["1:1", "2:3", "3:2"], steps: 28, sampler: "euler", scheduler: "model_default", cfgScale: 1, costMultiplier: 1, requiredEntitlement: "", maxCount: 4, concurrencyLimit: 1 };
 const textFields = [
   ["profileKey", "Profile key"], ["label", "Label"], ["runner", "Runner"], ["pipelineModel", "Pipeline model"], ["workflowKey", "Workflow key"], ["sourceModelPath", "Source model path"], ["convertedModelPath", "Converted model path"], ["sampler", "Sampler"], ["scheduler", "Scheduler"], ["requiredEntitlement", "Required entitlement"],
 ] as const;
 const numberFields = [
-  ["defaultWidth", "Default width", 128, 4096, 1], ["defaultHeight", "Default height", 128, 4096, 1], ["steps", "Steps", 1, 150, 1], ["cfgScale", "CFG scale", 1, 30, 0.1], ["costMultiplier", "Cost multiplier", 0.1, 20, 0.1], ["maxCount", "Maximum count", 1, 8, 1], ["concurrencyLimit", "Concurrency limit", 1, 100, 1], ["rolloutPercent", "Rollout percent", 0, 100, 1],
+  ["defaultWidth", "Default width", 128, 4096, 1], ["defaultHeight", "Default height", 128, 4096, 1], ["steps", "Steps", 1, 150, 1], ["cfgScale", "CFG scale", 1, 30, 0.1], ["costMultiplier", "Cost multiplier", 0.1, 20, 0.1], ["maxCount", "Maximum count", 1, 8, 1], ["concurrencyLimit", "Concurrency limit", 1, 100, 1],
 ] as const;
 
 export function GenerationProfileEditor({ source, editing, onSaved, onCancel }: { source: Profile | null; editing: boolean; onSaved: (id: string) => void; onCancel: () => void }) {

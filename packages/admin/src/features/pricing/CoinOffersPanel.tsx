@@ -6,6 +6,7 @@ import type { CoinOffer } from "@idream/shared/coins";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
+import { ApprovalRequiredNotice, isDualApprovalRequired, type BlockedApproval } from "@/features/approvals/ApprovalRequired";
 
 const input = "mt-1 min-h-11 w-full rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-2 text-sm";
 const button = "min-h-11 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold disabled:opacity-40";
@@ -19,6 +20,7 @@ export function CoinOffersPanel({ canWrite }: { canWrite: boolean }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
+  const [blockedPublish, setBlockedPublish] = useState<{ name: string; approval: BlockedApproval } | null>(null);
   const mounted = useRef(false);
   const serial = useRef(0);
 
@@ -62,7 +64,15 @@ export function CoinOffersPanel({ canWrite }: { canWrite: boolean }) {
         : "New purchases stop. Previously accepted invoices remain payable under their original terms." },
       submitLabel: action === "publish" ? "Publish coin offer" : "Retire coin offer",
       onSubmit: async (reason) => {
-        await write(`/api/v2/admin/billing/coin-offers/${encodeURIComponent(offer.id)}/state`, { version: offer.version, action, confirmation: `${offer.id}:${action}`, reason });
+        try {
+          await write(`/api/v2/admin/billing/coin-offers/${encodeURIComponent(offer.id)}/state`, { version: offer.version, action, confirmation: `${offer.id}:${action}`, reason });
+        } catch (cause) {
+          if (action !== "publish" || !isDualApprovalRequired(cause)) throw cause;
+          // 商品草稿不可改，批准绑定 offer id 即可（服务端 enforceApproval 不带 payload）。
+          setBlockedPublish({ name: offer.name, approval: { permissionKey: "config.pricing.write", action: "config.coin_offer.publish", targetType: "coin_offer", targetId: offer.id, payload: {}, reason } });
+          return;
+        }
+        if (action === "publish") setBlockedPublish(null);
         if (mounted.current) await load();
       },
     });
@@ -71,6 +81,7 @@ export function CoinOffersPanel({ canWrite }: { canWrite: boolean }) {
   return <section aria-label={t("Dreamcoin offers")} className="space-y-4 rounded-xl border border-[var(--ad-border)] p-4 md:p-5">
     <header className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold">{t("Dreamcoin offers")}</h2><p className="mt-1 max-w-prose text-sm text-[var(--ad-text-muted)]">{t("Create a draft with approved commercial terms. Publishing replaces the previous live version of the same offer.")}</p></div><button className={button} disabled={loading || busy} onClick={() => void load()} type="button">{t("Refresh")}</button></header>
     {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
+    {blockedPublish && <ApprovalRequiredNotice blocked={blockedPublish.approval} message={t("Publishing {name} needs a second approver. Submit an approval request; once approved, publish it again.", { name: blockedPublish.name })} onRequested={() => setBlockedPublish(null)} testId="coin-offer-publish-approval-required" />}
     {loading ? <p role="status" className="text-sm">{t("Loading coin offers…")}</p> : !items.length ? <p className="text-sm text-[var(--ad-text-muted)]">{t("No coin offers have been configured.")}</p> : <div className="divide-y divide-[var(--ad-border)]">{items.map((offer) => <article className="py-4" key={offer.id}><div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="font-semibold">{offer.name} · {t("Version")} {offer.version}</h3><p className="mt-1 text-sm">{offer.dreamcoins.toLocaleString()} {t("Dreamcoins")} · {(offer.priceCents / 100).toFixed(2)} {offer.currency.toUpperCase()} · {label(offer.status)}</p></div>{canWrite && offer.status !== "retired" && <button className={button} disabled={busy} onClick={() => change(offer, offer.status === "draft" ? "publish" : "retire")} type="button">{offer.status === "draft" ? t("Publish coin offer") : t("Retire coin offer")}</button>}</div><details className="mt-3 text-sm"><summary>{t("Purchase terms")}</summary><p className="mt-2 whitespace-pre-line">{offer.terms}</p></details></article>)}</div>}
     {canWrite && <form aria-label={t("Create coin offer draft")} className="border-t border-[var(--ad-border)] pt-4" onSubmit={(event) => void create(event)}>
       <h3 className="mb-4 font-semibold">{t("Create coin offer draft")}</h3><div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{([

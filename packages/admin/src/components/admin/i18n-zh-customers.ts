@@ -40,6 +40,7 @@ export const adminZhCustomers: Record<string, string> = {
   "A resolved case goes back to the active queue, or a recurrence is filed against it.":
     "已解决的工单会回到活跃队列，或据此新建一条复发记录。",
   "Access ends": "访问权限结束于",
+  "Period ended": "周期已结束于",
   "Acknowledge refund": "确认退款记录",
   "Active Cases": "活跃工单",
   "Activity could not be added": "活动添加失败",
@@ -49,8 +50,8 @@ export const adminZhCustomers: Record<string, string> = {
   "Adjust Ledger": "调整账本",
   "Adjusting {delta} for {user} needs a second approver. Submit an approval request; once approved, run the same adjustment again.":
     "为 {user} 调整 {delta} 需要第二位审批人。请提交审批申请，批准后再执行同一笔调整。",
-  "Approval requested for {user}. Run the same adjustment again once it is approved.":
-    "已为 {user} 提交审批申请。批准后请再执行同一笔调整。",
+  "Approval requested. Run the same action again once it is approved.":
+    "已提交审批申请。批准后请再执行同一操作。",
   "Request approval": "提交审批申请",
   "Adjust ledger for {user}": "调整 {user} 的余额",
   "Adjustment delta": "调整数额",

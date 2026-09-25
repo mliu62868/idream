@@ -91,7 +91,7 @@ describe("generation quote workflow authority", () => {
     authority.selectGenerationProfile.mockResolvedValue({ ...selected, mode: "video", convertedModelPath: null, enabled: true, status: "active", costMultiplier: 1 });
     authority.generationWorkflowDescriptor.mockResolvedValue({ workflowKey: selected.workflowKey, version: selected.runnerConfig.workflowVersion });
     authority.dreamcoinBalance.mockResolvedValue(100);
-    authority.resolveGenerationPricingAuthority.mockResolvedValue({ id: "video-price", ruleKey: "video", version: 1, baseCost: 10, effectiveFrom: null, updatedAt: new Date("2026-09-02T00:00:00Z") });
+    authority.resolveGenerationPricingAuthority.mockResolvedValue({ id: "video-price", ruleKey: "video", version: 1, baseCost: 10, multiplier: 1, effectiveFrom: null, updatedAt: new Date("2026-09-02T00:00:00Z") });
     const { quote } = await quoteGeneration({ userId: "user-1", body: {
       ...request, mode: "video", freeplay: false, characterId: "character", controls: { model: selected.profileKey },
     }, profileSelectionAuthority: "public_generator" });

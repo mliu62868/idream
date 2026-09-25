@@ -181,6 +181,19 @@ describe("CustomerWorkspace 360", () => {
     expect(panel).toContain("customer.note.added");
   });
 
+  // INVARIANT: 周期已结束的订阅不能写成「Renews <过去的日期>」。
+  it("labels a lapsed subscription as ended rather than renewing", async () => {
+    adminV2Request.mockImplementation(async (path) => path.startsWith("/api/v2/admin/customers/")
+      ? { ...customer360, subscription: { ...customer360.subscription, status: "expired", currentPeriodEnd: "2026-07-01T00:00:00.000Z", cancelAtPeriodEnd: false } }
+      : listResponse);
+    await mount();
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Customer results"] button')?.click());
+    await waitUntil(() => container.querySelector("#customer-detail-title") !== null);
+    const panel = container.querySelector<HTMLElement>('[aria-labelledby="customer-detail-title"]')?.textContent ?? "";
+    expect(panel).toContain("Period ended");
+    expect(panel).not.toContain("Renews");
+  });
+
   it("retries the failed customer detail without reloading the successful list", async () => {
     let detailAttempts = 0;
     adminV2Request.mockImplementation(async (path) => {

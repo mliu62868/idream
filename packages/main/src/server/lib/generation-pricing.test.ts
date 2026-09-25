@@ -160,6 +160,28 @@ describe("generationCostDreamcoins", () => {
     expect(cost2x).toBe(cost1x * 2);
   });
 
+  it("applies the rule's own multiplier on top of the profile multiplier", async () => {
+    const mode = `${P}rule-mult`;
+    await prisma.pricingRule.create({
+      data: {
+        id: `${P}rule-mult`,
+        ruleKey: `${P}rule-mult`,
+        label: "Rule multiplier",
+        mode,
+        baseCost: 10,
+        multiplier: 1.5,
+        status: "active",
+        version: 1,
+        effectiveFrom: new Date(),
+        publishedAt: new Date(),
+      },
+    });
+
+    // 10 * 3 outputs * 1.5 rule * 1.1 profile = 49.5 → 50
+    expect(await generationCostDreamcoins(mode as "image", 3, 1.1)).toBe(50);
+    expect(await generationCostDreamcoins(mode as "image", 1, 1)).toBe(15);
+  });
+
   it("rounds fractional costs up with Math.ceil", async () => {
     const mode = `${P}ceil`;
     await prisma.pricingRule.create({

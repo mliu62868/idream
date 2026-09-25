@@ -326,4 +326,35 @@ describe("Admin v2 billing reads", () => {
 
     expectError(result, 400, "bad_request");
   });
+
+  // SPEC: 过期是惰性的——周期已结束但 status 仍是 'active' 的行，运营读数按产品口径算 expired。
+  it("treats a lapsed 'active' row as expired in lists and the active count", async () => {
+    const reconciliation = () => adminV2Route(reconciliationRoute, { path: "billing/reconciliation", userId: actorId, role: "admin" });
+    const before = await reconciliation();
+    expectOk(before);
+    await prisma.subscription.create({
+      data: {
+        id: `${token}-subscription-lapsed`,
+        userId: customerId,
+        planId,
+        provider: "mock",
+        providerSubscriptionId: `${token}-provider-lapsed`,
+        status: "active",
+        currentPeriodEnd: new Date(Date.now() - 86_400_000),
+      },
+    });
+    const after = await reconciliation();
+    expectOk(after);
+    expect(after.data.activeSubscriptions).toBe(before.data.activeSubscriptions);
+
+    const list = (status: string) => adminV2Route(subscriptionsRoute, {
+      path: "billing/subscriptions", userId: actorId, role: "admin", query: { search: token, status },
+    });
+    const active = await list("active");
+    expectOk(active);
+    expect(active.data.items.map((item: { id: string }) => item.id)).not.toContain(`${token}-subscription-lapsed`);
+    const expired = await list("expired");
+    expectOk(expired);
+    expect(expired.data.items).toEqual([expect.objectContaining({ id: `${token}-subscription-lapsed`, status: "expired" })]);
+  });
 });

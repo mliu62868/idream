@@ -229,7 +229,7 @@ export function ProviderOverviewWorkspace({ canRead }: { canRead: boolean }) {
               ["blocked", "Blocked"],
               ["successRate", "Success rate %"],
               ["coinsCost", "Coins cost"],
-              ["avgCostPerJob", "Avg cost / request"],
+              ["avgCostPerJob", "Avg cost / completed request"],
               ["latencyP50Ms", "Latency p50 (ms)"],
               ["latencyP95Ms", "Latency p95 (ms)"],
               ["latencySamples", "Latency samples"],

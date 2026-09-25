@@ -390,11 +390,24 @@ async function expireEndedSubscriptionsInTx(
 }
 
 export function activeSubscriptionWhere(userId: string, now = new Date()): Prisma.SubscriptionWhereInput {
-  return {
-    userId,
-    status: "active",
-    OR: [{ currentPeriodEnd: null }, { currentPeriodEnd: { gt: now } }],
-  };
+  return { userId, ...liveSubscriptionWhere(now) };
+}
+
+// SPEC: 「在订」的唯一口径 = status 'active' 且周期未结束（与发放权益的判定一致）。
+// INTENT: 过期是惰性的（expireEndedSubscriptionsInTx 只在用户被触达时落库），所以库里有大量
+//         周期早已结束、status 仍是 'active' 的行；运营读数必须用这个口径，而不是裸 status。
+export function liveSubscriptionWhere(now = new Date()): Prisma.SubscriptionWhereInput {
+  return { status: "active", OR: [{ currentPeriodEnd: null }, { currentPeriodEnd: { gt: now } }] };
+}
+
+/** Lapsed-but-not-yet-reconciled rows read as "expired", the status they get on next touch. */
+export function effectiveSubscriptionStatus(
+  subscription: { readonly status: string; readonly currentPeriodEnd: Date | null },
+  now = new Date(),
+) {
+  return subscription.status === "active" && subscription.currentPeriodEnd && subscription.currentPeriodEnd <= now
+    ? "expired"
+    : subscription.status;
 }
 
 function mergeDerivedEntitlement(

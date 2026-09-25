@@ -31,7 +31,8 @@ describe("feature flag authority", () => {
 
     expect(response.status).toBe(200);
     const body = await response.json();
-    expect(body.data.flag).toMatchObject({ key, enabled: true, version: 1 });
+    // 新建且启用 = 全量；运行时只认 rolloutPercent === 100。
+    expect(body.data.flag).toMatchObject({ key, enabled: true, rolloutPercent: 100, version: 1 });
     expect(body.data.replayed).toBe(false);
     await expect(prisma.adminAuditLog.count({
       where: { requestId, action: "config.feature_flag.write", targetId: key },
@@ -53,6 +54,15 @@ describe("feature flag authority", () => {
     await expect(prisma.adminAuditLog.count({
       where: { action: "config.feature_flag.write", targetId: key },
     })).resolves.toBe(1);
+  });
+
+  it("pairs rollout with enabled so an enable toggle actually serves traffic", async () => {
+    const key = `${P}rollout-pair`;
+    await prisma.featureFlag.create({ data: { key, label: key, enabled: false, rolloutPercent: 0, targetRoles: [], targetPlans: [] } });
+    const on = await patchFlag(key, true, `${P}pair-on`, `${P}pair-on-key`);
+    expect((await on.json()).data.flag).toMatchObject({ enabled: true, rolloutPercent: 100 });
+    const off = await patchFlag(key, false, `${P}pair-off`, `${P}pair-off-key`);
+    expect((await off.json()).data.flag).toMatchObject({ enabled: false, rolloutPercent: 0 });
   });
 
   it("lists flags through the declared query contract", async () => {

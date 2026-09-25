@@ -27,6 +27,22 @@ import {
   paginateAdminKeyset,
 } from "@/server/modules/admin-v2/shared/list-cursor";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
+import {
+  enforceApproval,
+  LEDGER_APPROVAL_THRESHOLD,
+} from "@/server/modules/admin-v2/approvals/enforcement";
+
+// SPEC: 兑换码的最大发放量 = 面额 × 可用次数（不限次 = 无上限）。达到调账门槛时与调账同一道
+//       双人复核闸：一个码就是一笔可被反复领取的调账。
+// INTENT: 码本身是机密、只存哈希，所以批准不绑码，绑面额与次数：审批人放行的是「一个 X 币、
+//         Y 次的码」，同参数的一次创建消费掉它。
+const REDEEM_CODE_APPROVAL_TARGET = "redeem_code";
+function redeemCodeApprovalPayload(dreamcoins: number, maxRedemptions: number | null | undefined) {
+  return { dreamcoins, maxRedemptions: maxRedemptions ?? "unlimited" };
+}
+function redeemCodeNeedsApproval(dreamcoins: number, maxRedemptions: number | null | undefined) {
+  return dreamcoins * (maxRedemptions ?? Number.POSITIVE_INFINITY) >= LEDGER_APPROVAL_THRESHOLD;
+}
 
 export async function listRedeemCodes(request: Request) {
   await actorWithPermission(request, "growth.promo.read");
@@ -100,6 +116,14 @@ export async function createRedeemCode(
         where: { codeHash: { in: redeemCodeHashCandidates(body.code) } },
       });
       if (existing) throw Errors.badRequest("Redeem code already exists");
+      if (redeemCodeNeedsApproval(body.reward.dreamcoins, body.maxRedemptions)) {
+        await enforceApproval(
+          "promo.redeem_code.create",
+          REDEEM_CODE_APPROVAL_TARGET,
+          tx,
+          redeemCodeApprovalPayload(body.reward.dreamcoins, body.maxRedemptions),
+        );
+      }
       const code = await tx.redeemCode.create({
         data: {
           codeHash,

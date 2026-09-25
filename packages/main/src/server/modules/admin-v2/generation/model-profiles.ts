@@ -432,7 +432,8 @@ async function publishModelProfileAuthority(
     data: {
       status: "active",
       enabled: true,
-      rolloutPercent: profile.rolloutPercent > 0 ? profile.rolloutPercent : 100,
+      // INVARIANT: 运行时只服务 rolloutPercent === 100；发布即全量，否则上一版已归档、新版又不可服务。
+      rolloutPercent: 100,
       dryRunSummary: verifiedSummary,
       publishedAt: new Date(),
       archivedAt: null,
@@ -481,7 +482,7 @@ async function rollbackModelProfileAuthority(
   });
   const restored = await tx.generationModelProfile.update({
     where: { id: previous.id },
-    data: { status: "active", enabled: true, publishedAt: new Date(), archivedAt: null },
+    data: { status: "active", enabled: true, rolloutPercent: 100, publishedAt: new Date(), archivedAt: null },
     select: profileSelect,
   });
   await writeProfileAudit(tx, input.actor, input.requestId, {

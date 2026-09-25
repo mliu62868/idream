@@ -63,15 +63,15 @@ describe("ApprovalsWorkspace decision evidence", () => {
     vi.restoreAllMocks();
   });
 
-  async function mount(items: unknown[]) {
+  async function mount(items: unknown[], options: { canToggleEnforcement?: boolean; enforcementEnabled?: boolean } = {}) {
     apiGet.mockImplementation(async () => {
       reads += 1;
-      return { items, pageInfo: { endCursor: null, hasNextPage: false } };
+      return { items, pageInfo: { endCursor: null, hasNextPage: false }, enforcementEnabled: options.enforcementEnabled };
     });
     await act(async () => {
       root.render(
         <ToastProvider>
-          <ApprovalsWorkspace canReview />
+          <ApprovalsWorkspace canReview canToggleEnforcement={options.canToggleEnforcement} />
         </ToastProvider>,
       );
     });
@@ -176,6 +176,28 @@ describe("ApprovalsWorkspace decision evidence", () => {
     await click(clear);
     await waitUntil(() => reads >= 2);
     expect(apiGet.mock.calls.at(-1)?.[0]).toContain("status=pending");
+  });
+
+  // SPEC: dual_approval_enforced 不在库里时，审批台是唯一能打开它的地方（PATCH upsert）。
+  it("turns dual approval on through the feature flag upsert with confirmation", async () => {
+    await mount([], { canToggleEnforcement: true, enforcementEnabled: false });
+    apiWrite.mockResolvedValue({ flag: { key: "dual_approval_enforced", enabled: true } });
+    await click(findButton("Turn on dual approval", container));
+    const dialog = await waitForDialog();
+    await enter(dialog.querySelector<HTMLInputElement>('input[aria-label="Reason"]'), "Enable two-person rule");
+    await enter(dialog.querySelector<HTMLInputElement>('input[aria-label="Confirmation"]'), "dual_approval_enforced");
+    await click(findButton("Confirm", dialog));
+    await waitUntil(() => apiWrite.mock.calls.length === 1);
+    expect(apiWrite).toHaveBeenCalledWith("/api/v2/admin/feature-flags/dual_approval_enforced", "PATCH", {
+      enabled: true,
+      reason: "Enable two-person rule",
+      confirmation: "dual_approval_enforced:enabled",
+    });
+  });
+
+  it("hides the dual approval switch without feature flag write access", async () => {
+    await mount([], { enforcementEnabled: false });
+    expect(findButton("Turn on dual approval", container)).toBeNull();
   });
 
   it("sends the decision with its confirmation and reports success", async () => {

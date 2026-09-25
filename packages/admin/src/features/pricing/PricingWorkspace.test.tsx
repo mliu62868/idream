@@ -10,13 +10,18 @@ const echo = (key: string, values?: Record<string, string | number>) =>
 
 describe("pricing publish impact", () => {
   const rows = [
-    { id: "a", ruleKey: "image.standard", status: "active", version: 3, baseCost: 12, multiplier: 1 },
-    { id: "b", ruleKey: "image.standard", status: "draft", version: 4, baseCost: 18, multiplier: 1 },
-    { id: "c", ruleKey: "video.standard", status: "draft", version: 1, baseCost: 90, multiplier: 2 },
+    { id: "a", ruleKey: "image.standard", mode: "image", status: "active", version: 3, baseCost: 12, multiplier: 1 },
+    { id: "b", ruleKey: "image.standard", mode: "image", status: "draft", version: 4, baseCost: 18, multiplier: 1 },
+    { id: "c", ruleKey: "video.standard", mode: "video", status: "draft", version: 1, baseCost: 90, multiplier: 2 },
+    { id: "d", ruleKey: "image.promo", mode: "image", status: "draft", version: 1, baseCost: 3, multiplier: 1 },
   ];
 
   it("names the live version and price a publish will replace", () => {
     expect(replacedVersionNote(rows, rows[1]!, "publish", echo)).toBe(
+      "Replaces the live version 3, priced at 12 base Dreamcoins × 1.",
+    );
+    // 发布按 mode 顶掉在售规则：另一个 ruleKey 的同 mode 草稿同样顶掉 image.standard v3。
+    expect(replacedVersionNote(rows, rows[3]!, "publish", echo)).toBe(
       "Replaces the live version 3, priced at 12 base Dreamcoins × 1.",
     );
   });

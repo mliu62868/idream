@@ -65,6 +65,28 @@ describe("coin offer operator actions", () => {
     expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
 
+  // SPEC: 双人复核拦下发布时，被拦下的面板就是提交审批申请的入口。
+  it("offers an approval request when dual approval refuses the publish", async () => {
+    const { AdminV2RequestError } = await import("@/lib/admin-v2-api");
+    apiWrite.mockImplementation(async (path: string) => {
+      if (path.endsWith("/state")) throw new AdminV2RequestError("Dual approval required: no approved request for this action", 403, "forbidden");
+      return { request: { id: "approval-1" } };
+    });
+    await mount(true);
+    await act(async () => button("Publish coin offer", container).click());
+    const dialog = document.querySelector('[role="dialog"]')!;
+    await fill("Reason (≥3)", "Launch weekend pack", dialog);
+    await fill("Type the name to confirm", offer.name, dialog);
+    await act(async () => button("Publish coin offer", dialog).click());
+    expect(container.querySelector('[data-testid="coin-offer-publish-approval-required"]')).not.toBeNull();
+    await act(async () => button("Request approval", container).click());
+    expect(apiWrite).toHaveBeenLastCalledWith("/api/v2/admin/approvals", "POST", {
+      permissionKey: "config.pricing.write", action: "config.coin_offer.publish", targetType: "coin_offer",
+      targetId: offer.id, payload: {}, reason: "Launch weekend pack", confirmation: `${offer.id}:config.coin_offer.publish`,
+    });
+    expect(container.querySelector('[data-testid="coin-offer-publish-approval-required"]')).toBeNull();
+  });
+
   it("creates an unpublished draft with entered commercial terms and no default price", async () => {
     apiWrite.mockResolvedValue({ offer }); await mount(true);
     const form = container.querySelector("form")!;

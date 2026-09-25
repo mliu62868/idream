@@ -19,6 +19,7 @@ import {
   customerDreamcoinLedgerWhere,
   customerSubscriptionWhere,
 } from "@/server/modules/metric-data-scope";
+import { effectiveSubscriptionStatus, liveSubscriptionWhere } from "@/server/modules/ourdream/subscription-lifecycle";
 
 export async function billingLedger(request: Request) {
   await actorWithPermission(request, "billing.read");
@@ -74,9 +75,17 @@ export async function listSubscriptions(request: Request) {
   const query = queryParams(request, "GET /api/v2/admin/billing/subscriptions");
   const { search, userId, status, limit } = query;
   const queryIdentity = { search, userId, status };
+  const now = new Date();
+  // INVARIANT: active / expired 按产品口径（liveSubscriptionWhere）筛，而不是裸 status：
+  // 过期是惰性的，周期已结束但未被触达的行在库里仍是 'active'。
+  const statusWhere: Prisma.SubscriptionWhereInput | undefined = status === "active"
+    ? liveSubscriptionWhere(now)
+    : status === "expired"
+      ? { OR: [{ status: "expired" }, { status: "active", currentPeriodEnd: { lte: now } }] }
+      : status ? { status } : undefined;
   const where: Prisma.SubscriptionWhereInput = customerSubscriptionWhere({
     userId,
-    status,
+    AND: statusWhere ? [statusWhere] : undefined,
     OR: search
       ? [
           { id: { contains: search } },
@@ -141,7 +150,7 @@ export async function listSubscriptions(request: Request) {
         billingPeriod: subscription.plan.billingPeriod,
         includedDreamcoins: subscription.plan.includedDreamcoins,
         provider: subscription.provider,
-        status: subscription.status,
+        status: effectiveSubscriptionStatus(subscription, now),
         currentPeriodEnd: subscription.currentPeriodEnd?.toISOString() ?? null,
         cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
         providerSubscriptionId: subscription.providerSubscriptionId,
@@ -150,6 +159,7 @@ export async function listSubscriptions(request: Request) {
         currency: checkout?.currency ?? null,
         refund: refund ? publicSubscriptionRefundDTO(refund) : null,
         canRefund: Boolean(
+          // 退款资格跟随权威（refund.ts 按裸 status 判），这里不改它的口径。
           subscription.status === "active" &&
           checkout?.status === "completed" &&
           checkout.providerInvoiceStatus === "settled" &&
@@ -179,7 +189,7 @@ export async function billingReconciliation(request: Request) {
       _count: { _all: true },
     }),
     prisma.subscription.count({
-      where: customerSubscriptionWhere({ status: "active" }),
+      where: customerSubscriptionWhere(liveSubscriptionWhere(now)),
     }),
     prisma.checkoutSession.findMany({
       where: {

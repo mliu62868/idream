@@ -24,6 +24,7 @@ import {
   paginateAdminKeyset,
 } from "@/server/modules/admin-v2/shared/list-cursor";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
+import { effectiveSubscriptionStatus } from "@/server/modules/ourdream/subscription-lifecycle";
 
 /**
  * SPEC: 用户权威 —— 名录、明细、状态 / 角色 / 权限覆盖三条写命令。
@@ -159,7 +160,7 @@ export async function listUsers(request: Request) {
         ? {
             slug: user.subscriptions[0].plan.slug,
             billingPeriod: user.subscriptions[0].plan.billingPeriod,
-            status: user.subscriptions[0].status,
+            status: effectiveSubscriptionStatus(user.subscriptions[0]),
           }
         : null,
       dreamcoins: await dreamcoinBalance(user.id),

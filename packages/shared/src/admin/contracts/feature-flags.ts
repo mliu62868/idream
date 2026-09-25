@@ -1,6 +1,11 @@
 import { z } from "zod";
 import { adminIsoDateTimeSchema, adminJsonValueSchema, adminPageInfoSchema } from "./common";
 
+// SPEC: 灰度只有「关 / 全量」两档：运行时（featureFlagEnabled、isExecutableGenerationProfile）
+//       只认 rolloutPercent === 100，不存在按比例分流。
+// INTENT: 输入端只收 0 或 100，免得 1–99 被保存后看起来「半开」、实际一条流量都不服务。
+export const servingRolloutPercentSchema = z.union([z.literal(0), z.literal(100)]);
+
 /**
  * SPEC: `limit` 缺省时返回全量、不分页。
  * INTENT: 开关总数是几十条量级，运营台的「设置」页要一次看全；给它一个默认页长反而会
@@ -41,7 +46,7 @@ export const featureFlagListResponseSchema = z
 export const featureFlagPatchSchema = z
   .object({
     enabled: z.boolean().optional(),
-    rolloutPercent: z.number().int().min(0).max(100).optional(),
+    rolloutPercent: servingRolloutPercentSchema.optional(),
     targetRoles: z.array(z.string()).optional(),
     targetPlans: z.array(z.string()).optional(),
     description: z.string().max(500).optional(),

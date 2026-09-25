@@ -85,7 +85,9 @@ function payloadEntries(value: unknown): Array<[string, string]> {
   ]);
 }
 
-export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
+const DUAL_APPROVAL_FLAG = "dual_approval_enforced";
+
+export function ApprovalsWorkspace({ canReview, canToggleEnforcement = false }: { canReview: boolean; canToggleEnforcement?: boolean }) {
   const { t } = useAdminI18n();
   const format = useAdminFormat();
   const { toast } = useToast();
@@ -210,6 +212,34 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
     });
   }
 
+  // SPEC: 双人复核开关走 feature-flags 的 PATCH upsert —— 库里没有这行时它会被创建。
+  // INTENT: 开关以前只能在「功能开关」页翻已存在的行，而 dual_approval_enforced 从未被种下，
+  //         运营根本打不开双人复核。开关放在审批台，就是它生效的地方。
+  function confirmEnforcement(enabled: boolean) {
+    const next = !enabled;
+    setConfirmation({
+      title: next ? t("Turn on dual approval") : t("Turn off dual approval"),
+      destructive: { expectedName: DUAL_APPROVAL_FLAG, inputLabel: t("Confirmation") },
+      consequence: {
+        effect: next
+          ? t("From the next request, high-risk writes (large ledger adjustments, large redeem codes, pricing and coin offer publishes) are refused until a second operator approves them.")
+          : t("From the next request, high-risk writes run without a second approver. Approved requests stay in this list but are no longer required."),
+        reversible: true,
+      },
+      reasonLabel: t("Reason"),
+      submitLabel: t("Confirm"),
+      onSubmit: async (reason) => {
+        await apiWrite(`/api/v2/admin/feature-flags/${DUAL_APPROVAL_FLAG}`, "PATCH", {
+          enabled: next,
+          reason,
+          confirmation: `${DUAL_APPROVAL_FLAG}:${next ? "enabled" : "disabled"}`,
+        });
+        toast({ tone: "success", title: next ? t("Dual approval turned on") : t("Dual approval turned off") });
+        void load(query);
+      },
+    });
+  }
+
   const filtered = Boolean(query.search || query.status !== "pending");
   const rows = data?.items ?? [];
   const pageInfo = data?.pageInfo ?? emptyPageInfo;
@@ -287,6 +317,14 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
         >
           {t("Dual approval is switched off, so high-risk writes run without an approval. When the dual_approval_enforced flag is on, a blocked write is not queued here automatically: the operator submits it from the blocked form with Request approval.")}
         </p>
+      ) : null}
+      {data && canToggleEnforcement ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
+          <span>{data.enforcementEnabled ? t("Dual approval is on.") : null}</span>
+          <GhostButton onClick={() => confirmEnforcement(data.enforcementEnabled === true)}>
+            {data.enforcementEnabled ? t("Turn off dual approval") : t("Turn on dual approval")}
+          </GhostButton>
+        </div>
       ) : null}
       {!data && loading ? (
         <div className="rounded-lg border p-4" role="status">

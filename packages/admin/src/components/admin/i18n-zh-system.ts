@@ -122,6 +122,15 @@ export const adminZhSystem: Record<string, string> = {
   "Requested by": "发起人",
   "Show pending approvals": "查看待审批队列",
   "Dual approval is switched off, so high-risk writes run without an approval. When the dual_approval_enforced flag is on, a blocked write is not queued here automatically: the operator submits it from the blocked form with Request approval.": "双人复核当前处于关闭状态，高风险写入无需审批即可执行。开启 dual_approval_enforced 后，被拦下的写入不会自动进入这里，需要操作人在被拦下的表单上点「提交审批申请」。",
+  "Dual approval is on.": "双人复核已开启。",
+  "Turn on dual approval": "开启双人复核",
+  "Turn off dual approval": "关闭双人复核",
+  "Dual approval turned on": "双人复核已开启",
+  "Dual approval turned off": "双人复核已关闭",
+  "From the next request, high-risk writes (large ledger adjustments, large redeem codes, pricing and coin offer publishes) are refused until a second operator approves them.":
+    "从下一个请求起，高风险写入（大额调账、大额兑换码、定价与金币商品发布）在第二位操作人批准前都会被拒绝。",
+  "From the next request, high-risk writes run without a second approver. Approved requests stay in this list but are no longer required.":
+    "从下一个请求起，高风险写入无需第二位审批人即可执行。已批准的请求仍留在列表中，但不再是必需的。",
   // 团队访问的数据新鲜度行。原来是四句裸英文，中文界面里照样印英文。
   "As of {time}": "截至 {time}",
   "Controlled by account deletion": "由账号删除流程管理",
