@@ -124,6 +124,22 @@ describe("BillingWorkspace hydration", () => {
     expect(container.querySelector('nav [aria-current="page"]')?.textContent).toBe("Subscriptions");
   });
 
+  // SPEC: 空表必须说明非客户账号被排除，不然读作「没有流水」。
+  it("discloses the excluded owner classes under the ledger and subscription tables", async () => {
+    window.history.replaceState(null, "", "/admin/customer-ops/billing?billingView=ledger");
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<BillingWorkspace canAdjust canReconcile canRefund />);
+    });
+    await waitUntil(() => container.textContent?.includes("excluded: fixture + internal") ?? false);
+    expect(container.textContent).toContain("customer owners: customer");
+    await act(async () => {
+      window.history.replaceState(null, "", "/admin/customer-ops/billing?billingView=subscriptions");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    await waitUntil(() => container.textContent?.includes("excluded: fixture + internal") ?? false);
+  });
+
   it("opens ledger adjustment for the selected customer and clears the previous amount", async () => {
     const fallback = apiGet.getMockImplementation()!;
     apiGet.mockImplementation(async (path) => {

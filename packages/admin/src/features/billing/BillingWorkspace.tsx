@@ -607,6 +607,7 @@ export function BillingWorkspace({
           ]} minimumWidthClassName="min-w-[800px]" rows={subscriptionRows} stickyLastColumn />
           <ListPagination
             cursor={query.subscriptionCursor}
+            dataScope={subscriptionState.data.dataScope}
             loading={subscriptionState.loading}
             onNavigate={(cursor, trail) => navigate({ ...query, subscriptionCursor: cursor }, "push", { ...trails, subscription: trail })}
             pageInfo={subscriptionState.data.pageInfo ?? emptyPageInfo}
@@ -620,6 +621,7 @@ export function BillingWorkspace({
           ]} minimumWidthClassName="min-w-[720px]" rows={ledgerRows} />
           <ListPagination
             cursor={query.ledgerCursor}
+            dataScope={ledgerState.data.dataScope}
             loading={ledgerState.loading}
             onNavigate={(cursor, trail) => navigate({ ...query, ledgerCursor: cursor }, "push", { ...trails, ledger: trail })}
             pageInfo={ledgerState.data.pageInfo ?? emptyPageInfo}
@@ -883,16 +885,21 @@ function BillingEmpty({ filtered, kind, onClear }: { filtered: boolean; kind: "l
 }
 
 // SPEC: 账本和订阅两张表的分页条形状完全一样，只有游标属于哪一张不同。
-function ListPagination({ cursor, loading, onNavigate, pageInfo, rowCount, trail }: {
+// SPEC: 两张表都只含客户账号；非客户（内部、夹具、审计）被权威排除，要在表下说出来。
+// INTENT: 否则空表读作「没有流水」，而实际是「这些账号不在客户口径里」。
+function ListPagination({ cursor, dataScope, loading, onNavigate, pageInfo, rowCount, trail }: {
   cursor: string;
+  dataScope: BillingDataScope;
   loading: boolean;
   onNavigate: (cursor: string, trail: string[]) => void;
   pageInfo: PageInfo;
   rowCount: number;
   trail: string[];
 }) {
+  const { t } = useAdminI18n();
   return (
     <Pagination
+      detail={`${t("customer owners:")} ${dataScope.includedDataClasses.join(" + ")} · ${t("excluded:")} ${dataScope.excludedDataClasses.join(" + ")}`}
       hasNext={Boolean(pageInfo.hasNextPage && pageInfo.endCursor)}
       hasPrevious={trail.length > 0}
       loading={loading}

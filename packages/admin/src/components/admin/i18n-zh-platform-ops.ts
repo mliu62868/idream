@@ -805,6 +805,7 @@ export const adminZhPlatformOps: Record<string, string> = {
   "dry-run summary exists": "已有试运行摘要",
   "eligible ·": "符合条件 ·",
   "excluded:": "已排除：",
+  "customer owners:": "客户账号：",
   "feature flags": "功能开关",
   "fresh as of": "数据新鲜时间",
   "incidentId@version": "incidentId@version",
