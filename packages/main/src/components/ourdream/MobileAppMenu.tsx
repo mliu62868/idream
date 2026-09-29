@@ -39,6 +39,7 @@ export function MobileAppMenu({
       ? [
           { label: "Log in", href: authHrefForTarget("/login", currentPath) },
           { label: "Join free", href: authHrefForTarget("/signup", currentPath) },
+          { label: "Upgrade", href: "/upgrade" },
         ]
       : accountItems),
   ];

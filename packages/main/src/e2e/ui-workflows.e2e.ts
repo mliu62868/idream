@@ -2771,7 +2771,9 @@ test("mobile app shell menu exposes the full product navigation", async ({ page 
   for (const [label, href] of [
     ["Feed", "/feed"],
     ["Community", "/community"],
-    ["Profile", "/profile"],
+    // A signed-out visitor gets sign-in entries where members see Profile.
+    ["Log in", "/login?next=%2Fgenerate"],
+    ["Join free", "/signup?next=%2Fgenerate"],
     ["Upgrade", "/upgrade"],
   ] as const) {
     await expect(appNavigation.getByRole("link", { name: label })).toHaveAttribute("href", href);
@@ -2798,7 +2800,7 @@ test("mobile explore menu shares the full product navigation", async ({ page }) 
   for (const [label, href] of [
     ["Safety Center", "/safety/introduction"],
     ["More", "/resources-hub"],
-    ["Profile", "/profile"],
+    ["Log in", "/login?next=%2F"],
     ["Upgrade", "/upgrade"],
   ] as const) {
     await expect(appNavigation.getByRole("link", { name: label })).toHaveAttribute("href", href);
