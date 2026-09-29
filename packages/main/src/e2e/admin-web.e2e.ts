@@ -476,7 +476,7 @@ test("admin content ops requires confirmation for standalone draft placement and
     ).resolves.toBe(0);
 
     await page.getByRole("button", { name: "Create placement" }).click();
-    await expect(page.getByRole("heading", { level: 2, name: "feed_card" })).toBeVisible({
+    await expect(page.getByRole("heading", { level: 2, name: "Feed card" })).toBeVisible({
       timeout: 20_000,
     });
     await expect
@@ -645,7 +645,7 @@ test("admin users and billing actions write audit trail and clear adjustment for
     await billingTabs.getByRole("button", { name: "Ledger", exact: true }).click();
     const ledgerRow = page.getByRole("row").filter({ hasText: targetId });
     await expect(ledgerRow).toHaveCount(1, { timeout: 10_000 });
-    await expect(ledgerRow.getByText("admin_adjust", { exact: true })).toBeVisible();
+    await expect(ledgerRow.getByText("Admin adjust", { exact: true })).toBeVisible();
     await expect(ledgerRow.getByText("+37", { exact: true })).toBeVisible();
     await expect(ledgerRow.getByText("37", { exact: true })).toHaveCount(1);
 
