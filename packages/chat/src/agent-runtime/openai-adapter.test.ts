@@ -503,6 +503,26 @@ describe("OpenAI-compatible DSH adapter", () => {
     expect(chunks).toEqual([]);
   });
 
+  it("directs the image from the user's words when the compatibility answer is cut off", async () => {
+    // Observed on the local 35B: the retry rambles to the token limit, and the
+    // Turn used to fail as "Reply unavailable" although the request was clear.
+    const adapter = adapterFor("https://provider.example/v1", async () => new Response(`data: ${JSON.stringify({ choices: [{
+      delta: { content: "The couch is soft and the lamp is warm and I" },
+      finish_reason: "length",
+    }] })}\n\n`), { requiredToolName: "generate_image_async" });
+    const chunks: StreamChunk[] = [];
+    for await (const chunk of adapter.stream({
+      provider: "openrouter", model: "deepseek/test",
+      messages: [{ id: "u" as never, role: "user", source: { kind: "user" }, content: [{ type: "text", text: "Send me a photo of you reading on the couch." }] }],
+      tools: [{ name: "generate_image_async", description: "Generate", parameters: { type: "object", properties: { prompt: { type: "string" } } } }],
+    })) chunks.push(chunk);
+    expect(chunks).toContainEqual(expect.objectContaining({
+      type: "tool-call-delta",
+      name: "generate_image_async",
+      argumentsDelta: expect.stringContaining("reading on the couch"),
+    }));
+  });
+
   it.each([
     { label: "commentary around JSON", content: 'Here is the edit: {"instruction":"Move the notebook right of the cup"} Done.' },
     { label: "wrong tool wrapper", content: '{"name":"generate_image_async","arguments":{"instruction":"Move the notebook right of the cup"}}' },

@@ -416,7 +416,10 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
         }
       }
     }
-    if (!argumentsJson && omission?.finishReason.kind === "stop") {
+    // A compatibility answer cut off at the token limit is just as unusable as
+    // prose, and the fallback below reads only the user's words, never the
+    // truncated output — so it applies to both.
+    if (!argumentsJson && (omission?.finishReason.kind === "stop" || omission?.finishReason.kind === "max-tokens")) {
       // INTENT: the local model sometimes answers in prose on both forced
       // attempts. The current user request already names the picture and Main
       // re-derives authorization from its own frozen copy of that text, so
