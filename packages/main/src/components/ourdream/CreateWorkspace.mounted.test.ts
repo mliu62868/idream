@@ -386,6 +386,20 @@ describe("CreateWorkspace identity confirmation", () => {
     });
   });
 
+  it("starts fresh when the server no longer has the locally saved draft (it was saved as a character)", async () => {
+    window.localStorage.setItem(draftStorageKeyForScope("user:creator-1"), JSON.stringify({
+      ...initialCharacterDraft(), draftId: "draft-saved", step: 4, name: "Already saved", confirmedPreviewJobId: "preview-1",
+    }));
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) === "/api/v1/character-drafts/current") return Response.json({ ok: true, data: { draft: null, previewJob: null, asset: null } });
+      return originalFetch(input, init);
+    });
+    await act(async () => root.render(createElement(CreateWorkspace)));
+    await waitUntil(() => container.querySelector<HTMLInputElement>('input[placeholder="Nova Reyes"]')?.value === "");
+    expect(container.textContent).not.toContain("Already saved");
+  });
+
   it.each(["none", "appearance", "voice"])("recovers a missing candidate when visual inputs match and preserves local choices (changed=%s)", async (changed) => {
     const voiceSelection = changed === "voice" ? { provider: "pocket_tts", voiceId: "marius" } : null;
     window.localStorage.setItem(draftStorageKeyForScope("user:creator-1"), JSON.stringify({

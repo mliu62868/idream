@@ -560,13 +560,16 @@ export function CreateWorkspace() {
     }
     const recoverMissingCandidate = Boolean(restored?.draftId && restored.step === 3 &&
       !restored.previewBatch && !restored.restoredPreviewCandidate && !restored.confirmedPreviewJobId);
+    // A local copy of a server draft is checked once: if the server no longer
+    // has it as the current draft (it was saved as a character), start fresh.
+    const verifyLocalDraft = Boolean(restored?.draftId && !editCharacterId && viewerScope && !isAnonymousScope(viewerScope));
     if (restored) {
       queueMicrotask(() => {
         if (controller.signal.aborted || !restored) return;
         applyRestored(restored);
         if (!recoverMissingCandidate) setHydrated(true);
       });
-      if (!recoverMissingCandidate) return () => controller.abort();
+      if (!recoverMissingCandidate && !verifyLocalDraft) return () => controller.abort();
     }
     if (viewerScope && !isAnonymousScope(viewerScope)) {
       void requestApi(
@@ -575,7 +578,18 @@ export function CreateWorkspace() {
         "GET",
         { signal: controller.signal },
       ).then((payload) => {
-        if (controller.signal.aborted || !payload.data?.draft) return;
+        if (controller.signal.aborted) return;
+        if (!payload.data?.draft) {
+          // Only an explicit null means "no current draft"; the local copy is stale.
+          if (verifyLocalDraft && payload.data?.draft === null) {
+            try { window.localStorage.removeItem(storageKey); } catch { /* ignore */ }
+            setState(initialCharacterDraft());
+            setPreview(DEFAULT_PREVIEW);
+            setPreviewStatus("idle");
+            setSelectedPreviewJobId("");
+          }
+          return;
+        }
         const serverState = wizardStateFromServerDraft(payload.data.draft);
         if (serverState) {
           // Recover a lost confirmation without discarding unsaved local traits
@@ -602,12 +616,15 @@ export function CreateWorkspace() {
 
   useEffect(() => {
     if (!hydrated || !storageKey || viewerBlockedRef.current) return;
+    // Once saved, the wizard on screen is a receipt; writing it back would make
+    // the next visit to Create reopen the character that was just saved.
+    if (createdCharacterId) return;
     try {
       window.localStorage.setItem(storageKey, JSON.stringify(state));
     } catch {
       // ignore quota/serialization errors
     }
-  }, [state, hydrated, storageKey]);
+  }, [createdCharacterId, state, hydrated, storageKey]);
 
   // Load admin-curated starting templates (public, active only). Templates are
   // optional, but an unavailable authority is distinct from an intentional empty set.
