@@ -9,6 +9,7 @@ import {
   bindWorkflowArgs,
   loadWorkflowDescriptors,
   workflowPromptSlots,
+  workflowRunsWithoutReferences,
 } from "./workflow";
 
 const comfyDescriptor = workflowDescriptorSchema.parse({
@@ -500,6 +501,85 @@ describe("workflow identity capability contract", () => {
         },
       ],
     })).toThrow("Optional image slots require an explicit graph-level onAbsent contract");
+  });
+
+  it("runs one graph as text-to-image or identity generation through onAbsent remove_target_node", () => {
+    const descriptor = workflowDescriptorSchema.parse({
+      workflowKey: "optional-identity",
+      modelId: "optional-identity",
+      backendKind: "comfyui",
+      comfyWorkflow: { id: "22222222-2222-4222-8222-222222222230", name: "Optional Identity" },
+      version: 1,
+      capabilities: ["textToImage", "referenceImages", "stableSeed"],
+      identity: {
+        mode: "single_reference",
+        maxReferences: 1,
+        acceptedRoles: ["identity_anchor"],
+        supportsLookReference: false,
+        supportsSourceImageWithIdentity: false,
+      },
+      apiPrompt: {
+        "5": { class_type: "TextEncodeQwenImage21", inputs: { prompt: "", "images.image_1": ["10", 0] } },
+        "10": { class_type: "LoadImage", inputs: { image: "" } },
+      },
+      inputs: [
+        { key: "prompt", type: "text", target: { nodeId: "5", field: "prompt" } },
+        {
+          key: "identity_image",
+          type: "image",
+          referenceRoles: ["identity_anchor"],
+          required: false,
+          onAbsent: "remove_target_node",
+          target: { nodeId: "10", field: "image" },
+        },
+      ],
+    });
+
+    expect(workflowRunsWithoutReferences(descriptor)).toBe(true);
+    expect(assignWorkflowReferenceSlots(descriptor, [])).toMatchObject({ ok: true, minReferences: 0, maxReferences: 1 });
+    expect(assignWorkflowReferenceSlots(descriptor, ["identity_anchor"])).toMatchObject({ ok: true });
+
+    const textOnly = bindComfySlots(descriptor, { prompt: "a cat" });
+    expect(textOnly["10"]).toBeUndefined();
+    expect(textOnly["5"]?.inputs).toEqual({ prompt: "a cat" });
+
+    const withIdentity = bindComfySlots(descriptor, { prompt: "a cat", identity_image: "anchor.png" });
+    expect(withIdentity["10"]?.inputs.image).toBe("anchor.png");
+    expect(withIdentity["5"]?.inputs["images.image_1"]).toEqual(["10", 0]);
+  });
+
+  it("rejects onAbsent without required:false", () => {
+    expect(() => workflowDescriptorSchema.parse({
+      workflowKey: "onabsent-required",
+      modelId: "m",
+      backendKind: "comfyui",
+      comfyWorkflow: { id: "22222222-2222-4222-8222-222222222231", name: "OnAbsent Required" },
+      version: 1,
+      capabilities: ["referenceImages"],
+      identity: {
+        mode: "single_reference",
+        maxReferences: 1,
+        acceptedRoles: ["identity_anchor"],
+        supportsLookReference: false,
+        supportsSourceImageWithIdentity: false,
+      },
+      apiPrompt: { "10": { class_type: "LoadImage", inputs: { image: "" } } },
+      inputs: [{
+        key: "identity_image",
+        type: "image",
+        referenceRoles: ["identity_anchor"],
+        onAbsent: "remove_target_node",
+        target: { nodeId: "10", field: "image" },
+      }],
+    })).toThrow("Optional image slots require an explicit graph-level onAbsent contract");
+  });
+
+  it("keeps required image slots out of reference-free runs", () => {
+    expect(workflowRunsWithoutReferences({
+      capabilities: ["textToImage", "referenceImages"],
+      inputs: [{ type: "image" }],
+    })).toBe(false);
+    expect(workflowRunsWithoutReferences({ capabilities: ["img2img"], inputs: [] })).toBe(false);
   });
 
   it("rejects duplicate slot keys and duplicate ComfyUI node-field targets", () => {

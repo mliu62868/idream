@@ -1108,7 +1108,7 @@ export async function purgeTestData(prefix: string) {
     });
     await prisma.characterContentVersion.deleteMany({ where: { characterId: { in: projectCharacterIds } } });
   }
-  await prisma.generationRouteQualification.deleteMany({ where: { OR: [{ id: sw }, { routeFingerprint: sw }] } });
+  await prisma.generationRouteQualification.deleteMany({ where: { OR: [{ id: sw }, { routeFingerprint: sw }, { generationProfileKey: sw }] } });
 
   // Characters cascade: stats, tags, likes, submissions, chat sessions, messages.
   await prisma.character.deleteMany({ where: { OR: [{ id: sw }, { creatorId: sw }] } });

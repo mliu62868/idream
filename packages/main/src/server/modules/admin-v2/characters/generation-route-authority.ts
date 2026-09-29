@@ -4,6 +4,7 @@ import type {
 } from "@prisma/client";
 import {
   assignWorkflowReferenceSlots,
+  workflowRunsWithoutReferences,
   type WorkflowReferenceRole,
 } from "@idream/shared/gen-workflow";
 import type { GenerationRouteStaleReason } from "@idream/shared/admin";
@@ -88,9 +89,7 @@ export function identityCalibrationGenerationModes(input: {
   if (!workflow) return modes;
   const capabilities = record(input.profileCapabilities);
   if (
-    workflow.identity.mode === "none" &&
-    workflow.identity.maxReferences === 0 &&
-    workflow.capabilities.includes("textToImage") &&
+    workflowRunsWithoutReferences(workflow) &&
     capabilities.textToImage === true
   ) {
     modes.push("text_to_image");

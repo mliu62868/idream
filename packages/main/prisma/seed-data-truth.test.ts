@@ -378,7 +378,8 @@ describe("seed data provenance", () => {
       orderBy: { profileKey: "asc" },
     });
 
-    expect(profiles).toHaveLength(3);
+    // Premium + single-identity; the default moved to REDQW21.
+    expect(profiles).toHaveLength(2);
     for (const profile of profiles) {
       expect(profile).toMatchObject({
         sourceModelPath: expect.stringMatching(
@@ -418,7 +419,7 @@ describe("seed data provenance", () => {
     expect(unsupportedActive).toBe(0);
   });
 
-  it("seeds both public image routes on the registered RedMix3 descriptor", async () => {
+  it("seeds REDQW21 as the default image route and keeps Premium on RedMix3", async () => {
     const profiles = await prisma.generationModelProfile.findMany({
       where: {
         profileKey: {
@@ -442,11 +443,18 @@ describe("seed data provenance", () => {
     expect(profiles).toEqual([
       {
         profileKey: "profile_image_default_v1",
-        pipelineModel: "redcraft-krea2-redmix3-fp8",
-        workflowKey: "redcraft-krea2-redmix3-txt2img",
+        pipelineModel: "redqw21",
+        workflowKey: "redqw21",
         runner: "comfyui",
         version: 2,
-        runnerConfig: expect.objectContaining({ workflowVersion: 2 }),
+        runnerConfig: expect.objectContaining({
+          workflowVersion: 1,
+          capabilities: expect.objectContaining({
+            textToImage: true,
+            referenceImages: true,
+            initImage: false,
+          }),
+        }),
         enabled: true,
         rolloutPercent: 100,
       },

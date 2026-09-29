@@ -169,7 +169,12 @@ export class BackendImageModel implements ImageModel {
       // the prompt asked for image2. Use the encoder's own "Picture N" labels.
       prompt: descriptor.workflowKey === "qwen-image-edit-multi-reference"
         ? `Edit Picture 1, the source image. Preserve Picture 1's framing, pose, clothes, background and lighting except for the requested changes. Picture 2 is an identity reference only; do not copy its scene, pose or clothes.\n\n${input.prompt}`
-        : input.prompt,
+        // Qwen-Image-2.1 addresses references as <image1>. Without an explicit
+        // new-scene instruction the reference's background and clothes bleed
+        // into the result (measured 2026-09-25 on REDQW21).
+        : descriptor.workflowKey === "redqw21" && (input.referenceImages?.length ?? 0) > 0
+          ? `The person in <image1> is the subject: keep the exact face, facial features, hair and skin details of the person from <image1>. <image1> is an identity reference only; do not copy its framing, pose, clothing or background. Replace the entire background with the scene described below; nothing from <image1>'s setting remains.\n\n${input.prompt}`
+          : input.prompt,
       negativePrompt: input.negativePrompt,
     });
 

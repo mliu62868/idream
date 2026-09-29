@@ -21,7 +21,6 @@ describe("Creative Run prompt authority", () => {
           artDirection: "Soft daylight, plain background",
         },
       },
-      recipeBody: "Character image recipe",
       presetFragment: "",
       brief: "Create her first definitive portrait",
       visualProfile: null,

@@ -36,6 +36,7 @@ export default defineConfig({
       "src/server/modules/admin-v2/metrics/formula-validation.test.ts",
       "src/server/modules/admin-v2/characters/simplified-release.test.ts",
       "src/server/modules/admin-v2/characters/readiness.test.ts",
+      "src/server/modules/admin-v2/characters/visual-authority.test.ts",
       "src/server/modules/admin-v2/characters/character-release-contract.test.ts",
       "src/server/modules/admin-v2/characters/production-journey.test.ts",
       "src/server/modules/admin-v2/characters/image-qualification.test.ts",

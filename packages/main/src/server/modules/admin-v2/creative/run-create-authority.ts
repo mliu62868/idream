@@ -287,11 +287,13 @@ function productionConsistencyPrompt(
   return "Identity consistency: balanced; preserve the locked identity while allowing the requested scene, pose, outfit, and lighting.";
 }
 
+// INTENT: recipe bodies describe templates to operators ("...with appearance,
+// pose, outfit... blocks"); models with strong text rendering (REDQW21) draw
+// them as captions, so no production prompt carries them.
 export function productionPrompt(input: {
   purpose: CreativeRunCreateInput["purpose"];
   bootstrapIdentity?: boolean;
   target: Awaited<ReturnType<typeof resolveProductionTarget>>;
-  recipeBody: string;
   presetFragment: string;
   brief?: string;
   visualProfile: Awaited<ReturnType<typeof resolveProductionVisualProfile>>;
@@ -305,7 +307,6 @@ export function productionPrompt(input: {
       `Create one continuous ${characterVideoProductionRecipe.durationSeconds}-second image-to-video portrait clip.`,
       `Target character: ${input.target.label}.`,
       "The pinned source image is the exact identity, appearance, composition, and first-frame authority.",
-      `Recipe: ${input.recipeBody}`,
       input.brief ? `Operator motion brief: ${input.brief}` : "",
       "Use subtle natural motion, stable facial identity, coherent anatomy, and a steady single camera take.",
       "Do not cut, reframe, duplicate the person, introduce another person, add captions, or replace the background.",
@@ -346,7 +347,6 @@ export function productionPrompt(input: {
     targetPrompt,
     input.visualProfile ? `Locked identity: ${input.visualProfile.identityPrompt}` : "",
     input.visualProfile ? productionConsistencyPrompt(input.consistencyMode) : "",
-    `Recipe: ${input.recipeBody}`,
     input.presetFragment ? `Presets: ${input.presetFragment}` : "",
     input.brief ? `Operator brief: ${input.brief}` : "",
     input.target?.type === "character"

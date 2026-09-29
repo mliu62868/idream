@@ -31,3 +31,16 @@ export function requiredComfyNodeTypes(
       ),
   )].sort();
 }
+
+// SPEC: list a loader field's selectable files from /object_info.
+// INTENT: ComfyUI ships both the legacy `[[...files]]` spec and the V3
+// `["COMBO", { options: [...] }]` spec (UpscaleModelLoader moved in 0.37).
+export function comboOptions(spec: unknown): string[] | null {
+  if (!Array.isArray(spec)) return null;
+  if (Array.isArray(spec[0])) return spec[0].filter((v): v is string => typeof v === "string");
+  const options = (spec[1] as { options?: unknown } | undefined)?.options;
+  if (spec[0] === "COMBO" && Array.isArray(options)) {
+    return options.filter((v): v is string => typeof v === "string");
+  }
+  return null;
+}

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import h3Descriptor from "../workflows/minimax-h3-redcraft-i2v.json";
 import {
+  comboOptions,
   modelLoaderNodeForReference,
   requiredComfyNodeTypes,
 } from "./preflight-model-reference";
@@ -41,5 +42,13 @@ describe("modelLoaderNodeForReference", () => {
         "SaveVideo",
       ]),
     );
+  });
+
+  it("reads loader file lists from legacy and V3 COMBO object_info specs", () => {
+    expect(comboOptions([["a.safetensors", "b.safetensors"]])).toEqual(["a.safetensors", "b.safetensors"]);
+    expect(comboOptions(["COMBO", { multiselect: false, options: ["RealESRGAN_x2plus.pth"] }]))
+      .toEqual(["RealESRGAN_x2plus.pth"]);
+    expect(comboOptions(["INT", { default: 1 }])).toBeNull();
+    expect(comboOptions(undefined)).toBeNull();
   });
 });

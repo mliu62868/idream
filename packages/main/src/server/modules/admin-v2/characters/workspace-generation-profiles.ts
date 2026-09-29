@@ -5,6 +5,7 @@ import { characterVideoProductionRecipe } from "@idream/shared/admin";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { generationCostDreamcoins } from "@/server/lib/generation-pricing";
+import { workflowRunsWithoutReferences } from "@idream/shared/gen-workflow";
 import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 import { isDefaultProductionVideoProfile } from "@/server/modules/generation/production-video-profile";
 import { OPERATIONAL_USER_DATA_CLASS_SQL } from "@/server/modules/metric-data-scope";
@@ -91,7 +92,8 @@ export async function findBootstrapGenerationProfile() {
   });
   const ordered = [...profiles].sort((left, right) => {
     const entitlementDelta = Number(Boolean(left.requiredEntitlement)) - Number(Boolean(right.requiredEntitlement));
-    return entitlementDelta || left.profileKey.localeCompare(right.profileKey);
+    return entitlementDelta || left.costMultiplier - right.costMultiplier ||
+      left.profileKey.localeCompare(right.profileKey);
   });
   for (const profile of ordered) {
     const workflowKey = profile.workflowKey ?? profile.pipelineModel;
@@ -99,9 +101,7 @@ export async function findBootstrapGenerationProfile() {
     const capabilities = record(record(profile.runnerConfig).capabilities as Prisma.JsonValue | undefined);
     if (
       !workflow ||
-      workflow.identity.mode !== "none" ||
-      workflow.identity.maxReferences !== 0 ||
-      !workflow.capabilities.includes("textToImage") ||
+      !workflowRunsWithoutReferences(workflow) ||
       capabilities.textToImage !== true
     ) {
       continue;
@@ -147,6 +147,7 @@ export async function findRouteEvaluationGenerationProfiles(
     workflowVersion: number;
     orientation: string;
     requiredEntitlement: string | null;
+    costMultiplier: number;
   }> = [];
   for (const profile of profiles) {
     const workflowKey = profile.workflowKey ?? profile.pipelineModel;
@@ -170,11 +171,13 @@ export async function findRouteEvaluationGenerationProfiles(
         ? "4:5"
         : allowedOrientations[0] ?? "4:5",
       requiredEntitlement: profile.requiredEntitlement,
+      costMultiplier: profile.costMultiplier,
     });
   }
   compatible.sort((left, right) =>
     Number(Boolean(left.requiredEntitlement)) -
       Number(Boolean(right.requiredEntitlement)) ||
+    left.costMultiplier - right.costMultiplier ||
     left.profileKey.localeCompare(right.profileKey) ||
     right.profileVersion - left.profileVersion
   );
@@ -215,6 +218,7 @@ export async function findIdentityCalibrationGenerationProfiles() {
     allowedOrientations: string[];
     modes: Array<"text_to_image" | "image_to_image">;
     requiredEntitlement: string | null;
+    costMultiplier: number;
   }> = [];
   for (const profile of profiles) {
     const workflowKey = profile.workflowKey ?? profile.pipelineModel;
@@ -244,6 +248,7 @@ export async function findIdentityCalibrationGenerationProfiles() {
         : ["4:5"],
       modes,
       requiredEntitlement: profile.requiredEntitlement,
+      costMultiplier: profile.costMultiplier,
     });
   }
   compatible.sort((left, right) =>
@@ -251,6 +256,7 @@ export async function findIdentityCalibrationGenerationProfiles() {
       Number(!right.modes.includes("text_to_image")) ||
     Number(Boolean(left.requiredEntitlement)) -
       Number(Boolean(right.requiredEntitlement)) ||
+    left.costMultiplier - right.costMultiplier ||
     left.profileKey.localeCompare(right.profileKey) ||
     right.profileVersion - left.profileVersion
   );

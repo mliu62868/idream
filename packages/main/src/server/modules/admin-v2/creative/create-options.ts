@@ -1,6 +1,7 @@
 import { prisma } from "@/server/lib/db";
 import { creativeRunCreateOptionsSchema } from "@idream/shared/admin";
 import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
+import { workflowRunsWithoutReferences } from "@idream/shared/gen-workflow";
 import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 import { jsonRecord, nonEmptyStrings } from "./json";
 
@@ -81,9 +82,7 @@ export async function getCreativeRunCreateOptions(input: {
     const capabilities = jsonRecord(jsonRecord(profile.runnerConfig).capabilities);
     if (
       !workflow ||
-      workflow.identity.mode !== "none" ||
-      workflow.identity.maxReferences !== 0 ||
-      !workflow.capabilities.includes("textToImage") ||
+      !workflowRunsWithoutReferences(workflow) ||
       capabilities.textToImage !== true
     ) {
       continue;

@@ -1197,7 +1197,7 @@ describe("image generation service contract", () => {
       referenceSetRevisionId: null,
       referenceManifest: null,
       profileId: "profile_image_default_v1",
-      model: "redcraft-krea2-redmix3-txt2img",
+      model: "redqw21",
       recipeId: "template_image_character_default",
       status: "queued",
     });

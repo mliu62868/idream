@@ -70,6 +70,24 @@ const REDMIX3_IDENTITY_WORKFLOW_PATH = fileURLToPath(
     import.meta.url,
   ),
 );
+const REDQW21_MODEL_PATH = path.join(
+  COMFYUI_MODEL_ROOT,
+  "diffusion_models",
+  "redqw21_bf16.safetensors",
+);
+const REDQW21_TEXT_ENCODER_PATH = path.join(
+  COMFYUI_MODEL_ROOT,
+  "text_encoders",
+  "qwen3vl_8b_bf16.safetensors",
+);
+const REDQW21_VAE_PATH = path.join(
+  COMFYUI_MODEL_ROOT,
+  "vae",
+  "qwen_image_2.1_vae_bf16.safetensors",
+);
+const REDQW21_WORKFLOW_PATH = fileURLToPath(
+  new URL("../../gen/workflows/redqw21.json", import.meta.url),
+);
 const sensitiveTags = new Set(["teen", "bdsm", "virgin"]);
 
 const communityCollections = [
@@ -926,6 +944,10 @@ async function seedAdminControlPlane() {
     })).map((profile) => profile.profileKey),
   );
 
+  // INTENT: one REDQW21 (Qwen-Image-2.1) profile is the default for both
+  // text-to-image and single-anchor Character generation; its workflow image
+  // slot is optional. db/sql/2026-09-25-redqw21-default-image-profile.sql
+  // performs the same cutover on existing databases.
   if (!existingProfileKeys.has("profile_image_default_v1")) {
     await prisma.generationModelProfile.upsert({
       where: { id: "seed-profile-image-default-v1" },
@@ -933,27 +955,30 @@ async function seedAdminControlPlane() {
       create: {
         id: "seed-profile-image-default-v1",
         profileKey: "profile_image_default_v1",
-        label: "Default image · Krea 2 RedMix3",
+        label: "Default image · REDQW21 (Qwen-Image 2.1)",
         mode: "image",
         runner: "comfyui",
-        pipelineModel: "redcraft-krea2-redmix3-fp8",
-        workflowKey: "redcraft-krea2-redmix3-txt2img",
-        sourceModelPath: REDMIX3_FP8_MODEL_PATH,
+        pipelineModel: "redqw21",
+        workflowKey: "redqw21",
+        sourceModelPath: REDQW21_MODEL_PATH,
         convertedModelPath: null,
         modelFormat: "safetensors",
         runnerConfig: {
-          sourceFp8Path: REDMIX3_FP8_MODEL_PATH,
-          diffusionModelPath: REDMIX3_FP8_MODEL_PATH,
-          textEncoderPath: REDMIX3_TEXT_ENCODER_PATH,
-          vaePath: REDMIX3_VAE_PATH,
-          workflowPath: REDMIX3_WORKFLOW_PATH,
-          workflowVersion: 2,
-          apiModelId: "redcraft-krea2-redmix3-fp8",
-          precisionPolicy: "fp8_resident_bf16_transient_mps",
+          diffusionModelPath: REDQW21_MODEL_PATH,
+          diffusionModelSha256: "9830a9925759a4b69ea1346133d08917ec2390b8495ea7f0eb613f37e7c46647",
+          textEncoderPath: REDQW21_TEXT_ENCODER_PATH,
+          vaePath: REDQW21_VAE_PATH,
+          workflowPath: REDQW21_WORKFLOW_PATH,
+          workflowVersion: 1,
+          apiModelId: "redqw21",
+          baseModel: "Qwen-Image 2.1",
+          civitaiModelId: 452459,
+          civitaiVersionId: 3353689,
+          precisionPolicy: "bf16_resident_mps",
           capabilities: {
             textToImage: true,
             stableSeed: true,
-            referenceImages: false,
+            referenceImages: true,
             initImage: false,
             lora: false,
           },
@@ -961,7 +986,7 @@ async function seedAdminControlPlane() {
         defaultWidth: 512,
         defaultHeight: 512,
         allowedOrientations: ["1:1", "4:5", "3:4", "9:16", "16:9"],
-        steps: 12,
+        steps: 10,
         sampler: "euler",
         scheduler: "simple",
         cfgScale: 1,
@@ -975,11 +1000,11 @@ async function seedAdminControlPlane() {
         status: "active",
         dryRunSummary: {
           status: "runtime_verified_mps",
-          source: "redmix3_scaled_fp8_local_runtime",
+          source: "redqw21_comfyui_mps_2026_09_25",
           notes:
-            "Scaled-FP8 weights stay resident; M1-M4 decode individual operations to BF16 without a whole-model BF16 serving copy.",
+            "bf16 on M4 Max: ~9.3s/step, ~85s text-to-image and ~130s single-anchor identity at 832x1216.",
         },
-        publishedAt: new Date("2026-08-01T01:07:04.054Z"),
+        publishedAt: new Date("2026-09-25T00:00:00.000Z"),
       },
     });
   }

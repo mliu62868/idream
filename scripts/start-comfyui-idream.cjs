@@ -35,6 +35,11 @@ const profiles = {
   // separate state prevents that choice from changing RedGraft's math path.
   image: {
     port: "8189",
+    // INTENT: the image runner needs Qwen-Image-2.1 nodes (TextEncodeQwenImage21,
+    // QwenImage21Cache) that landed after v0.34.2. It gets its own pinned
+    // worktree (88ab4a06) and venv so the video runners' validated LTX/H3
+    // runtime is untouched.
+    root: "/Users/kk/ComfyUI-Installs/idream-image-qwen21/ComfyUI",
     attentionArg: "--use-pytorch-cross-attention",
     // INVARIANT: image workflows use the same graph-scoped lifecycle node as
     // video; deterministic RAM-cache ownership is required for physical text
@@ -64,7 +69,7 @@ function resolveRuntime(env = process.env) {
       `COMFYUI_PROFILE must be image, video, or video-h3; received ${profileName}`,
     );
   }
-  const root = env.COMFYUI_ROOT || defaultRoot;
+  const root = env.COMFYUI_ROOT || profile.root || defaultRoot;
   const python = env.COMFYUI_VENV_PYTHON || path.join(root, ".venv/bin/python3");
   const userDirectory = env.COMFYUI_USER_DIRECTORY || profile.userDirectory;
   const inputDirectory = env.COMFYUI_INPUT_DIRECTORY || profile.inputDirectory;

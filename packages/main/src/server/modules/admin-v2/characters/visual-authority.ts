@@ -2,6 +2,7 @@ import type { GenerationRouteQualification, Prisma } from "@prisma/client";
 import {
   evaluateEffectiveGenerationRouteAuthority,
   generationRouteRuntimeCompatibility,
+  isOperatorSingleImageRoute,
   OPERATOR_SINGLE_IMAGE_ROUTE_MATRIX_KEY,
 } from "./generation-route-authority";
 import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
@@ -58,6 +59,11 @@ export async function findQualifiedGenerationRoute(
       take: pageSize,
     });
     for (const candidate of candidates) {
+      // INTENT: operator_single_image rows only materialize the configured
+      // route that was current when an Admin run started. They keep existing
+      // Releases valid but must not pin future production to that profile;
+      // only an evaluated (40-sample) qualification outranks configuration.
+      if (isOperatorSingleImageRoute(candidate)) continue;
       const effective = await evaluateEffectiveGenerationRouteAuthority(db, {
         qualification: candidate,
         currentPolicyVersion: input.policyVersion,
@@ -112,6 +118,7 @@ async function configuredOperationalGenerationRoute(
   const ordered = [...profiles].sort((left, right) =>
     Number(Boolean(left.requiredEntitlement)) -
       Number(Boolean(right.requiredEntitlement)) ||
+    left.costMultiplier - right.costMultiplier ||
     left.profileKey.localeCompare(right.profileKey) ||
     right.version - left.version
   );

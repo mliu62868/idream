@@ -26,6 +26,7 @@ import { attestPinnedModelAssets } from "./model-asset-attestation";
 import {
   modelLoaderNodeForReference,
   requiredComfyNodeTypes,
+  comboOptions,
 } from "./preflight-model-reference";
 import { comfyUiRunnerForDescriptor } from "./backend/registry";
 
@@ -54,8 +55,8 @@ async function availableFiles(base: string, node: string, slot: string): Promise
   if (!info) return null;
   const required = (info.input as { required?: Record<string, unknown> } | undefined)?.required ?? {};
   const spec = required[slot];
-  if (!Array.isArray(spec) || !Array.isArray(spec[0])) return null;
-  return new Set(spec[0] as string[]);
+  const options = comboOptions(spec);
+  return options ? new Set(options) : null;
 }
 
 async function main() {

@@ -196,8 +196,11 @@ describe("local AI service pipeline", () => {
         profileId: "profile_image_default_v1",
         width: 512,
         height: 512,
+        // The default REDQW21 profile serves text-to-image and identity
+        // references from one graph; it never takes a source image.
         modelCapabilities: expect.objectContaining({
-          referenceImages: false,
+          textToImage: true,
+          referenceImages: true,
           initImage: false,
         }),
       },

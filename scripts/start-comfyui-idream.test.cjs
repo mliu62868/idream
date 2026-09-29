@@ -14,6 +14,15 @@ test("launcher exits cleanly after its child receives the forwarded stop signal"
   assert.equal(childExitCode(null, null), 1);
 });
 
+test("image runner pins its own Qwen-Image-2.1 capable ComfyUI install", () => {
+  const runtime = resolveRuntime({ COMFYUI_PROFILE: "image" });
+  assert.equal(
+    runtime.root,
+    "/Users/kk/ComfyUI-Installs/idream-image-qwen21/ComfyUI",
+  );
+  assert.equal(runtime.args[runtime.args.indexOf("--port") + 1], "8189");
+});
+
 test("video runner pins the validated RedGraft LTX 2.5 MPS runtime", () => {
   const runtime = resolveRuntime({ COMFYUI_PROFILE: "video" });
 

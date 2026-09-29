@@ -1,0 +1,237 @@
+{
+  "workflowKey": "redqw21",
+  "modelId": "redqw21",
+  "backendKind": "comfyui",
+  "comfyWorkflow": {
+    "id": "ed2637ba-ad6c-49a5-858b-ee71ca182972",
+    "name": "iDream · REDQW21"
+  },
+  "version": 1,
+  "negativePromptMode": "positive_instruction",
+  "capabilities": [
+    "textToImage",
+    "referenceImages",
+    "stableSeed"
+  ],
+  "identity": {
+    "mode": "single_reference",
+    "maxReferences": 1,
+    "acceptedRoles": [
+      "identity_anchor",
+      "identity_reference"
+    ],
+    "supportsLookReference": false,
+    "supportsSourceImageWithIdentity": false
+  },
+  "quality": {
+    "maxCandidates": 2,
+    "evaluatorDimensions": [
+      "artifact",
+      "face_count",
+      "identity",
+      "intent"
+    ]
+  },
+  "apiPrompt": {
+    "1": {
+      "class_type": "UNETLoader",
+      "inputs": {
+        "unet_name": "redqw21_bf16.safetensors",
+        "weight_dtype": "default"
+      }
+    },
+    "2": {
+      "class_type": "IDreamFreshCLIPLoader",
+      "inputs": {
+        "clip_name": "qwen3vl_8b_bf16.safetensors",
+        "type": "qwen_image"
+      }
+    },
+    "3": {
+      "class_type": "VAELoader",
+      "inputs": {
+        "vae_name": "qwen_image_2.1_vae_bf16.safetensors"
+      }
+    },
+    "4": {
+      "class_type": "QwenImage21Cache",
+      "inputs": {
+        "model": [
+          "1",
+          0
+        ],
+        "device": "auto",
+        "dtype": "default"
+      }
+    },
+    "5": {
+      "class_type": "TextEncodeQwenImage21",
+      "inputs": {
+        "clip": [
+          "2",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ],
+        "prompt": "",
+        "negative_prompt": "",
+        "resolution": 1024,
+        "images.image_1": [
+          "10",
+          0
+        ]
+      }
+    },
+    "6": {
+      "class_type": "EmptyLatentImage",
+      "inputs": {
+        "width": 832,
+        "height": 1216,
+        "batch_size": 1
+      }
+    },
+    "7": {
+      "class_type": "KSampler",
+      "inputs": {
+        "model": [
+          "4",
+          0
+        ],
+        "positive": [
+          "900:0",
+          0
+        ],
+        "negative": [
+          "900:0",
+          1
+        ],
+        "latent_image": [
+          "6",
+          0
+        ],
+        "seed": 0,
+        "steps": 10,
+        "cfg": 1,
+        "sampler_name": "euler",
+        "scheduler": "simple",
+        "denoise": 1
+      }
+    },
+    "8": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "7",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ]
+      }
+    },
+    "9": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "images": [
+          "8",
+          0
+        ],
+        "filename_prefix": "idream_redqw21"
+      }
+    },
+    "10": {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": ""
+      }
+    },
+    "900:0": {
+      "class_type": "IDreamUnloadOffDeviceModels",
+      "inputs": {
+        "passthrough": [
+          "5",
+          0
+        ],
+        "after": [
+          "5",
+          1
+        ],
+        "release": [
+          "2",
+          0
+        ]
+      }
+    }
+  },
+  "inputs": [
+    {
+      "key": "prompt",
+      "type": "text",
+      "target": {
+        "nodeId": "5",
+        "field": "prompt"
+      }
+    },
+    {
+      "key": "negative",
+      "type": "text",
+      "target": {
+        "nodeId": "5",
+        "field": "negative_prompt"
+      },
+      "default": ""
+    },
+    {
+      "key": "identity_image",
+      "type": "image",
+      "referenceRoles": [
+        "identity_anchor",
+        "identity_reference"
+      ],
+      "target": {
+        "nodeId": "10",
+        "field": "image"
+      },
+      "required": false,
+      "onAbsent": "remove_target_node"
+    },
+    {
+      "key": "width",
+      "type": "int",
+      "target": {
+        "nodeId": "6",
+        "field": "width"
+      },
+      "default": 832
+    },
+    {
+      "key": "height",
+      "type": "int",
+      "target": {
+        "nodeId": "6",
+        "field": "height"
+      },
+      "default": 1216
+    },
+    {
+      "key": "seed",
+      "type": "int",
+      "target": {
+        "nodeId": "7",
+        "field": "seed"
+      }
+    },
+    {
+      "key": "steps",
+      "type": "int",
+      "target": {
+        "nodeId": "7",
+        "field": "steps"
+      },
+      "default": 10
+    }
+  ]
+}

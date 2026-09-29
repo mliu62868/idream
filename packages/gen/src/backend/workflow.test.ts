@@ -2,8 +2,10 @@ import { describe, it, expect } from "vitest";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  bindComfySlots,
   workflowDescriptorSchema,
   loadWorkflowDescriptors,
+  workflowRunsWithoutReferences,
   type WorkflowDescriptor,
 } from "./workflow";
 
@@ -54,6 +56,28 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
     const modelIds = descriptors.map((descriptor) => descriptor.modelId);
     expect(modelIds).toContain("redcraft-krea2-redmix3-fp8");
     expect(modelIds).toContain("redcraft-krea2-identity-edit");
+  });
+
+  it("serves REDQW21 text-to-image and single-anchor identity from one graph", async () => {
+    const descriptors = await loadWorkflowDescriptors(WORKFLOWS_DIR);
+    const redqw21 = descriptors.find((descriptor) => descriptor.workflowKey === "redqw21");
+    if (!redqw21 || redqw21.backendKind !== "comfyui") throw new Error("redqw21 descriptor must load");
+    expect(workflowRunsWithoutReferences(redqw21)).toBe(true);
+    expect(redqw21.identity).toMatchObject({ mode: "single_reference", maxReferences: 1 });
+    // INVARIANT: the 8B text encoder is released at the barrier after both
+    // conditioning outputs of the single TextEncodeQwenImage21 node exist.
+    expect(redqw21.apiPrompt["900:0"]?.inputs).toEqual({
+      passthrough: ["5", 0],
+      after: ["5", 1],
+      release: ["2", 0],
+    });
+    expect(redqw21.apiPrompt["2"]).toMatchObject({
+      class_type: "IDreamFreshCLIPLoader",
+      inputs: { clip_name: "qwen3vl_8b_bf16.safetensors", type: "qwen_image" },
+    });
+    expect(bindComfySlots(redqw21, { prompt: "p", seed: 1 })["10"]).toBeUndefined();
+    expect(bindComfySlots(redqw21, { prompt: "p", seed: 1, identity_image: "a.png" })["5"]?.inputs["images.image_1"])
+      .toEqual(["10", 0]);
   });
 
   it("keeps RedMix3 scaled-FP8 resident without a whole-model BF16 descriptor", async () => {

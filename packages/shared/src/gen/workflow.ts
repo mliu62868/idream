@@ -69,10 +69,12 @@ const comfySlotSchema = slotBaseSchema.extend({
     .min(1)
     .optional(),
   referenceRoles: z.array(workflowReferenceRoleSchema).min(1).optional(),
-  // Reserved for a future graph-level onAbsent contract. `false` is rejected
-  // below because leaving a LoadImage value untouched is not executable
-  // optionality.
+  // SPEC: `required:false` is only executable with an explicit graph-level
+  // onAbsent contract. `remove_target_node` deletes the slot's node and every
+  // link to it when no reference is bound — for models whose encoder accepts
+  // 0..N images (Qwen-Image-2.1), one graph is both text-to-image and edit.
   required: z.boolean().optional(),
+  onAbsent: z.literal("remove_target_node").optional(),
 });
 
 const commandSlotSchema = slotBaseSchema.extend({
@@ -277,7 +279,7 @@ export const workflowDescriptorSchema = z.discriminatedUnion("backendKind", [
         });
       }
     }
-    if (slot.type !== "image" && slot.required !== undefined) {
+    if (slot.type !== "image" && (slot.required !== undefined || ("onAbsent" in slot && slot.onAbsent !== undefined))) {
       context.addIssue({
         code: "custom",
         path: ["inputs", index, "required"],
@@ -293,12 +295,19 @@ export const workflowDescriptorSchema = z.discriminatedUnion("backendKind", [
       continue;
     }
     if (slot.type !== "image") continue;
-    if (slot.required === false) {
+    if ((slot.required === false) !== ("onAbsent" in slot && slot.onAbsent !== undefined)) {
       context.addIssue({
         code: "custom",
         path: ["inputs", index, "required"],
         message:
-          "Optional image slots require an explicit graph-level onAbsent contract and are not supported",
+          "Optional image slots require an explicit graph-level onAbsent contract, and onAbsent is only valid on optional image slots",
+      });
+    }
+    if (slot.required === false && "additionalTargets" in slot && slot.additionalTargets) {
+      context.addIssue({
+        code: "custom",
+        path: ["inputs", index, "additionalTargets"],
+        message: "remove_target_node slots must own exactly one target node",
       });
     }
     if (!slot.referenceRoles?.length) {
@@ -373,6 +382,17 @@ export type WorkflowReferenceContractView = {
   }[];
 };
 
+// SPEC: a workflow can run with zero references when it declares textToImage
+// and every image slot is optional (onAbsent). Identity mode alone is not the
+// test: a Qwen-Image-2.1 graph is single_reference AND text-to-image.
+export function workflowRunsWithoutReferences(workflow: {
+  readonly capabilities: readonly string[];
+  readonly inputs: readonly { readonly type: string; readonly required?: boolean }[];
+}) {
+  return workflow.capabilities.includes("textToImage") &&
+    !workflow.inputs.some((input) => input.type === "image" && input.required !== false);
+}
+
 export type WorkflowReferenceSlotAssignment =
   | {
       readonly ok: true;
@@ -434,7 +454,9 @@ export function assignWorkflowReferenceSlots(
   }
 
   const imageSlots = descriptor.inputs.filter((slot) => slot.type === "image");
-  const requiredSlotKeys = new Set(imageSlots.map((slot) => slot.key));
+  const requiredSlotKeys = new Set(
+    imageSlots.filter((slot) => slot.required !== false).map((slot) => slot.key),
+  );
   const minReferences = requiredSlotKeys.size;
   const maxReferences = imageSlots.length;
   if (
@@ -533,6 +555,10 @@ export function bindComfySlots(d: WorkflowDescriptor, values: SlotValues): Recor
   const prompt = structuredClone(d.apiPrompt);
   for (const slot of d.inputs) {
     if (!("nodeId" in slot.target)) continue;
+    if ("onAbsent" in slot && slot.onAbsent === "remove_target_node" && values[slot.key] === undefined) {
+      removeComfyNode(prompt, slot.target.nodeId);
+      continue;
+    }
     const value = resolveValue(slot, values);
     for (const target of [slot.target, ...(slot.additionalTargets ?? [])]) {
       const node = prompt[target.nodeId];
@@ -545,6 +571,17 @@ export function bindComfySlots(d: WorkflowDescriptor, values: SlotValues): Recor
     }
   }
   return prompt;
+}
+
+// INVARIANT: a removed node leaves no dangling link; consumers must accept the
+// missing input (ComfyUI autogrow inputs such as TextEncodeQwenImage21.images).
+function removeComfyNode(prompt: Record<string, ComfyNode>, nodeId: string) {
+  delete prompt[nodeId];
+  for (const node of Object.values(prompt)) {
+    for (const [field, value] of Object.entries(node.inputs)) {
+      if (Array.isArray(value) && value[0] === nodeId) delete node.inputs[field];
+    }
+  }
 }
 
 export function bindWorkflowArgs(d: WorkflowDescriptor, values: SlotValues): string[] {

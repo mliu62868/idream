@@ -23,6 +23,7 @@ import {
   reserveInitialGenerationAttempt,
 } from "@/server/modules/generation/generation-attempt-authority";
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
+import { workflowRunsWithoutReferences } from "@idream/shared/gen-workflow";
 import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 import { generationBackendHealth } from "@/server/modules/admin-v2/generation/diagnostics";
 import {
@@ -255,9 +256,7 @@ export async function createCreativeRun(
     }
     if (
       !workflow ||
-      workflow.identity.mode !== "none" ||
-      workflow.identity.maxReferences !== 0 ||
-      !workflow.capabilities.includes("textToImage") ||
+      !workflowRunsWithoutReferences(workflow) ||
       profileCapabilities.textToImage !== true
     ) {
       throw Errors.conflict("The selected profile is not an explicit text-to-image identity bootstrap route", {
@@ -346,9 +345,7 @@ export async function createCreativeRun(
     }
   } else if (
     !workflow ||
-    workflow.identity.mode !== "none" ||
-    workflow.identity.maxReferences !== 0 ||
-    !workflow.capabilities.includes("textToImage") ||
+    !workflowRunsWithoutReferences(workflow) ||
     profileCapabilities.textToImage !== true
   ) {
     throw Errors.conflict("Generic image production requires an explicit text-to-image route", {
@@ -1120,7 +1117,6 @@ export async function createCreativeRun(
         purpose: body.purpose,
         bootstrapIdentity: body.bootstrapIdentity,
         target: verifiedBootstrapAuthority?.target ?? target,
-        recipeBody: recipe.body,
         presetFragment,
         brief: directionBrief,
         visualProfile: generationVisualProfile,

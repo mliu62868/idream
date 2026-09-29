@@ -1,5 +1,8 @@
 import type { Prisma } from "@prisma/client";
-import { assignWorkflowReferenceSlots } from "@idream/shared/gen-workflow";
+import {
+  assignWorkflowReferenceSlots,
+  workflowRunsWithoutReferences,
+} from "@idream/shared/gen-workflow";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
@@ -398,10 +401,7 @@ async function isPublicTextToImageGenerationProfile(
   // left and the exception could never fire again; leaving it in would only
   // promise a route that nothing can execute.
   if (!workflow) return false;
-  return (
-    workflow.capabilities.includes("textToImage") &&
-    !workflow.inputs.some((input) => input.type === "image")
-  );
+  return workflowRunsWithoutReferences(workflow);
 }
 
 export async function filterPublicTextToImageGenerationProfiles<

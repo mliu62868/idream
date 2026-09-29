@@ -611,6 +611,7 @@ const generationWorkflowSlotSchema = z
       .optional(),
     referenceRoles: z.array(z.string().min(1)).readonly().optional(),
     required: z.boolean().optional(),
+    onAbsent: z.literal("remove_target_node").optional(),
   })
   .strict();
 

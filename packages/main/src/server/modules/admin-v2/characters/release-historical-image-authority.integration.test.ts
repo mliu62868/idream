@@ -52,10 +52,14 @@ async function imageCandidate(suffix: string, attemptVersion = 1, bootstrapIdent
   await prisma.generationModelProfile.create({ data: {
     profileKey: currentProfileKey, label: "Current route", mode: "image", runner: "comfyui", pipelineModel: workflowKey,
     workflowKey, runnerConfig: { capabilities: { referenceImages: true, initImage: true } },
-    allowedOrientations: ["4:5"], version: 5, status: "active", enabled: true, rolloutPercent: 100,
+    // Cheapest compatible profile = the configured operational route, so the
+    // published images stay on the current route for a text-only revision.
+    allowedOrientations: ["4:5"], version: 5, status: "active", enabled: true, rolloutPercent: 100, costMultiplier: 0.01,
   } });
   const route = await prisma.generationRouteQualification.create({ data: {
-    routeFingerprint: `${id}-route`, generationProfileKey: currentProfileKey, generationProfileVersion: 5,
+    // Same canonical fingerprint ensureOperationalGenerationRoute materializes.
+    routeFingerprint: canonicalSha256({ generationProfileKey: currentProfileKey, generationProfileVersion: 5, workflowKey, workflowVersion, style: "realistic" }),
+    generationProfileKey: currentProfileKey, generationProfileVersion: 5,
     workflowKey, workflowVersion, style: "realistic", matrixKey: "operator-single-image-v1",
     sampleCount: 1, passCount: 1, identityMatch: 1, result: "qualified",
     evidence: { authorityMode: "operator_single_image", evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION },

@@ -161,6 +161,27 @@ describe("BackendImageModel", () => {
     expect(submittedSlots(backend).prompt).toContain("Add a red scarf; keep the source framing.");
   });
 
+  it("addresses the REDQW21 identity reference as <image1> only when one is bound", async () => {
+    const workflow = workflowDescriptorSchema.parse(JSON.parse(readFileSync(
+      new URL("../../workflows/redqw21.json", import.meta.url), "utf8",
+    )));
+    const controls = { workflowKey: workflow.workflowKey, workflowVersion: workflow.version };
+    const withIdentity = makeStubBackend();
+    expect((await modelWithDescriptor(withIdentity, workflow).generate({
+      prompt: "She reads on a beach at sunset.", count: 1, model: workflow.modelId, controls,
+      referenceImages: [{ assetId: "anchor", role: "identity_anchor", b64Json: Buffer.from(PNG).toString("base64") }],
+    })).ok).toBe(true);
+    expect(submittedSlots(withIdentity).prompt).toContain("person from <image1>");
+    expect(submittedSlots(withIdentity).prompt).toContain("Replace the entire background");
+    expect(submittedSlots(withIdentity).prompt).toContain("She reads on a beach at sunset.");
+
+    const textOnly = makeStubBackend();
+    expect((await modelWithDescriptor(textOnly, workflow).generate({
+      prompt: "She reads on a beach at sunset.", count: 1, model: workflow.modelId, controls,
+    })).ok).toBe(true);
+    expect(submittedSlots(textOnly).prompt).toBe("She reads on a beach at sunset.");
+  });
+
   it("applies workflow-native negative prompt semantics before submission", async () => {
     const backend = makeStubBackend();
     const model = modelWithDescriptor(backend, positiveInstructionDescriptor);
