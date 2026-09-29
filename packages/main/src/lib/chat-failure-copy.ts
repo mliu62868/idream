@@ -63,7 +63,7 @@ export function chatFailureCopy(payload: unknown, fallback: string): string {
 
 // Main's `conflict` messages mix reader guidance with internal invariants, so
 // only the ones written for the reader (what to do next) are shown verbatim.
-const USER_FACING_CONFLICT = /^(A reply is already generating|Cancel the active reply before |Companion memory is changing|[^.]* changed elsewhere\.|Your account changed\.|Your chat persona changed|(Archive|Delete|Rename) this conversation from its group chat|The selected image belongs to a different chat|There is no delivered Chat image to edit)/u;
+const USER_FACING_CONFLICT = /^(A reply is already generating|Cancel the active reply before |Still updating this Character's memory|[^.]* changed elsewhere\.|Your account changed\.|Your chat persona changed|(Archive|Delete|Rename|Open) this conversation from its group chat|The selected image belongs to a different chat|There is no delivered Chat image to edit)/u;
 
 function userFacingConflict(payload: unknown): string | null {
   const error = (payload as { error?: unknown }).error;

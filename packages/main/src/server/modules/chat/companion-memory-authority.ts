@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { recordMainToChatEvent } from "@/processes/chat-outbox";
 import {
   COMPANION_MEMORY_PURGE_PATH,
   COMPANION_MEMORY_REBUILD_PREPARE_PATH,
@@ -56,7 +57,7 @@ export async function assertNoPendingCompanionMemoryRebuild(
   characterId: string,
 ): Promise<void> {
   if (await hasPendingCompanionMemoryMutation(tx, userId, characterId)) {
-    throw Errors.conflict("Companion memory is changing; retry shortly");
+    throw Errors.conflict("Still updating this Character's memory — try again in a few seconds");
   }
 }
 
@@ -330,6 +331,18 @@ export async function clearCompanionMemory(userId: string, characterId: string) 
     });
     // Same allowance rule as a user's Stop: a reply Chat never started is not charged.
     for (const turn of active) await settleChatTurnUsage(tx, turn, "cancelled", now);
+    // Same durable cancel as a user's Stop, so a run keeps no GPU slot when the
+    // best-effort HTTP cancel below is lost and the purge has not landed yet.
+    for (const turn of active) {
+      await recordMainToChatEvent({
+        eventId: `chat_agent_run_cancel_${createHash("sha256").update(`${turn.id}:${turn.attempt}`).digest("hex").slice(0, 40)}`,
+        eventType: MAIN_TO_CHAT_EVENTS.agentRunCancelRequestedV1,
+        aggregateType: "chat_turn",
+        aggregateId: turn.id,
+        payload: { version: 1, userId, turnId: turn.id, attempt: turn.attempt },
+        occurredAt: now,
+      }, tx);
+    }
     // Turn.memoryEnabled is the immutable projection pin used by every later
     // canonical rebuild. Clearing only the mutable Session flag would let a
     // late rebuild resurrect the archived transcript.
@@ -401,7 +414,7 @@ export async function clearCompanionMemory(userId: string, characterId: string) 
     return { active, eventId };
   });
 
-  // Best effort only: the durable cancel event above already guarantees delivery, so a
+  // Best effort only: the durable cancel events above guarantee delivery, so a
   // slow or hung Chat must not hold the user's "clear memory" response.
   await Promise.allSettled(result.active.map((turn) => fetch(
     chatUrl(`/internal/agent-runs/${encodeURIComponent(turn.id)}/${turn.attempt}/cancel`),

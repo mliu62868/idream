@@ -3774,7 +3774,7 @@ export function GeneratorWorkspace() {
                     </div>
                     {job.errorCode === "provider_outcome_unknown" && (
                       <p className="mt-3 text-[12px] font-medium text-[rgb(170,170,170)]">
-                        The result could not be confirmed. Please contact support before trying again.
+                        The result could not be confirmed.{job.costDreamcoins > 0 ? ` Your ${job.costDreamcoins} coins are on hold until we confirm it, and you won't be charged twice.` : ""} Please contact support before trying again.
                         {" "}<Link className="underline" href="/helpdesk">Contact support</Link>
                         <span className="mt-1 block break-all">Request: {job.id}</span>
                       </p>

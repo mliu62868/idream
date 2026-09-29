@@ -77,7 +77,7 @@ export async function updateProactiveSettings(
  */
 async function claimDueProactiveSession() {
   const rows = await prisma.$queryRaw<
-    Array<{ sessionId: string; userId: string }>
+    Array<{ sessionId: string; userId: string; awaitingReply: boolean | null }>
   >`
     UPDATE "recent_chats"
        SET "proactiveNextAt" = now() + ("proactiveIntervalHours" || ' hours')::interval
@@ -94,7 +94,10 @@ async function claimDueProactiveSession() {
           FOR UPDATE OF c SKIP LOCKED
         LIMIT 1
      )
-    RETURNING "sessionId", "userId"
+    RETURNING "sessionId", "userId",
+      (SELECT t."origin" = 'proactive' FROM "chat_turns" t
+        WHERE t."sessionId" = "recent_chats"."sessionId"
+        ORDER BY t."createdAt" DESC LIMIT 1) AS "awaitingReply"
   `;
   return rows[0] ?? null;
 }
@@ -144,6 +147,10 @@ export async function dispatchDueProactiveTurns(
     if (signal?.aborted) break;
     const claim = await claimDueProactiveSession();
     if (!claim) break;
+    // SPEC: at most one unanswered check-in. The schedule still advances, so a
+    // reply is not followed by an immediate check-in; the next one comes a full
+    // interval after the user writes back.
+    if (claim.awaitingReply) continue;
     try {
       await admitProactiveTurn(claim);
       admitted += 1;

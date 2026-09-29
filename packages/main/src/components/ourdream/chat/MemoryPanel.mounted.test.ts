@@ -148,11 +148,12 @@ describe("MemoryPanel clear", () => {
 
     await render();
     await click(resetButton());
-    // Reset is destructive, so the first click only arms the confirm.
-    expect(fetchMock).not.toHaveBeenCalled();
+    // Reset is destructive, so the first click only arms the confirm (and reads
+    // which group chats it would archive).
+    expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual(["/api/v1/chat/groups"]);
     await click(resetButton());
 
-    const calls = fetchMock.mock.calls.map(([input]) => String(input));
+    const calls = fetchMock.mock.calls.map(([input]) => String(input)).filter((url) => url !== "/api/v1/chat/groups");
     expect(calls[0]).toContain("/api/v1/chat/memory/raya-reyes");
     // Without this the user is left sitting in a session the reset just archived,
     // where every send comes back "This chat has been archived".
@@ -161,17 +162,30 @@ describe("MemoryPanel clear", () => {
   });
 
   it("does not claim a reset failure was a no-op", async () => {
-    const fetchMock = vi.fn(async () => new Response("{}", { status: 500 }));
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL) => new Response("{}", { status: 500 }));
     vi.stubGlobal("fetch", fetchMock);
 
     await render();
     await click(resetButton());
     await click(resetButton());
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).includes("/memory/"))).toHaveLength(1);
     expect(
       container.querySelector('[data-testid="memory-clear-error"]')?.textContent,
     ).toContain("Old chats may already be archived");
+  });
+
+  it("names the group chats a one-to-one clear will archive before confirming", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input) === "/api/v1/chat/groups"
+      ? Response.json({ groups: [
+          { id: "g1", title: "Beach night", status: "active", members: [{ characterId: "raya-reyes", name: "Raya" }] },
+          { id: "g2", title: "Old", status: "archived", members: [{ characterId: "raya-reyes", name: "Raya" }] },
+          { id: "g3", title: "Others", status: "active", members: [{ characterId: "someone-else", name: "X" }] },
+        ] })
+      : Response.json({ items: [] })));
+    await render();
+    await click(resetButton());
+    expect(container.querySelector('[data-testid="memory-clear-groups"]')?.textContent).toContain("the group chat with this character: Beach night.");
   });
 });
 

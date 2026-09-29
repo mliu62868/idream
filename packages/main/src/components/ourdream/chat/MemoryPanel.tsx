@@ -33,6 +33,9 @@ export function MemoryPanel({
   const [resetting, setResetting] = useState(false);
   const [resetConfirm, setResetConfirm] = useState(false);
   const [resetFailed, setResetFailed] = useState(false);
+  // Clearing a Character's memory also archives every group chat they are in;
+  // from a one-to-one chat the reader has to be told which ones before confirming.
+  const [affectedGroups, setAffectedGroups] = useState<string[]>([]);
 
   // SPEC: 重置成功后把用户送进一段全新对话。
   // INTENT: 服务端会归档这个角色的活跃会话，所以留在原地的用户下一条消息必然被
@@ -42,6 +45,16 @@ export function MemoryPanel({
     if (!characterId) return;
     if (!resetConfirm) {
       setResetConfirm(true);
+      if (!groupConversation) {
+        void fetch("/api/v1/chat/groups", { cache: "no-store" })
+          .then(async (response) => (response.ok ? await response.json() : null))
+          .then((raw: { groups?: Array<{ title?: string; status?: string; members?: Array<{ characterId?: string }> }> } | null) => {
+            setAffectedGroups((raw?.groups ?? [])
+              .filter((group) => group.status === "active" && group.members?.some((member) => member.characterId === characterId))
+              .map((group) => group.title || "Untitled group"));
+          })
+          .catch(() => setAffectedGroups([]));
+      }
       return;
     }
     setResetting(true);
@@ -87,6 +100,7 @@ export function MemoryPanel({
 
   function closePanel() {
     setResetConfirm(false);
+    setAffectedGroups([]);
     onClose();
   }
 
@@ -137,6 +151,11 @@ export function MemoryPanel({
             Clear memory
           </h3>
           {groupConversation ? <p className="mb-3 text-xs leading-5 text-white/70">Clearing this Character&apos;s memory also archives group conversations they belong to. Other Characters keep their own memories.</p> : null}
+          {!groupConversation && resetConfirm && affectedGroups.length > 0 ? (
+            <p className="mb-3 text-xs leading-5 text-[rgb(255,184,112)]" data-testid="memory-clear-groups" role="status">
+              This also archives {affectedGroups.length === 1 ? "the group chat" : `${affectedGroups.length} group chats`} with this character: {affectedGroups.join(", ")}. Archived groups stay readable but can&apos;t continue.
+            </p>
+          ) : null}
           <p className="mb-3 text-[12px] leading-4 text-[rgb(114,113,112)]">
             {resetConfirm
               ? "This clears learned memories and your pinned facts, and moves your current chats with this character to the archive. You'll start a new conversation. Your old chats stay readable. Custom instructions stay until you remove them."

@@ -781,6 +781,14 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
           : chatFailureCopy(failure, "Message failed to send. Please try again."));
         setContent(text);
         setMessages(dropOptimisticMessage);
+        // A reply the page has not seen yet (a proactive check-in) can be the
+        // one generating; show it now instead of on the next minute's poll.
+        if (response.status === 409) {
+          void fetchSession().then((session) => {
+            applySession(session);
+            resumePendingStreams(session.messages);
+          }).catch(() => undefined);
+        }
         return;
       }
       const payload = parseChatSendResponse(await response.json());
@@ -2074,6 +2082,11 @@ function ChatImageAttachmentCard({
   // Main's active-job cap, not a broken image: nothing was charged or queued.
   const tooManyActive = failed && attachment.errorCode === "rate_limited";
   const completedUnavailable = attachment.status === "completed" && Boolean(attachment.mediaAssetId);
+  // Only a request that reached a job was charged; a failed one is refunded in
+  // full and an unconfirmed one is held, so the card says which.
+  const chargedCost = attachment.generationJobId && typeof attachment.costDreamcoins === "number" && attachment.costDreamcoins > 0
+    ? attachment.costDreamcoins : 0;
+  const refundableCost = chargedCost ? `${chargedCost} ${chargedCost === 1 ? "coin" : "coins"}` : null;
   return (
     <div
       className="w-full max-w-[260px] rounded-[12px] border border-white/10 bg-black/20 p-3"
@@ -2108,13 +2121,13 @@ function ChatImageAttachmentCard({
           ) : (
             <p className="mt-0.5 line-clamp-2 text-[11px] leading-4 text-white/60">
               {requiresReview
-                ? "The result could not be confirmed. Contact support before trying again."
+                ? `The result could not be confirmed. ${refundableCost ? `Your ${refundableCost} are on hold until we confirm it, and you won't be charged twice. ` : ""}Contact support before trying again.`
                 : failed || attachment.status === "proposed"
                 ? paymentRequired
                   ? "Add dreamcoins to generate this image."
                   : tooManyActive
                   ? "Wait for one to finish, then ask again. No coins used."
-                  : canRetry ? "The image could not be completed. Retry uses the current image price." : "The image could not be completed. You can send a new image request in this chat."
+                  : `The image could not be completed.${refundableCost ? ` Your ${refundableCost} were returned.` : ""} ${canRetry ? "Retry uses the current image price." : "You can send a new image request in this chat."}`
                 : "Your image is being prepared. You can keep chatting while it finishes."}
             </p>
           )}

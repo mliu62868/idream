@@ -1,5 +1,6 @@
 // Main owns Companion Chat product state. This module is now a façade over the
 // Main Turn Ledger; only AgentRun admission, cancellation and SSE cross to Chat.
+import { prisma } from "@/server/lib/db";
 import {
   BFF_HEADER,
   BFF_USER_HEADER,
@@ -175,6 +176,8 @@ async function routeMainChat(request: Request, segments: string[], userId: strin
     if (path.length === 3 && path[2] === "messages" && method === "POST") {
       const idempotencyKey = request.headers.get("idempotency-key")?.trim();
       if (!idempotencyKey) throw Errors.badRequest("Idempotency-Key is required");
+      const target = await prisma.recentChat.findFirst({ where: { sessionId, userId }, select: { groupId: true } });
+      if (target?.groupId) throw Errors.conflict("Open this conversation from its group chat");
       return envelope(await beginAdmittedChatTurn({
         userId,
         sessionId,

@@ -71,6 +71,16 @@ describe("Main group conversation authority", () => {
     expect((await listGroupConversations(f.userId))[0]).toMatchObject({ id: f.group.id, members: [{ name: f.characters[0].name }, { name: f.characters[1].name }] });
     await expect(deleteChatSession(f.userId, f.members[0].sessionId)).rejects.toMatchObject({ status: 409 });
     expect(await prisma.recentChat.count({ where: { groupId: f.group.id } })).toBe(2);
+    // A member session opened through the one-to-one routes points back to its group.
+    const viaSingle = (method: string, tail: string[] = []) => proxyChatRequest(new Request(`http://localhost/api/v1/chat/sessions/${f.members[0].sessionId}${tail.length ? `/${tail.join("/")}` : ""}`, {
+      method, headers: { "x-idream-user-id": f.userId, "x-idream-viewer-scope": `user:${f.userId}`, "content-type": "application/json", "idempotency-key": randomUUID() },
+      ...(method === "POST" ? { body: JSON.stringify({ content: "Hi" }) } : {}),
+    }), ["chat", "sessions", f.members[0].sessionId, ...tail]);
+    for (const response of [await viaSingle("GET"), await viaSingle("POST", ["messages"])]) {
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ message: "Open this conversation from its group chat" });
+    }
+    expect(await prisma.chatTurn.count({ where: { sessionId: f.members[0].sessionId } })).toBe(0);
   });
 
   it("admits twelve distinct eligible Characters and rejects overflow, duplicates, other owners' private Characters and underage Characters atomically", async () => {

@@ -20,6 +20,7 @@ import {
   regenerateChatTurn,
 } from "./turn-ledger";
 import { clearCompanionMemory } from "./companion-memory-authority";
+import { dispatchDueProactiveTurns } from "./proactive-messages";
 
 const prefix = `zt-proactive-authority-${randomUUID()}-`;
 
@@ -212,6 +213,23 @@ describe("proactive Turns and the daily allowance", () => {
   });
 });
 
+describe("proactive cadence without a reply", () => {
+  it("sends at most one unanswered check-in, and still moves the schedule on", async () => {
+    const f = await fixture();
+    const proactive = await beginChatTurn({
+      userId: f.userId, sessionId: f.sessionId, content: "Take the lead.", idempotencyKey: randomUUID(), origin: "proactive",
+    });
+    await commitSent(proactive.snapshot!, "The kiln's still warm.");
+    await prisma.recentChat.update({ where: { sessionId: f.sessionId }, data: {
+      proactiveEnabled: true, proactiveIntervalHours: 24, proactiveNextAt: new Date(Date.now() - 60_000),
+    } });
+    await dispatchDueProactiveTurns(20);
+    expect(await prisma.chatTurn.count({ where: { sessionId: f.sessionId } })).toBe(1);
+    const row = await prisma.recentChat.findUniqueOrThrow({ where: { sessionId: f.sessionId } });
+    expect(row.proactiveNextAt!.getTime()).toBeGreaterThan(Date.now());
+  });
+});
+
 describe("proactive delivery marker", () => {
   // SPEC: 主动消息到达时没有人在看，会话列表是它唯一能自我宣告的地方。
   it("marks the session unread and clears it when the user opens it", async () => {
@@ -323,6 +341,8 @@ describe("daily allowance ledger", () => {
     await clearWithoutChat(f.userId, f.characterId);
     expect(await prisma.chatTurn.findUniqueOrThrow({ where: { id: pending.snapshot!.turnId } }))
       .toMatchObject({ assistantStatus: "cancelled" });
+    // A lost best-effort HTTP cancel is backed by the same durable event as Stop.
+    expect(await prisma.mainOutboxEvent.count({ where: { aggregateId: pending.snapshot!.turnId, eventType: "chat.agent_run.cancel_requested.v1" } })).toBe(1);
     expect(await prisma.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId: pending.snapshot!.turnId } }))
       .toMatchObject({ voidedAt: expect.any(Date) });
   });

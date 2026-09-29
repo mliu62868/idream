@@ -203,6 +203,9 @@ export async function getChatSession(userId: string, sessionId: string) {
     },
   });
   if (!session) throw Errors.notFound("Chat session not found");
+  // A group member's session is one voice of the group; read as a one-to-one
+  // chat it would hide the other speakers and let a send bypass the group.
+  if (session.groupId) throw Errors.conflict("Open this conversation from its group chat");
   const messages = await enrichAttachmentMedia(publicMessages(session), userId);
   if (session.proactiveUnreadAt) {
     // Opening the session is reading it. Scoped by the timestamp we just read so
