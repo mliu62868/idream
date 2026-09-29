@@ -587,11 +587,24 @@ function asImpact(value: Prisma.JsonValue | null): Record<string, unknown> {
     : {};
 }
 
+// SPEC: 待办摘要里的角色用名字，不用 cuid —— 运营要一眼认出是哪个角色；链接仍按 id。
+async function characterNamesFor(rows: readonly ProjectableRow[]) {
+  const ids = new Set<string>();
+  for (const row of rows) {
+    if (row.sourceType === "admin_case" && row.row.targetType === "character") ids.add(row.row.targetId);
+    if (row.sourceType === "character_release") ids.add(row.project.characterId);
+  }
+  if (ids.size === 0) return new Map<string, string>();
+  const characters = await prisma.character.findMany({ where: { id: { in: [...ids] } }, select: { id: true, name: true } });
+  return new Map(characters.map((character) => [character.id, character.name]));
+}
+
 function projectRow(
   row: ProjectableRow,
   pinnedKeys: ReadonlySet<string>,
   permissions: ReadonlySet<AdminPermissionKey> = new Set(),
   preferenceVersions: ReadonlyMap<string, number> = new Map(),
+  characterNames: ReadonlyMap<string, string> = new Map(),
 ): TodayWorkItem {
   const environment = deploymentEnvironment();
   if (row.sourceType === "collaboration_mention") {
@@ -631,7 +644,7 @@ function projectRow(
       sourceId: item.id,
       sourceStatus: item.status as TodayWorkItem["sourceStatus"],
       title: `${item.type.replaceAll("_", " ")} case`,
-      summary: `${item.targetType} ${item.targetId} is ${item.status.replaceAll("_", " ")}`,
+      summary: `${item.targetType} ${(item.targetType === "character" && characterNames.get(item.targetId)) || item.targetId} is ${item.status.replaceAll("_", " ")}`,
       severity: CASE_SEVERITY.of(item),
       priority: normalizePriority(item.priority),
       impactSnapshot: { targetType: item.targetType, targetId: item.targetId, caseKey: item.caseKey },
@@ -690,8 +703,8 @@ function projectRow(
       sourceStatus: item.status as TodayWorkItem["sourceStatus"],
       title: `Character release ${item.status.replaceAll("_", " ")}`,
       summary: row.monitorActionRequired
-        ? `${row.project.characterId} · published monitor requires action`
-        : `${row.project.characterId} · readiness ${item.readiness}`,
+        ? `${characterNames.get(row.project.characterId) ?? row.project.characterId} · published monitor requires action`
+        : `${characterNames.get(row.project.characterId) ?? row.project.characterId} · readiness ${item.readiness}`,
       severity,
       priority: severity === "high" ? "high" : "normal",
       impactSnapshot: {
@@ -827,10 +840,11 @@ function queue(
   now: Date,
   workMode: TodayWorkMode,
   permissions: ReadonlySet<AdminPermissionKey>,
+  characterNames: ReadonlyMap<string, string>,
 ) {
   return {
     totalCount: rows.totalCount,
-    items: sortItems(rows.rows.map((row) => projectRow(row, pinnedKeys, permissions, preferenceVersions)), now, workMode).slice(0, QUEUE_LIMIT),
+    items: sortItems(rows.rows.map((row) => projectRow(row, pinnedKeys, permissions, preferenceVersions, characterNames)), now, workMode).slice(0, QUEUE_LIMIT),
   };
 }
 
@@ -1341,12 +1355,13 @@ export async function buildTodayProjection(input: {
     diagnostics: input.diagnostics,
   });
 
+  const characterNames = await characterNamesFor([...myShift.rows, ...nextBest.rows, ...unassigned.rows, ...watching.rows, ...recentlyResolved.rows]);
   return todayProjectionSchema.parse({
-    myShift: queue(myShift, pinnedKeys, preferenceVersions, now, workMode, input.permissions),
-    nextBestActions: queue(nextBest, pinnedKeys, preferenceVersions, now, workMode, input.permissions),
-    unassigned: queue(unassigned, pinnedKeys, preferenceVersions, now, workMode, input.permissions),
-    watching: queue(watching, pinnedKeys, preferenceVersions, now, workMode, input.permissions),
-    recentlyResolved: queue(recentlyResolved, pinnedKeys, preferenceVersions, now, workMode, input.permissions),
+    myShift: queue(myShift, pinnedKeys, preferenceVersions, now, workMode, input.permissions, characterNames),
+    nextBestActions: queue(nextBest, pinnedKeys, preferenceVersions, now, workMode, input.permissions, characterNames),
+    unassigned: queue(unassigned, pinnedKeys, preferenceVersions, now, workMode, input.permissions, characterNames),
+    watching: queue(watching, pinnedKeys, preferenceVersions, now, workMode, input.permissions, characterNames),
+    recentlyResolved: queue(recentlyResolved, pinnedKeys, preferenceVersions, now, workMode, input.permissions, characterNames),
     asOf: now.toISOString(),
     freshness: "fresh",
     workMode,
@@ -1579,8 +1594,9 @@ export async function buildTodayAllWork(input: {
   });
   const pinnedKeys = new Set(preferences.filter((item) => item.pinned).map((item) => `${item.sourceType}:${item.sourceId}`));
   const preferenceVersions = new Map(preferences.map((item) => [`${item.sourceType}:${item.sourceId}`, item.version]));
+  const characterNames = await characterNamesFor(rows.rows);
   const allItems = sortItems(
-    rows.rows.map((row) => projectRow(row, pinnedKeys, input.permissions, preferenceVersions)),
+    rows.rows.map((row) => projectRow(row, pinnedKeys, input.permissions, preferenceVersions, characterNames)),
     now,
     workMode,
   ).filter((item) => matchesAllWorkFilters(item, query, input.actor.id, now));

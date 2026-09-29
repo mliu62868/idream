@@ -817,6 +817,28 @@ export const generationProviderOpsResponseSchema = z
   })
   .strict();
 
+// SPEC: 「产品现在能不能用」的一行回答：聊天与生图各自的实时探活 + 最近一小时的成败数。
+// INTENT: 事故只由生图失败自动生成；聊天模型停机曾四天无人察觉。Today 首屏读这一份。
+export const opsHealthServiceSchema = z
+  .object({
+    key: z.enum(["chat", "image", "video"]),
+    state: z.enum(["ok", "degraded", "down"]),
+    probeOk: z.boolean(),
+    detail: z.string().nullable(),
+    attemptsLastHour: z.number().int().nonnegative(),
+    failuresLastHour: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export const opsHealthResponseSchema = z
+  .object({
+    checkedAt: adminIsoDateTimeSchema,
+    services: z.array(opsHealthServiceSchema).readonly(),
+  })
+  .strict();
+
+export type OpsHealth = z.infer<typeof opsHealthResponseSchema>;
+
 export type GenerationModelProfile = z.infer<typeof generationModelProfileSchema>;
 export type GenerationRecipe = z.infer<typeof generationRecipeSchema>;
 export type GenerationPreset = z.infer<typeof generationPresetSchema>;

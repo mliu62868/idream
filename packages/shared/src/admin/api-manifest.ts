@@ -1924,6 +1924,13 @@ export const ADMIN_V2_API_OPERATIONS = [
 
   operation(
     "GET",
+    "/api/v2/admin/ops/health",
+    allOf("chat.ops.read"),
+    "none",
+    "opsHealthResponseSchema",
+  ),
+  operation(
+    "GET",
     "/api/v2/admin/ops/providers",
     allOf("ops.queue.read"),
     "generationProviderOpsQuerySchema",

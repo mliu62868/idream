@@ -1032,3 +1032,47 @@ describe("Today command classification", () => {
     expect(page.totalCount).toBe(1);
   });
 });
+
+describe("Today names characters", () => {
+  const suffix = randomUUID();
+  const actorId = `today-names-${suffix}`;
+  const characterId = `today-names-character-${suffix}`;
+  const caseId = `today-names-case-${suffix}`;
+
+  beforeAll(async () => {
+    await prisma.user.create({ data: { id: actorId, email: `${actorId}@example.test`, role: "admin", status: "active" } });
+    await prisma.character.create({ data: {
+      id: characterId, name: "Nora Named", age: 25,
+      description: "Today summary fixture", appearance: {}, advancedDetails: {},
+    } });
+    await prisma.adminCase.create({ data: {
+      id: caseId,
+      type: "content_report",
+      targetType: "character",
+      targetId: characterId,
+      caseKey: `review:names-${suffix}`,
+      activeKey: adminCaseActiveKey("content_report", "character", characterId, `review:names-${suffix}`),
+      status: "new",
+      priority: "high",
+      ownerId: actorId,
+      slaDueAt: new Date("2026-07-11T13:00:00.000Z"),
+    } });
+  });
+
+  afterAll(async () => {
+    await prisma.adminCase.deleteMany({ where: { id: caseId } });
+    await prisma.character.deleteMany({ where: { id: characterId } });
+    await prisma.user.deleteMany({ where: { id: actorId } });
+  });
+
+  it("summarizes a character case by the character's name and keeps the id for the link", async () => {
+    const projection = await buildTodayProjection({
+      actor: { id: actorId, role: "admin" },
+      permissions: resolvePermissions("admin"),
+      now: new Date("2026-07-11T12:00:00.000Z"),
+    });
+    const item = projection.myShift.items.find((candidate) => candidate.sourceId === caseId);
+    expect(item?.summary).toBe("character Nora Named is new");
+    expect(item?.impactSnapshot).toMatchObject({ targetId: characterId });
+  });
+});

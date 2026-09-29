@@ -10,6 +10,8 @@ vi.mock("@/lib/admin-v2-api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/admin-v2-api")>();
   return { ...actual, adminV2Request };
 });
+// 服务状态栏自带请求与测试（ServiceHealthStrip.mounted.test.tsx）；这里只测工作队列。
+vi.mock("./ServiceHealthStrip", () => ({ ServiceHealthStrip: () => null }));
 vi.mock("@/components/admin/i18n", () => {
   const interpolate = (text: string, values?: Readonly<Record<string, string | number>>) =>
     Object.entries(values ?? {}).reduce((result, [key, value]) => result.replaceAll(`{${key}}`, String(value)), text);

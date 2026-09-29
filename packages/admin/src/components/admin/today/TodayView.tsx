@@ -8,6 +8,7 @@ import type { WorkMode } from "@/components/admin/nav-config";
 import { formatDateTime } from "@/components/admin/ui/format";
 import { Pagination } from "@/components/admin/ui/Pagination";
 import { adminV2Request } from "@/lib/admin-v2-api";
+import { ServiceHealthStrip } from "./ServiceHealthStrip";
 import { useActionFeedback } from "./feedback";
 import { formatCount, queueHealth, todayCounts, type QueueHealth, type TodayCounts } from "./health";
 import {
@@ -159,6 +160,7 @@ export function TodayView({ data, onPreferenceChanged, workMode }: { data: Today
 
   return (
     <div className="space-y-4" data-testid="today-view">
+      <ServiceHealthStrip />
       <HealthBanner
         asOf={projection.asOf}
         counts={counts}
