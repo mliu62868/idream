@@ -397,6 +397,18 @@ describe("CaseWorkspace decision loop", () => {
     expect(options).toMatchObject({ method: "POST", body: expect.objectContaining({ ownerId: "operator-7" }) });
   });
 
+  it("names another operator's ownership by display name rather than user ID", async () => {
+    const read = adminV2Request.getMockImplementation()!;
+    adminV2Request.mockImplementation(async (path, options) => path === "/api/v2/admin/cases/case-1"
+      ? { ...resolvedDetail, case: { ...resolvedCase, status: "in_progress", ownerId: "cmowner000000000000000001", ownerName: "Dana Support" } }
+      : read(path, options));
+    await mount({ canAssign: false, canDecide: false, actorId: "operator-7" });
+    await waitUntil(() => container.querySelector("#case-summary-title") !== null);
+    const summary = container.querySelector("#case-summary-title")!.parentElement!;
+    expect(summary.textContent).toContain("Dana Support");
+    expect(summary.textContent).not.toContain("cmowner000000000000000001");
+  });
+
   it.each(["resolved", "closed"])("requires reopening a %s case before assigning it", async (status) => {
     const read = adminV2Request.getMockImplementation()!;
     adminV2Request.mockImplementation(async (path, options) => path === "/api/v2/admin/cases/case-1"

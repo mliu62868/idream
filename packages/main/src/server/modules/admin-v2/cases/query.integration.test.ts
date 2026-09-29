@@ -171,6 +171,17 @@ describe("Admin Case queue scope", () => {
     expect(await ids(`view=unassigned&search=${suffix}`)).toEqual([openCaseId]);
   });
 
+  it("names the owner for people, falling back to email when there is no display name", async () => {
+    await prisma.adminCase.update({ where: { id: openCaseId }, data: { ownerId: actorId } });
+    try {
+      const response = await listCases(new Request(`http://localhost/api/v2/admin/cases?view=mine&search=${suffix}&limit=3`, { headers }));
+      const body = await response.json();
+      expect(body.data.items).toEqual([expect.objectContaining({ id: openCaseId, ownerId: actorId, ownerName: `${actorId}@example.test` })]);
+    } finally {
+      await prisma.adminCase.update({ where: { id: openCaseId }, data: { ownerId: null } });
+    }
+  });
+
   it("keeps resolved cases in the all view but never fixture subjects", async () => {
     expect((await ids("view=all")).slice(0, 2)).toEqual([resolvedCaseId, openCaseId]);
     expect(await ids(`view=all&search=${suffix}`)).toEqual([resolvedCaseId, openCaseId]);

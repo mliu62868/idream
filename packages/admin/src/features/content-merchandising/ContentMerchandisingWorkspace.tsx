@@ -300,7 +300,7 @@ export function ContentMerchandisingWorkspace({
           tone: "success",
           title:
             field === "visibility"
-              ? t("Character {id} is now {visibility}", { id, visibility: value })
+              ? t("Character {id} is now {visibility}", { id, visibility: valueLabel(value) })
               : t("Character {id} taken down", { id }),
         });
         await loadCharacters(query);

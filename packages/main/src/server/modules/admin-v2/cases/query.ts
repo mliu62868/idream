@@ -88,6 +88,9 @@ export async function caseDto(row: Awaited<ReturnType<typeof prisma.adminCase.fi
       }
     }
   }
+  const owner = row.ownerId
+    ? await prisma.user.findUnique({ where: { id: row.ownerId }, select: { displayName: true, email: true } })
+    : null;
   const relatedIncidents = relatedIncidentCandidates.size > 0
     ? await prisma.opsIncident.findMany({ where: { id: { in: [...relatedIncidentCandidates] } }, select: { id: true } })
     : [];
@@ -100,6 +103,7 @@ export async function caseDto(row: Awaited<ReturnType<typeof prisma.adminCase.fi
     priority: row.priority,
     severity: severity(row.resolution),
     ownerId: row.ownerId,
+    ownerName: owner ? owner.displayName ?? owner.email : null,
     slaDueAt: (row.slaDueAt ?? row.createdAt).toISOString(),
     reportCount: evidence.filter((item) => item.sourceType === "content_report").length,
     messageCount: evidence.filter((item) => item.sourceType === "support_message").length,

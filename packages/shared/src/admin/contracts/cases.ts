@@ -172,6 +172,8 @@ export const operationsCaseSchema = z
     priority: adminPrioritySchema,
     severity: adminSeveritySchema,
     ownerId: adminIdSchema.nullable(),
+    // 负责人给人看的名字（displayName ?? email）；ownerId 仍是分配与筛选的权威。
+    ownerName: z.string().nullable().optional(),
     slaDueAt: adminIsoDateTimeSchema,
     reportCount: z.number().int().nonnegative(),
     messageCount: z.number().int().nonnegative(),
