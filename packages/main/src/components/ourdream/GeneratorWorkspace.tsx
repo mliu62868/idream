@@ -1486,14 +1486,14 @@ export function GeneratorWorkspace() {
           cache: "no-store",
           signal: controller.signal,
         }),
-        fetch("/api/v1/library/created", {
+        (viewerAuthenticatedRef.current !== true ? Promise.resolve(null) : fetch("/api/v1/library/created", {
           cache: "no-store",
           signal: controller.signal,
-        })
+        }))
           // Only approved ones can be generated with; a rejected or taken-down
           // character would fail on submit.
           .then(async (res) => {
-            if (!res.ok) return [];
+            if (!res?.ok) return [];
             const raw = await res.json() as { data?: { items?: Array<{ status?: unknown }> } };
             const items = raw.data?.items?.filter((item) => item.status === "approved") ?? [];
             return parseGeneratorCharactersResponse({ ...raw, data: { ...raw.data, items } }).items;
