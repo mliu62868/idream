@@ -14,7 +14,7 @@ export function StatusPill({ status, label }: { status: string; label?: string }
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-medium uppercase tracking-[0.05em]",
+        "inline-flex items-center whitespace-nowrap rounded-full px-2.5 py-0.5 text-[11px] font-medium uppercase tracking-[0.05em]",
         STATUS_TONE_CLASS[statusTone(status)],
       )}
     >

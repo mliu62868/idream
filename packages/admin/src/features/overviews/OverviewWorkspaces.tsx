@@ -508,6 +508,7 @@ function CanonicalMetrics({ data }: { data: MetricDashboardResponse }) {
 
         {t("asOf")} <FormattedDate value={data.asOf} /> · {value(data.freshness)}
       </p>
+      <MetricQualitySummary cards={data.cards} />
       <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         {data.cards.map((card) => (
           <div
@@ -535,7 +536,6 @@ function CanonicalMetrics({ data }: { data: MetricDashboardResponse }) {
           </div>
         ))}
       </div>
-      <MetricQualitySummary cards={data.cards} />
     </section>
   );
 }
@@ -569,8 +569,8 @@ function MetricQualitySummary({ cards }: { cards: MetricDashboardResponse["cards
   if (unusable.length === 0) return null;
   const reasons = summariseMetricQualityReasons(unusable);
   return (
-    <details className="mt-4 rounded-md border border-[var(--ad-border)] p-3">
-      <summary className="cursor-pointer text-xs font-semibold text-[var(--ad-ink)]">
+    <details className="mt-4 rounded-md border border-[var(--ad-yellow-text)]/25 bg-[var(--ad-yellow-bg)] p-3">
+      <summary className="min-h-6 cursor-pointer text-sm font-semibold text-[var(--ad-yellow-text)]">
         {t("{count} of {total} metrics cannot be used for decisions", {
           count: unusable.length,
           total: cards.length,

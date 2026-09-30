@@ -7,6 +7,7 @@ import { Loader2, Pencil, Plus, RefreshCcw, Search, Trash2 } from "lucide-react"
 import type { AdminPageInfo } from "@idream/shared/admin";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
+import { Field } from "@/components/admin/ui/FormPage";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
@@ -52,7 +53,7 @@ type AnnouncementActionDraft = {
 };
 
 const inputClass =
-  "rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]";
+  "rounded-md h-10 w-full min-w-0 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]";
 
 export function AnnouncementsView() {
   const { t, value: valueLabel } = useAdminI18n();
@@ -204,17 +205,21 @@ export function AnnouncementsView() {
 
   return (
     <div className="space-y-5">
-      <form className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 md:grid-cols-4" onSubmit={(event) => {
+      <form className="grid items-end gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 md:grid-cols-4" onSubmit={(event) => {
         event.preventDefault();
         navigate({ announcementSearch: query.announcementSearch, announcementLevel: query.announcementLevel, announcementActive: query.announcementActive }, 1);
       }}>
-        <input aria-label={t("Search announcements")} className={inputClass} onChange={(event) => setQuery({ ...query, announcementSearch: event.target.value })} placeholder={t("Search")} type="search" value={query.announcementSearch} />
-        <select className={inputClass} onChange={(event) => setQuery({ ...query, announcementLevel: event.target.value })} value={query.announcementLevel}>
-          <option value="">{t("All levels")}</option><option value="info">{t("info")}</option><option value="promo">{t("promo")}</option><option value="warning">{t("warning")}</option>
-        </select>
-        <select className={inputClass} onChange={(event) => setQuery({ ...query, announcementActive: event.target.value })} value={query.announcementActive}>
-          <option value="">{t("All states")}</option><option value="true">{t("Active")}</option><option value="false">{t("Inactive")}</option>
-        </select>
+        <Field label={t("Search announcements")}><input aria-label={t("Search announcements")} className={inputClass} onChange={(event) => setQuery({ ...query, announcementSearch: event.target.value })} placeholder={t("Search")} type="search" value={query.announcementSearch} /></Field>
+        <Field label={t("Announcement level")}>
+          <select className={inputClass} onChange={(event) => setQuery({ ...query, announcementLevel: event.target.value })} value={query.announcementLevel}>
+            <option value="">{t("All levels")}</option><option value="info">{t("info")}</option><option value="promo">{t("promo")}</option><option value="warning">{t("warning")}</option>
+          </select>
+        </Field>
+        <Field label={t("Status")}>
+          <select className={inputClass} onChange={(event) => setQuery({ ...query, announcementActive: event.target.value })} value={query.announcementActive}>
+            <option value="">{t("All states")}</option><option value="true">{t("Active")}</option><option value="false">{t("Inactive")}</option>
+          </select>
+        </Field>
         <button className="inline-flex h-10 items-center justify-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white" type="submit"><Search className="h-4 w-4" />{t("Apply")}</button>
       </form>
       <div className="flex items-center justify-between">
@@ -255,13 +260,15 @@ export function AnnouncementsView() {
           </p>
           <p className="mt-1 text-xs text-[var(--ad-text-muted)]">{actionDraft.item.title}</p>
           <div className="mt-3 grid gap-3 md:grid-cols-[1fr_260px_auto_auto]">
-            <input
-              aria-label={t("Announcement action reason")}
-              className={inputClass}
-              onChange={(event) => setActionDraft({ ...actionDraft, reason: event.target.value })}
-              placeholder={t("Reason (≥3)")}
-              value={actionDraft.reason}
-            />
+            <Field label={t("Reason (≥3)")}>
+              <input
+                aria-label={t("Announcement action reason")}
+                className={inputClass}
+                onChange={(event) => setActionDraft({ ...actionDraft, reason: event.target.value })}
+                placeholder={t("Reason (≥3)")}
+                value={actionDraft.reason}
+              />
+            </Field>
             <input
               aria-label={t("Announcement action confirmation")}
               className={`${inputClass} font-mono`}
@@ -448,22 +455,28 @@ function AnnouncementForm({
   const canCreate = !busy && missing.length === 0;
 
   return (
-    <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-      <h2 className="text-sm font-semibold">
+    <details open={editing ? true : undefined} className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
+      <summary className="cursor-pointer text-sm font-semibold"><h2 className="inline">
         {editing ? t("Edit announcement") : t("Create announcement")}
         {editing ? <span className="ml-2 font-mono text-xs font-normal text-[var(--ad-text-muted)]">{editing.id}</span> : null}
-      </h2>
+      </h2></summary>
       <p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t("An in-product banner — this is the site-wide broadcast channel. Active means visible to everyone.")}</p>
-      <div className="mt-3 grid gap-3 md:grid-cols-2">
-        <input className={inputClass} onChange={(e) => setTitle(e.target.value)} placeholder={t("Title")} value={title} />
-        <input className={inputClass} onChange={(e) => setBody(e.target.value)} placeholder={t("Body")} value={body} />
-        <input
-          aria-label={t("Link URL (optional)")}
-          className={inputClass}
-          onChange={(e) => setHref(e.target.value)}
-          placeholder={t("Link URL (optional)")}
-          value={href}
-        />
+      <div className="mt-3 grid items-end gap-3 md:grid-cols-2">
+        <Field label={t("Title")}>
+          <input className={inputClass} onChange={(e) => setTitle(e.target.value)} placeholder={t("Title")} value={title} />
+        </Field>
+        <Field label={t("Body")}>
+          <input className={inputClass} onChange={(e) => setBody(e.target.value)} placeholder={t("Body")} value={body} />
+        </Field>
+        <Field label={t("Link URL (optional)")}>
+          <input
+            aria-label={t("Link URL (optional)")}
+            className={inputClass}
+            onChange={(e) => setHref(e.target.value)}
+            placeholder={t("Link URL (optional)")}
+            value={href}
+          />
+        </Field>
         <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
           {t("Starts at (optional)")}
           <input className={inputClass} onChange={(e) => setStartsAt(e.target.value)} type="datetime-local" value={startsAt} />
@@ -472,7 +485,7 @@ function AnnouncementForm({
           {t("Ends at (optional)")}
           <input className={inputClass} onChange={(e) => setEndsAt(e.target.value)} type="datetime-local" value={endsAt} />
         </label>
-        <select
+        <Field label={t("Announcement level")}><select
           className={`${inputClass} appearance-none`}
           onChange={(e) => setLevel(e.target.value as "info" | "promo" | "warning")}
           value={level}
@@ -480,26 +493,30 @@ function AnnouncementForm({
           <option value="info">{valueLabel("info")}</option>
           <option value="promo">{valueLabel("promo")}</option>
           <option value="warning">{valueLabel("warning")}</option>
-        </select>
+        </select></Field>
         {editing ? null : (
           <label className="flex items-center gap-2 text-sm text-[var(--ad-text-muted)]">
             <input checked={active} onChange={(e) => setActive(e.target.checked)} type="checkbox" />
             {t("Active immediately")}
           </label>
         )}
-        <input
-          className={inputClass}
-          onChange={(e) => setReason(e.target.value)}
-          placeholder={t("Reason (≥3)")}
-          value={reason}
-        />
-        <input
-          aria-label={t("Announcement create confirmation")}
-          className={editing ? `${inputClass} font-mono` : inputClass}
-          onChange={(e) => setConfirmation(e.target.value)}
-          placeholder={editing ? expectedConfirmation : t("Type title to confirm")}
-          value={confirmation}
-        />
+        <Field label={t("Reason (≥3)")}>
+          <input
+            className={inputClass}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder={t("Reason (≥3)")}
+            value={reason}
+          />
+        </Field>
+        <Field label={t("Confirmation")}>
+          <input
+            aria-label={t("Announcement create confirmation")}
+            className={editing ? `${inputClass} font-mono` : inputClass}
+            onChange={(e) => setConfirmation(e.target.value)}
+            placeholder={editing ? expectedConfirmation : t("Type title to confirm")}
+            value={confirmation}
+          />
+        </Field>
         {editing ? (
           <button
             className="rounded-md inline-flex h-10 items-center justify-center border border-[var(--ad-border)] px-3 text-sm"
@@ -520,6 +537,7 @@ function AnnouncementForm({
           {editing ? t("Save changes") : t("Create")}
         </button>
       </div>
+      {expectedConfirmation ? <p className="mt-3 break-all text-xs text-[var(--ad-text-muted)]">{t("Confirmation target: {target}", { target: expectedConfirmation })}</p> : null}
       {missing.length > 0 ? (
         <div className="mt-2 text-xs text-[var(--ad-text-muted)]" id="announcement-create-missing">
           {editing ? t("Still needed before you can save it:") : t("Still needed before you can create it:")}
@@ -529,6 +547,6 @@ function AnnouncementForm({
         </div>
       ) : null}
       {err ? <p role="alert" className="mt-2 text-xs text-[var(--ad-red-text)]">{err}</p> : null}
-    </section>
+    </details>
   );
 }

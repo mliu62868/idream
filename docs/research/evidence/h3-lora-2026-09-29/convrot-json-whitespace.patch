@@ -1,0 +1,103 @@
+diff --git a/h3_weights.c b/h3_weights.c
+index 14ff4b2..36040af 100644
+--- a/h3_weights.c
++++ b/h3_weights.c
+@@ -2,6 +2,7 @@
+ 
+ #include "h3_convrot.h"
+ 
++#include <ctype.h>
+ #include <dirent.h>
+ #include <stdarg.h>
+ #include <stdio.h>
+@@ -197,12 +198,25 @@ static int comfy_quant_group_size(const h3_weight_store *store,
+         return -1;
+     }
+     marker[bytes] = '\0';
+-    if (!strstr(marker, "\"format\": \"int8_tensorwise\"")) {
++    /* Comfy exporters emit both compact and spaced JSON. Whitespace outside
++     * strings has no meaning; preserve spaces and escapes inside strings. */
++    size_t compact = 0;
++    int quoted = 0, escaped = 0;
++    for (size_t i = 0; i < (size_t)bytes; i++) {
++        unsigned char c = (unsigned char)marker[i];
++        if (!quoted && isspace(c)) continue;
++        marker[compact++] = (char)c;
++        if (quoted && escaped) escaped = 0;
++        else if (quoted && c == '\\') escaped = 1;
++        else if (c == '"') quoted = !quoted;
++    }
++    marker[compact] = '\0';
++    if (!strstr(marker, "\"format\":\"int8_tensorwise\"")) {
+         fail(error, error_size, "weight %s uses an unsupported quant format: %s",
+              weight_name, marker);
+         return -1;
+     }
+-    if (!strstr(marker, "\"convrot\": true")) return 0;
++    if (!strstr(marker, "\"convrot\":true")) return 0;
+     const char *field = strstr(marker, "\"convrot_groupsize\":");
+     int group_size = field ? atoi(field + strlen("\"convrot_groupsize\":")) : 0;
+     if (group_size <= 0 || !h3_convrot_hadamard(group_size)) {
+diff --git a/tests/test_convrot_weights.c b/tests/test_convrot_weights.c
+index 6598f0c..4150418 100644
+--- a/tests/test_convrot_weights.c
++++ b/tests/test_convrot_weights.c
+@@ -191,6 +191,9 @@ static void loader_gates(h3_gpu *gpu, const char *directory) {
+     static const char bad_marker[] =
+         "{\"format\": \"fp8_rowwise\", \"convrot\": true, "
+         "\"convrot_groupsize\": 256}";
++    static const char compact_marker[] =
++        "{\"format\":\"int8_tensorwise\",\"convrot\":true,"
++        "\"convrot_groupsize\":256}";
+     static uint16_t plain[4][8];
+     for (int r = 0; r < 4; r++)
+         for (int c = 0; c < 8; c++)
+@@ -198,10 +201,12 @@ static void loader_gates(h3_gpu *gpu, const char *directory) {
+     static _Float16 half[16];
+     for (int i = 0; i < 16; i++) half[i] = (_Float16)(0.125 * i - 1.0);
+ 
+-    char marker_shape[16], bad_marker_shape[16];
++    char marker_shape[16], bad_marker_shape[16], compact_marker_shape[16];
+     snprintf(marker_shape, sizeof(marker_shape), "[%zu]", sizeof(marker) - 1);
+     snprintf(bad_marker_shape, sizeof(bad_marker_shape), "[%zu]",
+              sizeof(bad_marker) - 1);
++    snprintf(compact_marker_shape, sizeof(compact_marker_shape), "[%zu]",
++             sizeof(compact_marker) - 1);
+     fixture_t fixture = {0};
+     fixture_add(&fixture, "proj.weight", "I8", "[8,512]",
+                 quantized, sizeof(quantized));
+@@ -215,6 +220,12 @@ static void loader_gates(h3_gpu *gpu, const char *directory) {
+                 scales, sizeof(scales));
+     fixture_add(&fixture, "bad.comfy_quant", "U8", bad_marker_shape,
+                 bad_marker, sizeof(bad_marker) - 1);
++    fixture_add(&fixture, "compact.weight", "I8", "[8,512]",
++                quantized, sizeof(quantized));
++    fixture_add(&fixture, "compact.weight_scale", "F32", "[8,1]",
++                scales, sizeof(scales));
++    fixture_add(&fixture, "compact.comfy_quant", "U8", compact_marker_shape,
++                compact_marker, sizeof(compact_marker) - 1);
+     fixture_add(&fixture, "plain.weight", "BF16", "[4,8]",
+                 plain, sizeof(plain));
+     fixture_add(&fixture, "half.weight", "F16", "[16]",
+@@ -332,6 +343,21 @@ static void loader_gates(h3_gpu *gpu, const char *directory) {
+         free(stream_scales);
+     }
+ 
++    /* A compact JSON marker must preserve both format and rotation metadata. */
++    int8_t *compact_raw = NULL;
++    float *compact_scales = NULL;
++    int compact_group = 0;
++    check(h3_weight_load_int8_raw(store, "compact.weight", ROWS, COLS,
++                                  &compact_raw, &compact_scales, &compact_group,
++                                  error, sizeof(error)),
++          "compact JSON marker loads");
++    check(compact_group == GS && compact_raw && compact_scales &&
++          !memcmp(compact_raw, quantized, sizeof(quantized)) &&
++          !memcmp(compact_scales, scales, sizeof(scales)),
++          "compact JSON preserves rotation, bytes and scales");
++    free(compact_raw);
++    free(compact_scales);
++
+     /* BF16 fast path is unchanged; F16 converts. */
+     uint64_t plain_shape[] = {4, 8};
+     tensor = h3_weight_load_bf16(store, gpu, "plain.weight", 2, plain_shape,

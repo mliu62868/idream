@@ -450,15 +450,15 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
             <Stat label="Users" value={incident.impact.affectedUsers} />
             <Stat label="Provider spend" value={micros(locale, incident.impact.failedCostMicros)} />
             <Stat label="Refunded" value={t("{count} DC", { count: incident.impact.refundDreamcoins ?? 0 })} />
-            <Stat label="Started" value={<RelativeTime referenceTime={incident.updatedAt} value={incident.firstSeenAt} />} />
-            <Stat label="Last seen" value={<RelativeTime referenceTime={incident.updatedAt} value={incident.lastSeenAt} />} />
+            <Stat label="Started" value={<RelativeTime referenceTime={asOf} value={incident.firstSeenAt} />} />
+            <Stat label="Last seen" value={<RelativeTime referenceTime={asOf} value={incident.lastSeenAt} />} />
             <Stat label="Occurrences" value={detail.occurrences.length} />
             <Stat label="Verification" value={<StatusBadge value={incident.recoveryVerification.state} />} />
           </dl>
           {incident.slaDueAt ? (
             <p className="mt-3 text-xs text-[var(--ad-yellow-text)]">
               <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />
-              {t("SLA due")} <RelativeTime referenceTime={incident.updatedAt} value={incident.slaDueAt} />
+              {t("SLA due")} <RelativeTime referenceTime={asOf} value={incident.slaDueAt} />
             </p>
           ) : null}
         </section>
@@ -519,7 +519,7 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
             ) : null}
             <dl className="mt-3 grid grid-cols-2 gap-3 text-xs">
               {incident.causeConfidence !== null ? <Stat label="Cause confidence" value={`${Math.round(incident.causeConfidence * 100)}%`} /> : null}
-              {incident.lastKnownGoodAt ? <Stat label="Last known good" value={<RelativeTime referenceTime={incident.updatedAt} value={incident.lastKnownGoodAt} />} /> : null}
+              {incident.lastKnownGoodAt ? <Stat label="Last known good" value={<RelativeTime referenceTime={asOf} value={incident.lastKnownGoodAt} />} /> : null}
             </dl>
             {incident.runbookUrl ? (
               <p className="mt-3 text-xs"><a className="font-semibold underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]" href={incident.runbookUrl} rel="noreferrer" target="_blank">{t("Open runbook")}</a></p>
@@ -536,7 +536,7 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
                 {/* 请求 id 之前只是一串可复制的字符——现在直接进生成任务详情，不用手工换工作台。 */}
                 <a className="min-w-0 flex-1 truncate font-mono underline decoration-dotted underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]" href={`/admin/ops/jobs?job=${encodeURIComponent(occurrence.requestId)}`}>{occurrence.requestId}</a>
                 {occurrence.assignmentHistory.length > 0 ? <span className="shrink-0 text-[var(--ad-text-muted)]">{t("· reassigned {count}×", { count: occurrence.assignmentHistory.length })}</span> : null}
-                <RelativeTime referenceTime={incident.updatedAt} value={occurrence.observedAt} />
+                <RelativeTime referenceTime={asOf} value={occurrence.observedAt} />
               </li>
             ))}
           </ul>
@@ -734,7 +734,7 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
               {detail.activity.map((entry) => (
                 <li className="border-b border-[var(--ad-border)] pb-2 last:border-0" key={entry.id}>
                   <p className="font-mono">{entry.action}</p>
-                  <p className="mt-1 text-[var(--ad-text-muted)]">{entry.reason ?? t("No reason recorded")} · <RelativeTime referenceTime={incident.updatedAt} value={entry.createdAt} /></p>
+                  <p className="mt-1 text-[var(--ad-text-muted)]">{entry.reason ?? t("No reason recorded")} · <RelativeTime referenceTime={asOf} value={entry.createdAt} /></p>
                 </li>
               ))}
             </ul>

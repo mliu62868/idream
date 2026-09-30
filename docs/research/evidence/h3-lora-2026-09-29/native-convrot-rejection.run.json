@@ -1,0 +1,13 @@
+{
+  "label": "native-convrot-rejection",
+  "mode": "convrot",
+  "command": [
+    "./h3_lora_check",
+    "/Users/kk/code/idream/.scratch/h3-lora-20260929/convrot-source",
+    "-",
+    "blocks.0.attn.out_proj.weight"
+  ],
+  "exitCode": 1,
+  "wallSeconds": 0.035,
+  "acceleratorLease": true
+}

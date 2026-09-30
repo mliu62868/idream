@@ -82,6 +82,34 @@ describe("Character release history empty state", () => {
       .find((button) => button.textContent?.trim() === "发布角色");
   }
 
+  it.each([true, false])("opens availability controls only for the current release's alert (current: %s)", async (isCurrent) => {
+    const request = vi.spyOn(transport, "adminV2Request");
+    const stamp = "2026-09-05T00:00:00.000Z";
+    const release: CharacterWorkspaceDetail["releases"][number]["release"] = {
+      id: "monitored-release", projectId: "project-fixture", revisionId: "revision-fixture", characterContentVersionId: "content-fixture",
+      visualProfileId: null, visualProfileVersion: null, referenceSetRevisionId: null, generationProvenance: {}, releasePlacementManifest: {},
+      snapshotHash: "snapshot", readiness: "ready", status: "published", legacy: false, publishedAt: stamp,
+      supersedesId: null, rollbackOfReleaseId: null, version: 4, createdAt: stamp, updatedAt: stamp,
+    };
+    await render(characterWorkspaceDetail({
+      serving: { state: "live", currentReleaseId: isCurrent ? release.id : "another-live-release", version: 5, updatedAt: stamp, characterId: "character-fixture" },
+      releases: [
+        { release, checks: [], monitors: [{
+          id: "monitor-24h", window: "24h", status: "action_required", baseline: {},
+          observed: { operationalChecks: { chatAuthorityReady: false } },
+          verification: { recommendation: "rollback_review", asOf: stamp }, startedAt: stamp, finishedAt: null,
+        }] },
+        { release: { ...release, id: "another-live-release" }, checks: [], monitors: [] },
+      ],
+    }));
+    const section = [...container.querySelectorAll("details")]
+      .find((item) => item.querySelector("summary")?.textContent === "角色状态与回滚");
+    expect(section?.open).toBe(isCurrent);
+    const pause = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "暂停上线服务");
+    expect(pause?.disabled).toBe(true);
+    expect(request).not.toHaveBeenCalled();
+  });
+
   it("discards a blocked candidate with its exact version and leaves publishing separate", async () => {
     const request = vi.spyOn(transport, "adminV2Request").mockResolvedValue({ commandId: "withdraw-command" });
     const stamp = "2026-09-05T00:00:00.000Z";

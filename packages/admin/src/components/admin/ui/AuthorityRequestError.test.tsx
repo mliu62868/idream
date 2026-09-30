@@ -33,12 +33,14 @@ describe("AuthorityRequestError", () => {
           new AdminV2RequestError("Ledger snapshot unavailable", 503, "unavailable", undefined, "req-3")
         }
         message="Ledger snapshot unavailable"
+        requestKind="read"
         onRetry={() => undefined}
       />,
     );
 
     expect(html).toContain("The authority did not answer.");
-    expect(html).toContain("Check this record&#x27;s current state before retrying");
+    expect(html).toContain("Retry to load the latest data.");
+    expect(html).not.toContain("whether the write landed");
     // 技术详情里 code / status / requestId / 原文一个不少，且默认折叠。
     expect(html).toContain("code: unavailable");
     expect(html).toContain("status: 503");
@@ -46,6 +48,25 @@ describe("AuthorityRequestError", () => {
     expect(html).toContain("Ledger snapshot unavailable");
     expect(html).toContain("<details");
     expect(html).not.toContain("<details open");
+  });
+
+  it("preserves the unknown-write warning for existing save callers", () => {
+    const html = renderToStaticMarkup(<AuthorityRequestError
+      cause={new AdminV2RequestError("Save response unavailable", 503, "unavailable")}
+      message="Save response unavailable" onRetry={() => undefined} />);
+    expect(html).toContain("whether the write landed is unknown");
+    expect(html).not.toContain("identify the failed read");
+  });
+
+  it.each([
+    [400, "bad_request", "Correct the input and submit again"],
+    [429, "rate_limited", "Wait a moment and try again"],
+  ] as const)("preserves the specific recovery for a rejected read (%s)", (status, code, guidance) => {
+    const html = renderToStaticMarkup(<AuthorityRequestError
+      cause={new AdminV2RequestError("Read refused", status, code)}
+      message="Read refused" requestKind="read" onRetry={() => undefined} />);
+    expect(html).toContain(guidance);
+    expect(html).not.toContain("Retry to load the latest data.");
   });
 
   // INTENT: 十一处历史调用点只有一句 message，没有异常对象；它们也得有体面的一句话，

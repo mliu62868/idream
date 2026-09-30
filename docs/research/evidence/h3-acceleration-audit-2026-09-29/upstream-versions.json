@@ -1,0 +1,49 @@
+{
+  "observed_at": "2026-09-30T04:11:36.656968+00:00",
+  "date_note": "Audit began 2026-09-29 America/New_York; runtime snapshot completed 2026-09-30 America/New_York. File stem records start date.",
+  "release": {
+    "ComfyUI": {
+      "tag_name": "v0.38.0",
+      "html_url": "https://github.com/Comfy-Org/ComfyUI/releases/tag/v0.38.0",
+      "published_at": "2026-09-29T21:46:45Z",
+      "target_commitish": "master"
+    },
+    "AppleSilicon-FP8": {
+      "tag_name": "v1.3.4",
+      "html_url": "https://github.com/pawel-mazurkiewicz/ComfyUI-AppleSilicon-FP8/releases/tag/v1.3.4",
+      "published_at": "2026-09-23T14:14:45Z",
+      "target_commitish": "9c78935963e885ba93313807974dc64d71058c7f"
+    }
+  },
+  "repositories": {
+    "ComfyUI-SolAttn-MPS": {
+      "sha": "45071126b0c1ee30b0e6b7103fa9d70924828ba5",
+      "url": "https://github.com/yshenaw/ComfyUI-SolAttn-MPS/commit/45071126b0c1ee30b0e6b7103fa9d70924828ba5",
+      "date": "2026-08-21T17:32:22Z",
+      "subject": "Guard MiniMax H3 MPS runtime settings"
+    },
+    "LynnReal.git-head": {
+      "sha": "ad16ac787430bd22456ee55f018764cf53c25935",
+      "url": "https://github.com/LynnReal-AI/LynnReal-Omni/commit/ad16ac787430bd22456ee55f018764cf53c25935",
+      "date": "2026-09-22T15:46:42Z",
+      "subject": "Update README.md"
+    },
+    "mps-flash-attn-pypi": {
+      "version": "0.6.3",
+      "upload_times": [
+        "2026-09-01T13:05:21.107562Z",
+        "2026-09-01T13:05:22.924292Z",
+        "2026-09-01T13:05:24.250048Z",
+        "2026-09-01T13:05:25.501501Z",
+        "2026-09-01T13:05:26.744610Z"
+      ]
+    },
+    "mtlflashattn-pypi": {
+      "version": "0.2.0",
+      "upload_times": [
+        "2026-06-29T15:31:44.819271Z",
+        "2026-06-29T15:31:46.433264Z"
+      ]
+    }
+  }
+}

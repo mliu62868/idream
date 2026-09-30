@@ -1,0 +1,10 @@
+{
+  "label": "native-lora-tests",
+  "mode": "baseline",
+  "command": [
+    "./h3_lora_tests"
+  ],
+  "exitCode": 0,
+  "wallSeconds": 0.428,
+  "acceleratorLease": true
+}

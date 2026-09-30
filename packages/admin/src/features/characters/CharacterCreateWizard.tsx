@@ -1265,14 +1265,14 @@ function ReviewStep({
   draft: Draft;
   onEdit: (step: number) => void;
 }) {
-  const { t } = useAdminI18n();
+  const { t, value } = useAdminI18n();
   const sections = [
     {
       title: "Persona & conversation",
       rows: [
         [
           "Character",
-          `${draft.persona.name}, age ${draft.persona.age}, ${draft.persona.gender}`,
+          `${draft.persona.name} · ${t("Age")} ${draft.persona.age} · ${value(draft.persona.gender)}`,
         ],
         ["Short description", draft.persona.characterPromise],
         ["Opening message", draft.persona.firstMessage],
@@ -1284,7 +1284,7 @@ function ReviewStep({
       rows: [
         ["Identity anchor", draft.visualDirection.identityAnchor],
         ["Stable traits", draft.visualDirection.stableTraits.join(" · ")],
-        ["Style", draft.visualDirection.style],
+        ["Style", value(draft.visualDirection.style)],
         ["Reference direction", draft.visualDirection.referenceDirection],
       ],
     },

@@ -12,6 +12,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { clearSoulDraft, readSoulDraft, writeSoulDraft, type SoulDraft, type SoulVisualForm } from "./soul-drafts";
 import { characterCreateStepFieldErrors } from "./CharacterCreateWizard";
+import { characterHasPublishedRelease } from "./character-workspace-format";
 import type { RunCommittedCharacterMutation } from "./character-workspace-permissions";
 import { ConfirmDialog } from "@/components/admin/ui/ConfirmDialog";
 import { AdminV2RequestError } from "@/lib/admin-v2-api";
@@ -159,7 +160,9 @@ function SoulEditor({
 
   const releaseHref = `/admin/characters/${encodeURIComponent(data.character.id)}?tab=release`;
   const unpublishedNotice = data.preview.live === null
-    ? t("This Character has not been published yet.")
+    ? t(characterHasPublishedRelease(data)
+      ? "This character has a published version but is currently offline."
+      : "This Character has not been published yet.")
     : data.preview.changedFields.length > 0
       ? t("Saved changes are not live yet. Customers still see the published version.")
       : null;

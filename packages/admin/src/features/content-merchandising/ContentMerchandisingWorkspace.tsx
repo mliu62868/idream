@@ -23,6 +23,7 @@ import {
 } from "@/components/admin/ui/ConfirmDialog";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
+import { Field as FormField } from "@/components/admin/ui/FormPage";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { useAdminFormat } from "@/components/admin/ui/format";
 import { Pagination, type PageInfo } from "@/components/admin/ui/Pagination";
@@ -469,9 +470,9 @@ export function ContentMerchandisingWorkspace({
             value={blockedFeaturedCount}
           />
         </dl>
-        <div className="mt-3 grid gap-3 md:grid-cols-[1fr_220px_260px_auto]">
-          <input
-            className="h-10 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 font-mono text-sm"
+        <div className="mt-3 grid items-end gap-3 md:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto]">
+          <FormField label={t("Featured character IDs")}><input
+            className="w-full min-w-0 h-10 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 font-mono text-sm"
             disabled={!canWrite}
             onChange={(event) => {
               setFeaturedInput(event.target.value);
@@ -481,9 +482,9 @@ export function ContentMerchandisingWorkspace({
             }}
             placeholder={t("char_a, char_b")}
             value={featuredInput}
-          />
-          <input
-            className="h-10 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm"
+          /></FormField>
+          <FormField label={t("Reason (≥3 chars)")}><input
+            className="w-full min-w-0 h-10 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm"
             disabled={!canWrite}
             onChange={(event) => {
               setReason(event.target.value);
@@ -492,10 +493,10 @@ export function ContentMerchandisingWorkspace({
             }}
             placeholder={t("Reason (≥3 chars)")}
             value={reason}
-          />
-          <input
+          /></FormField>
+          <FormField label={t("Featured confirmation")}><input
             aria-label={t("Featured confirmation")}
-            className="h-10 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 font-mono text-sm"
+            className="w-full min-w-0 h-10 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 font-mono text-sm"
             disabled={!canWrite}
             onChange={(event) => {
               setConfirmation(event.target.value);
@@ -504,11 +505,11 @@ export function ContentMerchandisingWorkspace({
             }}
             placeholder={
               expectedConfirmation === "CLEAR"
-                ? "Type CLEAR"
-                : "Type featured IDs"
+                ? t("Type CLEAR")
+                : t("Type featured IDs")
             }
             value={confirmation}
-          />
+          /></FormField>
           <button
             className="inline-flex h-10 items-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
             disabled={
@@ -529,6 +530,7 @@ export function ContentMerchandisingWorkspace({
             {t("Save featured")}
           </button>
         </div>
+        <p className="mt-2 break-all text-xs text-[var(--ad-text-muted)]">{t("Confirmation target: {target}", { target: expectedConfirmation })}</p>
         <FeaturedDiff
           draftIds={parseCsv(featuredInput)}
           savedIds={featured.data.configuredCharacterIds}

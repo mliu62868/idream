@@ -1,0 +1,562 @@
+{
+  "comfy/quant_ops.py": {
+    "sha256": "6f9a5ee00d6f518448fded0375d806b76ec2faae71a793ff93bc6dde99504ea6",
+    "lines": [
+      {
+        "number": 256,
+        "text": "        \"storage_t\": torch.float8_e4m3fn,"
+      },
+      {
+        "number": 257,
+        "text": "        \"parameters\": {\"weight_scale\", \"input_scale\"},"
+      },
+      {
+        "number": 258,
+        "text": "        \"comfy_tensor_layout\": \"TensorCoreMXFP8Layout\","
+      },
+      {
+        "number": 259,
+        "text": "        \"group_size\": 32,"
+      },
+      {
+        "number": 260,
+        "text": "    }"
+      },
+      {
+        "number": 261,
+        "text": ""
+      },
+      {
+        "number": 262,
+        "text": "QUANT_ALGOS[\"int8_tensorwise\"] = {"
+      },
+      {
+        "number": 263,
+        "text": "    \"storage_t\": torch.int8,"
+      },
+      {
+        "number": 264,
+        "text": "    \"parameters\": {\"weight_scale\"},"
+      },
+      {
+        "number": 265,
+        "text": "    \"comfy_tensor_layout\": \"TensorWiseINT8Layout\","
+      },
+      {
+        "number": 266,
+        "text": "    \"quantize_input\": False,"
+      }
+    ]
+  },
+  "comfy/ops.py": {
+    "sha256": "28a44d8c49d37534c5fb3af0855ad689c4261f5a90295034d397d84a0835f90d",
+    "lines": [
+      {
+        "number": 1327,
+        "text": "            def _forward(self, input, weight, bias):"
+      },
+      {
+        "number": 1328,
+        "text": "                return torch.nn.functional.linear(input, weight, bias)"
+      },
+      {
+        "number": 1329,
+        "text": ""
+      },
+      {
+        "number": 1330,
+        "text": "            def forward_comfy_cast_weights("
+      },
+      {
+        "number": 1331,
+        "text": "                self,"
+      },
+      {
+        "number": 1332,
+        "text": "                input,"
+      },
+      {
+        "number": 1333,
+        "text": "                compute_dtype=None,"
+      },
+      {
+        "number": 1334,
+        "text": "                want_requant=False,"
+      },
+      {
+        "number": 1335,
+        "text": "                weight_only_quant=False,"
+      },
+      {
+        "number": 1336,
+        "text": "            ):"
+      },
+      {
+        "number": 1337,
+        "text": "                if not weight_only_quant:"
+      },
+      {
+        "number": 1338,
+        "text": "                    with CastBiasWeightContext("
+      },
+      {
+        "number": 1339,
+        "text": "                        self,"
+      },
+      {
+        "number": 1340,
+        "text": "                        input,"
+      },
+      {
+        "number": 1341,
+        "text": "                        offloadable=True,"
+      },
+      {
+        "number": 1342,
+        "text": "                        compute_dtype=compute_dtype,"
+      },
+      {
+        "number": 1343,
+        "text": "                        want_requant=want_requant,"
+      },
+      {
+        "number": 1344,
+        "text": "                    ) as (weight, bias):"
+      },
+      {
+        "number": 1345,
+        "text": "                        return self._forward(input, weight, bias)"
+      },
+      {
+        "number": 1346,
+        "text": ""
+      },
+      {
+        "number": 1347,
+        "text": "                with CastBiasWeightContext("
+      },
+      {
+        "number": 1348,
+        "text": "                    self,"
+      },
+      {
+        "number": 1349,
+        "text": "                    input=None,"
+      },
+      {
+        "number": 1350,
+        "text": "                    dtype=self.weight.dtype,"
+      },
+      {
+        "number": 1351,
+        "text": "                    device=input.device,"
+      },
+      {
+        "number": 1352,
+        "text": "                    bias_dtype=input.dtype,"
+      },
+      {
+        "number": 1353,
+        "text": "                    offloadable=True,"
+      },
+      {
+        "number": 1354,
+        "text": "                    compute_dtype=compute_dtype,"
+      },
+      {
+        "number": 1355,
+        "text": "                    want_requant=True,"
+      },
+      {
+        "number": 1356,
+        "text": "                ) as (weight, bias):"
+      },
+      {
+        "number": 1357,
+        "text": "                    weight = weight.to(dtype=input.dtype)"
+      },
+      {
+        "number": 1358,
+        "text": "                    return self._forward(input, weight, bias)"
+      },
+      {
+        "number": 1359,
+        "text": ""
+      },
+      {
+        "number": 1360,
+        "text": "            def forward(self, input, *args, **kwargs):"
+      },
+      {
+        "number": 1361,
+        "text": "                run_every_op()"
+      },
+      {
+        "number": 1362,
+        "text": ""
+      },
+      {
+        "number": 1372,
+        "text": ""
+      },
+      {
+        "number": 1373,
+        "text": "                _use_quantized = ("
+      },
+      {
+        "number": 1374,
+        "text": "                    getattr(self, 'layout_type', None) is not None and"
+      },
+      {
+        "number": 1375,
+        "text": "                    not isinstance(input, QuantizedTensor) and not self._full_precision_mm and"
+      },
+      {
+        "number": 1376,
+        "text": "                    not getattr(self, 'comfy_force_cast_weights', False) and"
+      },
+      {
+        "number": 1377,
+        "text": "                    len(self.weight_function) == 0 and len(self.bias_function) == 0"
+      },
+      {
+        "number": 1378,
+        "text": "                )"
+      },
+      {
+        "number": 1379,
+        "text": "                quantize_input = QUANT_ALGOS.get(getattr(self, 'quant_format', None), {}).get(\"quantize_input\", True)"
+      },
+      {
+        "number": 1380,
+        "text": ""
+      },
+      {
+        "number": 1381,
+        "text": "                # Training path: quantized forward with compute_dtype backward via autograd function"
+      },
+      {
+        "number": 1382,
+        "text": "                if (input.requires_grad and _use_quantized and quantize_input):"
+      },
+      {
+        "number": 1383,
+        "text": "                    with CastBiasWeightContext("
+      },
+      {
+        "number": 1384,
+        "text": "                        self,"
+      },
+      {
+        "number": 1385,
+        "text": "                        input,"
+      },
+      {
+        "number": 1386,
+        "text": "                        offloadable=True,"
+      },
+      {
+        "number": 1387,
+        "text": "                        compute_dtype=compute_dtype,"
+      },
+      {
+        "number": 1388,
+        "text": "                        want_requant=True"
+      },
+      {
+        "number": 1389,
+        "text": "                    ) as (weight, bias):"
+      },
+      {
+        "number": 1390,
+        "text": "                        scale = getattr(self, 'input_scale', None)"
+      },
+      {
+        "number": 1391,
+        "text": "                        if scale is not None:"
+      },
+      {
+        "number": 1392,
+        "text": "                            scale = comfy.model_management.cast_to_device(scale, input.device, None)"
+      },
+      {
+        "number": 1393,
+        "text": ""
+      },
+      {
+        "number": 1394,
+        "text": "                        return QuantLinearFunc.apply("
+      },
+      {
+        "number": 1395,
+        "text": "                            input, weight, bias, self.layout_type, scale, compute_dtype"
+      },
+      {
+        "number": 1396,
+        "text": "                        )"
+      },
+      {
+        "number": 1397,
+        "text": ""
+      },
+      {
+        "number": 1398,
+        "text": "                # Inference path (unchanged)"
+      },
+      {
+        "number": 1399,
+        "text": "                if _use_quantized and quantize_input:"
+      },
+      {
+        "number": 1400,
+        "text": ""
+      },
+      {
+        "number": 1401,
+        "text": "                    # Reshape >=3D tensors to 2D for quantization (needed for NVFP4 and others)"
+      },
+      {
+        "number": 1402,
+        "text": "                    input_reshaped = input.reshape(-1, input_shape[-1]) if input.ndim >= 3 else input"
+      },
+      {
+        "number": 1403,
+        "text": ""
+      },
+      {
+        "number": 1404,
+        "text": "                    # Fall back to non-quantized for non-2D tensors"
+      },
+      {
+        "number": 1405,
+        "text": "                    if input_reshaped.ndim == 2:"
+      },
+      {
+        "number": 1406,
+        "text": "                        reshaped_nd = input.ndim >= 3"
+      },
+      {
+        "number": 1407,
+        "text": "                        # dtype is now implicit in the layout class"
+      },
+      {
+        "number": 1408,
+        "text": "                        scale = getattr(self, 'input_scale', None)"
+      },
+      {
+        "number": 1409,
+        "text": "                        if scale is not None:"
+      },
+      {
+        "number": 1410,
+        "text": "                            scale = comfy.model_management.cast_to_device(scale, input.device, None)"
+      },
+      {
+        "number": 1411,
+        "text": "                        input = QuantizedTensor.from_float(input_reshaped, self.layout_type, scale=scale)"
+      },
+      {
+        "number": 1412,
+        "text": ""
+      },
+      {
+        "number": 1413,
+        "text": "                weight_only_quant = _use_quantized and not quantize_input and isinstance(self.weight, QuantizedTensor)"
+      },
+      {
+        "number": 1414,
+        "text": "                output = self.forward_comfy_cast_weights("
+      },
+      {
+        "number": 1415,
+        "text": "                    input,"
+      },
+      {
+        "number": 1416,
+        "text": "                    compute_dtype,"
+      },
+      {
+        "number": 1417,
+        "text": "                    want_requant=isinstance(input, QuantizedTensor),"
+      },
+      {
+        "number": 1418,
+        "text": "                    weight_only_quant=weight_only_quant,"
+      },
+      {
+        "number": 1419,
+        "text": "                )"
+      },
+      {
+        "number": 1420,
+        "text": ""
+      }
+    ]
+  },
+  "comfy/ldm/minimax/model.py": {
+    "sha256": "b3f51bfd5c44962c3bbe09c3e16e34698a286c5279e050ea6c3defbb8434c34e",
+    "lines": [
+      {
+        "number": 176,
+        "text": "            k = k.view(1, s, self.heads, self.head_dim)"
+      },
+      {
+        "number": 177,
+        "text": "            qw = comfy.model_management.cast_to(self.q_norm.weight, device=x.device)"
+      },
+      {
+        "number": 178,
+        "text": "            kw = comfy.model_management.cast_to(self.k_norm.weight, device=x.device)"
+      },
+      {
+        "number": 179,
+        "text": "            rot = rope_freqs.shape[-3] * 2"
+      },
+      {
+        "number": 180,
+        "text": "            if comfy.model_management.in_training:"
+      },
+      {
+        "number": 181,
+        "text": "                q, k = comfy.quant_ops.ck.rms_rope_split_half("
+      },
+      {
+        "number": 182,
+        "text": "                    q, k, rope_freqs, qw, kw, epsilon=self.q_norm.eps, rot_dim=rot)"
+      },
+      {
+        "number": 183,
+        "text": "            else:"
+      },
+      {
+        "number": 184,
+        "text": "                comfy.quant_ops.ck.rms_rope_split_half_("
+      },
+      {
+        "number": 185,
+        "text": "                    q, k, rope_freqs, qw, kw, epsilon=self.q_norm.eps, rot_dim=rot)"
+      },
+      {
+        "number": 186,
+        "text": "            q = q[0]"
+      },
+      {
+        "number": 187,
+        "text": "            k = k[0]"
+      },
+      {
+        "number": 188,
+        "text": "        else:"
+      },
+      {
+        "number": 189,
+        "text": "            q = self.q_norm(q.view(s, self.heads, self.head_dim))"
+      },
+      {
+        "number": 190,
+        "text": "            k = self.k_norm(k.view(s, self.heads, self.head_dim))"
+      },
+      {
+        "number": 191,
+        "text": "        v = v.clone()"
+      },
+      {
+        "number": 192,
+        "text": "        q = AttentionTensorContainer(q.transpose(0, 1).unsqueeze(0))"
+      }
+    ]
+  },
+  "comfy_kitchen/tensor/int8.py": {
+    "sha256": "df5fea37f408a224060c7d89d5a074e4c59eda4937020fcc5693c465934cb3a0",
+    "lines": [
+      {
+        "number": 150,
+        "text": "            scale=qscale,"
+      },
+      {
+        "number": 151,
+        "text": "            orig_dtype=orig_dtype,"
+      },
+      {
+        "number": 152,
+        "text": "            orig_shape=orig_shape,"
+      },
+      {
+        "number": 153,
+        "text": "            is_weight=is_weight,"
+      },
+      {
+        "number": 154,
+        "text": "            convrot=convrot,"
+      },
+      {
+        "number": 155,
+        "text": "            convrot_groupsize=convrot_groupsize,"
+      },
+      {
+        "number": 156,
+        "text": "        )"
+      },
+      {
+        "number": 157,
+        "text": "        return qdata, params"
+      },
+      {
+        "number": 158,
+        "text": ""
+      },
+      {
+        "number": 159,
+        "text": "    @classmethod"
+      },
+      {
+        "number": 160,
+        "text": "    def dequantize(cls, qdata: torch.Tensor, params: Params) -> torch.Tensor:"
+      },
+      {
+        "number": 161,
+        "text": "        \"\"\"Dequantize INT8 data back to original dtype."
+      },
+      {
+        "number": 162,
+        "text": ""
+      },
+      {
+        "number": 163,
+        "text": "        Args:"
+      },
+      {
+        "number": 164,
+        "text": "            qdata: Quantized INT8 data."
+      },
+      {
+        "number": 165,
+        "text": "            params: Layout parameters including scale."
+      },
+      {
+        "number": 166,
+        "text": ""
+      },
+      {
+        "number": 167,
+        "text": "        Returns:"
+      },
+      {
+        "number": 168,
+        "text": "            Dequantized tensor."
+      },
+      {
+        "number": 169,
+        "text": "        \"\"\""
+      },
+      {
+        "number": 170,
+        "text": "        output_dtype_code = _INT8_DEQUANT_DTYPE_TO_CODE.get(params.orig_dtype, 0)"
+      },
+      {
+        "number": 171,
+        "text": "        if getattr(params, \"convrot\", False):"
+      }
+    ]
+  }
+}

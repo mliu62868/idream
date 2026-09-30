@@ -1,7 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { AdminI18nProvider } from "@/components/admin/i18n";
-import { CaseWorkspace } from "./cases/CaseWorkspace";
 import { ModerationWorkspace } from "./moderation/ModerationWorkspace";
 import { SupportWorkspace } from "./support/SupportWorkspace";
 
@@ -41,18 +40,6 @@ describe("people workspaces render Chinese under the zh locale", () => {
     expect(html).toContain("每个决定都会确认、审计并传播");
   });
 
-  // 回归：工单的类型 / 队列视图 / 排序都是枚举。`Select` 与 `CaseTabs` 以前把它们
-  // 变成空格形态再查主表，而主表里从来没有 "content report" 这种键。
-  it("translates case types, queue views, and sort options", () => {
-    const html = zh(<CaseWorkspace canAssign={false} canDecide={false} />);
-
-    expect(html).toContain("内容举报");
-    expect(html).toContain("账务争议");
-    expect(html).toContain("未分配");
-    expect(html).toContain("最近已解决");
-    expect(html).toContain("最近更新在前");
-    expect(html).not.toContain("content report");
-    expect(html).not.toContain("recently resolved");
-    expect(html).not.toContain("updated_desc<");
-  });
+  // 工单的次级筛选现在按需挂载；翻译断言移到 CaseWorkspace.mounted.test.tsx，
+  // 先展开筛选再检查，继续覆盖真实渲染结果而不是只查字典。
 });

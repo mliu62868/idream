@@ -6,6 +6,7 @@ import {
   resolvePermissions,
 } from "@/server/admin/permissions";
 import type { ActorRole } from "@/server/lib/auth";
+import { effectivePermissions } from "@/server/admin/effective-permissions";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
@@ -398,14 +399,15 @@ export async function listUserPermissions(request: Request, userId: string) {
   await actorWithPermission(request, "user.role.write");
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) throw Errors.notFound("User not found");
-  const overrides = await prisma.adminUserPermission.findMany({
-    where: { userId },
-    orderBy: { createdAt: "desc" },
-  });
+  // INVARIANT: 台面上的生效能力与 API 鉴权共用解析器，包括有效授权包、单项覆盖和契约内兼容能力。
+  const [overrides, effective] = await Promise.all([
+    prisma.adminUserPermission.findMany({ where: { userId }, orderBy: { createdAt: "desc" } }),
+    effectivePermissions(userId, user.role as ActorRole),
+  ]);
   return {
     role: user.role,
     overrides: overrides.map(permissionOverrideDto),
-    effective: [...applyOverrides(resolvePermissions(user.role as ActorRole), overrides)].sort(),
+    effective: [...effective].sort(),
   };
 }
 

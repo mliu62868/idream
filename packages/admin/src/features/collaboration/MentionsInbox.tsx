@@ -51,7 +51,8 @@ export function MentionsInbox() {
     }
   }
 
-  return <details className="relative shrink-0" ref={panel} onToggle={(event) => {
+  // 窄屏弹层对齐整条工具栏，不能对齐靠中间的图标，否则左半边会落到视口外。
+  return <details className="shrink-0 md:relative" ref={panel} onToggle={(event) => {
     if (event.currentTarget.open) void load();
   }} onKeyDown={(event) => {
     if (event.key === "Escape" && panel.current) {

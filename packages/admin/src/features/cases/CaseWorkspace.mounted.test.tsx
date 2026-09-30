@@ -21,6 +21,7 @@ vi.mock("@/lib/admin-v2-api", async (importOriginal) => {
 });
 
 import { CaseWorkspace } from "./CaseWorkspace";
+import { AdminI18nProvider } from "@/components/admin/i18n";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -269,6 +270,42 @@ describe("CaseWorkspace browser URL interactions", () => {
     await act(async () => tabletToggle?.click());
     expect(tabletToggle?.getAttribute("aria-expanded")).toBe("false");
     expect(inspector?.parentElement?.className).toContain("md:hidden lg:block");
+  });
+
+  it("translates disclosed filters and distinguishes drafts from applied conditions", async () => {
+    const workspace = <AdminI18nProvider locale="zh"><CaseWorkspace canAssign={false} canDecide={false} /></AdminI18nProvider>;
+    container.innerHTML = renderToString(workspace);
+    await act(async () => { root = hydrateRoot(container, workspace); });
+    await waitUntil(() => Boolean(findButton("应用") && !findButton("应用")!.disabled));
+
+    expect(container.querySelector('select[aria-label="类型"]')).toBeNull();
+    await act(async () => findButton("筛选")!.click());
+    const html = container.innerHTML;
+    for (const translated of ["内容举报", "账务争议", "未分配", "最近已解决", "最近更新在前"]) {
+      expect(html).toContain(translated);
+    }
+    for (const leaked of ["content report", "recently resolved", "updated_desc<"]) {
+      expect(html).not.toContain(leaked);
+    }
+
+    const type = container.querySelector<HTMLSelectElement>('select[aria-label="类型"]')!;
+    const requestsBeforeDraft = adminV2Request.mock.calls.length;
+    await act(async () => { type.value = "appeal"; type.dispatchEvent(new Event("change", { bubbles: true })); });
+    expect(adminV2Request.mock.calls).toHaveLength(requestsBeforeDraft);
+    expect(container.querySelector('button[aria-label="清除筛选：类型"]')).toBeNull();
+
+    await act(async () => findButton("应用")!.click());
+    await waitUntil(() => container.querySelector('button[aria-label="清除筛选：类型"]') !== null);
+    expect(adminV2Request.mock.calls.some(([path]) => path.includes("type=appeal") && path.includes("view=unassigned"))).toBe(true);
+    const disclosure = container.querySelector<HTMLButtonElement>('button[aria-expanded="true"][aria-controls]')!;
+    await act(async () => disclosure.click());
+    expect(container.querySelector('select[aria-label="类型"]')).toBeNull();
+    const clear = container.querySelector<HTMLButtonElement>('button[aria-label="清除筛选：类型"]')!;
+    await act(async () => clear.click());
+    await waitUntil(() => container.querySelector('button[aria-label="清除筛选：类型"]') === null);
+    const lastListRequest = adminV2Request.mock.calls.filter(([path]) => path.startsWith("/api/v2/admin/cases?" )).at(-1)![0];
+    expect(lastListRequest).toContain("view=unassigned");
+    expect(lastListRequest).not.toContain("type=appeal");
   });
 
   function findButton(label: string) {

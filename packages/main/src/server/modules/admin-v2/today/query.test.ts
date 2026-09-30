@@ -452,7 +452,7 @@ describe("Today domain roots", () => {
     });
 
     expect(projection.nextBestActions.items).toEqual(expect.arrayContaining([
-      expect.objectContaining({ sourceId: releaseId, verificationState: "failed", recommendedAction: "Investigate monitor evidence and keep or rollback" }),
+      expect.objectContaining({ sourceId: releaseId, verificationState: "failed", recommendedAction: "Investigate monitor evidence and keep or rollback", deepLink: `/admin/characters/character-${suffix}?tab=monitor&releaseId=${releaseId}` }),
     ]));
     expect(projection.recentlyResolved.items.some((item) => item.sourceId === releaseId)).toBe(false);
     expect(projection.nextBestActions.items.some((item) => item.sourceId === historicalReleaseId)).toBe(false);

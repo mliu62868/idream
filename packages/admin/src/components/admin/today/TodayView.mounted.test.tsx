@@ -129,6 +129,55 @@ afterEach(async () => {
 });
 
 describe("Today operator actions", () => {
+  it("marks a retained snapshot stale after a failed refresh and fresh after recovery", async () => {
+    window.history.replaceState(null, "", "/admin/today?todayTab=all&severity=high");
+    let unavailable = false;
+    const snapshot = { ...allWorkResponse(1), items: [claimable("case-retained")] };
+    adminV2Request.mockImplementation(async (path: string, options?: { method?: string }) => {
+      if (options?.method) { unavailable = true; return { version: 1 }; }
+      if (path.includes("limit=1")) return allWorkResponse(0);
+      if (unavailable) throw new AdminV2RequestError("Refresh unavailable", 503, "unavailable");
+      return snapshot;
+    });
+    await mount([]);
+    await click(buttons().find((button) => button.textContent?.trim() === "Watch"));
+    await settle();
+    const allWork = container.querySelector('[data-testid="today-all-work"]')!;
+    expect(allWork.querySelector('[role="status"]')?.textContent).toContain("Stale");
+    expect(allWork.querySelector('[role="status"]')?.textContent).not.toContain("Fresh");
+    expect(allWork.textContent).toContain("case-retained");
+    expect(allWork.querySelector('[role="alert"]')?.textContent).toContain("last successful snapshot");
+
+    unavailable = false;
+    await click(buttons().find((button) => button.textContent?.trim() === "Retry"));
+    await settle();
+    expect(allWork.querySelector('[role="alert"]')).toBeNull();
+    expect(allWork.querySelector('[role="status"]')?.textContent).toContain("Fresh");
+    expect(window.location.search).toContain("severity=high");
+  });
+
+  it("recovers a failed filtered read without losing its query or claiming an empty queue", async () => {
+    window.history.replaceState(null, "", "/admin/today?todayTab=all&severity=high");
+    let unavailable = true;
+    adminV2Request.mockImplementation(async (path: string) => {
+      if (path.includes("limit=1")) return allWorkResponse(8);
+      if (unavailable) throw new AdminV2RequestError("Database pool unavailable", 503, "unavailable", undefined, "read-req-1");
+      return { ...allWorkResponse(1), items: [claimable("case-recovered")] };
+    });
+    await mount([]);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Retry to load the latest data");
+    expect(container.textContent).not.toContain("No matching work right now");
+    expect(container.textContent).not.toContain("whether the write landed");
+    expect(container.querySelector("pre")?.textContent).toContain("read-req-1");
+    unavailable = false;
+    await click(buttons().find((button) => button.textContent?.trim() === "Retry"));
+    await settle();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.textContent).toContain("case-recovered");
+    expect(window.location.search).toContain("severity=high");
+    expect(adminV2Request.mock.calls.every(([path]) => path.includes("limit=1") || path.includes("severity=high"))).toBe(true);
+  });
+
   it("selects one preview without claiming or duplicating queue items", async () => {
     await mount([claimable("case-1"), claimable("case-2")]);
     expect(container.querySelectorAll('input[type="checkbox"]')).toHaveLength(2);
@@ -136,6 +185,7 @@ describe("Today operator actions", () => {
     const preview = container.querySelector('[data-testid="today-preview"]')!;
     expect(preview.textContent).toContain("customer case-2 is waiting");
     expect(preview.querySelector("a")?.getAttribute("href")).toBe("/admin/cases/case-2");
+    expect(preview.querySelector("a")?.textContent).toContain("Review case");
     expect(adminV2Request.mock.calls.every(([, options]) => !options?.method)).toBe(true);
   });
 

@@ -1,0 +1,48 @@
+ok H(128) rejected (not a power of four)
+ok H(512) rejected (not a power of four)
+ok H(256) built
+ok H(256) is bit-exact to comfy-quants build_hadamard (FNV-1a)
+ok H(256) is symmetric
+ok H(256) is orthogonal
+ok derotate accepts [13][512]
+ok derotation inverts the reference rotation
+ok derotate rejects a non-multiple column count
+ok fixture written
+ok weight store opens the fixture
+ok int8 projection loads as BF16
+ok loaded projection reads back
+ok dequantized+derotated values match the double reference
+ok loaded values approximate the pre-quant weights
+ok raw int8 load succeeds
+ok raw load reports the convrot group size
+ok raw int8 bytes are unmodified
+ok raw scales are unmodified
+ok unknown quant format is rejected, not decoded
+ok shape mismatch is rejected
+ok int8 stream source resolves
+ok int8 stream reads all slabs
+ok int8 stream visits every row
+ok streamed rows match the double reference
+ok compact JSON marker loads
+ok compact JSON preserves rotation, bytes and scales
+ok BF16 weight loads
+ok BF16 payload is exact
+ok F16 weight loads as BF16
+ok F16 conversion rounds to nearest-even BF16
+ok F16 weight loads as F32
+ok F16 to F32 widening is exact
+ok conditioning file writes
+ok conditioning file reads back
+ok conditioning round-trip is exact
+ok corrupt conditioning file is rejected
+ok curve fixture written
+ok curve store opens
+ok curve rows build at table width
+ok curve lerp and clamping match the reference
+ok real checkpoint store opens
+ok real raw int8 load
+ok real projection loads as BF16
+ok real projection row reads back
+ok real projection row 0 matches the double reference
+info real qkv worst=1.896e-03 peak=7.037e-01
+0 failure(s)

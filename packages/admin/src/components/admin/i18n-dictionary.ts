@@ -100,6 +100,7 @@ const zhValues: Record<string, string> = {
   due_today: "今日到期",
   due_soon: "即将超时",
   expired: "已过期",
+  exhausted: "次数已用完",
   external: "外部",
   fail: "失败",
   failed: "失败",

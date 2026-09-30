@@ -6,7 +6,7 @@ import { RefreshCcw } from "lucide-react";
 import { RequestErrorDetails } from "./RequestErrorDetails";
 import { operatorErrorCopy } from "./request-error-copy";
 
-// SPEC: authority 读取失败的横幅：一句运营看得懂的话 + 下一步，原始报错折进「技术详情」。
+// SPEC: authority 请求失败的横幅：一句运营看得懂的话 + 下一步，原始报错折进「技术详情」。
 // INTENT: 这里以前直接把 authority 的英文报错糊在运营脸上。运营从
 //         `conflict: Character version changed` 里读不出「我现在该干什么」，而工程需要的
 //         requestId 又根本没显示——两边都没服务到。
@@ -15,21 +15,28 @@ export function AuthorityRequestError({
   message,
   onRetry,
   snapshotAt,
+  requestKind = "write",
 }: {
   /** 原始异常。给了就按错误码映射文案；只有 message 时按「读不到最新数据」兜底。 */
   cause?: unknown;
   message: string;
   onRetry: () => void;
   snapshotAt?: string | null;
+  /** 历史调用方也用它呈现保存失败；显式标注读取，才能省去写入结果核对。 */
+  requestKind?: "read" | "write";
 }) {
   const { locale, t } = useAdminI18n();
   const copy = cause === undefined ? null : operatorErrorCopy(cause);
   const headline = copy
     ? t(copy.headline)
     : t("The latest data could not be loaded.");
-  const nextStep = copy
+  // INVARIANT: 只对读取的断网/5xx 使用通用重试；被拒输入、权限与限流的恢复指引仍照权威映射。
+  // 未知写结果仍需核对，不能因复用横幅而丢掉警示。
+  const retryFailedRead = requestKind === "read" &&
+    (copy?.technical.status == null || copy.technical.status >= 500);
+  const nextStep = copy && !retryFailedRead
     ? t(copy.nextStep, copy.nextStepValues)
-    : t("Retry below; the technical details tell engineering what failed.");
+    : t(requestKind === "read" ? "Retry to load the latest data. The technical details identify the failed read." : "Retry below; the technical details tell engineering what failed.");
   return (
     <div
       className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"

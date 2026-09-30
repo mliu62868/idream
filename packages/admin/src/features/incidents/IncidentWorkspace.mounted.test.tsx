@@ -143,6 +143,16 @@ describe("IncidentWorkspace affected users", () => {
     expect(text).toContain("No customer record");
   });
 
+  it("dates detail events against the server snapshot instead of the last incident update", async () => {
+    adminV2Request.mockImplementation(async (path: string) =>
+      path.startsWith("/api/v2/admin/incidents?") ? { ...list, asOf: "2026-09-29T12:32:00.000Z" } : detail,
+    );
+    await mountInspector();
+    const seen = [...container.querySelectorAll("time")].filter((node) => node.dateTime === incident.lastSeenAt);
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((node) => node.textContent?.includes("49 days ago"))).toBe(true);
+  });
+
   it("links each affected user to their customer record", async () => {
     await mountInspector();
     expect(

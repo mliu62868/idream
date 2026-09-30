@@ -46,8 +46,9 @@ const ALIGNMENT: Record<DataTableAlign, string> = {
   center: "text-center",
   right: "text-right tabular-nums",
 };
+// INTENT: 窄屏先保留完整的对象信息；固定操作列会遮住几乎整张表，操作仍可横向滚动到达。
 const STICKY_CELL =
-  "sticky right-0 border-l border-[var(--ad-border)] bg-[var(--ad-surface)] shadow-[-8px_0_12px_-12px_rgba(0,0,0,0.35)]";
+  "sm:sticky right-0 sm:border-l border-[var(--ad-border)] bg-[var(--ad-surface)] sm:shadow-[-8px_0_12px_-12px_rgba(0,0,0,0.35)]";
 
 // SPEC: 编辑部风表格：无竖线、仅底边分隔；有 href 的行整行可点进详情。
 // SPEC: 加载 / 空 / 出错三态内建 —— 调用方只传状态，不再每页手写一遍骨架和灰字。
@@ -73,7 +74,7 @@ export function DataTable({
   empty?: ReactNode;
   caption?: string;
   minimumWidthClassName?: string;
-  /** Keeps row actions reachable while wide operational tables scroll. */
+  /** Keeps row actions reachable while wide operational tables scroll on desktop. */
   stickyLastColumn?: boolean;
   /** Caps the table height so column names survive a long vertical scroll. */
   stickyHeader?: boolean;
@@ -178,7 +179,7 @@ export function DataTable({
         tabIndex={0}
       >
         {loading ? <p className="sr-only" role="status">{t("Loading {caption}…", { caption: translatedCaption })}</p> : null}
-        <table className={`w-full ${minimumWidthClassName} text-left text-sm`}>
+        <table className={`w-full ${minimumWidthClassName} text-left text-sm [&_button]:shrink-0 [&_button]:whitespace-nowrap`}>
           <caption className="sr-only">{translatedCaption}</caption>
           <thead className={stickyHeader ? "sticky top-0 z-[2] bg-[var(--ad-surface)]" : ""}>
             <tr className="border-b border-[var(--ad-border)] text-xs uppercase tracking-[0.05em] text-[var(--ad-text-muted)]">
@@ -199,7 +200,7 @@ export function DataTable({
                 return (
                   <th
                     aria-sort={sorted ? (sorted === "asc" ? "ascending" : "descending") : undefined}
-                    className={`${padding} font-medium ${ALIGNMENT[column.align ?? "left"]} ${isSticky ? `z-[3] ${STICKY_CELL}` : ""}`}
+                    className={`${padding} whitespace-nowrap font-medium ${ALIGNMENT[column.align ?? "left"]} ${isSticky ? `z-[3] ${STICKY_CELL}` : ""}`}
                     key={column.label}
                     scope="col"
                     style={column.width ? { width: column.width } : undefined}

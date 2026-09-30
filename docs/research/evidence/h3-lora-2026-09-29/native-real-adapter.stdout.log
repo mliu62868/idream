@@ -1,0 +1,2 @@
+lora 0: format=diffusers low_rank=312 full=0 targets=208 applied=4 scale=0.0625
+apply 0.256 s

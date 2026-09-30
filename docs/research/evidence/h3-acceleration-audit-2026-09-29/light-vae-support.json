@@ -1,0 +1,145 @@
+{
+  "pr": {
+    "number": 16657,
+    "html_url": "https://github.com/Comfy-Org/ComfyUI/pull/16657",
+    "title": "Support LynnReal light Minimax-H3 vae",
+    "body": "Adds support for loading and using prune H3 VAEs, such as https://huggingface.co/stdstu123/LynnReal-Onmi-light-vae\r\n\r\nConverted test model: \r\n\r\nhttps://huggingface.co/Kijai/MiniMax-H3-experimental/blob/main/minimax_h3_lynnreal_light_vae_int8_convrot.safetensors",
+    "merged": true,
+    "merged_at": "2026-09-29T19:02:06Z",
+    "merge_commit_sha": "986c4d154ef8c288382ac87d956b52a2b640c8b3"
+  },
+  "commit": "986c4d154ef8c288382ac87d956b52a2b640c8b3",
+  "patches": [
+    {
+      "filename": "comfy/ldm/minimax/vae.py",
+      "patch": "@@ -426,6 +426,7 @@ def __init__(\n         tile_overlap_min=64,\n         tiling=True,\n         operations=ops,\n+        num_layers=36,\n     ):\n         super().__init__()\n         self.vae_ratio = int(math.prod(space_down))\n@@ -461,6 +462,7 @@ def __init__(\n             patch_size_t=self.vae_ratio_t,\n             in_channels=z_channels,\n             out_channels=out_ch,\n+            num_layers=num_layers,\n             operations=operations,\n         )\n "
+    },
+    {
+      "filename": "comfy/sd.py",
+      "patch": "@@ -1031,7 +1031,8 @@ def estimate_memory(shape, dtype, num_layers = 16, kv_cache_multiplier = 2):\n                 minimax_quant = comfy.utils.detect_layer_quantization(sd, \"\")\n                 if minimax_quant is not None:  # int8+convrot quantized decoder\n                     minimax_ops = comfy.ops.mixed_precision_ops(minimax_quant, dtype if dtype is not None else torch.float16)\n-                self.first_stage_model = comfy.ldm.minimax.vae.MiniMaxH3VideoVAE(operations=minimax_ops)\n+                minimax_layers = sum(k.startswith(\"decoder.transformer_blocks.\") and k.endswith(\".scale1\") for k in sd)\n+                self.first_stage_model = comfy.ldm.minimax.vae.MiniMaxH3VideoVAE(operations=minimax_ops, num_layers=minimax_layers)\n                 self.latent_channels = 24\n                 self.latent_dim = 3\n                 # frames 17k+5 <-> latents 5k+2, 16x spatial"
+    }
+  ],
+  "v0.38.0": {
+    "url": "https://raw.githubusercontent.com/Comfy-Org/ComfyUI/v0.38.0/comfy/sd.py",
+    "sha256": "ad1e6a9ff7b4abb48fb55b6054eace19e33f79359e24a0c4067d94a1a80e0e99",
+    "layer_count_detection_present": false,
+    "matching_lines": [
+      "self.first_stage_model = comfy.ldm.minimax.vae.MiniMaxH3VideoVAE(operations=minimax_ops)"
+    ]
+  },
+  "light_vae_config": {
+    "_class_name": "AutoencoderKLMiniMaxH3",
+    "_diffusers_version": "0.36.0.dev0",
+    "in_channels": 3,
+    "out_channels": 3,
+    "latent_channels": 24,
+    "block_out_channels": [
+      128,
+      256,
+      256,
+      512,
+      512,
+      1024
+    ],
+    "layers_per_block": 2,
+    "spatial_downsample_factors": [
+      2,
+      2,
+      2,
+      2,
+      1,
+      1
+    ],
+    "temporal_downsample_factors": [
+      1,
+      2,
+      2,
+      1,
+      1,
+      1
+    ],
+    "norm_num_groups": 32,
+    "norm_eps": 1e-06,
+    "spatial_padding_mode": "reflect",
+    "decoder_num_layers": 26,
+    "decoder_num_attention_heads": 32,
+    "decoder_attention_head_dim": 64,
+    "decoder_num_register_tokens": 4,
+    "decoder_ffn_mult": 4,
+    "decoder_rope_theta": 100.0,
+    "decoder_rope_dim_ratio": 0.75,
+    "decoder_norm_eps": 1e-05,
+    "clip_length": 17,
+    "token_drop": 3,
+    "latents_mean": [
+      0.858090341091156,
+      -0.9606591463088989,
+      1.0661640167236328,
+      -0.5090325474739075,
+      -0.2727581858634949,
+      -1.3675414323806763,
+      -0.2553254961967468,
+      -0.26907554268836975,
+      -0.5376840829849243,
+      -0.0464097298681736,
+      0.6657370328903198,
+      0.19690127670764923,
+      -0.5460608005523682,
+      -0.4035342037677765,
+      -0.23683024942874908,
+      0.25928452610969543,
+      -0.30133944749832153,
+      0.211341992020607,
+      -1.1206848621368408,
+      0.3581933379173279,
+      -0.04225143790245056,
+      0.2604829967021942,
+      0.22864092886447906,
+      0.7056031823158264
+    ],
+    "latents_std": [
+      1.2223774194717407,
+      1.2767263650894165,
+      1.6831774711608887,
+      1.7549455165863037,
+      1.5636216402053833,
+      2.194143533706665,
+      0.9653137922286987,
+      1.0569885969161987,
+      0.841948926448822,
+      0.7729952931404114,
+      1.8955937623977661,
+      0.946841835975647,
+      0.7996809482574463,
+      0.44988900423049927,
+      0.7197399735450745,
+      0.6936293244361877,
+      2.961095094680786,
+      2.7694199085235596,
+      3.0496184825897217,
+      2.1088054180145264,
+      3.276226282119751,
+      3.1627357006073,
+      2.2816812992095947,
+      2.6127843856811523
+    ]
+  },
+  "LynnReal_repository_head": {
+    "sha": "ad16ac787430bd22456ee55f018764cf53c25935",
+    "url": "https://github.com/LynnReal-AI/LynnReal-Omni/commit/ad16ac787430bd22456ee55f018764cf53c25935",
+    "date": "2026-09-22T15:46:42Z",
+    "subject": "Update README.md"
+  },
+  "light_vae_author_card": {
+    "url": "https://huggingface.co/stdstu123/LynnReal-Onmi-light-vae",
+    "retrieved_document_sha256": "f85e66cb2ac9e05772c156deffed8f4c9f0e7a4c2c0a4c44f3c351c7b04948d7",
+    "facts": {
+      "encoder": "unchanged MiniMax H3 encoder",
+      "decoder": "distilled 26-block decoder",
+      "latent_interface": "same latent channels, normalization, spatial scale and temporal compression",
+      "reconstruction": "can differ from original VAE RGB for identical latent",
+      "comfyui_loader": "LynnRealH3VAELoader; author tiles272/16",
+      "author_update_date": "2026-09-17"
+    }
+  }
+}

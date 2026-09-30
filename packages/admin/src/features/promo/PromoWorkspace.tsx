@@ -10,6 +10,7 @@ import {
   type ConfirmSpec,
 } from "@/components/admin/ui/ConfirmDialog";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
+import { StatusPill } from "@/components/admin/ui/StatusPill";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { useAdminFormat, text } from "@/components/admin/ui/format";
@@ -261,7 +262,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
             : "No redeem codes exist yet"
         }
         loadingLabel="Loading redeem codes…"
-        rows={codeRows(codes.rows ?? [], canWrite, confirmDisable, valueLabel, format)}
+        rows={codeRows(codes.rows ?? [], canWrite, confirmDisable, format, codes.refreshedAt)}
         state={codes}
         scope="codes"
       />
@@ -378,13 +379,13 @@ function RedeemCodeForm({ onCreated }: { onCreated: () => void }) {
   }
 
   return (
-    <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-      <h2 className="text-sm font-semibold">{t("Create redeem code")}</h2>
+    <details className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
+      <summary className="cursor-pointer text-sm font-semibold"><h2 className="inline">{t("Create redeem code")}</h2></summary>
       <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
 
         {t("Plaintext code is used only to derive its hash and is not returned by the authority.")}
       </p>
-      <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-7">
+      <div className="mt-3 grid items-end gap-4 md:grid-cols-2 xl:grid-cols-3">
         <Input label="Code (≥4)" onChange={setCode} value={code} />
         <Input label="Dreamcoins" onChange={setCoins} value={coins} />
         <Input
@@ -407,7 +408,7 @@ function RedeemCodeForm({ onCreated }: { onCreated: () => void }) {
           value={confirmation}
         />
         <button
-          className="inline-flex min-h-11 items-center justify-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
+          className="inline-flex min-h-11 items-center justify-center gap-2 whitespace-nowrap rounded-md bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
           disabled={!ready || busy}
           onClick={() => void create()}
           type="button"
@@ -454,7 +455,7 @@ function RedeemCodeForm({ onCreated }: { onCreated: () => void }) {
           maxRedemptionsValue={maxRedemptionsValue}
         />
       ) : null}
-    </section>
+    </details>
   );
 }
 
@@ -522,8 +523,8 @@ function codeRows(
   rows: Row[],
   canWrite: boolean,
   disable: (id: string) => void,
-  valueLabel: (key: string) => string,
   format: ReturnType<typeof useAdminFormat>,
+  asOf: string | null,
 ): DataTableRow[] {
   return rows.map((row, index) => {
     const id = text(row.id);
@@ -532,7 +533,7 @@ function codeRows(
       id: id || `code-${index}`,
       cells: [
         id,
-        text(row.status) ? valueLabel(text(row.status)) : "—",
+        <StatusPill key="status" status={redeemCodeDisplayStatus(row, asOf)} />,
         <RewardCell key="reward" reward={row.reward} />,
         format.display(row.maxRedemptions),
         format.display(row.redemptions),
@@ -554,6 +555,16 @@ function codeRows(
       ],
     };
   });
+}
+
+// Display eligibility at the last successful read; the server still owns redemption
+// and administrative enable/disable state. Do not label a spent or expired code usable.
+export function redeemCodeDisplayStatus(row: Row, asOf: string | null): string {
+  const status = text(row.status);
+  if (status !== "active") return status;
+  if (typeof row.expiresAt === "string" && asOf && Date.parse(row.expiresAt) <= Date.parse(asOf)) return "expired";
+  if (typeof row.maxRedemptions === "number" && typeof row.redemptions === "number" && row.redemptions >= row.maxRedemptions) return "exhausted";
+  return status;
 }
 
 function referralRows(
@@ -637,6 +648,8 @@ function AuthoritySection({
   return (
     <DataTable
       caption={scope === "codes" ? "Redeem codes" : "Referrals"}
+      minimumWidthClassName={scope === "codes" ? "min-w-[1120px]" : "min-w-[960px]"}
+      stickyLastColumn={scope === "codes"}
       headers={
         scope === "codes"
           ? [
@@ -764,10 +777,10 @@ function Input({
   // Field 只是转发到这里，所以 t() 只加在真正渲染 label 的这一处。
   const { t } = useAdminI18n();
   return (
-    <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
+    <label className="grid min-w-0 gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
       {t(label)}
       <input
-        className="min-h-11 rounded-md border bg-[var(--ad-surface)] px-3 text-sm"
+        className="min-h-11 w-full min-w-0 rounded-md border bg-[var(--ad-surface)] px-3 text-sm"
         onChange={(event) => onChange(event.target.value)}
         role={search ? "searchbox" : undefined}
         type={type}

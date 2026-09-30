@@ -124,7 +124,7 @@ export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: (
         aria-describedby={spec.summary ? descriptionId : undefined}
         aria-labelledby={titleId}
         aria-modal="true"
-        className="w-full max-w-md rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-6"
+        className="max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto overscroll-contain rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-6"
         onKeyDown={handleDialogKeyDown}
         ref={dialogRef}
         role="dialog"
@@ -148,6 +148,8 @@ export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: (
         ) : null}
         <div className="mt-4 space-y-3">
           {requireReason ? (
+            <label className="grid gap-1.5 text-xs font-semibold text-[var(--ad-text-muted)]">
+              {reasonLabel}
             <input
               aria-label={reasonLabel}
               className={INPUT_CLASS}
@@ -155,8 +157,13 @@ export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: (
               placeholder={reasonLabel}
               value={reason}
             />
+            </label>
           ) : null}
           {spec.destructive ? (
+            <label className="grid gap-1.5 text-xs font-semibold text-[var(--ad-text-muted)]">
+              {destructiveInputLabel}
+              {/* 确认目标必须在输入后仍可阅读；长 ID 不能只放在会截断、消失的 placeholder。 */}
+              <span className="select-all break-all rounded-md bg-[var(--ad-surface-subtle)] p-2 font-mono font-normal text-[var(--ad-ink)]">{spec.destructive.expectedName}</span>
             <input
               aria-label={destructiveInputLabel}
               className={INPUT_CLASS}
@@ -164,6 +171,7 @@ export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: (
               placeholder={`${destructiveInputLabel}: ${spec.destructive.expectedName}`}
               value={nameInput}
             />
+            </label>
           ) : null}
           {error ? (
             <div className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">
@@ -173,13 +181,13 @@ export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: (
             </div>
           ) : null}
         </div>
-        <div className="mt-5 flex justify-end gap-2">
+        <div className="mt-5 flex flex-wrap justify-end gap-2">
           <GhostButton disabled={busy} onClick={onClose}>
             {t("Cancel")}
           </GhostButton>
           <SubmitButton disabled={!canSubmit} irreversible={spec.consequence?.reversible === false} onClick={() => void submit()}>
-            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-            {t(spec.submitLabel)}
+            {busy ? <Loader2 className="h-4 w-4 shrink-0 animate-spin" /> : null}
+            <span className="min-w-0">{t(spec.submitLabel)}</span>
           </SubmitButton>
         </div>
       </div>
@@ -203,7 +211,7 @@ function SubmitButton({
 }) {
   const Button = irreversible ? DangerButton : PrimaryButton;
   return (
-    <Button disabled={disabled} onClick={onClick}>
+    <Button className="max-w-full whitespace-normal" disabled={disabled} onClick={onClick}>
       {children}
     </Button>
   );

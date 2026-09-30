@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { todayOperationalText } from "./format";
 import { TodayView, type TodayData, type TodayLegacyData } from "./TodayView";
-import { groupTodayQueueItems, todayWorkItemTitle } from "./WorkQueue";
+import { groupTodayQueueItems, todaySourceAction, todayWorkItemTitle } from "./WorkQueue";
 
 const legacy: TodayLegacyData = {
   metrics: {
@@ -67,6 +67,11 @@ function render(projection: Partial<TodayData["projection"]> = {}, workMode: "su
 }
 
 describe("Today authoritative projection", () => {
+  it("distinguishes launch checks from live monitoring without rewriting the authority link", () => {
+    expect(todaySourceAction({ ...item, sourceType: "character_release", deepLink: "/admin/characters/iris?tab=release&releaseId=release-1" })).toBe("Review release");
+    expect(todaySourceAction({ ...item, sourceType: "character_release", deepLink: "/admin/characters/iris?releaseId=release-1&tab=monitor" })).toBe("Inspect live monitoring");
+  });
+
   it("localizes system-generated titles without rewriting operator-authored titles", () => {
     const t = (key: string, values?: Record<string, string | number>) => {
       const template = ({
@@ -81,6 +86,7 @@ describe("Today authoritative projection", () => {
 
     expect(todayWorkItemTitle({ ...item, title: "content report case" }, t)).toBe("内容举报案件");
     expect(todayWorkItemTitle({ ...item, sourceType: "ops_incident", title: "medium incident: provider-timeout" }, t)).toBe("事故：provider-timeout");
+    expect(todayWorkItemTitle({ ...item, sourceType: "ops_incident", title: "medium incident" }, t)).toBe("Operational incident");
     expect(todayWorkItemTitle({ ...item, sourceType: "creative_run", title: "Summer campaign refresh" }, t)).toBe("Summer campaign refresh");
   });
 
@@ -89,6 +95,7 @@ describe("Today authoritative projection", () => {
     expect(todayOperationalText("customer user-1 is waiting", "zh")).toBe("客户 user-1 · 等待中");
     expect(todayOperationalText("feed_item character:item-1 is new", "zh")).toBe("内容项 角色:item-1 · 新建");
     expect(todayOperationalText("Incident is detected", "zh")).toBe("事故 · 已发现");
+    expect(todayOperationalText("Incident is detected · ref f0d1c37b", "zh")).toBe("事故 · 已发现 · #f0d1c37b");
     expect(todayOperationalText("Operator-authored title", "zh")).toBe("Operator-authored title");
   });
 

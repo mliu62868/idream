@@ -1,0 +1,11 @@
+{
+  "label": "native-nsfw-convrot-fixed",
+  "mode": "convrot-native",
+  "command": [
+    "./h3_convrot_tests",
+    "/Users/kk/code/idream/.scratch/h3-lora-20260929/convrot-source"
+  ],
+  "exitCode": 0,
+  "wallSeconds": 0.375,
+  "acceleratorLease": true
+}

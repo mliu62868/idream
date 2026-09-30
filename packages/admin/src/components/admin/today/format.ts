@@ -10,7 +10,7 @@ export function formatTime(value: string, locale: AdminLocale) {
   }).format(new Date(value));
 }
 
-export function todayOperationalText(text: string, locale: AdminLocale) {
+export function todayOperationalText(text: string, locale: AdminLocale): string {
   if (locale === "en") return text;
 
   const entityState = /^([a-z_]+) (.+) is ([a-z_ ]+)$/i.exec(text);
@@ -34,10 +34,12 @@ export function todayOperationalText(text: string, locale: AdminLocale) {
   return translateAdmin(locale, text);
 }
 
-function todayOperationalSegment(segment: string, locale: AdminLocale) {
+function todayOperationalSegment(segment: string, locale: AdminLocale): string {
+  const reference = /^ref ([a-f0-9]+)$/i.exec(segment);
+  if (reference) return `#${reference[1]}`;
   const readiness = /^readiness ([a-z_]+)$/i.exec(segment);
   if (readiness) {
     return `${translateAdmin(locale, "Readiness")}：${translateAdmin(locale, readiness[1])}`;
   }
-  return translateAdmin(locale, segment);
+  return todayOperationalText(segment, locale);
 }

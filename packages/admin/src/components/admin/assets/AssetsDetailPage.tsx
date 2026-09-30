@@ -177,7 +177,7 @@ export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: st
       {refreshWarning ? <p role="status" className="rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]">{refreshWarning}</p> : null}
 
       <MediaAssetAuthorityNotice asset={row} />
-      <AssetImage asset={row} />
+      <AssetImage asset={row} preview />
 
       <DetailSection title={t("Authority & usage")}>
         {row.sourceBatch ? (

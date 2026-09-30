@@ -7,6 +7,7 @@ import { useAdminI18n } from "@/components/admin/i18n";
 import type { WorkMode } from "@/components/admin/nav-config";
 import { formatDateTime } from "@/components/admin/ui/format";
 import { Pagination } from "@/components/admin/ui/Pagination";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { adminV2Request } from "@/lib/admin-v2-api";
 import { ServiceHealthStrip } from "./ServiceHealthStrip";
 import { useActionFeedback } from "./feedback";
@@ -60,13 +61,14 @@ export type TodayData = {
 };
 
 export function TodayView({ data, onPreferenceChanged, workMode }: { data: TodayData; onPreferenceChanged?: () => void | Promise<void>; workMode: WorkMode }) {
-  const { t } = useAdminI18n();
+  const { t, locale } = useAdminI18n();
   const { projection } = data;
   const refresh = onPreferenceChanged ?? (() => undefined);
   const [urlState, setUrlState] = useState<TodayUrlState>({ tab: "summary", limit: 25 });
   const summaryQueue = urlState.queue ?? "priority";
   const [allWork, setAllWork] = useState<TodayAllWorkResponse | null>(null);
-  const [allWorkError, setAllWorkError] = useState("");
+  const [allWorkError, setAllWorkError] = useState<{ message: string; cause: unknown } | null>(null);
+  const [loadedVersion, setLoadedVersion] = useState(-1);
   const [reloadVersion, setReloadVersion] = useState(0);
   const [overdueTotal, setOverdueTotal] = useState<number | null>(null);
   const [density, setDensity] = useState<WorkDensity>("compact");
@@ -79,7 +81,7 @@ export function TodayView({ data, onPreferenceChanged, workMode }: { data: Today
   useEffect(() => {
     const restore = () => {
       setAllWork(null);
-      setAllWorkError("");
+      setAllWorkError(null);
       const cursors = restoredPageCursors();
       setPageCursors(cursors);
       const next = parseTodayUrl(new URLSearchParams(window.location.search));
@@ -114,8 +116,8 @@ export function TodayView({ data, onPreferenceChanged, workMode }: { data: Today
     if (urlState.tab !== "all") return;
     let active = true;
     void adminV2Request(todayAllWorkPath(urlState, workMode), { schema: todayAllWorkResponseSchema })
-      .then((value) => { if (active) { setAllWork(value); setAllWorkError(""); } })
-      .catch((error: unknown) => { if (active) setAllWorkError(error instanceof Error ? error.message : "All Work failed to load"); })
+      .then((value) => { if (active) { setAllWork(value); setAllWorkError(null); setLoadedVersion(reloadVersion); } })
+      .catch((cause: unknown) => { if (active) setAllWorkError({ cause, message: cause instanceof Error ? cause.message : "All Work failed to load" }); })
     return () => { active = false; };
   }, [reloadVersion, urlState, workMode]);
 
@@ -124,7 +126,7 @@ export function TodayView({ data, onPreferenceChanged, workMode }: { data: Today
     window.history.pushState({ pageCursors: cursors } satisfies TodayHistoryState, "", todayBrowserPath(next));
     setPageCursors(cursors);
     setAllWork(null);
-    setAllWorkError("");
+    setAllWorkError(null);
     setUrlState(next);
   }
 
@@ -144,8 +146,11 @@ export function TodayView({ data, onPreferenceChanged, workMode }: { data: Today
 
   async function refreshAll() {
     await refresh();
+    setAllWorkError(null);
     setReloadVersion((value) => value + 1);
   }
+
+  const allWorkPending = !allWorkError && (!allWork || loadedVersion !== reloadVersion);
 
   const queueProps = { density, onFeedback: report, onPreferenceChanged: refreshAll };
   const filters = activeTodayFilters(urlState);
@@ -172,8 +177,8 @@ export function TodayView({ data, onPreferenceChanged, workMode }: { data: Today
 
       <div className="grid items-start gap-3">
         <nav aria-label={t("Today view")} className="flex flex-wrap items-center gap-1 border-b border-[var(--ad-border)] pb-2">
-          {queueOptions.map(({ id, label, icon: Icon, queue }) => <button aria-current={urlState.tab === "summary" && summaryQueue === id ? "page" : undefined} className="flex min-h-10 shrink-0 items-center gap-2 rounded-md px-3 text-left text-sm aria-[current=page]:bg-[var(--ad-red-bg)] aria-[current=page]:font-semibold aria-[current=page]:text-[var(--ad-red-text)]" key={id} onClick={() => { navigate({ tab: "summary", queue: id, limit: 25 }); }} type="button"><Icon className="h-4 w-4 shrink-0" /><span>{t(label)}</span><span className="ml-auto text-xs tabular-nums">{queue.totalCount}</span></button>)}
-          <button aria-current={urlState.tab === "all" ? "page" : undefined} className="flex min-h-10 shrink-0 items-center gap-2 rounded-md px-3 text-left text-sm aria-[current=page]:bg-[var(--ad-red-bg)] aria-[current=page]:font-semibold" onClick={() => openAllWork({})} type="button"><Inbox className="h-4 w-4" />{t("All work")}</button>
+          {queueOptions.map(({ id, label, icon: Icon, queue }) => <button aria-current={urlState.tab === "summary" && summaryQueue === id ? "page" : undefined} className="flex min-h-10 shrink-0 items-center gap-2 rounded-md px-3 text-left text-sm aria-[current=page]:bg-[var(--ad-ink)] aria-[current=page]:font-semibold aria-[current=page]:text-white" key={id} onClick={() => { navigate({ tab: "summary", queue: id, limit: 25 }); }} type="button"><Icon className="h-4 w-4 shrink-0" /><span>{t(label)}</span><span className="ml-auto text-xs tabular-nums">{queue.totalCount}</span></button>)}
+          <button aria-current={urlState.tab === "all" ? "page" : undefined} className="flex min-h-10 shrink-0 items-center gap-2 rounded-md px-3 text-left text-sm aria-[current=page]:bg-[var(--ad-ink)] aria-[current=page]:font-semibold aria-[current=page]:text-white" onClick={() => openAllWork({})} type="button"><Inbox className="h-4 w-4" />{t("All work")}</button>
           <details className="ml-auto shrink-0 px-3 py-2 text-xs text-[var(--ad-text-muted)]"><summary className="cursor-pointer">{t("Row density")}</summary><div className="mt-2 flex gap-2">{(["compact", "comfortable"] as const).map((value) => <button aria-pressed={density === value} className="min-h-9 rounded px-2 aria-pressed:bg-[var(--ad-ink)] aria-pressed:text-white" key={value} onClick={() => changeDensity(value)} type="button">{t(value === "compact" ? "Compact" : "Comfortable")}</button>)}</div></details>
         </nav>
         <div className="min-w-0">
@@ -223,13 +228,23 @@ export function TodayView({ data, onPreferenceChanged, workMode }: { data: Today
             </div>
           ) : null}
         </div>
-        {allWorkError ? <p className="rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]" role="alert">{t(allWorkError)}</p> : null}
+        {allWorkError ? <AuthorityRequestError
+          requestKind="read"
+          cause={allWorkError.cause}
+          message={allWorkError.message}
+          onRetry={() => { setAllWorkError(null); setReloadVersion((value) => value + 1); }}
+          snapshotAt={allWork?.asOf}
+        /> : null}
         {!allWork && !allWorkError ? (
           <div aria-label={t("Loading work")} className="space-y-2 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" role="status">
             {[0, 1, 2, 3, 4].map((row) => <div className="h-8 animate-pulse rounded bg-black/[0.05]" key={row} />)}
           </div>
         ) : null}
         {allWork ? <>
+          <p className="text-xs text-[var(--ad-text-muted)]" role="status">
+            {allWorkPending ? t("Refreshing") : t(!allWorkError && allWork.freshness === "fresh" ? "Fresh" : "Stale")}
+            {" · "}{t("As of {time}", { time: formatDateTime(allWork.asOf, locale) })}
+          </p>
           <WorkQueue
             {...queueProps}
             description={t("Every item you are authorized to work on, filtered and ranked as in Summary.")}
@@ -243,6 +258,7 @@ export function TodayView({ data, onPreferenceChanged, workMode }: { data: Today
             // 「上一页」走本地游标栈，不是 pageInfo.hasPreviousPage —— all-work 还是单向
             // keyset，栈是我们自己走过来的路，比缺席的反向游标更可靠。
             hasPrevious={pageCursors.length > 0}
+            loading={allWorkPending}
             onNext={() => {
               const cursor = allWork.pageInfo.endCursor ?? undefined;
               navigate({ ...urlState, cursor }, cursor ? [...pageCursors, cursor] : pageCursors);

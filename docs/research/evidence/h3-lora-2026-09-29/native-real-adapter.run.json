@@ -1,0 +1,19 @@
+{
+  "label": "native-real-adapter",
+  "mode": "adapter",
+  "command": [
+    "./h3_lora_check",
+    "/Users/kk/code/idream/.scratch/h3-lora-20260929/fixture",
+    "/Users/kk/code/idream/.scratch/h3-lora-20260929/patched",
+    "--lora",
+    "/Users/kk/code/idream/.scratch/h3-lora-20260929/minimax_h3_fl2v_turbo_4step_v1.2_768p_bf16.safetensors:1",
+    "token_refiner.blocks.0.attn.qkv_proj.weight",
+    "token_refiner.blocks.0.attn.out_proj.weight",
+    "token_refiner.blocks.0.mlp.fc1.weight",
+    "token_refiner.blocks.0.mlp.fc2.weight",
+    "token_refiner.blocks.0.norm1.weight"
+  ],
+  "exitCode": 0,
+  "wallSeconds": 1.035,
+  "acceleratorLease": true
+}

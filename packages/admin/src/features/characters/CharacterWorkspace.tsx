@@ -59,6 +59,7 @@ import { CharacterImageLibrary } from "./CharacterImageLibrary";
 import { CharacterPlacementEditor } from "./CharacterPlacementEditor";
 import { ReleasePanel } from "./ReleasePanel";
 import { MonitorPanel } from "./MonitorPanel";
+import { characterMonitorNeedsAttention } from "./character-workspace-format";
 import { PerformancePanel, characterNoDataDiagnosis } from "./PerformancePanel";
 import {
   CharacterMediaOperationsCard,
@@ -1198,20 +1199,21 @@ function CharacterDetail({
         ) : (
           // SPEC: 「线上」= 表现证据 → 组合决策 → 发布护栏，自上而下就是运营复盘的顺序。
           <div className="space-y-5">
-            <PerformancePanel data={data} />
-            <details className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
+            <details className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]" open={characterMonitorNeedsAttention(data)}>
               <summary className="cursor-pointer p-4 font-semibold">
                 {t("Release monitoring")}
               </summary>
               <div className="border-t border-[var(--ad-border)] p-4">
                 <MonitorPanel
                   data={data}
+                  onOpenRelease={() => selectTab("release")}
                   onOpenVisual={() => selectTab("visual")}
                   permissions={guardedPermissions}
                   runCommittedMutation={runCommittedMutation}
                 />
               </div>
             </details>
+            <PerformancePanel data={data} />
           </div>
         )}
       </div>

@@ -105,6 +105,16 @@ describe("Character launch preview — zh operators", () => {
     expect(container.querySelectorAll("article")).toHaveLength(2);
   });
 
+  it("does not call a paused published character a first release", () => {
+    act(() => root.render(<AdminI18nProvider locale="zh"><PreviewDiff data={characterWorkspaceDetail({
+      journey: { release: { servingState: "paused", currentReleaseId: "release-2" } },
+      preview: { live: null, changedFields: ["new_release"] },
+    })} /></AdminI18nProvider>));
+    expect(container.textContent).toContain("这个角色已有发布版本，目前未上线。");
+    expect(container.textContent).toContain("新发布版本");
+    expect(container.textContent).not.toContain("首次发布");
+  });
+
   it("closes preview when the live and draft snapshots are already identical", () => {
     const unchanged = characterWorkspaceDetail({
       preview: {

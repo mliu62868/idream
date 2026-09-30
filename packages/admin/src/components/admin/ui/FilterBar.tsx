@@ -1,6 +1,6 @@
 "use client";
 import { ChevronDown, ChevronUp, Loader2, Search, X } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useId, useState } from "react";
 import { useAdminI18n } from "@/components/admin/i18n";
 
 export type FilterSelect = {
@@ -65,9 +65,10 @@ export function FilterBar({
 }) {
   const { t } = useAdminI18n();
   const [expanded, setExpanded] = useState(false);
+  const panelId = useId();
 
   const searchBox = (
-    <div className="flex h-9 min-w-[220px] flex-1 items-center gap-2 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 focus-within:border-[var(--ad-ink)] focus-within:ring-2 focus-within:ring-[var(--ad-ink)]/10">
+    <div className="flex h-9 min-w-0 basis-full items-center gap-2 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 focus-within:border-[var(--ad-ink)] focus-within:ring-2 focus-within:ring-[var(--ad-ink)]/10 sm:min-w-[220px] sm:flex-1 sm:basis-auto">
       <Search className="h-4 w-4 shrink-0 text-[var(--ad-text-muted)]" />
       <input
         aria-label={searchPlaceholder}
@@ -92,17 +93,23 @@ export function FilterBar({
   ));
 
   if (!collapsible) {
-    return <div className="mb-4 flex flex-wrap items-center gap-2">{searchBox}{selectFields}{children}</div>;
+    return <div className="mb-4 flex flex-wrap items-center gap-2">{searchBox}{selects.map((select, index) => (
+      <label className="flex min-w-0 items-center gap-2 text-xs text-[var(--ad-text-muted)]" key={select.name}>
+        <span className="shrink-0">{select.name}</span>
+        {selectFields[index]}
+      </label>
+    ))}{children}</div>;
   }
 
   return (
     <form
       className="mb-4 space-y-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3"
-      onSubmit={(event) => { event.preventDefault(); onApply?.(); }}
+      onSubmit={(event) => { event.preventDefault(); if (!busy) onApply?.(); }}
     >
       <div className="flex flex-wrap items-center gap-2">
         {searchBox}
         <button
+          aria-controls={expanded ? panelId : undefined}
           aria-expanded={expanded}
           className={`inline-flex h-9 items-center gap-1.5 rounded-md border border-[var(--ad-border)] px-3 text-sm font-semibold ${FOCUS_RING}`}
           onClick={() => setExpanded((current) => !current)}
@@ -119,12 +126,12 @@ export function FilterBar({
       {chips.length > 0 ? (
         <div className="flex flex-wrap items-center gap-1.5">
           {chips.map((chip) => (
-            <span className="inline-flex items-center gap-1 rounded-full border border-[var(--ad-border)] bg-black/[0.03] py-0.5 pl-2.5 pr-1 text-xs" key={chip.key}>
-              <span className="text-[var(--ad-text-muted)]">{chip.label}:</span>
-              <span className="font-medium text-[var(--ad-ink)]">{chip.value}</span>
+            <span className="inline-flex max-w-full items-center gap-1 rounded-full border border-[var(--ad-border)] bg-black/[0.03] py-0.5 pl-2.5 pr-1 text-xs" key={chip.key}>
+              <span className="shrink-0 text-[var(--ad-text-muted)]">{chip.label}:</span>
+              <span className="min-w-0 truncate font-medium text-[var(--ad-ink)]" title={chip.value}>{chip.value}</span>
               <button
                 aria-label={t("Clear filter {label}", { label: chip.label })}
-                className={`grid h-5 w-5 place-items-center rounded-full text-[var(--ad-text-muted)] hover:bg-black/[0.06] hover:text-[var(--ad-ink)] ${FOCUS_RING}`}
+                className={`grid h-6 w-6 shrink-0 place-items-center rounded-full text-[var(--ad-text-muted)] hover:bg-black/[0.06] hover:text-[var(--ad-ink)] ${FOCUS_RING}`}
                 onClick={chip.onClear}
                 type="button"
               >
@@ -141,7 +148,7 @@ export function FilterBar({
       ) : null}
 
       {expanded ? (
-        <div className="grid gap-3 border-t border-[var(--ad-border)] pt-3 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="grid gap-3 border-t border-[var(--ad-border)] pt-3 sm:grid-cols-2 xl:grid-cols-4" id={panelId}>
           {inputs.map((input) => (
             <label className={`text-xs font-semibold text-[var(--ad-text-muted)] ${input.wide ? "sm:col-span-2" : ""}`} key={input.name}>
               {input.name}

@@ -1,0 +1,74 @@
+{
+  "adapter_bytes": 1383677808,
+  "adapter_sha256": "c3d4a2cf618efea71b9e21a4baaa12d412f1eb6c2b6f86efacaf0ebb6814b689",
+  "adapter_alpha": 8,
+  "adapter_rank": 128,
+  "requested_strength": 1,
+  "effective_scale": 0.0625,
+  "parsed_modules": 312,
+  "shape_matched_checkpoint_targets": 208,
+  "native_supported_bf16_targets": 8,
+  "native_unsupported_int8_targets": 200,
+  "native_adapter_output": "lora 0: format=diffusers low_rank=312 full=0 targets=208 applied=4 scale=0.0625\napply 0.256 s",
+  "results": [
+    {
+      "tensor": "token_refiner.blocks.0.attn.qkv_proj.weight",
+      "shape": [
+        21504,
+        5376
+      ],
+      "sampled_rows": 71,
+      "max_bf16_ulp": 0,
+      "exact_oracle_fraction": 1.0,
+      "sampled_changed_fraction": 0.027322790912139502,
+      "delta_rms": 8.17847417245231e-06,
+      "max_abs_error_to_rounded_oracle": 0.0
+    },
+    {
+      "tensor": "token_refiner.blocks.0.attn.out_proj.weight",
+      "shape": [
+        5376,
+        7168
+      ],
+      "sampled_rows": 71,
+      "max_bf16_ulp": 0,
+      "exact_oracle_fraction": 1.0,
+      "sampled_changed_fraction": 0.020545145875251507,
+      "delta_rms": 7.6212233685973785e-06,
+      "max_abs_error_to_rounded_oracle": 0.0
+    },
+    {
+      "tensor": "token_refiner.blocks.0.mlp.fc1.weight",
+      "shape": [
+        28672,
+        5376
+      ],
+      "sampled_rows": 71,
+      "max_bf16_ulp": 0,
+      "exact_oracle_fraction": 1.0,
+      "sampled_changed_fraction": 0.020660420858484237,
+      "delta_rms": 6.71315813537617e-06,
+      "max_abs_error_to_rounded_oracle": 0.0
+    },
+    {
+      "tensor": "token_refiner.blocks.0.mlp.fc2.weight",
+      "shape": [
+        5376,
+        14336
+      ],
+      "sampled_rows": 71,
+      "max_bf16_ulp": 0,
+      "exact_oracle_fraction": 1.0,
+      "sampled_changed_fraction": 0.017715669014084508,
+      "delta_rms": 5.373659439572881e-06,
+      "max_abs_error_to_rounded_oracle": 0.0
+    },
+    {
+      "tensor": "token_refiner.blocks.0.norm1.weight",
+      "unadapted_identical": true
+    }
+  ],
+  "checkpoint_stat_unchanged": true,
+  "fixture_sha256_unchanged": true,
+  "full_video_generation_tested": false
+}

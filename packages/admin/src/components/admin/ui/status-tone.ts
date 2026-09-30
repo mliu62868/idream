@@ -37,6 +37,8 @@ const TONE_BY_STATUS: Record<string, StatusTone> = {
   accepted: "pending", provider_queued: "pending", detected: "pending", mitigating: "pending",
   overdue: "pending", due_soon: "pending", high: "pending", unknown: "pending",
   stale: "pending", flagged: "pending", escalated: "pending",
+  // characters-release.ts 的 monitor.status 与发布监控权威结果。
+  action_required: "pending",
   partially_succeeded: "pending", needs_reconciliation: "pending",
   // compliance.ts COMPLIANCE_ACCOUNT_DELETION_WAITING_ON —— 账号擦除队列的「在等谁」。
   // grace_period 等时间到，chat_erasure 等另一个服务回执：都是「在等」，不是在跑。

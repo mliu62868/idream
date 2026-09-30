@@ -4,9 +4,18 @@ import {
   PromoWorkspace,
   isoFromLocalDateTime,
   strictIntegerFromText,
+  redeemCodeDisplayStatus,
 } from "./PromoWorkspace";
 
 describe("redeem code expiry", () => {
+  const asOf = "2026-09-29T12:00:00.000Z";
+  it("distinguishes enabled codes from codes that can still be redeemed", () => {
+    expect(redeemCodeDisplayStatus({ status: "active", expiresAt: asOf }, asOf)).toBe("expired");
+    expect(redeemCodeDisplayStatus({ status: "active", redemptions: 1, maxRedemptions: 1 }, asOf)).toBe("exhausted");
+    expect(redeemCodeDisplayStatus({ status: "active", redemptions: 100, maxRedemptions: null }, asOf)).toBe("active");
+    expect(redeemCodeDisplayStatus({ status: "active", expiresAt: "2026-10-01T00:00:00.000Z", maxRedemptions: 2, redemptions: 1 }, asOf)).toBe("active");
+    expect(redeemCodeDisplayStatus({ status: "disabled", expiresAt: asOf, maxRedemptions: 1, redemptions: 1 }, asOf)).toBe("disabled");
+  });
   // INTENT: 契约收 ISO，输入框给的是本地时间串；解不出来就得挡住，不能把 Invalid Date 发出去。
   it("converts a local datetime-local value to an ISO instant", () => {
     expect(isoFromLocalDateTime("2026-09-01T12:00")).toBe(

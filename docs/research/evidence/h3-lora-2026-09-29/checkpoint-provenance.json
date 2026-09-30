@@ -1,0 +1,90 @@
+{
+  "config": {
+    "transformer": {
+      "image_model": "minimax_h3",
+      "num_layers": 50,
+      "token_refiner_num_layers": 2,
+      "hidden_size": 5376,
+      "latents_dim": 24,
+      "audio_latents_dim": 32,
+      "attention_head_dim": 128,
+      "num_attention_heads": 56,
+      "ffn_hidden_size": 14336,
+      "text_dim": 5120,
+      "adaln_curve_grid": 1025,
+      "time_embed_dim": 8,
+      "rope_inv_freq_len": 16
+    }
+  },
+  "prompt": {
+    "1": {
+      "inputs": {
+        "unet_name": "10Eros_Max_h3_fl2va_beta1_pruned.safetensors",
+        "weight_dtype": "default"
+      },
+      "class_type": "UNETLoader",
+      "_meta": {
+        "title": "UNet加载器"
+      }
+    },
+    "2": {
+      "inputs": {
+        "lora_name": "H3\\minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+        "strength_model": 0.75,
+        "model": [
+          "1",
+          0
+        ]
+      },
+      "class_type": "LoraLoaderModelOnly",
+      "_meta": {
+        "title": "LoRA加载器（仅模型）"
+      }
+    },
+    "3": {
+      "inputs": {
+        "lora_name": "H3\\姿势-全套-SexGod-NaughtyTimes-lora-MINIMAXH3.safetensors",
+        "strength_model": 0.75,
+        "model": [
+          "2",
+          0
+        ]
+      },
+      "class_type": "LoraLoaderModelOnly",
+      "_meta": {
+        "title": "LoRA加载器（仅模型）"
+      }
+    },
+    "4": {
+      "inputs": {
+        "lora_name": "H3\\minimax_h3_ref_lora_rank_256_bf16.safetensors",
+        "strength_model": 0.5,
+        "model": [
+          "3",
+          0
+        ]
+      },
+      "class_type": "LoraLoaderModelOnly",
+      "_meta": {
+        "title": "LoRA加载器（仅模型）"
+      }
+    },
+    "5": {
+      "inputs": {
+        "quantize_int8_convrot": true,
+        "filename_prefix": "diffusion_models/REDMix-MiniMaxH3-A2A-pruned-int8-convrot-ComfyMCP",
+        "reference_unet": "MiniMAX\\minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+        "model": [
+          "4",
+          0
+        ]
+      },
+      "class_type": "MiniMaxH3CheckpointSave",
+      "_meta": {
+        "title": "MiniMax H3 Checkpoint Save"
+      }
+    }
+  },
+  "checkpoint_name": "/Users/kk/ComfyUI-Shared/models/diffusion_models/REDMix-MiniMaxH3-A2Ab1-pruned-int8-convrot-ComfyMCP.safetensors",
+  "quant_marker": "{\"format\":\"int8_tensorwise\",\"convrot\":true,\"convrot_groupsize\":256}"
+}

@@ -12,6 +12,7 @@ const { apiGet, apiWrite } = vi.hoisted(() => ({
 vi.mock("@/components/admin/api", () => ({ apiGet, apiWrite }));
 
 import { AccessWorkspace } from "./AccessWorkspace";
+import { AdminI18nProvider } from "@/components/admin/i18n";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -32,9 +33,9 @@ async function waitUntil(predicate: () => boolean) {
 
 async function typeUserId(container: HTMLElement, userId: string) {
   const input = [...container.querySelectorAll("label")]
-    .find((label) => label.textContent?.includes("Permission user ID"))
+    .find((label) => label.textContent?.includes("Target user ID"))
     ?.querySelector("input");
-  if (!input) throw new Error("Permission user ID field is missing");
+  if (!input) throw new Error("Target user ID field is missing");
   const setter = Object.getOwnPropertyDescriptor(
     window.HTMLInputElement.prototype,
     "value",
@@ -90,7 +91,7 @@ describe("role and grant bundle commands", () => {
         };
       }
       if (path.includes("/permissions")) {
-        return { user: { id: "user-9", role: "support", status: "active" }, overrides: [], effective: [] };
+        return { role: "support", overrides: [], effective: [] };
       }
       return emptyUserList;
     });
@@ -148,6 +149,27 @@ describe("role and grant bundle commands", () => {
     await clickButton("Confirm");
   }
 
+  it("explains a filtered empty result in Chinese and clears its query without a write", async () => {
+    const unfilteredRead = Promise.withResolvers<typeof emptyUserList>();
+    apiGet.mockImplementation(async (path) => path.includes("missing-user") ? emptyUserList : unfilteredRead.promise);
+    window.history.replaceState(null, "", "/admin/system/access?accessSearch=missing-user");
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<AdminI18nProvider locale="zh"><AccessWorkspace permissions={{ changeStatus: true, managePermissions: true }} /></AdminI18nProvider>);
+    });
+    await waitUntil(() => container.textContent?.includes("没有符合筛选条件的用户") ?? false);
+    expect(container.textContent).toContain("请调整或清除筛选条件，查看其他用户。");
+    expect(container.textContent).not.toContain("No users match");
+    await clickButton("清除筛选");
+    expect(new URLSearchParams(window.location.search).has("accessSearch")).toBe(false);
+    expect(apiGet.mock.calls.at(-1)?.[0]).not.toContain("missing-user");
+    expect(container.textContent).toContain("正在加载团队权限…");
+    expect(container.textContent).not.toContain("暂无用户");
+    await act(async () => unfilteredRead.resolve(emptyUserList));
+    expect(container.textContent).toContain("暂无用户");
+    expect(apiWrite).not.toHaveBeenCalled();
+  });
+
   it("offers revoke only for the bundles that are still active", async () => {
     await mountWithTarget();
     const revokeLabels = [...container.querySelectorAll("button")]
@@ -157,8 +179,42 @@ describe("role and grant bundle commands", () => {
     expect(revokeLabels).toEqual(["Revoke Creative operator"]);
   });
 
+  it("uses the refreshed user status after suspension removes the selected user from the filter", async () => {
+    let suspended = false;
+    const user = { id: "user-9", email: "user-9@example.test", displayName: "Operator One", role: "support", status: "active", dataClass: "fixture", plan: null, dreamcoins: 0, createdAt: "2026-09-29T12:00:00.000Z" };
+    apiGet.mockImplementation(async (path) => {
+      if (path.includes("/permissions")) return { role: "support", overrides: [], effective: ["dashboard.read"] };
+      if (path.includes("/grant-bundles")) return { user: { id: user.id, role: user.role, status: suspended ? "suspended" : "active" }, items: [] };
+      return { ...emptyUserList, items: suspended ? [] : [user] };
+    });
+    apiWrite.mockImplementation(async () => { suspended = true; return { user: { ...user, status: "suspended" }, replayed: false }; });
+    window.history.replaceState(null, "", "/admin/system/access?accessStatus=active");
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<AccessWorkspace permissions={{ changeStatus: true, managePermissions: true }} />);
+    });
+    await waitUntil(() => container.textContent?.includes("Operator One") ?? false);
+    await clickButton("Manage access for Operator One");
+    await waitUntil(() => apiGet.mock.calls.some(([path]) => path.includes("/grant-bundles")));
+    await clickButton("Suspend");
+    await confirmDialog("Confirmed operator suspension", "user-9:suspended");
+    await waitUntil(() => apiGet.mock.calls.filter(([path]) => path.includes("/grant-bundles")).length === 2);
+    const heading = container.querySelector(".scroll-mt-24");
+    expect(heading?.textContent).toContain("Operator One");
+    expect(heading?.textContent).toContain("Current role: support · suspended · fixture");
+    expect(heading?.textContent).not.toContain(" · active · ");
+    expect(container.querySelector('[aria-label="Suspend"]')).toBeNull();
+    expect(window.location.search).toContain("accessStatus=active");
+  });
+
   it("sends the role command with the confirmation string the authority compares", async () => {
+    const original = apiGet.getMockImplementation();
+    let permissionReads = 0;
+    apiGet.mockImplementation(async (path) => path.includes("/permissions")
+      ? { role: ++permissionReads === 1 ? "user" : "support", overrides: [], effective: [] }
+      : original?.(path));
     await mountWithTarget();
+    await waitUntil(() => permissionReads === 1);
     await clickButton("Change role");
     await confirmDialog("Promoting to ops on-call", "user-9:support");
 
@@ -167,6 +223,8 @@ describe("role and grant bundle commands", () => {
     expect(path).toBe("/api/v2/admin/users/user-9/role");
     expect(method).toBe("POST");
     expect(body).toMatchObject({ role: "support", confirmation: "user-9:support" });
+    await waitUntil(() => permissionReads === 2);
+    expect(container.textContent).toContain("Current role: support");
   });
 
   // SPEC: character_producer 必须带上非空 scope.characterIds 才授得出去。
@@ -345,5 +403,43 @@ describe("permission override impact", () => {
     const next = buttons.find((button) => button.textContent?.trim() === "Next page");
     expect(previous?.disabled).toBe(true);
     expect(next?.disabled).toBe(false);
+  });
+
+  it("selects a named user before showing permission commands and clears scope when switching people", async () => {
+    const users = ["1", "2"].map((id) => ({
+      id: `user-${id}`, email: `qa-${id}@example.test`, displayName: `QA ${id}`,
+      role: "user", status: "active", dataClass: "fixture", plan: null,
+      dreamcoins: 250, createdAt: "2026-08-01T00:00:00.000Z",
+    }));
+    apiGet.mockImplementation(async (path) => {
+      if (path.includes("/permissions")) return { role: "user", overrides: [], effective: [] };
+      if (path.includes("/grant-bundles")) return { user: { id: path.includes("user-2") ? "user-2" : "user-1", role: "user", status: "active" }, items: [] };
+      return { ...emptyUserList, items: users };
+    });
+    // happy-dom 没有布局；只隔离滚动 API，选择和数据请求仍走真实组件。
+    Object.defineProperty(window.HTMLElement.prototype, "scrollIntoView", { configurable: true, value: vi.fn() });
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<AccessWorkspace permissions={{ changeStatus: true, managePermissions: true }} />);
+    });
+    await waitUntil(() => container.textContent?.includes("QA 1") ?? false);
+    expect(container.querySelector('button[aria-label="Manage access for QA 1"]')).not.toBeNull();
+    expect([...container.querySelectorAll("button")].some((button) => button.textContent?.trim() === "Change role")).toBe(false);
+
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Manage access for QA 1"]')?.click());
+    expect([...container.querySelectorAll("label")].find((label) => label.textContent?.includes("Target user ID"))?.querySelector("input")?.value).toBe("user-1");
+    const scope = [...container.querySelectorAll("label")].find((label) => label.textContent?.includes("Assigned character IDs"))?.querySelector("input");
+    if (!scope) throw new Error("Missing character scope");
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+    await act(async () => {
+      setter?.call(scope, "character-for-user-1");
+      scope.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Manage access for QA 2"]')?.click());
+    expect(scope.value).toBe("");
+    expect([...container.querySelectorAll("label")].find((label) => label.textContent?.includes("Target user ID"))?.querySelector("input")?.value).toBe("user-2");
+    await waitUntil(() => apiGet.mock.calls.some(([path]) => path.includes("/user-2/permissions")));
+    expect(apiWrite).not.toHaveBeenCalled();
   });
 });

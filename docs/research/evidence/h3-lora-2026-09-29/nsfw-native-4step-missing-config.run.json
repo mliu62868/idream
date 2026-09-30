@@ -1,0 +1,31 @@
+{
+  "label": "nsfw-native-4step",
+  "mode": "render4",
+  "command": [
+    "./h3",
+    "-d",
+    "/Users/kk/code/idream/.scratch/h3-lora-20260929/nsfw-model",
+    "-p",
+    "An adult woman in her thirties wearing a red evening dress stands in a softly lit room. She smiles and gently waves at the camera. Stable medium shot, natural movement. Audio: quiet room ambience, no dialogue, no music.",
+    "--width",
+    "512",
+    "--height",
+    "512",
+    "--frames",
+    "22",
+    "--steps",
+    "4",
+    "--layers",
+    "50",
+    "--reuse",
+    "1",
+    "--seed",
+    "42",
+    "--profile",
+    "-o",
+    "/Users/kk/code/idream/.scratch/h3-lora-20260929/nsfw-native-4step.mp4"
+  ],
+  "exitCode": 1,
+  "wallSeconds": 52.147,
+  "acceleratorLease": true
+}

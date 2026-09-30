@@ -3,6 +3,11 @@
 // INVARIANT: key 在所有 i18n-zh-*.ts 之间互斥——同一个 key 只能有一个域文件持有；
 // 由 i18n-zh-exclusivity.test.ts 强制。新增文案放它所属的域文件，不要另开「杂项」文件。
 export const adminZhCommon: Record<string, string> = {
+  "Refreshing": "正在刷新",
+  "Fresh": "数据新鲜",
+  "Stale": "数据陈旧",
+  "{value} ms": "{value} 毫秒",
+  "Retry to load the latest data. The technical details identify the failed read.": "重试以读取最新数据。技术详情中保留了本次读取失败的证据。",
   "ID": "编号",
   "Assets": "素材",
   "(use pipelineModel)": "（使用 pipelineModel）",

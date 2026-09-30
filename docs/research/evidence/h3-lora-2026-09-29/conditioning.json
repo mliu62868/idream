@@ -1,0 +1,14 @@
+{
+  "encoder": "/Users/kk/ComfyUI-Shared/models/text_encoders/qwen3vl-32B-MiniMax-H3-Q4_K_M.gguf",
+  "conditioning": "/Users/kk/code/idream/.scratch/h3-lora-20260929/conditioning.h3cd",
+  "shape": [
+    1,
+    49,
+    5120
+  ],
+  "bytes": 501792,
+  "wall_seconds": 13.276609416934662,
+  "device": "cpu",
+  "prompt": "An adult woman in her thirties wearing a red evening dress stands in a softly lit room. She smiles and gently waves at the camera. Stable medium shot, natural movement. Audio: quiet room ambience, no dialogue, no music.",
+  "scope": "GGUF conditioning for native T2V smoke; no BF16 encoder parity claim"
+}

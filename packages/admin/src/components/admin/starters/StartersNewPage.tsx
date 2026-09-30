@@ -89,15 +89,15 @@ export function StartersNewPage({ canWrite, canAssist }: { canWrite: boolean; ca
     >
       {canWrite ? null : <PermissionNotice permission="content.template.write" />}
       {canAssist ? <FormSection hint={t("One-line inspiration — AI fills description and tags.")} title={t("AI assist")}>
-        <Field full label={t("Inspiration")}>
-          <div className="flex gap-2">
+        <div className="flex items-end gap-2 sm:col-span-2">
+          <Field className="flex-1" label={t("Inspiration")}>
             <input className={INPUT_CLASS} onChange={(e) => setSeed(e.target.value)} value={seed} />
-            <GhostButton disabled={assisting || seed.trim().length === 0} onClick={() => void assist()}>
-              {assisting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-              {t("Generate with AI")}
-            </GhostButton>
-          </div>
-        </Field>
+          </Field>
+          <GhostButton disabled={assisting || seed.trim().length === 0} onClick={() => void assist()}>
+            {assisting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+            {t("Generate with AI")}
+          </GhostButton>
+        </div>
         {assistError ? (
           <p className="text-sm text-[var(--ad-red-text)]" role="alert">
             {assistError}

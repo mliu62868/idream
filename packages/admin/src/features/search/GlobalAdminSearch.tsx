@@ -265,7 +265,7 @@ export function GlobalAdminSearch({
         </kbd>
       </div>
       {open ? (
-        <div className="absolute right-0 z-50 mt-2 w-[min(92vw,520px)] overflow-hidden rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] shadow-xl">
+        <div className="absolute left-0 z-50 mt-2 w-[min(calc(100vw-2rem),520px)] overflow-hidden rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] shadow-xl md:left-auto md:right-0">
           {authority.availability === "unavailable" ? (
             <div
               className="m-2 rounded-md bg-[var(--ad-red-bg)] px-3 py-2 text-xs text-[var(--ad-red-text)]"

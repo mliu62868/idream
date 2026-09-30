@@ -25,6 +25,7 @@ import type {
 } from "./character-command-journal";
 import {
   characterHasNoUnpublishedChanges,
+  characterMonitorNeedsAttention,
   characterReleaseOrdinals,
 } from "./character-workspace-format";
 import type {
@@ -591,7 +592,7 @@ export function ReleasePanel({
           </WorkspaceButton>
         ) : null}
 
-        <details className="mt-5 border-t border-[var(--ad-border)] pt-4">
+        <details className="mt-5 border-t border-[var(--ad-border)] pt-4" open={characterMonitorNeedsAttention(data)}>
           <summary className="cursor-pointer text-xs font-semibold">
             {t("Character availability and rollback")}
           </summary>

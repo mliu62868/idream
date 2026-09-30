@@ -390,7 +390,7 @@ function AdminConsoleContent({
                   label={activeItem.label}
                 />
               </div>
-              <div className="flex w-full items-center gap-2 md:w-auto">
+              <div className="relative flex w-full items-center gap-2 md:w-auto">
                 <div className="min-w-0 flex-1 md:flex-none"><GlobalAdminSearch permissions={permissions} /></div>
                 {permissions.has("dashboard.read") ? <MentionsInbox /> : null}
                 {/* SPEC: 刷新只广播事件；各工作台自取数、自报加载态。 */}

@@ -22,12 +22,64 @@ beforeAll(async () => {
 afterAll(async () => {
   await prisma.controlPlaneCommand.deleteMany({ where: { actorId } });
   await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: { startsWith: P } } });
+  await prisma.adminUserGrantBundle.deleteMany({ where: { userId: { startsWith: P } } });
   await purgeTestData(P);
   await removeFaultInjectionTriggers();
   await prisma.$disconnect();
 });
 
 describe("idempotent user authority commands", () => {
+  it("reports active bundle permissions and excludes revoked or expired grants and permission overrides", async () => {
+    const targetId = `${P}effective-bundle`;
+    await createUser({ id: targetId, role: "support" });
+    const grant = await prisma.adminUserGrantBundle.create({ data: {
+      userId: targetId, bundleKey: "growth_operator", reason: "verify bundle-derived access", createdById: actorId,
+    } });
+    const read = async () => {
+      const response = await userPermissionsReadRoute(
+        new Request(`http://localhost/api/v2/admin/users/${targetId}/permissions`, { headers: authHeaders() }),
+        { params: Promise.resolve({ id: targetId }) },
+      );
+      expect(response.status).toBe(200);
+      return (await response.json()).data;
+    };
+    expect((await read()).effective).toContain("experiment.manage");
+
+    const override = await prisma.adminUserPermission.create({ data: {
+      userId: targetId, permissionKey: "experiment.manage", effect: "revoke", reason: "individual revoke takes precedence", createdById: actorId,
+    } });
+    expect((await read()).effective).not.toContain("experiment.manage");
+    await prisma.adminUserPermission.delete({ where: { id: override.id } });
+    expect((await read()).effective).toContain("experiment.manage");
+
+    await prisma.adminUserGrantBundle.update({ where: { id: grant.id }, data: { expiresAt: new Date(0) } });
+    expect((await read()).effective).not.toContain("experiment.manage");
+    await prisma.adminUserGrantBundle.update({ where: { id: grant.id }, data: { expiresAt: null, revokedAt: new Date() } });
+    expect((await read()).effective).not.toContain("experiment.manage");
+  });
+
+  it("reports compatibility capabilities without overriding an explicit canonical revoke", async () => {
+    const targetId = `${P}effective-compatibility`;
+    await createUser({ id: targetId, role: "support" });
+    const read = async () => {
+      const response = await userPermissionsReadRoute(
+        new Request(`http://localhost/api/v2/admin/users/${targetId}/permissions`, { headers: authHeaders() }),
+        { params: Promise.resolve({ id: targetId }) },
+      );
+      expect(response.status).toBe(200);
+      return (await response.json()).data;
+    };
+    expect((await read()).effective).toContain("creative.asset.read");
+    expect((await read()).effective).toContain("creative.placement.read");
+    await prisma.adminUserPermission.create({ data: {
+      userId: targetId, permissionKey: "creative.asset.read", effect: "revoke", reason: "canonical revoke must remain effective", createdById: actorId,
+    } });
+    const permissions = await read();
+    expect(permissions.effective).toContain("content.asset.read");
+    expect(permissions.effective).not.toContain("creative.asset.read");
+    expect(permissions.effective).toContain("creative.placement.read");
+  });
+
   it("applies server search, role/status filters, and stable cursor pagination", async () => {
     const olderId = `${P}access-older`;
     const newerId = `${P}access-newer`;

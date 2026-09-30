@@ -50,14 +50,16 @@ export function FormSection({
 export function Field({
   label,
   full = false,
+  className = "",
   children,
 }: {
   label: string;
   full?: boolean;
+  className?: string;
   children: ReactNode;
 }) {
   return (
-    <label className={full ? "block sm:col-span-2" : "block"}>
+    <label className={`block min-w-0 ${full ? "sm:col-span-2" : ""} ${className}`}>
       <span className="mb-1.5 block text-xs font-medium text-[var(--ad-text-muted)]">{label}</span>
       {children}
     </label>

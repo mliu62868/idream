@@ -40,8 +40,8 @@ const HEADERS: DataTableHeader[] = [
   "Mode",
   "Status",
   "Provider",
-  "Failure reason",
-  "Replay authority",
+  { label: "Failure reason", width: "16rem" },
+  { label: "Replay authority", width: "22rem" },
   "Ledger",
   "Cost",
   "Updated",
@@ -210,8 +210,8 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
           {id}
         </a>,
         <span className="font-mono text-xs" key="user">{text(row.userId)}</span>,
-        enumOr(row.mode),
-        enumOr(row.status),
+        <span className="whitespace-nowrap" key="mode">{enumOr(row.mode)}</span>,
+        <span className="whitespace-nowrap" key="status">{enumOr(row.status)}</span>,
         format.display(row.provider),
         // SPEC: 失败原因出人话，和「生成任务」列表用同一个 FailureReason（JobsView.tsx:211）。
         // INTENT: 这一格此前直接印裸码。实测死信队列里真实出现 provider_timeout / backend_error /
@@ -222,7 +222,7 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
           ? <FailureReason code={text(row.errorCode)} key="failure" />
           : <span className="text-[var(--ad-text-muted)]" key="failure">—</span>,
         <RetryAuthority key="retry" verdict={retryVerdict(row.retryEligibility)} />,
-        enumOr(row.ledgerState),
+        <span className="whitespace-nowrap" key="ledger">{enumOr(row.ledgerState)}</span>,
         format.display(row.costDreamcoins),
         format.dateTime(row.updatedAt),
         <div key="actions">{rowActions(row)}</div>,
@@ -315,7 +315,7 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
           error={data ? null : errorMessage}
           headers={HEADERS}
           loading={loading}
-          minimumWidthClassName="min-w-[1120px]"
+          minimumWidthClassName="min-w-[1600px]"
           onRetry={() => void load(query)}
           rows={tableRows}
           selection={canSelect ? {
@@ -524,5 +524,5 @@ function Select({ label, onChange, options, value }: { label: string; onChange: 
 
 function ActionButton({ danger = false, icon, label, onClick }: { danger?: boolean; icon: ReactNode; label: string; onClick: () => void }) {
   const { t } = useAdminI18n();
-  return <button className={`inline-flex min-h-9 items-center gap-2 rounded-md border border-[var(--ad-border)] px-3 text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)] disabled:opacity-40 ${danger ? "text-[var(--ad-red-text)]" : "text-[var(--ad-text)]"}`} onClick={onClick} type="button">{icon}{t(label)}</button>;
+  return <button className={`inline-flex min-h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-md border border-[var(--ad-border)] px-3 text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)] disabled:opacity-40 ${danger ? "text-[var(--ad-red-text)]" : "text-[var(--ad-text)]"}`} onClick={onClick} type="button">{icon}{t(label)}</button>;
 }

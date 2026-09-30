@@ -1,0 +1,19 @@
+{
+  "checkpoint": "/Users/kk/ComfyUI-Shared/models/diffusion_models/REDMix-MiniMaxH3-A2Ab1-pruned-int8-convrot-ComfyMCP.safetensors",
+  "checkpoint_bytes": 20970384488,
+  "checkpoint_sha256": "fc99ff051283ee05f29b1ebcb14e0d7b36c03e93512ac5479411cdfa2e284122",
+  "checkpoint_mtime_ns": 1787137556259643374,
+  "fixture": "/Users/kk/code/idream/.scratch/h3-lora-20260929/fixture/selected-native-tensors.safetensors",
+  "fixture_sha256": "c937c3e105ba472b2a87efb6919e4dc62c52b62ac3d68ce5735ff9a4e07ce031",
+  "fixture_tensors": [
+    "token_refiner.blocks.0.attn.qkv_proj.weight",
+    "token_refiner.blocks.0.attn.out_proj.weight",
+    "token_refiner.blocks.0.mlp.fc1.weight",
+    "token_refiner.blocks.0.mlp.fc2.weight",
+    "token_refiner.blocks.0.norm1.weight"
+  ],
+  "idream_commit": "21303399a021cc3e06c26baad0a9d000ecc4774c",
+  "native_commit": "debd9a1e55815132200ee722c1e27ed22b006f6d",
+  "hf_revision": "3ec17a324ced54151364f24f8b5fb6bf7e26414f",
+  "scope": "real adapter parsing and selected-tensor Metal patch; no video generation"
+}

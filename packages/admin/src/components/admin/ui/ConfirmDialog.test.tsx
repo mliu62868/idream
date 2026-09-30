@@ -85,6 +85,9 @@ describe("ConfirmDialog", () => {
     expect(submit()?.disabled).toBe(true);
 
     await type("Type the name to confirm", "refund:sub-1");
+    // 输入后 placeholder 会消失，完整目标及字段标签仍必须可见。
+    expect(dialog().textContent).toContain("refund:sub-1");
+    expect(dialog().querySelector("label")?.textContent).toContain("Reason (≥3)");
     expect(submit()?.disabled).toBe(false);
     await click(submit());
     expect(onSubmit).toHaveBeenCalledWith("Chargeback avoidance");

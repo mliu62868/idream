@@ -3,7 +3,7 @@
 import { useAdminI18n } from "@/components/admin/i18n";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import Link from "next/link";
-import type { FormEvent, KeyboardEvent, ReactNode } from "react";
+import type { KeyboardEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowRight, CheckCircle2, ClipboardCheck, X } from "lucide-react";
 import {
@@ -21,6 +21,7 @@ import {
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { useAdminFormat } from "@/components/admin/ui/format";
 import { Pagination } from "@/components/admin/ui/Pagination";
+import { FilterBar, type FilterChip } from "@/components/admin/ui/FilterBar";
 import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
 import { adminV2Request, setWorkspaceUrl } from "@/lib/admin-v2-api";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
@@ -68,6 +69,8 @@ export function CaseWorkspace({ actorId = null, canAssign, canDecide, initialCas
   const failureToast = useFailureToast();
   const [initialUrlState] = useState(() => initialCaseWorkspaceState(initialCaseId));
   const [query, setQuery] = useState<CaseQueryDraft>(initialUrlState.query);
+  // 筛选芯片描述当前结果，不能把尚未提交的输入说成已生效条件。
+  const [appliedQuery, setAppliedQuery] = useState<CaseQueryDraft>(initialUrlState.query);
   const [list, setList] = useState<CaseList | null>(null);
   const [selectedId, setSelectedId] = useState(initialUrlState.selectedId);
   const [selectedSavedViewId, setSelectedSavedViewId] = useState(initialUrlState.savedViewId);
@@ -92,6 +95,7 @@ export function CaseWorkspace({ actorId = null, canAssign, canDecide, initialCas
       });
       if (requestId !== listRequestId.current) return;
       setList(response);
+      setAppliedQuery(next);
     } catch (loadError) {
       if (requestId === listRequestId.current) failureToast(loadError);
     } finally {
@@ -162,9 +166,8 @@ export function CaseWorkspace({ actorId = null, canAssign, canDecide, initialCas
     history.current.draft({ ...history.current.current(), query: next }, writeCaseUrl);
   }
 
-  function applyFilters(event?: FormEvent) {
-    event?.preventDefault();
-    const next = { ...query, cursor: undefined };
+  function applyFilters(draft = query) {
+    const next = { ...draft, cursor: undefined };
     setSelectedSavedViewId(null);
     setQuery(next);
     setCursorTrail([]);
@@ -246,7 +249,8 @@ export function CaseWorkspace({ actorId = null, canAssign, canDecide, initialCas
     }
   }
 
-  const filtered = Boolean(query.search || query.type || query.status || query.priority || query.ownerId);
+  const filtered = Boolean(appliedQuery.search || appliedQuery.type || appliedQuery.status || appliedQuery.priority || appliedQuery.ownerId);
+
 
   return (
     <section aria-labelledby="case-workspace-title" className="space-y-5">
@@ -271,17 +275,10 @@ export function CaseWorkspace({ actorId = null, canAssign, canDecide, initialCas
         onClick={() => setInspectorExpanded((expanded) => !expanded)}
       >{inspectorExpanded ? t("Case results") : t("Summary")}</WorkspaceButton> : null}
 
-      <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,0.92fr)_minmax(460px,1.08fr)]">
-        {selectedId ? <div className={inspectorExpanded ? "" : "md:hidden lg:block"}>{detailLoading && !detail ? <LoadingWorkspace label="Loading case detail" /> : detail ? <CaseInspector actorId={actorId} busy={busy} canAssign={canAssign} canDecide={canDecide} detail={detail} key={detail.case.id} onClose={() => selectCase(null)} onConfirmed={refreshAfterMutation} onMutate={mutate} referenceTime={list?.asOf ?? detail.case.updatedAt} /> : null}</div> : <aside className="hidden rounded-xl bg-[var(--ad-surface-subtle)] p-8 text-sm text-[var(--ad-text-muted)] lg:block">{t("Select a case to inspect evidence and complete the decision loop.")}</aside>}
-        <div className="space-y-3 lg:order-first" aria-label={t("Case results")}>
-          <form className="grid gap-3 rounded-xl bg-[var(--ad-surface)] p-4 md:grid-cols-2" onSubmit={applyFilters}>
-            <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Search all cases")}<input className={fieldClass} onChange={(event) => updateDraft({ search: event.target.value })} placeholder={t("target or case key")} value={query.search} /></label>
-            <Select label="Type" onChange={(type) => updateDraft({ type })} options={["", "content_report", "appeal", "support_request", "billing_dispute"]} value={query.type} />
-            <Select label="Status" onChange={(status) => updateDraft({ status })} options={["", "new", "triaged", "in_progress", "waiting", "resolved", "closed", "reopened"]} value={query.status} />
-            <Select label="Priority" onChange={(priority) => updateDraft({ priority })} options={["", "urgent", "high", "normal", "low"]} value={query.priority} />
-            <Select label="Sort" onChange={(sort) => updateDraft({ sort: sort as CaseQueryDraft["sort"] })} options={["updated_desc", "updated_asc"]} value={query.sort} />
-            <div className="flex items-end gap-2"><WorkspaceButton tone="primary" type="submit">{t("Apply")}</WorkspaceButton>{filtered ? <WorkspaceButton onClick={clearFilters}>{t("Clear")}</WorkspaceButton> : null}</div>
-          </form>
+      <div className="grid min-w-0 grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,0.92fr)_minmax(460px,1.08fr)]">
+        {selectedId ? <div className={`min-w-0 ${inspectorExpanded ? "" : "md:hidden lg:block"}`}>{detailLoading && !detail ? <LoadingWorkspace label="Loading case detail" /> : detail ? <CaseInspector actorId={actorId} busy={busy} canAssign={canAssign} canDecide={canDecide} detail={detail} key={detail.case.id} onClose={() => selectCase(null)} onConfirmed={refreshAfterMutation} onMutate={mutate} referenceTime={list?.asOf ?? detail.case.updatedAt} /> : null}</div> : <aside className="hidden rounded-xl bg-[var(--ad-surface-subtle)] p-8 text-sm text-[var(--ad-text-muted)] lg:block">{t("Select a case to inspect evidence and complete the decision loop.")}</aside>}
+        <div className="min-w-0 space-y-3 lg:order-first" aria-label={t("Case results")}>
+          <CaseFilters appliedQuery={appliedQuery} busy={loading} onApply={applyFilters} onChange={updateDraft} onReset={clearFilters} query={query} />
           {loading && !list ? <LoadingWorkspace label="Loading cases" /> : null}
           {list && list.items.length === 0 ? <CaseQueueEmpty filtered={filtered} onClear={clearFilters} onSelectView={selectView} view={query.view} /> : null}
           {list?.items.map((adminCase) => <CaseRow adminCase={adminCase} active={selectedId === adminCase.id} key={adminCase.id} onSelect={() => selectCase(adminCase.id)} referenceTime={list.asOf} />)}
@@ -306,6 +303,47 @@ export function CaseWorkspace({ actorId = null, canAssign, canDecide, initialCas
       </div>
     </section>
   );
+}
+
+function CaseFilters({ appliedQuery, busy, onApply, onChange, onReset, query }: {
+  appliedQuery: CaseQueryDraft;
+  busy: boolean;
+  onApply: (query: CaseQueryDraft) => void;
+  onChange: (patch: Partial<CaseQueryDraft>) => void;
+  onReset: () => void;
+  query: CaseQueryDraft;
+}) {
+  const { t, value } = useAdminI18n();
+  const filterFields = [
+    { key: "type", label: "Type", options: ["", "content_report", "appeal", "support_request", "billing_dispute"] },
+    { key: "status", label: "Status", options: ["", "new", "triaged", "in_progress", "waiting", "resolved", "closed", "reopened"] },
+    { key: "priority", label: "Priority", options: ["", "urgent", "high", "normal", "low"] },
+    { key: "sort", label: "Sort", options: ["updated_desc", "updated_asc"] },
+  ] as const;
+  const filterChips: FilterChip[] = [
+    { key: "search", label: "Search", text: appliedQuery.search },
+    ...filterFields.map(({ key, label }) => ({ key, label, text: appliedQuery[key] === defaultCaseQuery[key] ? "" : value(appliedQuery[key]) })),
+    { key: "ownerId", label: "Owner ID", text: appliedQuery.ownerId },
+  ].filter(({ text }) => Boolean(text)).map(({ key, label, text }) => ({
+    key, label: t(label), value: text,
+    onClear: () => onApply({ ...appliedQuery, [key]: defaultCaseQuery[key as keyof CaseQueryDraft] }),
+  }));
+  return <FilterBar
+    busy={busy}
+    chips={filterChips}
+    collapsible
+    inputs={[{ name: t("Owner ID"), value: query.ownerId, onChange: (ownerId) => onChange({ ownerId }) }]}
+    onApply={() => onApply(query)}
+    onReset={onReset}
+    onSearch={(search) => onChange({ search })}
+    search={query.search}
+    searchPlaceholder={t("Search all cases")}
+    selects={filterFields.map(({ key, label, options }) => ({
+      name: t(label), value: query[key],
+      onChange: (selected) => onChange({ [key]: selected }),
+      options: options.map((option) => ({ value: option, label: value(option || "all") })),
+    }))}
+  />;
 }
 
 // SPEC: 队列视图为空 ≠ 没有工作。视图是范围（归属/时效），不是筛选条件。
@@ -513,7 +551,7 @@ function CaseInspector({ actorId, busy, canAssign, canDecide, detail, onClose, o
         });
   }
 
-  return <aside aria-labelledby="case-detail-title" className="rounded-xl bg-[var(--ad-surface)] shadow-[0_18px_50px_rgb(45_42_34/0.08)] lg:sticky lg:top-40"><header className="flex items-start justify-between gap-4 border-b border-[var(--ad-border)] p-5"><div className="min-w-0"><p className="text-xs font-semibold text-[var(--ad-text-muted)]">{value(adminCase.type)} · <span className="font-mono font-normal">{adminCase.caseKey}</span></p><h3 className="mt-1 truncate font-mono text-lg font-semibold" id="case-detail-title">{caseTicketId(adminCase) ?? adminCase.target.id}</h3>
+  return <aside aria-labelledby="case-detail-title" className="min-w-0 rounded-xl bg-[var(--ad-surface)] shadow-[0_18px_50px_rgb(45_42_34/0.08)] lg:sticky lg:top-20"><header className="flex items-start justify-between gap-4 border-b border-[var(--ad-border)] p-5"><div className="min-w-0"><p className="text-xs font-semibold text-[var(--ad-text-muted)]">{value(adminCase.type)} · <span className="break-all font-mono font-normal">{adminCase.caseKey}</span></p><h3 className="mt-1 truncate font-mono text-lg font-semibold" id="case-detail-title">{caseTicketId(adminCase) ?? adminCase.target.id}</h3>
       {/* SPEC: 工单必须能一键跳到它背后的客户。此前 Cases→Customer 是断的（只有 Customer→Cases），
           客服要另开一个标签页把 ID 粘过去才能看到这人的余额、订阅和历史工单。 */}
       <div className="mt-1 flex flex-wrap gap-3 text-xs">{adminCase.target.type === "user" ? <Link className="underline" href={`/admin/customers/${encodeURIComponent(adminCase.target.id)}`}>{t("Open Customer 360")}</Link> : null}{/* SPEC: 客服工单的客户可见回复只在客服会话里写得了；从工单一键过去，而不是让人去「专项工具」里再搜一遍。 */}{caseTicketId(adminCase) ? <Link className="font-semibold underline" href={`/admin/support?ticket=${encodeURIComponent(caseTicketId(adminCase)!)}`}>{t("Reply to customer")}</Link> : null}</div>
@@ -527,9 +565,9 @@ function CaseInspector({ actorId, busy, canAssign, canDecide, detail, onClose, o
       <section aria-labelledby="case-evidence-title" className={mobileStepClass("evidence")} data-case-step="evidence"><div className="flex items-center justify-between"><h4 className="text-sm font-semibold" id="case-evidence-title">{t("Evidence")}</h4><span className="text-xs text-[var(--ad-text-muted)]">{t("immutable sources")}</span></div><ol className="mt-3 space-y-2">{detail.evidence.map((item) => <li className="rounded-md bg-[var(--ad-surface-subtle)] p-3" key={item.id}><div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs font-semibold">{value(item.evidenceType)}</span><span className="text-xs text-[var(--ad-text-muted)]"><RelativeTime referenceTime={referenceTime} value={item.occurredAt} /></span></div><p className="mt-2 text-sm leading-6">{item.summary}</p><p className="mt-2 text-xs text-[var(--ad-text-muted)]">{value(item.access)}</p><details className="mt-2 text-xs text-[var(--ad-text-muted)]"><summary className="cursor-pointer">{t("Source details")}</summary><p className="mt-2 break-all">{value(item.source.type)} · {item.source.id}</p><p className="mt-1 break-all">{t("Evidence")}: {item.id}</p></details></li>)}</ol></section>
 
       <div className={`${mobileStepClass("decision")} space-y-5`} data-case-step="decision">
-      {canAssign ? <form className="space-y-3 border-t border-[var(--ad-border)] pt-5" onSubmit={(event) => { event.preventDefault(); if (!busy && !assignmentBlocked) void onMutate("Case assignment saved", saveAssignment); }}><div className="flex items-center justify-between gap-3"><h4 className="text-sm font-semibold">{t("Assignment")}</h4>{actorId && adminCase.ownerId !== actorId && !assignmentBlocked ? <WorkspaceButton disabled={busy} onClick={() => void onMutate("Case assigned to you", assignToMe)} type="button">{t("Assign to me")}</WorkspaceButton> : null}</div>{assignmentBlocked ? <p className="text-xs text-[var(--ad-text-muted)]">{t("Reopen this case before changing its assignment.")}</p> : null}<fieldset className="space-y-3" disabled={busy || assignmentBlocked}><div className="grid gap-3 sm:grid-cols-2"><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Owner ID")}<input className={fieldClass} onChange={(event) => setOwnerId(event.target.value)} value={ownerId} /></label><Select label="Priority" onChange={(value) => setPriority(value as OperationsCase["priority"])} options={["urgent", "high", "normal", "low"]} value={priority} /></div><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Audit reason")}<input className={fieldClass} onChange={(event) => setReason(event.target.value)} required value={reason} /></label><WorkspaceButton disabled={busy || assignmentBlocked || reason.trim().length < 3} tone="primary" type="submit">{t("Save assignment")}</WorkspaceButton></fieldset></form> : null}
+      {canAssign ? <form className="space-y-3 border-t border-[var(--ad-border)] pt-5" onSubmit={(event) => { event.preventDefault(); if (!busy && !assignmentBlocked) void onMutate("Case assignment saved", saveAssignment); }}><div className="flex items-center justify-between gap-3"><h4 className="text-sm font-semibold">{t("Assignment")}</h4>{actorId && adminCase.ownerId !== actorId && !assignmentBlocked ? <WorkspaceButton disabled={busy} onClick={() => void onMutate("Case assigned to you", assignToMe)} type="button">{t("Assign to me")}</WorkspaceButton> : null}</div>{assignmentBlocked ? <p className="text-xs text-[var(--ad-text-muted)]">{t("Reopen this case before changing its assignment.")}</p> : null}<details><summary className="min-h-9 cursor-pointer text-sm font-medium text-[var(--ad-text-muted)]">{t("Edit assignment")}</summary><fieldset className="mt-3 space-y-3" disabled={busy || assignmentBlocked}><div className="grid gap-3 sm:grid-cols-2"><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Owner ID")}<input className={fieldClass} onChange={(event) => setOwnerId(event.target.value)} value={ownerId} /></label><Select label="Priority" onChange={(value) => setPriority(value as OperationsCase["priority"])} options={["urgent", "high", "normal", "low"]} value={priority} /></div><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Audit reason")}<input className={fieldClass} onChange={(event) => setReason(event.target.value)} required value={reason} /></label><WorkspaceButton disabled={busy || assignmentBlocked || reason.trim().length < 3} tone="primary" type="submit">{t("Save assignment")}</WorkspaceButton></fieldset></details></form> : null}
 
-      {canAssign || canDecide ? <section className="space-y-3 border-t border-[var(--ad-border)] pt-5"><h4 className="text-sm font-semibold">{t("Lifecycle")}</h4>{canAssign && ["new", "triaged", "in_progress", "reopened"].includes(adminCase.status) ? <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Resume after (optional)")}<input className={fieldClass} onChange={(event) => setResumeAt(event.target.value)} type="datetime-local" value={resumeAt} /></label> : null}<div className="flex flex-wrap gap-2">{canAssign && ["new", "triaged", "in_progress", "reopened"].includes(adminCase.status) ? <WorkspaceButton disabled={busy} onClick={() => confirmCommand({ command: "wait", title: t("Park this case on a dependency"), effect: t("The case leaves the active queue until someone resumes it. SLA keeps running."), submitLabel: t("Wait for dependency"), notice: "Case moved to waiting", body: (waitReason) => ({ reason: waitReason, resumeAt: resumeAt ? new Date(resumeAt).toISOString() : undefined }) })}>{t("Wait for dependency")}</WorkspaceButton> : null}{canDecide && ["resolved", "closed"].includes(adminCase.status) ? <WorkspaceButton disabled={busy} onClick={() => confirmCommand({ command: "reopen", title: t("Reopen this case"), effect: t("A resolved case goes back to the active queue, or a recurrence is filed against it."), submitLabel: t("Reopen / create recurrence"), notice: "Case reopened or recurrence created", body: (reopenReason) => ({ reason: reopenReason }) })}>{t("Reopen / create recurrence")}</WorkspaceButton> : null}</div></section> : null}
+      {canAssign || canDecide ? <details className="space-y-3 border-t border-[var(--ad-border)] pt-3"><summary className="min-h-9 cursor-pointer text-sm font-semibold">{t("Lifecycle")}</summary>{canAssign && ["new", "triaged", "in_progress", "reopened"].includes(adminCase.status) ? <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Resume after (optional)")}<input className={fieldClass} onChange={(event) => setResumeAt(event.target.value)} type="datetime-local" value={resumeAt} /></label> : null}<div className="flex flex-wrap gap-2">{canAssign && ["new", "triaged", "in_progress", "reopened"].includes(adminCase.status) ? <WorkspaceButton disabled={busy} onClick={() => confirmCommand({ command: "wait", title: t("Park this case on a dependency"), effect: t("The case leaves the active queue until someone resumes it. SLA keeps running."), submitLabel: t("Wait for dependency"), notice: "Case moved to waiting", body: (waitReason) => ({ reason: waitReason, resumeAt: resumeAt ? new Date(resumeAt).toISOString() : undefined }) })}>{t("Wait for dependency")}</WorkspaceButton> : null}{canDecide && ["resolved", "closed"].includes(adminCase.status) ? <WorkspaceButton disabled={busy} onClick={() => confirmCommand({ command: "reopen", title: t("Reopen this case"), effect: t("A resolved case goes back to the active queue, or a recurrence is filed against it."), submitLabel: t("Reopen / create recurrence"), notice: "Case reopened or recurrence created", body: (reopenReason) => ({ reason: reopenReason }) })}>{t("Reopen / create recurrence")}</WorkspaceButton> : null}</div></details> : null}
 
       {canDecide ? <section className="space-y-4 border-t border-[var(--ad-border)] pt-5" aria-labelledby="case-decision-title"><h4 className="text-sm font-semibold" id="case-decision-title">{t("Decision and verification")}</h4><Select label={customerCase ? "Customer action" : "Decision"} onChange={setDecision} options={operationOptions} value={decision} />{customerCase ? null : <p className="text-xs leading-5 text-[var(--ad-text-muted)]">{t("Taking content down or restoring it happens in Moderation — that is where the effect is actually applied.")} <Link className="underline" href="/admin/moderation">{t("Open Moderation")}</Link></p>}{needsOutcomeRef ? <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Outcome reference")}<input className={fieldClass} onChange={(event) => setOutcomeRef(event.target.value)} placeholder={adminCase.type === "billing_dispute" ? "ledger:<id>, refund:<id>, subscription:<id>:<status>" : "incident:<id>"} value={outcomeRef} /></label> : null}<label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Resolution summary")}<textarea className={textAreaClass} onChange={(event) => setSummary(event.target.value)} value={summary} /></label><fieldset className="space-y-2"><legend className="mb-2 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Select supporting evidence")}</legend>{detail.evidence.length === 0 ? <p className="text-sm text-[var(--ad-text-muted)]">{t("No evidence is available for this decision.")}</p> : detail.evidence.map((item) => <label className="flex min-h-11 items-start gap-3 rounded-md bg-[var(--ad-surface-subtle)] p-3 text-sm" key={item.id}><input className="mt-1 h-4 w-4 shrink-0 accent-[var(--ad-ink)]" checked={refs.includes(item.id)} onChange={(event) => setEvidenceRefs((current) => event.target.checked ? [...current, item.id] : current.filter((id) => id !== item.id))} type="checkbox" /><span className="min-w-0"><span className="block text-xs font-semibold">{value(item.evidenceType)}</span><span className="mt-1 block whitespace-pre-wrap break-words leading-6">{item.summary}</span></span></label>)}</fieldset><div className="flex flex-wrap gap-2"><WorkspaceButton disabled={busy || !decision || !summary.trim() || refs.length === 0 || (needsOutcomeRef && !outcomeRef.trim())} onClick={() => void onMutate(customerCase ? "Customer Case action recorded" : "Case decision recorded", recordDecision)}><ClipboardCheck className="h-4 w-4" />{customerCase ? t("Record action") : t("Record decision")}</WorkspaceButton>{/* SPEC: 自动验证只对客服 / 账务工单成立 —— 它读的是处置里的下游结果引用（ledger / subscription / incident）。
             INTENT: 复核类工单（内容举报 / 申诉）的决策根本不写这个引用，点下去永远是

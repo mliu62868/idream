@@ -1,0 +1,17 @@
+{
+  "label": "native-baseline",
+  "mode": "baseline",
+  "command": [
+    "./h3_lora_check",
+    "/Users/kk/code/idream/.scratch/h3-lora-20260929/fixture",
+    "/Users/kk/code/idream/.scratch/h3-lora-20260929/baseline",
+    "token_refiner.blocks.0.attn.qkv_proj.weight",
+    "token_refiner.blocks.0.attn.out_proj.weight",
+    "token_refiner.blocks.0.mlp.fc1.weight",
+    "token_refiner.blocks.0.mlp.fc2.weight",
+    "token_refiner.blocks.0.norm1.weight"
+  ],
+  "exitCode": 0,
+  "wallSeconds": 0.812,
+  "acceleratorLease": true
+}

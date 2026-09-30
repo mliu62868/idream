@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CharacterSoulPanel } from "./CharacterSoulPanel";
-import { characterWorkspaceDetail } from "./character-workspace-fixture";
+import { characterWorkspaceDetail, withCharacterWorkspaceDetail } from "./character-workspace-fixture";
 
 const operation = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/admin-v2-operation", () => ({ adminV2Operation: operation }));
@@ -72,6 +72,17 @@ describe("Soul draft retention", () => {
     expect(container.querySelector("input")!.value).toBe("Mira draft");
     expect(container.textContent).toContain("Unsaved draft");
     expect(runCommittedMutation).not.toHaveBeenCalled();
+  });
+
+  it("distinguishes a paused published character from a never-published draft", async () => {
+    await render();
+    expect(container.textContent).toContain("This Character has not been published yet.");
+    await render(actor, withCharacterWorkspaceDetail(data, {
+      preview: { live: null, changedFields: ["new_release"] },
+      journey: { release: { currentReleaseId: "release-2", servingState: "paused" } },
+    }));
+    expect(container.textContent).toContain("has a published version but is currently offline");
+    expect(container.textContent).not.toContain("has not been published yet");
   });
 
   it("does not reuse another operator's draft", async () => {

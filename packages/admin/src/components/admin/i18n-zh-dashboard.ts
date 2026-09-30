@@ -3,6 +3,12 @@
 // INVARIANT: key 在所有 i18n-zh-*.ts 之间互斥——同一个 key 只能有一个域文件持有；
 // 由 i18n-zh-exclusivity.test.ts 强制。新增文案放它所属的域文件，不要另开「杂项」文件。
 export const adminZhDashboard: Record<string, string> = {
+  "Review case": "查看案件",
+  "Investigate incident": "排查事故",
+  "Review command evidence": "查看命令证据",
+  "View mention context": "查看提及上下文",
+  "Review release": "查看发布检查",
+  "Review creative run": "查看创作任务",
   "Character release published": "角色已发布",
   "character release publish": "发布角色",
 

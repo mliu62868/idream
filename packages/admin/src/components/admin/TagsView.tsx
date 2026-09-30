@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GitMerge, Loader2, Pencil, Plus, RefreshCcw, Save, X } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
+import { Field } from "@/components/admin/ui/FormPage";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
@@ -378,23 +379,27 @@ function CreateTagSection({
   return (
     <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
       <h2 className="text-sm font-semibold">{t("New tag")}</h2>
-      <div className="mt-3 grid gap-3 md:grid-cols-3">
-        <input
-          aria-label={t("Label")}
-          className={inputClass}
-          maxLength={80}
-          onChange={(event) => setLabel(event.target.value)}
-          placeholder={t("Label")}
-          value={label}
-        />
-        <input
-          aria-label={t("Category (blank=none)")}
-          className={inputClass}
-          maxLength={40}
-          onChange={(event) => setCategory(event.target.value)}
-          placeholder={t("Category (blank=none)")}
-          value={category}
-        />
+      <div className="mt-3 grid items-end gap-3 md:grid-cols-3">
+        <Field label={t("Label")}>
+          <input
+            aria-label={t("Label")}
+            className={inputClass}
+            maxLength={80}
+            onChange={(event) => setLabel(event.target.value)}
+            placeholder={t("Label")}
+            value={label}
+          />
+        </Field>
+        <Field label={t("Category (blank=none)")}>
+          <input
+            aria-label={t("Category (blank=none)")}
+            className={inputClass}
+            maxLength={40}
+            onChange={(event) => setCategory(event.target.value)}
+            placeholder={t("Category (blank=none)")}
+            value={category}
+          />
+        </Field>
         <button
           className="inline-flex h-10 items-center justify-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
           disabled={!slug}
@@ -467,33 +472,37 @@ function MergeSection({
       <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
         {t("Move every character from the source tag to the target tag, then delete the source tag.")}
       </p>
-      <div className="mt-3 grid gap-3 md:grid-cols-3">
-        <select
-          aria-label={t("Source tag")}
-          className={cn(inputClass, "appearance-none")}
-          onChange={(event) => setSourceId(event.target.value)}
-          value={sourceId}
-        >
-          <option value="">{t("Source tag…")}</option>
-          {tags.map((tag) => (
-            <option key={tag.id} value={tag.id}>
-              {tag.slug} ({tag.characterCount})
-            </option>
-          ))}
-        </select>
-        <select
-          aria-label={t("Target tag")}
-          className={cn(inputClass, "appearance-none")}
-          onChange={(event) => setTargetId(event.target.value)}
-          value={targetId}
-        >
-          <option value="">{t("Target tag…")}</option>
-          {tags.map((tag) => (
-            <option key={tag.id} value={tag.id}>
-              {tag.slug} ({tag.characterCount})
-            </option>
-          ))}
-        </select>
+      <div className="mt-3 grid items-end gap-3 md:grid-cols-3">
+        <Field label={t("Source tag")}>
+          <select
+            aria-label={t("Source tag")}
+            className={cn(inputClass, "appearance-none")}
+            onChange={(event) => setSourceId(event.target.value)}
+            value={sourceId}
+          >
+            <option value="">{t("Source tag…")}</option>
+            {tags.map((tag) => (
+              <option key={tag.id} value={tag.id}>
+                {tag.slug} ({tag.characterCount})
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label={t("Target tag")}>
+          <select
+            aria-label={t("Target tag")}
+            className={cn(inputClass, "appearance-none")}
+            onChange={(event) => setTargetId(event.target.value)}
+            value={targetId}
+          >
+            <option value="">{t("Target tag…")}</option>
+            {tags.map((tag) => (
+              <option key={tag.id} value={tag.id}>
+                {tag.slug} ({tag.characterCount})
+              </option>
+            ))}
+          </select>
+        </Field>
         <button
           className="inline-flex h-10 items-center justify-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
           disabled={!canOpen}

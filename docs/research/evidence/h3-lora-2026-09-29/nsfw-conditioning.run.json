@@ -1,0 +1,12 @@
+{
+  "label": "nsfw-conditioning",
+  "mode": "conditioning",
+  "command": [
+    "/Users/kk/ComfyUI-Installs/idream-ltx25-v0342/ComfyUI/.venv/bin/python3",
+    "-u",
+    "/Users/kk/code/idream/.scratch/h3-lora-20260929/encode_conditioning.py"
+  ],
+  "exitCode": 0,
+  "wallSeconds": 17.73,
+  "acceleratorLease": true
+}

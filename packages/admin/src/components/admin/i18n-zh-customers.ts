@@ -90,6 +90,7 @@ export const adminZhCustomers: Record<string, string> = {
   "Already erased (idempotent).": "已擦除（幂等）。",
   "Appeals": "申诉",
   "Assignment": "分配",
+  "Edit assignment": "编辑分配",
   "Audit logged": "已写审计",
   "Authorization": "授权",
   "Balance": "余额",

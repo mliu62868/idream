@@ -194,7 +194,7 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
         </div>
       ) : null}
 
-      <AssetImage asset={row.asset} />
+      <AssetImage asset={row.asset} preview />
 
       <DetailSection title={t("Basic info")}>
         <InfoGrid

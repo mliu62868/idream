@@ -5,7 +5,7 @@ import Link from "next/link";
 import type { CharacterWorkspaceDetail } from "@idream/shared/admin";
 import { StatusBadge } from "@/features/operations/WorkspaceUi";
 import { cn } from "@/lib/utils";
-import { characterHasNoUnpublishedChanges } from "./character-workspace-format";
+import { characterHasNoUnpublishedChanges, characterHasPublishedRelease } from "./character-workspace-format";
 
 const previewChangeLabels: Record<string, string> = {
   new_release: "First release",
@@ -18,23 +18,28 @@ const previewChangeLabels: Record<string, string> = {
   assetPack: "Image pack",
 };
 
-export function releasePreviewChangeSummary(changedFields: readonly string[]) {
+export function releasePreviewChangeSummary(changedFields: readonly string[], previouslyPublished = false) {
   return {
-    firstRelease: changedFields.includes("new_release"),
+    firstRelease: !previouslyPublished && changedFields.includes("new_release"),
     labels: changedFields.map(
-      (field) => previewChangeLabels[field] ?? field.replaceAll("_", " "),
+      (field) => field === "new_release" && previouslyPublished
+        ? "New release"
+        : previewChangeLabels[field] ?? field.replaceAll("_", " "),
     ),
   };
 }
 
 function ReleaseChangeSummary({
-  changedFields,
+  data,
 }: {
-  changedFields: readonly string[];
+  data: CharacterWorkspaceDetail;
 }) {
   const { t } = useAdminI18n();
-  const summary = releasePreviewChangeSummary(changedFields);
-  const message = summary.firstRelease
+  const previouslyPublished = characterHasPublishedRelease(data);
+  const summary = releasePreviewChangeSummary(data.preview.changedFields, previouslyPublished);
+  const message = previouslyPublished && !data.preview.live
+    ? "This character has a published version but is currently offline."
+    : summary.firstRelease
     ? "First release — nothing is live yet."
     : summary.labels.length
       ? "{count} areas differ from Live."
@@ -134,7 +139,7 @@ export function PreviewDiff({ data }: { data: CharacterWorkspaceDetail }) {
               {t("Current and draft assets")}
             </h2>
           </div>
-          <ReleaseChangeSummary changedFields={data.preview.changedFields} />
+          <ReleaseChangeSummary data={data} />
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
             {snapshots.map((snapshot) => {
               const cover = snapshot.assetPack.character_cover;
@@ -182,7 +187,7 @@ export function PreviewDiff({ data }: { data: CharacterWorkspaceDetail }) {
   }
   return (
     <div>
-      <ReleaseChangeSummary changedFields={data.preview.changedFields} />
+      <ReleaseChangeSummary data={data} />
       {previewReady ? (
         <section aria-labelledby="real-renderer-preview-title">
           <div className="flex flex-wrap items-end justify-between gap-2">

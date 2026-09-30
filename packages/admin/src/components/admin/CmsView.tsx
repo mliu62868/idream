@@ -13,6 +13,7 @@ import {
 import { useCallback, useEffect, useState } from "react";
 import { CmsArticleEditor } from "./CmsArticleEditor";
 import { apiGet, apiWrite } from "@/components/admin/api";
+import { Field } from "@/components/admin/ui/FormPage";
 import { useAdminI18n, type AdminLocale } from "@/components/admin/i18n";
 import { formatDateTime } from "@/components/admin/ui/format";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
@@ -71,7 +72,7 @@ type EditDraft = {
 const emptyArticleBody =
   '{\n  "heading": "",\n  "intro": "",\n  "sections": []\n}';
 const inputClass =
-  "rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]";
+  "rounded-md h-10 w-full min-w-0 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]";
 
 export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
   const { locale, t, value: valueLabel } = useAdminI18n();
@@ -370,30 +371,34 @@ export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
             {valueLabel(publishDraft.nextStatus)}
           </p>
           <div className="mt-3 grid gap-3 md:grid-cols-[1fr_260px_auto_auto]">
-            <input
-              aria-label={t("CMS publish reason")}
-              className={inputClass}
-              onChange={(event) =>
-                setPublishDraft({
-                  ...publishDraft,
-                  reason: event.target.value,
-                })
-              }
-              placeholder={t("Reason (≥3)")}
-              value={publishDraft.reason}
-            />
-            <input
-              aria-label={t("CMS publish confirmation")}
-              className={`${inputClass} font-mono`}
-              onChange={(event) =>
-                setPublishDraft({
-                  ...publishDraft,
-                  confirmation: event.target.value,
-                })
-              }
-              placeholder={t("Type page path")}
-              value={publishDraft.confirmation}
-            />
+            <Field label={t("Reason (≥3)")}>
+              <input
+                aria-label={t("CMS publish reason")}
+                className={inputClass}
+                onChange={(event) =>
+                  setPublishDraft({
+                    ...publishDraft,
+                    reason: event.target.value,
+                  })
+                }
+                placeholder={t("Reason (≥3)")}
+                value={publishDraft.reason}
+              />
+            </Field>
+            <Field label={t("Type page path")}>
+              <input
+                aria-label={t("CMS publish confirmation")}
+                className={`${inputClass} font-mono`}
+                onChange={(event) =>
+                  setPublishDraft({
+                    ...publishDraft,
+                    confirmation: event.target.value,
+                  })
+                }
+                placeholder={t("Type page path")}
+                value={publishDraft.confirmation}
+              />
+            </Field>
             <button
               className="rounded-md inline-flex h-10 items-center justify-center border border-[var(--ad-border)] px-3 text-sm"
               onClick={() => setPublishDraft(null)}
@@ -518,15 +523,17 @@ function EditPageForm({
         )}
       </p>
       <div className="mt-3 grid gap-3 md:grid-cols-2">
-        <input
-          className={inputClass}
-          onChange={(event) =>
-            onChange({ ...draft, title: event.target.value })
-          }
-          placeholder={t("Page title")}
-          value={draft.title}
-        />
-        <select
+        <Field label={t("Page title")}>
+          <input
+            className={inputClass}
+            onChange={(event) =>
+              onChange({ ...draft, title: event.target.value })
+            }
+            placeholder={t("Page title")}
+            value={draft.title}
+          />
+        </Field>
+        <Field label={t("CMS indexing status")}><select
           aria-label={t("CMS indexing status")}
           className={inputClass}
           onChange={(event) =>
@@ -539,41 +546,49 @@ function EditPageForm({
         >
           <option value="noindex">{t("noindex")}</option>
           <option value="index">{t("index")}</option>
-        </select>
-        <input
-          className={`${inputClass} md:col-span-2`}
-          onChange={(event) =>
-            onChange({ ...draft, description: event.target.value })
-          }
-          placeholder={t("Meta description")}
-          value={draft.description}
-        />
-        <input
-          className={`${inputClass} font-mono md:col-span-2`}
-          onChange={(event) =>
-            onChange({ ...draft, canonical: event.target.value })
-          }
-          placeholder={t("Canonical path (blank uses the page path)")}
-          value={draft.canonical}
-        />
+        </select></Field>
+        <Field label={t("Meta description")} className="md:col-span-2">
+          <input
+            className={inputClass}
+            onChange={(event) =>
+              onChange({ ...draft, description: event.target.value })
+            }
+            placeholder={t("Meta description")}
+            value={draft.description}
+          />
+        </Field>
+        <Field label={t("Canonical path")} className="md:col-span-2">
+          <input
+            className={`${inputClass} font-mono`}
+            onChange={(event) =>
+              onChange({ ...draft, canonical: event.target.value })
+            }
+            placeholder={t("Canonical path (blank uses the page path)")}
+            value={draft.canonical}
+          />
+        </Field>
         <CmsArticleEditor bodyJson={draft.bodyJson} onChange={(bodyJson) => onChange({ ...draft, bodyJson })} />
-        <input
-          className={inputClass}
-          onChange={(event) =>
-            onChange({ ...draft, reason: event.target.value })
-          }
-          placeholder={t("Reason (≥3)")}
-          value={draft.reason}
-        />
-        <input
-          aria-label={t("CMS edit confirmation")}
-          className={`${inputClass} font-mono`}
-          onChange={(event) =>
-            onChange({ ...draft, confirmation: event.target.value })
-          }
-          placeholder={t("Type page path")}
-          value={draft.confirmation}
-        />
+        <Field label={t("Reason (≥3)")}>
+          <input
+            className={inputClass}
+            onChange={(event) =>
+              onChange({ ...draft, reason: event.target.value })
+            }
+            placeholder={t("Reason (≥3)")}
+            value={draft.reason}
+          />
+        </Field>
+        <Field label={t("Type page path")}>
+          <input
+            aria-label={t("CMS edit confirmation")}
+            className={`${inputClass} font-mono`}
+            onChange={(event) =>
+              onChange({ ...draft, confirmation: event.target.value })
+            }
+            placeholder={t("Type page path")}
+            value={draft.confirmation}
+          />
+        </Field>
         <div className="flex justify-end gap-2 md:col-span-2">
           <button
             className="rounded-md inline-flex h-10 items-center justify-center border border-[var(--ad-border)] px-3 text-sm"
@@ -655,39 +670,47 @@ function CreatePageForm({ onCreated, reload }: { onCreated: (message: string) =>
     confirmation.trim() === expectedPath;
 
   return (
-    <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-      <h2 className="text-sm font-semibold">{t("Create new page draft")}</h2>
+    <details className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
+      <summary className="cursor-pointer text-sm font-semibold"><h2 className="inline">{t("Create new page draft")}</h2></summary>
       <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
         {t(
           "Use a new lowercase CMS path. Duplicate and application-owned paths are rejected.",
         )}
       </p>
       <div className="mt-3 grid gap-3 md:grid-cols-2">
-        <input
-          className={inputClass}
-          onChange={(event) => setPath(event.target.value)}
-          placeholder={t("/guides/example")}
-          value={path}
-        />
-        <input
-          className={inputClass}
-          onChange={(event) => setTitle(event.target.value)}
-          placeholder={t("Page title")}
-          value={title}
-        />
-        <input
-          className={`${inputClass} md:col-span-2`}
-          onChange={(event) => setDescription(event.target.value)}
-          placeholder={t("Meta description")}
-          value={description}
-        />
-        <input
-          className={`${inputClass} font-mono`}
-          onChange={(event) => setCanonical(event.target.value)}
-          placeholder={t("Canonical path (optional)")}
-          value={canonical}
-        />
-        <select
+        <Field label={t("Page path")}>
+          <input
+            className={inputClass}
+            onChange={(event) => setPath(event.target.value)}
+            placeholder={t("/guides/example")}
+            value={path}
+          />
+        </Field>
+        <Field label={t("Page title")}>
+          <input
+            className={inputClass}
+            onChange={(event) => setTitle(event.target.value)}
+            placeholder={t("Page title")}
+            value={title}
+          />
+        </Field>
+        <Field label={t("Meta description")} className="md:col-span-2">
+          <input
+            className={inputClass}
+            onChange={(event) => setDescription(event.target.value)}
+            placeholder={t("Meta description")}
+            value={description}
+          />
+        </Field>
+        <Field label={t("Canonical path")}>
+          <input
+            className={`${inputClass} font-mono`}
+            onChange={(event) => setCanonical(event.target.value)}
+            placeholder={t("Canonical path (optional)")}
+            value={canonical}
+          />
+        </Field>
+        <Field label={t("CMS indexing status")}><select
           aria-label={t("CMS indexing status")}
           className={inputClass}
           onChange={(event) =>
@@ -697,21 +720,25 @@ function CreatePageForm({ onCreated, reload }: { onCreated: (message: string) =>
         >
           <option value="noindex">{t("noindex")}</option>
           <option value="index">{t("index")}</option>
-        </select>
+        </select></Field>
         <CmsArticleEditor bodyJson={bodyJson} onChange={setBodyJson} />
-        <input
-          className={inputClass}
-          onChange={(event) => setReason(event.target.value)}
-          placeholder={t("Reason (≥3)")}
-          value={reason}
-        />
-        <input
-          aria-label={t("CMS page confirmation")}
-          className={`${inputClass} font-mono`}
-          onChange={(event) => setConfirmation(event.target.value)}
-          placeholder={t("Type page path")}
-          value={confirmation}
-        />
+        <Field label={t("Reason (≥3)")}>
+          <input
+            className={inputClass}
+            onChange={(event) => setReason(event.target.value)}
+            placeholder={t("Reason (≥3)")}
+            value={reason}
+          />
+        </Field>
+        <Field label={t("Type page path")}>
+          <input
+            aria-label={t("CMS page confirmation")}
+            className={`${inputClass} font-mono`}
+            onChange={(event) => setConfirmation(event.target.value)}
+            placeholder={t("Type page path")}
+            value={confirmation}
+          />
+        </Field>
         <button
           className="inline-flex h-10 items-center justify-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50 md:col-span-2"
           disabled={!canCreate}
@@ -729,7 +756,7 @@ function CreatePageForm({ onCreated, reload }: { onCreated: (message: string) =>
       {err ? (
         <AuthorityRequestError cause={err.cause} message={err.message} onRetry={() => void reload()} />
       ) : null}
-    </section>
+    </details>
   );
 }
 

@@ -1,0 +1,28 @@
+h3: conditioning loaded from /Users/kk/code/idream/.scratch/h3-lora-20260929/conditioning.h3cd (49 tokens)
+refine text                  0/1   refine text                  1/1   
+precompute AdaLN             1/50  precompute AdaLN             2/50  precompute AdaLN             3/50  precompute AdaLN             4/50  precompute AdaLN             5/50  precompute AdaLN             6/50  precompute AdaLN             7/50  precompute AdaLN             8/50  precompute AdaLN             9/50  precompute AdaLN            10/50  precompute AdaLN            11/50  precompute AdaLN            12/50  precompute AdaLN            13/50  precompute AdaLN            14/50  precompute AdaLN            15/50  precompute AdaLN            16/50  precompute AdaLN            17/50  precompute AdaLN            18/50  precompute AdaLN            19/50  precompute AdaLN            20/50  precompute AdaLN            21/50  precompute AdaLN            22/50  precompute AdaLN            23/50  precompute AdaLN            24/50  precompute AdaLN            25/50  precompute AdaLN            26/50  precompute AdaLN            27/50  precompute AdaLN            28/50  precompute AdaLN            29/50  precompute AdaLN            30/50  precompute AdaLN            31/50  precompute AdaLN            32/50  precompute AdaLN            33/50  precompute AdaLN            34/50  precompute AdaLN            35/50  precompute AdaLN            36/50  precompute AdaLN            37/50  precompute AdaLN            38/50  precompute AdaLN            39/50  precompute AdaLN            40/50  precompute AdaLN            41/50  precompute AdaLN            42/50  precompute AdaLN            43/50  precompute AdaLN            44/50  precompute AdaLN            45/50  precompute AdaLN            46/50  precompute AdaLN            47/50  precompute AdaLN            48/50  precompute AdaLN            49/50  precompute AdaLN            50/50  
+load transformer core        1/50  load transformer core        2/50  load transformer core        3/50  load transformer core        4/50  load transformer core        5/50  load transformer core        6/50  load transformer core        7/50  load transformer core        8/50  load transformer core        9/50  load transformer core       10/50  load transformer core       11/50  load transformer core       12/50  load transformer core       13/50  load transformer core       14/50  load transformer core       15/50  load transformer core       16/50  load transformer core       17/50  load transformer core       18/50  load transformer core       19/50  load transformer core       20/50  load transformer core       21/50  load transformer core       22/50  load transformer core       23/50  load transformer core       24/50  load transformer core       25/50  load transformer core       26/50  load transformer core       27/50  load transformer core       28/50  load transformer core       29/50  load transformer core       30/50  load transformer core       31/50  load transformer core       32/50  load transformer core       33/50  load transformer core       34/50  load transformer core       35/50  load transformer core       36/50  load transformer core       37/50  load transformer core       38/50  load transformer core       39/50  load transformer core       40/50  load transformer core       41/50  load transformer core       42/50  load transformer core       43/50  load transformer core       44/50  load transformer core       45/50  load transformer core       46/50  load transformer core       47/50  load transformer core       48/50  load transformer core       49/50  load transformer core       50/50  
+h3 profile: H3 DiT                   load           wall=  21.089s encode=  0.601s wait=   0.064s root-gpu=  0.012s peak= 36.170GiB alloc= 37.751GiB submissions=54 direct=70 linear=9 conv=0 attention=2
+denoise                      0/4   denoise                      1/4   denoise                      2/4   denoise                      3/4   denoise                      4/4   
+h3 profile: H3 DiT                   Euler denoise  wall=  30.161s encode= 20.102s wait=   9.745s root-gpu=  0.007s peak= 36.170GiB alloc=  0.000GiB submissions=8 direct=628 linear=800 conv=0 attention=200
+h3 profile: H3 DiT                   total          wall=  51.983s encode= 20.702s wait=   9.809s root-gpu=  0.020s peak= 36.170GiB alloc= 37.751GiB submissions=62 direct=698 linear=809 conv=0 attention=202
+audio VAE                    0/7   
+h3: cannot open audio VAE config /Users/kk/code/idream/.scratch/h3-lora-20260929/nsfw-model/FL2VA/audio_vae/config.json: No such file or directory
+       52.14 real        12.46 user        11.00 sys
+         27905458176  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+             2708507  page reclaims
+                 189  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                3295  voluntary context switches
+               83074  involuntary context switches
+        218730213882  instructions retired
+         89433607942  cycles elapsed
+         40422815864  peak memory footprint

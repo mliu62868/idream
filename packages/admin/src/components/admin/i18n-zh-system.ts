@@ -7,8 +7,8 @@ export const adminZhSystem: Record<string, string> = {
   "An existing {effect} override is already recorded for this capability; applying a new one replaces it.":
     "这个能力上已经有一条 {effect} 覆盖；再执行一次会替换掉它。",
   "Applying this gives the user the capability.": "执行后该用户获得这项能力。",
-  "Applying this removes the override and hands the decision back to the role.":
-    "执行后删除该覆盖，把决定权交回角色。",
+  "Applying this removes the override. The role and active grant bundles then decide this capability.":
+    "执行后删除该覆盖，由角色和当前有效授权包决定这项能力。",
   "Applying this takes the capability away.": "执行后收回这项能力。",
   "Checking what this user can do today…": "正在查询该用户当前的权限…",
   // 生成配置：发布闸没达标时，把还差什么写出来，而不是只把按钮置灰。
@@ -19,8 +19,7 @@ export const adminZhSystem: Record<string, string> = {
   "Could not read this user's current permissions. The change below still applies as written.":
     "读取该用户当前权限失败。下面的变更仍会按原样执行。",
   "Enter a user ID to see what they can do today.": "输入用户 ID 即可查看其当前权限。",
-  "No override is recorded for this capability yet; the role decides it today.":
-    "这个能力上还没有覆盖，目前由角色决定。",
+  "No individual override is recorded for this capability.": "这项能力没有单独的权限覆盖。",
   "There is no override to remove, so nothing changes.": "没有可删除的覆盖，执行后不会有任何变化。",
   "This user can already do it. Applying this pins the capability on with an override that outlives any role change.":
     "该用户已经有这项能力。执行后会加一条覆盖把它钉死，之后改角色也收不回。",
@@ -72,7 +71,17 @@ export const adminZhSystem: Record<string, string> = {
   "Permission override applied to {user}": "已为 {user} 应用权限覆盖",
   "Permission override unavailable · user.role.write is not granted":
     "权限覆盖不可用 · 尚未授予 user.role.write",
-  "Permission user ID": "权限用户 ID",
+  "Target user ID": "目标用户 ID",
+  "Choose a user": "选择用户",
+  "No users": "暂无用户",
+  "No users match these filters": "没有符合筛选条件的用户",
+  "Change or clear the filters to see other users.": "请调整或清除筛选条件，查看其他用户。",
+  "There are no user accounts to display.": "暂无可显示的用户账号。",
+  "Manage access": "管理访问权限",
+  "Manage access for {user}": "管理 {user} 的访问权限",
+  "Current role": "当前角色",
+  "Refresh access": "刷新访问权限",
+  "Select a user in the list below, or enter their ID to review access.": "从下方列表选择用户，或输入用户 ID 查看其访问权限。",
   "Profile {id} disabled": "配置 {id} 已停用",
   "Profile {id} published": "配置 {id} 已发布",
   "Profile {id} rolled back": "配置 {id} 已回滚",
@@ -90,8 +99,8 @@ export const adminZhSystem: Record<string, string> = {
     "基于完整审批权威数据审核高风险请求；申请人隔离和所需权限继续由服务端强制执行。",
   "Rollback profile {id}": "回滚配置 {id}",
   "Search audit log": "搜索审计日志",
-  "Search users, apply narrowly scoped permission overrides, and suspend or restore access through audited commands.":
-    "搜索完整用户权威数据，应用精确范围的权限覆盖，并通过审计命令暂停或恢复访问。",
+  "Find a user and review their current access before changing their role, permissions, or account status. Changes require confirmation and an audit reason.":
+    "先查找用户、核对当前访问权限，再变更角色、权限或账号状态。变更需要确认并填写审计原因。",
   "Search users": "搜索用户",
   "Status change unavailable · user.status.write is not granted":
     "状态变更不可用 · 尚未授予 user.status.write",
@@ -102,7 +111,7 @@ export const adminZhSystem: Record<string, string> = {
   "The complete approval authority query returned no work.": "完整的审批权威查询未返回待处理工作。",
   "The complete server-side query returned no records. Clear filters to inspect the authority.": "完整的服务端查询没有返回任何记录。清除筛选可查看全部权威数据。",
   "The flag flips for live traffic on the next request. Flipping it back is one more click on this same row.": "开关会在下一次线上请求时生效。改回去只需在这一行再点一次。",
-  "The override takes effect on the user's next request. Applying the opposite effect reverses it.": "覆盖会在该用户下一次请求时生效。再应用一次相反的效果就能改回去。",
+  "Updates the individual override on the next request. Clearing it restores the permissions from the role and active grant bundles.": "单项覆盖会在下一次请求时生效。清除覆盖后，由角色和当前有效授权包决定权限。",
   "The profile is validated against the runtime. Nothing customer-facing changes.": "只是拿运行时校验一遍这个配置，不改变任何面向客户的东西。",
   "This runs a real generation: {count} image on {runner}, queued behind customer work. It debits no Dreamcoins, and the queued job cannot be recalled once dispatched.": "这会跑一次真实生成：在 {runner} 上出 {count} 张图，和客户的任务排同一条队。不扣梦币；任务一旦派发就无法撤回。",
   "Trace consequential operator decisions to the actor, target, reason, request, and command evidence that produced them.":
@@ -151,23 +160,28 @@ export const adminZhSystem: Record<string, string> = {
   //         运营只能一条一条打权限覆盖补丁。这批文案是那两个入口的。
   "Role and grant bundles": "角色与授权包",
   "Target user: {userId}": "目标用户：{userId}",
-  "Enter a user ID in Permission override above to act on someone.": "先在上方「权限覆盖」里填用户 ID，才能对某个人操作。",
   "Change role": "变更角色",
   "Role changed to {role}.": "角色已变更为{role}。",
-  "Replaces every capability the old role granted.": "原角色带来的全部能力都会被替换掉。",
+  "Changes the role's permissions; grant bundles and individual overrides remain in effect.": "变更角色带来的权限；授权包和单项权限覆盖继续生效。",
   "Grant bundle": "授权包",
   "Assigned character IDs": "指派的角色 ID",
   "{count} characters in scope": "范围内 {count} 个角色",
   "This bundle only grants access to the characters listed here.": "这个授权包只对这里列出的角色生效。",
   "Granted {bundle}.": "已授予{bundle}。",
-  "Adds every capability in the bundle on top of the role.": "在角色之上叠加这个包里的全部能力。",
+  "Adds the bundle's grants on top of the role. Individual revocations still take precedence.": "在角色之上叠加授权包的权限；单项撤销仍然优先。",
   "Revoke bundle": "撤销授权包",
   "Revoked {bundle}.": "已撤销{bundle}。",
-  "Removes every capability the bundle added.": "移除这个包带来的全部能力。",
+  "Removes this bundle's grants. Permissions supplied by the role, other bundles, or individual overrides remain in effect.": "移除这个包的授权。角色、其他授权包和单项覆盖带来的权限继续生效。",
   "Revoke {bundle}": "撤销{bundle}",
   "Loading grant bundles…": "正在加载授权包…",
   "Grant bundles for this user could not be read.": "读不到这个用户的授权包。",
-  "No bundle is granted; the role decides every capability today.": "尚未授予任何包；当前全部能力都由角色决定。",
+  "No active grant bundles.": "没有当前有效的授权包。",
+  "{count} capabilities in this bundle": "此包包含 {count} 项能力",
+  "{count} assigned characters": "指派范围：{count} 个角色",
+  "All resources allowed by these capabilities": "这些能力允许访问的全部资源",
+  "Expires {time}": "到期时间：{time}",
+  "No expiry": "无到期时间",
+  "Review granted capabilities and scope": "查看已授予的能力和范围",
   // —— 审计日志的重复折叠（features/audit/collapse-runs.ts）——
   // INTENT: 一次批量操作会往审计日志写几十条只有 ID 与毫秒不同的记录，首屏被它吃光。
   //         折叠是展示层的，所以"折了多少、怎么撤销"必须写在界面上。

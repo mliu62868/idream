@@ -1,6 +1,6 @@
 "use client";
 
-import type { TodayProjection, TodayWorkItem } from "@idream/shared/admin";
+import type { TodayProjection, TodaySourceType, TodayWorkItem } from "@idream/shared/admin";
 import { ArrowLeft, ArrowRight, Bell, Eye, MoreHorizontal, Pin, UserPlus } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
@@ -29,12 +29,27 @@ export function workItemKey(item: TodayWorkItem) {
 
 type Translate = (key: string, values?: Record<string, string | number>) => string;
 
+const SOURCE_ACTION: Record<TodaySourceType, string> = {
+  admin_case: "Review case",
+  ops_incident: "Investigate incident",
+  control_plane_command: "Review command evidence",
+  collaboration_mention: "View mention context",
+  character_release: "Review release",
+  creative_run: "Review creative run",
+};
+
+export function todaySourceAction(item: TodayWorkItem) {
+  return item.sourceType === "character_release" && new URL(item.deepLink, "http://admin.local").searchParams.get("tab") === "monitor"
+    ? "Inspect live monitoring"
+    : SOURCE_ACTION[item.sourceType];
+}
+
 // SPEC: Today 生成的系统标题必须跟随界面语言；运营人员自己写的标题保持原文。
 // INTENT: 事故严重度已经由紧邻标题的色标表达，标题再重复 medium/high 只增加扫读噪音。
 export function todayWorkItemTitle(item: TodayWorkItem, t: Translate) {
   if (item.sourceType === "ops_incident") {
-    const incident = /^(?:critical|high|medium|low) incident:\s*(.+)$/i.exec(item.title);
-    if (incident) return /^[a-f0-9]{32,}$/i.test(incident[1]) ? t("Operational incident") : t("Incident: {signature}", { signature: incident[1] });
+    const incident = /^(?:critical|high|medium|low) incident(?::\s*(.+))?$/i.exec(item.title);
+    if (incident) return !incident[1] || /^[a-f0-9]{32,}$/i.test(incident[1]) ? t("Operational incident") : t("Incident: {signature}", { signature: incident[1] });
   }
   return t(item.title);
 }
@@ -223,7 +238,7 @@ export function WorkQueue({
         </p>
       ) : null}
       </div>
-      {preview ? <div className={`${mobilePreview ? "" : "hidden lg:block"} min-w-0 scroll-mt-28 outline-none lg:sticky lg:top-4`} ref={previewRef} tabIndex={-1}>
+      {preview ? <div className={`${mobilePreview ? "" : "hidden lg:block"} min-w-0 scroll-mt-28 outline-none lg:sticky lg:top-20`} ref={previewRef} tabIndex={-1}>
         <button className="mb-3 inline-flex min-h-10 items-center gap-2 text-sm lg:hidden" onClick={() => { setMobilePreview(false); requestAnimationFrame(() => document.querySelector<HTMLButtonElement>('[data-today-preview][aria-pressed="true"]')?.focus()); }} type="button"><ArrowLeft className="h-4 w-4" />{t("Back to work list")}</button>
         <WorkItem {...itemProps} detail item={preview} key={workItemKey(preview)} onToggleSelected={actionable ? toggle : undefined} selected={false} />
       </div> : <div className="hidden min-h-96 items-center justify-center rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-8 text-sm text-[var(--ad-text-muted)] lg:flex">{t("Select a work item to preview its details.")}</div>}
@@ -430,7 +445,7 @@ function WorkItem({ density, detail, onPreview, previewKey, item, locale, now, o
       </div>
       <div className="mt-5">
         <p className="mb-3 text-sm text-[var(--ad-text-muted)]">{todayOperationalText(item.recommendedAction, locale)}</p>
-        <Link className="flex min-h-11 items-center justify-center gap-2 rounded-md bg-[var(--ad-ink)] px-5 text-sm font-semibold text-white" href={item.deepLink}>{t("Open source record")}<ArrowRight className="h-4 w-4" /></Link>
+        <Link className="flex min-h-11 items-center justify-center gap-2 rounded-md bg-[var(--ad-ink)] px-5 text-sm font-semibold text-white" href={item.deepLink}>{t(todaySourceAction(item))}<ArrowRight className="h-4 w-4" /></Link>
       </div>
       <details className="mt-5 border-t border-[var(--ad-border)] pt-3">
         <summary className="cursor-pointer text-sm font-semibold">{t("Work details")}</summary>
@@ -439,12 +454,12 @@ function WorkItem({ density, detail, onPreview, previewKey, item, locale, now, o
     </article>;
   }
 
-  return <div className={`flex items-start gap-3 px-4 ${density === "compact" ? "py-3" : "py-5"} ${previewKey === workItemKey(item) ? "bg-[var(--ad-red-bg)]/50" : "hover:bg-black/[0.025]"}`}>
+  return <div className={`flex items-start gap-3 px-4 ${density === "compact" ? "py-2.5" : "py-5"} ${previewKey === workItemKey(item) ? "bg-[var(--ad-surface-subtle)] shadow-[inset_3px_0_0_var(--ad-ink)]" : "hover:bg-black/[0.025]"}`}>
     {onToggleSelected ? <input aria-label={t("Select {title}", { title })} checked={selected} className="mt-1 h-4 w-4 shrink-0" onChange={(event) => onToggleSelected(item, event.target.checked)} type="checkbox" /> : null}
     <button data-today-preview aria-pressed={previewKey === workItemKey(item)} aria-label={t("Preview {title}", { title })} className="min-w-0 flex-1 text-left focus-visible:outline-2 focus-visible:outline-offset-4" onClick={() => onPreview?.(item)} type="button">
       <span className="flex items-start gap-2"><SeverityChip severity={item.severity} /><span className="min-w-0 break-words text-sm font-semibold leading-5">{item.pinned ? <Pin aria-hidden className="mr-1 inline h-3 w-3" /> : null}{title}</span></span>
-      <span className="mt-3 block truncate text-sm text-[var(--ad-text-muted)]">{todayOperationalText(item.summary, locale)}</span>
-      <span className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--ad-text-muted)]"><span className="max-w-full truncate">{item.ownerId ?? t("Unassigned")}{item.sourceType === "ops_incident" ? ` · ${item.sourceId.slice(-8)}` : ""}</span><SlaChip item={item} locale={locale} now={now} /></span>
+      <span className={`${density === "compact" ? "mt-1.5" : "mt-3"} block truncate text-sm text-[var(--ad-text-muted)]`}>{todayOperationalText(item.summary, locale)}</span>
+      <span className={`${density === "compact" ? "mt-1.5" : "mt-3"} flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--ad-text-muted)]`}><span className="max-w-full truncate">{item.ownerId ?? t("Unassigned")}{item.sourceType === "ops_incident" ? ` · ${item.sourceId.slice(-8)}` : ""}</span><SlaChip item={item} locale={locale} now={now} /></span>
     </button>
   </div>;
 }

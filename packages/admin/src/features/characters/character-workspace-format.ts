@@ -1,10 +1,31 @@
 /**
- * SPEC: 角色域独有的两条展示口径 —— 通用的（日期、时长、梦币）在 ui/format.tsx。
- * INTENT: 它们各自只有几行，但两边的面板必须给出同一个答案 —— 详情页的「线上版本」和发布页的
- *         回滚下拉曾经各算各的序号，同一个版本出现两种叫法。
+ * SPEC: 角色域共用的展示判断；通用日期、时长、梦币在 ui/format.tsx。
+ * INTENT: 详情、监控与发布面板必须对同一个版本给出一致的状态和称呼。
  */
 
 import type { CharacterWorkspaceDetail } from "@idream/shared/admin";
+
+export function characterReleaseMonitorNeedsAttention(
+  monitor: CharacterWorkspaceDetail["releases"][number]["monitors"][number],
+) {
+  return monitor.status === "action_required" || monitor.verification.recommendation === "rollback_review";
+}
+
+// INVARIANT: 历史版本的告警不能触发当前线上版本的处置入口。
+export function characterMonitorNeedsAttention(
+  data: Pick<CharacterWorkspaceDetail, "serving" | "releases">,
+) {
+  return data.releases.find(({ release }) => release.id === data.serving?.currentReleaseId)
+    ?.monitors.some(characterReleaseMonitorNeedsAttention) ?? false;
+}
+
+// A paused or retired character can have published history without a live preview.
+export function characterHasPublishedRelease(
+  data: Pick<CharacterWorkspaceDetail, "journey" | "preview" | "releases">,
+) {
+  return Boolean(data.preview.live || data.journey.release.currentReleaseId) ||
+    data.releases.some(({ release }) => release.status === "published" || release.publishedAt !== null);
+}
 
 export function percent(value: number | null) {
   return value === null ? "N/A" : `${(value * 100).toFixed(1)}%`;

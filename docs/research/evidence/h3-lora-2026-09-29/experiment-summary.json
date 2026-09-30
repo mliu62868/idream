@@ -1,0 +1,274 @@
+{
+  "idream_revision": "21303399a021cc3e06c26baad0a9d000ecc4774c",
+  "machine": {
+    "cpu": "Apple M4 Max",
+    "unified_memory_bytes": 137438953472,
+    "macos": "26.5.1"
+  },
+  "runtime_paths": {
+    "scratch": "/Users/kk/code/idream/.scratch/h3-lora-20260929",
+    "python": "/Users/kk/ComfyUI-Installs/idream-ltx25-v0342/ComfyUI/.venv/bin/python3",
+    "nsfw_checkpoint": "/Users/kk/ComfyUI-Shared/models/diffusion_models/REDMix-MiniMaxH3-A2Ab1-pruned-int8-convrot-ComfyMCP.safetensors"
+  },
+  "native_sources": {
+    "lora": {
+      "repo": "https://github.com/neysay/h3.c",
+      "revision": "debd9a1e55815132200ee722c1e27ed22b006f6d"
+    },
+    "convrot": {
+      "repo": "https://github.com/maderix/h3.c-ane",
+      "revision": "6538b226efe5c4fff905d299dcc4426db2f44de4",
+      "patch_sha256": "0b476b9c5b0ba0f4ddbee75ca31523ec24d94c58850204c15c33178bc22778f6",
+      "backend": "Metal; all H3_ANE_* variables removed"
+    }
+  },
+  "runs": [
+    {
+      "label": "native-baseline",
+      "mode": "baseline",
+      "command": [
+        "./h3_lora_check",
+        "/Users/kk/code/idream/.scratch/h3-lora-20260929/fixture",
+        "/Users/kk/code/idream/.scratch/h3-lora-20260929/baseline",
+        "token_refiner.blocks.0.attn.qkv_proj.weight",
+        "token_refiner.blocks.0.attn.out_proj.weight",
+        "token_refiner.blocks.0.mlp.fc1.weight",
+        "token_refiner.blocks.0.mlp.fc2.weight",
+        "token_refiner.blocks.0.norm1.weight"
+      ],
+      "exitCode": 0,
+      "wallSeconds": 0.812,
+      "acceleratorLease": true
+    },
+    {
+      "label": "native-convrot-rejection",
+      "mode": "convrot",
+      "command": [
+        "./h3_lora_check",
+        "/Users/kk/code/idream/.scratch/h3-lora-20260929/convrot-source",
+        "-",
+        "blocks.0.attn.out_proj.weight"
+      ],
+      "exitCode": 1,
+      "wallSeconds": 0.035,
+      "acceleratorLease": true
+    },
+    {
+      "label": "native-lora-tests",
+      "mode": "baseline",
+      "command": [
+        "./h3_lora_tests"
+      ],
+      "exitCode": 0,
+      "wallSeconds": 0.428,
+      "acceleratorLease": true
+    },
+    {
+      "label": "native-nsfw-convrot-fixed",
+      "mode": "convrot-native",
+      "command": [
+        "./h3_convrot_tests",
+        "/Users/kk/code/idream/.scratch/h3-lora-20260929/convrot-source"
+      ],
+      "exitCode": 0,
+      "wallSeconds": 0.375,
+      "acceleratorLease": true
+    },
+    {
+      "label": "native-nsfw-convrot-regression-red",
+      "mode": "convrot-native",
+      "command": [
+        "./h3_convrot_tests",
+        "/Users/kk/code/idream/.scratch/h3-lora-20260929/convrot-source"
+      ],
+      "exitCode": 1,
+      "wallSeconds": 0.046,
+      "acceleratorLease": true
+    },
+    {
+      "label": "native-nsfw-convrot-tests",
+      "mode": "convrot-native",
+      "command": [
+        "./h3_convrot_tests",
+        "/Users/kk/code/idream/.scratch/h3-lora-20260929/convrot-source"
+      ],
+      "exitCode": 1,
+      "wallSeconds": 0.177,
+      "acceleratorLease": true
+    },
+    {
+      "label": "native-real-adapter",
+      "mode": "adapter",
+      "command": [
+        "./h3_lora_check",
+        "/Users/kk/code/idream/.scratch/h3-lora-20260929/fixture",
+        "/Users/kk/code/idream/.scratch/h3-lora-20260929/patched",
+        "--lora",
+        "/Users/kk/code/idream/.scratch/h3-lora-20260929/minimax_h3_fl2v_turbo_4step_v1.2_768p_bf16.safetensors:1",
+        "token_refiner.blocks.0.attn.qkv_proj.weight",
+        "token_refiner.blocks.0.attn.out_proj.weight",
+        "token_refiner.blocks.0.mlp.fc1.weight",
+        "token_refiner.blocks.0.mlp.fc2.weight",
+        "token_refiner.blocks.0.norm1.weight"
+      ],
+      "exitCode": 0,
+      "wallSeconds": 1.035,
+      "acceleratorLease": true
+    },
+    {
+      "label": "nsfw-conditioning",
+      "mode": "conditioning",
+      "command": [
+        "/Users/kk/ComfyUI-Installs/idream-ltx25-v0342/ComfyUI/.venv/bin/python3",
+        "-u",
+        "/Users/kk/code/idream/.scratch/h3-lora-20260929/encode_conditioning.py"
+      ],
+      "exitCode": 0,
+      "wallSeconds": 17.73,
+      "acceleratorLease": true
+    },
+    {
+      "label": "nsfw-native-4step",
+      "mode": "render4",
+      "command": [
+        "./h3",
+        "-d",
+        "/Users/kk/code/idream/.scratch/h3-lora-20260929/nsfw-model",
+        "-p",
+        "An adult woman in her thirties wearing a red evening dress stands in a softly lit room. She smiles and gently waves at the camera. Stable medium shot, natural movement. Audio: quiet room ambience, no dialogue, no music.",
+        "--width",
+        "512",
+        "--height",
+        "512",
+        "--frames",
+        "22",
+        "--steps",
+        "4",
+        "--layers",
+        "50",
+        "--reuse",
+        "1",
+        "--seed",
+        "42",
+        "--profile",
+        "-o",
+        "/Users/kk/code/idream/.scratch/h3-lora-20260929/nsfw-native-4step.mp4"
+      ],
+      "exitCode": 1,
+      "wallSeconds": 52.147,
+      "acceleratorLease": true
+    },
+    {
+      "label": "nsfw-native-4step",
+      "mode": "render4",
+      "command": [
+        "./h3",
+        "-d",
+        "/Users/kk/code/idream/.scratch/h3-lora-20260929/nsfw-model",
+        "-p",
+        "An adult woman in her thirties wearing a red evening dress stands in a softly lit room. She smiles and gently waves at the camera. Stable medium shot, natural movement. Audio: quiet room ambience, no dialogue, no music.",
+        "--width",
+        "512",
+        "--height",
+        "512",
+        "--frames",
+        "22",
+        "--steps",
+        "4",
+        "--layers",
+        "50",
+        "--reuse",
+        "1",
+        "--seed",
+        "42",
+        "--profile",
+        "-o",
+        "/Users/kk/code/idream/.scratch/h3-lora-20260929/nsfw-native-4step.mp4"
+      ],
+      "exitCode": 0,
+      "wallSeconds": 175.398,
+      "acceleratorLease": true
+    },
+    {
+      "label": "nsfw-native-8step",
+      "mode": "render8",
+      "command": [
+        "./h3",
+        "-d",
+        "/Users/kk/code/idream/.scratch/h3-lora-20260929/nsfw-model",
+        "-p",
+        "An adult woman in her thirties wearing a red evening dress stands in a softly lit room. She smiles and gently waves at the camera. Stable medium shot, natural movement. Audio: quiet room ambience, no dialogue, no music.",
+        "--width",
+        "512",
+        "--height",
+        "512",
+        "--frames",
+        "22",
+        "--steps",
+        "8",
+        "--layers",
+        "50",
+        "--reuse",
+        "1",
+        "--seed",
+        "42",
+        "--profile",
+        "-o",
+        "/Users/kk/code/idream/.scratch/h3-lora-20260929/nsfw-native-8step.mp4"
+      ],
+      "exitCode": 0,
+      "wallSeconds": 118.906,
+      "acceleratorLease": true
+    }
+  ],
+  "video_validation": [
+    {
+      "steps": 4,
+      "path": "/Users/kk/code/idream/.scratch/h3-lora-20260929/nsfw-native-4step.mp4",
+      "sha256": "0a0736c61df2fda842769486d68f885a503a58c6662f9adf330210e775d02315",
+      "bytes": 139191,
+      "video_frames": 22,
+      "video_seconds": 0.916667,
+      "container_seconds": 0.925,
+      "width": 512,
+      "height": 512,
+      "fps": "24/1",
+      "frame_std_min": 47.88939840748417,
+      "frame_std_max": 48.48754552504008,
+      "mean_absolute_frame_difference": 1.609194040298462,
+      "audio_channels": 2,
+      "audio_sample_rate": 32000,
+      "audio_finite": true,
+      "audio_rms": 0.005541947313404197,
+      "audio_peak": 0.04576071351766586,
+      "scope": "Container and complete decode checks; content quality requires visual review"
+    },
+    {
+      "steps": 8,
+      "path": "/Users/kk/code/idream/.scratch/h3-lora-20260929/nsfw-native-8step.mp4",
+      "sha256": "f34f8cfb90a3d4381fbc18b34c25d19f829307843e094a7f3df3d7d8d33b204a",
+      "bytes": 126348,
+      "video_frames": 22,
+      "video_seconds": 0.916667,
+      "container_seconds": 0.925,
+      "width": 512,
+      "height": 512,
+      "fps": "24/1",
+      "frame_std_min": 49.643602354261716,
+      "frame_std_max": 50.10212631510095,
+      "mean_absolute_frame_difference": 1.729552984237671,
+      "audio_channels": 2,
+      "audio_sample_rate": 32000,
+      "audio_finite": true,
+      "audio_rms": 0.01643410279405969,
+      "audio_peak": 0.12363255023956299,
+      "scope": "Container and complete decode checks; content quality requires visual review"
+    }
+  ],
+  "limits": [
+    "New runtime Turbo patch checked only on four actual BF16 matrices; neysay rejects the full INT8 source.",
+    "Native videos used already-fused NSFW plus 8-step Turbo weights without an additional adapter.",
+    "T2V only; no product I2V integration or explicit-content quality test.",
+    "Large timing variation and uncontrolled host load; no stable speedup claim."
+  ]
+}

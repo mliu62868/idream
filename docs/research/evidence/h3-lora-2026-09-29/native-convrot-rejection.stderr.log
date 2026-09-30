@@ -1,0 +1,19 @@
+FAIL tests/lora_check.c: weight blocks.0.attn.out_proj.weight has dtype/rank I8/2, expected F32/2
+        0.03 real         0.00 user         0.00 sys
+            33144832  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+                2266  page reclaims
+                   4  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                   4  voluntary context switches
+                  71  involuntary context switches
+           120248446  instructions retired
+            52162438  cycles elapsed
+            23233136  peak memory footprint

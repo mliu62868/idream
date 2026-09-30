@@ -69,7 +69,7 @@ describe("money and growth workspaces: Chinese locale leaks", () => {
     for (const html of surfaces) {
       for (const leak of [
         "Search users",
-        "Permission user ID",
+        "Target user ID",
         "Permission key",
         "Search users, apply narrowly scoped permission overrides",
         "Review high-risk requests from the complete approval authority",

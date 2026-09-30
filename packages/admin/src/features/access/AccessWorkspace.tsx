@@ -17,7 +17,6 @@ import {
   type AdminGrantBundleKey,
   type AdminPermissionKey,
 } from "@idream/shared/admin/permissions";
-import type { FormEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Ban, Check, Loader2, ShieldCheck, UserCog, X } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
@@ -26,6 +25,8 @@ import {
   type ConfirmSpec,
 } from "@/components/admin/ui/ConfirmDialog";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
+import { CopyableId } from "@/components/admin/ui/CopyableId";
+import { FilterBar } from "@/components/admin/ui/FilterBar";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { useAdminFormat, text } from "@/components/admin/ui/format";
@@ -158,22 +159,30 @@ export function AccessWorkspace({
   const [errorCause, setErrorCause] = useState<unknown>(undefined);
   const [refreshedAt, setRefreshedAt] = useState<string | null>(null);
   const [permissionDraft, setPermissionDraft] = useState(emptyPermission);
+  const [selectedUser, setSelectedUser] = useState<AccessUserListItem | null>(null);
   const [permissionLookup, setPermissionLookup] = useState<PermissionLookup | null>(null);
   const [bundleLookup, setBundleLookup] = useState<BundleLookup | null>(null);
   const [roleChoice, setRoleChoice] = useState<AccessUserRole>("support");
   const [bundleChoice, setBundleChoice] = useState<AdminGrantBundleKey>(ADMIN_GRANT_BUNDLE_KEYS[0]);
   const [bundleCharacterIds, setBundleCharacterIds] = useState("");
-  // SPEC: 写命令成功后重新拉一次授权包清单。
-  // INTENT: 不加这个，撤销成功后芯片还挂在那里、授予成功后新包不出现 —— 运营会以为命令没生效
-  //         而再点一次。navigate() 只重载用户**列表**，碰不到这份按目标用户拉的清单。
-  const [commandNonce, setCommandNonce] = useState(0);
+  // INVARIANT: 写命令和手动刷新都重新读取权限与授权包，不能用旧权限证明操作结果。
+  const [accessRevision, setAccessRevision] = useState(0);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
   const gate = useRef(createLatestRequestGate());
   const permissionGate = useRef(createLatestRequestGate());
   const bundleGate = useRef(createLatestRequestGate());
+  const targetField = useRef<HTMLElement>(null);
   const targetUserId = permissionDraft.userId.trim();
   const needsCharacterScope = bundleNeedsCharacterScope(bundleChoice);
   const scopedCharacterIds = parseCharacterIds(bundleCharacterIds);
+
+  const refreshTarget = useCallback(() => {
+    permissionGate.current.invalidate();
+    bundleGate.current.invalidate();
+    setPermissionLookup(null);
+    setBundleLookup(null);
+    setAccessRevision((value) => value + 1);
+  }, []);
 
   const load = useCallback(async (next: AccessQuery) => {
     const request = gate.current.begin();
@@ -209,6 +218,7 @@ export function AccessWorkspace({
       setDraft(next);
       // 回退到的那一页是哪一页，历史条目里没记；不知道就说不知道，把「上一页」置灰。
       setCursorTrail([]);
+      refreshTarget();
       void load(next);
     };
     restore();
@@ -219,7 +229,7 @@ export function AccessWorkspace({
       window.removeEventListener("popstate", restore);
       window.removeEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, restore);
     };
-  }, [load]);
+  }, [load, refreshTarget]);
 
   // INTENT: 输入框每敲一个字符都查一次是浪费；停手 400ms 再查。查失败不拦操作——
   //         写命令自己会报错，这里只是「先看一眼」，看不到也不该把按钮锁死。
@@ -249,7 +259,7 @@ export function AccessWorkspace({
       window.clearTimeout(timer);
       requestGate.invalidate();
     };
-  }, [permissions.managePermissions, targetUserId]);
+  }, [accessRevision, permissions.managePermissions, targetUserId]);
 
   // SPEC: 授权包与权限覆盖盯的是同一个目标用户，所以共用 targetUserId，不再多要一个 ID。
   // INTENT: 撤销之前必须先知道他现在有什么——没有这份清单，运营只能凭记忆猜 bundleKey，
@@ -274,14 +284,14 @@ export function AccessWorkspace({
       window.clearTimeout(timer);
       requestGate.invalidate();
     };
-  }, [commandNonce, permissions.managePermissions, targetUserId]);
+  }, [accessRevision, permissions.managePermissions, targetUserId]);
 
   // SPEC: 任何改变结果集的动作都回到第一页 —— 所以 trail 默认清空，只有翻页自己传轨迹。
-  function navigate(
+  const navigate = useCallback((
     next: AccessQuery,
     mode: "push" | "replace" = "push",
     trail: string[] = [],
-  ) {
+  ) => {
     window.history[mode === "push" ? "pushState" : "replaceState"](
       null,
       "",
@@ -295,12 +305,22 @@ export function AccessWorkspace({
     setDraft(next);
     setCursorTrail(trail);
     void load(next);
-  }
+  }, [load]);
 
-  function apply(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    navigate({ ...draft, cursor: "" });
-  }
+  const selectTarget = useCallback((userId: string, user: AccessUserListItem | null = null) => {
+    setPermissionDraft({ ...emptyPermission, userId });
+    setSelectedUser(user);
+    refreshTarget();
+    setRoleChoice(user?.role ?? "support");
+    // INVARIANT: 切换对象时，不能把上一个人的角色授权范围带给下一个人。
+    setBundleCharacterIds("");
+    if (user || !userId) {
+      window.requestAnimationFrame(() => {
+        targetField.current?.scrollIntoView({ block: "start" });
+        targetField.current?.querySelector("input")?.focus({ preventScroll: true });
+      });
+    }
+  }, [refreshTarget]);
 
   function confirmCommand(input: AccessCommand) {
     setConfirmation({
@@ -316,20 +336,30 @@ export function AccessWorkspace({
           { ...input.payload(reason), confirmation: input.expected },
         );
         toast({ tone: "success", title: input.completed });
-        setCommandNonce((value) => value + 1);
+        refreshTarget();
         navigate({ ...query, cursor: "" }, "replace");
       },
     });
   }
 
   const users = data?.items ?? [];
+  const targetUser = users.find((user) => user.id === targetUserId)
+    ?? (selectedUser?.id === targetUserId ? selectedUser : null);
+  const targetAccess = bundleLookup?.userId === targetUserId ? bundleLookup.data?.user : null;
+  const currentRole = permissionLookup?.userId === targetUserId && permissionLookup.data
+    ? permissionLookup.data.role
+    : targetAccess
+      ? targetAccess.role
+      : targetUser?.role;
+  // 筛选可能把变更后的用户移出名录；当前状态以重新读取的对象为准，不能停留在选择时的行快照。
+  const currentStatus = targetAccess?.status ?? targetUser?.status;
   const filtered = Boolean(
     query.search || query.role || query.status || query.dataClass,
   );
   return (
     <section className="space-y-5">
       <PageHeader
-        purpose={t("Search users, apply narrowly scoped permission overrides, and suspend or restore access through audited commands.")}
+        purpose={t("Find a user and review their current access before changing their role, permissions, or account status. Changes require confirmation and an audit reason.")}
         title={t("Team Access")}
       />
       <div
@@ -343,77 +373,174 @@ export function AccessWorkspace({
           {!permissions.changeStatus ? <PermissionNotice permission="user.status.write" /> : null}
         </span>
       </div>
-      <form
-        className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 md:grid-cols-2 xl:grid-cols-[minmax(240px,1fr)_160px_160px_160px_auto]"
-        onSubmit={apply}
-      >
-        <Field
-          label="Search users"
-          onChange={(search) => setDraft((value) => ({ ...value, search }))}
-          search
-          value={draft.search}
-        />
-        <Select
-          optionLabel={valueLabel}
-          label="Role"
-          onChange={(role) => setDraft((value) => ({ ...value, role }))}
-          options={["", ...ACCESS_ROLES]}
-          value={draft.role}
-        />
-        <Select
-          optionLabel={valueLabel}
-          label="Status"
-          onChange={(status) => setDraft((value) => ({ ...value, status }))}
-          options={["", "active", "suspended", "deleted"]}
-          value={draft.status}
-        />
-        <Select
-          optionLabel={valueLabel}
-          label="Data class"
-          onChange={(dataClass) =>
-            setDraft((value) => ({
-              ...value,
-              dataClass: dataClass as AccessDataClassFilter,
-            }))
-          }
-          options={["", ...ADMIN_DATA_CLASSES]}
-          value={draft.dataClass}
-        />
-        <div className="flex items-end gap-2">
-          <button
-            className="min-h-11 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white"
-            type="submit"
-          >
-
-            {t("Filter users")}
-          </button>
-          {filtered ? (
-            <button
-              aria-label={t("Clear access filters")}
-              className="grid min-h-11 min-w-11 place-items-center rounded-md border border-[var(--ad-border)]"
-              onClick={() => navigate(defaultAccessQuery)}
-              type="button"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          ) : null}
-        </div>
-      </form>
+      <AccessFilters
+        loading={loading}
+        query={query}
+        draft={draft}
+        onChange={(patch) => setDraft((value) => ({ ...value, ...patch }))}
+        onApply={(next) => navigate({ ...next, cursor: "" })}
+      />
       {permissions.managePermissions ? (
+        <section
+          className="scroll-mt-24 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"
+          ref={targetField}
+        >
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h3 className="font-semibold">{t(targetUserId ? "Manage access" : "Choose a user")}</h3>
+              {targetUser ? (
+                <p className="mt-1 break-words text-sm">
+                  <strong>{targetUser.displayName || targetUser.email}</strong>
+                  {targetUser.displayName ? <span className="ml-2 text-[var(--ad-text-muted)]">{targetUser.email}</span> : null}
+                </p>
+              ) : (
+                <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
+                  {t("Select a user in the list below, or enter their ID to review access.")}
+                </p>
+              )}
+              {targetUserId && currentRole ? (
+                <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
+                  {t("Current role")}: {valueLabel(currentRole)}
+                  {currentStatus ? <> · {valueLabel(currentStatus)}</> : null}
+                  {targetUser ? <> · {valueLabel(targetUser.dataClass)}</> : null}
+                </p>
+              ) : null}
+            </div>
+            {targetUserId ? (
+              <div className="flex flex-wrap gap-2">
+                <button className="min-h-9 rounded-md border border-[var(--ad-border)] px-3 text-xs font-semibold" onClick={refreshTarget} type="button">{t("Refresh access")}</button>
+                <button className="min-h-9 rounded-md border border-[var(--ad-border)] px-3 text-xs font-semibold" onClick={() => selectTarget("")} type="button">
+                  {t("Clear selection")}
+                </button>
+              </div>
+            ) : null}
+          </div>
+          <div className="mt-3 max-w-xl">
+            <Field label="Target user ID" onChange={(userId) => selectTarget(userId)} value={permissionDraft.userId} />
+          </div>
+        </section>
+      ) : null}
+      {/* INVARIANT: 角色、授权包和单项覆盖共享一个明确的操作对象。 */}
+      {permissions.managePermissions && targetUserId ? (
+        <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
+          <h3 className="font-semibold">{t("Role and grant bundles")}</h3>
+          <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
+            {t("Target user: {userId}", { userId: targetUserId })}
+          </p>
+          <GrantedBundles
+            lookup={bundleLookup}
+            onRevoke={(bundle) =>
+              confirmCommand({
+                title: t("Revoke bundle"),
+                completed: t("Revoked {bundle}.", { bundle: valueLabel(bundle.bundleKey) }),
+                endpoint: `/api/v2/admin/users/${encodeURIComponent(bundle.userId)}/grant-bundles/${encodeURIComponent(bundle.bundleKey)}`,
+                method: "DELETE",
+                expected: accessBundleConfirmation(bundle.userId, bundle.bundleKey, "revoke"),
+                consequence: {
+                  effect: t("Removes this bundle's grants. Permissions supplied by the role, other bundles, or individual overrides remain in effect."),
+                  reversible: true,
+                },
+                payload: (reason) => ({ reason }),
+              })
+            }
+            targetUserId={targetUserId}
+          />
+          <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
+            <Select
+              label="Role"
+              onChange={(role) => setRoleChoice(role as AccessUserRole)}
+              optionLabel={valueLabel}
+              options={[...ACCESS_ROLES]}
+              value={roleChoice}
+            />
+            <div className="flex items-end">
+              <button
+                className="inline-flex min-h-11 items-center gap-2 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold disabled:opacity-50"
+                disabled={!targetUserId}
+                onClick={() => {
+                  if (!targetUserId) return;
+                  confirmCommand({
+                    title: t("Change role"),
+                    completed: t("Role changed to {role}.", { role: valueLabel(roleChoice) }),
+                    endpoint: `/api/v2/admin/users/${encodeURIComponent(targetUserId)}/role`,
+                    expected: accessRoleConfirmation(targetUserId, roleChoice),
+                    consequence: {
+                      effect: t("Changes the role's permissions; grant bundles and individual overrides remain in effect."),
+                      reversible: true,
+                    },
+                    payload: (reason) => ({ role: roleChoice, reason }),
+                  });
+                }}
+                type="button"
+              >
+                <UserCog className="h-4 w-4" />
+                {t("Change role")}
+              </button>
+            </div>
+          </div>
+          <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
+            <Select
+              label="Grant bundle"
+              onChange={(bundleKey) => setBundleChoice(bundleKey as AdminGrantBundleKey)}
+              optionLabel={valueLabel}
+              options={ADMIN_GRANT_BUNDLE_KEYS}
+              value={bundleChoice}
+            />
+            <div className="flex items-end">
+              <button
+                className="inline-flex min-h-11 items-center gap-2 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white disabled:opacity-50"
+                disabled={!targetUserId || (needsCharacterScope && scopedCharacterIds.length === 0)}
+                onClick={() => {
+                  if (!targetUserId) return;
+                  confirmCommand({
+                    title: t("Grant bundle"),
+                    completed: t("Granted {bundle}.", { bundle: valueLabel(bundleChoice) }),
+                    endpoint: `/api/v2/admin/users/${encodeURIComponent(targetUserId)}/grant-bundles`,
+                    expected: accessBundleConfirmation(targetUserId, bundleChoice, "grant"),
+                    consequence: {
+                      effect: t("Adds the bundle's grants on top of the role. Individual revocations still take precedence."),
+                      reversible: true,
+                    },
+                    // INVARIANT: 只有需要范围的包才带 scope —— 服务端对其余包收到 scope 会 400。
+                    payload: (reason) => needsCharacterScope
+                      ? { bundleKey: bundleChoice, reason, scope: { characterIds: scopedCharacterIds } }
+                      : { bundleKey: bundleChoice, reason },
+                  });
+                }}
+                type="button"
+              >
+                <ShieldCheck className="h-4 w-4" />
+                {t("Grant bundle")}
+              </button>
+            </div>
+          </div>
+          {/* SPEC: 需要范围的包，范围就是它的必填项 —— 不填不给按。
+              INTENT: 没有这个输入框时，character_producer（下拉框的默认值）发出去必定是一条
+              "Character producer grants require at least one assigned Character" 的 400。 */}
+          {needsCharacterScope ? (
+            <div className="mt-3">
+              <Field
+                label="Assigned character IDs"
+                onChange={setBundleCharacterIds}
+                value={bundleCharacterIds}
+              />
+              <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
+                {scopedCharacterIds.length > 0
+                  ? t("{count} characters in scope", { count: scopedCharacterIds.length })
+                  : t("This bundle only grants access to the characters listed here.")}
+              </p>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+      {permissions.managePermissions && targetUserId ? (
         <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
           <h3 className="font-semibold">{t("Permission override")}</h3>
           <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
 
             {t("Grant, revoke, or clear one effective permission without changing the user role.")}
           </p>
-          <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_140px_auto]">
-            <Field
-              label="Permission user ID"
-              onChange={(userId) =>
-                setPermissionDraft((value) => ({ ...value, userId }))
-              }
-              value={permissionDraft.userId}
-            />
+          <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_140px_auto]">
             {/* INTENT: 下拉里原本是 62 个权限码。管理员不背这张表——按能力名选，
                 码本身留在下面的说明行里，需要核对时还看得到。 */}
             <Select
@@ -452,7 +579,7 @@ export function AccessWorkspace({
                     capability: t(permissionLabel(permissionDraft.permissionKey)),
                   }),
                   completed: t("Permission override applied to {user}", { user: userId }),
-                  endpoint: `/api/v2/admin/users/${userId}/permissions`,
+                  endpoint: `/api/v2/admin/users/${encodeURIComponent(userId)}/permissions`,
                   expected: accessPermissionConfirmation(
                     userId,
                     permissionDraft.permissionKey,
@@ -460,7 +587,7 @@ export function AccessWorkspace({
                   ),
                   // INTENT: 覆盖立即生效但可以再改一次改回来，所以是可撤回的。
                   consequence: {
-                    effect: t("The override takes effect on the user's next request. Applying the opposite effect reverses it."),
+                    effect: t("Updates the individual override on the next request. Clearing it restores the permissions from the role and active grant bundles."),
                     reversible: true,
                   },
                   payload: (reason) => ({
@@ -484,133 +611,16 @@ export function AccessWorkspace({
           />
         </section>
       ) : null}
-      {/* SPEC: 角色与授权包 —— 后端 API 一直都在（users/:id/role、users/:id/grant-bundles），
-          界面上此前没有任何入口，运营只能一条一条地打权限覆盖补丁。
-          INTENT: 复用上方的目标用户 ID，不再要第二个输入框：同一个人的"他是什么角色 /
-          他有哪些包 / 他被单独开了哪些口子"本来就该在一屏里看完。 */}
-      {permissions.managePermissions ? (
-        <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-          <h3 className="font-semibold">{t("Role and grant bundles")}</h3>
-          <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-            {targetUserId
-              ? t("Target user: {userId}", { userId: targetUserId })
-              : t("Enter a user ID in Permission override above to act on someone.")}
-          </p>
-          <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
-            <Select
-              label="Role"
-              onChange={(role) => setRoleChoice(role as AccessUserRole)}
-              optionLabel={valueLabel}
-              options={[...ACCESS_ROLES]}
-              value={roleChoice}
-            />
-            <div className="flex items-end">
-              <button
-                className="inline-flex min-h-11 items-center gap-2 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold disabled:opacity-50"
-                disabled={!targetUserId}
-                onClick={() => {
-                  if (!targetUserId) return;
-                  confirmCommand({
-                    title: t("Change role"),
-                    completed: t("Role changed to {role}.", { role: valueLabel(roleChoice) }),
-                    endpoint: `/api/v2/admin/users/${encodeURIComponent(targetUserId)}/role`,
-                    expected: accessRoleConfirmation(targetUserId, roleChoice),
-                    consequence: {
-                      effect: t("Replaces every capability the old role granted."),
-                      reversible: true,
-                    },
-                    payload: (reason) => ({ role: roleChoice, reason }),
-                  });
-                }}
-                type="button"
-              >
-                <UserCog className="h-4 w-4" />
-                {t("Change role")}
-              </button>
-            </div>
-          </div>
-          <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
-            <Select
-              label="Grant bundle"
-              onChange={(bundleKey) => setBundleChoice(bundleKey as AdminGrantBundleKey)}
-              optionLabel={valueLabel}
-              options={ADMIN_GRANT_BUNDLE_KEYS}
-              value={bundleChoice}
-            />
-            <div className="flex items-end">
-              <button
-                className="inline-flex min-h-11 items-center gap-2 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white disabled:opacity-50"
-                disabled={!targetUserId || (needsCharacterScope && scopedCharacterIds.length === 0)}
-                onClick={() => {
-                  if (!targetUserId) return;
-                  confirmCommand({
-                    title: t("Grant bundle"),
-                    completed: t("Granted {bundle}.", { bundle: valueLabel(bundleChoice) }),
-                    endpoint: `/api/v2/admin/users/${encodeURIComponent(targetUserId)}/grant-bundles`,
-                    expected: accessBundleConfirmation(targetUserId, bundleChoice, "grant"),
-                    consequence: {
-                      effect: t("Adds every capability in the bundle on top of the role."),
-                      reversible: true,
-                    },
-                    // INVARIANT: 只有需要范围的包才带 scope —— 服务端对其余包收到 scope 会 400。
-                    payload: (reason) => needsCharacterScope
-                      ? { bundleKey: bundleChoice, reason, scope: { characterIds: scopedCharacterIds } }
-                      : { bundleKey: bundleChoice, reason },
-                  });
-                }}
-                type="button"
-              >
-                <ShieldCheck className="h-4 w-4" />
-                {t("Grant bundle")}
-              </button>
-            </div>
-          </div>
-          {/* SPEC: 需要范围的包，范围就是它的必填项 —— 不填不给按。
-              INTENT: 没有这个输入框时，character_producer（下拉框的默认值）发出去必定是一条
-              "Character producer grants require at least one assigned Character" 的 400。 */}
-          {needsCharacterScope ? (
-            <div className="mt-3">
-              <Field
-                label="Assigned character IDs"
-                onChange={setBundleCharacterIds}
-                value={bundleCharacterIds}
-              />
-              <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-                {scopedCharacterIds.length > 0
-                  ? t("{count} characters in scope", { count: scopedCharacterIds.length })
-                  : t("This bundle only grants access to the characters listed here.")}
-              </p>
-            </div>
-          ) : null}
-          <GrantedBundles
-            lookup={bundleLookup}
-            onRevoke={(bundle) =>
-              confirmCommand({
-                title: t("Revoke bundle"),
-                completed: t("Revoked {bundle}.", { bundle: valueLabel(bundle.bundleKey) }),
-                endpoint: `/api/v2/admin/users/${encodeURIComponent(bundle.userId)}/grant-bundles/${encodeURIComponent(bundle.bundleKey)}`,
-                method: "DELETE",
-                expected: accessBundleConfirmation(bundle.userId, bundle.bundleKey, "revoke"),
-                consequence: {
-                  effect: t("Removes every capability the bundle added."),
-                  reversible: true,
-                },
-                payload: (reason) => ({ reason }),
-              })
-            }
-            targetUserId={targetUserId}
-          />
-        </section>
-      ) : null}
       {error ? (
         <AuthorityRequestError
+          requestKind="read"
           cause={errorCause}
           message={error}
           onRetry={() => void load(query)}
           snapshotAt={data ? refreshedAt : null}
         />
       ) : null}
-      {!data && loading ? (
+      {loading && (!data || users.length === 0) ? (
         <div
           aria-label={t("Loading team access…")}
           className="rounded-lg border border-[var(--ad-border)] p-4"
@@ -623,6 +633,7 @@ export function AccessWorkspace({
       ) : data ? (
         users.length === 0 ? (
           <EmptyState
+            kind={filtered ? "filtered" : "empty"}
             action={
               filtered ? (
                 <button
@@ -637,45 +648,17 @@ export function AccessWorkspace({
             }
             hint={
               filtered
-                ? "The complete access authority query returned no matches."
-                : "No users exist in the authority."
+                ? "Change or clear the filters to see other users."
+                : "There are no user accounts to display."
             }
             title={filtered ? "No users match these filters" : "No users"}
           />
         ) : (
-          <DataTable
-            caption="Users"
-            // SPEC: width 是**文本盒**宽度，单元格左右还各有 1rem 内边距，真实列宽 ≈ width + 2rem；
-            //       九列合计 ~1240px，就是下面的 minimumWidthClassName。
-            // INTENT: 这张表原来九列全传字符串、连最小宽度都没传，于是用默认的 min-w-[640px] 去挤
-            //         1204px 的内容区：邮箱一列独吞 469px，角色 / 状态 / 数据分级各剩 46px——
-            //         中文被压成「前/台/用/户」的竖排，创建时间折成三行。
-            // INTENT: 总宽卡在 1240px 而不是给每列都留宽裕量：再宽一点「操作」列的封禁按钮就滚出屏幕，
-            //         运营得先横滚才能点。现在 1512 视口下只差 36px，按钮仍在第一屏。
-            headers={[
-              // ID 与邮箱截断后完整值仍在 title 悬停里（DataTable 给字符串单元格自动挂 title）。
-              { label: "ID", truncate: true, width: "7rem" },
-              { label: "Email", truncate: true, width: "10rem" },
-              { label: "Display name", truncate: true, width: "7.5rem" },
-              // 三个枚举列：中文最长四字（前台用户 / 测试数据），truncate 保证它们不折行。
-              { label: "Role", truncate: true, width: "4.5rem" },
-              { label: "Status", truncate: true, width: "4.5rem" },
-              { label: "Data class", truncate: true, width: "5rem" },
-              { label: "Dreamcoins", align: "right", width: "4.5rem" },
-              // 中文 dateStyle:medium + timeStyle:short 实测 ~142px；truncate 在这里的作用是不折行。
-              { label: "Created", truncate: true, width: "9.5rem" },
-              // 单个按钮（封禁 / 恢复）或一句只读说明，不截断，让说明自己折行。
-              { label: "Actions", width: "7rem" },
-            ]}
-            minimumWidthClassName="min-w-[1240px]"
-            rows={userTableRows(
-              users,
-              permissions.changeStatus,
-              confirmCommand,
-              t,
-              format,
-              valueLabel,
-            )}
+          <AccessUserTable
+            users={users}
+            canChangeStatus={permissions.changeStatus}
+            onSelect={permissions.managePermissions ? (user) => selectTarget(user.id, user) : undefined}
+            onConfirm={confirmCommand}
           />
         )
       ) : null}
@@ -728,6 +711,7 @@ function GrantedBundles({
   targetUserId: string;
 }) {
   const { t, value: valueLabel } = useAdminI18n();
+  const format = useAdminFormat();
   if (!targetUserId) return null;
   if (!lookup || lookup.userId !== targetUserId) {
     return <p className="mt-3 text-xs text-[var(--ad-text-muted)]">{t("Loading grant bundles…")}</p>;
@@ -739,24 +723,31 @@ function GrantedBundles({
       </p>
     );
   }
-  // INVARIANT: 只有 state=active 的包能撤销。已过期/已撤销的仍然列出来（那是这个人权限
-  //            历史的一部分），但不给撤销按钮 —— 对它再发一次撤销只会换回一条 400。
+  // INVARIANT: 只对权威判为 active 的包提供撤销操作。
   const active = lookup.data.items.filter((bundle) => bundle.state === "active");
   if (active.length === 0) {
     return (
       <p className="mt-3 text-xs text-[var(--ad-text-muted)]">
-        {t("No bundle is granted; the role decides every capability today.")}
+        {t("No active grant bundles.")}
       </p>
     );
   }
   return (
-    <ul className="mt-3 flex flex-wrap gap-2">
+    <ul className="mt-3 grid gap-2 sm:grid-cols-2">
       {active.map((bundle) => (
         <li
-          className="inline-flex items-center gap-2 rounded-md border border-[var(--ad-border)] px-3 py-1.5 text-xs"
+          className="min-w-0 rounded-md border border-[var(--ad-border)] p-3 text-xs"
           key={bundle.id}
         >
-          <span className="font-semibold">{valueLabel(bundle.bundleKey)}</span>
+          <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <p className="font-semibold">{valueLabel(bundle.bundleKey)}</p>
+            <p className="mt-1 text-[var(--ad-text-muted)]">{t("{count} capabilities in this bundle", { count: bundle.permissions.length })}</p>
+            <p className="mt-1 text-[var(--ad-text-muted)]">
+              {bundle.scope ? t("{count} assigned characters", { count: bundle.scope.characterIds.length }) : t("All resources allowed by these capabilities")}
+            </p>
+            <p className="mt-1 text-[var(--ad-text-muted)]">{bundle.expiresAt ? t("Expires {time}", { time: format.dateTime(bundle.expiresAt) }) : t("No expiry")}</p>
+          </div>
           <button
             aria-label={t("Revoke {bundle}", { bundle: valueLabel(bundle.bundleKey) })}
             className="grid min-h-8 min-w-8 place-items-center rounded text-[var(--ad-red-text)]"
@@ -765,6 +756,12 @@ function GrantedBundles({
           >
             <X className="h-3.5 w-3.5" />
           </button>
+          </div>
+          <details className="mt-2 border-t border-[var(--ad-border)] pt-2">
+            <summary className="cursor-pointer font-semibold">{t("Review granted capabilities and scope")}</summary>
+            {bundle.scope ? <ul className="mt-2 space-y-1 break-words font-mono [overflow-wrap:anywhere]">{bundle.scope.characterIds.map((id) => <li key={id}>{id}</li>)}</ul> : null}
+            <ul className="mt-2 list-disc space-y-1 pl-4">{bundle.permissions.map((key) => <li key={key}>{t(permissionLabel(key))}</li>)}</ul>
+          </details>
         </li>
       ))}
     </ul>
@@ -818,7 +815,7 @@ function PermissionImpact({
               ? t("An existing {effect} override is already recorded for this capability; applying a new one replaces it.", {
                   effect: valueLabel(existingOverride.effect),
                 })
-              : t("No override is recorded for this capability yet; the role decides it today.")}
+              : t("No individual override is recorded for this capability.")}
           </p>
           <p className="mt-1 text-[var(--ad-text)]">{outcome(draft, alreadyEffective, existingOverride, t)}</p>
         </>
@@ -829,7 +826,7 @@ function PermissionImpact({
 
 /**
  * INTENT: 一句话说清「点下去之后这个人多了/少了什么」。clear 是最容易误解的一个——
- * 它不是「收回权限」，是「删掉覆盖、把决定权还给角色」，结果取决于角色本身给不给。
+ * 它是删除单项覆盖；删除后由角色与有效授权包共同决定，不能承诺一定授予或撤销。
  */
 function outcome(
   draft: PermissionDraft,
@@ -839,7 +836,7 @@ function outcome(
 ) {
   if (draft.effect === "clear") {
     return existingOverride
-      ? t("Applying this removes the override and hands the decision back to the role.")
+      ? t("Applying this removes the override. The role and active grant bundles then decide this capability.")
       : t("There is no override to remove, so nothing changes.");
   }
   if (draft.effect === "grant") {
@@ -852,9 +849,81 @@ function outcome(
     : t("This user cannot do it today, so applying this only pins it off.");
 }
 
+function AccessFilters({ loading, query, draft, onApply, onChange }: {
+  loading: boolean;
+  query: AccessQuery;
+  draft: AccessQuery;
+  onApply: (next: AccessQuery) => void;
+  onChange: (patch: Partial<AccessQuery>) => void;
+}) {
+  const { t, value: valueLabel } = useAdminI18n();
+  const filterChips = ([
+    ["search", "Search users"], ["role", "Role"], ["status", "Status"], ["dataClass", "Data class"],
+  ] as const).filter(([key]) => query[key]).map(([key, label]) => ({
+    key, label: t(label), value: key === "search" ? query[key] : valueLabel(query[key]),
+    onClear: () => onApply({ ...query, [key]: "", cursor: "" }),
+  }));
+  return (
+      <FilterBar
+        busy={loading}
+        chips={filterChips}
+        collapsible
+        onApply={() => onApply(draft)}
+        onReset={() => onApply(defaultAccessQuery)}
+        onSearch={(search) => onChange({ search })}
+        search={draft.search}
+        searchPlaceholder={t("Search users")}
+        selects={[
+          { name: t("Role"), value: draft.role, onChange: (role) => onChange({ role }), options: ["", ...ACCESS_ROLES].map((value) => ({ value, label: value ? valueLabel(value) : t("All") })) },
+          { name: t("Status"), value: draft.status, onChange: (status) => onChange({ status }), options: ["", "active", "suspended", "deleted"].map((value) => ({ value, label: value ? valueLabel(value) : t("All") })) },
+          { name: t("Data class"), value: draft.dataClass, onChange: (dataClass) => onChange({ dataClass: dataClass as AccessDataClassFilter }), options: ["", ...ADMIN_DATA_CLASSES].map((value) => ({ value, label: value ? valueLabel(value) : t("All") })) },
+        ]}
+      />
+  );
+}
+
+function AccessUserTable({ users, canChangeStatus, onSelect, onConfirm }: {
+  users: readonly AccessUserListItem[];
+  canChangeStatus: boolean;
+  onSelect?: (user: AccessUserListItem) => void;
+  onConfirm: (command: AccessCommand) => void;
+}) {
+  const { t, value: valueLabel } = useAdminI18n();
+  const format = useAdminFormat();
+  return (
+          <DataTable
+            caption="Users"
+            // INTENT: 姓名、邮箱和 ID 放在同一身份列，选人时无需在三列之间反复对照。
+            headers={[
+              { label: "User", width: "17rem" },
+              // 三个枚举列：中文最长四字（前台用户 / 测试数据），truncate 保证它们不折行。
+              { label: "Role", truncate: true, width: "4.5rem" },
+              { label: "Status", truncate: true, width: "4.5rem" },
+              { label: "Data class", truncate: true, width: "5rem" },
+              { label: "Dreamcoins", align: "right", width: "4.5rem" },
+              // 中文 dateStyle:medium + timeStyle:short 实测 ~142px；truncate 在这里的作用是不折行。
+              { label: "Created", truncate: true, width: "9.5rem" },
+              // 单个按钮（封禁 / 恢复）或一句只读说明，不截断，让说明自己折行。
+              { label: "Actions", width: "7rem" },
+            ]}
+            minimumWidthClassName="min-w-[1080px]"
+            rows={userTableRows(
+              users,
+              canChangeStatus,
+              onSelect,
+              onConfirm,
+              t,
+              format,
+              valueLabel,
+            )}
+          />
+  );
+}
+
 function userTableRows(
   users: readonly AccessUserListItem[],
   canChangeStatus: boolean,
+  onSelect: ((user: AccessUserListItem) => void) | undefined,
   confirm: (input: AccessCommand) => void,
   t: (key: string, values?: Record<string, string | number>) => string,
   format: ReturnType<typeof useAdminFormat>,
@@ -868,9 +937,20 @@ function userTableRows(
     return {
       id: id || `user-${index}`,
       cells: [
-        id,
-        format.display(user.email),
-        format.display(user.displayName),
+        <div className="min-w-0 max-w-[17rem]" key="user">
+          {onSelect ? (
+            <button
+              aria-label={t("Manage access for {user}", { user: user.displayName || user.email })}
+              className="block max-w-full truncate text-left font-semibold underline decoration-[var(--ad-border)] underline-offset-4 hover:decoration-current"
+              onClick={() => onSelect(user)}
+              type="button"
+            >
+              {user.displayName || user.email}
+            </button>
+          ) : <p className="truncate font-semibold">{user.displayName || user.email}</p>}
+          <p className="mt-0.5 truncate text-xs text-[var(--ad-text-muted)]" title={user.email}>{user.email}</p>
+          <CopyableId value={id} />
+        </div>,
         // SPEC: 角色 / 状态 / 数据分级是枚举，走 valueLabel 而不是 format.display。
         // INTENT: format.display 只做取值与缺省处理，不查枚举译文，于是中文界面上这三列
         //         一直印着 user / active / deleted / fixture / customer。同文件 :534 早就
@@ -895,7 +975,7 @@ function userTableRows(
                   next === "active"
                     ? t("Access restored for {user}", { user: id })
                     : t("Access suspended for {user}", { user: id }),
-                endpoint: `/api/v2/admin/users/${id}/status`,
+                endpoint: `/api/v2/admin/users/${encodeURIComponent(id)}/status`,
                 expected: accessStatusConfirmation(id, next),
                 consequence: {
                   effect:
@@ -948,23 +1028,20 @@ function freshness(
 function Field({
   label,
   onChange,
-  search = false,
   value,
 }: {
   label: string;
   onChange: (value: string) => void;
-  search?: boolean;
   value: string;
 }) {
   // label 在接收方过 t()，一处修好覆盖全部调用点（搜索框、权限用户 ID、权限键…）。
   const { t } = useAdminI18n();
   return (
-    <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
+    <label className="grid min-w-0 gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
       {t(label)}
       <input
-        className="min-h-11 rounded-md border bg-[var(--ad-surface)] px-3 text-sm"
+        className="min-h-11 min-w-0 w-full rounded-md border bg-[var(--ad-surface)] px-3 text-sm"
         onChange={(event) => onChange(event.target.value)}
-        role={search ? "searchbox" : undefined}
         value={value}
       />
     </label>
@@ -985,10 +1062,10 @@ function Select({
 }) {
   const { t } = useAdminI18n();
   return (
-    <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
+    <label className="grid min-w-0 gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
       {t(label)}
       <select
-        className="min-h-11 rounded-md border bg-[var(--ad-surface)] px-3 text-sm"
+        className="min-h-11 min-w-0 w-full rounded-md border bg-[var(--ad-surface)] px-3 text-sm"
         onChange={(event) => onChange(event.target.value)}
         value={value}
       >

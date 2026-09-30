@@ -3,6 +3,8 @@
 // INVARIANT: key 在所有 i18n-zh-*.ts 之间互斥——同一个 key 只能有一个域文件持有；
 // 由 i18n-zh-exclusivity.test.ts 强制。新增文案放它所属的域文件，不要另开「杂项」文件。
 export const adminZhGrowth: Record<string, string> = {
+  "Featured character IDs": "精选角色 ID（逗号分隔）",
+  "Announcement level": "公告类型",
   "Affiliate Applications": "联盟申请",
   "Affiliate applications": "联盟申请",
   "Approve affiliate application": "批准联盟申请",

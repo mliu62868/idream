@@ -717,7 +717,8 @@ function projectRow(
       slaDueAt: null,
       recommendedAction: row.monitorActionRequired ? "Investigate monitor evidence and keep or rollback" : item.readiness === "blocked" ? "Resolve release readiness blockers" : "Advance release checks",
       openedAt: item.createdAt.toISOString(),
-      deepLink: `/admin/characters/${encodeURIComponent(row.project.characterId)}?tab=release&releaseId=${encodeURIComponent(item.id)}`,
+      // INTENT: 监控告警直接到证据；待发布工作仍到发布检查，不能让同一种来源抹掉任务差异。
+      deepLink: `/admin/characters/${encodeURIComponent(row.project.characterId)}?tab=${row.monitorActionRequired ? "monitor" : "release"}&releaseId=${encodeURIComponent(item.id)}`,
       verificationState: row.monitorActionRequired || item.readiness === "blocked" ? "failed" : item.readiness === "ready" ? "passed" : "pending",
       lastChangedAt: item.updatedAt.toISOString(),
       environment,

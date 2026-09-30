@@ -7,7 +7,7 @@ import { useAdminI18n } from "@/components/admin/i18n";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
 import { FilterBar } from "@/components/admin/ui/FilterBar";
-import { CardGrid, EntityCard } from "@/components/admin/ui/CardGrid";
+import { StatusPill } from "@/components/admin/ui/StatusPill";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { Pagination } from "@/components/admin/ui/Pagination";
 import { PrimaryButton } from "@/components/admin/ui/buttons";
@@ -164,22 +164,28 @@ export function StartersListPage({ canWrite }: { canWrite: boolean }) {
           title={filtered ? t("No starter templates match these filters.") : t("No starter templates yet.")}
         />
       ) : authority.data ? (
-        <CardGrid>
+        <div className="grid gap-3 lg:grid-cols-2">
           {rows.map((row) => (
-            <EntityCard
+            <Link
+              className="flex min-w-0 items-start gap-4 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 transition-colors hover:border-[var(--ad-ink)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]"
               href={`/admin/content/templates/${row.id}`}
               key={row.id}
-              meta={t("{scope} · sort {order} · {count} tags", {
+            >
+              <span aria-hidden className="grid h-12 w-12 shrink-0 place-items-center rounded-md bg-black/[0.04] text-lg font-semibold text-[var(--ad-text-muted)]">{row.name.slice(0, 1).toUpperCase()}</span>
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <h2 className="min-w-0 break-words text-sm font-semibold">{row.name}</h2>
+                  <StatusPill status={row.isActive ? "active" : "disabled"} label={row.isActive ? t("Published") : t("Inactive")} />
+                </div>
+                <p className="mt-2 text-xs text-[var(--ad-text-muted)]">{t("{scope} · sort {order} · {count} tags", {
                 scope: value(row.scope),
                 order: row.sortOrder,
                 count: row.tags.length,
-              })}
-              status={row.isActive ? "active" : "disabled"}
-              statusLabel={row.isActive ? t("Published") : t("Inactive")}
-              title={row.name}
-            />
+                })}</p>
+              </div>
+            </Link>
           ))}
-        </CardGrid>
+        </div>
       ) : null}
       <div className="mt-4">
         <Pagination

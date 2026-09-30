@@ -96,10 +96,9 @@ export function PlacementsListPage({ canPublish }: { canPublish: boolean }) {
   const filtered = search.trim().length > 0 || status !== "all";
   const tableRows: DataTableRow[] = rows.map((row) => ({
     id: row.id,
-    href: `/admin/content/placements/${row.id}`,
     cells: [
       <AssetImage asset={row.asset} compact key="thumb" />,
-      value(row.slot),
+      <Link className="font-semibold underline underline-offset-4" href={`/admin/content/placements/${row.id}`} key="slot">{value(row.slot)}</Link>,
       `${value(row.targetType)} · ${row.targetId}`,
       <StatusPill key="status" status={row.status} />,
       <StatusPill key="verification" status={row.verificationState} />,
