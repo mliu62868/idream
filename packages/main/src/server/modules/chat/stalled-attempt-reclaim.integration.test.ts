@@ -64,6 +64,36 @@ async function abandonInGenerating(turnId: string, ageMs: number) {
 }
 
 describe("reclaiming an abandoned Chat attempt", () => {
+  it("honors a configured execution deadline beyond the former six-minute watchdog", async () => {
+    const f = await fixture();
+    const begun = await beginChatTurn({ userId: f.userId, sessionId: f.sessionId, content: "A longer run.", idempotencyKey: randomUUID() });
+    const deadline = new Date(Date.now() + 3 * 60_000);
+    await prisma.chatTurn.update({ where: { id: begun.snapshot!.turnId }, data: { executionDeadlineAt: deadline } });
+    await abandonInGenerating(begun.snapshot!.turnId, 7 * 60_000);
+    expect(await reclaimStalledChatAgentRuns()).toEqual({ reclaimed: 0 });
+    expect(await prisma.chatTurn.findUniqueOrThrow({ where: { id: begun.snapshot!.turnId } }))
+      .toMatchObject({ assistantStatus: "generating", executionDeadlineAt: deadline });
+  });
+
+  it("reclaims an expired short execution deadline even when the row was recently updated", async () => {
+    const f = await fixture();
+    const begun = await beginChatTurn({ userId: f.userId, sessionId: f.sessionId, content: "A short run.", idempotencyKey: randomUUID() });
+    await prisma.chatTurn.update({ where: { id: begun.snapshot!.turnId }, data: {
+      assistantStatus: "generating", admittedAt: new Date(), executionDeadlineAt: new Date(Date.now() - 61_000),
+    } });
+    expect(await reclaimStalledChatAgentRuns()).toEqual({ reclaimed: 1 });
+    expect(await prisma.chatTurn.findUniqueOrThrow({ where: { id: begun.snapshot!.turnId } }))
+      .toMatchObject({ assistantStatus: "failed", terminalAt: expect.any(Date) });
+  });
+
+  it("allows the terminal-commit grace after a configured deadline expires", async () => {
+    const f = await fixture();
+    const begun = await beginChatTurn({ userId: f.userId, sessionId: f.sessionId, content: "Settling a reply.", idempotencyKey: randomUUID() });
+    await prisma.chatTurn.update({ where: { id: begun.snapshot!.turnId }, data: { executionDeadlineAt: new Date(Date.now() - 30_000) } });
+    await abandonInGenerating(begun.snapshot!.turnId, 7 * 60_000);
+    expect(await reclaimStalledChatAgentRuns()).toEqual({ reclaimed: 0 });
+  });
+
   // SPEC: `generating` 是唯一一个进得去出不来的已接纳状态。
   // INTENT: pending 调度器只认 pending，所以 Chat 在接纳之后死掉就没人再碰这行。
   // 更糟的是并发闸会因此永久拒绝这个关系的下一条消息 —— 用户看到的是一个

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { compileCharacterSoul } from "@idream/shared";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { POST as createCreativeRun } from "@/app/api/v2/admin/creative/runs/route";
@@ -22,6 +23,10 @@ import { PATCH as patchContentAssetRoute } from "@/app/api/v2/admin/assets/[id]/
 import { purgeQueuedGenerationJobs } from "@/server/test/helpers";
 import { recordCreativeReviewDecision } from "./review-decision";
 import { getCreativeRunDetail } from "./run-read";
+
+const { version: imageEditWorkflowVersion }: { version: number } = JSON.parse(
+  readFileSync(new URL("../../../../../../gen/workflows/qwen-image-edit-img2img.json", import.meta.url), "utf8"),
+);
 
 /**
  * SPEC: drive the Route Handler but keep the throw-on-failure shape these assertions use.
@@ -272,10 +277,10 @@ describe("Character image Creative Run authority", () => {
         label: "Character identity-preserving edit",
         mode: "image",
         runner: "comfyui",
-        pipelineModel: "qwen-image-edit",
+        pipelineModel: "redqw21-image-edit",
         workflowKey: "qwen-image-edit-img2img",
         runnerConfig: {
-          workflowVersion: 2,
+          workflowVersion: imageEditWorkflowVersion,
           capabilities: {
             textToImage: true,
             stableSeed: true,
@@ -305,10 +310,10 @@ describe("Character image Creative Run authority", () => {
         label: "Character identity plus source-image edit",
         mode: "image",
         runner: "comfyui",
-        pipelineModel: "qwen-image-edit",
+        pipelineModel: "redqw21-image-edit",
         workflowKey: multiReferenceWorkflowKey,
         runnerConfig: {
-          workflowVersion: 2,
+          workflowVersion: imageEditWorkflowVersion,
           capabilities: {
             textToImage: true,
             stableSeed: true,
@@ -869,7 +874,7 @@ describe("Character image Creative Run authority", () => {
         generationProfileKey: profileKey,
         generationProfileVersion: 1,
         workflowKey: "qwen-image-edit-img2img",
-        workflowVersion: 2,
+        workflowVersion: imageEditWorkflowVersion,
         style: "realistic",
         matrixKey: `character-image-legacy-matrix-${suffix}`,
         sampleCount: 40,
@@ -1051,7 +1056,7 @@ describe("Character image Creative Run authority", () => {
         generationProfileKey: profileKey,
         generationProfileVersion: 1,
         workflowKey: "qwen-image-edit-img2img",
-        workflowVersion: 2,
+        workflowVersion: imageEditWorkflowVersion,
         style: archiveRaceStyle,
         matrixKey: `character-image-archive-race-matrix-${suffix}`,
         sampleCount: 40,
@@ -1545,7 +1550,7 @@ describe("Character image Creative Run authority", () => {
         generationProfileKey: multiReferenceProfileKey,
         generationProfileVersion: 1,
         workflowKey: multiReferenceWorkflowKey,
-        workflowVersion: 2,
+        workflowVersion: imageEditWorkflowVersion,
         style: "realistic",
         matrixKey: `character-image-create-multi-matrix-${suffix}`,
         sampleCount: 40,
@@ -1693,7 +1698,7 @@ describe("Character image Creative Run authority", () => {
       where: { id: multiReferenceProfileId },
       data: {
         runnerConfig: {
-          workflowVersion: 2,
+          workflowVersion: imageEditWorkflowVersion,
           capabilities: {
             textToImage: true,
             stableSeed: true,
@@ -1748,7 +1753,7 @@ describe("Character image Creative Run authority", () => {
       where: { id: multiReferenceProfileId },
       data: {
         runnerConfig: {
-          workflowVersion: 2,
+          workflowVersion: imageEditWorkflowVersion,
           capabilities: {
             textToImage: true,
             stableSeed: true,

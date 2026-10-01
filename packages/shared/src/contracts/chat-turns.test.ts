@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  chatAgentRunAdmissionAckSchema,
   chatExecutionSnapshotSchema,
   chatTerminalCommitSchema,
   chatToolEffectSchema,
@@ -8,6 +9,20 @@ import {
   userChatPersonaResponseSchema,
   DEFAULT_CHAT_EXPERIENCE,
 } from "./chat-turns";
+
+describe("Chat admission execution commitment", () => {
+  it("requires the exact attempt identity and a deadline for an active run", () => {
+    const ack = { ok: true, turnId: "turn-1", attempt: 1, duplicate: false, terminal: false, deadlineAt: "2026-09-30T00:10:00.000Z" };
+    expect(chatAgentRunAdmissionAckSchema.parse(ack)).toEqual(ack);
+    for (const invalid of [
+      { ...ack, deadlineAt: null }, { ...ack, deadlineAt: "invalid" },
+      { ...ack, attempt: 0 }, { ...ack, attempt: 1.5 }, { ...ack, turnId: "" },
+      { ok: true },
+    ]) expect(chatAgentRunAdmissionAckSchema.safeParse(invalid).success).toBe(false);
+    // Successful historical traces may already be compacted without a deadline.
+    expect(chatAgentRunAdmissionAckSchema.safeParse({ ...ack, duplicate: true, terminal: true, deadlineAt: null }).success).toBe(true);
+  });
+});
 
 const snapshot = {
   version: 1,

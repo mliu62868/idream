@@ -144,8 +144,9 @@ describe("BackendImageModel", () => {
       new URL("../../workflows/qwen-image-edit-multi-reference.json", import.meta.url), "utf8",
     )));
     if (workflow.backendKind !== "comfyui") throw new Error("Qwen edit must use its ComfyUI graph");
-    expect(workflow.apiPrompt["3"].inputs).toMatchObject({ image1: ["12", 0], image2: ["8", 0] });
-    expect(workflow.version).toBe(3);
+    expect(workflow.apiPrompt["3"].inputs).toMatchObject({ "images.image_1": ["9", 0], "images.image_2": ["8:scale", 0] });
+    expect(workflow.apiPrompt["9"].inputs.image).toEqual(["12", 0]);
+    expect(workflow.version).toBe(6);
     const backend = makeStubBackend();
     const result = await modelWithDescriptor(backend, workflow).generate({
       prompt: "Add a red scarf; keep the source framing.", count: 1, model: workflow.modelId,
@@ -156,8 +157,8 @@ describe("BackendImageModel", () => {
       ],
     });
     expect(result.ok).toBe(true);
-    expect(submittedSlots(backend).prompt).toContain("Edit Picture 1");
-    expect(submittedSlots(backend).prompt).toContain("Picture 2 is an identity reference only");
+    expect(submittedSlots(backend).prompt).toContain("Edit <image1>");
+    expect(submittedSlots(backend).prompt).toContain("<image2> is an identity reference only");
     expect(submittedSlots(backend).prompt).toContain("Add a red scarf; keep the source framing.");
   });
 
@@ -180,6 +181,46 @@ describe("BackendImageModel", () => {
       prompt: "She reads on a beach at sunset.", count: 1, model: workflow.modelId, controls,
     })).ok).toBe(true);
     expect(submittedSlots(textOnly).prompt).toBe("She reads on a beach at sunset.");
+  });
+
+  it("preserves a source scene but restages an identity reference on the V2 single-image route", async () => {
+    const workflow = workflowDescriptorSchema.parse(JSON.parse(readFileSync(
+      new URL("../../workflows/qwen-image-edit-img2img.json", import.meta.url), "utf8",
+    )));
+    for (const role of ["source_image", "identity_anchor"] as const) {
+      const backend = makeStubBackend();
+      expect((await modelWithDescriptor(backend, workflow).generate({
+        model: workflow.modelId, prompt: "Add a red scarf.", count: 1,
+        controls: { workflowKey: workflow.workflowKey, workflowVersion: workflow.version },
+        referenceImages: [{ assetId: "reference", role, b64Json: Buffer.from(PNG).toString("base64") }],
+      })).ok).toBe(true);
+      const prompt = submittedSlots(backend).prompt;
+      expect(prompt).toContain("<image1>");
+      if (role === "source_image") {
+        expect(prompt).toContain("except for the requested changes");
+        expect(prompt).not.toContain("Replace the entire background");
+      } else {
+        expect(prompt).toContain("identity reference only");
+        expect(prompt).toContain("Replace the entire background");
+      }
+    }
+  });
+
+  it("keeps the primary identity when the V2 supporting image is a look reference", async () => {
+    const workflow = workflowDescriptorSchema.parse(JSON.parse(readFileSync(
+      new URL("../../workflows/qwen-image-edit-multi-identity.json", import.meta.url), "utf8",
+    )));
+    const backend = makeStubBackend();
+    expect((await modelWithDescriptor(backend, workflow).generate({
+      model: workflow.modelId, prompt: "A portrait in the garden.", count: 1,
+      controls: { workflowKey: workflow.workflowKey, workflowVersion: workflow.version },
+      referenceImages: [
+        { assetId: "look", role: "look_reference", b64Json: Buffer.from(PNG).toString("base64") },
+        { assetId: "identity", role: "identity_anchor", b64Json: Buffer.from(PNG).toString("base64") },
+      ],
+    })).ok).toBe(true);
+    expect(submittedSlots(backend).prompt).toContain("<image2> is a look reference");
+    expect(submittedSlots(backend).prompt).toContain("preserve the identity from <image1>");
   });
 
   it("applies workflow-native negative prompt semantics before submission", async () => {

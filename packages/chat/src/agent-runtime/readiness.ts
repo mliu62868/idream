@@ -301,7 +301,7 @@ export async function probeWorkspaceRebuild(
 ): Promise<void> {
   const identity = {
     userId: `readiness-${nonce()}`,
-    characterId: "readiness-empty-rebuild",
+    characterId: "readiness-rebuild",
   };
   const fence = {
     mutationId: `readiness:${identity.userId}`,
@@ -322,6 +322,21 @@ export async function probeWorkspaceRebuild(
       rebuildId: prepared.rebuildId,
       fence,
     });
+    // Nonempty Main history exercises the installed CLI's private-file format;
+    // an empty rebuild alone cannot certify a dependency's ingest contract.
+    const populatedFence = { ...fence, mutationId: `${fence.mutationId}:populated`, authorityVersion: "2" };
+    const timestamp = new Date().toISOString();
+    const populated = await port.prepareRebuild({
+      scope: "relationship",
+      ...identity,
+      mode: "rebuild",
+      messages: [
+        { id: "readiness-user", sessionId: identity.userId, role: "user", content: "This is a controlled memory source verification.\n明天再见。Literal symbols: ␊ ␡", createdAt: timestamp },
+        { id: "readiness-assistant", sessionId: identity.userId, role: "assistant", content: "The source verification has been acknowledged.\n\nThe original paragraphs remain intact.", createdAt: timestamp },
+      ],
+      fence: populatedFence,
+    });
+    await port.promoteRebuild({ scope: "relationship", ...identity, rebuildId: populated.rebuildId, fence: populatedFence });
   } finally {
     await port.purge({ scope: "relationship", ...identity });
   }
@@ -360,13 +375,10 @@ export function createReadinessProbe(
       "private",
       options.config.igrepCommand,
     );
-    if (normal.ingest !== false || normal.wake !== true || normal.memory !== true || normal.search !== false
-      || normal.webProvider !== false || normal.webTool !== false
-      || normal.memorySearchMode !== "fast") {
+    if (Object.entries(NORMAL_IGREP_CONFIG).some(([key, value]) => normal[key] !== value)) {
       throw new Error("normal igrep profile did not normalize to the required capability set");
     }
-    if (privateProfile.ingest !== false || privateProfile.wake !== false
-      || privateProfile.memory !== false || privateProfile.search !== false) {
+    if (Object.entries(PRIVATE_IGREP_CONFIG).some(([key, value]) => privateProfile[key] !== value)) {
       throw new Error("private igrep profile did not normalize to the required capability set");
     }
     const profile = readinessProfile(options.config.modelProfile);

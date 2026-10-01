@@ -101,6 +101,7 @@ const topologyEnvironment = {
   ...process.env,
   VOICE_PROVIDER: mainEnvValue("VOICE_PROVIDER", "pocket-tts"),
   VOICE_IDENTITY_PROVIDER: mainEnvValue("VOICE_IDENTITY_PROVIDER"),
+  ASR_PROVIDER: mainEnvValue("ASR_PROVIDER", "disabled"),
 };
 const runtimeTopology = createRuntimeTopology({
   repoRoot: __dirname,
@@ -143,6 +144,18 @@ const runtimeProcess = (name) => {
 
 module.exports = {
   apps: [
+    {
+      ...runtimeProcess("parakeet-asr"),
+      env: {
+        ...runtimeIdentityEnv,
+        PARAKEET_ASR_HOST: mainEnvValue("PARAKEET_ASR_HOST", "127.0.0.1"),
+        PARAKEET_ASR_PORT: mainEnvValue("PARAKEET_ASR_PORT", "8064"),
+        PARAKEET_ASR_DEVICE: mainEnvValue("PARAKEET_ASR_DEVICE", "cpu"),
+        PARAKEET_ASR_API_TOKEN: mainEnvValue("PARAKEET_ASR_API_TOKEN"),
+        PARAKEET_ASR_TEMP_DIR: mainEnvValue("PARAKEET_ASR_TEMP_DIR", dir(".data/parakeet-asr/audio")),
+        HF_HUB_OFFLINE: "1",
+      },
+    },
     // Optional Fish Audio S2 Pro MLX runtime + durable reference-voice registry.
     {
       ...runtimeProcess("fish-audio"),

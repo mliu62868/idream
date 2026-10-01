@@ -24,13 +24,12 @@ test("Gate T runner is bounded to embedded runtime and Chat public-seam tests", 
         id: "chat-tool-recovery",
         cwd: "packages/chat",
         scenarios: [
-          "attempt_call_replay",
-          "reservation_authority_loss",
-          "crash_before_intent",
-          "crash_after_result",
-          "single_artifact",
-          "single_delivery",
-          "terminal_replay_noop",
+          "admission_identity_and_deadline",
+          "bounded_terminal_candidate",
+          "recover_valid_agent_runs",
+          "account_erasure_drain",
+          "agent_authored_image_direction",
+          "same_identity_ambiguous_ack_recovery",
         ],
       },
     ],
@@ -52,7 +51,7 @@ test("Gate T runner reports every check and fails closed on one non-zero exit", 
       return {
         status: exits.shift() ?? 1,
         signal: null,
-        stdout: "fixture stdout",
+        stdout: "Tests 8 passed (8)",
         stderr: "fixture stderr",
       };
     },
@@ -66,6 +65,14 @@ test("Gate T runner reports every check and fails closed on one non-zero exit", 
     "/repo/packages/chat",
     "/repo/packages/chat",
   ]);
+});
+
+test("Gate T rejects a zero exit when every selected test was skipped", () => {
+  const report = runGateTProbe({ execute() {
+    return { status: 0, signal: null, stdout: "Test Files 1 skipped (1)\nTests 8 skipped (8)", stderr: "" };
+  } });
+  assert.equal(report.ok, false);
+  assert.ok(report.checks.every((check) => check.ok === false));
 });
 
 test("Gate T CLI accepts only an optional explicit report path", () => {

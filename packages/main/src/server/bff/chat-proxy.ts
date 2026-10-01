@@ -12,6 +12,7 @@ import { AppError, Errors } from "@/server/lib/errors";
 import { logger } from "@/server/lib/logger";
 import {
   archiveChatSession,
+  chatStreamAuthority,
   chatVoiceAuthority,
   createChatSession,
   deleteChatMessage,
@@ -32,6 +33,7 @@ import { clearCompanionMemory } from "@/server/modules/chat/companion-memory-aut
 import { createChatContextDirective, deleteChatContextDirective, listChatContextDirectives, updateChatContextDirective } from "@/server/modules/chat/context-directives";
 import { getChatExperiencePreference, updateChatExperiencePreference } from "@/server/modules/chat/experience-preferences";
 import { getProactiveSettings, updateProactiveSettings } from "@/server/modules/chat/proactive-messages";
+import { routeVoiceInput } from "@/server/modules/chat/voice-input";
 import { getVoiceCallCapability, startVoiceCall } from "@/server/modules/chat/voice-call";
 import { createGroupConversation, getGroupConversation, groupSpeakerSession, listGroupCandidates, listGroupConversations, updateGroupConversation } from "@/server/modules/chat/group-conversations";
 
@@ -81,9 +83,13 @@ export async function proxyChatRequest(request: Request, segments: string[]): Pr
 
 async function routeMainChat(request: Request, segments: string[], userId: string): Promise<Response> {
   const method = request.method;
-  const body = method === "GET" || method === "HEAD" ? {} : await jsonBody(request);
   const root = segments[0];
   const path = root === "chat" ? segments.slice(1) : segments;
+  if (root === "chat") {
+    const voiceInput = await routeVoiceInput(request, path, userId);
+    if (voiceInput) return voiceInput;
+  }
+  const body = method === "GET" || method === "HEAD" ? {} : await jsonBody(request);
 
   if (root === "chat" && path[0] === "groups") {
     if (path.length === 1) {
@@ -214,7 +220,8 @@ async function routeMainChat(request: Request, segments: string[], userId: strin
       return json(await regenerateAndAdmitChatTurn(userId, messageId), 202);
     }
     if (path.length === 3 && path[2] === "cancel" && method === "POST") {
-      return json(await cancelAdmittedChatTurn(userId, messageId));
+      if (typeof body.attempt !== "number") throw Errors.badRequest("Stop requires the observed attempt");
+      return json(await cancelAdmittedChatTurn(userId, messageId, body.attempt));
     }
     if (path.length === 3 && path[2] === "stream" && method === "GET") {
       return proxyAgentStream(request, userId, messageId);
@@ -227,12 +234,29 @@ async function routeMainChat(request: Request, segments: string[], userId: strin
 async function proxyAgentStream(request: Request, userId: string, messageId: string): Promise<Response> {
   const base = requireAgentRuntime();
   const incoming = new URL(request.url);
+  const requestedAttempt = incoming.searchParams.get("attempt");
+  if (requestedAttempt !== null && !/^[1-9]\d*$/u.test(requestedAttempt)) {
+    throw Errors.badRequest("Stream requires a positive integer attempt");
+  }
+  const authority = await chatStreamAuthority(userId, messageId,
+    requestedAttempt === null ? undefined : Number(requestedAttempt));
+  // Existing probe/quality callers omit attempt. Resolve their current product
+  // identity once and pin it for this upstream handshake.
+  incoming.searchParams.set("attempt", String(authority.attempt));
   const path = `/api/v1/messages/${encodeURIComponent(messageId)}/stream`;
   const target = `${base}${path}${incoming.search}`;
   const headers = signedAgentHeaders(userId, "GET", path, "");
   const lastEventId = request.headers.get("last-event-id");
   if (lastEventId) headers.set("last-event-id", lastEventId);
-  const response = await fetch(target, { method: "GET", headers });
+  const response = await fetch(target, { method: "GET", headers, signal: request.signal });
+  try {
+    // The handshake can outlive deletion or revision. Do not expose a body from
+    // an identity that lost product authority while we waited for Chat.
+    await chatStreamAuthority(userId, messageId, authority.attempt);
+  } catch (error) {
+    void response.body?.cancel().catch(() => undefined);
+    throw error;
+  }
   const responseHeaders = new Headers(response.headers);
   responseHeaders.delete("content-encoding");
   responseHeaders.set("cache-control", "private, no-cache, no-store, no-transform");

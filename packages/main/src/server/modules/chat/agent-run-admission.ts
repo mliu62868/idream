@@ -5,6 +5,7 @@ import {
   signBffContext,
 } from "@idream/shared/bff";
 import {
+  chatAgentRunAdmissionAckSchema,
   chatExecutionSnapshotSchema,
   type ChatExecutionSnapshot,
 } from "@idream/shared/contracts";
@@ -26,8 +27,10 @@ import { loadChatAuthoritySnapshot } from "./chat-authority-snapshot";
 const ADMISSION_PATH = "/internal/agent-runs";
 const ADMISSION_TIMEOUT_MS = 5_000;
 const ADMISSION_LEASE_MS = 15_000;
-/** Chat's own 300s AgentRun deadline plus a margin for a slow terminal commit. */
-const STALLED_ATTEMPT_MS = 6 * 60_000;
+const TERMINAL_COMMIT_GRACE_MS = 60_000;
+// Historical generating rows have no recorded Chat commitment. Retain the
+// previous watchdog only for those rows; every new admission pins its deadline.
+const LEGACY_STALLED_ATTEMPT_MS = 6 * 60_000;
 
 export interface AgentRunAdmissionResult {
   admitted: boolean;
@@ -86,16 +89,17 @@ export async function regenerateAndAdmitChatTurn(userId: string, messageId: stri
 export async function cancelAdmittedChatTurn(
   userId: string,
   messageId: string,
+  expectedAttempt: number,
   fetchImpl: typeof fetch = fetch,
 ) {
-  const result = await cancelChatTurn(userId, messageId);
-  await cancelAdmittedAttempt(result.turnId, result.attempt, fetchImpl).catch((error) => {
+  const result = await cancelChatTurn(userId, messageId, expectedAttempt);
+  if (result.cancelled) await cancelAdmittedAttempt(result.turnId, result.attempt, fetchImpl).catch((error) => {
     logger.warn(
       { err: error, turnId: result.turnId, attempt: result.attempt },
       "immediate AgentRun cancellation failed; durable outbox remains authoritative",
     );
   });
-  return { ok: true, cancelled: result.cancelled };
+  return { ok: true, attempt: result.attempt, cancelled: result.cancelled };
 }
 
 /**
@@ -168,6 +172,15 @@ export async function attemptChatAgentRunAdmission(
     if (!response.ok) {
       throw new Error(`Chat AgentRun admission failed with HTTP ${response.status}`);
     }
+    const ack = chatAgentRunAdmissionAckSchema.parse(await response.json());
+    if (ack.turnId !== snapshot.turnId || ack.attempt !== snapshot.attempt) {
+      throw new Error("Chat AgentRun admission ACK belongs to another attempt");
+    }
+    if (ack.terminal) {
+      // Chat marks local terminal only after Main settles. An old terminal ACK
+      // cannot manufacture a fresh generating state in the product ledger.
+      throw new Error("Chat AgentRun already terminal; product state must reconcile");
+    }
     const changed = await prisma.chatTurn.updateMany({
       where: {
         id: snapshot.turnId,
@@ -179,6 +192,7 @@ export async function attemptChatAgentRunAdmission(
       data: {
         assistantStatus: "generating",
         admittedAt: new Date(),
+        executionDeadlineAt: new Date(ack.deadlineAt!),
         admissionLeaseToken: null,
         admissionLeaseUntil: null,
         admissionLastError: Prisma.DbNull,
@@ -265,10 +279,10 @@ export async function dispatchPendingChatAgentRuns(
 /**
  * SPEC: reclaim Turns stuck in `generating` past any attempt's useful life.
  *
- * INTENT: Chat bounds one AgentRun with `DSH_AGENT_DEADLINE_MS` (300s default)
- * and reports its own failures, so anything still generating well past that
- * window means the reporting path itself is gone — a killed process, a lost
- * terminal callback. Main is the only authority that can still end it.
+ * INTENT: Chat reports its frozen deadline at admission. Main honors that
+ * commitment even when Chat's configuration differs from Main's environment.
+ * Anything still generating past its deadline and commit grace needs Main to
+ * release the relationship and settle usage.
  * The grace margin keeps a merely slow attempt from being cut off early.
  */
 export async function reclaimStalledChatAgentRuns(
@@ -276,12 +290,19 @@ export async function reclaimStalledChatAgentRuns(
   signal?: AbortSignal,
 ): Promise<{ reclaimed: number }> {
   if (signal?.aborted) return { reclaimed: 0 };
-  const stalledBefore = new Date(Date.now() - STALLED_ATTEMPT_MS);
+  const now = Date.now();
+  const cutoff = {
+    deadlineBefore: new Date(now - TERMINAL_COMMIT_GRACE_MS),
+    legacyStalledBefore: new Date(now - LEGACY_STALLED_ATTEMPT_MS),
+  };
   const rows = await prisma.chatTurn.findMany({
     where: {
       assistantStatus: "generating",
       terminalAt: null,
-      updatedAt: { lt: stalledBefore },
+      OR: [
+        { executionDeadlineAt: { lt: cutoff.deadlineBefore } },
+        { executionDeadlineAt: null, updatedAt: { lt: cutoff.legacyStalledBefore } },
+      ],
     },
     orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
     select: { id: true },
@@ -291,7 +312,7 @@ export async function reclaimStalledChatAgentRuns(
   for (const row of rows) {
     if (signal?.aborted) break;
     try {
-      const result = await failStalledChatTurn(row.id, stalledBefore);
+      const result = await failStalledChatTurn(row.id, cutoff);
       if (result.reclaimed) {
         reclaimed += 1;
         logger.warn(

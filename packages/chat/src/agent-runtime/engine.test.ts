@@ -18,6 +18,7 @@ import {
   type CompanionRuntimePort,
 } from "./engine";
 import { AttemptWorkspaceStore } from "./workspace";
+import { OpenAiCompatibleAdapter } from "./openai-adapter";
 
 const IGREP_LLM = { url: "https://maintenance.example/v1", model: "maintenance-model" };
 const temporary: string[] = [];
@@ -309,6 +310,7 @@ const recallMarker = "idreamrecall_08a47391c06ac75d765597abfd2af7c5";
 const memoryPorts: Partial<CompanionEngineOptions> = {
   runIgrep: async ({ args }) => args.includes("wake")
     ? { markdownContext: "" }
+    : args.includes("reproject") ? { provider: "igrep", action: "reproject", migrated: false }
     : {
         results: [{
           citation: "dialogue:1",
@@ -359,6 +361,68 @@ async function waitFor(check: () => boolean): Promise<void> {
 }
 
 describe("Chat embedded companion runtime", () => {
+  it.each(["normal", "private"] as const)("rebinds only normal memory snapshots before reads (%s)", async (mode) => {
+    const operations: string[] = [];
+    const adapter = new MemoryReplyAdapter("Ready.");
+    const runtime = await engine(adapter, undefined, {
+      runIgrep: async (options) => {
+        operations.push(options.args[1]!);
+        return options.args[1] === "reproject"
+          ? { provider: "igrep", action: "reproject", migrated: false }
+          : options.args[1] === "wake" ? { markdownContext: "" } : { results: [] };
+      },
+    });
+    const connection = port();
+    await runtime.run(mode === "normal" ? normalInvocation() : invocation(), connection.runtimePort);
+    expect(operations).toEqual(mode === "normal" ? ["reproject", "wake", "memory-search"] : []);
+    expect(connection.candidates).toHaveLength(1);
+  });
+
+  it("does not call the model when snapshot reproject fails", async () => {
+    const adapter = new MemoryReplyAdapter("Must not execute.");
+    const runtime = await engine(adapter, undefined, { runIgrep: async () => { throw new Error("snapshot binding unavailable"); } });
+    const connection = port();
+    await runtime.run(normalInvocation(), connection.runtimePort);
+    expect(adapter.requests).toHaveLength(0);
+    expect(connection.candidates).toHaveLength(0);
+    expect(connection.events.at(-1)).toMatchObject({ type: "failed" });
+  });
+
+  it.each([false, true])("preserves group speakers through DSH into the provider request (image=%s)", async (image) => {
+    const value = image ? requiredImageInvocation() : invocation();
+    const speakers = [
+      { characterId: "briar", sessionId: "briar-session", name: "Briar" },
+      { characterId: "cedar", sessionId: "cedar-session", name: "Cedar" },
+    ];
+    value.preparedTurn.messages.splice(1, 0,
+      { id: "prior-user", sourceKind: "replay", role: "user", content: "Who brought what?" },
+      { id: "prior-briar", sourceKind: "replay", role: "assistant", speaker: speakers[0], content: "I brought the cup." },
+      { id: "prior-cedar", sourceKind: "replay", role: "assistant", speaker: speakers[1], content: "I moved the book." },
+    );
+    const requests: Array<{ messages: unknown[] }> = [];
+    const adapter = new OpenAiCompatibleAdapter({
+      profile: value.preparedTurn.profile,
+      apiKey: "fixture-key",
+      ...(image ? { requiredToolName: "generate_image_async" as const } : {}),
+      fetch: async (_url, init) => {
+        requests.push(JSON.parse(String(init?.body)) as { messages: unknown[] });
+        return new Response(`data: ${JSON.stringify({ choices: [{
+          delta: image ? { tool_calls: [{ index: 0, id: "image-1", function: {
+            name: "generate_image_async", arguments: JSON.stringify({ prompt: "A rainy observatory portrait" }),
+          } }] } : { content: "Briar brought the cup; Cedar moved the book." },
+          finish_reason: image ? "tool_calls" : "stop",
+        }] })}\n\ndata: [DONE]\n\n`);
+      },
+    });
+    const runtime = await engine(adapter);
+    const connection = port();
+    await runtime.run(value, connection.runtimePort);
+    expect(connection.events.filter(event => event.type === "failed")).toEqual([]);
+    const request = JSON.stringify(requests[0]?.messages);
+    for (const speaker of speakers) expect(request).toContain(JSON.stringify(speaker).replaceAll('"', '\\"'));
+    expect(request.indexOf("I brought the cup.")).toBeLessThan(request.indexOf("I moved the book."));
+  });
+
   it.each(["normal", "private"] as const)("restricts plugin tools in %s mode at presentation and dispatch", async (mode) => {
     let writes = 0;
     const denied: boolean[] = [];

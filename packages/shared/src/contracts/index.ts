@@ -12,3 +12,4 @@ export * from "./content-report";
 export * from "./support";
 export * from "./chat-turns";
 export * from "./chat-runtime-diagnostics";
+export * from "./voice-input";

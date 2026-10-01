@@ -62,8 +62,8 @@ CLIP_TYPES = (
 )
 
 
-def discard_completed_model_owner(owner: object, render_device: object) -> float:
-    """Drop a completed off-device model from its cached owner container."""
+def discard_completed_model_owner(owner: object) -> float:
+    """Drop a declared completed text encoder from its cached owner container."""
 
     patcher = getattr(owner, "patcher", None)
     model = getattr(owner, "cond_stage_model", None)
@@ -71,7 +71,6 @@ def discard_completed_model_owner(owner: object, render_device: object) -> float
         patcher is None
         or model is None
         or getattr(patcher, "model", None) is not model
-        or getattr(patcher, "load_device", render_device) == render_device
     ):
         return 0.0
 
@@ -86,14 +85,20 @@ def discard_completed_model_owner(owner: object, render_device: object) -> float
 
 
 def release_off_device_models(completed_owner: object | None = None) -> float:
-    """Release loaded models whose execution device is not the render device."""
+    """Release off-device models and the explicitly completed text owner."""
 
     render_device = model_management.get_torch_device()
+    completed_patcher = getattr(completed_owner, "patcher", None)
+    completed_unload_failed = False
     freed_mb = 0.0
 
     for loaded in list(model_management.current_loaded_models):
         patcher = loaded.model
-        if patcher is None or loaded.device == render_device:
+        # The graph explicitly proves this CLIP has no remaining consumers.
+        # Moving it to MPS must not make its weights survive the barrier, while
+        # the diffusion model and VAE on the same device remain live.
+        is_completed_owner = patcher is completed_patcher
+        if patcher is None or (loaded.device == render_device and not is_completed_owner):
             continue
 
         model = getattr(patcher, "model", None)
@@ -104,6 +109,8 @@ def release_off_device_models(completed_owner: object | None = None) -> float:
             # off-device text weights are dead for the remainder of the render.
             loaded.model_unload(None)
         except Exception:
+            if is_completed_owner:
+                completed_unload_failed = True
             # INTENT: a memory optimization must not turn a valid paid render
             # into a failed attempt; retain the model and continue instead.
             logger.exception(
@@ -125,12 +132,9 @@ def release_off_device_models(completed_owner: object | None = None) -> float:
         )
 
     discarded_owner_mb = 0.0
-    if completed_owner is not None:
+    if completed_owner is not None and not completed_unload_failed:
         try:
-            discarded_owner_mb = discard_completed_model_owner(
-                completed_owner,
-                render_device,
-            )
+            discarded_owner_mb = discard_completed_model_owner(completed_owner)
         except Exception:
             logger.exception("iDream could not discard completed model owner")
 
@@ -152,7 +156,7 @@ def release_off_device_models(completed_owner: object | None = None) -> float:
     except Exception:
         logger.exception("iDream could not empty the accelerator cache")
     logger.info(
-        "iDream detached %.0f MB of off-device models, discarded %.0f MB "
+        "iDream detached %.0f MB of completed/off-device models, discarded %.0f MB "
         "from completed owners, and evicted %.0f MB of cached CPU tensors",
         freed_mb,
         discarded_owner_mb,
@@ -174,7 +178,7 @@ class IDreamUnloadOffDeviceModels:
                 "after": (ANY,),
             },
             "optional": {
-                # Image workflows declare the prompt-scoped CLIP owner that is
+                # Workflows declare the prompt-scoped CLIP owner that is
                 # dead once every conditioning branch reaches this barrier.
                 "release": (ANY,),
             },
@@ -186,7 +190,8 @@ class IDreamUnloadOffDeviceModels:
     CATEGORY = "iDream/memory"
     DESCRIPTION = (
         "Waits for the declared conditioning dependency, releases loaded models "
-        "outside the render device, and returns both inputs unchanged."
+        "outside the render device and the declared completed text owner, "
+        "then returns both inputs unchanged."
     )
 
     @classmethod
@@ -318,6 +323,9 @@ class IDreamFreshCLIPLoader:
                 "clip_name": (folder_paths.get_filename_list("text_encoders"),),
                 "type": (CLIP_TYPES,),
             },
+            "optional": {
+                "device": (("default", "cpu", "mps"),),
+            },
         }
 
     RETURN_TYPES = ("CLIP",)
@@ -329,9 +337,21 @@ class IDreamFreshCLIPLoader:
     def IS_CHANGED(cls, **_kwargs):
         return float("nan")
 
-    def load(self, clip_name, type="stable_diffusion"):
+    def load(self, clip_name, type="stable_diffusion", device="default"):
         import comfy.sd
         import folder_paths
+        import torch
+
+        model_options = {}
+        if device not in ("default", "cpu", "mps"):
+            raise ValueError(f"Unsupported text encoder device: {device}")
+        if device != "default":
+            if device == "mps" and not torch.backends.mps.is_available():
+                raise RuntimeError("MPS text encoding requires an available Apple GPU")
+            model_options = {
+                "load_device": torch.device(device),
+                "offload_device": torch.device("cpu"),
+            }
 
         clip_type = getattr(
             comfy.sd.CLIPType,
@@ -346,6 +366,7 @@ class IDreamFreshCLIPLoader:
             ckpt_paths=[clip_path],
             embedding_directory=folder_paths.get_folder_paths("embeddings"),
             clip_type=clip_type,
+            model_options=model_options,
         )
         return (clip,)
 

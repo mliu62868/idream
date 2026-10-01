@@ -139,6 +139,30 @@ describe("Character Portfolio card", () => {
     expect(performance).not.toContain("live management");
   });
 
+  it("marks an archived draft and directs recovery before image production", () => {
+    const archived = {
+      ...item,
+      serving: { ...item.serving, state: "retired" as const, currentReleaseId: null },
+      journey: { ...journey("create_primary_portrait", "visual_setup", "/admin/characters/character-1?tab=assets"), status: "blocked" as const },
+    };
+    expect(characterPortfolioState(archived).label).toBe("Archived");
+    expect(resolveCharacterPortfolioPrimaryAction(archived)).toMatchObject({
+      label: "Restore draft", href: "/admin/characters/character-1?tab=release", requiresAssets: false,
+    });
+    const html = renderToStaticMarkup(<CharacterPortfolioCard canOpenAssets={false} canOpenProject item={archived} mode="studio" />);
+    expect(html).toContain("Archived");
+    expect(html).toContain("Restore draft");
+    expect(html).not.toContain("Create first identity portrait");
+  });
+
+  it("keeps retired published and paused characters distinct from a live production journey", () => {
+    const retired = { ...item, serving: { ...item.serving, state: "retired" as const, currentReleaseId: "release-1" } };
+    expect(characterPortfolioState(retired).label).toBe("Retired");
+    expect(resolveCharacterPortfolioPrimaryAction(retired)).toMatchObject({ label: "Review retired character", requiresAssets: false });
+    const paused = { ...item, serving: { ...item.serving, state: "paused" as const }, journey: journey("monitor_live_character", "live_operations", "/admin/characters/character-1?tab=monitor") };
+    expect(characterPortfolioState(paused).label).toBe("Paused");
+  });
+
   it("keeps long Character names readable instead of visually truncating them", () => {
     const longName = "E2E Admin Operations Character With A Deliberately Long Name";
     const html = renderToStaticMarkup(

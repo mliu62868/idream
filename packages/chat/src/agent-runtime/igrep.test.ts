@@ -36,9 +36,14 @@ async function fixtureIngest(options: JsonCommandOptions) {
   const transcript = await readFile(argument("--transcript"), "utf8");
   const rows = transcript.trim().split("\n").map((line) => JSON.parse(line));
   const dialoguePath = `.igrep/mem/memory/dialogues/deepseek-harness-${sessionId}.jsonl`;
+  const sessionPath = `.igrep/mem/memory/sessions/deepseek-harness-${sessionId}.jsonl`;
   await mkdir(dirname(join(workspace, dialoguePath)), { recursive: true });
-  await writeFile(join(workspace, dialoguePath), rows.map((row, index) => JSON.stringify({
-    schema: "igrep.mem.dialogue/1",
+  await mkdir(dirname(join(workspace, sessionPath)), { recursive: true });
+  // Captured official igrep 0.1.150: searchable tuples and separate role-bearing sources.
+  await writeFile(join(workspace, dialoguePath), rows.map((row) => JSON.stringify([row.source_at, row.content])).join("\n") + "\n");
+  await writeFile(join(workspace, sessionPath), rows.map((row, index) => JSON.stringify({
+    schema: "igrep.mem.session/1",
+    agent: "deepseek-harness",
     id: `fixture-${sessionId}-${index}`,
     session_id: sessionId,
     turn_index: index + 1,
@@ -46,7 +51,7 @@ async function fixtureIngest(options: JsonCommandOptions) {
     content: row.content,
     source_at: { instant_utc: row.source_at },
   })).join("\n") + "\n");
-  return { events: rows.length, dialoguePath };
+  return { events: rows.length, dialoguePath, sessionPath };
 }
 
 describe("igrep subprocess bounds", () => {
@@ -109,6 +114,9 @@ describe("official igrep wake observation", () => {
       undefined,
       async () => ({ warnings: [] }),
     )).rejects.toThrow("unverifiable evidence");
+    await expect(recallIgrepMemory("igrep", "/w", "query", {}, async () => ({
+      results: [], warnings: ["workspace memory search incomplete (1 dialogue file(s) could not be bound to canonical evidence); run mem reproject"],
+    }))).rejects.toThrow("unverifiable evidence");
   });
 });
 
@@ -194,6 +202,55 @@ describe("official igrep pre-recall", () => {
 });
 
 describe("official igrep canonical rebuild", () => {
+  it("preserves multiline Unicode sources through the captured v3 transport and relative-date view", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "chat-igrep-transport-"));
+    temporary.push(workspace);
+    await mkdir(join(workspace, ".igrep"));
+    const run = async (options: JsonCommandOptions) => {
+      if (options.args[1] !== "ingest") return { ok: true };
+      const result = await fixtureIngest(options);
+      // Captured from official mem_dialogue_facts.project_rows in igrep 0.1.150.
+      await writeFile(join(workspace, result.dialoguePath), [
+        ["2026-09-30T17:00:00.469Z", "明天（2026-10-01）晚上见。␊␡I have ␊␊ and ␡␡ symbols.␉␡End. 🛶"],
+        ["2026-09-30T17:00:01.000Z", "Acknowledged."],
+      ].map((row) => JSON.stringify(row)).join("\n") + "\n");
+      return result;
+    };
+    const builder = new IgrepMemoryBuilder("igrep", { status: async () => ({ dialogueFiles: 1, pendingProfileRows: 0, processedProfileRows: 1, lastMaintainAt: "2026-09-30T17:00:01.000Z" }) }, run);
+    await expect(builder.build(workspace, {
+      scope: "relationship", userId: "user-1", characterId: "character-1", mode: "rebuild",
+      messages: [
+        { id: "source", sessionId: "transport", role: "user", content: "明天晚上见。\nI have ␊ and ␡ symbols.\tEnd. 🛶", createdAt: "2026-09-30T17:00:00.469Z" },
+        { id: "reply", sessionId: "transport", role: "assistant", content: "Acknowledged.", createdAt: "2026-09-30T17:00:01.000Z" },
+      ],
+    })).resolves.toMatchObject({ sourceReady: true, derivation: "accepted" });
+  });
+
+  it.each(["truncated ␊", "invalid ␊x", "invalid ␡x", "changed original"]) (
+    "rejects malformed transport or rewritten text: %s", async (content) => {
+      const workspace = await mkdtemp(join(tmpdir(), "chat-igrep-bad-transport-"));
+      temporary.push(workspace);
+      await mkdir(join(workspace, ".igrep"));
+      const run = async (options: JsonCommandOptions) => {
+        if (options.args[1] !== "ingest") return { ok: true };
+        const result = await fixtureIngest(options);
+        await writeFile(join(workspace, result.dialoguePath), [
+          ["2026-09-30T17:00:00.000Z", content],
+          ["2026-09-30T17:00:01.000Z", "Acknowledged."],
+        ].map((row) => JSON.stringify(row)).join("\n") + "\n");
+        return result;
+      };
+      const builder = new IgrepMemoryBuilder("igrep", { status: async () => ({ dialogueFiles: 1, pendingProfileRows: 0, processedProfileRows: 1, lastMaintainAt: "2026-09-30T17:00:01.000Z" }) }, run);
+      await expect(builder.build(workspace, {
+        scope: "relationship", userId: "user-1", characterId: "character-1", mode: "rebuild",
+        messages: [
+          { id: "source", sessionId: "transport", role: "user", content: "original", createdAt: "2026-09-30T17:00:00.000Z" },
+          { id: "reply", sessionId: "transport", role: "assistant", content: "Acknowledged.", createdAt: "2026-09-30T17:00:01.000Z" },
+        ],
+      })).rejects.toThrow("igrep source integrity rejected");
+    },
+  );
+
   it("ingests strict Chat transcripts, rebuilds maintenance and verifies the public status seam", async () => {
     const root = await mkdtemp(join(tmpdir(), "chat-runtime-igrep-rebuild-"));
     temporary.push(root);
@@ -427,126 +484,77 @@ describe("igrep Main source admission", () => {
   }
   async function expectSources(workspace: string, input: CompanionWorkspaceRebuild) {
     const rows = (await readFile(join(workspace, dialogue), "utf8")).trim().split("\n").map((row) => JSON.parse(row));
-    expect(rows.map((row) => [row.role, row.content, row.source_at.instant_utc])).toEqual(
-      input.messages.map((message) => [message.role, message.content, message.createdAt]),
+    expect(rows).toEqual(
+      input.messages.map((message) => [message.createdAt, message.content]),
     );
     await expect(readFile(join(workspace, retractions))).rejects.toMatchObject({ code: "ENOENT" });
     expect(await readdir(join(workspace, ".igrep/mem/memory/dialogues"))).toEqual(["deepseek-harness-session-1.jsonl"]);
   }
 
-  // Captured dialogue/1 shapes from official igrep 0.1.137 ingest. The
-  // searchable content includes dates; source_content remains Main's text.
-  const annotatedSamples = [
-    {
-      source: "What is today's agenda?",
-      content: "What is today（2026-09-10）'s agenda?",
-      annotations: [{ span: { start: 8, end: 13 }, surface: "today", absolute_text: "2026-09-10" }],
-    },
-    {
-      source: "🌿 今天给Cedar浇水，明天再检查。",
-      content: "🌿 今天（2026-09-10）给Cedar浇水，明天（2026-09-11）再检查。",
-      annotations: [
-        { span: { start: 2, end: 4 }, surface: "今天", absolute_text: "2026-09-10" },
-        { span: { start: 13, end: 15 }, surface: "明天", absolute_text: "2026-09-11" },
-      ],
-    },
-    {
-      source: "Call me in 3 hours and next week.",
-      content: "Call me in 3 hours（2026-09-10T04:07+00:00） and next week（2026-09-17）.",
-      annotations: [
-        { span: { start: 8, end: 18 }, surface: "in 3 hours", absolute_text: "2026-09-10T04:07+00:00" },
-        { span: { start: 23, end: 32 }, surface: "next week", absolute_text: "2026-09-17" },
-      ],
-    },
-  ];
-
-  function annotatedRequest(source: string): CompanionWorkspaceRebuild {
-    return { ...request, messages: [
-      { ...request.messages[0]!, content: source, createdAt: "2026-09-10T01:07:23.469Z" },
-      { ...request.messages[1]!, content: "Noted.", createdAt: "2026-09-10T01:07:55.036Z" },
-    ] };
-  }
-
-  async function annotatedIngest(options: JsonCommandOptions, sample: typeof annotatedSamples[number]) {
-    const result = await fixtureIngest(options);
-    const workspace = options.args[options.args.indexOf("--workspace") + 1]!;
-    const path = join(workspace, result.dialoguePath);
-    const rows = (await readFile(path, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-    Object.assign(rows[0], {
-      source_content: sample.source,
-      content: sample.content,
-      temporal_annotations: sample.annotations.map((annotation) => ({
-        ...annotation, anchor_ref: "message.source_at", authority: "user_assertion", method: "rule",
-      })),
-    });
-    await writeFile(path, rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
-    return result;
-  }
-
-  it.each(annotatedSamples)("accepts official temporal views without losing the Main source: $source", async (sample) => {
+  it("accepts the captured igrep 0.1.150 tuple and session formats", async () => {
     const workspace = await fixture();
     const calls: string[] = [];
     const builder = new IgrepMemoryBuilder("igrep", { status: async () => ({
-      dialogueFiles: 1, pendingProfileRows: 0, processedProfileRows: 2, lastMaintainAt: "2026-09-10T01:08:00Z",
+      dialogueFiles: 1, pendingProfileRows: 0, processedProfileRows: 4, lastMaintainAt: "2026-09-10T01:08:00Z",
     }) }, async (options) => {
       calls.push(options.args[1]!);
-      return options.args[1] === "ingest" ? annotatedIngest(options, sample) : { ok: true };
+      return options.args[1] === "ingest" ? fixtureIngest(options) : { ok: true };
     });
-    await expect(builder.build(workspace, annotatedRequest(sample.source))).resolves.toMatchObject({
-      sourceReady: true, derivation: "accepted", sessions: 1, messages: 2,
+    await expect(builder.build(workspace, request)).resolves.toMatchObject({
+      sourceReady: true, derivation: "accepted", sessions: 1, messages: 4,
     });
     expect(calls).toEqual(["ingest", "maintain", "doctor"]);
+    await expectSources(workspace, request);
   });
 
-  it.each(["changed-source", "unannotated-rewrite", "forged-surface", "overlapping-spans", "non-date-insertion"])(
-    "rejects a temporal view with %s even when it supplies source_content", async (fault) => {
+  it.each(["text", "timestamp", "order", "extra-field", "role", "session-id", "turn-index", "source-text", "missing-source"])(
+    "rejects changed tuple/session evidence: %s", async (fault) => {
       const workspace = await fixture();
-      const sample = structuredClone(annotatedSamples[0]!);
-      const source = sample.source;
-      if (fault === "changed-source") {
-        sample.source = sample.source.replace("agenda", "schedule");
-        sample.content = sample.content.replace("agenda", "schedule");
-      }
-      if (fault === "unannotated-rewrite") sample.content = "The user forgot Cedar.";
-      if (fault === "forged-surface") sample.annotations[0]!.surface = "agenda";
-      if (fault === "overlapping-spans") sample.annotations.push(sample.annotations[0]!);
-      if (fault === "non-date-insertion") {
-        sample.annotations[0]!.absolute_text = "The user forgot Cedar";
-        sample.content = "What is today（The user forgot Cedar）'s agenda?";
-      }
       const calls: string[] = [];
       const builder = new IgrepMemoryBuilder("igrep", sourceOnlyStatus, async (options) => {
         calls.push(options.args[1]!);
-        return options.args[1] === "ingest" ? annotatedIngest(options, sample) : { ok: true };
+        if (options.args[1] !== "ingest") return { ok: true };
+        const result = await fixtureIngest(options);
+        const sourceFault = ["role", "session-id", "turn-index", "source-text", "missing-source"].includes(fault);
+        const path = join(workspace, sourceFault ? result.sessionPath : result.dialoguePath);
+        if (fault === "missing-source") { await rm(path); return result; }
+        const rows = (await readFile(path, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+        if (fault === "text") rows[0][1] = "The notebook was forgotten.";
+        if (fault === "timestamp") rows[0][0] = "2026-09-08T09:00:00Z";
+        if (fault === "order") rows.reverse();
+        if (fault === "extra-field") rows[0].push("unverified source");
+        if (fault === "role") rows[0].role = "assistant";
+        if (fault === "session-id") rows[0].session_id = "another-session";
+        if (fault === "turn-index") rows[0].turn_index = 2;
+        if (fault === "source-text") rows[0].content = "The notebook was forgotten.";
+        await writeFile(path, rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
+        return result;
       });
-      await expect(builder.build(workspace, annotatedRequest(source))).rejects.toThrow("igrep source integrity rejected");
+      await expect(builder.build(workspace, request)).rejects.toThrow("igrep source integrity rejected");
       expect(calls).toEqual(["ingest", "ingest"]);
     },
   );
 
-  it("rejects maintenance changes to an otherwise valid temporal annotation", async () => {
+  it.each(["dialogue", "session"] as const)("rejects maintenance changes to the %s source", async (kind) => {
     const workspace = await fixture();
-    const sample = annotatedSamples[0]!;
     const calls: string[] = [];
     const builder = new IgrepMemoryBuilder("igrep", sourceOnlyStatus, async (options) => {
       calls.push(options.args[1]!);
-      if (options.args[1] === "ingest") return annotatedIngest(options, sample);
+      if (options.args[1] === "ingest") return fixtureIngest(options);
       if (options.args[1] === "maintain") {
-        const path = join(workspace, dialogue);
+        const path = join(workspace, kind === "dialogue" ? dialogue : dialogue.replace("/dialogues/", "/sessions/"));
         const rows = (await readFile(path, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-        rows[0].content = sample.content.replace("2026-09-10", "2026-09-11");
-        rows[0].temporal_annotations[0].absolute_text = "2026-09-11";
+        if (kind === "dialogue") rows[0][1] = "The notebook was forgotten.";
+        else rows[0].role = "assistant";
         await writeFile(path, rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
       }
       return { ok: true };
     });
-    await expect(builder.build(workspace, annotatedRequest(sample.source))).resolves.toMatchObject({
-      sourceReady: true, derivation: "rejected", rejectionReason: "dialogue_changed_during_maintenance",
+    await expect(builder.build(workspace, request)).resolves.toMatchObject({
+      sourceReady: true, derivation: "rejected", rejectionReason: "dialogue_source_mismatch",
     });
     expect(calls).toEqual(["ingest", "maintain", "ingest", "doctor"]);
-    const restored = JSON.parse((await readFile(join(workspace, dialogue), "utf8")).split("\n")[0]!);
-    expect(restored.content).toBe(sample.content);
-    expect(restored.source_content).toBe(sample.source);
+    await expectSources(workspace, request);
   });
 
   it.each(["project", "rebuild"] as const)("recovers a rejected %s from the current Main source, retaining explicit correction", async (mode) => {
@@ -594,7 +602,7 @@ describe("igrep Main source admission", () => {
     const builder = new IgrepMemoryBuilder("igrep", sourceOnlyStatus, async (options) => {
       if (options.args[1] === "ingest") return fixtureIngest(options);
       if (options.args[1] === "maintain") {
-        const path = join(workspace, dialogue);
+        const path = join(workspace, fault === "provenance" ? dialogue.replace("/dialogues/", "/sessions/") : dialogue);
         if (fault === "delete") await rm(path);
         else {
           const text = await readFile(path, "utf8");
@@ -727,7 +735,7 @@ describe("igrep Main source admission", () => {
     expect(await readdir(join(outside, ".igrep"))).toEqual([]);
   });
 
-  it.each(["mem", "mem/memory", "mem/memory/dialogues", "mem/.state"])("rejects linked source directory %s before the first CLI write", async (directory) => {
+  it.each(["mem", "mem/memory", "mem/memory/dialogues", "mem/memory/sessions", "mem/.state"])("rejects linked source directory %s before the first CLI write", async (directory) => {
     const workspace = await fixture();
     const outside = await fixture();
     const target = join(outside, ".igrep");
@@ -764,6 +772,8 @@ describe("igrep readiness isolation evidence", () => {
   it("proves same-session replay and bidirectional cross-workspace isolation without returning probe content", async () => {
     const searches: Array<{ workspace: string; query: string }> = [];
     const run = async (options: JsonCommandOptions): Promise<unknown> => {
+      if (options.args[1] === "ingest") await mkdir(join(options.args[options.args.indexOf("--workspace") + 1]!, ".igrep"), { recursive: true });
+      if (options.args[1] === "reproject") return { provider: "igrep", action: "reproject", migrated: false };
       if (options.args[0] === "mem-api" && options.args[1] === "memory-search") {
         const payload = JSON.parse(options.stdin ?? "{}") as { workspace: string; query: string };
         searches.push(payload);
@@ -771,7 +781,8 @@ describe("igrep readiness isolation evidence", () => {
           provider: "igrep",
           strategy: "shared-search",
           workspaceRoot: payload.workspace,
-          results: [],
+          results: payload.workspace.includes(payload.query.startsWith("scope-a-") ? "scope-a" : "scope-b")
+            ? [{ sourceClass: "dialogue", snippet: payload.query }] : [],
           warnings: [],
           markdownContext: "",
         };
@@ -794,22 +805,25 @@ describe("igrep readiness isolation evidence", () => {
       duplicateIngest: { replayedSessions: 1, duplicateDialogueFiles: 0 },
       crossScope: { probes: 2, leakedResults: 0 },
     });
-    expect(searches).toHaveLength(2);
+    expect(searches).toHaveLength(4);
     expect(searches[0]?.workspace).not.toBe(searches[1]?.workspace);
     expect(JSON.stringify(evidence)).not.toContain("fixed-nonce");
   });
 
   it("accepts an igrep workspaceRoot alias that resolves to the probed workspace", async () => {
     const run = async (options: JsonCommandOptions): Promise<unknown> => {
+      if (options.args[1] === "ingest") await mkdir(join(options.args[options.args.indexOf("--workspace") + 1]!, ".igrep"), { recursive: true });
+      if (options.args[1] === "reproject") return { provider: "igrep", action: "reproject", migrated: false };
       if (options.args[0] === "mem-api" && options.args[1] === "memory-search") {
-        const payload = JSON.parse(options.stdin ?? "{}") as { workspace: string };
+        const payload = JSON.parse(options.stdin ?? "{}") as { workspace: string; query: string };
         const alias = `${payload.workspace}-alias`;
-        await symlink(payload.workspace, alias);
+        await symlink(payload.workspace, alias).catch((error: NodeJS.ErrnoException) => { if (error.code !== "EEXIST") throw error; });
         return {
           provider: "igrep",
           strategy: "shared-search",
           workspaceRoot: alias,
-          results: [],
+          results: payload.workspace.includes(payload.query.startsWith("scope-a-") ? "scope-a" : "scope-b")
+            ? [{ sourceClass: "dialogue", snippet: payload.query }] : [],
           warnings: [],
           markdownContext: "",
         };
@@ -834,13 +848,15 @@ describe("igrep readiness isolation evidence", () => {
 
   it("fails closed when either workspace can recall the other scope sentinel", async () => {
     const run = async (options: JsonCommandOptions): Promise<unknown> => {
+      if (options.args[1] === "ingest") await mkdir(join(options.args[options.args.indexOf("--workspace") + 1]!, ".igrep"), { recursive: true });
+      if (options.args[1] === "reproject") return { provider: "igrep", action: "reproject", migrated: false };
       if (options.args[0] === "mem-api" && options.args[1] === "memory-search") {
         const payload = JSON.parse(options.stdin ?? "{}") as { workspace: string; query: string };
         return {
           provider: "igrep",
           strategy: "shared-search",
           workspaceRoot: payload.workspace,
-          results: [{ content: payload.query }],
+          results: [{ sourceClass: "dialogue", snippet: payload.query }],
           warnings: [],
           markdownContext: "",
         };

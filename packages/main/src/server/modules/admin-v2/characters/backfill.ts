@@ -135,10 +135,9 @@ async function ensureContentVersion(
   character: BackfillCharacter,
 ) {
   const { snapshot, contentHash } = legacyCutoverContentIdentity(character);
-  const existing = await tx.characterContentVersion.findUnique({
-    where: {
-      characterId_contentHash: { characterId: character.id, contentHash },
-    },
+  const existing = await tx.characterContentVersion.findFirst({
+    where: { characterId: character.id, contentHash },
+    orderBy: { version: "asc" },
   });
   if (existing) return existing;
   const latest = await tx.characterContentVersion.aggregate({

@@ -174,7 +174,10 @@ export async function handleChatRequest(
     if (admitted.tombstoned) {
       return json(409, { error: "agent_run_attempt_tombstoned" });
     }
-    return json(202, { ok: true, duplicate: admitted.duplicate, terminal: admitted.terminal });
+    return json(202, {
+      ok: true, turnId: snapshot.turnId, attempt: snapshot.attempt,
+      duplicate: admitted.duplicate, terminal: admitted.terminal, deadlineAt: admitted.deadlineAt,
+    });
   }
 
   if (url.pathname === ACCOUNT_DELETION_V2_INGEST_PATH && request.method === "POST") {

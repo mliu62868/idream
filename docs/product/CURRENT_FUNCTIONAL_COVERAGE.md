@@ -1,12 +1,20 @@
 # iDream 当前功能覆盖审计
 
-更新日期：2026-09-13
+更新日期：2026-09-30
 
 > 本文引用的 `docs/product-audits/` 与 `output/` 证据路径已于 2026-09-13 移出工作树（历史审计产物，git 历史中仍可检索）。路径保留用于说明当时证据的形态与归属，不再是可直接打开的文件。新的审计证据按 `docs/agents/audit-brief.md` 写进本地 `.scratch/<slug>/`。
 
 ## 结论
 
 iDream 的核心用户与运营链已有受控运行证据，当前集中实施五角色体验、默认生成性能与可信运营指标。完整目标仍是对标 OurDream.ai 的 18+ AI 角色扮演 / 伴侣平台，覆盖 Create、Chat、Generate、My AI、Feed/Community、商业化及内容运营。下文按日期记录实现与证据；历史报告不自动验收新源码，本地 development 不代表公开生产发布。
+
+## 2026-09-30 主站语音输入
+
+单聊和群聊已接入独立 Mic → 录音 → 可编辑草稿 → 明确 Send。Main 复用登录/年龄、owner、成员、归档及 Serving / Release pin 资格检查；ASR 不进入 Turn、关系记忆、媒体或计费。草稿编辑或收件人改变时先确认候选；取消、迟到权限/结果、后台中断、账户切换及收音期间 TTS 播放均有生命周期边界。仅 Chat 文档开放自身源麦克风权限。部署使用一个常驻、固定 revision / SDK / hash lock 的 Redux CPU gateway，经 PM2 wrapper 固定身份 readiness 后开放能力。
+
+受控 Chrome 使用公开真人语音经 native WebAudio 虚拟输入与 native MediaRecorder，真实 Main → ffmpeg → Redux → 草稿已完成；约 59.2 秒录音的 Done→草稿单次约 1.10 秒，约 19 秒录音单次约 0.36 秒，tracks 全部结束。转写前后数据库、余额和用量一致；单聊手动发送后恰好一个持久 Turn、一次消息用量且真实 Chat 回复成功，刷新保留。群聊真实验证录音中换角色后手动转写、旧角色 request scope、候选确认及新角色发送；取消无新增转写。实际 gateway 10 / 60 秒各 20 次的 HTTP p95 为 148 / 901 ms，不能替代整个浏览器链路 p95。[任务验证报告](../../.scratch/chat-voice-input/VERIFICATION.md)记录各 source revision、UUID、数据库与浏览器证据。
+
+**25 语质量门禁尚未通过**：165 次真实推理筛选中希腊语普通 WER 36.34%，法语 / 德语加噪也超门槛；英语普通 WER 5.15%。其他 19 语、真实耳语、说话人覆盖、完整人工意义判定、实际手机和 Safari / Firefox 设备链路仍缺资格。配置默认禁用，仅本机受控开发环境启用，不据此标记欧洲全覆盖、Voice Call 或公开发布完成。[质量报告](../../.scratch/chat-voice-input/qualification/REPORT.md)。
 
 ## 2026-09-13 后台运营闭环续修
 

@@ -157,7 +157,7 @@ describe("public image-edit workflow authority", () => {
       ...profile,
       workflowKey,
       runnerConfig: {
-        workflowVersion: workflowKey === "qwen-image-edit-multi-reference" ? 3 : 2,
+        workflowVersion: workflows.find((workflow) => workflow.workflowKey === workflowKey)!.version,
         publicSelection: { surface: "generator_image_edit" },
         capabilities: { textToImage: false, initImage: true },
       },

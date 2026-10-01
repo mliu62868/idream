@@ -49,7 +49,7 @@ for (const viewport of [{ width: 1291, height: 745 }, { width: 390, height: 844 
     await expect.poll(() => regenerate.evaluate((button) => {
       const rect = button.getBoundingClientRect();
       const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
-      const composer = document.querySelector('input[aria-label="Message"]')?.closest("form")?.getBoundingClientRect();
+      const composer = document.querySelector('textarea[aria-label="Message"]')?.closest("form")?.getBoundingClientRect();
       return Boolean(hit && button.contains(hit) && composer && rect.bottom < composer.top);
     })).toBe(true);
     const rect = await regenerate.boundingBox();

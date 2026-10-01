@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { Prisma } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { characterPortfolioQuerySchema } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
@@ -1167,18 +1168,23 @@ describe("Character Portfolio authority/read model", () => {
 
   });
 
-  it("orders by recency on request and pages back to the page it came from", async () => {
+  it.each(["project_id_asc", "updated_desc", "updated_asc", "created_desc"] as const)("orders by %s and pages back to the page it came from", async (sort) => {
     const all = await listCharacterPortfolioData(
       prisma,
       characterPortfolioQuerySchema.parse({
         limit: 20,
-        sort: "updated_desc",
+        sort,
       }),
       { asOf },
     );
     const projects = await prisma.characterProject.findMany({
       where: { characterId: { in: all.items.map((item) => item.characterId) } },
-      orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+      orderBy: ({
+        project_id_asc: [{ id: "asc" }],
+        updated_desc: [{ updatedAt: "desc" }, { id: "desc" }],
+        updated_asc: [{ updatedAt: "asc" }, { id: "asc" }],
+        created_desc: [{ createdAt: "desc" }, { id: "desc" }],
+      } satisfies Record<typeof sort, Prisma.CharacterProjectOrderByWithRelationInput[]>)[sort],
       select: { characterId: true },
     });
     expect(all.items.map((item) => item.characterId)).toEqual(
@@ -1190,7 +1196,7 @@ describe("Character Portfolio authority/read model", () => {
       prisma,
       characterPortfolioQuerySchema.parse({
         limit: 1,
-        sort: "updated_desc",
+        sort,
       }),
       { asOf },
     );
@@ -1198,7 +1204,7 @@ describe("Character Portfolio authority/read model", () => {
       prisma,
       characterPortfolioQuerySchema.parse({
         limit: 1,
-        sort: "updated_desc",
+        sort,
         cursor: first.pageInfo.endCursor as string,
       }),
       { asOf },
@@ -1207,7 +1213,7 @@ describe("Character Portfolio authority/read model", () => {
       prisma,
       characterPortfolioQuerySchema.parse({
         limit: 1,
-        sort: "updated_desc",
+        sort,
         before: second.pageInfo.startCursor as string,
       }),
       { asOf },

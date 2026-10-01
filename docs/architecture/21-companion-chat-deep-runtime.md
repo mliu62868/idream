@@ -8,13 +8,41 @@ Companion Chat 只有两个需要独立生命周期的 module：Main 持有产�
 
 Agent 运行只在 Main ACK 未确定时保存完整且不可变的终态候选；Main accepted、duplicate accepted 或明确永久拒绝后即可清理。运行轨迹不是状态机：成功轨迹提交后清理，失败或未决轨迹最多保留七天。Main 的 lease、attempt、权威快照和终态 CAS 是唯一 durable job state。用户取消先提交 Main 终态，再由同一事务写 durable Main→Chat cancel intent；同步 HTTP 只是低延迟快路，outbox 重试负责最终写入 Chat attempt tombstone。Main 接受 failed/cancelled 终态后，SSE `error` 就结束该 attempt；重新生成是新的产品命令，不是流连接自行重试。
 
-`PreparedTurn` 是 Chat 内唯一执行输入：编译时直接生成带稳定消息 id、source kind、Soul/Scene trace、预算与模型 profile 的对象，不再先造产品对象、再经 WeakMap/`*Wire` 转换。Invocation、event、tool 与 commit ACK schema 只存在于 `packages/chat/src/agent-runtime`；Shared 只保留 Main↔Chat 的记忆重建、readiness 与无内容运营证据契约。本地 AgentRun event 文件只记录 content-free lifecycle/tool/failure 事实；文本 delta 与终态正文分别属于 Redis 流和未决 `proposal.json`。
+新消息、编辑与重新生成都由 Main 在用户与会话锁内确认执行资格。单聊会话或整个群聊同时最多有一个可执行回复；较新的 blocked Turn 不得绕过仍在执行的旧回复。每个可执行 Turn 在启动前持有唯一额度 fact，首次可执行的编辑创建预留，失败后重试先恢复预留并核验剩余额度，已经计量的修订不再花一份额度。proactive 仍不消耗用户主动发送额度，fact 沿用 Turn 的 UTC 产品日。新的修订 attempt 重新核验公共 Serving 权威，固定 Release 不能保留已撤销的执行资格；已接纳 attempt 的终态仍由原快照与 CAS 完成。
+
+跨日修订核验实际恢复的原 Turn 产品日额度桶。额度 fact 的 `consumedAt` 独立记录已消费事实：成功回复或已接纳的取消一旦消费，后续 attempt 失败或未接纳取消都不能清除它；回复统计不承担取消的消费记账。Chat 首次接纳时固定并持久化 deadline，重复接纳与恢复重放同一时间；接纳回执绑定 Turn/attempt 并将该截止时间交给 Main。Main 在实际截止时间加终态提交宽限之后回收，不从另一个进程的配置或普通行更新时间猜测新运行的期限。没有该字段的历史 generating 行沿用旧回收政策，发布按既有 drain/cutover 流程隔离旧运行。
+
+assistant message id 在不同 attempt 间复用，不能独自标识执行。Chat 清理旧 attempt 只删除仍指向它的本地索引；浏览器的文本缓存、停止标记与 EventSource 也绑定 attempt，观察到新 attempt 后撤销旧来源。传输断开只重连同一 attempt：CONNECTING 由 EventSource 重连，CLOSED 由 Main 权威轮询重新建立连接，不因此生成新回复。
+
+SSE 入口以 Main 的所有者、消息存在性与当前 attempt 为交付权威，在请求 Chat 前与握手返回后均校验。接纳回执丢失而 Main 尚未确认的 pending attempt 不得交付本地文本；Main 已提交 sent 终态则足以确认交付。已有 probe/quality 调用方未传 attempt 时，BFF 将 Main 当前身份固定到上游请求。删除或修订发生在握手期间时，取消上游正文并拒绝交付；已打开的流仍由既有取消 intent、attempt 事件和客户端栅栏收敛。
+
+Stop 命令携带用户点击时观察到的 attempt，Main 在 Turn 锁内校验并回显该身份；迟到命令不得取消新 attempt，迟到回执不得停止或清空新回复。编辑或重新生成成功后的浏览器读取栅栏使在途旧快照失效，已观察 attempt 不因流缓存清理而丢失。周期性过期清理也在同一 Turn 锁内重读索引，避免扫描旧版本后删除新索引。
+
+`PreparedTurn` 是 Chat 内唯一执行输入：编译时直接生成带稳定消息 id、source kind、Soul/Scene trace、预算与模型 profile 的对象，不再先造产品对象、再经 WeakMap/`*Wire` 转换。Invocation、event、tool 与 commit ACK schema 只存在于 `packages/chat/src/agent-runtime`；Shared 保留 Main↔Chat 的产品执行快照、接纳回执、工具效果、终态提交、记忆重建、readiness 与无内容运营证据契约。本地 AgentRun event 文件只记录 content-free lifecycle/tool/failure 事实；文本 delta 与终态正文分别属于 Redis 流和未决 `proposal.json`。
 
 强制图片工具也保留消息 ID、来源及跨说话者的原始先后顺序；历史只是引用数据，不重新授权旧动作，runtime/recall 不伪装成用户。预算测试使用与实际执行相同的 replay 来源分类，包含最新用户事实的完整序列化成本。这只保证输入不被重排或截断，不把传输保真当成语义验证。
 
+群聊历史的 Character 归属必须穿过 DSH 的不可变消息投影到达实际 provider 请求。图片短确认只能沿用当前 Character 的上一条邀约。跨 attempt 的 turn_action 重放遵循统一 user→conversation→Turn→attachment 锁序，并在锁内重读 Job、状态与费用；requesting 只是动作身份已保存，不能作为成功预留 ACK。中断后恢复该动作先绑定当前 attempt，再进入原有 Generation 原子预留，以同一动作身份防止重复扣费。
+
+legacy 图片动作收据只有在用户原文未变时可跨 attempt 重放；编辑在同一事务持久标记旧身份失效，包括没有 Job 的旧收据。已有 Job 的旧编辑清除证据也使该收据失效。Gen 完成、失败、取消与运营退款都先取得与 Chat 相同的 user 锁，再取得 Request 和附件锁；批量结算先按 userId 排序取得全部用户锁，避免钱包与附件的反向等待。金额与资格仍由锁内事实和现有幂等账本决定。
+
 OpenAI-compatible provider 在首个响应中以普通文本返回所需工具的完整参数 JSON 时，复用原 schema 校验后直接接纳，不先丢弃并重采样。仅 `stop` 完成、无混入 native tool delta 的候选允许转换；`length`、残缺终态、额外字段或说明文字不能因 JSON 可解析而成为动作。原生工具、最多一次兼容重试、实际 provider 归属和总用量记账保持同一实现。
 
+provider 的工具名分片先累计为完整当前名称，再交给 DSH；参数仍按 delta 累积。SSE `[DONE]` 结束当前响应读取，不等待 HTTP EOF，也不放宽 finish reason、provider attribution 或用量核验。
+
+非成功 HTTP 响应的正文取消只负责释放资源，不能使原 HTTP 错误等待一个永不收敛的 cleanup promise。执行截止时间校验留在执行与接纳边界；账号擦除读取所有者时不以历史执行证据完整为前提。
+
 陪伴记忆只从 Main 已提交产品 Turn 异步投影。Main outbox 使用至少一次投递；Chat 在独立候选 workspace 中幂等 prepare，再以单调 authority version 原子 promote。prepare/promote 不持有 relationship-wide Agent 执行锁，也不取消已经运行的 Turn。普通投影延迟不阻塞新 Turn；破坏性修订期间，由 Main 把受影响的新 Agent attempt 固定为 private execution，直到重建切换完成。基于旧 Main 权威快照返回的终态候选必须被 Main CAS 拒绝。
+
+DSH 固定 `0.2.0-rc.2`；igrep CLI 读取实际安装版本并以运行证明核验，插件包的 `0.1.0` 不代表其内容未变。Bootstrap 对随包发布的 JavaScript 同时核验源与安装副本一致，并纳入 profile input digest；manifest、配置或版本相同不能代替实现身份。Chat 显式关闭插件的 `sessionRecall`、自动 `ingest`、`wake` 和定时 `maintain`：Agent 运行轨迹不进入陪伴记忆，Main 投影独占写入及维护，Chat 在模型首轮前只执行一次可观测的官方 wake，并按当前消息执行 fast recall。normal 仅向模型开放 `memory_search`；private 不加载记忆或归档召回。每次 Agent 使用由已授权关系快照生成的独立 workspace；不复用共享 cwd，也不依赖插件默认寻址决定产品所有者。
+
+普通投影只合并尚未尝试的 pending 事件，并在同一接纳事务通过 event 行 CAS 与领取互斥。尝试过的事件可能已经发布指针但丢失 ACK，后来的产品事实必须取得新 authority。记忆导出明文 spool 归入 Chat 用户擦除目录；每段短文件写入重查用户 tombstone，网络等待不持用户锁。启动在开放 HTTP 前清理崩溃遗留的新目录和已退役 OS 临时目录，账号擦除清理当前用户 spool，迟到 staging 不得重新创建它。
+
+igrep `0.1.150` 的可检索 dialogue 是 `[时间, 正文]` 元组，角色与来源身份位于独立 `session/1` 文件。发布前同时核验两类文件的目录、逐行顺序、时间及 session 的角色、会话身份和原文与 Main 完整来源一致。Dialogue 的 v3 控制符传输严格解码，仅允许插入形状受限的绝对日期注释，全部原文字符须保持顺序；这不认证相对日期解释的语义正确性。维护前后来源及检索视图字节均不能变化。运行认证执行空来源及带换行、Unicode、控制符图形和相对日期的非空来源重建，空工作区或单行 ASCII 成功不能证明 ingest 格式兼容。
+
+新版 igrep 的检索视图绑定来源文件的物理 witness；复制出的 normal attempt 在 wake / recall 前执行官方零模型 `mem reproject`，仅在自己拥有的副本中恢复绑定，不维护 profile、不写 Main 历史。Private 不执行此步骤。预召回若返回检索不完整警告，必须失败，不能将缺失来源解释为记忆为空。完整运行认证同时验证复制后的自身原文召回及双向跨关系隔离。
+
+canonical 指针的原子切换是本地发布点。切换后隔离旧版本失败仍向 Main 报错、保留重建待完成状态，但不能回滚到可能已被隔离的旧路径。精确重放已经发布的版本也必须完成剩余旧版本与候选的隔离后才 ACK。账号删除的同一 sourceEventId 串行构造持久回执；本地 purgedAt、完成事件 ID 与请求 hash 构成不可变候选，并发投递和重试都重放同一完成信封。
 
 Main 记忆导出按完整会话分组、组内保持时间顺序，分页不能破坏 Chat 流式解码所需的会话连续性。clear/destructive rebuild 必须撤销 pending 和 processing 普通投影；后者可能已经读出旧历史，最终 promote 仍须在 Main user 行锁内确认事件有效。用户完整删除由 Chat 持久 tombstone 阻止旧 prepare/promote 复活。官方 ingest 既负责追加，也负责 session/cursor 恢复；仅证明 dialogue 未变或 doctor 成功，不足以跳过其恢复职责。
 

@@ -155,6 +155,24 @@ describe("Character create wizard restore authority", () => {
     });
   });
 
+  it("returns a rejected placeholder from Review to the editable field", async () => {
+    window.localStorage.setItem("idream.admin.character-create-draft.v3:operator-a", JSON.stringify({
+      ...restoredDraft,
+      persona: { ...restoredDraft.persona, name: "Untitled companion" },
+    }));
+    await act(async () => root.render(<CharacterCreateWizard actorId="operator-a" canCreate />));
+    await waitUntil(() => container.textContent?.includes("Persona & conversation") === true);
+    const save = [...container.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Save character")!;
+    await act(async () => save.click());
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const name = container.querySelector<HTMLInputElement>('[name="persona.name"]');
+    expect(name).not.toBeNull();
+    expect(name?.getAttribute("aria-invalid")).toBe("true");
+    expect(document.activeElement).toBe(name);
+    expect(container.textContent).toContain("Replace the placeholder with real character information.");
+    expect(adminV2Request).not.toHaveBeenCalled();
+  });
+
   it("preserves spaces and newlines while typing stable visual traits", async () => {
     window.localStorage.setItem("idream.admin.character-create-draft.v3:operator-a", JSON.stringify({
       ...restoredDraft,
@@ -585,8 +603,7 @@ describe("Character create wizard restore authority", () => {
     const finish = [...container.querySelectorAll("button")].find((button) =>
       button.textContent?.includes("Save character"),
     );
-    // SPEC: 遗留草稿里的 instructional sentinel 仍然拦住最终创建，即使它落在向导已不再渲染的
-    // positioning 字段上——production-ready 校验吃的是整份草稿，不是当前这一屏。
+    // SPEC: 遗留占位名可以恢复为草稿，但最终创建必须要求替换，并返回对应编辑字段。
     expect(finish?.disabled).toBe(false);
     await act(async () => finish?.click());
     expect(container.textContent).toContain(

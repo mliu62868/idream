@@ -4,11 +4,11 @@ import {
   type CharacterPerformanceWindow,
   type CharacterPortfolioQuery,
 } from "@idream/shared/admin";
-import type {
-  CharacterProject,
-  CharacterRelease,
+import {
   Prisma,
-  PrismaClient,
+  type CharacterProject,
+  type CharacterRelease,
+  type PrismaClient,
 } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
@@ -25,6 +25,7 @@ import {
 } from "@/server/modules/admin-v2/shared/list-cursor";
 import { effectiveCharacterIdsForPermission } from "@/server/admin/effective-permissions";
 import {
+  OPERATIONAL_USER_DATA_CLASS_SQL,
   operationalCharacterWhere,
   operationalMediaAssetWhere,
 } from "@/server/modules/metric-data-scope";
@@ -450,6 +451,53 @@ async function incompleteLiveAssetPackCharacterIds(db: PrismaClient) {
   });
 }
 
+// INVARIANT: equivalent to operationalCharacterWhere({ deletedAt: null }).
+// The SQL population is shared by names, page rows and counts; it never expands
+// all operational IDs into one bind parameter per Character.
+const operationalPortfolioCharacterSql = Prisma.sql`
+  c."deletedAt" IS NULL AND (
+    c.source = 'official' OR (
+      c.source = 'user' AND EXISTS (
+        SELECT 1 FROM "users" creator
+        WHERE creator.id = c."creatorId"
+          AND creator."dataClass" IN (${OPERATIONAL_USER_DATA_CLASS_SQL})
+      )
+    )
+  )
+`;
+
+// SPEC: authoring names come from the same latest immutable draft as the editor,
+// including readable v0/v1 history. Search also retains the live directory fields.
+async function latestDraftNames(
+  db: PrismaClient,
+  characterIds: readonly string[] | null,
+  search?: string,
+) {
+  if (characterIds?.length === 0) return [];
+  return db.$queryRaw<Array<{ characterId: string; name: string | null }>>(Prisma.sql`
+    SELECT "characterId", name FROM (
+      SELECT c.id AS "characterId", c.name AS live_name, c.description AS live_description,
+        COALESCE("personaSnapshot" #>> '{soul,name}', "personaSnapshot" #>> '{soul,identity,name}', "personaSnapshot" ->> 'name') AS name,
+        COALESCE("personaSnapshot" #>> '{soul,characterPromise}', "personaSnapshot" #>> '{soul,identity,characterPromise}', "personaSnapshot" ->> 'description') AS description
+      FROM "characters" c
+      LEFT JOIN LATERAL (
+        SELECT "personaSnapshot"
+        FROM "character_content_versions"
+        WHERE "characterId" = c.id
+        ORDER BY version DESC LIMIT 1
+      ) AS latest ON TRUE
+      WHERE ${operationalPortfolioCharacterSql}
+        ${characterIds === null ? Prisma.empty : Prisma.sql`AND c.id = ANY(${[...characterIds]}::text[])`}
+    ) AS draft
+    ${search ? Prisma.sql`WHERE
+      strpos(lower(COALESCE(name, '')), lower(${search})) > 0 OR
+      strpos(lower(COALESCE(description, '')), lower(${search})) > 0 OR
+      strpos(lower("characterId"), lower(${search})) > 0 OR
+      strpos(lower(live_name), lower(${search})) > 0 OR
+      strpos(lower(live_description), lower(${search})) > 0` : Prisma.empty}
+  `);
+}
+
 async function filteredCharacterIds(
   db: PrismaClient,
   query: CharacterPortfolioQuery,
@@ -457,28 +505,14 @@ async function filteredCharacterIds(
   asOf: Date = new Date(),
 ) {
   const filters: string[][] = [];
+  if (authorizedCharacterIds !== null) filters.push([...authorizedCharacterIds]);
   if (query.attention) filters.push(await attentionCharacterIds(db, asOf));
   if (query.workQueue === "live_asset_pack_incomplete") {
     filters.push(await incompleteLiveAssetPackCharacterIds(db));
   }
-  if (authorizedCharacterIds !== null)
-    filters.push([...authorizedCharacterIds]);
   if (query.search) {
-    filters.push(
-      (
-        await db.character.findMany({
-          where: operationalCharacterWhere({
-            deletedAt: null,
-            OR: [
-              { id: { contains: query.search, mode: "insensitive" } },
-              { name: { contains: query.search, mode: "insensitive" } },
-              { description: { contains: query.search, mode: "insensitive" } },
-            ],
-          }),
-          select: { id: true },
-        })
-      ).map((row) => row.id),
-    );
+    const drafts = await latestDraftNames(db, authorizedCharacterIds, query.search);
+    filters.push(drafts.map((row) => row.characterId));
   }
   if (query.servingState) {
     filters.push(
@@ -557,6 +591,42 @@ const PORTFOLIO_SORT_KEYS: Record<
   ],
 };
 
+const portfolioPageColumns: Record<string, Prisma.Sql> = {
+  id: Prisma.sql`p.id`,
+  updatedAt: Prisma.sql`p."updatedAt"`,
+  createdAt: Prisma.sql`p."createdAt"`,
+};
+
+// The existing paginator owns cursor validation and direction. This adapter only
+// translates its fixed scalar predicates; SQL identifiers/operators stay allowlisted.
+function portfolioPageSql(paging: AdminKeysetPaging) {
+  const column = (field: string) => {
+    if (!Object.hasOwn(portfolioPageColumns, field)) throw new Error("Unsupported Character portfolio cursor field");
+    return portfolioPageColumns[field];
+  };
+  const groups = paging.cursorWhere.map((group) => {
+    if (!Array.isArray(group.OR)) throw new Error("Unsupported Character portfolio cursor predicate");
+    const clauses = group.OR.map((clause: Record<string, unknown>) => Prisma.sql`(${Prisma.join(
+      Object.entries(clause).map(([field, operand]) => {
+        if (typeof operand === "string" || operand instanceof Date) return Prisma.sql`${column(field)} = ${operand}`;
+        if (operand === null || typeof operand !== "object" || Object.keys(operand).length !== 1) throw new Error("Unsupported Character portfolio cursor operand");
+        if (Object.hasOwn(operand, "gt")) return Prisma.sql`${column(field)} > ${(operand as { gt: unknown }).gt}`;
+        if (Object.hasOwn(operand, "lt")) return Prisma.sql`${column(field)} < ${(operand as { lt: unknown }).lt}`;
+        throw new Error("Unsupported Character portfolio cursor comparison");
+      }), " AND ",
+    )})`);
+    return Prisma.sql`(${Prisma.join(clauses, " OR ")})`;
+  });
+  const order = paging.orderBy.flatMap((entry) => Object.entries(entry).map(([field, direction]) => {
+    if (direction !== "asc" && direction !== "desc") throw new Error("Unsupported Character portfolio sort direction");
+    return Prisma.sql`${column(field)} ${direction === "asc" ? Prisma.sql`ASC` : Prisma.sql`DESC`}`;
+  }));
+  return {
+    cursor: groups.length ? Prisma.sql`AND ${Prisma.join(groups, " AND ")}` : Prisma.empty,
+    order: Prisma.join(order),
+  };
+}
+
 export async function listCharacterPortfolioData(
   db: PrismaClient,
   query: CharacterPortfolioQuery,
@@ -574,9 +644,11 @@ export async function listCharacterPortfolioData(
     input.authorizedCharacterIds ?? null,
     asOf,
   );
-  const where: Prisma.CharacterProjectWhereInput = {
-    ...(characterIds ? { characterId: { in: characterIds } } : {}),
-  };
+  const population = Prisma.sql`
+    FROM "character_projects" p JOIN "characters" c ON c.id = p."characterId"
+    WHERE ${operationalPortfolioCharacterSql}
+      ${characterIds === null ? Prisma.empty : Prisma.sql`AND p."characterId" = ANY(${characterIds}::text[])`}
+  `;
   const { items: page, pageInfo } = await paginateAdminKeyset({
     scope: "character_portfolio",
     // 排序进 identity：换了排序，旧游标的键就对不上了，必须失效而不是静默错位。
@@ -590,19 +662,24 @@ export async function listCharacterPortfolioData(
     before: query.before,
     limit: query.limit,
     keys: PORTFOLIO_SORT_KEYS[query.sort],
-    fetch: (
-      paging: AdminKeysetPaging<Prisma.CharacterProjectOrderByWithRelationInput>,
-    ) =>
-      db.characterProject.findMany({
-        where: { AND: [where, ...paging.cursorWhere] },
-        orderBy: paging.orderBy,
-        take: paging.take,
-      }),
-    count: () => db.characterProject.count({ where }),
+    fetch: (paging: AdminKeysetPaging) => {
+      const pageSql = portfolioPageSql(paging);
+      return db.$queryRaw<CharacterProject[]>(Prisma.sql`
+        SELECT p.* ${population} ${pageSql.cursor}
+        ORDER BY ${pageSql.order} LIMIT ${paging.take}
+      `);
+    },
+    count: async () => {
+      const [row] = await db.$queryRaw<Array<{ count: number }>>(Prisma.sql`SELECT COUNT(*)::int AS count ${population}`);
+      return row.count;
+    },
   });
   const pageCharacterIds = [
     ...new Set(page.map((project) => project.characterId)),
   ];
+  const draftNameByCharacter = new Map(
+    (await latestDraftNames(db, pageCharacterIds)).map((row) => [row.characterId, row.name]),
+  );
   // INTENT: attention=true 的分页集合已经由同一权威函数筛过；不要为当前页重复跑一次
   //         Live observation 与草稿 Review 查询。
   const pageNeedsAttention = new Set(
@@ -954,7 +1031,7 @@ export async function listCharacterPortfolioData(
       const livePurposes = journey.assetPack.live.availablePurposes;
       return {
         characterId: character.id,
-        name: character.name,
+        name: draftNameByCharacter.get(character.id) || character.name,
         needsAttention: pageNeedsAttention.has(character.id),
         serving: {
           characterId: character.id,

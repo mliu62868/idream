@@ -111,13 +111,13 @@ export function PreviewDiff({ data }: { data: CharacterWorkspaceDetail }) {
         >
           <div>
             <h2 className="font-semibold" id="launch-preview-next-action">
-              {t("Launch preview is waiting for the image pack")}
+              {t("Full launch preview is waiting for the image pack")}
             </h2>
             <p className="mt-1 max-w-2xl text-sm leading-6">
               {t(
                 draftAssetPackIsStale
-                  ? "Regenerate the stale image selections under the current route, then return here to compare live and draft."
-                  : "Complete the cover, hero, and chat images under the current route, then return here to compare live and draft.",
+                  ? "Compare saved text below. Regenerate the stale image selections for the full launch preview."
+                  : "Compare saved text below. Complete the cover, hero, and chat images for the full launch preview.",
               )}
             </p>
           </div>
@@ -171,11 +171,17 @@ export function PreviewDiff({ data }: { data: CharacterWorkspaceDetail }) {
                   </figure>
                   <div className="min-w-0">
                     <strong className="text-sm">{t(snapshot.label)}</strong>
+                    <h3 className="mt-1 break-words font-semibold">{snapshot.name}</h3>
                     <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
                       {missing === 0
                         ? t("Image pack complete")
                         : t("{count} image slots missing", { count: missing })}
                     </p>
+                  </div>
+                  <div className="col-span-2 border-t border-[var(--ad-border)] pt-3">
+                    <p className="whitespace-pre-wrap break-words text-sm leading-6">{snapshot.description}</p>
+                    <h4 className="mt-3 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Opening message")}</h4>
+                    <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6">{String(snapshot.opening.firstMessage ?? t("Unavailable"))}</p>
                   </div>
                 </article>
               );

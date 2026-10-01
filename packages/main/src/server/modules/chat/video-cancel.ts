@@ -7,12 +7,12 @@ import { lockChatScope } from "./turn-scope";
 
 // SPEC: 用户在聊天里取消一次尚未开始执行的视频。
 //
-// INTENT: 取消的五步结算（锁 Request → 前置 → 状态迁移 → Attempt 终态 → 撤销
+// INTENT: 取消的五步结算（锁 User → Request → 前置 → 状态迁移 → Attempt 终态 → 撤销
 // dispatch → 退款）只在 settleGenerationRequestCancellation 里写一遍；这里只负责
 // 用户侧独有的两件事：幂等重放的快速返回，和把聊天附件推进到 cancelled。
 //
-// INVARIANT: 锁序是 generation_jobs → users → recent_chats → chat_turns →
-// chat_turn_attachments。退款在 settle 内部已经取过 users，聊天阶梯随后重取是同
+// INVARIANT: 锁序是 users → generation_jobs → recent_chats → chat_turns →
+// chat_turn_attachments。settle 在碰 Request 前已经取过 users，聊天阶梯随后重取是同
 // 事务内的空操作，方向仍与 modules/chat 的产品 Turn 阶梯一致。
 export async function cancelChatVideo(userId: string, requestId: string) {
   return prisma.$transaction(async tx => {

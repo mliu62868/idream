@@ -12,6 +12,17 @@ const runtimeModes = new Set(Object.keys(RUNTIME_CERTIFICATION));
 // the same facts before it is allowed to resume Generation queues.
 const processSpecs = Object.freeze([
   {
+    name: "parakeet-asr",
+    roles: ["voice"],
+    definitionPlan: false,
+    modes: {
+      development: { cwd: ".", script: "scripts/start-parakeet-asr.cjs", execMode: "fork" },
+      production: { cwd: ".", script: "scripts/start-parakeet-asr.cjs", execMode: "fork" },
+    },
+    watchPaths: ["scripts/start-parakeet-asr.cjs", "scripts/parakeet_asr_gateway.py", "scripts/parakeet-asr-requirements.lock"],
+    killTimeout: 35_000,
+  },
+  {
     name: "fish-audio",
     roles: ["voice"],
     definitionPlan: true,
@@ -63,10 +74,10 @@ const processSpecs = Object.freeze([
     roles: ["admission"],
     definitionPlan: true,
     modes: {
-      development: { cwd: "packages/chat", script: "src/main.ts", execMode: "fork" },
-      production: { cwd: "packages/chat", script: "dist/main.js", execMode: "fork" },
+      development: { cwd: "packages/chat", script: "../../scripts/start-chat.cjs", args: ["src/main.ts"], execMode: "fork" },
+      production: { cwd: "packages/chat", script: "../../scripts/start-chat.cjs", args: ["dist/main.js"], execMode: "fork" },
     },
-    watchPaths: ["packages/chat/src", "packages/shared/src"],
+    watchPaths: ["packages/chat/src", "packages/shared/src", "scripts/start-chat.cjs"],
     killTimeout: 5 * 60 * 1_000,
   },
   {
@@ -147,6 +158,7 @@ function configuredVoiceRuntimeTargets(environment) {
   const configured = [
     environment.VOICE_PROVIDER ?? "pocket-tts",
     environment.VOICE_IDENTITY_PROVIDER,
+    ...(environment.ASR_PROVIDER === "parakeet-redux" ? ["parakeet-asr"] : []),
   ];
   return namesWithRole("voice").filter((name) => configured.includes(name));
 }

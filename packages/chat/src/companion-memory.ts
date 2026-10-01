@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, open, rm, type FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   companionWorkspaceRebuildPromotionSchema,
   decodeCompanionWorkspaceRebuildFrame,
@@ -13,10 +13,31 @@ import {
 } from "./agent-runtime/runtime.js";
 import type { CompanionWorkspaceRebuildSpool } from "./agent-runtime/rebuild-source.js";
 import type { WorkspacePurgeRequest } from "./agent-runtime/workspace.js";
+import { env } from "./env.js";
+import { assertNotFenced, fenceKey, withFenceLock } from "./fence.js";
 
 const MAX_CONTROL_BODY_BYTES = 1_048_576;
 const MAX_REBUILD_FRAME_BYTES = 256 * 1_024;
 const TRANSCRIPT_BUFFER_BYTES = 64 * 1_024;
+
+function userSpoolRoot(userId: string): string {
+  const userHash = createHash("sha256").update(userId).digest("hex");
+  return join(resolve(env.CHAT_FS_ROOT), "rebuild-spools", `user-${userHash}`);
+}
+
+/** Startup only, before HTTP admission: no request owns a live spool yet. */
+export async function cleanupInterruptedCompanionMemorySpools(): Promise<void> {
+  // The retired OS location has no user ownership metadata. Single-process
+  // startup is the point where every surviving request directory is orphaned.
+  await rm(join(tmpdir(), "idream-chat-rebuilds"), { recursive: true, force: true });
+  await rm(join(resolve(env.CHAT_FS_ROOT), "rebuild-spools"), { recursive: true, force: true });
+}
+
+/** Account erasure installs the durable user fence before removing this scope. */
+export async function purgeCompanionMemorySpoolsForUser(userId: string): Promise<void> {
+  await withFenceLock(fenceKey({ scope: "user", userId }), () =>
+    rm(userSpoolRoot(userId), { recursive: true, force: true }));
+}
 
 async function readJson(request: Request): Promise<unknown> {
   if (!request.body) throw new Error("request body is required");
@@ -80,14 +101,44 @@ async function stageWorkspaceRebuild(request: Request): Promise<StagedWorkspaceR
   if (request.headers.get("content-type")?.split(";", 1)[0]?.trim() !== "application/x-ndjson") {
     throw new Error("relationship rebuild requires application/x-ndjson");
   }
-  const spoolBase = join(tmpdir(), "idream-chat-rebuilds");
-  await mkdir(spoolBase, { recursive: true, mode: 0o700 });
-  await chmod(spoolBase, 0o700);
-  const spoolRoot = await mkdtemp(join(spoolBase, "request-"));
-  await chmod(spoolRoot, 0o700);
-  const manifestPath = join(spoolRoot, "manifest.jsonl");
-  const manifest = await open(manifestPath, "wx", 0o600);
-  let start: Extract<ReturnType<typeof decodeCompanionWorkspaceRebuildFrame>, { type: "start" }> | undefined;
+  const frames = readNdjsonLines(request);
+  const first = await frames.next();
+  let start: Extract<ReturnType<typeof decodeCompanionWorkspaceRebuildFrame>, { type: "start" }>;
+  try {
+    if (first.done) throw new Error("relationship rebuild start frame is required");
+    const frame = decodeCompanionWorkspaceRebuildFrame(first.value);
+    if (frame.type !== "start") throw new Error("relationship rebuild must start with a start frame");
+    start = frame;
+  } catch (error) {
+    await frames.return(undefined);
+    throw error;
+  }
+  const userScope = { scope: "user", userId: start.userId } as const;
+  // Short filesystem mutations share the account fence lock. Waiting for the
+  // next network frame never holds it, so ordinary projection staging cannot
+  // block a new Turn admission for the duration of a history export.
+  const writeSpool = <T>(run: () => Promise<T>) => withFenceLock(fenceKey(userScope), async () => {
+    await assertNotFenced([userScope]);
+    return run();
+  });
+  let spoolRoot = "";
+  let manifestPath: string;
+  let manifest: FileHandle;
+  try {
+    ({ manifestPath, manifest } = await writeSpool(async () => {
+      const spoolBase = userSpoolRoot(start.userId);
+      await mkdir(spoolBase, { recursive: true, mode: 0o700 });
+      await chmod(spoolBase, 0o700);
+      spoolRoot = await mkdtemp(join(spoolBase, "request-"));
+      await chmod(spoolRoot, 0o700);
+      const manifestPath = join(spoolRoot, "manifest.jsonl");
+      return { manifestPath, manifest: await open(manifestPath, "wx", 0o600) };
+    }));
+  } catch (error) {
+    await frames.return(undefined);
+    if (spoolRoot) await rm(spoolRoot, { recursive: true, force: true });
+    throw error;
+  }
   let complete = false;
   let messages = 0;
   let sessions = 0;
@@ -110,13 +161,16 @@ async function stageWorkspaceRebuild(request: Request): Promise<StagedWorkspaceR
   const transcriptBuffer = Buffer.allocUnsafe(TRANSCRIPT_BUFFER_BYTES);
   let bufferedBytes = 0;
   const flushTranscript = async () => {
-    if (!transcript) throw new Error("relationship transcript is not open");
-    let offset = 0;
-    while (offset < bufferedBytes) {
-      const { bytesWritten } = await transcript.write(transcriptBuffer, offset, bufferedBytes - offset);
-      if (bytesWritten === 0) throw new Error("relationship transcript write made no progress");
-      offset += bytesWritten;
-    }
+    const handle = transcript;
+    if (!handle) throw new Error("relationship transcript is not open");
+    await writeSpool(async () => {
+      let offset = 0;
+      while (offset < bufferedBytes) {
+        const { bytesWritten } = await handle.write(transcriptBuffer, offset, bufferedBytes - offset);
+        if (bytesWritten === 0) throw new Error("relationship transcript write made no progress");
+        offset += bytesWritten;
+      }
+    });
     bufferedBytes = 0;
   };
   const writeTranscript = async (value: string) => {
@@ -137,6 +191,7 @@ async function stageWorkspaceRebuild(request: Request): Promise<StagedWorkspaceR
   };
   const finishSession = async () => {
     if (!currentSession) return;
+    const session = currentSession;
     if (activeMessage || currentSession.expectedRole !== "user") {
       throw new Error(`relationship rebuild session ${currentSession.id} has an incomplete exchange`);
     }
@@ -144,23 +199,18 @@ async function stageWorkspaceRebuild(request: Request): Promise<StagedWorkspaceR
     await transcript?.sync();
     await transcript?.close();
     transcript = undefined;
-    await manifest.write(`${JSON.stringify({
-      sessionId: currentSession.id,
-      transcriptPath: currentSession.path,
-      messageCount: currentSession.messages,
-      estimatedBytes: currentSession.bytes,
-    })}\n`);
+    await writeSpool(() => manifest.write(`${JSON.stringify({
+      sessionId: session.id,
+      transcriptPath: session.path,
+      messageCount: session.messages,
+      estimatedBytes: session.bytes,
+    })}\n`));
     sessions += 1;
     currentSession = undefined;
   };
   try {
-    for await (const line of readNdjsonLines(request)) {
+    for await (const line of frames) {
       const frame = decodeCompanionWorkspaceRebuildFrame(line);
-      if (!start) {
-        if (frame.type !== "start") throw new Error("relationship rebuild must start with a start frame");
-        start = frame;
-        continue;
-      }
       if (complete) throw new Error("relationship rebuild has frames after completion");
       if (frame.type === "start") throw new Error("relationship rebuild has multiple start frames");
       if (frame.type === "message_start") {
@@ -176,7 +226,7 @@ async function stageWorkspaceRebuild(request: Request): Promise<StagedWorkspaceR
           seenSessions.add(frame.message.sessionId);
           const digest = createHash("sha256").update(frame.message.sessionId).digest("hex");
           const path = join(spoolRoot, `session-${digest}.jsonl`);
-          transcript = await open(path, "wx", 0o600);
+          transcript = await writeSpool(() => open(path, "wx", 0o600));
           currentSession = {
             id: frame.message.sessionId,
             path,
@@ -237,7 +287,6 @@ async function stageWorkspaceRebuild(request: Request): Promise<StagedWorkspaceR
       await finishSession();
       complete = true;
     }
-    if (!start) throw new Error("relationship rebuild start frame is required");
     if (!complete) throw new Error("relationship rebuild complete frame is required");
     if (!start.fence) throw new Error("relationship rebuild prepare requires a projection fence");
     await manifest.sync();

@@ -58,6 +58,31 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
     expect(modelIds).toContain("redcraft-krea2-identity-edit");
   });
 
+  it("retires every Rapid-AIO weight while keeping the three image-input contracts on REDQW21 V2", async () => {
+    const descriptors = await loadWorkflowDescriptors(WORKFLOWS_DIR);
+    expect(JSON.stringify(descriptors)).not.toContain("Qwen-Rapid-AIO-NSFW-v19");
+    for (const key of ["redqw21", "qwen-image-edit-img2img", "qwen-image-edit-multi-reference", "qwen-image-edit-multi-identity"]) {
+      const workflow = descriptors.find((descriptor) => descriptor.workflowKey === key);
+      if (!workflow || workflow.backendKind !== "comfyui") throw new Error(`missing ${key}`);
+      const encoder = Object.values(workflow.apiPrompt).find((node) => node.class_type === "IDreamFreshCLIPLoader");
+      expect(encoder?.inputs).toMatchObject({ clip_name: "qwen3vl_8b_int8_convrot.safetensors", type: "qwen_image", device: key === "qwen-image-edit-img2img" ? "mps" : "cpu" });
+      expect(Object.values(workflow.apiPrompt).filter((node) => node.class_type === "IDreamQwen21VAELoader")).toHaveLength(1);
+    }
+    for (const key of ["qwen-image-edit-img2img", "qwen-image-edit-multi-reference", "qwen-image-edit-multi-identity"]) {
+      const workflow = descriptors.find((descriptor) => descriptor.workflowKey === key);
+      if (!workflow || workflow.backendKind !== "comfyui") throw new Error(`missing ${key}`);
+      expect(workflow.apiPrompt["1"]?.inputs.unet_name).toBe("redqw21_unlocked_v2_bf16.safetensors");
+      if (key !== "qwen-image-edit-img2img") {
+        expect(workflow.apiPrompt["3"]?.class_type).toBe("TextEncodeQwenImage21");
+        expect(workflow.apiPrompt["2"]?.inputs).toMatchObject({
+          steps: 16, cfg: 2, sampler_name: "euler", scheduler: "simple",
+        });
+      }
+      const references = Object.fromEntries(workflow.inputs.filter((slot) => slot.type === "image").map((slot) => [slot.key, `${slot.key}.png`]));
+      expect(bindComfySlots(workflow, { prompt: "test", width: 512, height: 640, seed: 1, ...references })["9"]?.inputs).toMatchObject({ width: 512, height: 640 });
+    }
+  });
+
   it("serves REDQW21 text-to-image and single-anchor identity from one graph", async () => {
     const descriptors = await loadWorkflowDescriptors(WORKFLOWS_DIR);
     const redqw21 = descriptors.find((descriptor) => descriptor.workflowKey === "redqw21");
@@ -73,7 +98,7 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
     });
     expect(redqw21.apiPrompt["2"]).toMatchObject({
       class_type: "IDreamFreshCLIPLoader",
-      inputs: { clip_name: "qwen3vl_8b_bf16.safetensors", type: "qwen_image" },
+      inputs: { clip_name: "qwen3vl_8b_int8_convrot.safetensors", type: "qwen_image", device: "cpu" },
     });
     expect(bindComfySlots(redqw21, { prompt: "p", seed: 1 })["10"]).toBeUndefined();
     expect(bindComfySlots(redqw21, { prompt: "p", seed: 1, identity_image: "a.png" })["5"]?.inputs["images.image_1"])
@@ -193,18 +218,29 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
     const qwenEdit = descriptors.find((d) => d.workflowKey === "qwen-image-edit-img2img");
     expect(qwenEdit).toBeDefined();
     expect(() => workflowDescriptorSchema.parse(qwenEdit)).not.toThrow();
-    expect(qwenEdit).toMatchObject({ version: 2 });
+    expect(qwenEdit).toMatchObject({ modelId: "redqw21-image-edit", version: 5 });
     expect(qwenEdit?.negativePromptMode).toBe("positive_instruction");
     if (!qwenEdit || qwenEdit.backendKind !== "comfyui") {
       throw new Error("expected Qwen image edit ComfyUI descriptor");
     }
     expect(qwenEdit.apiPrompt["1"]?.class_type).toBe(
-      "IDreamCheckpointModelVaeLoader",
+      "UNETLoader",
     );
-    expect(qwenEdit.apiPrompt["1:clip"]?.class_type).toBe(
-      "IDreamFreshCheckpointCLIPLoader",
+    expect(qwenEdit.apiPrompt["4"]?.class_type).toBe(
+      "IDreamFreshCLIPLoader",
     );
-    expectImageMemoryBarrier(qwenEdit, "2", "3", "4", "1:clip", 0);
+    expect(qwenEdit.apiPrompt["900:0"]?.inputs).toEqual({ passthrough: ["3", 0], after: ["3", 1], release: ["4", 0] });
+    // INVARIANT: the distilled adapter uses its author grid and positive-only
+    // guidance; ordinary simple/Euler sigmas or merged BF16 LoRA lose fidelity.
+    expect(qwenEdit.apiPrompt["3"]).toMatchObject({ class_type: "IDreamQwen21TextEncode", inputs: { cfg: 1, resolution: 0 } });
+    expect(qwenEdit.apiPrompt["1:lora"]).toMatchObject({
+      class_type: "IDreamQwen21TurboLora",
+      inputs: { model: ["1:cache", 0], lora_name: "Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors" },
+    });
+    expect(qwenEdit.apiPrompt["2:guider"]).toMatchObject({ class_type: "BasicGuider", inputs: { model: ["1:lora", 0], conditioning: ["900:0", 0] } });
+    expect(qwenEdit.apiPrompt["2:sigmas"]).toMatchObject({ class_type: "IDreamQwen21TurboSigmas", inputs: { latent: ["3", 2], steps: 6 } });
+    expect(qwenEdit.apiPrompt["2"]?.inputs).toMatchObject({ guider: ["2:guider", 0], sigmas: ["2:sigmas", 0], latent_image: ["3", 2] });
+    expect(bindComfySlots(qwenEdit, { prompt: "change shirt", source_image: "source.png", seed: 7 })["2:noise"]?.inputs.noise_seed).toBe(7);
   });
 
   it("loads the two-reference Qwen identity workflow with two required semantic graph slots", async () => {
@@ -215,8 +251,8 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
     expect(multiIdentity).toBeDefined();
     expect(() => workflowDescriptorSchema.parse(multiIdentity)).not.toThrow();
     expect(multiIdentity).toMatchObject({
-      modelId: "qwen-image-edit-multi-identity",
-      version: 2,
+      modelId: "redqw21-multi-identity",
+      version: 5,
       identity: {
         mode: "multi_identity",
         maxReferences: 2,
@@ -248,17 +284,18 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
       }),
     ]);
     expect(multiIdentity.apiPrompt["3"]?.inputs).toMatchObject({
-      image1: ["8", 0],
-      image2: ["12", 0],
+      resolution: 1024,
+      "images.image_1": ["8", 0],
+      "images.image_2": ["12", 0],
     });
-    expectImageMemoryBarrier(multiIdentity, "2", "3", "4", "1:clip", 0);
+    expect(multiIdentity.apiPrompt["900:0"]?.inputs).toEqual({ passthrough: ["3", 0], after: ["3", 1], release: ["4", 0] });
 
     const identityAndSource = descriptors.find(
       (descriptor) => descriptor.workflowKey === "qwen-image-edit-multi-reference",
     );
     expect(identityAndSource).toMatchObject({
-      modelId: "qwen-image-edit-multi-reference",
-      version: 3,
+      modelId: "redqw21-multi-reference",
+      version: 6,
       identity: {
         mode: "multi_reference",
         maxReferences: 2,
@@ -289,10 +326,17 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
       }),
     ]);
     expect(identityAndSource.apiPrompt["3"]?.inputs).toMatchObject({
-      image1: ["12", 0],
-      image2: ["8", 0],
+      resolution: 0,
+      "images.image_1": ["9", 0],
+      "images.image_2": ["8:scale", 0],
     });
-    expectImageMemoryBarrier(identityAndSource, "2", "3", "4", "1:clip", 0);
+    expect(identityAndSource.apiPrompt["8:scale"]).toEqual({
+      class_type: "ImageScaleToTotalPixels",
+      inputs: { image: ["8", 0], upscale_method: "lanczos", megapixels: 1, resolution_steps: 32 },
+    });
+    expect(identityAndSource.apiPrompt["9"]?.inputs.image).toEqual(["12", 0]);
+    expect(identityAndSource.apiPrompt["2"]?.inputs.latent_image).toEqual(["3", 2]);
+    expect(identityAndSource.apiPrompt["900:0"]?.inputs).toEqual({ passthrough: ["3", 0], after: ["3", 1], release: ["4", 0] });
   });
 
   it("loads the opt-in Draw Things Pornmaster descriptor", async () => {

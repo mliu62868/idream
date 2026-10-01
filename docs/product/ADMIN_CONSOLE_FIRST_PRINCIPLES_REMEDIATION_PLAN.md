@@ -1414,7 +1414,7 @@ running/verifying 使用 lease：`leaseOwner/leaseExpiresAt/heartbeatAt/attemptC
 | 模型 | 关键字段 | 关键约束 |
 | --- | --- | --- |
 | `CharacterProject` | characterId、draft asset pack、visual route、version | 一个官方 Character 一个 active Project；只保存生产草稿元数据，不保存负责人、阶段或排期 |
-| `CharacterContentVersion` | characterId、version、contentHash、persona/opening/appearance snapshot、sourceType/id、createdBy | `(characterId, version)` 与 `(characterId, contentHash)` unique；所有角色可用、不可变 |
+| `CharacterContentVersion` | characterId、version、contentHash、persona/opening/appearance snapshot、sourceType/id、createdBy | `(characterId, version)` unique；`(characterId, contentHash)` 非唯一索引；所有角色可用、不可变 |
 | `CharacterRevision` | projectId、revision、characterContentVersionId、project metadata、createdBy | `(projectId, revision)` unique；发布后不可变 |
 | `CharacterRelease` | projectId、revisionId、characterContentVersionId、visualProfileId/version、referenceSetRevisionId、generation provenance、releaseOwnedPlacementManifest、snapshotHash、status、publishedAt、supersedesId、rollbackOfReleaseId、version | published 后 content/manifest 不可变，lifecycle 可推进；不存 serving/schedule authority |
 | `CharacterServing` | characterId、currentReleaseId、state、version | characterId unique；至多一个 current pointer |
@@ -1450,6 +1450,8 @@ running/verifying 使用 lease：`leaseOwner/leaseExpiresAt/heartbeatAt/attemptC
 | `AdminActionRequest v2` | commandType、target、payloadHash、expectedVersion、expiresAt、status | approval 不能被不同 command payload 重用 |
 | `MetricDefinitionSnapshot` | key、version、definition、queryHash、qualityState、effectiveAt | key+version unique、发布后不可变 |
 | `AiUsageFact` | source、request/attempt/transportExecution、user/character/release、provider/model、token/media usage、latency、costMicros、pricingVersion | 每次真实 invocation 可追溯；provider 成本与 dreamcoin 价格分离 |
+
+`CharacterContentVersion` 的保存身份与内容身份分开：Admin 将 A 编辑为 B 后恢复 A，追加新版本及审计，不修改历史记录；原样提交当前内容返回原版本，不新增内容、Revision、审计或 Outbox。2026-09-30 的角色编辑修复因此将 hash 唯一约束改为查询索引，修正了旧约束对合法恢复的拒绝。用户角色、导入及 backfill 继续显式复用最早的相同 hash 版本；hash 算法、版本号唯一性、并发保护和已发布快照均保持。
 
 模型名表达目标语义，不强制第一步就重命名大表。Generation 迁移可以先把现有 `GenerationJob` 视为 Request authority，新增 Attempt/Artifact/Delivery/SettlementLink 并通过 v2 DTO 暴露目标语义；等所有调用者切换后再决定是否物理更名，避免“重命名工程”阻塞 P0 不变量。
 

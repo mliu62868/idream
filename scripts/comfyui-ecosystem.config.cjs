@@ -16,6 +16,11 @@ function runner(profile, port, killTimeout) {
     env: {
       COMFYUI_PROFILE: profile,
       COMFYUI_PORT: port,
+      // INVARIANT: PM2 merges saved env on restart. The image code and Python
+      // must come from the same Qwen21 install, even after a legacy override.
+      ...(profile === "image" ? {
+        COMFYUI_VENV_PYTHON: "/Users/kk/ComfyUI-Installs/idream-image-qwen21/ComfyUI/.venv/bin/python3",
+      } : {}),
     },
   };
 }

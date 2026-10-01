@@ -2,6 +2,7 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { Errors } from "@/server/lib/errors";
 import { reserveRetryGenerationAttempt } from "@/server/modules/generation/generation-attempt-authority";
 import { refundGenerationRequest } from "@/server/ai/generation-refund";
+import { lockGenerationRequestForSettlement } from "@/server/ai/generation-settlement";
 import { claimControlPlaneCommand } from "../shared/control-plane-command";
 import { transitionControlPlaneCommandAttempt } from "../shared/control-plane-command-attempt";
 import { transitionControlPlaneCommand } from "../shared/control-plane-command-transition";
@@ -83,9 +84,7 @@ async function appendRefund(
   tx: Prisma.TransactionClient,
   input: { commandId: string; jobId: string },
 ) {
-  const job = await tx.generationJob.findUnique({ where: { id: input.jobId } });
-  if (!job) throw Errors.notFound("Incident refund target Generation Request is missing");
-  await tx.$queryRaw`SELECT id FROM "generation_jobs" WHERE id = ${job.id} FOR UPDATE`;
+  const job = await lockGenerationRequestForSettlement(tx, input.jobId);
   const amount = await refundGenerationRequest(tx, {
     requestId: job.id,
     userId: job.userId,
@@ -166,6 +165,19 @@ export async function executeIncidentActionPlanCommand(
           },
         });
       } else if (plan.action === "refund") {
+        const requestIds = occurrences.map(occurrence => {
+          if (!occurrence.requestId) throw Errors.conflict("Refund occurrence has no Generation Request");
+          return occurrence.requestId;
+        });
+        const owners = await tx.generationJob.findMany({
+          where: { id: { in: requestIds } },
+          select: { userId: true },
+        });
+        // A plan can refund several users. Lock all wallets in the same order
+        // before any Request, even when two plans list their occurrences differently.
+        for (const userId of [...new Set(owners.map(owner => owner.userId))].sort()) {
+          await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${userId} FOR UPDATE`;
+        }
         const settlements = [];
         for (const occurrence of occurrences) {
           if (!occurrence.requestId) throw Errors.conflict("Refund occurrence has no Generation Request");

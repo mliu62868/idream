@@ -38,13 +38,18 @@ const streamingReply = {
   role: "assistant",
   content: "",
   status: "generating",
+  attempt: 1,
   replyToMessageId: "user-1",
 };
 
 class FakeEventSource {
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSED = 2;
   static instances: FakeEventSource[] = [];
   readonly url: string;
   closed = false;
+  readyState = FakeEventSource.OPEN;
   private readonly listeners = new Map<string, Set<(event: unknown) => void>>();
 
   constructor(url: string) {
@@ -62,6 +67,7 @@ class FakeEventSource {
 
   close() {
     this.closed = true;
+    this.readyState = FakeEventSource.CLOSED;
   }
 
   emit(type: string, data: unknown) {
@@ -123,6 +129,9 @@ describe("ChatSessionClient streaming composer", () => {
         if (url.endsWith("/messages") && init?.method === "POST") {
           return sendResponse;
         }
+        if (url.endsWith("/cancel") && init?.method === "POST") {
+          return Response.json({ cancelled: true, attempt: 1 });
+        }
         if (url === "/api/v1/chat/sessions/session-1") {
           sessionReads += 1;
           return Response.json({
@@ -153,6 +162,28 @@ describe("ChatSessionClient streaming composer", () => {
     await act(async () => root.unmount());
     container.remove();
     vi.unstubAllGlobals();
+  });
+
+  it("keeps Shift+Enter and IME composition editable and sends multiline text once on plain Enter", async () => {
+    await mountSession();
+    await act(async () => typeMessage("First line"));
+    const textarea = messageInput()!;
+    expect(textarea.tagName).toBe("TEXTAREA");
+    for (const flags of [{ shiftKey: true }, { isComposing: true }, { keyCode: 229 }]) {
+      const event = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...flags });
+      await act(async () => textarea.dispatchEvent(event));
+      expect(event.defaultPrevented).toBe(false);
+      expect(vi.mocked(fetch).mock.calls.filter(([url, init]) => String(url).endsWith("/messages") && init?.method === "POST")).toHaveLength(0);
+      expect(messageInput()!.value).toBe("First line");
+    }
+    await act(async () => typeMessage("First line\nSecond line"));
+    const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    await act(async () => textarea.dispatchEvent(enter));
+    expect(enter.defaultPrevented).toBe(true);
+    const messages = vi.mocked(fetch).mock.calls.filter(([url, init]) => String(url).endsWith("/messages") && init?.method === "POST");
+    expect(messages).toHaveLength(1);
+    expect(JSON.parse(String(messages[0][1]!.body)).content).toBe("First line\nSecond line");
+    await act(async () => releaseSend?.(sendPayload()));
   });
 
   it("renders the reader's own turn before the send round-trip resolves", async () => {
@@ -208,7 +239,10 @@ describe("ChatSessionClient streaming composer", () => {
     expect(FakeEventSource.instances.at(-1)?.closed).toBe(true);
     expect(fetch).toHaveBeenCalledWith(
       "/api/v1/messages/assistant-1/cancel",
-      { method: "POST" },
+      {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ attempt: 1 }),
+      },
     );
     expect(replyBubble()?.textContent).toContain("Once upon");
     expect(container.querySelector('[aria-label="Assistant is typing"]')).toBeNull();
@@ -218,6 +252,31 @@ describe("ChatSessionClient streaming composer", () => {
     expect(replyBubble()?.querySelector('[data-testid="chat-play-voice"]')).toBeNull();
     expect(container.querySelector('[data-testid="chat-session-status"]')?.textContent)
       .toContain("Reply stopped.");
+  });
+
+  it.each([200, 409])("keeps the newer reply when an old Stop returns HTTP %s", async (status) => {
+    await startStreamingReply();
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    const cancelResponse = Promise.withResolvers<Response>();
+    vi.mocked(fetch).mockImplementation(async (input, init) =>
+      String(input).endsWith("/cancel") ? cancelResponse.promise : originalFetch(input, init),
+    );
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="chat-stop-reply"]')?.click());
+    sessionMessages = [opening, userTurn, { ...streamingReply, attempt: 2 }];
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await waitUntil(() => FakeEventSource.instances.length === 2);
+    const currentStream = FakeEventSource.instances[1]!;
+    await act(async () => currentStream.emit("delta", { attempt: 2, delta: "New partial reply" }));
+    await act(async () => cancelResponse.resolve(Response.json({ cancelled: status === 200, attempt: 1 }, { status })));
+
+    expect(replyBubble()?.textContent).toContain("New partial reply");
+    expect(currentStream.closed).toBe(false);
+    expect(container.querySelector('[aria-label="Assistant is typing"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="chat-stop-reply"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="chat-session-status"]')?.textContent ?? "").not.toContain("Reply stopped");
+    expect(fetch).toHaveBeenCalledWith("/api/v1/messages/assistant-1/cancel", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ attempt: 1 }),
+    });
   });
 
   it.each(["user-1", "assistant-1"])(
@@ -303,6 +362,113 @@ describe("ChatSessionClient streaming composer", () => {
     await act(async () => document.dispatchEvent(new Event("visibilitychange")));
     await waitUntil(() => FakeEventSource.instances.length === 2);
     expect(FakeEventSource.instances.at(-1)?.url).toContain("attempt=2");
+  });
+
+  it("drops a stopped attempt's cache when another page regenerates to pending", async () => {
+    sessionMessages = [opening, userTurn, { ...streamingReply, attempt: 1 }];
+    await mountSession();
+    await waitUntil(() => FakeEventSource.instances.length === 1);
+    await act(async () => FakeEventSource.instances[0]?.emit("delta", { attempt: 1, delta: "Old partial reply" }));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="chat-stop-reply"]')?.click());
+    expect(replyBubble()?.textContent).toContain("Old partial reply");
+
+    // An independent browser page advances Main's attempt; this page did not
+    // execute regenerate(), so its old stopped cache still exists.
+    sessionMessages = [opening, userTurn, { ...streamingReply, attempt: 2, status: "pending" }];
+    const readsBefore = sessionReads;
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await waitUntil(() => sessionReads > readsBefore);
+    expect(replyBubble()?.textContent).not.toContain("Old partial reply");
+    expect(container.querySelector('[aria-label="Assistant is typing"]')).not.toBeNull();
+
+    sessionMessages = [opening, userTurn, { ...streamingReply, attempt: 2 }];
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    await waitUntil(() => FakeEventSource.instances.length === 2);
+    expect(FakeEventSource.instances.at(-1)?.url).toContain("attempt=2");
+  });
+
+  it("replaces an older attempt's live stream after another page regenerates", async () => {
+    sessionMessages = [opening, userTurn, { ...streamingReply, attempt: 1 }];
+    await mountSession();
+    await waitUntil(() => FakeEventSource.instances.length === 1);
+    const previous = FakeEventSource.instances[0]!;
+    await act(async () => previous.emit("delta", { attempt: 1, delta: "Old partial reply" }));
+    sessionMessages = [opening, userTurn, { ...streamingReply, attempt: 2 }];
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await waitUntil(() => FakeEventSource.instances.length === 2);
+    expect(previous.closed).toBe(true);
+    await act(async () => previous.emit("delta", { attempt: 1, delta: "Late old text" }));
+    expect(replyBubble()?.textContent).not.toContain("Late old text");
+    await act(async () => FakeEventSource.instances.at(-1)?.emit("delta", { attempt: 2, delta: "New reply" }));
+    expect(replyBubble()?.textContent).toContain("New reply");
+    expect(replyBubble()?.textContent).not.toContain("Old partial reply");
+  });
+
+  it.each(["regenerate", "edit"])("discards a delayed focus snapshot started during %s", async (mutation) => {
+    sessionMessages = [opening, userTurn, { ...streamingReply, status: "sent", content: "Old answer" }];
+    await mountSession();
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    const staleSnapshot = await originalFetch("/api/v1/chat/sessions/session-1");
+    const mutationResponse = Promise.withResolvers<Response>();
+    const focusResponse = Promise.withResolvers<Response>();
+    let deferFocusRead = false;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/regenerate") || (url.endsWith("/user-1") && init?.method === "PATCH")) {
+        return mutationResponse.promise;
+      }
+      if (url === "/api/v1/chat/sessions/session-1" && deferFocusRead) {
+        deferFocusRead = false;
+        return focusResponse.promise;
+      }
+      return originalFetch(input, init);
+    });
+    if (mutation === "regenerate") {
+      await act(async () => replyBubble()?.querySelector<HTMLButtonElement>('[data-testid="chat-regenerate"]')?.click());
+    } else {
+      await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="chat-edit-message"]')?.click());
+      await act(async () => {
+        const input = container.querySelector<HTMLTextAreaElement>('[data-testid="chat-edit-input"]');
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(input, "Changed user request");
+        input?.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await act(async () => container.querySelector('[data-testid="chat-save-edit"]')?.closest("form")?.dispatchEvent(
+        new Event("submit", { bubbles: true, cancelable: true }),
+      ));
+    }
+    deferFocusRead = true;
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    sessionMessages = [opening, userTurn, { ...streamingReply, attempt: 2 }];
+    await act(async () => mutationResponse.resolve(Response.json({
+      assistantMessageId: "assistant-1", attempt: 2, status: "generating",
+      streamUrl: "/api/v1/chat/messages/assistant-1/stream?attempt=2",
+    })));
+    await waitUntil(() => FakeEventSource.instances.length === 1);
+    const currentStream = FakeEventSource.instances[0]!;
+    expect(currentStream.url).toContain("attempt=2");
+    await act(async () => focusResponse.resolve(staleSnapshot));
+
+    expect(currentStream.closed).toBe(false);
+    expect(container.querySelector('[aria-label="Assistant is typing"]')).not.toBeNull();
+    expect(replyBubble()?.textContent).not.toContain("Old answer");
+  });
+
+  it("reopens a CLOSED transport while allowing CONNECTING to reconnect itself", async () => {
+    sessionMessages = [opening, userTurn, { ...streamingReply, attempt: 1 }];
+    await mountSession();
+    await waitUntil(() => FakeEventSource.instances.length === 1);
+    const previous = FakeEventSource.instances[0]!;
+    previous.readyState = FakeEventSource.CONNECTING;
+    await act(async () => previous.emit("error", {}));
+    expect(previous.closed).toBe(false);
+    expect(FakeEventSource.instances).toHaveLength(1);
+
+    previous.readyState = FakeEventSource.CLOSED;
+    await act(async () => previous.emit("error", {}));
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    await waitUntil(() => FakeEventSource.instances.length === 2);
+    expect(FakeEventSource.instances.at(-1)?.url).toContain("attempt=1");
+    expect(fetch).not.toHaveBeenCalledWith(expect.stringMatching(/\/regenerate$/u), expect.anything());
   });
 
   it("shows a recoverable error when changing memory loses its connection", async () => {
@@ -701,6 +867,64 @@ describe("ChatSessionClient streaming composer", () => {
       sessionId: "session-1",
       text: "Hey there.",
     });
+  });
+
+  it.each(["playing", "render pending", "quote pending"])("stops %s TTS on microphone start and blocks voice requests during capture", async mode => {
+    const pause = vi.fn(), play = vi.fn().mockResolvedValue(undefined), stopTrack = vi.fn();
+    vi.stubGlobal("Audio", class {
+      src: string; onerror: (() => void) | null = null; onended: (() => void) | null = null;
+      constructor(src: string) { this.src = src; }
+      pause = pause; play = play;
+    });
+    vi.stubGlobal("MediaRecorder", class {
+      static isTypeSupported() { return true; }
+      state = "inactive"; ondataavailable = null; onstop = null; onerror = null;
+      start() { this.state = "recording"; } stop() { this.state = "inactive"; }
+    });
+    vi.stubGlobal("AudioContext", undefined);
+    vi.stubGlobal("navigator", { mediaDevices: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [{ stop: stopTrack, onended: null }] }) } });
+    const secureContext = Object.getOwnPropertyDescriptor(window, "isSecureContext");
+    Object.defineProperty(window, "isSecureContext", { configurable: true, value: true });
+    let releaseTts!: (response: Response) => void;
+    const pending = new Promise<Response>(resolve => { releaseTts = resolve; });
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/voice-input")) return Response.json({ ok: true, data: {
+        supported: true, available: true, ownerScope: "user:viewer-a", languages: ["en"],
+        maxDurationMs: 60_000, maxUploadBytes: 8388608, resultTtlMs: 120_000,
+      } });
+      if (url === "/api/v1/generation/voice/quote" && mode === "quote pending") return pending;
+      if (url === "/api/v1/generation/voice") return mode === "render pending" ? pending : Response.json({ data: { contentUrl: "/voice/recording-test.wav" } });
+      return originalFetch(input, init);
+    });
+    try {
+      await mountSession();
+      await waitUntil(() => container.querySelector('[aria-label="Voice input"]') !== null);
+      await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="chat-play-voice"]')!.click());
+      if (mode === "playing") expect(play).toHaveBeenCalledOnce();
+      await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Voice input"]')!.click());
+      expect(container.textContent).toContain("Listening");
+      if (mode === "playing") expect(pause).toHaveBeenCalledOnce();
+      const beforeQuote = vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith("/voice/quote")).length;
+      const beforeRender = voiceRequests().length;
+      await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="chat-play-voice"]')!.click());
+      expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith("/voice/quote"))).toHaveLength(beforeQuote);
+      expect(voiceRequests()).toHaveLength(beforeRender);
+      if (mode !== "playing") {
+        await act(async () => releaseTts(mode === "render pending" ? Response.json({ data: { contentUrl: "/voice/late.wav" } }) : Response.json({ ok: true, data: { quote: {
+          quoteToken: null, maxCostDreamcoins: 2, overflowCostDreamcoins: 2, allowanceMinutes: 30,
+          remainingAllowanceMs: 60_000, balance: 100, accepted: true, alreadyDelivered: false,
+        } } })));
+        expect(play).not.toHaveBeenCalled();
+        expect(voiceRequests()).toHaveLength(beforeRender);
+      }
+      await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Cancel")!.click());
+      expect(stopTrack).toHaveBeenCalledOnce();
+    } finally {
+      if (secureContext) Object.defineProperty(window, "isSecureContext", secureContext);
+      else Reflect.deleteProperty(window, "isSecureContext");
+    }
   });
 
   it("shows the accepted voice price ceiling and sends no synthesis before confirmation", async () => {
@@ -1142,7 +1366,7 @@ describe("ChatSessionClient streaming composer", () => {
       data: {
         userMessage: userTurn,
         assistant: streamingReply,
-        streamUrl: "/api/v1/chat/messages/assistant-1/stream",
+        streamUrl: "/api/v1/chat/messages/assistant-1/stream?attempt=1",
       },
     });
   }
@@ -1152,13 +1376,13 @@ describe("ChatSessionClient streaming composer", () => {
   }
 
   function messageInput() {
-    return container.querySelector<HTMLInputElement>('input[name="message"]');
+    return container.querySelector<HTMLTextAreaElement>('textarea[name="message"]');
   }
 
   function typeMessage(value: string) {
     const input = messageInput();
     // Bypass React's value tracker so the change is not swallowed as a no-op.
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(
       input,
       value,
     );

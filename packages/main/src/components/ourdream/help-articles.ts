@@ -140,6 +140,14 @@ export const helpTopics: readonly HelpTopic[] = [
         keywords: "reset relationship restart wrong memory",
       },
       {
+        id: "voice-input",
+        question: "Can I speak instead of typing?",
+        answer:
+          "When voice input is available, click the microphone beside your message, record for up to one minute, then select Done. Your words are added to an editable draft; review them and press Send yourself. Transcription is free and does not consume voice minutes or messages. Recordings are not saved to your chat. Cancel or use the keyboard at any time. Your browser needs microphone permission and a secure connection.",
+        links: [{ href: "/chat", label: "Your chats" }],
+        keywords: "microphone dictate speech input asr recording transcribe",
+      },
+      {
         id: "voice-replies",
         question: "Can I hear a character's replies out loud?",
         answer:

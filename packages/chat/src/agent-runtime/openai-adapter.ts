@@ -119,6 +119,7 @@ function modelInputMessages(system: string | undefined, messages: readonly Reque
       sourceKind,
       role: message.role,
       content,
+      ...(message.role === "assistant" && message.source.speaker ? { speaker: message.source.speaker } : {}),
       ...(message.role === "assistant" && toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
     });
   }
@@ -129,29 +130,10 @@ function requiredToolArgumentsJson(
   name: CompanionToolCall["name"],
   content: string,
 ): string | null {
-  let candidate = content.trim();
-  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/iu.exec(candidate);
-  if (fenced) candidate = fenced[1] ?? "";
-  // INTENT: the local model often says one in-character line before the JSON
-  // ("Okay, give me a moment.\n\n{...}"); the trailing object is still the only
-  // action candidate and is validated below exactly like a bare payload.
-  if (!candidate.startsWith("{") && candidate.endsWith("}")) {
-    candidate = candidate.slice(candidate.indexOf("{"));
-  }
   try {
-    const parsed = JSON.parse(candidate) as unknown;
-    let raw = parsed;
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      const row = parsed as Record<string, unknown>;
-      if (row.name === name && row.arguments !== undefined) raw = row.arguments;
-      if (row.name === name && row.args !== undefined) raw = row.args;
-      const fn = row.function && typeof row.function === "object" && !Array.isArray(row.function)
-        ? row.function as Record<string, unknown>
-        : null;
-      if (fn?.name === name && fn.arguments !== undefined) raw = fn.arguments;
-    }
-    if (typeof raw === "string") raw = JSON.parse(raw) as unknown;
-    const toolCall = parseImageAgentToolCall(name, raw);
+    // SPEC: ADR-21 accepts only a complete arguments object. Stripping prose,
+    // Markdown or wrappers can turn an explicitly qualified answer into an act.
+    const toolCall = parseImageAgentToolCall(name, JSON.parse(content) as unknown);
     return toolCall ? JSON.stringify(toolCall.arguments) : null;
   } catch {
     return null;
@@ -593,7 +575,9 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
         throw new LlmError("OpenAI-compatible provider is unreachable", "TRANSPORT", { cause: error });
       });
       if (!response.ok) {
-        await response.body?.cancel().catch(() => undefined);
+        // Cleanup must not hold the HTTP failure behind a provider stream's
+        // cancellation promise; aborting the request cannot settle that promise.
+        void response.body?.cancel().catch(() => undefined);
         throw new LlmError(
           `OpenAI-compatible provider returned HTTP ${response.status}`,
           "PROVIDER_HTTP_ERROR",
@@ -656,7 +640,7 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
           const [state, start] = ensure(`tool:${providerIndex}`, "tool-call", call.id);
           chunks.push(...start);
           state.id ??= call.id;
-          state.name ??= call.function?.name;
+          if (call.function?.name) state.name = (state.name ?? "") + call.function.name;
           const argumentsDelta = call.function?.arguments ?? "";
           appendOutput(state, argumentsDelta);
           if (!state.id) throw new LlmError("provider tool call omitted its id", "INVALID_RESPONSE");
@@ -664,14 +648,15 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
             type: "tool-call-delta",
             index: state.index,
             id: state.id as never,
-            ...(call.function?.name ? { name: call.function.name } : {}),
+            // DSH treats name as the current complete value, not a delta.
+            ...(call.function?.name ? { name: state.name } : {}),
             argumentsDelta,
           });
         }
         return chunks;
       };
 
-      for await (const text of decodedResponseChunks(response.body, timeout.signal)) {
+      providerStream: for await (const text of decodedResponseChunks(response.body, timeout.signal)) {
         responseBytes += Buffer.byteLength(text);
         if (responseBytes > MAX_PROVIDER_STREAM_BYTES) {
           failStreamLimit("provider stream exceeded the configured byte limit");
@@ -690,7 +675,11 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
             .filter((line) => line.startsWith("data:"))
             .map((line) => line.slice(5).trimStart())
             .join("\n");
-          if (!data || data === "[DONE]") continue;
+          if (!data) continue;
+          // The provider terminates the message with DONE. Awaiting HTTP EOF
+          // after it can turn a complete answer into an idle timeout; usage
+          // trailers before DONE have already been accounted for above.
+          if (data === "[DONE]") break providerStream;
           const payload = JSON.parse(data) as OpenAiStreamPayload;
           const chunks = processPayload(payload);
           if (chunks.some((chunk) => chunk.type === "text-delta"

@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -39,6 +40,10 @@ import {
 } from "@/server/test/helpers";
 import { adminV2, type AdminV2Result } from "@/server/test/admin-v2-http";
 import { adminV2Route } from "@/server/test/admin-v2-route-client";
+
+const { version: imageEditWorkflowVersion }: { version: number } = JSON.parse(
+  readFileSync(new URL("../../../../../gen/workflows/qwen-image-edit-img2img.json", import.meta.url), "utf8"),
+);
 
 const P = "zt-admin-";
 const seedPricingAuthorities = [
@@ -342,7 +347,7 @@ async function seedCharacterAssetAuthority(input: {
       generationProfileKey: input.generationProfileKey,
       generationProfileVersion: 1,
       workflowKey: "qwen-image-edit-img2img",
-      workflowVersion: 2,
+      workflowVersion: imageEditWorkflowVersion,
       style,
       matrixKey: `${input.generationProfileKey}-matrix-v1`,
       sampleCount: 40,
@@ -2131,10 +2136,10 @@ describe("generation config control plane", () => {
         label: "Production profile",
         mode: "image",
         runner: "comfyui",
-        pipelineModel: "qwen-image-edit",
+        pipelineModel: "redqw21-image-edit",
         workflowKey: "qwen-image-edit-img2img",
         runnerConfig: {
-          workflowVersion: 2,
+          workflowVersion: imageEditWorkflowVersion,
           capabilities: {
             textToImage: false,
             stableSeed: true,

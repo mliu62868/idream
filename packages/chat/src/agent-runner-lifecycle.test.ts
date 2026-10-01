@@ -34,7 +34,10 @@ const stream = vi.hoisted(() => ({
   ),
 }));
 
-vi.mock("./agent-run-store.js", () => store);
+vi.mock("./agent-run-store.js", async importOriginal => ({
+  ...await importOriginal<typeof import("./agent-run-store.js")>(),
+  ...store,
+}));
 vi.mock("./fence.js", () => fence);
 vi.mock("./agent-runtime/runtime.js", () => ({
   agentRuntimeProfileDigest: vi.fn(async () => "profile-digest"),
@@ -114,6 +117,7 @@ function agentRunInput(userContent = "hello"): AgentRunInput {
   return {
     schemaVersion: 1,
     admittedAt: "2026-08-28T11:59:00.000Z",
+    deadlineAt: "2026-08-28T12:04:00.000Z",
     snapshot: {
       version: 1,
       turnId: "turn-1",
@@ -195,6 +199,8 @@ describe("AgentRun account-erasure drain", () => {
     await completed.promise;
     await new Promise((resolve) => setImmediate(resolve));
     expect(store.readAgentRunInput).toHaveBeenCalledWith("turn-1", 1);
+    // Recovery consumes the first admission's pin, not a new wall-clock window.
+    expect(runtime.runCompanion.mock.calls[0]?.[0]).toMatchObject({ deadlineAt: agentRunInput().deadlineAt });
   });
 
   it.each([

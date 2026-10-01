@@ -26,6 +26,7 @@ import {
   transitionGenerationRequestWithDisposition,
 } from "./generation-request-transition";
 import { refundGenerationRequest } from "./generation-refund";
+import { lockGenerationRequestForSettlement } from "./generation-settlement";
 import {
   deliverGenerationArtifacts,
   lateArtifactDisposition,
@@ -843,6 +844,7 @@ async function finalizeGenerationCompleted(
   });
 
   await prisma.$transaction(async (tx) => {
+    await lockGenerationRequestForSettlement(tx, job.id);
     if (existingAssets === 0) {
       for (const [index, asset] of payload.assets.entries()) {
         const mediaId = `media_${cryptoRandomId()}`;
@@ -1333,7 +1335,7 @@ async function refundGeneration(
   // don't charge a wallet on creation).
   const isDebitedJob = sourceType !== "content_production_item";
   return prisma.$transaction(async (tx) => {
-    await tx.$queryRaw`SELECT id FROM "generation_jobs" WHERE id = ${jobId} FOR UPDATE`;
+    await lockGenerationRequestForSettlement(tx, jobId);
     const transitioned = await transitionGenerationRequest(tx, {
       requestId: jobId,
       to: status,

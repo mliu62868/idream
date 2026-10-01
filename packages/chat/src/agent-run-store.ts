@@ -20,8 +20,17 @@ import {
 export interface AgentRunInput {
   schemaVersion: 1;
   admittedAt: string;
+  // Existing on-disk inputs predate this pin; every new admission persists it.
+  deadlineAt?: string;
   snapshot: ChatExecutionSnapshot;
   authority: ChatAuthoritySnapshot;
+}
+
+export interface AgentRunAdmission {
+  duplicate: boolean;
+  terminal: boolean;
+  deadlineAt: string | null;
+  tombstoned?: true;
 }
 
 export interface AgentRunCompletion {
@@ -71,6 +80,7 @@ interface AgentRunIndex {
   userId: string;
   snapshotDigest: string;
   terminal: boolean;
+  deadlineAt?: string;
   expiresAt: string | null;
 }
 
@@ -113,7 +123,7 @@ function assistantIndexFile(assistantMessageId: string): string {
 
 export async function admitAgentRun(
   input: AgentRunInput,
-): Promise<{ duplicate: boolean; terminal: boolean; tombstoned?: true }> {
+): Promise<AgentRunAdmission> {
   return withFenceLock(
     fenceKey({ scope: "user", userId: input.snapshot.userId }),
     () => withFenceLock(
@@ -125,7 +135,7 @@ export async function admitAgentRun(
 
 async function admitAgentRunUnlocked(
   input: AgentRunInput,
-): Promise<{ duplicate: boolean; terminal: boolean; tombstoned?: true }> {
+): Promise<AgentRunAdmission> {
   if (
     await isFenced({ scope: "user", userId: input.snapshot.userId }) ||
     await isFenced({
@@ -134,7 +144,7 @@ async function admitAgentRunUnlocked(
       attempt: input.snapshot.attempt,
     })
   ) {
-    return { duplicate: false, terminal: false, tombstoned: true };
+    return { duplicate: false, terminal: false, deadlineAt: null, tombstoned: true };
   }
   const snapshotDigest = admissionIdentity(input);
   const existingIndex = await readAgentRunIndex(input.snapshot.assistantMessageId);
@@ -155,27 +165,34 @@ async function admitAgentRunUnlocked(
     if (!exactIdentity && !supersedesPriorAttempt) {
       throw new Error("AgentRun identity was reused with different input");
     }
-    if (exactIdentity && existingIndex.terminal) return { duplicate: true, terminal: true };
+    if (exactIdentity && existingIndex.terminal) return {
+      duplicate: true, terminal: true, deadlineAt: existingIndex.deadlineAt ?? null,
+    };
   }
   const file = inputFile(input.snapshot.turnId, input.snapshot.attempt);
-  const encoded = `${JSON.stringify(input)}\n`;
   try {
     const existing = await readFile(file, "utf8");
-    const persisted = JSON.parse(existing) as AgentRunInput;
+    const original = JSON.parse(existing) as AgentRunInput;
+    const persisted = { ...original, deadlineAt: agentRunDeadlineAt(original) };
     if (admissionIdentity(persisted) !== admissionIdentity(input)) {
       throw new Error("AgentRun identity was reused with different input");
     }
-    await writeAgentRunIndex(input, false);
+    // A lost ACK must report the first accepted deadline, even after a config
+    // change or a later request timestamp. Upgrade historical inputs once here.
+    if (original.deadlineAt === undefined) await atomicWrite(file, `${JSON.stringify(persisted)}\n`);
+    await writeAgentRunIndex(persisted, false);
     return {
       duplicate: true,
+      deadlineAt: persisted.deadlineAt,
       terminal: Boolean(await readAgentRunCompletion(input.snapshot.turnId, input.snapshot.attempt)),
     };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-  await atomicWrite(file, encoded);
-  await writeAgentRunIndex(input, false);
-  return { duplicate: false, terminal: false };
+  const persisted = { ...input, deadlineAt: agentRunDeadlineAt(input) };
+  await atomicWrite(file, `${JSON.stringify(persisted)}\n`);
+  await writeAgentRunIndex(persisted, false);
+  return { duplicate: false, terminal: false, deadlineAt: persisted.deadlineAt };
 }
 
 export async function findAgentRunByAssistant(assistantMessageId: string): Promise<{
@@ -193,6 +210,8 @@ export async function findAgentRunByAssistant(assistantMessageId: string): Promi
 
 export async function readAgentRunInput(turnId: string, attempt: number): Promise<AgentRunInput | null> {
   try {
+    // Erasure reads ownership even from damaged execution evidence; it must not
+    // depend on that input satisfying the execution-time deadline contract.
     return JSON.parse(await readFile(inputFile(turnId, attempt), "utf8")) as AgentRunInput;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
@@ -397,7 +416,15 @@ async function cleanupExpiredAgentRuns(now = Date.now()): Promise<AgentRunRecove
     try {
       const index = await readAgentRunIndexFile(target);
       if (!index?.terminal || !index.expiresAt || Date.parse(index.expiresAt) > now) continue;
-      await rm(target, { force: true });
+      await withFenceLock(fenceKey({ scope: "turn", turnId: index.turnId }), async () => {
+        // The assistant id survives regeneration. Admission may have replaced
+        // the expired attempt since the scan; decide from the current index
+        // under the same Turn lock as every writer, then remove only that file.
+        const current = await readAgentRunIndexFile(target);
+        if (!current || current.turnId !== index.turnId || !current.terminal
+          || !current.expiresAt || Date.parse(current.expiresAt) > now) return;
+        await rm(target, { force: true });
+      });
     } catch (error) {
       failures.push(recoveryFailure(
         path.join("run-index", "assistant", name),
@@ -483,12 +510,11 @@ async function purgeAgentRunDirectoriesUnlocked(
     if (!Number.isSafeInteger(attempt) || attempt < 1) continue;
     if (throughAttempt !== null && attempt > throughAttempt) continue;
     const input = await readAgentRunInput(safeTurnId, attempt);
-    if (input) {
-      await rm(assistantIndexFile(input.snapshot.assistantMessageId), { force: true });
-      purged += 1;
-    }
+    if (input) purged += 1;
     await rm(runDir(safeTurnId, attempt), { recursive: true, force: true });
   }
+  // The assistant id is shared by every attempt. Delete indexes by their
+  // current attempt, never by a superseded input's assistant id.
   await purgeAgentRunIndexes((index) =>
     index.turnId === safeTurnId
     && (throughAttempt === null || index.attempt <= throughAttempt));
@@ -599,6 +625,7 @@ async function writeAgentRunIndex(
     userId: input.snapshot.userId,
     snapshotDigest: admissionIdentity(input),
     terminal,
+    deadlineAt: agentRunDeadlineAt(input),
     expiresAt,
   } satisfies AgentRunIndex)}\n`);
 }
@@ -623,6 +650,16 @@ function admissionIdentity(input: AgentRunInput): string {
   // entitlement facts change; that retry must discover the existing run instead
   // of replacing it or rejecting exact product identity.
   return sha256(JSON.stringify(input.snapshot));
+}
+
+export function agentRunDeadlineAt(input: AgentRunInput): string {
+  if (!isDateString(input.admittedAt)) throw new Error("invalid AgentRun admission timestamp");
+  const deadlineAt = input.deadlineAt
+    ?? new Date(Date.parse(input.admittedAt) + env.AGENT_RUN_DEADLINE_MS).toISOString();
+  if (!isDateString(deadlineAt) || Date.parse(deadlineAt) < Date.parse(input.admittedAt)) {
+    throw new Error("invalid AgentRun execution deadline");
+  }
+  return deadlineAt;
 }
 
 function parseAgentRunCompletion(value: unknown): AgentRunCompletion {
@@ -655,6 +692,7 @@ function parseAgentRunIndex(value: unknown): AgentRunIndex {
     || typeof value.snapshotDigest !== "string"
     || !/^[a-f0-9]{64}$/u.test(value.snapshotDigest)
     || typeof value.terminal !== "boolean"
+    || (value.deadlineAt !== undefined && !isDateString(value.deadlineAt))
     || (value.terminal ? !isDateString(value.expiresAt) : value.expiresAt !== null)
   ) {
     throw new Error("invalid AgentRun assistant index");
@@ -680,4 +718,3 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function isDateString(value: unknown): value is string {
   return typeof value === "string" && Number.isFinite(Date.parse(value));
 }
-

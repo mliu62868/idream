@@ -123,15 +123,23 @@ export function resolveCharacterPortfolioPrimaryAction(
     ...characterPortfolioPrimaryActionCopy[item.journey.primaryAction.code],
     href: item.journey.primaryAction.deepLink,
   };
-  // SPEC: 卡片主动作只服从这个优先级：未完成命令/旅程阻塞 → Release 阻塞 → 线上零观测
+  // SPEC: 卡片主动作只服从这个优先级：未完成命令 → 归档/停用 → 旅程阻塞 → Release 阻塞 → 线上零观测
   //       → 待发布版本 → 待发布修订 → 线上图片包缺失 → 普通制作旅程。
   // INTENT: 生成批次只是生产过程，不能盖过线上故障或发布决策。
-  if (
-    item.journey.primaryAction.code === "recover_active_command" ||
-    item.journey.status === "blocked"
-  ) {
-    return journeyAction;
+  if (item.journey.primaryAction.code === "recover_active_command") return journeyAction;
+  if (item.serving.state === "retired") {
+    const archivedDraft = item.serving.currentReleaseId === null;
+    return {
+      description: archivedDraft
+        ? "Restore this archived draft before continuing character production."
+        : "This character is retired. Review its release history.",
+      eyebrow: archivedDraft ? "Archived draft" : "Retired character",
+      href: `/admin/characters/${encodeURIComponent(item.characterId)}?tab=release`,
+      label: archivedDraft ? "Restore draft" : "Review retired character",
+      requiresAssets: false,
+    };
   }
+  if (item.journey.status === "blocked") return journeyAction;
   if (item.readiness === "blocked") {
     return {
       description:
@@ -200,6 +208,14 @@ export function resolveCharacterPortfolioPrimaryAction(
 }
 
 export function characterPortfolioState(item: CharacterPortfolioItem) {
+  // Lifecycle is authoritative even while a production journey still has work.
+  if (item.serving.state === "retired" || item.serving.state === "paused") {
+    return {
+      badge: "bg-[var(--ad-surface-subtle)] text-[var(--ad-text-muted)]",
+      label: item.serving.state === "paused" ? "Paused" : item.serving.currentReleaseId === null ? "Archived" : "Retired",
+      tone: "text-[var(--ad-text-muted)]",
+    } as const;
+  }
   if (
     item.serving.state === "live" ||
     item.journey.stage === "live_operations"

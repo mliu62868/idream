@@ -97,13 +97,12 @@ export async function materializeUserCharacterContentVersion(input: {
   createdById: string | null;
   content: ReturnType<typeof compileUserCharacterContent>;
 }): Promise<{ id: string; version: number; snapshot: CharacterSoulSnapshot }> {
-  const existing = await input.tx.characterContentVersion.findUnique({
+  const existing = await input.tx.characterContentVersion.findFirst({
     where: {
-      characterId_contentHash: {
-        characterId: input.characterId,
-        contentHash: input.content.contentHash,
-      },
+      characterId: input.characterId,
+      contentHash: input.content.contentHash,
     },
+    orderBy: { version: "asc" },
   });
   if (existing) {
     return {

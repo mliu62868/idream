@@ -6,9 +6,9 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-export const DSH_VERSION = "0.1.7-rc.2";
+export const DSH_VERSION = "0.2.0-rc.2";
 export const IGREP_PLUGIN_VERSION = "0.1.0";
-// INTENT: igrep 0.1.148 publishes this range for every DSH peer. The owned
+// INTENT: igrep 0.1.150 publishes this range for every DSH peer. The owned
 // profiles pin DSH_VERSION explicitly and live readiness proves compatibility.
 export const IGREP_PLUGIN_DSH_PEER_RANGE = ">=0.1.7-alpha.1 <0.2.0";
 export const PROFILE_NAMES = Object.freeze({
@@ -34,9 +34,11 @@ const PROFILE_CAPABILITIES = Object.freeze({
     search: false,
     webProvider: false,
     webTool: false,
+    sessionRecall: false,
     memory: true,
     ingest: false,
-    wake: true,
+    wake: false,
+    maintainIntervalMs: 0,
     memorySearchMode: "fast",
     timeoutMs: 10000,
   }),
@@ -44,9 +46,11 @@ const PROFILE_CAPABILITIES = Object.freeze({
     search: false,
     webProvider: false,
     webTool: false,
+    sessionRecall: false,
     memory: false,
     ingest: false,
     wake: false,
+    maintainIntervalMs: 0,
   }),
 });
 
@@ -757,6 +761,29 @@ function computeProfileInputDigest(discovery, validated, fs, dshHome) {
     discovery.pluginPath,
     sourceManifest.dsh.bundle.patch,
   );
+  // The igrep release changes this bundle while its npm version stays 0.1.0.
+  // Bind the installed client to the CLI's actual shipped code, not just its
+  // unchanged package identity and configuration patch.
+  const files = sourceManifest.files;
+  if (!Array.isArray(files) || !files.includes("index.mjs") || files.some(
+    (file) => typeof file !== "string" || path.isAbsolute(file) || file.split(/[\\/]/).includes(".."),
+  )) {
+    throw new BootstrapError("PLUGIN_MANIFEST_INVALID", "igrep plugin must declare workspace-local bundle files");
+  }
+  const moduleInputs = files.filter((file) => file.endsWith(".mjs")).flatMap((file) => {
+    const source = path.join(discovery.pluginPath, file);
+    const installed = path.join(validated.installedPluginPath, file);
+    if (!fs.existsSync(source) || !fs.existsSync(installed)) {
+      throw new BootstrapError("PROFILE_INPUT_MISSING", `igrep plugin module is missing: ${file}`);
+    }
+    if (String(fs.readFileSync(source)) !== String(fs.readFileSync(installed))) {
+      throw new BootstrapError("PLUGIN_CONTENT_MISMATCH", `installed igrep module differs from the CLI bundle: ${file}; rerun setup`);
+    }
+    return [
+      [`plugin-source-module:${file}`, source, true],
+      [`plugin-installed-module:${file}`, installed, true],
+    ];
+  });
   const inputs = [
     ["home-patch", path.join(dshHome, "cordis.patch.yml"), false],
     ["profile-manifest", path.join(validated.profileDir, "package.json"), true],
@@ -766,6 +793,7 @@ function computeProfileInputDigest(discovery, validated, fs, dshHome) {
     ["plugin-source-patch", sourcePatchPath, true],
     ["plugin-installed-manifest", path.join(validated.installedPluginPath, "package.json"), true],
     ["plugin-installed-patch", validated.installedPatchPath, true],
+    ...moduleInputs,
     ...validated.peerManifestPaths.map(([peerPackage, peerManifestPath]) => [
       `peer:${peerPackage}`,
       peerManifestPath,

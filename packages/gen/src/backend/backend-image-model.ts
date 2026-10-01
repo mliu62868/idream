@@ -161,20 +161,24 @@ export class BackendImageModel implements ImageModel {
     const count = Math.max(1, Math.min(input.count, 4));
     const stepsOverride = numericControl(input.controls, "steps");
     const workflowControlSlots = resolveWorkflowControlSlots(descriptor, input.controls);
+    let prompt = input.prompt;
+    if (descriptor.workflowKey === "qwen-image-edit-multi-reference") {
+      // The scene is encoded first, independently of the caller's reference order.
+      prompt = `Edit <image1>, the source image. Replace the person's face and hair in <image1> with <image2>'s exact identity, facial features, hair and skin details. Preserve <image1>'s framing, pose, clothes, background and lighting except for the requested changes. <image2> is an identity reference only; do not copy its scene, pose or clothes.\n\n${prompt}`;
+    } else if (descriptor.workflowKey === "qwen-image-edit-multi-identity") {
+      const lookReference = input.referenceImages?.some((reference) => reference.role === "look_reference");
+      prompt = `The person in <image1> is the subject: preserve their face, facial features, hair and skin details. ${lookReference ? "<image2> is a look reference for the requested clothing and styling; preserve the identity from <image1>." : "<image2> is a supporting reference of the same person, not a second subject."} The references do not define the new scene, pose or background.\n\n${prompt}`;
+    } else if (
+      (descriptor.workflowKey === "redqw21" || descriptor.workflowKey === "qwen-image-edit-img2img") &&
+      (input.referenceImages?.length ?? 0) > 0
+    ) {
+      prompt = input.referenceImages?.[0]?.role === "source_image"
+        ? `Edit <image1>, the source image. Preserve its subject's identity, framing, pose, clothes, background and lighting except for the requested changes.\n\n${prompt}`
+        : `The person in <image1> is the subject: keep the exact face, facial features, hair and skin details of the person from <image1>. <image1> is an identity reference only; do not copy its framing, pose, clothing or background. Replace the entire background with the scene described below; nothing from <image1>'s setting remains.\n\n${prompt}`;
+    }
     const promptSlots = workflowPromptSlots({
       mode: descriptor.negativePromptMode,
-      // Qwen's first reference is the scene being edited. Put the source first
-      // in the graph, then identify the secondary portrait explicitly. A real
-      // edit followed the identity scene when it occupied image1, even when
-      // the prompt asked for image2. Use the encoder's own "Picture N" labels.
-      prompt: descriptor.workflowKey === "qwen-image-edit-multi-reference"
-        ? `Edit Picture 1, the source image. Preserve Picture 1's framing, pose, clothes, background and lighting except for the requested changes. Picture 2 is an identity reference only; do not copy its scene, pose or clothes.\n\n${input.prompt}`
-        // Qwen-Image-2.1 addresses references as <image1>. Without an explicit
-        // new-scene instruction the reference's background and clothes bleed
-        // into the result (measured 2026-09-25 on REDQW21).
-        : descriptor.workflowKey === "redqw21" && (input.referenceImages?.length ?? 0) > 0
-          ? `The person in <image1> is the subject: keep the exact face, facial features, hair and skin details of the person from <image1>. <image1> is an identity reference only; do not copy its framing, pose, clothing or background. Replace the entire background with the scene described below; nothing from <image1>'s setting remains.\n\n${input.prompt}`
-          : input.prompt,
+      prompt,
       negativePrompt: input.negativePrompt,
     });
 

@@ -8,7 +8,7 @@ import {
 describe("backend smoke workflow pin", () => {
   const descriptors = [
     {
-      modelId: "qwen-image-edit",
+      modelId: "redqw21-image-edit",
       workflowKey: "qwen-image-edit-img2img",
       version: 1,
     },
@@ -16,9 +16,9 @@ describe("backend smoke workflow pin", () => {
 
   it("pins the exact descriptor selected by model id", () => {
     expect(
-      resolveSmokeWorkflowPin(descriptors, "qwen-image-edit"),
+      resolveSmokeWorkflowPin(descriptors, "redqw21-image-edit"),
     ).toEqual({
-      modelId: "qwen-image-edit",
+      modelId: "redqw21-image-edit",
       workflowKey: "qwen-image-edit-img2img",
       workflowVersion: 1,
     });

@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, copyFile, cp, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Context } from "@deepseek-ai/cordis";
@@ -41,11 +41,16 @@ export const NORMAL_IGREP_CONFIG = Object.freeze({
   search: false,
   webProvider: false,
   webTool: false,
+  // Agent execution history is disposable; Main supplies the selected Turns.
+  sessionRecall: false,
   memory: true,
   // Main projects only committed Turns into canonical memory. Attempt-local
   // ingest would maintain a disposable copy after commit and then delete it.
   ingest: false,
-  wake: true,
+  // Chat awaits and observes wake itself before agent creation. Running the
+  // plugin hook as well would duplicate that read and its first-token latency.
+  wake: false,
+  maintainIntervalMs: 0,
   memorySearchMode: "fast",
   timeoutMs: 10_000,
 });
@@ -54,9 +59,11 @@ export const PRIVATE_IGREP_CONFIG = Object.freeze({
   search: false,
   webProvider: false,
   webTool: false,
+  sessionRecall: false,
   memory: false,
   ingest: false,
   wake: false,
+  maintainIntervalMs: 0,
 });
 
 export interface IgrepPluginModule {
@@ -135,6 +142,14 @@ export interface IgrepWake {
   resultCount: 0 | 1;
   /** Resident profile markdown for this turn's prompt; never placed on the wire. */
   profile: string;
+}
+
+/** Refresh copied source witnesses through the official zero-model writer. */
+export async function reprojectIgrepMemory(command: string, workspace: string, signal?: AbortSignal, run: RunJsonCommand = runJsonCommand): Promise<void> {
+  const result = objectRecord(await run({ command, args: ["mem", "reproject", "--workspace", workspace], timeoutMs: 30_000, signal }));
+  if (result?.provider !== "igrep" || result.action !== "reproject" || typeof result.migrated !== "boolean" || result.error || result.failed === true) {
+    throw new Error("igrep memory snapshot reproject returned unverifiable evidence");
+  }
 }
 
 /**
@@ -223,7 +238,8 @@ export async function recallIgrepMemory(
     timeoutMs: RECALL_TIMEOUT_MS,
     signal: options.signal,
   }));
-  if (!payload || payload.failed === true || payload.error || !Array.isArray(payload.results)) {
+  if (!payload || payload.failed === true || payload.error || !Array.isArray(payload.results)
+    || (Array.isArray(payload.warnings) && payload.warnings.length > 0)) {
     throw new Error("igrep memory-search returned unverifiable evidence");
   }
   const results = payload.results.map((hit): IgrepRecallHit => {
@@ -374,10 +390,13 @@ export class IgrepMemoryBuilder {
         );
       }
       const dialoguePath = resolve(workspace, record.dialoguePath);
-      if (dirname(dialoguePath) !== resolve(workspace, ".igrep/mem/memory/dialogues")) {
+      const sessionPath = typeof record.sessionPath === "string" ? resolve(workspace, record.sessionPath) : "";
+      if (dirname(dialoguePath) !== resolve(workspace, ".igrep/mem/memory/dialogues")
+        || dirname(sessionPath) !== resolve(workspace, ".igrep/mem/memory/sessions")
+        || basename(dialoguePath) !== basename(sessionPath)) {
         throw new Error("igrep ingest returned a dialogue outside its source corpus");
       }
-      return dialoguePath;
+      return { dialoguePath, sessionPath };
     };
     // Main sends the relationship's whole history in both modes, so a project
     // that the canonical seed refuses can become a rebuild of this candidate.
@@ -385,9 +404,9 @@ export class IgrepMemoryBuilder {
     const ingestSource = async (session: Parameters<typeof ingest>[0]) => {
       const expected = await memorySourceFingerprint(session.transcriptPath, "transcript", session.sessionId, signal);
       if (expected.rows !== session.messageCount) throw new Error("Main memory transcript row count changed");
-      let dialoguePath: string;
+      let paths: { dialoguePath: string; sessionPath: string };
       try {
-        dialoguePath = await ingest(session);
+        paths = await ingest(session);
       } catch (error) {
         // INTENT: the seed refuses a session registered to another transcript
         // path (every candidate before stable transcript roots) or whose
@@ -400,10 +419,10 @@ export class IgrepMemoryBuilder {
         logger.warn({ event: "companion_memory_project_fell_back_to_rebuild" }, "canonical seed refused an ingest; rebuilding the candidate from Main history");
         await rm(join(workspace, ".igrep"), { recursive: true, force: true });
         await mkdir(join(workspace, ".igrep"), { recursive: true, mode: 0o700 });
-        for (const earlier of sessions) earlier.dialoguePath = await ingest(earlier);
-        dialoguePath = await ingest(session);
+        for (const earlier of sessions) Object.assign(earlier, await ingest(earlier));
+        paths = await ingest(session);
       }
-      sessions.push({ ...session, dialoguePath, expectedDigest: expected.digest });
+      sessions.push({ ...session, ...paths, expectedDigest: expected.digest, expectedDialogueDigest: expected.dialogueDigest });
     };
     if ("kind" in source) {
       for await (const session of rebuildSpoolSessions(source)) {
@@ -487,7 +506,7 @@ export class IgrepMemoryBuilder {
         if (current.digest !== session.expectedDigest || current.rows !== session.messageCount) {
           throw new Error("Main memory transcript changed before source-only recovery");
         }
-        session.dialoguePath = await ingest(session);
+        Object.assign(session, await ingest(session));
       }
       await verifyMemorySourceCorpus(workspace, sessions, signal);
     }
@@ -553,92 +572,117 @@ interface IngestedMemorySource {
   messageCount: number;
   estimatedBytes: number;
   dialoguePath: string;
+  sessionPath: string;
   expectedDigest: string;
+  expectedDialogueDigest: string;
 }
 
-function dialogueSourceContent(row: Record<string, unknown>): string {
-  const content = row.content as string;
-  if (row.source_content === undefined && row.temporal_annotations === undefined) return content;
-  if (typeof row.source_content !== "string" || !Array.isArray(row.temporal_annotations)) {
-    throw new MemorySourceIntegrityError("dialogue_format_invalid");
+// igrep's v3 transport doubles literal U+2400..241F/U+2421 and represents
+// C0 controls as a control picture followed by U+2421. Decode strictly rather
+// than treating a newline's searchable representation as rewritten Main text.
+function decodeDialogueContent(content: string): string {
+  const decoded: string[] = [];
+  for (let index = 0; index < content.length; index += 1) {
+    const character = content[index]!;
+    const code = character.charCodeAt(0);
+    if (code >= 0x2400 && code < 0x2420) {
+      const next = content[++index];
+      if (next === character) decoded.push(character);
+      else if (next === "␡") decoded.push(String.fromCharCode(code - 0x2400));
+      else throw new MemorySourceIntegrityError("dialogue_format_invalid");
+    } else if (character === "␡") {
+      if (content[++index] !== character) throw new MemorySourceIntegrityError("dialogue_format_invalid");
+      decoded.push(character);
+    } else decoded.push(character);
   }
-  // Official dialogue/1 is a searchable view: relative-time annotations are
-  // insertions into source_content. Check that exact representation before
-  // comparing the original text with Main; source_content alone cannot excuse
-  // arbitrary rewrites. Python's spans count Unicode code points, not UTF-16.
-  const source = Array.from(row.source_content);
-  const view: string[] = [];
-  let cursor = 0;
-  for (const value of row.temporal_annotations) {
-    const annotation = objectRecord(value);
-    const span = objectRecord(annotation?.span);
-    const start = span?.start;
-    const end = span?.end;
-    const absolute = annotation?.absolute_text;
-    if (typeof start !== "number" || !Number.isSafeInteger(start)
-      || typeof end !== "number" || !Number.isSafeInteger(end)
-      || start < cursor || end <= start || end > source.length
-      || typeof annotation?.surface !== "string"
-      || source.slice(start, end).join("") !== annotation.surface
-      || typeof absolute !== "string"
-      || !/^\d{4}(?:-\d{2}(?:-\d{2}(?:T\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2}))?)?)?$/u.test(absolute)
-      || annotation.anchor_ref !== "message.source_at" || annotation.method !== "rule"
-      || annotation.authority !== (row.role === "user" ? "user_assertion" : "context")) {
-      throw new MemorySourceIntegrityError("dialogue_format_invalid");
+  return decoded.join("");
+}
+
+function dialoguePreservesSource(view: string, source: string): boolean {
+  let original = 0;
+  for (let index = 0; index < view.length;) {
+    // The official rule-based view may insert absolute dates. Every original
+    // character must remain in order, including dates authored by the user.
+    // This validates insertion shape, not the annotator's date interpretation.
+    const annotation = view[index] === "（"
+      ? /^（\d{4}(?:-\d{2}(?:-\d{2}(?:T\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2}))?)?)?）/u.exec(view.slice(index))?.[0]
+      : undefined;
+    if (annotation && !source.startsWith(annotation, original)) {
+      index += annotation.length;
+      continue;
     }
-    view.push(source.slice(cursor, end).join(""), `（${absolute}）`);
-    cursor = end;
+    if (view[index] !== source[original]) return false;
+    index += 1;
+    original += 1;
   }
-  view.push(source.slice(cursor).join(""));
-  if (view.join("") !== content) throw new MemorySourceIntegrityError("dialogue_source_mismatch");
-  return row.source_content;
+  return original === source.length;
 }
 
-async function memorySourceFingerprint(path: string, kind: "transcript" | "dialogue", sessionId: string, signal?: AbortSignal) {
+async function memorySourceFingerprint(path: string, kind: "transcript" | "session" | "dialogue", sessionId: string, signal?: AbortSignal, sessionPath?: string) {
   throwIfAborted(signal);
   const digest = createHash("sha256");
+  const dialogueDigest = createHash("sha256");
   const bytes = createHash("sha256");
   const stream = createReadStream(path, { signal });
   stream.on("data", (chunk) => { bytes.update(chunk); });
   const lines = createInterface({ input: stream, crlfDelay: Infinity });
+  const sourceStream = sessionPath ? createReadStream(sessionPath, { signal }) : undefined;
+  const sourceLines = sourceStream ? createInterface({ input: sourceStream, crlfDelay: Infinity }) : undefined;
+  const sourceIterator = sourceLines?.[Symbol.asyncIterator]();
   let rows = 0;
   try {
     for await (const line of lines) {
       throwIfAborted(signal);
-      let row: Record<string, unknown> | null;
-      try { row = objectRecord(JSON.parse(line)); } catch { row = null; }
-      const sourceAt = kind === "dialogue" ? objectRecord(row?.source_at)?.instant_utc : row?.source_at;
-      if (!row || !["user", "assistant"].includes(String(row.role)) || typeof row.content !== "string"
-        || typeof sourceAt !== "string" || !Number.isFinite(Date.parse(sourceAt))
-        || (kind === "dialogue" && (row.schema !== "igrep.mem.dialogue/1" || row.session_id !== sessionId || row.turn_index !== rows + 1))) {
+      let parsed: unknown;
+      try { parsed = JSON.parse(line); } catch { parsed = null; }
+      const row = objectRecord(parsed);
+      const tuple = kind === "dialogue" && Array.isArray(parsed) && parsed.length === 2 ? parsed : null;
+      const sourceAt = kind === "dialogue" ? tuple?.[0]
+        : kind === "session" ? objectRecord(row?.source_at)?.instant_utc : row?.source_at;
+      let content = kind === "dialogue" ? tuple?.[1] : row?.content;
+      if (typeof content !== "string" || typeof sourceAt !== "string" || !Number.isFinite(Date.parse(sourceAt))
+        || (kind !== "dialogue" && (!row || !["user", "assistant"].includes(String(row.role))))
+        || (kind === "session" && (row?.schema !== "igrep.mem.session/1" || row.agent !== "deepseek-harness"
+          || row.session_id !== sessionId || row.turn_index !== rows + 1))) {
         throw new MemorySourceIntegrityError("dialogue_format_invalid");
+      }
+      if (kind === "dialogue") {
+        const original = await sourceIterator?.next();
+        let canonical: Record<string, unknown> | null = null;
+        try { canonical = original && !original.done ? objectRecord(JSON.parse(original.value)) : null; } catch { /* rejected below */ }
+        if (typeof canonical?.content !== "string" || !dialoguePreservesSource(decodeDialogueContent(content), canonical.content)) {
+          throw new MemorySourceIntegrityError("dialogue_source_mismatch");
+        }
+        content = canonical.content;
       }
       // Main sends UTC timestamps. Preserve sub-millisecond precision if an
       // already validated source contains it, while normalizing UTC notation.
       const fraction = /\.(\d+)/u.exec(sourceAt)?.[1] ?? "";
       const extraPrecision = fraction.slice(3).replace(/0+$/u, "");
       const instant = new Date(sourceAt).toISOString().replace(/Z$/u, `${extraPrecision}Z`);
-      const sourceContent = kind === "dialogue" ? dialogueSourceContent(row) : row.content;
-      digest.update(JSON.stringify([row.role, sourceContent, instant])).update("\n");
+      digest.update(JSON.stringify([row?.role, content, instant])).update("\n");
+      dialogueDigest.update(JSON.stringify([content, instant])).update("\n");
       rows += 1;
     }
+    if (sourceIterator && !(await sourceIterator.next()).done) throw new MemorySourceIntegrityError("dialogue_source_mismatch");
   } finally {
     lines.close();
     stream.destroy();
+    sourceLines?.close();
+    sourceStream?.destroy();
   }
-  return { rows, digest: digest.digest("hex"), bytes: bytes.digest("hex") };
+  return { rows, digest: digest.digest("hex"), dialogueDigest: dialogueDigest.digest("hex"), bytes: bytes.digest("hex") };
 }
 
 /**
- * Versioned private-file admission check for the installed igrep dialogue/1
- * format. It verifies Main's source and the shape of its annotated view, and
- * rejects derived retractions. It does not validate the meaning of relative
- * dates or Dream's profile semantics, or grant natural-language deletion.
+ * igrep 0.1.150 stores searchable [timestamp, content] tuples and role-bearing
+ * session/1 sources separately. Canonical sources must match Main exactly;
+ * searchable views may only encode controls and insert structured dates.
+ * Profiles cannot authorize a rewrite or natural-language deletion.
  */
 async function verifyMemorySourceCorpus(workspace: string, sessions: readonly IngestedMemorySource[], signal?: AbortSignal) {
   throwIfAborted(signal);
   const memoryRoot = await memorySourceRoot(workspace);
-  const directory = join(workspace, ".igrep/mem/memory/dialogues");
   const regularFile = async (path: string) => {
     const metadata = await lstat(path);
     const within = relative(memoryRoot, await realpath(path));
@@ -646,31 +690,39 @@ async function verifyMemorySourceCorpus(workspace: string, sessions: readonly In
       throw new MemorySourceIntegrityError("dialogue_format_invalid");
     }
   };
-  let entries: string[];
-  try {
-    const metadata = await lstat(directory);
-    if (!metadata.isDirectory() || metadata.isSymbolicLink()
-      || await realpath(directory) !== join(memoryRoot, "mem/memory/dialogues")) {
-      throw new MemorySourceIntegrityError("dialogue_format_invalid");
+  for (const kind of ["dialogue", "session"] as const) {
+    const directory = join(memoryRoot, "mem/memory", `${kind}s`);
+    let entries: string[];
+    try {
+      const metadata = await lstat(directory);
+      if (!metadata.isDirectory() || metadata.isSymbolicLink() || await realpath(directory) !== directory) {
+        throw new MemorySourceIntegrityError("dialogue_format_invalid");
+      }
+      entries = await readdir(directory);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      entries = [];
     }
-    entries = await readdir(directory);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    entries = [];
-  }
-  const expected = sessions.map((session) => relative(directory, session.dialoguePath)).sort();
-  if (JSON.stringify([...entries].sort()) !== JSON.stringify(expected)) {
-    throw new MemorySourceIntegrityError("dialogue_inventory_mismatch");
+    const expected = sessions.map((session) => relative(
+      join(workspace, ".igrep/mem/memory", `${kind}s`),
+      kind === "dialogue" ? session.dialoguePath : session.sessionPath,
+    )).sort();
+    if (JSON.stringify([...entries].sort()) !== JSON.stringify(expected)) {
+      throw new MemorySourceIntegrityError("dialogue_inventory_mismatch");
+    }
   }
   const fingerprints: string[] = [];
   for (const session of sessions) {
     throwIfAborted(signal);
+    await regularFile(session.sessionPath);
+    const source = await memorySourceFingerprint(session.sessionPath, "session", session.sessionId, signal);
     await regularFile(session.dialoguePath);
-    const actual = await memorySourceFingerprint(session.dialoguePath, "dialogue", session.sessionId, signal);
-    if (actual.rows !== session.messageCount || actual.digest !== session.expectedDigest) {
+    const actual = await memorySourceFingerprint(session.dialoguePath, "dialogue", session.sessionId, signal, session.sessionPath);
+    if (actual.rows !== session.messageCount || actual.dialogueDigest !== session.expectedDialogueDigest
+      || source.rows !== session.messageCount || source.digest !== session.expectedDigest) {
       throw new MemorySourceIntegrityError("dialogue_source_mismatch");
     }
-    fingerprints.push(actual.bytes);
+    fingerprints.push(actual.bytes, source.bytes);
   }
   const retractions = join(workspace, ".igrep/mem/.state/retractions.jsonl");
   try {
@@ -694,7 +746,7 @@ async function memorySourceRoot(workspace: string): Promise<string> {
   }
   // Check the known source/annotation paths before the CLI can write through
   // a copied seed. Missing directories are created by official ingest.
-  for (const directory of ["mem", "mem/memory", "mem/memory/dialogues", "mem/.state"]) {
+  for (const directory of ["mem", "mem/memory", "mem/memory/dialogues", "mem/memory/sessions", "mem/.state"]) {
     const expected = join(root, directory);
     try {
       const child = await lstat(expected);
@@ -816,10 +868,21 @@ export async function probeIgrepLifecycle(
       }
     }
 
+    // A byte copy changes canonical file witnesses. Certify the same official
+    // zero-model rebind that normal attempts perform before wake and recall.
+    const snapshots = workspaces.map((workspace) => `${workspace}-snapshot`);
+    for (const [index, workspace] of workspaces.entries()) {
+      await cp(join(workspace, ".igrep"), join(snapshots[index]!, ".igrep"), { recursive: true });
+      await reprojectIgrepMemory(command, snapshots[index]!, undefined, run);
+      const recalled = await recallIgrepMemory(command, snapshots[index]!, sentinels[index]!, {}, run);
+      if (!recalled.results.some((hit) => hit.sourceClass === "dialogue" && hit.snippet.includes(sentinels[index]!))) {
+        throw new Error("igrep copied memory snapshot could not recall its source evidence");
+      }
+    }
     let leakedResults = 0;
     for (const [workspace, foreignSentinel] of [
-      [workspaces[0], sentinels[1]],
-      [workspaces[1], sentinels[0]],
+      [snapshots[0]!, sentinels[1]],
+      [snapshots[1]!, sentinels[0]],
     ] as const) {
       const recalled = objectRecord(await run({
         command,

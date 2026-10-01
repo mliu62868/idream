@@ -48,6 +48,71 @@ async function drain(adapter: OpenAiCompatibleAdapter): Promise<void> {
 }
 
 describe("OpenAI-compatible DSH adapter", () => {
+  it.each([false, true])("assembles fragmented tool names before dispatch (required=%s)", async (required) => {
+    let requests = 0;
+    const adapter = adapterFor("https://provider.example/v1", async () => {
+      requests += 1;
+      return new Response([
+        `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{
+          index: 0, id: "fragmented-call", function: { name: "generate_image_", arguments: '{"prompt":"A rainy ' },
+        }] } }] })}\n\n`,
+        `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{
+          index: 0, function: { name: "async", arguments: 'window portrait"}' },
+        }] }, finish_reason: "tool_calls" }] })}\n\n`,
+        "data: [DONE]\n\n",
+      ].join(""));
+    }, required ? { requiredToolName: "generate_image_async" } : {});
+    const chunks: StreamChunk[] = [];
+    for await (const chunk of adapter.stream({
+      provider: "openrouter", model: "deepseek/test", messages: [],
+      tools: [{ name: "generate_image_async", description: "Generate", parameters: { type: "object" } }],
+    })) chunks.push(chunk);
+
+    expect(requests).toBe(1);
+    expect(chunks).toContainEqual(expect.objectContaining({
+      type: "tool-call-delta", name: "generate_image_async", argumentsDelta: 'window portrait"}',
+    }));
+    expect(chunks).toContainEqual({ type: "block-end", index: 0, block: {
+      type: "tool-call", id: "fragmented-call", name: "generate_image_async", arguments: '{"prompt":"A rainy window portrait"}',
+    } });
+  });
+
+  it("completes on DONE without waiting for HTTP EOF and retains the usage trailer", async () => {
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode([
+          'data: {"choices":[{"delta":{"content":"Complete answer."},"finish_reason":"stop"}]}\n\n',
+          'data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2}}\n\n',
+          "data: [DONE]\n\n",
+        ].join("")));
+        // The provider's message terminator is authoritative even when its
+        // transport stays open; only an abort or cancellation closes this body.
+      },
+      cancel,
+    });
+    const adapter = adapterFor("https://provider.example/v1", async () => new Response(body), {
+      profile: {
+        tier: "test", adapter: "openai-compatible-v1", provider: "openrouter",
+        baseUrl: "https://provider.example/v1", model: "deepseek/test", supportsTools: true,
+        maxOutputTokens: 16, timeout: { firstTokenMs: 1_000, idleMs: 30 },
+        sampling: { temperature: 0.9, topP: 0.95, repetitionPenalty: 1.05 },
+      },
+    });
+    const chunks: StreamChunk[] = [];
+    for await (const chunk of adapter.stream({ provider: "openrouter", model: "deepseek/test", messages: [] })) chunks.push(chunk);
+    expect(chunks).toContainEqual({ type: "usage", usage: { inputTokens: 3, outputTokens: 2, reasoningTokens: 0 } });
+    expect(chunks.at(-1)).toMatchObject({ type: "finish", reason: { kind: "stop" } });
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
+  });
+
+  it("does not accept DONE as a substitute for a provider finish reason", async () => {
+    const adapter = adapterFor("https://provider.example/v1", async () => new Response(
+      'data: {"choices":[{"delta":{"content":"Unfinished answer"}}]}\n\ndata: [DONE]\n\n',
+    ));
+    await expect(drain(adapter)).rejects.toThrow("without a finish reason");
+  });
+
   it("rejects dynamic DSH context exceeding the prepared budget before contacting a provider", async () => {
     let requests = 0;
     const adapter = adapterFor("https://provider.example/v1", async () => {
@@ -525,6 +590,10 @@ describe("OpenAI-compatible DSH adapter", () => {
 
   it.each([
     { label: "commentary around JSON", content: 'Here is the edit: {"instruction":"Move the notebook right of the cup"} Done.' },
+    { label: "commentary before JSON", content: 'I cannot do that. {"instruction":"Move the notebook right of the cup"}' },
+    { label: "fenced JSON", content: '```json\n{"instruction":"Move the notebook right of the cup"}\n```' },
+    { label: "matching tool wrapper", content: '{"name":"edit_last_image","arguments":{"instruction":"Move the notebook right of the cup"}}' },
+    { label: "extra wrapper field", content: '{"name":"edit_last_image","arguments":{"instruction":"Move the notebook right of the cup"},"doNotRun":true}' },
     { label: "wrong tool wrapper", content: '{"name":"generate_image_async","arguments":{"instruction":"Move the notebook right of the cup"}}' },
     { label: "unexpected parameter", content: '{"instruction":"Move the notebook right of the cup","unapprovedEffect":"erase history"}' },
     { label: "missing required parameter", content: '{"caption":"The notebook goes on the right"}' },
@@ -638,8 +707,7 @@ describe("OpenAI-compatible DSH adapter", () => {
     });
   });
 
-  it("accepts a compatibility payload that follows one in-character line", async () => {
-    // Observed from the local 35B model: a spoken line, then {name, args}.
+  it("keeps the first forced attempt's line beside pure-argument compatibility JSON", async () => {
     let requests = 0;
     const adapter = new OpenAiCompatibleAdapter({
       profile: {
@@ -659,10 +727,7 @@ describe("OpenAI-compatible DSH adapter", () => {
         requests += 1;
         const content = requests === 1
           ? "One cozy cafe, give me a second."
-          : `Okay, one cozy cafe, me lost in a book.\n\n${JSON.stringify({
-              name: "generate_image_async",
-              args: { prompt: "Woman reading in a warm cozy cafe", orientation: "4:5" },
-            })}`;
+          : JSON.stringify({ prompt: "Woman reading in a warm cozy cafe", orientation: "4:5" });
         return new Response([
           `data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: null }] })}\n\n`,
           `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`,
@@ -1056,6 +1121,32 @@ describe("OpenAI-compatible DSH adapter", () => {
     expect(bodyCancelled).toBe(true);
     expect(JSON.stringify(thrown)).not.toContain(sentinel);
     expect((thrown as Error).message).not.toContain(sentinel);
+  });
+
+  it("reports HTTP failures without waiting for a stalled error body cancellation", async () => {
+    vi.useFakeTimers();
+    const cancellation = Promise.withResolvers<void>();
+    const cancel = vi.fn(() => cancellation.promise);
+    const adapter = adapterFor("https://provider.example/v1", async () => new Response(
+      new ReadableStream<Uint8Array>({ cancel }),
+      { status: 503 },
+    ));
+    let outcome: unknown = "pending";
+    const finished = drain(adapter).then(
+      () => { outcome = "resolved"; },
+      (error: unknown) => { outcome = error; },
+    );
+    try {
+      // Even the request's first-token deadline cannot settle a transport's
+      // cleanup promise. The HTTP status must already have reached the caller.
+      await vi.advanceTimersByTimeAsync(1_100);
+      expect(outcome).toMatchObject({ code: "PROVIDER_HTTP_ERROR", failure: { status: 503 } });
+      expect(cancel).toHaveBeenCalledOnce();
+    } finally {
+      cancellation.resolve();
+      await finished;
+      vi.useRealTimers();
+    }
   });
 
   it("cancels a stalled provider body when the first-token timeout fires", async () => {

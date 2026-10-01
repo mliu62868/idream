@@ -122,7 +122,7 @@ function modeLabel(mode: ExperimentMode) {
 
 function generationModelLabel(modelId: string) {
   if (modelId === "redcraft-krea2-redmix3-fp8") return "RedCraft Krea2";
-  if (modelId === "qwen-image-edit") return "Qwen Image Edit";
+  if (modelId.startsWith("redqw21")) return "REDQW21";
   return modelId;
 }
 

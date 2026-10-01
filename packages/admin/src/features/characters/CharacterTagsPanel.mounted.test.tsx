@@ -49,6 +49,24 @@ describe("Character overview settings writes", () => {
     );
   });
 
+  it("locks tag edits until the saved selection has been read back", async () => {
+    let finishSave!: () => void;
+    api.apiGet.mockImplementation(async (path: string) => path.startsWith("/api/v2/admin/content/tags")
+      ? { items: [{ id: "tag-1", label: "Slow Burn", category: null, isSensitive: false }] }
+      : { character: { tags: [] } });
+    api.apiWrite.mockReturnValue(new Promise<void>((resolve) => { finishSave = resolve; }));
+    await act(async () => root.render(<CharacterTagsPanel canWrite characterId="character-1" />));
+    await settle();
+    await act(async () => button("Slow Burn").click());
+    await act(async () => button("Save tags").click());
+    try {
+      expect(button("Slow Burn").disabled).toBe(true);
+      expect(button("Slow Burn").getAttribute("aria-pressed")).toBe("true");
+    } finally {
+      await act(async () => finishSave());
+    }
+  });
+
   // SPEC: 服务端 tagIds.max(24)；到上限后未选的标签不可点，并说明原因，而不是保存时吃 400。
   it("caps the selection at 24 tags with a visible hint", async () => {
     const items = Array.from({ length: 26 }, (_, index) => ({ id: `tag-${index}`, label: `Tag ${index}`, category: null, isSensitive: false }));

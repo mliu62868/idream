@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Prisma } from "@prisma/client";
 import {
@@ -38,6 +39,8 @@ import {
 } from "@/server/test/helpers";
 
 const P = "zt-imgsvc-";
+const currentImageEdit = JSON.parse(readFileSync(new URL("../../../../../gen/workflows/qwen-image-edit-img2img.json", import.meta.url), "utf8"));
+const currentMultiIdentity = JSON.parse(readFileSync(new URL("../../../../../gen/workflows/qwen-image-edit-multi-identity.json", import.meta.url), "utf8"));
 const SYS = `${P}sys`;
 const CHAR = `${P}char`;
 const COMPLETE_PERSONA_DETAILS = {
@@ -324,10 +327,10 @@ beforeAll(async () => {
       label: "Compatible Character reference test route",
       mode: "image",
       runner: "comfyui",
-      pipelineModel: "qwen-image-edit",
+      pipelineModel: currentImageEdit.modelId,
       workflowKey: "qwen-image-edit-img2img",
       runnerConfig: {
-        workflowVersion: 2,
+        workflowVersion: currentImageEdit.version,
         capabilities: {
           textToImage: true,
           stableSeed: true,
@@ -339,7 +342,7 @@ beforeAll(async () => {
       allowedOrientations: ["4:5", "16:9"],
       costMultiplier: 1,
       maxCount: 4,
-      version: 3,
+      version: 10001,
       status: "active",
     },
   });
@@ -4726,7 +4729,7 @@ describe("image generation service contract", () => {
         generationProfileKey: profileKey,
         generationProfileVersion: 1,
         workflowKey: "qwen-image-edit-img2img",
-        workflowVersion: 2,
+        workflowVersion: currentImageEdit.version,
         style: "realistic",
         matrixKey: `${P}source-runtime-matrix`,
         sampleCount: 40,
@@ -4828,7 +4831,7 @@ describe("image generation service contract", () => {
       details: {
         generationJobId: jobId,
         workflowKey: "qwen-image-edit-img2img",
-        workflowVersion: 2,
+        workflowVersion: currentImageEdit.version,
       },
     });
     await expect(
@@ -5315,7 +5318,7 @@ describe("image generation service contract", () => {
         generationProfileKey: routedProfileId,
         generationProfileVersion: routedProfileVersion,
         workflowKey: "qwen-image-edit-multi-identity",
-        workflowVersion: 2,
+        workflowVersion: currentMultiIdentity.version,
       },
     });
     expect(generated.data.job.prompt).toContain("midnight blue evening dress");
@@ -5382,7 +5385,7 @@ describe("image generation service contract", () => {
         generationProfileKey: routedProfileId,
         generationProfileVersion: routedProfileVersion,
         workflowKey: "qwen-image-edit-multi-identity",
-        workflowVersion: 2,
+        workflowVersion: currentMultiIdentity.version,
       },
     });
     const retriedJobId = retriedLookGeneration.data.job.id as string;

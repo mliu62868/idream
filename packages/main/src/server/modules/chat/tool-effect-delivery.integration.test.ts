@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { compileCharacterSoul } from "@idream/shared";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/server/lib/db";
@@ -9,7 +9,7 @@ import * as generation from "../ourdream/service";
 import { createReferenceSetRevision } from "../ourdream/generation-reference-set";
 import { quoteAuthorityFor } from "../ourdream/generation-quote";
 import { applyChatToolEffect } from "./tool-effect";
-import { beginChatTurn, commitChatTerminal, createChatSession, getChatSession } from "./turn-ledger";
+import { beginChatTurn, commitChatTerminal, createChatSession, getChatSession, regenerateChatTurn } from "./turn-ledger";
 
 const prefix = `zt-chat-effect-delivery-${randomUUID()}-`;
 const sourceKeys: string[] = [];
@@ -36,7 +36,8 @@ afterAll(async () => {
 });
 
 describe("initial Chat image delivery", () => {
-  it.each(["failed", "completed", "retry-completed"] as const)("keeps %s delivery visible when Gen finishes before the first ToolEffect ACK", async outcome => {
+  it.each(["failed", "completed", "retry-completed", "requesting-recovery"] as const)("preserves %s image delivery and reservation identity", async scenario => {
+    const outcome = scenario === "requesting-recovery" ? "completed" : scenario;
     const userId = `${prefix}${randomUUID()}`;
     await createUser({ id: userId });
     await grantCoins(userId, 40);
@@ -53,8 +54,25 @@ describe("initial Chat image delivery", () => {
     await prisma.$transaction(tx => createReferenceSetRevision(tx, visual, "test", [{ mediaAssetId: source.id, position: 0, role: "primary_face", weight: 1, selectionReason: "primary_identity_anchor" }]));
     const session = await createChatSession(userId, { characterId: character.id });
     await prisma.recentChat.update({ where: { sessionId: session.id }, data: { memoryEnabled: false } });
-    const { snapshot } = await beginChatTurn({ userId, sessionId: session.id, content: "Send me a portrait beside the rainy window.", idempotencyKey: randomUUID() });
+    let { snapshot } = await beginChatTurn({ userId, sessionId: session.id, content: "Send me a portrait beside the rainy window.", idempotencyKey: randomUUID() });
     if (!snapshot) throw new Error("Missing accepted Turn");
+    if (scenario === "requesting-recovery") {
+      // Reproduce Main exiting after the action identity was saved but before
+      // Generation's atomic reservation. No Job or debit exists to replay.
+      const contentDigest = createHash("sha256").update(snapshot.userContent).digest("hex");
+      const attachmentId = `chatfx_${createHash("sha256").update(`${snapshot.turnId}:generate_image_async:${contentDigest}`).digest("hex").slice(0, 48)}`;
+      await prisma.chatTurnAttachment.create({ data: {
+        id: attachmentId, turnId: snapshot.turnId, kind: "generated_image", status: "requesting",
+        promptHint: "Avery beside the rainy window.",
+        metadata: { attempt: 1, effect: { attempt: 1, effectScope: "turn_action", intent: { requestedNudity: "unspecified" } }, request: { name: "generate_image_async", orientation: "4:5", outputCount: 1 } },
+      } });
+      await commitChatTerminal({ version: 1, turnId: snapshot.turnId, sessionId: snapshot.sessionId,
+        assistantMessageId: snapshot.assistantMessageId, attempt: 1, status: "failed", content: "", model: null,
+        promptTokens: null, completionTokens: null, sceneVersion: snapshot.sceneVersion, scene: snapshot.scene,
+        terminalEvidence: { authority: "test", prompt: { productPromptVersion: "companion-product-1", preparedTurnVersion: null, systemPromptDigest: null, soulFingerprint: null } },
+      });
+      snapshot = (await regenerateChatTurn(userId, snapshot.assistantMessageId)).snapshot;
+    }
     const gen = await generationTestProviders();
     const generate = vi.spyOn(gen.image, "generate");
     if (outcome !== "completed") generate.mockResolvedValueOnce({ ok: false, error: { code: "backend_error", message: "Controlled pre-submit connection refusal", retryable: false, outcome: "definitive" } });
@@ -96,7 +114,7 @@ describe("initial Chat image delivery", () => {
         throw error;
       }
     });
-    const effect = { version: 2 as const, turnId: snapshot.turnId, attempt: 1, callId: randomUUID(), name: "generate_image_async" as const, effectScope: "turn_action" as const, intent: { requestedNudity: "unspecified" as const }, arguments: { prompt: "Avery beside the rainy window.", orientation: "4:5", outputCount: 1 } };
+    const effect = { version: 2 as const, turnId: snapshot.turnId, attempt: snapshot.attempt, callId: randomUUID(), name: "generate_image_async" as const, effectScope: "turn_action" as const, intent: { requestedNudity: "unspecified" as const }, arguments: { prompt: "Avery beside the rainy window.", orientation: "4:5", outputCount: 1 } };
     const accepted = await applyChatToolEffect(effect);
     if (creationFailure) throw creationFailure;
     expect(accepted, JSON.stringify(accepted)).toMatchObject({ accepted: true, duplicate: false, generationJobId: expect.any(String) });
@@ -107,7 +125,8 @@ describe("initial Chat image delivery", () => {
       ? { generationJobId: finalJobId, status: "failed", errorCode: "backend_error", mediaAssetId: null }
       : { generationJobId: finalJobId, status: "completed", errorCode: null, mediaAssetId: expect.any(String) };
     expect(await prisma.chatTurnAttachment.findUniqueOrThrow({ where: { id: accepted.attachmentId } })).toMatchObject(delivery);
-    await commitChatTerminal({ version: 1, turnId: snapshot.turnId, sessionId: snapshot.sessionId, assistantMessageId: snapshot.assistantMessageId, attempt: 1, status: "sent", content: "The image request failed.", model: "test", promptTokens: 1, completionTokens: 1,
+    expect(await prisma.chatTurnAttachment.findUniqueOrThrow({ where: { id: accepted.attachmentId } })).toMatchObject({ metadata: expect.objectContaining({ attempt: snapshot.attempt }) });
+    await commitChatTerminal({ version: 1, turnId: snapshot.turnId, sessionId: snapshot.sessionId, assistantMessageId: snapshot.assistantMessageId, attempt: snapshot.attempt, status: "sent", content: "The image request failed.", model: "test", promptTokens: 1, completionTokens: 1,
       sceneVersion: snapshot.sceneVersion + 1,
       scene: { schemaVersion: 1, location: null, time: null, participants: [], emotionalBeat: null, unresolvedThreads: [], ...snapshot.scene, version: snapshot.sceneVersion + 1 },
       terminalEvidence: { authority: "test", prompt: { productPromptVersion: "companion-product-1", preparedTurnVersion: 4, systemPromptDigest: "a".repeat(64), soulFingerprint: "b".repeat(64) } } });

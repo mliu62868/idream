@@ -80,6 +80,12 @@ const nextConfig: NextConfig = {
         ],
       },
       {
+        // INTENT: Dictation requires the top-level Chat origin's microphone.
+        // Other pages and embedded/cross-origin documents keep capture disabled.
+        source: "/chat/:path*",
+        headers: [{ key: "Permissions-Policy", value: "camera=(), microphone=(self), geolocation=()" }],
+      },
+      {
         source: "/((?!internal-preview/).*)",
         headers: [{ key: "X-Frame-Options", value: "DENY" }],
       },

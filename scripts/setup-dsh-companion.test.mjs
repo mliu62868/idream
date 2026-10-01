@@ -165,13 +165,17 @@ test("setup materializes both official profiles, dumps with the same DSH_HOME, a
   ));
   assert.match(normalPatch, /memory: true/);
   assert.match(normalPatch, /ingest: false/);
-  assert.match(normalPatch, /wake: true/);
+  assert.match(normalPatch, /wake: false/);
+  assert.match(normalPatch, /sessionRecall: false/);
+  assert.match(normalPatch, /maintainIntervalMs: 0/);
   assert.match(privatePatch, /search: false/);
   assert.match(privatePatch, /webProvider: false/);
   assert.match(privatePatch, /webTool: false/);
   assert.match(privatePatch, /memory: false/);
   assert.match(privatePatch, /ingest: false/);
   assert.match(privatePatch, /wake: false/);
+  assert.match(privatePatch, /sessionRecall: false/);
+  assert.match(privatePatch, /maintainIntervalMs: 0/);
   for (const profileName of Object.values(PROFILE_NAMES)) {
     const manifest = fixture.fs.readJson(path.join(
       DSH_HOME,
@@ -239,6 +243,23 @@ test("--check accepts a newer system igrep after setup when capabilities are unc
 
   assert.equal(report.versions.igrep, "9.8.8");
   assert.deepEqual(fixture.fs.mutations, []);
+});
+
+test("--check rejects stale plugin code even when its version and capabilities are unchanged", () => {
+  for (const side of ["source", "installed"]) {
+    const fixture = createFixture({ materialized: false });
+    runDshCompanionBootstrap({ check: false }, fixture.dependencies);
+    const root = side === "source" ? PLUGIN_SOURCE : path.join(
+      DSH_HOME, "profiles", PROFILE_NAMES.normal, "node_modules", "@igrep", "dsh-plugin",
+    );
+    fixture.fs.seed(path.join(root, "memory-lifecycle.mjs"), "export const changed = true;\n");
+    fixture.fs.resetMutations();
+    assert.throws(
+      () => runDshCompanionBootstrap({ check: true }, fixture.dependencies),
+      (error) => error?.code === "PLUGIN_CONTENT_MISMATCH",
+    );
+    assert.deepEqual(fixture.fs.mutations, []);
+  }
 });
 
 test("--check fails closed when profile inputs drift after setup", () => {
@@ -489,17 +510,21 @@ function createFixture(options = {}) {
             search: false,
             webProvider: false,
             webTool: false,
+            sessionRecall: false,
             memory: false,
             ingest: false,
             wake: false,
+            maintainIntervalMs: 0,
           }
         : {
             search: false,
             webProvider: false,
             webTool: false,
+            sessionRecall: false,
             memory: true,
             ingest: false,
-            wake: true,
+            wake: false,
+            maintainIntervalMs: 0,
             memorySearchMode: "fast",
             timeoutMs: 10000,
           };
@@ -565,11 +590,14 @@ function seedPluginSource(fs, version, peerRange) {
     JSON.stringify({
       name: "@igrep/dsh-plugin",
       version,
+      files: ["index.mjs", "memory-lifecycle.mjs", "cordis.patch.yml"],
       dsh: { bundle: { patch: "cordis.patch.yml" } },
       peerDependencies: Object.fromEntries(PLUGIN_PEERS.map((peer) => [peer, peerRange])),
     }),
   );
   fs.seed(path.join(PLUGIN_SOURCE, "cordis.patch.yml"), "- id: igrep-dsh\n");
+  fs.seed(path.join(PLUGIN_SOURCE, "index.mjs"), "export const name = 'igrep';\n");
+  fs.seed(path.join(PLUGIN_SOURCE, "memory-lifecycle.mjs"), "export const lifecycle = true;\n");
 }
 
 function materializeProfile(fs, profile, pluginPath, peerVersion = DSH_VERSION) {
@@ -599,6 +627,9 @@ function materializeProfile(fs, profile, pluginPath, peerVersion = DSH_VERSION) 
     path.join(installed, "cordis.patch.yml"),
     fs.readFileSync(path.join(PLUGIN_SOURCE, "cordis.patch.yml"), "utf8"),
   );
+  for (const file of ["index.mjs", "memory-lifecycle.mjs"]) {
+    fs.seed(path.join(installed, file), fs.readFileSync(path.join(PLUGIN_SOURCE, file), "utf8"));
+  }
   for (const peerPackage of PLUGIN_PEERS) {
     fs.seed(
       path.join(profileDir, "node_modules", ...peerPackage.split("/"), "package.json"),

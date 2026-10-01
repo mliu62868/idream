@@ -4,10 +4,14 @@ import type { ChatToolEffect } from "@idream/shared/contracts";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { MAIN_QUEUES } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
+import { jobQueue } from "@/server/jobs/queue";
+import { drainLocalAiPipeline } from "@/server/ai/local-pipeline";
 import { recordGenerationAttemptEvent } from "@/server/ai/generation-attempt-events";
 import { transitionGenerationRequest } from "@/server/ai/generation-request-transition";
+import { postDreamcoinEntry } from "@/server/modules/billing/ledger";
 import { reserveInitialGenerationAttempt, reserveRetryGenerationAttempt } from "@/server/modules/generation/generation-attempt-authority";
 import { createUser, createCharacter, dreamcoinBalance, purgeTestData } from "@/server/test/helpers";
 import * as generation from "../ourdream/service";
@@ -66,6 +70,51 @@ async function complete(snapshot: NonNullable<Awaited<ReturnType<typeof beginCha
     sceneVersion: snapshot.sceneVersion + 1,
     scene: { schemaVersion: 1, location: null, time: null, participants: [], emotionalBeat: null, unresolvedThreads: [], ...snapshot.scene, version: snapshot.sceneVersion + 1 },
     terminalEvidence: evidence });
+}
+
+// Pause only after PostgreSQL really acquired the Chat mutation's user lock.
+// Every query and terminal settlement still runs against the real database.
+function pauseNextUserLock() {
+  let resume = () => {};
+  const held = new Promise<void>(resolve => { resume = resolve; });
+  let signalLocked = (_pid: number) => {};
+  const locked = new Promise<number>(resolve => { signalLocked = resolve; });
+  let paused = false;
+  const transaction = prisma.$transaction.bind(prisma);
+  vi.spyOn(prisma, "$transaction").mockImplementation((async (...args: unknown[]) => {
+    const [callback, options] = args;
+    if (typeof callback !== "function") return Reflect.apply(transaction, prisma, args);
+    return transaction(async tx => callback(new Proxy(tx, {
+      get(target, property, receiver) {
+        if (property !== "$queryRaw") return Reflect.get(target, property, receiver);
+        return async (...queryArgs: unknown[]) => {
+          const result = await Reflect.apply(target.$queryRaw, target, queryArgs);
+          const sql = Array.isArray(queryArgs[0]) ? queryArgs[0].join("") : String(queryArgs[0]);
+          if (!paused && sql.includes('"users"') && sql.includes("FOR UPDATE")) {
+            paused = true;
+            const [{ pid }] = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+            signalLocked(pid);
+            await held;
+          }
+          return result;
+        };
+      },
+    })), options as Parameters<typeof prisma.$transaction>[1]);
+  }) as typeof prisma.$transaction);
+  return { locked, resume };
+}
+
+async function waitForBlockedTransaction(blockerPid: number) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const rows = await prisma.$queryRaw<Array<{ pid: number }>>`
+      SELECT pid FROM pg_stat_activity
+       WHERE ${blockerPid} = ANY(pg_blocking_pids(pid))
+    `;
+    if (rows.length > 0) return;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  throw new Error("Generation settlement never reached the held Chat user lock");
 }
 
 async function editFixture(text: string) {
@@ -445,6 +494,144 @@ describe("Main image action authorization", () => {
     expect(await prisma.generationJob.count({ where: { userId } })).toBe(2);
   });
 
+  it.each(["accepted", "completed"] as const)("replays an unedited legacy %s image but buys a new action after its Turn is edited", async status => {
+    const { userId, characterId, begin, generated } = await fixture();
+    const { snapshot } = await begin("Send me a photo by the cafe window.");
+    if (!snapshot) throw new Error("Missing snapshot");
+    const call = effect(snapshot);
+    const attachmentId = `chatfx_${createHash("sha256").update(`${snapshot.turnId}:${call.name}`).digest("hex").slice(0, 48)}`;
+    const job = await prisma.generationJob.create({ data: {
+      userId, characterId, mode: "image", prompt: "By the cafe window.", controls: {}, presetIds: [],
+      sourceType: "chat_image", sourceId: attachmentId, costDreamcoins: 8,
+      status: status === "completed" ? "completed" : "queued",
+      sourceMeta: { sessionId: snapshot.sessionId, exchangeId: snapshot.turnId, messageId: snapshot.assistantMessageId },
+    } });
+    const asset = status === "completed" ? await prisma.mediaAsset.create({ data: {
+      id: `${userId}-legacy-window`, ownerId: userId, characterId, sourceJobId: job.id,
+      type: "image", url: "/legacy-window.png", safetyStatus: "passed", metadata: {},
+    } }) : null;
+    await prisma.chatTurnAttachment.create({ data: {
+      id: attachmentId, turnId: snapshot.turnId, kind: "generated_image", status,
+      generationJobId: job.id, mediaAssetId: asset?.id, promptHint: "By the cafe window.",
+      metadata: { attempt: 1, costDreamcoins: 8, effect: { effectScope: "turn_action", intent: call.intent } },
+    } });
+    await complete(snapshot);
+
+    const regenerated = await regenerateChatTurn(userId, snapshot.assistantMessageId);
+    expect(await applyChatToolEffect({ ...call, attempt: regenerated.attempt, callId: randomUUID() }))
+      .toMatchObject({ accepted: true, duplicate: true, attachmentId, generationJobId: job.id });
+    expect(generated).not.toHaveBeenCalled();
+    await complete(regenerated.snapshot);
+    await prisma.mainOutboxEvent.updateMany({ where: { aggregateId: `${userId}:${characterId}` }, data: { status: "delivered", deliveredAt: new Date() } });
+
+    const edited = await editChatTurn(userId, snapshot.userMessageId, "Send me a photo on the beach at sunset.");
+    expect((await prisma.generationJob.findUniqueOrThrow({ where: { id: job.id } })).sourceMeta)
+      .toMatchObject({ privacyRedaction: { reason: "logical_turn_edited" } });
+    // Historical edits predate attachment markers; their Job still records why
+    // its source was redacted, and must not become reusable after an upgrade.
+    const legacyMetadata = JSON.parse(JSON.stringify((await prisma.chatTurnAttachment.findUniqueOrThrow({ where: { id: attachmentId } })).metadata));
+    delete legacyMetadata.turnActionInvalidatedByEdit;
+    await prisma.chatTurnAttachment.update({ where: { id: attachmentId }, data: { metadata: legacyMetadata } });
+    const beach = await applyChatToolEffect({ ...call, attempt: edited.attempt, callId: randomUUID(),
+      arguments: { prompt: "One person on a beach at sunset.", orientation: "4:5", outputCount: 1 } });
+    expect(beach).toMatchObject({ accepted: true, duplicate: false });
+    expect(beach.attachmentId).not.toBe(attachmentId);
+    expect(generated).toHaveBeenCalledTimes(1);
+    expect(generated.mock.calls[0]?.[0].promptHint).toContain("beach at sunset");
+    expect(await prisma.generationJob.count({ where: { userId } })).toBe(2);
+    const view = await getChatSession(userId, snapshot.sessionId);
+    const reply = view.messages.find(message => message.id === snapshot.assistantMessageId) as { attachments: Array<{ id: string }> } | undefined;
+    expect(reply?.attachments.map(attachment => attachment.id)).toEqual([beach.attachmentId]);
+  });
+
+  it.each(["accepted", "completed", "failed", "requesting"] as const)("starts a new picture after editing a legacy %s action without a Job", async status => {
+    const { userId, characterId, begin, generated } = await fixture();
+    const { snapshot } = await begin("Send me a photo by the cafe window.");
+    if (!snapshot) throw new Error("Missing snapshot");
+    const call = effect(snapshot);
+    const attachmentId = `chatfx_${createHash("sha256").update(`${snapshot.turnId}:${call.name}`).digest("hex").slice(0, 48)}`;
+    const asset = ["accepted", "completed"].includes(status) ? await prisma.mediaAsset.create({ data: {
+      id: `${userId}-legacy-curated`, ownerId: userId, characterId,
+      type: "image", url: "/legacy-curated.png", safetyStatus: "passed", metadata: {},
+    } }) : null;
+    await prisma.chatTurnAttachment.create({ data: {
+      id: attachmentId, turnId: snapshot.turnId, kind: "generated_image", status,
+      mediaAssetId: asset?.id, promptHint: "By the cafe window.",
+      metadata: { attempt: 1, costDreamcoins: 0, effect: { effectScope: "turn_action", intent: call.intent } },
+    } });
+    await complete(snapshot);
+    if (asset) {
+      const regenerated = await regenerateChatTurn(userId, snapshot.assistantMessageId);
+      expect(await applyChatToolEffect({ ...call, attempt: regenerated.attempt, callId: randomUUID() }))
+        .toMatchObject({ accepted: true, duplicate: true, attachmentId, generationJobId: null, mediaAssetId: asset.id });
+      expect(generated).not.toHaveBeenCalled();
+      await complete(regenerated.snapshot);
+    }
+    await prisma.mainOutboxEvent.updateMany({ where: { aggregateId: `${userId}:${characterId}` }, data: { status: "delivered", deliveredAt: new Date() } });
+    const edited = await editChatTurn(userId, snapshot.userMessageId, "Send me a photo on the beach at sunset.");
+    expect((await prisma.chatTurnAttachment.findUniqueOrThrow({ where: { id: attachmentId } })).metadata)
+      .toMatchObject({ turnActionInvalidatedByEdit: true });
+    const beach = await applyChatToolEffect({ ...call, attempt: edited.attempt, callId: randomUUID(),
+      arguments: { prompt: "One person on a beach at sunset.", orientation: "4:5", outputCount: 1 } });
+    expect(beach).toMatchObject({ accepted: true, duplicate: false });
+    expect(beach.attachmentId).not.toBe(attachmentId);
+    expect(generated).toHaveBeenCalledTimes(1);
+    expect(generated.mock.calls[0]?.[0].promptHint).toContain("beach at sunset");
+    expect(await prisma.generationJob.count({ where: { userId } })).toBe(1);
+  });
+
+  it.each(["rebind", "edit"] as const)("settles one real debit while a Chat %s holds the user lock", async mutation => {
+    const { userId, begin } = await fixture();
+    const { snapshot } = await begin("Send me a photo by the cafe window.");
+    if (!snapshot) throw new Error("Missing snapshot");
+    const call = effect(snapshot);
+    const accepted = await applyChatToolEffect(call);
+    if (!accepted.accepted || !accepted.generationJobId) throw new Error("Missing image reservation");
+    const jobId = accepted.generationJobId;
+    await prisma.generationJob.update({ where: { id: jobId }, data: {
+      sourceMeta: { sessionId: snapshot.sessionId, exchangeId: snapshot.turnId, messageId: snapshot.assistantMessageId },
+    } });
+    await prisma.$transaction(tx => postDreamcoinEntry(tx, {
+      kind: "generation_spend", userId, amount: 8, sourceId: jobId, idempotencyKey: `generation:${jobId}:reserve`,
+    }));
+    expect(await dreamcoinBalance(userId)).toBe(32);
+    await complete(snapshot);
+    const attempt = mutation === "rebind"
+      ? (await regenerateChatTurn(userId, snapshot.assistantMessageId)).attempt
+      : snapshot.attempt;
+    const attemptId = `${jobId}-attempt`;
+    await prisma.generationAttempt.create({ data: { id: attemptId, requestId: jobId, attemptNo: 1, provider: "mock", status: "running" } });
+    const payload = { version: 1 as const, kind: "generation.failed" as const, requestId: jobId, generationJobId: jobId,
+      attemptId, attemptNo: 1, mode: "image" as const, terminalRecordRef: `gen/terminal-records/${attemptId}/terminal.json`,
+      terminalRecordChecksum: "a".repeat(64), error: { code: "backend_error", message: "Controlled provider failure", retryable: true, retryability: "retryable" as const } };
+    await prisma.mainOutboxEvent.create({ data: { id: `generation_terminal_record_${attemptId}`,
+      eventType: "generation.terminal_record.accepted.v1", aggregateType: "generation_attempt", aggregateId: attemptId, payload } });
+    const dedupeKey = `${prefix}refund-lock:${attemptId}`;
+    await jobQueue.enqueue({ queue: MAIN_QUEUES.aiFinalize, payload, dedupeKey, maxAttempts: 1 });
+
+    const barrier = pauseNextUserLock();
+    const revision = Promise.allSettled([mutation === "rebind"
+      ? applyChatToolEffect({ ...call, attempt, callId: randomUUID() })
+      : editChatTurn(userId, snapshot.userMessageId, "Send me a photo on the beach at sunset.")]);
+    let finalized: ReturnType<typeof drainLocalAiPipeline> | undefined;
+    try {
+      const pid = await barrier.locked;
+      finalized = drainLocalAiPipeline({ queues: [MAIN_QUEUES.aiFinalize], limit: 1, workerId: `${prefix}refund` });
+      await waitForBlockedTransaction(pid);
+    } finally {
+      barrier.resume();
+    }
+    expect(await revision).toEqual([expect.objectContaining({ status: "fulfilled" })]);
+    expect(await finalized).toMatchObject({ processed: 1, claimed: [expect.objectContaining({ status: "completed" })] });
+    expect(await prisma.generationJob.findUniqueOrThrow({ where: { id: jobId } })).toMatchObject({ status: "failed" });
+    expect(await prisma.chatTurnAttachment.findUniqueOrThrow({ where: { id: accepted.attachmentId } }))
+      .toMatchObject({ status: "failed", generationJobId: jobId, metadata: expect.objectContaining({ attempt }) });
+    expect(await prisma.dreamcoinLedger.count({ where: { sourceId: jobId, reason: "generation_spend" } })).toBe(1);
+    expect(await prisma.dreamcoinLedger.count({ where: { sourceId: jobId, reason: "refund" } })).toBe(1);
+    expect(await dreamcoinBalance(userId)).toBe(40);
+    await jobQueue.removeByDedupeKey(MAIN_QUEUES.aiFinalize, dedupeKey);
+  });
+
   it("runs a picture again on regenerate when its first try failed before anything was reserved", async () => {
     const { userId, begin, generated } = await fixture();
     const { snapshot } = await begin("Send me a photo by the cafe window.");
@@ -466,6 +653,37 @@ describe("Main image action authorization", () => {
       status: "accepted", errorCode: null, metadata: expect.objectContaining({ attempt: regenerated.attempt }),
     });
     expect(await prisma.generationJob.count({ where: { userId } })).toBe(1);
+  });
+
+  it("preserves a concurrent replacement Job's cost when rebinding the action to a new attempt", async () => {
+    const { userId, begin, generated } = await fixture();
+    const { snapshot } = await begin("Send me a photo by the cafe window.");
+    if (!snapshot) throw new Error("Missing snapshot");
+    const call = effect(snapshot);
+    const accepted = await applyChatToolEffect(call);
+    if (!accepted.accepted) throw new Error("Missing image reservation");
+    await complete(snapshot);
+    const regenerated = await regenerateChatTurn(userId, snapshot.assistantMessageId);
+    const replacement = await prisma.generationJob.create({ data: {
+      userId, characterId: snapshot.characterId, mode: "image", prompt: "Replacement image.",
+      controls: {}, presetIds: [], sourceType: "chat_image", sourceId: null,
+      derivedFromJobId: accepted.generationJobId, costDreamcoins: 13,
+    } });
+    const staleRead = prisma.chatTurnAttachment.findUnique({ where: { id: accepted.attachmentId } });
+    const stale = await staleRead;
+    if (!stale) throw new Error("Missing prior action");
+    // Replay the unlocked lookup from just before a paid retry's binding. The
+    // canonical scope reads below must observe the real, newer database row.
+    await prisma.chatTurnAttachment.update({ where: { id: stale.id }, data: {
+      generationJobId: replacement.id,
+      metadata: { ...JSON.parse(JSON.stringify(stale.metadata)), costDreamcoins: 13 },
+    } });
+    vi.spyOn(prisma.chatTurnAttachment, "findUnique").mockReturnValueOnce(staleRead);
+    const replay = await applyChatToolEffect({ ...call, attempt: regenerated.attempt, callId: randomUUID() });
+    expect(replay).toMatchObject({ accepted: true, duplicate: true, generationJobId: replacement.id, costDreamcoins: 13 });
+    expect(await prisma.chatTurnAttachment.findUniqueOrThrow({ where: { id: accepted.attachmentId } }))
+      .toMatchObject({ generationJobId: replacement.id, metadata: expect.objectContaining({ attempt: regenerated.attempt, costDreamcoins: 13 }) });
+    expect(generated).toHaveBeenCalledTimes(1);
   });
 
   it.each(["Yes, please.", "No, let's talk about coffee."])("uses only the persisted previous offer for a short reply: %s", async reply => {

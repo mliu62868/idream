@@ -210,13 +210,12 @@ export async function ensureOfficialEditorialCatalogQualification(
       }
     }
 
-    const existingContent = await tx.characterContentVersion.findUnique({
+    const existingContent = await tx.characterContentVersion.findFirst({
       where: {
-        characterId_contentHash: {
-          characterId: character.id,
-          contentHash,
-        },
+        characterId: character.id,
+        contentHash,
       },
+      orderBy: { version: "asc" },
     });
     const latestContentVersion = existingContent
       ? null

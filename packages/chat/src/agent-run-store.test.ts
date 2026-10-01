@@ -5,6 +5,21 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import * as store from "./agent-run-store.js";
 import type { AgentRunInput } from "./agent-run-store.js";
 
+const filesystemFaults = vi.hoisted(() => ({
+  afterIndexRead: undefined as ((file: string) => Promise<void>) | undefined,
+}));
+vi.mock("node:fs/promises", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    readFile: async (...args: Parameters<typeof actual.readFile>) => {
+      const result = await actual.readFile(...args);
+      await filesystemFaults.afterIndexRead?.(String(args[0]));
+      return result;
+    },
+  };
+});
+
 const roots: string[] = [];
 
 async function fixture() {
@@ -15,12 +30,88 @@ async function fixture() {
 }
 
 afterEach(async () => {
+  filesystemFaults.afterIndexRead = undefined;
   vi.useRealTimers();
+  vi.unstubAllEnvs();
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
   delete process.env.CHAT_FS_ROOT;
 });
 
 describe("AgentRun local authority", () => {
+  it("pins the configured deadline across duplicate admissions and recovery", async () => {
+    const { root, store } = await fixture();
+    vi.stubEnv("DSH_AGENT_DEADLINE_MS", "600000");
+    const input: AgentRunInput = {
+      schemaVersion: 1, admittedAt: "2026-09-30T00:00:00.000Z",
+      snapshot: {
+        version: 1, turnId: "turn-deadline", sessionId: "session-deadline",
+        userMessageId: "user-message-deadline", assistantMessageId: "assistant-deadline", attempt: 1,
+        userId: "user-deadline", characterId: "character-deadline", characterContentVersionId: "content-deadline",
+        characterReleaseId: null, characterVisualProfileId: null, characterVisualProfileVersion: null,
+        memoryEnabled: true, contextRevision: 0, userContent: "hello", hasRecentImageContext: false,
+        recentTurns: [], sceneVersion: 0, scene: null,
+      },
+      authority: {
+        version: 1,
+        user: { id: "user-deadline", displayName: null, locale: "en", status: "active", deletedAt: null, dataClass: "customer" },
+        eligibility: { ageGateAccepted: true, ageVerified: true, jurisdiction: null, restrictedReason: null },
+        entitlement: { modelTier: "free", unlimitedMessages: false, voiceEnabled: false, imageToolEnabled: true },
+      },
+    };
+    await expect(store.admitAgentRun(input)).resolves.toMatchObject({ deadlineAt: "2026-09-30T00:10:00.000Z" });
+    vi.stubEnv("DSH_AGENT_DEADLINE_MS", "900000");
+    await expect(store.admitAgentRun({ ...input, admittedAt: "2026-09-30T00:01:00.000Z" }))
+      .resolves.toMatchObject({ duplicate: true, deadlineAt: "2026-09-30T00:10:00.000Z" });
+    expect(await store.readAgentRunInput(input.snapshot.turnId, 1))
+      .toMatchObject({ deadlineAt: "2026-09-30T00:10:00.000Z" });
+    expect(JSON.parse(await readFile(path.join(root, "runs", "turn-deadline", "1", "input.json"), "utf8")))
+      .toMatchObject({ deadlineAt: "2026-09-30T00:10:00.000Z" });
+  });
+
+  it("keeps a new attempt discoverable when expiry cleanup already read its old assistant index", async () => {
+    const { root, store } = await fixture();
+    const input: AgentRunInput = {
+      schemaVersion: 1,
+      admittedAt: "2020-01-01T12:00:00.000Z",
+      snapshot: {
+        version: 1, turnId: "turn-expiry", sessionId: "session-expiry",
+        userMessageId: "user-message-expiry", assistantMessageId: "assistant-expiry", attempt: 1,
+        userId: "user-expiry", characterId: "character-expiry", characterContentVersionId: "content-expiry",
+        characterReleaseId: null, characterVisualProfileId: null, characterVisualProfileVersion: null,
+        memoryEnabled: true, contextRevision: 0, userContent: "hello", hasRecentImageContext: false,
+        recentTurns: [], sceneVersion: 0, scene: null,
+      },
+      authority: {
+        version: 1,
+        user: { id: "user-expiry", displayName: null, locale: "en", status: "active", deletedAt: null, dataClass: "customer" },
+        eligibility: { ageGateAccepted: true, ageVerified: true, jurisdiction: null, restrictedReason: null },
+        entitlement: { modelTier: "free", unlimitedMessages: false, voiceEnabled: false, imageToolEnabled: true },
+      },
+    };
+    await store.admitAgentRun(input);
+    await store.completeAgentRun("turn-expiry", 1, {
+      attemptId: "assistant-expiry:1", outcome: "committed", evidence: {},
+      completedAt: "2020-01-01T12:00:01.000Z",
+    });
+    const readOldIndex = Promise.withResolvers<void>();
+    const releaseCleanup = Promise.withResolvers<void>();
+    const indexFile = path.join(root, "run-index", "assistant", "assistant-expiry.json");
+    filesystemFaults.afterIndexRead = async file => {
+      if (file !== indexFile) return;
+      filesystemFaults.afterIndexRead = undefined;
+      readOldIndex.resolve();
+      await releaseCleanup.promise;
+    };
+    const cleanup = store.listIncompleteAgentRuns();
+    await readOldIndex.promise;
+    await store.admitAgentRun({ ...input, snapshot: { ...input.snapshot, attempt: 2 } });
+    releaseCleanup.resolve();
+    await cleanup;
+    await expect(store.findAgentRunByAssistant("assistant-expiry")).resolves.toEqual({
+      turnId: "turn-expiry", attempt: 2, userId: "user-expiry",
+    });
+  });
+
   it("keeps only an exact proposal plus a bounded failed trace", async () => {
     // Exercise duplicate admission inside the seven-day retention window.
     vi.useFakeTimers({ toFake: ["Date"] });
@@ -57,7 +148,7 @@ describe("AgentRun local authority", () => {
         entitlement: { modelTier: "free", unlimitedMessages: false, voiceEnabled: false, imageToolEnabled: true },
       },
     };
-    await expect(store.admitAgentRun(input)).resolves.toEqual({ duplicate: false, terminal: false });
+    await expect(store.admitAgentRun(input)).resolves.toEqual({ duplicate: false, terminal: false, deadlineAt: expect.any(String) });
     await expect(store.admitAgentRun({
       ...input,
       admittedAt: "2026-08-27T12:00:02.000Z",
@@ -65,7 +156,7 @@ describe("AgentRun local authority", () => {
         ...input.authority,
         entitlement: { ...input.authority.entitlement, modelTier: "premium" },
       },
-    })).resolves.toEqual({ duplicate: true, terminal: false });
+    })).resolves.toEqual({ duplicate: true, terminal: false, deadlineAt: expect.any(String) });
     await store.appendAgentRunEvent("turn-1", 1, "started", { ok: true });
     const proposal = {
       schemaVersion: 1 as const,
@@ -118,7 +209,7 @@ describe("AgentRun local authority", () => {
       completedAt: "2026-08-27T12:00:01.000Z",
     });
     expect(await store.listIncompleteAgentRuns()).toEqual({ runs: [], failures: [] });
-    await expect(store.admitAgentRun(input)).resolves.toEqual({ duplicate: true, terminal: true });
+    await expect(store.admitAgentRun(input)).resolves.toEqual({ duplicate: true, terminal: true, deadlineAt: expect.any(String) });
     await expect(store.findAgentRunByAssistant("assistant-message-1"))
       .resolves.toMatchObject({ turnId: "turn-1", attempt: 1, userId: "user-1" });
     await expect(store.purgeAgentRunsForTurn("turn-1")).resolves.toBe(1);
@@ -282,10 +373,10 @@ describe("AgentRun local authority", () => {
     await expect(store.admitAgentRun({
       ...base,
       snapshot: { ...base.snapshot, attempt: 2 },
-    })).resolves.toEqual({ duplicate: false, terminal: false });
+    })).resolves.toEqual({ duplicate: false, terminal: false, deadlineAt: expect.any(String) });
   });
 
-  it("lets a newer Main-signed attempt replace the prior assistant index before local completion", async () => {
+  it.each(["committed", "failed", "cancelled"] as const)("preserves the newer attempt index after delayed %s completion and purge", async (outcome) => {
     const { store } = await fixture();
     const input = {
       schemaVersion: 1 as const,
@@ -323,12 +414,19 @@ describe("AgentRun local authority", () => {
     await expect(store.admitAgentRun({
       ...input,
       snapshot: { ...input.snapshot, attempt: 2, memoryEnabled: false },
-    })).resolves.toEqual({ duplicate: false, terminal: false });
+    })).resolves.toEqual({ duplicate: false, terminal: false, deadlineAt: expect.any(String) });
     await store.completeAgentRun("turn-regenerate", 1, {
       attemptId: "assistant-regenerate:1",
-      outcome: "committed",
+      outcome,
       evidence: {},
       completedAt: "2026-08-27T12:00:01.000Z",
+    });
+    await expect(store.findAgentRunByAssistant("assistant-regenerate"))
+      .resolves.toEqual({ turnId: "turn-regenerate", attempt: 2, userId: "user-regenerate" });
+    await store.purgeAgentRunsThroughAttempt("turn-regenerate", 1);
+    await expect(store.readAgentRunInput("turn-regenerate", 1)).resolves.toBeNull();
+    await expect(store.readAgentRunInput("turn-regenerate", 2)).resolves.toMatchObject({
+      snapshot: { attempt: 2 },
     });
     await expect(store.findAgentRunByAssistant("assistant-regenerate"))
       .resolves.toEqual({ turnId: "turn-regenerate", attempt: 2, userId: "user-regenerate" });

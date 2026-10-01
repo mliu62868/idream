@@ -1,12 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { compileCharacterSoul } from "@idream/shared";
+import type { ChatToolEffect } from "@idream/shared/contracts";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { proxyChatRequest } from "@/server/bff/chat-proxy";
-import { createCharacter, createUser, purgeTestData } from "@/server/test/helpers";
+import { createCharacter, createUser, dreamcoinBalance, grantCoins, purgeTestData } from "@/server/test/helpers";
+import * as generation from "../ourdream/service";
 import { createGroupConversation, getGroupConversation, groupSpeakerSession, listGroupCandidates, listGroupConversations, updateGroupConversation } from "./group-conversations";
 import { beginChatTurn, cancelChatTurn, commitChatTerminal, createChatSession, deleteChatMessage, deleteChatSession, deleteGroupChatConversation, editChatTurn, listChatSessions, regenerateChatTurn, setChatMemory } from "./turn-ledger";
 import { clearCompanionMemory } from "./companion-memory-authority";
+import { applyChatToolEffect } from "./tool-effect";
 
 const prefix = `zt-group-${randomUUID()}-`;
 afterAll(async () => {
@@ -155,6 +158,64 @@ describe("Main group conversation authority", () => {
     expect(await prisma.chatTurnUsageFact.count({ where: { userId: f.userId } })).toBe(1);
   });
 
+  it("does not start a second group reply by safely editing another speaker's newer blocked Turn", async () => {
+    const f = await fixture();
+    const active = await f.begin(0);
+    const blocked = await f.begin(1, "minor");
+    expect(blocked.assistant.status).toBe("blocked");
+    const savedBlocked = await prisma.chatTurn.findUniqueOrThrow({ where: { userMessageId: blocked.userMessage.id } });
+    await expect(editChatTurn(f.userId, blocked.userMessage.id, "Hello again."))
+      .rejects.toMatchObject({ status: 409, message: "A reply is already generating" });
+    expect(await prisma.chatTurn.findUniqueOrThrow({ where: { id: active.snapshot!.turnId } }))
+      .toMatchObject({ assistantStatus: "pending", attempt: 1, executionSnapshot: active.snapshot });
+    expect(await prisma.chatTurn.findUniqueOrThrow({ where: { id: savedBlocked.id } })).toEqual(savedBlocked);
+    expect(await prisma.chatTurn.count({ where: { groupTurn: { groupId: f.group.id }, assistantStatus: { in: ["pending", "generating"] } } })).toBe(1);
+    expect(await prisma.chatTurnUsageFact.count({ where: { userId: f.userId, voidedAt: null } })).toBe(1);
+  });
+
+  it.each([1, 0])("binds group image confirmation to the offering Character (speaker %s)", async selectedSpeaker => {
+    const f = await fixture();
+    await grantCoins(f.userId, 40);
+    const offer = await f.begin(0, "Let's sit by the cafe window.");
+    await finish(offer.snapshot!, "Would you like me to send you a photo by the cafe window?");
+    const confirmation = await f.begin(selectedSpeaker, "Yes, please.");
+    const snapshot = confirmation.snapshot!;
+    expect(snapshot.recentTurns.at(-1)?.speaker?.characterId).toBe(f.characters[0].id);
+    expect(snapshot.characterId).toBe(f.characters[selectedSpeaker].id);
+    const call: ChatToolEffect = {
+      version: 2, turnId: snapshot.turnId, attempt: snapshot.attempt, callId: randomUUID(),
+      name: "generate_image_async", effectScope: "turn_action", intent: { requestedNudity: "unspecified" },
+      arguments: { prompt: "One person seated by a rain-streaked cafe window.", outputCount: 1, orientation: "4:5" },
+    };
+    // Generation's reservation boundary is replaced only in this consent
+    // fixture; the delivery suite exercises the real debit and dispatch.
+    const generated = vi.spyOn(generation, "createChatImageGenerationJob").mockImplementation(async payload => {
+      const job = await prisma.generationJob.create({ data: {
+        userId: f.userId, characterId: payload.characterId, mode: "image", prompt: payload.promptHint,
+        controls: {}, presetIds: [], sourceType: "chat_image", sourceId: payload.attachmentId, costDreamcoins: 8,
+      } });
+      const attachment = await prisma.chatTurnAttachment.findUniqueOrThrow({ where: { id: payload.attachmentId } });
+      await prisma.chatTurnAttachment.update({ where: { id: attachment.id }, data: {
+        status: "accepted", generationJobId: job.id,
+        metadata: { ...JSON.parse(JSON.stringify(attachment.metadata)), costDreamcoins: job.costDreamcoins },
+      } });
+      return job;
+    });
+    try {
+      if (selectedSpeaker === 0) {
+        expect(await applyChatToolEffect(call)).toMatchObject({ accepted: true, costDreamcoins: 8 });
+        expect(generated).toHaveBeenCalledTimes(1);
+        expect(await prisma.generationJob.findFirstOrThrow({ where: { userId: f.userId } })).toMatchObject({ characterId: f.characters[0].id });
+      } else {
+        await expect(applyChatToolEffect(call)).rejects.toMatchObject({ status: 403, code: "forbidden" });
+        expect(generated).not.toHaveBeenCalled();
+        expect(await prisma.chatTurnAttachment.count({ where: { turnId: snapshot.turnId } })).toBe(0);
+        expect(await prisma.generationJob.count({ where: { userId: f.userId } })).toBe(0);
+        expect(await dreamcoinBalance(f.userId)).toBe(40);
+      }
+    } finally { generated.mockRestore(); }
+  });
+
   it("permits revisions only on the latest group Turn and rolls its Scene back across speakers", async () => {
     const f = await fixture();
     const a = await f.begin(0); await finish(a.snapshot!);
@@ -214,7 +275,7 @@ describe("Main group conversation authority", () => {
     const active = await f.begin(0);
     await expect(deleteGroupChatConversation(f.userId, f.group.id)).rejects.toMatchObject({ status: 409 });
     expect(await prisma.recentChat.count({ where: { groupId: f.group.id } })).toBe(2);
-    await cancelChatTurn(f.userId, active.assistant.id);
+    await cancelChatTurn(f.userId, active.assistant.id, active.snapshot!.attempt);
     await deleteGroupChatConversation(f.userId, f.group.id);
     expect(await prisma.groupConversation.findUnique({ where: { id: f.group.id } })).toBeNull();
     expect(await prisma.groupChatTurn.count({ where: { groupId: f.group.id } })).toBe(0);

@@ -504,8 +504,8 @@ export const adminZhCharacters: Record<string, string> = {
   "Complete image route setup": "完成图片线路设置",
   "Complete the Character image-readiness actions first.":
     "请先完成角色图片生产就绪步骤。",
-  "Complete the cover, hero, and chat images under the current route, then return here to compare live and draft.":
-    "先在当前图片线路下补齐主肖像、角色主视觉和聊天场景图，再回来对比线上版本与草稿。",
+  "Compare saved text below. Complete the cover, hero, and chat images for the full launch preview.":
+    "可先在下方核对文字。补齐封面、角色主视觉和聊天场景图后，即可查看完整上线预览。",
   "Complete the current visual setup action once. Existing live images and releases will not change.":
     "只需完成当前视觉设置；现有线上图片和发布版本不会改变。",
   "Complete the image pack the live character is missing":
@@ -751,7 +751,7 @@ export const adminZhCharacters: Record<string, string> = {
   "Latest video Run": "最近的视频生产批次",
   "Launch and release": "检查与发布",
   "Launch preview": "上线预览",
-  "Launch preview is waiting for the image pack": "上线预览正在等待图片资产包",
+  "Full launch preview is waiting for the image pack": "完整上线预览正在等待图片资产包",
   "Listen and activate voice version {version} when it matches the character.":
     "试听声音版本 {version}，确认符合角色后再启用。",
   "Listen before saving the default mapping.": "保存默认映射前请先试听。",
@@ -1042,8 +1042,8 @@ export const adminZhCharacters: Record<string, string> = {
   "Refresh the active platform image route": "刷新当前平台图片线路",
   Regenerate: "重新生成",
   "Regenerate current image pack": "重新生成当前图片资产包",
-  "Regenerate the stale image selections under the current route, then return here to compare live and draft.":
-    "先在当前图片线路下重新生成已过期的图片选择，再回来对比线上版本与草稿。",
+  "Compare saved text below. Regenerate the stale image selections for the full launch preview.":
+    "可先在下方核对文字。重新生成已过期的图片后，即可查看完整上线预览。",
   "Regenerate under current route": "使用当前路线重新生成",
   "Reject current": "拒绝当前候选图",
   Rejected: "已拒绝",
@@ -1825,4 +1825,23 @@ export const adminZhCharacters: Record<string, string> = {
   "Replace this image in its placement above before removing it.": "请先在上方的展示位置里替换这张图片，再移除。",
   "Generate here or import images made elsewhere. The placements above choose from this library.": "在这里生成，或导入别处做好的图片；上方的展示位置从这个图库里选图。",
   "Each placement uses an image from this Character's library below.": "每个展示位置都从下方这个角色的图库里选图。",
+  "Enter valid character details.": "请填写有效的角色补充设定。",
+  "Select a supported gender.": "请选择有效的性别。",
+  "Select a supported visual style.": "请选择有效的视觉风格。",
+  "Name must be 120 characters or fewer.": "角色名称不能超过 120 个字符。",
+  "Short description must be 1000 characters or fewer.": "一句话简介不能超过 1000 个字符。",
+  "Additional details must be 24000 characters or fewer.": "补充设定不能超过 24000 个字符。",
+  "Opening message must be 4000 characters or fewer.": "开场白不能超过 4000 个字符。",
+  "Identity anchor must be 2000 characters or fewer.": "身份锚点不能超过 2000 个字符。",
+  "Each stable visual trait must be 500 characters or fewer.": "每条稳定视觉特征不能超过 500 个字符。",
+  "Add no more than 24 stable visual traits.": "稳定视觉特征不能超过 24 条。",
+  "Reference direction must be 4000 characters or fewer.": "参考图方向不能超过 4000 个字符。",
+  "Replace the placeholder with real character information.": "请把占位内容替换为真实的角色信息。",
+  "Archived draft": "已归档草稿",
+  Paused: "已暂停",
+  Retired: "已停用",
+  "Retired character": "已停用角色",
+  "Review retired character": "查看停用角色",
+  "Restore this archived draft before continuing character production.": "请先恢复这个已归档草稿，再继续角色制作。",
+  "This character is retired. Review its release history.": "这个角色已停用，可查看其发布历史。",
 };

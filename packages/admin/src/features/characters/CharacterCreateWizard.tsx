@@ -40,6 +40,7 @@ import {
   type DurableMutationIntent,
 } from "@/lib/durable-mutation-intent";
 import { reconcileDurableMutationIntent } from "@/lib/durable-mutation-recovery";
+import { characterCreateStepFieldErrors } from "./character-form-validation";
 
 type Draft = CharacterProjectDraft;
 type SaveState =
@@ -101,35 +102,6 @@ export function isCharacterCreateStepComplete(draft: Draft, step: number) {
     ).success;
   }
   return characterProjectProductionReadyDraftSchema.safeParse(draft).success;
-}
-
-const characterCreateFieldErrorCopy: Record<string, string> = {
-  name: "Enter a character name.",
-  age: "Age must be a whole number from 18 to 120.",
-  characterPromise: "Write a one-line description.",
-  firstMessage: "Write the first message users will receive.",
-  identityAnchor: "Describe the visual identity to establish.",
-  stableTraits: "Add at least one stable visual trait.",
-  referenceDirection: "Describe the portrait's visual direction.",
-};
-
-export function characterCreateStepFieldErrors(draft: Draft, step: number) {
-  const parsed =
-    step === 0
-      ? characterProjectDraftSchema.shape.persona.safeParse(draft.persona)
-      : step === 1
-        ? characterProjectDraftSchema.shape.visualDirection.safeParse(
-            draft.visualDirection,
-          )
-        : characterProjectProductionReadyDraftSchema.safeParse(draft);
-  if (parsed.success) return {};
-  return Object.fromEntries(
-    parsed.error.issues.flatMap((issue) => {
-      const field = String(issue.path[issue.path.length - 1] ?? "");
-      const message = characterCreateFieldErrorCopy[field];
-      return field && message ? [[field, message]] : [];
-    }),
-  );
 }
 
 export function firstIncompleteCharacterCreateStep(draft: Draft) {
@@ -712,7 +684,11 @@ export function CharacterCreateWizard({
       !createIntent &&
       !isCharacterCreateStepComplete(draft, steps.length - 1)
     ) {
-      setValidationAttemptedStep(steps.length - 1);
+      const errors = characterCreateStepFieldErrors(draft, steps.length - 1);
+      const targetStep = Object.keys(errors).some((field) => Object.hasOwn(characterProjectDraftSchema.shape.persona.shape, field)) ? 0 : 1;
+      setStep(targetStep);
+      setValidationAttemptedStep(targetStep);
+      window.setTimeout(() => wizardRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus(), 0);
       return;
     }
     try {
@@ -736,11 +712,12 @@ export function CharacterCreateWizard({
     setSaveState("Not saved");
   };
   const currentLabel = steps[step];
-  const currentStepComplete = isCharacterCreateStepComplete(draft, step);
   const fieldErrors =
     validationAttemptedStep === step
-      ? characterCreateStepFieldErrors(draft, step)
+      ? Object.fromEntries(Object.entries(characterCreateStepFieldErrors(draft, steps.length - 1))
+        .filter(([field]) => step === steps.length - 1 || Object.hasOwn(step === 0 ? draft.persona : draft.visualDirection, field)))
       : {};
+  const currentStepComplete = isCharacterCreateStepComplete(draft, step) && Object.keys(fieldErrors).length === 0;
   const navigationLocked =
     saveState === "Saving" ||
     ["checking", "restoring", "restore_failed"].includes(resumeState);

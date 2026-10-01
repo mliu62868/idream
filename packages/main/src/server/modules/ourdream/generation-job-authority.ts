@@ -241,8 +241,8 @@ export async function acceptGenerationJobForUser(input: GenerationAdmission) {
     reservation = { job: existing, outboxId: null };
   }
 
-  // Never reserve or dispatch a replay while holding the user lock: terminal
-  // settlement locks Job before user. Wake only after the transaction commits.
+  // Wake only after the transaction commits: dispatch must see the durable
+  // Request, Attempt, debit and attachment binding together.
   if (reservation.outboxId) {
     await dispatchGenerationAttemptOutbox(prisma, { outboxIds: [reservation.outboxId] });
   } else {

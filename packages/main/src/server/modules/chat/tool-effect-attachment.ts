@@ -1,6 +1,13 @@
+import { createHash } from "node:crypto";
+import type { ChatToolEffect } from "@idream/shared/contracts";
 import type { ChatTurnAttachment, Prisma } from "@prisma/client";
 import { Errors } from "@/server/lib/errors";
 import { attachmentLockedByInsert, type LockedChatTurn, type LockedChatTurnAttachment } from "./turn-scope";
+
+/** Identity of persisted actions created before the user-content digest. */
+export function legacyTurnActionAttachmentId(turnId: string, name: ChatToolEffect["name"]): string {
+  return `chatfx_${createHash("sha256").update(`${turnId}:${name}`).digest("hex").slice(0, 48)}`;
+}
 
 // SPEC: 工具效果附件（聊天里的生成图片与生成视频）的唯一创建与迁移入口。
 //

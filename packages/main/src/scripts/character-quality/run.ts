@@ -9,6 +9,7 @@ import { prisma } from "../../server/lib/db";
 import { env } from "../../server/lib/env";
 import { createSessionToken } from "../../server/lib/auth";
 import { resolveCharacterVoiceAuthority } from "../../server/modules/voice-defaults";
+import { entitlementMap } from "../../server/modules/ourdream/subscription-lifecycle";
 import { evaluateDshRecallEvidence, fetchAuditCompanionAttemptEvidence, productFetch, waitForProbeMemoryMaintenance } from "../../server/probe-chat-service";
 import { waitForGenerationPersistence } from "../../server/probe-generation-persistence";
 import { observeChatSseAcrossReconnects } from "../../server/readiness/chat-sse-probe";
@@ -70,7 +71,10 @@ async function pinCharacter(characterId: string, actorId: string) {
       },
     };
   }, { isolationLevel: "RepeatableRead" });
-  const authority = await resolveCharacterVoiceAuthority({ characterId });
+  // Pin the voice this actor can actually play; an expired plan uses the
+  // quoted system voice even when the Character has an active clone.
+  const entitlements = await entitlementMap(actorId);
+  const authority = await resolveCharacterVoiceAuthority({ characterId, systemDefaultOnly: entitlements.voice_enabled !== true });
   const voice = { provider: authority.providerKey, voiceId: authority.voiceId, source: authority.source, settingVersion: authority.settingVersion, characterVoiceProfileVersion: authority.characterVoiceProfileVersion, delivery: authority.delivery };
   return { ...pinned, actorId, voice };
 }

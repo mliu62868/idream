@@ -7,6 +7,7 @@ import {
   characterCreateSteps,
   isCharacterCreateStepComplete,
 } from "./CharacterCreateWizard";
+import { characterCreateStepFieldErrors } from "./character-form-validation";
 import { hasAdminZh } from "@/components/admin/i18n";
 import type { AdminPermissionKey } from "@idream/shared/admin";
 import { CharacterWorkspace } from "./CharacterWorkspace";
@@ -16,6 +17,14 @@ vi.mock("next/navigation", () => ({
 }));
 
 describe("Character create wizard", () => {
+  it("maps nested trait and optional Markdown limits to their editable fields", () => {
+    const draft = {
+      persona: { name: "Mara", age: 28, gender: "female" as const, characterPromise: "A warm host", detailsMarkdown: "x".repeat(24_001), firstMessage: "Hello." },
+      visualDirection: { identityAnchor: "Adult radio host", stableTraits: ["x".repeat(501)], style: "realistic" as const, referenceDirection: "Warm portrait lighting" },
+    };
+    expect(characterCreateStepFieldErrors(draft, 0)).toHaveProperty("detailsMarkdown");
+    expect(characterCreateStepFieldErrors(draft, 1)).toHaveProperty("stableTraits");
+  });
   it("opens on the character itself, not on a launch brief", () => {
     const html = renderToStaticMarkup(
       createElement(CharacterCreateWizard, { canCreate: true }),

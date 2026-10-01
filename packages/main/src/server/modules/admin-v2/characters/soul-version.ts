@@ -23,7 +23,8 @@ export type CharacterSoulVersionResult = {
 };
 
 /**
- * SPEC: saving the Character draft creates one immutable Content Version and Revision.
+ * SPEC: a changed Character draft appends one immutable Content Version and Revision.
+ * Restoring earlier bytes is a new save; submitting the current bytes is a no-op.
  * INTENT: the visual direction written at creation feeds every image prompt; this is
  * the only place an operator can correct it afterwards.
  * INVARIANT: without visualDirection the previously pinned Appearance bytes are kept
@@ -60,7 +61,7 @@ export async function createCharacterSoulVersion(input: {
       project.version !== input.expectedProjectVersion ||
       currentContent.id !== input.expectedContentVersionId
     ) {
-      throw Errors.conflict("Character Soul changed in another session", {
+      throw Errors.versionConflict("Character Soul changed in another session", {
         projectVersion: project.version,
         contentVersionId: currentContent.id,
       });
@@ -83,15 +84,22 @@ export async function createCharacterSoulVersion(input: {
         cause instanceof Error ? cause.message : "Character Soul compilation failed",
       );
     }
-    const historical = await tx.characterContentVersion.findFirst({
-      where: { characterId: input.characterId, contentHash: snapshots.contentHash },
-      select: { id: true, version: true },
-    });
-    if (historical) {
-      throw Errors.conflict("This exact Character Soul version already exists; select the historical version instead", {
-        contentVersionId: historical.id,
-        contentVersion: historical.version,
-      });
+    if (currentContent.contentHash === snapshots.contentHash) {
+      if (!latestRevision || latestRevision.characterContentVersionId !== currentContent.id) {
+        throw Errors.conflict("The current Character draft has no matching revision", {
+          blocker: "draft_revision_missing",
+        });
+      }
+      return {
+        characterId: input.characterId,
+        projectId: project.id,
+        projectVersion: project.version,
+        contentVersionId: currentContent.id,
+        contentVersion: currentContent.version,
+        revisionId: latestRevision.id,
+        revision: latestRevision.revision,
+        fingerprint: snapshots.personaSnapshot.compiled.fingerprint,
+      };
     }
 
     const changed = await tx.characterProject.updateMany({
@@ -99,7 +107,7 @@ export async function createCharacterSoulVersion(input: {
       data: { version: { increment: 1 } },
     });
     if (changed.count !== 1) {
-      throw Errors.conflict("Character Project changed in another session");
+      throw Errors.versionConflict("Character Project changed in another session");
     }
     const createdContent = await tx.characterContentVersion.create({
       data: {

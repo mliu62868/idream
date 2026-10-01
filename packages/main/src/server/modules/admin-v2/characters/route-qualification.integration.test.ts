@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import {
   characterRouteEvaluationMatrixDirections,
   characterRouteEvaluationMatrixKey,
@@ -21,6 +22,10 @@ import {
   characterVisualProfileSnapshotHash,
   referenceSetSnapshotHash,
 } from "./release-snapshot";
+
+const { version: imageEditWorkflowVersion }: { version: number } = JSON.parse(
+  readFileSync(new URL("../../../../../../gen/workflows/qwen-image-edit-img2img.json", import.meta.url), "utf8"),
+);
 
 describe("production Generation Route Qualification writer", () => {
   const prefix = `zt-route-qualification-${randomUUID()}-`;
@@ -560,7 +565,7 @@ describe("production Generation Route Qualification writer", () => {
         generationProfileKey,
         generationProfileVersion: 1,
         workflowKey,
-        workflowVersion: 2,
+        workflowVersion: imageEditWorkflowVersion,
         style: "realistic",
         matrixKey: `${prefix}older-viable-matrix`,
         sampleCount: 40,
@@ -576,7 +581,7 @@ describe("production Generation Route Qualification writer", () => {
         generationProfileKey: `${prefix}disabled-profile-${index}`,
         generationProfileVersion: 1,
         workflowKey,
-        workflowVersion: 2,
+        workflowVersion: imageEditWorkflowVersion,
         style: "realistic",
         matrixKey: `${prefix}newer-disabled-matrix-${index}`,
         sampleCount: 40,

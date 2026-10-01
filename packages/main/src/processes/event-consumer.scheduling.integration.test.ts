@@ -84,7 +84,11 @@ describe("durable event consumer time isolation", () => {
       }
       if (target.endsWith("/internal/agent-runs")) {
         delivered.push("admission");
-        return Response.json({ ok: true }, { status: 202 });
+        const snapshot = JSON.parse(String(init?.body)) as { turnId: string; attempt: number };
+        return Response.json({
+          ok: true, turnId: snapshot.turnId, attempt: snapshot.attempt,
+          duplicate: false, terminal: false, deadlineAt: new Date(Date.now() + 300_000).toISOString(),
+        }, { status: 202 });
       }
       if (target.endsWith("/cancel")) {
         // The consumer drains every pending row in the shared test DB; count only ours.
@@ -130,8 +134,12 @@ describe("durable event consumer time isolation", () => {
         schemaVersion: 2, aggregateType: "user", aggregateId: f.userId,
         payload: { userId: f.userId },
       });
-      await vi.advanceTimersByTimeAsync(5_000);
-      await expect.poll(() => [...delivered].sort(), { timeout: 1_000 }).toEqual([
+      // Keep poll clocks moving while real PostgreSQL I/O settles. A single
+      // advance can skip every tick behind the initial in-flight lifecycle scan.
+      await expect.poll(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+        return [...delivered].sort();
+      }, { timeout: 1_000 }).toEqual([
         "account-deletion", "admission", "cancel", "purge",
       ]);
       await expect(prisma.chatTurn.findUniqueOrThrow({

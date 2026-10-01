@@ -316,7 +316,6 @@ describe("chat lock ladder inventory", () => {
     "modules/chat/turn-scope.ts": 4,
     "modules/chat/turn-ledger.ts": 11,
     "modules/chat/group-conversations.ts": 1,
-    "modules/chat/tool-effect.ts": 1,
   };
 
   it("keeps every bare chat-table lock inside the declared inventory", async () => {

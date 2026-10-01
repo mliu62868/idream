@@ -69,6 +69,29 @@ describe("Character workspace shell refresh", () => {
     expect(adminV2Operation).not.toHaveBeenCalled();
   });
 
+  it("pages the applied results without submitting an unfinished search", async () => {
+    adminV2Operation.mockResolvedValue({
+      items: [{ characterId: "character-a" }],
+      pageInfo: { endCursor: "page-2", hasNextPage: true },
+      asOf: "2026-09-30T10:00:00Z",
+    });
+    await act(async () => root.render(<CharacterPortfolio canCreate canRead canOpenAssets canOpenProjects mode="studio" />));
+    await waitUntil(() => container.textContent?.includes("character-a") === true);
+    const search = container.querySelector<HTMLInputElement>('input[aria-label="Search characters"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(search, "unfinished search");
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const next = [...container.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Next page")!;
+    await act(async () => next.click());
+    await waitUntil(() => adminV2Operation.mock.calls.length === 2);
+    const query = new URLSearchParams(adminV2Operation.mock.calls[1][1].query);
+    expect(query.get("cursor")).toBe("page-2");
+    expect(query.has("search")).toBe(false);
+    expect(search.value).toBe("unfinished search");
+    expect(new URLSearchParams(window.location.search).has("search")).toBe(false);
+  });
+
   it("lets an operator retry the first failed chat-tool read", async () => {
     apiGet.mockRejectedValueOnce(new Error("Temporary read failure")).mockResolvedValue({ chatImageToolEnabled: false });
     await act(async () => root.render(<CharacterChatToolsPanel characterId="character-a" canWrite />));

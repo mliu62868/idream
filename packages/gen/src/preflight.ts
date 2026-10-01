@@ -22,7 +22,7 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { characterVideoProductionRecipes } from "@idream/shared";
 import { env } from "./env";
-import { attestPinnedModelAssets } from "./model-asset-attestation";
+import { attestLocalComfyUiModelRoot, attestPinnedModelAssets } from "./model-asset-attestation";
 import {
   modelLoaderNodeForReference,
   requiredComfyNodeTypes,
@@ -42,6 +42,27 @@ type Problem = { workflow: string; detail: string };
 // ComfyUI exposes each loader's selectable files through /object_info, keyed by
 // the input name. That listing is authority on what the runner can actually see.
 const FP8_DTYPES = new Set(["fp8_e4m3fn", "fp8_e4m3fn_fast", "fp8_e5m2"]);
+
+// INVARIANT: filenames in dropdowns do not prove that the REDQW21 V2 recipe
+// loads the qualified BF16 diffusion, community ConvRot INT8 encoder and VAE.
+const QWEN21_EDIT_MODEL_ASSETS = [
+  {
+    path: "diffusion_models/redqw21_unlocked_v2_bf16.safetensors",
+    sha256: "c2ff9ea7e983b61589363fe11d0437419f7ade088bb470ef2e501bd81513c45f",
+  },
+  {
+    path: "text_encoders/qwen3vl_8b_int8_convrot.safetensors",
+    sha256: "8bfd0f6e12abf2d2d697ecc888e5e90b0d6741d6708f05799f53afa560452e8f",
+  },
+  {
+    path: "vae/qwen_image_2.1_vae_bf16.safetensors",
+    sha256: "bb21f7473051e1ac368515dd3f2e15cd44d7a11748ee8823e1ddca3e4876b7c9",
+  },
+];
+const QWEN21_TURBO_MODEL_ASSET = {
+  path: "loras/Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors",
+  sha256: "0c98591700346f9777051d4e6fa29aa94519abec0d85b1f1f672a2a3db8c94b3",
+};
 
 async function objectInfo(base: string, node: string): Promise<Record<string, unknown> | null> {
   const res = await fetch(`${base}/object_info/${node}`);
@@ -97,6 +118,8 @@ async function main() {
   let checked = 0;
   let checkedNodeTypes = 0;
   let checkedModelAssets = 0;
+  let qwen21EditPresent = false;
+  let qwen21TurboPresent = false;
 
   for (const file of files) {
     let descriptor: Descriptor;
@@ -116,6 +139,12 @@ async function main() {
       : runner === "video-h3"
         ? env.COMFYUI_H3_API_URL
         : env.COMFYUI_VIDEO_API_URL;
+    if (runner === "image" && descriptor.workflowKey?.startsWith("qwen-image-edit-")) {
+      qwen21EditPresent = true;
+      qwen21TurboPresent ||= Object.values(descriptor.apiPrompt).some(
+        (node) => node.class_type === "IDreamQwen21TurboLora",
+      );
+    }
 
     for (const nodeType of requiredComfyNodeTypes(descriptor.apiPrompt)) {
       const nodeTypeKey = `${base}:${nodeType}`;
@@ -163,6 +192,29 @@ async function main() {
     }
   }
 
+  if (env.IMAGE_PROVIDER === "backend" && qwen21EditPresent) {
+    const assets = qwen21TurboPresent
+      ? [...QWEN21_EDIT_MODEL_ASSETS, QWEN21_TURBO_MODEL_ASSET]
+      : QWEN21_EDIT_MODEL_ASSETS;
+    const attestation = await attestPinnedModelAssets({
+      modelRoot: env.COMFYUI_MODEL_ROOT,
+      assets,
+    });
+    checkedModelAssets += attestation.checked;
+    for (const detail of attestation.problems) {
+      problems.push({ workflow: "(Qwen image model bytes)", detail });
+    }
+    try {
+      await attestLocalComfyUiModelRoot({
+        apiUrl: env.COMFYUI_IMAGE_API_URL,
+        modelRoot: env.COMFYUI_MODEL_ROOT,
+        assetPaths: assets.map((asset) => asset.path),
+      });
+    } catch (error) {
+      problems.push({ workflow: "(Qwen image model resolution)", detail: String(error) });
+    }
+  }
+
   if (env.VIDEO_PROVIDER === "backend") {
     const pinnedModelAssets: Array<{ path: string; sha256: string }> = [];
     for (const recipe of characterVideoProductionRecipes) {
@@ -172,7 +224,7 @@ async function main() {
       modelRoot: env.COMFYUI_MODEL_ROOT,
       assets: pinnedModelAssets,
     });
-    checkedModelAssets = attestation.checked;
+    checkedModelAssets += attestation.checked;
     for (const detail of attestation.problems) {
       problems.push({ workflow: "(video model bytes)", detail });
     }

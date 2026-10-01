@@ -159,7 +159,7 @@ export function CharacterTagsPanel({
         <div className="mt-3 flex flex-wrap gap-2">
           {vocabulary.map((tag) => {
             const selected = draft.includes(tag.id);
-            const blocked = !canWrite || (atLimit && !selected);
+            const blocked = !canWrite || saving || (atLimit && !selected);
             return (
               <button
                 aria-pressed={selected}

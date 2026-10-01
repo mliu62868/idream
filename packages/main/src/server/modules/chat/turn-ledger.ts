@@ -27,6 +27,7 @@ import {
   scheduleCompanionMemoryRebuild,
 } from "./companion-memory-authority";
 import { lockChatScope } from "./turn-scope";
+import { legacyTurnActionAttachmentId } from "./tool-effect-attachment";
 import { userChatPersonaForTurn } from "./user-persona";
 
 const BLOCKED_NOTICE = "I can’t help with that request.";
@@ -300,14 +301,6 @@ export async function beginChatTurn(input: {
       // from different sessions cannot all slip past the limit. A scheduled
       // proactive Turn neither counts nor is refused here.
       if (input.origin !== "proactive") await assertUserReplyCapacity(tx, input.userId);
-      // SPEC: the daily free allowance counts messages the user chose to send.
-      // INTENT: a proactive Turn is the Character reaching out on a schedule the
-      // user set once. Charging it spends the allowance on something they did
-      // not ask for in the moment, and once the allowance runs out the proactive
-      // dispatcher would retry that same session every backoff window until the
-      // UTC day rolls over. It still passes through moderation, the concurrency
-      // gate and usage accounting below.
-      if (input.origin !== "proactive") await assertChatQuota(tx, input.userId);
     }
     const previous = await tx.chatTurn.findFirst({
       where: { ...(lockedSession.groupId ? { groupTurn: { groupId: lockedSession.groupId } } : { sessionId: session.sessionId }), assistantStatus: "sent" },
@@ -356,9 +349,7 @@ export async function beginChatTurn(input: {
       await tx.groupChatTurn.create({ data: { groupId: lockedSession.groupId, ordinal: group.nextOrdinal - 1, turnId: turn.id } });
     }
     if (!blocked) {
-      await tx.chatTurnUsageFact.create({
-        data: { turnId: turn.id, userId: input.userId, productDay: productDay(now), origin: turn.origin },
-      });
+      await reserveChatTurnUsage(tx, input.userId, turn);
     }
     return {
       turn,
@@ -400,7 +391,7 @@ export async function regenerateChatTurn(userId: string, messageId: string) {
     if (ACTIVE_ASSISTANT_STATES.includes(current.assistantStatus)) {
       throw Errors.conflict("A reply is already generating");
     }
-    await assertUserReplyCapacity(tx, userId);
+    await reserveRevisedChatTurn(tx, userId, current);
     const previousAttempt = current.attempt;
     const originalSnapshot = current.executionSnapshot ? chatExecutionSnapshotSchema.parse(current.executionSnapshot) : null;
     const contextDirectives = originalSnapshot?.contextDirectives ?? [];
@@ -427,6 +418,7 @@ export async function regenerateChatTurn(userId: string, messageId: string) {
         admissionLeaseUntil: null,
         admissionLastError: Prisma.JsonNull,
         admittedAt: null,
+        executionDeadlineAt: null,
       },
     });
     await scheduleCompanionMemoryRebuild(tx, {
@@ -463,8 +455,20 @@ export async function editChatTurn(userId: string, messageId: string, nextConten
     if (ACTIVE_ASSISTANT_STATES.includes(current.assistantStatus)) {
       throw Errors.conflict("A reply is already generating");
     }
-    if (!blocked) await assertUserReplyCapacity(tx, userId);
+    if (!blocked) await reserveRevisedChatTurn(tx, userId, current);
     const sceneAnchor = await previousCommittedScene(tx, current);
+    if (content !== current.userContent) {
+      // Old action IDs predate the user-content digest. Keep their receipts for
+      // retries of unchanged words, but never attach them to an edited request.
+      const legacy = await tx.chatTurnAttachment.findMany({
+        where: { turnId: current.id, id: { in: (["generate_image_async", "edit_last_image"] as const)
+          .map(name => legacyTurnActionAttachmentId(current.id, name)) } },
+      });
+      for (const attachment of legacy) await tx.chatTurnAttachment.update({
+        where: { id: attachment.id },
+        data: { metadata: toJson({ ...jsonRecord(attachment.metadata), turnActionInvalidatedByEdit: true }) },
+      });
+    }
     await redactChatImageSourceText(tx, {
       userId,
       reason: "logical_turn_edited",
@@ -504,6 +508,7 @@ export async function editChatTurn(userId: string, messageId: string, nextConten
         admissionLeaseUntil: null,
         admissionLastError: Prisma.JsonNull,
         admittedAt: null,
+        executionDeadlineAt: null,
       },
     });
     await scheduleCompanionMemoryRebuild(tx, {
@@ -653,7 +658,32 @@ export async function commitChatTerminal(input: ChatTerminalCommit) {
   };
 }
 
-export async function cancelChatTurn(userId: string, messageId: string) {
+/** Local stream existence is execution evidence; Main decides whether it may be delivered. */
+export async function chatStreamAuthority(userId: string, assistantMessageId: string, expectedAttempt?: number) {
+  if (expectedAttempt !== undefined && (!Number.isSafeInteger(expectedAttempt) || expectedAttempt < 1)) {
+    throw Errors.badRequest("Stream requires a positive integer attempt");
+  }
+  const turn = await prisma.chatTurn.findFirst({
+    where: { assistantMessageId, session: { userId } },
+    select: { attempt: true, admittedAt: true, assistantStatus: true },
+  });
+  if (!turn) throw Errors.notFound("Chat message not found");
+  if (expectedAttempt !== undefined && turn.attempt !== expectedAttempt) {
+    throw Errors.conflict("Stream belongs to a superseded Chat attempt");
+  }
+  // A lost admission ACK leaves Main pending and cancellation can still release
+  // its unused quota. No local text may escape in that state. A committed sent
+  // terminal is sufficient evidence even when it arrived before the admission ACK.
+  if (!turn.admittedAt && turn.assistantStatus !== "sent") {
+    throw Errors.conflict("Chat attempt has not been confirmed for delivery");
+  }
+  return { attempt: turn.attempt };
+}
+
+export async function cancelChatTurn(userId: string, messageId: string, expectedAttempt: number) {
+  if (!Number.isSafeInteger(expectedAttempt) || expectedAttempt < 1) {
+    throw Errors.badRequest("Stop requires the observed positive integer attempt");
+  }
   const turn = await requireTurn(userId, messageId);
   return prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${userId} FOR UPDATE`;
@@ -663,6 +693,7 @@ export async function cancelChatTurn(userId: string, messageId: string) {
       where: { id: turn.id, session: { userId } },
     });
     if (!current) throw Errors.notFound("Chat message not found");
+    if (current.attempt !== expectedAttempt) throw Errors.conflict("Stop belongs to a superseded Chat attempt");
     if (!ACTIVE_ASSISTANT_STATES.includes(current.assistantStatus)) {
       return {
         ok: true,
@@ -703,12 +734,15 @@ export async function cancelChatTurn(userId: string, messageId: string) {
  * never be used again. The user saw a spinner that outlived the process that
  * was supposed to fill it.
  *
- * INVARIANT: the CAS re-checks `updatedAt` inside the row lock, so a reply that
+ * INVARIANT: the CAS re-checks the frozen deadline inside the row lock, so a reply that
  * committed between the scan and the lock keeps its real terminal state. The
  * durable cancel intent is the same one user cancellation writes, so a Chat
  * that is merely slow stops instead of racing a terminal we already rejected.
  */
-export async function failStalledChatTurn(turnId: string, stalledBefore: Date) {
+export async function failStalledChatTurn(turnId: string, cutoff: {
+  deadlineBefore: Date;
+  legacyStalledBefore: Date;
+}) {
   const owner = await prisma.chatTurn.findFirst({
     where: { id: turnId },
     select: { session: { select: { userId: true } } },
@@ -730,7 +764,9 @@ export async function failStalledChatTurn(turnId: string, stalledBefore: Date) {
       !turn ||
       turn.assistantStatus !== "generating" ||
       turn.terminalAt !== null ||
-      turn.updatedAt >= stalledBefore
+      (turn.executionDeadlineAt
+        ? turn.executionDeadlineAt >= cutoff.deadlineBefore
+        : turn.updatedAt >= cutoff.legacyStalledBefore)
     ) {
       return { reclaimed: false as const };
     }
@@ -1126,7 +1162,7 @@ async function repinOwnerSessionToServingRelease<T extends {
   });
 }
 
-async function assertChatSessionServingAuthority(
+export async function assertChatSessionServingAuthority(
   tx: Prisma.TransactionClient,
   userId: string,
   session: { characterId: string; characterReleaseId: string | null },
@@ -1177,10 +1213,9 @@ async function requireTurn(userId: string, messageId: string) {
   return turn;
 }
 
-async function assertChatQuota(tx: Prisma.TransactionClient, userId: string) {
+async function assertChatQuota(tx: Prisma.TransactionClient, userId: string, day: Date) {
   const now = new Date();
   if ((await entitlementMap(userId, tx, now)).unlimited_messages === true) return;
-  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
   // SPEC: the free allowance counts the user's own messages for the UTC day.
   // INTENT: every admitted Turn still writes a usage fact, because a proactive
   // reply costs the same generation capacity and daily operational usage must
@@ -1193,12 +1228,59 @@ async function assertChatQuota(tx: Prisma.TransactionClient, userId: string) {
     SELECT count(*) AS used
       FROM "chat_turn_usage_facts"
      WHERE "userId" = ${userId}
-       AND "productDay" = ${start}::date
+       AND "productDay" = ${day}::date
        AND "origin" = 'user'
        AND "voidedAt" IS NULL
   `;
   if (Number(row?.used ?? 0) >= FREE_DAILY_MESSAGES) {
     throw Errors.paymentRequired("Daily free message limit reached");
+  }
+}
+
+/** Caller holds the user and conversation locks from lockLatestTurn. */
+async function reserveRevisedChatTurn(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  turn: { id: string; sessionId: string; createdAt: Date; origin: string },
+) {
+  const groupTurn = await tx.groupChatTurn.findUnique({ where: { turnId: turn.id }, select: { groupId: true } });
+  const active = await tx.chatTurn.findFirst({
+    where: {
+      ...(groupTurn ? { groupTurn: { groupId: groupTurn.groupId } } : { sessionId: turn.sessionId }),
+      id: { not: turn.id },
+      assistantStatus: { in: ACTIVE_ASSISTANT_STATES },
+    },
+    select: { id: true },
+  });
+  if (active) throw Errors.conflict("A reply is already generating");
+  await assertUserReplyCapacity(tx, userId);
+  await reserveChatTurnUsage(tx, userId, turn);
+}
+
+/**
+ * INVARIANT: every executable Turn holds one allowance reservation before Chat
+ * starts. A blocked Turn has none; a failed Turn released its reservation.
+ * Revisions of an already-counted Turn never consume another slot. The user
+ * lock serializes restoration across sessions, not just within the latest Turn.
+ */
+async function reserveChatTurnUsage(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  turn: { id: string; createdAt: Date; origin: string },
+) {
+  const fact = await tx.chatTurnUsageFact.findUnique({ where: { turnId: turn.id } });
+  if (fact && fact.voidedAt === null) return;
+  // Scheduled Character messages retain operational usage without spending
+  // the allowance for messages the user chose to send.
+  // A revision restores its original Turn-day fact, even across midnight.
+  const day = fact?.productDay ?? productDay(turn.createdAt);
+  if (turn.origin !== "proactive") await assertChatQuota(tx, userId, day);
+  if (fact) {
+    await tx.chatTurnUsageFact.update({ where: { turnId: turn.id }, data: { voidedAt: null } });
+  } else {
+    await tx.chatTurnUsageFact.create({
+      data: { turnId: turn.id, userId, productDay: day, origin: turn.origin },
+    });
   }
 }
 
@@ -1211,11 +1293,10 @@ async function assertChatQuota(tx: Prisma.TransactionClient, userId: string) {
  *   - cancelled: voided only while the attempt was never admitted to Chat
  *     (`admittedAt` null). An admitted attempt is already streaming text to the
  *     user; voiding it would make "read the reply, then press Stop" free.
- *   - a Turn that already delivered a reply once (`statsCountedAt`) keeps
- *     counting even when a later regeneration fails.
- *   - a later sent attempt (regenerate / edit) restores the count. Only the
- *     latest Turn can be revised, so this never lets the day exceed the limit
- *     by more than that one Turn.
+ *   - a consumed fact remains consumed across all subsequent attempts. This
+ *     includes an admitted cancellation, which never increments reply stats.
+ *   - regenerate / edit reserves a released slot before executing. A sent
+ *     attempt keeps that reservation; another failed attempt releases it again.
  * INVARIANT: the fact row is never deleted here; operational usage stays whole.
  */
 export async function settleChatTurnUsage(
@@ -1224,17 +1305,15 @@ export async function settleChatTurnUsage(
   outcome: "sent" | "failed" | "cancelled",
   at: Date,
 ) {
-  if (outcome === "sent") {
+  if (outcome === "sent" || turn.statsCountedAt || (outcome === "cancelled" && turn.admittedAt)) {
     await tx.chatTurnUsageFact.updateMany({
-      where: { turnId: turn.id, voidedAt: { not: null } },
-      data: { voidedAt: null },
+      where: { turnId: turn.id, consumedAt: null },
+      data: { voidedAt: null, consumedAt: turn.statsCountedAt ?? at },
     });
     return;
   }
-  if (turn.statsCountedAt) return;
-  if (outcome === "cancelled" && turn.admittedAt) return;
   await tx.chatTurnUsageFact.updateMany({
-    where: { turnId: turn.id, voidedAt: null },
+    where: { turnId: turn.id, voidedAt: null, consumedAt: null },
     data: { voidedAt: at },
   });
 }
@@ -1409,13 +1488,16 @@ async function lockLatestTurn(
   if (operation === "revise") {
     const lockedSession = await tx.recentChat.findUnique({
       where: { sessionId: turn.sessionId },
-      select: { status: true, group: { select: { status: true } } },
+      select: { status: true, characterId: true, characterReleaseId: true, group: { select: { status: true } } },
     });
     // Archived history can be deleted, but admission cannot execute a new
     // attempt there. Reject before replacing its saved reply or memory state.
     if (lockedSession?.status !== "active" || (lockedSession.group && lockedSession.group.status !== "active")) {
       throw Errors.gone("This conversation is archived. Its replies cannot be edited or regenerated");
     }
+    // A revision starts a new attempt on the same Turn. Its immutable pin does
+    // not preserve permission to execute after public Serving is revoked.
+    await assertChatSessionServingAuthority(tx, userId, lockedSession);
   }
   await assertNoPendingCompanionMemoryRebuild(tx, userId, session.characterId);
   await tx.$queryRaw`SELECT id FROM "chat_turns" WHERE id = ${turn.id} FOR UPDATE`;

@@ -20,9 +20,11 @@ import { loadChatAuthoritySnapshot } from "./chat-authority-snapshot";
 import {
   abandonRequestedToolEffectAttachment,
   createToolEffectAttachment,
+  legacyTurnActionAttachmentId,
   reopenUnreservedFailedToolEffectAttachment,
 } from "./tool-effect-attachment";
 import { chatTurnForEffect } from "./turn-ledger";
+import { lockChatScope } from "./turn-scope";
 
 export type ChatToolEffectResult =
   | {
@@ -55,15 +57,19 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
   let attachmentId = effectAttachmentId(effect, turn.userContent);
   let prior = await prisma.chatTurnAttachment.findUnique({ where: { id: attachmentId } });
   if (!prior && effect.effectScope === "turn_action") {
-    // INTENT: attachments made before the identity carried the user's words have
-    // no record of which words they answered. Reusing them keeps a regenerate of
-    // such an old Turn from buying the same image twice; an edit of one of them
-    // still reuses it, as it always did.
-    const legacyId = legacyTurnActionAttachmentId(effect);
+    // INTENT: old identities do not carry the user's words. Preserve their ACK
+    // on regenerate, but an edited Turn authorizes a new picture. Main's durable
+    // edit markers also cover legacy actions without a Generation Job.
+    const legacyId = legacyTurnActionAttachmentId(effect.turnId, effect.name);
     const legacy = await prisma.chatTurnAttachment.findUnique({ where: { id: legacyId } });
-    if (legacy) {
-      attachmentId = legacyId;
-      prior = legacy;
+    if (legacy && record(legacy.metadata)?.turnActionInvalidatedByEdit !== true) {
+      const job = legacy.generationJobId
+        ? await prisma.generationJob.findUnique({ where: { id: legacy.generationJobId }, select: { sourceMeta: true } })
+        : null;
+      if (record(record(job?.sourceMeta)?.privacyRedaction)?.reason !== "logical_turn_edited") {
+        attachmentId = legacyId;
+        prior = legacy;
+      }
     }
   }
   // An exact historical ACK is a read, with no execution or reattachment.
@@ -76,10 +82,10 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
   assertImageAction(action, effect);
   // INVARIANT: an accepted effect remains replayable after its Turn becomes
   // terminal. HTTP timeout must not turn a successful reservation into a 409.
-  if (prior && prior.status !== "requesting") {
+  if (prior) {
     if (effect.effectScope === "attempt") assertEffectRequest(prior, requestDigest);
     else assertTurnActionIntent(prior, effect.intent);
-    if (effect.effectScope === "turn_action" && effectAttempt(prior.metadata) !== effect.attempt) {
+    if (effect.effectScope === "turn_action" && record(prior.metadata)?.attempt !== effect.attempt) {
       if (
         turn.attempt !== effect.attempt ||
         !["pending", "generating"].includes(turn.assistantStatus)
@@ -274,10 +280,6 @@ function effectAttachmentId(effect: ChatToolEffect, userContent: string): string
   return `chatfx_${sha256(identity).slice(0, 48)}`;
 }
 
-function legacyTurnActionAttachmentId(effect: ChatToolEffect): string {
-  return `chatfx_${sha256(`${effect.turnId}:${effect.name}`).slice(0, 48)}`;
-}
-
 /** The Turn's own frozen context, or null when it is missing or no longer binds. */
 function boundSnapshot(
   turn: { id: string; attempt: number; userContent: string; executionSnapshot: Prisma.JsonValue | null },
@@ -303,10 +305,15 @@ async function frozenImageAction(
 ): Promise<RequiredImageAction | null> {
   const bound = boundSnapshot(turn);
   if (!bound) return null;
+  const previous = bound.recentTurns.at(-1);
+  // A short confirmation in a group answers only the selected Character's
+  // offer. Another member's words cannot authorize this Character's purchase.
+  const previousAssistantText = !bound.group || previous?.speaker?.characterId === bound.characterId
+    ? previous?.assistantContent : undefined;
   const decision = await resolveImageIntent({
     userText: bound.userContent,
     hasRecentImageContext: bound.hasRecentImageContext,
-    previousAssistantText: bound.recentTurns.at(-1)?.assistantContent,
+    previousAssistantText,
     imageToolEnabled: true,
     onJudgeUnavailable: (reason) => logger.warn({ event: "chat_image_intent_judge" }, reason),
   });
@@ -420,15 +427,25 @@ async function rebindTurnActionAttempt(
   attachment: { id: string; status: string; generationJobId: string | null; metadata: Prisma.JsonValue },
   effect: ChatToolEffect,
   replayRequestDigest: string,
-  judged: { attempt: number; userContent: string },
+  judged: { attempt: number; userContent: string; session: { userId: string } },
   action: RequiredImageAction | null,
 ) {
   const attempt = effect.attempt;
-  const metadata = record(attachment.metadata) ?? {};
-  const previousEffect = record(metadata.effect) ?? {};
   return prisma.$transaction(async (tx) => {
-    await tx.$queryRaw`SELECT id FROM "chat_turns" WHERE id = ${effect.turnId} FOR UPDATE`;
-    const current = await tx.chatTurn.findUniqueOrThrow({ where: { id: effect.turnId } });
+    const scope = await lockChatScope(tx, {
+      userId: judged.session.userId,
+      at: { attachment: attachment.id },
+      expect: {
+        attempt,
+        assistantStatus: ["pending", "generating"],
+        conflictMessage: "Required effect replay does not belong to the active Chat attempt",
+      },
+    });
+    const current = scope.turn;
+    const lockedAttachment = scope.attachment;
+    if (!current || !lockedAttachment || current.id !== effect.turnId) {
+      throw Errors.conflict("Required effect replay does not belong to the active Chat attempt");
+    }
     // The consent above was decided before this lock, and deciding it again here
     // would hold the row across a network call to the judge. Re-bind it instead:
     // the same frozen message still has to be the Turn's message under the lock.
@@ -440,9 +457,14 @@ async function rebindTurnActionAttempt(
     if (current.attempt !== attempt || !["pending", "generating"].includes(current.assistantStatus)) {
       throw Errors.conflict("Required effect replay does not belong to the active Chat attempt");
     }
+    assertTurnActionIntent(lockedAttachment, effect.intent);
+    // A concurrent delivery or paid retry may have changed status, Job and
+    // cost since the first read. Rebinding carries only these locked facts.
+    const metadata = record(lockedAttachment.metadata) ?? {};
+    const previousEffect = record(metadata.effect) ?? {};
     const rebound = { ...metadata, attempt, effect: { ...previousEffect, attempt, replayRequestDigest } };
     if (
-      attachment.status === "failed" && attachment.generationJobId === null &&
+      lockedAttachment.status === "failed" && lockedAttachment.generationJobId === null &&
       await reopenUnreservedFailedToolEffectAttachment(tx, { id: attachment.id, metadata: rebound })
     ) {
       return tx.chatTurnAttachment.findUniqueOrThrow({ where: { id: attachment.id } });
@@ -467,6 +489,11 @@ function existingEffect(
   effectScope: ChatToolEffect["effectScope"],
 ): ChatToolEffectResult {
   if (effectScope === "attempt") assertEffectRequest(attachment, expectedRequestDigest);
+  if (attachment.status === "requesting") {
+    // No Generation reservation has committed, so there is no durable success
+    // ACK to replay. The caller must retry the same action identity.
+    throw Errors.unavailable("The image action has not been reserved yet");
+  }
   if (attachment.status === "failed") {
     return {
       accepted: false,

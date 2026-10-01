@@ -478,7 +478,7 @@ describe("Visual Identity experiment activation", () => {
               profileKey: "qwen-profile",
               profileVersion: 2,
               label: "Qwen portrait",
-              modelId: "qwen-image-edit",
+              modelId: "redqw21-image-edit",
               workflowKey: "qwen-image-workflow",
               workflowVersion: 3,
               orientation: "1:1",
@@ -526,11 +526,11 @@ describe("Visual Identity experiment activation", () => {
     ).not.toBeNull();
 
     await act(async () => {
-      if (model) setSelectValue(model, "qwen-image-edit");
+      if (model) setSelectValue(model, "redqw21-image-edit");
     });
-    expect(model?.value).toBe("qwen-image-edit");
+    expect(model?.value).toBe("redqw21-image-edit");
     expect(profile?.value).toBe("qwen-profile");
-    expect(container.textContent).toContain("Qwen Image Edit");
+    expect(container.textContent).toContain("REDQW21");
     expect(profile?.value).toBe("qwen-profile");
   });
 

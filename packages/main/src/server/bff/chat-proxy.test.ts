@@ -1,13 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import { compileCharacterSoul } from "@idream/shared";
 import { FREE_DAILY_MESSAGES } from "@idream/shared/chat/limits";
-import { verifyBffContext, type BffContext } from "@idream/shared/bff";
+import { BFF_HEADER, BFF_USER_HEADER, verifyBffContext, type BffContext } from "@idream/shared/bff";
 import { chatSceneStateSchema, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { Prisma } from "@prisma/client";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
-import { dispatchPendingChatAgentRuns } from "@/server/modules/chat/agent-run-admission";
+import { attemptChatAgentRunAdmission, dispatchPendingChatAgentRuns } from "@/server/modules/chat/agent-run-admission";
 import { dispatchPendingChatEvents } from "@/processes/chat-outbox";
 import {
   beginChatTurn,
@@ -22,6 +22,14 @@ import {
 } from "@/server/modules/chat/turn-ledger";
 import { applyChatToolEffect } from "@/server/modules/chat/tool-effect";
 import { characterReleaseSnapshotHash } from "@/server/modules/admin-v2/characters/release-snapshot";
+
+function admissionResponse(init?: RequestInit) {
+  const snapshot = JSON.parse(String(init?.body)) as { turnId: string; attempt: number };
+  return Response.json({
+    ok: true, turnId: snapshot.turnId, attempt: snapshot.attempt,
+    duplicate: false, terminal: false, deadlineAt: new Date(Date.now() + 300_000).toISOString(),
+  }, { status: 202 });
+}
 
 const USER_ID = "seed-dev-user";
 const SECRET = "test-bff-secret-0123456789abcdef";
@@ -164,7 +172,7 @@ describe("Main-owned Chat façade", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     fetchMock.mockReset();
-    fetchMock.mockImplementation(async () => Response.json({ ok: true }, { status: 202 }));
+    fetchMock.mockImplementation(async (_url, init) => admissionResponse(init));
   });
 
   afterAll(async () => {
@@ -256,7 +264,119 @@ describe("Main-owned Chat façade", () => {
     }
   });
 
-  it("requires public sessions to pin the live published Release and its visual identity", async () => {
+  it("refuses SSE after Chat accepts but Main loses the admission ACK", async () => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const sessionId = await ensureSession(proxyChatRequest);
+    const begun = await beginChatTurn({ userId: USER_ID, sessionId, content: "Admission ACK lost.", idempotencyKey: randomUUID() });
+    fetchMock.mockImplementationOnce(async () => { throw new Error("Chat accepted; its ACK was lost"); });
+    await expect(attemptChatAgentRunAdmission(begun.snapshot!)).resolves.toMatchObject({ admitted: false });
+    expect(await prisma.chatTurn.findUniqueOrThrow({ where: { id: begun.snapshot!.turnId } }))
+      .toMatchObject({ assistantStatus: "pending", admittedAt: null });
+    fetchMock.mockClear();
+    fetchMock.mockImplementation(async () => new Response("data: partial reply\n\n", { headers: { "content-type": "text/event-stream" } }));
+
+    const response = await proxyChatRequest(authRequest(`/api/v1/chat/messages/${begun.assistant.id}/stream?attempt=1`), ["chat", "messages", begun.assistant.id, "stream"]);
+    const delivered = await response.text();
+    await cancelChatTurn(USER_ID, begun.assistant.id, 1);
+    expect(await prisma.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId: begun.snapshot!.turnId } }))
+      .toMatchObject({ consumedAt: null, voidedAt: expect.any(Date) });
+    expect(response.status).toBe(409);
+    expect(delivered).not.toContain("partial reply");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses SSE for a deleted Main Turn even while Chat still has its stream", async () => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const sessionId = await ensureSession(proxyChatRequest);
+    const done = await sendAndCommit(proxyChatRequest, sessionId, "Private words", "Private reply");
+    await deleteChatMessage(USER_ID, done.assistantMessageId);
+    fetchMock.mockClear();
+    fetchMock.mockImplementation(async () => new Response("data: Private reply\n\n"));
+    const response = await proxyChatRequest(authRequest(`/api/v1/chat/messages/${done.assistantMessageId}/stream?attempt=1`), ["chat", "messages", done.assistantMessageId, "stream"]);
+    expect(response.status).toBe(404);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses SSE from a superseded attempt before contacting Chat", async () => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const sessionId = await ensureSession(proxyChatRequest);
+    const done = await sendAndCommit(proxyChatRequest, sessionId, "First", "First reply");
+    await regenerateChatTurn(USER_ID, done.assistantMessageId);
+    fetchMock.mockClear();
+    fetchMock.mockImplementation(async () => new Response("data: stale reply\n\n"));
+    const response = await proxyChatRequest(authRequest(`/api/v1/chat/messages/${done.assistantMessageId}/stream?attempt=1`), ["chat", "messages", done.assistantMessageId, "stream"]);
+    expect(response.status).toBe(409);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rechecks Main SSE authority after an upstream handshake races regeneration", async () => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const sessionId = await ensureSession(proxyChatRequest);
+    const done = await sendAndCommit(proxyChatRequest, sessionId, "First", "First reply");
+    const cancelBody = vi.fn();
+    fetchMock.mockClear();
+    fetchMock.mockImplementation(async () => {
+      await regenerateChatTurn(USER_ID, done.assistantMessageId);
+      return new Response(new ReadableStream({ cancel: cancelBody }));
+    });
+    const response = await proxyChatRequest(authRequest(`/api/v1/chat/messages/${done.assistantMessageId}/stream?attempt=1`), ["chat", "messages", done.assistantMessageId, "stream"]);
+    expect(response.status).toBe(409);
+    expect(cancelBody).toHaveBeenCalledTimes(1);
+  });
+
+  it("pins a legacy SSE caller to the Main attempt and preserves reconnect transport", async () => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const sessionId = await ensureSession(proxyChatRequest);
+    const done = await sendAndCommit(proxyChatRequest, sessionId, "First", "First reply");
+    fetchMock.mockClear();
+    fetchMock.mockImplementation(async () => new Response("data: committed reply\n\n", { headers: { "content-type": "text/event-stream", "content-encoding": "gzip" } }));
+    const response = await proxyChatRequest(authRequest(`/api/v1/chat/messages/${done.assistantMessageId}/stream?lastEventId=12-3`, { headers: { "last-event-id": "12-3" } }), ["chat", "messages", done.assistantMessageId, "stream"]);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("committed reply");
+    expect(response.headers.get("content-encoding")).toBeNull();
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    const [target, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(new URL(target).searchParams.get("attempt")).toBe("1");
+    expect(new URL(target).searchParams.get("lastEventId")).toBe("12-3");
+    expect(new Headers(init.headers).get("last-event-id")).toBe("12-3");
+    expect(verifyBffContext({ secret: env.CHAT_BFF_SIGNING_SECRET ?? SECRET, method: "GET", path: `/api/v1/messages/${done.assistantMessageId}/stream`, body: "", signature: new Headers(init.headers).get(BFF_HEADER)!, context: JSON.parse(new Headers(init.headers).get(BFF_USER_HEADER)!) as BffContext, now: Date.now() })).toEqual({ ok: true });
+  });
+
+  it.each(["admitted", "sent_before_admission_ack"])("allows SSE when Main confirms delivery through %s", async (confirmation) => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const sessionId = await ensureSession(proxyChatRequest);
+    const begun = await beginChatTurn({ userId: USER_ID, sessionId, content: "Deliver the confirmed reply.", idempotencyKey: randomUUID() });
+    const snapshot = begun.snapshot!;
+    if (confirmation === "admitted") {
+      await expect(attemptChatAgentRunAdmission(snapshot)).resolves.toMatchObject({ admitted: true });
+    } else {
+      await commitChatTerminal({
+        version: 1, turnId: snapshot.turnId, sessionId, assistantMessageId: snapshot.assistantMessageId,
+        attempt: snapshot.attempt, status: "sent", content: "Confirmed reply", model: "test-model",
+        promptTokens: 1, completionTokens: 1, ...nextSceneFixture(snapshot), terminalEvidence: TEST_TERMINAL_EVIDENCE,
+      });
+      expect(await prisma.chatTurn.findUniqueOrThrow({ where: { id: snapshot.turnId } })).toMatchObject({ admittedAt: null });
+    }
+    fetchMock.mockClear();
+    fetchMock.mockImplementation(async () => new Response("data: Confirmed reply\n\n"));
+    const response = await proxyChatRequest(authRequest(`/api/v1/chat/messages/${begun.assistant.id}/stream?attempt=1`), ["chat", "messages", begun.assistant.id, "stream"]);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("Confirmed reply");
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it.each(["0", "1.5", "NaN", "9007199254740992"])("refuses an invalid SSE attempt: %s", async (attempt) => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const sessionId = await ensureSession(proxyChatRequest);
+    const done = await sendAndCommit(proxyChatRequest, sessionId, "First", "First reply");
+    fetchMock.mockClear();
+    fetchMock.mockImplementation(async () => new Response("data: reply\n\n"));
+    const response = await proxyChatRequest(authRequest(`/api/v1/chat/messages/${done.assistantMessageId}/stream?attempt=${attempt}`), ["chat", "messages", done.assistantMessageId, "stream"]);
+    expect(response.status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("requires public sessions and revisions to retain live Serving authority for their published Release", async () => {
     const rolledBack = new Error("completed public Chat Release fixture");
     await expect(prisma.$transaction(async (tx) => {
       function inFixture<T>(run: (client: Prisma.TransactionClient) => Promise<T>): Promise<T> { return run(tx); }
@@ -269,6 +389,7 @@ describe("Main-owned Chat façade", () => {
         vi.spyOn(prisma.recentChat, "findUnique").mockImplementation(tx.recentChat.findUnique),
         vi.spyOn(prisma.recentChat, "create").mockImplementation(tx.recentChat.create),
         vi.spyOn(prisma.recentChat, "updateMany").mockImplementation(tx.recentChat.updateMany),
+        vi.spyOn(prisma.chatTurn, "findFirst").mockImplementation(tx.chatTurn.findFirst),
         vi.spyOn(prisma.moderationEvent, "create").mockImplementation(tx.moderationEvent.create),
         vi.spyOn(prisma, "$transaction").mockImplementation(inFixture),
       ];
@@ -405,6 +526,33 @@ describe("Main-owned Chat façade", () => {
             characterVisualProfileVersion: 3,
           });
 
+        const saved = await tx.chatTurn.create({ data: {
+          id: `public-chat-turn-${suffix}`, sessionId: session.id,
+          idempotencyKey: `public-chat-saved-${suffix}`, requestHash: "saved-public-turn",
+          userMessageId: `public-chat-user-message-${suffix}`, assistantMessageId: `public-chat-assistant-message-${suffix}`,
+          userContent: "A saved user message.", assistantContent: "A saved public companion reply.", assistantStatus: "sent",
+          memoryEnabled: true, terminalAt: new Date(), statsCountedAt: new Date(),
+          characterContentVersionId: contentId, characterReleaseId: releaseId,
+          characterVisualProfileId: visualId, characterVisualProfileVersion: 3,
+        } });
+        const now = new Date();
+        const usage = await tx.chatTurnUsageFact.create({ data: {
+          turnId: saved.id, userId, productDay: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())),
+        } });
+        async function expectRevisionsDenied() {
+          // Serving can be revoked while its old session remains active. Both
+          // revision entry points must fail before erasing the saved reply.
+          await expect(regenerateChatTurn(userId, saved.assistantMessageId)).rejects.toMatchObject({ status: 410 });
+          await expect(editChatTurn(userId, saved.userMessageId, "This replacement must not run.")).rejects.toMatchObject({ status: 410 });
+          expect(await tx.recentChat.findUniqueOrThrow({ where: { sessionId: session.id } })).toMatchObject({ status: "active" });
+          expect(await tx.chatTurn.findUniqueOrThrow({ where: { id: saved.id } })).toEqual(saved);
+          expect(await tx.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId: saved.id } })).toEqual(usage);
+          expect(await tx.mainOutboxEvent.count({ where: { aggregateId: `${userId}:${characterId}` } })).toBe(0);
+        }
+        await tx.characterServing.update({ where: { characterId }, data: { state: "paused" } });
+        await expectRevisionsDenied();
+        await tx.characterServing.update({ where: { characterId }, data: { state: "live" } });
+
         await tx.characterContentVersion.create({
           data: {
             id: contentV2Id,
@@ -423,6 +571,7 @@ describe("Main-owned Chat façade", () => {
           where: { characterId },
           data: { currentReleaseId: releaseV2Id },
         });
+        await expectRevisionsDenied();
 
         const replacement = await createChatSession(userId, { characterId });
         expect(replacement.id).not.toBe(session.id);
@@ -495,6 +644,41 @@ describe("Main-owned Chat façade", () => {
     })).toEqual({ ok: true });
   });
 
+  it("persists the exact configured deadline from the matching admission ACK", async () => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const sessionId = await ensureSession(proxyChatRequest);
+    const deadlineAt = new Date(Date.now() + 600_000).toISOString();
+    fetchMock.mockImplementation(async (_url, init) => {
+      const snapshot = JSON.parse(String(init?.body)) as { turnId: string; attempt: number };
+      return Response.json({ ok: true, turnId: snapshot.turnId, attempt: snapshot.attempt, duplicate: false, terminal: false, deadlineAt }, { status: 202 });
+    });
+    const response = await proxyChatRequest(authRequest(`/api/v1/chat/sessions/${sessionId}/messages`, {
+      method: "POST", headers: { "idempotency-key": randomUUID() }, body: JSON.stringify({ content: "Take the configured time." }),
+    }), ["chat", "sessions", sessionId, "messages"]);
+    expect(response.status).toBe(202);
+    expect(await prisma.chatTurn.findFirstOrThrow({ where: { sessionId } }))
+      .toMatchObject({ assistantStatus: "generating", executionDeadlineAt: new Date(deadlineAt) });
+  });
+
+  it.each(["missing_deadline", "invalid_deadline", "wrong_turn", "wrong_attempt", "terminal"] as const)("keeps admission pending for an unusable ACK: %s", async (fault) => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const sessionId = await ensureSession(proxyChatRequest);
+    fetchMock.mockImplementation(async (_url, init) => {
+      const snapshot = JSON.parse(String(init?.body)) as { turnId: string; attempt: number };
+      return Response.json({
+        ok: true, turnId: fault === "wrong_turn" ? "another-turn" : snapshot.turnId,
+        attempt: fault === "wrong_attempt" ? snapshot.attempt + 1 : snapshot.attempt,
+        duplicate: false, terminal: fault === "terminal",
+        ...(fault === "missing_deadline" ? {} : { deadlineAt: fault === "invalid_deadline" ? "not-a-date" : new Date(Date.now() + 300_000).toISOString() }),
+      }, { status: 202 });
+    });
+    await proxyChatRequest(authRequest(`/api/v1/chat/sessions/${sessionId}/messages`, {
+      method: "POST", headers: { "idempotency-key": randomUUID() }, body: JSON.stringify({ content: "Validate the execution commitment." }),
+    }), ["chat", "sessions", sessionId, "messages"]);
+    expect(await prisma.chatTurn.findFirstOrThrow({ where: { sessionId } }))
+      .toMatchObject({ assistantStatus: "pending", executionDeadlineAt: null, admittedAt: null, admissionLeaseToken: null });
+  });
+
   it("keeps a committed Turn pending when Chat is unavailable and admits it on retry", async () => {
     const { proxyChatRequest } = await import("./chat-proxy");
     const sessionId = await ensureSession(proxyChatRequest);
@@ -512,7 +696,7 @@ describe("Main-owned Chat façade", () => {
       where: { sessionId_idempotencyKey: { sessionId, idempotencyKey: key } },
     })).resolves.toMatchObject({ assistantStatus: "pending" });
 
-    fetchMock.mockImplementation(async () => Response.json({ ok: true }, { status: 202 }));
+    fetchMock.mockImplementation(async (_url, init) => admissionResponse(init));
     await prisma.chatTurn.updateMany({
       where: { sessionId, idempotencyKey: key },
       data: { admissionNextRunAt: new Date(0) },
@@ -570,7 +754,7 @@ describe("Main-owned Chat façade", () => {
       data: { admissionNextRunAt: new Date(1) },
     });
     fetchMock.mockClear();
-    fetchMock.mockImplementation(async () => Response.json({ ok: true }, { status: 202 }));
+    fetchMock.mockImplementation(async (_url, init) => admissionResponse(init));
 
     await expect(dispatchPendingChatAgentRuns()).resolves.toEqual({ admitted: 1, pending: 1 });
     expect(fetchMock).toHaveBeenCalledOnce();
@@ -598,7 +782,7 @@ describe("Main-owned Chat façade", () => {
           where: { id: snapshot.turnId },
           data: { assistantStatus: "cancelled", terminalAt: new Date() },
         });
-        return Response.json({ ok: true }, { status: 202 });
+        return admissionResponse(init);
       }
       return Response.json({ ok: true });
     });
@@ -633,7 +817,7 @@ describe("Main-owned Chat façade", () => {
             admissionLeaseUntil: null,
           },
         });
-        return Response.json({ ok: true }, { status: 202 });
+        return admissionResponse(init);
       }
       return Response.json({ ok: true });
     });
@@ -674,7 +858,7 @@ describe("Main-owned Chat façade", () => {
       },
     });
     fetchMock.mockClear();
-    fetchMock.mockImplementation(async () => Response.json({ ok: true }, { status: 202 }));
+    fetchMock.mockImplementation(async (_url, init) => admissionResponse(init));
     await prisma.chatTurn.updateMany({
       where: { sessionId, idempotencyKey: key },
       data: { admissionNextRunAt: new Date(0) },
@@ -852,6 +1036,48 @@ describe("Main-owned Chat façade", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("echoes the cancelled attempt so the browser can bind its Stop receipt", async () => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const sessionId = await ensureSession(proxyChatRequest);
+    const begun = await beginChatTurn({ userId: USER_ID, sessionId, content: "Stop the observed run.", idempotencyKey: randomUUID() });
+    fetchMock.mockImplementation(async () => Response.json({ ok: true, active: false }));
+    const response = await proxyChatRequest(authRequest(`/api/v1/messages/${begun.assistant.id}/cancel`, {
+      method: "POST", body: JSON.stringify({ attempt: begun.snapshot!.attempt }),
+    }), ["messages", begun.assistant.id, "cancel"]);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ ok: true, attempt: 1, cancelled: true });
+  });
+
+  it("rejects a delayed Stop for a superseded attempt without cancelling its replacement", async () => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const sessionId = await ensureSession(proxyChatRequest);
+    const done = await sendAndCommit(proxyChatRequest, sessionId, "First", "First reply");
+    const revised = await regenerateChatTurn(USER_ID, done.assistantMessageId);
+    fetchMock.mockClear();
+    const response = await proxyChatRequest(authRequest(`/api/v1/chat/messages/${done.assistantMessageId}/cancel`, {
+      method: "POST", body: JSON.stringify({ attempt: 1 }),
+    }), ["chat", "messages", done.assistantMessageId, "cancel"]);
+    expect(response.status).toBe(409);
+    expect(await prisma.chatTurn.findUniqueOrThrow({ where: { id: revised.snapshot.turnId } }))
+      .toMatchObject({ attempt: 2, assistantStatus: "pending", terminalAt: null });
+    expect(await prisma.mainOutboxEvent.count({ where: { aggregateId: revised.snapshot.turnId, eventType: MAIN_TO_CHAT_EVENTS.agentRunCancelRequestedV1 } })).toBe(0);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([{}, { attempt: "1" }, { attempt: 0 }, { attempt: -1 }, { attempt: 1.5 }])("rejects a Stop without a valid observed attempt: %j", async (body) => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const sessionId = await ensureSession(proxyChatRequest);
+    const begun = await beginChatTurn({ userId: USER_ID, sessionId, content: "Still replying.", idempotencyKey: randomUUID() });
+    fetchMock.mockClear();
+    const response = await proxyChatRequest(authRequest(`/api/v1/chat/messages/${begun.assistant.id}/cancel`, {
+      method: "POST", body: JSON.stringify(body),
+    }), ["chat", "messages", begun.assistant.id, "cancel"]);
+    expect(response.status).toBe(400);
+    expect(await prisma.chatTurn.findUniqueOrThrow({ where: { id: begun.snapshot!.turnId } }))
+      .toMatchObject({ attempt: 1, assistantStatus: "pending", terminalAt: null });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("durably delivers user cancellation for the exact AgentRun attempt", async () => {
     const { proxyChatRequest } = await import("./chat-proxy");
     const sessionId = await ensureSession(proxyChatRequest);
@@ -862,7 +1088,7 @@ describe("Main-owned Chat façade", () => {
       idempotencyKey: `cancel-${randomUUID()}`,
     });
 
-    await expect(cancelChatTurn(USER_ID, begun.assistant.id)).resolves.toMatchObject({
+    await expect(cancelChatTurn(USER_ID, begun.assistant.id, begun.snapshot!.attempt)).resolves.toMatchObject({
       turnId: begun.snapshot!.turnId,
       attempt: 1,
       cancelled: true,

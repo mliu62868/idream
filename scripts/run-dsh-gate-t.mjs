@@ -31,20 +31,19 @@ export const GATE_T_CHECKS = Object.freeze([
     command: "bun",
     args: Object.freeze([
       "run",
-      "test:pure",
+      "test",
       "--",
-      "src/generate-agent-tools.test.ts",
-      "-t",
-      "\\[Gate T\\]",
+      "src/agent-tools.test.ts",
+      "src/agent-run-store.test.ts",
+      "src/agent-runner-lifecycle.test.ts",
     ]),
     scenarios: Object.freeze([
-      "attempt_call_replay",
-      "reservation_authority_loss",
-      "crash_before_intent",
-      "crash_after_result",
-      "single_artifact",
-      "single_delivery",
-      "terminal_replay_noop",
+      "admission_identity_and_deadline",
+      "bounded_terminal_candidate",
+      "recover_valid_agent_runs",
+      "account_erasure_drain",
+      "agent_authored_image_direction",
+      "same_identity_ambiguous_ack_recovery",
     ]),
   }),
 ]);
@@ -86,9 +85,14 @@ export function runGateTProbe({
       env: process.env,
     });
     const exitCode = typeof result.status === "number" ? result.status : null;
+    // Vitest can exit zero with all tests skipped (e.g. a stale file/filter).
+    // Gate T requires observed execution, not merely a successful process exit.
+    const summary = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.replace(/\u001b\[[0-9;]*m/gu, "");
+    const passedTests = Number(/\bTests\s+(\d+)\s+passed\b/u.exec(summary)?.[1] ?? 0);
     return {
       id: check.id,
-      ok: exitCode === 0,
+      ok: exitCode === 0 && passedTests > 0,
+      passedTests,
       scenarios: [...check.scenarios],
       command: [check.command, ...check.args],
       exitCode,

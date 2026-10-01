@@ -16,6 +16,7 @@ import {
   reserveRetryGenerationAttempt,
 } from "@/server/modules/generation/generation-attempt-authority";
 import { refundGenerationRequest } from "./generation-refund";
+import { lockGenerationRequestForSettlement } from "./generation-settlement";
 import { transitionGenerationRequest } from "./generation-request-transition";
 import { removeGenerationAttemptQueueJob } from "./generation-attempt-queue";
 
@@ -39,10 +40,10 @@ export type GenerationCancellationGuard =
   | { readonly kind: "before_dispatch" };
 
 /**
- * 取消一次 Generation Request 的唯一结算路径：锁 Request → 判前置 → 状态迁移 →
+ * 取消一次 Generation Request 的唯一结算路径：锁 User → Request → 判前置 → 状态迁移 →
  * Attempt 终态事件 → 撤销 dispatch outbox → 退款。
  *
- * INVARIANT: generation_jobs 的行锁在本函数内部取。ADR-13 §2.1.4 记录过「调用方
+ * INVARIANT: users 和 generation_jobs 的行锁在本函数内部依次取。ADR-13 §2.1.4 记录过「调用方
  * 必须先上锁」这类约定的代价（6 个退款调用点漏了 1 个，40 币退回 80），所以锁跟着
  * 权威走，而不是跟着注释走。退款仍然只经 refundGenerationRequest 这一个入口。
  */
@@ -62,15 +63,11 @@ export async function settleGenerationRequestCancellation(
   readonly cancelled: GenerationJob;
   readonly refundAmount: number;
 }> {
-  await tx.$queryRaw`SELECT id FROM "generation_jobs" WHERE id = ${input.requestId} FOR UPDATE`;
-  const job = await tx.generationJob.findFirst({
-    where: {
-      id: input.requestId,
-      ...(input.userId ? { userId: input.userId } : {}),
-      ...(input.expectSourceType ? { sourceType: input.expectSourceType } : {}),
-    },
-  });
-  if (!job) throw Errors.notFound("Generation Request not found");
+  const job = await lockGenerationRequestForSettlement(tx, input.requestId);
+  if (
+    (input.userId && job.userId !== input.userId) ||
+    (input.expectSourceType && job.sourceType !== input.expectSourceType)
+  ) throw Errors.notFound("Generation Request not found");
   const attempt = await tx.generationAttempt.findFirst({
     where: { requestId: job.id },
     orderBy: { attemptNo: "desc" },

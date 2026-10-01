@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CharacterSoulPanel } from "./CharacterSoulPanel";
 import { characterWorkspaceDetail, withCharacterWorkspaceDetail } from "./character-workspace-fixture";
+import { AdminV2RequestError } from "@/lib/admin-v2-api";
 
 const operation = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/admin-v2-operation", () => ({ adminV2Operation: operation }));
@@ -147,6 +148,19 @@ describe("Soul draft retention", () => {
     expect(container.textContent).toContain("Save failed");
   });
 
+  it.each([
+    [{ blocker: "version_mismatch" }, "Someone changed this record before your action landed."],
+    [{ blocker: "draft_revision_missing" }, "The authority refused this action: its precondition is not met."],
+  ])("uses the authority's conflict reason and preserves the request ID: %j", async (details, headline) => {
+    await render(); editName();
+    runCommittedMutation.mockRejectedValueOnce(new AdminV2RequestError("Authority reason", 409, "conflict", details, "soul-request-123"));
+    await act(async () => saveButton().click());
+    expect(container.textContent).toContain(headline);
+    expect(container.textContent).toContain("soul-request-123");
+    expect(container.textContent).toContain("Authority reason");
+    expect(container.querySelector("input")!.value).toBe("Mira draft");
+  });
+
   it("saves in one click without a reason and does not resurrect the committed draft", async () => {
     await render(); editName();
     committingMutation();
@@ -195,5 +209,30 @@ describe("Soul draft retention", () => {
     await render(actor, { ...data, preview: { ...data.preview, live: data.preview.draft, changedFields: ["persona"] } });
     expect(container.textContent).toContain("Saved changes are not live yet.");
     expect(container.querySelector('a[href$="?tab=release"]')?.textContent).toBe("Go to Release");
+  });
+
+  it("identifies an oversized trait locally and focuses the rejected field", async () => {
+    await render();
+    typeInto("Identity anchor", "Adult radio host");
+    typeInto("Stable traits (one per line)", "x".repeat(501));
+    typeInto("Reference direction", "Warm portrait lighting");
+    await act(async () => saveButton().click());
+    expect(operation).not.toHaveBeenCalled();
+    expect(runCommittedMutation).not.toHaveBeenCalled();
+    const rejected = container.querySelector<HTMLTextAreaElement>('textarea[aria-invalid="true"]');
+    expect(rejected).not.toBeNull();
+    expect(rejected?.value).toHaveLength(501);
+    expect(document.activeElement).toBe(rejected);
+    expect(container.textContent).toContain("Each stable visual trait must be 500 characters or fewer.");
+    expect(document.getElementById(rejected!.getAttribute("aria-describedby")!)?.textContent).toContain("500");
+  });
+
+  it("reports an oversized optional Markdown field before attempting a write", async () => {
+    await render();
+    typeInto("Additional details · Markdown (optional)", "x".repeat(24_001));
+    await act(async () => saveButton().click());
+    expect(runCommittedMutation).not.toHaveBeenCalled();
+    expect(container.querySelector('textarea[aria-invalid="true"]')).not.toBeNull();
+    expect(container.textContent).toContain("Additional details must be 24000 characters or fewer.");
   });
 });

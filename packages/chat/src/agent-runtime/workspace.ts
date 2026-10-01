@@ -321,7 +321,6 @@ export class AttemptWorkspaceStore {
     let releaseRelationship: (() => void) | undefined;
     let candidateMoved = false;
     let canonicalChanged = false;
-    let priorVersion: string | undefined;
     let relationshipRoot: string | undefined;
     let versionsRoot: string | undefined;
     let canonicalLink: string | undefined;
@@ -353,13 +352,18 @@ export class AttemptWorkspaceStore {
       await mkdir(versionsRoot, { recursive: true, mode: 0o700 });
       await chmod(versionsRoot, 0o700);
       const current = await this.canonicalVersion(canonicalLink, versionsRoot);
-      priorVersion = current;
-      // A lost HTTP response can leave the pointer swapped while Chat rolls
-      // its short transaction back. The exact version name proves this same
-      // rebuildId already won, so retry stays idempotent even after its tiny
-      // candidate metadata has been collected.
+      // The pointer can already be published when quarantine fails or the HTTP
+      // response is lost. Its exact identity permits replay without metadata,
+      // but every replay must still finish isolating superseded private bytes.
       if (current && resolve(current) === resolve(candidateVersion)
         && !(await exists(candidateRoot))) {
+        const garbage = await this.quarantineRebuildGarbage(
+          relationshipRoot,
+          versionsRoot,
+          current,
+          candidateRoot,
+        );
+        this.removeRebuildGarbage(garbage);
         return { sessions: 0, messages: 0 };
       }
       const manifest = this.parseRelationshipRebuildCandidateManifest(
@@ -425,20 +429,11 @@ export class AttemptWorkspaceStore {
       this.removeRebuildGarbage(garbage);
       return { sessions: manifest.sessions, messages: manifest.messages };
     } catch (error) {
-      if (canonicalChanged && relationshipRoot && canonicalLink) {
-        if (priorVersion) {
-          const rollbackLink = join(relationshipRoot, `.igrep.rollback-${randomUUID()}`);
-          try {
-            await symlink(relative(relationshipRoot, priorVersion), rollbackLink, "dir");
-            await rename(rollbackLink, canonicalLink);
-          } finally {
-            await rm(rollbackLink, { force: true }).catch(() => undefined);
-          }
-        } else {
-          await rm(canonicalLink, { force: true });
-        }
-      }
-      if (candidateMoved && candidateVersion && candidateMemory) {
+      // INVARIANT: the atomic pointer swap is the local publication point.
+      // Quarantine may have already moved the old version, so rolling back
+      // would create a dangling pointer. Keep the valid new source and report
+      // the failure to Main; its mutation remains pending until isolation retries.
+      if (!canonicalChanged && candidateMoved && candidateVersion && candidateMemory) {
         await rename(candidateVersion, candidateMemory).catch(() => undefined);
       }
       throw error;

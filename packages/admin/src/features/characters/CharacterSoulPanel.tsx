@@ -9,13 +9,14 @@ import {
 } from "@idream/shared/admin";
 import { compileCharacterSoul } from "@idream/shared/chat/persona";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { clearSoulDraft, readSoulDraft, writeSoulDraft, type SoulDraft, type SoulVisualForm } from "./soul-drafts";
-import { characterCreateStepFieldErrors } from "./CharacterCreateWizard";
+import { characterCreateStepFieldErrors } from "./character-form-validation";
 import { characterHasPublishedRelease } from "./character-workspace-format";
 import type { RunCommittedCharacterMutation } from "./character-workspace-permissions";
 import { ConfirmDialog } from "@/components/admin/ui/ConfirmDialog";
-import { AdminV2RequestError } from "@/lib/admin-v2-api";
+import { RequestErrorDetails } from "@/components/admin/ui/RequestErrorDetails";
+import { operatorErrorCopy, type OperatorErrorCopy } from "@/components/admin/ui/request-error-copy";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
 import {
   LoadingWorkspace,
@@ -58,6 +59,8 @@ function SoulEditor({
   const dirty = draft !== null;
   const [busy, setBusy] = useState(false);
   const [validationAttempted, setValidationAttempted] = useState(false);
+  const formRef = useRef<HTMLFieldSetElement>(null);
+  const [requestError, setRequestError] = useState<OperatorErrorCopy | null>(null);
   const [error, setError] = useState<string | null>(() =>
     persona ? null : t("Character Soul could not be loaded"),
   );
@@ -83,6 +86,7 @@ function SoulEditor({
     const persisted = clearSoulDraft(storageKey);
     setDraft(null);
     setValidationAttempted(false);
+    setRequestError(null);
     setError(persisted ? null : t("Draft cleared for this tab. Browser storage is unavailable."));
   }
 
@@ -98,6 +102,7 @@ function SoulEditor({
 
   const keepDraft = (next: SoulDraft) => {
     setDraft(next);
+    setRequestError(null);
     if (!writeSoulDraft(storageKey, next)) {
       setError(t("Draft kept until this tab reloads. Browser storage is unavailable."));
     }
@@ -119,9 +124,14 @@ function SoulEditor({
 
   const save = async () => {
     setValidationAttempted(true);
-    if (Object.keys(errors).length > 0) return;
+    const invalidField = Object.keys(errors)[0];
+    if (invalidField) {
+      formRef.current?.querySelector<HTMLElement>(`[name="${invalidField}"]`)?.focus();
+      return;
+    }
     setBusy(true);
     setError(null);
+    setRequestError(null);
     try {
       await runCommittedMutation({
         action: t("Save character"),
@@ -146,13 +156,7 @@ function SoulEditor({
         },
       });
     } catch (cause) {
-      setError(
-        cause instanceof AdminV2RequestError && cause.status === 409
-          ? t("Someone saved a newer version. Reload before saving again.")
-          : cause instanceof Error
-            ? cause.message
-            : t("Changes could not be saved"),
-      );
+      setRequestError(operatorErrorCopy(cause));
     } finally {
       setBusy(false);
     }
@@ -190,11 +194,11 @@ function SoulEditor({
         </section>
       ) : null}
 
-      <fieldset disabled={!canWrite || busy} className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5">
+      <fieldset ref={formRef} disabled={!canWrite || busy} className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5">
         <h3 className="text-lg font-semibold">{t("Persona")}</h3>
         <div className="mt-4 grid gap-5 lg:grid-cols-2">
-          <Field error={fieldErrors.name} label={t("Name")} value={persona.name} onChange={(value) => setPersona({ name: value })} />
-          <Field error={fieldErrors.age} label={t("Age")} max={120} min={18} type="number" value={String(persona.age)} onChange={(value) => setPersona({ age: Number(value) })} />
+          <Field name="name" error={fieldErrors.name} label={t("Name")} value={persona.name} onChange={(value) => setPersona({ name: value })} />
+          <Field name="age" error={fieldErrors.age} label={t("Age")} max={120} min={18} type="number" value={String(persona.age)} onChange={(value) => setPersona({ age: Number(value) })} />
           <label className="text-sm font-medium">
             {t("Gender")}
             <select className={`${fieldClass} mt-2`} onChange={(event) => setPersona({ gender: event.target.value as CharacterDraftPersona["gender"] })} value={persona.gender}>
@@ -203,20 +207,20 @@ function SoulEditor({
               <option value="trans">{t("Trans")}</option>
             </select>
           </label>
-          <Field error={fieldErrors.characterPromise} label={t("Short description")} value={persona.characterPromise} onChange={(value) => setPersona({ characterPromise: value })} />
+          <Field name="characterPromise" error={fieldErrors.characterPromise} label={t("Short description")} value={persona.characterPromise} onChange={(value) => setPersona({ characterPromise: value })} />
           <div className="lg:col-span-2">
-            <Area error={fieldErrors.firstMessage} label={t("Opening message")} value={persona.firstMessage} onChange={(value) => setPersona({ firstMessage: value })} />
+            <Area name="firstMessage" error={fieldErrors.firstMessage} label={t("Opening message")} value={persona.firstMessage} onChange={(value) => setPersona({ firstMessage: value })} />
           </div>
           <div className="lg:col-span-2">
-            <Area label={t("Additional details · Markdown (optional)")} value={persona.detailsMarkdown} onChange={(value) => setPersona({ detailsMarkdown: value })} />
+            <Area name="detailsMarkdown" error={fieldErrors.detailsMarkdown} label={t("Additional details · Markdown (optional)")} value={persona.detailsMarkdown} onChange={(value) => setPersona({ detailsMarkdown: value })} />
           </div>
         </div>
 
         <h3 className="mt-8 text-lg font-semibold">{t("Appearance")}</h3>
         <p className="mt-1 text-sm text-[var(--ad-text-muted)]">{t("Every new image of this Character is generated from this description.")}</p>
         <div className="mt-4 grid gap-5 lg:grid-cols-2">
-          <Area error={fieldErrors.identityAnchor} label={t("Identity anchor")} value={visual.identityAnchor} onChange={(value) => setVisual({ identityAnchor: value })} />
-          <Area error={fieldErrors.stableTraits} label={t("Stable traits (one per line)")} value={visual.stableTraits} onChange={(value) => setVisual({ stableTraits: value })} />
+          <Area name="identityAnchor" error={fieldErrors.identityAnchor} label={t("Identity anchor")} value={visual.identityAnchor} onChange={(value) => setVisual({ identityAnchor: value })} />
+          <Area name="stableTraits" error={fieldErrors.stableTraits} label={t("Stable traits (one per line)")} value={visual.stableTraits} onChange={(value) => setVisual({ stableTraits: value })} />
           <label className="text-sm font-medium">
             {t("Visual style")}
             <select className={`${fieldClass} mt-2`} onChange={(event) => setVisual({ style: event.target.value as SoulVisualForm["style"] })} value={visual.style}>
@@ -226,11 +230,16 @@ function SoulEditor({
               <option value="other">{t("Other")}</option>
             </select>
           </label>
-          <Area error={fieldErrors.referenceDirection} label={t("Reference direction")} value={visual.referenceDirection} onChange={(value) => setVisual({ referenceDirection: value })} />
+          <Area name="referenceDirection" error={fieldErrors.referenceDirection} label={t("Reference direction")} value={visual.referenceDirection} onChange={(value) => setVisual({ referenceDirection: value })} />
         </div>
 
         {Object.keys(fieldErrors).length > 0 ? <p className="mt-4 text-sm text-[var(--ad-red-text)]" role="alert">{t("Fix the highlighted fields to save.")}</p> : null}
         {error ? <p className="mt-4 text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}
+        {requestError ? <div className="mt-4 rounded-md bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]" role="alert">
+          <p className="font-semibold">{t(requestError.headline)}</p>
+          <p className="mt-1">{t(requestError.nextStep, requestError.nextStepValues)}</p>
+          <RequestErrorDetails technical={requestError.technical} />
+        </div> : null}
         <div className="mt-5">
           <WorkspaceButton disabled={!canWrite || busy || stale || !dirty} onClick={() => void save()} tone="primary">
             {busy ? t("Saving…") : t("Save")}
@@ -320,13 +329,14 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function FieldError({ error }: { error?: string }) {
+function FieldError({ error, id }: { error?: string; id: string }) {
   const { t } = useAdminI18n();
-  return error ? <span className="mt-1 block text-xs font-medium text-[var(--ad-red-text)]">{t(error)}</span> : null;
+  return error ? <span id={id} className="mt-1 block text-xs font-medium text-[var(--ad-red-text)]">{t(error)}</span> : null;
 }
 
-function Field({ error, label, value, onChange, type = "text", min, max }: {
+function Field({ error, name, label, value, onChange, type = "text", min, max }: {
   error?: string;
+  name: string;
   label: string;
   value: string;
   onChange: (value: string) => void;
@@ -334,18 +344,20 @@ function Field({ error, label, value, onChange, type = "text", min, max }: {
   min?: number;
   max?: number;
 }) {
-  return <label className="text-sm font-medium">{label}<input aria-invalid={error ? true : undefined} className={`${fieldClass} mt-2`} max={max} min={min} onChange={(event) => onChange(event.target.value)} type={type} value={value} /><FieldError error={error} /></label>;
+  const id = useId();
+  return <label htmlFor={id} className="text-sm font-medium">{label}<input id={id} name={name} aria-invalid={error ? true : undefined} aria-describedby={error ? `${id}-error` : undefined} className={`${fieldClass} mt-2`} max={max} min={min} onChange={(event) => onChange(event.target.value)} type={type} value={value} /><FieldError id={`${id}-error`} error={error} /></label>;
 }
 
-function Area({ error, label, value, onChange }: { error?: string; label: string; value: string; onChange: (value: string) => void }) {
-  return <label className="text-sm font-medium">{label}<textarea aria-invalid={error ? true : undefined} className={`${textAreaClass} mt-2 min-h-24`} onChange={(event) => onChange(event.target.value)} value={value} /><FieldError error={error} /></label>;
+function Area({ error, name, label, value, onChange }: { error?: string; name: string; label: string; value: string; onChange: (value: string) => void }) {
+  const id = useId();
+  return <label htmlFor={id} className="text-sm font-medium">{label}<textarea id={id} name={name} aria-invalid={error ? true : undefined} aria-describedby={error ? `${id}-error` : undefined} className={`${textAreaClass} mt-2 min-h-24`} onChange={(event) => onChange(event.target.value)} value={value} /><FieldError id={`${id}-error`} error={error} /></label>;
 }
 
 function ReadOnlyArtifact({ title, unavailableLabel, value }: { title: string; unavailableLabel: string; value: string | null }) {
   return (
     <details className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
       <summary className="cursor-pointer p-4 font-semibold">{title}</summary>
-      <pre className="max-h-[36rem] overflow-auto whitespace-pre-wrap border-t border-[var(--ad-border)] p-4 text-xs leading-6">{value ?? unavailableLabel}</pre>
+      <pre className="max-h-[36rem] overflow-auto whitespace-pre-wrap border-t border-[var(--ad-border)] p-4 text-xs leading-6">{value || unavailableLabel}</pre>
     </details>
   );
 }

@@ -148,3 +148,13 @@ test("dedicated PM2 topology keeps image, RedGraft, and H3 isolated", () => {
     ],
   );
 });
+
+test("the image PM2 definition replaces a saved legacy Python override", () => {
+  const config = require("./comfyui-ecosystem.config.cjs");
+  const image = config.apps.find((app) => app.name === "comfyui-image");
+  const runtime = resolveRuntime({
+    COMFYUI_VENV_PYTHON: "/Users/kk/ComfyUI-Installs/idream (1)/ComfyUI/.venv/bin/python3",
+    ...image.env,
+  });
+  assert.equal(runtime.python, path.join(runtime.root, ".venv/bin/python3"));
+});

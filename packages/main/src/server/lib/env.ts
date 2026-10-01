@@ -57,6 +57,9 @@ const EnvSchema = z.object({
   VOICE_IDENTITY_PROVIDER: z
     .enum(["pocket-tts", "fish-audio"])
     .optional(),
+  ASR_PROVIDER: z.enum(["disabled", "parakeet-redux"]).default("disabled"),
+  PARAKEET_ASR_API_URL: z.string().url().default("http://127.0.0.1:8064"),
+  PARAKEET_ASR_API_TOKEN: z.preprocess((value) => value === "" ? undefined : value, z.string().min(1).optional()),
   PAYMENT_PROVIDER: z.enum(["mock", "btcpay"]).default("mock"),
   BLOB_PROVIDER: z.enum(["mock", "r2", "s3"]).default("mock"),
   AGE_VERIFICATION_PROVIDER: z.enum(["mock", "gocam"]).default("mock"),

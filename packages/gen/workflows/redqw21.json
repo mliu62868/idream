@@ -4,9 +4,9 @@
   "backendKind": "comfyui",
   "comfyWorkflow": {
     "id": "ed2637ba-ad6c-49a5-858b-ee71ca182972",
-    "name": "iDream · REDQW21"
+    "name": "iDream \u00b7 REDQW21"
   },
-  "version": 1,
+  "version": 3,
   "negativePromptMode": "positive_instruction",
   "capabilities": [
     "textToImage",
@@ -43,12 +43,13 @@
     "2": {
       "class_type": "IDreamFreshCLIPLoader",
       "inputs": {
-        "clip_name": "qwen3vl_8b_bf16.safetensors",
-        "type": "qwen_image"
+        "clip_name": "qwen3vl_8b_int8_convrot.safetensors",
+        "type": "qwen_image",
+        "device": "cpu"
       }
     },
     "3": {
-      "class_type": "VAELoader",
+      "class_type": "IDreamQwen21VAELoader",
       "inputs": {
         "vae_name": "qwen_image_2.1_vae_bf16.safetensors"
       }

@@ -16,7 +16,8 @@ import { purgeAgentRunsForUser } from "./agent-run-store.js";
 import { cancelAgentRunsForUser } from "./agent-runner.js";
 import { purgeCompanionWorkspace } from "./agent-runtime/runtime.js";
 import { env } from "./env.js";
-import { fenceUser } from "./fence.js";
+import { fenceUser, withFenceLock } from "./fence.js";
+import { purgeCompanionMemorySpoolsForUser } from "./companion-memory.js";
 
 interface LocalDeletionReceipt {
   version: 1;
@@ -40,70 +41,75 @@ export async function consumeAccountDeletionRequest(raw: unknown) {
     throw new Error("invalid account deletion v2 durable envelope");
   }
 
-  const requestHash = durableEnvelopeHash(event);
-  const completionEventId = `chat_account_erasure_v2_${sha256(event.sourceEventId).slice(0, 40)}`;
-  const fileMutationId = `local_account_delete_${sha256(`${payload.userId}:${event.sourceEventId}`).slice(0, 40)}`;
-  const receiptFile = localReceiptFile(event.sourceEventId);
-  const existing = await readReceipt(receiptFile);
-  if (existing && (
-    existing.requestHash !== requestHash
-    || existing.completionEventId !== completionEventId
-    || existing.fileMutationId !== fileMutationId
-  )) {
-    throw new Error("account deletion request identity was reused with different authority");
-  }
+  // The receipt and completion form one immutable candidate. At-least-once
+  // delivery can overlap, so only one request may construct its purgedAt;
+  // Main hashes that timestamp and would quarantine a different completion.
+  return withFenceLock(`account-deletion:${event.sourceEventId}`, async () => {
+    const requestHash = durableEnvelopeHash(event);
+    const completionEventId = `chat_account_erasure_v2_${sha256(event.sourceEventId).slice(0, 40)}`;
+    const fileMutationId = `local_account_delete_${sha256(`${payload.userId}:${event.sourceEventId}`).slice(0, 40)}`;
+    const receiptFile = localReceiptFile(event.sourceEventId);
+    const existing = await readReceipt(receiptFile);
+    if (existing && (
+      existing.requestHash !== requestHash
+      || existing.completionEventId !== completionEventId
+      || existing.fileMutationId !== fileMutationId
+    )) {
+      throw new Error("account deletion request identity was reused with different authority");
+    }
 
-  await eraseLocalUserEvidence(payload.userId);
+    await eraseLocalUserEvidence(payload.userId);
 
-  const receipt: LocalDeletionReceipt = existing ?? {
-    version: 1,
-    requestHash,
-    completionEventId,
-    fileMutationId,
-    purgedAt: new Date().toISOString(),
-    deliveredAt: null,
-  };
-  await atomicWrite(receiptFile, receipt);
-
-  const completion = durableEventEnvelopeSchema.parse({
-    sourceService: "chat",
-    sourceEventId: completionEventId,
-    eventType: CHAT_TO_MAIN_EVENTS.accountErasureCompletedV2,
-    schemaVersion: 2,
-    occurredAt: receipt.purgedAt,
-    aggregateType: "user",
-    aggregateId: payload.userId,
-    payload: {
-      version: 2,
-      binding: "request_bound",
-      userId: payload.userId,
+    const receipt: LocalDeletionReceipt = existing ?? {
+      version: 1,
+      requestHash,
+      completionEventId,
       fileMutationId,
-      deletionRequestEventId: event.sourceEventId,
-    },
-  });
-  const response = await fetch(
-    `${env.MAIN_INTERNAL_BASE_URL}${ACCOUNT_ERASURE_COMPLETION_V2_INGEST_PATH}`,
-    {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-internal-token": env.INTERNAL_TOKEN,
-      },
-      body: JSON.stringify(completion),
-      signal: AbortSignal.timeout(30_000),
-    },
-  );
-  if (!response.ok) {
-    throw new Error(`Main account erasure completion returned HTTP ${response.status}`);
-  }
-  const ack = durableAckSchema.parse(await response.json());
-  if (!ack.acknowledged) throw new Error("Main did not acknowledge account erasure completion");
+      purgedAt: new Date().toISOString(),
+      deliveredAt: null,
+    };
+    await atomicWrite(receiptFile, receipt);
 
-  await atomicWrite(receiptFile, { ...receipt, deliveredAt: new Date().toISOString() });
-  return durableAckSchema.parse({
-    acknowledged: true,
-    status: existing ? "duplicate" : "persisted",
-    receiptId: `main:${event.sourceEventId}`,
+    const completion = durableEventEnvelopeSchema.parse({
+      sourceService: "chat",
+      sourceEventId: completionEventId,
+      eventType: CHAT_TO_MAIN_EVENTS.accountErasureCompletedV2,
+      schemaVersion: 2,
+      occurredAt: receipt.purgedAt,
+      aggregateType: "user",
+      aggregateId: payload.userId,
+      payload: {
+        version: 2,
+        binding: "request_bound",
+        userId: payload.userId,
+        fileMutationId,
+        deletionRequestEventId: event.sourceEventId,
+      },
+    });
+    const response = await fetch(
+      `${env.MAIN_INTERNAL_BASE_URL}${ACCOUNT_ERASURE_COMPLETION_V2_INGEST_PATH}`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-internal-token": env.INTERNAL_TOKEN,
+        },
+        body: JSON.stringify(completion),
+        signal: AbortSignal.timeout(30_000),
+      },
+    );
+    if (!response.ok) {
+      throw new Error(`Main account erasure completion returned HTTP ${response.status}`);
+    }
+    const ack = durableAckSchema.parse(await response.json());
+    if (!ack.acknowledged) throw new Error("Main did not acknowledge account erasure completion");
+
+    await atomicWrite(receiptFile, { ...receipt, deliveredAt: new Date().toISOString() });
+    return durableAckSchema.parse({
+      acknowledged: true,
+      status: existing ? "duplicate" : "persisted",
+      receiptId: `main:${event.sourceEventId}`,
+    });
   });
 }
 
@@ -117,6 +123,7 @@ async function eraseLocalUserEvidence(userId: string): Promise<void> {
   await cancelAgentRunsForUser(userId);
   await purgeAgentRunsForUser(userId);
   await purgeCompanionWorkspace({ scope: "user", userId });
+  await purgeCompanionMemorySpoolsForUser(userId);
   await purgeRetiredUserFiles(userId);
 }
 

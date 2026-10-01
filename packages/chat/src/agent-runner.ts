@@ -16,6 +16,7 @@ import {
   runCompanion,
 } from "./agent-runtime/runtime.js";
 import {
+  agentRunDeadlineAt,
   admitAgentRun,
   appendAgentRunEvent,
   completeAgentRun,
@@ -51,7 +52,7 @@ const activeRuns = new Map<string, ActiveAgentRun>();
 /** The HTTP adapter hands over one signed input; this module owns admission and execution order. */
 export async function acceptAgentRun(
   input: AgentRunInput,
-): Promise<{ duplicate: boolean; terminal: boolean; tombstoned?: true }> {
+) {
   const admitted = await admitAgentRun(input);
   if (!admitted.terminal && !admitted.tombstoned) {
     startAgentRun({
@@ -178,7 +179,7 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
       preparedTurn: wire,
       memoryMode,
       expectedProfileDigest: profileDigest,
-      deadlineAt: new Date(Date.now() + env.AGENT_RUN_DEADLINE_MS).toISOString(),
+      deadlineAt: agentRunDeadlineAt(input),
     };
     let sequence = 0;
     const port: CompanionRuntimePort = {

@@ -137,8 +137,9 @@ export function CharacterPortfolio({
       next: CharacterPortfolioUrlState,
       historyMode: "none" | "push" | "replace",
       nextCursorStack: readonly string[] = [],
+      preserveSearchDraft = false,
     ) => {
-      setSearch(next.search);
+      if (!preserveSearchDraft) setSearch(next.search);
       setServingState(next.servingState ?? "");
       setReadiness(next.readiness ?? "");
       setAttention(next.attention ?? false);
@@ -206,15 +207,16 @@ export function CharacterPortfolio({
   }
 
   function goToPage(direction: "next" | "previous") {
+    // A cursor belongs to the applied query. Typing alone never submits a search.
     if (direction === "next") {
-      apply(pageInfo.endCursor ?? undefined, [
+      applyQuery({ ...applied, cursor: pageInfo.endCursor ?? undefined }, "push", [
         ...cursorStack,
         applied.cursor ?? "",
-      ]);
+      ], true);
       return;
     }
     const previous = cursorStack.slice(0, -1);
-    apply(cursorStack.at(-1) || undefined, previous);
+    applyQuery({ ...applied, cursor: cursorStack.at(-1) || undefined }, "push", previous, true);
   }
 
   const rosterView = attention
@@ -437,13 +439,7 @@ export function CharacterPortfolio({
           error ? null : (
             <CharacterListEmptyState
               onClear={() => applyQuery({ search: "" }, "push")}
-              view={characterPortfolioEmptyView({
-                search,
-                servingState: servingState || undefined,
-                readiness: readiness || undefined,
-                attention: attention || undefined,
-                workQueue: workQueue || undefined,
-              })}
+              view={characterPortfolioEmptyView(applied)}
             />
           )
         ) : (

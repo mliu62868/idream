@@ -5,18 +5,18 @@ import {
 } from "@idream/shared";
 import { canonicalSha256 } from "./canonical-json";
 
-// SPEC: `CharacterContentVersion.contentHash` is the identity of one immutable
-// content version. `@@unique([characterId, contentHash])` makes it do two jobs at
-// once: an edit that lands on an existing hash reuses that version instead of
-// appending one (explicit rollback), and callers compare it to detect that
-// content moved under them before they write.
+// SPEC: contentHash identifies immutable bytes, while (characterId, version)
+// identifies a save. Admin may append a new version to restore earlier bytes;
+// user/import/backfill paths explicitly reuse the earliest matching version.
+// Hash lookups retain a non-unique index, and comparisons still detect that
+// content moved under a caller before a write.
 //
 // INVARIANT: these formulas are frozen. Every row already in the database was
 // keyed by the exact bytes below — changing a formula splits one logical version
 // into two, and makes a rollback unable to find the version it means to return
 // to. Changing one is a data migration with a rehash pass, not a refactor.
 // `character-content-identity.test.ts` pins each formula to a literal digest so
-// that an "innocent" edit fails in CI instead of in the unique index.
+// that an "innocent" formula edit fails in CI instead of splitting historical identity.
 //
 // INTENT: three shapes live here on purpose rather than being folded into one.
 // They hash different field sets read off different sources, so unifying them

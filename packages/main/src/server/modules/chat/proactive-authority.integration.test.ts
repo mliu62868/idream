@@ -280,6 +280,149 @@ async function clearWithoutChat(userId: string, characterId: string) {
 
 // SPEC: 额度只看 usage fact 本身；删消息/删会话不退额度，没拿到回复的 Turn 不扣额度。
 describe("daily allowance ledger", () => {
+  it("does not start a second reply by editing a newer blocked Turn", async () => {
+    const f = await fixture();
+    const active = await send(f);
+    const blocked = await send(f, "minor");
+    await expect(editChatTurn(f.userId, blocked.userMessage.id, "Hello again."))
+      .rejects.toMatchObject({ status: 409, message: "A reply is already generating" });
+    expect(await prisma.chatTurn.findUniqueOrThrow({ where: { id: active.snapshot!.turnId } }))
+      .toMatchObject({ assistantStatus: "pending", attempt: 1, executionSnapshot: active.snapshot });
+    expect(await prisma.chatTurn.count({ where: { sessionId: f.sessionId, assistantStatus: { in: ["pending", "generating"] } } }))
+      .toBe(1);
+  });
+
+  it("rejects a blocked-to-safe edit once the user's allowance is full", async () => {
+    const f = await fixture();
+    await exhaustDailyAllowance(f.userId, f.sessionId);
+    const blocked = await send(f, "minor");
+    expect(blocked.assistant.status).toBe("blocked");
+    await expect(editChatTurn(f.userId, blocked.userMessage.id, "Hello again."))
+      .rejects.toMatchObject({ status: 402 });
+    expect(await prisma.chatTurn.findUniqueOrThrow({ where: { userMessageId: blocked.userMessage.id } }))
+      .toMatchObject({ assistantStatus: "blocked", attempt: 1 });
+  });
+
+  it("reserves exactly one usage fact when a blocked Turn first becomes executable", async () => {
+    const f = await fixture();
+    const blocked = await send(f, "minor");
+    const edited = await editChatTurn(f.userId, blocked.userMessage.id, "Hello again.");
+    const turnId = edited.snapshot!.turnId;
+    expect(await prisma.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId } }))
+      .toMatchObject({ userId: f.userId, origin: "user", voidedAt: null });
+    await commitSent(edited.snapshot!, "Hello.");
+    // The independent memory worker is outside this quota fixture; acknowledge
+    // the edit's rebuild before exercising a subsequent revision.
+    await prisma.mainOutboxEvent.updateMany({
+      where: { aggregateId: `${f.userId}:${f.characterId}`, eventType: "chat.companion_memory.rebuild_requested.v1" },
+      data: { status: "delivered", deliveredAt: new Date() },
+    });
+    const other = await fixture(f.userId);
+    await exhaustDailyAllowance(f.userId, other.sessionId, FREE_DAILY_MESSAGES - 1);
+    // Paid-for revisions remain free even at the allowance boundary.
+    const revised = await regenerateChatTurn(f.userId, edited.assistantMessageId);
+    await commitSent(revised.snapshot, "Hello once more.");
+    expect(await prisma.chatTurnUsageFact.count({ where: { turnId } })).toBe(1);
+    await expect(send(f)).rejects.toMatchObject({ status: 402 });
+  });
+
+  it.each(["regenerate", "edit"] as const)("checks quota before %s restores a failed Turn in another session", async (revision) => {
+    const f = await fixture();
+    const failed = await send(f);
+    await commitFailed(failed.snapshot!);
+    const other = await fixture(f.userId);
+    await exhaustDailyAllowance(f.userId, other.sessionId);
+    await expect(revision === "regenerate"
+      ? regenerateChatTurn(f.userId, failed.assistant.id)
+      : editChatTurn(f.userId, failed.userMessage.id, "Hello again."))
+      .rejects.toMatchObject({ status: 402 });
+    expect(await prisma.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId: failed.snapshot!.turnId } }))
+      .toMatchObject({ voidedAt: expect.any(Date) });
+    expect(await prisma.chatTurn.findUniqueOrThrow({ where: { id: failed.snapshot!.turnId } }))
+      .toMatchObject({ assistantStatus: "failed", attempt: 1 });
+  });
+
+  it.each(["regenerate", "edit"] as const)("checks the original UTC day before a cross-day %s", async (revision) => {
+    const f = await fixture();
+    const old = await send(f, revision === "edit" ? "minor" : "Hello?");
+    if (revision === "regenerate") await commitFailed(old.snapshot!);
+    const turn = await prisma.chatTurn.findUniqueOrThrow({ where: { assistantMessageId: old.assistant.id } });
+    const yesterday = new Date();
+    yesterday.setUTCHours(0, 0, 0, 0);
+    yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+    await prisma.chatTurn.update({ where: { id: turn.id }, data: { createdAt: yesterday } });
+    await prisma.chatTurnUsageFact.updateMany({ where: { turnId: turn.id }, data: { productDay: yesterday } });
+    const other = await fixture(f.userId);
+    await exhaustDailyAllowance(f.userId, other.sessionId);
+    await prisma.chatTurnUsageFact.updateMany({
+      where: { userId: f.userId, turnId: { not: turn.id } }, data: { productDay: yesterday },
+    });
+    await expect(revision === "regenerate"
+      ? regenerateChatTurn(f.userId, old.assistant.id)
+      : editChatTurn(f.userId, old.userMessage.id, "Hello again."))
+      .rejects.toMatchObject({ status: 402 });
+    expect(await prisma.chatTurn.findUniqueOrThrow({ where: { id: turn.id } })).toMatchObject({ attempt: 1 });
+    expect(await prisma.chatTurnUsageFact.count({ where: { userId: f.userId, productDay: yesterday, voidedAt: null } }))
+      .toBe(FREE_DAILY_MESSAGES);
+  });
+
+  it.each(["regenerate", "edit"] as const)("restores an available original-day slot for %s even when today is full", async (revision) => {
+    const f = await fixture();
+    const old = await send(f, revision === "edit" ? "minor" : "Hello?");
+    if (revision === "regenerate") await commitFailed(old.snapshot!);
+    const turn = await prisma.chatTurn.findUniqueOrThrow({ where: { assistantMessageId: old.assistant.id } });
+    const yesterday = new Date();
+    yesterday.setUTCHours(0, 0, 0, 0);
+    yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+    await prisma.chatTurn.update({ where: { id: turn.id }, data: { createdAt: yesterday } });
+    await prisma.chatTurnUsageFact.updateMany({ where: { turnId: turn.id }, data: { productDay: yesterday } });
+    const other = await fixture(f.userId);
+    await exhaustDailyAllowance(f.userId, other.sessionId);
+    const revised = revision === "regenerate"
+      ? await regenerateChatTurn(f.userId, old.assistant.id)
+      : await editChatTurn(f.userId, old.userMessage.id, "Hello again.");
+    expect(revised.attempt).toBe(2);
+    expect(await prisma.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId: turn.id } }))
+      .toMatchObject({ productDay: yesterday, voidedAt: null });
+  });
+
+  it.each(["failed", "cancelled"] as const)("retains a consumed cancellation when its next attempt is %s", async (outcome) => {
+    const f = await fixture();
+    await exhaustDailyAllowance(f.userId, f.sessionId, FREE_DAILY_MESSAGES - 1);
+    const streaming = await send(f);
+    await prisma.chatTurn.update({
+      where: { id: streaming.snapshot!.turnId },
+      data: { assistantStatus: "generating", admittedAt: new Date() },
+    });
+    await cancelChatTurn(f.userId, streaming.assistant.id, 1);
+    const retry = await regenerateChatTurn(f.userId, streaming.assistant.id);
+    if (outcome === "failed") await commitFailed(retry.snapshot);
+    else await cancelChatTurn(f.userId, streaming.assistant.id, 2);
+    expect(await prisma.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId: retry.snapshot.turnId } }))
+      .toMatchObject({ voidedAt: null });
+    await expect(send(f)).rejects.toMatchObject({ status: 402 });
+  });
+
+  it("reserves the last allowance slot before concurrent failed-Turn revisions execute", async () => {
+    const first = await fixture();
+    const failedFirst = await send(first);
+    await commitFailed(failedFirst.snapshot!);
+    const second = await fixture(first.userId);
+    const failedSecond = await send(second);
+    await commitFailed(failedSecond.snapshot!);
+    const other = await fixture(first.userId);
+    await exhaustDailyAllowance(first.userId, other.sessionId, FREE_DAILY_MESSAGES - 1);
+    const revisions = await Promise.allSettled([
+      regenerateChatTurn(first.userId, failedFirst.assistant.id),
+      editChatTurn(first.userId, failedSecond.userMessage.id, "Hello again."),
+    ]);
+    expect(revisions.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(revisions.find((result) => result.status === "rejected"))
+      .toMatchObject({ reason: { status: 402 } });
+    expect(await prisma.chatTurnUsageFact.count({ where: { userId: first.userId, voidedAt: null, origin: "user" } }))
+      .toBe(FREE_DAILY_MESSAGES);
+  });
+
   it("does not hand the allowance back when the user deletes a message", async () => {
     const f = await fixture();
     await exhaustDailyAllowance(f.userId, f.sessionId, FREE_DAILY_MESSAGES - 1);
@@ -306,6 +449,8 @@ describe("daily allowance ledger", () => {
       .toMatchObject({ origin: "user", voidedAt: expect.any(Date) });
 
     const regenerated = await regenerateChatTurn(f.userId, failed.assistant.id);
+    expect(await prisma.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId: failed.snapshot!.turnId } }))
+      .toMatchObject({ voidedAt: null });
     await commitSent(regenerated.snapshot, "Here I am.");
     expect(await prisma.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId: failed.snapshot!.turnId } }))
       .toMatchObject({ voidedAt: null });
@@ -316,7 +461,7 @@ describe("daily allowance ledger", () => {
     const f = await fixture();
     await exhaustDailyAllowance(f.userId, f.sessionId, FREE_DAILY_MESSAGES - 1);
     const cancelled = await send(f);
-    await cancelChatTurn(f.userId, cancelled.assistant.id);
+    await cancelChatTurn(f.userId, cancelled.assistant.id, cancelled.snapshot!.attempt);
     const next = await send(f);
     expect(next.snapshot).not.toBeNull();
   });
@@ -329,7 +474,7 @@ describe("daily allowance ledger", () => {
       where: { id: streaming.snapshot!.turnId },
       data: { assistantStatus: "generating", admittedAt: new Date() },
     });
-    await cancelChatTurn(f.userId, streaming.assistant.id);
+    await cancelChatTurn(f.userId, streaming.assistant.id, streaming.snapshot!.attempt);
     expect(await prisma.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId: streaming.snapshot!.turnId } }))
       .toMatchObject({ voidedAt: null });
   });

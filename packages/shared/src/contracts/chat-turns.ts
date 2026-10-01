@@ -1,6 +1,20 @@
 import { z } from "zod";
 
 export const CHAT_PIN_LIMIT = 8;
+
+// Chat freezes the execution lifetime once. Main's recovery policy consumes
+// that commitment instead of guessing from another process's configuration.
+export const chatAgentRunAdmissionAckSchema = z.object({
+  ok: z.literal(true),
+  turnId: z.string().min(1),
+  attempt: z.number().int().positive(),
+  duplicate: z.boolean(),
+  terminal: z.boolean(),
+  deadlineAt: z.iso.datetime().nullable(),
+}).strict().refine(value => value.terminal || value.deadlineAt !== null, {
+  message: "An active AgentRun admission requires a frozen execution deadline",
+});
+export type ChatAgentRunAdmissionAck = z.infer<typeof chatAgentRunAdmissionAckSchema>;
 export const CHAT_PIN_MAX_CHARS = 500;
 export const CHAT_INSTRUCTION_MAX_CHARS = 1_500;
 export const GROUP_CHAT_MIN_MEMBERS = 2;

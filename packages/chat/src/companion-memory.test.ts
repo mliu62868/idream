@@ -1,5 +1,9 @@
-import { readFile, stat } from "node:fs/promises";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { createCompanionWorkspaceRebuildStream } from "@idream/shared/chat/companion-runtime";
 import { rebuildSpoolSessions, type CompanionWorkspaceRebuildSpool } from "./agent-runtime/rebuild-source";
 
@@ -10,8 +14,14 @@ const observed = vi.hoisted(() => ({
   zeroWrite: false,
   writeError: null as Error | null,
   syncError: null as Error | null,
+  osRoot: "",
+  afterTranscriptWrite: undefined as (() => void) | undefined,
   prepare: vi.fn(),
 }));
+vi.mock("node:os", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:os")>();
+  return { ...actual, tmpdir: () => observed.osRoot || actual.tmpdir() };
+});
 vi.mock("./agent-runtime/runtime.js", () => ({
   prepareCompanionWorkspaceRebuild: observed.prepare,
   promoteCompanionWorkspaceRebuild: vi.fn(),
@@ -23,18 +33,20 @@ vi.mock("node:fs/promises", async importOriginal => {
     ...actual,
     open: async (...args: Parameters<typeof actual.open>) => {
       const handle = await actual.open(...args);
-      if (String(args[0]).includes("idream-chat-rebuilds/") && /session-[a-f0-9]+\.jsonl$/u.test(String(args[0]))) {
+      if (/session-[a-f0-9]+\.jsonl$/u.test(String(args[0]))) {
         observed.paths.push(String(args[0]));
         const write = handle.write;
-        Object.defineProperty(handle, "write", { value: (...values: unknown[]) => {
+        Object.defineProperty(handle, "write", { value: async (...values: unknown[]) => {
           const content = Buffer.isBuffer(values[0])
             ? values[0].subarray(Number(values[1] ?? 0), Number(values[1] ?? 0) + Number(values[2] ?? values[0].length))
             : Buffer.from(String(values[0]));
           observed.writes.push(content.byteLength);
           if (observed.writeError) throw observed.writeError;
           if (observed.zeroWrite) return { bytesWritten: 0, buffer: content };
-          if (observed.shortWriteBytes) return Reflect.apply(write, handle, [content.subarray(0, observed.shortWriteBytes)]);
-          return Reflect.apply(write, handle, values);
+          const result = await Reflect.apply(write, handle, observed.shortWriteBytes
+            ? [content.subarray(0, observed.shortWriteBytes)] : values);
+          observed.afterTranscriptWrite?.();
+          return result;
         } });
         const sync = handle.sync;
         Object.defineProperty(handle, "sync", { value: () => {
@@ -46,7 +58,10 @@ vi.mock("node:fs/promises", async importOriginal => {
     },
   };
 });
-import { prepareCompanionMemory } from "./companion-memory";
+import { cleanupInterruptedCompanionMemorySpools, prepareCompanionMemory } from "./companion-memory";
+import { consumeAccountDeletionRequest } from "./account-deletion";
+
+let root = "";
 
 function messagesFor(sessionId: string, count: number, content?: string) {
   return Array.from({ length: count }, (_, index) => ({
@@ -71,17 +86,94 @@ async function expectDisposed() {
   for (const path of observed.paths) await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" });
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  root = await mkdtemp(join(tmpdir(), "idream-memory-staging-test-"));
+  process.env.CHAT_FS_ROOT = join(root, "chat");
+  observed.osRoot = join(root, "os");
   observed.writes = [];
   observed.paths = [];
   observed.shortWriteBytes = 0;
   observed.zeroWrite = false;
   observed.writeError = null;
   observed.syncError = null;
+  observed.afterTranscriptWrite = undefined;
   observed.prepare.mockReset();
 });
 
+afterEach(async () => {
+  observed.osRoot = "";
+  observed.afterTranscriptWrite = undefined;
+  vi.unstubAllGlobals();
+  delete process.env.CHAT_FS_ROOT;
+  await rm(root, { recursive: true, force: true });
+});
+
 describe("Chat memory transcript staging", () => {
+  it("keeps plaintext request spools inside the erasable user scope", async () => {
+    observed.prepare.mockImplementation(async (source: CompanionWorkspaceRebuildSpool) => {
+      const userHash = createHash("sha256").update("owned-user").digest("hex");
+      const ownedScope = join(root, "chat", "rebuild-spools", `user-${userHash}`);
+      expect(source.manifestPath.startsWith(`${ownedScope}/`)).toBe(true);
+      for await (const session of rebuildSpoolSessions(source)) {
+        expect(session.transcriptPath.startsWith(`${ownedScope}/`)).toBe(true);
+      }
+    });
+    await prepareCompanionMemory(rebuildRequest(messagesFor("owned-session", 2)));
+    await expectDisposed();
+  });
+
+  it("erases a partially staged request and rejects its later writes before acknowledging account deletion", async () => {
+    const original = rebuildRequest(messagesFor("interrupted-erasure-session", 2, "private erasure sentinel ".repeat(4000)));
+    const frames = (await original.text()).trimEnd().split("\n");
+    const stagedWrite = Promise.withResolvers<void>();
+    observed.afterTranscriptWrite = () => stagedWrite.resolve();
+    let bodyController!: ReadableStreamDefaultController<Uint8Array>;
+    const request = new Request(original.url, {
+      method: "POST", headers: original.headers,
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          bodyController = controller;
+          controller.enqueue(Buffer.from(`${frames.slice(0, -1).join("\n")}\n`));
+        },
+      }), duplex: "half",
+    } as RequestInit);
+    const preparing = prepareCompanionMemory(request);
+    // Observe the rejection immediately so the pending request cannot produce
+    // an unhandled failure while the deletion callback is still settling.
+    const outcome = preparing.then(() => "accepted", error => error);
+    await stagedWrite.promise;
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      await expectDisposed();
+      return Response.json({ acknowledged: true, status: "persisted", receiptId: "completion-erasure" });
+    }));
+    try {
+      await expect(consumeAccountDeletionRequest({
+        sourceService: "main", sourceEventId: "delete-staged-owned-user",
+        eventType: MAIN_TO_CHAT_EVENTS.accountDeletionRequestedV2, schemaVersion: 2,
+        occurredAt: "2026-09-30T12:00:00.000Z", aggregateType: "user", aggregateId: "owned-user",
+        payload: { userId: "owned-user" },
+      })).resolves.toMatchObject({ acknowledged: true });
+    } finally {
+      bodyController.enqueue(Buffer.from(`${frames.at(-1)}\n`));
+      bodyController.close();
+      await outcome;
+    }
+    expect(await outcome).toEqual(expect.objectContaining({ message: "Chat user is fenced" }));
+    expect(observed.prepare).not.toHaveBeenCalled();
+    await expectDisposed();
+  });
+
+  it("clears interrupted request files and recognized legacy OS spools during startup recovery", async () => {
+    const legacyFile = join(observed.osRoot, "idream-chat-rebuilds", "request-interrupted", "session-interrupted.jsonl");
+    const ownedFile = join(root, "chat", "rebuild-spools", "user-interrupted", "request-interrupted", "session-interrupted.jsonl");
+    for (const file of [legacyFile, ownedFile]) {
+      await mkdir(dirname(file), { recursive: true });
+      await writeFile(file, "private erasure sentinel\n");
+    }
+    await cleanupInterruptedCompanionMemorySpools();
+    for (const file of [legacyFile, ownedFile]) await expect(stat(file)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("batches small protocol fragments without changing the complete transcript or its private lifecycle", async () => {
     const messages = messagesFor("owned-session", 512);
     let bytes = 0;

@@ -1,12 +1,12 @@
 {
   "workflowKey": "qwen-image-edit-multi-reference",
-  "modelId": "qwen-image-edit-multi-reference",
+  "modelId": "redqw21-multi-reference",
   "backendKind": "comfyui",
   "comfyWorkflow": {
     "id": "8bf807d5-cfc7-4fb2-90d6-774b983df93c",
-    "name": "iDream · Qwen Image Edit · Identity + Source"
+    "name": "iDream \u00b7 REDQW21 V2 \u00b7 Identity + Source"
   },
-  "version": 3,
+  "version": 6,
   "negativePromptMode": "positive_instruction",
   "capabilities": [
     "img2img",
@@ -36,24 +36,17 @@
   },
   "apiPrompt": {
     "1": {
-      "class_type": "IDreamCheckpointModelVaeLoader",
+      "class_type": "UNETLoader",
       "inputs": {
-        "ckpt_name": "Qwen-Rapid-AIO-NSFW-v19.safetensors",
-        "weight_dtype": "fp8_e4m3fn",
-        "compute_dtype": "default"
-      }
-    },
-    "1:clip": {
-      "class_type": "IDreamFreshCheckpointCLIPLoader",
-      "inputs": {
-        "ckpt_name": "Qwen-Rapid-AIO-NSFW-v19.safetensors"
+        "unet_name": "redqw21_unlocked_v2_bf16.safetensors",
+        "weight_dtype": "default"
       }
     },
     "2": {
       "class_type": "KSampler",
       "inputs": {
         "model": [
-          "1",
+          "1:cache",
           0
         ],
         "positive": [
@@ -61,51 +54,57 @@
           0
         ],
         "negative": [
-          "4",
-          0
+          "900:0",
+          1
         ],
         "latent_image": [
-          "9",
-          0
+          "3",
+          2
         ],
         "seed": 0,
-        "steps": 4,
-        "cfg": 1,
-        "sampler_name": "sa_solver",
-        "scheduler": "beta",
+        "steps": 16,
+        "cfg": 2,
+        "sampler_name": "euler",
+        "scheduler": "simple",
         "denoise": 1
       }
     },
     "3": {
-      "class_type": "TextEncodeQwenImageEditPlus",
+      "class_type": "TextEncodeQwenImage21",
       "inputs": {
         "clip": [
-          "1:clip",
+          "4",
           0
         ],
         "vae": [
-          "1",
-          1
-        ],
-        "image1": [
-          "12",
+          "5",
           0
         ],
-        "image2": [
-          "8",
+        "prompt": "",
+        "negative_prompt": "",
+        "resolution": 0,
+        "images.image_1": [
+          "9",
           0
         ],
-        "prompt": ""
+        "images.image_2": [
+          "8:scale",
+          0
+        ]
       }
     },
     "4": {
-      "class_type": "TextEncodeQwenImageEditPlus",
+      "class_type": "IDreamFreshCLIPLoader",
       "inputs": {
-        "clip": [
-          "1:clip",
-          0
-        ],
-        "prompt": ""
+        "clip_name": "qwen3vl_8b_int8_convrot.safetensors",
+        "type": "qwen_image",
+        "device": "cpu"
+      }
+    },
+    "5": {
+      "class_type": "IDreamQwen21VAELoader",
+      "inputs": {
+        "vae_name": "qwen_image_2.1_vae_bf16.safetensors"
       }
     },
     "8": {
@@ -115,11 +114,16 @@
       }
     },
     "9": {
-      "class_type": "EmptyLatentImage",
+      "class_type": "ImageScale",
       "inputs": {
+        "image": [
+          "12",
+          0
+        ],
+        "upscale_method": "lanczos",
         "width": 832,
         "height": 1216,
-        "batch_size": 1
+        "crop": "disabled"
       }
     },
     "10": {
@@ -130,8 +134,8 @@
           0
         ],
         "vae": [
-          "1",
-          1
+          "5",
+          0
         ]
       }
     },
@@ -142,13 +146,36 @@
           "10",
           0
         ],
-        "filename_prefix": "idream_qwen_edit_multi"
+        "filename_prefix": "idream_redqw21_v2_multi-reference"
       }
     },
     "12": {
       "class_type": "LoadImage",
       "inputs": {
         "image": ""
+      }
+    },
+    "1:cache": {
+      "class_type": "QwenImage21Cache",
+      "inputs": {
+        "model": [
+          "1",
+          0
+        ],
+        "device": "auto",
+        "dtype": "default"
+      }
+    },
+    "8:scale": {
+      "class_type": "ImageScaleToTotalPixels",
+      "inputs": {
+        "image": [
+          "8",
+          0
+        ],
+        "upscale_method": "lanczos",
+        "megapixels": 1,
+        "resolution_steps": 32
       }
     },
     "900:0": {
@@ -159,11 +186,11 @@
           0
         ],
         "after": [
-          "4",
-          0
+          "3",
+          1
         ],
         "release": [
-          "1:clip",
+          "4",
           0
         ]
       }
@@ -182,8 +209,8 @@
       "key": "negative",
       "type": "text",
       "target": {
-        "nodeId": "4",
-        "field": "prompt"
+        "nodeId": "3",
+        "field": "negative_prompt"
       },
       "default": ""
     },
@@ -243,7 +270,7 @@
         "nodeId": "2",
         "field": "steps"
       },
-      "default": 4
+      "default": 16
     }
   ]
 }

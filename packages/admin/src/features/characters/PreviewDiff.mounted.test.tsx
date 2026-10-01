@@ -36,6 +36,7 @@ const blockedPreviewWorkspace = characterWorkspaceDetail({
   preview: {
     changedFields: ["imageUrl", "assetPack"],
     live: {
+      ...characterWorkspaceDetail().preview.draft,
       label: "Live",
       name: "Alexa Reeves",
       assetPack: {
@@ -73,6 +74,24 @@ afterEach(() => {
 });
 
 describe("Character launch preview — zh operators", () => {
+  it("compares saved text even while the image pack is incomplete", () => {
+    const base = characterWorkspaceDetail();
+    act(() => root.render(<PreviewDiff data={characterWorkspaceDetail({
+      project: { draftAssetRouteAuthority: { releaseReady: false } },
+      preview: {
+        changedFields: ["name", "opening"],
+        live: { ...base.preview.draft, label: "Live", name: "Live name", description: "Live description", opening: { firstMessage: "Live opening" } },
+        draft: { name: "Draft name", description: "Draft description", opening: { firstMessage: "Draft opening" }, assetPackReady: false },
+      },
+    })} />));
+    expect(container.textContent).toContain("Live name");
+    expect(container.textContent).toContain("Draft name");
+    expect(container.textContent).toContain("Live description");
+    expect(container.textContent).toContain("Draft description");
+    expect(container.textContent).toContain("Live opening");
+    expect(container.textContent).toContain("Draft opening");
+    expect(container.querySelector("iframe")).toBeNull();
+  });
   it("turns authority field keys into an operator-readable release summary", () => {
     expect(
       releasePreviewChangeSummary(["name", "opening", "assetPack"]),
@@ -138,7 +157,7 @@ describe("Character launch preview — zh operators", () => {
     expect(container.textContent).toContain("Live and draft are identical");
     expect(container.textContent).toContain("Nothing needs review or release");
     expect(container.textContent).not.toContain(
-      "Launch preview is waiting for the image pack",
+      "Full launch preview is waiting for the image pack",
     );
   });
 

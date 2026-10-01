@@ -1,6 +1,7 @@
 const { spawnSync } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
-const { existsSync } = require("node:fs");
+const { existsSync, readFileSync } = require("node:fs");
+const { createRequire } = require("node:module");
 const path = require("node:path");
 const {
   loadGenEnvironment,
@@ -18,6 +19,20 @@ const {
 } = require("./runtime-topology.cjs");
 
 const repoRoot = path.resolve(__dirname, "..");
+function asrEnvironment(environment) {
+  // Production is secret-manager owned; local audio settings share Main's
+  // existing .env authority rather than a second runtime configuration file.
+  if (environment.APP_ENV === "production") return environment;
+  const envPath = path.join(repoRoot, "packages/main/.env");
+  if (!existsSync(envPath)) return environment;
+  const { parse } = createRequire(path.join(repoRoot, "packages/main/package.json"))("dotenv");
+  const configured = parse(readFileSync(envPath));
+  const values = {};
+  for (const key of ["ASR_PROVIDER", "PARAKEET_ASR_API_URL", "PARAKEET_ASR_API_TOKEN"]) {
+    if (configured[key] !== undefined) values[key] = configured[key];
+  }
+  return { ...values, ...environment };
+}
 const productionGateCwd = path.join(repoRoot, "packages/main");
 const productionGenCwd = path.join(repoRoot, "packages/gen");
 const bunInterpreter = [
@@ -351,7 +366,16 @@ function verifyProductionRuntime(options) {
     cwd: repoRoot,
   });
   const voiceProbes = configuredVoiceRuntimeTargets(runtimeEnv).map((name) =>
-    name === "pocket-tts"
+    name === "parakeet-asr"
+      ? {
+          name,
+          command: "curl",
+          args: ["--fail", "--silent", "--show-error", "--connect-timeout", "2", "--max-time", "5", "--output", "/dev/null", "--config", "-", new URL("/health", runtimeEnv.PARAKEET_ASR_API_URL ?? "http://127.0.0.1:8064").href],
+          // Internal credentials must not appear in the command line / ps.
+          input: `header = "Authorization: Bearer ${String(runtimeEnv.PARAKEET_ASR_API_TOKEN ?? "").replace(/[\r\n"\\]/g, "")}"\n`,
+          cwd: repoRoot,
+        }
+      : name === "pocket-tts"
       ? curlProbe(
           name,
           `http://127.0.0.1:${runtimeEnv.POCKET_TTS_PORT ?? "8063"}/health`,
@@ -386,7 +410,8 @@ function verifyProductionRuntime(options) {
     const result = spawn(probe.command, probe.args, {
       cwd: probe.cwd,
       env: runtimeEnv,
-      stdio: "inherit",
+      stdio: probe.input ? ["pipe", "inherit", "inherit"] : "inherit",
+      ...(probe.input ? { input: probe.input } : {}),
     });
     if (result.error) throw result.error;
     if (result.status !== 0) {
@@ -511,9 +536,37 @@ function verifyGenImageWorkerOwnership({
   return result.status ?? 1;
 }
 
+// First launch after dependency installation can take longer than a warm
+// restart. Keep admission paused while the pinned native runtime loads.
+function verifyAsrRuntime({ spawnSync: spawn, runtimeEnv, attempts = 120, delay = blockingDelay }) {
+  if (runtimeEnv.ASR_PROVIDER !== "parakeet-redux") return 0;
+  const token = String(runtimeEnv.PARAKEET_ASR_API_TOKEN ?? "");
+  if (!token || /[\r\n"\\]/.test(token)) {
+    process.stderr.write("Parakeet ASR requires a valid internal token; Generation queues remain paused\n");
+    return 1;
+  }
+  const url = new URL("/health", runtimeEnv.PARAKEET_ASR_API_URL ?? "http://127.0.0.1:8064").href;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const result = spawn("curl", ["--fail", "--silent", "--connect-timeout", "1", "--max-time", "2", "--config", "-", url], {
+      cwd: repoRoot, env: runtimeEnv, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"],
+      input: `header = "Authorization: Bearer ${token}"\n`,
+    });
+    if (result.error) throw result.error;
+    if (result.status === 0) {
+      try {
+        const health = JSON.parse(result.stdout);
+        if (health.ready === true && health.model === "moondream/parakeet-redux" && health.modelRevision === "2bf128600aac4b16946f7ed8372e56117fe5e23b" && health.runtimeVersion === "2.6.1") return 0;
+      } catch { /* A TCP listener or unrelated service is not model readiness. */ }
+    }
+    if (attempt + 1 < attempts) delay(500);
+  }
+  process.stderr.write("Pinned Parakeet ASR did not become ready; Generation queues remain paused\n");
+  return 1;
+}
+
 function runPm2Ecosystem(options = {}) {
   const args = options.args ?? process.argv.slice(2);
-  const env = options.env ?? process.env;
+  const env = options.env ?? asrEnvironment(process.env);
   const spawn = options.spawnSync ?? spawnSync;
   const requestedMode = args[0] ?? "development";
   const action = args[1] ?? "start";
@@ -655,7 +708,7 @@ function runPm2Ecosystem(options = {}) {
     if (
       hasUnsafeProductionTarget(
         finalSnapshot.processes,
-        [...productionRuntimeTargets, "pocket-tts"],
+        [...productionRuntimeTargets, ...voiceRuntimeTargets],
       )
     ) {
       return 1;
@@ -716,6 +769,12 @@ function runPm2Ecosystem(options = {}) {
     env: runtimeEnv,
     stdio: "ignore",
   });
+  if (runtimeEnv.ASR_PROVIDER === "parakeet-redux" || quiescedProcesses.some(process => process?.name === "parakeet-asr")) {
+    const deleted = spawn("pm2", ["delete", "parakeet-asr"], { cwd: repoRoot, env: runtimeEnv, stdio: "ignore" });
+    if (deleted.error) throw deleted.error;
+    if (deleted.status !== 0 && quiescedProcesses.some(process => process?.name === "parakeet-asr")) return deleted.status ?? 1;
+    // A missing optional process is expected on the first enabled start.
+  }
 
   const pm2Args =
     action === "start" || definitionRecreated
@@ -730,6 +789,9 @@ function runPm2Ecosystem(options = {}) {
   if (result.status !== 0) {
     return result.status ?? 1;
   }
+
+  const asrReady = (options.verifyAsrRuntime ?? verifyAsrRuntime)({ spawnSync: spawn, runtimeEnv });
+  if (asrReady !== 0) return asrReady;
 
   if (mode === "production") {
     const verifyRuntime =
@@ -770,6 +832,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  verifyAsrRuntime,
   productionAdmissionTargets,
   productionDrainWorkerTargets,
   productionQuiescenceTargets,

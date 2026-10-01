@@ -9,6 +9,7 @@
 //            leave the customer paying for output they never received.
 import type { Prisma } from "@prisma/client";
 import { refundGenerationRequest } from "@/server/ai/generation-refund";
+import { lockGenerationRequestForSettlement } from "@/server/ai/generation-settlement";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
@@ -174,18 +175,24 @@ export async function discardGenerationDeadLetterBatch(request: Request) {
     mutate: async (tx) => {
       const jobs = await tx.generationJob.findMany({
         where: operationalGenerationJobWhere({ id: { in: [...body.jobIds] } }),
+        select: { id: true, userId: true },
       });
+      // A batch can span wallets. Own all of them in a consistent order before
+      // taking any Request lock, regardless of findMany's unspecified row order.
+      for (const userId of [...new Set(jobs.map(job => job.userId))].sort()) {
+        await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${userId} FOR UPDATE`;
+      }
       const discarded: string[] = [];
       const refundedNow: string[] = [];
       const skipped: { id: string; reason: string }[] = [];
       for (const job of jobs) {
-        if (!isDiscardable(job.status)) {
+        const settlement = await refundDiscardableJob(tx, job.id);
+        if (!settlement) {
           skipped.push({ id: job.id, reason: "not_discardable" });
           continue;
         }
-        const didRefund = await refundDiscardableJob(tx, job);
         discarded.push(job.id);
-        if (didRefund) refundedNow.push(job.id);
+        if (settlement.refunded) refundedNow.push(job.id);
       }
       for (const id of missingIds([...body.jobIds], jobs)) skipped.push({ id, reason: "not_found" });
       await writeDeadLetterAudit(tx, actor, requestId, {
@@ -258,14 +265,16 @@ export async function discardGenerationDeadLetterJob(request: Request, jobId: st
     target: { type: "generation_job", id: jobId },
     payload: body,
     mutate: async (tx) => {
-      const job = await tx.generationJob.findFirst({
+      const target = await tx.generationJob.findFirst({
         where: operationalGenerationJobWhere({ id: jobId }),
+        select: { id: true },
       });
-      if (!job) throw Errors.notFound("Generation job not found");
-      if (!isDiscardable(job.status)) {
+      if (!target) throw Errors.notFound("Generation job not found");
+      const settlement = await refundDiscardableJob(tx, target.id);
+      if (!settlement) {
         throw Errors.badRequest("Only failed, blocked, or refunded jobs can be discarded");
       }
-      const refunded = await refundDiscardableJob(tx, job);
+      const { job, refunded } = settlement;
       await writeDeadLetterAudit(tx, actor, requestId, {
         action: "ops.deadletter.discard",
         targetType: "generation_job",
@@ -346,9 +355,10 @@ function retryEligibilityWithPin(
 
 async function refundDiscardableJob(
   tx: Prisma.TransactionClient,
-  job: { id: string; userId: string; costDreamcoins: number; errorCode: string | null },
+  jobId: string,
 ) {
-  await tx.$queryRaw`SELECT id FROM "generation_jobs" WHERE id = ${job.id} FOR UPDATE`;
+  const job = await lockGenerationRequestForSettlement(tx, jobId);
+  if (!isDiscardable(job.status)) return null;
   const amount = await refundGenerationRequest(tx, {
     requestId: job.id,
     userId: job.userId,
@@ -373,7 +383,7 @@ async function refundDiscardableJob(
       },
     });
   }
-  return amount > 0;
+  return { job, refunded: amount > 0 };
 }
 
 async function refundedJobIds(

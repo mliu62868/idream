@@ -1,12 +1,18 @@
 # iDream 剩余工作执行计划
 
-更新日期：2026-09-09
+更新日期：2026-09-30
 
 本文件只保留尚未完成的工作。已完成能力与历史运行证据见 `CURRENT_FUNCTIONAL_COVERAGE.md`。
 
 2026-09-02 起的多轮审计已实际完成 Create、单角色 Chat、图片、默认 RedGraft 视频、Admin 角色与客服运营的核心闭环。候选 `ab995512…` 的 4,955 条默认测试、146/146 Chrome、正式自然记忆与模型交付证据见 `CURRENT_FUNCTIONAL_COVERAGE.md`；最新增量验证及各版本归属见 `.tmp/product-audit-20260902/FINAL_REPORT.md` 和 `iteration3-validation.json`。H3 最新样本未通过视觉验收，已停用前台新选择，不能将其技术交付成功视为质量合格。支付、年龄检查与合规不在本轮范围。
 
 分期统一见 [PRD §12](PRD.md#12-交付阶段与完整范围)。2026-09-06 用户已确认先集中完成核心体验、默认路线性能和可信运营数据；这调整工作顺序，不删除完整 OurDream 对标需求。当前实现与本轮验收入口见 [核心体验验证](CORE_EXPERIENCE_VALIDATION.md)。
+
+## 2026-09-30 语音输入发布资格
+
+Mic → draft → 明确 Send 的单聊/群聊实现及受控真实链路已完成，见当前覆盖及 `.scratch/chat-voice-input/VERIFICATION.md`；不再把按钮、ASR gateway 或免费输入计费隔离列为待实现，也不把这项能力当作双向 Voice Call。
+
+固定 Parakeet Redux 的本次真实质量筛选失败：希腊语普通 WER 36.34%，法语 / 德语白噪声样本超门槛，法语含方向意义错误。下一步须解决这些已复现误差并补齐其余 19 语、每语至少三说话人、真实耳语及真实环境噪声、陪伴情境词汇与人工关键意义验收；完整材料要求见 `.scratch/chat-voice-input/PRD.md`。公开 FLEURS 朗读和数学衰减 / 加噪不替代上述材料。还须验证实际桌面 Chrome / Firefox / Safari、iOS Safari / Android Chrome 的权限、录音格式、中断与 Done→draft p95，以及目标部署的 RSS / 持续负载和 Photon usage 遥测出站策略。当前真实 gateway p95 与两次虚拟输入浏览器延迟不签发这些发布门禁。
 
 ## 下一工作顺序
 

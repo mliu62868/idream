@@ -25,11 +25,13 @@ const {
   resolveCurrentPm2Mode,
   runPm2Ecosystem,
   verifyProductionRuntime,
+  verifyAsrRuntime,
 } = require("./start-pm2-ecosystem.cjs");
 
 function loadConfig(mode, overrides = {}) {
   const originalMode = process.env.IDREAM_PM2_MODE;
   const originalVideoProvider = process.env.GEN_VIDEO_PROVIDER;
+  const originalAsrProvider = process.env.ASR_PROVIDER;
   const originalVoiceProvider = process.env.VOICE_PROVIDER;
   const originalVoiceIdentityProvider = process.env.VOICE_IDENTITY_PROVIDER;
   try {
@@ -46,6 +48,7 @@ function loadConfig(mode, overrides = {}) {
     } else {
       process.env.GEN_VIDEO_PROVIDER = videoProvider;
     }
+    process.env.ASR_PROVIDER = overrides.ASR_PROVIDER ?? "disabled";
     process.env.VOICE_PROVIDER = overrides.VOICE_PROVIDER ?? "pocket-tts";
     // An absent variable intentionally falls back to the operator's .env in
     // production. Fixture defaults must shadow it; individual cases opt in.
@@ -73,6 +76,8 @@ function loadConfig(mode, overrides = {}) {
     } else {
       process.env.VOICE_IDENTITY_PROVIDER = originalVoiceIdentityProvider;
     }
+    if (originalAsrProvider === undefined) delete process.env.ASR_PROVIDER;
+    else process.env.ASR_PROVIDER = originalAsrProvider;
     delete require.cache[require.resolve(configPath)];
   }
 }
@@ -210,7 +215,10 @@ test("development is the source-backed default", () => {
   assert.deepEqual(chat.watch, [
     path.join(repoRoot, "packages/chat/src"),
     path.join(repoRoot, "packages/shared/src"),
+    path.join(repoRoot, "scripts/start-chat.cjs"),
   ]);
+  assert.equal(chat.script, "../../scripts/start-chat.cjs");
+  assert.equal(chat.args, "src/main.ts");
   assert.equal(chat.watch_delay, 500);
   assert.equal(genImage.instances, 1);
   assert.equal(
@@ -440,13 +448,14 @@ test("production keeps immutable standalone web releases and disables watch", ()
 test("production runs Bun-built worker artifacts instead of TypeScript source", () => {
   const config = loadConfig("production");
   const expectedScripts = new Map([
-    ["chat", "dist/main.js"],
+    ["chat", "../../scripts/start-chat.cjs"],
     ["gen-image", "dist/image.js"],
     ["gen-video", "dist/video.js"],
     ["gen-finalizer", "dist/finalizer.js"],
     ["main-event-consumer", "dist/event-consumer.js"],
     ["admin-command-worker", "dist/admin-command-worker.js"],
   ]);
+  assert.equal(byName(config, "chat").args, "dist/main.js");
   for (const [name, script] of expectedScripts) {
     assert.equal(byName(config, name).script, script);
   }
@@ -2074,4 +2083,34 @@ test("orphan recovery package scripts preserve explicit quiesce, plan and apply 
       apply: "bun scripts/recover-gen-worker-orphans.cjs apply",
     },
   );
+});
+
+
+test("ASR readiness requires the pinned ready model and keeps its token off argv", () => {
+  const calls = [];
+  const runtimeEnv = { ASR_PROVIDER: "parakeet-redux", PARAKEET_ASR_API_TOKEN: "fixture-private", PARAKEET_ASR_API_URL: "http://127.0.0.1:8064" };
+  const ready = { ready: true, model: "moondream/parakeet-redux", modelRevision: "2bf128600aac4b16946f7ed8372e56117fe5e23b", runtimeVersion: "2.6.1" };
+  assert.equal(verifyAsrRuntime({ runtimeEnv, attempts: 2, delay() {}, spawnSync: scriptedSpawn([
+    { status: 0, stdout: JSON.stringify({ ...ready, ready: false }) },
+    { status: 0, stdout: JSON.stringify(ready) },
+  ], calls) }), 0);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].args.join(" ").includes("fixture-private"), false);
+  assert.match(calls[0].options.input, /fixture-private/);
+  assert.equal(verifyAsrRuntime({ runtimeEnv, attempts: 1, spawnSync: () => ({ status: 0, stdout: JSON.stringify({ ...ready, modelRevision: "wrong" }) }) }), 1);
+  let coldStartProbes = 0;
+  assert.equal(verifyAsrRuntime({ runtimeEnv, delay() {}, spawnSync: () => {
+    coldStartProbes += 1;
+    return { status: 0, stdout: JSON.stringify({ ...ready, ready: coldStartProbes > 30 }) };
+  } }), 0);
+  assert.equal(coldStartProbes, 31);
+});
+
+test("ASR topology is optional and uses one offline resident process", () => {
+  const config = loadConfig("development", { ASR_PROVIDER: "parakeet-redux" });
+  const asr = byName(config, "parakeet-asr");
+  assert.equal(asr.instances, 1);
+  assert.equal(asr.kill_timeout, 35000);
+  assert.equal(asr.env.HF_HUB_OFFLINE, "1");
+  assert.equal(loadConfig().apps.some(app => app.name === "parakeet-asr"), false);
 });

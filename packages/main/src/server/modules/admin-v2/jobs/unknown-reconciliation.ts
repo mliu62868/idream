@@ -15,7 +15,7 @@ import {
   type GenerationAttempt,
   type GenerationJob,
 } from "@prisma/client";
-import { ensureGenerationSettlementLinks } from "@/server/ai/generation-settlement";
+import { ensureGenerationSettlementLinks, lockGenerationRequestForSettlement } from "@/server/ai/generation-settlement";
 import { refundGenerationRequest } from "@/server/ai/generation-refund";
 import { removeGenerationAttemptQueueJob } from "@/server/ai/generation-attempt-queue";
 import { transitionGenerationRequest } from "@/server/ai/generation-request-transition";
@@ -111,15 +111,16 @@ export async function reconcileUnknownGenerationRequest(input: {
     });
     if (replay) return replayUnknownReconciliation(replay, requestHash);
 
-    const requestLock = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-      SELECT id FROM generation_jobs WHERE id = ${input.requestId} FOR UPDATE
-    `);
-    if (requestLock.length !== 1) {
-      throw Errors.notFound("Generation Request not found");
+    let request: GenerationJob;
+    if (input.command.resolution === "remain_unknown") {
+      const requestLock = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+        SELECT id FROM generation_jobs WHERE id = ${input.requestId} FOR UPDATE
+      `);
+      if (requestLock.length !== 1) throw Errors.notFound("Generation Request not found");
+      request = await tx.generationJob.findUniqueOrThrow({ where: { id: input.requestId } });
+    } else {
+      request = await lockGenerationRequestForSettlement(tx, input.requestId);
     }
-    const request = await tx.generationJob.findUniqueOrThrow({
-      where: { id: input.requestId },
-    });
     if (request.version !== input.command.entityVersion) {
       throw Errors.conflict("Generation Request changed before unknown reconciliation", {
         expectedVersion: input.command.entityVersion,

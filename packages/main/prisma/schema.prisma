@@ -775,6 +775,7 @@ model ChatTurn {
   admissionLeaseUntil           DateTime?
   admissionLastError            Json?
   admittedAt                    DateTime?
+  executionDeadlineAt           DateTime?
   statsCountedAt                DateTime?
   sceneVersion                  Int                  @default(0)
   scene                         Json?
@@ -788,6 +789,7 @@ model ChatTurn {
   @@unique([sessionId, idempotencyKey])
   @@index([sessionId, createdAt])
   @@index([assistantStatus, updatedAt])
+  @@index([assistantStatus, executionDeadlineAt])
   @@index([assistantStatus, admissionNextRunAt, admissionLeaseUntil])
   @@map("chat_turns")
 }
@@ -795,13 +797,15 @@ model ChatTurn {
 // One accepted product Turn consumes one daily allowance, even when privacy
 // operations later remove the mutable transcript row. The allowance question is
 // answered from this row alone: origin is copied from the Turn at admission and
-// voidedAt marks a Turn that never produced a reply the user could keep.
+// voidedAt marks a Turn that never produced a reply the user could keep;
+// consumedAt survives revisions, including an admitted cancellation with no stats.
 model ChatTurnUsageFact {
   turnId     String    @id
   userId     String
   productDay DateTime  @db.Date
   origin     String    @default("user") // user | proactive
   voidedAt   DateTime?
+  consumedAt DateTime?
   createdAt  DateTime  @default(now())
   user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -1923,7 +1927,8 @@ model CharacterContentVersion {
   currentForCharacters Character[] @relation("CharacterCurrentContentVersion")
 
   @@unique([characterId, version])
-  @@unique([characterId, contentHash])
+  // Restoring prior content appends a version; the hash identifies bytes, not a save.
+  @@index([characterId, contentHash])
   @@unique([id, characterId], map: "character_content_versions_id_characterId_key")
   @@index([sourceType, sourceId])
   @@map("character_content_versions")

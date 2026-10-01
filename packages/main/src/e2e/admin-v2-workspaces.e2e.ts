@@ -1154,9 +1154,10 @@ test.describe.serial("Admin v2 operator workspaces", () => {
           label: "E2E pipeline identity route",
           mode: "image",
           runner: "comfyui",
-          pipelineModel: "qwen-image-edit",
+          pipelineModel: identityWorkflow.modelId,
           workflowKey: "qwen-image-edit-img2img",
           runnerConfig: {
+            workflowVersion: identityWorkflowVersion,
             capabilities: {
               textToImage: false,
               stableSeed: true,

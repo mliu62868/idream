@@ -156,6 +156,39 @@ class MemoryLifecycleTest(unittest.TestCase):
             math.isnan(memory_lifecycle.IDreamFreshCLIPLoader.IS_CHANGED()),
         )
 
+    def test_releases_declared_mps_clip_without_unloading_live_mps_models(self):
+        text_encoder = FakeLoadedModel("mps", size_mb=14_613)
+        diffusion_model = FakeLoadedModel("mps", size_mb=16_201)
+        vae = FakeLoadedModel("mps", size_mb=4_000)
+        owner = types.SimpleNamespace(
+            patcher=text_encoder.model,
+            cond_stage_model=text_encoder.model.model,
+        )
+        fake_management.current_loaded_models = [text_encoder, diffusion_model, vae]
+
+        memory_lifecycle.release_off_device_models(owner)
+
+        self.assertEqual(text_encoder.unload_calls, [None])
+        self.assertEqual(diffusion_model.unload_calls, [])
+        self.assertEqual(vae.unload_calls, [])
+        self.assertEqual(fake_management.current_loaded_models, [diffusion_model, vae])
+        self.assertIsNone(owner.cond_stage_model)
+        self.assertIsNone(owner.patcher.model)
+
+    def test_failed_completed_owner_unload_preserves_owner_and_registration(self):
+        text_encoder = FakeLoadedModel(
+            "mps", size_mb=14_613, unload_error=RuntimeError("cannot unload"),
+        )
+        model = text_encoder.model.model
+        owner = types.SimpleNamespace(patcher=text_encoder.model, cond_stage_model=model)
+        fake_management.current_loaded_models = [text_encoder]
+
+        memory_lifecycle.release_off_device_models(owner)
+
+        self.assertEqual(fake_management.current_loaded_models, [text_encoder])
+        self.assertIs(owner.cond_stage_model, model)
+        self.assertIs(owner.patcher.model, model)
+
 
 if __name__ == "__main__":
     unittest.main()

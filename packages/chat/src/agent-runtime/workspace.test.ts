@@ -5,11 +5,33 @@ import type {
   CompanionWorkspaceRebuildFence,
 } from "@idream/shared/chat/companion-runtime";
 import type { CompanionInvocation } from "./contracts";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AttemptWorkspaceStore,
   relationshipWorkspacePath,
 } from "./workspace";
+
+const filesystemFaults = vi.hoisted(() => ({
+  rename: undefined as ((from: string, to: string) => Error | undefined) | undefined,
+  readdir: undefined as ((directory: string) => Error | undefined) | undefined,
+}));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    rename: async (...args: Parameters<typeof actual.rename>) => {
+      const failure = filesystemFaults.rename?.(String(args[0]), String(args[1]));
+      if (failure) throw failure;
+      return actual.rename(...args);
+    },
+    readdir: async (...args: Parameters<typeof actual.readdir>) => {
+      const failure = filesystemFaults.readdir?.(String(args[0]));
+      if (failure) throw failure;
+      return actual.readdir(...args);
+    },
+  };
+});
 
 const temporary: string[] = [];
 
@@ -22,6 +44,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  filesystemFaults.rename = undefined;
+  filesystemFaults.readdir = undefined;
   delete process.env.CHAT_FS_ROOT;
   await Promise.all(temporary.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
@@ -321,6 +345,67 @@ describe("Chat companion workspace", () => {
       ".igrep",
       "memory.txt",
     ), "utf8")).toBe("user-2");
+  });
+
+  it("keeps the published pointer valid when quarantine fails after moving the old version", async () => {
+    const { store, canonicalRoot } = await fixture();
+    const identity = { userId: "user-1", characterId: "character-1" };
+    await rebuildRelationship(store, identity, async (workspace) => {
+      await writeFile(join(workspace, ".igrep", "memory.txt"), "old source");
+    });
+    const nextFence = fence("2");
+    const next = await store.prepareRelationshipRebuild(identity, nextFence, { seed: "empty" }, async (workspace) => {
+      await writeFile(join(workspace, ".igrep", "memory.txt"), "new source");
+      return { sessions: 1, messages: 2 };
+    });
+    const relationship = relationshipWorkspacePath(canonicalRoot, identity.userId, identity.characterId);
+    const candidateRoot = join(relationship, ".rebuild-candidates", next.rebuildId);
+    filesystemFaults.rename = (from) => from === candidateRoot ? new Error("candidate quarantine failed") : undefined;
+
+    const promotion = { ...identity, rebuildId: next.rebuildId, fence: nextFence };
+    await expect(store.promoteRelationshipRebuild(promotion)).rejects.toThrow("candidate quarantine failed");
+    expect(await readFile(join(relationship, ".igrep", "memory.txt"), "utf8")).toBe("new source");
+    const attempt = await store.prepare(invocation("normal"));
+    expect(await readFile(join(attempt.path, ".igrep", "memory.txt"), "utf8")).toBe("new source");
+    await attempt.discard();
+
+    filesystemFaults.rename = undefined;
+    await expect(store.promoteRelationshipRebuild(promotion)).resolves.toEqual({ sessions: 1, messages: 2 });
+    await expect(lstat(candidateRoot)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("retries incomplete quarantine even after the exact published candidate metadata moved", async () => {
+    const { store, canonicalRoot } = await fixture();
+    const identity = { userId: "user-1", characterId: "character-1" };
+    await rebuildRelationship(store, identity, async (workspace) => {
+      await writeFile(join(workspace, ".igrep", "memory.txt"), "old source");
+    });
+    const stale = await store.prepareRelationshipRebuild(identity, fence("1"), { seed: "empty" }, async (workspace) => {
+      await writeFile(join(workspace, ".igrep", "memory.txt"), "revoked private source");
+      return { sessions: 1, messages: 2 };
+    });
+    const nextFence = fence("2");
+    const next = await store.prepareRelationshipRebuild(identity, nextFence, { seed: "empty" }, async (workspace) => {
+      await writeFile(join(workspace, ".igrep", "memory.txt"), "new source");
+      return { sessions: 1, messages: 2 };
+    });
+    const relationship = relationshipWorkspacePath(canonicalRoot, identity.userId, identity.characterId);
+    const candidatesRoot = join(relationship, ".rebuild-candidates");
+    filesystemFaults.readdir = (directory) => directory === candidatesRoot ? new Error("candidate scan failed") : undefined;
+
+    const promotion = { ...identity, rebuildId: next.rebuildId, fence: nextFence };
+    await expect(store.promoteRelationshipRebuild(promotion)).rejects.toThrow("candidate scan failed");
+    expect(await readFile(join(relationship, ".igrep", "memory.txt"), "utf8")).toBe("new source");
+    await expect(lstat(join(candidatesRoot, next.rebuildId))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(join(candidatesRoot, stale.rebuildId, "workspace", ".igrep", "memory.txt"), "utf8"))
+      .toBe("revoked private source");
+    // Losing metadata is not an ACK: the remaining isolation work must run again.
+    await expect(store.promoteRelationshipRebuild(promotion)).rejects.toThrow("candidate scan failed");
+
+    filesystemFaults.readdir = undefined;
+    await expect(store.promoteRelationshipRebuild(promotion)).resolves.toEqual({ sessions: 0, messages: 0 });
+    await expect(lstat(join(candidatesRoot, stale.rebuildId))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(join(relationship, ".igrep", "memory.txt"), "utf8")).toBe("new source");
   });
 
   it("fences rebuild preparation and promotion after a user purge", async () => {

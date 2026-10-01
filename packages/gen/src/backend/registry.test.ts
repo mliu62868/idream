@@ -245,7 +245,9 @@ describe("buildBackendRegistry", () => {
       source_image: "anchor.png",
       seed: 7,
     });
-    expect(qwenPrompt["4"].inputs.prompt).toBe("text, watermark, duplicate person");
+    expect(qwenPrompt["3"].inputs.negative_prompt).toBe("text, watermark, duplicate person");
+    expect(qwenPrompt["2:noise"].inputs.noise_seed).toBe(7);
+    expect(qwenPrompt["2:sigmas"].inputs.steps).toBe(6);
 
     const multiIdentity = registry.resolveForModel(
       "qwen-image-edit-multi-identity",
@@ -258,8 +260,8 @@ describe("buildBackendRegistry", () => {
       seed: 8,
     });
     expect(multiIdentityPrompt["3"].inputs).toMatchObject({
-      image1: ["8", 0],
-      image2: ["12", 0],
+      "images.image_1": ["8", 0],
+      "images.image_2": ["12", 0],
     });
     expect(multiIdentityPrompt["8"].inputs.image).toBe("anchor.png");
     expect(multiIdentityPrompt["12"].inputs.image).toBe("look.png");
@@ -275,8 +277,8 @@ describe("buildBackendRegistry", () => {
       seed: 9,
     });
     expect(multiReferencePrompt["3"].inputs).toMatchObject({
-      image1: ["12", 0],
-      image2: ["8", 0],
+      "images.image_1": ["9", 0],
+      "images.image_2": ["8:scale", 0],
     });
     expect(multiReferencePrompt["8"].inputs.image).toBe("identity.png");
     expect(multiReferencePrompt["12"].inputs.image).toBe("source.png");

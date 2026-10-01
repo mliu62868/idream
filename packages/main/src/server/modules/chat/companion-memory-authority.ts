@@ -66,19 +66,31 @@ export async function scheduleCompanionMemoryProjection(
   input: { userId: string; characterId: string },
 ): Promise<string> {
   const aggregateId = companionRelationshipAggregateId(input.userId, input.characterId);
-  // A pending full projection reads Main only when delivered, so it already
-  // includes every newer accepted Turn and can safely coalesce them.
+  // Only an unattempted projection can absorb newer accepted Turns. A retry
+  // may already have published its authority version before losing the ACK;
+  // that version's immutable publication cannot absorb a later source export.
   const existing = await tx.mainOutboxEvent.findFirst({
     where: {
       eventType: MAIN_TO_CHAT_EVENTS.companionMemoryProjectRequestedV1,
       aggregateType: "chat_relationship",
       aggregateId,
       status: "pending",
+      attempts: 0,
     },
     orderBy: { createdAt: "desc" },
     select: { id: true },
   });
-  if (existing) return existing.id;
+  if (existing) {
+    // Hold the event row until this source transaction commits. The dispatcher
+    // claim uses advisory -> event-row locks without taking the user lock, so
+    // this user -> event-row order cannot introduce a reverse dependency.
+    // If a claim won since the read, schedule a fresh authority instead.
+    const coalesced = await tx.mainOutboxEvent.updateMany({
+      where: { id: existing.id, status: "pending", attempts: 0 },
+      data: { status: "pending" },
+    });
+    if (coalesced.count === 1) return existing.id;
+  }
   const authority = await tx.companionMemoryAuthority.upsert({
     where: { aggregateId },
     create: { aggregateId, version: BigInt(1) },

@@ -61,6 +61,7 @@ PM2 starts the product topology from `ecosystem.config.js`:
 | PM2 app | Default port | Description |
 | --- | --- | --- |
 | `fish-audio` | 8062 | Fish Audio voice gateway |
+| `parakeet-asr` | 8064 | Optional resident Parakeet Redux speech input |
 | `main-web` | 3000 | Public app and `/api/v1/*` (Next dev + Fast Refresh by default) |
 | `admin-web` | 3001 | Admin console (Next dev + Fast Refresh by default) |
 | `chat` | `CHAT_PORT` | Chat API/SSE |
@@ -147,6 +148,88 @@ use the controlled teardown procedure in the operations runbook. Ordinary
 development source changes do not need a mode switch. `bun run pm2:stop` is also
 gated: it drains Generation, proves quiescent ownership, stops voice last, and
 leaves the Generation queues paused for the next controlled start.
+
+## Chat Runtime
+
+Chat embeds DSH `0.2.0-rc.2` and the official igrep plugin. After updating the
+system igrep CLI, refresh its dedicated profiles and verify the installed code:
+
+```bash
+bun run dsh-companion:setup
+bun run dsh-companion:check
+```
+
+Main's committed Turns own memory. Chat projects them through official igrep
+ingest/maintain, reads wake once before the first model request, and uses fast
+recall plus the read-only `memory_search` tool. Plugin auto-ingest, auto-wake,
+maintenance timers, and session archives are disabled. Private execution exposes
+neither memory nor session recall. Bootstrap compares the shipped and installed
+JavaScript because the plugin package version can stay `0.1.0` across CLI releases.
+For igrep `0.1.150`, projection verifies both searchable `[timestamp, content]`
+dialogue tuples and the separate role-bearing session sources against Main.
+The dialogue v3 transport is decoded strictly; only structured date insertions
+may accompany the unchanged source text. Canonical session text, roles and
+timestamps must still match Main exactly. This does not certify the semantic
+correctness of igrep's relative-date interpretation.
+Each normal attempt runs official zero-model `mem reproject` on its owned copy
+before wake/recall, restoring source-file witnesses changed by copying. Incomplete
+recall warnings fail the attempt; they cannot masquerade as an empty memory.
+Full runtime certification exercises both empty and populated rebuilds.
+Apply a running-process update through the controlled PM2 wrapper described above.
+
+## Chat Voice Input
+
+Single and group chats support dictation into an editable draft. Click the
+microphone, record for up to 60 seconds, select Done, review the text, then Send.
+Transcription does not create a Turn or consume messages, Dreamcoins, or TTS
+minutes. Existing drafts are appended; changed drafts or group recipients require
+confirmation. Cancel, leaving the page, and account changes revoke delivery and
+release microphone tracks. Backgrounding stops capture and asks whether to
+transcribe the clip. Retry audio and server-side candidates expire from memory within two minutes;
+no recording is stored in the product database or media storage.
+
+Enable in `packages/main/.env` (production uses the secret manager):
+
+```dotenv
+ASR_PROVIDER=parakeet-redux
+PARAKEET_ASR_API_URL=http://127.0.0.1:8064
+PARAKEET_ASR_API_TOKEN=<random-private-token>
+```
+
+Install `uv` and `ffmpeg`, then prepare the hashed dependencies and fixed model
+snapshot before starting through the controlled PM2 wrapper:
+
+```bash
+bun run voice:asr:install
+bun run test:voice:asr
+bun run pm2:restart
+```
+
+The optional process runs one offline CPU Photon worker, with a private Bearer
+token and readiness checks for `moondream==2.6.1` and model revision
+`2bf128600aac4b16946f7ed8372e56117fe5e23b`. Configure an internal URL reachable by
+Main and keep port 8064 private. Limit each recording to 8 MiB; decoded audio is
+also bounded to 60 seconds. All Main instances share the gateway's per-user
+admission (one active request, ten new requests/minute), one inference slot, four
+queue positions, a two-second queue wait, and a thirty-second execution deadline.
+Cancellation suppresses delivery immediately but retains the inference slot until
+native execution returns. Temporary decoded files are removed after native
+execution; results are memory-only and fetched candidates are deleted.
+
+Supported language codes: `bg hr cs da nl en et fi fr de el hu it lv lt mt pl pt
+ro ru sk sl es sv uk`. This list does not imply every European language or equal
+accuracy across languages. A supported recording browser and HTTPS (or localhost)
+are required. Unsupported providers leave the microphone entry hidden; configured
+but unavailable models show a disabled entry with a retry availability action.
+
+Photon 2.6.1 attempts to send periodic runtime usage metadata to Moondream (model, hardware,
+hostname and request/token counts); its reporter has no documented off switch.
+The gateway sends no audio/text to cloud inference, but offline Hugging Face flags
+do not disable Photon usage telemetry. Deployments requiring no outbound metadata
+must enforce egress policy and verify it separately. Public read-speech evaluation
+does not certify real whispers, natural noise, or physical mobile microphones;
+see the [qualification report](.scratch/chat-voice-input/qualification/REPORT.md)
+for measured coverage before rollout.
 
 ## Image Generation
 

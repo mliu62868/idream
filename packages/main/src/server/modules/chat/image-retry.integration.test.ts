@@ -8,6 +8,7 @@ import { jobQueue } from "@/server/jobs/queue";
 import { drainLocalAiPipeline } from "@/server/ai/local-pipeline";
 import { api, createCharacter, createUser, dreamcoinBalance, expectError, expectOk, generationTestProviders, grantCoins, purgeTestData, runQueuedGenerationJobs } from "@/server/test/helpers";
 import * as generation from "../ourdream/service";
+import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 import { quoteAuthorityFor } from "../ourdream/generation-quote";
 import { parseGenerationRetryQuoteResponse } from "@/lib/public-api-contracts";
 import { applyChatToolEffect } from "./tool-effect";
@@ -16,10 +17,12 @@ import { beginChatTurn, commitChatTerminal, createChatSession, getChatSession, r
 const P = `zt-chat-image-retry-${randomUUID()}-`;
 const profileKey = `${P}profile`;
 const sourceKeys: string[] = [];
+let workflowVersion: number;
 beforeAll(async () => {
+  workflowVersion = (await generationWorkflowDescriptor("qwen-image-edit-img2img"))!.version;
   await prisma.generationModelProfile.create({ data: {
-    id: profileKey, profileKey, label: "Pinned Chat retry fixture", mode: "image", runner: "comfyui", pipelineModel: "qwen-image-edit", workflowKey: "qwen-image-edit-img2img", version: 1,
-    runnerConfig: { capabilities: { textToImage: true, stableSeed: true, referenceImages: true, initImage: true, lora: false } }, allowedOrientations: ["4:5"], maxCount: 1, enabled: true, status: "active", rolloutPercent: 100,
+    id: profileKey, profileKey, label: "Pinned Chat retry fixture", mode: "image", runner: "comfyui", pipelineModel: "redqw21-image-edit", workflowKey: "qwen-image-edit-img2img", version: 1,
+    runnerConfig: { workflowVersion, capabilities: { textToImage: true, stableSeed: true, referenceImages: true, initImage: true, lora: false } }, allowedOrientations: ["4:5"], maxCount: 1, enabled: true, status: "active", rolloutPercent: 100,
   } });
   if (!await prisma.pricingRule.findFirst({ where: { mode: "image", status: "active" } })) await prisma.pricingRule.create({ data: { id: `${P}price`, ruleKey: `${P}price`, label: "Retry price", mode: "image", baseCost: 5, status: "active" } });
 });
@@ -47,7 +50,7 @@ async function fixture() {
   // quote, reservation, queue, Gen test adapter and Main delivery transaction.
   vi.spyOn(generation, "createChatImageGenerationJob").mockImplementationOnce(async payload => {
     const job = await prisma.generationJob.create({ data: {
-    id: `${userId}-failed`, userId, characterId: character.id, mode: "image", prompt: payload.promptHint, status: "failed", errorCode: "provider_error", controls: { width: 512, height: 640, workflowKey: "qwen-image-edit-img2img", workflowVersion: 2 }, presetIds: [],
+    id: `${userId}-failed`, userId, characterId: character.id, mode: "image", prompt: payload.promptHint, status: "failed", errorCode: "provider_error", controls: { width: 512, height: 640, workflowKey: "qwen-image-edit-img2img", workflowVersion }, presetIds: [],
     sourceType: "chat_image", sourceId: payload.attachmentId, sourceMeta: { sessionId: session.id, exchangeId: snapshot.turnId, messageId: snapshot.assistantMessageId, promptHint: payload.promptHint },
     visualProfileId: visual.id, visualProfileVersion: visual.version, referenceAssetIds: [source.id], referenceManifest: [{ mediaAssetId: source.id, role: "identity_anchor" }], model: "qwen-image-edit-img2img", profileId: profileKey, profileVersion: 1, provider: "comfyui", orientation: "4:5", outputCount: 1, costDreamcoins: 5,
     } });

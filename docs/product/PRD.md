@@ -173,6 +173,7 @@ OurDream 公开可验证的页面族全部进入对标库存，但 iDream 只在
 | CH-12 | 用户可调整 response length、scene generation、active messages 和互动强度；控制值版本化固定到 Turn snapshot，不静默改写 Soul。 | P1 |
 | CH-13 | 支持最多 12 个角色的 Group Chat，用户可选择或 `@` 指定应答角色；编排、历史、memory、额度、Product Action 和权限均有权威契约。 | P1 |
 | CH-14 | 支持与单条 Voice Clip 分开的双向 Voice Call，包含通话状态、中断恢复、语音身份、时长与结算。 | P1 |
+| CH-15 | 单聊和群聊支持独立麦克风语音输入：最多 60 秒，转写为可编辑草稿，由用户明确发送；不自动创建 Turn / memory / 媒体，不扣 dreamcoins、消息额度或 TTS 分钟。取消、中断、草稿/收件人变化与账号切换必须守住权限和资源边界。英语及已明确的欧洲目标语言须逐语通过普通、真实耳语、噪声和关键意义质量验收后发布；ASR 不代替 CH-14 的 Voice Call。 | P1 |
 | CH-15 | 提供版本化 conversation-profile Catalog；2026-09-01 对标基线为 5 个用户可感知档位（历史观察，不代表当前竞品目录）。每个档位在执行前明示能力与成本，底层 provider/model 仍由服务端权威选择，不因档位改变角色身份。 | P1 |
 
 ### 6.4 角色创建器

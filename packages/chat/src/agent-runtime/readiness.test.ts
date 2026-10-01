@@ -44,7 +44,7 @@ const successfulRuntimeEvidence = {
   instance: runtimeInstance,
   readBootstrapState: async () => ({
     schemaVersion: 2 as const,
-    pins: { dsh: "0.1.7-rc.2", plugin: "0.1.0" },
+    pins: { dsh: "0.2.0-rc.2", plugin: "0.1.0" },
     profiles: {
       normal: {
         name: "idream-companion-memory",
@@ -98,8 +98,8 @@ describe("fail-closed companion readiness", () => {
     expect(readiness).toMatchObject({
       ready: true,
       productPromptVersion: "companion-product-1",
-      dshVersion: "0.1.7-rc.2",
-      dshCommit: "b150a551b8d465e31e418e1b2eaf5e79bbb7d28e",
+      dshVersion: "0.2.0-rc.2",
+      dshCommit: "639ed015397290b3745d163aafe02ffee4aa3f84",
       igrepVersion: "0.1.134",
       pluginVersion: "0.1.0",
       instance: runtimeInstance,
@@ -122,9 +122,11 @@ describe("fail-closed companion readiness", () => {
         search: false,
         webProvider: false,
         webTool: false,
+        sessionRecall: false,
         memory: true,
         ingest: false,
-        wake: true,
+        wake: false,
+        maintainIntervalMs: 0,
         memorySearchMode: "fast",
         timeoutMs: 10_000,
       }), { maxSteps: config.maxSteps, igrepLlm: config.igrepLlm }),
@@ -188,6 +190,28 @@ describe("fail-closed companion readiness", () => {
     }
   });
 
+  it.each([
+    { memory: true, sessionRecall: true },
+    { memory: false, sessionRecall: true },
+    { memory: true, maintainIntervalMs: 1000 },
+    { memory: false, webProvider: true },
+  ])("rejects plugin defaults that escape the host capability policy: %j", async (drift) => {
+    await expect(createReadinessProbe({
+      config,
+      plugin: async () => ({
+        ...plugin,
+        module: {
+          ...plugin.module,
+          resolveConfig: (raw: Record<string, unknown>) => raw.memory === drift.memory
+            ? { ...raw, ...drift }
+            : raw,
+        },
+      }),
+      resolveIgrepVersion: async () => "0.1.150",
+      ...successfulRuntimeEvidence,
+    })()).rejects.toThrow(/profile did not normalize/);
+  });
+
   it("singleflights, retries failure, and refreshes only when explicitly forced", async () => {
     let warmups = 0;
     let fail = true;
@@ -214,7 +238,7 @@ describe("fail-closed companion readiness", () => {
     expect(warmups).toBe(3);
   });
 
-  it("probes a disposable empty rebuild and always purges it", async () => {
+  it("probes empty and populated disposable rebuilds and always purges them", async () => {
     const calls: string[] = [];
     await expect(probeWorkspaceRebuild({
       async prepareRebuild(request) {
@@ -236,6 +260,8 @@ describe("fail-closed companion readiness", () => {
     }, () => "fixed-nonce")).resolves.toBeUndefined();
     expect(calls).toEqual([
       "prepare:readiness-fixed-nonce:0",
+      "promote:readiness-fixed-nonce:11111111-1111-4111-8111-111111111111",
+      "prepare:readiness-fixed-nonce:2",
       "promote:readiness-fixed-nonce:11111111-1111-4111-8111-111111111111",
       "purge:readiness-fixed-nonce",
     ]);

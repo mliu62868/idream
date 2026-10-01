@@ -49,6 +49,7 @@ import type {
 import {
   observeIgrepWake,
   recallIgrepMemory,
+  reprojectIgrepMemory,
   type IgrepPluginModule,
   type RunJsonCommand,
 } from "./igrep";
@@ -115,8 +116,8 @@ function auditRecallEvidenceMatches(value: unknown): number {
 // the same section name in the agent scope shadows it, so the companion reads
 // recall guidance in its own register without forking the plugin.
 // `{{igrep_memory_profile}}` keeps the plugin's variable name; the agent-scoped
-// value shadows the plugin's asynchronously refreshed wake cache with the wake
-// result this turn actually awaited, so the profile can never race the prompt.
+// value supplies the wake result this turn actually awaited. The plugin wake
+// hook is disabled: Chat owns the read, failure handling and observation.
 const COMPANION_MEMORY_GUIDANCE = [
   "Memory: you genuinely remember what this person has shared with you across",
   "conversations. Weave it in the way a close companion would — naturally, in",
@@ -290,14 +291,6 @@ function invocationFailure(input: {
   };
 }
 
-declare module "@deepseek-ai/dsh-llm" {
-  interface MessageSourceMap {
-    // DSH has no catch-all plugin source; producers declare their own kind.
-    // Any kind other than "user" stays invisible to igrep ingest.
-    idream: { kind: "idream"; context: "replay" | "snapshot" | "recall" };
-  }
-}
-
 function seedMessage(
   message: PreparedTurnMessage,
   profile: PreparedTurnProfile,
@@ -307,7 +300,12 @@ function seedMessage(
     return freezeMessage({
       id: MessageId(message.id),
       role: "assistant" as const,
-      source: { kind: "model" as const, provider: profile.provider, model: profile.model },
+      source: {
+        kind: "model" as const,
+        provider: profile.provider,
+        model: profile.model,
+        ...(message.speaker ? { speaker: message.speaker } : {}),
+      },
       content: [
         ...(message.content ? [{ type: "text" as const, text: message.content }] : []),
         ...(message.tool_calls ?? []).map((call) => ({
@@ -706,6 +704,11 @@ export class CompanionEngine {
       event({ type: "started", instance: this.instance, profileDigest: compositionPlan.digest });
       failurePhase = "workspace";
       workspace = await this.options.workspaces.prepare(invocation, active.cancellation.signal);
+      if (mode === "normal") {
+        // The attempt owns this copy; the zero-model writer restores physical
+        // witnesses without maintaining profiles or changing product history.
+        await reprojectIgrepMemory(this.options.igrepCommand, workspace.path, active.cancellation.signal, this.options.runIgrep);
+      }
       failurePhase = "agent";
       const current = invocation.preparedTurn.messages.find((message) => message.sourceKind === "current_user");
       if (!current || current.role !== "user") throw new Error("current user message is missing");

@@ -30,6 +30,8 @@ import {
 } from "@/lib/public-api-contracts";
 import { useAgeGateAccess } from "./AgeGateBoundary";
 import { useGenerationReceipts } from "@/hooks/useGenerationReceipts";
+import { useVoiceInput } from "@/hooks/useVoiceInput";
+import { VoiceInputButton, VoiceInputStatus } from "./chat/VoiceInputControls";
 import { AppSidebar } from "./AppSidebar";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { ChatHeaderControls } from "./chat/ChatHeaderControls";
@@ -104,6 +106,7 @@ const COMPOSER_BUTTON_CLASS =
   "inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-[linear-gradient(0deg,#ff1cac,#fd5fc2_50%,#ff79d1)] text-white disabled:opacity-70";
 
 type LocalStreamState = {
+  readonly attempt?: number;
   readonly content: string;
   readonly stopped: boolean;
 };
@@ -144,7 +147,7 @@ export function applyLocalStreamState(
   if (localState.size === 0) return messages;
   return messages.map((message) => {
     const local = localState.get(message.id);
-    if (!local) return message;
+    if (!local || local.attempt !== message.attempt) return message;
     if (chatStreamMessageIsTerminal(message) && message.status !== STOPPED_REPLY_STATUS) {
       return message;
     }
@@ -273,6 +276,8 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
   } = useGenerationReceipts({ ownerScope: receiptOwnerScope, onWarning: setReceiptWarning });
   const [jumpToLatestVisible, setJumpToLatestVisible] = useState(false);
   const localStreamStateRef = useRef<Map<string, LocalStreamState>>(new Map());
+  // Attempt identity survives text-cache cleanup and pending/terminal snapshots.
+  const observedAttemptsRef = useRef<Map<string, number>>(new Map());
   const pinnedToBottomRef = useRef(true);
   const sendIntentRef = useRef<{
     sessionId: string;
@@ -288,6 +293,24 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
     useRef<Map<string, { key: string; promise: Promise<VoiceClipRequestResult> }>>(new Map());
   const voiceClipUrlsRef = useRef<Map<string, { key: string; url: string }>>(new Map());
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const voiceInput = useVoiceInput({
+    sessionPath,
+    ownerScope: receiptOwnerScope,
+    enabled: ageGateAccepted && loadState === "ready" && !conversationArchived,
+    recipientId: groupMode ? characterId : null,
+    draft: content,
+    onDraft: (text) => {
+      setContent(text);
+      if (window.matchMedia?.("(pointer: fine)").matches) {
+        window.requestAnimationFrame(() => {
+          composerRef.current?.focus({ preventScroll: true });
+          composerRef.current?.setSelectionRange(text.length, text.length);
+        });
+      }
+    },
+    beforeRecording: stopVoice,
+  });
   const sessionMutationEpochRef = useRef(0);
   const hasActiveAttachment = messages.some((message) =>
     (message.attachments ?? []).some((attachment) =>
@@ -297,9 +320,16 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
   const hasGeneratingReply = chatStreamMessagesNeedReconciliation(messages);
   const canSend = canSubmitChatMessage(
     content,
-    pending || stoppingReply || speakerPending || conversationArchived,
+    pending || stoppingReply || speakerPending || conversationArchived || voiceInput.blocksSend,
     hasGeneratingReply,
   );
+
+  useEffect(() => {
+    const input = composerRef.current;
+    if (!input) return;
+    input.style.height = "auto";
+    input.style.height = `${Math.min(128, Math.max(48, input.scrollHeight))}px`;
+  }, [content, loadState]);
 
   useEffect(() => {
     let previousScrollY = window.scrollY;
@@ -344,6 +374,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
       for (const source of streamSources.current.values()) source.close();
       streamSources.current.clear();
       localStreamStateRef.current.clear();
+      observedAttemptsRef.current.clear();
       pinnedToBottomRef.current = true;
       setJumpToLatestVisible(false);
       audioRef.current?.pause();
@@ -577,6 +608,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
     acceptedQuoteToken?: string,
   ): Promise<VoiceClipRequestResult> {
     const receiptContext = generationReceiptContext();
+    const playbackIntent = voicePlaybackIntentRef.current;
     // INVARIANT: a regenerated Turn keeps its message id but changes its text
     // and attempt. Its audio must never come from the discarded reply.
     const message = messages.find((message) => message.id === messageId);
@@ -598,7 +630,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
             method: "POST", headers, cache: "no-store", body: JSON.stringify(body),
           });
           const payload = await quoted.json().catch(() => null);
-          if (!receiptContext.isCurrent()) return { url: null, reason: "failed" };
+          if (!receiptContext.isCurrent() || playbackIntent !== voicePlaybackIntentRef.current) return { url: null, reason: "failed" };
           if (quoted.status === 402) return { url: null, reason: "insufficient_balance" };
           if (!quoted.ok) return { url: null, reason: "failed", errorMessage: chatFailureCopy(payload, "Voice price could not load. Press Play to check again.") };
           const quote = voiceClipQuoteSchema.parse(payload?.data?.quote);
@@ -608,6 +640,9 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
           }
           acceptedQuoteToken = quote.quoteToken ?? undefined;
         }
+        // Stopping playback or starting dictation revokes permission to spend
+        // on a quote that completed after the reader changed their intent.
+        if (!receiptContext.isCurrent() || playbackIntent !== voicePlaybackIntentRef.current) return { url: null, reason: "failed" };
         const response = await fetch("/api/v1/generation/voice", {
           method: "POST",
           headers,
@@ -652,6 +687,10 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
   // SPEC: Voice synthesis starts only after the reader presses Play. Repeated
   // plays of the same selected reply reuse its clip.
   async function playMessage(messageId: string, text: string, acceptedQuoteToken?: string) {
+    if (voiceInput.readOnly) {
+      setStatus("Finish recording before playing voice.");
+      return;
+    }
     if (!characterId || !text.trim()) return;
     if (voicePlayingId === messageId) {
       stopVoice();
@@ -706,6 +745,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (voiceInput.blocksSend) return;
     const text = content.trim();
     // SPEC: 输入 @Name 时说话人切换是异步的；切换期间的回车必须有回执。
     // INTENT: 静默 return 会让用户以为消息发出去了 —— 实测第一次回车既不发消息也不报错。
@@ -907,6 +947,8 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
         streamUrl?: string | null;
         status?: "pending" | "generating" | "blocked";
       };
+      // Reads started during the edit can still describe the discarded attempt.
+      sessionMutationEpochRef.current += 1;
       if (payload.assistantMessageId) {
         localStreamStateRef.current.delete(payload.assistantMessageId);
       }
@@ -950,6 +992,8 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
 
   function applySession(session: ChatSession) {
     if (session.id !== id) return;
+    if (session.messages.some((message) => typeof message.attempt === "number"
+      && (observedAttemptsRef.current.get(message.id) ?? message.attempt) > message.attempt)) return;
     const intent = sendIntentRef.current;
     if (session.group && intent && session.messages.some(message => message.requestKey === intent.idempotencyKey)) {
       sendIntentRef.current = null;
@@ -959,7 +1003,19 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
     resumeGenerationReceipts(session.ownerScope);
     setReceiptOwnerScope(session.ownerScope);
     let recoveredStream = false;
+    let changedAttempt = false;
     for (const message of session.messages) {
+      const observedAttempt = observedAttemptsRef.current.get(message.id);
+      const advancedAttempt = typeof message.attempt === "number"
+        && observedAttempt !== undefined && message.attempt > observedAttempt;
+      if (typeof message.attempt === "number") observedAttemptsRef.current.set(message.id, message.attempt);
+      const local = localStreamStateRef.current.get(message.id);
+      if (advancedAttempt || (local && local.attempt !== message.attempt)) {
+        localStreamStateRef.current.delete(message.id);
+        streamSources.current.get(message.id)?.close();
+        streamSources.current.delete(message.id);
+        changedAttempt = true;
+      }
       if (!chatStreamMessageIsTerminal(message)) continue;
       if (message.status !== STOPPED_REPLY_STATUS) localStreamStateRef.current.delete(message.id);
       const source = streamSources.current.get(message.id);
@@ -968,6 +1024,9 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
       streamSources.current.delete(message.id);
       recoveredStream = true;
     }
+    // Another page can advance the same durable message. Old recovery reads
+    // must not apply after this page has observed that newer attempt.
+    if (changedAttempt) sessionMutationEpochRef.current += 1;
     if (recoveredStream) setStatus(null);
     // 角色行可能已经不存在了（创作者注销会硬删他的角色，且不通知 chat）。
     // BFF 在那种情况下把 name 兜成空串，直接用会渲染出一个无名会话头。
@@ -1269,11 +1328,17 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
       };
       const newId = payload.assistantMessageId;
       const streamUrl = payload.streamUrl;
-      if (!newId || !streamUrl) {
+      if (!newId || !streamUrl || typeof payload.attempt !== "number"
+        || !Number.isSafeInteger(payload.attempt) || payload.attempt <= 0) {
         setStatus("Couldn't regenerate. Please try again.");
         return;
       }
+      // A focus read started during this POST may still contain the old reply.
+      sessionMutationEpochRef.current += 1;
       localStreamStateRef.current.delete(messageId);
+      streamSources.current.get(messageId)?.close();
+      streamSources.current.delete(messageId);
+      observedAttemptsRef.current.set(newId, payload.attempt);
       setMessages((current) =>
         current.map((message) =>
           message.id === messageId
@@ -1294,13 +1359,12 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
       if (
         message.role === "assistant" &&
         !message.content.trim() &&
-        message.status === "generating"
+        message.status === "generating" &&
+        typeof message.attempt === "number" && Number.isSafeInteger(message.attempt) && message.attempt > 0 &&
+        observedAttemptsRef.current.get(message.id) === message.attempt
       ) {
-        const attempt = Number.isSafeInteger(message.attempt) && Number(message.attempt) > 0
-          ? `?attempt=${message.attempt}`
-          : "";
         streamAssistant(
-          `/api/v1/chat/messages/${encodeURIComponent(message.id)}/stream${attempt}`,
+          `/api/v1/chat/messages/${encodeURIComponent(message.id)}/stream?attempt=${message.attempt}`,
           message.id,
           "",
         );
@@ -1309,13 +1373,17 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
   }
 
   function streamAssistant(streamUrl: string, assistantId: string, fallback: string) {
-    if (streamSources.current.has(assistantId)) return;
-
+    const requestedAttempt = new URL(streamUrl, window.location.origin).searchParams.get("attempt");
+    const attempt = Number(requestedAttempt);
+    if (!Number.isSafeInteger(attempt) || attempt <= 0
+      || (observedAttemptsRef.current.get(assistantId) ?? attempt) > attempt
+      || streamSources.current.has(assistantId)) return;
+    observedAttemptsRef.current.set(assistantId, attempt);
     let streamed = "";
     let finished = false;
     const source = new EventSource(streamUrl);
     streamSources.current.set(assistantId, source);
-    localStreamStateRef.current.set(assistantId, { content: "", stopped: false });
+    localStreamStateRef.current.set(assistantId, { attempt, content: "", stopped: false });
 
     const close = () => {
       source.close();
@@ -1353,6 +1421,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
       const delta = typeof data.delta === "string" ? data.delta : "";
       streamed += delta;
       localStreamStateRef.current.set(assistantId, {
+        attempt,
         content: streamed,
         stopped: false,
       });
@@ -1368,6 +1437,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
       const data = parseStreamEvent(event);
       streamed = typeof data.content === "string" ? data.content : "";
       localStreamStateRef.current.set(assistantId, {
+        attempt,
         content: streamed,
         stopped: false,
       });
@@ -1388,6 +1458,10 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
       if (finished || streamSources.current.get(assistantId) !== source) return;
       const payload = parseStreamEvent(event);
       if (chatStreamErrorDisposition(payload) === "reconnect") {
+        // HTTP/auth/protocol failures can leave EventSource CLOSED, where it
+        // will never reconnect itself. Let the authority poll reopen this same
+        // attempt instead of retaining a dead source in the registry.
+        if (source.readyState === EventSource.CLOSED) close();
         setStatus("Reply interrupted. Reconnecting…");
         return;
       }
@@ -1401,47 +1475,62 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
     });
   }
 
-  // SPEC: Stop is a Chat-owned terminal transition. The browser closes SSE
-  // immediately, but unlocks the composer only after Chat has cancelled the
-  // exact durable attempt and signalled the active DSH invocation.
+  // SPEC: Main owns Stop's exact-attempt terminal transition. The browser closes
+  // SSE immediately, then applies only the matching durable cancellation ACK.
   async function stopStreamingReply() {
     if (stoppingReply) return;
+    const stoppedReplies = messages.flatMap((message) => {
+      if (!chatStreamMessageIsInProgress(message) || typeof message.attempt !== "number"
+        || !Number.isSafeInteger(message.attempt) || message.attempt <= 0) return [];
+      const local = localStreamStateRef.current.get(message.id);
+      return [{ messageId: message.id, attempt: message.attempt,
+        content: local?.attempt === message.attempt ? local.content : message.content }];
+    });
+    if (stoppedReplies.length === 0) return;
     sessionMutationEpochRef.current += 1;
-    const stoppedIds = new Set<string>();
-    for (const [messageId, source] of streamSources.current) {
-      source.close();
-      stoppedIds.add(messageId);
+    for (const { messageId, attempt } of stoppedReplies) {
+      if (observedAttemptsRef.current.get(messageId) !== attempt) continue;
+      streamSources.current.get(messageId)?.close();
+      streamSources.current.delete(messageId);
     }
-    streamSources.current.clear();
-    for (const message of messages) {
-      if (chatStreamMessageIsInProgress(message)) stoppedIds.add(message.id);
-    }
-    if (stoppedIds.size === 0) return;
     setStoppingReply(true);
     setStatus("Stopping reply…");
     let completionWonRace = false;
     const results = await Promise.all(
-      [...stoppedIds].map(async (messageId) => {
+      stoppedReplies.map(async ({ messageId, attempt }) => {
         const response = await fetch(
           `/api/v1/messages/${encodeURIComponent(messageId)}/cancel`,
-          { method: "POST" },
+          { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ attempt }) },
         );
         if (response.ok) {
-          const result = await response.json() as { cancelled?: boolean };
+          const result = await response.json() as { cancelled?: boolean; attempt?: number };
+          if (result.attempt !== attempt || typeof result.cancelled !== "boolean") return false;
           completionWonRace ||= result.cancelled === false;
         }
         return response.ok;
       }),
-    ).catch(() => stoppedIds.size === 0 ? [] : [false]);
+    ).catch(() => [false]);
+    // A Stop belongs to the attempt visible when clicked, even if another
+    // page has already advanced the same assistant id while its ACK travelled.
+    const currentReplies = stoppedReplies.filter(({ messageId, attempt }) =>
+      observedAttemptsRef.current.get(messageId) === attempt);
+    if (currentReplies.length === 0) {
+      setStatus(null);
+      setStoppingReply(false);
+      return;
+    }
     if (!results.every(Boolean) || completionWonRace) {
-      for (const messageId of stoppedIds) {
-        localStreamStateRef.current.delete(messageId);
+      for (const { messageId, attempt } of currentReplies) {
+        if (localStreamStateRef.current.get(messageId)?.attempt === attempt) localStreamStateRef.current.delete(messageId);
       }
       setStatus(completionWonRace ? null : "Couldn't stop the reply. Reconnecting…");
       try {
+        const mutationEpoch = sessionMutationEpochRef.current;
         const session = await fetchSession();
-        applySession(session);
-        resumePendingStreams(session.messages);
+        if (mutationEpoch === sessionMutationEpochRef.current) {
+          applySession(session);
+          resumePendingStreams(session.messages);
+        }
       } catch {
         // Keep the explicit reconnecting state; the normal poll loop remains
         // the recovery path when this immediate authority read also fails.
@@ -1450,13 +1539,11 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
       }
       return;
     }
-    for (const messageId of stoppedIds) {
-      const streamedContent = localStreamStateRef.current.get(messageId)?.content;
+    for (const { messageId, attempt, content } of currentReplies) {
+      const local = localStreamStateRef.current.get(messageId);
       localStreamStateRef.current.set(messageId, {
-        content:
-          streamedContent ??
-          messages.find((message) => message.id === messageId)?.content ??
-          "",
+        attempt,
+        content: local?.attempt === attempt ? local.content : content,
         stopped: true,
       });
     }
@@ -1804,13 +1891,16 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
                     ) : null}
                   </p>
                 ) : null}
+              <VoiceInputStatus voice={voiceInput} />
               <form
-                className="flex gap-2 py-2"
+                className="flex items-end gap-2 py-2"
                 onSubmit={submit}
               >
-                <input
+                <textarea
+                  ref={composerRef}
+                  rows={1}
                   aria-label="Message"
-                  className="h-12 min-w-0 flex-1 rounded-full bg-[rgb(36,36,36)] px-5 text-[14px] font-medium outline-none placeholder:text-[rgb(114,113,112)]"
+                  className="min-h-12 max-h-32 min-w-0 flex-1 resize-none rounded-3xl bg-[rgb(36,36,36)] px-5 py-3 text-[14px] leading-6 font-medium caret-[#ff7ac8] outline-none placeholder:text-white/50 focus-visible:ring-2 focus-visible:ring-[#ff7ac8]"
                   id={`chat-message-${id}`}
                   onChange={(event) => {
                     const next = event.target.value;
@@ -1821,9 +1911,15 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
                   name="message"
                   placeholder={group ? "Message, or @ a Character…" : "Message..."}
                   disabled={conversationArchived}
-                  readOnly={groupMode && sendOutcomeUnknown}
+                  readOnly={voiceInput.readOnly || (groupMode && sendOutcomeUnknown)}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing || event.keyCode === 229) return;
+                    event.preventDefault();
+                    if (canSend) event.currentTarget.form?.requestSubmit();
+                  }}
                   value={content}
                 />
+                <VoiceInputButton voice={voiceInput} disabled={pending || speakerPending || conversationArchived || (groupMode && sendOutcomeUnknown)} />
                 {hasGeneratingReply ? (
                   <button
                     aria-label="Stop reply"
