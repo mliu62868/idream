@@ -1,8 +1,12 @@
-"""Resident Fish Audio S2 Pro MLX gateway for iDream.
+"""Resident voice-cloning MLX gateway for iDream (the `fish_audio` provider slot).
 
-The gateway loads the model once, owns the durable reference-voice registry,
-and passes reference audio to Fish as an MLX array. This avoids the oMLX 0.5.3
-reference-cloning path that currently forwards a temporary filename string.
+SPEC: the gateway loads Breeze TTS 2 (8-bit MLX) once, owns the durable
+reference-voice registry, and passes reference audio to the model as an MLX array.
+INTENT: the engine changed from Fish Audio S2 Pro to Breeze after a 2026-10-02
+blind listening test; the provider key, env names and on-disk registry keep the
+`fish_audio` name so stored profiles and voices keep working without a data
+migration. oMLX is not used: its bundled mlx-audio predates Breeze, and its
+reference-cloning path forwards a temporary filename string to the model.
 """
 
 from __future__ import annotations
@@ -30,11 +34,11 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 
-MODEL_ID = os.getenv("FISH_AUDIO_MODEL", "fish-audio-s2-pro-8bit").strip()
+MODEL_ID = os.getenv("FISH_AUDIO_MODEL", "breeze-tts-2-mlx-8bit").strip()
 MODEL_PATH = Path(
     os.getenv(
         "FISH_AUDIO_MODEL_PATH",
-        "~/.omlx/models/mlx-community/fish-audio-s2-pro-8bit",
+        "~/.idream/models/mlx-community/Breeze-TTS-2-mlx-8bit",
     )
 ).expanduser().resolve()
 LANGUAGE = os.getenv("FISH_AUDIO_LANGUAGE", "auto").strip()
@@ -106,7 +110,7 @@ def load_runtime_model() -> Any:
     if runtime_model is not None:
         return runtime_model
     if not MODEL_PATH.is_dir():
-        raise RuntimeError(f"Fish Audio model directory does not exist: {MODEL_PATH}")
+        raise RuntimeError(f"Voice model directory does not exist: {MODEL_PATH}")
     from mlx_audio.tts.utils import load_model
 
     runtime_model = load_model(model_path=str(MODEL_PATH))
@@ -120,7 +124,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(
-    title="iDream Fish Audio S2 Pro MLX gateway",
+    title="iDream Breeze TTS 2 MLX voice-cloning gateway",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -431,23 +435,34 @@ def render_idempotent_wav(
         return rendered, False
 
 
-def style_prefix(delivery: DeliverySettings) -> str:
-    base = {
-        "sensual": ["female voice", "low voice", "breathy"],
-        "intimate": ["female voice", "soft voice", "whisper"],
-        "playful": ["female voice", "playful", "teasing"],
-        "confident": ["female voice", "confident", "low voice"],
-        "natural": ["female voice", "warm"],
-    }[delivery.preset]
+PRESET_DIRECTIONS = {
+    "sensual": "A woman speaking in a low, breathy, sensual voice.",
+    "intimate": "A woman speaking softly and intimately, close to a whisper.",
+    "playful": "A woman speaking in a playful, teasing voice.",
+    "confident": "A woman speaking in a confident, low voice.",
+    "natural": "A woman speaking in a warm, natural voice.",
+}
+
+
+# SPEC: delivery settings become one natural-language Breeze `instruct` string.
+# INTENT: Breeze has no speed parameter, so pace is part of the direction; Breeze
+# reads square brackets as Chinese vocal events, so Fish-style `[tag]` prefixes
+# in the spoken text would be wrong.
+def delivery_instruction(delivery: DeliverySettings) -> str:
+    parts = [PRESET_DIRECTIONS[delivery.preset]]
     if delivery.intensity >= 85:
-        base.append("very expressive")
+        parts.append("Very expressive.")
     elif delivery.intensity <= 30:
-        base.append("subtle")
-    return " ".join(f"[{tag}]" for tag in base)
-
-
-def styled_text(text: str, delivery: DeliverySettings) -> str:
-    return f"{style_prefix(delivery)} {text.strip()}"
+        parts.append("Subtle and understated.")
+    if delivery.speed <= 0.9:
+        parts.append("Slow pace.")
+    elif delivery.speed < 0.97:
+        parts.append("Slightly slower than normal pace.")
+    elif delivery.speed >= 1.1:
+        parts.append("Fast pace.")
+    elif delivery.speed > 1.03:
+        parts.append("Slightly faster than normal pace.")
+    return " ".join(parts)
 
 
 def render_wav(request: SpeechRequest) -> bytes:
@@ -466,28 +481,31 @@ def render_wav(request: SpeechRequest) -> bytes:
     ref_audio = load_audio(str(reference_path), sample_rate=model.sample_rate)
 
     with generation_lock:
+        # INTENT: no classifier-free guidance. Measured 2026-10-02: cfg_scale=4 with a
+        # "low, breathy" direction pulled speaker similarity below the other-woman
+        # baseline (0.81-0.90 vs 0.87) and nearly doubled duration; without CFG the
+        # clone holds (0.90-0.96) at about real time, and the direction stays a nudge.
         results = list(
             model.generate(
-                text=styled_text(request.input, request.delivery),
+                text=request.input.strip(),
+                instruct=delivery_instruction(request.delivery),
                 ref_audio=ref_audio,
                 ref_text=manifest["ref_text"],
-                speed=request.delivery.speed,
                 temperature=request.delivery.temperature,
                 top_p=request.delivery.topP,
                 top_k=request.delivery.topK,
                 repetition_penalty=request.delivery.repetitionPenalty,
                 max_tokens=1200,
                 stream=False,
-                verbose=False,
             )
         )
     if not results:
-        raise HTTPException(status_code=502, detail="Fish Audio returned no audio")
+        raise HTTPException(status_code=502, detail="Voice model returned no audio")
     audio = np.concatenate(
         [np.array(result.audio, dtype=np.float32).reshape(-1) for result in results]
     )
     if audio.size == 0 or not np.isfinite(audio).all():
-        raise HTTPException(status_code=502, detail="Fish Audio returned invalid audio")
+        raise HTTPException(status_code=502, detail="Voice model returned invalid audio")
     audio = np.clip(audio, -1.0, 1.0)
     pcm = (audio * 32767.0).astype("<i2").tobytes()
     output = io.BytesIO()

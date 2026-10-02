@@ -124,7 +124,7 @@ const EnvSchema = z.object({
   POCKET_TTS_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
   FISH_AUDIO_API_URL: z.string().url().default("http://127.0.0.1:8062/v1"),
   FISH_AUDIO_API_TOKEN: z.string().optional(),
-  FISH_AUDIO_MODEL: z.string().min(1).default("fish-audio-s2-pro-8bit"),
+  FISH_AUDIO_MODEL: z.string().min(1).default("breeze-tts-2-mlx-8bit"),
   FISH_AUDIO_LANGUAGE: z.string().min(1).default("auto"),
   FISH_AUDIO_DEFAULT_VOICE_ID: z
     .string()

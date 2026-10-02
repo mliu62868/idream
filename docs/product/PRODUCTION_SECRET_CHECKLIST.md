@@ -86,8 +86,8 @@ The public ingress must **overwrite** (not append to) `X-Forwarded-For` before r
 | `PIPELINE_VOICE_MODEL_DEFAULT` | Explicit rollback voice model alias only |
 | `FISH_AUDIO_API_URL` | Fish Audio gateway, normally `http://127.0.0.1:8062/v1` |
 | `FISH_AUDIO_API_TOKEN` | Shared internal token used by Main and the Fish gateway |
-| `FISH_AUDIO_MODEL` | Exact voice model id, currently `fish-audio-s2-pro-8bit` |
-| `FISH_AUDIO_MODEL_PATH` | Deployed Fish Audio S2 Pro 8-bit model directory |
+| `FISH_AUDIO_MODEL` | Exact voice model id, currently `breeze-tts-2-mlx-8bit` |
+| `FISH_AUDIO_MODEL_PATH` | Deployed Breeze TTS 2 MLX 8-bit model directory |
 | `FISH_AUDIO_SYSTEM_REFERENCE_AUDIO` | Reviewed system-voice reference WAV |
 | `FISH_AUDIO_SYSTEM_REFERENCE_MANIFEST` | Exact transcript/identity manifest for that WAV |
 

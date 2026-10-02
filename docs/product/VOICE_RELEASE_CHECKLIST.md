@@ -66,9 +66,12 @@ and §29 below). This checklist covers the remaining steps to reach a
    for the current lock), retain the pinned model revision, and verify
    `/health` reports `runtime=pocket_tts`, `acceleration=cpu`, `catalog_ready=true`, and
    all 21 official English voices.
-2. **Optional Fish cloning** — only when reference-audio identity cloning is required,
-   download `mlx-community/fish-audio-s2-pro-8bit` and prepare a reviewed WAV plus exact
-   transcript manifest without overwriting an existing authority:
+2. **Optional reference-audio cloning (`fish-audio` provider, Breeze TTS 2 engine)** —
+   only when identity cloning is required, place `mlx-community/Breeze-TTS-2-mlx-8bit`
+   at `FISH_AUDIO_MODEL_PATH`, run `bun run voice:fish:install` once per
+   `scripts/breeze-tts-requirements.lock` (the `fish-audio` process resolves offline), and
+   prepare a reviewed WAV plus exact transcript manifest without overwriting an existing
+   authority:
    ```
    bun run voice:fish:prepare-system -- \
      --audio /voices/curated-adult-female-reference.wav \

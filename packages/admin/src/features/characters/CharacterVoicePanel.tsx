@@ -1687,9 +1687,9 @@ function voiceRuntimeMessage(
     }[status];
   }
   return {
-    ready: "Fish Audio S2 Pro voice cloning through MLX is ready.",
+    ready: "Breeze TTS 2 voice cloning through MLX is ready.",
     unavailable:
-      "Fish Audio is configured but unavailable. Verify the fish-audio-s2-pro-8bit model, resident MLX process, and system female reference.",
+      "Fish Audio is configured but unavailable. Verify the Breeze TTS 2 model, resident MLX process, and system female reference.",
     inactive:
       "Fish Audio is not the Character voice-cloning provider. Set VOICE_IDENTITY_PROVIDER=fish-audio and start the Fish Audio process.",
   }[status];
@@ -1699,7 +1699,7 @@ function voiceProviderLabel(
   provider: CharacterWorkspaceDetail["voice"]["provider"],
 ) {
   if (provider === "pocket_tts") return "Pocket TTS";
-  if (provider === "fish_audio") return "Fish Audio S2 Pro";
+  if (provider === "fish_audio") return "Breeze TTS 2";
   return provider;
 }
 

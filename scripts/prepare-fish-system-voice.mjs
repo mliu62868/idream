@@ -44,7 +44,7 @@ const temporaryManifest = path.join(
 );
 const manifest = {
   format: "idream_fish_audio_system_reference_v1",
-  model: "fish-audio-s2-pro-8bit",
+  model: process.env.FISH_AUDIO_MODEL ?? "breeze-tts-2-mlx-8bit",
   language: source.language,
   ref_text: source.refText,
   source_filename: path.basename(sourceAudio),

@@ -452,7 +452,7 @@ function defaultVoiceForModel(model: string | null) {
   if (normalized.includes("qwen3-tts")) return "serena";
   if (normalized.includes("kokoro")) return "af_heart";
   if (normalized.includes("pocket-tts")) return "anna";
-  if (normalized.includes("fish-audio")) return "fish-female-default";
+  if (normalized.includes("breeze-tts")) return "fish-female-default";
   return "default";
 }
 

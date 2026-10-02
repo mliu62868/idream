@@ -30,7 +30,7 @@ const voiceToken = pocketTts
 const voiceModel = pocketTts
   ? process.env.POCKET_TTS_MODEL ?? "pocket-tts"
   : fishAudio
-  ? process.env.FISH_AUDIO_MODEL ?? "fish-audio-s2-pro-8bit"
+  ? process.env.FISH_AUDIO_MODEL ?? "breeze-tts-2-mlx-8bit"
   : process.env.PIPELINE_VOICE_MODEL_DEFAULT ??
     process.env.MOSS_TTS_MODEL ??
     "OpenMOSS/MOSS-TTS-Local-Transformer-v1.5";
@@ -131,6 +131,6 @@ function defaultVoiceForModel(model) {
   if (normalized.includes("qwen3-tts")) return "serena";
   if (normalized.includes("kokoro")) return "af_heart";
   if (normalized.includes("pocket-tts")) return "anna";
-  if (normalized.includes("fish-audio")) return "fish-female-default";
+  if (normalized.includes("breeze-tts")) return "fish-female-default";
   return "default";
 }

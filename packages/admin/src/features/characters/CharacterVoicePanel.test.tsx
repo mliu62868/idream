@@ -304,7 +304,7 @@ describe("CharacterVoicePanel voice identity controls", () => {
     expect(modelRadio("voice-model-clone")?.checked).toBe(false);
     const change = container.querySelector('[data-testid="voice-change"]');
     expect(change?.textContent).toContain("Pocket TTS · Official voices");
-    expect(change?.textContent).toContain("Fish Audio S2 Pro · Voice cloning");
+    expect(change?.textContent).toContain("Breeze TTS 2 · Voice cloning");
     expect(change?.textContent).toContain("2 official English female voices");
     expect(change?.textContent).toContain("Engine MLX 0.4.3");
     expect(container.querySelector('[data-testid="voice-preset-builder"]')).not.toBeNull();

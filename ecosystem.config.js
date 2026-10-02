@@ -156,7 +156,8 @@ module.exports = {
         HF_HUB_OFFLINE: "1",
       },
     },
-    // Optional Fish Audio S2 Pro MLX runtime + durable reference-voice registry.
+    // Optional voice-cloning MLX runtime (Breeze TTS 2; `fish_audio` provider slot)
+    // + durable reference-voice registry.
     {
       ...runtimeProcess("fish-audio"),
       env: {
@@ -172,13 +173,13 @@ module.exports = {
         ),
         FISH_AUDIO_MODEL: mainEnvValue(
           "FISH_AUDIO_MODEL",
-          "fish-audio-s2-pro-8bit",
+          "breeze-tts-2-mlx-8bit",
         ),
         FISH_AUDIO_MODEL_PATH: mainEnvValue(
           "FISH_AUDIO_MODEL_PATH",
           path.join(
             process.env.HOME || __dirname,
-            ".omlx/models/mlx-community/fish-audio-s2-pro-8bit",
+            ".idream/models/mlx-community/Breeze-TTS-2-mlx-8bit",
           ),
         ),
         FISH_AUDIO_LANGUAGE: mainEnvValue("FISH_AUDIO_LANGUAGE", "auto"),
@@ -198,6 +199,7 @@ module.exports = {
           "FISH_AUDIO_VOICE_DIR",
           dir(".data/fish-audio/voices"),
         ),
+        HF_HUB_OFFLINE: "1",
         ...(fishAudioApiToken
           ? { FISH_AUDIO_API_TOKEN: fishAudioApiToken }
           : {}),

@@ -2,30 +2,32 @@ const { existsSync } = require("node:fs");
 const { spawn } = require("node:child_process");
 const path = require("node:path");
 
-const appRoot = "/Applications/oMLX.app/Contents/Resources";
-const python = process.env.FISH_AUDIO_PYTHON ||
-  path.join(appRoot, "Python/cpython-3.11/bin/python3.11");
-const sitePackages = path.join(
-  appRoot,
-  "Python/framework-mlx-base/lib/python3.11/site-packages",
-);
-
-if (!existsSync(python)) {
-  throw new Error(
-    "oMLX bundled Python is required to start Fish Audio; set FISH_AUDIO_PYTHON",
-  );
+const candidates = [
+  process.env.UV_BIN,
+  path.join(process.env.HOME || "", ".local/bin/uv"),
+  path.join(process.env.HOME || "", ".langflow/uv/uv"),
+  "uv",
+].filter(Boolean);
+const uv = candidates.find((candidate) => candidate === "uv" || existsSync(candidate));
+if (!uv) {
+  throw new Error("uv is required to start the voice-cloning gateway; set UV_BIN to its executable");
 }
 
-const pythonPath = [
-  appRoot,
-  sitePackages,
-  process.env.PYTHONPATH,
-].filter(Boolean).join(path.delimiter);
-
+// SPEC: start only from the wheels `bun run voice:fish:install` put in the uv cache.
+// INTENT: the gateway runs Breeze TTS 2, which needs mlx-audio >= 0.5; oMLX's
+// bundled mlx-audio predates it, so the gateway owns a hashed lock instead of
+// borrowing oMLX's Python. --offline keeps a restart from crash-looping when
+// PyPI or the host proxy is unreachable, same as Pocket TTS.
 const child = spawn(
-  python,
+  uv,
   [
-    "-m",
+    "run",
+    "--offline",
+    "--no-project",
+    "--python",
+    "3.12",
+    "--with-requirements",
+    "scripts/breeze-tts-requirements.lock",
     "uvicorn",
     "scripts.fish_audio_gateway:app",
     "--host",
@@ -35,7 +37,7 @@ const child = spawn(
   ],
   {
     cwd: path.resolve(__dirname, ".."),
-    env: { ...process.env, PYTHONPATH: pythonPath },
+    env: process.env,
     stdio: "inherit",
   },
 );

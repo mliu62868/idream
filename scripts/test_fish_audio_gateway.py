@@ -55,15 +55,46 @@ class FishAudioGatewayTests(unittest.TestCase):
                 os.environ[key] = value
         self.directory.cleanup()
 
-    def test_sensual_preset_builds_a_female_low_breathy_direction(self):
+    def test_sensual_preset_builds_a_low_breathy_direction_with_pace(self):
         delivery = self.gateway.DeliverySettings(
             preset="sensual",
             intensity=75,
+            speed=0.94,
         )
         self.assertEqual(
-            self.gateway.style_prefix(delivery),
-            "[female voice] [low voice] [breathy]",
+            self.gateway.delivery_instruction(delivery),
+            "A woman speaking in a low, breathy, sensual voice. "
+            "Slightly slower than normal pace.",
         )
+
+    def test_render_passes_direction_as_instruct_without_cfg_or_speed(self):
+        calls = {}
+
+        class FakeResult:
+            audio = [0.0, 0.5, -0.5]
+            sample_rate = 24_000
+
+        class FakeModel:
+            sample_rate = 24_000
+
+            def generate(self, **kwargs):
+                calls.update(kwargs)
+                return [FakeResult()]
+
+        self.gateway.runtime_model = FakeModel()
+        rendered = self.gateway.render_wav(
+            self.gateway.SpeechRequest(
+                input="  (laugh) Hello there.  ",
+                voice="fish-female-default",
+                delivery=self.gateway.DeliverySettings(preset="playful", speed=1.0),
+            )
+        )
+        self.assertTrue(rendered.startswith(b"RIFF"))
+        self.assertEqual(calls["text"], "(laugh) Hello there.")
+        self.assertEqual(calls["instruct"], "A woman speaking in a playful, teasing voice.")
+        self.assertEqual(calls["ref_text"], "A curated adult female voice reference.")
+        self.assertNotIn("cfg_scale", calls)
+        self.assertNotIn("speed", calls)
 
     def test_registry_rejects_unknown_non_catalog_voice(self):
         request = self.gateway.SpeechRequest(
@@ -78,11 +109,13 @@ class FishAudioGatewayTests(unittest.TestCase):
     def test_delivery_preset_is_not_overridden_by_the_system_voice_identity(self):
         delivery = self.gateway.DeliverySettings(
             preset="natural",
+            intensity=20,
+            speed=1.0,
             temperature=0.61,
         )
         self.assertEqual(
-            self.gateway.styled_text("Hello", delivery),
-            "[female voice] [warm] Hello",
+            self.gateway.delivery_instruction(delivery),
+            "A woman speaking in a warm, natural voice. Subtle and understated.",
         )
         self.assertEqual(delivery.temperature, 0.61)
 
@@ -134,7 +167,7 @@ class FishAudioGatewayTests(unittest.TestCase):
                 response = client.post(
                     "/v1/audio/speech",
                     json={
-                        "model": "fish-audio-s2-pro-8bit",
+                        "model": "breeze-tts-2-mlx-8bit",
                         "input": "Thread-affinity regression",
                         "voice": "fish-female-default",
                         "response_format": "wav",
@@ -168,7 +201,7 @@ class FishAudioGatewayTests(unittest.TestCase):
             "X-Idream-Attempt-No": "1",
         }
         payload = {
-            "model": "fish-audio-s2-pro-8bit",
+            "model": "breeze-tts-2-mlx-8bit",
             "input": "Persistent replay",
             "voice": "fish-female-default",
             "response_format": "wav",
@@ -198,7 +231,7 @@ class FishAudioGatewayTests(unittest.TestCase):
             "X-Idream-Attempt-No": "1",
         }
         payload = {
-            "model": "fish-audio-s2-pro-8bit",
+            "model": "breeze-tts-2-mlx-8bit",
             "input": "Original request",
             "voice": "fish-female-default",
             "response_format": "wav",
@@ -229,10 +262,11 @@ class FishAudioGatewayTests(unittest.TestCase):
             )
         self.assertEqual(raised.exception.status_code, 409)
 
-    def test_launcher_uses_omlx_bundled_python_and_not_uv(self):
+    def test_launcher_runs_the_locked_breeze_env_offline(self):
         launcher = Path(__file__).with_name("start-fish-audio.cjs").read_text()
-        self.assertIn("/Applications/oMLX.app/Contents/Resources", launcher)
-        self.assertNotIn('"uv"', launcher)
+        self.assertIn('"--offline"', launcher)
+        self.assertIn('"scripts/breeze-tts-requirements.lock"', launcher)
+        self.assertNotIn("oMLX.app", launcher)
         self.assertIn(
             'process.on("SIGINT", () => forward("SIGTERM"));',
             launcher,

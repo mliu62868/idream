@@ -664,11 +664,11 @@ export const adminZhCharacters: Record<string, string> = {
   "First message": "第一条消息",
   "First message preview": "第一条消息预览",
   "First-time setup": "首次设置",
-  "Fish Audio S2 Pro": "Fish Audio S2 Pro",
-  "Fish Audio S2 Pro voice cloning through MLX is ready.":
-    "通过 MLX 运行的 Fish Audio S2 Pro 声音克隆已就绪。",
-  "Fish Audio is configured but unavailable. Verify the fish-audio-s2-pro-8bit model, resident MLX process, and system female reference.":
-    "Fish Audio 已配置但当前不可用；请检查 fish-audio-s2-pro-8bit 模型、常驻 MLX 进程和系统女性声音参考。",
+  "Breeze TTS 2": "Breeze TTS 2",
+  "Breeze TTS 2 voice cloning through MLX is ready.":
+    "通过 MLX 运行的 Breeze TTS 2 声音克隆已就绪。",
+  "Fish Audio is configured but unavailable. Verify the Breeze TTS 2 model, resident MLX process, and system female reference.":
+    "Fish Audio 已配置但当前不可用；请检查 Breeze TTS 2 模型、常驻 MLX 进程和系统女性声音参考。",
   "Fish Audio is not the Character voice-cloning provider. Set VOICE_IDENTITY_PROVIDER=fish-audio and start the Fish Audio process.":
     "Fish Audio 当前不是角色声音克隆供应器；请设置 VOICE_IDENTITY_PROVIDER=fish-audio 并启动 Fish Audio 进程。",
   "Fish Audio must be the active voice provider before this candidate can be activated.":
