@@ -3392,14 +3392,6 @@ async function addCharacterSoulAuthorityPreflight(
           "Apply the Main Chat Turn migration before starting Chat.",
       },
       {
-        id: "character-read-model-parity",
-        area: "Chat",
-        status: audit.readModel.parityMismatches === 0 ? "pass" : "fail",
-        message: `${audit.readModel.parityMismatches} Character serving/pointer read-model mismatches.`,
-        remediation:
-          "Inspect character-soul:audit output and repair the canonical view or serving pointers.",
-      },
-      {
         id: "character-soul-snapshot-load",
         area: "Chat",
         status: audit.snapshots.invalid.length === 0 ? "pass" : "fail",

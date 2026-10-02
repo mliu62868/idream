@@ -22,7 +22,7 @@ function enMarkup(node: React.ReactElement) {
 
 describe("legacy admin views: locale leaks", () => {
   it("keeps hardcoded Chinese out of the English locale", () => {
-    const surfaces = [enMarkup(<ComplianceView />), enMarkup(<AnnouncementsView />), enMarkup(<InsightsView />)];
+    const surfaces = [enMarkup(<ComplianceView />), enMarkup(<AnnouncementsView canWrite />), enMarkup(<InsightsView />)];
 
     for (const html of surfaces) {
       expect(html).not.toMatch(/[一-鿿]/);

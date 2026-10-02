@@ -15,6 +15,8 @@ import {
   referenceSetSnapshotHash,
 } from "../characters/release-snapshot";
 import { PUBLIC_CATALOG_EDITORIAL_IMPORT_POLICY_VERSION } from "@/server/modules/ourdream/public-catalog-qualification";
+import { deriveCreativeRunContinuation } from "../creative/run-state";
+import { CREATIVE_RUN_ITEM_STATES } from "../shared/state-transition-authority";
 
 interface ViolationRow {
   id: string;
@@ -48,6 +50,17 @@ type ServingPointer = {
   readonly pointer: "current";
   readonly releaseId: string;
 };
+
+function resolvedCreativeRunItemStatuses(purpose: string) {
+  // INVARIANT: SQL takes terminal membership from the actual continuation
+  // authority; ordinary generation must not acquire a second manual-review rule.
+  return CREATIVE_RUN_ITEM_STATES.filter((status) =>
+    deriveCreativeRunContinuation([status], {
+      requiresVerifiedPlacement: purpose === "campaign",
+      requiresReview: purpose === "model_eval",
+    }).lifecycleState === "closed",
+  );
+}
 
 const sqlChecks: readonly SqlInvariant[] = [
   {
@@ -627,8 +640,8 @@ const sqlChecks: readonly SqlInvariant[] = [
   },
   {
     key: "creative_run_child_projection_mismatch",
-    description: "Creative Run counters and lifecycle projection must equal their child item facts",
-    evidence: "ContentProductionBatch totals/status recomputed from ContentProductionItem states",
+    description: "Creative Run counters/status must match child facts, and closed Runs require purpose-specific terminal items",
+    evidence: "ContentProductionBatch counters/status use child facts and canonical purpose-specific terminal states",
     query: Prisma.sql`
       WITH derived AS (
         SELECT
@@ -640,10 +653,16 @@ const sqlChecks: readonly SqlInvariant[] = [
           count(i.id) FILTER (WHERE i.status IN ('approved', 'rejected', 'published', 'failed'))::int AS reviewed_items,
           count(i.id) FILTER (WHERE i.status IN ('queued', 'regenerate_requested'))::int AS active_items,
           count(i.id) FILTER (WHERE i.status = 'generated')::int AS generated_items,
+          count(i.id) FILTER (WHERE CASE b.purpose
+            WHEN 'campaign' THEN i.status IN (${Prisma.join(resolvedCreativeRunItemStatuses("campaign"))})
+            WHEN 'model_eval' THEN i.status IN (${Prisma.join(resolvedCreativeRunItemStatuses("model_eval"))})
+            ELSE i.status IN (${Prisma.join(resolvedCreativeRunItemStatuses("character_cover"))})
+          END)::int AS resolved_items,
           b."totalItems",
           b."completedItems",
           b."failedItems",
           b."approvedItems",
+          b."lifecycleState",
           b.status
         FROM content_production_batches b
         LEFT JOIN content_production_items i ON i."batchId" = b.id
@@ -654,8 +673,9 @@ const sqlChecks: readonly SqlInvariant[] = [
           OR "completedItems" <> completed_items
           OR "failedItems" <> failed_items
           OR "approvedItems" <> approved_items
+          OR ("lifecycleState" = 'closed' AND (total_items = 0 OR resolved_items <> total_items))
           OR status <> CASE
-            WHEN total_items > 0 AND reviewed_items = total_items
+            WHEN total_items > 0 AND resolved_items = total_items
               THEN CASE WHEN completed_items > 0 THEN 'completed' ELSE 'failed' END
             WHEN generated_items > 0 OR reviewed_items > 0 THEN 'reviewing'
             WHEN active_items > 0 THEN 'queued'

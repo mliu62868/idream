@@ -54,6 +54,15 @@ async function fixtureIngest(options: JsonCommandOptions) {
   return { events: rows.length, dialoguePath, sessionPath };
 }
 
+async function recallFixture(messages: { role: string; content: string; source_at: string }[]) {
+  const workspace = await mkdtemp(join(tmpdir(), "chat-igrep-recall-"));
+  temporary.push(workspace);
+  const transcript = join(workspace, "transcript.jsonl");
+  await writeFile(transcript, messages.map(row => JSON.stringify(row)).join("\n") + "\n");
+  const source = await fixtureIngest({ command: "igrep", args: ["mem", "ingest", "--workspace", workspace, "--session-id", "recall", "--transcript", transcript] });
+  return { workspace, path: source.dialoguePath.replace(".igrep/mem/", "") };
+}
+
 describe("igrep subprocess bounds", () => {
   it("kills an unbounded stderr producer and returns only a stable failure code", async () => {
     const script = `process.stderr.write("PRIVATE_STDERR_SENTINEL".repeat(5000));setInterval(()=>{},1000)`;
@@ -123,9 +132,13 @@ describe("official igrep wake observation", () => {
 describe("official igrep pre-recall", () => {
   it("searches memory in fast mode and renders dialogue notes without profile hits", async () => {
     const calls: JsonCommandOptions[] = [];
+    const fixture = await recallFixture([
+      { role: "user", content: "my dog is Kestrel", source_at: "2026-08-24T10:00:00.000Z" },
+      { role: "assistant", content: "Kestrel it is.", source_at: "2026-08-24T10:00:01.000Z" },
+    ]);
     const recall = await recallIgrepMemory(
       "/opt/igrep",
-      "/private/workspace",
+      fixture.workspace,
       "what is my dog's name",
       { referenceAt: "2026-08-24T10:00:00.000Z" },
       async (options) => {
@@ -139,7 +152,7 @@ describe("official igrep pre-recall", () => {
               sourceClass: "profile",
             },
             {
-              citation: "memory/dialogues/x.jsonl#L1-L2",
+              citation: `${fixture.path}#L1-L2`,
               snippet: "L1: [user @ 2026-08-24] my dog is Kestrel\nL2: [assistant @ 2026-08-24] Kestrel it is.",
               sourceClass: "dialogue",
             },
@@ -155,7 +168,7 @@ describe("official igrep pre-recall", () => {
       timeoutMs: 30_000,
     })]);
     expect(JSON.parse(calls[0]?.stdin ?? "{}")).toEqual({
-      workspace: "/private/workspace",
+      workspace: fixture.workspace,
       query: "what is my dog's name",
       max_results: 6,
       search_mode: "fast",
@@ -164,7 +177,7 @@ describe("official igrep pre-recall", () => {
     expect(recall).toMatchObject({
       outcome: "hit",
       resultCount: 2,
-      notes: ["[user @ 2026-08-24] my dog is Kestrel [assistant @ 2026-08-24] Kestrel it is."],
+      notes: ["[user @ 2026-08-24T10:00:00.000Z] my dog is Kestrel [assistant @ 2026-08-24T10:00:01.000Z] Kestrel it is."],
     });
   });
 
@@ -182,18 +195,23 @@ describe("official igrep pre-recall", () => {
 
   it("keeps the complete user fact after an earlier assistant passage", async () => {
     const label = "idreamrecall_0123456789abcdef0123456789abcdef";
-    const snippet = `L2: [assistant @ 2026-09-07] ${"The boat approaches the harbor. ".repeat(12)}\nL3: [user @ 2026-09-07] My blue notebook is beside the window. Its exact label is ${label}.`;
-    const recall = await recallIgrepMemory("igrep", "/w", "What is my notebook label?", {}, async () => ({
-      results: [{ citation: "memory/dialogues/x.jsonl#L2-L3", snippet, sourceClass: "dialogue" }],
+    const fixture = await recallFixture([
+      { role: "user", content: "A prior message.", source_at: "2026-09-07T00:00:00.000Z" },
+      { role: "assistant", content: "The boat approaches the harbor. ".repeat(12), source_at: "2026-09-07T00:00:01.000Z" },
+      { role: "user", content: `My blue notebook is beside the window. Its exact label is ${label}.`, source_at: "2026-09-07T00:00:02.000Z" },
+    ]);
+    const recall = await recallIgrepMemory("igrep", fixture.workspace, "What is my notebook label?", {}, async () => ({
+      results: [{ citation: `${fixture.path}#L2-L3`, snippet: "Derived preview", sourceClass: "dialogue" }],
     }));
-    expect(recall.notes[0]).toContain(`[user @ 2026-09-07] My blue notebook is beside the window. Its exact label is ${label}.`);
+    expect(recall.notes[0]).toContain(`[user @ 2026-09-07T00:00:02.000Z] My blue notebook is beside the window. Its exact label is ${label}.`);
   });
 
   it("marks bounded excerpts as incomplete without fabricating a partial identifier", async () => {
-    const prefix = `[user @ 2026-09-07] ${"Earlier context. ".repeat(123)}`;
+    const prefix = "Earlier context. ".repeat(123);
     const identifier = "full_identifier_".repeat(30);
-    const recall = await recallIgrepMemory("igrep", "/w", "What is the exact identifier?", {}, async () => ({
-      results: [{ citation: "memory/dialogues/x.jsonl#L1", snippet: `L1: ${prefix}${identifier}`, sourceClass: "dialogue" }],
+    const fixture = await recallFixture([{ role: "user", content: `${prefix}${identifier}`, source_at: "2026-09-07T00:00:00.000Z" }]);
+    const recall = await recallIgrepMemory("igrep", fixture.workspace, "What is the exact identifier?", {}, async () => ({
+      results: [{ citation: `${fixture.path}#L1`, snippet: `L1: ${prefix}${identifier}`, sourceClass: "dialogue" }],
     }));
     expect(recall.notes[0]?.length).toBeLessThanOrEqual(2000);
     expect(recall.notes[0]).not.toContain("full_identifier_");
@@ -772,17 +790,19 @@ describe("igrep readiness isolation evidence", () => {
   it("proves same-session replay and bidirectional cross-workspace isolation without returning probe content", async () => {
     const searches: Array<{ workspace: string; query: string }> = [];
     const run = async (options: JsonCommandOptions): Promise<unknown> => {
-      if (options.args[1] === "ingest") await mkdir(join(options.args[options.args.indexOf("--workspace") + 1]!, ".igrep"), { recursive: true });
+      if (options.args[1] === "ingest") return fixtureIngest(options);
       if (options.args[1] === "reproject") return { provider: "igrep", action: "reproject", migrated: false };
       if (options.args[0] === "mem-api" && options.args[1] === "memory-search") {
         const payload = JSON.parse(options.stdin ?? "{}") as { workspace: string; query: string };
+        const [file] = await readdir(join(payload.workspace, ".igrep/mem/memory/dialogues"));
+        const citation = `memory/dialogues/${file}#L1-L2`;
         searches.push(payload);
         return {
           provider: "igrep",
           strategy: "shared-search",
           workspaceRoot: payload.workspace,
           results: payload.workspace.includes(payload.query.startsWith("scope-a-") ? "scope-a" : "scope-b")
-            ? [{ sourceClass: "dialogue", snippet: payload.query }] : [],
+            ? [{ citation, sourceClass: "dialogue", snippet: payload.query }] : [],
           warnings: [],
           markdownContext: "",
         };
@@ -812,10 +832,12 @@ describe("igrep readiness isolation evidence", () => {
 
   it("accepts an igrep workspaceRoot alias that resolves to the probed workspace", async () => {
     const run = async (options: JsonCommandOptions): Promise<unknown> => {
-      if (options.args[1] === "ingest") await mkdir(join(options.args[options.args.indexOf("--workspace") + 1]!, ".igrep"), { recursive: true });
+      if (options.args[1] === "ingest") return fixtureIngest(options);
       if (options.args[1] === "reproject") return { provider: "igrep", action: "reproject", migrated: false };
       if (options.args[0] === "mem-api" && options.args[1] === "memory-search") {
         const payload = JSON.parse(options.stdin ?? "{}") as { workspace: string; query: string };
+        const [file] = await readdir(join(payload.workspace, ".igrep/mem/memory/dialogues"));
+        const citation = `memory/dialogues/${file}#L1-L2`;
         const alias = `${payload.workspace}-alias`;
         await symlink(payload.workspace, alias).catch((error: NodeJS.ErrnoException) => { if (error.code !== "EEXIST") throw error; });
         return {
@@ -823,7 +845,7 @@ describe("igrep readiness isolation evidence", () => {
           strategy: "shared-search",
           workspaceRoot: alias,
           results: payload.workspace.includes(payload.query.startsWith("scope-a-") ? "scope-a" : "scope-b")
-            ? [{ sourceClass: "dialogue", snippet: payload.query }] : [],
+            ? [{ citation, sourceClass: "dialogue", snippet: payload.query }] : [],
           warnings: [],
           markdownContext: "",
         };
@@ -848,15 +870,17 @@ describe("igrep readiness isolation evidence", () => {
 
   it("fails closed when either workspace can recall the other scope sentinel", async () => {
     const run = async (options: JsonCommandOptions): Promise<unknown> => {
-      if (options.args[1] === "ingest") await mkdir(join(options.args[options.args.indexOf("--workspace") + 1]!, ".igrep"), { recursive: true });
+      if (options.args[1] === "ingest") return fixtureIngest(options);
       if (options.args[1] === "reproject") return { provider: "igrep", action: "reproject", migrated: false };
       if (options.args[0] === "mem-api" && options.args[1] === "memory-search") {
         const payload = JSON.parse(options.stdin ?? "{}") as { workspace: string; query: string };
+        const [file] = await readdir(join(payload.workspace, ".igrep/mem/memory/dialogues"));
+        const citation = `memory/dialogues/${file}#L1-L2`;
         return {
           provider: "igrep",
           strategy: "shared-search",
           workspaceRoot: payload.workspace,
-          results: [{ sourceClass: "dialogue", snippet: payload.query }],
+          results: [{ citation, sourceClass: "dialogue", snippet: payload.query }],
           warnings: [],
           markdownContext: "",
         };

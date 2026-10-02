@@ -24,6 +24,8 @@ export type Placement = {
   publishedAt: string | null;
   verificationState: string;
   managedRunId: string | null;
+  canPublish: boolean;
+  metadata: Record<string, unknown>;
   asset: PlacementAsset;
 };
 
@@ -34,11 +36,19 @@ export type ApprovedAsset = {
   targetId: string | null;
   customerPublishable: boolean;
   publishabilityReasons: string[];
+  description?: string | null;
+  url?: string;
+  thumbnailUrl?: string;
 };
 
 export const PLACEMENTS_BASE = "/api/v2/admin/content/placements";
 export const PLACEMENTS_LIST = `${PLACEMENTS_BASE}?limit=25`;
-export const APPROVED_ASSETS_LIST = "/api/v2/admin/assets?status=approved&limit=100";
+export function approvedAssetsListPath(search: string, cursor?: string) {
+  const params = new URLSearchParams({ status: "approved", limit: "25" });
+  if (search.trim()) params.set("search", search.trim());
+  if (cursor) params.set("cursor", cursor);
+  return `/api/v2/admin/assets?${params}`;
+}
 
 // 与 placementSlotSchema（server admin/content/placements.ts）一致。
 export const SLOTS = [
@@ -53,7 +63,7 @@ export const SLOTS = [
 // 原有下拉顺序。
 export const TARGET_TYPES = ["character", "template", "route_page", "campaign"] as const;
 
-// 新建表单只创建非运行时 draft；发布权由 Character Release 或 Creative Run verification 持有。
+// Creating a draft never publishes it; uploaded Campaigns use the explicit verification command.
 export const CREATE_STATUSES = ["draft"] as const;
 
 // Legacy 详情页只保留 pause/archive；archive 是终态。
@@ -77,15 +87,23 @@ export type PlacementDraft = {
   targetId: string;
   status: (typeof CREATE_STATUSES)[number];
   reason: string;
+  eyebrow: string;
+  title: string;
+  ctaLabel: string;
+  href: string;
 };
 
 export const defaultPlacementDraft: PlacementDraft = {
   mediaAssetId: "",
-  slot: "feed_card",
-  targetType: "character",
+  slot: "campaign",
+  targetType: "campaign",
   targetId: "",
   status: "draft",
   reason: "",
+  eyebrow: "",
+  title: "",
+  ctaLabel: "",
+  href: "",
 };
 
 export function publishableApprovedAssets(
@@ -104,7 +122,24 @@ export function placementCreatePayload(draft: PlacementDraft): Record<string, un
     targetId: draft.targetId,
     status: draft.status,
     reason: draft.reason.trim(),
+    ...(draft.slot === "campaign" ? { metadata: {
+      eyebrow: draft.eyebrow.trim(), title: draft.title.trim(),
+      ...(draft.ctaLabel.trim() || draft.href.trim() ? { ctaLabel: draft.ctaLabel.trim(), href: draft.href.trim() } : {}),
+    } } : {}),
   };
+}
+
+export function validCampaignDraft(draft: Pick<PlacementDraft, "slot" | "targetType" | "eyebrow" | "title" | "ctaLabel" | "href">) {
+  if (draft.slot !== "campaign") return true;
+  if (draft.targetType !== "campaign" || !draft.eyebrow.trim() || !draft.title.trim()) return false;
+  const label = draft.ctaLabel.trim();
+  const href = draft.href.trim();
+  if (!label && !href) return true;
+  if (!label || !href || href.startsWith("//") || /[\\\u0000-\u001F\u007F]/.test(href)) return false;
+  try {
+    const url = href.startsWith("/") ? new URL(href, "https://community.invalid") : new URL(href);
+    return (href.startsWith("/") || url.protocol === "https:") && !url.username && !url.password;
+  } catch { return false; }
 }
 
 // SPEC: 原样搬运 patchPlacement()（:566-570）的 PATCH body；reason 原逻辑硬编码为

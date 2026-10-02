@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildGenerationPrompt,
   compileChatImagePrompt,
+  imageNegativePrompt,
   sanitizeChatImageDirection,
 } from "./generation-prompt";
 import type { GenerationPromptCharacter, GenerationVisualProfile } from "./generation-character-authority";
@@ -38,6 +39,35 @@ function prompt(
 }
 
 describe("image generation prompt", () => {
+  it.each([undefined, "chat_image", "chat_handoff"])("keeps biography scenes out of image identity on %s", sourceType => {
+    const scene = "One adult in a quiet conservatory at dawn, holding one closed green notebook.";
+    const text = buildGenerationPrompt({
+      mode: "image", character: { ...character, description: "Three guests on a sunny yacht." },
+      visualProfile: null, consistencyMode: "strict", userPrompt: scene,
+      presetFragment: "", lookFragment: "", sourceType,
+    });
+    expect(text).toContain(scene);
+    expect(text).toContain("Raya Reyes");
+    expect(text).toContain("dark brown");
+    expect(text).toContain("warm olive");
+    expect(text).not.toContain("yacht");
+    expect(text).not.toContain("Three guests");
+  });
+  it("preserves a freeplay still life without injecting a human subject", () => {
+    const scene = "A red ceramic cup on a plain wooden table, natural daylight, still life photography";
+    const text = buildGenerationPrompt({
+      mode: "image", character: null, visualProfile: null, consistencyMode: "balanced",
+      userPrompt: scene, presetFragment: "", lookFragment: "",
+    });
+    expect(text).toContain(scene);
+    expect(text).not.toMatch(/portrait|face|eyes|skin|human|person/i);
+  });
+
+  it("deduplicates composed image exclusions without dropping identity constraints", () => {
+    expect(imageNegativePrompt("blur, duplicate person, BLUR", { negativeIdentityPrompt: "different face, duplicate person" }))
+      .toBe("blur, duplicate person, different face");
+  });
+
   it("keeps the complete Chat moment when optional character notes would exhaust the final budget", () => {
     const required = `A closed blue notebook rests flat on the wooden windowsill to the left of a white cup. ${"Rain falls in the dark night. ".repeat(18)}`.trim();
     const text = buildGenerationPrompt({

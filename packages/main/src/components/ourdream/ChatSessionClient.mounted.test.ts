@@ -82,6 +82,7 @@ describe("ChatSessionClient streaming composer", () => {
   let root: Root;
   let sessionMessages: unknown[];
   let sessionProactiveEnabled: boolean;
+  let sessionContinuation: "available" | "character_unavailable" | "character_release_changed";
   let sessionReads: number;
   let releaseSend: ((response: Response) => void) | undefined;
 
@@ -100,6 +101,7 @@ describe("ChatSessionClient streaming composer", () => {
     FakeEventSource.instances = [];
     sessionMessages = [opening];
     sessionProactiveEnabled = false;
+    sessionContinuation = "available";
     sessionReads = 0;
     const sendResponse = new Promise<Response>((resolve) => {
       releaseSend = resolve;
@@ -144,6 +146,7 @@ describe("ChatSessionClient streaming composer", () => {
                 characterId: "character-1",
                 memoryEnabled: true,
                 proactiveEnabled: sessionProactiveEnabled,
+                continuation: sessionContinuation,
                 messages: sessionMessages,
                 character: { name: "Avery", canUpdateIdentity: false, image: "/media/avery-thumb.png" },
               },
@@ -162,6 +165,62 @@ describe("ChatSessionClient streaming composer", () => {
     await act(async () => root.unmount());
     container.remove();
     vi.unstubAllGlobals();
+  });
+
+  it("keeps paused Character history readable while refusing new messages and calls", async () => {
+    sessionContinuation = "character_unavailable";
+    await mountSession();
+    expect(container.textContent).toContain("Hey there.");
+    expect(container.textContent).toContain("This Character is currently unavailable. Your conversation stays readable.");
+    expect(messageInput()?.disabled).toBe(true);
+    expect(container.querySelector<HTMLButtonElement>('[aria-label="Send message"]')?.disabled).toBe(true);
+    expect(container.querySelector('[data-testid="chat-generate-link"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Generate is loading"]')).toBeNull();
+    await act(async () => {
+      typeMessage("Please continue.");
+      submitComposer();
+    });
+    expect(vi.mocked(fetch).mock.calls.filter(([url, init]) => String(url).endsWith("/messages") && init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("preserves an unsent draft across a pause and enables it after authority is restored", async () => {
+    await mountSession();
+    await act(async () => typeMessage("Keep this draft."));
+    sessionContinuation = "character_unavailable";
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await waitUntil(() => messageInput()?.disabled === true);
+    expect(messageInput()?.value).toBe("Keep this draft.");
+    sessionContinuation = "available";
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await waitUntil(() => messageInput()?.disabled === false);
+    expect(messageInput()?.value).toBe("Keep this draft.");
+    expect(container.querySelector<HTMLButtonElement>('[aria-label="Send message"]')?.disabled).toBe(false);
+    expect(vi.mocked(fetch).mock.calls.filter(([url, init]) => String(url).endsWith("/messages") && init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("offers the current Character chat before sending and carries its unsent draft", async () => {
+    const handoff = new Map<string, string>();
+    vi.stubGlobal("sessionStorage", {
+      getItem: (key: string) => handoff.get(key) ?? null,
+      setItem: (key: string, value: string) => { handoff.set(key, value); },
+      removeItem: (key: string) => { handoff.delete(key); },
+    });
+    const assign = vi.spyOn(window.location, "assign").mockImplementation(() => {});
+    await mountSession();
+    await act(async () => typeMessage("Bring this draft to the new chat."));
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => String(input) === "/api/v1/chat/sessions" && init?.method === "POST"
+      ? Response.json({ ok: true, data: { session: { id: "current-session" } } }) : originalFetch(input, init));
+    sessionContinuation = "character_release_changed";
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await waitUntil(() => messageInput()?.disabled === true);
+    const continueButton = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Continue in a new chat");
+    expect(continueButton).toBeDefined();
+    await act(async () => continueButton!.click());
+    expect(assign).toHaveBeenCalledWith("/chat/current-session");
+    expect(handoff.get("idream:chat-release-handoff:current-session")).toBe("Bring this draft to the new chat.");
+    expect(vi.mocked(fetch).mock.calls.filter(([url, init]) => String(url).endsWith("/messages") && init?.method === "POST")).toHaveLength(0);
+    assign.mockRestore();
   });
 
   it("keeps Shift+Enter and IME composition editable and sends multiline text once on plain Enter", async () => {
@@ -207,6 +266,41 @@ describe("ChatSessionClient streaming composer", () => {
     await waitUntil(() => !container.querySelector('[data-message-id^="local:"]'));
     expect(container.querySelector('[data-message-id="user-1"]')?.textContent)
       .toContain("hello there");
+  });
+
+  it("protects the submitted draft during admission and allows the next draft while the reply streams", async () => {
+    await mountSession();
+    await act(async () => typeMessage("hello there"));
+    await act(async () => submitComposer());
+    expect(messageInput()?.readOnly).toBe(true);
+    await act(async () => releaseSend?.(sendPayload()));
+    await waitUntil(() => FakeEventSource.instances.length > 0);
+
+    expect(messageInput()?.readOnly).toBe(false);
+    await act(async () => typeMessage("My next draft"));
+    await act(async () => FakeEventSource.instances.at(-1)?.emit("delta", { delta: "Current reply" }));
+    expect(messageInput()?.value).toBe("My next draft");
+    await act(async () => submitComposer());
+    expect(vi.mocked(fetch).mock.calls.filter(([input, init]) => String(input).endsWith("/messages") && init?.method === "POST")).toHaveLength(1);
+  });
+
+  it.each<number | "network">([402, 503, "network"])("restores the protected draft and releases the composer after admission fails with %s", async failure => {
+    const send = Promise.withResolvers<Response>();
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => String(input).endsWith("/messages") && init?.method === "POST"
+      ? send.promise : originalFetch(input, init));
+    await mountSession();
+    await act(async () => typeMessage("Keep my submitted draft"));
+    await act(async () => submitComposer());
+    expect(messageInput()?.readOnly).toBe(true);
+    await act(async () => {
+      if (failure === "network") send.reject(new TypeError("Network connection lost"));
+      else send.resolve(Response.json({ error: "unavailable" }, { status: failure }));
+    });
+
+    expect(messageInput()?.readOnly).toBe(false);
+    expect(messageInput()?.value).toBe("Keep my submitted draft");
+    expect(container.querySelector('[data-message-id^="local:"]')).toBeNull();
   });
 
   it("keeps streamed text when a poll lands mid-stream", async () => {
@@ -989,6 +1083,63 @@ describe("ChatSessionClient streaming composer", () => {
     expect(container.querySelector('[data-testid="chat-confirm-voice"]')).toBeNull();
   });
 
+  it.each([401, 403, 404])("clears private chat content and voice when focus loses access with %s", async status => {
+    const pause = vi.fn();
+    vi.stubGlobal("Audio", class {
+      constructor(public src: string) {}
+      pause = pause;
+      async play() {}
+    });
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    let inaccessible = false;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === "/api/v1/generation/voice") return Response.json({ data: { contentUrl: "/voice/private.wav" } });
+      if (inaccessible && url === "/api/v1/chat/sessions/session-1") return Response.json({ ok: false }, { status });
+      return originalFetch(input, init);
+    });
+    await mountSession();
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="chat-play-voice"]')!.click());
+    expect(container.textContent).toContain("Hey there.");
+    expect(container.querySelector('[data-testid="chat-header-avatars"] img')).not.toBeNull();
+    inaccessible = true;
+    await act(async () => window.dispatchEvent(new Event("focus")));
+
+    expect(container.textContent).not.toContain("Hey there.");
+    expect(container.querySelector('[data-testid="chat-header-avatars"] img')).toBeNull();
+    expect(messageInput()).toBeNull();
+    expect(pause).toHaveBeenCalledOnce();
+  });
+
+  it.each(["network", "server"])("keeps the readable chat and voice through a focus %s failure", async failure => {
+    const pause = vi.fn();
+    vi.stubGlobal("Audio", class {
+      constructor(public src: string) {}
+      pause = pause;
+      async play() {}
+    });
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    let interrupted = false;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === "/api/v1/generation/voice") return Response.json({ data: { contentUrl: "/voice/private.wav" } });
+      if (interrupted && url === "/api/v1/chat/sessions/session-1") {
+        if (failure === "network") throw new TypeError("Network connection lost");
+        return Response.json({ ok: false }, { status: 503 });
+      }
+      return originalFetch(input, init);
+    });
+    await mountSession();
+    await act(async () => typeMessage("Unsent draft"));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="chat-play-voice"]')!.click());
+    interrupted = true;
+    await act(async () => window.dispatchEvent(new Event("focus")));
+
+    expect(container.textContent).toContain("Hey there.");
+    expect(messageInput()?.value).toBe("Unsent draft");
+    expect(pause).not.toHaveBeenCalled();
+  });
+
   it("reports an expired voice quote without silently accepting a new price", async () => {
     const originalFetch = vi.mocked(fetch).getMockImplementation()!;
     vi.mocked(fetch).mockImplementation(async (input, init) => {
@@ -1157,6 +1308,95 @@ describe("ChatSessionClient streaming composer", () => {
 
     expect(replyBubble()).toBeNull();
     expect(pause).toHaveBeenCalledOnce();
+  });
+
+  it.each(["playing", "render pending", "quote pending"])("revokes %s voice when another page advances the reply attempt", async mode => {
+    const pause = vi.fn();
+    const playedUrls: string[] = [];
+    vi.stubGlobal("Audio", class {
+      constructor(public src: string) {}
+      pause = pause;
+      async play() { playedUrls.push(this.src); }
+    });
+    const tts = Promise.withResolvers<Response>();
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === "/api/v1/generation/voice/quote" && mode === "quote pending") return tts.promise;
+      if (url === "/api/v1/generation/voice") return mode === "render pending"
+        ? tts.promise : Response.json({ data: { contentUrl: "/voice/discarded.wav" } });
+      return originalFetch(input, init);
+    });
+    sessionProactiveEnabled = true;
+    sessionMessages = [opening, userTurn, { ...streamingReply, content: "Original answer", status: "sent" }];
+    await mountSession();
+    await act(async () => replyBubble()?.querySelector<HTMLButtonElement>('[data-testid="chat-play-voice"]')!.click());
+    sessionMessages = [opening, userTurn, { ...streamingReply, attempt: 2, content: "Replacement answer", status: "sent" }];
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    await waitUntil(() => Boolean(replyBubble()?.textContent?.includes("Replacement answer")));
+    if (mode !== "playing") {
+      await act(async () => tts.resolve(mode === "render pending"
+        ? Response.json({ data: { contentUrl: "/voice/discarded.wav" } })
+        : Response.json({ ok: true, data: { quote: {
+          quoteToken: null, maxCostDreamcoins: 2, overflowCostDreamcoins: 2,
+          allowanceMinutes: 30, remainingAllowanceMs: 60_000, balance: 100, accepted: true, alreadyDelivered: false,
+        } } })));
+    }
+
+    if (mode === "playing") expect(pause).toHaveBeenCalledOnce();
+    else expect(playedUrls).toEqual([]);
+    if (mode === "quote pending") expect(voiceRequests()).toHaveLength(0);
+    expect(replyBubble()?.querySelector('[data-testid="chat-play-voice"]')?.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("keeps a different history clip playing when another reply advances its attempt", async () => {
+    const pause = vi.fn();
+    vi.stubGlobal("Audio", class {
+      constructor(public src: string) {}
+      pause = pause;
+      async play() {}
+    });
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => String(input) === "/api/v1/generation/voice"
+      ? Response.json({ data: { contentUrl: "/voice/opening.wav" } }) : originalFetch(input, init));
+    sessionProactiveEnabled = true;
+    sessionMessages = [opening, userTurn, { ...streamingReply, content: "Original answer", status: "sent" }];
+    await mountSession();
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-message-id="assistant-0"] [data-testid="chat-play-voice"]')!.click());
+    sessionMessages = [opening, userTurn, { ...streamingReply, attempt: 2, content: "Replacement answer", status: "sent" }];
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    await waitUntil(() => Boolean(replyBubble()?.textContent?.includes("Replacement answer")));
+
+    expect(pause).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-message-id="assistant-0"] [data-testid="chat-play-voice"]')?.getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("does not resurrect a deleted exchange from a focus read started during deletion", async () => {
+    sessionMessages = [opening, userTurn, { ...streamingReply, content: "Reply being deleted", status: "sent" }];
+    await mountSession();
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    const staleSnapshot = await originalFetch("/api/v1/chat/sessions/session-1");
+    const deletion = Promise.withResolvers<Response>();
+    const focusRead = Promise.withResolvers<Response>();
+    let deferRead = false;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) === "/api/v1/messages/assistant-1" && init?.method === "DELETE") return deletion.promise;
+      if (String(input) === "/api/v1/chat/sessions/session-1" && deferRead) {
+        deferRead = false;
+        return focusRead.promise;
+      }
+      return originalFetch(input, init);
+    });
+    await act(async () => replyBubble()?.querySelector<HTMLButtonElement>('[data-testid="chat-delete-message"]')!.click());
+    await act(async () => replyBubble()?.querySelector<HTMLButtonElement>('[data-testid="chat-delete-message"]')!.click());
+    deferRead = true;
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await act(async () => deletion.resolve(Response.json({ ok: true })));
+    expect(replyBubble()).toBeNull();
+    await act(async () => focusRead.resolve(staleSnapshot));
+
+    expect(replyBubble()).toBeNull();
+    expect(container.querySelector('[data-message-id="user-1"]')).toBeNull();
   });
 
   it("selects a group speaker through @ and sends one canonical request with that Character while preserving other speakers", async () => {

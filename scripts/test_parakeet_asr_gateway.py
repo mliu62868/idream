@@ -1,22 +1,30 @@
 """Contract tests with controlled inference; these are not model-quality evidence."""
 import asyncio
 import io
+import tempfile
 import time
 import unittest
 import wave
+from pathlib import Path
 from unittest.mock import patch
 
 import httpx
 from scripts import parakeet_asr_gateway as g
 
 
-def wav(seconds=1):
+def wav(seconds=1, *, pcm=None):
+    frames = round(seconds * 16000)
+    if pcm is None:
+        # A nonzero, zero-mean tone exercises native admission and codec decode;
+        # it is a transport fixture, not model-quality evidence.
+        tone = b"\x00\x08" * 16 + b"\x00\xf8" * 16
+        pcm = (tone * ((frames + 31) // 32))[:frames * 2]
     out = io.BytesIO()
     with wave.open(out, "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
         w.setframerate(16000)
-        w.writeframes(bytes(round(seconds * 16000) * 2))
+        w.writeframes(pcm)
     return out.getvalue()
 
 
@@ -27,6 +35,9 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         g.slot = asyncio.Lock()
         g.states.clear()
         g.rates.clear()
+        self.directory = tempfile.TemporaryDirectory(prefix="idream-asr-contract-")
+        self.temp = patch.object(g, "TEMP_DIR", Path(self.directory.name))
+        self.temp.start()
         self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=g.app), base_url="http://asr")
         self.mock = patch.object(g, "transcribe", return_value={"text": "Review this draft."})
         self.infer = self.mock.start()
@@ -36,6 +47,8 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.gather(*g.tasks, return_exceptions=True)
         self.mock.stop()
         await self.client.aclose()
+        self.temp.stop()
+        self.directory.cleanup()
 
     def headers(self, key="clip-1", user="user-1", conversation="session:one"):
         return {"Authorization": "Bearer test-internal-token", "X-ASR-User-Id": user, "X-ASR-Conversation-Id": conversation, "X-ASR-Request-Id": key, "Content-Type": "audio/wav"}
@@ -71,8 +84,103 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_decode_duration_and_invalid_audio(self):
         self.assertEqual((await self.post(wav(60.01))).json()["errorCode"], "audio_too_long")
+        self.assertEqual((await self.post(wav(60.01, pcm=bytes(round(60.01 * 16000) * 2)), key="long-zero")).json()["errorCode"], "audio_too_long")
         self.assertEqual((await self.post(b"bad audio", key="bad")).json()["errorCode"], "invalid_audio")
         self.infer.assert_not_called()
+
+    async def test_real_http_zero_pcm_never_reaches_model_but_one_lsb_does(self):
+        import socket
+        import uvicorn
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(128)
+        port = listener.getsockname()[1]
+        # The test listener never loads the resident runtime or its startup warmup.
+        server = uvicorn.Server(uvicorn.Config(g.app, log_level="critical", lifespan="off"))
+        task = asyncio.create_task(server.serve(sockets=[listener]))
+        self.infer.return_value = {"text": "Thank you."}
+        try:
+            for _ in range(100):
+                if server.started:
+                    break
+                await asyncio.sleep(.01)
+            self.assertTrue(server.started)
+            async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}", trust_env=False) as client:
+                for seconds in (1, 10, 60):
+                    with self.subTest(seconds=seconds):
+                        key = f"zero-{seconds}"
+                        body = wav(seconds, pcm=bytes(seconds * 16000 * 2))
+                        headers = self.headers(key=key)
+                        result = await client.post("/v1/transcriptions", content=body, headers=headers)
+                        self.assertEqual(result.status_code, 200)
+                        payload = result.json()
+                        self.assertEqual(payload["status"], "failed")
+                        self.assertEqual(payload["errorCode"], "no_speech")
+                        self.assertNotIn("text", payload)
+                        self.infer.assert_not_called()
+                        await asyncio.gather(*g.tasks)
+                        op = g.states[key]
+                        self.assertEqual(op.duration, seconds * 1000)
+                        self.assertIsNone(op.text)
+                        self.assertFalse(op.active)
+                        self.assertFalse(g.slot.locked())
+                        self.assertEqual(g.uploads, 0)
+                        self.assertEqual(list(g.TEMP_DIR.iterdir()), [])
+                        self.assertGreater(op.expires, time.time() + g.TTL - 2)
+                        status = await client.get(f"/v1/transcriptions/{key}", headers=headers)
+                        self.assertEqual(status.json(), payload)
+                        replay = await client.post("/v1/transcriptions", content=body, headers=headers)
+                        self.assertEqual(replay.json(), payload)
+                        conflict = await client.post("/v1/transcriptions", content=wav(), headers=headers)
+                        self.assertEqual(conflict.status_code, 409)
+                        self.infer.assert_not_called()
+                        op.expires = time.time() - 1
+                        self.assertEqual((await client.get(f"/v1/transcriptions/{key}", headers=headers)).status_code, 404)
+                # A single PCM16 LSB is eligible even with almost zero RMS.
+                pcm = bytes(8000 * 2) + b"\x01\x00" + bytes(7999 * 2)
+                result = await client.post("/v1/transcriptions", content=wav(pcm=pcm), headers=self.headers(key="one-lsb"))
+                self.assertEqual(result.status_code, 200)
+                self.assertEqual(result.json()["status"], "completed")
+                self.assertEqual(result.json()["audioDurationMs"], 1000)
+                self.assertEqual(result.json()["text"], "Thank you.")
+                self.assertEqual(self.infer.call_count, 1)
+                self.infer.assert_called_once_with(pcm)
+                await asyncio.gather(*g.tasks)
+                self.assertFalse(g.slot.locked())
+                self.assertEqual(list(g.TEMP_DIR.iterdir()), [])
+        finally:
+            server.should_exit = True
+            await task
+            listener.close()
+
+    async def test_cancel_during_real_zero_decode_preserves_tombstone_and_cleanup(self):
+        entered, release = asyncio.Event(), asyncio.Event()
+        real_decode = g.decode
+        async def paused_decode(path, deadline):
+            pcm = await real_decode(path, deadline)
+            entered.set()
+            await release.wait()
+            return pcm
+        with patch.object(g, "decode", side_effect=paused_decode):
+            pending = asyncio.create_task(self.post(wav(pcm=bytes(16000 * 2))))
+            try:
+                await asyncio.wait_for(entered.wait(), 3)
+                cancelled = await self.client.delete("/v1/transcriptions/clip-1", headers=self.headers())
+                self.assertEqual(cancelled.json()["status"], "cancelled")
+                self.assertEqual((await pending).json()["status"], "cancelled")
+                self.assertTrue(g.slot.locked())
+            finally:
+                release.set()
+                await pending
+                await asyncio.gather(*g.tasks)
+        self.infer.assert_not_called()
+        self.assertEqual(g.states["clip-1"].status, "cancelled")
+        self.assertIsNone(g.states["clip-1"].error)
+        self.assertIsNone(g.states["clip-1"].text)
+        self.assertFalse(g.states["clip-1"].active)
+        self.assertFalse(g.slot.locked())
+        self.assertEqual(g.uploads, 0)
+        self.assertEqual(list(g.TEMP_DIR.iterdir()), [])
 
     async def test_cancel_native_holds_slot_and_user_gate(self):
         import threading

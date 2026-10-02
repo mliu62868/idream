@@ -79,6 +79,8 @@ describe("Main Scene terminal authority", () => {
     await expect(commitChatTerminal({ ...failed, scene: { ...snapshot.scene!, location: "a forged location" } })).rejects.toThrow("Scene");
     await expect(commitChatTerminal(failed)).resolves.toMatchObject({ duplicate: false });
     await expect(prisma.chatTurn.findUniqueOrThrow({ where: { id: snapshot.turnId } })).resolves.toMatchObject({ assistantStatus: status, sceneVersion: snapshot.sceneVersion, scene: snapshot.scene });
+    await expect(prisma.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId: snapshot.turnId } }))
+      .resolves.toMatchObject({ consumedAt: null, voidedAt: expect.any(Date) });
     await expect(chatVoiceAuthority(f.userId, f.sessionId, snapshot.assistantMessageId)).rejects.toThrow("Message not found");
   });
 

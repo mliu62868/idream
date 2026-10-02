@@ -204,9 +204,13 @@ describe("ProfileWorkspace media pagination", () => {
   it("lets the account panels read on the first try in the commit that confirms the owner", async () => {
     await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/profile" })));
     await settle();
+    const requestedPaths = requests.map(path => new URL(path, "http://localhost").pathname);
     for (const path of ["/api/v1/affiliate/dashboard", "/api/v1/account/email-verification", "/api/v1/age-verification/status"]) {
-      expect(requests, path).toContain(path);
+      expect(requestedPaths, path).toContain(path);
     }
+    const affiliateReads = requests.filter(path => new URL(path, "http://localhost").pathname === "/api/v1/affiliate/dashboard");
+    expect(affiliateReads).toHaveLength(1);
+    expect(Object.fromEntries(new URL(affiliateReads[0]!, "http://localhost").searchParams)).toEqual({ limit: "20" });
   });
 
   it("holds a write made while focus re-confirms the owner and sends it once the same owner is confirmed", async () => {
@@ -495,12 +499,16 @@ describe("ProfileWorkspace media pagination", () => {
       .toBe("This Character is unavailable for sharing. Resolve its report or appeal first.");
   });
 
-  it("does not offer a Packs tab and sends its old deep link to Recent", async () => {
+  it("opens Packs from its deep link and preserves the exact claimed edition", async () => {
     window.history.replaceState(null, "", "/custom?tab=packs");
+    override = (path) => path === "/api/v1/library/packs" ? Promise.resolve(Response.json({ ok: true, data: {
+      items: [{ id: "grant-a", type: "pack", title: "Claimed story", description: "Claimed version 2", href: "/packs/pack-a?release=release-a" }], emptyCta: "/packs/new",
+    } })) : undefined;
     await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/custom" })));
     await settle();
-    expect([...container.querySelectorAll("button")].some((item) => item.textContent?.trim() === "packs")).toBe(false);
-    expect(button("Recent").getAttribute("aria-pressed")).toBe("true");
+    expect(button("Packs").getAttribute("aria-pressed")).toBe("true");
+    expect(container.querySelector('a[href="/packs/pack-a?release=release-a"]')?.textContent).toContain("Claimed story");
+    expect(container.querySelector('a[href="/packs?scope=mine"]')).not.toBeNull();
   });
 
   it("keeps a new collection private unless the owner opts in", async () => {
@@ -509,6 +517,47 @@ describe("ProfileWorkspace media pagination", () => {
     const publish = container.querySelector<HTMLInputElement>('[aria-label="Publish collection to Community"]');
     expect(publish).not.toBeNull();
     expect(publish!.checked).toBe(false);
+  });
+
+  it("requires explicit media publication before adding a private image to a public collection", async () => {
+    const writes: unknown[] = [];
+    override = (path, init) => {
+      if (path === "/api/v1/media/collections") return Promise.resolve(Response.json({ ok: true, data: {
+        collections: [
+          { id: "public-collection", name: "Shared work", visibility: "public", itemCount: 1 },
+          { id: "private-collection", name: "Personal work", visibility: "private", itemCount: 1 },
+        ],
+      } }));
+      if (path.endsWith("-collection/items")) {
+        writes.push({ path, ...JSON.parse(String(init?.body)) });
+        return Promise.resolve(Response.json({ ok: true, data: {} }));
+      }
+      return undefined;
+    };
+    await mountMedia();
+    const card = container.querySelector('[data-media-id="image-1"]')!;
+    await click(card.querySelector("[aria-expanded]")!);
+    const add = card.querySelector<HTMLButtonElement>('[aria-label="Add media to collection"]')!;
+    expect(add.disabled).toBe(true);
+    expect(card.querySelector("option")?.textContent).toContain("in Community");
+    let consent = card.querySelector<HTMLInputElement>('[aria-label="Publish this media to Community"]')!;
+    expect(consent).not.toBeNull();
+    expect(consent.checked).toBe(false);
+    await click(consent);
+    const select = card.querySelector<HTMLSelectElement>('[aria-label="Existing collection"]')!;
+    await act(async () => { select.value = "private-collection"; select.dispatchEvent(new Event("change", { bubbles: true })); }); await settle();
+    expect(card.querySelector('[aria-label="Publish this media to Community"]')).toBeNull();
+    expect(add.disabled).toBe(false);
+    await click(add);
+    await act(async () => { select.value = "public-collection"; select.dispatchEvent(new Event("change", { bubbles: true })); }); await settle();
+    consent = card.querySelector<HTMLInputElement>('[aria-label="Publish this media to Community"]')!;
+    expect(consent.checked).toBe(false); expect(add.disabled).toBe(true);
+    await click(consent);
+    await click(add);
+    expect(writes).toEqual([
+      { path: "/api/v1/media/collections/private-collection/items", mediaAssetId: "image-1", publishMedia: false },
+      { path: "/api/v1/media/collections/public-collection/items", mediaAssetId: "image-1", publishMedia: true },
+    ]);
   });
 
   it("shows an existing referral link on load without pressing Invite", async () => {
@@ -660,7 +709,7 @@ describe("ProfileWorkspace media pagination", () => {
     expect(container.querySelector('[data-media-id="image-1"]')).not.toBeNull();
     for (const testId of accountPanels) expect(container.querySelector(`[data-testid="${testId}"]`), testId).toBeNull();
     for (const path of ["/api/v1/referrals", "/api/v1/profile/preferences", "/api/v1/affiliate/dashboard", "/api/v1/account/email-verification"]) {
-      expect(requests, path).not.toContain(path);
+      expect(requests.map(request => new URL(request, "http://localhost").pathname), path).not.toContain(path);
     }
     await act(async () => root.unmount());
     root = createRoot(container);

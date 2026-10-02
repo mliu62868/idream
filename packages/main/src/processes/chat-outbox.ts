@@ -22,6 +22,9 @@ export type MainToChatEventType =
   (typeof MAIN_TO_CHAT_EVENTS)[keyof typeof MAIN_TO_CHAT_EVENTS];
 
 export type ChatEventLane = "memory" | "lifecycle";
+// Bound headers and ACK body alike: one hung receiver must release its lease
+// through the existing retry path so other lifecycle aggregates can advance.
+const CHAT_LIFECYCLE_DELIVERY_TIMEOUT_MS = 30_000;
 const CHAT_EVENT_TYPES_BY_LANE = {
   memory: [
     MAIN_TO_CHAT_EVENTS.companionMemoryProjectRequestedV1,
@@ -229,7 +232,11 @@ async function deliverToChat(event: DurableEventEnvelope): Promise<void> {
     if (!base) throw new Error("CHAT_SERVICE_URL is required for AgentRun cancellation");
     const response = await fetch(
       `${base.replace(/\/$/, "")}/internal/agent-runs/${encodeURIComponent(payload.turnId)}/${payload.attempt}/cancel`,
-      { method: "POST", headers: { "x-internal-token": env.INTERNAL_TOKEN } },
+      {
+        method: "POST",
+        headers: { "x-internal-token": env.INTERNAL_TOKEN },
+        signal: AbortSignal.timeout(CHAT_LIFECYCLE_DELIVERY_TIMEOUT_MS),
+      },
     );
     if (!response.ok) throw new Error(`Chat AgentRun cancel returned ${response.status}`);
     const acknowledged = await response.json() as { ok?: unknown };
@@ -254,6 +261,7 @@ async function deliverToChat(event: DurableEventEnvelope): Promise<void> {
     method: "POST",
     headers: { "content-type": "application/json", "x-internal-token": env.INTERNAL_TOKEN },
     body: JSON.stringify(event),
+    signal: AbortSignal.timeout(CHAT_LIFECYCLE_DELIVERY_TIMEOUT_MS),
   });
   if (!response.ok) throw new Error(`chat durable ingest returned ${response.status}`);
   const ack = durableAckSchema.parse(await response.json());

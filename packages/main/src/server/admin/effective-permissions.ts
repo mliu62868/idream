@@ -1,4 +1,5 @@
 import type { ActorRole } from "@/server/lib/auth";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { applyOverrides, resolvePermissions, type PermissionKey } from "./permissions";
 import { expandGrantBundles, type AdminGrantBundleKey } from "./permissions";
@@ -12,26 +13,27 @@ function isGrantBundleKey(value: string): value is AdminGrantBundleKey {
   return Object.hasOwn(ADMIN_GRANT_BUNDLES, value);
 }
 
+type PermissionDb = Pick<Prisma.TransactionClient, "adminUserPermission" | "adminUserGrantBundle">;
+
 // SPEC: 解析一个 actor 的有效 permission key 集合 = role 映射 ∪ grant − revoke（用户级覆盖）。
 // INTENT: 权限判定的单一入口，page 初始门与每个 admin API 都走它，避免 role-only 与 override 两套逻辑漂移。
 // INVARIANTS: 无 userId 时退化为纯 role 集合；只读，不写。
 export async function effectivePermissions(
   userId: string | undefined,
   role: ActorRole | undefined,
+  db: PermissionDb = prisma,
 ): Promise<Set<PermissionKey>> {
   const base = resolvePermissions(role);
   if (!userId) return base;
-  const [overrides, bundleRows] = await Promise.all([
-    prisma.adminUserPermission.findMany({ where: { userId } }),
-    prisma.adminUserGrantBundle.findMany({
-      where: {
-        userId,
-        revokedAt: null,
-        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
-      },
-      select: { bundleKey: true },
-    }),
-  ]);
+  const overrides = await db.adminUserPermission.findMany({ where: { userId } });
+  const bundleRows = await db.adminUserGrantBundle.findMany({
+    where: {
+      userId,
+      revokedAt: null,
+      OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+    },
+    select: { bundleKey: true },
+  });
   for (const permission of expandGrantBundles(
     bundleRows.map((row) => row.bundleKey).filter(isGrantBundleKey),
   )) base.add(permission);
@@ -58,18 +60,17 @@ export async function effectivePermissionScope(
   userId: string,
   role: ActorRole | undefined,
   key: PermissionKey,
+  db: PermissionDb = prisma,
 ): Promise<AdminPermissionScope | null> {
-  const [overrides, bundleRows] = await Promise.all([
-    prisma.adminUserPermission.findMany({ where: { userId, permissionKey: key } }),
-    prisma.adminUserGrantBundle.findMany({
-      where: {
-        userId,
-        revokedAt: null,
-        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
-      },
-      select: { bundleKey: true },
-    }),
-  ]);
+  const overrides = await db.adminUserPermission.findMany({ where: { userId, permissionKey: key } });
+  const bundleRows = await db.adminUserGrantBundle.findMany({
+    where: {
+      userId,
+      revokedAt: null,
+      OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+    },
+    select: { bundleKey: true },
+  });
   if (overrides.some((row) => row.effect === "grant")) return null;
   for (const row of bundleRows) {
     if (!isGrantBundleKey(row.bundleKey)) continue;

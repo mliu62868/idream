@@ -14,7 +14,7 @@ import { parseImageAgentToolCall } from "@idream/shared/chat/image-action";
 import { createHash } from "node:crypto";
 import { logger } from "../logger.js";
 import type { CompanionModelRequestEvidence, CompanionToolCall, PreparedTurnProfile } from "./contracts";
-import { estimateModelRequestInputTokens, formatModelRequestInput, type ModelInputMessage } from "./model-request-format";
+import { dropOldestReplayExchange, estimateModelRequestInputTokens, formatModelRequestInput, type ModelInputMessage } from "./model-request-format";
 
 export interface OpenAiCompatibleAdapterOptions {
   profile: PreparedTurnProfile;
@@ -22,8 +22,11 @@ export interface OpenAiCompatibleAdapterOptions {
   openRouterProviderOnly?: readonly string[];
   requiredToolName?: CompanionToolCall["name"];
   maxInputTokens?: number;
+  /** Only Main-pinned history IDs may be dropped; new model/tool steps stay fixed. */
+  replayMessageIds?: readonly string[];
   /** Factual turns use the profile's structured temperature without changing the configured roleplay default. */
   samplingTemperature?: number;
+  responseFormat?: { type: "json_schema"; json_schema: { name: string; strict: true; schema: Record<string, unknown> } };
   observeRequest?: (evidence: CompanionModelRequestEvidence) => void;
   fetch?: typeof globalThis.fetch;
 }
@@ -298,7 +301,9 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
   private readonly requiredToolName: CompanionToolCall["name"] | undefined;
   private requiredToolCompleted: boolean;
   private readonly maxInputTokens: number | undefined;
+  private readonly replayMessageIds: ReadonlySet<string>;
   private readonly samplingTemperature: number | undefined;
+  private readonly responseFormat: OpenAiCompatibleAdapterOptions["responseFormat"];
   private readonly observeRequest: OpenAiCompatibleAdapterOptions["observeRequest"];
 
   constructor(options: OpenAiCompatibleAdapterOptions) {
@@ -310,7 +315,9 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
     this.request = options.fetch ?? globalThis.fetch;
     this.requiredToolName = options.requiredToolName;
     this.maxInputTokens = options.maxInputTokens;
+    this.replayMessageIds = new Set(options.replayMessageIds);
     this.samplingTemperature = options.samplingTemperature;
+    this.responseFormat = options.responseFormat;
     this.observeRequest = options.observeRequest;
     this.requiredToolCompleted = !options.requiredToolName;
     if (!this.apiKey) throw new Error("OpenAI-compatible API key is required");
@@ -475,12 +482,14 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
       )),
       this.profile.timeout.firstTokenMs,
     );
-    const modelInput = formatModelRequestInput({
-      messages: modelInputMessages(options.system, options.messages),
+    let inputMessages = modelInputMessages(options.system, options.messages);
+    const formatInput = () => formatModelRequestInput({
+      messages: inputMessages,
       tools: options.tools,
       requiredTool: forceRequiredTool,
       jsonCompatibilityMode,
     });
+    const modelInput = formatInput();
     const body = {
       model: options.model,
       // SPEC: the latest user request authorizes one image action. Preserve
@@ -509,6 +518,7 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
       // INVARIANT: Chat-owned PreparedTurn budgets the companion reply, not
       // hidden chain-of-thought inside the sole DSH execution path.
       chat_template_kwargs: { enable_thinking: false },
+      ...(this.responseFormat ? { response_format: this.responseFormat } : {}),
       ...(options.stop?.length ? { stop: options.stop } : {}),
       ...(options.tools?.length ? {
         tools: modelInput.tools,
@@ -538,9 +548,23 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
       // Apply the same character estimate as PreparedTurn, now
       // including DSH guidance, resident memory, tool results and wire schemas.
       // This is an input estimate, not a claim about a provider's tokenizer.
-      const estimatedInputTokens = estimateModelRequestInputTokens(body);
-      if (this.maxInputTokens !== undefined && estimatedInputTokens > this.maxInputTokens) {
-        throw new LlmError("assembled model request exceeds the prepared input budget", "INPUT_BUDGET_EXCEEDED");
+      const estimate = () => estimateModelRequestInputTokens(body)
+        + (this.responseFormat ? Math.ceil(JSON.stringify(this.responseFormat).length / 4) : 0);
+      let estimatedInputTokens = estimate();
+      const droppedReplayMessageIds: string[] = [];
+      while (this.maxInputTokens !== undefined && estimatedInputTokens > this.maxInputTokens) {
+        // DSH adds memory guidance, profile, recall and tool results after
+        // PreparedTurn fitting. Refit the same oldest complete exchanges here;
+        // their pinned IDs distinguish history from this turn's model steps.
+        const retained = dropOldestReplayExchange(inputMessages, this.replayMessageIds);
+        if (!retained) {
+          throw new LlmError("assembled model request exceeds the prepared input budget", "INPUT_BUDGET_EXCEEDED");
+        }
+        const retainedIds = new Set(retained.map(message => message.id));
+        droppedReplayMessageIds.push(...inputMessages.filter(message => !retainedIds.has(message.id)).map(message => message.id));
+        inputMessages = retained;
+        body.messages = formatInput().messages;
+        estimatedInputTokens = estimate();
       }
       const serializedBody = JSON.stringify(body);
       this.observeRequest?.({
@@ -554,6 +578,7 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
           .join("\n")).digest("hex"),
         estimatedInputTokens,
         ...(this.maxInputTokens === undefined ? {} : { maxInputTokens: this.maxInputTokens }),
+        ...(droppedReplayMessageIds.length === 0 ? {} : { droppedReplayMessageIds }),
       });
       const response = await this.request(chatCompletionsUrl(this.profile.baseUrl), {
         method: "POST",

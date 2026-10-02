@@ -2,6 +2,15 @@
 // voice profile/clone/default-settings surface it reports on.
 
 import { z } from "zod";
+import { voiceCallSchema } from "../../contracts/voice-call";
+
+export const characterVoiceCallHistorySchema = z.object({ items: z.array(voiceCallSchema.extend({
+  userId: z.string(), settledAt: z.string().nullable(), provider: z.string(),
+  utterances: z.array(z.object({ id: z.string(), turnId: z.string().nullable(), replyAttempt: z.number().int().nullable(),
+    status: z.string(), voiceRequestId: z.string().nullable(), mediaAssetId: z.string().nullable(),
+    durationMs: z.number().int().nonnegative(), costDreamcoins: z.number().int().nonnegative(), errorCode: z.string().nullable() })),
+})) });
+export type CharacterVoiceCallHistory = z.infer<typeof characterVoiceCallHistorySchema>;
 import {
   adminIdSchema,
   adminIsoDateTimeSchema,

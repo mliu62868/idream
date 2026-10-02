@@ -571,14 +571,18 @@ test("admin users and billing actions write audit trail and clear adjustment for
 
     await page.goto(`${adminURL}/admin/system/access`);
     await expectAdminShellReady(page, "Team Access");
-    const targetRow = page.getByRole("row").filter({ hasText: targetId });
+    const targetRow = page.getByRole("row").filter({
+      has: page.getByRole("button", { name: `Copy ${targetId}`, exact: true }),
+    });
     await expect(targetRow).toHaveCount(1, { timeout: 15_000 });
     await expect(targetRow.getByText("active", { exact: true })).toBeVisible();
 
-    await page.getByRole("textbox", { name: "Permission user ID" }).fill(targetId);
-    await page.getByRole("combobox", { name: "Permission key" }).selectOption("billing.ledger.adjust");
-    await page.getByRole("combobox", { name: "Permission effect" }).selectOption("grant");
-    await page.getByRole("button", { name: "Apply" }).click();
+    await targetRow.getByRole("button", { name: "Manage access for Billing Target", exact: true }).click();
+    await expect(page.getByRole("textbox", { name: "Target user ID", exact: true })).toHaveValue(targetId);
+    const permissionOverride = page.getByRole("heading", { name: "Permission override", exact: true }).locator("..");
+    await permissionOverride.getByRole("combobox", { name: "Permission key" }).selectOption("billing.ledger.adjust");
+    await permissionOverride.getByRole("combobox", { name: "Permission effect" }).selectOption("grant");
+    await permissionOverride.getByRole("button", { name: "Apply", exact: true }).click();
     await expect(page.getByRole("heading", { name: "grant the permission for: Adjusting customer Dreamcoin balances" })).toBeVisible();
     await page.getByRole("textbox", { name: "Reason", exact: true }).fill("E2E permission grant");
     await page.getByRole("textbox", { name: "Confirmation", exact: true }).fill("PERMISSION");
@@ -688,15 +692,13 @@ test("admin users and billing actions write audit trail and clear adjustment for
     await expectAdminShellReady(page, "Audit Log");
     await page.getByRole("textbox", { name: "action, target, reason, or request" }).fill(targetId);
     await page.getByRole("button", { name: "Apply", exact: true }).click();
-    await expect(
-      page.getByRole("row").filter({ hasText: targetId }).filter({ hasText: "billing.ledger.adjust" }),
-    ).toHaveCount(1, { timeout: 10_000 });
-    await expect(
-      page.getByRole("row").filter({ hasText: targetId }).filter({ hasText: "user.status.write" }),
-    ).toHaveCount(2);
-    await expect(
-      page.getByRole("row").filter({ hasText: targetId }).filter({ hasText: "admin.permission.grant" }),
-    ).toHaveCount(1);
+    const targetAuditRows = page.getByRole("table", { name: "Audit authority events" })
+      .getByRole("row").filter({ has: page.getByRole("cell", { name: `user:${targetId}`, exact: true }) });
+    // Permission-grant details also contain the billing action key. Only the
+    // primary Action cell identifies the authority event being counted.
+    await expect(targetAuditRows.filter({ has: page.getByRole("cell", { name: "billing.ledger.adjust", exact: true }) })).toHaveCount(1, { timeout: 10_000 });
+    await expect(targetAuditRows.filter({ has: page.getByRole("cell", { name: "user.status.write", exact: true }) })).toHaveCount(2);
+    await expect(targetAuditRows.filter({ has: page.getByRole("cell", { name: "admin.permission.grant", exact: true }) })).toHaveCount(1);
 
     const [target, ledger, audits] = await Promise.all([
       prisma.user.findUniqueOrThrow({ where: { id: targetId }, select: { status: true } }),
@@ -736,7 +738,9 @@ test("team access hides high-risk controls without their effective permissions",
   try {
     await page.goto(`${adminBaseURL()}/admin/system/access`);
     await expectAdminShellReady(page, "Team Access");
-    const targetRow = page.getByRole("row").filter({ hasText: targetId });
+    const targetRow = page.getByRole("row").filter({
+      has: page.getByRole("button", { name: `Copy ${targetId}`, exact: true }),
+    });
     await expect(targetRow).toHaveCount(1);
     await expect(page.getByText("Permission override", { exact: true })).toHaveCount(0);
     await expect(targetRow.getByRole("button", { name: /Suspend|Restore/ })).toHaveCount(0);
@@ -1792,6 +1796,7 @@ test("admin pricing and promo creation require typed confirmation", async ({ pag
 
     await page.goto(`${adminURL}/admin/promo`);
     await expectAdminShellReady(page, "Promotions");
+    await page.locator("summary").filter({ hasText: "Create redeem code" }).click();
     await page.getByRole("textbox", { name: "Code (≥4)", exact: true }).fill(code);
     await page.getByRole("textbox", { name: "Dreamcoins", exact: true }).fill("42");
     await page.getByRole("textbox", { name: "Max uses (blank=∞)", exact: true }).fill("3");
@@ -2391,6 +2396,7 @@ test("admin announcements UI requires typed confirmation for create, update, and
     await prisma.appSetting.deleteMany({ where: { key: "announcements" } });
     await page.goto(`${adminURL}/admin/announcements`);
     await expectAdminShellReady(page, "Announcements");
+    await page.locator("summary").filter({ hasText: "Create announcement" }).click();
 
     await page.getByRole("textbox", { name: "Title", exact: true }).fill(title);
     await page.getByRole("textbox", { name: "Body", exact: true }).fill("Announcement confirmation smoke");
@@ -2426,7 +2432,7 @@ test("admin announcements UI requires typed confirmation for create, update, and
     await page.getByRole("textbox", { name: "Announcement action confirmation" }).fill(announcementId ?? "");
     await expect(confirmUpdate).toBeEnabled();
     await confirmUpdate.click();
-    await expect(row).toContainText("no", { timeout: 10_000 });
+    await expect(row.getByText("Inactive", { exact: true })).toBeVisible({ timeout: 10_000 });
 
     await row.getByRole("button", { name: "Delete announcement" }).click();
     const confirmDelete = page.getByRole("button", { name: "Confirm delete" });
@@ -2465,6 +2471,7 @@ test("admin API Phase 4: announcement write (admin) + public read + growth gatin
   await startRoleSession(page, "admin");
   try {
     const create = await page.request.post(`${adminURL}/api/v2/admin/announcements`, {
+      headers: { "idempotency-key": crypto.randomUUID() },
       data: {
         title: "E2E banner",
         body: "hello from e2e",
@@ -2502,6 +2509,7 @@ test("admin API Phase 4: announcement write (admin) + public read + growth gatin
   // analyst lacks growth.promo.write → announcement create 403
   await startRoleSession(page, "analyst");
   const annForbidden = await page.request.post(`${adminURL}/api/v2/admin/announcements`, {
+    headers: { "idempotency-key": crypto.randomUUID() },
     data: { title: "x", body: "y", reason: "test reason", confirmation: "ANNOUNCE" },
   });
   expect(annForbidden.status()).toBe(403);

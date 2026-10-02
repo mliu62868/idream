@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { COMPANION_PRODUCT_PROMPT_VERSION } from "@idream/shared";
 import type { AgentRuntimeConfig } from "./config";
 import { createReadinessProbe, probeWorkspaceRebuild } from "./readiness";
 import { companionCompositionDigest } from "./composition";
@@ -97,7 +98,7 @@ describe("fail-closed companion readiness", () => {
     })();
     expect(readiness).toMatchObject({
       ready: true,
-      productPromptVersion: "companion-product-1",
+      productPromptVersion: COMPANION_PRODUCT_PROMPT_VERSION,
       dshVersion: "0.2.0-rc.2",
       dshCommit: "639ed015397290b3745d163aafe02ffee4aa3f84",
       igrepVersion: "0.1.134",

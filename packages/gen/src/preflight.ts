@@ -243,14 +243,15 @@ async function main() {
   }
   if (fp8RunnerBases.size > 0) {
     // The node registers no ComfyUI nodes (pure runtime patches), so there is
-    // no /object_info surface to probe. Point COMFYUI_VENV_PYTHON at the
-    // runner interpreter (<comfyui>/.venv/bin/python3); custom_nodes/ is
-    // derived from it for a hard presence check. Without it we can only warn.
+    // no /object_info surface to probe. Source and Python may live in separate
+    // directories. An explicit source root is authoritative; only the existing
+    // <comfyui>/.venv layout can be inferred when that root is absent.
     const venvPython = process.env.COMFYUI_VENV_PYTHON;
-    if (venvPython) {
+    const comfyRoot = process.env.COMFYUI_ROOT
+      || (venvPython ? path.resolve(venvPython, "../../..") : undefined);
+    if (comfyRoot) {
       const nodeInit = path.resolve(
-        venvPython,
-        "../../..",
+        comfyRoot,
         "custom_nodes/ComfyUI-AppleSilicon-FP8/__init__.py",
       );
       if (!existsSync(nodeInit)) {
@@ -261,7 +262,7 @@ async function main() {
       }
     } else {
       process.stdout.write(
-        "preflight: set COMFYUI_VENV_PYTHON to hard-check the ComfyUI-AppleSilicon-FP8 node\n",
+        "preflight: set COMFYUI_ROOT (or COMFYUI_VENV_PYTHON for the legacy .venv layout) to hard-check the ComfyUI-AppleSilicon-FP8 node\n",
       );
     }
   }

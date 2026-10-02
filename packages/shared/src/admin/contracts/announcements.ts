@@ -5,8 +5,8 @@ import { adminIdSchema, adminIsoDateTimeSchema, adminPageInfoSchema } from "./co
  * SPEC: 站内公告（banner）后台 CRUD 的公开契约。
  * INTENT: `confirmation` 必须等于 title（创建）或 id（改/删），但那是跨字段判断，
  *   留在 authority 里 —— 写进 schema 会让契约注册表再也生成不出合法夹具。
- * INVARIANT: 写操作不声明 idempotency-key。公告存在 AppSetting 的一个 JSON 数组里，
- *   没有可去重的命令表；声明一个不执行的幂等头正是 v2 要消灭的那种契约。
+ * INVARIANT: JSON 内容、审计和已有 ControlPlaneCommand 幂等回执同事务提交；
+ *   PATCH/DELETE 回传单条 entityVersion，不能用陈旧编辑覆盖新的公告内容。
  */
 
 export const announcementLevelSchema = z.enum(["info", "promo", "warning"]);
@@ -16,6 +16,7 @@ const announcementConfirmationSchema = z.string().trim().min(1).max(160);
 export const announcementSchema = z
   .object({
     id: adminIdSchema,
+    version: z.number().int().positive(),
     title: z.string().min(1),
     body: z.string().min(1),
     level: announcementLevelSchema,
@@ -74,6 +75,7 @@ export const announcementCreateRequestSchema = z
 
 export const announcementPatchRequestSchema = z
   .object({
+    entityVersion: z.number().int().positive(),
     title: z.string().trim().min(1).max(160).optional(),
     body: z.string().trim().min(1).max(2_000).optional(),
     level: announcementLevelSchema.optional(),
@@ -88,6 +90,7 @@ export const announcementPatchRequestSchema = z
 
 export const announcementDeleteRequestSchema = z
   .object({
+    entityVersion: z.number().int().positive(),
     reason: announcementReasonSchema.optional(),
     confirmation: announcementConfirmationSchema,
   })

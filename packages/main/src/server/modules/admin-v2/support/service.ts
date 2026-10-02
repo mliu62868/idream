@@ -5,7 +5,7 @@ import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { operationalSupportRequestWhere } from "@/server/modules/metric-data-scope";
-import { synchronizeSupportCaseFromRequest } from "@/server/modules/admin-v2/cases/service";
+import { assertCaseOwner, ensureSupportCaseForRequest, synchronizeSupportCaseFromRequest } from "@/server/modules/admin-v2/cases/service";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
 import {
   actorWithPermission,
@@ -20,6 +20,7 @@ import {
 } from "@/server/modules/admin-v2/shared/list-cursor";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { appendSupportMessage, supportConversation } from "./conversation";
+import { supportSlaDueAt } from "./sla";
 
 type PlaintextFields = Record<string, string | null>;
 
@@ -35,25 +36,17 @@ type SupportRequestRow = Prisma.SupportRequestGetPayload<{
 }>;
 type SupportSlaState = "all" | "overdue" | "due_soon" | "on_track" | "paused" | "closed";
 
-const supportSlaHoursByPriority = new Map([
-  [1, 4],
-  [2, 12],
-  [3, 24],
-  [4, 48],
-  [5, 72],
-]);
-
-function supportRequestSla(request: SupportRequestRow) {
+function supportRequestSla(request: SupportRequestRow, caseDueAt?: Date | null) {
   if (request.status === "resolved" || request.status === "closed") {
     return { dueAt: null, hoursRemaining: null, state: "closed" as const };
   }
   if (request.status === "waiting_on_user") {
     return { dueAt: null, hoursRemaining: null, state: "paused" as const };
   }
-  const hours = supportSlaHoursByPriority.get(request.priority) ?? 24;
-  const dueAt = new Date(request.createdAt.getTime() + hours * 60 * 60 * 1_000);
-  const hoursRemaining = Math.ceil((dueAt.getTime() - Date.now()) / (60 * 60 * 1_000));
-  const state = hoursRemaining < 0
+  const dueAt = caseDueAt ?? supportSlaDueAt(request.priority, request.createdAt);
+  const remainingMs = dueAt.getTime() - Date.now();
+  const hoursRemaining = Math.ceil(remainingMs / (60 * 60 * 1_000));
+  const state = remainingMs < 0
     ? "overdue"
     : hoursRemaining <= 4
       ? "due_soon"
@@ -61,8 +54,19 @@ function supportRequestSla(request: SupportRequestRow) {
   return { dueAt, hoursRemaining, state };
 }
 
-function supportRequestDTO(request: SupportRequestRow) {
-  const sla = supportRequestSla(request);
+async function supportCaseSlaDates(db: Pick<Prisma.TransactionClient, "caseEvidence">, requestIds: readonly string[]) {
+  const links = await db.caseEvidence.findMany({
+    where: { sourceType: "support_request", sourceId: { in: [...requestIds] } },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    select: { sourceId: true, case: { select: { slaDueAt: true } } },
+  });
+  const dates = new Map<string, Date | null>();
+  for (const link of links) if (!dates.has(link.sourceId)) dates.set(link.sourceId, link.case.slaDueAt);
+  return dates;
+}
+
+function supportRequestDTO(request: SupportRequestRow, caseDueAt?: Date | null) {
+  const sla = supportRequestSla(request, caseDueAt);
   return {
     id: request.id,
     ticketId: request.ticketId,
@@ -184,8 +188,9 @@ export async function listSupportRequests(request: Request) {
       exhausted = true;
       break;
     }
+    const slaDates = await supportCaseSlaDates(prisma, items.map((item) => item.id));
     for (const item of items) {
-      const dto = supportRequestDTO(item);
+      const dto = supportRequestDTO(item, slaDates.get(item.id));
       if (sla !== "all" && dto.slaState !== sla) continue;
       matches.push(dto);
       rawByTicket.set(item.ticketId, {
@@ -264,6 +269,14 @@ export async function patchSupportRequest(request: Request, ticketId: string) {
     execute: async (tx, requestId) => {
       const before = await tx.supportRequest.findUnique({ where: { ticketId } });
       if (!before) throw Errors.notFound("Support request not found");
+      if (before.updatedAt.getTime() !== new Date(body.expectedUpdatedAt).getTime()) {
+        throw Errors.conflict("Support request changed. Refresh it before updating.");
+      }
+      if (body.assignedToId) {
+        const adminCase = await ensureSupportCaseForRequest(tx, before);
+        if (!adminCase) throw Errors.internal("Support Case is missing");
+        await assertCaseOwner(tx, body.assignedToId, adminCase.type);
+      }
       if (body.status === "closed" && before.status !== "resolved") {
         throw Errors.conflict("Resolve the support request before closing it");
       }
@@ -280,11 +293,12 @@ export async function patchSupportRequest(request: Request, ticketId: string) {
           resolutionNotes: body.resolutionNotes === undefined ? undefined : body.resolutionNotes,
           resolvedAt: body.status === undefined ? undefined : terminal ? new Date() : null,
           status: body.status,
+          updatedAt: new Date(Math.max(Date.now(), before.updatedAt.getTime() + 1)),
         },
         include: supportRequestIncludes,
       });
       if (body.status !== undefined || body.priority !== undefined || body.assignedToId !== undefined) {
-        await synchronizeSupportCaseFromRequest(tx, updated);
+        await synchronizeSupportCaseFromRequest(tx, updated, { statusChanged: updated.status !== before.status, priorityChanged: updated.priority !== before.priority });
       }
       if (body.customerMessage) {
         await appendSupportMessage(tx, updated, { messageId: requireIdempotencyKey(request), body: body.customerMessage, author: "support", authorId: actor.id, actorRole: actor.role });
@@ -310,7 +324,8 @@ export async function patchSupportRequest(request: Request, ticketId: string) {
         }),
         requestId,
       } });
-      return { request: supportRequestDTO(updated) };
+      const slaDates = await supportCaseSlaDates(tx, [updated.id]);
+      return { request: supportRequestDTO(updated, slaDates.get(updated.id)) };
     },
   });
 }
@@ -340,10 +355,14 @@ export async function escalateSupportRequest(request: Request, ticketId: string)
         include: supportRequestIncludes,
       });
       if (!before) throw Errors.notFound("Support request not found");
+      if (before.updatedAt.getTime() !== new Date(body.expectedUpdatedAt).getTime()) {
+        throw Errors.conflict("Support request changed. Refresh it before escalating.");
+      }
       if (before.status === "resolved" || before.status === "closed") {
         throw Errors.badRequest("Resolved or closed support requests cannot be escalated");
       }
-      const beforeSla = supportRequestSla(before);
+      const slaDates = await supportCaseSlaDates(tx, [before.id]);
+      const beforeSla = supportRequestSla(before, slaDates.get(before.id));
       if (beforeSla.state !== "overdue" && beforeSla.state !== "due_soon") {
         throw Errors.badRequest("Only due-soon or overdue support requests can be escalated");
       }
@@ -356,10 +375,11 @@ export async function escalateSupportRequest(request: Request, ticketId: string)
           slaEscalatedById: actor.id,
           slaEscalationReason: body.reason,
           status: before.status === "received" ? "open" : before.status,
+          updatedAt: new Date(Math.max(Date.now(), before.updatedAt.getTime() + 1)),
         },
         include: supportRequestIncludes,
       });
-      await synchronizeSupportCaseFromRequest(tx, updated);
+      const currentCase = await synchronizeSupportCaseFromRequest(tx, updated, { statusChanged: updated.status !== before.status, priorityChanged: updated.priority !== before.priority });
       await tx.adminAuditLog.create({ data: {
         actorId: actor.id,
         actorRole: actor.role,
@@ -378,12 +398,12 @@ export async function escalateSupportRequest(request: Request, ticketId: string)
           assignedToId: updated.assignedToId,
           priority: updated.priority,
           slaEscalatedAt: updated.slaEscalatedAt?.toISOString() ?? null,
-          slaState: supportRequestSla(updated).state,
+          slaState: supportRequestSla(updated, currentCase.slaDueAt).state,
           status: updated.status,
         }),
         requestId,
       } });
-      return { request: supportRequestDTO(updated) };
+      return { request: supportRequestDTO(updated, currentCase.slaDueAt) };
     },
   });
 }

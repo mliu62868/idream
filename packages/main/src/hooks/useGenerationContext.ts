@@ -72,7 +72,8 @@ export function useGenerationContext(viewerScope: string | null) {
   const clear = useCallback(() => {
     const url = new URL(window.location.href);
     for (const field of routeFields) url.searchParams.delete(field);
-    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    // Next copies its internal state and syncs the route for external writes.
+    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
     setRoute({ kind: "none" });
     setSnapshot(null);
   }, []);

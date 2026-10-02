@@ -11,7 +11,7 @@ import { startEventConsumer } from "./event-consumer";
 
 // Registry publication has its own refresh lifecycle and query tests. Keep
 // this independent periodic module from changing their certification fixtures;
-// all five durable dispatchers below still run against the real test database.
+// all durable dispatchers below still run against the real test database.
 vi.mock("@/server/modules/admin-v2/metrics/refresh", () => ({
   startMetricSnapshotRefresh: () => ({ close: async () => {} }),
 }));
@@ -64,6 +64,75 @@ async function fixture() {
 }
 
 describe("durable event consumer time isolation", () => {
+  it("reclaims an expired generating Turn while a pending admission is still blocked", async () => {
+    const expiredFixture = await fixture();
+    const expired = await beginChatTurn({
+      userId: expiredFixture.userId, sessionId: expiredFixture.sessionId,
+      content: "A reply whose execution deadline already passed.", idempotencyKey: randomUUID(),
+    });
+    expect(expired.snapshot).not.toBeNull();
+    const expiredTurnId = expired.snapshot!.turnId;
+    await prisma.chatTurn.update({
+      where: { id: expiredTurnId },
+      data: {
+        assistantStatus: "generating", admittedAt: new Date(Date.now() - 120_000),
+        executionDeadlineAt: new Date(Date.now() - 120_000),
+      },
+    });
+    const pendingFixture = await fixture();
+    const pending = await beginChatTurn({
+      userId: pendingFixture.userId, sessionId: pendingFixture.sessionId,
+      content: "A new reply waiting for a slow admission receiver.", idempotencyKey: randomUUID(),
+    });
+    expect(pending.snapshot).not.toBeNull();
+    let releaseAdmission!: () => void;
+    const blocked = new Promise<void>((resolve) => { releaseAdmission = resolve; });
+    let admissionStarted = false;
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (target.endsWith("/internal/agent-runs")) {
+        const snapshot = JSON.parse(String(init?.body)) as { turnId: string; attempt: number };
+        if (snapshot.turnId === pending.snapshot!.turnId) {
+          admissionStarted = true;
+          await blocked;
+        }
+        return Response.json({
+          ok: true, turnId: snapshot.turnId, attempt: snapshot.attempt,
+          duplicate: false, terminal: false, deadlineAt: new Date(Date.now() + 300_000).toISOString(),
+        }, { status: 202 });
+      }
+      if (target.endsWith("/cancel")) return Response.json({ ok: true, active: false });
+      throw new Error(`Unexpected owned transport: ${target}`);
+    }));
+    const worker = startEventConsumer();
+    try {
+      await expect.poll(() => admissionStarted).toBe(true);
+      // Reclaim must settle before the independent admission transport returns;
+      // waiting for its five-second timeout would make backlog size own recovery.
+      await expect.poll(async () => (await prisma.chatTurn.findUniqueOrThrow({
+        where: { id: expiredTurnId },
+      })).assistantStatus, { timeout: 1_000 }).toBe("failed");
+      await expect(prisma.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId: expiredTurnId } }))
+        .resolves.toMatchObject({ consumedAt: null, voidedAt: expect.any(Date) });
+      await expect(prisma.mainOutboxEvent.findFirst({
+        where: { aggregateId: expiredTurnId, eventType: MAIN_TO_CHAT_EVENTS.agentRunCancelRequestedV1 },
+      })).resolves.toMatchObject({ payload: {
+        eventType: MAIN_TO_CHAT_EVENTS.agentRunCancelRequestedV1,
+        aggregateType: "chat_turn", aggregateId: expiredTurnId,
+        payload: {
+          version: 1, userId: expiredFixture.userId, turnId: expiredTurnId, attempt: expired.snapshot!.attempt,
+        },
+      } });
+      await expect(prisma.chatTurn.findUniqueOrThrow({
+        where: { id: pending.snapshot!.turnId },
+      })).resolves.toMatchObject({ assistantStatus: "pending", admissionLeaseToken: expect.any(String) });
+    } finally {
+      releaseAdmission();
+      await worker.close();
+      await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: expiredTurnId } });
+    }
+  });
+
   it("admits a later Turn and delivers lifecycle intents while an earlier memory projection is still blocked", async () => {
     const f = await fixture();
     const memoryId = await prisma.$transaction((tx) => scheduleCompanionMemoryProjection(tx, f));

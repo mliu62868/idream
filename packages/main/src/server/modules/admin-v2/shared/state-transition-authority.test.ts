@@ -119,8 +119,8 @@ const matrices: readonly MatrixCase[] = [
     states: CREATIVE_RUN_VERIFICATION_STATES,
     allowed: {
       pending: ["pending", "verifying", "passed"],
-      verifying: ["pending", "passed", "failed"],
-      passed: ["verifying"],
+      verifying: ["pending", "verifying", "passed", "failed"],
+      passed: ["pending", "passed", "verifying"],
       failed: ["verifying"],
       overridden: ["verifying"],
     },
@@ -132,7 +132,7 @@ const matrices: readonly MatrixCase[] = [
     allowed: {
       pending: ["verifying"],
       verifying: ["passed", "failed", "overridden"],
-      passed: [],
+      passed: ["overridden"],
       failed: ["verifying"],
       overridden: [],
     },
@@ -147,7 +147,7 @@ const matrices: readonly MatrixCase[] = [
       approved: ["approved", "rejected", "published"],
       rejected: ["approved", "rejected"],
       regenerate_requested: ["generated", "failed"],
-      published: ["published"],
+      published: ["generated", "published"],
       failed: ["regenerate_requested"],
     },
     permits: isCreativeRunItemTransitionAllowed,

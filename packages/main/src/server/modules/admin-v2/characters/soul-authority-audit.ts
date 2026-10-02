@@ -63,7 +63,6 @@ export interface CharacterSoulAuthorityAuditReport {
     mode: "main_turn_ledger" | "invalid";
     database: string;
   };
-  readModel: { parityMismatches: number; rows: unknown[] };
   snapshots: SoulSnapshotAudit;
   drain: {
     activeSessions: number;
@@ -76,7 +75,6 @@ export interface CharacterSoulAuthorityAuditReport {
 
 export function characterSoulAuthorityIsLaunchSafe(input: {
   topologyMode: CharacterSoulAuthorityAuditReport["topology"]["mode"];
-  parityMismatches: number;
   invalidSnapshots: number;
   nullPinSessions: number;
   legacyPinnedSessions: number;
@@ -87,7 +85,6 @@ export function characterSoulAuthorityIsLaunchSafe(input: {
   // schema, and every active session must pin immutable content. Historical
   // adapters exist for continuity, not as a reason to report a green launch.
   return input.topologyMode === "main_turn_ledger" &&
-    input.parityMismatches === 0 &&
     input.invalidSnapshots === 0 &&
     input.nullPinSessions === 0 &&
     input.legacyPinnedSessions === 0 &&
@@ -106,7 +103,6 @@ export async function auditCharacterSoulAuthority(
   `;
   const topology = topologyRows[0];
   const mode = topology?.database ? "main_turn_ledger" as const : "invalid" as const;
-  const parityRows: unknown[] = [];
 
   const serving = await db.$queryRaw<Array<{
     ownerId: string;
@@ -177,7 +173,6 @@ export async function auditCharacterSoulAuthority(
   const legacyCurrentPointers = pointers.filter((row) => !isCurrentSoul(row.contentVersionId)).length;
   const ok = characterSoulAuthorityIsLaunchSafe({
     topologyMode: mode,
-    parityMismatches: parityRows.length,
     invalidSnapshots: snapshotAudit.invalid.length,
     nullPinSessions,
     legacyPinnedSessions,
@@ -190,7 +185,6 @@ export async function auditCharacterSoulAuthority(
       mode,
       database: topology?.database ?? "unknown",
     },
-    readModel: { parityMismatches: parityRows.length, rows: parityRows },
     snapshots: snapshotAudit,
     drain: {
       activeSessions,

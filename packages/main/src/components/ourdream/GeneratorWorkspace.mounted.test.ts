@@ -16,7 +16,8 @@ vi.mock("next/image", () => ({
 vi.mock("./AgeGateBoundary", () => ({ useAgeGateAccess: () => ({ accepted: true }) }));
 
 import { GeneratorWorkspace } from "./GeneratorWorkspace";
-import { saveCurrentGenerationJob } from "@/lib/generation-current-job";
+import { readCurrentGenerationJob, saveCurrentGenerationJob } from "@/lib/generation-current-job";
+import { requestGenerationRetryWithExactAuthority } from "@/lib/generation-write-client";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -52,6 +53,10 @@ const quote = {
   costs: [{ outputCount: 1, costDreamcoins: 5 }], balance: 100, identityLocked: false,
 };
 
+const videoCapabilities = { options: { seconds: [3, 5], orientations: ["2:3", "1:1"], qualities: ["preview", "standard"] }, audio: ["generated", "silent", "narration"] };
+const videoQuote = { fingerprint: "c".repeat(64), costDreamcoins: 5, balance: 100, audio: "generated", narrationExtendsLastFrame: false, narrationExtraCostDreamcoins: 0,
+  costs: [{ ordinal: 0, costDreamcoins: 5 }], scenes: [{ ordinal: 0, video: { durationSeconds: 121 / 24, width: 768, height: 1152, audio: "generated" } }] };
+
 function deferredResponse() {
   let resolve!: (response: Response) => void;
   const promise = new Promise<Response>((complete) => { resolve = complete; });
@@ -67,6 +72,20 @@ const chatHandoff = {
     releaseSnapshotHash: "a".repeat(64), visualProfileId: "visual-v1", visualProfileVersion: 1,
     referenceSetRevisionId: "references-v1" },
 };
+
+function installNextHistory() {
+  const originalReplace = window.history.replaceState.bind(window.history);
+  let canonicalHref = window.location.href;
+  const internalState = { __NA: true, __PRIVATE_NEXTJS_INTERNALS_TREE: { tree: ["generate"], renderedSearch: window.location.search } };
+  originalReplace(internalState, "", canonicalHref);
+  // Next 16's history boundary treats __NA/_N writes as framework commits.
+  // Plain happy-dom history cannot expose a stale canonical route being restored.
+  vi.spyOn(window.history, "replaceState").mockImplementation((data, unused, url) => {
+    if (!data?.__NA && !data?._N && url) canonicalHref = new URL(String(url), window.location.href).href;
+    originalReplace({ ...data, ...internalState }, unused, url);
+  });
+  return { commit: () => window.history.replaceState(internalState, "", canonicalHref) };
+}
 
 describe("GeneratorWorkspace media journeys", () => {
   let root: Root;
@@ -116,6 +135,7 @@ describe("GeneratorWorkspace media journeys", () => {
     container.remove();
     vi.useRealTimers();
     window.sessionStorage.clear();
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
@@ -189,6 +209,103 @@ describe("GeneratorWorkspace media journeys", () => {
     expect(window.location.search).not.toContain("chatTurnId");
     expect(container.querySelector('[data-testid="generator-context"]')).toBeNull();
     expect(prompt.value).toBe("");
+  });
+
+  it("keeps a new generation detached from Chat after a router commit and reload without losing owned recovery", async () => {
+    window.history.replaceState(null, "", "/generate?characterId=character&chatSessionId=chat-session&chatTurnId=chat-turn&chatAttempt=3");
+    const nextHistory = installNextHistory();
+    const owner = config.viewer.scope;
+    saveCurrentGenerationJob(window.sessionStorage, owner, "owned-running-job");
+    await expect(requestGenerationRetryWithExactAuthority({
+      jobId: "earlier-failed-job", createIdempotencyKey: () => "retained-retry-key",
+      persistence: { ownerScope: owner },
+      quoteAuthority: { profileId: "edit-model", profileVersion: 1, routeFingerprint: "a".repeat(64), pricingFingerprint: "b".repeat(64), outputCount: 1, costDreamcoins: 5 },
+    }, async () => { throw new TypeError("Lost response"); })).rejects.toThrow();
+    const originalFetch = globalThis.fetch;
+    const quotes: Array<{ body: Record<string, unknown>; scope: string | null }> = [];
+    const contextRequests: string[] = [];
+    const writes: string[] = [];
+    const job = { id: "owned-running-job", mode: "image", status: "running", costDreamcoins: 5, outputCount: 1, errorCode: null, createdAt: new Date().toISOString() };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/generation/config") return Response.json({ ok: true, data: {
+        ...config, entitlements: { premium_controls: true, video_generation: true },
+        video: { enabled: true, availability: { state: "available" }, requiredEntitlement: "video_generation",
+          recipes: [{ id: "video-recipe", rowId: "video-recipe-v1", label: "Animate character", mode: "video", useCase: "character", version: 1 }],
+          models: [{ id: "video-model", label: "Video", maxCount: 1, costMultiplier: 1, entitlement: null }] },
+      } });
+      if (path.startsWith("/api/v1/characters?")) return Response.json({ ok: true, data: { items: [{
+        id: "character", title: "Mira", age: "28", description: "Photographer", likes: "0", chats: "0", creator: "iDream", image: "/user-content/portrait.png",
+      }], nextCursor: null } });
+      if (path.startsWith("/api/v1/generation/context?")) {
+        contextRequests.push(path);
+        return Response.json({ ok: true, data: { context: { ...chatHandoff, source: { ...chatHandoff.source, attempt: 3 } } } });
+      }
+      if (path === "/api/v1/generation/quote") {
+        const body = JSON.parse(String(init?.body));
+        quotes.push({ body, scope: new Headers(init?.headers).get("x-idream-viewer-scope") });
+        return Response.json({ ok: true, data: { quote: body.mode === "video"
+          ? { ...quote, mode: "video", profileId: "video-model", video: { durationSeconds: 5, width: 512, height: 512, audio: "none" } } : quote } });
+      }
+      if (path === "/api/v1/generation/video-sequences/capabilities") return Response.json({ ok: true, data: { capabilities: videoCapabilities } });
+      if (path === "/api/v1/generation/video-sequences") return Response.json({ ok: true, data: { sequences: [] } });
+      if (path === "/api/v1/generation/video-sequences/quote") {
+        quotes.push({ body: JSON.parse(String(init?.body)), scope: new Headers(init?.headers).get("x-idream-viewer-scope") });
+        return Response.json({ ok: true, data: { quote: videoQuote } });
+      }
+      if (path.startsWith("/api/v1/generation/jobs?")) return Response.json({ ok: true, data: { items: [job] } });
+      if (path === "/api/v1/generation/jobs/owned-running-job") return Response.json({ ok: true, data: { job, assets: [] } });
+      if (init?.method === "POST") writes.push(path);
+      return originalFetch(input, init);
+    }));
+    await mount();
+    expect(quotes.at(-1)?.body.generationContextToken).toBe(chatHandoff.token);
+    expect(contextRequests).toHaveLength(1);
+    expect(container.querySelector('[data-pending-request-key="retained-retry-key"]')).not.toBeNull();
+    await click(button("Start a new generation"));
+    expect(container.querySelector('[data-testid="generator-context"]')).toBeNull();
+    await click(button("Video"));
+    await act(async () => nextHistory.commit());
+    await settle();
+    expect(window.location.pathname + window.location.search).toBe("/generate?characterId=character");
+    const field = container.querySelector<HTMLTextAreaElement>('[aria-label="Scene 1 prompt"]')!;
+    await act(async () => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, "A calm wave"); field.dispatchEvent(new Event("input", { bubbles: true })); });
+    await click(button("Review video price"));
+    expect(quotes.at(-1)).toMatchObject({ body: { characterId: "character", scenes: [{ prompt: "A calm wave", seconds: 5 }] }, scope: owner });
+    expect(quotes.at(-1)?.body).not.toHaveProperty("generationContextToken");
+    expect(window.history.state.__NA).toBe(true);
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await mount();
+    expect(container.querySelector('[data-testid="generator-context"]')).toBeNull();
+    expect(contextRequests).toHaveLength(1);
+    expect(readCurrentGenerationJob(window.sessionStorage, owner)).toBe("owned-running-job");
+    expect(container.querySelector('[data-generation-job-id="owned-running-job"]')).not.toBeNull();
+    expect(container.querySelector('[data-pending-request-key="retained-retry-key"]')).not.toBeNull();
+    expect(writes).toEqual([]);
+  });
+
+  it("keeps an exited Feed Remix out of the canonical route and reload", async () => {
+    window.history.replaceState(null, "", "/generate?characterId=character&remixFeedItemId=feed-post#workspace");
+    const nextHistory = installNextHistory();
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).startsWith("/api/v1/characters?")) return Response.json({ ok: true, data: { items: [{
+        id: "character", title: "Mira", age: "28", description: "Photographer", likes: "0", chats: "0", creator: "iDream", image: "/user-content/portrait.png",
+      }], nextCursor: null } });
+      return originalFetch(input, init);
+    }));
+    await mount();
+    expect(container.textContent).toContain("Remix ready from Feed");
+    await click(container.querySelector<HTMLInputElement>("#generator-freeplay")!);
+    await act(async () => nextHistory.commit());
+    await settle();
+    expect(window.location.pathname + window.location.search + window.location.hash).toBe("/generate#workspace");
+    expect(container.textContent).not.toContain("Remix ready from Feed");
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await mount();
+    expect(container.textContent).not.toContain("Remix ready from Feed");
   });
 
   it.each(["&chatAttempt=0", "&chatAttempt=1"]) ("never falls back to a new generation when a Chat source cannot be resolved (%s)", async (attempt) => {
@@ -964,10 +1081,10 @@ describe("GeneratorWorkspace media journeys", () => {
 
   it.each([
     { durationSeconds: 121 / 24, width: 768, height: 1152, audio: "generated", orientation: "2:3" },
-    { durationSeconds: 124 / 24, width: 512, height: 512, audio: "generated", orientation: "1:1" },
-  ])("shows the quoted $width×$height video envelope before submitting without a duration override", async ({ orientation, ...video }) => {
+    { durationSeconds: 73 / 24, width: 512, height: 512, audio: "generated", orientation: "1:1" },
+  ])("shows the exact $width×$height sequence quote before one accepted submission", async ({ orientation, ...video }) => {
     const originalFetch = globalThis.fetch;
-    const submitted: Array<{ mode: string; controls: Record<string, unknown> }> = [];
+    const submitted: Array<{ orientation: string; scenes: Array<{ seconds: number }> }> = [];
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "/api/v1/generation/config") return Response.json({ ok: true, data: {
@@ -983,29 +1100,34 @@ describe("GeneratorWorkspace media journeys", () => {
         items: [{ id: "character", title: "Mira", age: "28", description: "Photographer",
           likes: "0", chats: "0", creator: "iDream", image: "/user-content/portrait.png" }], nextCursor: null,
       } });
-      if (url === "/api/v1/generation/quote") return Response.json({ ok: true, data: {
-        quote: { ...quote, mode: "video", profileId: "video-model", orientations: [orientation], defaultOrientation: orientation, video },
-      } });
-      if (url === "/api/v1/generation/jobs" && init?.method === "POST") {
+      if (url === "/api/v1/generation/video-sequences/capabilities") return Response.json({ ok: true, data: { capabilities: videoCapabilities } });
+      if (url === "/api/v1/generation/video-sequences/quote") return Response.json({ ok: true, data: { quote: { ...videoQuote, scenes: [{ ordinal: 0, video }] } } });
+      if (url === "/api/v1/generation/video-sequences" && init?.method === "POST") {
         submitted.push(JSON.parse(String(init.body)));
         return Response.json({ ok: false, error: { message: "Request captured" } }, { status: 503 });
       }
+      if (url === "/api/v1/generation/video-sequences") return Response.json({ ok: true, data: { sequences: [] } });
       return originalFetch(input, init);
     }));
     await mount();
     await click(button("Video"));
-    expect(container.querySelector('[data-testid="generator-video-specifications"]')?.textContent).toBe(`About 5 seconds · ${video.width}×${video.height} · Generated audio`);
-    await click(button("Generate · 5 coins"));
+    const prompt = container.querySelector<HTMLTextAreaElement>('[aria-label="Scene 1 prompt"]')!;
+    await act(async () => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(prompt, "A calm wave"); prompt.dispatchEvent(new Event("input", { bubbles: true })); });
+    await act(async () => { const ratio = container.querySelector<HTMLSelectElement>('[aria-label="Video aspect ratio"]')!, resolution = container.querySelector<HTMLSelectElement>('[aria-label="Video resolution"]')!, duration = container.querySelector<HTMLSelectElement>('[aria-label="Scene 1 duration"]')!;
+      ratio.value = orientation; ratio.dispatchEvent(new Event("change", { bubbles: true }));
+      resolution.value = video.width === 512 ? "preview" : "standard"; resolution.dispatchEvent(new Event("change", { bubbles: true }));
+      duration.value = video.width === 512 ? "3" : "5"; duration.dispatchEvent(new Event("change", { bubbles: true })); });
+    expect(submitted).toHaveLength(0); await click(button("Review video price"));
+    expect(container.querySelector('[aria-label="Video price"]')?.textContent).toContain(`${video.durationSeconds.toFixed(2)}s · ${video.width}×${video.height} · 5 coins`);
+    await click(button("Accept 5 coins & create video"));
     expect(submitted).toHaveLength(1);
-    expect(submitted[0].mode).toBe("video");
-    expect(submitted[0].controls).not.toHaveProperty("seconds");
-    expect(submitted[0].controls.orientation).toBe(orientation);
+    expect(submitted[0].scenes[0]?.seconds).toBe(video.width === 512 ? 3 : 5);
+    expect(submitted[0].orientation).toBe(orientation);
     // An unresolved request checks its original authority, not today's quote.
-    expect(container.querySelector('[data-testid="generator-video-specifications"]')).toBeNull();
+    expect(button("Check original request").disabled).toBe(false);
   });
 
   it.each([
-    { mode: "video", modelId: "h3-model", modelLabel: "H3 Video", autoLabel: "Auto (animate source)" },
     { mode: "image", modelId: "premium-image", modelLabel: "Premium image", autoLabel: "Auto (identity-aware)" },
   ] as const)("keeps Auto distinct from an explicit $mode model and requotes the automatic route", async ({ mode, modelId, modelLabel, autoLabel }) => {
     const originalFetch = globalThis.fetch;
@@ -1035,7 +1157,7 @@ describe("GeneratorWorkspace media journeys", () => {
       return originalFetch(input, init);
     }));
     await mount();
-    await click(mode === "video" ? button("Video") : container.querySelector("#generator-freeplay")!);
+    await click(container.querySelector("#generator-freeplay")!);
     const select = container.querySelector<HTMLSelectElement>('[aria-label="Model"]')!;
     await act(async () => {
       select.value = modelId;

@@ -14,7 +14,14 @@ const SSE_DEADLINE_MS = 60_000;
 const BLOCK_MS = 5_000;
 
 function createRedis(): IORedis {
-  return new IORedis(redisConnectionOptions(env.REDIS_URL));
+  return new IORedis({
+    ...redisConnectionOptions(env.REDIS_URL),
+    // Chat has no BullMQ worker. A stalled transient stream must release its
+    // callers, including when TCP remains open but Redis never replies.
+    maxRetriesPerRequest: 1,
+    connectTimeout: BLOCK_MS,
+    commandTimeout: BLOCK_MS + 1_000,
+  });
 }
 
 // SPEC: ONE shared publisher for the non-blocking stream ops (XADD/XRANGE).
@@ -33,7 +40,7 @@ export async function closeStreamPublisher(): Promise<void> {
   const current = publisher;
   if (!current) return;
   publisher = null;
-  await current.quit();
+  await current.quit().catch(() => current.disconnect());
 }
 
 export function streamKey(assistantMessageId: string): string {

@@ -6,6 +6,7 @@ import {
   CONTENT_EFFECT_REVIEW_DECISIONS,
   CONTENT_REPORT_CASE_DECISIONS,
   SUPPORT_CASE_ACTIONS,
+  adminActorRoleSchema,
   caseActionHasAuthorityVerifier,
 } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
@@ -14,6 +15,8 @@ import { caseSeverityForPriority } from "./case-severity";
 import { toInputJson } from "../shared/prisma-json";
 import { isAdminCaseTransitionAllowed } from "../shared/state-transition-authority";
 import { transitionCase } from "./transition";
+import { supportSlaDueAt } from "../support/sla";
+import { effectivePermissions, effectivePermissionScope } from "@/server/admin/effective-permissions";
 
 type Db = PrismaClient | Prisma.TransactionClient;
 type Actor = { readonly id: string; readonly role: string };
@@ -97,6 +100,22 @@ function assertCaseScope(adminCase: { type: string }, actor: Actor) {
   }
 }
 
+export async function assertCaseOwner(db: Db, ownerId: string, caseType: string) {
+  const owner = await db.user.findUnique({ where: { id: ownerId }, select: { role: true, status: true } });
+  const role = adminActorRoleSchema.safeParse(owner?.role);
+  if (!owner || owner.status !== "active" || !role.success) {
+    throw Errors.badRequest("Case owner must be an active operator");
+  }
+  const permissions = await effectivePermissions(ownerId, role.data, db);
+  if (!permissions.has("case.read")) {
+    throw Errors.badRequest("Case owner must have effective Case access");
+  }
+  const scope = await effectivePermissionScope(ownerId, role.data, "case.read", db);
+  if (scope === "support_case_subtypes" && !["support_request", "billing_dispute"].includes(caseType)) {
+    throw Errors.badRequest("Case subtype is outside the owner's permission scope");
+  }
+}
+
 function slaFor(priority: string, createdAt: Date) {
   const hours = priority === "urgent" ? 1 : priority === "high" ? 4 : priority === "low" ? 72 : 24;
   return new Date(createdAt.getTime() + hours * 60 * 60 * 1_000);
@@ -159,7 +178,7 @@ export async function ensureSupportCaseForRequest(db: Db, request: SupportReques
           status: supportStatus(request.status),
           priority,
           ownerId: request.assignedToId,
-          slaDueAt: slaFor(priority, request.createdAt),
+          slaDueAt: supportSlaDueAt(request.priority, request.createdAt),
           resolution: toInputJson({
             severity: caseSeverityForPriority(priority),
             category: request.category,
@@ -244,7 +263,11 @@ export async function ensureSupportCaseForRequest(db: Db, request: SupportReques
   return adminCase;
 }
 
-export async function synchronizeSupportCaseFromRequest(db: Db, request: SupportRequest) {
+export async function synchronizeSupportCaseFromRequest(
+  db: Db,
+  request: SupportRequest,
+  input: { readonly statusChanged: boolean; readonly priorityChanged: boolean },
+) {
   const current = await ensureSupportCaseForRequest(db, request);
   if (!current) throw Errors.internal("Support Case is missing");
   const evidence = await db.caseEvidence.findFirst({
@@ -254,7 +277,7 @@ export async function synchronizeSupportCaseFromRequest(db: Db, request: Support
   const terminal = ["resolved", "closed"].includes(request.status);
   const priority = priorityForSupport(request.priority);
   let resolutionEvidenceId = evidence.id;
-  if (terminal) {
+  if (terminal && input.statusChanged) {
     const resolutionEvidence = await db.caseEvidence.upsert({
       where: {
         caseId_sourceType_sourceId: {
@@ -282,36 +305,59 @@ export async function synchronizeSupportCaseFromRequest(db: Db, request: Support
   const baseResolution = current.resolution && typeof current.resolution === "object" && !Array.isArray(current.resolution)
     ? current.resolution as Record<string, unknown>
     : {};
+  let nextStatus = input.statusChanged ? supportStatus(request.status) : current.status;
+  if (nextStatus === "triaged" && ["in_progress", "waiting", "reopened"].includes(current.status)) {
+    nextStatus = "in_progress";
+  }
+  const data = {
+    activeKey: terminal ? null : adminCaseActiveKey(current.type, current.targetType, current.targetId, current.caseKey),
+    priority,
+    ownerId: request.assignedToId,
+    slaDueAt: terminal
+      ? current.slaDueAt ?? request.resolvedAt ?? request.updatedAt
+      : input.priorityChanged ? supportSlaDueAt(request.priority, request.createdAt) : current.slaDueAt,
+    verificationState: input.statusChanged ? terminal ? "overridden" : "pending" : current.verificationState,
+    resolution: terminal && input.statusChanged
+      ? toInputJson({
+          ...baseResolution,
+          summary: request.resolutionNotes?.trim() || `Support Request ${request.status}`,
+          decision: request.status,
+          evidenceRefs: [evidence.id, resolutionEvidenceId],
+          verification: {
+            state: "overridden",
+            evidenceRefs: [resolutionEvidenceId],
+            verifiedAt: (request.resolvedAt ?? request.updatedAt).toISOString(),
+            overrideReason: "Legacy Support Request update does not include system verification.",
+          },
+        })
+      : toInputJson({ ...baseResolution, severity: caseSeverityForPriority(priority), category: request.category }),
+  };
+  // Metadata synchronization is not a lifecycle transition. It still advances
+  // the Case version so an operator's older decision cannot overwrite it.
+  if (nextStatus === current.status) {
+    const changed = await db.adminCase.updateMany({
+      where: { id: current.id, version: current.version, status: current.status },
+      data: {
+        activeKey: data.activeKey,
+        priority: data.priority,
+        ownerId: data.ownerId,
+        slaDueAt: data.slaDueAt,
+        verificationState: data.verificationState,
+        resolution: data.resolution,
+        version: { increment: 1 },
+      },
+    });
+    if (changed.count !== 1) throw Errors.conflict("Support Case changed before synchronization");
+    return db.adminCase.findUniqueOrThrow({ where: { id: current.id } });
+  }
   return transitionCase(db as Prisma.TransactionClient, {
     caseId: current.id,
-    to: supportStatus(request.status),
+    to: nextStatus as "new" | "triaged" | "in_progress" | "waiting" | "resolved" | "closed" | "reopened",
     expected: {
       from: current.status as "new" | "triaged" | "in_progress" | "waiting" | "resolved" | "closed" | "reopened",
       version: current.version,
     },
-    data: {
-      activeKey: terminal
-        ? null
-        : adminCaseActiveKey(current.type, current.targetType, current.targetId, current.caseKey),
-      priority,
-      ownerId: request.assignedToId,
-      slaDueAt: terminal ? request.resolvedAt ?? request.updatedAt : slaFor(priority, request.createdAt),
-      verificationState: terminal ? "overridden" : "pending",
-      resolution: terminal
-        ? toInputJson({
-            ...baseResolution,
-            summary: request.resolutionNotes?.trim() || `Support Request ${request.status}`,
-            decision: request.status,
-            evidenceRefs: [evidence.id, resolutionEvidenceId],
-            verification: {
-              state: "overridden",
-              evidenceRefs: [resolutionEvidenceId],
-              verifiedAt: (request.resolvedAt ?? request.updatedAt).toISOString(),
-              overrideReason: "Legacy Support Request update does not include system verification.",
-            },
-          })
-        : toInputJson({ ...baseResolution, severity: caseSeverityForPriority(priority), category: request.category }),
-    },
+    data,
   });
 }
 
@@ -700,15 +746,13 @@ export async function assignReviewCaseInTransaction(
   assertCaseScope(current, input.actor);
   if (current.version !== input.expectedVersion) throw Errors.versionConflict("Case version changed");
   if (input.ownerId) {
-    const owner = await tx.user.findUnique({ where: { id: input.ownerId }, select: { role: true, status: true } });
-    if (!owner || owner.status !== "active" || owner.role === "user") {
-      throw Errors.badRequest("Case owner must be an active operator");
-    }
+    await assertCaseOwner(tx, input.ownerId, current.type);
   }
   const nextStatus = ["new", "reopened"].includes(current.status) ? "triaged" : current.status;
   if (!isAdminCaseTransitionAllowed(current.status, nextStatus)) {
     throw Errors.conflict("Case cannot be assigned from its present state", { status: current.status });
   }
+  let slaDueAt = input.slaDueAt;
   if (["support_request", "billing_dispute"].includes(current.type)) {
     const source = await tx.caseEvidence.findFirst({
       where: { caseId: current.id, sourceType: "support_request" },
@@ -717,13 +761,16 @@ export async function assignReviewCaseInTransaction(
     if (source) {
       // INVARIANT: Match Support updates' Support → Case lock order. A losing
       // Case CAS must roll back the ticket assignment in this same transaction.
-      await tx.supportRequest.update({
+      const ticket = await tx.supportRequest.update({
         where: { id: source.sourceId },
         data: {
           assignedToId: input.ownerId,
           priority: input.priority === undefined ? undefined : priorityRank(input.priority) + 1,
         },
       });
+      if (slaDueAt === undefined && input.priority !== undefined) {
+        slaDueAt = supportSlaDueAt(ticket.priority, ticket.createdAt);
+      }
     }
   }
   const updated = await transitionCase(tx, {
@@ -736,7 +783,7 @@ export async function assignReviewCaseInTransaction(
     data: {
       ownerId: input.ownerId,
       priority: input.priority,
-      slaDueAt: input.slaDueAt,
+      slaDueAt,
     },
   });
   await tx.adminAuditLog.create({

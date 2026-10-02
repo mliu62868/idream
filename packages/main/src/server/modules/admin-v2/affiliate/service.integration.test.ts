@@ -94,7 +94,11 @@ describe("affiliate operational approval", () => {
     const clickBody = { code: itemId, visitorKey: `${prefix}visitor`, landingPath: "/" };
     const click = await api("POST", "affiliate/click", { body: clickBody });
     expectOk(click, 201);
-    const duplicate = await api("POST", "affiliate/click", { body: clickBody });
+    // Repeat visits belong to the issued browser cookie, not an IP or caller-named key.
+    const duplicate = await api("POST", "affiliate/click", {
+      cookie: click.setCookies.map((cookie) => cookie.split(";")[0]).join("; "),
+      body: clickBody,
+    });
     expectOk(duplicate, 201);
     expect(duplicate.data.id).toBe(click.data.id);
     const reapplied = await api("POST", "affiliate/application", { userId: customerId, body: { termsVersion: "unreviewed", channels: ["changed"] } });

@@ -6,7 +6,7 @@
     "id": "7b4d10fa-cce3-4d8b-a2d7-64b132a5c25d",
     "name": "iDream RedGraft LTX 2.5 I2V"
   },
-  "version": 2,
+  "version": 4,
   "negativePromptMode": "positive_instruction",
   "capabilities": [
     "video",
@@ -114,7 +114,7 @@
       "inputs": {
         "cfg": 1,
         "model": [
-          "320:333",
+          "900:4",
           0
         ],
         "positive": [
@@ -552,7 +552,7 @@
       "inputs": {
         "cfg": 1,
         "model": [
-          "320:333",
+          "900:4",
           0
         ],
         "positive": [
@@ -663,11 +663,12 @@
     },
     "320:335": {
       "inputs": {
-        "clip_name": "gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors",
-        "type": "ltxv",
-        "device": "cpu"
+        "clip_name": "gemma4-12b-ltx-v1-mlx-q8.safetensors"
       },
-      "class_type": "CLIPLoader"
+      "class_type": "IDreamGemma4MLXCLIPLoader",
+      "_meta": {
+        "title": "Gemma 4 MLX Q8"
+      }
     },
     "320:333": {
       "inputs": {
@@ -754,11 +755,25 @@
         "after": [
           "900:1",
           0
+        ],
+        "release": [
+          "320:335",
+          0
         ]
       },
       "class_type": "IDreamUnloadOffDeviceModels",
       "_meta": {
-        "title": "iDream: unload CPU text encoder after conditioning"
+        "title": "iDream: release Gemma after both conditioning branches"
+      }
+    },
+    "900:4": {
+      "class_type": "IDreamMPSGraphAttention",
+      "inputs": {
+        "model": [
+          "320:333",
+          0
+        ],
+        "compute_precision": "bf16"
       }
     }
   },

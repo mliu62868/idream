@@ -15,6 +15,7 @@ vi.mock("@/lib/admin-v2-api", async () => {
 });
 
 import { ToastProvider } from "@/components/admin/ui/Toast";
+import { generationJobDetailResponseSchema } from "@idream/shared/admin";
 import { JobsView } from "./JobsView";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -83,6 +84,58 @@ describe("JobsView request cancellation", () => {
     expect(findButton("Abort")).toBeNull();
     expect(findButton("Retry")).toBeNull();
   });
+
+  it("copies complete evidence identifiers even when their displayed prefixes collide", async () => {
+    const detail = jobDetail("shared-prefix-request-A");
+    apiGet.mockImplementation(async (path: string) => path.includes(`/jobs/${detail.request.id}`)
+      ? detail : { ...jobList("running"), items: [detail.request] });
+    await act(async () => root.render(<ToastProvider><JobsView permissions={allowed} /></ToastProvider>));
+    await waitUntil(() => findButton("Details") !== null);
+    await click(findButton("Details"));
+    await waitUntil(() => container.textContent?.includes("Generation Attempts") === true);
+    const inspector = container.querySelector('[aria-labelledby="generation-job-detail-title"]')!;
+    const identifiers = [detail.request.id, detail.attempts[0]!.id, detail.transportExecutions[0]!.id,
+      detail.artifacts[0]!.id, detail.artifacts[0]!.assetId, detail.deliveries[0]!.targetId,
+      detail.settlementEntries[0]!.ledgerEntryId].filter((id): id is string => id !== null);
+    const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
+    for (const identifier of identifiers) {
+      const copy = inspector.querySelector<HTMLButtonElement>(`button[aria-label="Copy ${identifier}"]`);
+      expect(copy).not.toBeNull();
+      await click(copy);
+      expect(writeText).toHaveBeenLastCalledWith(identifier);
+    }
+    expect(adminV2Request).not.toHaveBeenCalled();
+  });
+
+  it.each(["success", "failure"])("ignores a stale detail %s after selecting another job", async (outcome) => {
+    const first = jobDetail("shared-prefix-request-A");
+    const second = jobDetail("shared-prefix-request-B");
+    let resolveFirst!: (value: typeof first) => void;
+    let rejectFirst!: (reason: Error) => void;
+    const pendingFirst = new Promise<typeof first>((resolve, reject) => { resolveFirst = resolve; rejectFirst = reject; });
+    apiGet.mockImplementation(async (path: string) => {
+      if (path === `/api/v2/admin/jobs/${first.request.id}`) return pendingFirst;
+      if (path === `/api/v2/admin/jobs/${second.request.id}`) return second;
+      return { ...jobList("running"), items: [first.request, second.request] };
+    });
+    await act(async () => root.render(<ToastProvider><JobsView permissions={allowed} /></ToastProvider>));
+    await waitUntil(() => container.querySelectorAll('[aria-label="Generation Jobs scrollable table"] tbody tr').length === 2);
+    const row = (id: string) => container.querySelector(`button[aria-label="Copy ${id}"]`)!.closest("tr")!;
+    await click(findButton("Details", row(first.request.id)));
+    await waitUntil(() => apiGet.mock.calls.some(([path]) => path === `/api/v2/admin/jobs/${first.request.id}`));
+    await click(findButton("Details", row(second.request.id)));
+    await waitUntil(() => container.textContent?.includes(`route-${second.request.id}`) === true);
+    await act(async () => {
+      if (outcome === "success") resolveFirst(first);
+      else rejectFirst(new Error("Stale first job read failed"));
+    });
+    const inspector = container.querySelector('[aria-labelledby="generation-job-detail-title"]')!;
+    expect(inspector.textContent).toContain(`route-${second.request.id}`);
+    expect(inspector.textContent).not.toContain(`route-${first.request.id}`);
+    expect(inspector.textContent).not.toContain("Stale first job read failed");
+    expect(window.location.search).toContain(`job=${second.request.id}`);
+    expect(adminV2Request).not.toHaveBeenCalled();
+  });
 });
 
 const allowed = { retry: true, cancel: true, reconcile: true };
@@ -128,6 +181,27 @@ function jobList(legacyStatus: "running" | "failed") {
     asOf: "2026-08-25T12:02:00.000Z",
     freshness: "fresh",
   };
+}
+
+function jobDetail(id: string) {
+  const at = "2026-08-25T12:02:00.000Z";
+  const attemptId = `shared-prefix-attempt-${id}`;
+  const artifactId = `shared-prefix-artifact-${id}`;
+  return generationJobDetailResponseSchema.parse({
+    request: { ...jobList("running").items[0], id, requestOutcome: "succeeded", legacyStatus: "completed", deliveredOutputCount: 1,
+      assetCount: 1, delivery: { expectedOutputCount: 1, deliveredCount: 1, pendingCount: 0, failedCount: 0, suppressedCount: 0 }, finishedAt: at },
+    attempts: [{ id: attemptId, attemptNo: 1, status: "succeeded", provider: "local", profileKey: "profile-1", profileVersion: 1,
+      workflowKey: `route-${id}`, workflowVersion: 1, errorClass: null, errorCode: null, errorSignature: null, retryability: null,
+      operatorGuidance: null, startedAt: at, finishedAt: at, createdAt: at }],
+    transportExecutions: [{ id: `shared-prefix-transport-${id}`, attemptId, transportAttemptNo: 1, provider: "local",
+      providerRequestId: "provider-request-1", idempotencyKey: "transport-key-1", status: "succeeded", latencyMs: 1000,
+      costMicros: null, pricingVersion: null, terminalRecordRef: "terminal/attempt.json", startedAt: at, finishedAt: at }],
+    artifacts: [{ id: artifactId, attemptId, ordinal: 0, validationState: "valid", archiveState: "active", assetId: `shared-prefix-asset-${id}`, createdAt: at }],
+    deliveries: [{ id: `shared-prefix-delivery-${id}`, artifactId, targetType: "user_library", targetId: "shared-prefix-target-user", status: "delivered", deliveredAt: at, createdAt: at }],
+    events: [{ id: "event-1", attemptId, sequence: 1, eventType: "generation.attempt.succeeded.v1", outcome: "succeeded", occurredAt: at }],
+    settlementEntries: [{ ledgerEntryId: `shared-prefix-ledger-${id}`, kind: "generation_spend", deltaDreamcoins: -8, reason: "generation_spend", createdAt: at }],
+    unknownReconciliations: [], unknownTerminalEvidence: null, feedback: [], asOf: at, freshness: "fresh",
+  });
 }
 
 function findButton(label: string, root: ParentNode = document) {

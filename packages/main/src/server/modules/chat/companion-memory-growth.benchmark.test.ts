@@ -11,7 +11,7 @@ import { prisma } from "@/server/lib/db";
 import { createCharacter, createUser, purgeTestData } from "@/server/test/helpers";
 import { dispatchPendingChatEvents } from "@/processes/chat-outbox";
 import { scheduleCompanionMemoryProjection, syncCompanionMemoryFromMain } from "./companion-memory-authority";
-import { IgrepMemoryBuilder, IgrepMemoryProbe, observeIgrepWake, recallIgrepMemory, runJsonCommand, type RunJsonCommand } from "../../../../../chat/src/agent-runtime/igrep";
+import { IgrepMemoryBuilder, IgrepMemoryProbe, observeIgrepWake, recallIgrepMemory, reprojectIgrepMemory, runJsonCommand, type RunJsonCommand } from "../../../../../chat/src/agent-runtime/igrep";
 import { AttemptWorkspaceStore, relationshipWorkspacePath } from "../../../../../chat/src/agent-runtime/workspace";
 import type { CompanionInvocation } from "../../../../../chat/src/agent-runtime/contracts";
 import { rebuildSpoolSessions, type CompanionWorkspaceRebuildPromotion, type CompanionWorkspaceRebuildSpool } from "../../../../../chat/src/agent-runtime/rebuild-source";
@@ -37,6 +37,7 @@ const { prepareCompanionMemory, promoteCompanionMemory } = await vi.importActual
 const prefix = `zt-memory-growth-${randomUUID()}-`;
 const temporary: string[] = [];
 const measurements: Array<Record<string, unknown>> = [];
+const memoryStatuses: Array<Awaited<ReturnType<IgrepMemoryProbe["status"]>>> = [];
 const providerRequests: Array<Record<string, unknown>> = [];
 const cleanup: Array<() => Promise<void>> = [];
 const round = (value: number) => Math.round(value * 100) / 100;
@@ -67,10 +68,10 @@ afterAll(async () => {
     sourceRevision,
     sourceRevisionAtCompletion: revision(),
     completedAt: new Date().toISOString(),
-    method: "Real isolated Main PostgreSQL, actual dispatch leases and coalescing, Main NDJSON stream, Chat decoder, workspace promotion, installed igrep ingest/doctor/status/wake. In-process HTTP Request transport excludes network latency. Synthetic 1000-character content across interleaved sessions. One sample per phase; not a throughput SLA.",
+    method: "Real isolated Main PostgreSQL, actual dispatch leases and coalescing, Main NDJSON stream, Chat decoder, workspace promotion, installed igrep ingest/doctor/status and attempt copy/reproject/wake. Live representative attempts run wake and fast recall in parallel, as the engine does. In-process HTTP Request transport excludes network latency. Synthetic 1000-character content across interleaved sessions. One sample per phase; not a throughput SLA.",
     limitations: live
-      ? "Only the 100-message bootstrap performs real maintenance (one CLI pass, short repeated facts). Other maintenance calls and their completion timestamp are intercepted; at most 3 real fast recalls. All model/embedding/rerank HTTP is routed through a task-local forwarding counter with a combined 4-request ceiling; failures stop the run. No conversational model or user-visible first-token measurement."
-      : "All maintenance commands and their completion timestamp are intercepted. No recall, embedding or model request. Memory-ready time is not first-token time.",
+      ? "100-message bootstrap performs real maintenance (one CLI pass, short repeated facts), followed by one 2-message projection with maintenance intercepted. One representative attempt performs real fast recall after reproject, alongside wake. The four concurrent attempts measure copy/reproject/wake only. All model/embedding/rerank HTTP is routed through a task-local forwarding counter with a combined 6-request ceiling; failures stop the run. No maintained long-history, conversational model or user-visible first-token measurement."
+      : "All maintenance commands and their completion timestamp are intercepted. Attempts measure copy/reproject/wake; the query-recall stage is explicitly unmeasured. No recall, embedding or model request. This measures source-only pending history, not a maintained profile or user-visible first-token latency.",
     measurements,
     providerRequests,
   }, null, 2)}\n`, { flag: "wx" });
@@ -102,7 +103,9 @@ describe.skipIf(!enabled)("Main to Chat memory growth benchmark", () => {
         const record: Record<string, unknown> = { ordinal: providerRequests.length + 1, path: request.url, model: payload.model,
           requestDigest: createHash("sha256").update(body).digest("hex"), requestBytes: body.byteLength };
         providerRequests.push(record);
-        if (providerRequests.length > 4 || liveAbort.signal.aborted) {
+        // One maintained relationship needs two profile calls, then embedding
+        // and more than one rerank to retrieve a complete original passage.
+        if (providerRequests.length > 6 || liveAbort.signal.aborted) {
           record.blocked = true;
           response.writeHead(429).end("task model budget exceeded");
           liveAbort.abort(new Error("Task model request budget exceeded"));
@@ -118,12 +121,20 @@ describe.skipIf(!enabled)("Main to Chat memory growth benchmark", () => {
           const text = await result.text();
           record.ms = round(performance.now() - started);
           record.responseBytes = Buffer.byteLength(text);
-          const returned = JSON.parse(text) as { id?: string; usage?: unknown; model?: string };
-          record.requestId = returned.id;
-          record.actualModel = returned.model;
-          record.usage = returned.usage;
           record.responseDigest = createHash("sha256").update(text).digest("hex");
-          response.writeHead(result.status, { "content-type": "application/json" }).end(text);
+          record.contentType = result.headers.get("content-type");
+          // Diagnostics must not turn a valid upstream protocol into a 502.
+          // The actual CLI remains responsible for accepting its response.
+          try {
+            const returned = JSON.parse(text) as { id?: string; usage?: unknown; model?: string };
+            record.requestId = returned.id;
+            record.actualModel = returned.model;
+            record.usage = returned.usage;
+          } catch {
+            record.diagnosticsFormat = "non_json";
+            record.responseText = text;
+          }
+          response.writeHead(result.status, { "content-type": result.headers.get("content-type") ?? "application/octet-stream" }).end(text);
           if (!result.ok) liveAbort.abort(new Error("Task model request failed"));
         } catch (error) {
           record.failed = true;
@@ -158,13 +169,17 @@ describe.skipIf(!enabled)("Main to Chat memory growth benchmark", () => {
         ...(operation === "mem maintain" ? { timeoutMs: 120_000 } : {}) });
       const commands = active.commands as Array<Record<string, unknown>>;
       const record = value as Record<string, unknown>;
-      commands.push({ operation, ms: round(performance.now() - started), ...(operation === "mem ingest" ? { events: record.events, newEvents: record.newEvents } : {}) });
+      commands.push({ operation, ms: round(performance.now() - started), ...(operation === "mem ingest" ? {
+        events: record.events, newEvents: record.newEvents, rebuilt: record.rebuilt,
+        sessionWritten: record.sessionWritten, dialogueWritten: record.dialogueWritten,
+      } : {}) });
       if (operation === "mem maintain") active.maintenanceResult = value;
       return value;
     };
     const builder = new IgrepMemoryBuilder("igrep", {
       async status(workspace) {
         const value = await probe.status(workspace);
+        memoryStatuses.push(value);
         active.memoryStatus = value;
         // Explicitly synthetic witness allows measuring the real source path
         // without sending 10k rows through an unbounded profile derivation.
@@ -187,7 +202,12 @@ describe.skipIf(!enabled)("Main to Chat memory growth benchmark", () => {
       });
       active.transcriptFingerprints = fingerprints.value;
       active.benchmarkFingerprintMs = fingerprints.ms;
-      const result = await timed(() => store.prepareRelationshipRebuild(source, source.fence!, { seed: source.mode === "project" ? "canonical" : "empty" }, workspace => builder.build(workspace, source)));
+      const result = await timed(() => store.prepareRelationshipRebuild(
+        source,
+        source.fence!,
+        { seed: source.mode === "project" ? "canonical" : "empty" },
+        (workspace, transcriptsRoot) => builder.build(workspace, source, live ? liveAbort.signal : undefined, transcriptsRoot),
+      ));
       active.workspaceBuildMs = result.ms;
       return result.value;
     });
@@ -210,7 +230,9 @@ describe.skipIf(!enabled)("Main to Chat memory growth benchmark", () => {
       return Response.json({ ok: true, rebuilt: await promoteCompanionMemory(request) });
     });
 
-    for (const messages of [100, 1_000, 10_000]) {
+    // Live mode qualifies one actually maintained relationship and its precise
+    // increment. Larger pending-growth costs are covered without model spend.
+    for (const messages of live ? [100] : [100, 1_000, 10_000]) {
       const userId = `${prefix}${messages}-user`;
       const characterId = `${prefix}${messages}-character`;
       const sessionIds = Array.from({ length: messages === 100 ? 2 : 4 }, (_, index) => `${prefix}${messages}-session-${index}`);
@@ -230,6 +252,7 @@ describe.skipIf(!enabled)("Main to Chat memory growth benchmark", () => {
       });
       await prisma.chatTurn.createMany({ data: Array.from({ length: messages / 2 }, (_, index) => makeTurn(index)) });
       for (const phase of ["bootstrap", "incremental"] as const) {
+        const priorStatus = memoryStatuses.at(-1);
         if (phase === "incremental") await prisma.chatTurn.create({ data: makeTurn(messages / 2) });
         active = { baseMessages: messages, phase, commands: [] };
         measurements.push(active);
@@ -247,26 +270,75 @@ describe.skipIf(!enabled)("Main to Chat memory growth benchmark", () => {
         active.eventLoopP99Ms = round(lag.percentile(99) / 1e6);
         expect(dispatch.value).toEqual({ delivered: 1, failed: 0 });
         expect(active.messages).toBe(messages + (phase === "incremental" ? 2 : 0));
-        if (!live && phase === "incremental") {
-          const ingests = (active.commands as Array<Record<string, unknown>>).filter(command => command.operation === "mem ingest");
-          expect(ingests.reduce((count, command) => count + Number(command.newEvents), 0)).toBe(2);
+        const status = memoryStatuses.at(-1);
+        if (!status) throw new Error("The memory builder did not report its actual status");
+        if (typeof status.pendingProfileRows !== "number" || typeof status.processedProfileRows !== "number") {
+          throw new Error("The memory builder status omitted its canonical row counters");
+        }
+        expect(status.pendingProfileRows + status.processedProfileRows).toBe(active.messages);
+        expect(status.dialogueFiles).toBe(sessionIds.length);
+        active.profileMaintenanceVerified = status.lastMaintainAt !== null && status.processedProfileRows > 0;
+        if (realMaintenance) {
+          // The probe value above is the real CLI status, before the synthetic
+          // completion witness used only for intercepted maintenance passes.
+          expect(status.lastMaintainAt).not.toBeNull();
+          expect(status.processedProfileRows).toBeGreaterThan(0);
+        }
+        if (phase === "incremental") {
+          if (!priorStatus) throw new Error("Incremental projection has no measured bootstrap status");
+          if (typeof priorStatus.pendingProfileRows !== "number" || typeof priorStatus.processedProfileRows !== "number") {
+            throw new Error("Bootstrap status omitted its canonical row counters");
+          }
+          // igrep 0.1.150 reports parsed rows as newEvents. A copied workspace
+          // and rewritten transcript change file witnesses, so ingest safely
+          // replays the complete prefix; status proves the logical delta.
+          expect(status.pendingProfileRows + status.processedProfileRows
+            - priorStatus.pendingProfileRows - priorStatus.processedProfileRows).toBe(2);
+          expect(status.processedProfileRows).toBe(priorStatus.processedProfileRows);
+          expect(status.dialogueFiles).toBe(priorStatus.dialogueFiles);
+          expect(status.lastMaintainAt).toBe(priorStatus.lastMaintainAt);
         }
         active.canonicalBytes = await treeBytes(join(relationshipWorkspacePath(canonicalRoot, userId, characterId), ".igrep"));
         const attempts = await timed(() => Promise.all(Array.from({ length: 4 }, async (_, index) => {
+          const started = performance.now();
           const prepared = await timed(() => store.prepare({ userId, characterId, memoryMode: "normal", attemptId: `${phase}-${messages}-${index}` } as CompanionInvocation));
           try {
-            const wake = await timed(() => observeIgrepWake("igrep", prepared.value.path));
-            return { prepareMs: prepared.ms, wakeMs: wake.ms, wakeOutcome: wake.value.outcome };
+            const reproject = await timed(() => reprojectIgrepMemory("igrep", prepared.value.path, undefined, run));
+            const wake = await timed(() => observeIgrepWake("igrep", prepared.value.path, undefined, run));
+            return { prepareMs: prepared.ms, reprojectMs: reproject.ms, wakeMs: wake.ms,
+              wakeOutcome: wake.value.outcome, residentProfileChars: wake.value.profile.length,
+              copyReprojectWakeMs: round(performance.now() - started),
+              recall: { measured: false, reason: live ? "bounded recall is measured by the representative attempt" : "non-live mode forbids model and embedding requests" } };
           } finally { await prepared.value.discard(); }
         })));
-        active.concurrentAttempts = { count: 4, wallMs: attempts.ms, samples: attempts.value };
+        active.concurrentAttempts = { count: 4, wallMs: attempts.ms, includesDiscard: true, recallMeasured: false, samples: attempts.value };
         if (live && phase === "incremental") {
-          if (++recallCalls > 3) throw new Error("Live recall budget exceeded");
-          const attempt = await store.prepare({ userId, characterId, memoryMode: "normal", attemptId: `recall-${messages}` } as CompanionInvocation);
+          if (++recallCalls > 1) throw new Error("Live recall budget exceeded");
+          const started = performance.now();
+          const attempt = await timed(() => store.prepare({ userId, characterId, memoryMode: "normal", attemptId: `recall-${messages}` } as CompanionInvocation));
           try {
-            const recalled = await timed(() => recallIgrepMemory("igrep", attempt.path, "Where do I keep my copper notebook?", { signal: liveAbort.signal }));
-            active.recall = { ms: recalled.ms, outcome: recalled.value.outcome, results: recalled.value.resultCount };
-          } finally { await attempt.discard(); }
+            const reproject = await timed(() => reprojectIgrepMemory("igrep", attempt.value.path, liveAbort.signal, run));
+            const query = "Where do I keep my copper notebook?";
+            const reads = await timed(() => Promise.all([
+              timed(() => observeIgrepWake("igrep", attempt.value.path, liveAbort.signal, run)),
+              timed(() => recallIgrepMemory("igrep", attempt.value.path, query, { signal: liveAbort.signal }, run)),
+            ]));
+            const [wake, recalled] = reads.value;
+            const dialogueHits = recalled.value.results.filter(hit => hit.sourceClass === "dialogue");
+            const expectedPassage = messages === 100
+              ? "I keep my copper notebook by the cafe window. My favorite drink is jasmine tea."
+              : "I keep it beside the cafe window.";
+            expect(wake.value.outcome).toBe("hit");
+            expect(wake.value.profile).toMatch(/copper notebook|jasmine tea/iu);
+            expect(dialogueHits.some(hit => hit.snippet.includes(expectedPassage))).toBe(true);
+            active.recall = { ms: recalled.ms, outcome: recalled.value.outcome, results: recalled.value.resultCount,
+              dialogueResults: dialogueHits.length,
+              originalPassageHits: dialogueHits.filter(hit => hit.snippet.includes(expectedPassage)).length };
+            active.representativeAttempt = { query, prepareMs: attempt.ms, reprojectMs: reproject.ms,
+              wakeMs: wake.ms, wakeOutcome: wake.value.outcome, residentProfileChars: wake.value.profile.length,
+              parallelWakeRecallMs: reads.ms, memoryPreflightMs: round(performance.now() - started),
+              profileMaintenanceVerified: active.profileMaintenanceVerified, recallMeasured: true };
+          } finally { await attempt.value.discard(); }
         }
       }
     }

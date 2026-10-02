@@ -116,6 +116,18 @@ export async function settleGenerationRequestCancellation(
 
 // 派发超时之后供应商可能已经接单，所以「未被触碰的 dispatch」是唯一能证明
 // 取消真的停住了付费执行的事实。
+export function canCancelGenerationBeforeDispatch(
+  job: Pick<GenerationJob, "status">,
+  attempt: Pick<GenerationAttempt, "id" | "status" | "startedAt"> | null,
+  dispatches: readonly { status: string; attempts: number; payload: Prisma.JsonValue }[],
+) {
+  const exact = dispatches.filter((item) => jsonRecord(item.payload).attemptId === attempt?.id);
+  return !(
+    job.status !== "queued" || !attempt || attempt.status !== "queued" || attempt.startedAt !== null ||
+    exact.length === 0 || exact.some((item) => item.status !== "pending" || item.attempts !== 0)
+  );
+}
+
 async function assertGenerationDispatchUntouched(
   tx: Prisma.TransactionClient,
   job: GenerationJob,
@@ -131,11 +143,7 @@ async function assertGenerationDispatchUntouched(
         select: { status: true, attempts: true, payload: true },
       })
     : [];
-  const exact = dispatches.filter((item) => jsonRecord(item.payload).attemptId === attempt?.id);
-  if (
-    job.status !== "queued" || !attempt || attempt.status !== "queued" || attempt.startedAt !== null ||
-    exact.length === 0 || exact.some((item) => item.status !== "pending" || item.attempts !== 0)
-  ) {
+  if (!canCancelGenerationBeforeDispatch(job, attempt, dispatches)) {
     throw Errors.conflict(
       "This video has already entered processing and can no longer be cancelled. Its result will stay in this chat.",
       { reason: "processing_started" },

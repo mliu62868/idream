@@ -170,9 +170,21 @@ PM2 `online`、HTTP 200 或 mock 成功都不能单独作为发布通过证据�
 
 `bun run recovery:rehearse` 的 schema 2 已移除旧 Chat PG/inbox/file-mutation
 假设，并把 Main PostgreSQL、AgentRun、DSH canonical/private、Blob 与 queue
-receipt 固定进同一 checkpoint digest。schema-1 的历史 bundle 不再具备当前
-认证资格；每次迁移或 source revision 变化后都必须生成新的 schema-2 bundle，
-完成所有 authority 的隔离恢复并由 launch gate 验证。
+receipt 固定进同一 checkpoint digest。schema-1 的历史 bundle 只保留历史证据。
+producer/executor/launch gate 按目标数据库、当前 migration 名称与 checksum、
+AgentRun/DSH 路径、Blob 与 Redis/queue prefix authority、恢复格式、manifest SHA
+及有效期核验，不以应用 source revision 相等作为 bundle 复用条件。
+
+单纯应用源码变化不要求重复相同的恢复演练；上述 authority、迁移或恢复格式
+变化，或证据超过有效期时，须重新生成、隔离恢复全部 authority 并核准。
+损坏或核准 digest 不匹配的 bundle 不得沿用，应修复证据并重新核准，必要时重做演练。
+launch gate 要求 `RECOVERY_REHEARSAL_BUNDLE` 和 bundle
+外记录的 `RECOVERY_REHEARSAL_APPROVED_SHA256`；有效期取
+`RECOVERY_REHEARSAL_MAX_AGE_MINUTES`，默认 1440 分钟。实际判定见
+[producer](../../packages/main/src/server/readiness/recovery-rehearsal-producer.ts)、
+[executor](../../packages/main/src/server/readiness/recovery-rehearsal-executor.ts)、
+[bundle verifier](../../packages/main/src/server/readiness/recovery-rehearsal-authority.ts)
+与 [launch gate](../../packages/main/src/server/launch-readiness.ts)。本节不表示当前已执行新的恢复演练或取得生产资格。
 
 ## 8. 验证门
 

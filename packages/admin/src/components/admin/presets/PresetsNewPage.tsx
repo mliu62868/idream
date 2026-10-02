@@ -1,4 +1,5 @@
 "use client";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Loader2 } from "lucide-react";
 import { apiWrite } from "@/components/admin/api";
@@ -6,6 +7,8 @@ import { useAdminI18n } from "@/components/admin/i18n";
 import { requestErrorMessage } from "@/components/admin/section-kit";
 import { FormPage, FormSection, Field, FormFooter, INPUT_CLASS, TEXTAREA_CLASS } from "@/components/admin/ui/FormPage";
 import { PrimaryButton } from "@/components/admin/ui/buttons";
+import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
+import { useUnsavedChanges } from "@/components/admin/ui/useUnsavedChanges";
 import {
   PRESET_TYPES,
   PRESET_VISIBILITY,
@@ -18,26 +21,31 @@ import {
 // SPEC: 全屏新建页 —— 基本信息 + controls JSON → 提交（spec §7 新建页）。
 // INVARIANTS: presetPayload 无 reason 字段（后端 presetAdminSchema 不要求）——不设 reason 输入；
 // controlsJson 非法 JSON 在提交时抛错，就地显示，不清空表单。
-export function PresetsNewPage() {
+export function PresetsNewPage({ canWrite }: { canWrite: boolean }) {
   const { t, value } = useAdminI18n();
+  const router = useRouter();
   const [draft, setDraft] = useState<PresetDraft>(defaultPresetDraft);
   const [creating, setCreating] = useState(false);
+  const [created, setCreated] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { guard } = useUnsavedChanges(!created && JSON.stringify(draft) !== JSON.stringify(defaultPresetDraft));
 
   function patch(partial: Partial<PresetDraft>) {
     setDraft((current) => ({ ...current, ...partial }));
   }
 
-  const canSubmit = !creating && draft.label.trim().length > 0;
+  const canSubmit = canWrite && !creating && draft.label.trim().length > 0;
 
   async function create() {
+    if (!canSubmit) return;
     setCreating(true);
     setError(null);
     try {
       const payload = presetPayload(draft);
       const created = await apiWrite<{ preset?: { id?: string } }>(PRESETS_LIST, "POST", payload);
       const newId = created.preset?.id;
-      window.location.href = newId ? `/admin/generation/presets/${newId}` : "/admin/generation/presets";
+      setCreated(true);
+      router.push(newId ? `/admin/generation/presets/${encodeURIComponent(newId)}` : "/admin/generation/presets");
     } catch (createError) {
       setError(requestErrorMessage(createError, t));
       setCreating(false);
@@ -46,6 +54,9 @@ export function PresetsNewPage() {
 
   return (
     <FormPage backHref="/admin/generation/presets" backLabel={t("Back to presets")} title={t("New preset")}>
+      {guard}
+      {canWrite ? <>
+      <fieldset className="space-y-6" disabled={creating}>
       <FormSection title={t("Basic info")}>
         <Field label={t("Type")}>
           <select
@@ -93,6 +104,8 @@ export function PresetsNewPage() {
           {t("Create preset")}
         </PrimaryButton>
       </FormFooter>
+      </fieldset>
+      </> : <PermissionNotice permission="generation.config.write" />}
     </FormPage>
   );
 }

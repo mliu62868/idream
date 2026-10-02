@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { GET as getCmsPageRoute } from "@/app/api/v2/admin/cms/page/route";
 import {
   GET as listCmsPagesRoute,
@@ -9,6 +9,16 @@ import { POST as publishCmsPageRoute } from "@/app/api/v2/admin/cms/pages/publis
 import { prisma } from "@/server/lib/db";
 import { callAdminV2, expectAdminV2Ok } from "@/server/test/admin-v2-client";
 import { createUser, purgeTestData } from "@/server/test/helpers";
+
+const { revalidatePath, revalidateTag } = vi.hoisted(() => ({
+  revalidatePath: vi.fn(),
+  revalidateTag: vi.fn(),
+}));
+vi.mock("next/cache", async (original) => ({
+  ...await original<typeof import("next/cache")>(),
+  revalidatePath,
+  revalidateTag,
+}));
 
 const P = "zt-v2cms-";
 const path = `/${P}landing`;
@@ -252,5 +262,92 @@ describe("Admin v2 CMS pages", () => {
       confirmation: "/admin/takeover",
     });
     expect(result.status).toBe(400);
+  });
+
+  it("reads every CMS page past 100 with stable bidirectional cursors bound to the filters", async () => {
+    const prefix = `/${P}pagination-`;
+    const paths = Array.from({ length: 105 }, (_, index) => `${prefix}${String(index).padStart(3, "0")}`);
+    await prisma.routePage.createMany({ data: paths.map((path) => ({
+      path, template: "article", title: "Pagination guide", description: "Pagination fixture",
+      body: completeBody, contentStatus: "draft", updatedAt: new Date("2025-01-01T00:00:00.000Z"),
+    })) });
+    await prisma.routePage.create({ data: {
+      path: `${prefix}published`, template: "article", title: "Pagination guide", description: "Excluded published page",
+      body: completeBody, contentStatus: "published", updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+    } });
+    const filters = { q: prefix, status: "draft" };
+    const list = (query: Record<string, string>) => callAdminV2(listCmsPagesRoute, {
+      url: "/api/v2/admin/cms/pages", actor: admin, query,
+    });
+    const first = expectAdminV2Ok(await list(filters)).data;
+    expect(first.items).toHaveLength(100);
+    expect(first.pageInfo).toMatchObject({ hasNextPage: true, hasPreviousPage: false, startCursor: null });
+    const firstInfo = first.pageInfo as { endCursor: string };
+    const second = expectAdminV2Ok(await list({ ...filters, cursor: firstInfo.endCursor })).data;
+    expect(second.items).toHaveLength(5);
+    expect(second.pageInfo).toMatchObject({ hasNextPage: false, endCursor: null, hasPreviousPage: true });
+    const all = [...first.items as Array<{ path: string }>, ...second.items as Array<{ path: string }>];
+    expect(all.map((page) => page.path)).toEqual([...paths].sort().reverse());
+    const secondInfo = second.pageInfo as { startCursor: string };
+    const previous = expectAdminV2Ok(await list({ ...filters, before: secondInfo.startCursor })).data;
+    expect(previous.items).toEqual(first.items);
+    expect(previous.pageInfo).toMatchObject({ hasNextPage: true, hasPreviousPage: false, startCursor: null });
+    expect((await list({ ...filters, status: "published", cursor: firstInfo.endCursor })).status).toBe(400);
+    expect((await list({ ...filters, q: "different search", cursor: firstInfo.endCursor })).status).toBe(400);
+    expect((await list({ ...filters, cursor: firstInfo.endCursor, before: secondInfo.startCursor })).status).toBe(400);
+  });
+
+  it.each(["draft", "published"] as const)("recovers the %s page's cache under current version and permission gates without changing publication", async (status) => {
+    revalidatePath.mockReset(); revalidateTag.mockReset();
+    const cachePath = `/${P}cache-${status}`;
+    let current = expectAdminV2Ok(await createPage(admin, {
+      path: cachePath,
+      title: "CMS cache recovery guide",
+      description: "A complete editorial page used to verify that cache recovery preserves the authoritative publication state.",
+      body: completeBody,
+      reason: "prepare cache recovery",
+      confirmation: cachePath,
+    })).data.page;
+    if (status === "published") {
+      current = expectAdminV2Ok(await publishPage({
+        path: cachePath,
+        contentStatus: "published",
+        expectedUpdatedAt: current.updatedAt,
+        reason: "publish recovery guide",
+        confirmation: cachePath,
+      })).data.page;
+    }
+    const body = {
+      action: "revalidate",
+      path: cachePath,
+      contentStatus: status,
+      expectedUpdatedAt: current.updatedAt,
+      reason: "retry failed public cache invalidation",
+      confirmation: cachePath,
+    };
+    revalidatePath.mockClear(); revalidateTag.mockClear();
+    revalidateTag.mockImplementationOnce(() => { throw new Error("cache unavailable"); });
+    const failedCache = expectAdminV2Ok(await publishPage(body));
+    expect(failedCache.data).toMatchObject({ page: current, cacheRevalidated: false });
+
+    revalidatePath.mockClear(); revalidateTag.mockClear();
+    expect((await callAdminV2(publishCmsPageRoute, {
+      url: "/api/v2/admin/cms/pages/publish", method: "POST", actor: analyst, body,
+    })).status).toBe(403);
+    expect((await publishPage({ ...body, expectedUpdatedAt: "2000-01-01T00:00:00.000Z" })).status).toBe(409);
+    expect((await publishPage({ ...body, contentStatus: status === "published" ? "draft" : "published" })).status).toBe(409);
+    expect(revalidatePath).not.toHaveBeenCalled();
+    expect(revalidateTag).not.toHaveBeenCalled();
+
+    const recovered = expectAdminV2Ok(await publishPage(body));
+    expect(recovered.data).toMatchObject({ page: current, cacheRevalidated: true });
+    expect(revalidateTag).toHaveBeenCalledWith("cms-pages", { expire: 0 });
+    expect(revalidatePath).toHaveBeenCalledWith(cachePath);
+    expect(revalidatePath).toHaveBeenCalledWith("/resources-hub");
+    expect(revalidatePath).toHaveBeenCalledWith("/sitemap.xml");
+    const readBack = expectAdminV2Ok(await callAdminV2(getCmsPageRoute, {
+      url: "/api/v2/admin/cms/page", actor: admin, query: { path: cachePath },
+    }));
+    expect(readBack.data.page).toEqual(current);
   });
 });

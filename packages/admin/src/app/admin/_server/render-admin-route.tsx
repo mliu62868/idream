@@ -99,7 +99,6 @@ export async function renderAdminRoute(
       initialSection={initialSection}
       preferences={preferences}
       shellSignals={bootstrap.shellSignals}
-      devLogout={bootstrap.devLogin.enabled}
     />
   );
 }

@@ -4,6 +4,18 @@ import type { PreparedTurnMessage } from "./contracts";
 // DSH can attach tool provenance even to plain text, without a tool-result block.
 export type ModelInputMessage = PreparedTurnMessage;
 
+/** Remove only an immutable history exchange, never a current execution step. */
+export function dropOldestReplayExchange<T extends { id: string; role: string }>(
+  messages: readonly T[],
+  replayMessageIds: ReadonlySet<string>,
+): T[] | null {
+  const replay = messages.filter(message => replayMessageIds.has(message.id));
+  if (replay.length === 0) return null;
+  const nextUser = replay.findIndex((message, index) => index > 0 && message.role === "user");
+  const removed = new Set(replay.slice(0, nextUser < 0 ? replay.length : nextUser).map(message => message.id));
+  return messages.filter(message => !removed.has(message.id));
+}
+
 function contextSource(message: ModelInputMessage): string | null {
   if (message.id.startsWith("state:")) return "scene_state";
   if (message.id.startsWith("recall:")) return "retrieved_memory";

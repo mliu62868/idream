@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { chatTerminalAckSchema, type ChatTerminalCommit, type ChatToolEffect } from "@idream/shared/contracts";
+import { chatTerminalAckSchema, type ChatStreamEvent, type ChatTerminalCommit, type ChatToolEffect } from "@idream/shared/contracts";
 import { COMPANION_PRODUCT_PROMPT_VERSION } from "@idream/shared";
+import { ZodError } from "zod";
 import type {
   CompanionCommitAck,
   CompanionEvent,
@@ -9,7 +10,7 @@ import type {
   CompanionToolCall,
   CompanionToolResult,
 } from "./agent-runtime/contracts.js";
-import type { CompanionRuntimePort } from "./agent-runtime/engine.js";
+import { CompanionCapacityError, type CompanionRuntimePort } from "./agent-runtime/engine.js";
 import {
   agentRuntimeProfileDigest,
   agentRuntimeVersions,
@@ -35,7 +36,7 @@ import { logger } from "./logger.js";
 import {
   prepareCompanionTurn,
 } from "./prepared-turn.js";
-import { sceneForReply } from "./scene.js";
+import { projectSceneForReply, type SceneProjectionEvidence } from "./scene.js";
 import { appendStreamEvent, streamKey } from "./stream.js";
 import { stableJson } from "./stable-json.js";
 
@@ -46,6 +47,7 @@ interface ActiveAgentRun {
 }
 
 type TerminalPromptAttribution = ChatTerminalCommit["terminalEvidence"]["prompt"];
+type PublishStreamEvent = (event: ChatStreamEvent) => Promise<void>;
 
 const activeRuns = new Map<string, ActiveAgentRun>();
 
@@ -124,13 +126,14 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
   const snapshot = input.snapshot;
   const attemptId = `${snapshot.assistantMessageId}:${snapshot.attempt}`;
   const key = streamKey(snapshot.assistantMessageId);
+  const publish = createAgentRunStreamPublisher(turnId, attempt, key);
   const existingProposal = await readAgentRunProposal(turnId, attempt);
   if (existingProposal) {
     await appendAgentRunEvent(turnId, attempt, "recovery.terminal_proposal", {
       attemptId: existingProposal.attemptId,
       terminalDigest: sha256(JSON.stringify(existingProposal.terminal)),
     });
-    const replay = await settleTerminalProposal(existingProposal, key, true);
+    const replay = await settleTerminalProposal(existingProposal, publish, true);
     if (!replay.accepted) throw new Error(replay.error.message);
     await finalizeAcceptedProposal(existingProposal, replay);
     return;
@@ -142,6 +145,8 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
   let committedAck: Extract<CompanionCommitAck, { accepted: true }> | null = null;
   let runtimeFailure: Extract<CompanionEvent, { type: "failed" }>["error"] | undefined;
   let runtimeCancellation: Extract<CompanionEvent, { type: "cancelled" }>["reason"] | undefined;
+  let sceneProjectionEvidence: SceneProjectionEvidence | undefined;
+  let completedReply: Pick<CompanionTerminalCandidate, "provider" | "model" | "usage" | "modelRequests"> | undefined;
   let promptAttribution: TerminalPromptAttribution = {
     productPromptVersion: COMPANION_PRODUCT_PROMPT_VERSION,
     preparedTurnVersion: null,
@@ -149,7 +154,7 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
     soulFingerprint: null,
   };
   try {
-    await appendStreamEvent(key, { type: "start", attempt: snapshot.attempt });
+    await publish({ type: "start", attempt: snapshot.attempt });
     await appendAgentRunEvent(turnId, attempt, "admitted", {
       attemptId,
       sessionId: snapshot.sessionId,
@@ -196,15 +201,26 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
           if (event.outcome === "failure") metric.failures += 1;
           metric.evidenceMatches += event.evidenceMatches ?? 0;
         }
-        sequence = await projectStreamEvent(key, snapshot.attempt, sequence, event);
+        sequence = await projectStreamEvent(publish, snapshot.attempt, sequence, event);
       },
       executeTool: (call) => executeMainTool(call, snapshot.turnId, snapshot.attempt),
-      commit: async (candidate) => {
-        const scene = sceneForReply({
+      commit: async (candidate, commitSignal) => {
+        completedReply = { provider: candidate.provider, model: candidate.model, usage: candidate.usage, modelRequests: candidate.modelRequests };
+        const projection = await projectSceneForReply({
           previous: context.scene,
           userText: snapshot.userContent,
           assistantText: candidate.content,
+          attemptId, userMessageId: snapshot.userMessageId, assistantMessageId: snapshot.assistantMessageId,
+        }, {
+          profile: wire.profile, apiKey: env.CHAT_MODEL_API_KEY,
+          openRouterProviderOnly: env.DSH_OPENROUTER_PROVIDER_ONLY,
+          maxInputTokens: wire.budget.maxInputTokens, signal: commitSignal ?? signal,
         });
+        const { scene, evidence: sceneProjection } = projection;
+        sceneProjectionEvidence = sceneProjection;
+        await appendAgentRunEvent(turnId, attempt, "scene.projected", sceneProjection);
+        (commitSignal ?? signal).throwIfAborted();
+        const completeUsage = sceneProjection.requests.length === 0 || sceneProjection.usage !== null;
         const terminal: ChatTerminalCommit = {
           version: 1,
           turnId: snapshot.turnId,
@@ -214,11 +230,11 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
           status: "sent",
           content: candidate.content,
           model: candidate.model,
-          promptTokens: candidate.usage.promptTokens,
-          completionTokens: candidate.usage.completionTokens,
+          promptTokens: completeUsage ? candidate.usage.promptTokens + (sceneProjection.usage?.promptTokens ?? 0) : null,
+          completionTokens: completeUsage ? candidate.usage.completionTokens + (sceneProjection.usage?.completionTokens ?? 0) : null,
           sceneVersion: scene.version,
           scene,
-          terminalEvidence: terminalEvidence(
+          terminalEvidence: { ...terminalEvidence(
             candidate,
             profileDigest,
             runtimeVersions,
@@ -226,7 +242,7 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
             runtimeInstance,
             igrepObservations,
             promptAttribution,
-          ),
+          ), replyUsage: candidate.usage, sceneProjection },
         };
         const proposal: AgentRunProposal = {
           schemaVersion: 1,
@@ -235,7 +251,7 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
           proposedAt: new Date().toISOString(),
         };
         await writeAgentRunProposal(turnId, attempt, proposal);
-        const ack = await settleTerminalProposal(proposal, key, false);
+        const ack = await settleTerminalProposal(proposal, publish, false);
         if (ack.accepted) {
           committedProposal = proposal;
           committedAck = ack;
@@ -253,6 +269,14 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
     await finalizeAcceptedProposal(committedProposal, committedAck);
   } catch (error) {
     if (committedAck) throw error;
+    if (error instanceof CompanionCapacityError && !signal.aborted) {
+      // Capacity is temporary. Keep the exact admitted input for the existing
+      // recovery scanner; Main's immutable deadline still bounds this attempt.
+      await appendAgentRunEvent(turnId, attempt, "agent.deferred", {
+        reason: "runtime_capacity", pool: error.pool,
+      });
+      return;
+    }
     if (await readAgentRunCompletion(turnId, attempt)) return;
     // Once a candidate is durable, recovery may only replay it. Replacing it
     // with a generic failure would destroy exact Main CAS identity.
@@ -273,13 +297,13 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
       completionTokens: null,
       sceneVersion: snapshot.sceneVersion,
       scene: snapshot.scene,
-      terminalEvidence: agentRunFailureEvidence({
+      terminalEvidence: { ...agentRunFailureEvidence({
         cancelled,
         prompt: promptAttribution,
         runtimeCancellation: cancellation.reason,
         runtimeFailure,
         reason,
-      }),
+      }), ...(completedReply ? { reply: completedReply } : {}), ...(sceneProjectionEvidence ? { sceneProjection: sceneProjectionEvidence } : {}) },
     };
     const proposal: AgentRunProposal = {
       schemaVersion: 1,
@@ -293,7 +317,7 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
       failureCode: cancellation.failureCode ?? runtimeFailure?.code ?? "agent_run_failed",
       reasonDigest: sha256(reason),
     });
-    const ack = await settleTerminalProposal(proposal, key, false);
+    const ack = await settleTerminalProposal(proposal, publish, false);
     if (ack.accepted) await finalizeAcceptedProposal(proposal, ack);
     else return;
     if (!cancelled) throw error;
@@ -302,7 +326,7 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
 
 async function settleTerminalProposal(
   proposal: AgentRunProposal,
-  stream: string,
+  publish: PublishStreamEvent,
   recovery: boolean,
 ): Promise<CompanionCommitAck> {
   const terminal = proposal.terminal;
@@ -317,11 +341,11 @@ async function settleTerminalProposal(
       status: response.status,
       recovery,
     });
-    await appendStreamEvent(stream, {
+    await publish({
       type: "error",
       attempt: terminal.attempt,
       code: "terminal_rejected",
-    }).catch(() => undefined);
+    });
     await completeAgentRun(terminal.turnId, terminal.attempt, {
       attemptId: proposal.attemptId,
       outcome: terminal.status === "cancelled" ? "cancelled" : "failed",
@@ -349,7 +373,7 @@ async function settleTerminalProposal(
   if (terminal.status === "sent") {
     // INVARIANT: SSE done is downstream of Main's durable commit ACK. It is
     // at-least-once across the final local-file write crash window.
-    await appendStreamEvent(stream, {
+    await publish({
       type: "done",
       attempt: terminal.attempt,
       usage: {
@@ -358,11 +382,11 @@ async function settleTerminalProposal(
       },
     });
   } else {
-    await appendStreamEvent(stream, {
+    await publish({
       type: "error",
       attempt: terminal.attempt,
       code: terminalFailureCode(terminal),
-    }).catch(() => undefined);
+    });
   }
   return ack;
 }
@@ -480,20 +504,38 @@ async function executeMainTool(
   throw new Error("unreachable Main tool acknowledgement loop");
 }
 
+function createAgentRunStreamPublisher(turnId: string, attempt: number, key: string): PublishStreamEvent {
+  let available = true;
+  return async event => {
+    if (!available) return;
+    try {
+      await appendStreamEvent(key, event);
+    } catch (error) {
+      if (error instanceof ZodError) throw error;
+      // Main history polling delivers the durable reply. Stop publishing for
+      // this attempt: retrying each delta would repeatedly spend the Redis
+      // deadline, and resuming halfway would present incomplete live text.
+      available = false;
+      logger.warn({ turnId, attempt, reasonDigest: sha256(error instanceof Error ? error.message : String(error)) },
+        "Chat stream unavailable; continuing the durable reply");
+    }
+  };
+}
+
 async function projectStreamEvent(
-  key: string,
+  publish: PublishStreamEvent,
   attempt: number,
   sequence: number,
   event: CompanionEvent,
 ): Promise<number> {
   if (event.type === "text_delta") {
     const next = sequence + 1;
-    await appendStreamEvent(key, { type: "delta", attempt, seq: next, delta: event.delta });
+    await publish({ type: "delta", attempt, seq: next, delta: event.delta });
     return next;
   }
   if (event.type === "text_reset") {
     const next = sequence + 1;
-    await appendStreamEvent(key, { type: "replace", attempt, seq: next, content: "" });
+    await publish({ type: "replace", attempt, seq: next, content: "" });
     return next;
   }
   return sequence;

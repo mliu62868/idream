@@ -18,6 +18,7 @@ vi.mock("next/link", () => ({
 }));
 
 import { RecipesListPage } from "./RecipesListPage";
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 function recipe(id: string): Recipe {
   return {
@@ -46,7 +47,7 @@ async function mount() {
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
-  await act(async () => { root.render(<RecipesListPage />); });
+  await act(async () => { root.render(<RecipesListPage canWrite />); });
   await settle();
 }
 
@@ -98,9 +99,8 @@ describe("RecipesListPage cursor history", () => {
     expect(cursorsRequested()).toEqual([null, "c1", null]);
   });
 
-  // INVARIANT: hasPreviousPage 缺席 = 这个 operation 还是单向 keyset，「上一页」置灰，
-  // 绝不当成「你在第一页」而放行一个会 400 的请求。
-  it("keeps Previous disabled while the operation is forward-only", async () => {
+  // INVARIANT: 单向 API 的上一页重读已访问的前向游标，不发契约不接受的 before。
+  it("returns through visited forward cursors without inventing a backward API", async () => {
     apiGet.mockResolvedValue(response([recipe("r1")], {
       endCursor: "c1",
       hasNextPage: true,
@@ -112,7 +112,10 @@ describe("RecipesListPage cursor history", () => {
     await act(async () => { findButton("Next page")?.click(); });
     await settle();
 
-    expect(findButton("Previous page")?.disabled).toBe(true);
+    expect(findButton("Previous page")?.disabled).toBe(false);
+    await act(async () => { findButton("Previous page")?.click(); }); await settle();
+    expect(cursorsRequested()).toEqual([null, "c1", null]);
+    expect(apiGet.mock.calls.every(([path]) => !new URLSearchParams(path.split("?")[1]).has("before"))).toBe(true);
   });
 
   // SPEC: 拿不到 totalCount 就不显示「共 N 条」，更不能拿当页条数冒充总数。

@@ -206,8 +206,8 @@ const CREATIVE_RUN_VERIFICATION_AUTHORITY = defineTransitionAuthority(
   CREATIVE_RUN_VERIFICATION_STATES,
   {
     pending: ["pending", "verifying", "passed"],
-    verifying: ["pending", "passed", "failed"],
-    passed: ["verifying"],
+    verifying: ["pending", "verifying", "passed", "failed"],
+    passed: ["pending", "passed", "verifying"],
     failed: ["verifying"],
     overridden: ["verifying"],
   },
@@ -228,7 +228,7 @@ const CREATIVE_PLACEMENT_VERIFICATION_AUTHORITY = defineTransitionAuthority(
   {
     pending: ["verifying"],
     verifying: ["passed", "failed", "overridden"],
-    passed: [],
+    passed: ["overridden"],
     failed: ["verifying"],
     overridden: [],
   },
@@ -251,7 +251,7 @@ const CREATIVE_RUN_ITEM_AUTHORITY = defineTransitionAuthority(
     approved: ["approved", "rejected", "published"],
     rejected: ["approved", "rejected"],
     regenerate_requested: ["generated", "failed"],
-    published: ["published"],
+    published: ["generated", "published"],
     failed: ["regenerate_requested"],
   },
 );

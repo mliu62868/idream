@@ -22,7 +22,7 @@ import {
 } from "@/lib/authority-state";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import {
-  canGoPrevious,
+  previousListPage,
   listPageFromParams,
   requestErrorMessage,
   syncListUrl,
@@ -45,7 +45,7 @@ export function StartersListPage({ canWrite }: { canWrite: boolean }) {
   const [status, setStatus] = useState("all");
   const [cursor, setCursor] = useState<string | undefined>();
   const [page, setPage] = useState(1);
-  const [ready, setReady] = useState(false);
+  const [urlRevision, setUrlRevision] = useState(0);
   const requestGate = useRef(createLatestRequestGate());
 
   const reload = useCallback(async (nextCursor: string | undefined, nextPage: number) => {
@@ -53,12 +53,12 @@ export function StartersListPage({ canWrite }: { canWrite: boolean }) {
     const params = new URLSearchParams(queryKey);
     const request = requestGate.current.begin();
     setAuthority((current) => authorityRequestStarted(current, queryKey));
+    setPage(syncListUrl(params, nextPage));
     try {
       const data = await apiGet<StartersResponse>(`${STARTERS_LIST}?${params}`);
       if (!request.isCurrent()) return;
       setAuthority(authorityRequestSucceeded(queryKey, data));
       setCursor(nextCursor);
-      syncListUrl(params, nextPage);
     } catch (loadError) {
       if (!request.isCurrent()) return;
       setAuthority((current) => authorityRequestFailed(
@@ -75,11 +75,12 @@ export function StartersListPage({ canWrite }: { canWrite: boolean }) {
     setScope(params.get("scope") ?? "all");
     setStatus(params.get("status") ?? "all");
     setCursor(params.get("cursor") ?? undefined);
-    setPage(listPageFromParams(params));
-    setReady(true);
+    setPage(params.get("cursor") ? listPageFromParams(params) : 1);
+    setAuthority((current) => authorityRequestStarted(current, startersQueryKey(params.get("search") ?? "", params.get("scope") ?? "all", params.get("status") ?? "all", params.get("cursor") ?? undefined)));
+    setUrlRevision((revision) => revision + 1);
   }, []), requestGate);
 
-  useDebouncedReload({ cursor, page, ready, reload, search });
+  useDebouncedReload({ cursor, page, urlRevision, reload, search });
 
   // 换搜索词/筛选就回到第一页 —— 第 4 页的游标配上新条件是一段没有意义的偏移。
   const restart = useCallback((apply: () => void) => {
@@ -88,6 +89,13 @@ export function StartersListPage({ canWrite }: { canWrite: boolean }) {
     setCursor(undefined);
     setPage(1);
   }, []);
+
+  function changePage(nextCursor: string | undefined, nextPage: number) {
+    requestGate.current.invalidate();
+    setCursor(nextCursor);
+    setPage(nextPage);
+    setAuthority((current) => authorityRequestStarted(current, startersQueryKey(search, scope, status, nextCursor)));
+  }
 
   const allOption = { value: "all", label: t("All") };
   const rows = authority.data?.items ?? [];
@@ -139,7 +147,7 @@ export function StartersListPage({ canWrite }: { canWrite: boolean }) {
               { value: "disabled", label: t("Inactive") }] },
         ]}
       />
-      {authority.error ? <AuthorityRequestError cause={authority.cause} message={authority.error} onRetry={() => void reload(cursor, page)} snapshotAt={authority.data ? authority.refreshedAt : null} /> : null}
+      {authority.error ? <AuthorityRequestError cause={authority.cause} message={authority.error} requestKind="read" onRetry={() => void reload(cursor, page)} snapshotAt={authority.data ? authority.refreshedAt : null} /> : null}
       {authority.loading && authority.data === null ? (
         <LoadingWorkspace label="Loading starter templates…" />
       ) : authority.data && rows.length === 0 ? (
@@ -190,20 +198,11 @@ export function StartersListPage({ canWrite }: { canWrite: boolean }) {
       <div className="mt-4">
         <Pagination
           hasNext={Boolean(pageInfo?.hasNextPage && pageInfo.endCursor)}
-          // 这个 operation 的查询契约没有 `before` —— 置灰，不假装已经在第一页（section-kit 有全部理由）。
-          hasPrevious={pageInfo ? canGoPrevious(pageInfo, false) : false}
+          hasPrevious={Boolean(cursor)}
+          previousLabel={cursor && !previousListPage().hasHistory ? t("Back to first page") : undefined}
           loading={authority.loading}
-          onNext={() => {
-            const nextCursor = pageInfo?.endCursor ?? undefined;
-            requestGate.current.invalidate();
-            setCursor(nextCursor);
-            setPage(page + 1);
-            setAuthority((current) => authorityRequestStarted(
-              current,
-              startersQueryKey(search, scope, status, nextCursor),
-            ));
-          }}
-          onPrevious={() => undefined}
+          onNext={() => changePage(pageInfo?.endCursor ?? undefined, page + 1)}
+          onPrevious={() => { const previous = previousListPage(); changePage(previous.cursor, previous.page); }}
           page={page}
           pageSize={PAGE_SIZE}
           rowCount={rows.length}

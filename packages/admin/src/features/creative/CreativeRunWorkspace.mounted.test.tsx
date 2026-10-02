@@ -978,6 +978,62 @@ describe("Creative Run review and placement authority", () => {
     });
   });
 
+  it("withdraws a verified live campaign using its current version and refreshes the unplaced item", async () => {
+    const placement = {
+      ...stagedPlacement,
+      id: "creative-placement-live",
+      status: "published" as const,
+      verificationState: "passed" as const,
+      verifiedAt: "2026-07-17T12:05:00.000Z",
+    };
+    const base = campaignRun({ placement });
+    const detail: CreativeRunDetail = {
+      ...base,
+      lifecycleState: "closed",
+      workflowStage: "verification",
+      deploymentState: "placed",
+      verificationState: "passed",
+      items: [{ ...base.items[0]!, status: "published" }],
+    };
+    const refreshed: CreativeRunDetail = {
+      ...detail,
+      version: 5,
+      lifecycleState: "active",
+      workflowStage: "placement",
+      deploymentState: "unplaced",
+      verificationState: "pending",
+      items: [{ ...detail.items[0]!, status: "generated", placement: null }],
+    };
+    let committed = false;
+    adminV2Request.mockImplementation(async (_path, options) => {
+      if (options?.method === "POST") {
+        committed = true;
+        return { placementId: placement.id, runVersion: 5, verificationState: "overridden" };
+      }
+      return committed ? refreshed : detail;
+    });
+    await mountRun();
+    expect(buttonByText(container, "Withdraw live placement")?.disabled).toBe(true);
+    await act(async () => {
+      changeField(fieldByLabel(container, "Withdrawal reason"), "The campaign has ended");
+    });
+    await act(async () => {
+      buttonByText(container, "Withdraw live placement")?.click();
+    });
+    await advance();
+    const withdrawals = adminV2Request.mock.calls.filter(
+      ([path, options]) => options?.method === "POST" && path.endsWith("/withdrawal"),
+    );
+    expect(withdrawals).toHaveLength(1);
+    expect(withdrawals[0]?.[0]).toContain(`/placements/${placement.id}/withdrawal`);
+    expect(withdrawals[0]?.[1]).toMatchObject({
+      idempotencyKey: expect.any(String),
+      body: { entityVersion: 4, reason: "The campaign has ended" },
+    });
+    expect(buttonByText(container, "Withdraw live placement")).toBeUndefined();
+    expect(buttonByText(container, "Stage campaign candidate")).toBeDefined();
+  });
+
   it("preserves historical decisions as read-only evidence", async () => {
     const detail = campaignRun({ review: approvedReview });
     adminV2Request.mockImplementation(async () => detail);

@@ -28,13 +28,13 @@ import {
 } from "../shared/list-cursor";
 import { toInputJson } from "../shared/prisma-json";
 import { contentAuditData } from "./audit";
+import { parseCommunityCampaignAuthoredCopy, UPLOADED_CAMPAIGN_AUTHORITY_SCHEMA } from "@/server/modules/ourdream/community-campaigns";
+import { providers } from "@/server/providers";
+import { parseAdminImageUpload } from "../shared/image-upload";
 
-// SPEC: legacy Placement 编辑器。只创建非运行时 draft，并以 pause / archive（archive 为终态）
-//       管理它。
-// INTENT: 客户可见的投放权威早已收归 Character Release（角色图位）与 Creative Run
-//         staging + runtime verification（Campaign）。这里保留的是尚未迁移的运营草稿面，
-//         因此 published 与 release 所属槽位一律 fail closed，Run 托管的 placement 也拒绝
-//         从这个入口改动。
+// SPEC: 创建草稿，管理暂停/归档；外部上传的 Campaign 经独立 publish 命令核验真实文件后上线。
+// INVARIANT: 角色图仍归 Character Release；生成素材仍归 Creative Run verification。
+// 上传不伪造生成记录，也不能通过普通 PATCH 绕过发布核验。
 
 const releaseOwnedPlacementSlots = new Set([
   "character_avatar",
@@ -117,6 +117,20 @@ export async function getPlacement(id: string) {
   return { placement: placementDTO(placement, authority) };
 }
 
+export function decoratePlacementReplay(result: unknown, replayed: boolean) {
+  const value = jsonRecord(result);
+  const placement = jsonRecord(value.placement);
+  // INTENT: historical create/PATCH receipts predate this required capability field.
+  // Only replay gets a conservative value; a fresh GET supplies the current publication eligibility.
+  return {
+    ...value,
+    ...(replayed && !Object.hasOwn(placement, "canPublish")
+      ? { placement: { ...placement, canPublish: false } }
+      : {}),
+    replayed,
+  };
+}
+
 export async function createPlacement(input: {
   tx: Prisma.TransactionClient;
   request: Request;
@@ -124,6 +138,7 @@ export async function createPlacement(input: {
   body: ContentPlacementCreateRequest;
 }) {
   const { tx, request, actor, body } = input;
+  assertAuthoredPlacementMetadata(body.metadata);
   assertLegacyPlacementAuthority(body.slot, body.status);
   validatePlacementTarget(body.slot, body.targetType);
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`media-asset-authority:${body.mediaAssetId}`}))`;
@@ -207,14 +222,23 @@ export async function patchPlacement(input: {
     });
   }
   assertLegacyPlacementAuthority(before.slot, body.status);
-  assertLegacyPlacementTransition(before.status, body.status);
+  if (body.status) assertLegacyPlacementTransition(before.status, body.status);
+  if (body.metadata) {
+    assertAuthoredPlacementMetadata(body.metadata);
+    if (!["draft", "paused"].includes(before.status)) throw Errors.conflict("Pause the placement before editing campaign copy");
+  }
+  const nextMetadata = body.metadata ? { ...beforeMetadata, ...body.metadata } : undefined;
+  if (nextMetadata && before.slot === "campaign") {
+    // Null explicitly clears the optional CTA; absent patch fields preserve existing copy.
+    for (const key of ["ctaLabel", "href"]) if (nextMetadata[key] === null) delete nextMetadata[key];
+  }
   const changed = await tx.mediaAssetPlacement.updateMany({
     where: { id, status: before.status, version: expectedVersion },
     data: {
       status: body.status,
       pausedAt: body.status === "paused" ? new Date() : undefined,
       archivedAt: body.status === "archived" ? new Date() : undefined,
-      metadata: body.metadata ? toInputJson(body.metadata) : undefined,
+      metadata: nextMetadata ? toInputJson(nextMetadata) : undefined,
       version: { increment: 1 },
     },
   });
@@ -232,7 +256,7 @@ export async function patchPlacement(input: {
   });
   await tx.adminAuditLog.create({
     data: contentAuditData(request, actor, {
-      action: `content.placement.${body.status}`,
+      action: `content.placement.${body.status ?? "update"}`,
       targetType: "media_asset_placement",
       targetId: id,
       reason: body.reason,
@@ -241,12 +265,14 @@ export async function patchPlacement(input: {
         mediaAssetId: before.mediaAssetId,
         slot: before.slot,
         targetId: before.targetId,
+        metadata: before.metadata,
       },
       after: {
         status: updated.status,
         mediaAssetId: updated.mediaAssetId,
         slot: updated.slot,
         targetId: updated.targetId,
+        metadata: updated.metadata,
       },
     }),
   });
@@ -254,6 +280,109 @@ export async function patchPlacement(input: {
     await resolveMediaAssetAuthorityMap(tx, [updated.mediaAsset])
   ).get(updated.mediaAssetId);
   return { placement: placementDTO(updated, authority) };
+}
+
+export async function prepareUploadedPlacement(id: string, expectedVersion?: number) {
+  const placement = await prisma.mediaAssetPlacement.findFirst({
+    where: operationalMediaAssetPlacementWhere({ id }), include: { mediaAsset: true },
+  });
+  if (!placement) throw Errors.notFound("Placement not found");
+  if (placement.version !== expectedVersion) throw Errors.conflict("Placement changed before publication");
+  assertUploadedCampaign(placement);
+  const asset = placement.mediaAsset;
+  if (!providers.blob.getPrivate) throw Errors.unavailable("Publication requires readable stored artwork");
+  const stored = await providers.blob.getPrivate({ key: asset.storageKey! });
+  if (!stored.ok) throw Errors.conflict("Uploaded artwork is unavailable; upload it again before publishing");
+  const form = new FormData();
+  form.set("image", new File([Uint8Array.from(stored.data.body)], "campaign.png", { type: asset.contentType ?? "image/png" }));
+  const image = await parseAdminImageUpload(form).catch(() => {
+    throw Errors.conflict("Uploaded artwork is damaged; upload it again before publishing");
+  });
+  if (image.sha256 !== jsonRecord(asset.metadata).sha256 || image.width !== asset.width || image.height !== asset.height) {
+    throw Errors.conflict("Stored artwork changed after upload; upload it again before publishing");
+  }
+  return { assetId: asset.id, storageKey: asset.storageKey!, sha256: image.sha256 };
+}
+
+export async function publishUploadedPlacement(input: {
+  tx: Prisma.TransactionClient; request: Request; actor: AdminActor; id: string;
+  expectedVersion: number; reason: string; prepared: Awaited<ReturnType<typeof prepareUploadedPlacement>>;
+}) {
+  const { tx, request, actor, id, expectedVersion, reason, prepared } = input;
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`legacy-placement:${id}`}))`;
+  const before = await tx.mediaAssetPlacement.findFirst({
+    where: operationalMediaAssetPlacementWhere({ id }), include: placementInclude,
+  });
+  if (!before) throw Errors.notFound("Placement not found");
+  if (before.version !== expectedVersion) throw Errors.conflict("Placement changed before publication");
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`creative-placement:${before.slot}:${before.targetType}:${before.targetId}`}))`;
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`media-asset-authority:${before.mediaAssetId}`}))`;
+  const asset = await tx.mediaAsset.findUniqueOrThrow({ where: { id: before.mediaAssetId } });
+  assertUploadedCampaign({ ...before, mediaAsset: asset });
+  if (asset.id !== prepared.assetId || asset.storageKey !== prepared.storageKey || jsonRecord(asset.metadata).sha256 !== prepared.sha256) {
+    throw Errors.conflict("Artwork authority changed while publication was being verified");
+  }
+  const replacing = await tx.mediaAssetPlacement.findMany({ where: {
+    id: { not: id }, slot: before.slot, targetType: before.targetType, targetId: before.targetId,
+    status: "published", verificationState: "passed",
+  } });
+  const managed = replacing.filter(placement => ["creativeRunId", "creativeRunItemId", "customerMediaAuthority"]
+    .some(key => Object.hasOwn(jsonRecord(placement.metadata), key)));
+  if (managed.length) {
+    // INVARIANT: only Creative commands may withdraw its live placement and synchronize Run/item authority.
+    const runId = jsonRecord(managed[0].metadata).creativeRunId;
+    throw Errors.conflict("Withdraw the live placement from its Creative Run before publishing uploaded artwork", {
+      code: "creative_placement_withdrawal_required",
+      placementIds: managed.map(placement => placement.id),
+      repairPath: typeof runId === "string" && runId ? `/admin/creative/runs/${runId}` : "/admin/creative/runs",
+    });
+  }
+  const staged = await tx.mediaAssetPlacement.findFirst({ where: {
+    slot: before.slot, targetType: before.targetType, targetId: before.targetId, status: "scheduled", verificationState: "verifying",
+  } });
+  if (staged) throw Errors.conflict("Another placement is awaiting verification for this campaign");
+  const verifiedAt = new Date();
+  const proof = { schemaVersion: UPLOADED_CAMPAIGN_AUTHORITY_SCHEMA, ...prepared, verifiedAt: verifiedAt.toISOString() };
+  await tx.mediaAsset.update({ where: { id: asset.id }, data: { visibility: "unlisted" } });
+  await tx.mediaAssetPlacement.updateMany({ where: { id: { in: replacing.map(p => p.id) } }, data: {
+    status: "paused", pausedAt: verifiedAt, version: { increment: 1 },
+  } });
+  const changed = await tx.mediaAssetPlacement.updateMany({ where: { id, version: expectedVersion, status: before.status }, data: {
+    status: "published", verificationState: "passed", verificationEvidence: toInputJson(proof),
+    verifiedAt, publishedAt: verifiedAt, pausedAt: null,
+    metadata: toInputJson({ ...jsonRecord(before.metadata), uploadedCampaignAuthority: proof }),
+    rollbackPlacementId: replacing[0]?.id ?? before.rollbackPlacementId, version: { increment: 1 },
+  } });
+  if (changed.count !== 1) throw Errors.conflict("Placement changed during publication");
+  await tx.adminAuditLog.create({ data: contentAuditData(request, actor, {
+    action: "content.placement.publish", targetType: "media_asset_placement", targetId: id, reason,
+    before: { status: before.status, version: before.version, replacedPlacementIds: replacing.map(p => p.id) },
+    after: { status: "published", version: expectedVersion + 1, mediaAssetId: asset.id, sha256: prepared.sha256 },
+  }) });
+  const placement = await tx.mediaAssetPlacement.findUniqueOrThrow({ where: { id }, include: placementInclude });
+  const authority = (await resolveMediaAssetAuthorityMap(tx, [placement.mediaAsset])).get(asset.id);
+  return { placement: placementDTO(placement, authority) };
+}
+
+function assertUploadedCampaign(placement: Prisma.MediaAssetPlacementGetPayload<{ include: { mediaAsset: true } }>) {
+  const metadata = jsonRecord(placement.metadata);
+  if (placement.slot !== "campaign" || placement.targetType !== "campaign" ||
+      !["draft", "paused"].includes(placement.status) ||
+      ["creativeRunId", "creativeRunItemId", "customerMediaAuthority"].some(key => Object.hasOwn(metadata, key))) {
+    throw Errors.conflict("Only an uploaded Campaign draft or paused placement can publish here");
+  }
+  const asset = placement.mediaAsset;
+  if (asset.deletedAt || asset.safetyStatus !== "passed" || !asset.storageKey ||
+      mediaAssetPlatformStatus(asset.metadata) !== "approved" || !inspectOperatorUploadAuthority(asset)?.publishable) {
+    throw Errors.conflict("Campaign publication requires an available approved operator upload");
+  }
+  if (!parseCommunityCampaignAuthoredCopy(metadata)) throw Errors.badRequest("Campaign title, eyebrow and destination must be valid before publication");
+}
+
+function assertAuthoredPlacementMetadata(metadata: Record<string, unknown>) {
+  if (["creativeRunId", "creativeRunItemId", "customerMediaAuthority", "uploadedCampaignAuthority"].some(key => Object.hasOwn(metadata, key))) {
+    throw Errors.badRequest("Placement provenance is written by publication commands, not by authored metadata");
+  }
 }
 
 function assertLegacyPlacementAuthority(slot: string, nextStatus?: string) {
@@ -360,6 +489,13 @@ function placementDTO(
     version: placement.version,
     verificationState: placement.verificationState,
     managedRunId: typeof metadata.creativeRunId === "string" ? metadata.creativeRunId : null,
+    canPublish: placement.slot === "campaign" && placement.targetType === "campaign" &&
+      ["draft", "paused"].includes(placement.status) &&
+      !["creativeRunId", "creativeRunItemId", "customerMediaAuthority"].some(key => Object.hasOwn(metadata, key)) &&
+      !placement.mediaAsset.deletedAt && placement.mediaAsset.safetyStatus === "passed" &&
+      mediaAssetPlatformStatus(placement.mediaAsset.metadata) === "approved" && authority?.publishable === true &&
+      inspectOperatorUploadAuthority(placement.mediaAsset)?.publishable === true &&
+      Boolean(parseCommunityCampaignAuthoredCopy(metadata)),
     scheduledAt: placement.scheduledAt?.toISOString() ?? null,
     publishedAt: placement.publishedAt?.toISOString() ?? null,
     pausedAt: placement.pausedAt?.toISOString() ?? null,

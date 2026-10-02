@@ -312,6 +312,83 @@ function blockingDelay(milliseconds) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
 }
 
+// Next's development listener can be online while routes are missing or still
+// compiling. Prove real anonymous entry points before admitting Generation;
+// this source-watch check does not replace production runtime certification.
+function verifyDevelopmentRuntime(options) {
+  const spawn = options.spawnSync;
+  const runtimeEnv = options.runtimeEnv;
+  const attempts = positiveInstanceCount(options.attempts, 240);
+  const delay = options.delay ?? blockingDelay;
+  const deadline = Date.now() + 120_000;
+  const mainUrl = `http://127.0.0.1:${runtimeEnv.MAIN_WEB_PORT ?? "3000"}`;
+  const probes = [
+    {
+      name: "main-home",
+      url: `${mainUrl}/`,
+      valid: (body) => /<html\b/i.test(body) && /<title>iDream \|/i.test(body),
+    },
+    {
+      name: "main-me",
+      url: `${mainUrl}/api/v1/me`,
+      valid: (body) => {
+        const response = JSON.parse(body);
+        return response?.ok === true && response.data?.user === null &&
+          response.data?.dreamcoins?.balance === 0 &&
+          response.data?.entitlements !== null &&
+          typeof response.data?.entitlements === "object" &&
+          !Array.isArray(response.data.entitlements);
+      },
+    },
+    {
+      name: "admin-today",
+      url: `http://127.0.0.1:${runtimeEnv.ADMIN_WEB_PORT ?? "3001"}/admin/today`,
+      // Both anonymous auth walls require a successful Main bootstrap. A 200
+      // authority-unavailable page is not a working Admin entry point.
+      valid: (body) => /<html\b/i.test(body) &&
+        /<title>[^<]*iDream Admin<\/title>/i.test(body) &&
+        /data-admin-auth-wall="(?:dev-login|access-denied)-v1"/.test(body),
+    },
+  ];
+  const pending = new Set(probes);
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    for (const probe of pending) {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) break;
+      const result = spawn("curl", [
+        "--fail", "--silent", "--show-error", "--connect-timeout", "2",
+        "--max-time", String(Math.min(15, remainingMs / 1000)),
+        "--write-out", "\n%{http_code}", probe.url,
+      ], {
+        cwd: repoRoot, env: runtimeEnv, encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"], maxBuffer: 4 * 1024 * 1024,
+      });
+      if (result.error) throw result.error;
+      const output = String(result.stdout ?? "");
+      const separator = output.lastIndexOf("\n");
+      const statusText = output.slice(separator + 1).trim();
+      const status = /^\d{3}$/.test(statusText) ? statusText : "unknown";
+      let valid = false;
+      if (result.status === 0 && status === "200" && separator >= 0) {
+        try { valid = probe.valid(output.slice(0, separator)); }
+        catch { /* Invalid JSON remains an explicit readiness failure below. */ }
+      }
+      if (valid) pending.delete(probe);
+      else probe.failure = result.status !== 0
+        ? `curl exit ${result.status ?? "unknown"}, HTTP ${status || "unknown"}`
+        : `HTTP ${status || "unknown"}, unexpected response`;
+    }
+    if (pending.size === 0) return 0;
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+    if (attempt < attempts) delay(Math.min(500, remainingMs));
+  }
+  process.stderr.write(`Development HTTP readiness failed; Generation queues remain paused: ${JSON.stringify(
+    [...pending].map(({ name, failure }) => ({ name, failure: failure ?? "deadline exceeded" })),
+  )}\n`);
+  return 1;
+}
+
 // INVARIANT: accepting a PM2 mutation is not deployment success. Every expected
 // process instance and its minimum service dependency must be ready before the
 // globally paused Generation queues are admitted again.
@@ -638,7 +715,7 @@ function runPm2Ecosystem(options = {}) {
       return 1;
     }
     if (!new Set(["quiesce", "stop"]).has(action)) {
-      const launchGate = spawn("bun", ["run", "check:launch:direct"], {
+      const launchGate = spawn("bun", ["run", "check:launch"], {
         cwd: repoRoot,
         env: runtimeEnv,
         stdio: "inherit",
@@ -804,6 +881,13 @@ function runPm2Ecosystem(options = {}) {
     if (runtimeReady !== 0) return runtimeReady;
   }
 
+  if (mode === "development") {
+    const webReady = (options.verifyDevelopmentRuntime ?? verifyDevelopmentRuntime)({
+      spawnSync: spawn, runtimeEnv,
+    });
+    if (webReady !== 0) return webReady;
+  }
+
   const ownedImageWorkers = ownershipProbe({
     expected: positiveInstanceCount(runtimeEnv.GEN_IMAGE_INSTANCES, 1),
     // Development registers the PM2 app, but mock exits before creating a Bull
@@ -832,6 +916,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  verifyDevelopmentRuntime,
   verifyAsrRuntime,
   productionAdmissionTargets,
   productionDrainWorkerTargets,

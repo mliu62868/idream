@@ -2,6 +2,7 @@
 
 import { useAdminI18n } from "@/components/admin/i18n";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import Link from "next/link";
 import type { KeyboardEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -63,7 +64,7 @@ type CaseMobileStep = "summary" | "evidence" | "decision";
 type CaseDetail = ReturnType<typeof operationsCaseDetailSchema.parse>;
 
 export function CaseWorkspace({ actorId = null, canAssign, canDecide, initialCaseId = null }: { actorId?: string | null; canAssign: boolean; canDecide: boolean; initialCaseId?: string | null }) {
-  const { t } = useAdminI18n();
+  const { t, value } = useAdminI18n();
   const format = useAdminFormat();
   const { toast } = useToast();
   const failureToast = useFailureToast();
@@ -75,8 +76,12 @@ export function CaseWorkspace({ actorId = null, canAssign, canDecide, initialCas
   const [selectedId, setSelectedId] = useState(initialUrlState.selectedId);
   const [selectedSavedViewId, setSelectedSavedViewId] = useState(initialUrlState.savedViewId);
   const [detail, setDetail] = useState<CaseDetail | null>(null);
+  // 读取快照的新鲜度独立于实体最后编辑时间，后者仍用于写入版本校验。
+  const [detailSnapshotAt, setDetailSnapshotAt] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [listError, setListError] = useState<unknown>(null);
+  const [detailError, setDetailError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
   const [inspectorExpanded, setInspectorExpanded] = useState(true);
   // SPEC: 「上一页」重发自己走过的那个游标；工单列表还是单向 keyset（没有 startCursor /
@@ -85,38 +90,56 @@ export function CaseWorkspace({ actorId = null, canAssign, canDecide, initialCas
   const history = useRef(createWorkspaceHistoryController(initialUrlState));
   const listRequestId = useRef(0);
   const detailRequestId = useRef(0);
+  const mounted = useRef(false);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      listRequestId.current += 1;
+      detailRequestId.current += 1;
+    };
+  }, []);
 
   const loadList = useCallback(async (next: CaseQueryDraft) => {
     const requestId = ++listRequestId.current;
     setLoading(true);
+    setListError(null);
     try {
       const response = await adminV2Request<CaseList>(`/api/v2/admin/cases?${buildCaseQuery(next)}`, {
         schema: operationsCaseListResponseSchema,
       });
-      if (requestId !== listRequestId.current) return;
+      if (requestId !== listRequestId.current) return false;
       setList(response);
       setAppliedQuery(next);
+      return true;
     } catch (loadError) {
-      if (requestId === listRequestId.current) failureToast(loadError);
+      if (requestId === listRequestId.current) setListError(loadError);
+      return false;
     } finally {
       if (requestId === listRequestId.current) setLoading(false);
     }
-  }, [failureToast]);
+  }, []);
 
   const loadDetail = useCallback(async (caseId: string) => {
     const requestId = ++detailRequestId.current;
     setDetailLoading(true);
+    setDetailError(null);
     try {
       const response = await adminV2Request<CaseDetail>(`/api/v2/admin/cases/${encodeURIComponent(caseId)}`, {
         schema: operationsCaseDetailSchema,
       });
-      if (requestId === detailRequestId.current) setDetail(response);
+      if (requestId !== detailRequestId.current) return false;
+      setDetail(response);
+      setDetailSnapshotAt(new Date().toISOString());
+      return true;
     } catch (loadError) {
-      if (requestId === detailRequestId.current) failureToast(loadError);
+      if (requestId === detailRequestId.current) setDetailError(loadError);
+      return false;
     } finally {
       if (requestId === detailRequestId.current) setDetailLoading(false);
     }
-  }, [failureToast]);
+  }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -223,18 +246,25 @@ export function CaseWorkspace({ actorId = null, canAssign, canDecide, initialCas
     setSelectedSavedViewId(id);
   }, []);
 
-  // SPEC: 写成功的提示必须等重新拉完数据再出现。
+  // SPEC: 完整成功的提示必须等重新拉完数据再出现；写成功但读取失败分别告知。
   // INTENT: 此前是"先弹已完成、再去拉列表"，重拉那几秒运营盯着的是旧队列配一句成功——
   // 尤其关闭工单后那条工单还在原地，很容易被再点一次。
+  function workspaceIsCurrent() {
+    return mounted.current && window.location.pathname === caseWorkspacePath(selectedId);
+  }
+
   async function refreshAfterMutation(label: string) {
-    const next = { ...history.current.current().query, cursor: undefined };
-    setQuery(next);
-    setCursorTrail([]);
-    history.current.replace({ query: next, selectedId, savedViewId: selectedSavedViewId }, writeCaseUrl);
-    await Promise.all([loadList(next), selectedId ? loadDetail(selectedId) : Promise.resolve()]);
+    // A command may finish after Reply/navigation; its old workspace cannot navigate back.
+    if (!workspaceIsCurrent()) return;
+    // Next still exposes this pathname while a destination is loading. Rewriting
+    // history here would cancel that navigation; refresh the current queue in place.
+    const next = history.current.current().query;
+    const refreshed = await Promise.all([loadList(next), selectedId ? loadDetail(selectedId) : Promise.resolve(true)]);
     // INVARIANT: label 是词典 key，翻译收在这一处 —— 调用点散在十来个按钮上，
     // 让它们各自 t() 就是让其中几个忘记（旧的 notice 出口正是这样露出英文的）。
-    toast({ tone: "success", title: t(label) });
+    if (workspaceIsCurrent()) toast(refreshed.every(Boolean)
+      ? { tone: "success", title: t(label) }
+      : { tone: "info", title: t(label), description: t("The latest data could not be loaded.") });
   }
 
   async function mutate(label: string, execute: () => Promise<unknown>) {
@@ -243,9 +273,9 @@ export function CaseWorkspace({ actorId = null, canAssign, canDecide, initialCas
       await execute();
       await refreshAfterMutation(label);
     } catch (mutationError) {
-      failureToast(mutationError);
+      if (workspaceIsCurrent()) failureToast(mutationError);
     } finally {
-      setBusy(false);
+      if (mounted.current) setBusy(false);
     }
   }
 
@@ -256,7 +286,7 @@ export function CaseWorkspace({ actorId = null, canAssign, canDecide, initialCas
     <section aria-labelledby="case-workspace-title" className="space-y-5">
       <header className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div><h2 className="sr-only" id="case-workspace-title">{t("Cases")}</h2><p className="max-w-2xl text-sm leading-6 text-[var(--ad-text-muted)]">{t("Evidence, decision, downstream verification, and closure stay attached to the customer problem.")}</p></div>
-        {list ? <p className="text-xs text-[var(--ad-text-muted)]" role="status">{t(list.freshness)}  {t("· data as of")} <time dateTime={list.asOf}>{format.time(list.asOf)}</time></p> : null}
+        {list ? <p className="text-xs text-[var(--ad-text-muted)]" role="status">{value(appliedQuery.view)} · {t(list.freshness)}  {t("· data as of")} <time dateTime={list.asOf}>{format.time(list.asOf)}</time></p> : null}
       </header>
 
       <CaseTabs active={query.view} onChange={selectView} />
@@ -276,17 +306,21 @@ export function CaseWorkspace({ actorId = null, canAssign, canDecide, initialCas
       >{inspectorExpanded ? t("Case results") : t("Summary")}</WorkspaceButton> : null}
 
       <div className="grid min-w-0 grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,0.92fr)_minmax(460px,1.08fr)]">
-        {selectedId ? <div className={`min-w-0 ${inspectorExpanded ? "" : "md:hidden lg:block"}`}>{detailLoading && !detail ? <LoadingWorkspace label="Loading case detail" /> : detail ? <CaseInspector actorId={actorId} busy={busy} canAssign={canAssign} canDecide={canDecide} detail={detail} key={detail.case.id} onClose={() => selectCase(null)} onConfirmed={refreshAfterMutation} onMutate={mutate} referenceTime={list?.asOf ?? detail.case.updatedAt} /> : null}</div> : <aside className="hidden rounded-xl bg-[var(--ad-surface-subtle)] p-8 text-sm text-[var(--ad-text-muted)] lg:block">{t("Select a case to inspect evidence and complete the decision loop.")}</aside>}
+        {selectedId ? <div className={`min-w-0 space-y-3 ${inspectorExpanded ? "" : "md:hidden lg:block"}`}>
+          {detailError ? <AuthorityRequestError cause={detailError} message={t("The latest data could not be loaded.")} onRetry={() => void loadDetail(selectedId)} requestKind="read" snapshotAt={detail ? detailSnapshotAt : null} /> : null}
+          {detailLoading && !detail ? <LoadingWorkspace label="Loading case detail" /> : detail ? <CaseInspector actorId={actorId} busy={busy || detailLoading || detailError !== null} canAssign={canAssign} canDecide={canDecide} detail={detail} key={detail.case.id} onClose={() => selectCase(null)} onConfirmed={refreshAfterMutation} onMutate={mutate} referenceTime={list?.asOf ?? detail.case.updatedAt} /> : null}
+        </div> : <aside className="hidden rounded-xl bg-[var(--ad-surface-subtle)] p-8 text-sm text-[var(--ad-text-muted)] lg:block">{t("Select a case to inspect evidence and complete the decision loop.")}</aside>}
         <div className="min-w-0 space-y-3 lg:order-first" aria-label={t("Case results")}>
           <CaseFilters appliedQuery={appliedQuery} busy={loading} onApply={applyFilters} onChange={updateDraft} onReset={clearFilters} query={query} />
+          {listError ? <AuthorityRequestError cause={listError} message={t("The latest data could not be loaded.")} onRetry={() => void loadList(history.current.current().query)} requestKind="read" snapshotAt={list?.asOf} /> : null}
           {loading && !list ? <LoadingWorkspace label="Loading cases" /> : null}
-          {list && list.items.length === 0 ? <CaseQueueEmpty filtered={filtered} onClear={clearFilters} onSelectView={selectView} view={query.view} /> : null}
+          {list && list.items.length === 0 ? <CaseQueueEmpty filtered={filtered} onClear={clearFilters} onSelectView={selectView} view={appliedQuery.view} /> : null}
           {list?.items.map((adminCase) => <CaseRow adminCase={adminCase} active={selectedId === adminCase.id} key={adminCase.id} onSelect={() => selectCase(adminCase.id)} referenceTime={list.asOf} />)}
           {list && list.items.length > 0 ? (
             <Pagination
               hasNext={Boolean(list.pageInfo.hasNextPage && list.pageInfo.endCursor)}
               hasPrevious={cursorTrail.length > 0}
-              loading={loading}
+              loading={loading || listError !== null}
               onNext={() => {
                 if (!list.pageInfo.endCursor) return;
                 goToPage(list.pageInfo.endCursor, [...cursorTrail, query.cursor ?? ""]);

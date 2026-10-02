@@ -10,7 +10,7 @@
 //   - 写操作用 updatedAt CAS，并把审计行提交在同一个事务里。
 import { z } from "zod";
 import { revalidatePath, revalidateTag } from "next/cache";
-import type { RoutePage } from "@prisma/client";
+import type { Prisma, RoutePage } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { logger } from "@/server/lib/logger";
@@ -31,6 +31,7 @@ import {
   type AdminActor,
 } from "@/server/modules/admin-v2/shared/authority";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
+import { paginateAdminKeyset, type AdminKeysetPaging } from "@/server/modules/admin-v2/shared/list-cursor";
 
 const CMS_WRITE = "content.cms.write" as const;
 const CONTENT_READ = "content.read" as const;
@@ -113,17 +114,27 @@ function revalidateCmsPage(path: string) {
 export async function listCmsPages(request: Request) {
   await actorWithPermission(request, CONTENT_READ);
   const query = queryParams(request, "GET /api/v2/admin/cms/pages");
-  const rows = await prisma.routePage.findMany({
-    where: {
-      contentStatus: query.status,
-      ...(query.q
-        ? { OR: [{ path: { contains: query.q } }, { title: { contains: query.q } }] }
-        : {}),
-    },
-    orderBy: { updatedAt: "desc" },
-    take: query.limit,
+  const where: Prisma.RoutePageWhereInput = {
+    contentStatus: query.status,
+    ...(query.q ? { OR: [{ path: { contains: query.q } }, { title: { contains: query.q } }] } : {}),
+  };
+  const result = await paginateAdminKeyset({
+    scope: "cms-pages",
+    queryIdentity: { status: query.status ?? null, q: query.q ?? null },
+    cursor: query.cursor,
+    before: query.before,
+    limit: query.limit,
+    keys: [
+      { field: "updatedAt", direction: "desc", type: "datetime", value: (row) => row.updatedAt },
+      { field: "path", direction: "desc", value: (row) => row.path },
+    ],
+    fetch: (paging: AdminKeysetPaging<Prisma.RoutePageOrderByWithRelationInput>) => prisma.routePage.findMany({
+      where: { AND: [where, ...paging.cursorWhere] },
+      orderBy: paging.orderBy,
+      take: paging.take,
+    }),
   });
-  return { items: rows.map(summaryDto) };
+  return { items: result.items.map(summaryDto), pageInfo: result.pageInfo };
 }
 
 export async function getCmsPage(request: Request) {
@@ -238,6 +249,35 @@ export async function publishCmsPage(request: Request) {
   const body = await jsonBody(request, "cmsPagePublicationRequestSchema");
   const path = ownedCmsPath(body.path);
   assertPathConfirmation(body.confirmation, path);
+  if (body.action === "revalidate") {
+    return prisma.$transaction(async (tx) => {
+      // Hold the row until its cache invalidation has been recorded. Concurrent
+      // edits/status changes cannot make this retry apply to an unseen version.
+      const locked = await tx.$queryRaw<Array<{ path: string }>>`
+        SELECT path FROM route_pages WHERE path = ${path} FOR UPDATE
+      `;
+      if (locked.length === 0) throw Errors.notFound("Route page not found");
+      const page = await tx.routePage.findUniqueOrThrow({ where: { path } });
+      assertExpectedUpdatedAt(page.updatedAt, body.expectedUpdatedAt);
+      if (page.contentStatus !== body.contentStatus) {
+        throw Errors.versionConflict("CMS publication state changed since it was loaded", {
+          actualContentStatus: page.contentStatus,
+          expectedContentStatus: body.contentStatus,
+        });
+      }
+      const cacheRevalidated = revalidateCmsPage(path);
+      await tx.adminAuditLog.create({
+        data: auditRow(request, actor, {
+          action: "cms.page.revalidate",
+          targetId: path,
+          reason: body.reason,
+          before: { contentStatus: page.contentStatus, updatedAt: page.updatedAt },
+          after: { contentStatus: page.contentStatus, updatedAt: page.updatedAt, cacheRevalidated },
+        }),
+      });
+      return { page: detailDto(page), cacheRevalidated };
+    });
+  }
   const before = await prisma.routePage.findUnique({ where: { path } });
   if (!before) throw Errors.notFound("Route page not found");
   assertExpectedUpdatedAt(before.updatedAt, body.expectedUpdatedAt);

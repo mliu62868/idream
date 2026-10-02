@@ -6,6 +6,7 @@ import {
   placementCreatePayload,
   placementPatchPayload,
   publishableApprovedAssets,
+  validCampaignDraft,
   type PlacementDraft,
 } from "./placements-api";
 
@@ -16,9 +17,19 @@ const baseDraft: PlacementDraft = {
   targetId: "char-1",
   status: "draft",
   reason: " because reasons ",
+  eyebrow: " Featured ", title: " Collection ", ctaLabel: "", href: "",
 };
 
 describe("placementCreatePayload", () => {
+  it("accepts only customer-serving CTA paths or absolute HTTPS URLs", () => {
+    const draft = { ...baseDraft, slot: "campaign" as const, targetType: "campaign" as const, ctaLabel: "Explore" };
+    for (const href of ["explore", "#featured", "?view=campaigns", "//example.com", "javascript:alert(1)"]) {
+      expect(validCampaignDraft({ ...draft, href }), href).toBe(false);
+    }
+    for (const href of ["/explore", "/community?view=campaigns#featured", "https://example.com/explore"]) {
+      expect(validCampaignDraft({ ...draft, href }), href).toBe(true);
+    }
+  });
   it("carries every create field verbatim and trims reason", () => {
     expect(placementCreatePayload(baseDraft)).toEqual({
       mediaAssetId: "asset-1",
@@ -45,6 +56,7 @@ describe("placementCreatePayload", () => {
       targetId: "char-1",
       status: "draft",
       reason: "because reasons",
+      metadata: { eyebrow: "Featured", title: "Collection" },
     });
   });
 

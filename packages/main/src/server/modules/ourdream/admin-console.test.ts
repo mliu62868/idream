@@ -449,6 +449,7 @@ describe("admin support request inbox", () => {
       params: { id: submitted.data.request.ticketId as string },
       body: {
         assignedToId: support,
+        expectedUpdatedAt: (await prisma.supportRequest.findUniqueOrThrow({ where: { ticketId: submitted.data.request.ticketId as string } })).updatedAt.toISOString(),
         priority: 2,
         status: "resolved",
         resolutionNotes: "Confirmed queue recovered and replied to the user.",
@@ -529,6 +530,7 @@ describe("admin support request inbox", () => {
       params: { id: overdueTicketId },
       body: {
         reason: "SLA breach needs support lead attention",
+        expectedUpdatedAt: (await prisma.supportRequest.findUniqueOrThrow({ where: { ticketId: overdueTicketId } })).updatedAt.toISOString(),
         confirmation: overdueTicketId,
       },
     });
@@ -548,6 +550,7 @@ describe("admin support request inbox", () => {
         params: { id: freshTicketId },
         body: {
           reason: "Fresh ticket should not escalate",
+          expectedUpdatedAt: (await prisma.supportRequest.findUniqueOrThrow({ where: { ticketId: freshTicketId } })).updatedAt.toISOString(),
           confirmation: freshTicketId,
         },
       }),
@@ -1016,7 +1019,7 @@ describe("generation config control plane", () => {
       expect(gen.data.job).toMatchObject({
         status: "queued",
         profileId: "profile_image_default_v1",
-        profileVersion: 2,
+        profileVersion: 4,
         recipeId: "template_image_character_default",
         recipeVersion: 1,
       });
@@ -2869,7 +2872,7 @@ describe("generation config control plane", () => {
     }
   });
 
-  it("publishes prompt templates with dry-run evidence and archives the previous active version", async () => {
+  it("rejects self-reported prompt template summaries and preserves the previous active version", async () => {
     const admin = await setupActor("admin", "prompt");
     await prisma.generationRecipe.create({
       data: {
@@ -2918,10 +2921,10 @@ describe("generation config control plane", () => {
       role: "admin",
       body: { reason: "sample matrix passed", confirmation: draft.data.recipe.id },
     });
-    expectOk(exactPublish);
-    expect(exactPublish.data.recipe).toMatchObject({ status: "active", version: 2 });
+    expectError(exactPublish, 400, "bad_request");
+    expect(await prisma.generationRecipe.findUnique({ where: { id: draft.data.recipe.id } })).toMatchObject({ status: "draft", version: 2 });
     expect(await prisma.generationRecipe.findUnique({ where: { id: `${P}template-v1` } })).toMatchObject({
-      status: "archived",
+      status: "active",
     });
   });
 });

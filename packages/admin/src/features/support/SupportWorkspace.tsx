@@ -271,6 +271,7 @@ export function SupportWorkspace({
 
   function confirmAction(input: {
     id: string;
+    expectedUpdatedAt: string;
     label: string;
     endpoint: string;
     method: "POST" | "PATCH";
@@ -301,6 +302,7 @@ export function SupportWorkspace({
         if (needsMessage && !publicMessage.value.trim()) throw new Error(t("Write a message to the customer before continuing."));
         const body = {
           confirmation: input.id, reason,
+          expectedUpdatedAt: input.expectedUpdatedAt,
           resolutionNotes: input.includeResolution ? reason : undefined,
           customerMessage: needsMessage ? publicMessage.value.trim() : undefined,
           status: input.status,
@@ -459,6 +461,7 @@ export function SupportWorkspace({
               cause={savedViewErrorCause}
               message={savedViewError}
               onRetry={() => void loadSavedViews()}
+              requestKind="read"
             />
           </div>
         ) : null}
@@ -468,13 +471,14 @@ export function SupportWorkspace({
           cause={errorCause}
           message={error}
           onRetry={() => void load(query)}
+          requestKind="read"
           snapshotAt={data ? refreshedAt : null}
         />
       ) : null}
       {conversationTicket ? <SupportConversationPanel
         key={conversationTicket} ticketId={conversationTicket} canWrite={canWrite}
         refreshRevision={conversationRevision}
-        onClose={() => selectConversation(null)} onUpdated={() => void load(query)}
+        onClose={() => selectConversation(null)} onUpdated={() => void load(currentQuery())}
         canViewPlaintext={canViewPlaintext}
       /> : null}
       {!data && loading ? (
@@ -522,7 +526,7 @@ export function SupportWorkspace({
         <Pagination
           hasNext={Boolean(pageInfo.hasNextPage && pageInfo.endCursor)}
           hasPrevious={cursorTrail.length > 0}
-          loading={loading}
+          loading={loading || error !== null}
           onNext={() => {
             if (!pageInfo.endCursor) return;
             navigate({ ...query, cursor: pageInfo.endCursor }, "push", [...cursorTrail, query.cursor]);
@@ -563,6 +567,7 @@ function SupportConversationPanel({ ticketId, canWrite, canViewPlaintext, refres
   const [error, setError] = useState<unknown>(null);
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
+  const replyInFlight = useRef(false);
   const { toast } = useToast();
   const failureToast = useFailureToast();
   const gate = useRef(createLatestRequestGate());
@@ -596,10 +601,13 @@ function SupportConversationPanel({ ticketId, canWrite, canViewPlaintext, refres
   // SPEC: 回复后工单进入「等待客户」；客户再回复时前台会把它改回 open（customer-care.ts）。
   async function reply() {
     const customerMessage = draft.trim();
-    if (!customerMessage || !canWrite || !conversation) return;
+    if (!customerMessage || !canWrite || !conversation?.canReply || loading || replyInFlight.current) return;
+    // INVARIANT: repeated submit events can arrive before React disables the button.
+    replyInFlight.current = true;
     setSending(true);
     try {
       await apiWrite(`/api/v2/admin/support/requests/${encodeURIComponent(ticketId)}`, "PATCH", {
+        expectedUpdatedAt: conversation.updatedAt,
         customerMessage,
         reason: "Customer-visible support reply",
         confirmation: ticketId,
@@ -611,12 +619,13 @@ function SupportConversationPanel({ ticketId, canWrite, canViewPlaintext, refres
     } catch (cause) {
       failureToast(cause);
     } finally {
+      replyInFlight.current = false;
       setSending(false);
     }
   }
   return <section className="space-y-4 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5" ref={section}>
     <div className="flex items-center justify-between gap-3"><h2 className="font-semibold">{t("Support conversation")} · {ticketId}</h2><GhostButton onClick={onClose}>{t("Close conversation")}</GhostButton></div>
-    {error ? <AuthorityRequestError cause={error} message={t("Support conversation could not load")} onRetry={() => void load()} /> : null}
+    {error ? <AuthorityRequestError cause={error} message={t("Support conversation could not load")} onRetry={() => void load()} requestKind="read" /> : null}
     {loading ? <p role="status">{t("Loading conversation…")}</p> : null}
     {conversation ? <>
       <p className="font-medium">{conversation.subject} · {value(conversation.status)}</p>
@@ -628,11 +637,11 @@ function SupportConversationPanel({ ticketId, canWrite, canViewPlaintext, refres
         </article>)}
       </div>
       {canWrite && conversation.canReply ? <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); void reply(); }}>
-        <label className="grid gap-2 text-sm font-medium">{t("Message to customer")}<textarea aria-label={t("Message to customer")} className="min-h-28 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3" maxLength={2000} onChange={(event) => setDraft(event.target.value)} value={draft} /></label>
+        <label className="grid gap-2 text-sm font-medium">{t("Message to customer")}<textarea aria-label={t("Message to customer")} className="min-h-28 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3" disabled={sending} maxLength={2000} onChange={(event) => setDraft(event.target.value)} value={draft} /></label>
         <p className="text-xs text-[var(--ad-text-muted)]">{t("Visible to the customer in Help Desk. Internal reasons stay private.")}</p>
         <PrimaryButton disabled={!draft.trim() || loading || sending} type="submit">{t("Send reply")}</PrimaryButton>
       </form> : null}
-      <GhostButton disabled={loading} onClick={() => void load()}>{t("Refresh conversation")}</GhostButton>
+      <GhostButton disabled={loading || sending} onClick={() => void load()}>{t("Refresh conversation")}</GhostButton>
       {canViewPlaintext ? <details className="rounded-md border border-[var(--ad-border)] p-3">
         <summary className="cursor-pointer text-sm font-semibold">{t("Plaintext access")}</summary>
         <PlaintextAccessPanel initialTicketId={ticketId} />
@@ -867,6 +876,7 @@ function PlaintextAccessPanel({ initialTicketId = "" }: { initialTicketId?: stri
 
 type ConfirmAction = (input: {
   id: string;
+  expectedUpdatedAt: string;
   label: string;
   endpoint: string;
   method: "POST" | "PATCH";
@@ -946,6 +956,7 @@ function supportRows(
                 onClick={() =>
                   confirm({
                     id,
+                    expectedUpdatedAt: format.text(row.updatedAt),
                     label: action.label,
                     endpoint:
                       action.endpoint ?? `/api/v2/admin/support/requests/${id}`,

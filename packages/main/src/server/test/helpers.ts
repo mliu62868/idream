@@ -165,8 +165,8 @@ export async function api(
 
   const segments = path.split("/").filter(Boolean);
   const response = await dispatchV1(request, segments);
-  // Audio endpoints answer with raw bytes rather than the JSON envelope.
-  const bytes = response.headers.get("content-type")?.startsWith("audio/")
+  // Media delivery answers with raw bytes rather than the JSON envelope.
+  const bytes = /^(?:audio\/|video\/|image\/|application\/octet-stream)/.test(response.headers.get("content-type") ?? "")
     ? new Uint8Array(await response.arrayBuffer())
     : undefined;
   const text = bytes ? "" : await response.text();
@@ -915,6 +915,28 @@ export async function purgeTestData(prefix: string) {
     MAIN_QUEUES.generationTerminalIngest,
     MAIN_QUEUES.aiFinalize,
   ]);
+
+  // Attempt evidence intentionally has no Request cascade in production. Test
+  // teardown owns these exact Requests and must remove their independent facts
+  // before User deletion loses the ownership path and leaves cutover blockers.
+  const purgeGenerationJobIds = purgeGenerationJobs.map((job) => job.id);
+  if (purgeGenerationJobIds.length > 0) {
+    const attempts = await prisma.generationAttempt.findMany({
+      where: { requestId: { in: purgeGenerationJobIds } },
+      select: { id: true },
+    });
+    const attemptIds = attempts.map((attempt) => attempt.id);
+    await prisma.generationDelivery.deleteMany({ where: { requestId: { in: purgeGenerationJobIds } } });
+    await prisma.generationArtifact.deleteMany({ where: { attemptId: { in: attemptIds } } });
+    await prisma.generationTransportExecution.deleteMany({ where: { attemptId: { in: attemptIds } } });
+    await prisma.generationAttemptEvent.deleteMany({ where: { attemptId: { in: attemptIds } } });
+    await prisma.generationAttempt.deleteMany({ where: { id: { in: attemptIds } } });
+    await prisma.generationSettlementLink.deleteMany({ where: { requestId: { in: purgeGenerationJobIds } } });
+    await prisma.generationFulfillmentFact.deleteMany({ where: { requestId: { in: purgeGenerationJobIds } } });
+    await prisma.aiUsageFact.deleteMany({ where: { requestId: { in: purgeGenerationJobIds } } });
+    await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: { in: [...purgeGenerationJobIds, ...attemptIds] } } });
+    await prisma.generationJob.deleteMany({ where: { id: { in: purgeGenerationJobIds } } });
+  }
 
   const derivedCaseEvidence = await prisma.caseEvidence.findMany({
     where: { sourceId: sw },

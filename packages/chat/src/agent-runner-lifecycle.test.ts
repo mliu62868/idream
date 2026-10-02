@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RequiredImageAction } from "@idream/shared/chat/image-action";
 import type { AgentRunInput, AgentRunProposal, AgentRunRecoveryScan } from "./agent-run-store.js";
+import type { CompanionTerminalCandidate } from "./agent-runtime/contracts.js";
+import { CompanionCapacityError } from "./agent-runtime/engine.js";
 
 const store = vi.hoisted(() => ({
   admitAgentRun: vi.fn(async () => ({ duplicate: false, terminal: false })),
@@ -12,7 +14,7 @@ const store = vi.hoisted(() => ({
   readAgentRunCompletion: vi.fn(async () => null),
   readAgentRunInput: vi.fn(),
   readAgentRunProposal: vi.fn<() => Promise<AgentRunProposal | null>>(async () => null),
-  writeAgentRunProposal: vi.fn(async () => undefined),
+  writeAgentRunProposal: vi.fn<typeof import("./agent-run-store.js").writeAgentRunProposal>(async () => undefined),
 }));
 const fence = vi.hoisted(() => ({
   fenceAttemptsThrough: vi.fn(async () => undefined),
@@ -20,6 +22,9 @@ const fence = vi.hoisted(() => ({
 }));
 const runtime = vi.hoisted(() => ({
   runCompanion: vi.fn(),
+}));
+const projection = vi.hoisted(() => ({
+  projectSceneForReply: vi.fn<typeof import("./scene.js").projectSceneForReply>(),
 }));
 const imageAction = vi.hoisted(() => ({
   requiredImageActionForUserRequest: vi.fn<() => RequiredImageAction | null>(() => null),
@@ -39,6 +44,10 @@ vi.mock("./agent-run-store.js", async importOriginal => ({
   ...store,
 }));
 vi.mock("./fence.js", () => fence);
+vi.mock("./scene.js", async importOriginal => ({
+  ...await importOriginal<typeof import("./scene.js")>(),
+  ...projection,
+}));
 vi.mock("./agent-runtime/runtime.js", () => ({
   agentRuntimeProfileDigest: vi.fn(async () => "profile-digest"),
   agentRuntimeVersions: vi.fn(async () => ({
@@ -54,7 +63,7 @@ vi.mock("./prepared-turn.js", () => ({
     context: {
       policy: { imageToolEnabled: productContext.imageToolEnabled },
       userLocale: productContext.userLocale,
-      scene: {
+      scene: snapshot.scene ?? {
         schemaVersion: 1,
         version: 0,
         location: null,
@@ -82,7 +91,13 @@ vi.mock("./prepared-turn.js", () => ({
       },
     ],
     tools: [],
-    profile: { provider: "openai", model: "test-model" },
+    profile: {
+      tier: "test", adapter: "openai-compatible-v1", provider: "openai", model: "test-model",
+      baseUrl: "https://model.test/v1", supportsTools: true, maxOutputTokens: 1_024,
+      timeout: { firstTokenMs: 1_000, idleMs: 1_000 },
+      sampling: { temperature: 0.9, topP: 0.95, repetitionPenalty: 1.05 },
+    },
+    budget: { maxInputTokens: 4_000, usedInputTokens: 100, dropped: [] },
     trace: {
       productPromptVersion: "companion-product-1",
       systemPromptDigest: "a".repeat(64),
@@ -99,6 +114,8 @@ vi.mock("./env.js", () => ({
     AGENT_RUN_DEADLINE_MS: 30_000,
     INTERNAL_TOKEN: "test-token",
     MAIN_INTERNAL_BASE_URL: "http://main.test",
+    CHAT_MODEL_API_KEY: "test-model-key",
+    DSH_OPENROUTER_PROVIDER_ONLY: [],
   },
 }));
 vi.mock("@idream/shared/chat/image-action", async (importOriginal) => ({
@@ -165,12 +182,33 @@ function agentRunInput(userContent = "hello"): AgentRunInput {
   };
 }
 
+function terminalCandidate(attemptId: string): CompanionTerminalCandidate {
+  return {
+    attemptId, content: "I stay beside you.", finishReason: "stop", provider: "openai", model: "test-model",
+    usage: { promptTokens: 20, completionTokens: 8, reasoningTokens: 0 },
+    execution: { steps: 1, toolCalls: 0 }, tools: [], completedAt: "2026-08-28T12:00:01.000Z",
+  };
+}
+
+const unchangedProjection: typeof import("./scene.js").projectSceneForReply = async (input) => ({
+  scene: { ...input.previous, version: input.previous.version + 1 },
+  evidence: {
+    version: "scene-projection-1", attemptId: input.attemptId, anchorVersion: input.previous.version,
+    sourceMessageIds: { user: input.userMessageId, assistant: input.assistantMessageId },
+    inputDigest: "f".repeat(64), promptDigest: "e".repeat(64), completionPromptDigest: "c".repeat(64), provider: "openai", model: "test-model",
+    status: "unchanged", durationMs: 0, changeCount: 0, requests: [], phases: [], usage: null,
+  },
+});
+
 describe("AgentRun account-erasure drain", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    stream.appendStreamEvent.mockReset().mockResolvedValue(undefined);
+    store.readAgentRunProposal.mockReset().mockResolvedValue(null);
     productContext.imageToolEnabled = true;
     productContext.userLocale = "en";
     imageAction.requiredImageActionForUserRequest.mockReturnValue(null);
+    projection.projectSceneForReply.mockImplementation(unchangedProjection);
     store.admitAgentRun.mockResolvedValue({ duplicate: false, terminal: false });
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({
       accepted: true,
@@ -179,6 +217,69 @@ describe("AgentRun account-erasure drain", () => {
       committedAt: "2026-08-28T12:00:00.000Z",
     })));
     store.readAgentRunInput.mockResolvedValue(agentRunInput());
+  });
+
+  it.each(["start", "delta", "replace", "done"])("commits and cleans up the exact reply when Redis rejects %s", async failedType => {
+    let proposal: AgentRunProposal | null = null;
+    store.readAgentRunProposal.mockImplementation(async () => proposal);
+    store.writeAgentRunProposal.mockImplementationOnce(async (_turnId, _attempt, value) => {
+      proposal = value;
+    });
+    stream.appendStreamEvent.mockImplementation(async (_key, event) => {
+      if ((event as { type: string }).type === failedType) throw new Error("Redis unavailable");
+    });
+    runtime.runCompanion.mockImplementationOnce(async (invocation, port) => {
+      const identity = {
+        invocationId: invocation.invocationId, attemptId: invocation.attemptId,
+        occurredAt: "2026-08-28T12:00:00.000Z",
+      };
+      await port.emit({ ...identity, sequence: 1, type: "text_delta", delta: "Draft reply" });
+      await port.emit({ ...identity, sequence: 2, type: "text_reset" });
+      await port.emit({ ...identity, sequence: 3, type: "text_delta", delta: "I stay beside you." });
+      await port.commit(terminalCandidate(invocation.attemptId));
+    });
+
+    await acceptAgentRun(agentRunInput());
+    await vi.waitFor(() => expect(store.completeAgentRun).toHaveBeenCalled());
+    await new Promise(resolve => setImmediate(resolve));
+
+    expect(runtime.runCompanion).toHaveBeenCalledOnce();
+    expect(store.writeAgentRunProposal).toHaveBeenCalledExactlyOnceWith("turn-1", 1, expect.objectContaining({
+      terminal: expect.objectContaining({ status: "sent", content: "I stay beside you." }),
+    }));
+    expect(vi.mocked(fetch)).toHaveBeenCalledOnce();
+    expect(store.completeAgentRun).toHaveBeenCalledExactlyOnceWith("turn-1", 1, expect.objectContaining({ outcome: "committed" }));
+    expect(stream.appendStreamEvent.mock.calls.filter(([, event]) => (event as { type: string }).type === failedType)).toHaveLength(1);
+    await expect(cancelAgentRunsForUser("user-1")).resolves.toBe(0);
+  });
+
+  it("retries the same admitted attempt after capacity returns without persisting a failure", async () => {
+    runtime.runCompanion.mockRejectedValueOnce(new CompanionCapacityError("normal"));
+    await acceptAgentRun(agentRunInput());
+    await vi.waitFor(() => expect(store.appendAgentRunEvent).toHaveBeenCalledWith(
+      "turn-1", 1, "agent.deferred", { reason: "runtime_capacity", pool: "normal" },
+    ));
+    await new Promise(resolve => setImmediate(resolve));
+    expect(store.writeAgentRunProposal).not.toHaveBeenCalled();
+    expect(store.completeAgentRun).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+
+    store.listIncompleteAgentRuns.mockResolvedValueOnce({
+      runs: [{ turnId: "turn-1", attempt: 1, userId: "user-1" }], failures: [],
+    });
+    runtime.runCompanion.mockImplementationOnce(async (invocation, port) => {
+      await port.commit(terminalCandidate(invocation.attemptId));
+    });
+    await expect(recoverIncompleteAgentRuns()).resolves.toEqual({ recovered: 1, failed: 0 });
+    await vi.waitFor(() => expect(store.completeAgentRun).toHaveBeenCalled());
+    expect(store.admitAgentRun).toHaveBeenCalledOnce();
+    expect(runtime.runCompanion.mock.calls.map(([invocation]) => invocation.attemptId)).toEqual([
+      "assistant-1:1", "assistant-1:1",
+    ]);
+    expect(store.writeAgentRunProposal).toHaveBeenCalledExactlyOnceWith("turn-1", 1, expect.objectContaining({
+      terminal: expect.objectContaining({ status: "sent", attempt: 1 }),
+    }));
+    expect(fetch).toHaveBeenCalledOnce();
   });
 
   it("recovers valid runs while reporting neighboring invalid evidence", async () => {
@@ -234,6 +335,7 @@ describe("AgentRun account-erasure drain", () => {
     await cancelAgentRunsForUser("user-1");
 
     expect(runtime.runCompanion).not.toHaveBeenCalled();
+    expect(projection.projectSceneForReply).not.toHaveBeenCalled();
     expect(store.writeAgentRunProposal).not.toHaveBeenCalled();
     expect(store.completeAgentRun).not.toHaveBeenCalled();
     expect(stream.appendStreamEvent).not.toHaveBeenCalled();
@@ -251,9 +353,70 @@ describe("AgentRun account-erasure drain", () => {
     await recoverIncompleteAgentRuns();
     await cancelAgentRunsForUser("user-1");
     expect(runtime.runCompanion).not.toHaveBeenCalled();
+    expect(projection.projectSceneForReply).not.toHaveBeenCalled();
     expect(store.completeAgentRun).toHaveBeenCalledExactlyOnceWith("turn-1", 1, expect.objectContaining({ outcome: "committed" }));
     expect(stream.appendStreamEvent).toHaveBeenCalledExactlyOnceWith("stream:assistant-1", expect.objectContaining({ type: "done", attempt: 1 }));
     expect(vi.mocked(fetch).mock.calls[1]?.[1]?.body).toBe(request?.body);
+  });
+
+  it.each([true, false])("projects from the frozen attempt before persisting the immutable proposal, with complete usage=%s", async knownUsage => {
+    const input = agentRunInput("Now we are at the beach.");
+    input.snapshot.scene = { schemaVersion: 1, version: 4, location: "the kitchen", time: "tonight", participants: ["Mina"], emotionalBeat: "calm", unresolvedThreads: ["call the hotel"] };
+    input.snapshot.sceneVersion = 4;
+    store.readAgentRunInput.mockResolvedValue(input);
+    const completed = Promise.withResolvers<void>();
+    store.completeAgentRun.mockImplementationOnce(async () => { completed.resolve(); return undefined; });
+    projection.projectSceneForReply.mockImplementationOnce(async (source, options) => {
+      expect(store.writeAgentRunProposal).not.toHaveBeenCalled();
+      expect(options.signal.aborted).toBe(false);
+      const result = await unchangedProjection(source, options);
+      return { scene: { ...result.scene, location: "the beach" }, evidence: {
+        ...result.evidence, status: knownUsage ? "applied" : "failed", changeCount: knownUsage ? 1 : 0,
+        requests: [{ systemPromptDigest: "e".repeat(64), bodyDigest: "d".repeat(64), estimatedInputTokens: 123, source: "user", phaseId: "user:extraction" }],
+        usage: knownUsage ? { promptTokens: 23, completionTokens: 8, reasoningTokens: 2 } : null,
+      } };
+    });
+    runtime.runCompanion.mockImplementationOnce(async (invocation, port, signal) => {
+      await port.commit(terminalCandidate(invocation.attemptId), signal);
+    });
+    await acceptAgentRun(input);
+    await completed.promise;
+    expect(projection.projectSceneForReply).toHaveBeenCalledExactlyOnceWith({
+      previous: input.snapshot.scene, userText: input.snapshot.userContent, assistantText: "I stay beside you.",
+      attemptId: "assistant-1:1", userMessageId: "user-message-1", assistantMessageId: "assistant-1",
+    }, expect.objectContaining({ maxInputTokens: 4_000, profile: expect.objectContaining({ model: "test-model" }) }));
+    expect(store.writeAgentRunProposal).toHaveBeenCalledWith("turn-1", 1, expect.objectContaining({
+      terminal: expect.objectContaining({
+        status: "sent", sceneVersion: 5, scene: expect.objectContaining({ version: 5, location: "the beach" }),
+        promptTokens: knownUsage ? 43 : null, completionTokens: knownUsage ? 16 : null,
+        terminalEvidence: expect.objectContaining({ replyUsage: { promptTokens: 20, completionTokens: 8, reasoningTokens: 0 }, sceneProjection: expect.objectContaining({ anchorVersion: 4, usage: knownUsage ? expect.any(Object) : null }) }),
+      }),
+    }));
+    expect(store.appendAgentRunEvent).toHaveBeenCalledWith("turn-1", 1, "scene.projected", expect.objectContaining({ anchorVersion: 4 }));
+  });
+
+  it("preserves the original anchor and request facts when the run is cancelled during projection", async () => {
+    const input = agentRunInput("Now we are at the beach.");
+    input.snapshot.scene = { schemaVersion: 1, version: 4, location: "the kitchen", time: null, participants: ["Mina"], emotionalBeat: null, unresolvedThreads: [] };
+    input.snapshot.sceneVersion = 4;
+    store.readAgentRunInput.mockResolvedValue(input);
+    const completed = Promise.withResolvers<void>();
+    store.completeAgentRun.mockImplementationOnce(async () => { completed.resolve(); return undefined; });
+    projection.projectSceneForReply.mockImplementationOnce(async (source, options) => {
+      const result = await unchangedProjection(source, options);
+      return { ...result, evidence: { ...result.evidence, status: "cancelled", requests: [{ systemPromptDigest: "e".repeat(64), bodyDigest: "d".repeat(64), estimatedInputTokens: 123, source: "user", phaseId: "user:extraction" }] } };
+    });
+    runtime.runCompanion.mockImplementationOnce(async (invocation, port) => {
+      const controller = new AbortController();
+      controller.abort(new Error("run deadline"));
+      await port.emit({ invocationId: invocation.invocationId, attemptId: invocation.attemptId, sequence: 1, occurredAt: "2026-08-28T12:00:00.000Z", type: "cancelled", reason: "timeout" });
+      await port.commit(terminalCandidate(invocation.attemptId), controller.signal);
+    });
+    await acceptAgentRun(input);
+    await completed.promise;
+    expect(store.writeAgentRunProposal).toHaveBeenCalledExactlyOnceWith("turn-1", 1, expect.objectContaining({
+      terminal: expect.objectContaining({ status: "cancelled", sceneVersion: 4, scene: input.snapshot.scene, content: "", terminalEvidence: expect.objectContaining({ reply: expect.objectContaining({ model: "test-model", usage: { promptTokens: 20, completionTokens: 8, reasoningTokens: 0 } }), sceneProjection: expect.objectContaining({ status: "cancelled", requests: [expect.any(Object)] }) }) }),
+    }));
   });
 
   it("waits for the user's active writer to finish after aborting it", async () => {

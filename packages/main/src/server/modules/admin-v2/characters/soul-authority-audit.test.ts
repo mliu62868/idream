@@ -29,7 +29,6 @@ describe("Character Soul authority audit", () => {
   it("blocks launch until legacy and null-pin migration state is drained", () => {
     expect(characterSoulAuthorityIsLaunchSafe({
       topologyMode: "main_turn_ledger",
-      parityMismatches: 0,
       invalidSnapshots: 0,
       nullPinSessions: 271,
       legacyPinnedSessions: 0,
@@ -38,7 +37,6 @@ describe("Character Soul authority audit", () => {
     })).toBe(false);
     expect(characterSoulAuthorityIsLaunchSafe({
       topologyMode: "main_turn_ledger",
-      parityMismatches: 0,
       invalidSnapshots: 0,
       nullPinSessions: 0,
       legacyPinnedSessions: 0,
@@ -47,7 +45,6 @@ describe("Character Soul authority audit", () => {
     })).toBe(true);
     expect(characterSoulAuthorityIsLaunchSafe({
       topologyMode: "main_turn_ledger",
-      parityMismatches: 0,
       invalidSnapshots: 0,
       nullPinSessions: 0,
       legacyPinnedSessions: 1,
@@ -56,7 +53,6 @@ describe("Character Soul authority audit", () => {
     })).toBe(false);
     expect(characterSoulAuthorityIsLaunchSafe({
       topologyMode: "main_turn_ledger",
-      parityMismatches: 0,
       invalidSnapshots: 1,
       nullPinSessions: 0,
       legacyPinnedSessions: 0,
@@ -65,7 +61,6 @@ describe("Character Soul authority audit", () => {
     })).toBe(false);
     expect(characterSoulAuthorityIsLaunchSafe({
       topologyMode: "main_turn_ledger",
-      parityMismatches: 0,
       invalidSnapshots: 0,
       nullPinSessions: -1,
       legacyPinnedSessions: 0,

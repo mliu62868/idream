@@ -31,9 +31,9 @@ import { recordMediaIdentityFeedback } from "./media-feedback";
 
 const P = "zt-genwrite-";
 const PINNED_RETRY_JOB_AUTHORITY = {
-  model: "redcraft-krea2-redmix3-txt2img",
+  model: "redqw21",
   profileId: "profile_image_default_v1",
-  profileVersion: 2,
+  profileVersion: 4,
   orientation: "1:1",
   outputCount: 1,
   provider: "comfyui",

@@ -4,7 +4,8 @@ import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
-import { chatSessionCharacterPin, chatTurnMessagesForOwner } from "./turn-ledger";
+import { publicCharacterAudienceWhere } from "@/server/modules/ourdream/public-content-audience";
+import { chatSessionCharacterPin, chatSessionContinuation, chatTurnMessagesForOwner } from "./turn-ledger";
 
 const createSchema = z.object({
   title: z.string().trim().min(1).max(120),
@@ -62,7 +63,7 @@ export async function listGroupCandidates(userId: string, query: string, cursor?
       ...(query.trim() ? { name: { contains: query.trim().slice(0, 80), mode: "insensitive" } } : {}),
       OR: [
         { creatorId: userId, OR: [{ currentContentVersionId: { not: null } }, { serving: { state: "live", currentRelease: { status: "published" } } }] },
-        { visibility: "public", status: "approved", serving: { state: "live", currentRelease: { status: "published" } } },
+        publicCharacterAudienceWhere,
       ],
     },
     orderBy: { id: "asc" }, ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}), take: 33,
@@ -108,6 +109,7 @@ export async function getGroupConversation(userId: string, groupId: string, sele
   return {
     id: group.id, ownerScope: `user:${userId}`, title: group.title, status: group.status,
     characterId: selected.characterId, memoryEnabled: selected.memoryEnabled,
+    continuation: await chatSessionContinuation(prisma, userId, selected),
     character: { name: selected.title ?? "Character", canUpdateIdentity: selected.character.creatorId === userId },
     // 群聊头部的成员头像组；group.members 是 Main→Chat 的执行契约，不往里加展示字段。
     memberImages: Object.fromEntries(group.members.flatMap(member => {

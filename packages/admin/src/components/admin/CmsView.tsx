@@ -10,7 +10,8 @@ import {
   RefreshCcw,
   UploadCloud,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { cmsPageListResponseSchema, type CmsPageListResponse } from "@idream/shared/admin";
 import { CmsArticleEditor } from "./CmsArticleEditor";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { Field } from "@/components/admin/ui/FormPage";
@@ -19,7 +20,15 @@ import { formatDateTime } from "@/components/admin/ui/format";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
-import { WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
+import { FilterBar } from "@/components/admin/ui/FilterBar";
+import { Pagination } from "@/components/admin/ui/Pagination";
+import { useUrlFilters } from "@/components/admin/ui/useUrlFilters";
+import { useUnsavedChanges } from "@/components/admin/ui/useUnsavedChanges";
+import { buildCompatibilityListUrl } from "@/features/compatibility-lists/query";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
+import { createLatestRequestGate } from "@/lib/latest-request";
+import { authorityRequestFailed, authorityRequestStarted, authorityRequestSucceeded, createAuthorityState } from "@/lib/authority-state";
+import { WriteFeedbackBanner, listPageFromParams, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
 
 type ContentStatus = "template" | "draft" | "published";
 type IndexingStatus = "noindex" | "index";
@@ -42,7 +51,7 @@ type PageRow = {
   updatedAt: string;
   editable: boolean;
   publishability: "ready" | "blocked";
-  issues: PublicationIssue[];
+  issues: readonly PublicationIssue[];
 };
 
 type PageDetail = PageRow & {
@@ -50,6 +59,7 @@ type PageDetail = PageRow & {
 };
 
 type PublishDraft = {
+  action: "set_status" | "revalidate";
   path: string;
   nextStatus: "draft" | "published";
   expectedUpdatedAt: string;
@@ -73,68 +83,128 @@ const emptyArticleBody =
   '{\n  "heading": "",\n  "intro": "",\n  "sections": []\n}';
 const inputClass =
   "rounded-md h-10 w-full min-w-0 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]";
+const PAGE_SIZE = 25;
+type CmsQuery = { search: string; status: ContentStatus | ""; cursor: string; before: string; page: number };
+const emptyQuery: CmsQuery = { search: "", status: "", cursor: "", before: "", page: 1 };
+
+function cmsQueryFromParams(params: URLSearchParams): CmsQuery {
+  const status = params.get("cmsStatus");
+  const cursor = params.get("cmsCursor")?.trim() ?? "";
+  const before = cursor ? "" : params.get("cmsBefore")?.trim() ?? "";
+  return {
+    search: params.get("cmsSearch")?.trim() ?? "",
+    status: status === "template" || status === "draft" || status === "published" ? status : "",
+    cursor, before, page: cursor || before ? listPageFromParams(params) : 1,
+  };
+}
+
+function cmsListPath(query: CmsQuery) {
+  const params = new URLSearchParams({ limit: String(PAGE_SIZE) });
+  if (query.search) params.set("q", query.search);
+  if (query.status) params.set("status", query.status);
+  if (query.cursor) params.set("cursor", query.cursor);
+  if (query.before) params.set("before", query.before);
+  return `/api/v2/admin/cms/pages?${params}`;
+}
 
 export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
   const { locale, t, value: valueLabel } = useAdminI18n();
   const [viewPage, setViewPage] = useState<PageDetail | null>(null);
-  const [pages, setPages] = useState<PageRow[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [list, setList] = useState(() => createAuthorityState<CmsPageListResponse>());
   // INVARIANT: 存异常对象而不只是它的 message —— AuthorityRequestError 要靠 cause 才能按错误码
   // 出人话；只有 message 时运营读到的仍是 authority 的英文原文。
   const [error, setError] = useState<{ message: string; cause: unknown } | null>(null);
   const [publishDraft, setPublishDraft] = useState<PublishDraft | null>(null);
   const [publishBusy, setPublishBusy] = useState(false);
   const [editDraft, setEditDraft] = useState<EditDraft | null>(null);
+  const [editBaseline, setEditBaseline] = useState<EditDraft | null>(null);
   const [editLoadingPath, setEditLoadingPath] = useState<string | null>(null);
   const [editBusy, setEditBusy] = useState(false);
   const { feedback, reportSuccess, reportFailure, clearFeedback } = useWriteFeedback();
+  const requestGate = useRef(createLatestRequestGate());
+  const { confirmDiscard, guard } = useUnsavedChanges(Boolean(
+    (editDraft && JSON.stringify(editDraft) !== JSON.stringify(editBaseline)) ||
+    (publishDraft && (publishDraft.reason || publishDraft.confirmation)),
+  ));
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (query = cmsQueryFromParams(new URLSearchParams(window.location.search))) => {
+    const request = requestGate.current.begin();
+    const queryKey = cmsListPath(query);
+    setList((current) => authorityRequestStarted(current, queryKey));
     setError(null);
     try {
-      const data = await apiGet<{ items: unknown }>(
-        "/api/v2/admin/cms/pages",
-      );
-      if (!Array.isArray(data.items) || !data.items.every(isPageRow)) {
+      const data = await apiGet<unknown>(queryKey);
+      if (!request.isCurrent()) return;
+      const parsed = cmsPageListResponseSchema.safeParse(data);
+      if (!parsed.success) {
         throw new Error(t("The CMS page list response was incomplete."));
       }
-      setPages(data.items);
+      setList(authorityRequestSucceeded(queryKey, parsed.data));
     } catch (err) {
-      setError({ message: requestErrorMessage(err, t), cause: err });
-    } finally {
-      setLoading(false);
+      if (!request.isCurrent()) return;
+      setList((current) => authorityRequestFailed(current, queryKey, requestErrorMessage(err, t), err));
     }
   }, [t]);
 
+  const filters = useUrlFilters<CmsQuery>({
+    initial: emptyQuery,
+    parse: cmsQueryFromParams,
+    toUrl: (query, location) => buildCompatibilityListUrl(location.pathname, location.search, {
+      cmsSearch: query.search.trim() || null,
+      cmsStatus: query.status || null,
+      cmsCursor: query.cursor || null,
+      cmsBefore: query.before || null,
+      page: query.page > 1 ? String(query.page) : null,
+    }),
+    load: (query) => void load(query),
+  });
+
   useEffect(() => {
-    const timer = window.setTimeout(() => void load(), 0);
-    return () => window.clearTimeout(timer);
+    const onRefresh = () => void load();
+    window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, onRefresh);
+    return () => window.removeEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, onRefresh);
   }, [load]);
+
+  useEffect(() => {
+    const gate = requestGate.current;
+    return () => gate.invalidate();
+  }, []);
+
+  const pages = list.data?.items ?? [];
+  const loading = list.loading;
+  const pageInfo = list.data?.pageInfo;
+  const filtered = Boolean(filters.query.search || filters.query.status);
+  function applyFilters(next: CmsQuery) {
+    filters.apply({ ...next, search: next.search.trim(), cursor: "", before: "", page: 1 });
+  }
 
   function startPublish(
     page: PageRow,
     nextStatus: PublishDraft["nextStatus"],
+    action: PublishDraft["action"] = "set_status",
   ) {
-    if (!canWrite) return;
-    setError(null);
-    setEditDraft(null);
-    setPublishDraft({
-      path: page.path,
-      nextStatus,
-      expectedUpdatedAt: page.updatedAt,
-      reason: "",
-      confirmation: "",
+    if (!canWrite || editBusy || publishBusy || editLoadingPath !== null) return;
+    confirmDiscard(() => {
+      setError(null);
+      setEditDraft(null);
+      setPublishDraft({
+        action,
+        path: page.path,
+        nextStatus,
+        expectedUpdatedAt: page.updatedAt,
+        reason: "",
+        confirmation: "",
+      });
     });
   }
 
   async function publish() {
-    if (!canWrite || !publishDraft || !canConfirmPublish(publishDraft)) return;
+    if (!canWrite || publishBusy || !publishDraft || !canConfirmPublish(publishDraft)) return;
     setPublishBusy(true);
     setError(null);
     try {
-      // SPEC: 发布 / 下线的响应里带 `cacheRevalidated` —— 那是「访客现在看到的是不是新版」
-      //       这件事的唯一权威判据。
+      // SPEC: cacheRevalidated records whether Next accepted cache invalidation.
+      // Visitor read-back still verifies the page served after the command.
       // INTENT: 契约里一直有这个字段，服务端每次都算（pages.ts:95 的 revalidateCmsPage 失败
       //       时返回 false 并只写一条 warn 日志），而后台从来没读过它：无论缓存刷没刷新，
       //       运营看到的都是「已发布」。刷新失败时数据库是 published、站上还是旧页，
@@ -143,6 +213,7 @@ export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
         "/api/v2/admin/cms/pages/publish",
         "POST",
         {
+          action: publishDraft.action,
           path: publishDraft.path,
           contentStatus: publishDraft.nextStatus,
           expectedUpdatedAt: publishDraft.expectedUpdatedAt,
@@ -150,7 +221,7 @@ export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
           confirmation: publishDraft.confirmation.trim(),
         },
       );
-      const { path, nextStatus } = publishDraft;
+      const { path, nextStatus, action } = publishDraft;
       setPublishDraft(null);
       await load();
       // INVARIANT: 缓存没刷新不是「成功」—— 走 reportFailure 那条不会自动消失的通道，
@@ -158,12 +229,14 @@ export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
       if (result.cacheRevalidated === false) {
         reportFailure(
           nextStatus === "published"
-            ? t("{path} is published in the authority, but the cache did not refresh — visitors keep seeing the old page. Run publish again; if it keeps failing this is an engineering issue.", { path })
-            : t("{path} is unpublished in the authority, but the cache did not refresh — visitors can still reach the old page. Run unpublish again; if it keeps failing this is an engineering issue.", { path }),
+            ? t("{path} is published in the authority, but the cache did not refresh — visitors may see the old page. Use Refresh public cache; if it keeps failing this is an engineering issue.", { path })
+            : t("{path} is unpublished in the authority, but the cache did not refresh — visitors may still reach the old page. Use Refresh public cache; if it keeps failing this is an engineering issue.", { path }),
         );
       } else {
         reportSuccess(
-          nextStatus === "published"
+          action === "revalidate"
+            ? t("Public cache invalidation completed for {path}. Its publication state is unchanged.", { path })
+            : nextStatus === "published"
             ? t("{path} is published and indexable per its indexing status.", { path })
             : t("{path} is unpublished and back to draft. It is no longer served.", { path }),
         );
@@ -188,38 +261,42 @@ export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
     } catch (cause) { setError({ message: requestErrorMessage(cause, t), cause }); }
   }
 
-  async function startEdit(page: PageRow) {
-    if (!canWrite || !page.editable || page.contentStatus === "published") return;
-    setError(null);
-    setPublishDraft(null);
-    setEditLoadingPath(page.path);
-    try {
-      const data = await apiGet<{ page: unknown }>(
-        `/api/v2/admin/cms/page?path=${encodeURIComponent(page.path)}`,
-      );
-      if (!isPageDetail(data.page)) {
-        throw new Error(t("The CMS page response was incomplete."));
+  function startEdit(page: PageRow) {
+    if (!canWrite || editBusy || publishBusy || editLoadingPath !== null || !page.editable || page.contentStatus === "published") return;
+    confirmDiscard(async () => {
+      setError(null);
+      setPublishDraft(null);
+      setEditLoadingPath(page.path);
+      try {
+        const data = await apiGet<{ page: unknown }>(
+          `/api/v2/admin/cms/page?path=${encodeURIComponent(page.path)}`,
+        );
+        if (!isPageDetail(data.page)) {
+          throw new Error(t("The CMS page response was incomplete."));
+        }
+        const nextDraft: EditDraft = {
+          path: data.page.path,
+          title: data.page.title,
+          description: data.page.description,
+          canonical: data.page.canonical ?? "",
+          indexingStatus: data.page.indexingStatus,
+          bodyJson: JSON.stringify(data.page.body, null, 2),
+          expectedUpdatedAt: data.page.updatedAt,
+          reason: "",
+          confirmation: "",
+        };
+        setEditDraft(nextDraft);
+        setEditBaseline(nextDraft);
+      } catch (err) {
+        setError({ message: requestErrorMessage(err, t), cause: err });
+      } finally {
+        setEditLoadingPath(null);
       }
-      setEditDraft({
-        path: data.page.path,
-        title: data.page.title,
-        description: data.page.description,
-        canonical: data.page.canonical ?? "",
-        indexingStatus: data.page.indexingStatus,
-        bodyJson: JSON.stringify(data.page.body, null, 2),
-        expectedUpdatedAt: data.page.updatedAt,
-        reason: "",
-        confirmation: "",
-      });
-    } catch (err) {
-      setError({ message: requestErrorMessage(err, t), cause: err });
-    } finally {
-      setEditLoadingPath(null);
-    }
+    });
   }
 
   async function saveEdit() {
-    if (!canWrite || !editDraft || !canSaveEdit(editDraft)) return;
+    if (!canWrite || editBusy || editLoadingPath !== null || !editDraft || !canSaveEdit(editDraft)) return;
     setEditBusy(true);
     setError(null);
     try {
@@ -243,7 +320,8 @@ export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
     } catch (err) {
       const message = requestErrorMessage(err, t);
       if (/changed|since it was loaded/i.test(message)) {
-        setEditDraft(null);
+        // Refresh the authority, but keep the operator's copy and original CAS.
+        // Reopening the fresh version is an explicit, guarded discard.
         await load();
       }
       setError({ message, cause: err });
@@ -282,7 +360,7 @@ export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
         {page.contentStatus !== "published" ? (
           <button
             className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs disabled:opacity-50"
-            disabled={!page.editable || editLoadingPath !== null || publishBusy}
+            disabled={!page.editable || editLoadingPath !== null || publishBusy || editBusy}
             onClick={() => void startEdit(page)}
             title={page.editable ? t("Edit draft") : t("This route is application-owned")}
             type="button"
@@ -295,10 +373,20 @@ export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
             {t("Edit")}
           </button>
         ) : null}
+        {page.contentStatus !== "template" && !page.issues.some((issue) => issue.code === "path_not_cms_owned") ? (
+          <button
+            className="min-h-8 rounded-md border border-[var(--ad-border)] px-2 text-xs disabled:opacity-50"
+            disabled={publishBusy || editBusy || editLoadingPath !== null}
+            onClick={() => startPublish(page, page.contentStatus === "published" ? "published" : "draft", "revalidate")}
+            type="button"
+          >
+            {t("Refresh public cache")}
+          </button>
+        ) : null}
         {page.contentStatus === "published" ? (
           <button
             className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs"
-            disabled={publishBusy}
+            disabled={publishBusy || editBusy || editLoadingPath !== null}
             onClick={() => startPublish(page, "draft")}
             type="button"
           >
@@ -307,7 +395,7 @@ export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
         ) : page.contentStatus === "draft" ? (
           <button
             className="inline-flex h-8 items-center gap-1 bg-[var(--ad-ink)] px-2 text-xs font-semibold text-white disabled:opacity-50"
-            disabled={publishBusy || page.publishability !== "ready"}
+            disabled={publishBusy || editBusy || editLoadingPath !== null || page.publishability !== "ready"}
             onClick={() => startPublish(page, "published")}
             type="button"
           >
@@ -322,9 +410,10 @@ export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
 
   return (
     <div className="space-y-5">
+      {guard}
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold">
-          {t("CMS pages")} ({pages.length})
+          {t("CMS pages")}
         </h2>
         <button
           className="rounded-md inline-flex h-9 items-center gap-2 border border-[var(--ad-border)] px-3 text-sm disabled:opacity-50"
@@ -341,11 +430,30 @@ export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
         </button>
       </div>
       <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
+      {list.error ? <AuthorityRequestError cause={list.cause} message={list.error} requestKind="read" snapshotAt={list.refreshedAt} onRetry={() => void load()} /> : null}
       {error ? (
         <AuthorityRequestError cause={error.cause} message={error.message} onRetry={() => void load()} />
       ) : null}
 
-      {canWrite ? <CreatePageForm onCreated={reportSuccess} reload={load} /> : <p className="text-sm text-[var(--ad-text-muted)]">{t("You can browse CMS pages. Creating, editing and publishing requires CMS write access.")}</p>}
+      <FilterBar
+        collapsible
+        search={filters.draft.search}
+        onSearch={(search) => filters.setDraft({ search })}
+        searchPlaceholder={t("Search paths or titles")}
+        selects={[{ name: t("CMS status"), value: filters.draft.status, onChange: (status) => filters.setDraft({ status: status as CmsQuery["status"] }), options: [
+          { value: "", label: t("All statuses") },
+          ...(["template", "draft", "published"] as const).map((status) => ({ value: status, label: valueLabel(status) })),
+        ] }]}
+        chips={[
+          ...(filters.query.search ? [{ key: "search", label: t("Search"), value: filters.query.search, onClear: () => applyFilters({ ...filters.query, search: "" }) }] : []),
+          ...(filters.query.status ? [{ key: "status", label: t("Status"), value: valueLabel(filters.query.status), onClear: () => applyFilters({ ...filters.query, status: "" }) }] : []),
+        ]}
+        onApply={() => applyFilters(filters.draft)}
+        onReset={() => applyFilters(emptyQuery)}
+      />
+
+      <CreatePageForm canWrite={canWrite} onCreated={reportSuccess} reload={load} />
+      {!canWrite ? <p className="text-sm text-[var(--ad-text-muted)]">{t("You can browse CMS pages. Creating, editing and publishing requires CMS write access.")}</p> : null}
 
       {viewPage ? <section className="space-y-4 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
         <div className="flex items-start justify-between gap-3"><div><h3 className="font-semibold">{viewPage.title}</h3><p className="mt-1 text-sm text-[var(--ad-text-muted)]">{viewPage.path} · {valueLabel(viewPage.contentStatus)}</p></div><button className="min-h-9 px-3 text-sm" type="button" onClick={() => setViewPage(null)}>{t("Close")}</button></div>
@@ -355,7 +463,7 @@ export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
 
       {canWrite && editDraft ? (
         <EditPageForm
-          busy={editBusy}
+          busy={editBusy || editLoadingPath !== null}
           draft={editDraft}
           onCancel={() => setEditDraft(null)}
           onChange={setEditDraft}
@@ -366,11 +474,11 @@ export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
       {canWrite && publishDraft ? (
         <section className="rounded-lg border border-[var(--ad-yellow-text)]/20 bg-[var(--ad-yellow-bg)] p-3">
           <p className="text-xs font-semibold text-[var(--ad-yellow-text)]">
-            {t("Confirm CMS status change")}{" "}
+            {t(publishDraft.action === "revalidate" ? "Confirm cache refresh" : "Confirm CMS status change")}{" "}
             <span className="font-mono">{publishDraft.path}</span> →{" "}
             {valueLabel(publishDraft.nextStatus)}
           </p>
-          <div className="mt-3 grid gap-3 md:grid-cols-[1fr_260px_auto_auto]">
+          <fieldset className="mt-3 grid gap-3 md:grid-cols-[1fr_260px_auto_auto]" disabled={publishBusy}>
             <Field label={t("Reason (≥3)")}>
               <input
                 aria-label={t("CMS publish reason")}
@@ -401,6 +509,7 @@ export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
             </Field>
             <button
               className="rounded-md inline-flex h-10 items-center justify-center border border-[var(--ad-border)] px-3 text-sm"
+              disabled={publishBusy}
               onClick={() => setPublishDraft(null)}
               type="button"
             >
@@ -415,19 +524,21 @@ export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
               {publishBusy ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               ) : null}
-              {t("Confirm publish change")}
+              {t(publishDraft.action === "revalidate" ? "Confirm cache refresh" : "Confirm publish change")}
             </button>
-          </div>
+          </fieldset>
         </section>
       ) : null}
 
-      {error && pages.length === 0 ? null : (
+      {(error || list.error) && pages.length === 0 ? null : (
         <DataTable
           caption="CMS pages"
           empty={
             <EmptyState
-              hint={canWrite ? t("Create a draft above; it is not served until you publish it.") : t("No pages have been created yet. Refresh later to check for updates.")}
-              title={t("No CMS pages yet.")}
+              hint={filtered ? t("The authority searched every CMS page. Clear the filters to see them all.") : canWrite ? t("Create a draft above; it is not served until you publish it.") : t("No pages have been created yet. Refresh later to check for updates.")}
+              kind={filtered ? "filtered" : "empty"}
+              onClearFilters={filtered ? () => applyFilters(emptyQuery) : undefined}
+              title={filtered ? t("No CMS pages match these filters.") : t("No CMS pages yet.")}
             />
           }
           headers={[
@@ -444,11 +555,23 @@ export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
           stickyLastColumn
         />
       )}
+      <Pagination
+        page={filters.query.page}
+        pageSize={PAGE_SIZE}
+        rowCount={pages.length}
+        hasPrevious={pageInfo ? Boolean(pageInfo.hasPreviousPage) : Boolean(filters.query.cursor || filters.query.before)}
+        hasNext={Boolean(pageInfo?.hasNextPage && pageInfo.endCursor)}
+        loading={loading}
+        onPrevious={() => pageInfo?.startCursor
+          ? filters.apply({ ...filters.query, cursor: "", before: pageInfo.startCursor, page: Math.max(1, filters.query.page - 1) })
+          : applyFilters(filters.query)}
+        onNext={() => { if (pageInfo?.endCursor) filters.apply({ ...filters.query, cursor: pageInfo.endCursor, before: "", page: filters.query.page + 1 }); }}
+      />
     </div>
   );
 }
 
-function CmsPublicationIssues({ issues }: { issues: PublicationIssue[] }) {
+function CmsPublicationIssues({ issues }: { issues: readonly PublicationIssue[] }) {
   const { t } = useAdminI18n();
   if (issues.length === 0) return null;
   function fieldLabel(path: string) {
@@ -522,7 +645,8 @@ function EditPageForm({
           "Saving creates a draft. Publication remains a separate validated action.",
         )}
       </p>
-      <div className="mt-3 grid gap-3 md:grid-cols-2">
+      {/* A pending save owns this draft until it settles. Reads can refresh the list. */}
+      <fieldset className="mt-3 grid gap-3 md:grid-cols-2" disabled={busy}>
         <Field label={t("Page title")}>
           <input
             className={inputClass}
@@ -592,6 +716,7 @@ function EditPageForm({
         <div className="flex justify-end gap-2 md:col-span-2">
           <button
             className="rounded-md inline-flex h-10 items-center justify-center border border-[var(--ad-border)] px-3 text-sm"
+            disabled={busy}
             onClick={onCancel}
             type="button"
           >
@@ -609,12 +734,12 @@ function EditPageForm({
             {t("Save draft")}
           </button>
         </div>
-      </div>
+      </fieldset>
     </section>
   );
 }
 
-function CreatePageForm({ onCreated, reload }: { onCreated: (message: string) => void; reload: () => Promise<void> }) {
+function CreatePageForm({ canWrite, onCreated, reload }: { canWrite: boolean; onCreated: (message: string) => void; reload: () => Promise<void> }) {
   const { t } = useAdminI18n();
   const [path, setPath] = useState("");
   const [title, setTitle] = useState("");
@@ -627,8 +752,13 @@ function CreatePageForm({ onCreated, reload }: { onCreated: (message: string) =>
   const [confirmation, setConfirmation] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<{ message: string; cause: unknown } | null>(null);
+  const { guard } = useUnsavedChanges(Boolean(
+    path || title || description || canonical || indexingStatus !== "noindex" ||
+    bodyJson !== emptyArticleBody || reason || confirmation,
+  ));
 
   async function create() {
+    if (!canWrite || !canCreate) return;
     setBusy(true);
     setErr(null);
     try {
@@ -669,15 +799,18 @@ function CreatePageForm({ onCreated, reload }: { onCreated: (message: string) =>
     reason.trim().length >= 3 &&
     confirmation.trim() === expectedPath;
 
+  if (!canWrite) return guard;
+
   return (
     <details className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
+      {guard}
       <summary className="cursor-pointer text-sm font-semibold"><h2 className="inline">{t("Create new page draft")}</h2></summary>
       <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
         {t(
           "Use a new lowercase CMS path. Duplicate and application-owned paths are rejected.",
         )}
       </p>
-      <div className="mt-3 grid gap-3 md:grid-cols-2">
+      <fieldset className="mt-3 grid gap-3 md:grid-cols-2" disabled={busy}>
         <Field label={t("Page path")}>
           <input
             className={inputClass}
@@ -752,7 +885,7 @@ function CreatePageForm({ onCreated, reload }: { onCreated: (message: string) =>
           )}
           {t("Create draft")}
         </button>
-      </div>
+      </fieldset>
       {err ? (
         <AuthorityRequestError cause={err.cause} message={err.message} onRetry={() => void reload()} />
       ) : null}

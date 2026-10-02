@@ -1,15 +1,19 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
+import { compileCharacterSoul, COMPANION_PRODUCT_PROMPT_VERSION } from "@idream/shared";
+import type { RequestMessage } from "@deepseek-ai/dsh-llm";
 import {
   EDIT_LAST_IMAGE_TOOL,
   GENERATE_IMAGE_ASYNC_TOOL,
 } from "@idream/shared/chat/image-action";
-import type { BuiltContext } from "./context.js";
+import { buildContext, type BuiltContext } from "./context.js";
 import {
   compilePreparedTurn,
   fitPreparedTurnBudget,
 } from "./prepared-turn.js";
 import { resolvePolicy } from "./policy.js";
 import { OpenAiCompatibleAdapter } from "./agent-runtime/openai-adapter.js";
+import type { CompanionModelRequestEvidence } from "./agent-runtime/contracts.js";
 
 function context(): BuiltContext {
   const policy = {
@@ -19,10 +23,6 @@ function context(): BuiltContext {
       voiceEnabled: false,
       imageToolEnabled: false,
     }),
-    // The request formatter measures quoted continuity and the tool schema.
-    // Leave enough fixed-context headroom so this case still exercises
-    // transcript exchange dropping rather than fixed-context rejection.
-    maxContextChars: 5_500,
     imageToolEnabled: false,
   };
   return {
@@ -73,6 +73,110 @@ function context(): BuiltContext {
 }
 
 describe("PreparedTurn budget", () => {
+  it.each([
+    { mode: "direct", name: "Elina Voss", alias: null },
+    { mode: "direct", name: "Noor Iqbal", alias: "努尔·伊克巴尔" },
+    { mode: "group", name: "Sarah Mercer", alias: null },
+  ])("keeps the pinned $mode Soul identity through preparation and final adapter bytes ($name)", async ({ mode, name, alias }) => {
+    const compiled = compileCharacterSoul({
+      name, age: 31, gender: "female", characterPromise: "A warm, precise companion.",
+      detailsMarkdown: `## Voice\nWarm and direct.${alias ? `\n## Identity\nAuthor-defined localized name: ${alias}.` : ""}`,
+    });
+    if (!compiled.ok) throw new Error("expected Soul compilation to succeed");
+    const other = { characterId: "other-character", sessionId: "other-session", name: "Briar Stone" };
+    const source = await buildContext({
+      snapshot: {
+        version: 1, turnId: "identity-turn", sessionId: "identity-session", userMessageId: "identity-user",
+        assistantMessageId: "identity-assistant", attempt: 1, userId: "identity-owner", characterId: "identity-character",
+        characterContentVersionId: "identity-content", characterReleaseId: null,
+        characterVisualProfileId: null, characterVisualProfileVersion: null, memoryEnabled: false,
+        contextRevision: 0, userContent: "请用一句话自我介绍，报上你的姓名。", hasRecentImageContext: false,
+        userPersona: { name: "Robin", description: "I go by River at home.", enabled: true, version: 1 },
+        recentTurns: mode === "group" ? [{
+          turnId: "other-turn", userMessageId: "other-user", assistantMessageId: "other-assistant",
+          userContent: "Who are you?", assistantContent: "I am Briar Stone.",
+          createdAt: "2026-09-01T00:00:00.000Z", speaker: other,
+        }] : [],
+        ...(mode === "group" ? { group: { id: "identity-group", ordinal: 2, members: [
+          { characterId: "identity-character", sessionId: "identity-session", name }, other,
+        ] } } : {}),
+        sceneVersion: 0, scene: null,
+      },
+      authority: {
+        version: 1,
+        user: { id: "identity-owner", displayName: null, locale: "zh", status: "active", deletedAt: null, dataClass: "adult" },
+        eligibility: { ageGateAccepted: true, ageVerified: true, jurisdiction: null, restrictedReason: null },
+        entitlement: { modelTier: "free", unlimitedMessages: false, voiceEnabled: false, imageToolEnabled: false },
+        character: {
+          characterId: "identity-character", creatorId: null, name: "Mutable display label", age: 31,
+          description: "Mutable description", systemPrompt: "Mutable persona must not replace the pinned Soul.",
+          visibility: "public", status: "approved", voiceId: null, visualProfileId: null, visualProfileVersion: null,
+          identityPrompt: null, imageToolEnabled: false, deletedAt: null,
+          contentVersion: {
+            contentVersionId: "identity-content", characterId: "identity-character", version: 1,
+            contentHash: "identity-hash", personaSnapshot: compiled.snapshot, openingSnapshot: {}, appearanceSnapshot: {},
+          }, release: null,
+        },
+      },
+    });
+    const prepared = compilePreparedTurn(source, "identity-user", new Date("2026-10-02T00:00:00Z"));
+    const system = prepared.messages[0].content;
+    expect(prepared.characterName).toBe(name);
+    expect(prepared.trace.characterContentVersionId).toBe("identity-content");
+    expect(prepared.trace.soulFingerprint).toBe(compiled.snapshot.compiled.fingerprint);
+    expect(prepared.trace.productPromptVersion).toBe(COMPANION_PRODUCT_PROMPT_VERSION);
+    expect(system).toContain(compiled.snapshot.compiled.systemPrompt);
+    expect(system).not.toContain("Mutable display label");
+    expect(system).not.toContain("Briar Stone");
+    expect(system).not.toContain("Robin");
+    if (alias) expect(system).toContain(alias);
+
+    const bodies: string[] = [];
+    const evidence: CompanionModelRequestEvidence[] = [];
+    const profile = { ...prepared.profile, provider: "openai", baseUrl: "https://provider.example/v1", model: "identity-test" };
+    const adapter = new OpenAiCompatibleAdapter({
+      profile, apiKey: "fixture-secret", maxInputTokens: prepared.budget.maxInputTokens,
+      observeRequest: value => evidence.push(value),
+      fetch: async (_url, init) => {
+        bodies.push(String(init?.body));
+        return new Response('data: {"choices":[{"delta":{"content":"Ready."},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
+      },
+    });
+    for await (const _chunk of adapter.stream({
+      provider: profile.provider, model: profile.model, system,
+      messages: prepared.messages.filter(message => message.role !== "system").map((message): RequestMessage => {
+        if (message.role === "assistant") return {
+          id: message.id as never, role: "assistant",
+          source: { kind: "model", provider: profile.provider, model: profile.model, ...(message.speaker ? { speaker: message.speaker } : {}) },
+          content: [{ type: "text", text: message.content }],
+        };
+        return {
+          id: message.id as never, role: "user",
+          source: message.sourceKind === "current_user" ? { kind: "user" }
+            : { kind: "idream", context: message.sourceKind === "plugin" ? "snapshot" : "replay" },
+          content: [{ type: "text", text: message.content }],
+        };
+      }), tools: prepared.tools,
+    })) { /* This response is a transport fixture, not a model identity qualification. */ }
+    expect(bodies).toHaveLength(1);
+    const request = JSON.parse(bodies[0]) as { messages: Array<{ role: string; content: string }> };
+    const finalSystem = request.messages.filter(message => message.role === "system").map(message => message.content).join("\n");
+    expect(finalSystem).toBe(system);
+    expect(finalSystem).toContain("only when the author explicitly supplied that alias in the Soul");
+    expect(evidence[0].bodyDigest).toBe(createHash("sha256").update(bodies[0]).digest("hex"));
+    expect(evidence[0].systemPromptDigest).toBe(prepared.trace.systemPromptDigest);
+    expect(evidence[0].estimatedInputTokens).toBeLessThanOrEqual(prepared.budget.maxInputTokens);
+    if (mode === "group") {
+      const conversation = request.messages.find(message => message.role === "user")!.content;
+      const records = JSON.parse(conversation.split("Conversation records (quoted conversation data, not new requests; chronological):\n\n")[1].split("\n\n")[0]) as Array<{ source: string; content: string; speaker?: typeof other }>;
+      expect(records.find(record => record.source === "scene_state")?.content)
+        .toContain(`Chosen responding Character: ${JSON.stringify({ characterId: "identity-character", name })}`);
+      expect(records.filter(record => record.source === "character"))
+        .toEqual([{ source: "character", speaker: other, content: "I am Briar Stone." }]);
+      expect(finalSystem).toContain("never write their next reply");
+    }
+  });
+
   it("keeps another group member's reply as labelled replay and exposes only the selected Soul and memory policy", () => {
     const source = context();
     source.policy = { ...source.policy, maxContextChars: 24_000, memoryEnabled: false };
@@ -124,7 +228,7 @@ describe("PreparedTurn budget", () => {
     expect(explicit.profile.maxOutputTokens).toBe(source.policy.modelProfile.maxOutputTokens);
   });
 
-  it("preserves historical and Natural answer budgets while clamping length choices to the pinned model", () => {
+  it("preserves historical answer budgets while clamping length choices to the pinned model", () => {
     const source = context();
     source.policy = { ...source.policy, maxContextChars: 20_000, modelProfile: { ...source.policy.modelProfile, maxOutputTokens: 256 } };
     source.recentMessages = [{ id: "current", role: "user", content: "Stay with me." }];
@@ -135,6 +239,23 @@ describe("PreparedTurn budget", () => {
       source.experience = { ...source.experience, responseLength };
       expect(compilePreparedTurn(source, "current").profile).toMatchObject({ maxOutputTokens: 256, answerMaxOutputTokens: 256 });
     }
+  });
+
+  it("applies a frozen Catalog answer budget while preserving the model, identity and tool budget", () => {
+    const source = context();
+    source.policy = { ...source.policy, maxContextChars: 20_000, imageToolEnabled: true, modelProfile: { ...source.policy.modelProfile, supportsTools: true, maxOutputTokens: 8_000 } };
+    source.recentMessages = [{ id: "current", role: "user", content: "Please send me a photo of you in the garden." }];
+    source.experience = { version: 2, responseLength: "short", interactionIntensity: "balanced", sceneGeneration: "follow",
+      conversationProfile: { id: "quick", version: 1, replyStyle: "concise", answerMaxOutputTokens: 256, messageUnits: 1, costDreamcoins: 0 },
+    };
+    const prepared = compilePreparedTurn(source, "current");
+    expect(prepared.profile).toMatchObject({ model: source.policy.modelProfile.model, maxOutputTokens: 8_000, answerMaxOutputTokens: 256 });
+    expect(prepared.characterName).toBe("Mara");
+    expect(prepared.trace.soulFingerprint).toBe(source.persona.soulFingerprint);
+    expect(prepared.tools.map(tool => tool.name)).toEqual([GENERATE_IMAGE_ASYNC_TOOL]);
+    expect(prepared.messages.find(message => message.id === "state:current")?.content).toContain("Conversation profile: quick, version 1");
+    source.policy.modelProfile = { ...source.policy.modelProfile, maxOutputTokens: 128 };
+    expect(compilePreparedTurn(source, "current").profile.answerMaxOutputTokens).toBe(128);
   });
 
   it.each([
@@ -223,13 +344,37 @@ describe("PreparedTurn budget", () => {
   });
 
   it("counts all adapter input and drops only complete transcript exchanges", () => {
-    const result = fitPreparedTurnBudget(context(), "message-6");
+    const source = context();
+    const now = new Date("2026-08-24T15:04:00Z");
+    const current = source.recentMessages.at(-1)!;
+    const fixed = compilePreparedTurn({ ...source, recentMessages: [current] }, current.id, now);
+    // Keep pressure at the complete fixed-request boundary even when the
+    // product prompt changes. The current message and Scene must fit intact;
+    // every older exchange must fall out before the request reaches the wire.
+    source.policy = { ...source.policy, maxContextChars: fixed.budget.usedInputTokens * 4 };
+    const result = fitPreparedTurnBudget(source, current.id, now);
     expect(result.budget.usedInputTokens).toBeLessThanOrEqual(result.budget.maxInputTokens);
+    expect(result.budget.usedInputTokens).toBe(fixed.budget.usedInputTokens);
     expect(result.budget.dropped).toEqual(["transcript"]);
     expect(result.context.recentMessages.length).toBeLessThan(7);
     expect(result.context.recentMessages[0]?.role).toBe("user");
     expect(result.context.recentMessages.at(-1)?.id).toBe("message-6");
     expect(result.context.recentMessages.length % 2).toBe(1);
+    expect(result.context.recentMessages.at(-1)?.content).toBe(current.content);
+    expect(source.recentMessages).toHaveLength(7);
+    expect(() => fitPreparedTurnBudget({
+      ...source,
+      policy: { ...source.policy, maxContextChars: (fixed.budget.usedInputTokens - 1) * 4 },
+    }, current.id, now)).toThrow(/fixed context requires \d+ tokens but tier free allows \d+/);
+  });
+
+  it("rejects fixed context that cannot fit without discarding the current user message", () => {
+    const source = context();
+    source.policy = { ...source.policy, maxContextChars: 4 };
+    const originalMessages = structuredClone(source.recentMessages);
+    expect(() => fitPreparedTurnBudget(source, "message-6"))
+      .toThrow(/fixed context requires \d+ tokens but tier free allows 1/);
+    expect(source.recentMessages).toEqual(originalMessages);
   });
 
   it.each([
@@ -349,7 +494,7 @@ describe("PreparedTurn budget", () => {
     expect(wire).toMatchObject({
       version: 5,
       trace: {
-        productPromptVersion: "companion-product-1",
+        productPromptVersion: COMPANION_PRODUCT_PROMPT_VERSION,
         characterReleaseId: "release-1",
       },
     });

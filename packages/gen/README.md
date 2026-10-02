@@ -53,7 +53,7 @@ Set `COMFYUI_IMAGE_API_URL` (default `http://127.0.0.1:8189`) and
 `COMFYUI_VIDEO_API_URL` (default `http://127.0.0.1:8188`) to the isolated native
 image and RedGraft/LTX APIs. `COMFYUI_H3_API_URL` defaults to
 `http://127.0.0.1:8190` for MiniMax H3. `bun run comfyui:start` starts image with
-PyTorch attention, RedGraft/LTX with validated split attention, and H3 with
+PyTorch attention, RedGraft/LTX with model-scoped MPSGraph attention and split fallback, and H3 with
 exact PyTorch SDPA. Set `GEN_IMAGE_PROVIDER=backend` to route `providers.image`
 through it. `GEN_WORKFLOW_DIR` defaults to
 `packages/gen/workflows` (repo-root relative); the smoke script below resolves
@@ -91,7 +91,8 @@ After every ComfyUI upgrade (then `bun run comfyui:restart`):
 cd packages/gen && bun run preflight
 ```
 
-`preflight` hard-checks the node directory (via `COMFYUI_VENV_PYTHON`), model
+`preflight` hard-checks the node directory (via `COMFYUI_ROOT`, or the legacy
+`COMFYUI_VENV_PYTHON` layout when no root is set), model
 visibility, the REDQW21 V2 editor's BF16 diffusion / ConvRot INT8 encoder / VAE /
 Viggle LoRA SHA-256, and every production video recipe's pinned model SHA-256
 against the bytes under `COMFYUI_MODEL_ROOT`. For Qwen edits it also proves
@@ -285,8 +286,28 @@ caller omits the model. Its request contract is the integer value `seconds=5`,
 which the worker binds to H3's native 124-frame grid. Workflow v4 routes H3 to
 8190 but keeps exact SDPA: the matched 512×512/124-frame SolAttn A/B saved only
 about eight seconds of an eleven-minute prompt while changing generated pixels,
-which was not enough evidence to accept approximation. RedGraft workflow v2
-continues to use the isolated 8188 split-attention process.
+which was not enough evidence to accept approximation.
+
+RedGraft workflow v4 uses `IDreamMPSGraphAttention` in explicit BF16 mode on
+both sampling stages. It preserves the 8+3 Euler schedule, CFG 1, current
+weights, MLX Q8 Gemma and accelerated Conv VAE. Long compatible attention
+shapes use MPSGraph; short or unsupported calls retain the original split
+implementation. BF16 accumulation changes pixels and motion details, so this
+is a separately qualified recipe, not a bit-exact replacement.
+
+The 8188 PM2 definition pins a separate Torch 2.11 / mps-sdpa 0.2.0 environment
+and persistent native extension cache. Comfy source stays on the validated
+0.34.2 checkout. Set `COMFYUI_ROOT` and `COMFYUI_VENV_PYTHON` independently in
+Gen's environment. Install the exact dependencies from
+`comfyui_nodes/idream_mps_attention/requirements.txt` into that video environment.
+After draining through the root README's PM2 wrapper, `bun run comfyui:restart:video`
+restarts only 8188. Image and H3 retain their separate dependencies.
+
+`db/sql/2026-10-02-redgraft-mpsgraph.sql` publishes immutable profile v6/v7
+after admission/worker quiescence. An already active options-v5 becomes active
+v7 with the same 3/5-second, portrait/square, preview/standard choices; a
+disabled draft remains disabled. Old jobs and profiles retain their pins.
+See [the controlled A/B/A, numerical and recovery evidence](../../docs/research/LTX25_MPSGRAPH_IMPLEMENTATION_2026-10-02.md).
 
 Every checked-in ComfyUI image/video workflow places
 `IDreamUnloadOffDeviceModels` after every text/reference conditioning branch
@@ -306,6 +327,17 @@ sufficient for the launch gate. Every new immutable TerminalRecord also pins
 the Gen execution source revision, so a new checker cannot relabel an old run
 as current launch evidence.
 
+The shared custom-node configuration loads `comfyui_nodes/idream_ltx25_mps_vae`. Its constructor
+hook recognizes the convolutional LTX 2.5 VAE and replaces eligible decoder
+Conv3D arithmetic with bounded Conv2D depth sums on MPS. It preserves Comfy's
+dynamic weight-loading context and the existing tile/blending rules. CPU/CUDA,
+the encoder, and other VAE configurations retain their original operations.
+In the prior Torch 2.10 environment, the same captured 121-frame latent
+measured 199.88 seconds for stock decode and 32.16 seconds for this plugin,
+with a maximum per-frame RGB RMSE of 0.00192. The native Comfy decode node
+measured 32.17 seconds; full I2V latency was not remeasured.
+See [the VAE replay evidence](../../docs/research/LTX25_VAE_ACCELERATION_2026-10-02.md).
+
 Unless startup receives an explicit `IDREAM_SOURCE_REVISION`, the PM2 wrapper
 computes `IDREAM_SOURCE_REVISION` with
 `idream_worktree_sha256_v1`. That computed form includes every Git-tracked file
@@ -322,7 +354,7 @@ bun run sync:comfyui-workflows
 
 The 30-minute provider timeout is intentional. On the current M4 Max host, the
 executor-bound `0fdf96b06508` evidence snapshot measured MiniMax H3 direct at
-667.438 seconds total (565 seconds for 8-step sampling). The latest isolated
+667.438 seconds total (565 seconds for 8-step sampling). An earlier isolated
 RedGraft product probe took 893.807 seconds end to end for 121 frames. Historical
 LTX 2.3 timings remain evidence for old outputs, not an executable route. The
 active routes use different resolution/frame contracts and warm/cold states, so

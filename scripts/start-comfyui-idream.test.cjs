@@ -158,3 +158,23 @@ test("the image PM2 definition replaces a saved legacy Python override", () => {
   });
   assert.equal(runtime.python, path.join(runtime.root, ".venv/bin/python3"));
 });
+
+test("the video PM2 definition replaces stale runtime and native cache overrides", () => {
+  const config = require("./comfyui-ecosystem.config.cjs");
+  const video = config.apps.find((app) => app.name === "comfyui-video");
+  const runtime = resolveRuntime({
+    COMFYUI_ROOT: "/tmp/old-comfy",
+    COMFYUI_VENV_PYTHON: "/tmp/old-python",
+    TORCH_EXTENSIONS_DIR: "/tmp/old-torch-cache",
+    MPS_SDPA_SKIP_CALIBRATION: "0",
+    ...video.env,
+  });
+  assert.equal(runtime.root, "/Users/kk/ComfyUI-Installs/idream-ltx25-v0342/ComfyUI");
+  assert.equal(runtime.python, "/Users/kk/ComfyUI-Installs/idream-ltx25-mpsgraph/.venv/bin/python3");
+  assert.equal(runtime.env.MPS_SDPA_SKIP_CALIBRATION, "1");
+  assert.equal(runtime.env.TORCH_EXTENSIONS_DIR, "/Users/kk/ComfyUI-Installs/idream-ltx25-mpsgraph/torch_extensions");
+  for (const app of config.apps.filter((app) => app !== video)) {
+    assert.equal(app.env.MPS_SDPA_SKIP_CALIBRATION, undefined);
+    assert.equal(app.env.TORCH_EXTENSIONS_DIR, undefined);
+  }
+});

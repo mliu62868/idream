@@ -81,13 +81,14 @@ export const minimaxH3VideoProductionRecipe = {
 // SPEC: RedGraft is the default LTX video route validated on the isolated MPS
 // ComfyUI runtime. H3 remains an explicit alternative.
 export const redgraftLtx25VideoProductionRecipe = {
-  recipeVersion: 2,
+  recipeVersion: 6,
+  optionsProfileVersion: 7,
   profileKey: "profile_video_redgraft_ltx25_v1",
   modelLabel: "RedGraft LTX 2.5 Fast 2K",
   runner: "comfyui",
   pipelineModel: "redgraft-ltx25-fast2k-int8-convrot",
   workflowKey: "redgraft-ltx25-i2v",
-  workflowVersion: 2,
+  workflowVersion: 4,
   sourceModelPath:
     "diffusion_models/redgraftLTX25Fast2K_ltx25RedgraftNSFW.safetensors",
   checkpointFilename:
@@ -110,7 +111,7 @@ export const redgraftLtx25VideoProductionRecipe = {
   scheduler: "manual_sigmas",
   cfgScale: 1,
   workflowGraphSha256:
-    "6e00a21674d7a0cfe9df503152f353ac9560ef83ed5d632149bc7a0e7a86b169",
+    "7a51857f6c929855dd0e150391bd280ab62206ac3d46ba969d423d4f44b6bc87",
   modelAssets: [
     {
       path: "diffusion_models/redgraftLTX25Fast2K_ltx25RedgraftNSFW.safetensors",
@@ -121,8 +122,8 @@ export const redgraftLtx25VideoProductionRecipe = {
       sha256: "5f416311fa8172b65af67530758964708d29a317b830d689a51143b7f91913ed",
     },
     {
-      path: "text_encoders/gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors",
-      sha256: "6ce688a0aa98a5fa36a9f1e6c3f42152a498cc2b53ee8c15674c64244f91487f",
+      path: "text_encoders/gemma4-12b-ltx-v1-mlx-q8.safetensors",
+      sha256: "dcb072acbec50ea10ca22d3dcc24667f1a85b6788dc6f9ed8e4da4edff8c7790",
     },
     {
       path: "vae/ltx-2.5-audio-vae-bf16.safetensors",

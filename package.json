@@ -43,6 +43,7 @@
     "pm2:logs": "pm2 logs",
     "comfyui:start": "pm2 start scripts/comfyui-ecosystem.config.cjs --update-env",
     "comfyui:restart": "pm2 restart scripts/comfyui-ecosystem.config.cjs --only comfyui-video,comfyui-image --update-env",
+    "comfyui:restart:video": "pm2 restart scripts/comfyui-ecosystem.config.cjs --only comfyui-video --update-env",
     "comfyui:stop": "pm2 stop comfyui-video comfyui-image",
     "comfyui:status": "pm2 status comfyui-video comfyui-image",
     "comfyui:logs": "pm2 logs comfyui-video comfyui-image",

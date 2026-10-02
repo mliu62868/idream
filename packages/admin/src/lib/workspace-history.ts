@@ -1,5 +1,15 @@
 import type { WorkspaceHistoryMode } from "./admin-v2-api";
 
+// Next.js copies its router state into external History API writes. Passing its
+// internal flags ourselves skips that synchronization, so retain only app state.
+export function historyStateForNavigation(state: unknown): Record<string, unknown> {
+  const next: Record<string, unknown> = state && typeof state === "object" ? { ...state } : {};
+  delete next.__NA;
+  delete next._N;
+  delete next.__PRIVATE_NEXTJS_INTERNALS_TREE;
+  return next;
+}
+
 export type WorkspaceHistoryWriter<T> = (state: T, mode: WorkspaceHistoryMode) => void;
 
 export type WorkspaceHistoryController<T> = {

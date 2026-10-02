@@ -333,16 +333,9 @@ export function startEventConsumer(): { close(): Promise<void> } {
     { name: "product_events", run: () => dispatchPendingProductEvents(100, { signal: stopping.signal }) },
     { name: "chat_memory", run: () => dispatchPendingChatEvents({ lane: "memory", batch: 50, signal: stopping.signal }) },
     { name: "chat_lifecycle", run: () => dispatchPendingChatEvents({ lane: "lifecycle", batch: 50, signal: stopping.signal }) },
-    {
-      name: "chat_admission",
-      // Admitting new attempts and reclaiming abandoned ones are the two halves
-      // of one responsibility: an attempt nobody will ever finish also blocks
-      // every later Turn in that relationship.
-      run: async () => {
-        await dispatchPendingChatAgentRuns(50, stopping.signal);
-        await reclaimStalledChatAgentRuns(50, stopping.signal);
-      },
-    },
+    { name: "chat_admission", run: () => dispatchPendingChatAgentRuns(50, stopping.signal) },
+    // An admission backlog must not delay settlement of already-expired runs.
+    { name: "chat_reclaim", run: () => reclaimStalledChatAgentRuns(50, stopping.signal) },
     { name: "proactive_messages", run: () => dispatchDueProactiveTurns(20, stopping.signal).then(() => undefined) },
     { name: "account_blob_deletion", run: () => dispatchPendingAccountDeletionBlobDeletes({ signal: stopping.signal }) },
     { name: "unrouted_outbox", run: () => recordUnroutedMainOutboxEvents().then(() => undefined) },

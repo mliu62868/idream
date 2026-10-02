@@ -82,10 +82,34 @@ export const userChatPersonaResponseSchema = z.object({
 export type UserChatPersona = z.infer<typeof userChatPersonaSchema>;
 
 export const chatSceneGenerationSchema = z.enum(["follow", "advance"]);
+// Main freezes the selected Catalog entry. Historical Turns keep their original
+// preferences rather than acquiring a newer profile during replay.
+export const conversationProfileSnapshotSchema = z.object({
+  id: z.enum(["natural", "quick", "gentle", "expressive", "story"]),
+  version: z.number().int().positive(),
+  replyStyle: z.enum(["natural", "concise", "gentle", "expressive", "story"]),
+  answerMaxOutputTokens: z.number().int().min(128).max(8192),
+  messageUnits: z.literal(1),
+  costDreamcoins: z.literal(0),
+}).strict();
+export type ConversationProfileSnapshot = z.infer<typeof conversationProfileSnapshotSchema>;
+export const conversationProfileCatalogSchema = z.object({
+  version: z.number().int().positive(),
+  items: z.array(conversationProfileSnapshotSchema.extend({
+    label: z.string().min(1),
+    description: z.string().min(1),
+    preferences: z.object({
+      responseLength: z.enum(["auto", "short", "long"]),
+      interactionIntensity: z.enum(["gentle", "balanced", "expressive"]),
+      sceneGeneration: chatSceneGenerationSchema,
+    }).strict(),
+  }).strict()).min(1),
+}).strict();
 export const chatExperienceValuesSchema = z.object({
   responseLength: z.enum(["auto", "short", "long"]),
   interactionIntensity: z.enum(["gentle", "balanced", "expressive"]),
   sceneGeneration: chatSceneGenerationSchema.default("follow"),
+  conversationProfile: conversationProfileSnapshotSchema.optional(),
 }).strict();
 export const chatExperiencePreferenceSchema = chatExperienceValuesSchema.extend({
   // Historical accepted preferences predate this control; do not backfill them.

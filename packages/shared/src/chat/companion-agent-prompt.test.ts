@@ -9,7 +9,7 @@ import { IMAGE_AGENT_TOOL_DEFINITIONS } from "./image-action";
 
 describe("Companion Product Agent Contract", () => {
   it("defines the shared adult-companion outcome before Character-specific expression", () => {
-    expect(COMPANION_PRODUCT_PROMPT_VERSION).toBe("companion-product-1");
+    expect(COMPANION_PRODUCT_PROMPT_VERSION).toBe("companion-product-2");
     expect(COMPANION_PRODUCT_AGENT_PROMPT).toContain(
       "Make the user feel actively wanted, understood, and accompanied",
     );
@@ -38,6 +38,18 @@ describe("Companion Product Agent Contract", () => {
     expect(COMPANION_PRODUCT_AGENT_PROMPT).not.toContain("Character Soul —");
   });
 
+  it("keeps self-introduction names authoritative while allowing author-supplied aliases", () => {
+    const soul = "Name: Noor Iqbal. Author-defined localized name: 努尔·伊克巴尔. Voice: warm and direct.";
+    const prompt = composeCompanionSystemPrompt({ memoryEnabled: false, imageToolEnabled: false, soulPrompt: soul });
+    expect(prompt).toContain("Use your authoritative Character Soul name when introducing yourself");
+    expect(prompt).toContain("only when the author explicitly supplied that alias in the Soul");
+    expect(prompt).toContain("never invent a surname or adopt another participant's identity");
+    expect(prompt.endsWith(soul)).toBe(true);
+    // The general contract cannot carry one Character's name or a correction dictionary.
+    expect(COMPANION_PRODUCT_AGENT_PROMPT).not.toContain("Noor Iqbal");
+    expect(COMPANION_PRODUCT_AGENT_PROMPT).not.toContain("努尔·伊克巴尔");
+  });
+
   it("composes Product, Runtime, then Soul through one shared authority", () => {
     const prompt = composeCompanionSystemPrompt({
       memoryEnabled: true,
@@ -64,7 +76,7 @@ describe("Companion Product Agent Contract", () => {
       soulPrompt: "Teasing but warm.",
     })).toMatchObject({
       passed: true,
-      productPromptVersion: "companion-product-1",
+      productPromptVersion: COMPANION_PRODUCT_PROMPT_VERSION,
       actionName: "generate_image_async",
       imagePromptAuthority: "companion_agent",
       executionMode: "required_agent_tool",

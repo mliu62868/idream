@@ -662,7 +662,7 @@ export async function verifyCreativeRetryCommands(
         data: {
           workflowStage: nextWorkflowStage,
           verificationState: nextVerificationState,
-          status: verificationPassed ? continuation.status : "completed",
+          status: continuation.status,
           ...(verificationPassed ? { lifecycleState: continuation.lifecycleState } : {}),
           version: { increment: 1 },
         },

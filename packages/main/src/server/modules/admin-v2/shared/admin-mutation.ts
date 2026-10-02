@@ -198,7 +198,7 @@ function staticPermission(operation: AdminV2ApiOperation) {
 }
 
 async function mutationBody(request: Request, contract: AdminV2DeclaredRequestRef) {
-  return request.method === "DELETE" ? {} : jsonBody(request, contract);
+  return request.method === "DELETE" && request.body === null ? {} : jsonBody(request, contract);
 }
 
 function requiredIdempotencyKey(request: Request) {

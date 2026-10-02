@@ -189,6 +189,18 @@ describe("admin shell keyboard and account menu", () => {
     expect(document.querySelector('select[aria-label="Language"]')).not.toBeNull();
   });
 
+  it("offers logout for a signed-in production operator and retains the menu on a failed request", async () => {
+    await mountShell();
+    await act(async () => accountMenuTrigger().click());
+    const logout = [...document.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Logout");
+    expect(logout).not.toBeUndefined();
+    vi.mocked(fetch).mockResolvedValue(Response.json({ ok: false, error: { code: "unavailable", message: "Main unavailable" } }, { status: 503 }));
+    await act(async () => logout!.click());
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain("Sign-out failed. Try again.");
+    expect(logout!.disabled).toBe(false);
+    expect(document.querySelector('[id="admin-account-menu"]')).not.toBeNull();
+  });
+
   // SPEC: 偏好写 cookie，不写 localStorage —— 服务端必须能在下一次导航的首帧就读到它。
   it("persists a language change to a cookie the server can read", async () => {
     await mountShell();

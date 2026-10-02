@@ -412,6 +412,13 @@ export const ADMIN_V2_API_OPERATIONS = [
     "characterImageSourceListResponseSchema",
   ),
   operation(
+    "GET",
+    "/api/v2/admin/characters/:id/voice-calls",
+    allOf("character.project.read"),
+    "path:id",
+    "characterVoiceCallHistorySchema",
+  ),
+  operation(
     "POST",
     "/api/v2/admin/characters/:id/image-sources",
     allOf("character.project.write", "creative.run.write"),
@@ -1461,6 +1468,11 @@ export const ADMIN_V2_API_OPERATIONS = [
   operation("POST", "/api/v2/admin/comics/:id/decision", allOf("safety.review.write"),
     "adminComicDecisionRequestSchema+idempotency-key", "adminComicDetailResponseSchema", undefined,
     { commandType: "comic.review" }),
+  operation("GET", "/api/v2/admin/packs", allOf("content.asset.read"), "adminPackQuerySchema", "adminPackListResponseSchema"),
+  operation("GET", "/api/v2/admin/packs/:id", allOf("content.asset.read"), "path:id", "adminPackDetailResponseSchema"),
+  operation("POST", "/api/v2/admin/packs/:id/block", allOf("safety.review.write"),
+    "adminPackBlockRequestSchema+idempotency-key", "adminPackDetailResponseSchema", undefined,
+    { commandType: "pack.block" }),
   operation("GET", "/api/v2/admin/billing/coin-offers", allOf("billing.read"), "none", "adminCoinOfferListSchema"),
   operation("POST", "/api/v2/admin/billing/coin-offers", allOf("config.pricing.write"),
     "adminCoinOfferCreateRequestSchema+idempotency-key", "adminCoinOfferMutationSchema", undefined,
@@ -1545,6 +1557,13 @@ export const ADMIN_V2_API_OPERATIONS = [
     "affiliateApplicationListResponseSchema",
   ),
   operation(
+    "GET",
+    "/api/v2/admin/affiliate/applications/:id/attribution",
+    allOf("growth.promo.read"),
+    "affiliateAttributionQuerySchema",
+    "affiliateAttributionAdminHistorySchema",
+  ),
+  operation(
     "POST",
     "/api/v2/admin/affiliate/applications/:id/decision",
     allOf("growth.promo.write"),
@@ -1600,6 +1619,7 @@ export const ADMIN_V2_API_OPERATIONS = [
   ),
 
   // CMS/SEO。写操作用 expectedUpdatedAt CAS，不声明幂等头（见 contracts/cms.ts）。
+  // publish 的 revalidate action 只重验同状态/版本的公开缓存，不切换发布状态。
   operation(
     "GET",
     "/api/v2/admin/cms/pages",
@@ -1648,22 +1668,28 @@ export const ADMIN_V2_API_OPERATIONS = [
     "POST",
     "/api/v2/admin/announcements",
     allOf("growth.promo.write"),
-    "announcementCreateRequestSchema",
+    "announcementCreateRequestSchema+idempotency-key",
     "announcementMutationResponseSchema",
+    undefined,
+    { commandType: "growth.announcement.create" },
   ),
   operation(
     "PATCH",
     "/api/v2/admin/announcements/:id",
     allOf("growth.promo.write"),
-    "announcementPatchRequestSchema",
+    "announcementPatchRequestSchema+idempotency-key",
     "announcementMutationResponseSchema",
+    undefined,
+    { commandType: "growth.announcement.update" },
   ),
   operation(
     "DELETE",
     "/api/v2/admin/announcements/:id",
     allOf("growth.promo.write"),
-    "announcementDeleteRequestSchema",
+    "announcementDeleteRequestSchema+idempotency-key",
     "announcementDeleteResponseSchema",
+    undefined,
+    { commandType: "growth.announcement.delete" },
   ),
 
   operation(
@@ -1812,6 +1838,27 @@ export const ADMIN_V2_API_OPERATIONS = [
     allOf("generation.config.write"),
     "generationRecipePatchRequestSchema+idempotency-key",
     "generationRecipeResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/generation/recipes/:id/commands/test-matrix",
+    allOf("generation.config.write"),
+    "generationRecipeTestMatrixRequestSchema+idempotency-key",
+    "generationRecipeTestMatrixResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/generation/recipes/:id/commands/verify",
+    allOf("generation.config.write"),
+    "generationRecipeVerifyRequestSchema+idempotency-key",
+    "generationRecipeVerifyResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/generation/recipes/:id/preview",
+    allOf("generation.config.read"),
+    "generationRecipePreviewQuerySchema",
+    "generationRecipePreviewResponseSchema",
   ),
   operation(
     "POST",
@@ -2062,6 +2109,15 @@ export const ADMIN_V2_API_OPERATIONS = [
     "contentPlacementMutationResponseSchema",
     undefined,
     { commandType: "content.placement.patch" },
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/content/placements/:id/publish",
+    allOf("creative.placement.publish"),
+    "contentPlacementPublishRequestSchema+idempotency-key+if-match",
+    "contentPlacementMutationResponseSchema",
+    undefined,
+    { commandType: "content.placement.publish" },
   ),
   operation(
     "GET",

@@ -1,8 +1,21 @@
 # iDream 剩余工作执行计划
 
-更新日期：2026-09-30
+更新日期：2026-10-02
 
-本文件只保留尚未完成的工作。已完成能力与历史运行证据见 `CURRENT_FUNCTIONAL_COVERAGE.md`。
+本文件以最新状态列出尚未完成的工作，保留带日期的历史结果。已实施能力与证据见 [当前覆盖](CURRENT_FUNCTIONAL_COVERAGE.md)。用户已确认先完成本机与部署材料，目标环境尚未提供；本轮排除支付、年龄检查、合规及 AF-03 收益/佣金/结算。
+
+## 2026-10-02 当前待办
+
+CH-16 profile、Voice Call 106、AF-02 107、免费 Packs 108 和 GN-19 109 已实施；CMS 四族 10 个发布路由、Comics 发布→游客阅读→真实 Remix→撤下、合集撤回、Support 和 Create CAS 已有真实 Chrome 单域证据。不要重复将这些列为待开发，也不能据此签发整个新 source。具体范围和证据见 [2026-10-02 覆盖记录](CURRENT_FUNCTIONAL_COVERAGE.md#2026-10-02-当前实施单域证据与未取得的资格)。
+
+1. **质量资格**：canonical Scene policy18仍未通过；私有20、21、22和固定9B模型比较均保存真实首败及未执行case，不合入候选、不放宽原47/root7断言。默认Redux及turbo的部分语言/带噪ASR未通过；完整large-v3原7输入/评分不变的有界比较已结束且仍RED，不切默认，25语言、真人低声/噪声和物理麦克风尚未验收。默认图/视频历史像素失败保持，新的Iris素材及GN-19两场景有具体成功样本，不推及所有构图和Catalog组合；H3仍禁用。
+2. **剩余真实用户资格**：恢复码、Roadmap、Follow/Following、Studio暂停与同Release恢复、worker主动消息的交付/未读/不重发/关闭均已完成。新事实边界指令经59项标准集成与一次真实worker有限复验，未再编造用户偏好；回复重复与长期质量仍待。保存Look、聊天图片与v7 Animate真实生成/播放/下载/扣费已对账；My AI副本管理、Feed Comic阅读/精确Remix、客服三消息/运营结案、Community作者/筛选/两Campaign轮播CTA及站内公告接收/关闭/停用也已补齐。A七条临时权益已精确清除，指令恢复；发布测试内容正常撤回/暂停。视频取消DB12/12+mounted10/10与麦克风24界面/10集成已绿，实体Mac静音录音保留/Discard/End已实测，真人人声质量仍待。邮件订阅明确尚未提供；站内通知不替代邮件。最终复验针对新变化与仍缺的质量，不重复已闭合入口。
+3. **统一版本收尾**：最新受控CI至05e58c/a92e860，7145pass/0fail/4opt-in skip，全Main fresh coverage四门槛、全仓check/五包build、PM2 174/174和110 migration/14 rehearsal均通过；完整fixture E2E保留173passed+1flaky，修正账号测试旧Login导航竞争后原完整单例首次通过。两处最终夹具改动各有全文件hash关联，旧RED/原trace保留，不重标旧运行。主动消息指令增量另有59/59标准集成、Main类型/lint与真实worker证据；最终source/runtime及构建关联以[独立封存](../../.scratch/full-product-audit-2026-10-01/verification/FINAL_SOURCE_BINDING.md)和实际恢复记录为准，不重复将已通过的全仓检查列为未执行。
+4. **本机恢复与部署材料**：完整Main PG+Blob+AgentRun+official DSH canonical/private+queues/ACL已在50f、d838两独立新名bundle真实quiesce/恢复/hash/ACL/cleanup，并经官方wrapper重启/11在线/source/Sentry/ownership验证。后续增量的最终新名bundle与runtime绑定见[实际执行记录](../../.scratch/full-product-audit-2026-10-01/verification/deployment/full-recovery-local/EXECUTION_RESULT.md)，不能重标旧bundle。目标环境未提供，本机演练不代表公开上线；部署模板、TLS/邮件/声音authority与首次启动步骤按实际契约交付，生产HTTPS、对象存储、监控和负载须在目标环境另验。wrapper生产首次冷启动仍有launch gate依赖已运行服务的确定性顺序缺口，最小实施计划已交付但未修复；真实入口隔离须先获目标配置，不能添加绕过门禁的参数冒充启动资格。
+
+2026-10-01 已按源码将 Group Chat、主动消息、Advanced seed/model、精确 Chat 生成上下文、Comics、Coin Store 和 Affiliate 已发布条款/用户 UI 从“待开发”改为“已有实现、资格单独验收”。本轮只清理状态，不继承历史报告的通过结论，也不预先签发尚待执行的完整质量验证。
+
+2026-10-01 的历史 Scene runner 为16个真实样本、4通过/12失败；当时 nullable delta、来源绑定编辑与纯净传输候选未获 provider 质量资格、未接入产品。失败断言和日志保持；后续policy14属于历史，当前policy18状态以上方2026-10-02记录及[交接](../../.scratch/full-product-audit-2026-10-01/scene-current-relations-handoff-20261002.md)为准，冻结快照/锚点保护不等于语义合格。
 
 2026-09-02 起的多轮审计已实际完成 Create、单角色 Chat、图片、默认 RedGraft 视频、Admin 角色与客服运营的核心闭环。候选 `ab995512…` 的 4,955 条默认测试、146/146 Chrome、正式自然记忆与模型交付证据见 `CURRENT_FUNCTIONAL_COVERAGE.md`；最新增量验证及各版本归属见 `.tmp/product-audit-20260902/FINAL_REPORT.md` 和 `iteration3-validation.json`。H3 最新样本未通过视觉验收，已停用前台新选择，不能将其技术交付成功视为质量合格。支付、年龄检查与合规不在本轮范围。
 
@@ -22,7 +35,7 @@ Mic → draft → 明确 Send 的单聊/群聊实现及受控真实链路已完�
 
 2. **默认生成速度与容量**：优先默认图片、身份图与 RedGraft。按版本分别记录实际排队、执行与端到端分布，保持模型、规格、输入和质量可比较；稳定参考缓存与性能分段已进入实现，实际收益以对照报告为准。共享设备串行等待与纯执行耗时分别处理，不用换模型或缩小规格掩盖原因。
 3. **从工程可观测走向经营证据**：指标自动物化和只读诊断已实现；接下来补足真实 eligible facts、成熟窗口、有效定义与质量认证。WPCU 保持 official，本地 audit/internal 数据与未认证值不作真实留存或经营判断。
-4. **按证据再扩展产品**：核心体验稳定后，继续完整平台中的账号、精确 Chat → Generate 上下文、创作者/社区、联盟、Pack/Comic、群聊与通话等缺口；商业化及公开生产按原有独立阶段验收。
+4. **按证据完成资格**：CH-16 profiles、双向 Call、免费 Packs、AF-02 与 GN-19 已实施，按最新待办补实际尚缺的质量和同版旅程资格。Comics 等单域闭环保留原 source；Pack 购买、Coin Store 真实支付、创作者/联盟收益结算属于后续独立范围，本轮不执行。
 
 前 3 项形成一个完整里程碑：用户愿意继续同一角色的互动，生成等待可解释且有实测改善，运营能看见可信且可行动的事实。H3 继续隔离，稳定复验是重新启用的前提；不把实验后端恢复置于默认用户体验之前。
 
@@ -37,23 +50,23 @@ Mic → draft → 明确 Send 的单聊/群聊实现及受控真实链路已完�
 
 ## 1. 收口完整 OurDream 对标缺口
 
-H3 首帧叠影与构图跳变仍需稳定修复和质量复验；重新启用须按合法 recipe/profile 版本发布，不能直接修改历史 pins。默认 RedGraft 仍可用，但现有完整生产配置门禁要求的 H3 目前不满足。正式主机/访问、HTTPS 主站和受保护 Admin、对象存储及 Sentry 接入仍待提供；不能把本机 development、旧版本探针或一次正常 seed 当作完整生产验收。
+H3 首帧叠影与构图跳变仍需稳定修复和质量复验，当前保持禁用；重新启用须按合法 recipe/profile 版本发布，不能直接修改历史 pins。默认 RedGraft 的技术交付与像素质量分别验收，GN-19 v7的两场景真实资格已取得，其他组合与最终统一source仍待。用户尚未提供目标环境，先完成本机与可执行部署材料；正式主机/访问、HTTPS 主站和受保护 Admin、对象存储及 Sentry 等生产 authority 不能填假值。本机 development、旧探针或正常 seed 不代表完整生产验收，也不放宽既有 launch gate。
 
 1. 已建立 [域级对标矩阵](PRODUCT_PARITY_MATRIX.md) 和需求/用户故事映射；继续下钻到逐功能、逐 Catalog 项与同版本运行证据，覆盖 Explore、完整 Create、Chat、Generate、My AI/Profile、Feed/Community/Creator Economy、Upgrade、Affiliate、Support 与公开内容。每项绑定 OurDream 可验证契约、iDream 当前代码/运行证据、真实缺口和退出 Gate。
 2. 区分“未实现空态”、“受 feature/provider/entitlement 条件限制”、“本地受控可用”和“公开生产已认证”，不用路由存在或历史截图代替能力证明。
 3. Create 五步链及目录扩展已有实际证据：48 personality / 135 occupation / 29 relationship、运行声音目录 21 项；继续核对内容语义差异，不能只按总数认定 matched。沿用同一 Soul Markdown 与既有五步，Quick Start 只能预填这条链。
-4. 将 Recent、Characters、Presets、Created 和 Media 共同作为 My AI P0 核心面；Group Chats/Packs/Comics 作为 P1 对标缺口，发布前只显示明确 unavailable 空态或不暴露入口。
-5. Generate 的 Create / Edit / 独立 Enhance 2×、已发布 reference lineage 与单段视频已真实交付。第三轮 Preset 浏览/编辑与分类目录、Gallery 过滤和整页刷新后的独立原请求核对已通过统一 Chrome 与测试；最终版本的图片/两条视频真实报告仍按验收索引收口。继续核对 Advanced seed / 合格 model 选择、多 scene / 可选时长 / 比例 / 质量 / AI voice Video 及精确 Chat Product Action 上下文交接；固定配方的规格显示不等同于新增可选参数。历史 pins、quote、settlement/refund 和 replay 幂等保持。
-6. Creator Profile 跨页可达、路线图分页投票、Admin feedback 状态运营、CMS 发布后的 Resources 发现与分页已补齐并有真实 Chrome 证据。第三轮公开合集详情、分页、作者管理和原生媒体播放已通过统一 Chrome 与测试；继续覆盖 Feed / Community / Creator levels / Studio、Pack / Comic、Affiliate 后续归因运营、Images / Videos / Glossary / Authors 与完整内容族的真实数据、副作用和权限。2026-09-13 已闭合 Admin 体检 A-2 的现有非支付申请审批：权限、确认、版本竞争、幂等审计、用户 dashboard API 结果与批准后的点击资格已有受控测试，不再列为待启动。AF-01 下一步建立已发布条款/资格 authority，并补用户申请、回执及 dashboard UI；随后按 AF-02 补推广链接/素材、归因窗口与转化状态及完整用户/运营浏览器证据，不能把申请人自行提交的 termsVersion 当作已发布条款。收益、佣金结算、充值和支付执行保留为后续独立范围。
-7. Pinned Memories、Custom Instructions 与 session 级回复长度/表达风格已实现，真实模型验证了版本冻结、重生成、no-memory 与清除。末条操作遮挡、失败图片 Retry 入口和 50 条以后会话可达性已通过统一 Chrome 与测试；第三轮 Scene 与全局用户 persona 已在 `eb7b9bef…` 完成四次真实模型请求、历史版本与新 Turn 冻结核对，样本不构成全面模型质量证明。回忆输出校验和正式自然召回已在 `ab995512…` 通过；后续补主动消息、以 2026-09-01 五档历史基线评估的功能等价 profiles、最多 12 角色 Group Chat 和双向 Voice Call。继续保持 Main 历史权威、official igrep、角色身份及 Product Action 连续性。
-8. **本轮不执行支付范围**。后续独立工作仍包括 Upgrade/Profile 的 provider checkout → activation → expiry → repurchase，以及 coin store 的 offer → quote → one-time checkout → provider confirmation → 幂等 topup ledger → 购买历史。既有历史/媒体访问与一次性预付承诺保持；本轮内部测试加币不算用户充值产品闭环。
+4. 将 Recent、Characters、Presets、Created、Media、Group chats 与免费 Packs 作为实际资产入口核对。免费 Pack 108 已完成私有副本、immutable Grant、撤下/封禁边界及原生领取/下载/播放闭环；不可将其写成普通合集或 Pack 购买完成。Comics 已有发布→游客阅读→真实 Remix→撤下单域证据，各域仍须完成新 source 的组合资格与对标判定。
+5. Generate 的 Create / Edit / 独立 Enhance 2×、reference lineage 与单段视频已有真实交付。Advanced seed/model、精确 Chat context 和 gated Chat Animate 已实现。GN-19 109 已实现 1–3 scenes、时长/比例/质量选择、可选英文 voice 与 composition lease；当前v7/workflow4已有两场景真实生成/旁白/合成/下载/ledger证据；其他组合和最终统一source仍待。默认图/视频像素失败继续处理；历史 pins、quote、settlement/refund 和 replay 幂等保持。
+6. Images / Videos / Glossary / Authors 四族已有 10 个实际发布路由及 Chrome index/detail/CTA 证据，Comics、合集撤回与 Support 也已有单域闭环。继续核对其余内容库存、Feed / Community / Creator levels / Studio 与同版组合资格。AF-02 107 已实施；同 IP/UA 独立客户修复的 Chrome F scoped proof 已成功、E RED 保留，新 whole-source wrapper 资格待取。AF-03 与 Pack 购买本轮排除；2026-09-13 审批报告保留原日期与范围。
+7. Pinned Memories、Custom Instructions、主动消息与 Group Chat 已实施，继续补权限变化、调度恢复、角色/记忆隔离与真实媒体资格。CH-16 Catalog 及偏好/Turn 快照、Voice Call 106 已实施；Call 仅已有本机受控 English recorded-upload 和恢复证据，physical mic/欧洲 25 语未 qualified。Scene canonical policy18仍未语义qualified，私有20/21/9B原失败保留，未切默认。保持 Main 历史权威、official igrep 和 Product Action 连续性。
+8. **本轮不执行支付范围**。Upgrade/Profile 的预付访问及 Coin Store 独立 offer / checkout / provider-confirmed 幂等 topup / 购买历史已有实现；后续独立验证真实支付确认、唯一入账/激活、原任务恢复、迟到/重复通知、expiry / repurchase。既有历史/媒体访问与一次性预付承诺保持；内部测试加币不算用户充值产品闭环。
 9. WPCU 保持 `official`；WSCU/WSCrU/WPSCU/WSR 保持 shadow/directional 诊断。补生产回放、成熟窗口和质量认证，但不执行指标 cutover。
 
 退出条件：parity matrix 中每个目标域都有明确状态、真实产品能力与同 revision 浏览器/运行证据；所有公开声明与当前实现状态一致；指标保持 WPCU official 与其他诊断指标的正确层级。
 
 ## 2. 执行数据库 cutover
 
-以下是仍含旧 Chat 数据的目标环境切换计划，不是要求当前本机重复迁移：本轮运行库已核对 82 个 migration、checksum 和关键约束。正式目标先发现实际状态，再由用户/CI在受控维护窗执行必要步骤：
+以下是仍含旧 Chat 数据的目标环境切换计划，不是要求当前本机重复迁移。旧轮核对 82 个 migration 的证据保留历史范围；2026-10-02本机已执行并核对110条名称/checksum 与新增表 app-role 权限，见[恢复准备材料](../../.scratch/full-product-audit-2026-10-01/verification/deployment/full-recovery-local/README.md)。正式目标尚未提供，后续先发现实际状态，再在受控维护窗执行必要步骤：
 
 1. 备份 Main PostgreSQL、旧 Chat schema、Blob、`CHAT_FS_ROOT` 和 DSH workspace。
 2. pause 新 Turn admission、Chat、Gen/finalizer，确认没有 active attempt 或未知 terminal。
@@ -66,13 +79,13 @@ H3 首帧叠影与构图跳变仍需稳定修复和质量复验；重新启用�
 ## 3. cutover 后清理迁移兼容面
 
 - production cutover 对账通过后再清理不再可恢复的旧 runtime trace；本轮不做不可逆删除。
-- recovery producer/executor/launch gate 已升级为 schema 2；已核准的 Main PG + AgentRun + DSH canonical/private + Blob + queue receipt bundle 按目标数据库、迁移校验、存储/队列 authority、manifest SHA 和有效期验证。单纯应用 source 改变不要求重复同一恢复演练；authority、迁移、恢复格式或有效期不再满足时重新生成并核准。历史 schema-1 bundle 只保留历史证据。
+- recovery producer/executor/launch gate 已升级为 schema 2；Main PG + AgentRun + DSH canonical/private + Blob + queue receipt bundle 必须按目标数据库、迁移校验、存储/队列 authority、manifest SHA 和有效期验证。本机110同边界完整演练尚未执行；实际 dump/restore、文件字节/路径/ACL、owner/grants、queues 和安全清理均需 proof，不能只证明 PG 计数。authority、迁移、恢复格式或有效期变化时重新生成并核准；历史 schema-1 和 PG-only 证据保留原范围。
 
 这些代码在实际 cutover 前保留是迁移保险；cutover 后继续长期保留才是结构债。
 
 ## 4. 目标 revision 的完整再验证
 
-历史闭环证据见 `CURRENT_FUNCTIONAL_COVERAGE.md`；任何产品/代码切换后，目标 revision 仍必须重新覆盖：
+历史及本次单域证据见 `CURRENT_FUNCTIONAL_COVERAGE.md`；当前源码新增与 merge 后尚未最终冻结，全量 runner 继续等待最终 source。目标 revision 必须重新覆盖以下风险，不能把旧 `57adf7f…` 媒体或跨 source 的视频组合成全通过：
 
 - 创建会话、发消息、刷新恢复、编辑、重生成、取消。
 - terminal exact replay；冲突 replay/旧 attempt 被拒。

@@ -2,7 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdminPageInfo } from "@idream/shared/admin";
-import { canGoPrevious, listPageFromParams, listUrlSearch, syncListUrl } from "./section-kit";
+import { canGoPrevious, listPageFromParams, listUrlSearch, previousListPage, syncListUrl } from "./section-kit";
 
 describe("canGoPrevious", () => {
   // SPEC: contracts/common.ts —— hasPreviousPage 缺席意味着「这个 operation 还是单向的」，
@@ -104,5 +104,70 @@ describe("syncListUrl", () => {
     syncListUrl(new URLSearchParams({ limit: "25", cursor: "c1" }), 2);
 
     expect(pushState).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves existing history state while recording a page navigation", () => {
+    window.history.replaceState({ workspace: "keep-me" }, "", "/admin/generation/recipes");
+    syncListUrl(new URLSearchParams({ limit: "25", cursor: "c1" }), 2);
+    expect(window.history.state.workspace).toBe("keep-me");
+  });
+
+  it("preserves application state without forwarding Next.js internal navigation flags", () => {
+    window.history.replaceState({ workspace: "keep-me", __NA: true, _N: true, __PRIVATE_NEXTJS_INTERNALS_TREE: { old: "tree" } }, "", "/admin/generation/recipes");
+    syncListUrl(new URLSearchParams({ cursor: "c1" }), 2);
+    const written = pushState.mock.calls[0]?.[0];
+    expect(written.workspace).toBe("keep-me");
+    // Next.js 16 treats these flags as its own navigation and skips router synchronization.
+    expect(written).not.toHaveProperty("__NA");
+    expect(written).not.toHaveProperty("_N");
+    expect(written).not.toHaveProperty("__PRIVATE_NEXTJS_INTERNALS_TREE");
+  });
+
+  it("restores prefixed cursor history without mixing it with an adjacent workspace", () => {
+    const keys = { cursor: "experimentCursor", page: "experimentPage", limit: "experimentLimit" };
+    window.history.replaceState(null, "", "/admin/growth/experiments?view=experiments&cursor=adjacent&page=8");
+    syncListUrl(new URLSearchParams(window.location.search + "&experimentCursor=c1"), 2, keys);
+    syncListUrl(new URLSearchParams(window.location.search.replace("experimentCursor=c1", "experimentCursor=c2")), 3, keys);
+    expect(new URLSearchParams(window.location.search).get("experimentPage")).toBe("3");
+    expect(new URLSearchParams(window.location.search).get("page")).toBe("8");
+    expect(previousListPage(keys)).toEqual({ cursor: "c1", page: 2, hasHistory: true });
+    const oldState = window.history.state;
+    window.history.replaceState(oldState, "", window.location.href + "&experimentSearch=changed");
+    expect(previousListPage(keys)).toEqual({ cursor: undefined, page: 1, hasHistory: false });
+  });
+
+  it("normalises a cursorless deep link to the first page", () => {
+    window.history.replaceState(null, "", "/admin/generation/recipes?page=5");
+    syncListUrl(new URLSearchParams({ limit: "25" }), 5);
+    expect(window.location.search).toBe("?limit=25");
+  });
+
+  it("keeps visited forward cursors through refreshes and consumes them one page at a time", () => {
+    syncListUrl(new URLSearchParams({ limit: "25", cursor: "c1" }), 2);
+    syncListUrl(new URLSearchParams({ limit: "25", cursor: "c2" }), 3);
+    syncListUrl(new URLSearchParams({ limit: "25", cursor: "c2" }), 3);
+    expect(previousListPage()).toEqual({ cursor: "c1", page: 2, hasHistory: true });
+    syncListUrl(new URLSearchParams({ limit: "25", cursor: "c1" }), 2);
+    expect(previousListPage()).toEqual({ cursor: undefined, page: 1, hasHistory: true });
+    syncListUrl(new URLSearchParams({ limit: "25" }), 1);
+    expect(previousListPage()).toEqual({ cursor: undefined, page: 1, hasHistory: false });
+  });
+
+  it("drops cursor history when the filters or the shared-route view change", () => {
+    syncListUrl(new URLSearchParams({ limit: "25", cursor: "c1" }), 2);
+    const oldState = window.history.state;
+    syncListUrl(new URLSearchParams({ limit: "25", search: "new", cursor: "new-cursor" }), 2);
+    expect(previousListPage()).toEqual({ cursor: undefined, page: 1, hasHistory: false });
+    window.history.replaceState(oldState, "", "/admin/generation/recipes?limit=25&cursor=c1&page=2&view=presets");
+    expect(previousListPage()).toEqual({ cursor: undefined, page: 1, hasHistory: false });
+  });
+
+  it("can return to a visited deep-linked page, then explicitly falls back to the first page", () => {
+    window.history.replaceState(null, "", "/admin/generation/recipes?limit=25&cursor=c9&page=9");
+    expect(previousListPage()).toEqual({ cursor: undefined, page: 1, hasHistory: false });
+    syncListUrl(new URLSearchParams({ limit: "25", cursor: "c10" }), 10);
+    expect(previousListPage()).toEqual({ cursor: "c9", page: 9, hasHistory: true });
+    syncListUrl(new URLSearchParams({ limit: "25", cursor: "c9" }), 9);
+    expect(previousListPage()).toEqual({ cursor: undefined, page: 1, hasHistory: false });
   });
 });

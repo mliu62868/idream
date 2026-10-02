@@ -6,6 +6,7 @@ import {
   redgraftLtx25VideoProductionRecipe,
   type CharacterVideoProductionRecipe,
 } from "@idream/shared";
+import { REDGRAFT_VIDEO_OPTIONS } from "@idream/shared/contracts";
 
 function productionVideoProfile(recipe: CharacterVideoProductionRecipe) {
   return {
@@ -56,6 +57,19 @@ export const PRODUCTION_REDGRAFT_LTX25_VIDEO_PROFILE = productionVideoProfile(
   redgraftLtx25VideoProductionRecipe,
 );
 
+// MPSGraph uses v6 for the default and v7 for video options. Historical
+// profiles retain their original Gemma/runtime workflow pins.
+export const PRODUCTION_REDGRAFT_LTX25_VIDEO_OPTIONS_PROFILE = {
+  ...PRODUCTION_REDGRAFT_LTX25_VIDEO_PROFILE,
+  version: redgraftLtx25VideoProductionRecipe.optionsProfileVersion,
+  allowedOrientations: ["2:3", "1:1"],
+  runnerConfig: { ...PRODUCTION_REDGRAFT_LTX25_VIDEO_PROFILE.runnerConfig, videoOptions: REDGRAFT_VIDEO_OPTIONS },
+} as const;
+
+export function hasProductionVideoOptions(profile: ProductionVideoProfileCandidate) {
+  return profileMatchesAuthority(profile, PRODUCTION_REDGRAFT_LTX25_VIDEO_OPTIONS_PROFILE);
+}
+
 const PRODUCTION_VIDEO_PROFILE_AUTHORITIES = characterVideoProductionRecipes.map(
   (recipe) => ({ recipe, profile: productionVideoProfile(recipe) }),
 );
@@ -98,6 +112,7 @@ export function isDefaultProductionVideoProfile(
 export function productionVideoRecipeForProfile(
   profile: ProductionVideoProfileCandidate,
 ): CharacterVideoProductionRecipe | null {
+  if (hasProductionVideoOptions(profile)) return redgraftLtx25VideoProductionRecipe;
   return PRODUCTION_VIDEO_PROFILE_AUTHORITIES.find(
     ({ profile: authority }) => profileMatchesAuthority(profile, authority),
   )?.recipe ?? null;
@@ -111,7 +126,7 @@ export function isProductionVideoProfile(
 
 function profileMatchesAuthority(
   profile: ProductionVideoProfileCandidate,
-  authority: ReturnType<typeof productionVideoProfile>,
+  authority: Omit<ReturnType<typeof productionVideoProfile>, "runnerConfig" | "allowedOrientations" | "version"> & { runnerConfig: unknown; allowedOrientations: readonly string[]; version: number },
 ) {
   return (
     profile.mode === "video" &&

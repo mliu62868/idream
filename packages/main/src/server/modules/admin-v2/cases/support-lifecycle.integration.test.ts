@@ -28,7 +28,7 @@ async function fileRequest() {
 async function resolveRequest(ticketId: string, message = "The image download works again.") {
   expectOk(await adminV2("PATCH", `support/requests/${ticketId}`, {
     userId: ADMIN, role: "admin",
-    body: { status: "resolved", customerMessage: message, reason: message, confirmation: ticketId },
+    body: { expectedUpdatedAt: (await prisma.supportRequest.findUniqueOrThrow({ where: { ticketId } })).updatedAt.toISOString(), status: "resolved", customerMessage: message, reason: message, confirmation: ticketId },
   }));
 }
 

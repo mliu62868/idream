@@ -62,7 +62,7 @@ export function ChatVideoAttachmentCard({ attachment, ownerScope, retryPending, 
   }
 
   async function cancel() {
-    if (!jobId || !ownerScope || pending) return;
+    if (!jobId || !ownerScope || pending || attachment.canCancel !== true) return;
     const current = ++epoch.current;
     setPending(true);
     setError("");
@@ -100,7 +100,7 @@ export function ChatVideoAttachmentCard({ attachment, ownerScope, retryPending, 
       {unknown ? <Link href="/helpdesk" className={`${classes} bg-white/10`}>Contact support</Link> : retryable ? quote ? <>
         <p className="text-xs text-white/75">Retry this video · {quote.costDreamcoins} Dreamcoins</p>
         <button type="button" className={`${classes} bg-white text-black`} disabled={pending || retryPending || !ownerScope} onClick={() => void confirmRetry()}>{pending || retryPending ? "Confirming retry…" : "Confirm video retry"}</button>
-      </> : <button type="button" className={`${classes} bg-white text-black`} disabled={pending || retryPending || !ownerScope} onClick={() => void checkRetry()}><RefreshCw className="size-4" />{pending ? "Checking price…" : "Check video retry price"}</button> : active && ["requesting", "accepted", "queued"].includes(attachment.status) ? <button type="button" className={`${classes} bg-white/10`} disabled={pending || !ownerScope} onClick={() => void cancel()}>{pending ? "Checking cancellation…" : "Cancel before processing"}</button> : null}
+      </> : <button type="button" className={`${classes} bg-white text-black`} disabled={pending || retryPending || !ownerScope} onClick={() => void checkRetry()}><RefreshCw className="size-4" />{pending ? "Checking price…" : "Check video retry price"}</button> : active && attachment.canCancel === true ? <button type="button" className={`${classes} bg-white/10`} disabled={pending || !ownerScope} onClick={() => void cancel()}>{pending ? "Checking cancellation…" : "Cancel before processing"}</button> : null}
       {error ? <p role="alert" className="text-xs leading-5 text-rose-200">{error}</p> : null}
     </figcaption>
   </figure>;

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { loadCharacterSoulSnapshot } from "@idream/shared";
 import { FREE_DAILY_MESSAGES } from "@idream/shared/chat/limits";
 import type {
   ChatExecutionSnapshot,
@@ -7,18 +8,21 @@ import type {
   ChatExperiencePreference,
   UserChatPersona,
 } from "@idream/shared/contracts";
-import { chatContextDirectivesSchema, chatExchangeCompletedV2Schema, chatExchangeCorrectionV2Schema, chatExecutionSnapshotSchema, chatExperiencePreferenceSchema, chatTerminalCommitSchema, DEFAULT_CHAT_EXPERIENCE, MAIN_TO_CHAT_EVENTS, METRIC_PRODUCT_EVENTS } from "@idream/shared/contracts";
+import { chatContextDirectivesSchema, chatExchangeCompletedV2Schema, chatExchangeCorrectionV2Schema, chatExecutionSnapshotSchema, chatExperiencePreferenceSchema, chatTerminalCommitSchema, MAIN_TO_CHAT_EVENTS, METRIC_PRODUCT_EVENTS } from "@idream/shared/contracts";
 import { Prisma, type RecentChat } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
-import { Errors } from "@/server/lib/errors";
+import { AppError, Errors } from "@/server/lib/errors";
 import { logger } from "@/server/lib/logger";
 import { isSyntheticMediaAsset } from "@/server/lib/media-asset-authority";
 import { moderateText } from "@/server/moderation/text-authority";
 import { updateGenerationRequestSourceMeta } from "@/server/ai/generation-request-transition";
+import { canCancelGenerationBeforeDispatch } from "@/server/ai/generation-request-lifecycle";
+import { MAIN_OUTBOX_GENERATION_DISPATCH_EVENT_TYPES } from "@/server/events/main-outbox-transport";
 import { recordMainToChatEvent } from "@/processes/chat-outbox";
 import { appendCanonicalMetricEvent, appendCanonicalMetricEventsForUser } from "@/server/modules/admin-v2/metrics/event-writer";
 import { isReusablePlatformAssetWhere } from "@/server/modules/ourdream/chat-image-reuse";
-import { generationExecutionErrorCode, latestGenerationAttemptStatuses } from "@/server/modules/ourdream/generation-job-read-model";
+import { directCharacterAudienceWhere } from "@/server/modules/ourdream/public-content-audience";
+import { effectiveGenerationJobStatus, generationExecutionErrorCode } from "@/server/modules/ourdream/generation-job-read-model";
 import { entitlementMap } from "@/server/modules/ourdream/subscription-lifecycle";
 import {
   assertNoPendingCompanionMemoryRebuild,
@@ -29,6 +33,7 @@ import {
 import { lockChatScope } from "./turn-scope";
 import { legacyTurnActionAttachmentId } from "./tool-effect-attachment";
 import { userChatPersonaForTurn } from "./user-persona";
+import { DEFAULT_PROFILE_EXPERIENCE } from "./conversation-profiles";
 
 const BLOCKED_NOTICE = "I can’t help with that request.";
 const ACTIVE_ASSISTANT_STATES = ["pending", "generating"];
@@ -68,7 +73,7 @@ export async function chatSessionCharacterPin(
       deletedAt: null,
       OR: [
         { creatorId: userId },
-        { visibility: { in: ["public", "unlisted"] }, status: "approved" },
+        directCharacterAudienceWhere,
       ],
     },
     include: {
@@ -95,6 +100,11 @@ export async function chatSessionCharacterPin(
     : character.currentContentVersion;
   if (!content) {
     throw Errors.gone("Character has no immutable Chat content version");
+  }
+  // New sessions must pin a runnable Soul. Historical reads and accepted Turn
+  // replay keep their own immutable authority and do not re-enter this gate.
+  if (content.characterId !== character.id || !loadCharacterSoulSnapshot(content.personaSnapshot).ok) {
+    throw Errors.gone("Character has no valid immutable Chat Soul");
   }
   const openingMessage = firstMessage(content.openingSnapshot) ?? null;
   const visual = release
@@ -219,6 +229,7 @@ export async function getChatSession(userId: string, sessionId: string) {
   return {
     ...publicSession(session),
     ownerScope: `user:${userId}`,
+    continuation: await chatSessionContinuation(prisma, userId, session),
     // The open page polls for a check-in only while one can arrive.
     proactiveEnabled: session.proactiveEnabled,
     character: {
@@ -237,6 +248,7 @@ export async function beginChatTurn(input: {
   content: string;
   idempotencyKey: string;
   origin?: "user" | "proactive";
+  voiceCall?: { id: string; leaseToken: string; utteranceId: string };
 }): Promise<BegunChatTurn> {
   const content = requiredText(input.content, "content", 20_000);
   const idempotencyKey = requiredText(input.idempotencyKey, "Idempotency-Key", 160);
@@ -249,7 +261,7 @@ export async function beginChatTurn(input: {
   const created = await prisma.$transaction(async (tx) => {
     // INVARIANT: the user lock serializes the daily quota across all of their
     // sessions; the session lock serializes product ordering inside one chat.
-    if (!blocked || session.groupId) {
+    if (!blocked || session.groupId || input.voiceCall) {
       await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${input.userId} FOR UPDATE`;
     }
     if (session.groupId) {
@@ -264,6 +276,15 @@ export async function beginChatTurn(input: {
     if (!lockedSession) throw Errors.notFound("Chat session not found");
     if (lockedSession.status !== "active") throw Errors.gone("Chat session is archived");
     await assertChatSessionServingAuthority(tx, input.userId, lockedSession);
+    if (input.voiceCall) {
+      const now = new Date();
+      const call = await tx.voiceCall.findFirst({ where: { id: input.voiceCall.id, userId: input.userId,
+        sessionId: session.sessionId, status: "active", leaseToken: input.voiceCall.leaseToken,
+        leaseExpiresAt: { gt: now }, deadlineAt: { gt: now } } });
+      const utterance = await tx.voiceCallUtterance.findFirst({ where: { id: input.voiceCall.utteranceId,
+        callId: input.voiceCall.id, status: { in: ["transcribing", "linked"] } } });
+      if (!call || !utterance) throw Errors.gone("Call stopped before this spoken turn could be accepted");
+    }
     const duplicate = lockedSession.groupId
       ? await tx.chatTurn.findFirst({ where: { groupTurn: { groupId: lockedSession.groupId }, idempotencyKey } })
       : await tx.chatTurn.findUnique({ where: { sessionId_idempotencyKey: { sessionId: session.sessionId, idempotencyKey } } });
@@ -338,6 +359,9 @@ export async function beginChatTurn(input: {
         origin: input.origin ?? "user",
       },
     });
+    if (input.voiceCall) await tx.voiceCallUtterance.update({ where: { id: input.voiceCall.utteranceId }, data: {
+      turnId: turn.id, assistantMessageId: turn.assistantMessageId, replyAttempt: turn.attempt, status: "linked",
+    } });
     await tx.recentChat.update({
       where: { sessionId: session.sessionId },
       data: { lastMessageAt: now },
@@ -606,9 +630,7 @@ export async function commitChatTerminal(input: ChatTerminalCommit) {
         },
         select: { userId: true, characterId: true, entryExposureId: true, entryJourneyId: true, entryPlacementId: true },
       });
-      if (input.status === "sent" || input.status === "failed" || input.status === "cancelled") {
-        await settleChatTurnUsage(tx, current, input.status, now);
-      }
+      await settleChatTurnUsage(tx, current, input.status, now);
       if (input.status === "sent") {
         const firstSelectedReply = await tx.chatTurn.updateMany({
           where: { id: input.turnId, statsCountedAt: null },
@@ -1027,11 +1049,11 @@ async function frozenExecutionSnapshot(
   );
   const experienceRow = preservedExperience !== undefined ? preservedExperience : await tx.chatExperiencePreference.findUnique({
     where: { sessionId: turn.sessionId },
-    select: { responseLength: true, interactionIntensity: true, sceneGeneration: true, version: true },
+    select: { responseLength: true, interactionIntensity: true, sceneGeneration: true, conversationProfile: true, version: true },
   });
   const experience = experienceRow
-    ? chatExperiencePreferenceSchema.parse(experienceRow)
-    : preservedExperience === undefined ? DEFAULT_CHAT_EXPERIENCE : null;
+    ? chatExperiencePreferenceSchema.parse({ ...experienceRow, conversationProfile: experienceRow.conversationProfile ?? undefined })
+    : preservedExperience === undefined ? DEFAULT_PROFILE_EXPERIENCE : null;
   const snapshot = chatExecutionSnapshotSchema.parse({
     version: 1,
     turnId: turn.id,
@@ -1201,6 +1223,27 @@ export async function assertChatSessionServingAuthority(
   );
 }
 
+// Historical reads keep their immutable content. New actions use exactly the
+// same Serving gate as admission, so the page can explain a pause or update
+// before asking the reader to send an impossible request.
+export async function chatSessionContinuation(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  session: { characterId: string; characterReleaseId: string | null },
+): Promise<"available" | "character_unavailable" | "character_release_changed"> {
+  try {
+    await assertChatSessionServingAuthority(tx, userId, session);
+    return "available";
+  } catch (error) {
+    if (!(error instanceof AppError) || error.code !== "gone") throw error;
+    const details = error.details;
+    return details && typeof details === "object" && "reason" in details
+      && details.reason === "character_release_changed"
+      ? "character_release_changed"
+      : "character_unavailable";
+  }
+}
+
 async function requireTurn(userId: string, messageId: string) {
   const turn = await prisma.chatTurn.findFirst({
     where: {
@@ -1289,7 +1332,7 @@ async function reserveChatTurnUsage(
  *
  * INTENT: charging a Turn that failed makes the user pay for our outage — while
  * the model was down every send spent 1/30 and delivered nothing.
- *   - failed: voided.
+ *   - failed / blocked: voided.
  *   - cancelled: voided only while the attempt was never admitted to Chat
  *     (`admittedAt` null). An admitted attempt is already streaming text to the
  *     user; voiding it would make "read the reply, then press Stop" free.
@@ -1302,7 +1345,7 @@ async function reserveChatTurnUsage(
 export async function settleChatTurnUsage(
   tx: Prisma.TransactionClient,
   turn: { id: string; statsCountedAt: Date | null; admittedAt: Date | null },
-  outcome: "sent" | "failed" | "cancelled",
+  outcome: ChatTerminalCommit["status"],
   at: Date,
 ) {
   if (outcome === "sent" || turn.statsCountedAt || (outcome === "cancelled" && turn.admittedAt)) {
@@ -1795,11 +1838,32 @@ async function enrichAttachmentMedia(messages: Array<Record<string, unknown>>, u
 
   const jobs = jobIds.size ? await prisma.generationJob.findMany({
     where: { id: { in: [...jobIds] }, userId },
-    select: { id: true, status: true, errorCode: true },
+    select: { id: true, status: true, errorCode: true, sourceType: true },
   }) : [];
-  const attemptStatuses = await latestGenerationAttemptStatuses(jobs.map((job) => job.id));
-  const executionErrors = new Map(jobs.map((job) => [
-    job.id, generationExecutionErrorCode(job.status, attemptStatuses.get(job.id) ?? null, job.errorCode),
+  const attempts = jobs.length ? await prisma.generationAttempt.findMany({
+    where: { requestId: { in: jobs.map(job => job.id) } },
+    select: { id: true, requestId: true, status: true, startedAt: true },
+    orderBy: [{ requestId: "asc" }, { attemptNo: "desc" }],
+  }) : [];
+  const latestAttempts = new Map<string, (typeof attempts)[number]>();
+  for (const attempt of attempts) if (!latestAttempts.has(attempt.requestId)) latestAttempts.set(attempt.requestId, attempt);
+  const videoJobs = jobs.filter(job => job.sourceType === "chat_video");
+  const dispatches = videoJobs.length ? await prisma.mainOutboxEvent.findMany({
+    where: { aggregateType: "generation_request", aggregateId: { in: videoJobs.map(job => job.id) }, eventType: { in: [...MAIN_OUTBOX_GENERATION_DISPATCH_EVENT_TYPES] } },
+    select: { aggregateId: true, status: true, attempts: true, payload: true },
+  }) : [];
+  const dispatchesByJob = new Map<string, typeof dispatches>();
+  for (const dispatch of dispatches) {
+    const rows = dispatchesByJob.get(dispatch.aggregateId);
+    if (rows) rows.push(dispatch);
+    else dispatchesByJob.set(dispatch.aggregateId, [dispatch]);
+  }
+  const jobProjections = new Map(jobs.map((job) => [
+    job.id, {
+      status: effectiveGenerationJobStatus(job.status, latestAttempts.get(job.id)?.status ?? null),
+      errorCode: generationExecutionErrorCode(job.status, latestAttempts.get(job.id)?.status ?? null, job.errorCode),
+      canCancel: job.sourceType === "chat_video" && canCancelGenerationBeforeDispatch(job, latestAttempts.get(job.id) ?? null, dispatchesByJob.get(job.id) ?? []),
+    },
   ]));
 
   const assets = await prisma.mediaAsset.findMany({
@@ -1824,22 +1888,28 @@ async function enrichAttachmentMedia(messages: Array<Record<string, unknown>>, u
       ...message,
       attachments: attachments.map((attachment) => {
         if (!isRecord(attachment)) return attachment;
-        const errorCode = typeof attachment.generationJobId === "string"
-          ? executionErrors.get(attachment.generationJobId)
+        const job = typeof attachment.generationJobId === "string"
+          ? jobProjections.get(attachment.generationJobId)
           : null;
-        if (errorCode === "provider_outcome_unknown") return { ...attachment, errorCode };
-        const mediaAssetId = typeof attachment.mediaAssetId === "string" ? attachment.mediaAssetId : null;
+        // Liveness and cancellation are read projections; delivery remains the
+        // persisted attachment authority, including its terminal and media facts.
+        const activeVideo = attachment.kind === "generated_video" && ["requesting", "accepted", "queued", "running"].includes(String(attachment.status));
+        const projected = attachment.kind === "generated_video"
+          ? { ...attachment, canCancel: activeVideo && job?.canCancel === true, ...(activeVideo && job?.status === "running" ? { status: "running" } : {}) }
+          : attachment;
+        if (job?.errorCode === "provider_outcome_unknown") return { ...projected, errorCode: job.errorCode };
+        const mediaAssetId = typeof projected.mediaAssetId === "string" ? projected.mediaAssetId : null;
         const asset = mediaAssetId ? byId.get(mediaAssetId) : null;
         return asset
           ? {
-              ...attachment,
+              ...projected,
               mediaUrl: asset.url,
               thumbnailUrl: asset.thumbnailUrl ?? asset.url,
-              width: attachment.width ?? asset.width,
-              height: attachment.height ?? asset.height,
+              width: projected.width ?? asset.width,
+              height: projected.height ?? asset.height,
               isSynthetic: isSyntheticMediaAsset(asset.metadata),
             }
-          : attachment;
+          : projected;
       }),
     };
   });

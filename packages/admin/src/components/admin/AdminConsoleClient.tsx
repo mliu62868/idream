@@ -64,8 +64,6 @@ type AdminConsoleClientProps = {
   // INVARIANT: 外壳不得在挂载后再去别处读这两项——那正是每次导航先闪一次默认值的来源。
   //            运行时只写 cookie，不读。必填是唯一的强制点：漏传就是编译错误。
   preferences: AdminShellPreferences;
-  // dev-only：展示退出按钮以便切换内置账号。
-  devLogout?: boolean;
 };
 
 const WORK_MODE_LABELS: Record<WorkMode, string> = {
@@ -163,7 +161,6 @@ function AdminConsoleContent({
   path,
   preferences,
   shellSignals,
-  devLogout = false,
   locale,
   setLocale,
 }: AdminConsoleClientProps & {
@@ -406,7 +403,6 @@ function AdminConsoleContent({
                 <AccountMenu
                   actor={actor}
                   canChooseWorkMode={canChooseWorkMode}
-                  devLogout={devLogout}
                   locale={locale}
                   setLocale={setLocale}
                   setWorkMode={changeWorkMode}
@@ -566,7 +562,6 @@ function ShellTitle({
 function AccountMenu({
   actor,
   canChooseWorkMode,
-  devLogout,
   locale,
   setLocale,
   setWorkMode,
@@ -575,7 +570,6 @@ function AccountMenu({
 }: {
   actor: Actor;
   canChooseWorkMode: boolean;
-  devLogout: boolean;
   locale: AdminLocale;
   setLocale: (locale: AdminLocale) => void;
   setWorkMode: (mode: WorkMode) => void;
@@ -584,6 +578,8 @@ function AccountMenu({
 }) {
   const { t } = useAdminI18n();
   const [open, setOpen] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [logoutError, setLogoutError] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
 
@@ -676,18 +672,26 @@ function AccountMenu({
             ))}
           </dl>
 
-          {devLogout ? (
-            <button
-              className="mt-3 inline-flex h-9 w-full items-center justify-center rounded-md border border-[var(--ad-border)] text-sm text-[var(--ad-text-muted)] hover:bg-black/[0.04]"
-              onClick={async () => {
-                await fetch("/api/admin-auth/logout", { method: "POST" });
+          {logoutError ? <p className="mt-3 text-xs text-[var(--ad-danger)]" role="alert">{t("Sign-out failed. Try again.")}</p> : null}
+          <button
+            className="mt-3 inline-flex h-9 w-full items-center justify-center rounded-md border border-[var(--ad-border)] text-sm text-[var(--ad-text-muted)] hover:bg-black/[0.04] disabled:opacity-50"
+            disabled={loggingOut}
+            onClick={async () => {
+              setLoggingOut(true);
+              setLogoutError(false);
+              try {
+                const response = await fetch("/api/admin-auth/logout", { method: "POST" });
+                if (!response.ok) throw new Error("Sign-out request failed");
                 window.location.reload();
-              }}
-              type="button"
-            >
-              {t("Logout")}
-            </button>
-          ) : null}
+              } catch {
+                setLogoutError(true);
+                setLoggingOut(false);
+              }
+            }}
+            type="button"
+          >
+            {t("Logout")}
+          </button>
         </div>
       ) : null}
     </div>

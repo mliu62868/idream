@@ -70,10 +70,14 @@ async function hasReleaseAuthority(tx: Prisma.TransactionClient, characterId: st
  * transaction locks the draft row first and re-reads its submitted mark; the
  * loser returns the winner's result instead of appending a second version.
  */
-async function lockEditDraftSubmission(tx: Prisma.TransactionClient, draftId: string) {
-  await tx.$queryRaw`SELECT id FROM character_drafts WHERE id = ${draftId} FOR UPDATE`;
-  const locked = await tx.characterDraft.findUnique({ where: { id: draftId }, select: { advancedDetails: true } });
-  return Boolean(readCurrentCharacterDraftDetails(locked?.advancedDetails).submittedCharacterId);
+async function lockEditDraftSubmission(tx: Prisma.TransactionClient, draft: Pick<CharacterDraft, "id" | "updatedAt">) {
+  await tx.$queryRaw`SELECT id FROM character_drafts WHERE id = ${draft.id} FOR UPDATE`;
+  const locked = await tx.characterDraft.findUniqueOrThrow({ where: { id: draft.id }, select: { advancedDetails: true, updatedAt: true } });
+  const submitted = Boolean(readCurrentCharacterDraftDetails(locked.advancedDetails).submittedCharacterId);
+  if (!submitted && locked.updatedAt.getTime() !== draft.updatedAt.getTime()) {
+    throw Errors.versionConflict("This draft changed while saving. Load the latest saved draft before saving again.");
+  }
+  return submitted;
 }
 
 /**
@@ -324,7 +328,7 @@ export async function applyCharacterEditDraft(input: {
     : null;
 
   const committed = await prisma.$transaction(async (tx) => {
-    const alreadySubmitted = await lockEditDraftSubmission(tx, draft.id);
+    const alreadySubmitted = await lockEditDraftSubmission(tx, draft);
     await lockCharacterGenerationAuthority(tx, characterId);
     const existing = await tx.character.findFirst({ where: { id: characterId, creatorId: userId, deletedAt: null } });
     if (!existing) throw Errors.notFound("Character not found");
@@ -469,7 +473,7 @@ async function submitPublishedCharacterRevision(input: {
     advancedDetails: input.details,
   });
   await prisma.$transaction(async (tx) => {
-    const alreadySubmitted = await lockEditDraftSubmission(tx, draft.id);
+    const alreadySubmitted = await lockEditDraftSubmission(tx, draft);
     await lockCharacterGenerationAuthority(tx, characterId);
     const existing = await tx.character.findFirst({ where: { id: characterId, creatorId: userId, deletedAt: null } });
     if (!existing) throw Errors.notFound("Character not found");
@@ -508,6 +512,8 @@ async function submitPublishedCharacterRevision(input: {
           createdById: userId,
         },
       });
+      // The operator's expectedProjectVersion also covers the chosen text revision.
+      await tx.characterProject.update({ where: { id: project.id }, data: { version: { increment: 1 } } });
     }
     // Tags are catalog dimensions, not Release content; same dictionary rule as create.
     const tagSlugs = jsonStringArray(draft.tags);

@@ -2,13 +2,15 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Loader2 } from "lucide-react";
-import { apiGet, apiWrite } from "@/components/admin/api";
+import { AdminV2RequestError, apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { DetailPage, DetailSection } from "@/components/admin/ui/DetailPage";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { FormSection, Field, INPUT_CLASS, TEXTAREA_CLASS } from "@/components/admin/ui/FormPage";
 import { DangerButton, GhostButton, PrimaryButton } from "@/components/admin/ui/buttons";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
+import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
+import { useUnsavedChanges } from "@/components/admin/ui/useUnsavedChanges";
 import { EngineeringDetails } from "@/components/admin/generation/EngineeringDetails";
 import { LoadingWorkspace } from "@/features/operations/WorkspaceUi";
 import { InfoGrid, WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
@@ -21,11 +23,11 @@ import {
   type Recipe,
   type RecipeDraft,
 } from "./recipes-api";
+import { RecipeValidationSection } from "./RecipeValidationSection";
 
 // SPEC: 提示词配方详情页 —— 查看 + 就地编辑（仅 draft）+ 发布/回滚（spec §7 详情页）。
-// INTENT: 无单条 GET，复用列表接口按 id 过滤。PATCH 无 reason 字段且后端审计不记 reason
-// （recipePatchSchema 契约），Save 直接 PATCH——不弹 ConfirmDialog 采集一个去不了后端的
-// reason。发布/回滚的后端确实收 reason，保留 ConfirmDialog。
+// INTENT: GET 读取精确配方。PATCH 无 reason 字段，Save 直接 PATCH；样本、核验、
+// 发布和回滚要求运营理由。发布只接受后端绑定当前输入的真实样本证据。
 type Mode = "view" | "edit";
 type PendingAction = "publish" | "rollback" | null;
 
@@ -42,25 +44,35 @@ function draftFromRow(row: Recipe): RecipeDraft {
   };
 }
 
-export function RecipesDetailPage({ id }: { id: string }) {
+export function RecipesDetailPage({ canWrite, id }: { canWrite: boolean; id: string }) {
   const { t, value } = useAdminI18n();
   const [rows, setRows] = useState<Recipe[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notFound, setNotFound] = useState(false);
   const [mode, setMode] = useState<Mode>("view");
   const [draft, setDraft] = useState<RecipeDraft | null>(null);
+  const [editBaseline, setEditBaseline] = useState<RecipeDraft | null>(null);
   const [pending, setPending] = useState<PendingAction>(null);
   const [saving, setSaving] = useState(false);
+  const [awaitingReadback, setAwaitingReadback] = useState(false);
+  const [publishReady, setPublishReady] = useState(false);
   const { feedback, reportSuccess, clearFeedback } = useWriteFeedback();
+  const { guard } = useUnsavedChanges(Boolean(draft && !awaitingReadback && JSON.stringify(draft) !== JSON.stringify(editBaseline)));
 
   const reload = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setNotFound(false);
+    setPublishReady(false);
     try {
       const data = await apiGet<{ recipe: Recipe }>(`${RECIPES_LIST}/${encodeURIComponent(id)}`);
       setRows([data.recipe]);
+      return data.recipe;
     } catch (loadError) {
+      setNotFound(loadError instanceof AdminV2RequestError && loadError.status === 404);
       setError(requestErrorMessage(loadError, t));
+      return null;
     } finally {
       setLoading(false);
     }
@@ -74,14 +86,19 @@ export function RecipesDetailPage({ id }: { id: string }) {
   }, [reload]);
 
   const row = useMemo(() => rows.find((item) => item.id === id), [rows, id]);
-  const canEdit = row?.status === "draft";
+  const canEdit = canWrite && !awaitingReadback && row?.status === "draft";
+  const editing = canWrite && mode === "edit";
 
   function startEdit(current: Recipe) {
-    setDraft(draftFromRow(current));
+    if (!canWrite || awaitingReadback) return;
+    const nextDraft = draftFromRow(current);
+    setDraft(nextDraft);
+    setEditBaseline(nextDraft);
     setMode("edit");
   }
 
   function cancelEdit() {
+    if (saving || awaitingReadback) return;
     setDraft(null);
     setMode("view");
   }
@@ -93,15 +110,19 @@ export function RecipesDetailPage({ id }: { id: string }) {
   // Save 直接 PATCH：后端 PATCH 契约无 reason，可写门槛已由 status==="draft" 把住；
   // 失败就地显示在页面 error 条，不关编辑态。
   async function save() {
-    if (!draft) return;
+    if (!canWrite || saving || awaitingReadback || !draft) return;
     setSaving(true);
     setError(null);
     try {
       await apiWrite(`${RECIPES_LIST}/${id}`, "PATCH", recipeDraftPayload(draft));
-      await reload();
+      // A confirmed write must never be resent because its readback failed.
+      setAwaitingReadback(true);
+      const saved = await reload();
+      if (!saved) return;
+      setAwaitingReadback(false);
       setMode("view");
       setDraft(null);
-      reportSuccess(t("Draft saved. {label} stays a draft until you publish it.", { label: draft.label }));
+      reportSuccess(t(saved.status === "draft" ? "Draft saved. {label} stays a draft until you publish it." : "Latest details loaded.", { label: saved.label }));
     } catch (saveError) {
       setError(requestErrorMessage(saveError, t));
     } finally {
@@ -109,8 +130,16 @@ export function RecipesDetailPage({ id }: { id: string }) {
     }
   }
 
+  async function retryReadback() {
+    if (!(await reload())) return;
+    setAwaitingReadback(false);
+    setMode("view");
+    setDraft(null);
+    reportSuccess(t("Latest details loaded."));
+  }
+
   const confirmSpec: ConfirmSpec | null = useMemo(() => {
-    if (!row || !pending) return null;
+    if (!canWrite || awaitingReadback || !row || !pending) return null;
     if (pending === "publish") {
       return {
         title: t("Publish recipe"),
@@ -119,10 +148,15 @@ export function RecipesDetailPage({ id }: { id: string }) {
           await apiWrite(`${RECIPES_LIST}/${id}/commands/publish`, "POST", {
             reason,
             confirmation: id,
-            dryRunSummary: { source: "admin_console" },
           });
-          await reload();
-          reportSuccess(t("{label} is published and now serves generation requests.", { label: row.label }));
+          setAwaitingReadback(true);
+          if (!(await reload())) return;
+          setAwaitingReadback(false);
+          reportSuccess(t(row.mode === "negative"
+            ? "{label} is published. Its body supplements matching image recipes for new requests; accepted jobs keep their saved prompts."
+            : (row.useCase === "character" || row.useCase === "freeplay")
+            ? "{label} is published. New default requests for this media type and use case select it; pinned requests keep their recipe version."
+            : "{label} is published and available to generation workflows that select this recipe.", { label: row.label }));
         },
       };
     }
@@ -132,43 +166,48 @@ export function RecipesDetailPage({ id }: { id: string }) {
       submitLabel: t("Rollback"),
       onSubmit: async (reason) => {
         await apiWrite(`${RECIPES_LIST}/${id}/commands/rollback`, "POST", { reason, confirmation: id });
-        await reload();
+        setAwaitingReadback(true);
+        if (!(await reload())) return;
+        setAwaitingReadback(false);
         reportSuccess(t("{label} is rolled back and no longer serves generation requests.", { label: row.label }));
       },
     };
-  }, [pending, row, id, t, reload, reportSuccess]);
+  }, [canWrite, awaitingReadback, pending, row, id, t, reload, reportSuccess]);
 
   if (loading) {
-    return <LoadingWorkspace label="Loading…" />;
+    return <>{guard}<LoadingWorkspace label="Loading…" /></>;
   }
 
   if (!row) {
     return (
-      <EmptyState
+      <>{guard}<EmptyState
         action={
-          <Link href="/admin/generation/recipes">
-            <PrimaryButton>{t("Back to prompt recipes")}</PrimaryButton>
-          </Link>
+          <div className="flex flex-wrap justify-center gap-2">
+            {!notFound ? <PrimaryButton onClick={() => void reload()}>{t("Retry")}</PrimaryButton> : null}
+            <Link href="/admin/generation/recipes">
+              <GhostButton>{t("Back to prompt recipes")}</GhostButton>
+            </Link>
+          </div>
         }
         hint={error ?? undefined}
-        title={t("Recipe not found.")}
-      />
+        title={t(notFound ? "Recipe not found." : "Could not load recipe.")}
+      /></>
     );
   }
 
   const editButton = canEdit ? (
-    <GhostButton onClick={() => startEdit(row)}>{t("Edit profile")}</GhostButton>
+    <GhostButton onClick={() => startEdit(row)}>{t("Edit recipe")}</GhostButton>
   ) : (
     <GhostButton disabled title={t("Only draft recipes can be edited.")}>
-      {t("Edit profile")}
+      {t("Edit recipe")}
     </GhostButton>
   );
 
   const actions =
-    mode === "edit" ? (
+    !canWrite ? <PermissionNotice permission="generation.config.write" /> : editing ? (
       <>
-        <GhostButton disabled={saving} onClick={cancelEdit}>{t("Cancel")}</GhostButton>
-        <PrimaryButton disabled={saving} onClick={() => void save()}>
+        <GhostButton disabled={saving || awaitingReadback} onClick={cancelEdit}>{t("Cancel")}</GhostButton>
+        <PrimaryButton disabled={saving || awaitingReadback} onClick={() => void save()}>
           {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
           {t("Save changes")}
         </PrimaryButton>
@@ -177,15 +216,16 @@ export function RecipesDetailPage({ id }: { id: string }) {
       <>
         {editButton}
         {row.status === "draft" ? (
-          <PrimaryButton onClick={() => setPending("publish")}>{t("Publish")}</PrimaryButton>
+          <PrimaryButton disabled={awaitingReadback || !publishReady} onClick={() => setPending("publish")} title={!publishReady ? t("Run and verify the saved sample matrix before publishing.") : undefined}>{t("Publish")}</PrimaryButton>
         ) : null}
         {row.status === "active" ? (
-          <DangerButton onClick={() => setPending("rollback")}>{t("Rollback")}</DangerButton>
+          <DangerButton disabled={awaitingReadback} onClick={() => setPending("rollback")}>{t("Rollback")}</DangerButton>
         ) : null}
       </>
     );
 
   return (
+    <>{guard}
     <DetailPage
       actions={actions}
       backHref="/admin/generation/recipes"
@@ -195,10 +235,12 @@ export function RecipesDetailPage({ id }: { id: string }) {
       title={row.label}
     >
       <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
+      {awaitingReadback ? <p role="status" className="text-sm text-[var(--ad-yellow-text)]">{t("Changes were saved, but the latest details could not be loaded. Retry before making another change.")}</p> : null}
       {error ? <p role="alert" className="text-sm text-[var(--ad-red-text)]">{error}</p> : null}
+      {awaitingReadback ? <GhostButton onClick={() => void retryReadback()}>{t("Retry")}</GhostButton> : null}
 
-      {mode === "edit" && draft ? (
-        <>
+      {editing && draft ? (
+        <fieldset className="space-y-6" disabled={saving || awaitingReadback}>
           <FormSection title={t("Basic info")}>
             <Field label={t("Recipe Key")}>
               <input
@@ -242,6 +284,9 @@ export function RecipesDetailPage({ id }: { id: string }) {
             </Field>
           </FormSection>
           <FormSection title={t("Body")}>
+            <p className="text-sm text-[var(--ad-text-muted)]">{t(draft.mode === "negative"
+              ? "The latest active negative recipe adds its body to the base negative prompt of image recipes with the same use case."
+              : "Standard image/video recipe bodies describe the template for operators. Their negative base is used in image prompts; enhancement recipes send the body itself.")}</p>
             <Field full label={t("Body")}>
               <textarea
                 className={`${TEXTAREA_CLASS} font-mono`}
@@ -249,15 +294,15 @@ export function RecipesDetailPage({ id }: { id: string }) {
                 value={draft.body}
               />
             </Field>
-            <Field full label={t("Negative Base")}>
+            {draft.mode !== "negative" ? <Field full label={t("Negative Base")}>
               <textarea
                 className={`${TEXTAREA_CLASS} font-mono`}
                 onChange={(event) => updateDraft("negativeBase", event.target.value)}
                 value={draft.negativeBase}
               />
-            </Field>
+            </Field> : null}
           </FormSection>
-        </>
+        </fieldset>
       ) : (
         <>
           <DetailSection title={t("Basic info")}>
@@ -272,14 +317,17 @@ export function RecipesDetailPage({ id }: { id: string }) {
           </DetailSection>
 
           <DetailSection title={t("Body")}>
+            <p className="text-sm text-[var(--ad-text-muted)]">{t(row.mode === "negative"
+              ? "The latest active negative recipe adds its body to the base negative prompt of image recipes with the same use case."
+              : "Standard image/video recipe bodies describe the template for operators. Their negative base is used in image prompts; enhancement recipes send the body itself.")}</p>
             <p className="whitespace-pre-wrap font-mono text-sm text-[var(--ad-text)]">{row.body}</p>
           </DetailSection>
 
-          <DetailSection title={t("Negative Base")}>
+          {row.mode !== "negative" ? <DetailSection title={t("Negative Base")}>
             <p className="whitespace-pre-wrap font-mono text-sm text-[var(--ad-text)]">
               {row.negativeBase || "—"}
             </p>
-          </DetailSection>
+          </DetailSection> : null}
 
           <EngineeringDetails summary={t("Recipe details")}>
             <div className="space-y-1">
@@ -291,7 +339,10 @@ export function RecipesDetailPage({ id }: { id: string }) {
         </>
       )}
 
+      {!editing ? <RecipeValidationSection canWrite={canWrite && !awaitingReadback} key={`${row.id}:${row.updatedAt}`} recipe={row} onReady={setPublishReady} onChanged={async () => { await reload(); }} /> : null}
+
       {confirmSpec ? <ConfirmDialog onClose={() => setPending(null)} spec={confirmSpec} /> : null}
     </DetailPage>
+    </>
   );
 }

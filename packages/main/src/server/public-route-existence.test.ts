@@ -15,19 +15,21 @@ vi.mock("@/server/lib/db", () => {
     if (state.fails) throw new Error("db down");
     return state.found;
   };
-  return { prisma: { character: { findFirst: read }, user: { findFirst: read }, comic: { findFirst: read } } };
+  return { prisma: { character: { findFirst: read }, user: { findFirst: read }, comic: { findFirst: read }, pack: { findFirst: read } } };
 });
 
 import {
   requirePublicCharacterForAnonymous,
   requirePublicComicForAnonymous,
   requirePublicCreatorForAnonymous,
+  requirePublicPackForAnonymous,
 } from "./public-route-existence";
 
 const guards = [
   requirePublicCharacterForAnonymous,
   requirePublicCreatorForAnonymous,
   requirePublicComicForAnonymous,
+  requirePublicPackForAnonymous,
 ];
 
 describe("anonymous dynamic-id pages", () => {

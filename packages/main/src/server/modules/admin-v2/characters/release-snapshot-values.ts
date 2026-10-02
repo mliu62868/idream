@@ -23,6 +23,7 @@ export interface ReleasePlacement {
   readonly itemId: string | null;
   readonly reviewDecisionId: string | null;
   readonly generationJobId: string | null;
+  readonly customerIdentityRevisionId: string | null;
   readonly bootstrapIdentity: boolean;
 }
 
@@ -41,6 +42,7 @@ export function releasePlacements(value: Prisma.JsonValue): ReleasePlacement[] {
       itemId: releaseString(placement.itemId),
       reviewDecisionId: releaseString(placement.reviewDecisionId),
       generationJobId: releaseString(placement.generationJobId),
+      customerIdentityRevisionId: releaseString(placement.customerIdentityRevisionId),
       bootstrapIdentity: placement.bootstrapIdentity === true,
     }];
   });

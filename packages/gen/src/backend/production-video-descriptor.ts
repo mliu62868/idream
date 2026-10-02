@@ -188,12 +188,16 @@ function assertLtxGraph(
   assertGraphInput(graph, "320:333", "unet_name", recipe.checkpointFilename);
   assertGraphValue(graph, "75", "class_type", "SaveVideo");
   assertGraphInput(graph, "75", "filename_prefix", recipe.outputFilenamePrefix);
+  assertGraphValue(graph, "900:4", "class_type", "IDreamMPSGraphAttention");
+  assertGraphInput(graph, "900:4", "model", ["320:333", 0]);
+  assertGraphInput(graph, "900:4", "compute_precision", "bf16");
   for (const nodeId of ["320:280", "320:291"] as const) {
     assertGraphValue(graph, nodeId, "class_type", "KSamplerSelect");
     assertGraphInput(graph, nodeId, "sampler_name", recipe.sampler);
   }
   for (const nodeId of ["320:282", "320:314"] as const) {
     assertGraphValue(graph, nodeId, "class_type", "CFGGuider");
+    assertGraphInput(graph, nodeId, "model", ["900:4", 0]);
     assertGraphInput(graph, nodeId, "cfg", recipe.cfgScale);
   }
   assertGraphValue(
@@ -204,6 +208,8 @@ function assertLtxGraph(
   );
   assertGraphInput(graph, "900:3", "passthrough", ["320:304", 0]);
   assertGraphInput(graph, "900:3", "after", ["900:1", 0]);
+  assertGraphInput(graph, "900:3", "release", ["320:335", 0]);
+  assertGraphValue(graph, "320:335", "class_type", "IDreamGemma4MLXCLIPLoader");
   assertGraphInput(graph, "320:282", "positive", ["900:2", 0]);
   assertGraphInput(graph, "320:314", "positive", ["900:3", 0]);
   if (recipe.scheduler !== "manual_sigmas") {

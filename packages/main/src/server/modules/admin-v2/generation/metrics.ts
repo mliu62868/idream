@@ -17,6 +17,10 @@ import { actorWithPermission, queryParams } from "@/server/modules/admin-v2/shar
 
 type StatusBuckets = { total: number; completed: number; failed: number; blocked: number };
 
+function profileMetricKey(profileId: string, version: number | null) {
+  return JSON.stringify([profileId, version]);
+}
+
 function emptyBuckets(): StatusBuckets {
   return { total: 0, completed: 0, failed: 0, blocked: 0 };
 }
@@ -82,8 +86,8 @@ export async function getGenerationMetrics(request: Request) {
       where: operationalMediaAssetPlacementWhere({ createdAt: { gte: since } }),
       _count: { _all: true },
     }),
-    prisma.$queryRaw<Array<{ profileId: string; avgMs: number | null }>>`
-      SELECT jobs."profileId",
+    prisma.$queryRaw<Array<{ profileId: string; profileVersion: number | null; avgMs: number | null }>>`
+      SELECT jobs."profileId", jobs."profileVersion",
              GREATEST(0, AVG(EXTRACT(EPOCH FROM (jobs."completedAt" - jobs."createdAt")) * 1000))::float8 AS "avgMs"
       FROM "generation_jobs" jobs
       JOIN "users" owners ON owners.id = jobs."userId"
@@ -91,7 +95,7 @@ export async function getGenerationMetrics(request: Request) {
         AND jobs."completedAt" IS NOT NULL
         AND jobs."profileId" IS NOT NULL
         AND owners."dataClass" IN (${OPERATIONAL_USER_DATA_CLASS_SQL})
-      GROUP BY jobs."profileId"
+      GROUP BY jobs."profileId", jobs."profileVersion"
     `,
     prisma.$queryRaw<
       Array<{ slot: string | null; placementId: string | null; impressions: number; clicks: number }>
@@ -134,7 +138,7 @@ export async function getGenerationMetrics(request: Request) {
     }),
   ]);
 
-  const avgByProfile = new Map(durations.map((row) => [row.profileId, row.avgMs]));
+  const avgByProfile = new Map(durations.map((row) => [profileMetricKey(row.profileId, row.profileVersion), row.avgMs]));
 
   const profileMap = new Map<
     string,
@@ -142,7 +146,7 @@ export async function getGenerationMetrics(request: Request) {
   >();
   for (const row of byProfileRaw) {
     if (row.profileId === null) continue;
-    const key = `${row.profileId}@${row.profileVersion ?? 0}`;
+    const key = profileMetricKey(row.profileId, row.profileVersion);
     const entry = profileMap.get(key) ?? {
       ...emptyBuckets(),
       profileId: row.profileId,
@@ -156,15 +160,16 @@ export async function getGenerationMetrics(request: Request) {
 
   const profileKeys = [...new Set([...profileMap.values()].map((entry) => entry.profileId))];
   const profileRecords = await prisma.generationModelProfile.findMany({
-    where: { profileKey: { in: profileKeys } },
-    orderBy: { version: "desc" },
-    select: { profileKey: true, label: true, workflowKey: true },
+    where: { OR: [{ profileKey: { in: profileKeys } }, { id: { in: profileKeys } }] },
+    select: { id: true, profileKey: true, version: true, label: true, workflowKey: true },
   });
   const profileMeta = new Map<string, { label: string; workflowKey: string | null }>();
   for (const record of profileRecords) {
-    if (!profileMeta.has(record.profileKey)) {
-      profileMeta.set(record.profileKey, { label: record.label, workflowKey: record.workflowKey });
-    }
+    // INVARIANT: metadata describes the request's pinned route, never the latest profile.
+    // Jobs use profileKey; diagnostic/history callers can also store the profile row id.
+    const metadata = { label: record.label, workflowKey: record.workflowKey };
+    profileMeta.set(profileMetricKey(record.profileKey, record.version), metadata);
+    profileMeta.set(profileMetricKey(record.id, record.version), metadata);
   }
 
   const recipeMap = new Map<string, StatusBuckets & { recipeId: string; costDreamcoins: number }>();
@@ -210,9 +215,9 @@ export async function getGenerationMetrics(request: Request) {
     profiles: [...profileMap.values()]
       .map((entry) => ({
         ...entry,
-        label: profileMeta.get(entry.profileId)?.label ?? null,
-        workflowKey: profileMeta.get(entry.profileId)?.workflowKey ?? null,
-        avgDurationMs: avgByProfile.get(entry.profileId) ?? null,
+        label: profileMeta.get(profileMetricKey(entry.profileId, entry.profileVersion))?.label ?? null,
+        workflowKey: profileMeta.get(profileMetricKey(entry.profileId, entry.profileVersion))?.workflowKey ?? null,
+        avgDurationMs: avgByProfile.get(profileMetricKey(entry.profileId, entry.profileVersion)) ?? null,
       }))
       .sort((a, b) => b.total - a.total),
     recipes: [...recipeMap.values()].sort((a, b) => b.total - a.total),

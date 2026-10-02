@@ -2930,9 +2930,10 @@ test.describe.serial("Admin v2 operator workspaces", () => {
         baseline: { policyVersion: CHARACTER_RELEASE_POLICY_VERSION },
         observed: {
           routeFingerprint: lifecycleRouteFingerprint,
-          qualification: "expired",
+          effectiveQualification: "expired",
+          reason: "qualification_expired",
         },
-        verification: { recommendation: "refresh_route_qualification" },
+        verification: { servingChanged: false, catalogProjectionChanged: false, checkedAt: new Date().toISOString() },
         finishedAt: new Date(),
       },
       update: {
@@ -2940,9 +2941,10 @@ test.describe.serial("Admin v2 operator workspaces", () => {
         baseline: { policyVersion: CHARACTER_RELEASE_POLICY_VERSION },
         observed: {
           routeFingerprint: lifecycleRouteFingerprint,
-          qualification: "expired",
+          effectiveQualification: "expired",
+          reason: "qualification_expired",
         },
-        verification: { recommendation: "refresh_route_qualification" },
+        verification: { servingChanged: false, catalogProjectionChanged: false, checkedAt: new Date().toISOString() },
         finishedAt: new Date(),
       },
     });
@@ -2953,6 +2955,11 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     ).toContainText("serving now");
 
     await openCharacterTab(page, "monitor");
+    const monitoringSummary = page.locator("summary").filter({ hasText: "Release monitoring" });
+    await expect(monitoringSummary).toBeVisible();
+    if (await monitoringSummary.locator("..").getAttribute("open") === null) {
+      await monitoringSummary.click();
+    }
     const refresh24h = page.getByRole("button", { name: "Refresh 24h" });
     await refresh24h.click();
     await expect
@@ -2985,9 +2992,14 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     });
     await expect(routeGuardrail).toContainText(lifecycleRouteFingerprint);
     await expect(routeGuardrail).toContainText("expired");
-    await expect(routeGuardrail).toContainText(
-      "Recommendation: refresh_route_qualification",
-    );
+    const recommendation = routeGuardrail.locator("p").filter({ hasText: "Recommendation:" });
+    await expect(recommendation).toBeVisible();
+    await expect(recommendation).toContainText("The qualification behind this route has passed its expiry.");
+    await expect(recommendation).toContainText("Publish a new Release for this Character: it re-pins to the generation route that is qualified today. Re-enabling the old profile version is not possible.");
+    await routeGuardrail.getByText("Full monitor evidence", { exact: true }).click();
+    await expect(routeGuardrail.locator("pre")).toBeVisible();
+    await expect(routeGuardrail.locator("pre")).toContainText('"reason": "qualification_expired"');
+    await expect(routeGuardrail.locator("pre")).toContainText(lifecycleRouteFingerprint);
     await expect(refresh24h).toBeEnabled();
     await routeGuardrail
       .getByRole("button", {
@@ -3002,7 +3014,13 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       }),
     ).toBeVisible();
     await openCharacterTab(page, "release");
-    await page.getByText("Character availability and rollback", { exact: true }).click();
+    const availabilitySummary = page.locator("summary").filter({ hasText: "Character availability and rollback" });
+    await expect(availabilitySummary).toBeVisible();
+    // Returning from the route monitor may preserve the already-open panel.
+    // A second unconditional toggle hides the confirmation instead of opening it.
+    if (await availabilitySummary.locator("..").getAttribute("open") === null) {
+      await availabilitySummary.click();
+    }
     await page.getByLabel("I confirm this release action").check();
     await page.getByRole("button", { name: "Roll back" }).click();
     await expect
@@ -3481,6 +3499,12 @@ test.describe.serial("Admin v2 operator workspaces", () => {
         { exact: true },
       ),
     ).toBeVisible();
+    const assignmentDetails = page.locator("details").filter({
+      has: page.getByText("Edit assignment", { exact: true }),
+    });
+    if ((await assignmentDetails.getAttribute("open")) === null) {
+      await assignmentDetails.locator("summary").click();
+    }
     await page.getByLabel("Owner ID").fill(actorId);
     await page.getByLabel("Audit reason", { exact: true }).fill("Assign the verified incident follow-up");
     await page.getByRole("button", { name: "Save assignment" }).click();
@@ -3592,11 +3616,12 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await expect(incidentPreview).toContainText("Incident is closed · ref provider");
     await casePreview.click();
     await expect(casePreview).toHaveAttribute("aria-pressed", "true");
-    const openSourceRecord = resolved
-      .getByTestId("today-preview")
-      .getByRole("link", { name: "Open source record", exact: true });
-    await expect(openSourceRecord).toHaveAttribute("href", `/admin/cases/${caseId}`);
-    await openSourceRecord.click();
+    const workPreview = resolved.getByTestId("today-preview");
+    const caseSourceRecord = workPreview.getByRole("link", {
+      name: "Review case", exact: true,
+    });
+    await expect(caseSourceRecord).toHaveAttribute("href", `/admin/cases/${caseId}`);
+    await caseSourceRecord.click();
     await expect(page).toHaveURL(new RegExp(`/admin/cases/${caseId}$`));
     await expect(
       page.getByRole("heading", { level: 4, name: "Evidence" }),
@@ -3606,8 +3631,11 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await recentlyResolved.click();
     await incidentPreview.click();
     await expect(incidentPreview).toHaveAttribute("aria-pressed", "true");
-    await expect(openSourceRecord).toHaveAttribute("href", `/admin/ops/incidents/${incidentId}`);
-    await openSourceRecord.click();
+    const incidentSourceRecord = workPreview.getByRole("link", {
+      name: "Investigate incident", exact: true,
+    });
+    await expect(incidentSourceRecord).toHaveAttribute("href", `/admin/ops/incidents/${incidentId}`);
+    await incidentSourceRecord.click();
     await expect(page).toHaveURL(
       new RegExp(`/admin/ops/incidents/${incidentId}$`),
     );

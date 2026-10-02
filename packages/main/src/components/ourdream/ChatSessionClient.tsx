@@ -31,7 +31,9 @@ import {
 import { useAgeGateAccess } from "./AgeGateBoundary";
 import { useGenerationReceipts } from "@/hooks/useGenerationReceipts";
 import { useVoiceInput } from "@/hooks/useVoiceInput";
+import { useVoiceCall } from "@/hooks/useVoiceCall";
 import { VoiceInputButton, VoiceInputStatus } from "./chat/VoiceInputControls";
+import { VoiceCallControls } from "./chat/VoiceCallControls";
 import { AppSidebar } from "./AppSidebar";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { ChatHeaderControls } from "./chat/ChatHeaderControls";
@@ -221,6 +223,8 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
   const [characterId, setCharacterId] = useState<string | null>(null);
   const [group, setGroup] = useState<ChatSession["group"]>(undefined);
   const [conversationArchived, setConversationArchived] = useState(false);
+  const [continuation, setContinuation] = useState<NonNullable<ChatSession["continuation"]>>("available");
+  const conversationReadOnly = conversationArchived || continuation !== "available";
   const [speakerPending, setSpeakerPending] = useState(false);
   const [sendOutcomeUnknown, setSendOutcomeUnknown] = useState(false);
   const selectedSpeakerRef = useRef<string | null>(null);
@@ -235,7 +239,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
   //   群 id 在 recentChat 里查不到，点下去必定 404。enabled=false 是用户无解的死路，
   //   直接不给入口；entitled=false 用户能自己升级，保留入口走付费墙。
   const [videoCapability, setVideoCapability] = useState<{ sessionId: string; enabled: boolean } | null>(null);
-  const videoEnabled = ageGateAccepted && !groupMode && videoCapability?.sessionId === id && videoCapability.enabled;
+  const videoEnabled = ageGateAccepted && !conversationReadOnly && !groupMode && videoCapability?.sessionId === id && videoCapability.enabled;
   const [memoryEnabled, setMemoryEnabled] = useState(true);
   const [proactiveEnabled, setProactiveEnabled] = useState(false);
   const [memoryPending, setMemoryPending] = useState(false);
@@ -289,6 +293,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
   const streamSources = useRef<Map<string, EventSource>>(new Map());
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const voicePlaybackIntentRef = useRef(0);
+  const voicePlaybackMessageIdRef = useRef<string | null>(null);
   const voiceClipRequestsRef =
     useRef<Map<string, { key: string; promise: Promise<VoiceClipRequestResult> }>>(new Map());
   const voiceClipUrlsRef = useRef<Map<string, { key: string; url: string }>>(new Map());
@@ -297,7 +302,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
   const voiceInput = useVoiceInput({
     sessionPath,
     ownerScope: receiptOwnerScope,
-    enabled: ageGateAccepted && loadState === "ready" && !conversationArchived,
+    enabled: ageGateAccepted && loadState === "ready" && !conversationReadOnly,
     recipientId: groupMode ? characterId : null,
     draft: content,
     onDraft: (text) => {
@@ -311,6 +316,15 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
     },
     beforeRecording: stopVoice,
   });
+  const voiceCall = useVoiceCall({
+    sessionPath, ownerScope: receiptOwnerScope,
+    enabled: ageGateAccepted && loadState === "ready" && !conversationReadOnly && !groupMode,
+    beforeConnect: () => { stopVoice(); voiceInput.cancel(); },
+    onTurn: ({ userMessage, assistant, streamUrl }) => {
+      setMessages(current => mergeCanonicalMessages(current, [userMessage, assistant]));
+      if (streamUrl && chatStreamMessageIsInProgress(assistant)) streamAssistant(streamUrl, assistant.id, assistant.content);
+    },
+  });
   const sessionMutationEpochRef = useRef(0);
   const hasActiveAttachment = messages.some((message) =>
     (message.attachments ?? []).some((attachment) =>
@@ -320,7 +334,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
   const hasGeneratingReply = chatStreamMessagesNeedReconciliation(messages);
   const canSend = canSubmitChatMessage(
     content,
-    pending || stoppingReply || speakerPending || conversationArchived || voiceInput.blocksSend,
+    pending || stoppingReply || speakerPending || conversationReadOnly || voiceInput.blocksSend || voiceCall.active,
     hasGeneratingReply,
   );
 
@@ -399,6 +413,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
       setGroup(undefined);
       selectedSpeakerRef.current = null;
       setConversationArchived(false);
+      setContinuation("available");
       setSendOutcomeUnknown(false);
       setCanUpdateIdentity(false);
       const epoch = sessionMutationEpochRef.current;
@@ -484,6 +499,28 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
           return;
         }
         stopVoice();
+        // A failed owner check revokes cached content as well as new writes.
+        // Header/Scene and open drawers render outside the ready-state branch.
+        for (const source of streamSources.current.values()) source.close();
+        streamSources.current.clear();
+        localStreamStateRef.current.clear();
+        observedAttemptsRef.current.clear();
+        voiceClipRequestsRef.current.clear();
+        voiceClipUrlsRef.current.clear();
+        receiptOwnerScopeRef.current = null;
+        sendIntentRef.current = null;
+        setMessages([]);
+        setContent("");
+        setCharacterId(null);
+        setCharacterImage(null);
+        setMemberImages({});
+        setGroup(undefined);
+        selectedSpeakerRef.current = null;
+        setProactiveEnabled(false);
+        setVoicePreparingIds(new Set());
+        setSessionsOpen(false);
+        setMemoryOpen(false);
+        setVideoForm(null);
         setTitle("Chat");
         setLoadState(isChatAuthError(error) ? "signed-out" : "error");
       });
@@ -592,6 +629,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
 
   function stopVoice() {
     voicePlaybackIntentRef.current += 1;
+    voicePlaybackMessageIdRef.current = null;
     const audio = audioRef.current;
     if (audio) {
       audio.pause();
@@ -697,6 +735,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
       return;
     }
     stopVoice();
+    voicePlaybackMessageIdRef.current = messageId;
     const playbackIntent = voicePlaybackIntentRef.current;
     setStatus(null);
     setUpgradeReason(null);
@@ -745,7 +784,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (voiceInput.blocksSend) return;
+    if (voiceInput.blocksSend || voiceCall.active) return;
     const text = content.trim();
     // SPEC: 输入 @Name 时说话人切换是异步的；切换期间的回车必须有回执。
     // INTENT: 静默 return 会让用户以为消息发出去了 —— 实测第一次回车既不发消息也不报错。
@@ -753,7 +792,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
       setStatus("Selecting that Character… send again once the recipient is ready.");
       return;
     }
-    if (!canSubmitChatMessage(text, pending || speakerPending || conversationArchived, hasGeneratingReply)) return;
+    if (!canSubmitChatMessage(text, pending || speakerPending || conversationReadOnly, hasGeneratingReply)) return;
     const mentioned = group ? mentionedGroupCharacter(text, group.members) : null;
     if (mentioned && mentioned !== characterId) {
       await changeSpeaker(mentioned);
@@ -815,6 +854,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
         const failure = await response.json().catch(() => null);
         const updatedCharacterId = response.status === 410 && !groupMode ? chatReleaseChangedCharacterId(failure) : null;
         if (updatedCharacterId && await openUpdatedCharacterChat(updatedCharacterId, text)) return;
+        if (response.status === 410) setContinuation(updatedCharacterId ? "character_release_changed" : "character_unavailable");
         setSendOutcomeUnknown(response.status >= 500);
         setStatus(updatedCharacterId
           ? "This Character was updated, so this chat is now read-only. Your message is still below. Open the Character again to continue in a new chat."
@@ -980,8 +1020,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
       cache: "no-store",
       signal,
     });
-    if (response.status === 401) throw chatSessionFetchError(401);
-    if (!response.ok) throw new Error("Chat unavailable");
+    if (!response.ok) throw chatSessionFetchError(response.status);
     const session = parseChatSessionDetailResponse(
       await response.json(),
     ).session;
@@ -1014,6 +1053,16 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
         localStreamStateRef.current.delete(message.id);
         streamSources.current.get(message.id)?.close();
         streamSources.current.delete(message.id);
+        // A revision discards every delivery from its earlier attempt. Revoke
+        // only this reply's voice intent; another history clip may keep playing.
+        if (voicePlaybackMessageIdRef.current === message.id) stopVoice();
+        voiceClipRequestsRef.current.delete(message.id);
+        voiceClipUrlsRef.current.delete(message.id);
+        setVoicePreparingIds((current) => {
+          const next = new Set(current);
+          next.delete(message.id);
+          return next;
+        });
         changedAttempt = true;
       }
       if (!chatStreamMessageIsTerminal(message)) continue;
@@ -1042,7 +1091,8 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
     selectedSpeakerRef.current = session.characterId ?? null;
     setGroup(session.group);
     setConversationArchived(session.status === "archived");
-    if (session.status === "archived") cancelEdit();
+    setContinuation(session.continuation ?? "available");
+    if (session.status === "archived" || (session.continuation && session.continuation !== "available")) cancelEdit();
     setCanUpdateIdentity(Boolean(session.character.canUpdateIdentity));
     setCharacterImage(session.character.image ?? null);
     setMemberImages(session.memberImages ?? {});
@@ -1114,6 +1164,8 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
         method: "DELETE",
       });
       if (response.ok) {
+        // Reads started while DELETE was in flight may still contain this Turn.
+        sessionMutationEpochRef.current += 1;
         // INVARIANT: Main deletes one complete Turn from either message id.
         const target = messages.find((message) => message.id === messageId);
         const userMessageId = target?.role === "user" ? target.id : target?.replyToMessageId;
@@ -1606,6 +1658,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
               {conversationArchived ? <p className="mt-3 text-sm text-white/80">This conversation is archived. Its history stays readable.{!group && characterId ? <> <Link className="font-bold underline" href={`/characters/${encodeURIComponent(characterId)}`}>Start a new chat</Link></> : group ? <> <Link className="font-bold underline" href="/chat/groups">Start a new group</Link></> : null}</p> : null}
               <ChatHeaderControls
                 generateHref={chatGenerationHref({ characterId, sessionId: executionSessionId, message: latestCompletedReply })}
+                generationUnavailable={continuation !== "available"}
                 memoryEnabled={memoryEnabled}
                 memoryPending={memoryPending}
                 onToggleMemory={toggleMemory}
@@ -1661,12 +1714,12 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
                     !replyInProgress &&
                     !isLocalChatMessageId(message.id);
                   const canEditMessage =
-                    !conversationArchived &&
+                    !conversationReadOnly &&
                     isUser &&
                     message.id === latestUserMessageId &&
                     !latestReplyInProgress;
                   const canRegenerateMessage =
-                    !conversationArchived &&
+                    !conversationReadOnly &&
                     !immutableOpening &&
                     message.replyToMessageId === latestUserMessageId &&
                     canRegenerateChatMessage(message, hasGeneratingReply);
@@ -1807,7 +1860,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
                       {showMessageActions ? (
                         <MessageActions
                           isUser={isUser}
-                          pending={pending || editingPending}
+                          pending={pending || editingPending || voiceCall.active}
                           voiceState={
                             voicePreparingIds.has(message.id)
                               ? "loading"
@@ -1892,6 +1945,22 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
                   </p>
                 ) : null}
               <VoiceInputStatus voice={voiceInput} />
+              {!conversationArchived && continuation !== "available" ? (
+                <p role="status" className="mb-3 text-sm text-white/80" data-testid="chat-continuation-status">
+                  {continuation === "character_release_changed"
+                    ? <>This Character was updated. This conversation stays readable. {groupMode
+                      ? <Link className="font-bold underline" href="/chat/groups">Start a new group</Link>
+                      : <button type="button" className="font-bold underline disabled:opacity-50" disabled={pending || !receiptOwnerScope || !characterId} onClick={async () => {
+                        if (!characterId) return;
+                        setPending(true);
+                        try {
+                          if (!await openUpdatedCharacterChat(characterId, content)) setStatus("Couldn't open the current chat. Your draft is still here. Try again.");
+                        } finally { setPending(false); }
+                      }}>Continue in a new chat</button>}</>
+                    : <>This Character is currently unavailable. Your conversation stays readable. {groupMode ? "Choose another speaker to continue." : <Link className="font-bold underline" href="/">Explore Characters</Link>}</>}
+                </p>
+              ) : null}
+              {!groupMode ? <VoiceCallControls voice={voiceCall} disabled={pending || hasGeneratingReply || conversationReadOnly || voiceInput.blocksSend} /> : null}
               <form
                 className="flex items-end gap-2 py-2"
                 onSubmit={submit}
@@ -1910,8 +1979,10 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
                   }}
                   name="message"
                   placeholder={group ? "Message, or @ a Character…" : "Message..."}
-                  disabled={conversationArchived}
-                  readOnly={voiceInput.readOnly || (groupMode && sendOutcomeUnknown)}
+                  disabled={conversationReadOnly}
+                  // Preserve one draft until its admission result is known.
+                  // Reply generation does not hold pending, so the next draft stays editable.
+                  readOnly={pending || voiceInput.readOnly || voiceCall.active || (groupMode && sendOutcomeUnknown)}
                   onKeyDown={(event) => {
                     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing || event.keyCode === 229) return;
                     event.preventDefault();
@@ -1919,7 +1990,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
                   }}
                   value={content}
                 />
-                <VoiceInputButton voice={voiceInput} disabled={pending || speakerPending || conversationArchived || (groupMode && sendOutcomeUnknown)} />
+                <VoiceInputButton voice={voiceInput} disabled={voiceCall.active || pending || speakerPending || conversationReadOnly || (groupMode && sendOutcomeUnknown)} />
                 {hasGeneratingReply ? (
                   <button
                     aria-label="Stop reply"

@@ -6,6 +6,7 @@ import { useCallback, useRef, useState } from "react";
 import type { AdminCommandStatus } from "@idream/shared/admin";
 import { apiGet } from "@/components/admin/api";
 import { CopyableId } from "@/components/admin/ui/CopyableId";
+import { EngineeringDetails } from "@/components/admin/generation/EngineeringDetails";
 import { csvFilename, downloadCsv, toCsv, type CsvColumn } from "@/components/admin/ui/csv";
 import { DataTable, type DataTableHeader, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { collapseAuditRuns } from "./collapse-runs";
@@ -172,7 +173,17 @@ export function AuditWorkspace() {
       text(row.actorRole) ? value(text(row.actorRole)) : "—",
       text(row.action) || "—",
       `${text(row.targetType) || "—"}:${text(row.targetId) || "—"}`,
-      format.display(row.reason),
+      <div className="w-48 space-y-2" key="evidence">
+        <div className="truncate" title={typeof row.reason === "string" ? row.reason : undefined}>{format.display(row.reason)}</div>
+        <EngineeringDetails summary={t("Audit details")}>
+          {/* INVARIANT: 只展示权威审计快照；不回查已脱敏字段的原始领域对象。 */}
+          <dl className="space-y-2">
+            <div><dt>{t("Request")}</dt><dd>{text(row.requestId) ? <CopyableId value={text(row.requestId)} /> : "—"}</dd></div>
+            <div><dt>{t("Before change")}</dt><dd><pre className="max-h-60 overflow-auto whitespace-pre-wrap break-all">{JSON.stringify(row.before, null, 2) ?? "—"}</pre></dd></div>
+            <div><dt>{t("After change")}</dt><dd><pre className="max-h-60 overflow-auto whitespace-pre-wrap break-all">{JSON.stringify(row.after, null, 2) ?? "—"}</pre></dd></div>
+          </dl>
+        </EngineeringDetails>
+      </div>,
       dateCell(row.createdAt, format.dateTime),
     ],
   }));
@@ -321,14 +332,19 @@ const AUDIT_HEADERS: DataTableHeader[] = [
   // 三列散文：钳在宽度内出省略号，完整值走 title 悬停与 CSV 导出，不许撑宽整张表。
   { label: "Action", truncate: true, width: "13rem" },
   { label: "Target", truncate: true, width: "12rem" },
-  { label: "Reason", truncate: true, width: "12rem" },
+  { label: "Reason", width: "12rem" },
   // 中文 dateStyle:medium + timeStyle:short 实测 ~142px；给足一行的量，dateCell 负责不折行。
   { label: "Occurred", width: "9.5rem" },
 ];
 
 function CommandContext({ command }: { command: AdminCommandStatus }) {
   const format = useAdminFormat();
-  return <DataTable caption="Command context" headers={["Command", "Type", "Target", "Execution", "Verification", "Reconciliation", "Updated"]} rows={[{ id: command.commandId, cells: [<CopyableId key="id" value={command.commandId} />, command.commandType, `${command.target.type}:${command.target.id}`, command.status, command.verificationState ?? "pending", command.needsReconciliation ? "required" : "not required", <time dateTime={command.updatedAt} key="updated">{format.dateTime(command.updatedAt)}</time>] }]} />;
+  const { t } = useAdminI18n();
+  return <DataTable caption="Command context" headers={["Command", "Type", "Target", "Execution", "Verification", "Reconciliation", "Updated", "Error"]} rows={[{ id: command.commandId, cells: [<CopyableId key="id" value={command.commandId} />, command.commandType, `${command.target.type}:${command.target.id}`, command.status, command.verificationState ?? "pending", command.needsReconciliation ? "required" : "not required", <time dateTime={command.updatedAt} key="updated">{format.dateTime(command.updatedAt)}</time>,
+    command.error == null ? "—" : <EngineeringDetails key="error" summary={t("Command evidence")}>
+      <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-all">{JSON.stringify(command.error, null, 2)}</pre>
+    </EngineeringDetails>,
+  ] }]} />;
 }
 
 function dateCell(value: unknown, dateTime: (value: unknown) => string) {

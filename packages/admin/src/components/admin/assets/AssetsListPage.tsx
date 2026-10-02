@@ -17,7 +17,7 @@ import { LoadingWorkspace } from "@/features/operations/WorkspaceUi";
 import type { AdminPageInfo } from "@idream/shared/admin";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import {
-  canGoPrevious,
+  previousListPage,
   listPageFromParams,
   requestErrorMessage,
   syncListUrl,
@@ -63,7 +63,7 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
   const [cursor, setCursor] = useState<string | undefined>();
   const [page, setPage] = useState(1);
   const [pageInfo, setPageInfo] = useState<AdminPageInfo>(EMPTY_PAGE_INFO);
-  const [ready, setReady] = useState(false);
+  const [urlRevision, setUrlRevision] = useState(0);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [preflightBusy, setPreflightBusy] = useState(false);
   const [preflightBlockers, setPreflightBlockers] = useState<AssetDependencyFinding[]>([]);
@@ -105,19 +105,21 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
     const request = requestGate.current.begin();
     setLoading(true);
     setError(null);
+    setRows([]);
+    setPageInfo(EMPTY_PAGE_INFO);
+    const params = new URLSearchParams();
+    if (status !== "all") params.set("status", status);
+    if (purpose !== "all") params.set("purpose", purpose);
+    if (search.trim()) params.set("search", search.trim());
+    if (targetId.trim()) params.set("targetId", targetId.trim());
+    if (nextCursor) params.set("cursor", nextCursor);
+    setPage(syncListUrl(params, nextPage));
     try {
       const data = await apiGet<{ items: ContentAsset[]; pageInfo: AdminPageInfo }>(assetsListPath({ status, purpose, search, targetId, cursor: nextCursor, limit: PAGE_SIZE }));
       if (!request.isCurrent()) return;
       setRows(data.items);
       setCursor(nextCursor);
       setPageInfo(data.pageInfo);
-      const params = new URLSearchParams();
-      if (status !== "all") params.set("status", status);
-      if (purpose !== "all") params.set("purpose", purpose);
-      if (search.trim()) params.set("search", search.trim());
-      if (targetId.trim()) params.set("targetId", targetId.trim());
-      if (nextCursor) params.set("cursor", nextCursor);
-      syncListUrl(params, nextPage);
     } catch (loadError) {
       if (!request.isCurrent()) return;
       setError({ message: requestErrorMessage(loadError, t), cause: loadError });
@@ -127,21 +129,28 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
   }, [purpose, search, status, targetId, t, uploadRevision]);
 
   useUrlBootstrap(useCallback((params: URLSearchParams) => {
+    clearForNextQuery();
     setStatus(params.get("status") ?? "all");
     setPurpose(params.get("purpose") ?? "all");
     setSearch(params.get("search") ?? "");
     setTargetId(params.get("targetId") ?? "");
     setCursor(params.get("cursor") ?? undefined);
-    setPage(listPageFromParams(params));
-    setReady(true);
-  }, []), requestGate);
+    setPage(params.get("cursor") ? listPageFromParams(params) : 1);
+    setUrlRevision((revision) => revision + 1);
+  }, [clearForNextQuery]), requestGate);
   // 依赖预检有自己的在途请求，卸载时也要作废——它和列表请求不共用同一个闸。
   useEffect(() => {
     const preflightGate = preflightRequestGate.current;
     return () => preflightGate.invalidate();
   }, []);
 
-  useDebouncedReload({ cursor, page, ready, reload, search });
+  useDebouncedReload({ cursor, page, urlRevision, reload, search });
+
+  function changePage(nextCursor: string | undefined, nextPage: number) {
+    clearForNextQuery();
+    setCursor(nextCursor);
+    setPage(nextPage);
+  }
 
   const hasFilters = status !== "all" || purpose !== "all" || search.trim().length > 0 || targetId.trim().length > 0;
 
@@ -441,7 +450,7 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
       ) : null}
       {error ? (
         <div className="mb-4">
-          <AuthorityRequestError cause={error.cause} message={error.message} onRetry={() => void reload(cursor, page)} snapshotAt={null} />
+          <AuthorityRequestError cause={error.cause} message={error.message} requestKind="read" onRetry={() => void reload(cursor, page)} snapshotAt={null} />
         </div>
       ) : null}
       {preflightError ? (
@@ -529,17 +538,11 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
       <div className="mt-4">
         <Pagination
           hasNext={Boolean(pageInfo.hasNextPage && pageInfo.endCursor)}
-          // 这个 operation 的查询契约没有 `before` —— 置灰，不假装已经在第一页（section-kit 有全部理由）。
-          hasPrevious={canGoPrevious(pageInfo, false)}
+          hasPrevious={Boolean(cursor)}
+          previousLabel={cursor && !previousListPage().hasHistory ? t("Back to first page") : undefined}
           loading={loading}
-          onNext={() => {
-            const next = pageInfo.endCursor ?? undefined;
-            const nextPage = page + 1;
-            clearForNextQuery();
-            setCursor(next);
-            setPage(nextPage);
-          }}
-          onPrevious={() => undefined}
+          onNext={() => changePage(pageInfo.endCursor ?? undefined, page + 1)}
+          onPrevious={() => { const previous = previousListPage(); changePage(previous.cursor, previous.page); }}
           page={page}
           pageSize={PAGE_SIZE}
           rowCount={rows.length}

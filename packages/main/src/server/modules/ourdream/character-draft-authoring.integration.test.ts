@@ -73,7 +73,7 @@ describe("Create authoring authority", () => {
     expect((await prisma.characterDraft.findUniqueOrThrow({ where: { id: draft.id } })).previewJobId).toBe(first.preview.id);
     expect((await prisma.characterPreviewJob.findUniqueOrThrow({ where: { id: second.preview.id } })).resultAssetId).toBe(second.asset.id);
     const savedStep = await api("PATCH", `character-drafts/${draft.id}`, {
-      userId, ageGate: true, body: { step: 4, appearance: { prompt: "Freckles" }, hair: {}, body: {} },
+      userId, ageGate: true, body: { expectedUpdatedAt: (await prisma.characterDraft.findUniqueOrThrow({ where: { id: draft.id } })).updatedAt.toISOString(), step: 4, appearance: { prompt: "Freckles" }, hair: {}, body: {} },
     });
     expectOk(savedStep);
     expect(savedStep.data.draft.previewJobId).toBe(first.preview.id);
@@ -104,7 +104,7 @@ describe("Create authoring authority", () => {
     const appearance = { prompt: "Freckles", eyes: "Hazel", ethnicity: "Latina", skinTone: "Olive", faceShape: "Oval" };
     const hair = { prompt: "Short auburn curls" };
     const body = { type: "Athletic" };
-    const patched = await api("PATCH", `character-drafts/${draftId}`, { userId, ageGate: true, body: {
+    const patched = await api("PATCH", `character-drafts/${draftId}`, { userId, ageGate: true, body: { expectedUpdatedAt: (await prisma.characterDraft.findUniqueOrThrow({ where: { id: draftId } })).updatedAt.toISOString(),
       appearance, hair, body,
       advancedDetails: { description: "A warm radio host", firstMessage: "Welcome back.", detailsMarkdown: "## Occupation\nRadio host\n\n## Relationship\nChildhood friend", voiceSelection: selection },
     } });
@@ -124,13 +124,13 @@ describe("Create authoring authority", () => {
     expectOk(confirmed);
     for (const step of [4, 5]) {
       const saved = await api("PATCH", `character-drafts/${draftId}`, {
-        userId, ageGate: true, body: { step, appearance, hair, body },
+        userId, ageGate: true, body: { expectedUpdatedAt: (await prisma.characterDraft.findUniqueOrThrow({ where: { id: draftId } })).updatedAt.toISOString(), step, appearance, hair, body },
       });
       expectOk(saved);
       expect(saved.data.draft.previewJobId).toBe(preview.id);
     }
     // Rewording the opening line or Soul after confirming keeps the confirmed face.
-    const reworded = await api("PATCH", `character-drafts/${draftId}`, { userId, ageGate: true, body: {
+    const reworded = await api("PATCH", `character-drafts/${draftId}`, { userId, ageGate: true, body: { expectedUpdatedAt: (await prisma.characterDraft.findUniqueOrThrow({ where: { id: draftId } })).updatedAt.toISOString(),
       advancedDetails: { description: "A warm radio host", firstMessage: "Back already?", detailsMarkdown: "## Occupation\nRadio host\n\n## Relationship\nChildhood friend", voiceSelection: selection },
     } });
     expectOk(reworded);
@@ -198,14 +198,14 @@ describe("Create authoring authority", () => {
     // 一个词典内的 + 一个词典外的自由输入：后者必须被丢弃，且不得凭空建 tag。
     const unknownSlug = `${prefix}ceramics`;
     const tagged = await api("POST", `character-drafts/${draftId}/tags`, {
-      userId, ageGate: true, body: { tags: [knownTag.slug, unknownSlug] },
+      userId, ageGate: true, body: { expectedUpdatedAt: (await prisma.characterDraft.findUniqueOrThrow({ where: { id: draftId } })).updatedAt.toISOString(), tags: [knownTag.slug, unknownSlug] },
     });
     expectOk(tagged);
 
     const appearance = { prompt: "Freckles" };
     await api("PATCH", `character-drafts/${draftId}`, {
       userId, ageGate: true,
-      body: { appearance, advancedDetails: { description: "A potter", firstMessage: "Come in." } },
+      body: { expectedUpdatedAt: (await prisma.characterDraft.findUniqueOrThrow({ where: { id: draftId } })).updatedAt.toISOString(), appearance, advancedDetails: { description: "A potter", firstMessage: "Come in." } },
     });
     const anchor = await prisma.mediaAsset.create({ data: {
       id: `${prefix}tag-anchor`, ownerId: userId, type: "image", url: "/user-content/tagged.png",
@@ -252,17 +252,17 @@ describe("Create authoring authority", () => {
     expect(restored.data.previewJob.id).toBe(preview.id);
     // This durable prompt predates voice exclusion. Changing the preset must
     // still allow its existing image to be confirmed without generating again.
-    expectOk(await api("PATCH", `character-drafts/${draft.id}`, { userId, ageGate: true, body: {
+    expectOk(await api("PATCH", `character-drafts/${draft.id}`, { userId, ageGate: true, body: { expectedUpdatedAt: (await prisma.characterDraft.findUniqueOrThrow({ where: { id: draft.id } })).updatedAt.toISOString(),
       advancedDetails: { voiceSelection: { provider: "pocket_tts", voiceId: "alba" } },
     } }));
     expectOk(await api("POST", `character-drafts/${draft.id}/preview-anchor`, { userId, ageGate: true, body: { previewJobId: preview.id } }));
-    const voiceChanged = await api("PATCH", `character-drafts/${draft.id}`, { userId, ageGate: true, body: { advancedDetails: { voiceSelection: null } } });
+    const voiceChanged = await api("PATCH", `character-drafts/${draft.id}`, { userId, ageGate: true, body: { expectedUpdatedAt: (await prisma.characterDraft.findUniqueOrThrow({ where: { id: draft.id } })).updatedAt.toISOString(), advancedDetails: { voiceSelection: null } } });
     expectOk(voiceChanged);
     expect(voiceChanged.data.draft.previewJobId).toBe(preview.id);
     const voiceRestored = await api("GET", "character-drafts/current", { userId, ageGate: true });
     expectOk(voiceRestored);
     expect(voiceRestored.data.previewJob.id).toBe(preview.id);
-    const changed = await api("PATCH", `character-drafts/${draft.id}`, { userId, ageGate: true, body: { appearance: { prompt: "Freckles", eyes: "Blue" } } });
+    const changed = await api("PATCH", `character-drafts/${draft.id}`, { userId, ageGate: true, body: { expectedUpdatedAt: (await prisma.characterDraft.findUniqueOrThrow({ where: { id: draft.id } })).updatedAt.toISOString(), appearance: { prompt: "Freckles", eyes: "Blue" } } });
     expectOk(changed);
     expect(changed.data.draft.previewJobId).toBeNull();
     const stale = await api("GET", "character-drafts/current", { userId, ageGate: true });
@@ -299,37 +299,49 @@ describe("Create authoring authority", () => {
     }
   });
 
-  it("rolls back the Character and voice together if submission fails after binding", async () => {
-    const userId = `${prefix}rollback-owner`;
+  it.each(["binding", "newer draft"])("rolls back the Character and voice when submission fails (%s)", async (failure) => {
+    const rollbackPrefix = `${prefix}rollback-${failure.replace(" ", "-")}-`;
+    const userId = `${rollbackPrefix}owner`;
     await createUser({ id: userId });
     const draft = await prisma.characterDraft.create({ data: {
       ownerId: userId, name: "Avery", gender: "female", style: "realistic", appearance: {}, hair: {}, body: {}, tags: [],
       advancedDetails: { age: 25, description: "A warm companion", firstMessage: "Hello.", voiceSelection: { provider: "pocket_tts", voiceId: "marius" } },
     } });
     const anchor = await prisma.mediaAsset.create({ data: {
-      id: `${prefix}rollback-anchor`, ownerId: userId, type: "image", url: "/user-content/anchor.png", storageKey: `${prefix}rollback-anchor.png`,
+      id: `${rollbackPrefix}anchor`, ownerId: userId, type: "image", url: "/user-content/anchor.png", storageKey: `${rollbackPrefix}anchor.png`,
       visibility: "private", safetyStatus: "passed", metadata: { synthetic: false },
     } });
     const preview = await prisma.characterPreviewJob.create({ data: { draftId: draft.id, status: "completed", provider: "test", resultAssetId: anchor.id, completedAt: new Date() } });
     await prisma.characterDraft.update({ where: { id: draft.id }, data: { previewJobId: preview.id } });
     const prepared: draftVoice.PreparedCharacterDraftVoice = {
-      userId, draftId: draft.id, provider: "pocket_tts", presetVoiceId: "marius", voiceId: `${prefix}rollback-alias`,
+      userId, draftId: draft.id, provider: "pocket_tts", presetVoiceId: "marius", voiceId: `${rollbackPrefix}alias`,
       model: "pocket-tts", language: "english", delivery: DEFAULT_FISH_AUDIO_DELIVERY, sampleText: "Hello.",
-      reference: { id: `${prefix}rollback-reference`, key: `${prefix}rollback-reference.json`, sizeBytes: 24, sha256: "a".repeat(64) },
-      preview: { id: `${prefix}rollback-voice-preview`, key: `${prefix}rollback-voice-preview.wav`, durationMs: 1000 },
+      reference: { id: `${rollbackPrefix}reference`, key: `${rollbackPrefix}reference.json`, sizeBytes: 24, sha256: "a".repeat(64) },
+      preview: { id: `${rollbackPrefix}voice-preview`, key: `${rollbackPrefix}voice-preview.wav`, durationMs: 1000 },
     };
-    vi.spyOn(draftVoice, "prepareCharacterDraftVoice").mockResolvedValue(prepared);
+    vi.spyOn(draftVoice, "prepareCharacterDraftVoice").mockImplementation(async () => {
+      if (failure === "newer draft") {
+        await prisma.characterDraft.update({ where: { id: draft.id }, data: { name: "Updated in another tab", advancedDetails: { age: 25, description: "Newer persona", firstMessage: "Keep my newer input." } } });
+      }
+      return prepared;
+    });
     const bind = draftVoice.bindCharacterDraftVoice;
-    vi.spyOn(draftVoice, "bindCharacterDraftVoice").mockImplementation(async (...args) => { await bind(...args); throw new Error("Voice binding confirmation failed"); });
+    vi.spyOn(draftVoice, "bindCharacterDraftVoice").mockImplementation(async (...args) => {
+      await bind(...args);
+      if (failure === "binding") throw new Error("Voice binding confirmation failed");
+    });
     const cleanup = vi.spyOn(draftVoice, "cleanupPreparedCharacterDraftVoice").mockResolvedValue(undefined);
     const result = await api("POST", `character-drafts/${draft.id}/submit`, { userId, ageGate: true, body: { visibility: "private" } });
-    expect(result.status).toBe(500);
+    expect(result.status).toBe(failure === "binding" ? 500 : 409);
     expect(await prisma.character.count({ where: { creatorId: userId } })).toBe(0);
     expect(await prisma.characterVoiceProfile.count({ where: { providerVoiceId: prepared.voiceId } })).toBe(0);
     expect(await prisma.mediaAsset.count({ where: { id: { in: [prepared.reference.id, prepared.preview.id] } } })).toBe(0);
     expect((await prisma.mediaAsset.findUniqueOrThrow({ where: { id: anchor.id } })).characterId).toBeNull();
     expect(cleanup).toHaveBeenCalledWith(prepared);
     expect((await prisma.characterDraft.findUniqueOrThrow({ where: { id: draft.id } })).advancedDetails).not.toHaveProperty("submittedCharacterId");
+    if (failure === "newer draft") {
+      expect(await prisma.characterDraft.findUniqueOrThrow({ where: { id: draft.id } })).toMatchObject({ name: "Updated in another tab", advancedDetails: { description: "Newer persona", firstMessage: "Keep my newer input." } });
+    }
   });
 
   it("serves catalog choices and requires a signed-in user for a fixed-text voice preview", async () => {

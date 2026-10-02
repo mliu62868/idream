@@ -24,6 +24,7 @@ const {
   matchesDevelopmentProcessDefinition,
   resolveCurrentPm2Mode,
   runPm2Ecosystem,
+  verifyDevelopmentRuntime,
   verifyProductionRuntime,
   verifyAsrRuntime,
 } = require("./start-pm2-ecosystem.cjs");
@@ -115,6 +116,7 @@ function pm2Process(name, status) {
       watch: false,
       IDREAM_PM2_MODE: "production",
       IDREAM_RUNTIME_CERTIFICATION: "revision-bound-immutable",
+      IDREAM_SOURCE_REVISION: process.env.IDREAM_SOURCE_REVISION,
     },
   };
 }
@@ -165,6 +167,16 @@ function noisyPm2List(processes) {
 
 function commandList(calls) {
   return calls.map(({ command, args }) => [command, args]);
+}
+
+function developmentHttpResponse(url) {
+  const pathname = new URL(url).pathname;
+  const body = pathname === "/api/v1/me"
+    ? JSON.stringify({ ok: true, data: { user: null, entitlements: {}, dreamcoins: { balance: 0 } } })
+    : pathname === "/admin/today"
+      ? '<html><title>Admin sign-in | iDream Admin</title><main data-admin-auth-wall="dev-login-v1"></main></html>'
+      : '<html><title>iDream | AI Characters, Chat &amp; Image Generation</title><body></body></html>';
+  return { status: 0, stdout: `${body}\n200` };
 }
 
 function onlineProductionProcesses() {
@@ -770,9 +782,10 @@ test("a failed launch gate prevents queue and PM2 mutation", () => {
 
   assert.equal(status, 47);
   assert.deepEqual(commandList(calls), [
-    ["bun", ["run", "check:launch:direct"]],
+    ["bun", ["run", "check:launch"]],
   ]);
   assert.equal(calls[0].options.env.LAUNCH_SCOPE, "core");
+  assert.equal(typeof rootPackage.scripts[calls[0].args[1]], "string", "The production launch gate must invoke a declared root script");
 });
 
 test("PM2 mode discovery fails closed when warning output has no JSON array", () => {
@@ -938,7 +951,7 @@ test("a generic restart of production enters the launch gate before PM2 mutation
   assert.equal(status, 31);
   assert.deepEqual(commandList(calls), [
     ["pm2", ["jlist"]],
-    ["bun", ["run", "check:launch:direct"]],
+    ["bun", ["run", "check:launch"]],
   ]);
   assert.equal(calls[1].options.env.IDREAM_PM2_MODE, "production");
 });
@@ -993,7 +1006,7 @@ test("explicit quiesce pauses and stops owned production processes without launc
   ]);
   assert.equal(
     commandList(calls).some(([, args]) =>
-      args.includes("check:launch:direct") ||
+      args.includes("check:launch") ||
       args.includes("ecosystem.config.js") ||
       args.includes("generation-cutover:resume"),
     ),
@@ -1066,13 +1079,146 @@ test("pm2 stop uses the same drain and ownership fence before stopping voice", (
   ]);
   assert.equal(
     commandList(calls).some(([, args]) =>
-      args.includes("check:launch:direct") ||
+      args.includes("check:launch") ||
       args.includes("check:generation-cutover") ||
       args.includes("ecosystem.config.js") ||
       args.includes("generation-cutover:resume"),
     ),
     false,
   );
+});
+
+test("development restart refuses HTTP 404 before resuming Generation queues", () => {
+  const calls = [];
+  let snapshots = 0;
+  const status = runPm2Ecosystem({
+    args: ["current", "restart"],
+    env: { PATH: process.env.PATH, GEN_VIDEO_PROVIDER: "mock" },
+    computeSourceRevision: () => "idream-worktree-http-readiness",
+    spawnSync: (command, args, options) => {
+      calls.push({ command, args, options });
+      if (command === "pm2" && args[0] === "jlist") {
+        snapshots += 1;
+        return { status: 0, stdout: JSON.stringify(snapshots === 1 ? [{
+          name: "main-web",
+          pm2_env: { status: "online", IDREAM_PM2_MODE: "development" },
+        }] : []) };
+      }
+      if (command === "curl") {
+        return { status: 22, stdout: "\n404", stderr: "HTTP 404" };
+      }
+      return { status: 0 };
+    },
+    verifyGenImageWorkerOwnership: () => 0,
+    verifyDevelopmentRuntime: (input) => verifyDevelopmentRuntime({
+      ...input, attempts: 1, delay: () => undefined,
+    }),
+  });
+
+  assert.equal(status, 1);
+  assert.equal(calls.some(({ args }) => args.includes("generation-cutover:resume")), false);
+  assert.equal(calls.some(({ command }) => command === "curl"), true);
+});
+
+test("development waits for slow cold route compilation before resuming", () => {
+  const calls = [];
+  const delays = [];
+  const compiled = new Set();
+  const attempts = new Map();
+  const expectedUrls = [
+    "http://127.0.0.1:3337/",
+    "http://127.0.0.1:3337/api/v1/me",
+    "http://127.0.0.1:3338/admin/today",
+  ];
+  const status = runPm2Ecosystem({
+    args: ["development", "start"],
+    env: { PATH: process.env.PATH, GEN_VIDEO_PROVIDER: "mock", MAIN_WEB_PORT: "3337", ADMIN_WEB_PORT: "3338" },
+    computeSourceRevision: () => "idream-worktree-cold-compile",
+    spawnSync: (command, args, options) => {
+      calls.push({ command, args, options });
+      if (command === "pm2" && args[0] === "jlist") return { status: 0, stdout: "[]" };
+      if (command === "curl") {
+        const url = args.at(-1);
+        const attempt = (attempts.get(url) ?? 0) + 1;
+        attempts.set(url, attempt);
+        assert.ok(expectedUrls.includes(url));
+        if (attempt === 1) return { status: 28, stdout: "\n000" };
+        if (attempt === 2) return { status: 22, stdout: "\n404" };
+        compiled.add(url);
+        return developmentHttpResponse(url);
+      }
+      if (args.includes("generation-cutover:resume")) {
+        assert.deepEqual([...compiled], expectedUrls, "Web routes are still compiling");
+      }
+      return { status: 0 };
+    },
+    verifyGenImageWorkerOwnership: ({ mode }) => {
+      if (mode === "ready") {
+        assert.deepEqual([...compiled], expectedUrls, "Final ownership must follow HTTP readiness");
+      }
+      return 0;
+    },
+    verifyDevelopmentRuntime: (input) => verifyDevelopmentRuntime({
+      ...input, attempts: 4, delay: (milliseconds) => delays.push(milliseconds),
+    }),
+  });
+
+  assert.equal(status, 0);
+  assert.deepEqual([...attempts.values()], [3, 3, 3]);
+  assert.deepEqual(delays, [500, 500]);
+  assert.deepEqual(commandList(calls).at(-1), ["bun", ["run", "generation-cutover:resume"]]);
+});
+
+for (const scenario of [
+  { name: "an unrelated homepage", pathname: "/", result: { status: 0, stdout: "<html><title>Other service</title></html>\n200" } },
+  { name: "a missing Main API route", pathname: "/api/v1/me", result: { status: 22, stdout: "\n404" } },
+  { name: "HTML instead of the Main API envelope", pathname: "/api/v1/me", result: { status: 0, stdout: "<html>Fallback</html>\n200" } },
+  { name: "an unsuccessful Main API envelope", pathname: "/api/v1/me", result: { status: 0, stdout: '{"ok":false,"error":{"code":"unavailable"}}\n200' } },
+  { name: "a missing Admin route", pathname: "/admin/today", result: { status: 22, stdout: "\n404" } },
+  { name: "an Admin authority-unavailable page", pathname: "/admin/today", result: { status: 0, stdout: "<html><title>Today | iDream Admin</title><h1>Admin authority service unavailable</h1></html>\n200" } },
+  { name: "an Admin redirect", pathname: "/admin/today", result: { status: 0, stdout: "\n302" } },
+]) {
+  test(`development readiness rejects ${scenario.name} while the other entry points are healthy`, () => {
+    const urls = [];
+    const status = verifyDevelopmentRuntime({
+      runtimeEnv: {}, attempts: 1, delay: () => assert.fail("no retry after the final attempt"),
+      spawnSync: (command, args) => {
+        assert.equal(command, "curl");
+        const url = args.at(-1);
+        urls.push(url);
+        assert.equal(args.includes("--location"), false);
+        const timeout = Number(args[args.indexOf("--max-time") + 1]);
+        assert.ok(timeout > 0 && timeout <= 15);
+        return new URL(url).pathname === scenario.pathname ? scenario.result : developmentHttpResponse(url);
+      },
+    });
+    assert.equal(status, 1);
+    assert.deepEqual(urls, ["http://127.0.0.1:3000/", "http://127.0.0.1:3000/api/v1/me", "http://127.0.0.1:3001/admin/today"]);
+  });
+}
+
+test("development allows extended transient compilation within its readiness budget", () => {
+  let homeAttempts = 0;
+  const status = verifyDevelopmentRuntime({
+    runtimeEnv: {}, delay: () => undefined,
+    spawnSync: (_command, args) => {
+      const url = args.at(-1);
+      if (new URL(url).pathname === "/" && ++homeAttempts <= 70) {
+        return { status: 22, stdout: "\n503" };
+      }
+      return developmentHttpResponse(url);
+    },
+  });
+  assert.equal(status, 0);
+  assert.equal(homeAttempts, 71);
+});
+
+test("development readiness propagates a failed probe spawn", () => {
+  const error = new Error("curl could not start");
+  assert.throws(() => verifyDevelopmentRuntime({
+    runtimeEnv: {}, attempts: 1,
+    spawnSync: () => ({ error }),
+  }), (caught) => caught === error);
 });
 
 test("a generic development restart preserves the detected source topology", () => {
@@ -1124,6 +1270,9 @@ test("a generic development restart preserves the detected source topology", () 
         { status: 0 },
         { status: 0 },
         { status: 0 },
+        developmentHttpResponse("http://127.0.0.1:3000/"),
+        developmentHttpResponse("http://127.0.0.1:3000/api/v1/me"),
+        developmentHttpResponse("http://127.0.0.1:3001/admin/today"),
         { status: 0 },
       ],
       calls,
@@ -1141,7 +1290,9 @@ test("a generic development restart preserves the detected source topology", () 
   });
 
   assert.equal(status, 0);
-  assert.deepEqual(commandList(calls), [
+  assert.deepEqual(commandList(calls).map(([command, args]) =>
+    command === "curl" ? [command, [args.at(-1)]] : [command, args]
+  ), [
     ["pm2", ["jlist"]],
     ["bun", ["run", "generation-cutover:pause-and-drain"]],
     ["pm2", ["jlist"]],
@@ -1154,6 +1305,9 @@ test("a generic development restart preserves the detected source topology", () 
     ["bun", ["run", "check:generation-cutover"]],
     ["pm2", ["delete", "pocket-tts"]],
     ["pm2", ["restart", "ecosystem.config.js", "--update-env"]],
+    ["curl", ["http://127.0.0.1:3000/"]],
+    ["curl", ["http://127.0.0.1:3000/api/v1/me"]],
+    ["curl", ["http://127.0.0.1:3001/admin/today"]],
     ["bun", ["run", "generation-cutover:resume"]],
   ]);
   assert.equal(calls[11].options.env.IDREAM_PM2_MODE, "development");
@@ -1230,6 +1384,9 @@ test("development mock video topology requires zero video consumers", () => {
         { status: 0 },
         { status: 0 },
         { status: 0 },
+        developmentHttpResponse("http://127.0.0.1:3000/"),
+        developmentHttpResponse("http://127.0.0.1:3000/api/v1/me"),
+        developmentHttpResponse("http://127.0.0.1:3001/admin/today"),
         { status: 0 },
       ],
       calls,
@@ -1297,6 +1454,9 @@ for (const scenario of [
           { status: 0 },
           { status: 0 },
           { status: 0 },
+          developmentHttpResponse("http://127.0.0.1:3000/"),
+          developmentHttpResponse("http://127.0.0.1:3000/api/v1/me"),
+          developmentHttpResponse("http://127.0.0.1:3001/admin/today"),
         ],
         calls,
       ),
@@ -1308,7 +1468,9 @@ for (const scenario of [
 
     assert.equal(status, 73);
     assert.deepEqual(ownershipModes, ["quiescent", "ready"]);
-    assert.deepEqual(commandList(calls), [
+    assert.deepEqual(commandList(calls).map(([command, args]) =>
+      command === "curl" ? [command, [args.at(-1)]] : [command, args]
+    ), [
       ["pm2", ["jlist"]],
       ["bun", ["run", "generation-cutover:pause-and-drain"]],
       ["pm2", ["jlist"]],
@@ -1317,6 +1479,9 @@ for (const scenario of [
       ["bun", ["run", "check:generation-cutover"]],
       ["pm2", ["delete", "pocket-tts"]],
       ["pm2", scenario.action],
+      ["curl", ["http://127.0.0.1:3000/"]],
+      ["curl", ["http://127.0.0.1:3000/api/v1/me"]],
+      ["curl", ["http://127.0.0.1:3001/admin/today"]],
     ]);
   });
 }
@@ -1424,7 +1589,7 @@ test("production pauses and drains before phased stop, gate, restart, and resume
 
   assert.equal(status, 0);
   assert.deepEqual(commandList(calls), [
-    ["bun", ["run", "check:launch:direct"]],
+    ["bun", ["run", "check:launch"]],
     ["bun", ["run", "generation-cutover:pause-and-drain"]],
     ["pm2", ["jlist"]],
     ["pm2", ["stop", "main-web"]],
@@ -1517,7 +1682,7 @@ test("development definitions are deleted and recreated before production resume
 
   assert.equal(status, 0);
   assert.deepEqual(commandList(calls), [
-    ["bun", ["run", "check:launch:direct"]],
+    ["bun", ["run", "check:launch"]],
     ["bun", ["run", "generation-cutover:pause-and-drain"]],
     ["pm2", ["jlist"]],
     ["pm2", ["stop", "main-web"]],
@@ -1661,7 +1826,7 @@ test("a failed pause/drain prevents every PM2 mutation", () => {
 
   assert.equal(status, 31);
   assert.deepEqual(commandList(calls), [
-    ["bun", ["run", "check:launch:direct"]],
+    ["bun", ["run", "check:launch"]],
     ["bun", ["run", "generation-cutover:pause-and-drain"]],
   ]);
 });
@@ -1687,7 +1852,7 @@ test("a failed admission stop prevents worker stop, gate, and restart", () => {
 
   assert.equal(status, 17);
   assert.deepEqual(commandList(calls), [
-    ["bun", ["run", "check:launch:direct"]],
+    ["bun", ["run", "check:launch"]],
     ["bun", ["run", "generation-cutover:pause-and-drain"]],
     ["pm2", ["jlist"]],
     ["pm2", ["stop", "main-event-consumer"]],
@@ -1719,7 +1884,7 @@ test("a failed admission verification prevents worker stop and gate", () => {
 
   assert.equal(status, 1);
   assert.deepEqual(commandList(calls), [
-    ["bun", ["run", "check:launch:direct"]],
+    ["bun", ["run", "check:launch"]],
     ["bun", ["run", "generation-cutover:pause-and-drain"]],
     ["pm2", ["jlist"]],
     ["pm2", ["stop", "main-web"]],
@@ -1747,7 +1912,7 @@ test("a failed drain-worker stop prevents the gate and restart", () => {
 
   assert.equal(status, 19);
   assert.deepEqual(commandList(calls), [
-    ["bun", ["run", "check:launch:direct"]],
+    ["bun", ["run", "check:launch"]],
     ["bun", ["run", "generation-cutover:pause-and-drain"]],
     ["pm2", ["jlist"]],
     ["pm2", ["jlist"]],
@@ -1776,7 +1941,7 @@ test("a failed authority gate leaves processes stopped and queues paused", () =>
 
   assert.equal(status, 23);
   assert.deepEqual(commandList(calls), [
-    ["bun", ["run", "check:launch:direct"]],
+    ["bun", ["run", "check:launch"]],
     ["bun", ["run", "generation-cutover:pause-and-drain"]],
     ["pm2", ["jlist"]],
     ["pm2", ["jlist"]],
@@ -1989,7 +2154,7 @@ test("a first production deploy with no existing PM2 apps still closes the full 
 
   assert.equal(status, 0);
   assert.deepEqual(commandList(calls), [
-    ["bun", ["run", "check:launch:direct"]],
+    ["bun", ["run", "check:launch"]],
     ["bun", ["run", "generation-cutover:pause-and-drain"]],
     ["pm2", ["jlist"]],
     ["pm2", ["jlist"]],

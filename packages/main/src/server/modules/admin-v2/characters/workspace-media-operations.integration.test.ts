@@ -1,4 +1,5 @@
 import { recoveredGenerationFixture } from "@/server/test/recovered-generation-fixture";
+import { recordGenerationAttemptEvent } from "@/server/ai/generation-attempt-events";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { compileCharacterSoul } from "@idream/shared";
@@ -382,9 +383,14 @@ describe("Character media operations projection", () => {
       await prisma.generationJob.create({ data: {
         id: jobId, userId, characterId, mode: "image", controls: {}, presetIds: [], status: "completed", deliveredOutputCount: 1, provider: "comfyui",
       } });
-      await prisma.generationAttempt.create({ data: {
-        requestId: jobId, attemptNo: 1, status: "unknown", provider: "comfyui", operatorGuidance: "Reconcile provider before retrying.",
-      } });
+      await prisma.$transaction(async (tx) => {
+        const attempt = await tx.generationAttempt.create({ data: { requestId: jobId, attemptNo: 1, provider: "comfyui" } });
+        await recordGenerationAttemptEvent(tx, {
+          eventId: `${attempt.id}:unknown`, attemptId: attempt.id, eventType: "generation.attempt.unknown.v1",
+          outcome: "unknown", occurredAt: new Date(), payload: { requestId: jobId },
+          operatorGuidance: "Reconcile provider before retrying.",
+        });
+      });
       await prisma.mediaAsset.create({ data: {
         id: assetId, ownerId: userId, characterId, sourceJobId: jobId, type: "image", safetyStatus: "passed",
         storageKey: `gen/${jobId}/recovered.webp`, url: `/user-content/${assetId}.webp`, metadata: { provider: "comfyui", recoveredUnknown: true },
@@ -492,14 +498,12 @@ describe("Character media operations projection", () => {
           createdAt: new Date("2026-08-02T02:30:00.000Z"),
         },
       });
-      await prisma.generationAttempt.create({
-        data: {
-          id: attemptId,
-          requestId: jobId,
-          attemptNo: 1,
-          status: "failed",
-          retryability: "legacy_unknown",
-        },
+      await prisma.$transaction(async (tx) => {
+        await tx.generationAttempt.create({ data: { id: attemptId, requestId: jobId, attemptNo: 1 } });
+        await recordGenerationAttemptEvent(tx, {
+          eventId: `${attemptId}:failed`, attemptId, eventType: "generation.attempt.failed.v1",
+          outcome: "failed", occurredAt: new Date(), payload: { requestId: jobId }, retryability: "legacy_unknown",
+        });
       });
 
       const projection = characterMediaOperationsProjectionSchema.parse(
@@ -814,7 +818,10 @@ describe("Character media operations projection", () => {
       expect(projection.operations.find((row) => row.modality === "video")).toMatchObject({
         requestId: jobId, status: "running", attempt: { id: attemptId, status: "running" },
       });
-      await prisma.generationAttempt.update({ where: { id: attemptId }, data: { status: "succeeded" } });
+      await prisma.$transaction(tx => recordGenerationAttemptEvent(tx, {
+        eventId: `${attemptId}:succeeded`, attemptId, eventType: "generation.attempt.succeeded.v1",
+        outcome: "succeeded", occurredAt: new Date(), payload: { requestId: jobId },
+      }));
       const finalizing = await loadCharacterMediaOperationsProjection(characterId);
       expect(finalizing.operations.find((row) => row.modality === "video")?.status).toBe("finalizing");
     } finally {

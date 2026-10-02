@@ -245,6 +245,7 @@ export type CharacterCommandJournalSnapshot = {
    *            去处理另一条命令。
    */
   readonly recoveryError: CharacterCommandMessage | null;
+  readonly recoveryErrorCommandId: string | null;
   readonly writesLocked: boolean;
 };
 
@@ -604,7 +605,7 @@ export type CharacterCommandJournal = {
   readonly getGeneration: () => number;
   readonly isCurrentGeneration: (candidate: number) => boolean;
   readonly setNotice: (notice: CharacterMutationNotice | null) => void;
-  readonly setRecoveryError: (message: CharacterCommandMessage | null) => void;
+  readonly setRecoveryError: (message: CharacterCommandMessage | null, commandId?: string | null) => void;
   /**
    * 同一 (操作员, 角色) 下按业务签名稳定的幂等键，跨刷新存活。
    * INTENT: 同步原子 mutation（如 Voice request reclaim）也需要它——它们不落命令日志，
@@ -650,10 +651,12 @@ export function createCharacterCommandJournal(options: {
   let command: PendingCharacterCommand | null = null;
   let notice: CharacterMutationNotice | null = null;
   let recoveryError: CharacterCommandMessage | null = null;
+  let recoveryErrorCommandId: string | null = null;
   let snapshot: CharacterCommandJournalSnapshot = {
     command: null,
     notice: null,
     recoveryError: null,
+    recoveryErrorCommandId: null,
     writesLocked: false,
   };
   let pendingCleanup: {
@@ -668,13 +671,15 @@ export function createCharacterCommandJournal(options: {
     if (
       snapshot.command === command &&
       snapshot.notice === notice &&
-      snapshot.recoveryError === recoveryError
+      snapshot.recoveryError === recoveryError &&
+      snapshot.recoveryErrorCommandId === recoveryErrorCommandId
     )
       return;
     snapshot = {
       command,
       notice,
       recoveryError,
+      recoveryErrorCommandId,
       writesLocked: command !== null || notice !== null,
     };
     for (const listener of listeners) listener();
@@ -734,6 +739,7 @@ export function createCharacterCommandJournal(options: {
     command = next;
     notice = noticeForCommand(next);
     recoveryError = null;
+    recoveryErrorCommandId = null;
     persist(next);
     publish();
     return next;
@@ -869,8 +875,10 @@ export function createCharacterCommandJournal(options: {
     return true;
   };
 
-  const setRecoveryError = (message: CharacterCommandMessage | null) => {
+  const setRecoveryError = (message: CharacterCommandMessage | null, commandId: string | null = null) => {
     recoveryError = message;
+    // Terminal evidence remains readable after its command and write lock clear.
+    recoveryErrorCommandId = message ? commandId : null;
     publish();
   };
 
@@ -1143,6 +1151,7 @@ export function createCharacterCommandJournal(options: {
                   action: target.action,
                   status: status.status,
                 }),
+            target.commandId,
           );
           return settled(status.succeeded ? "succeeded" : "failed");
         case "evidence_missing": {

@@ -176,7 +176,7 @@ describe("SupportWorkspace customer replies", () => {
     await change(dialog.querySelector('input[aria-label="Confirmation"]')!, "SUP-CLOCK-1");
     await act(async () => ([...dialog.querySelectorAll("button")].find((node) => node.textContent?.trim() === "Confirm") as HTMLButtonElement).click());
     await waitUntil(() => apiWrite.mock.calls.length === 1);
-    expect(apiWrite.mock.calls[0][2]).toMatchObject({ status: "waiting_on_user", customerMessage: "Please send the image ID.", reason: "Need reproduction evidence." });
+    expect(apiWrite.mock.calls[0][2]).toMatchObject({ expectedUpdatedAt: baseTicket.updatedAt, status: "waiting_on_user", customerMessage: "Please send the image ID.", reason: "Need reproduction evidence." });
     expect(apiWrite.mock.calls[0][2]).not.toHaveProperty("resolutionNotes", "Please send the image ID.");
   });
   it("opens the full customer conversation from the ticket number", async () => {
@@ -282,7 +282,82 @@ describe("SupportWorkspace customer replies", () => {
     await waitUntil(() => apiWrite.mock.calls.length === 1);
     expect(document.querySelector('[role="dialog"]')).toBeNull();
     expect(apiWrite.mock.calls[0][0]).toBe("/api/v2/admin/support/requests/SUP-CLOCK-1");
-    expect(apiWrite.mock.calls[0][2]).toMatchObject({ customerMessage: "We refunded the duplicate charge.", confirmation: "SUP-CLOCK-1", status: "waiting_on_user" });
+    expect(apiWrite.mock.calls[0][2]).toMatchObject({ expectedUpdatedAt: "2026-09-02T12:00:00.000Z", customerMessage: "We refunded the duplicate charge.", confirmation: "SUP-CLOCK-1", status: "waiting_on_user" });
+  });
+
+  it("freezes a submitted reply and preserves it for retry after failure", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => Response.json({ ok: true, data: String(input).includes("/support/requests/")
+      ? { request: { ticketId: "SUP-CLOCK-1", subject: "Charged twice", description: "Customer intake", status: "open", canReply: true, createdAt: "2026-09-02T12:00:00.000Z", updatedAt: "2026-09-02T12:00:00.000Z", messages: [] } }
+      : { items: [] } })));
+    let rejectReply!: (cause: Error) => void;
+    apiWrite.mockImplementationOnce(() => new Promise((_, reject) => { rejectReply = reject; }));
+    await mount();
+    await act(async () => [...container.querySelectorAll("button")].find((node) => node.textContent?.trim() === "SUP-CLOCK-1")!.click());
+    await waitUntil(() => container.querySelector("textarea") !== null);
+    const reply = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message to customer"]')!;
+    await change(reply, "Please send the failing image ID.");
+    await act(async () => reply.closest("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    expect(reply.disabled).toBe(true);
+    await act(async () => rejectReply(new Error("Network unavailable")));
+    expect(reply.disabled).toBe(false);
+    expect(reply.value).toBe("Please send the failing image ID.");
+    expect(document.body.textContent).toContain("This action did not complete.");
+    expect(document.body.textContent).toContain("Copy for engineering");
+    await act(async () => reply.closest("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    await waitUntil(() => reply.value === "");
+    expect(apiWrite).toHaveBeenCalledTimes(2);
+    expect(apiWrite.mock.calls[1][2]).toMatchObject({ customerMessage: "Please send the failing image ID." });
+  });
+
+  it("sends only one reply when the form is submitted twice before rerender", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => Response.json({ ok: true, data: String(input).includes("/support/requests/")
+      ? { request: { ticketId: "SUP-CLOCK-1", subject: "Charged twice", description: "Customer intake", status: "open", canReply: true, createdAt: "2026-09-02T12:00:00.000Z", updatedAt: "2026-09-02T12:00:00.000Z", messages: [] } }
+      : { items: [] } })));
+    let resolveReply!: (value: unknown) => void;
+    apiWrite.mockImplementation(() => new Promise((resolve) => { resolveReply = resolve; }));
+    await mount();
+    await act(async () => [...container.querySelectorAll("button")].find((node) => node.textContent?.trim() === "SUP-CLOCK-1")!.click());
+    await waitUntil(() => container.querySelector("textarea") !== null);
+    const reply = container.querySelector<HTMLTextAreaElement>("textarea")!;
+    await change(reply, "Please send the failing image ID.");
+    await act(async () => {
+      const form = reply.closest("form")!;
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    expect(apiWrite).toHaveBeenCalledTimes(1);
+    await act(async () => resolveReply({}));
+    await waitUntil(() => reply.value === "");
+  });
+
+  it("refreshes the current queue filters when an earlier reply finishes", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => Response.json({ ok: true, data: String(input).includes("/support/requests/")
+      ? { request: { ticketId: "SUP-CLOCK-1", subject: "Conversation subject", description: "Customer intake", status: "open", canReply: true, createdAt: "2026-09-02T12:00:00.000Z", updatedAt: "2026-09-02T12:00:00.000Z", messages: [] } }
+      : { items: [] } })));
+    apiGet.mockImplementation(async (path) => ({
+      items: [{ ...baseTicket, subject: path.includes("status=resolved") ? "Resolved queue result" : "Unfiltered queue result" }],
+      pageInfo: { endCursor: null, hasNextPage: false },
+    }));
+    let resolveReply!: (value: unknown) => void;
+    apiWrite.mockImplementationOnce(() => new Promise((resolve) => { resolveReply = resolve; }));
+    await mount();
+    await act(async () => [...container.querySelectorAll("button")].find((node) => node.textContent?.trim() === "SUP-CLOCK-1")!.click());
+    await waitUntil(() => container.querySelector("textarea") !== null);
+    const reply = container.querySelector<HTMLTextAreaElement>("textarea")!;
+    await change(reply, "Please send the failing image ID.");
+    await act(async () => reply.closest("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    await act(async () => {
+      const status = container.querySelector<HTMLSelectElement>('select[aria-label="Support status"]')!;
+      status.value = "resolved";
+      status.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await waitUntil(() => container.textContent?.includes("Resolved queue result") === true);
+    await act(async () => resolveReply({}));
+    await waitUntil(() => ![...container.querySelectorAll("p")].some((node) => node.textContent === "Loading conversation…"));
+    expect(apiGet.mock.calls.at(-1)?.[0]).toContain("status=resolved");
+    expect(container.textContent).toContain("Resolved queue result");
+    expect(container.textContent).not.toContain("Unfiltered queue result");
+    expect(new URLSearchParams(window.location.search).get("status")).toBe("resolved");
   });
 });
 
@@ -299,6 +374,7 @@ const baseTicket = {
   slaEscalationReason: null,
   resolutionNotes: null,
   createdAt: "2026-08-10T00:00:00.000Z",
+  updatedAt: "2026-08-10T00:00:00.000Z",
 };
 
 describe("SupportWorkspace queue triage signals", () => {
@@ -478,6 +554,45 @@ describe("SupportWorkspace queue triage signals", () => {
     // 单向 operation 不接受 before；回上一页发的是自己走过的那个前向游标（第一页即无游标）。
     expect(apiGet.mock.calls.at(-1)?.[0]).not.toContain("before=");
     expect(apiGet.mock.calls.at(-1)?.[0]).not.toContain("cursor=");
+  });
+
+  it("blocks cursors from the old snapshot when a new queue read fails and retries the current filters", async () => {
+    let failOpen = true;
+    apiGet.mockImplementation(async (path) => {
+      if (path.includes("status=open") && failOpen) throw new Error("Support read unavailable");
+      return {
+        items: [{ ...baseTicket, status: path.includes("status=open") ? "open" : "received" }],
+        pageInfo: { endCursor: "cursor-for-this-snapshot", hasNextPage: true },
+        asOf: "2026-08-16T00:00:00.000Z",
+        freshness: "fresh",
+      };
+    });
+    await act(async () => root.render(<ToastProvider><SupportWorkspace canViewPlaintext={false} canWrite /></ToastProvider>));
+    await waitUntil(() => container.textContent?.includes("SUP-CLOCK-1") === true);
+    const button = (label: string) => [...container.querySelectorAll("button")].find((node) => node.textContent?.trim() === label)!;
+    expect(button("Next page").disabled).toBe(false);
+    await act(async () => {
+      const status = container.querySelector<HTMLSelectElement>('select[aria-label="Support status"]')!;
+      status.value = "open";
+      status.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await waitUntil(() => container.querySelector('[role="alert"]') !== null);
+    expect(window.location.search).toContain("status=open");
+    expect(container.textContent).toContain("Showing the last successful snapshot from");
+    expect(button("Next page").disabled).toBe(true);
+    failOpen = false;
+    await act(async () => button("Retry").click());
+    await waitUntil(() => container.querySelector('[role="alert"]') === null);
+    expect(apiGet.mock.calls.at(-1)?.[0]).toContain("status=open");
+    expect(apiGet.mock.calls.at(-1)?.[0]).not.toContain("cursor=");
+    expect(button("Next page").disabled).toBe(false);
+  });
+
+  it("gives failed queue reads read-retry guidance rather than uncertain-write guidance", async () => {
+    apiGet.mockRejectedValue(new Error("Support read unavailable"));
+    await act(async () => root.render(<ToastProvider><SupportWorkspace canViewPlaintext={false} canWrite /></ToastProvider>));
+    await waitUntil(() => container.querySelector('[role="alert"]') !== null);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Retry to load the latest data.");
   });
 });
 

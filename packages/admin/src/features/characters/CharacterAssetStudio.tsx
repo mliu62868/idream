@@ -154,7 +154,7 @@ export function CharacterAssetStudio({
     "generate" | "review" | "select" | "prepare" | null
   >(null);
   const [error, setError] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | { readonly runId: string } | null>(null);
   const [refreshWarning, setRefreshWarning] = useState<string | null>(null);
   const [, setReviewDrafts] = useState<Record<string, ReviewDraft>>(
     {},
@@ -395,7 +395,7 @@ export function CharacterAssetStudio({
       }
       if (verdict.kind === "reflected") {
         setRefreshWarning(null);
-        setMessage(characterAssetRunReceiptMessage(detail));
+        setMessage({ runId: detail.id });
       }
     },
   });
@@ -511,6 +511,13 @@ export function CharacterAssetStudio({
 
   const activeRunDetail =
     selectedRun?.id === selectedRunId ? selectedRun : null;
+  // A committed receipt survives intent release; its text follows the current
+  // projection of that exact Run, including later polling and terminal results.
+  const statusMessage = typeof message === "string"
+    ? message
+    : activeRunDetail && activeRunDetail.id === message?.runId
+      ? characterAssetRunReceiptMessage(activeRunDetail)
+      : null;
   const selectedExistingImage =
     existingImages.find((image) => image.id === selectedExistingImageId) ??
     existingImages[0] ??
@@ -1719,12 +1726,12 @@ export function CharacterAssetStudio({
           {t(error)}
         </p>
       ) : null}
-      {message ? (
+      {statusMessage ? (
         <p
           className="rounded-lg bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]"
           role="status"
         >
-          {t(message)}
+          {t(statusMessage)}
         </p>
       ) : null}
       {!recurringProductionReady ? (

@@ -21,6 +21,7 @@ import {
 import { isRecord, toInputJson } from "@/server/lib/request-json";
 import { jsonStringArray, pruneUndefined } from "./json-values";
 import { dimensionsForImageOrientation } from "@idream/shared/media/image-orientation";
+import { REDGRAFT_VIDEO_OPTIONS } from "@idream/shared/contracts";
 import {
   resolveGenerationVisualProfile,
   isEditorialLegacyVisualProfileProjection,
@@ -29,6 +30,7 @@ import {
 import {
   assertGenerationProfileCanDispatchReferences,
   normalizedGenerationReferenceRole,
+  resolveImageRecipeNegative,
 } from "./generation-profile-selection";
 import { directCharacterAudienceWhere } from "./public-content-audience";
 import {
@@ -104,11 +106,14 @@ export async function createGenerationJobForUser(
     requireQuoteAuthority?: boolean;
     expectedVisualProfileVersion?: number;
     expectedReferenceSetRevisionId?: string;
+    // A sequence atomically admits its ordinary child Requests in one ledger transaction.
+    admissionTx?: Prisma.TransactionClient;
+    sequenceId?: string;
   } = {},
 ) {
-  const preexisting = await findExistingGenerationJob(userId, options);
+  const preexisting = await findExistingGenerationJob(userId, options, options.admissionTx);
   if (preexisting) {
-    await wakeQueuedGenerationDispatch(preexisting);
+    if (!options.admissionTx) await wakeQueuedGenerationDispatch(preexisting);
     return preexisting;
   }
   if (
@@ -152,10 +157,12 @@ export async function createGenerationJobForUser(
     entitlements,
     profile,
     recipe,
+    recipeNegative,
     requestedLookReferenceAssetId,
     requestedSourceImageAssetId,
     selectedLook,
     videoRecipe,
+    videoEnvelope,
     workflowDescriptor,
   } = plan;
   const lookSnapshot = selectedLook ? characterLookSnapshot(selectedLook) : null;
@@ -250,7 +257,7 @@ export async function createGenerationJobForUser(
           defaultWidth: profile.defaultWidth,
           defaultHeight: profile.defaultHeight,
         })
-      : { width: profile.defaultWidth, height: profile.defaultHeight };
+      : videoEnvelope ?? { width: profile.defaultWidth, height: profile.defaultHeight };
   const momentSpec = buildMomentSpec(
     body,
     options.source,
@@ -276,7 +283,7 @@ export async function createGenerationJobForUser(
       ? imageNegativePrompt(
           [
             defaultImageNegativePrompt(
-              recipe.negativeBase,
+              recipeNegative?.base ?? recipe.negativeBase,
               options.source?.sourceType,
             ),
             body.negativePrompt,
@@ -289,7 +296,11 @@ export async function createGenerationJobForUser(
     userId,
     identity: options,
     chatAttachment: options.chatAttachment,
+    sequenceId: options.sequenceId,
     prepare: async (tx) => {
+      if (recipeNegative && (await resolveImageRecipeNegative(recipe, tx)).promptRecipeFingerprint !== recipeNegative.promptRecipeFingerprint) {
+        throw Errors.conflict("Generation negative recipe changed. Refresh the exact quote before submitting.");
+      }
       const contextToken = generationContextToken(body);
       const lockedContext = contextToken ? await lockGenerationContext(tx, userId, contextToken) : null;
       let legacyReleaseAuthority:
@@ -451,7 +462,8 @@ export async function createGenerationJobForUser(
       }
       const controls = pruneUndefined({
         ...body.controls,
-        seconds: videoRecipe?.durationSeconds ?? body.controls.seconds,
+        seconds: videoEnvelope?.seconds ?? videoRecipe?.durationSeconds ?? body.controls.seconds,
+        videoOptionsVersion: videoEnvelope ? REDGRAFT_VIDEO_OPTIONS.version : undefined,
         orientation,
         model: profile.profileKey,
         profileId: profile.profileKey,
@@ -511,11 +523,15 @@ export async function createGenerationJobForUser(
           provider: profile.runner,
           sourceType: options.source?.sourceType ?? "generator",
           sourceId: options.source?.sourceId,
-          sourceMeta: options.source?.sourceMeta,
+          sourceMeta: recipeNegative?.negativeRecipe ? toInputJson({
+            ...(isRecord(options.source?.sourceMeta) ? options.source.sourceMeta : {}),
+            negativeRecipe: recipeNegative.negativeRecipe,
+            promptRecipeFingerprint: recipeNegative.promptRecipeFingerprint,
+          }) : options.source?.sourceMeta,
         },
       };
     },
-  });
+  }, options.admissionTx);
 }
 
 function characterLookSnapshot(look: {
@@ -606,7 +622,7 @@ async function assertGenerationLookAuthorityInTx(
 // INTENT: presets are open to every tier (unlike custom prompt); only built-in or the user's
 // own active presets or public community presets resolve, so a stranger's private
 // id can't be injected. Empty when none selected.
-async function resolvePresetPromptFragment(
+export async function resolvePresetPromptFragment(
   controls: {
     modePresetId?: string;
     backgroundPresetId?: string;
@@ -614,6 +630,7 @@ async function resolvePresetPromptFragment(
     outfitPresetId?: string;
   },
   userId: string,
+  db: Pick<Prisma.TransactionClient, "generationPreset"> = prisma,
 ): Promise<string> {
   const ids = [
     controls.modePresetId,
@@ -622,7 +639,7 @@ async function resolvePresetPromptFragment(
     controls.outfitPresetId,
   ].filter((id): id is string => Boolean(id));
   if (ids.length === 0) return "";
-  const presets = await prisma.generationPreset.findMany({
+  const presets = await db.generationPreset.findMany({
     where: {
       id: { in: ids },
       status: "active",

@@ -1,5 +1,5 @@
 import { ensureCustomerCharacterPublicationPrep } from "@/server/modules/admin-v2/characters/publication-prep";
-import type { CharacterDraft, Prisma } from "@prisma/client";
+import { Prisma, type CharacterDraft } from "@prisma/client";
 import { dispatchGenerationAttemptOutbox } from "@/server/modules/generation/generation-attempt-authority";
 import { lockCharacterMediaAssetAuthorities } from "@/server/modules/admin-v2/characters/generation-authority-lock";
 import { prisma } from "@/server/lib/db";
@@ -63,6 +63,32 @@ export async function assertDraftOwner(id: string, userId: string) {
   });
   if (!draft) throw Errors.notFound("Character draft not found");
   return draft;
+}
+
+const DRAFT_VERSION_CONFLICT_MESSAGE = "This draft changed in another tab or was opened by an older page. Load the latest saved draft before saving. Your current inputs have been kept.";
+
+export function assertDraftRevision(draft: Pick<CharacterDraft, "updatedAt">, expectedUpdatedAt: string | undefined) {
+  if (!expectedUpdatedAt || draft.updatedAt.getTime() !== new Date(expectedUpdatedAt).getTime()) {
+    throw Errors.versionConflict(DRAFT_VERSION_CONFLICT_MESSAGE);
+  }
+}
+
+export async function updateDraftWithRevision(draft: CharacterDraft, expectedUpdatedAt: string | undefined, data: Prisma.CharacterDraftUpdateInput) {
+  assertDraftRevision(draft, expectedUpdatedAt);
+  if (readCurrentCharacterDraftDetails(draft.advancedDetails).submittedCharacterId) {
+    throw Errors.versionConflict("This draft was already saved as a character. Load the latest saved draft to continue.");
+  }
+  try {
+    return await prisma.characterDraft.update({
+      where: { id: draft.id, ownerId: draft.ownerId, updatedAt: draft.updatedAt },
+      data: { ...data, updatedAt: new Date(Math.max(Date.now(), draft.updatedAt.getTime() + 1)) },
+    });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025") {
+      throw Errors.versionConflict(DRAFT_VERSION_CONFLICT_MESSAGE);
+    }
+    throw error;
+  }
 }
 
 // SPEC: the identity preview prompt carries only what the face and body look
@@ -289,6 +315,7 @@ export async function submitCharacterDraft(input: {
   readonly userId: string;
   readonly draftId: string;
   readonly visibility: "private" | "unlisted" | "public";
+  readonly expectedUpdatedAt?: string;
 }) {
   const { draftId: id, userId } = input;
   const draft = await assertDraftOwner(id, userId);
@@ -321,6 +348,7 @@ export async function submitCharacterDraft(input: {
     }
     return { character: existing, edited: false, pendingPublication: false, visibilityWarning: null };
   }
+  if (input.expectedUpdatedAt !== undefined) assertDraftRevision(draft, input.expectedUpdatedAt);
   const editsCharacterId = draft.editsCharacterId;
   if (editsCharacterId) {
     const edited = await applyCharacterEditDraft({ userId, draft: { ...draft, editsCharacterId }, visibility: input.visibility });
@@ -417,6 +445,11 @@ export async function submitCharacterDraft(input: {
     : null;
 
   const character = await prisma.$transaction(async (tx) => {
+    // External voice preparation may have taken time. Bind the commit to the
+    // snapshot that was validated, without discarding a newer tab's draft.
+    await tx.$queryRaw`SELECT id FROM character_drafts WHERE id = ${draft.id} FOR UPDATE`;
+    const currentDraft = await tx.characterDraft.findUniqueOrThrow({ where: { id: draft.id } });
+    assertDraftRevision(currentDraft, draft.updatedAt.toISOString());
     await lockCharacterMediaAssetAuthorities(tx, [anchorAssetId]);
     const lockedAnchorAsset = await assertIdentityImageMediaInTx(
       tx,

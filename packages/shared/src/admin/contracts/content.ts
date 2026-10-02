@@ -389,6 +389,7 @@ export const contentPlacementSchema = z.object({
   version: z.number().int(),
   verificationState: shortText(40),
   managedRunId: adminIdSchema.nullable(),
+  canPublish: z.boolean(),
   scheduledAt: adminIsoDateTimeSchema.nullable(),
   publishedAt: adminIsoDateTimeSchema.nullable(),
   pausedAt: adminIsoDateTimeSchema.nullable(),
@@ -420,8 +421,13 @@ export const contentPlacementCreateRequestSchema = z.object({
 }).strict();
 
 export const contentPlacementPatchRequestSchema = z.object({
-  status: z.enum(["paused", "archived"]),
+  status: z.enum(["paused", "archived"]).optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
+  reason: reasonSchema,
+  confirmation: confirmationSchema,
+}).strict().refine(body => body.status !== undefined || body.metadata !== undefined, { message: "A placement change is required" });
+
+export const contentPlacementPublishRequestSchema = z.object({
   reason: reasonSchema,
   confirmation: confirmationSchema,
 }).strict();

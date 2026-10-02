@@ -20,13 +20,10 @@
  * extractor's job, not the prompt assembler's.
  */
 
-/** The maintenance model's ways of saying "nothing here". */
+/** Whole-line empty states; "No pets" and other negative facts are real content. */
 const EMPTY_STATE = [
-  /^no(?:ne|thing)?\b/iu,
-  /^no\s+(?:core\s+)?(?:new\s+)?(?:user[- ]?profile\s+)?(?:facts?|observations?|details?|information)\b/iu,
-  /^no\s+.{0,40}\bto\s+reconcile\b/iu,
-  /\bobservations?\s+(?:were\s+)?extracted\b/iu,
-  /^n\/a$/iu,
+  /^(?:none|nothing(?:\s+to\s+reconcile)?|n\/a)[.。]*$/iu,
+  /^no\s+(?:core\s+)?(?:new\s+)?(?:user[- ]?profile\s+)?(?:facts?|observations?|details?|information)(?:\s+or\s+observations?)?(?:\s+(?:were\s+)?extracted(?:\s+from\s+(?:the\s+)?(?:target|provided)\s+messages?)?|\s+to\s+reconcile)?[.。]*$/iu,
 ];
 
 /**

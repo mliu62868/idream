@@ -7,6 +7,7 @@ export type AnnouncementLevel = "info" | "promo" | "warning";
 
 export type Announcement = {
   id: string;
+  version: number;
   title: string;
   body: string;
   level: AnnouncementLevel;
@@ -28,17 +29,18 @@ function isAnnouncement(value: unknown): value is Announcement {
   );
 }
 
-export async function readAnnouncements(): Promise<Announcement[]> {
-  const setting = await prisma.appSetting.findUnique({ where: { key: ANNOUNCEMENTS_KEY } });
+export async function readAnnouncements(db: Pick<Prisma.TransactionClient, "appSetting"> = prisma): Promise<Announcement[]> {
+  const setting = await db.appSetting.findUnique({ where: { key: ANNOUNCEMENTS_KEY } });
   const value = setting?.value;
   if (!value || typeof value !== "object" || Array.isArray(value)) return [];
   const items = (value as { items?: unknown }).items;
-  return Array.isArray(items) ? items.filter(isAnnouncement) : [];
+  // Existing JSON predates per-announcement versions; its first version is 1.
+  return Array.isArray(items) ? items.filter(isAnnouncement).map(item => ({ ...item, version: item.version ?? 1 })) : [];
 }
 
-export async function writeAnnouncements(items: Announcement[]): Promise<void> {
+export async function writeAnnouncements(items: Announcement[], db: Pick<Prisma.TransactionClient, "appSetting"> = prisma): Promise<void> {
   const value = { items } as unknown as Prisma.InputJsonValue;
-  await prisma.appSetting.upsert({
+  await db.appSetting.upsert({
     where: { key: ANNOUNCEMENTS_KEY },
     update: { value },
     create: { key: ANNOUNCEMENTS_KEY, value },

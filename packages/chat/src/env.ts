@@ -52,6 +52,9 @@ export const env = {
   get CHAT_MODEL_API_KEY() {
     return resolveChatModelProfile(process.env).apiKey;
   },
+  get DSH_OPENROUTER_PROVIDER_ONLY() {
+    return process.env.DSH_OPENROUTER_PROVIDER_ONLY?.split(",").map(value => value.trim()).filter(Boolean);
+  },
   get BFF_SIGNING_SECRET() {
     return process.env.CHAT_BFF_SIGNING_SECRET ?? "";
   },

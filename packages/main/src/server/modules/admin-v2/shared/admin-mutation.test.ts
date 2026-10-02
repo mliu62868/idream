@@ -77,6 +77,7 @@ vi.mock("./authority", () => ({
 }));
 
 const { executeAdminMutation, requireAdminMutationOperation } = await import("./admin-mutation");
+const { executeAtomicIdempotentMutation } = await import("./atomic-mutation");
 
 const CASE_ID = "case_response_contract";
 const decisionBody = {
@@ -214,5 +215,66 @@ describe("Admin mutation response contract timing", () => {
     expect(first).toEqual(contractResult);
     expect(replay).toEqual(contractResult);
     expect(db.committedCommands.size).toBe(1);
+  });
+
+  it("preserves the JSON body of a DELETE command requiring confirmation and a version", async () => {
+    const body = { entityVersion: 7, confirmation: "announcement-1", reason: "Retire the announcement" };
+    const request = new Request("http://admin.test/api/v2/admin/announcements/announcement-1", {
+      method: "DELETE", headers: { "idempotency-key": "delete-announcement", "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const result = await executeAdminMutation<typeof body>("DELETE /api/v2/admin/announcements/:id", request, {
+      params: { id: body.confirmation }, target: () => ({ type: "announcement", id: body.confirmation }),
+      expectedVersion: value => value.entityVersion,
+      mutate: async (_tx, context) => {
+        expect(context.body).toEqual(body);
+        expect(context.expectedVersion).toBe(7);
+        return { deleted: true };
+      },
+    });
+    expect(result).toEqual({ deleted: true });
+  });
+
+  it.each([false, true])("rechecks the committed receipt after concurrent preparation fails (payloadConflict=%s)", async (payloadConflict) => {
+    let release!: () => void;
+    let entered!: () => void;
+    const wait = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const common = {
+      environment: "test", actor, idempotencyKey: "prepare-race", requestId: "prepare-race-request",
+      commandType: "content.placement.publish", target: { type: "media_asset_placement", id: "prepared-placement" },
+      expectedVersion: 1, payload: { reason: "Publish the same prepared artwork" },
+    };
+    const prepare = vi.fn(async () => { entered(); await wait; throw new Error("Placement changed before publication"); });
+    const mutate = vi.fn(async () => { throw new Error("The replay must not mutate"); });
+    const slow = executeAtomicIdempotentMutation({ ...common, prepare, mutate })
+      .then(value => ({ value }), error => ({ error }));
+    await started;
+    const completed = await executeAtomicIdempotentMutation({
+      ...common,
+      payload: payloadConflict ? { reason: "Another command cannot reuse this key" } : common.payload,
+      prepare: async () => "verified bytes", mutate: async () => contractResult,
+    });
+    release();
+    expect(completed).toEqual(contractResult);
+    if (payloadConflict) expect(await slow).toMatchObject({ error: { code: "conflict", message: "Idempotency key is bound to another mutation" } });
+    else expect(await slow).toEqual({ value: contractResult });
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(mutate).not.toHaveBeenCalled();
+    expect(db.committedCommands.size).toBe(1);
+  });
+
+  it("preserves the original preparation failure when no completed receipt exists", async () => {
+    const cause = new Error("The stored artwork is unavailable");
+    const prepare = vi.fn(async () => { throw cause; });
+    const mutate = vi.fn(async () => contractResult);
+    await expect(executeAtomicIdempotentMutation({
+      environment: "test", actor, idempotencyKey: "prepare-failure", requestId: "prepare-failure-request",
+      commandType: "content.placement.publish", target: { type: "media_asset_placement", id: "prepared-placement" },
+      expectedVersion: 1, payload: { reason: "Publish unavailable artwork" }, prepare, mutate,
+    })).rejects.toBe(cause);
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(mutate).not.toHaveBeenCalled();
+    expect(db.committedCommands.size).toBe(0);
   });
 });

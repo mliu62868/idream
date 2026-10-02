@@ -9,6 +9,7 @@ import {
   withdrawCreativePlacement,
 } from "./placement";
 import { recordCreativeReviewDecision } from "./review-decision";
+import { auditAdminCutoverInvariants } from "../reconciliation/invariants";
 
 describe("Creative workflow transition concurrency", () => {
   const suffix = randomUUID();
@@ -604,9 +605,19 @@ describe("Creative workflow transition concurrency", () => {
       lifecycleState: "closed",
       workflowStage: "review",
       verificationState: "pending",
-      status: "completed",
+      status: "failed",
+      totalItems: 1,
+      completedItems: 0,
+      failedItems: 0,
+      approvedItems: 0,
       version: 2,
     });
+    const audit = await auditAdminCutoverInvariants(prisma);
+    for (const key of ["creative_succeeded_without_successful_item", "creative_run_child_projection_mismatch"]) {
+      const check = audit.checks.find((entry) => entry.key === key);
+      expect(check, `Missing ${key} check`).toBeDefined();
+      expect(check?.sampleIds).not.toContain(terminalRejectRunId);
+    }
   });
 
 
@@ -639,11 +650,18 @@ describe("Creative workflow transition concurrency", () => {
 
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
     expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    const committed = results.find((result) => result.status === "fulfilled");
+    if (committed?.status !== "fulfilled") throw new Error("No review decision committed");
+    const approved = committed.value.decision === "approved";
     await expect(prisma.contentProductionBatch.findUniqueOrThrow({ where: { id: reviewRunId } })).resolves.toMatchObject({
       lifecycleState: "closed",
       workflowStage: "review",
       verificationState: "pending",
-      status: "completed",
+      status: approved ? "completed" : "failed",
+      totalItems: 1,
+      completedItems: approved ? 1 : 0,
+      failedItems: 0,
+      approvedItems: approved ? 1 : 0,
       version: 2,
     });
     await expect(prisma.contentProductionItem.findUniqueOrThrow({ where: { id: reviewItemId } })).resolves.toMatchObject({

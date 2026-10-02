@@ -10,6 +10,7 @@ const authority = vi.hoisted(() => ({
   resolveGenerationLook: vi.fn(),
   selectGenerationProfile: vi.fn(),
   selectRecipe: vi.fn(),
+  resolveImageRecipeNegative: vi.fn(),
 }));
 
 vi.mock("./subscription-lifecycle", () => ({
@@ -31,6 +32,7 @@ vi.mock("./generation-profile-selection", () => ({
   generationReferenceRouteRequirements: vi.fn(),
   selectGenerationProfile: authority.selectGenerationProfile,
   selectRecipe: authority.selectRecipe,
+  resolveImageRecipeNegative: authority.resolveImageRecipeNegative,
 }));
 
 vi.mock("@/server/modules/billing/ledger", () => ({ dreamcoinBalance: authority.dreamcoinBalance }));
@@ -77,6 +79,7 @@ describe("generation quote workflow authority", () => {
       recipeKey: "template_image_freeplay_default",
       version: 1,
     });
+    authority.resolveImageRecipeNegative.mockResolvedValue({ base: null, negativeRecipe: null, promptRecipeFingerprint: "no-negative-recipe" });
     authority.selectGenerationProfile.mockResolvedValue(profile);
     authority.generationWorkflowDescriptor.mockResolvedValue(null);
   });

@@ -95,6 +95,11 @@ const fixtureOverrides: Readonly<Record<string, unknown>> = {
     reason: "Verify the tag patch contract",
     confirmation: "tag-fixture",
   },
+  contentPlacementPatchRequestSchema: {
+    status: "paused",
+    reason: "Verify placement patch contract",
+    confirmation: "placement-fixture",
+  },
 };
 
 export function resolveAdminV2Contract(

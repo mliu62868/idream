@@ -6,6 +6,7 @@ import { recordGenerationAttemptEvent } from "./generation-attempt-events";
 import { isGenerationTransportExecutionTransitionAllowed } from "./generation-evidence-transition-authority";
 import { recordGenerationInvocationUsageFact } from "./generation-invocation-usage";
 import { resolveExactGenerationDispatchAuthority } from "./generation-dispatch-evidence-authority";
+import { videoSceneDispatchDeferred } from "@/server/modules/generation/video-sequence-dispatch";
 
 export async function recordGenerationTransportExecution(rawInput: unknown) {
   const input = generationTransportExecutionEventSchema.parse(rawInput);
@@ -30,6 +31,9 @@ export async function recordGenerationTransportExecution(rawInput: unknown) {
       FOR UPDATE
     `);
     const attempt = await tx.generationAttempt.findUnique({ where: { id: input.attemptId } });
+    if ((input.status === "running" || input.status === "waiting") && await videoSceneDispatchDeferred(tx, input.generationJobId)) {
+      throw Errors.conflict("This video scene must wait for the preceding delivered scene", { reason: "video_sequence_deferred" });
+    }
     if (!attempt || attempt.requestId !== input.generationJobId || attempt.attemptNo !== input.attemptNo) {
       throw Errors.conflict(
         `Generation transport identity does not match its business Attempt (${input.attemptId}/${input.generationJobId}/${input.attemptNo})`,

@@ -4,6 +4,7 @@ import { createServer, type Server } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GenerateOptions, StreamChunk } from "@deepseek-ai/dsh-llm";
 import { OpenAiCompatibleAdapter, spokenLineBeforePayload, type OpenAiCompatibleAdapterOptions } from "./openai-adapter";
+import type { CompanionModelRequestEvidence } from "./contracts";
 
 const servers: Server[] = [];
 
@@ -48,6 +49,34 @@ async function drain(adapter: OpenAiCompatibleAdapter): Promise<void> {
 }
 
 describe("OpenAI-compatible DSH adapter", () => {
+  it("sends the structured projection schema in the observed physical request", async () => {
+    const responseFormat = { type: "json_schema" as const, json_schema: {
+      name: "scene_changes", strict: true as const,
+      schema: { type: "object", properties: { changes: { type: "array" } }, required: ["changes"] },
+    } };
+    const bodies: Record<string, unknown>[] = [];
+    const evidence: { bodyDigest: string }[] = [];
+    const adapter = adapterFor("https://provider.example/v1", async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response('data: {"choices":[{"delta":{"content":"{\\\"changes\\\":[]}"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
+    }, { responseFormat, observeRequest: value => evidence.push(value) });
+    await drain(adapter);
+    expect(bodies[0]?.response_format).toEqual(responseFormat);
+    expect(evidence[0]?.bodyDigest).toBe(createHash("sha256").update(JSON.stringify(bodies[0])).digest("hex"));
+  });
+
+  it("includes the structured schema in the total input budget before contacting a provider", async () => {
+    const request = vi.fn<typeof fetch>();
+    const adapter = adapterFor("https://provider.example/v1", request, {
+      maxInputTokens: 20,
+      responseFormat: { type: "json_schema", json_schema: { name: "scene", strict: true, schema: {
+        type: "object", description: "schema bytes ".repeat(100), properties: {},
+      } } },
+    });
+    await expect(drain(adapter)).rejects.toThrow("input budget");
+    expect(request).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])("assembles fragmented tool names before dispatch (required=%s)", async (required) => {
     let requests = 0;
     const adapter = adapterFor("https://provider.example/v1", async () => {
@@ -126,6 +155,79 @@ describe("OpenAI-compatible DSH adapter", () => {
       })) {}
     })()).rejects.toThrow(/input budget/);
     expect(requests).toBe(0);
+  });
+
+  it.each(["native", "json"] as const)("fits pinned replay exchanges around fixed dynamic context on the required-tool %s path", async (mode) => {
+    const requests: { messages: unknown[]; tools: unknown[] }[] = [];
+    const evidence: CompanionModelRequestEvidence[] = [];
+    const adapter = adapterFor("https://provider.example/v1", async (_url, init) => {
+      requests.push(JSON.parse(String(init?.body)));
+      const args = JSON.stringify({ prompt: "A fully clothed rainy library portrait" });
+      return new Response(`data: ${JSON.stringify({ choices: [{
+        delta: mode === "native" ? { tool_calls: [{ index: 0, id: "image-1", function: { name: "generate_image_async", arguments: args } }] }
+          : { content: requests.length === 1 ? "I will make the image." : args },
+        finish_reason: mode === "native" ? "tool_calls" : "stop",
+      }] })}\n\ndata: [DONE]\n\n`);
+    }, { maxInputTokens: 1_000, requiredToolName: "generate_image_async", replayMessageIds: ["old-user", "old-assistant", "next-user", "next-assistant"], observeRequest: value => evidence.push(value) });
+    for await (const _chunk of adapter.stream({
+      provider: "openrouter", model: "deepseek/test", system: "Pinned Soul.",
+      messages: [
+        { id: "old-user" as never, role: "user", source: { kind: "idream", context: "replay" }, content: [{ type: "text", text: `OLD_USER ${"x".repeat(2_000)}` }] },
+        { id: "old-assistant" as never, role: "assistant", source: { kind: "model", provider: "openrouter", model: "deepseek/test" }, content: [{ type: "text", text: `OLD_ASSISTANT ${"y".repeat(2_000)}` }] },
+        { id: "next-user" as never, role: "user", source: { kind: "idream", context: "replay" }, content: [{ type: "text", text: "The notebook is on the table." }] },
+        { id: "next-assistant" as never, role: "assistant", source: { kind: "model", provider: "openrouter", model: "deepseek/test" }, content: [{ type: "text", text: "I lit the lamp." }] },
+        { id: "state:current" as never, role: "user", source: { kind: "idream", context: "snapshot" }, content: [{ type: "text", text: "Scene: the rainy library." }] },
+        { id: "recall:current" as never, role: "user", source: { kind: "idream", context: "recall" }, content: [{ type: "text", text: "Your notebook is called Harbor Finch." }] },
+        { id: "current" as never, role: "user", source: { kind: "user" }, content: [{ type: "text", text: "Send me a fully clothed photo." }] },
+      ],
+      tools: [{ name: "generate_image_async", description: "Generate", parameters: { type: "object", properties: { prompt: { type: "string" } } } }],
+    })) { /* drain */ }
+
+    expect(requests).toHaveLength(mode === "native" ? 1 : 2);
+    for (const [index, request] of requests.entries()) {
+      const wire = JSON.stringify(request.messages);
+      expect(wire).not.toContain("OLD_USER");
+      expect(wire).not.toContain("OLD_ASSISTANT");
+      for (const text of ["Pinned Soul.", "The notebook is on the table.", "I lit the lamp.", "Scene: the rainy library.", "Harbor Finch", "Send me a fully clothed photo."]) expect(wire).toContain(text);
+      expect(evidence[index]?.droppedReplayMessageIds).toEqual(["old-user", "old-assistant"]);
+      expect(evidence[index]?.estimatedInputTokens).toBe(Math.ceil(JSON.stringify({ messages: request.messages, tools: request.tools }).length / 4));
+      expect(evidence[index]?.estimatedInputTokens).toBeLessThanOrEqual(1_000);
+    }
+  });
+
+  it.each([1_000, 20])("keeps the current tool call and result fixed when fitting replay history (budget=%i)", async (maxInputTokens) => {
+    let body = "";
+    const adapter = adapterFor("https://provider.example/v1", async (_url, init) => {
+      body = String(init?.body);
+      return new Response('data: {"choices":[{"delta":{"content":"Okay"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
+    }, { maxInputTokens, replayMessageIds: ["old-user", "old-assistant"] });
+    const args = JSON.stringify({ query: `EXACT_QUERY ${"q".repeat(500)}` });
+    const result = `EXACT_RESULT ${"m".repeat(1_500)}`;
+    const drainRequest = async () => {
+      for await (const _chunk of adapter.stream({
+        provider: "openrouter", model: "deepseek/test", system: "Pinned Soul.",
+        messages: [
+          { id: "old-user" as never, role: "user", source: { kind: "idream", context: "replay" }, content: [{ type: "text", text: `OLD_USER ${"x".repeat(2_000)}` }] },
+          { id: "old-assistant" as never, role: "assistant", source: { kind: "model", provider: "openrouter", model: "deepseek/test" }, content: [{ type: "text", text: `OLD_ASSISTANT ${"y".repeat(2_000)}` }] },
+          { id: "current" as never, role: "user", source: { kind: "user" }, content: [{ type: "text", text: "What did I tell you?" }] },
+          { id: "current-call" as never, role: "assistant", source: { kind: "model", provider: "openrouter", model: "deepseek/test" }, content: [{ type: "tool-call", id: "lookup" as never, name: "memory_search", arguments: args }] },
+          { id: "current-result" as never, role: "tool", source: { kind: "tool", callId: "lookup" as never }, toolCallId: "lookup" as never, isError: false, content: [{ type: "text", text: result }] },
+        ],
+      })) { /* drain */ }
+    };
+    if (maxInputTokens === 20) {
+      await expect(drainRequest()).rejects.toThrow("input budget");
+      expect(body).toBe("");
+    } else {
+      await drainRequest();
+      const request = JSON.parse(body) as { messages: unknown[] };
+      expect(request.messages).toEqual([
+        { role: "system", content: "Pinned Soul." },
+        { role: "user", content: "What did I tell you?" },
+        { role: "assistant", content: null, tool_calls: [{ id: "lookup", type: "function", function: { name: "memory_search", arguments: args } }] },
+        { role: "tool", tool_call_id: "lookup", content: result },
+      ]);
+    }
   });
 
   it("records the exact serialized provider request and assembled system digest", async () => {

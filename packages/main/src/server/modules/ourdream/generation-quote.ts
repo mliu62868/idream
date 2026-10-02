@@ -37,11 +37,13 @@ import {
   generationReferenceRouteRequirements,
   selectGenerationProfile,
   selectRecipe,
+  resolveImageRecipeNegative,
   selectableCharacterGenerationProfiles,
 } from "./generation-profile-selection";
 import { entitlementMap } from "./subscription-lifecycle";
 import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
-import { productionVideoRecipeForProfile } from "@/server/modules/generation/production-video-profile";
+import { hasProductionVideoOptions, productionVideoRecipeForProfile } from "@/server/modules/generation/production-video-profile";
+import { redgraftVideoEnvelope, REDGRAFT_VIDEO_OPTIONS } from "@idream/shared/contracts";
 import type { GenerationQuoteAuthority } from "./generation-quote-contract";
 import { applyGenerationContext, generationContextToken, resolveGenerationContext } from "./generation-context";
 
@@ -120,6 +122,7 @@ export async function resolveGenerationPlan(
     body.mode,
     body.characterId ? "character" : "freeplay",
   );
+  const recipeNegative = body.mode === "image" ? await resolveImageRecipeNegative(recipe) : null;
   const character = context?.character ?? (body.characterId
     ? await generationCharacter(body.characterId, userId)
     : null);
@@ -258,8 +261,19 @@ export async function resolveGenerationPlan(
       },
     );
   }
+  let videoEnvelope = null;
+  if (videoRecipe && hasProductionVideoOptions(profile)) {
+    try { videoEnvelope = redgraftVideoEnvelope({ seconds: body.controls.seconds ?? videoRecipe.durationSeconds,
+        orientation: body.orientation ?? body.controls.orientation ?? videoRecipe.orientation,
+        quality: body.controls.videoQuality ?? "standard" }); }
+    catch { throw Errors.badRequest("Choose a published video duration, aspect ratio, and resolution"); }
+  }
+  if (body.controls.videoQuality && !videoEnvelope && body.controls.videoQuality !== "standard") {
+    throw Errors.conflict("This route has not published selectable video resolution");
+  }
   if (
     videoRecipe &&
+    !videoEnvelope &&
     body.controls.seconds !== undefined &&
     body.controls.seconds !== videoRecipe.durationSeconds
   ) {
@@ -315,12 +329,14 @@ export async function resolveGenerationPlan(
     hasRequestedSourceImage,
     profile,
     recipe,
+    recipeNegative,
     referenceRequirements,
     requestedLookReferenceAssetId,
     requestedSourceImageAssetId,
     selectedLook,
     selectedModel,
     videoRecipe,
+    videoEnvelope,
     visualProfile,
     workflowDescriptor,
   };
@@ -343,7 +359,7 @@ export async function resolveGenerationPlan(
 export function generationPlanRouteFingerprint(plan: GenerationPlan) {
   return createHash("sha256")
     .update(JSON.stringify({
-      schemaVersion: "generation-plan-v1",
+      schemaVersion: plan.recipeNegative?.negativeRecipe ? "generation-plan-v2" : "generation-plan-v1",
       chatHandoffDigest: plan.context?.digest ?? null,
       mode: plan.profile.mode,
       profileId: plan.profile.profileKey,
@@ -356,6 +372,7 @@ export function generationPlanRouteFingerprint(plan: GenerationPlan) {
         plan.workflowDescriptor?.identity ?? null,
       recipeId: plan.recipe.recipeKey,
       recipeVersion: plan.recipe.version,
+      ...(plan.recipeNegative?.negativeRecipe ? { promptRecipeFingerprint: plan.recipeNegative.promptRecipeFingerprint } : {}),
       characterId: plan.character?.id ?? null,
       visualProfileId: plan.visualProfile?.id ?? null,
       visualProfileVersion: plan.visualProfile?.version ?? null,
@@ -373,6 +390,7 @@ export function generationPlanRouteFingerprint(plan: GenerationPlan) {
       ),
       maxCount: plan.profile.maxCount,
       costMultiplier: plan.profile.costMultiplier,
+      ...(plan.videoEnvelope ? { videoOptionsVersion: REDGRAFT_VIDEO_OPTIONS.version, videoEnvelope: plan.videoEnvelope } : {}),
     }))
     .digest("hex");
 }
@@ -522,9 +540,9 @@ export async function quoteGeneration(input: {
       //   于是界面会替一次不会发生的事情打包票。这里报的是实际选中的那条路线。
       identityLocked: plan.referenceRequirements.length > 0,
       ...(plan.videoRecipe ? { video: {
-        durationSeconds: plan.videoRecipe.expectedDurationSeconds,
-        width: plan.videoRecipe.width,
-        height: plan.videoRecipe.height,
+        durationSeconds: plan.videoEnvelope?.expectedDurationSeconds ?? plan.videoRecipe.expectedDurationSeconds,
+        width: plan.videoEnvelope?.width ?? plan.videoRecipe.width,
+        height: plan.videoEnvelope?.height ?? plan.videoRecipe.height,
         audio: plan.videoRecipe.capabilities.includes("audio") ? "generated" as const : "none" as const,
       } } : {}),
     },

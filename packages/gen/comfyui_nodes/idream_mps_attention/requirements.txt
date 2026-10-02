@@ -1,1 +1,10 @@
 mps-sdpa==0.2.0
+torch==2.11.0
+torchaudio==2.11.0
+torchvision==0.26.0
+setuptools==81.0.0
+pyobjc-core==12.2.2
+pyobjc-framework-Cocoa==12.2.2
+pyobjc-framework-Metal==12.2.2
+pyobjc-framework-MetalPerformanceShaders==12.2.2
+pyobjc-framework-MetalPerformanceShadersGraph==12.2.2

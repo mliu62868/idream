@@ -27,6 +27,32 @@ async function collection(label: string, count: number, visibility = "public") {
 }
 
 describe("collection details and membership", () => {
+  it("does not publish private media when added to a public collection without explicit consent", async () => {
+    const { id } = await collection("explicit-publication", 1);
+    const mediaAssetId = `${prefix}private-to-add`;
+    await createMedia({ id: mediaAssetId, ownerId: owner, visibility: "private" });
+    for (const consent of [{}, { publishMedia: false }]) {
+      expectError(await api("POST", `media/collections/${id}/items`, { ...owned, body: { mediaAssetId, ...consent } }), 409);
+      expect(await prisma.mediaAsset.findUniqueOrThrow({ where: { id: mediaAssetId } })).toMatchObject({ visibility: "private" });
+      expect(await prisma.mediaCollectionItem.count({ where: { collectionId: id, mediaAssetId } })).toBe(0);
+    }
+    expectOk(await api("POST", `media/collections/${id}/items`, { ...owned, body: { mediaAssetId, publishMedia: true } }));
+    expect(await prisma.mediaAsset.findUniqueOrThrow({ where: { id: mediaAssetId } })).toMatchObject({ visibility: "public_pack" });
+    const shared = await api("GET", `media/collections/${id}`, { userId: other, ageGate: true });
+    expectOk(shared);
+    expect(shared.data.items.map((item: { id: string }) => item.id)).toContain(mediaAssetId);
+  });
+
+  it("adds private media to a private collection without publishing it", async () => {
+    const { id } = await collection("private-addition", 1, "private");
+    const mediaAssetId = `${prefix}stays-private`;
+    await createMedia({ id: mediaAssetId, ownerId: owner, visibility: "private" });
+    expectOk(await api("POST", `media/collections/${id}/items`, { ...owned, body: { mediaAssetId } }));
+    expect(await prisma.mediaAsset.findUniqueOrThrow({ where: { id: mediaAssetId } })).toMatchObject({ visibility: "private" });
+    expect(await prisma.mediaCollectionItem.count({ where: { collectionId: id, mediaAssetId } })).toBe(1);
+    expectError(await api("GET", `media/collections/${id}`, { userId: other, ageGate: true }), 404);
+  });
+
   it("returns all thirteen members with typed content URLs, never generation details", async () => {
     const { id, mediaIds } = await collection("mixed", 13);
     const first = await api("GET", `media/collections/${id}`, { ageGate: true });
@@ -144,7 +170,8 @@ describe("collection details and membership", () => {
     await api("DELETE", `media/collections/${id}/items/${mediaIds[1]}`, owned);
     const newIds = [`${id}-new-a`, `${id}-new-b`];
     for (const mediaId of newIds) await createMedia({ id: mediaId, ownerId: owner });
-    const writes = await Promise.all(newIds.map((mediaAssetId) => api("POST", `media/collections/${id}/items`, { ...owned, body: { mediaAssetId } })));
+    // This exercises ordering after an explicit publication decision.
+    const writes = await Promise.all(newIds.map((mediaAssetId) => api("POST", `media/collections/${id}/items`, { ...owned, body: { mediaAssetId, publishMedia: true } })));
     writes.forEach((result) => expectOk(result));
     const rows = await prisma.mediaCollectionItem.findMany({ where: { collectionId: id }, orderBy: { sortOrder: "asc" } });
     expect(rows.map((row) => row.sortOrder)).toEqual([0, 2, 3, 4]);
@@ -153,7 +180,7 @@ describe("collection details and membership", () => {
     await createMedia({ id: extra, ownerId: owner });
     const race = await Promise.all([
       api("DELETE", `media/collections/${single.id}/items/${single.mediaIds[0]}`, owned),
-      api("POST", `media/collections/${single.id}/items`, { ...owned, body: { mediaAssetId: extra } }),
+      api("POST", `media/collections/${single.id}/items`, { ...owned, body: { mediaAssetId: extra, publishMedia: true } }),
     ]);
     race.forEach((result) => expectOk(result));
     const result = await prisma.mediaCollection.findUniqueOrThrow({ where: { id: single.id }, include: { items: true } });

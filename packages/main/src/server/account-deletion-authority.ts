@@ -13,6 +13,7 @@ import { prisma } from "@/server/lib/db";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { updateCharacterProjectMetadata } from "@/server/modules/admin-v2/characters/transition";
 import { revokeAccountEmailCodes } from "@/server/modules/ourdream/account-email-challenges";
+import { packReleaseStorageKeys } from "@/server/modules/ourdream/pack-authority";
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 
@@ -71,6 +72,10 @@ export async function requestAccountDeletion(
   const user = await tx.user.update({
     where: { id: input.userId },
     data: { status: "deleted", deletedAt: now },
+  });
+  await tx.pack.updateMany({
+    where: { creatorId: input.userId, status: { not: "blocked" } },
+    data: { status: "withdrawn", version: { increment: 1 } },
   });
   await tx.session.deleteMany({ where: { userId: input.userId } });
   await revokeAccountEmailCodes(tx, user.email);
@@ -708,6 +713,15 @@ async function materializeCurrentBlobDeletes(
   const keys = new Set(rows.flatMap((row) =>
     row.storageKey?.trim() ? [row.storageKey.trim()] : [],
   ));
+  // Pack editions own their bytes. Other people's grants survive creator
+  // erasure; editions with no remaining recipient follow the blob-delete receipt.
+  const ungrantedPackReleases = await tx.packRelease.findMany({
+    where: { pack: { creatorId: deletion.userId }, grants: { none: { userId: { not: deletion.userId } } } },
+    select: { manifest: true },
+  });
+  for (const release of ungrantedPackReleases) {
+    for (const key of packReleaseStorageKeys(release.manifest)) keys.add(key);
+  }
   for (const row of attemptRows) {
     if (row.terminalRecordRef?.trim()) keys.add(row.terminalRecordRef.trim());
   }
@@ -1154,6 +1168,19 @@ async function hardDeleteMainAccountAuthority(
        OR payload->>'userId' = ${input.userId}
   `);
 
+  const packs = await tx.pack.findMany({ where: { creatorId: input.userId }, select: { id: true, currentReleaseId: true } });
+  for (const pack of packs) {
+    const ungranted = await tx.packRelease.findMany({
+      where: { packId: pack.id, grants: { none: { userId: { not: input.userId } } } }, select: { id: true },
+    });
+    await tx.pack.update({ where: { id: pack.id }, data: {
+      title: "Former creator Pack", description: "", draftContent: { items: [], coverAssetId: null, claimUntil: null },
+      version: { increment: 1 },
+      ...(ungranted.some(release => release.id === pack.currentReleaseId) ? { currentReleaseId: null } : {}),
+    } });
+    await tx.packRelease.deleteMany({ where: { id: { in: ungranted.map(release => release.id) } } });
+    if (!await tx.packRelease.count({ where: { packId: pack.id } })) await tx.pack.delete({ where: { id: pack.id } });
+  }
   await tx.user.delete({ where: { id: input.userId } });
   await tx.accountDeletionBlobReceipt.updateMany({
     where: { deletionId: input.deletionId, status: "deleted" },

@@ -3,6 +3,11 @@
 // INVARIANT: key 在所有 i18n-zh-*.ts 之间互斥——同一个 key 只能有一个域文件持有；
 // 由 i18n-zh-exclusivity.test.ts 强制。新增文案放它所属的域文件，不要另开「杂项」文件。
 export const adminZhCommon: Record<string, string> = {
+  "Discard unsaved changes?": "放弃未保存的修改？",
+  "Changes were saved, but the latest details could not be loaded. Retry before making another change.": "修改已保存，但最新详情读取失败。重试读取后才能继续修改。",
+  "Latest details loaded.": "已读取最新详情。",
+  "Your unsaved changes will be lost.": "未保存的修改将丢失。",
+  "Discard changes": "放弃修改",
   "Refreshing": "正在刷新",
   "Fresh": "数据新鲜",
   "Stale": "数据陈旧",
@@ -189,6 +194,7 @@ export const adminZhCommon: Record<string, string> = {
   "Dreamcoins": "梦币",
   "Earlier decision": "之前的决定",
   "Edit": "编辑",
+  "Edit preset": "编辑预设",
   "Edit profile": "编辑资料",
   "Edit template": "编辑模板",
   "Editing CMS pages": "编辑 CMS 页面",

@@ -5,8 +5,8 @@ import { RecipesDetailPage } from "./RecipesDetailPage";
 import { RecipesNewPage } from "./RecipesNewPage";
 
 // SPEC: generation/recipes 的子视图路由 —— list / new / detail 三件套（spec §6.1）。
-export function RecipesSection({ view }: { view: AdminSubview }) {
-  if (view.kind === "new") return <RecipesNewPage />;
-  if (view.kind === "detail") return <RecipesDetailPage id={view.id} />;
-  return <RecipesListPage />;
+export function RecipesSection({ canWrite, view }: { canWrite: boolean; view: AdminSubview }) {
+  if (view.kind === "new") return <RecipesNewPage canWrite={canWrite} />;
+  if (view.kind === "detail") return <RecipesDetailPage canWrite={canWrite} id={view.id} key={view.id} />;
+  return <RecipesListPage canWrite={canWrite} />;
 }

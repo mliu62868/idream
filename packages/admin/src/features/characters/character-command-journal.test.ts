@@ -711,13 +711,15 @@ describe("character command journal — 落盘身份", () => {
     const { journal, server } = createJournal();
     server.rejectWith(new Error("network down"));
     await journal.submit(releaseIntent);
-    journal.setRecoveryError("acceptance is still unknown");
+    journal.setRecoveryError("acceptance is still unknown", "previous-command");
     expect(journal.getSnapshot().recoveryError).not.toBeNull();
+    expect(journal.getSnapshot().recoveryErrorCommandId).toBe("previous-command");
 
     server.resolveWith({ commandId: "command-1" });
     await journal.replay(journal.getSnapshot().command!);
 
     expect(journal.getSnapshot().recoveryError).toBeNull();
+    expect(journal.getSnapshot().recoveryErrorCommandId).toBeNull();
   });
 
   it("notifies subscribers with a stable snapshot identity between changes", async () => {

@@ -133,19 +133,28 @@ export async function executeIncidentActionPlanCommand(
       const result: Record<string, unknown> = { action: plan.action, eligibleOccurrenceIds: eligibleIds };
       if (plan.action === "retry_eligible") {
         const attemptIds: string[] = [];
+        const occurrenceIdsByRequest = new Map<string, string[]>();
         for (const occurrence of occurrences) {
           if (!occurrence.requestId) throw Errors.conflict("Retry occurrence has no Generation Request");
+          const ids = occurrenceIdsByRequest.get(occurrence.requestId) ?? [];
+          ids.push(occurrence.id);
+          occurrenceIdsByRequest.set(occurrence.requestId, ids);
+        }
+        // Several failed Attempts can represent one unresolved request. Preserve
+        // all occurrences, but admit only one replacement Attempt per request.
+        for (const [requestId, occurrenceIds] of occurrenceIdsByRequest) {
           const { attempt } = await reserveRetryGenerationAttempt(tx, {
-            requestId: occurrence.requestId,
+            requestId,
             requireLatestAttempt: true,
             sourceCommandId: claimed.id,
             dispatch: {
-              outboxId: `incident_retry_${claimed.id}_${occurrence.id}`,
+              outboxId: `incident_retry_${claimed.id}_${occurrenceIds[0]}`,
               eventType: "incident.retry.dispatch.v2",
               payload: {
                 incidentId: incident.id,
                 actionPlanId: plan.id,
-                occurrenceId: occurrence.id,
+                occurrenceId: occurrenceIds[0],
+                occurrenceIds,
                 commandId: claimed.id,
               },
             },

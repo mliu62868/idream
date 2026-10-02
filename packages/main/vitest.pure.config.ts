@@ -40,6 +40,7 @@ export default defineConfig({
       "src/server/modules/admin-v2/characters/character-release-contract.test.ts",
       "src/server/modules/admin-v2/characters/production-journey.test.ts",
       "src/server/modules/admin-v2/characters/image-qualification.test.ts",
+      "src/server/modules/admin-v2/characters/customer-identity-source.test.ts",
       "src/server/modules/admin-v2/content/explore-listing-eligibility.test.ts",
       "src/server/modules/admin-v2/creative/run-create-authority.test.ts",
       "src/server/modules/admin-v2/shared/admin-mutation.test.ts",
@@ -49,10 +50,13 @@ export default defineConfig({
       "src/server/modules/admin-v2/shared/deep-module-authority-boundaries.test.ts",
       "src/server/modules/admin-v2/shared/finite-state-authority-inventory.test.ts",
       "src/server/modules/generation/generation-runner-vocabulary.test.ts",
+      "src/server/modules/generation/production-video-profile.test.ts",
       "src/server/modules/ourdream/architecture-boundaries.test.ts",
+      "src/server/modules/ourdream/creator-levels.test.ts",
       "src/server/modules/ourdream/character-quick-start.test.ts",
       "src/server/modules/ourdream/generation-prompt.test.ts",
       "src/server/modules/ourdream/generation-context.test.ts",
+      "src/server/modules/ourdream/video-composition.test.ts",
       "src/server/modules/ourdream/voice-clip-quote.test.ts",
       "src/server/modules/ourdream/generation-profile-selection.test.ts",
       "src/server/next-standalone-runtime.test.ts",
@@ -82,6 +86,7 @@ export default defineConfig({
   },
   resolve: {
     alias: [
+      { find: "@idream/shared/media/video-probe", replacement: `${sharedSourceRoot}media/video-probe.ts` },
       {
         find: /^@\/(.+)$/,
         replacement: `${mainSourceRoot}$1`,

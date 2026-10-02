@@ -13,6 +13,7 @@ import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { adminV2Request } from "@/lib/admin-v2-api";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
+import { AffiliateAttributionHistory } from "./AffiliateAttributionHistory";
 
 const statuses = { pending: "Pending", approved: "Approved", rejected: "Rejected" } as const;
 
@@ -27,6 +28,7 @@ export function AffiliateApplicationsView({ canWrite }: { canWrite: boolean }) {
   const [error, setError] = useState<unknown>(null);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
   const [notice, setNotice] = useState("");
+  const [attributionId, setAttributionId] = useState<string | null>(null);
   const activeRequest = useRef<AbortController | null>(null);
   const cursor = trail.at(-1) ?? "";
   const load = useCallback(async () => {
@@ -104,11 +106,12 @@ export function AffiliateApplicationsView({ canWrite }: { canWrite: boolean }) {
         id: item.id,
         cells: [<div key="id"><p className="font-mono text-xs">{item.id}</p><p>{item.userId}</p></div>, item.termsVersion, item.channels.join(", "),
           <div key="state"><p>{t(statuses[item.status])}</p>{item.reviewNote && <p className="mt-1 max-w-md whitespace-pre-wrap text-sm">{item.reviewNote}</p>}{item.reviewedAt && <time className="text-xs" dateTime={item.reviewedAt}>{item.reviewedAt}</time>}</div>,
-          item.status === "pending" ? <div key="actions" className="flex gap-2"><GhostButton disabled={!canWrite} onClick={() => decide(item, "approved")}>{t("Approve")}</GhostButton><GhostButton disabled={!canWrite} onClick={() => decide(item, "rejected")}>{t("Reject")}</GhostButton></div> : t("Reviewed")],
+          <div key="actions" className="flex flex-wrap gap-2"><GhostButton onClick={() => setAttributionId(item.id)}>{t("View attribution")}</GhostButton>{item.status === "pending" ? <><GhostButton disabled={!canWrite} onClick={() => decide(item, "approved")}>{t("Approve")}</GhostButton><GhostButton disabled={!canWrite} onClick={() => decide(item, "rejected")}>{t("Reject")}</GhostButton></> : <span>{t("Reviewed")}</span>}</div>],
       }))} />
       {!canWrite && <p className="text-sm">{t("Affiliate review requires growth.promo.write permission.")}</p>}
       <Pagination page={trail.length + 1} pageSize={25} rowCount={data.items.length} hasPrevious={trail.length > 0} hasNext={data.pageInfo.hasNextPage} onPrevious={() => setTrail((current) => current.slice(0, -1))} onNext={() => { if (data.pageInfo.endCursor) setTrail((current) => [...current, data.pageInfo.endCursor!]); }} />
     </>}
+    {attributionId ? <AffiliateAttributionHistory key={attributionId} applicationId={attributionId} onClose={() => setAttributionId(null)} /> : null}
     {confirmation && <ConfirmDialog spec={confirmation} onClose={() => setConfirmation(null)} />}
   </section>;
 }

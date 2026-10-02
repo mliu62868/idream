@@ -15,7 +15,7 @@ import type { ChatExecutionSnapshot } from "@idream/shared/contracts";
 import { buildContext, type BuiltContext } from "./context.js";
 import { buildCompanionSystemPrompt, buildTurnStateBlock } from "./prompt.js";
 import { registryChatTools } from "./agent-tools.js";
-import { estimateModelRequestInputTokens, formatModelRequestInput } from "./agent-runtime/model-request-format.js";
+import { dropOldestReplayExchange, estimateModelRequestInputTokens, formatModelRequestInput } from "./agent-runtime/model-request-format.js";
 import {
   preparedTurnSchema,
   type PreparedTurnInput,
@@ -65,8 +65,8 @@ export function compilePreparedTurn(
     model: modelProfile.model,
     supportsTools: modelProfile.supportsTools,
     maxOutputTokens: modelProfile.maxOutputTokens,
-    ...(fitted.context.experience && fitted.context.experience.responseLength !== "auto" ? {
-      answerMaxOutputTokens: Math.min(modelProfile.maxOutputTokens, fitted.context.experience.responseLength === "short" ? 512 : 2048),
+    ...(fitted.context.experience?.conversationProfile || (fitted.context.experience && fitted.context.experience.responseLength !== "auto") ? {
+      answerMaxOutputTokens: Math.min(modelProfile.maxOutputTokens, fitted.context.experience?.conversationProfile?.answerMaxOutputTokens ?? (fitted.context.experience?.responseLength === "short" ? 512 : 2048)),
     } : {}),
     timeout: {
       firstTokenMs: modelProfile.firstTokenTimeoutMs,
@@ -191,6 +191,7 @@ export function fitPreparedTurnBudget(
   fitted.policy = { ...fitted.policy, imageToolEnabled: Boolean(requiredAction) };
   const maxInputTokens = Math.max(1, Math.ceil(fitted.policy.maxContextChars / 4));
   const dropped = new Set(fitted.dropped);
+  const replayMessageIds = new Set(fitted.recentMessages.filter(message => message.id !== currentUserMessageId).map(message => message.id));
   const turnState = [
     buildTurnStateBlock(fitted, now),
     ...(requiredAction && imageIntent.kind === "generate" && imageIntent.confirmedOffer
@@ -215,17 +216,13 @@ export function fitPreparedTurnBudget(
   };
 
   let calculated = calculate();
-  while (calculated.usedInputTokens > maxInputTokens && fitted.recentMessages.length > 1) {
+  while (calculated.usedInputTokens > maxInputTokens) {
     // INVARIANT: the transcript is a sequence of user-led exchanges. Dropping a
     // single message can make an old assistant reply look like an unsolicited
     // instruction, so budget pressure removes the whole oldest exchange.
-    fitted.recentMessages.shift();
-    while (
-      fitted.recentMessages.length > 1 &&
-      fitted.recentMessages[0]?.role !== "user"
-    ) {
-      fitted.recentMessages.shift();
-    }
+    const retained = dropOldestReplayExchange(fitted.recentMessages, replayMessageIds);
+    if (!retained) break;
+    fitted.recentMessages = retained;
     dropped.add("transcript");
     calculated = calculate();
   }

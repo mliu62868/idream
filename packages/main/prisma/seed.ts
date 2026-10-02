@@ -1532,18 +1532,18 @@ async function seedAdminControlPlane() {
         enabled: true,
         status: "active",
         dryRunSummary: {
-          status: "passed",
-          source: "local_mps_multi_seed_and_cutover_probe",
-          testedAt: "2026-08-28",
+          status: "not_run",
+          source: "seed_configuration_state",
+          qualificationReference: "docs/research/LTX25_MPSGRAPH_IMPLEMENTATION_2026-10-02.md",
           resolution: `${recipe.width}x${recipe.height}`,
           frames: recipe.frameCount,
           seconds: recipe.expectedDurationSeconds,
           fps: recipe.fps,
-          wallTimeSeconds: 866.617,
+          referenceWallTimeSeconds: 616.334,
           notes:
-            "Exact Civitai 3250230 checkpoint completed multi-seed and repeat I2V validation with AAC audio on ComfyUI 0.34.2 / PyTorch 2.13 MPS.",
+            "RedGraft MPSGraph BF16 attention with MLX Q8 Gemma completed 768x1152/121-frame I2V with AAC audio on fixed ComfyUI 0.34.2 / PyTorch 2.11; isolated native graph qualification, without Main billing verification. This seed is configuration, not qualification of the installation being seeded.",
         },
-        publishedAt: new Date("2026-08-28T00:00:00.000Z"),
+        publishedAt: new Date("2026-10-02T00:00:00.000Z"),
       },
     });
   }

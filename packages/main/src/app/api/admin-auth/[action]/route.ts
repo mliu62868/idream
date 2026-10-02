@@ -1,5 +1,5 @@
 import { ZodError } from "zod";
-import { devAdminLogin, devAdminLogout } from "@/server/admin/dev-login";
+import { devAdminLogin, adminLogout } from "@/server/admin/dev-login";
 import { AppError } from "@/server/lib/errors";
 import { fail } from "@/server/lib/http";
 
@@ -14,7 +14,7 @@ async function route(request: Request, context: AdminAuthRouteContext) {
   try {
     const { action } = await context.params;
     if (action === "login") return await devAdminLogin(request);
-    if (action === "logout") return await devAdminLogout(request);
+    if (action === "logout") return await adminLogout(request);
     return fail(new AppError("not_found", "Unknown admin-auth action"));
   } catch (error) {
     if (error instanceof AppError) return fail(error);

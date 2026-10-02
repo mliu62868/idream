@@ -1,4 +1,5 @@
 import { recoveredGenerationFixture } from "@/server/test/recovered-generation-fixture";
+import { recordGenerationAttemptEvent } from "@/server/ai/generation-attempt-events";
 import { resolveMediaAssetAuthorityMap } from "@/server/lib/media-asset-authority-query";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -242,8 +243,12 @@ describe.sequential("Character image placement authority", () => {
         status: "completed", deliveredOutputCount: 1, provider: "comfyui", sourceType: "content_production_item", sourceId: itemId,
       } });
       await tx.generationAttempt.create({ data: {
-        id: attemptId, requestId: jobId, attemptNo: 1, status: "succeeded", provider: "comfyui",
+        id: attemptId, requestId: jobId, attemptNo: 1, provider: "comfyui",
       } });
+      await recordGenerationAttemptEvent(tx, {
+        eventId: `${attemptId}:succeeded`, attemptId, eventType: "generation.attempt.succeeded.v1",
+        outcome: "succeeded", occurredAt: new Date(), payload: { requestId: jobId },
+      });
       await tx.mediaAsset.create({ data: {
         id: assetId, ownerId: actorId, characterId, sourceJobId: jobId, type: "image",
         url: `/assets/${assetId}.webp`, storageKey: `test-fixtures/${assetId}.webp`,

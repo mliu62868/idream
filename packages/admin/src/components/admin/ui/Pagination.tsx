@@ -42,6 +42,7 @@ export function Pagination({
   hasPrevious,
   hasNext,
   onPrevious,
+  previousLabel,
   onNext,
   loading = false,
   detail,
@@ -51,6 +52,7 @@ export function Pagination({
   hasPrevious: boolean;
   hasNext: boolean;
   onPrevious: () => void;
+  previousLabel?: string;
   onNext: () => void;
   loading?: boolean;
   /** Page-specific provenance line (data scope, freshness…). */
@@ -95,7 +97,7 @@ export function Pagination({
           {pageCount === null ? t("Page {page}", { page }) : t("Page {page} of {pageCount}", { page, pageCount })}
         </span>
         <button className={buttonClass} disabled={loading || !hasPrevious} onClick={onPrevious} type="button">
-          <ChevronLeft className="h-4 w-4" />{t("Previous page")}
+          <ChevronLeft className="h-4 w-4" />{previousLabel ?? t("Previous page")}
         </button>
         <button className={buttonClass} disabled={loading || !hasNext} onClick={onNext} type="button">
           {t("Next page")}<ChevronRight className="h-4 w-4" />

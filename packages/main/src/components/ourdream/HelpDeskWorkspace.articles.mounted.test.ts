@@ -71,6 +71,14 @@ describe("Help Desk articles", () => {
     expect(document.activeElement?.getAttribute("name")).toBe("subject");
   });
 
+  it("provides a Changelog entry without blocking basic support", async () => {
+    await mount();
+    const link = [...container.querySelectorAll("a")].find((node) => node.textContent?.trim() === "Read product updates");
+    expect(link?.getAttribute("href")).toBe("/changelog");
+    expect(container.textContent).toContain("Premium and Deluxe");
+    expect(container.querySelector('[id="support-request"]')).not.toBeNull();
+  });
+
   it("links only to places that exist", () => {
     const known = new Set<string>([...ourdreamRoutePaths, "/generate", "/coins"]);
     for (const link of helpTopics.flatMap((topic) => topic.articles.flatMap((article) => article.links))) {

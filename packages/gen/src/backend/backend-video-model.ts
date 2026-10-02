@@ -1,8 +1,10 @@
 import {
   minimaxH3VideoProductionRecipe,
+  redgraftLtx25VideoProductionRecipe,
   type CharacterVideoProductionRecipe,
 } from "@idream/shared";
 import type { VideoGeneratePayload } from "@idream/shared/contracts";
+import { redgraftVideoEnvelope, REDGRAFT_VIDEO_OPTIONS } from "@idream/shared/contracts";
 import { env } from "../env";
 import {
   stableNumericSeed,
@@ -71,7 +73,14 @@ export class BackendVideoModel implements VideoModel {
     if (referenceError) {
       return failure("unsupported_video_workflow", referenceError, false);
     }
-    if (input.seconds !== recipe.durationSeconds) {
+    let envelope: { width: number; height: number; seconds: number; frameCount: number | null; fps: number; expectedDurationSeconds: number } = { ...recipe, seconds: recipe.durationSeconds };
+    if (input.controls?.videoOptionsVersion !== undefined) {
+      try {
+        if (recipe.workflowKey !== redgraftLtx25VideoProductionRecipe.workflowKey || input.controls.videoOptionsVersion !== REDGRAFT_VIDEO_OPTIONS.version || input.controls.generationProfileVersion !== redgraftLtx25VideoProductionRecipe.optionsProfileVersion) throw new Error("Video parameter authority is not the published options profile");
+        envelope = redgraftVideoEnvelope({ seconds: input.seconds, orientation: String(input.controls.orientation), quality: String(input.controls.videoQuality ?? "standard") });
+      } catch (error) { return failure("unsupported_video_envelope", error, false); }
+    }
+    if (input.seconds !== envelope.seconds) {
       return failure(
         "unsupported_video_duration",
         `${recipe.modelLabel} production video generation requires exactly ${recipe.durationSeconds} seconds`,
@@ -86,7 +95,7 @@ export class BackendVideoModel implements VideoModel {
     // cannot send.
     const width = numericControl(input.controls, "width");
     const height = numericControl(input.controls, "height");
-    if (width !== recipe.width || height !== recipe.height) {
+    if (width !== envelope.width || height !== envelope.height) {
       return failure(
         "unsupported_video_envelope",
         `${recipe.modelLabel} production video generation requires ${recipe.width}x${recipe.height} at ${recipe.fps}fps`,
@@ -106,6 +115,7 @@ export class BackendVideoModel implements VideoModel {
       width,
       height,
       seed,
+      seconds: envelope.seconds,
     });
     let providerRequestId: string | null = null;
     const requests: (BackendPerformance & { providerRequestId: string })[] = [];
@@ -153,6 +163,7 @@ export class BackendVideoModel implements VideoModel {
         asset,
         descriptor,
         recipe,
+        envelope,
       );
       if (mediaError) {
         return failure(
@@ -202,33 +213,34 @@ function validateProductionVideoOutput(
   asset: BackendAsset,
   descriptor: ReturnType<BackendRegistry["resolveForModel"]>["descriptor"],
   recipe: CharacterVideoProductionRecipe,
+  envelope: { width: number; height: number; expectedDurationSeconds: number; frameCount: number | null; fps: number } = recipe,
 ) {
   const media = asset.verifiedVideo;
   if (!media) {
     return "ComfyUI video output has no verified decode metadata";
   }
   if (
-    media.width !== recipe.width ||
-    media.height !== recipe.height
+    media.width !== envelope.width ||
+    media.height !== envelope.height
   ) {
     return `Decoded video is ${media.width}x${media.height}; expected ${recipe.width}x${recipe.height}`;
   }
   if (
     Math.abs(
-      media.durationSeconds - recipe.expectedDurationSeconds,
+      media.durationSeconds - envelope.expectedDurationSeconds,
     ) > PRODUCTION_DURATION_TOLERANCE_SECONDS
   ) {
     return `Decoded video duration is ${media.durationSeconds}s; expected approximately ${recipe.expectedDurationSeconds}s`;
   }
   if (
-    Math.abs(media.framesPerSecond - recipe.fps) >
+    Math.abs(media.framesPerSecond - envelope.fps) >
       PRODUCTION_FPS_TOLERANCE
   ) {
     return `Decoded video frame rate is ${media.framesPerSecond}fps; expected ${recipe.fps}fps`;
   }
   if (
-    recipe.frameCount !== null &&
-    media.frameCount !== recipe.frameCount
+    envelope.frameCount !== null &&
+    media.frameCount !== envelope.frameCount
   ) {
     return `Decoded video has ${media.frameCount ?? "unknown"} frames; expected ${recipe.frameCount}`;
   }
@@ -284,6 +296,7 @@ function productionVideoSlots(
     readonly width: number;
     readonly height: number;
     readonly seed: number;
+    readonly seconds: number;
   },
 ): SlotValues {
   const common = {
@@ -299,7 +312,7 @@ function productionVideoSlots(
   return {
     ...common,
     negative: input.negativePrompt ?? "",
-    seconds: recipe.durationSeconds,
+    seconds: input.seconds,
     refinerSeed: input.seed + 1,
   };
 }

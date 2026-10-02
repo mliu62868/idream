@@ -1,13 +1,17 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { requestErrorMessage } from "@/components/admin/section-kit";
 import { FormPage, FormSection, Field, FormFooter, INPUT_CLASS } from "@/components/admin/ui/FormPage";
 import { PrimaryButton } from "@/components/admin/ui/buttons";
+import { Pagination } from "@/components/admin/ui/Pagination";
+import { AssetImage } from "@/components/admin/ui/AssetImage";
+import type { AdminPageInfo } from "@idream/shared/admin";
+import { createLatestRequestGate } from "@/lib/latest-request";
 import {
-  APPROVED_ASSETS_LIST,
+  approvedAssetsListPath,
   CREATE_STATUSES,
   PLACEMENTS_BASE,
   SLOTS,
@@ -15,14 +19,12 @@ import {
   defaultPlacementDraft,
   placementCreatePayload,
   publishableApprovedAssets,
+  validCampaignDraft,
   type ApprovedAsset,
   type PlacementDraft,
 } from "./placements-api";
 
-// SPEC: 全屏新建页 —— 原样搬运 旧内容运营视图 create() 的表单字段（资产/slot/目标类型/目标 ID/
-// 状态）+ FormFooter reason 输入（placementCreateSchema 要求 reason，spec §7 新建页）。
-// INTENT: 选择资产时把该资产的 targetId 带入表单（原样搬运 旧内容运营视图 资产配对逻辑），运营
-// 仍可手动改写；assets 加载完成后若表单为空则默认选中第一个资产（同样搬运自旧视图的 load()）。
+// A Campaign draft includes the copy actually rendered to customers. Selecting artwork does not publish it.
 export function PlacementsNewPage() {
   const { t, value } = useAdminI18n();
   const [assets, setAssets] = useState<ApprovedAsset[]>([]);
@@ -31,12 +33,20 @@ export function PlacementsNewPage() {
   const [loadingAssets, setLoadingAssets] = useState(true);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [assetSearch, setAssetSearch] = useState("");
+  const [assetCursors, setAssetCursors] = useState<Array<string | undefined>>([undefined]);
+  const [pageInfo, setPageInfo] = useState<AdminPageInfo>({ hasNextPage: false, endCursor: null });
+  const requestGate = useRef(createLatestRequestGate());
+  const assetCursor = assetCursors.at(-1);
 
   const loadAssets = useCallback(async () => {
+    const request = requestGate.current.begin();
     setLoadingAssets(true);
     setError(null);
     try {
-      const data = await apiGet<{ items: ApprovedAsset[] }>(APPROVED_ASSETS_LIST);
+      const data = await apiGet<{ items: ApprovedAsset[]; pageInfo: AdminPageInfo }>(approvedAssetsListPath(assetSearch, assetCursor));
+      if (!request.isCurrent()) return;
+      setPageInfo(data.pageInfo);
       const eligible = publishableApprovedAssets(data.items);
       setAssets(eligible);
       setBlockedAssets(
@@ -55,17 +65,19 @@ export function PlacementsNewPage() {
           "",
       }));
     } catch (loadError) {
+      if (!request.isCurrent()) return;
       setError(requestErrorMessage(loadError, t));
     } finally {
-      setLoadingAssets(false);
+      if (request.isCurrent()) setLoadingAssets(false);
     }
-  }, [t]);
+  }, [assetSearch, assetCursor, t]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
       void loadAssets();
-    }, 0);
-    return () => window.clearTimeout(timer);
+    }, 200);
+    const gate = requestGate.current;
+    return () => { window.clearTimeout(timer); gate.invalidate(); };
   }, [loadAssets]);
 
   function patch(partial: Partial<PlacementDraft>) {
@@ -77,10 +89,20 @@ export function PlacementsNewPage() {
     patch({ mediaAssetId: assetId, targetId: asset?.targetId ?? draft.targetId });
   }
 
+  function invalidateAssets() {
+    requestGate.current.invalidate();
+    setLoadingAssets(true);
+    setAssets([]);
+    setBlockedAssets([]);
+    setPageInfo({ hasNextPage: false, endCursor: null });
+  }
+
   const canSubmit =
     !creating &&
+    !loadingAssets &&
     assets.some((asset) => asset.id === draft.mediaAssetId) &&
     draft.targetId.trim().length > 0 &&
+    validCampaignDraft(draft) &&
     draft.reason.trim().length >= 3;
 
   async function create() {
@@ -93,7 +115,7 @@ export function PlacementsNewPage() {
         placementCreatePayload(draft),
       );
       const newId = created.placement?.id;
-      window.location.href = newId ? `/admin/content/placements/${newId}` : "/admin/content/placements";
+      window.location.href = newId ? `/admin/creative/placements/${newId}` : "/admin/creative/placements";
     } catch (createError) {
       setError(requestErrorMessage(createError, t));
       setCreating(false);
@@ -101,13 +123,16 @@ export function PlacementsNewPage() {
   }
 
   return (
-    <FormPage backHref="/admin/content/placements" backLabel={t("Back to placements")} title={t("New placement")}>
+    <FormPage backHref="/admin/creative/placements" backLabel={t("Back to placements")} title={t("New placement")}>
       <div className="rounded-lg bg-[var(--ad-blue-bg)] p-3 text-sm leading-6 text-[var(--ad-blue-text)]">
-        {t("Standalone placements are draft records only. Customer-visible campaign activation happens from a verified Creative Run; Character images publish through a Character Release.")}
+        {t("Upload artwork, prepare a Campaign draft, then publish it after image verification. Generated campaigns use Creative Runs; Character images use Character Releases.")}
       </div>
       <FormSection title={t("Basic info")}>
         <Field full label={t("Asset")}>
+          <input aria-label={t("Search images")} className={`${INPUT_CLASS} mb-2`} placeholder={t("Search images")}
+            value={assetSearch} onChange={(event) => { invalidateAssets(); setAssetSearch(event.target.value); setAssetCursors([undefined]); }} />
           <select
+            aria-label={t("Asset")}
             className={INPUT_CLASS}
             disabled={loadingAssets || assets.length === 0}
             onChange={(event) => selectAsset(event.target.value)}
@@ -115,10 +140,23 @@ export function PlacementsNewPage() {
           >
             {assets.map((asset) => (
               <option key={asset.id} value={asset.id}>
-                {asset.id} · {asset.purpose ? value(asset.purpose) : t("Asset")}
+                {asset.description || asset.id} · {asset.purpose ? value(asset.purpose) : t("Asset")}
               </option>
             ))}
           </select>
+          <Pagination page={assetCursors.length} pageSize={25} rowCount={assets.length + blockedAssets.length}
+            loading={loadingAssets} hasPrevious={assetCursors.length > 1} hasNext={Boolean(pageInfo.hasNextPage && pageInfo.endCursor)}
+            onPrevious={() => { if (loadingAssets) return; invalidateAssets(); setAssetCursors(current => current.slice(0, -1)); }}
+            onNext={() => {
+              if (loadingAssets || !pageInfo.endCursor) return;
+              const nextCursor = pageInfo.endCursor;
+              invalidateAssets();
+              setAssetCursors(current => current.at(-1) === nextCursor ? current : [...current, nextCursor]);
+            }} />
+          {assets.find(asset => asset.id === draft.mediaAssetId)?.url ? <AssetImage asset={{
+            url: assets.find(asset => asset.id === draft.mediaAssetId)!.url!,
+            thumbnailUrl: assets.find(asset => asset.id === draft.mediaAssetId)!.thumbnailUrl ?? "",
+          }} preview /> : null}
           {blockedAssets.length > 0 ? (
             <p className="mt-2 text-xs text-[var(--ad-yellow-text)]" role="status">
               {blockedAssets.length === 1
@@ -170,9 +208,16 @@ export function PlacementsNewPage() {
           </select>
         </Field>
         <Field label={t("Target ID")}>
-          <input className={INPUT_CLASS} onChange={(event) => patch({ targetId: event.target.value })} value={draft.targetId} />
+          <input aria-label={t(draft.slot === "campaign" ? "Campaign destination key" : "Target ID")} className={INPUT_CLASS} maxLength={180} onChange={(event) => patch({ targetId: event.target.value })} value={draft.targetId} />
         </Field>
       </FormSection>
+      {draft.slot === "campaign" ? <FormSection title={t("Campaign")}>
+        <Field label={t("Campaign eyebrow")}><input aria-label={t("Campaign eyebrow")} className={INPUT_CLASS} maxLength={80} value={draft.eyebrow} onChange={event => patch({ eyebrow: event.target.value })} /></Field>
+        <Field label={t("Campaign title")}><input aria-label={t("Campaign title")} className={INPUT_CLASS} maxLength={120} value={draft.title} onChange={event => patch({ title: event.target.value })} /></Field>
+        <Field label={t("Campaign CTA label")}><input aria-label={t("Campaign CTA label")} className={INPUT_CLASS} maxLength={60} value={draft.ctaLabel} onChange={event => patch({ ctaLabel: event.target.value })} /></Field>
+        <Field label={t("Campaign CTA href")}><input aria-label={t("Campaign CTA href")} className={INPUT_CLASS} maxLength={512} value={draft.href} onChange={event => patch({ href: event.target.value })} /></Field>
+        <p className="text-sm text-[var(--ad-text-muted)]">{t("Add both a CTA label and destination, or leave both blank.")}</p>
+      </FormSection> : <p className="text-sm text-[var(--ad-yellow-text)]">{t("This slot has no customer-facing renderer. It can be saved as a draft only.")}</p>}
       <FormFooter error={error}>
         <input
           aria-label={t("Reason (≥3)")}

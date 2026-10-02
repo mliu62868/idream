@@ -23,7 +23,7 @@ describe("announcement schedule inputs", () => {
     expect(localInputToIso("not a date")).toBeNull();
   });
 
-  // 权威只做两个独立比较，不校验先后；反向窗口存得下来却永远不会展示。
+  // 前端与写入权威都要求结束晚于开始；这里保证表单在提交前也能指出错误。
   it("rejects a window whose end precedes its start", () => {
     expect(announcementWindowOrdered("2026-09-20T09:00", "2026-09-19T09:00")).toBe(false);
     expect(announcementWindowOrdered("2026-09-20T09:00", "2026-09-20T09:00")).toBe(false);

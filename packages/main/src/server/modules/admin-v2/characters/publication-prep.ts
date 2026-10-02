@@ -7,6 +7,8 @@ import { Errors } from "@/server/lib/errors";
 import { toInputJson } from "../shared/prisma-json";
 import { characterWorkspaceTabLink } from "./character-deep-link";
 import { lockCharacterGenerationAuthority, lockCharacterMediaAssetAuthorities } from "./generation-authority-lock";
+import { customerIdentityReceipt, inspectCustomerIdentitySource } from "./customer-identity-source";
+import { canonicalSha256 } from "../shared/canonical-json";
 
 export type CustomerCharacterPublicationPrep = {
   state: "publication_prep";
@@ -42,6 +44,8 @@ export async function ensureCustomerCharacterPublicationPrep(
       visibility: true,
       status: true,
       currentContentVersionId: true,
+      creatorId: true,
+      imageAssetId: true,
     },
   });
   if (!character) throw Errors.notFound("Character not found");
@@ -56,7 +60,7 @@ export async function ensureCustomerCharacterPublicationPrep(
     throw Errors.conflict("Customer Character is missing immutable content authority");
   }
   const submission = await tx.characterSubmission.findFirst({
-    where: { id: input.submissionId, characterId: character.id },
+    where: { id: input.submissionId, characterId: character.id, submitterId: character.creatorId ?? "" },
     select: { id: true, status: true },
   });
   if (
@@ -78,12 +82,17 @@ export async function ensureCustomerCharacterPublicationPrep(
   if (!contentVersion) {
     throw Errors.conflict("Customer Character content authority is invalid");
   }
+  if (character.imageAssetId) await lockCharacterMediaAssetAuthorities(tx, [character.imageAssetId]);
+  const identity = await inspectCustomerIdentitySource(tx, {
+    characterId: character.id, submissionId: submission.id, contentVersionId: contentVersion.id,
+  });
 
   let project = await tx.characterProject.findFirst({
     where: { characterId: character.id },
     orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
   });
   let created = false;
+  const existingProject = project !== null;
   if (!project) {
     project = await tx.characterProject.create({
       data: {
@@ -101,7 +110,10 @@ export async function ensureCustomerCharacterPublicationPrep(
     },
     orderBy: [{ revision: "desc" }, { id: "desc" }],
   });
-  if (!revision) {
+  if (!revision || canonicalSha256(customerIdentityReceipt(revision.projectSnapshot)) !== canonicalSha256(identity?.receipt ?? null)) {
+    if (await tx.characterRelease.findFirst({ where: { projectId: project.id, status: "approved" }, select: { id: true } })) {
+      throw Errors.conflict("Abandon the current Release candidate before changing publication preparation");
+    }
     const latestRevision = await tx.characterRevision.findFirst({
       where: { projectId: project.id },
       orderBy: [{ revision: "desc" }, { id: "desc" }],
@@ -118,11 +130,15 @@ export async function ensureCustomerCharacterPublicationPrep(
           submissionId: input.submissionId,
           contentVersion: contentVersion.version,
           contentHash: contentVersion.contentHash,
+          ...(identity ? { customerIdentity: identity.receipt } : {}),
         }),
         createdById: input.actorId,
       },
     });
     created = true;
+    if (existingProject) {
+      project = await tx.characterProject.update({ where: { id: project.id }, data: { version: { increment: 1 } } });
+    }
   }
 
   let serving = await tx.characterServing.findUnique({

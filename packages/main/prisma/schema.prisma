@@ -37,8 +37,10 @@ model User {
   chatTurnUsageFacts ChatTurnUsageFact[]
   chatContextDirectives ChatContextDirective[]
   generationJobs     GenerationJob[]
+  videoSequences     VideoSequence[]
   mediaAssets        MediaAsset[]
   voiceClipRequests  VoiceClipRequest[]
+  voiceCalls         VoiceCall[]
   voiceUsageFacts    VoiceUsageFact[]
   productionBatches  ContentProductionBatch[]
   mediaPlacements    MediaAssetPlacement[]
@@ -46,6 +48,8 @@ model User {
   characterLikes     CharacterLike[]
   mediaCollections   MediaCollection[]
   comics             Comic[]
+  packs              Pack[]
+  packGrants         PackGrant[]
   presets            GenerationPreset[]
   subscriptions      Subscription[]
   entitlements       Entitlement[]
@@ -267,8 +271,10 @@ model Character {
   recentChats           RecentChat[]
   chatContextDirectives ChatContextDirective[]
   generationJobs        GenerationJob[]
+  videoSequences        VideoSequence[]
   mediaAssets           MediaAsset[]             @relation("CharacterAssets")
   voiceClipRequests     VoiceClipRequest[]
+  voiceCalls            VoiceCall[]
   voiceUsageFacts       VoiceUsageFact[]
   visualProfiles        CharacterVisualProfile[]
   looks                 CharacterLook[]
@@ -317,6 +323,8 @@ model VoiceClipRequest {
   userId             String
   characterId        String
   messageId          String
+  replyAttempt       Int              @default(0) // 0: legacy reply version cannot be proven
+  voiceCallUtteranceId String?         @unique
   requestFingerprint String
   synthesisPayload   Json?
   billingAuthority   Json?
@@ -339,10 +347,65 @@ model VoiceClipRequest {
   mediaAsset         MediaAsset?      @relation("VoiceClipRequestMedia", fields: [mediaAssetId], references: [id], onDelete: SetNull)
   usageFacts         VoiceUsageFact[]
 
-  @@unique([userId, messageId])
+  @@unique([userId, messageId, replyAttempt])
   @@index([status, leaseExpiresAt])
   @@index([characterId, createdAt])
   @@map("voice_clip_requests")
+}
+
+model VoiceCall {
+  id                 String @id
+  userId             String
+  sessionId          String
+  characterId        String
+  activeKey          String? @unique
+  requestHash        String
+  status             String @default("active")
+  language           String @default("en")
+  providerPayload    Json
+  billingAuthority   Json
+  maxCostDreamcoins  Int
+  leaseToken         String
+  leaseExpiresAt     DateTime
+  deadlineAt         DateTime
+  lastHeartbeatAt    DateTime
+  connectedMs        Int @default(0)
+  startedAt          DateTime @default(now())
+  endedAt            DateTime?
+  settledAt          DateTime?
+  endReason          String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  user               User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session            RecentChat @relation(fields: [sessionId], references: [sessionId], onDelete: Cascade)
+  character          Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  utterances         VoiceCallUtterance[]
+
+  @@index([status, leaseExpiresAt])
+  @@index([characterId, createdAt])
+  @@map("voice_calls")
+}
+
+model VoiceCallUtterance {
+  id                 String @id
+  callId             String
+  audioDigest        String
+  status             String @default("transcribing")
+  turnId             String? @unique
+  assistantMessageId String?
+  replyAttempt       Int?
+  voiceRequestId     String?
+  mediaAssetId       String?
+  durationMs         Int @default(0)
+  costDreamcoins     Int @default(0)
+  settledAt          DateTime?
+  errorCode          String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  call               VoiceCall @relation(fields: [callId], references: [id], onDelete: Cascade)
+
+  @@index([callId, createdAt])
+  @@map("voice_call_utterances")
 }
 
 model VoiceUsageFact {
@@ -690,6 +753,7 @@ model RecentChat {
   character                     Character  @relation(fields: [characterId], references: [id], onDelete: Cascade)
   group                         GroupConversation? @relation(fields: [groupId], references: [id], onDelete: Cascade)
   turns                         ChatTurn[]
+  voiceCalls                    VoiceCall[]
   experiencePreference          ChatExperiencePreference?
 
   @@index([userId, lastMessageAt])
@@ -705,6 +769,7 @@ model ChatExperiencePreference {
   responseLength       String   @default("auto")
   interactionIntensity String   @default("balanced")
   sceneGeneration      String   @default("follow")
+  conversationProfile  Json?
   version              Int      @default(1)
   updatedAt            DateTime @updatedAt
   session              RecentChat @relation(fields: [sessionId], references: [sessionId], onDelete: Cascade)
@@ -734,6 +799,12 @@ model AffiliateClick {
   visitorKey     String
   landingPath    String
   convertedAt    DateTime?
+  // No User FK: an erased account must remain a revoked observed signup,
+  // rather than losing its attribution identity or becoming an unknown legacy row.
+  convertedUserId String? @unique
+  attributionVersion String?
+  attributionWindowDays Int?
+  termsVersion   String?
   createdAt      DateTime @default(now())
   affiliateUser  User     @relation(fields: [affiliateUserId], references: [id], onDelete: Cascade)
   application    AffiliateApplication? @relation(fields: [code], references: [id], onDelete: Cascade)
@@ -933,6 +1004,7 @@ model GenerationJob {
   productionItems        ContentProductionItem[]
   referenceCandidates    ReferenceCandidate[]
   generationFeedback     GenerationFeedback[]
+  videoScene             VideoSequenceScene?
 
   @@unique([userId, idempotencyKey])
   @@unique([sourceType, sourceId])
@@ -1028,11 +1100,57 @@ model MediaAsset {
   voicePreviewProfiles   CharacterVoiceProfile[]            @relation("VoicePreviewAsset")
   voiceClipRequests      VoiceClipRequest[]                 @relation("VoiceClipRequestMedia")
   voiceUsageFacts        VoiceUsageFact[]                   @relation("VoiceUsageMedia")
+  videoSequences         VideoSequence[]                    @relation("VideoSequenceOutput")
+  videoNarrationScenes   VideoSequenceScene[]               @relation("VideoSceneNarration")
 
   @@index([ownerId, type, createdAt])
   @@index([sourceJobId])
   @@index([characterId])
   @@map("media_assets")
+}
+
+model VideoSequence {
+  id                 String @id @default(cuid())
+  userId             String
+  characterId        String?
+  idempotencyKey     String
+  requestFingerprint String
+  acceptedQuote      Json
+  request            Json
+  voicePin           Json?
+  audio              String
+  status             String @default("generating")
+  mediaAssetId       String?
+  errorCode          String?
+  compositionOwner   String?
+  compositionLeaseAt DateTime?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  completedAt        DateTime?
+  user               User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  character          Character? @relation(fields: [characterId], references: [id], onDelete: SetNull)
+  mediaAsset         MediaAsset? @relation("VideoSequenceOutput", fields: [mediaAssetId], references: [id], onDelete: SetNull)
+  scenes             VideoSequenceScene[]
+
+  @@unique([userId, idempotencyKey])
+  @@index([userId, createdAt])
+  @@index([status, updatedAt])
+  @@map("video_sequences")
+}
+
+model VideoSequenceScene {
+  id                    String @id @default(cuid())
+  sequenceId            String
+  ordinal               Int
+  generationJobId       String @unique
+  narrationMediaAssetId String?
+  narrationState        String @default("pending")
+  sequence              VideoSequence @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+  generationJob         GenerationJob @relation(fields: [generationJobId], references: [id], onDelete: Cascade)
+  narrationMediaAsset   MediaAsset? @relation("VideoSceneNarration", fields: [narrationMediaAssetId], references: [id], onDelete: SetNull)
+
+  @@unique([sequenceId, ordinal])
+  @@map("video_sequence_scenes")
 }
 
 model ContentProductionBatch {
@@ -2982,4 +3100,64 @@ model ComicPage {
   @@unique([episodeId, ordinal])
   @@index([mediaAssetId])
   @@map("comic_pages")
+}
+
+// A release owns independent immutable bytes, not Gallery storage-key aliases.
+// Creator erasure stops discovery but cannot revoke another user's exact grant.
+model Pack {
+  id               String       @id @default(cuid())
+  creatorId        String?
+  title            String
+  description      String       @default("")
+  visibility       String       @default("private") // private | unlisted | public
+  status           String       @default("draft") // draft | published | withdrawn | blocked
+  version          Int          @default(1)
+  draftContent     Json
+  currentReleaseId String?
+  blockedReason    String?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+  creator          User?        @relation(fields: [creatorId], references: [id], onDelete: SetNull)
+  releases         PackRelease[] @relation("PackReleases")
+  currentRelease   PackRelease? @relation("CurrentPackRelease", fields: [currentReleaseId, id], references: [id, packId], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([currentReleaseId, id])
+  @@index([creatorId, updatedAt, id])
+  @@index([status, visibility, updatedAt, id])
+  @@map("packs")
+}
+
+model PackRelease {
+  id            String    @id
+  packId        String
+  version       Int
+  title         String
+  description   String    @default("")
+  manifest      Json
+  manifestHash  String
+  priceCents    Int       @default(0)
+  rights        String    @default("personal_view_download_current_only")
+  claimUntil    DateTime?
+  publishedAt   DateTime  @default(now())
+  pack          Pack      @relation("PackReleases", fields: [packId], references: [id], onDelete: Cascade)
+  currentOf     Pack?     @relation("CurrentPackRelease")
+  grants        PackGrant[]
+
+  @@unique([id, packId])
+  @@unique([packId, version])
+  @@map("pack_releases")
+}
+
+model PackGrant {
+  id        String      @id @default(cuid())
+  userId    String
+  releaseId String
+  createdAt DateTime    @default(now())
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  release   PackRelease @relation(fields: [releaseId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, releaseId])
+  @@index([userId, createdAt, id])
+  @@index([releaseId])
+  @@map("pack_grants")
 }

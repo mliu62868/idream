@@ -5,6 +5,7 @@ import { characterPortfolioQuerySchema } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { createUser } from "@/server/test/helpers";
+import { operationalCharacterWhere } from "../../metric-data-scope";
 import { toInputJson } from "../shared/prisma-json";
 import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-validation";
 import {
@@ -1169,58 +1170,85 @@ describe("Character Portfolio authority/read model", () => {
   });
 
   it.each(["project_id_asc", "updated_desc", "updated_asc", "created_desc"] as const)("orders by %s and pages back to the page it came from", async (sort) => {
-    const all = await listCharacterPortfolioData(
-      prisma,
-      characterPortfolioQuerySchema.parse({
-        limit: 20,
-        sort,
-      }),
-      { asOf },
-    );
-    const projects = await prisma.characterProject.findMany({
-      where: { characterId: { in: all.items.map((item) => item.characterId) } },
-      orderBy: ({
-        project_id_asc: [{ id: "asc" }],
-        updated_desc: [{ updatedAt: "desc" }, { id: "desc" }],
-        updated_asc: [{ updatedAt: "asc" }, { id: "asc" }],
-        created_desc: [{ createdAt: "desc" }, { id: "desc" }],
-      } satisfies Record<typeof sort, Prisma.CharacterProjectOrderByWithRelationInput[]>)[sort],
-      select: { characterId: true },
+    const overflow = Array.from({ length: 3 }, (_, index) => ({
+      characterId: `portfolio-overflow-character-${sort}-${index}-${suffix}`,
+      projectId: `portfolio-overflow-project-${sort}-${index}-${suffix}`,
+    }));
+    await prisma.character.createMany({
+      data: overflow.map(({ characterId }) => ({
+        id: characterId, creatorId: producerId, name: "Portfolio page overflow",
+        age: 24, description: "Owned pagination fixture", source: "official",
+        visibility: "private", status: "approved", appearance: {}, advancedDetails: {},
+      })),
     });
-    expect(all.items.map((item) => item.characterId)).toEqual(
-      projects.map((project) => project.characterId),
-    );
-    expect(all.pageInfo.totalCount).toBe(projects.length);
+    try {
+      await prisma.characterProject.createMany({
+        data: overflow.map(({ characterId, projectId }) => ({ id: projectId, characterId })),
+      });
+      const all = await listCharacterPortfolioData(
+        prisma,
+        characterPortfolioQuerySchema.parse({
+          limit: 20,
+          sort,
+        }),
+        { asOf },
+      );
+      expect(all.items).toHaveLength(20);
+      expect(all.pageInfo.hasNextPage).toBe(true);
+      expect(all.pageInfo.totalCount).toBeGreaterThan(all.items.length);
+      const characters = await prisma.character.findMany({
+        where: operationalCharacterWhere({ deletedAt: null }),
+        select: { id: true },
+      });
+      const projects = await prisma.characterProject.findMany({
+        where: { characterId: { in: characters.map(character => character.id) } },
+        orderBy: ({
+          project_id_asc: [{ id: "asc" }],
+          updated_desc: [{ updatedAt: "desc" }, { id: "desc" }],
+          updated_asc: [{ updatedAt: "asc" }, { id: "asc" }],
+          created_desc: [{ createdAt: "desc" }, { id: "desc" }],
+        } satisfies Record<typeof sort, Prisma.CharacterProjectOrderByWithRelationInput[]>)[sort],
+        select: { characterId: true },
+      });
+      expect(projects.length).toBeGreaterThan(20);
+      expect(all.items.map((item) => item.characterId)).toEqual(
+        projects.slice(0, 20).map((project) => project.characterId),
+      );
+      expect(all.pageInfo.totalCount).toBe(projects.length);
 
-    const first = await listCharacterPortfolioData(
-      prisma,
-      characterPortfolioQuerySchema.parse({
-        limit: 1,
-        sort,
-      }),
-      { asOf },
-    );
-    const second = await listCharacterPortfolioData(
-      prisma,
-      characterPortfolioQuerySchema.parse({
-        limit: 1,
-        sort,
-        cursor: first.pageInfo.endCursor as string,
-      }),
-      { asOf },
-    );
-    const back = await listCharacterPortfolioData(
-      prisma,
-      characterPortfolioQuerySchema.parse({
-        limit: 1,
-        sort,
-        before: second.pageInfo.startCursor as string,
-      }),
-      { asOf },
-    );
-    expect(back.items.map((item) => item.characterId)).toEqual(
-      first.items.map((item) => item.characterId),
-    );
+      const first = await listCharacterPortfolioData(
+        prisma,
+        characterPortfolioQuerySchema.parse({
+          limit: 1,
+          sort,
+        }),
+        { asOf },
+      );
+      const second = await listCharacterPortfolioData(
+        prisma,
+        characterPortfolioQuerySchema.parse({
+          limit: 1,
+          sort,
+          cursor: first.pageInfo.endCursor as string,
+        }),
+        { asOf },
+      );
+      const back = await listCharacterPortfolioData(
+        prisma,
+        characterPortfolioQuerySchema.parse({
+          limit: 1,
+          sort,
+          before: second.pageInfo.startCursor as string,
+        }),
+        { asOf },
+      );
+      expect(back.items.map((item) => item.characterId)).toEqual(
+        first.items.map((item) => item.characterId),
+      );
+    } finally {
+      await prisma.characterProject.deleteMany({ where: { id: { in: overflow.map(item => item.projectId) } } });
+      await prisma.character.deleteMany({ where: { id: { in: overflow.map(item => item.characterId) } } });
+    }
   });
 
   it("invalidates a cursor that was issued under a different sort", async () => {

@@ -12,6 +12,7 @@ import Link from "next/link";
 import { parseViewerAuthorityResponse } from "@/lib/public-api-contracts";
 import { authHrefForTarget, safeInternalAuthRedirect } from "./authRedirect";
 import { AccountRecovery, RecoveryCodeCard } from "./AccountRecovery";
+import { announceViewerAuthorityChange } from "./viewer-auth";
 import { AccountDeletionStatus } from "./AccountDeletionStatus";
 
 export function AuthWorkspace({
@@ -106,6 +107,7 @@ export function AuthWorkspace({
         );
         return;
       }
+      announceViewerAuthorityChange();
       if (mode === "signup" && payload.data?.recoveryCode && payload.data.user) {
         setRecoveryCode({ code: payload.data.recoveryCode, ownerId: payload.data.user.id });
         setPassword("");

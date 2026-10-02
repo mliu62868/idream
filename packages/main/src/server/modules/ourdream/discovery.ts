@@ -30,6 +30,7 @@ import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { AppError, Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
+import { publicPackAudienceWhere } from "./pack-authority";
 import { cryptoRandomId } from "@/server/lib/random-id";
 import { clampInt } from "@/server/lib/request-query";
 import {
@@ -911,6 +912,7 @@ export async function followUser(request: Request, targetId: string) {
       OR: [
         { charactersCreated: { some: publicCharacterAudienceWhere } },
         { comics: { some: { status: "published", visibility: { in: ["public", "unlisted"] } } } },
+        { packs: { some: publicPackAudienceWhere() } },
       ],
     },
   });
@@ -978,6 +980,7 @@ export async function creatorProfile(request: Request, creatorId: string) {
         ...(ctx.userId === creatorId ? [{ id: creatorId }] : []),
         { charactersCreated: { some: publicCharacterAudienceWhere } },
         { comics: { some: { status: "published", visibility: { in: ["public", "unlisted"] } } } },
+        { packs: { some: publicPackAudienceWhere() } },
       ],
     },
     select: { id: true, displayName: true, name: true, image: true, createdAt: true },

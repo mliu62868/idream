@@ -45,6 +45,8 @@ import {
 } from "@/server/modules/admin-v2/characters/generation-route-authority";
 import { operationalMediaAssetWhere } from "@/server/modules/metric-data-scope";
 import { isDefaultProductionVideoProfile } from "@/server/modules/generation/production-video-profile";
+import { resolveImageRecipeNegative } from "@/server/modules/ourdream/generation-profile-selection";
+import { imageNegativePrompt } from "@/server/modules/ourdream/generation-prompt";
 import {
   appendProductionJobEvent,
   generationProfileCapabilities,
@@ -210,6 +212,7 @@ export async function createCreativeRun(
     undefined,
     productionMode,
   );
+  const recipeNegative = productionMode === "image" ? await resolveImageRecipeNegative(recipe) : null;
   const target = await resolveProductionTarget(body.targetType, body.targetId);
   const visualProfile = characterVideoRun
     ? null
@@ -529,14 +532,16 @@ export async function createCreativeRun(
   // bootstrap image must remain a true no-reference/no-profile definition.
   const generationVisualProfile =
     body.bootstrapIdentity || identityExperimentRun ? null : visualProfile;
-  const effectiveNegativePrompt = productionNegativePrompt(
-    recipe.negativeBase,
-    identityExperimentRun
-      ? body.identityExperiment?.negativePrompt
-      : generationVisualProfile?.negativeIdentityPrompt,
+  const identityNegative = identityExperimentRun ? body.identityExperiment?.negativePrompt : generationVisualProfile?.negativeIdentityPrompt;
+  const compiledNegativePrompt = productionNegativePrompt(
+    recipeNegative?.base ?? recipe.negativeBase,
+    recipeNegative?.negativeRecipe ? null : identityNegative,
     body.purpose,
     body.negativePrompt,
   );
+  const effectiveNegativePrompt = recipeNegative?.negativeRecipe
+    ? imageNegativePrompt(compiledNegativePrompt, { negativeIdentityPrompt: identityNegative ?? null })
+    : compiledNegativePrompt;
   const canonicalReferenceManifest = activeReferenceSet
     ? activeReferenceSet.references.map((reference) => ({
         mediaAssetId: reference.mediaAssetId,
@@ -698,6 +703,9 @@ export async function createCreativeRun(
           include: creativeRunInclude,
         });
       }
+    }
+    if (recipeNegative && (await resolveImageRecipeNegative(recipe, tx)).promptRecipeFingerprint !== recipeNegative.promptRecipeFingerprint) {
+      throw Errors.conflict("The negative recipe changed before the Run was committed. Refresh and create the Run again.");
     }
     if (body.targetType === "character" && body.targetId) {
       await lockCharacterGenerationAndMediaAssetAuthorities(
@@ -1175,6 +1183,7 @@ export async function createCreativeRun(
           sourceType: "content_production_item",
           sourceId: item.id,
           sourceMeta: toInputJson({
+            ...(recipeNegative?.negativeRecipe ? { negativeRecipe: recipeNegative.negativeRecipe, promptRecipeFingerprint: recipeNegative.promptRecipeFingerprint } : {}),
             batchId: createdBatch.id,
             purpose: body.purpose,
             targetType: body.targetType,

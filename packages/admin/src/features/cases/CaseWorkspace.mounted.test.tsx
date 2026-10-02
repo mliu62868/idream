@@ -22,6 +22,7 @@ vi.mock("@/lib/admin-v2-api", async (importOriginal) => {
 
 import { CaseWorkspace } from "./CaseWorkspace";
 import { AdminI18nProvider } from "@/components/admin/i18n";
+import { ToastProvider } from "@/components/admin/ui/Toast";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -158,6 +159,7 @@ describe("CaseWorkspace browser URL interactions", () => {
   afterEach(async () => {
     await act(async () => root?.unmount());
     container.remove();
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -308,6 +310,105 @@ describe("CaseWorkspace browser URL interactions", () => {
     expect(lastListRequest).not.toContain("type=appeal");
   });
 
+  it("marks a failed queue read as a stale snapshot and retries the current view", async () => {
+    let failing = false;
+    let listReads = 0;
+    adminV2Request.mockImplementation(async (path) => {
+      if (path.startsWith("/api/v2/admin/saved-views")) return { items: [] };
+      const view = new URL(path, "http://admin.local").searchParams.get("view") ?? "mine";
+      listReads += 1;
+      if (failing) throw new TypeError("Queue connection lost");
+      return { ...listResponse(view), pageInfo: { endCursor: "next-page", hasNextPage: true } };
+    });
+    const workspace = <CaseWorkspace canAssign={false} canDecide={false} />;
+    container.innerHTML = renderToString(workspace);
+    await act(async () => { root = hydrateRoot(container, workspace); });
+    await waitUntil(() => container.querySelector('[aria-label="Case results"] > button') !== null);
+    failing = true;
+    await act(async () => findButton("overdue")!.click());
+    await waitUntil(() => listReads === 2 && !findButton("Apply")!.disabled);
+    const results = container.querySelector('[aria-label="Case results"]')!;
+    const error = results.querySelector('[role="alert"]');
+    expect(error).not.toBeNull();
+    expect(error?.textContent).toContain("Showing the last successful snapshot from");
+    expect(error?.querySelector("time")?.dateTime).toBe("2026-08-11T00:00:00.000Z");
+    expect(findButton("Next page")!.disabled).toBe(true);
+    failing = false;
+    await act(async () => [...error!.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Retry")!.click());
+    await waitUntil(() => listReads === 3 && results.querySelector('[role="alert"]') === null);
+    expect(adminV2Request.mock.calls.at(-1)?.[0]).toContain("view=overdue");
+    expect(findButton("Next page")!.disabled).toBe(false);
+    expect(window.location.search).toContain("view=overdue");
+  });
+
+  it("keeps a failed case detail actionable through an inline retry", async () => {
+    let failing = true;
+    let detailReads = 0;
+    adminV2Request.mockImplementation(async (path) => {
+      if (path.startsWith("/api/v2/admin/saved-views")) return { items: [] };
+      if (path.startsWith("/api/v2/admin/collaboration/")) return { items: [], actors: [], watching: false, watcherIds: [], pageInfo: { endCursor: null, hasNextPage: false } };
+      if (path === "/api/v2/admin/cases/case-1") {
+        detailReads += 1;
+        if (failing) throw new TypeError("Detail connection lost");
+        return { case: adminCase, evidence: [], decisions: [], activity: [] };
+      }
+      return listResponse("overdue");
+    });
+    window.history.replaceState(null, "", "/admin/cases/case-1?view=overdue");
+    const workspace = <CaseWorkspace canAssign={false} canDecide={false} initialCaseId="case-1" />;
+    container.innerHTML = renderToString(workspace);
+    await act(async () => { root = hydrateRoot(container, workspace); });
+    await waitUntil(() => detailReads === 1 && !container.textContent?.includes("Loading case detail"));
+    const error = container.querySelector('[role="alert"]');
+    expect(error).not.toBeNull();
+    expect(error?.textContent).toContain("Retry to load the latest data.");
+    failing = false;
+    await act(async () => [...error!.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Retry")!.click());
+    await waitUntil(() => container.querySelector("#case-detail-title") !== null);
+    expect(detailReads).toBe(2);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(window.location.pathname + window.location.search).toBe("/admin/cases/case-1?view=overdue");
+  });
+
+  it("dates a retained detail snapshot by its successful read, not the record's last edit", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const firstRead = "2026-10-02T07:00:00.000Z";
+    const nextRead = "2026-10-02T07:04:00.000Z";
+    vi.setSystemTime(firstRead);
+    const originalRequest = adminV2Request.getMockImplementation()!;
+    let failing = false;
+    adminV2Request.mockImplementation(async (path, init) => {
+      if (path === "/api/v2/admin/cases/case-1" && failing) throw new TypeError("Detail connection lost");
+      return originalRequest(path, init);
+    });
+    window.history.replaceState(null, "", "/admin/cases/case-1");
+    const workspace = <CaseWorkspace canAssign={false} canDecide={false} initialCaseId="case-1" />;
+    container.innerHTML = renderToString(workspace);
+    await act(async () => { root = hydrateRoot(container, workspace); });
+    await waitUntil(() => container.querySelector("#case-detail-title") !== null);
+
+    failing = true;
+    vi.setSystemTime("2026-10-02T07:02:00.000Z");
+    await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+    await waitUntil(() => container.querySelector('[role="alert"]') !== null);
+    const snapshotTime = () => container.querySelector<HTMLTimeElement>('[role="alert"] time')?.dateTime;
+    expect(snapshotTime()).toBe(firstRead);
+
+    vi.setSystemTime("2026-10-02T07:03:00.000Z");
+    await act(async () => findButton("Retry")!.click());
+    expect(snapshotTime()).toBe(firstRead);
+
+    failing = false;
+    vi.setSystemTime(nextRead);
+    await act(async () => findButton("Retry")!.click());
+    await waitUntil(() => container.querySelector('[role="alert"]') === null);
+    failing = true;
+    vi.setSystemTime("2026-10-02T07:05:00.000Z");
+    await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+    await waitUntil(() => container.querySelector('[role="alert"]') !== null);
+    expect(snapshotTime()).toBe(nextRead);
+  });
+
   function findButton(label: string) {
     return [...container.querySelectorAll("button")].find(
       (button) => button.textContent === label,
@@ -343,9 +444,10 @@ describe("CaseWorkspace decision loop", () => {
   });
 
   async function mount(permissions: { canAssign: boolean; canDecide: boolean; actorId?: string }) {
-    container.innerHTML = renderToString(<CaseWorkspace actorId={permissions.actorId} canAssign={permissions.canAssign} canDecide={permissions.canDecide} initialCaseId="case-1" />);
+    const workspace = <ToastProvider><CaseWorkspace actorId={permissions.actorId} canAssign={permissions.canAssign} canDecide={permissions.canDecide} initialCaseId="case-1" /></ToastProvider>;
+    container.innerHTML = renderToString(workspace);
     await act(async () => {
-      root = hydrateRoot(container, <CaseWorkspace actorId={permissions.actorId} canAssign={permissions.canAssign} canDecide={permissions.canDecide} initialCaseId="case-1" />);
+      root = hydrateRoot(container, workspace);
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     await waitUntil(() => container.querySelector("#case-detail-title") !== null);
@@ -432,6 +534,88 @@ describe("CaseWorkspace decision loop", () => {
     await waitUntil(() => adminV2Request.mock.calls.some(([path]) => path.endsWith("/assignment")));
     const [, options] = adminV2Request.mock.calls.find(([path]) => path.endsWith("/assignment"))!;
     expect(options).toMatchObject({ method: "POST", body: expect.objectContaining({ ownerId: "operator-7" }) });
+  });
+
+  it("distinguishes a saved assignment from a failed refresh and recovers without another write", async () => {
+    const read = adminV2Request.getMockImplementation()!;
+    let saved = false;
+    let failing = true;
+    adminV2Request.mockImplementation(async (path, options) => {
+      if (path.endsWith("/assignment")) { saved = true; return { caseId: "case-1", version: 5 }; }
+      if (path === "/api/v2/admin/cases/case-1") {
+        if (saved && failing) throw new TypeError("Detail refresh connection lost");
+        return { ...resolvedDetail, case: { ...resolvedCase, status: "in_progress", ownerId: saved ? "operator-7" : null, version: saved ? 5 : 4 } };
+      }
+      return read(path, options);
+    });
+    await mount({ canAssign: true, canDecide: false, actorId: "operator-7" });
+    const assign = [...container.querySelectorAll("button")].find((button) => button.textContent === "Assign to me")!;
+    await act(async () => assign.click());
+    await waitUntil(() => [...document.querySelectorAll('[data-testid="admin-action-status"]')].some((node) => node.textContent?.includes("Case assigned to you")));
+    const result = [...document.querySelectorAll('[data-testid="admin-action-status"]')].find((node) => node.textContent?.includes("Case assigned to you"))!;
+    expect(result.getAttribute("data-tone")).toBe("info");
+    expect(result.textContent).toContain("The latest data could not be loaded.");
+    expect(document.querySelector('[data-testid="admin-action-status"][data-tone="success"]')).toBeNull();
+    const error = container.querySelector('[role="alert"]');
+    expect(error).not.toBeNull();
+    expect(assign.disabled).toBe(true);
+    failing = false;
+    await act(async () => [...error!.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Retry")!.click());
+    await waitUntil(() => container.querySelector('[role="alert"]') === null);
+    expect(container.querySelector("#case-summary-title")?.parentElement?.textContent).toContain("You");
+    expect([...container.querySelectorAll("button")].some((button) => button.textContent === "Assign to me")).toBe(false);
+    expect(adminV2Request.mock.calls.filter(([path]) => path.endsWith("/assignment"))).toHaveLength(1);
+  });
+
+  it.each([false, true])("keeps Support navigation when a Case assignment finishes late (unmounted: %s)", async (unmountBeforeCompletion) => {
+    const read = adminV2Request.getMockImplementation()!;
+    let resolveAssignment!: (result: unknown) => void;
+    adminV2Request.mockImplementation(async (path, options) => {
+      if (path.endsWith("/assignment")) return new Promise((resolve) => { resolveAssignment = resolve; });
+      if (path === "/api/v2/admin/cases/case-1") return { ...resolvedDetail, case: { ...resolvedCase, status: "in_progress", ownerId: null, caseKey: "ticket:SUP-TEST123" } };
+      return read(path, options);
+    });
+    await mount({ canAssign: true, canDecide: false, actorId: "operator-7" });
+    const assign = [...container.querySelectorAll("button")].find((button) => button.textContent === "Assign to me")!;
+    const reply = [...container.querySelectorAll("a")].find((link) => link.textContent === "Reply to customer")!;
+    await act(async () => assign.click());
+    await waitUntil(() => Boolean(resolveAssignment));
+    window.history.pushState(null, "", reply.getAttribute("href"));
+    if (unmountBeforeCompletion) {
+      await act(async () => root?.unmount());
+      root = null;
+    }
+    const readsBeforeCompletion = adminV2Request.mock.calls.length;
+    await act(async () => resolveAssignment({ caseId: "case-1", version: 5 }));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(window.location.pathname + window.location.search).toBe("/admin/support?ticket=SUP-TEST123");
+    expect(adminV2Request.mock.calls).toHaveLength(readsBeforeCompletion);
+  });
+
+  it("does not rewrite browser history while Reply navigation is still pending", async () => {
+    const read = adminV2Request.getMockImplementation()!;
+    let resolveAssignment!: (result: unknown) => void;
+    adminV2Request.mockImplementation(async (path, options) => {
+      if (path.endsWith("/assignment")) return new Promise((resolve) => { resolveAssignment = resolve; });
+      if (path === "/api/v2/admin/cases/case-1") return { ...resolvedDetail, case: { ...resolvedCase, status: "in_progress", ownerId: null, caseKey: "ticket:SUP-TEST123" } };
+      return read(path, options);
+    });
+    await mount({ canAssign: true, canDecide: false, actorId: "operator-7" });
+    const assign = [...container.querySelectorAll("button")].find((button) => button.textContent === "Assign to me")!;
+    await act(async () => assign.click());
+    await waitUntil(() => Boolean(resolveAssignment));
+    const reply = [...container.querySelectorAll("a")].find((link) => link.textContent === "Reply to customer")!;
+    // Next keeps the old pathname until the destination RSC payload commits.
+    reply.addEventListener("click", (event) => event.preventDefault());
+    await act(async () => reply.click());
+    const replace = vi.spyOn(window.history, "replaceState");
+    const push = vi.spyOn(window.history, "pushState");
+    const readsBeforeCompletion = adminV2Request.mock.calls.length;
+    await act(async () => resolveAssignment({ caseId: "case-1", version: 5 }));
+    await waitUntil(() => !assign.disabled);
+    expect(adminV2Request.mock.calls.length).toBeGreaterThan(readsBeforeCompletion);
+    expect(replace).not.toHaveBeenCalled();
+    expect(push).not.toHaveBeenCalled();
   });
 
   it("names another operator's ownership by display name rather than user ID", async () => {

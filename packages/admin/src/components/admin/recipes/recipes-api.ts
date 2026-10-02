@@ -1,6 +1,6 @@
 // SPEC: 提示词配方三件套的共享契约 —— 类型/端点/payload 构造 + 状态文案（SSoT，三页共用）。
-// INVARIANTS: payload 字段与旧 Prompt Recipes 单页视图的 POST/PATCH body 完全一致（后端不变，
-// recipePatchSchema/recipeSchema 均无 reason 字段 —— 与 Starters/Official 不同，编辑无需审计原因）。
+// INVARIANT: 编辑只提交表单展示的字段，不能用新建默认值覆盖已有配置和验证记录。
+// recipePatchSchema/recipeSchema 均无 reason 字段，编辑无需审计原因。
 
 export type Recipe = {
   id: string;
@@ -14,10 +14,12 @@ export type Recipe = {
   status: string;
   createdAt: string;
   updatedAt: string;
+  sampleMatrix?: unknown;
+  dryRunSummary?: Record<string, unknown> | null;
 };
 
 export const MODES = ["image", "video", "negative"] as const;
-export const USE_CASES = ["character", "freeplay", "negative"] as const;
+export const USE_CASES = ["character", "freeplay", "negative", "enhance"] as const;
 export const RECIPES_LIST = "/api/v2/admin/generation/recipes";
 
 export type RecipeDraft = {
@@ -51,10 +53,6 @@ export function recipeDraftPayload(draft: RecipeDraft): Record<string, unknown> 
     useCase: draft.useCase,
     body: draft.body.trim(),
     negativeBase: nullableText(draft.negativeBase),
-    presetOrder: [],
-    safetyHints: { source: "admin_console" },
-    sampleMatrix: [],
-    dryRunSummary: { source: "admin_console", status: "draft_created" },
   };
 }
 
@@ -65,6 +63,6 @@ export function recipeStateLabelKey(recipe: { status: string }): string {
   const status = recipe.status;
   if (status === "active") return "Published";
   if (status === "archived") return "Archived";
-  if (status === "draft") return "Ready to publish";
+  if (status === "draft") return "Draft";
   return status || "draft";
 }

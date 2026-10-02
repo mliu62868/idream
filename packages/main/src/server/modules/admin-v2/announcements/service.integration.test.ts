@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
 import {
   DELETE as deleteAnnouncementRoute,
   PATCH as patchAnnouncementRoute,
@@ -22,6 +23,7 @@ function createAnnouncement(actor: typeof admin, body: Record<string, unknown>) 
     method: "POST",
     actor,
     body,
+    headers: { "idempotency-key": randomUUID() },
   });
 }
 
@@ -86,6 +88,8 @@ describe("Admin v2 announcements", () => {
       confirmation: "Launch sale",
     }));
     const id = created.data.announcement.id as string;
+    let version = created.data.announcement.version as number;
+    expect(version).toBe(1);
 
     expectAdminV2Ok(await listAnnouncements(analyst));
 
@@ -96,14 +100,18 @@ describe("Admin v2 announcements", () => {
       (pub.data.items as Array<{ id: string; href?: string }>).find((item) => item.id === id)?.href,
     ).toBe("https://help.ourdream.ai/");
 
-    const patch = (body: Record<string, unknown>) =>
-      callAdminV2(patchAnnouncementRoute, {
+    const patch = async (body: Record<string, unknown>) => {
+      const result = await callAdminV2(patchAnnouncementRoute, {
         url: `/api/v2/admin/announcements/${id}`,
         method: "PATCH",
         actor: admin,
         params: { id },
-        body,
+        body: { entityVersion: version, ...body },
+        headers: { "idempotency-key": randomUUID() },
       });
+      if (result.ok) version = result.data.announcement.version;
+      return result;
+    };
 
     const wrongConfirmation = await patch({
       active: false,
@@ -132,7 +140,8 @@ describe("Admin v2 announcements", () => {
         method: "DELETE",
         actor: admin,
         params: { id },
-        body,
+        body: body ? { entityVersion: version, ...body } : undefined,
+        headers: { "idempotency-key": randomUUID() },
       });
 
     expect((await remove()).status).toBe(400);

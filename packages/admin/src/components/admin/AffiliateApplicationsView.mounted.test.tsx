@@ -76,4 +76,15 @@ describe("affiliate review workflow", () => {
     expect(button("Reject").disabled).toBe(true);
     expect(container.textContent).toContain("growth.promo.write");
   });
+
+  it("lets a read-only operator open canonical attribution evidence without enabling decisions", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input); calls.push(path);
+      if (path.includes("/attribution?")) return Response.json({ ok: true, data: { items: [], pageInfo: { endCursor: null, hasNextPage: false }, totalVisits: 0, totalSignups: 0, asOf: "2026-10-01T00:00:00.000Z", currentRule: { version: "affiliate-signup-v1", windowDays: 30 } } });
+      return list();
+    }));
+    await open(false); await act(async () => button("View attribution").click()); await waitFor(() => Boolean(container.textContent?.includes("No visits in this date range")));
+    expect(calls).toContain("/api/v2/admin/affiliate/applications/affiliate-1/attribution?limit=20"); expect(button("Approve").disabled).toBe(true); expect(button("Reject").disabled).toBe(true);
+  });
 });

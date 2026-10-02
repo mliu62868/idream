@@ -8,6 +8,7 @@
 //   - persist terminal record before attempting durable relay admission
 //   - persisted terminal record is relayed before moderation/provider invocation
 //   - only provider-declared deterministic replay may retry provider invocation
+//   - unmeasured GPU time is absent, never inferred from output size or wall time
 import {
   imageGeneratePayloadSchema,
   videoGeneratePayloadSchema,
@@ -164,7 +165,7 @@ export async function processImageGenerate(
         }
         return {
           assets,
-          usage: { gpuSeconds: assets.length * 1.2, model: payload.model },
+          usage: { model: payload.model },
         };
       } catch (error) {
         await Promise.allSettled(
@@ -286,7 +287,7 @@ export async function processVideoGenerate(
           contentType,
           providerKey: output.asset.key ?? null,
         }],
-        usage: { gpuSeconds: payload.seconds * 2, model: payload.model },
+        usage: { model: payload.model },
       };
     },
   }, {

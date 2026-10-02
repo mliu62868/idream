@@ -12,6 +12,8 @@ describe("modelLoaderNodeForReference", () => {
       .toBe("CLIPLoaderGGUF");
     expect(modelLoaderNodeForReference("CLIPLoader", "clip_name"))
       .toBe("CLIPLoader");
+    expect(modelLoaderNodeForReference("IDreamGemma4MLXCLIPLoader", "clip_name"))
+      .toBe("IDreamGemma4MLXCLIPLoader");
   });
 
   it("keeps checkpoint, UNET, VAE, and model-only LoRA probes", () => {

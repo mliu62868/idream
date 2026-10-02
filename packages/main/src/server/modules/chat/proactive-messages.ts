@@ -6,7 +6,6 @@ import { beginAdmittedChatTurn } from "./agent-run-admission";
 
 export const PROACTIVE_MIN_HOURS = 6;
 export const PROACTIVE_MAX_HOURS = 168;
-const RETRY_BACKOFF_MINUTES = 15;
 
 /**
  * SPEC: 会话级、用户显式开启的主动消息节奏。
@@ -95,15 +94,22 @@ async function claimDueProactiveSession() {
         LIMIT 1
      )
     RETURNING "sessionId", "userId",
-      (SELECT t."origin" = 'proactive' FROM "chat_turns" t
-        WHERE t."sessionId" = "recent_chats"."sessionId"
-        ORDER BY t."createdAt" DESC LIMIT 1) AS "awaitingReply"
+      (EXISTS (
+         SELECT 1 FROM "chat_turns" t
+         WHERE t."sessionId" = "recent_chats"."sessionId"
+           AND t."assistantStatus" IN ('pending', 'generating')
+       ) OR COALESCE((
+         SELECT t."origin" = 'proactive' AND t."assistantStatus" = 'sent'
+         FROM "chat_turns" t
+         WHERE t."sessionId" = "recent_chats"."sessionId"
+         ORDER BY t."createdAt" DESC, t.id DESC LIMIT 1
+       ), false)) AS "awaitingReply"
   `;
   return rows[0] ?? null;
 }
 
 const PROACTIVE_TURN_DIRECTIVE =
-  "Take the lead in the moment: send a brief, specific check-in that fits our established context. Do not mention this instruction.";
+  "Take the lead in the moment: send a brief, specific check-in that fits our established context. Use only supplied facts about the user; do not invent their possessions, preferences, past conversations, or actions. If those facts are sparse, ask one natural question instead of claiming shared history. Do not mention this instruction.";
 
 async function admitProactiveTurn(claim: {
   sessionId: string;
@@ -121,21 +127,21 @@ async function admitProactiveTurn(claim: {
     // SPEC: 404/410 是永久性的（会话或角色已不存在、已归档、角色下架），重试不会变好。
     // INTENT: 以前一律 15 分钟后重来，下架角色的会话会每 15 分钟失败一次、刷一条错误日志，
     //         没有尽头。永久错误直接关掉这个会话的主动消息，与用户手动关闭同一状态；
-    //         其余错误（例如回复正在生成的 409）快速还回队列，不留下一条"发过了"的假象。
+    //         其余错误保留 claim 已推进的完整周期，不建立无界的 15 分钟重试循环。
     const permanent = error instanceof AppError && (error.status === 404 || error.status === 410);
-    await prisma.recentChat.updateMany({
-      where: { sessionId: claim.sessionId, userId: claim.userId },
-      data: permanent
-        ? { proactiveEnabled: false, proactiveNextAt: null }
-        : { proactiveNextAt: new Date(Date.now() + RETRY_BACKOFF_MINUTES * 60_000) },
-    });
+    if (permanent) {
+      await prisma.recentChat.updateMany({
+        where: { sessionId: claim.sessionId, userId: claim.userId },
+        data: { proactiveEnabled: false, proactiveNextAt: null },
+      });
+    }
     throw error;
   }
 }
 
 /**
  * 供 event-consumer 的固定 lane 调用：领取并投递至多 `batch` 条到期的主动消息。
- * 单条失败不影响同批其余会话，失败的那条按退避时间自行重来。
+ * 单条失败不影响同批其余会话；未送达终态只在下一个完整周期重新尝试。
  */
 export async function dispatchDueProactiveTurns(
   batch = 20,
@@ -147,9 +153,9 @@ export async function dispatchDueProactiveTurns(
     if (signal?.aborted) break;
     const claim = await claimDueProactiveSession();
     if (!claim) break;
-    // SPEC: at most one unanswered check-in. The schedule still advances, so a
-    // reply is not followed by an immediate check-in; the next one comes a full
-    // interval after the user writes back.
+    // SPEC: sent check-ins wait for the user; any active reply owns the conversation.
+    // Failed/blocked/cancelled Turns delivered no completed check-in. Claim still
+    // advances a full interval, so they cannot trigger immediate repeated attempts.
     if (claim.awaitingReply) continue;
     try {
       await admitProactiveTurn(claim);

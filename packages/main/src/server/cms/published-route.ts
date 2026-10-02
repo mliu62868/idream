@@ -177,6 +177,9 @@ export async function loadPublishedRoutePagesForDistribution(): Promise<
       orderBy: { path: "asc" },
     });
     return rows
+      // This CMS article is served by its own per-request membership gate.
+      // Public directories, searches and sitemap must not distribute its body.
+      .filter((row) => row.path !== "/changelog")
       .map(resolveCmsRouteRow)
       .filter(
         (

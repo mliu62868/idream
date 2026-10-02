@@ -5,18 +5,23 @@
 // pipeline logic ports 1:1.
 // INVARIANTS: blob.putPrivate is the ONLY persistence gen performs. No DB.
 import { Buffer } from "node:buffer";
-import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import { deflateSync } from "node:zlib";
 import type { ImageGeneratePayload } from "@idream/shared/contracts";
 import type { VideoGeneratePayload } from "@idream/shared/contracts";
+import { REDGRAFT_VIDEO_OPTIONS, redgraftVideoEnvelope } from "@idream/shared/contracts";
 import {
-  mockVideoMp4Bytes,
+  characterVideoProductionRecipeForWorkflow,
   S3CompatibleBlobStore,
   SafetyGatewayModerationProvider,
 } from "@idream/shared";
 import { BackendImageModel } from "./backend/backend-image-model";
 import { BackendVideoModel } from "./backend/backend-video-model";
+import { createVideoMediaProbe } from "./backend/video-media-probe";
 import { prepareComfyUiRunnerMemory } from "./backend/comfyui-memory-transition";
 import { buildBackendRegistry, type BackendRegistry } from "./backend/registry";
 import { withGenerationAcceleratorLease } from "./backend/generation-accelerator-lease";
@@ -213,20 +218,72 @@ function mockPngCrc32(data: Buffer) {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
+const mockVideoClips = new Map<string, ReturnType<typeof mockVideoClip>>();
+const runMockMediaCommand = promisify(execFile);
+
+// Mock transport still delivers real media: native scenes are decoded and
+// packaged by Main. The shared one-frame download fixture cannot satisfy that
+// contract. Keep this CPU-only and cache at most four accepted envelopes.
+async function mockVideoClip(width: number, height: number, frameCount: number, ffmpegPath: string, ffprobePath: string) {
+  const directory = await mkdtemp(path.join(tmpdir(), "idream-mock-video-"));
+  try {
+    const output = path.join(directory, "clip.mp4");
+    await runMockMediaCommand(ffmpegPath, [
+      "-nostdin", "-v", "error", "-xerror", "-y",
+      "-f", "lavfi", "-i", `testsrc2=size=${width}x${height}:rate=24`,
+      "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+      "-map", "0:v:0", "-map", "1:a:0", "-frames:v", String(frameCount), "-t", String(frameCount / 24),
+      "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28", "-threads", "1", "-pix_fmt", "yuv420p",
+      "-c:a", "aac", "-b:a", "64k", "-ar", "48000", "-ac", "2", "-map_metadata", "-1",
+      "-fflags", "+bitexact", "-movflags", "+faststart", output,
+    ], { timeout: 30_000, maxBuffer: 4 * 1024 * 1024 });
+    const body = new Uint8Array(await readFile(output));
+    const media = await createVideoMediaProbe({ ffmpegPath, ffprobePath })(body);
+    if (media.width !== width || media.height !== height || media.frameCount !== frameCount ||
+        media.framesPerSecond !== 24 || !media.hasAudio || Math.abs(media.durationSeconds - frameCount / 24) > 0.05) {
+      throw new Error("Mock video does not match its requested stream envelope");
+    }
+    return { body, width: media.width, height: media.height, seconds: media.durationSeconds };
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
 class MockVideoModel implements VideoModel {
   readonly retryCapabilities = { deterministicIdempotencyKey: true, retryableFailureCodes: [...retryablePipelineCategories] } as const;
   async generate(input: Parameters<VideoModel["generate"]>[0]) {
-    return {
-      ok: true as const,
-      data: {
-        asset: {
-          key: `mock/videos/${input.seed ?? "mock"}.mp4`,
-          seconds: input.seconds,
-          contentType: "video/mp4",
-          body: mockVideoMp4Bytes(),
-        },
-      },
-    };
+    const width = input.controls?.width ?? 64, height = input.controls?.height ?? 96;
+    if (!Number.isInteger(input.seconds) || input.seconds < 1 || input.seconds > 30 ||
+        typeof width !== "number" || typeof height !== "number" ||
+        !Number.isInteger(width) || !Number.isInteger(height) || width < 2 || height < 2 || width % 2 || height % 2) {
+      return { ok: false as const, error: { code: "unsupported_video_envelope", message: "Mock video requires 1–30 seconds and positive even dimensions", retryable: false } };
+    }
+    try {
+      const recipe = characterVideoProductionRecipeForWorkflow(String(input.controls?.workflowKey ?? ""));
+      let frameCount = recipe && input.seconds === recipe.durationSeconds ? recipe.frameCount : input.seconds * 24;
+      if (input.controls?.videoOptionsVersion !== undefined) {
+        if (recipe?.workflowKey !== "redgraft-ltx25-i2v" || input.controls.videoOptionsVersion !== REDGRAFT_VIDEO_OPTIONS.version) {
+          throw new Error("Mock video options require the published RedGraft envelope");
+        }
+        const envelope = redgraftVideoEnvelope({ seconds: input.seconds, orientation: String(input.controls.orientation), quality: String(input.controls.videoQuality ?? "standard") });
+        if (envelope.width !== width || envelope.height !== height) throw new Error("Mock video options do not match their requested dimensions");
+        frameCount = envelope.frameCount;
+      }
+      const ffmpegPath = env.FFMPEG_BIN, ffprobePath = env.FFPROBE_BIN;
+      const key = JSON.stringify([width, height, frameCount, ffmpegPath, ffprobePath]);
+      let clip = mockVideoClips.get(key);
+      if (!clip) {
+        if (mockVideoClips.size >= 4) mockVideoClips.delete(mockVideoClips.keys().next().value!);
+        clip = mockVideoClip(width, height, frameCount, ffmpegPath, ffprobePath);
+        mockVideoClips.set(key, clip);
+        const pending = clip;
+        void pending.catch(() => { if (mockVideoClips.get(key) === pending) mockVideoClips.delete(key); });
+      }
+      const media = await clip;
+      return { ok: true as const, data: { asset: { key: `mock/videos/${input.seed ?? "mock"}.mp4`, contentType: "video/mp4", ...media, body: media.body.slice() } } };
+    } catch (error) {
+      return { ok: false as const, error: { code: "invalid_video_output", message: error instanceof Error ? error.message : "Mock video could not be generated", retryable: false } };
+    }
   }
 }
 
@@ -599,8 +656,6 @@ export function stableNumericSeed(seed: string | undefined) {
   }
   return hash >>> 0;
 }
-
-
 
 
 

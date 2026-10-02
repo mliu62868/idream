@@ -3,6 +3,7 @@
 // INVARIANT: key 在所有 i18n-zh-*.ts 之间互斥——同一个 key 只能有一个域文件持有；
 // 由 i18n-zh-exclusivity.test.ts 强制。新增文案放它所属的域文件，不要另开「杂项」文件。
 export const adminZhSystem: Record<string, string> = {
+  "Command evidence": "命令证据",
   // 权限覆盖面板：提交前把「这个人现在有什么、改完变成什么」讲清楚。
   "An existing {effect} override is already recorded for this capability; applying a new one replaces it.":
     "这个能力上已经有一条 {effect} 覆盖；再执行一次会替换掉它。",
@@ -35,6 +36,9 @@ export const adminZhSystem: Record<string, string> = {
   "Approval authority refresh failed:": "审批权威刷新失败：",
   "Approval authority ·": "审批权威 ·",
   "Audit authority events": "审计权威事件",
+  "Audit details": "审计详情",
+  "Before change": "变更前",
+  "After change": "变更后",
   "Auditable operator actions will appear after the first consequential command is recorded.": "第一条有后果的运营命令被记录后，可审计的操作会出现在这里。",
   "Check profile configuration {id}": "检查配置 {id}",
   "Clear access filters": "清除访问筛选",

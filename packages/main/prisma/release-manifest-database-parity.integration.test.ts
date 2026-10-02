@@ -129,6 +129,34 @@ const samples: Array<{ label: string; value: unknown }> = [
   },
 ];
 
+const customerPlacement = {
+  slotKey: "character_avatar", assetId: "customer-identity-asset", slotVersion: 1,
+  customerIdentityRevisionId: "identity-revision", generationJobId: "original-preview-job",
+};
+for (const [label, overrides] of [
+  ["customer identity with Creative hero and uploaded chat", {}],
+  ["customer identity explicit non-bootstrap", { bootstrapIdentity: false }],
+  ["customer identity ECMAScript whitespace IDs", { customerIdentityRevisionId: " \u00a0identity-revision\ufeff ", generationJobId: " \toriginal-preview-job\n" }],
+  ["customer identity missing job", { generationJobId: undefined }],
+  ["customer identity missing receipt", { customerIdentityRevisionId: undefined }],
+  ["customer identity blank receipt", { customerIdentityRevisionId: "\u00a0\ufeff" }],
+  ["customer identity null receipt", { customerIdentityRevisionId: null }],
+  ["customer identity numeric receipt", { customerIdentityRevisionId: 42 }],
+  ["customer identity null job", { generationJobId: null }],
+  ["customer identity blank job", { generationJobId: "\n\t " }],
+  ["customer identity forged run", { runId: "forged" }],
+  ["customer identity forged item", { itemId: "forged" }],
+  ["customer identity mixed production lineage", { runId: "forged", itemId: "forged" }],
+  ["customer identity forged review", { reviewDecisionId: "forged" }],
+  ["customer identity forged bootstrap", { bootstrapIdentity: true }],
+  ["customer identity non-boolean bootstrap", { bootstrapIdentity: "false" }],
+  ["customer identity unknown key", { unknown: "forged" }],
+  ["customer identity duplicate asset", { assetId: "character_hero-asset" }],
+] as const) samples.push({ label, value: manifest([
+  { ...customerPlacement, ...overrides }, placement("character_hero"),
+  { slotKey: "character_chat", assetId: "imported-chat", slotVersion: 1 },
+]) });
+
 describe("Release placement manifest: shared contract vs database contract", () => {
   it.each(samples)("agrees on $label", async ({ value }) => {
     // JSON.stringify 会丢掉 undefined 的键，这正是"这个键不存在"要表达的形状。

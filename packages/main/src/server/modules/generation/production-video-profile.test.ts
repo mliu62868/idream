@@ -6,6 +6,8 @@ import {
   PRODUCTION_DEFAULT_VIDEO_PROFILE,
   PRODUCTION_H3_VIDEO_PROFILE,
   PRODUCTION_REDGRAFT_LTX25_VIDEO_PROFILE,
+  PRODUCTION_REDGRAFT_LTX25_VIDEO_OPTIONS_PROFILE,
+  hasProductionVideoOptions,
 } from "./production-video-profile";
 
 function exactProfile() {
@@ -106,5 +108,19 @@ describe("production video profile catalog", () => {
       fps: 24,
       explicitSelectionOnly: false,
     });
+  });
+  it("requires the v7 options publication on the current MPSGraph workflow", () => {
+    const options = { ...PRODUCTION_REDGRAFT_LTX25_VIDEO_OPTIONS_PROFILE, mode: "video", convertedModelPath: null, enabled: true, status: "active" };
+    expect(hasProductionVideoOptions(options)).toBe(true);
+    expect(isProductionVideoProfile(options)).toBe(true);
+    expect(productionVideoRecipeForProfile(options)?.workflowVersion).toBe(4);
+    expect(hasProductionVideoOptions(exactRedGraftProfile())).toBe(false);
+    expect(hasProductionVideoOptions({ ...options, version: 2 })).toBe(false);
+    expect(hasProductionVideoOptions({ ...options, version: 3 })).toBe(false);
+    expect(hasProductionVideoOptions({ ...options, version: 4 })).toBe(false);
+    expect(hasProductionVideoOptions({ ...options, version: 5 })).toBe(false);
+    expect(hasProductionVideoOptions({ ...options, version: 6 })).toBe(false);
+    expect(hasProductionVideoOptions({ ...options, allowedOrientations: ["2:3", "1:1", "16:9"] })).toBe(false);
+    expect(hasProductionVideoOptions({ ...options, enabled: false })).toBe(false);
   });
 });

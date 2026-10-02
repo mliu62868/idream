@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { historyStateForNavigation } from "@/lib/workspace-history";
 
 export type HistoryMode = "push" | "replace";
 
@@ -38,7 +39,7 @@ export function useUrlFilters<Q>({ initial, parse, toUrl, load }: UrlFilterOptio
       pathname: window.location.pathname,
       search: window.location.search,
     });
-    window.history[mode === "push" ? "pushState" : "replaceState"](null, "", href);
+    window.history[mode === "push" ? "pushState" : "replaceState"](historyStateForNavigation(window.history.state), "", href);
     options.current.load(next, new URLSearchParams(href.split("?")[1] ?? ""));
   }, []);
 
@@ -70,7 +71,7 @@ export function useUrlFilters<Q>({ initial, parse, toUrl, load }: UrlFilterOptio
     }), []),
     /** Escape hatch for URL state that sits next to the filters (an opened row, a tab). */
     pushUrl: useCallback((href: string, mode: HistoryMode = "push") => {
-      window.history[mode === "push" ? "pushState" : "replaceState"](null, "", href);
+      window.history[mode === "push" ? "pushState" : "replaceState"](historyStateForNavigation(window.history.state), "", href);
     }, []),
   };
 }

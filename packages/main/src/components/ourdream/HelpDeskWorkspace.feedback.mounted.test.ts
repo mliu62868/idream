@@ -140,4 +140,77 @@ describe("public roadmap pages", () => {
     expect(titles()).toEqual(["New account idea"]);
     expect(container.querySelector('[data-testid="feedback-items"] [aria-pressed="true"]')).toBeNull();
   });
+
+  it.each(["customer", "anonymous"])("does not file a %s support draft into a new account while a focus identity check is delayed", async (initialViewer) => {
+    viewer = initialViewer;
+    let finishViewer!: (response: Response) => void;
+    let holdViewer = false;
+    const persisted: Array<{ userId: string; description: string }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(String(input), "http://localhost").pathname;
+      if (path === "/api/v1/me") return holdViewer
+        ? new Promise<Response>((resolve) => { finishViewer = resolve; })
+        : envelope({ user: viewer === "anonymous" ? null : { id: viewer }, anonymousId: viewer === "anonymous" ? "test-browser" : null });
+      if (path === "/api/v1/support/history") return envelope({ supportRequests: [], reports: [], appeals: [] });
+      if (path === "/api/v1/support/requests") {
+        const expectedScope = new Headers(init?.headers).get("x-idream-viewer-scope");
+        if (expectedScope && expectedScope !== `user:${viewer}`) return Response.json({ ok: false, error: { message: "Your account changed." } }, { status: 409 });
+        const body = JSON.parse(String(init?.body));
+        persisted.push({ userId: viewer, description: body.description });
+        return envelope({ request: { id: "support-a", ticketId: "SUP-A", status: "received", category: "generation" } });
+      }
+      return envelope({ items: [], nextCursor: null, viewerId: viewer === "anonymous" ? null : viewer });
+    }));
+    await mount();
+    await act(async () => {
+      const subject = container.querySelector<HTMLInputElement>('[name="subject"]')!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(subject, "Private account problem");
+      subject.dispatchEvent(new Event("input", { bubbles: true }));
+      const description = container.querySelector<HTMLTextAreaElement>('[name="description"]')!;
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(description, "Only the original account should send this private description.");
+      description.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    viewer = "other"; holdViewer = true;
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await click("Submit request");
+    holdViewer = false;
+    await act(async () => finishViewer(envelope({ user: { id: viewer }, anonymousId: null })));
+    await settle();
+    expect(persisted).toEqual([]);
+  });
+
+  it("clears the previous account's history and pending support state before the next account's history arrives", async () => {
+    let finishSupport!: (response: Response) => void;
+    let finishHistory!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = new URL(String(input), "http://localhost").pathname;
+      if (path === "/api/v1/me") return envelope({ user: { id: viewer }, anonymousId: null });
+      if (path === "/api/v1/support/history") return viewer === "other"
+        ? new Promise<Response>((resolve) => { finishHistory = resolve; })
+        : envelope({ supportRequests: [{ id: "support-a", ticketId: "SUP-A", category: "bug", subject: "Original account ticket", status: "received", createdAt: "2026-10-01T00:00:00Z", updatedAt: "2026-10-01T00:00:00Z", resolution: null }], reports: [], appeals: [] });
+      if (path === "/api/v1/support/requests") return new Promise<Response>((resolve) => { finishSupport = resolve; });
+      return page([], null, viewer);
+    }));
+    await mount();
+    expect(container.textContent).toContain("Original account ticket");
+    const fillDraft = async (text: string) => act(async () => {
+      const subject = container.querySelector<HTMLInputElement>('[name="subject"]')!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(subject, text);
+      subject.dispatchEvent(new Event("input", { bubbles: true }));
+      const description = container.querySelector<HTMLTextAreaElement>('[name="description"]')!;
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(description, `${text} private description`);
+      description.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await fillDraft("Original account"); await click("Submit request");
+    viewer = "other";
+    await act(async () => window.dispatchEvent(new Event("focus"))); await settle();
+    expect(container.textContent).not.toContain("Original account ticket");
+    await fillDraft("Next account");
+    const submit = [...container.querySelectorAll("button")].find((node) => node.textContent?.trim() === "Submit request");
+    expect(submit).toBeDefined(); expect(submit!.disabled).toBe(false);
+    await act(async () => finishSupport(envelope({ request: { id: "support-a", ticketId: "SUP-A", status: "received", category: "bug" } }))); await settle();
+    expect(container.textContent).not.toContain("SUP-A");
+    expect(container.querySelector<HTMLInputElement>('[name="subject"]')!.value).toBe("Next account");
+    await act(async () => finishHistory(envelope({ supportRequests: [], reports: [], appeals: [] })));
+  });
 });

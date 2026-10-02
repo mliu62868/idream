@@ -253,6 +253,104 @@ describe("Character Asset Studio bootstrap route projection", () => {
     vi.restoreAllMocks();
   });
 
+  it.each([
+    ["succeeded", "ready"],
+    ["partially_succeeded", "ready"],
+    ["failed", "failed"],
+    ["cancelled", "failed"],
+    ["failed", "unknown"],
+  ] as const)("updates the submitted Hero receipt after polling returns %s / %s", async (outcome, executionState) => {
+    vi.useFakeTimers();
+    const readyData = withCharacterWorkspaceDetail(data, {
+      journey: journeyFor(["character_cover"]),
+      project: {
+        draftImageAssetId: "portrait-asset",
+        draftAssetPack: { character_cover: "portrait-asset" },
+      },
+      visual: {
+        activeIdentity: { id: "receipt-identity", version: 1, immutableHash: "identity-hash" },
+        activeReferenceSet: {
+          id: "receipt-references",
+          references: [{ mediaAssetId: "portrait-asset", role: "primary_face", available: true, url: "/portrait.png", thumbnailUrl: null, qualityScore: null, identityScore: null }],
+        },
+        routeQualifications: [routeQualification()],
+        identityBootstrap: { allowed: false, state: "blocked_existing_authority" },
+        readiness: { ready: true, blockers: [] },
+      },
+    });
+    let submitted = false;
+    let terminal = false;
+    const hasAsset = () => terminal && executionState === "ready";
+    const run = () => ({
+      id: "receipt-hero-run", purpose: "character_hero", lifecycleState: "active",
+      target: { type: "character", id: data.character.id }, version: 1,
+      executionOutcome: terminal ? outcome : "running", reviewState: hasAsset() ? "pending" : "not_ready",
+      counts: { total: 1, generated: hasAsset() ? 1 : 0, reviewed: 0, approved: 0, placed: 0, failed: terminal && !hasAsset() ? 1 : 0 },
+      updatedAt: "2026-10-02T14:05:24.370Z",
+      items: [{ id: "receipt-hero-item", ordinal: 0, version: 1,
+        status: terminal ? hasAsset() ? "generated" : "failed" : "running", executionState: terminal ? executionState : "generating",
+        asset: hasAsset() ? { id: "receipt-hero-asset", url: "/hero.png", thumbnailUrl: "/hero.png" } : null,
+        review: null, lineage: { requestId: "receipt-hero-job" },
+      }],
+    });
+    const history = () => ({ ...run(), id: "receipt-history", executionOutcome: "failed", reviewState: "not_ready",
+      counts: { total: 1, generated: 0, reviewed: 0, approved: 0, placed: 0, failed: 1 }, items: [{
+      id: "history-item", ordinal: 0, status: "failed", executionState: "failed", version: 1, asset: null, review: null,
+      lineage: { requestId: "history-job" },
+    }] });
+    adminV2Request.mockImplementation(async (path, options) => {
+      if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") {
+        expect(options.body).toMatchObject({ purpose: "character_hero", count: 1 });
+        submitted = true;
+        return { batch: { id: "receipt-hero-run" }, replayed: false };
+      }
+      if (path.includes("/api/v2/admin/creative/runs?")) return {
+        items: submitted ? [run(), history()] : [], pageInfo: { endCursor: null, hasNextPage: false },
+      };
+      if (path === "/api/v2/admin/creative/runs/receipt-hero-run") return run();
+      if (path === "/api/v2/admin/creative/runs/receipt-history") return history();
+      throw new Error(`Unexpected Admin request: ${path}`);
+    });
+    const findButton = (text: string) => [...container.querySelectorAll("button")].find(button => button.textContent?.includes(text));
+    await act(async () => {
+      root.render(<CharacterAssetStudio
+        actorId="operator-receipt"
+        data={readyData}
+        permissions={{ read: true, create: true, review: false, selectDraft: true }}
+        onContinue={() => undefined}
+        onProjectReload={async () => undefined}
+        commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
+      />);
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(findButton("Generate 1 hero image")?.disabled).toBe(false);
+    await act(async () => { findButton("Generate 1 hero image")?.click(); await vi.advanceTimersByTimeAsync(0); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(container.textContent).toContain("The image request is in progress.");
+    expect(findButton("Image request in progress")?.disabled).toBe(true);
+    expect(readActiveDurableMutationIntent({ scope: `character-asset:create:operator-receipt:${data.character.id}` })).toBeNull();
+
+    terminal = true;
+    await act(async () => { await vi.advanceTimersByTimeAsync(4_000); });
+    expect(container.textContent).toContain(hasAsset() ? "Ready to decide" : executionState === "unknown" ? "Generation outcome needs confirmation" : "Generation failed");
+    if (hasAsset()) {
+      expect(findButton("Generate 1 hero image")?.disabled).toBe(false);
+      expect(container.textContent).toContain("Generation is complete. Choose an image to use.");
+    } else {
+      expect(container.textContent).not.toContain("Generation is complete. Choose an image to use.");
+    }
+    expect(container.textContent).not.toContain("The image request is in progress.");
+    // A receipt for this request cannot describe a different run in history.
+    expect(findButton("receipt-history")).toBeDefined();
+    await act(async () => { findButton("receipt-history")?.click(); await vi.advanceTimersByTimeAsync(0); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(container.textContent).not.toContain("Generation is complete. Choose an image to use.");
+    expect(container.textContent).not.toContain("The image request is in progress.");
+    expect(adminV2Request.mock.calls.filter(([, options]) => options?.method === "POST")).toHaveLength(1);
+    expect(adminV2Request.mock.calls.some(([path]) => path.endsWith("/decisions"))).toBe(false);
+  });
+
   it("unlocks the chat composer after directly selecting a hero without a historical review", async () => {
     const actorId = "operator-direct-selection";
     const runId = "direct-hero-run";

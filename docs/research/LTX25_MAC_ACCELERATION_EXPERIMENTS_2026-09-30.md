@@ -2,6 +2,8 @@
 
 日期：2026-09-30。这是受控 Comfy backend / MLX 可行性实验，未测试产品 BFF 交付、数据库与额度扣减，未修改默认 workflow 或启动配置。研究来源与量化建议见[调研记录](LTX25_MAC_ACCELERATION_RESEARCH_2026-09-30.md)。
 
+2026-10-02 后续：[VAE 解码加速](LTX25_VAE_ACCELERATION_2026-10-02.md)已实现模型局部的 MPS Conv2D depth kernels，并在现有 Comfy 服务中启用；本页保留首轮实验边界和历史数值。
+
 ## 当前判断
 
 保留当前 INT8 ConvRot Gemma。MPSGraph 是保留权重的最小改动候选；MLX Q8 已完成完整音视频可行性运行，主要收益来自解码，采样本身略慢于MPSGraph。低位 Gemma 文件更小不等于完整视频更快。默认路由仍需多 seed、音画质量与失败恢复验收。

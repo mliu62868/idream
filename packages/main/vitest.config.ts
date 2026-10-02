@@ -130,6 +130,7 @@ export default defineConfig({
         "../shared/src/media/image-orientation.ts",
         import.meta.url,
       ).pathname,
+      "@idream/shared/media/video-probe": new URL("../shared/src/media/video-probe.ts", import.meta.url).pathname,
       "@idream/shared/media/image-references": new URL(
         "../shared/src/media/image-references.ts",
         import.meta.url,
@@ -157,6 +158,7 @@ export default defineConfig({
         import.meta.url,
       ).pathname,
       "@idream/shared/comics": new URL("../shared/src/comics.ts", import.meta.url).pathname,
+      "@idream/shared/packs": new URL("../shared/src/packs.ts", import.meta.url).pathname,
       "@idream/shared/coins": new URL("../shared/src/coins.ts", import.meta.url).pathname,
       "@idream/shared": new URL("../shared/src/index.ts", import.meta.url).pathname,
     },

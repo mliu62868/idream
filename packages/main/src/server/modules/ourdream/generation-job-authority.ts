@@ -45,6 +45,7 @@ type GenerationAdmission = {
   identity: GenerationJobIdentity;
   retryOf?: Pick<GenerationJobRow, "id" | "version">;
   chatAttachment?: { sessionId: string; turnId: string; attempt: number };
+  sequenceId?: string;
   // This is the only varying step: lock and revalidate the entry's Character,
   // references or source image, then return its exact immutable request pins.
   prepare(tx: Prisma.TransactionClient): Promise<{
@@ -144,10 +145,10 @@ async function findAdmissionReplay(
   return existing;
 }
 
-export async function acceptGenerationJobForUser(input: GenerationAdmission) {
+export async function acceptGenerationJobForUser(input: GenerationAdmission, admissionTx?: Prisma.TransactionClient) {
   let reservation: { job: GenerationJobRow; outboxId: string | null };
   try {
-    reservation = await prisma.$transaction(async (tx) => {
+    const admit = async (tx: Prisma.TransactionClient) => {
       // Source Turns can be edited/deleted under this same user lock. Own it
       // before source/Character/media locks so admission cannot invert their order.
       await lockUserLedger(tx, input.userId);
@@ -189,7 +190,9 @@ export async function acceptGenerationJobForUser(input: GenerationAdmission) {
         throw Errors.paymentRequired("Insufficient dreamcoins", { balance, cost: data.costDreamcoins, required: data.costDreamcoins });
       }
       const active = await tx.generationJob.count({
-        where: { userId: input.userId, status: { in: activeGenerationStatuses() } },
+        where: { userId: input.userId, status: { in: activeGenerationStatuses() },
+          ...(input.sequenceId ? { NOT: { sourceType: "video_sequence_scene", sourceId: { startsWith: `${input.sequenceId}:` } } } : {}),
+        },
       });
       const max = maxInflightJobs(entitlements);
       if (active >= max) throw Errors.rateLimited("Too many active generation jobs", { active, max });
@@ -233,9 +236,10 @@ export async function acceptGenerationJobForUser(input: GenerationAdmission) {
         retrySource ? "Retry generation job queued" : enhancement ? "Image enhancement queued" : "Generation job queued", {});
       const dispatch = await reserveInitialGenerationAttempt(tx, job);
       return { job, outboxId: dispatch.outbox.id };
-    });
+    };
+    reservation = admissionTx ? await admit(admissionTx) : await prisma.$transaction(admit);
   } catch (error) {
-    if (!isUniqueConstraintError(error)) throw error;
+    if (admissionTx || !isUniqueConstraintError(error)) throw error;
     const existing = await findAdmissionReplay(prisma, input);
     if (!existing) throw error;
     reservation = { job: existing, outboxId: null };
@@ -243,6 +247,7 @@ export async function acceptGenerationJobForUser(input: GenerationAdmission) {
 
   // Wake only after the transaction commits: dispatch must see the durable
   // Request, Attempt, debit and attachment binding together.
+  if (admissionTx) return reservation.job;
   if (reservation.outboxId) {
     await dispatchGenerationAttemptOutbox(prisma, { outboxIds: [reservation.outboxId] });
   } else {

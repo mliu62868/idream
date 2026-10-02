@@ -2,10 +2,13 @@ import { randomUUID } from "node:crypto";
 import { compileCharacterSoul } from "@idream/shared";
 import { FREE_DAILY_MESSAGES } from "@idream/shared/chat/limits";
 import { chatExchangeCompletedV2Schema, chatExchangeCorrectionV2Schema } from "@idream/shared/contracts";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import type { Prisma } from "@prisma/client";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { AppError } from "@/server/lib/errors";
 import { createCharacter, createUser, purgeTestData } from "@/server/test/helpers";
+import { characterReleaseSnapshotHash } from "@/server/modules/admin-v2/characters/release-snapshot";
+import { PUBLIC_CATALOG_EDITORIAL_IMPORT_POLICY_VERSION } from "@/server/modules/ourdream/public-catalog-qualification";
 import {
   archiveChatSession,
   beginChatTurn,
@@ -20,6 +23,7 @@ import {
   regenerateChatTurn,
 } from "./turn-ledger";
 import { clearCompanionMemory } from "./companion-memory-authority";
+import * as agentRunAdmission from "./agent-run-admission";
 import { dispatchDueProactiveTurns } from "./proactive-messages";
 
 const prefix = `zt-proactive-authority-${randomUUID()}-`;
@@ -214,19 +218,114 @@ describe("proactive Turns and the daily allowance", () => {
 });
 
 describe("proactive cadence without a reply", () => {
-  it("sends at most one unanswered check-in, and still moves the schedule on", async () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn(async (_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const snapshot = JSON.parse(String(init?.body));
+      return Response.json({
+        ok: true, turnId: snapshot.turnId, attempt: snapshot.attempt,
+        duplicate: false, terminal: false,
+        deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+      });
+    }));
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  async function makeDue(sessionId: string) {
+    await prisma.recentChat.update({ where: { sessionId }, data: {
+      proactiveEnabled: true, proactiveIntervalHours: 24,
+      proactiveNextAt: new Date(Date.now() - 60_000),
+    } });
+  }
+
+  it.each(["sent", "pending", "generating"] as const)("suppresses an unanswered %s check-in and still advances its cadence", async (status) => {
     const f = await fixture();
     const proactive = await beginChatTurn({
       userId: f.userId, sessionId: f.sessionId, content: "Take the lead.", idempotencyKey: randomUUID(), origin: "proactive",
     });
-    await commitSent(proactive.snapshot!, "The kiln's still warm.");
-    await prisma.recentChat.update({ where: { sessionId: f.sessionId }, data: {
-      proactiveEnabled: true, proactiveIntervalHours: 24, proactiveNextAt: new Date(Date.now() - 60_000),
-    } });
-    await dispatchDueProactiveTurns(20);
+    if (status === "sent") await commitSent(proactive.snapshot!, "The kiln's still warm.");
+    if (status === "generating") await agentRunAdmission.attemptChatAgentRunAdmission(proactive.snapshot!);
+    expect(await prisma.chatTurn.findUniqueOrThrow({ where: { id: proactive.snapshot!.turnId } }))
+      .toMatchObject({ assistantStatus: status });
+    await makeDue(f.sessionId);
+    await expect(dispatchDueProactiveTurns(20)).resolves.toEqual({ admitted: 0, failed: 0 });
     expect(await prisma.chatTurn.count({ where: { sessionId: f.sessionId } })).toBe(1);
     const row = await prisma.recentChat.findUniqueOrThrow({ where: { sessionId: f.sessionId } });
-    expect(row.proactiveNextAt!.getTime()).toBeGreaterThan(Date.now());
+    expect(row.proactiveNextAt!.getTime()).toBeGreaterThan(Date.now() + 23 * 3_600_000);
+  });
+
+  it.each(["failed", "blocked", "cancelled"] as const)("allows one new check-in at the next cadence after a %s terminal", async (status) => {
+    const f = await fixture();
+    const proactive = await beginChatTurn({
+      userId: f.userId, sessionId: f.sessionId,
+      content: status === "blocked" ? "minor" : "Take the lead.",
+      idempotencyKey: randomUUID(), origin: "proactive",
+    });
+    if (status === "failed") await commitFailed(proactive.snapshot!);
+    if (status === "cancelled") await cancelChatTurn(f.userId, proactive.assistant.id, 1);
+    expect(await prisma.chatTurn.findFirstOrThrow({ where: { sessionId: f.sessionId, assistantMessageId: proactive.assistant.id } }))
+      .toMatchObject({ assistantStatus: status, attempt: 1 });
+    await makeDue(f.sessionId);
+
+    await expect(dispatchDueProactiveTurns(20)).resolves.toEqual({ admitted: 1, failed: 0 });
+    await expect(dispatchDueProactiveTurns(20)).resolves.toEqual({ admitted: 0, failed: 0 });
+    const turns = await prisma.chatTurn.findMany({ where: { sessionId: f.sessionId }, orderBy: { createdAt: "asc" } });
+    expect(turns).toHaveLength(2);
+    expect(turns[0]).toMatchObject({ assistantStatus: status, attempt: 1 });
+    expect(turns[1]).toMatchObject({ origin: "proactive", assistantStatus: "generating", attempt: 1 });
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+    const row = await prisma.recentChat.findUniqueOrThrow({ where: { sessionId: f.sessionId } });
+    expect(row.proactiveNextAt!.getTime()).toBeGreaterThan(Date.now() + 23 * 3_600_000);
+  });
+
+  it("does not let a newer blocked Turn hide a reply that is still active", async () => {
+    const f = await fixture();
+    const active = await send(f);
+    await beginChatTurn({
+      userId: f.userId, sessionId: f.sessionId, content: "minor",
+      idempotencyKey: randomUUID(), origin: "proactive",
+    });
+    await makeDue(f.sessionId);
+
+    await expect(dispatchDueProactiveTurns(20)).resolves.toEqual({ admitted: 0, failed: 0 });
+    expect(await prisma.chatTurn.count({ where: { sessionId: f.sessionId } })).toBe(2);
+    expect(await prisma.chatTurn.findUniqueOrThrow({ where: { id: active.snapshot!.turnId } }))
+      .toMatchObject({ assistantStatus: "pending", attempt: 1 });
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+
+  it("claims a due failed relationship once across concurrent dispatchers", async () => {
+    const f = await fixture();
+    const proactive = await beginChatTurn({
+      userId: f.userId, sessionId: f.sessionId, content: "Take the lead.",
+      idempotencyKey: randomUUID(), origin: "proactive",
+    });
+    await commitFailed(proactive.snapshot!);
+    await makeDue(f.sessionId);
+
+    const results = await Promise.all([dispatchDueProactiveTurns(1), dispatchDueProactiveTurns(1)]);
+    expect(results.reduce((sum, result) => sum + result.admitted, 0)).toBe(1);
+    expect(results.reduce((sum, result) => sum + result.failed, 0)).toBe(0);
+    expect(await prisma.chatTurn.count({ where: { sessionId: f.sessionId } })).toBe(2);
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not shorten the user's cadence after a temporary admission failure", async () => {
+    const f = await fixture();
+    await makeDue(f.sessionId);
+    // Only the rejection is injected: claiming and cadence persistence use PostgreSQL.
+    const admission = vi.spyOn(agentRunAdmission, "beginAdmittedChatTurn")
+      .mockRejectedValueOnce(new Error("Temporary admission failure"));
+    try {
+      await expect(dispatchDueProactiveTurns(20)).resolves.toEqual({ admitted: 0, failed: 1 });
+      await expect(dispatchDueProactiveTurns(20)).resolves.toEqual({ admitted: 0, failed: 0 });
+      expect(admission).toHaveBeenCalledTimes(1);
+      expect(await prisma.chatTurn.count({ where: { sessionId: f.sessionId } })).toBe(0);
+      const row = await prisma.recentChat.findUniqueOrThrow({ where: { sessionId: f.sessionId } });
+      expect(row.proactiveNextAt!.getTime()).toBeGreaterThan(Date.now() + 23 * 3_600_000);
+    } finally {
+      admission.mockRestore();
+    }
   });
 });
 
@@ -550,33 +649,70 @@ describe("opening a chat after Serving moved to a new Release", () => {
   async function publicFixture() {
     const creatorId = `${prefix}${randomUUID()}`;
     const userId = `${prefix}${randomUUID()}`;
-    await createUser({ id: creatorId });
+    await createUser({ id: creatorId, dataClass: "customer" });
     await createUser({ id: userId });
-    const character = await createCharacter({ id: `${creatorId}-character`, creatorId, source: "user", visibility: "public" });
+    const character = await createCharacter({
+      id: `${creatorId}-character`, creatorId, source: "user", visibility: "public", name: "Nova", age: 31,
+    });
     const soul = compileCharacterSoul({
       name: "Nova", age: 31, gender: "female", characterPromise: "A ceramicist who works late.", detailsMarkdown: "Unhurried and specific.",
     });
     if (!soul.ok) throw new Error("Invalid fixture Soul");
+    const assetId = `${character.id}-avatar`;
+    await prisma.mediaAsset.create({ data: {
+      id: assetId, ownerId: creatorId, characterId: character.id, type: "image",
+      url: `/user-content/${assetId}/content.webp`, storageKey: `tests/${assetId}.webp`, contentType: "image/webp",
+      visibility: "public_pack", safetyStatus: "passed",
+      metadata: { seedSource: prefix, synthetic: false, platformAsset: { status: "approved" } },
+    } });
+    await prisma.character.update({ where: { id: character.id }, data: { imageAssetId: assetId } });
     const project = await prisma.characterProject.create({ data: { characterId: character.id } });
-    const release = async (version: number) => {
-      const content = await prisma.characterContentVersion.create({ data: {
-        characterId: character.id, version, sourceType: "test", contentHash: `${soul.snapshot.compiled.fingerprint}-${version}`,
+    // Reuse the qualified editorial shape from direct-audience integration.
+    // Publish pins and Serving atomically so both versions have valid authority.
+    const release = async (tx: Prisma.TransactionClient, version: number) => {
+      const content = await tx.characterContentVersion.create({ data: {
+        characterId: character.id, version, sourceType: "test", contentHash: soul.snapshot.compiled.fingerprint,
         personaSnapshot: JSON.parse(JSON.stringify(soul.snapshot)), openingSnapshot: { firstMessage: "Hello." }, appearanceSnapshot: {},
       } });
-      return prisma.characterRelease.create({ data: {
-        projectId: project.id, revisionId: `${character.id}-revision-${version}`, characterContentVersionId: content.id,
-        generationProvenance: {}, releasePlacementManifest: {}, snapshotHash: `${character.id}-hash-${version}`,
-        status: "published", publishedAt: new Date(),
+      const revision = await tx.characterRevision.create({ data: {
+        projectId: project.id, revision: version, characterContentVersionId: content.id, projectSnapshot: {},
       } });
+      const snapshot = {
+        projectId: project.id, revisionId: revision.id, characterContentVersionId: content.id,
+        visualProfileId: null, visualProfileVersion: null, referenceSetRevisionId: null,
+        generationProvenance: {
+          schemaVersion: "character-release-editorial-import-v1", recordId: character.id, dataset: prefix, sourceAssetId: assetId,
+        },
+        releasePlacementManifest: {
+          schemaVersion: 1, kind: "editorial_import", placements: [{ slotKey: "character_avatar", assetId, slotVersion: 1 }],
+        },
+      };
+      const published = await tx.characterRelease.create({ data: {
+        ...snapshot, snapshotHash: characterReleaseSnapshotHash(snapshot),
+        readiness: "ready", legacy: true, status: "published", publishedAt: new Date(),
+      } });
+      await tx.publicCatalogQualification.create({ data: {
+        releaseId: published.id, releaseSnapshotHash: published.snapshotHash, kind: "editorial_import",
+        evidence: {
+          schemaVersion: "public-catalog-qualification-v1", policyVersion: PUBLIC_CATALOG_EDITORIAL_IMPORT_POLICY_VERSION,
+          characterId: character.id, sourceAssetId: assetId,
+          checks: { exactSeedRecord: true, nonSynthetic: true, safetyPassed: true, publicPack: true, imageAvailable: true },
+        },
+      } });
+      await tx.character.update({ where: { id: character.id }, data: { currentContentVersionId: content.id } });
+      return published;
     };
-    const first = await release(1);
-    await prisma.characterServing.create({ data: { characterId: character.id, currentReleaseId: first.id, state: "live" } });
-    const moveServing = async () => {
-      const next = await release(2);
-      await prisma.characterRelease.update({ where: { id: first.id }, data: { status: "superseded" } });
-      await prisma.characterServing.update({ where: { characterId: character.id }, data: { currentReleaseId: next.id } });
+    const first = await prisma.$transaction(async (tx) => {
+      const published = await release(tx, 1);
+      await tx.characterServing.create({ data: { characterId: character.id, currentReleaseId: published.id, state: "live" } });
+      return published;
+    });
+    const moveServing = () => prisma.$transaction(async (tx) => {
+      const next = await release(tx, 2);
+      await tx.characterRelease.update({ where: { id: first.id }, data: { status: "superseded" } });
+      await tx.characterServing.update({ where: { characterId: character.id }, data: { currentReleaseId: next.id } });
       return next;
-    };
+    });
     return { userId, creatorId, characterId: character.id, firstReleaseId: first.id, moveServing };
   }
 
@@ -636,6 +772,7 @@ describe("opening a chat after Serving moved to a new Release", () => {
     const f = await publicFixture();
     const session = await createChatSession(f.userId, { characterId: f.characterId });
     const next = await f.moveServing();
+    expect((await getChatSession(f.userId, session.id)).continuation).toBe("character_release_changed");
 
     const refused = await send({ userId: f.userId, sessionId: session.id }, "Still there?").catch((error: unknown) => error);
     expect(refused).toBeInstanceOf(AppError);

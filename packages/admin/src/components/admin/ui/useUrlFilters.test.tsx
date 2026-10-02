@@ -5,6 +5,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useUrlFilters } from "./useUrlFilters";
 
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
 type Query = { status: string; cursor: string };
 
 const initial: Query = { status: "", cursor: "" };
@@ -105,5 +107,19 @@ describe("useUrlFilters", () => {
 
     expect(window.location.search).toBe("?status=failed&row=job-1");
     expect(load).not.toHaveBeenCalled();
+  });
+
+  it("preserves adjacent history state when normalising, applying filters, and opening a row", () => {
+    const state = { workspace: "keep-me", adminListCursorHistory: { cursor: "c1", page: 2, cursors: [""] } };
+    window.history.replaceState(state, "", "/admin/system/audit?status=failed&cursor=c1");
+    act(() => root.unmount());
+    root = createRoot(container);
+    act(() => root.render(<Probe />));
+    expect(window.history.state).toEqual(state);
+    click("edit");
+    click("apply");
+    expect(window.history.state).toEqual(state);
+    click("open row");
+    expect(window.history.state).toEqual(state);
   });
 });

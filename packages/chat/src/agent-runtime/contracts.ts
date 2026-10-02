@@ -12,7 +12,7 @@ import { groupChatMemberSchema, type GroupChatMember } from "@idream/shared/cont
 declare module "@deepseek-ai/dsh-llm" {
   interface MessageSourceMap {
     // Only the current request is a DSH user source and eligible for ingest.
-    idream: { kind: "idream"; context: "replay" | "snapshot" | "recall" };
+    idream: { kind: "idream"; context: "replay" | "snapshot" | "recall" | "projection" };
   }
   interface ModelMessageSource {
     // INVARIANT: replayed group dialogue retains its Character identity across
@@ -203,6 +203,7 @@ export const companionModelRequestEvidenceSchema = z.object({
   systemPromptDigest: sha256,
   estimatedInputTokens: positiveInteger,
   maxInputTokens: positiveInteger.optional(),
+  droppedReplayMessageIds: z.array(nonEmptyString).optional(),
 }).strict();
 export type CompanionModelRequestEvidence = z.infer<typeof companionModelRequestEvidenceSchema>;
 

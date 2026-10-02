@@ -22,7 +22,9 @@ import { X } from "lucide-react";
 import type { AdminPageInfo } from "@idream/shared/admin";
 import { useAdminI18n } from "@/components/admin/i18n";
 import type { LatestRequestGate } from "@/lib/latest-request";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { cn } from "@/lib/utils";
+import { historyStateForNavigation } from "@/lib/workspace-history";
 
 // INVARIANT: 成功提示自动消失，失败提示不会——运营没读到的失败等于没发生。
 const SUCCESS_DISMISS_MS = 8_000;
@@ -51,16 +53,20 @@ export function canGoPrevious(pageInfo: AdminPageInfo, acceptsBefore: boolean): 
 // SPEC: 列表页地址栏 = 该页的 API 查询参数 + page。page 只给 UI 用，永远不发给 authority。
 // INTENT: 页码进 URL 是为了后退能落回正确的「第 N 页」——不进 URL 的话后退只恢复游标，
 //   页码归零，运营会读到一个编出来的数字。
-export function listUrlSearch(apiParams: URLSearchParams, page: number): string {
+type ListUrlKeys = { cursor: string; page: string; limit?: string };
+const defaultListKeys: ListUrlKeys = { cursor: "cursor", page: "page", limit: "limit" };
+
+export function listUrlSearch(apiParams: URLSearchParams, page: number, pageKey = "page"): string {
   const params = new URLSearchParams(apiParams);
-  if (page > 1) params.set("page", String(page));
+  if (page > 1) params.set(pageKey, String(page));
+  else params.delete(pageKey);
   return params.size ? `?${params}` : "";
 }
 
 // SPEC: 翻页写 pushState，改筛选/搜索写 replaceState。
 // INTENT: 翻页是运营心里的一次导航，后退必须回得来（这五个列表页此前一律 replaceState，
 //   后退连上一页都回不去）；而搜索框每敲一个字符就压一条历史，等于把后退键废掉。
-export function syncListUrl(apiParams: URLSearchParams, page: number): void {
+export function syncListUrl(apiParams: URLSearchParams, page: number, keys: ListUrlKeys = defaultListKeys): number {
   const current = new URLSearchParams(window.location.search);
   // SPEC: `view` chooses the workspace mounted at a shared route; it is not an API filter.
   // INTENT: Presets lives beside Recipes at /admin/ops/recipes. Dropping `view=presets`
@@ -68,14 +74,50 @@ export function syncListUrl(apiParams: URLSearchParams, page: number): void {
   const nextParams = new URLSearchParams(apiParams);
   const adjacentView = current.get("view")?.trim();
   if (adjacentView) nextParams.set("view", adjacentView);
-  const next = `${window.location.pathname}${listUrlSearch(nextParams, page)}`;
-  const paged = apiParams.get("cursor") !== current.get("cursor")
-    || String(page) !== (current.get("page") ?? "1");
-  window.history[paged ? "pushState" : "replaceState"](null, "", next);
+  const nextCursor = nextParams.get(keys.cursor) ?? "";
+  const nextPage = nextCursor && Number.isInteger(page) && page > 0 ? page : 1;
+  const currentPage = current.get(keys.cursor) ? listPageFromParams(current, keys.page) : 1;
+  const sameFilters = listCursorQueryKey(current, keys) === listCursorQueryKey(nextParams, keys);
+  let cursors = sameFilters ? savedListCursors(current, keys) : [];
+  if (!nextCursor) cursors = [];
+  else if (sameFilters && nextPage > currentPage) cursors = [...cursors, current.get(keys.cursor) ?? ""];
+  else if (sameFilters && nextPage < currentPage) cursors = cursors.slice(0, -1);
+  const next = `${window.location.pathname}${listUrlSearch(nextParams, nextPage, keys.page)}`;
+  const paged = sameFilters && (nextCursor !== (current.get(keys.cursor) ?? "") || nextPage !== currentPage);
+  window.history[paged ? "pushState" : "replaceState"]({
+    ...historyStateForNavigation(window.history.state),
+    adminListCursorHistory: { queryKey: listCursorQueryKey(nextParams, keys), cursor: nextCursor, page: nextPage, cursors },
+  }, "", next);
+  return nextPage;
 }
 
-export function listPageFromParams(params: URLSearchParams): number {
-  const page = Number(params.get("page"));
+function listCursorQueryKey(params: URLSearchParams, keys: ListUrlKeys) {
+  const filters = new URLSearchParams(params);
+  for (const key of [keys.cursor, keys.page, keys.limit]) if (key) filters.delete(key);
+  filters.sort();
+  return `${window.location.pathname}?${filters}`;
+}
+
+function savedListCursors(params: URLSearchParams, keys: ListUrlKeys): string[] {
+  const saved = window.history.state?.adminListCursorHistory;
+  const page = params.get(keys.cursor) ? listPageFromParams(params, keys.page) : 1;
+  return saved?.queryKey === listCursorQueryKey(params, keys)
+    && saved.cursor === (params.get(keys.cursor) ?? "") && saved.page === page
+    && Array.isArray(saved.cursors) && saved.cursors.every((cursor: unknown) => typeof cursor === "string")
+    ? saved.cursors : [];
+}
+
+// Forward-only APIs can reread a visited forward cursor. A fresh deep link has
+// no such evidence, so its back action explicitly returns to the first page.
+export function previousListPage(keys: ListUrlKeys = defaultListKeys) {
+  const params = new URLSearchParams(window.location.search);
+  const cursors = savedListCursors(params, keys);
+  const cursor = cursors.at(-1) || undefined;
+  return { cursor, page: cursor ? Math.max(1, listPageFromParams(params, keys.page) - 1) : 1, hasHistory: cursors.length > 0 };
+}
+
+export function listPageFromParams(params: URLSearchParams, pageKey = "page"): number {
+  const page = Number(params.get(pageKey));
   return Number.isInteger(page) && page > 0 ? page : 1;
 }
 
@@ -177,21 +219,31 @@ export function InfoGrid({ items }: { items: { label: string; value: ReactNode }
 export function useDebouncedReload({
   cursor,
   page,
-  ready,
+  urlRevision,
   reload,
   search,
 }: {
   cursor: string | undefined;
   page: number;
-  ready: boolean;
+  // Zero until bootstrap; every URL restore triggers a read even when its
+  // filter/cursor values happen to match the previous history entry.
+  urlRevision: number;
   reload: (cursor: string | undefined, page: number) => void;
   search: string;
 }) {
   useEffect(() => {
-    if (!ready) return;
+    if (!urlRevision) return;
     const timer = window.setTimeout(() => reload(cursor, page), search.trim() ? 250 : 0);
-    return () => window.clearTimeout(timer);
-  }, [cursor, page, ready, reload, search]);
+    const refresh = () => {
+      window.clearTimeout(timer);
+      reload(cursor, page);
+    };
+    window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh);
+    };
+  }, [cursor, page, urlRevision, reload, search]);
 }
 
 // SPEC: 挂载后从 URL 恢复筛选/游标，然后才允许首次取数。
@@ -218,8 +270,11 @@ export function useUrlBootstrap(
   // SPEC: 后退/前进要把列表带回那一页 —— pushState 只改地址栏，状态得自己接回来。
   // INVARIANT: apply 与 bootstrap 用同一个回调，所以「从 URL 恢复」只有一套逻辑。
   useEffect(() => {
-    const onPopState = () => apply(new URLSearchParams(window.location.search));
+    const onPopState = () => {
+      gateRef?.current?.invalidate();
+      apply(new URLSearchParams(window.location.search));
+    };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
-  }, [apply]);
+  }, [apply, gateRef]);
 }

@@ -100,11 +100,31 @@ describe("Chat video confirmation and history", () => {
   it("keeps the active attachment intact when processing has already started", async () => {
     const cancelled = vi.fn(async () => {});
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ok: false, error: { code: "conflict", message: "This video has already entered processing." } }, { status: 409 })));
-    await render(createElement(ChatVideoAttachmentCard, { attachment: { id: "video-attachment", kind: "generated_video", status: "accepted", generationJobId: "video-job" }, ownerScope: "user:viewer", retryPending: false, onRetry: vi.fn(), onCancelled: cancelled }));
+    await render(createElement(ChatVideoAttachmentCard, { attachment: { id: "video-attachment", kind: "generated_video", status: "accepted", generationJobId: "video-job", canCancel: true }, ownerScope: "user:viewer", retryPending: false, onRetry: vi.fn(), onCancelled: cancelled }));
     await click("Cancel before processing");
     expect(cancelled).not.toHaveBeenCalled();
     expect(container.textContent).toContain("Generating video");
     expect(container.textContent).toContain("already entered processing");
     expect(container.textContent).not.toContain("Video cancelled");
+  });
+
+  it.each([
+    ["accepted", false], ["queued", false], ["running", false], ["accepted", undefined],
+  ] as const)("does not offer cancellation for %s without an untouched-dispatch authority (%s)", async (status, canCancel) => {
+    await render(createElement(ChatVideoAttachmentCard, { attachment: { id: "video-attachment", kind: "generated_video", status, generationJobId: "video-job", canCancel }, ownerScope: "user:viewer", retryPending: false, onRetry: vi.fn(), onCancelled: vi.fn() }));
+    expect(container.textContent).toContain("Generating video");
+    expect(container.textContent).not.toContain("Cancel before processing");
+    expect(requests).toHaveLength(0);
+  });
+
+  it("allows an explicitly cancellable pending video and refreshes only after successful cancellation", async () => {
+    const cancelled = vi.fn(async () => {});
+    const fetch = vi.fn(async () => json({ requestId: "video-job", status: "cancelled", refundAmount: 40 }));
+    vi.stubGlobal("fetch", fetch);
+    await render(createElement(ChatVideoAttachmentCard, { attachment: { id: "video-attachment", kind: "generated_video", status: "accepted", generationJobId: "video-job", canCancel: true }, ownerScope: "user:viewer", retryPending: false, onRetry: vi.fn(), onCancelled: cancelled }));
+    await click("Cancel before processing");
+    expect(fetch).toHaveBeenCalledExactlyOnceWith("/api/v1/generation/jobs/video-job/cancel", { method: "POST", headers: { "x-idream-viewer-scope": "user:viewer" } });
+    expect(cancelled).toHaveBeenCalledOnce();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
   });
 });

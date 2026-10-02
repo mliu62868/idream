@@ -193,6 +193,11 @@ async def execute(op: Operation, directory: str, path: Path):
         op.duration = round(len(pcm) / (SAMPLE_RATE * 2) * 1000)
         if op.status == "cancelled":
             return
+        # Exact zero is definitive silence; an energy threshold would reject
+        # legitimate quiet speech. Keep all nonzero PCM eligible for inference.
+        if not any(pcm):
+            finish(op, "failed", "no_speech")
+            return
         native = asyncio.create_task(asyncio.to_thread(transcribe, pcm))
         try:
             result = await asyncio.wait_for(asyncio.shield(native), max(0.001, op.deadline - time.monotonic()))

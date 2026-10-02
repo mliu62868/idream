@@ -239,17 +239,13 @@ export async function recallIgrepMemory(
     signal: options.signal,
   }));
   if (!payload || payload.failed === true || payload.error || !Array.isArray(payload.results)
-    || (Array.isArray(payload.warnings) && payload.warnings.length > 0)) {
+    || (payload.provider !== undefined && payload.provider !== "igrep")
+    || (payload.workspaceRoot !== undefined && (typeof payload.workspaceRoot !== "string"
+      || !await sameRealPath(payload.workspaceRoot, workspace)))
+    || (payload.warnings !== undefined && (!Array.isArray(payload.warnings) || payload.warnings.length > 0))) {
     throw new Error("igrep memory-search returned unverifiable evidence");
   }
-  const results = payload.results.map((hit): IgrepRecallHit => {
-    const record = objectRecord(hit) ?? {};
-    return {
-      citation: typeof record.citation === "string" ? record.citation : "",
-      snippet: typeof record.snippet === "string" ? record.snippet : "",
-      sourceClass: typeof record.sourceClass === "string" ? record.sourceClass : "",
-    };
-  });
+  const results = await originalIgrepMemoryHits(workspace, payload.results, options.signal);
   const notes = results
     .filter((hit) => hit.sourceClass !== "profile")
     .map((hit) => recallNote(hit.snippet))
@@ -262,11 +258,113 @@ export async function recallIgrepMemory(
   };
 }
 
-/** `L12: [user @ 2026-08-24] text` lines become `[user @ 2026-08-24] text`. */
+/**
+ * Official search selects the evidence; its annotated view is not fact authority.
+ * Resolve dialogue citations against the same relationship's bound session rows.
+ * Keep the original view intact, including incorrect upstream date annotations.
+ */
+export async function originalIgrepMemoryHits(workspace: string, hits: readonly unknown[], signal?: AbortSignal): Promise<IgrepRecallHit[]> {
+  const sources = new Map<string, Promise<{ rows: Record<string, unknown>[]; sourceAt: string[] }>>();
+  const result: IgrepRecallHit[] = [];
+  for (const hit of hits) {
+    throwIfAborted(signal);
+    const record = objectRecord(hit);
+    if (typeof record?.citation !== "string" || typeof record.snippet !== "string" || typeof record.sourceClass !== "string") {
+      throw new Error("igrep memory-search returned unverifiable evidence");
+    }
+    let snippet = record.snippet;
+    if (record.sourceClass === "dialogue") {
+      const match = /^memory\/dialogues\/(deepseek-harness-[A-Za-z0-9_.-]+\.jsonl)#L([1-9]\d*)(?:-L([1-9]\d*))?$/u.exec(record.citation);
+      const start = Number(match?.[2]);
+      const end = Number(match?.[3] ?? match?.[2]);
+      if (!match || !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || end < start
+        || (record.path !== undefined && record.path !== `memory/dialogues/${match[1]}`)
+        || (record.startLine !== undefined && record.startLine !== start)
+        || (record.endLine !== undefined && record.endLine !== end)
+        || (record.evidenceStatus !== undefined && record.evidenceStatus !== "active")) {
+        throw new Error("igrep memory-search returned unverifiable evidence");
+      }
+      const file = match[1]!;
+      let source = sources.get(file);
+      if (!source) {
+        source = citedDialogueSource(workspace, file, signal);
+        sources.set(file, source);
+      }
+      const bound = await source;
+      if (end > bound.rows.length
+        || (record.sourceAt !== undefined && (typeof record.sourceAt !== "string"
+          || !bound.sourceAt.slice(start - 1, end).some(at => memorySourceInstant(at) === memorySourceInstant(record.sourceAt as string))))) {
+        throw new Error("igrep memory-search returned unverifiable evidence");
+      }
+      snippet = bound.rows.slice(start - 1, end).map(row => {
+        const at = objectRecord(row.source_at)!;
+        const context = [at.instant_utc];
+        if (at.original !== undefined && at.original !== at.instant_utc) context.push(`original=${JSON.stringify(at.original)}`);
+        if (at.timezone !== undefined) context.push(`timezone=${JSON.stringify(at.timezone)}`);
+        return `[${row.role} @ ${context.join("; ")}] ${row.content}`;
+      }).join("\n");
+    } else if (record.sourceClass !== "profile") {
+      throw new Error("igrep memory-search returned unverifiable evidence");
+    }
+    result.push({ citation: record.citation, snippet, sourceClass: record.sourceClass });
+  }
+  return result;
+}
+
+async function citedDialogueSource(workspace: string, file: string, signal?: AbortSignal) {
+  const root = await memorySourceRoot(workspace);
+  const regular = async (path: string) => {
+    const metadata = await lstat(path, { bigint: true });
+    if (!metadata.isFile() || metadata.isSymbolicLink() || await realpath(path) !== path) {
+      throw new MemorySourceIntegrityError("dialogue_format_invalid");
+    }
+    return [metadata.dev, metadata.ino, metadata.size, metadata.mtimeNs, metadata.ctimeNs].join(":");
+  };
+  const checkRetractions = async () => {
+    const path = join(root, "mem/.state/retractions.jsonl");
+    try {
+      await regular(path);
+      if ((await readFile(path, { encoding: "utf8", signal })).trim()) throw new MemorySourceIntegrityError("retractions_present");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  };
+  await checkRetractions();
+  const session = join(root, "mem/memory/sessions", file);
+  const dialogue = join(root, "mem/memory/dialogues", file);
+  const before = [await regular(session), await regular(dialogue)];
+  // INVARIANT: citations use the same original rows that were validated and
+  // fingerprinted, without rereading the whole session for each comparison.
+  // No rows leave this call until the complete view and file witnesses agree.
+  const source = await memorySourceFingerprint(session, "session", undefined, { signal, collectRows: true });
+  const rows = source.records ?? [];
+  const sessionId = rows[0]?.session_id;
+  if (typeof sessionId !== "string" || !sessionId) throw new MemorySourceIntegrityError("dialogue_format_invalid");
+  const view = await memorySourceFingerprint(dialogue, "dialogue", sessionId, { signal, sessionRows: rows });
+  if (source.rows !== view.rows || source.dialogueDigest !== view.dialogueDigest) {
+    throw new MemorySourceIntegrityError("dialogue_source_mismatch");
+  }
+  const sourceAt = rows.map(row => {
+    const at = objectRecord(row.source_at)!;
+    if (at.original !== undefined && (typeof at.original !== "string" || memorySourceInstant(at.original) !== memorySourceInstant(at.instant_utc as string))
+      || (at.timezone !== undefined && (typeof at.timezone !== "string" || !at.timezone.trim()))) {
+      throw new MemorySourceIntegrityError("dialogue_format_invalid");
+    }
+    return at.instant_utc as string;
+  });
+  if (before.join("|") !== [await regular(session), await regular(dialogue)].join("|")) {
+    throw new MemorySourceIntegrityError("dialogue_changed_during_maintenance");
+  }
+  await checkRetractions();
+  throwIfAborted(signal);
+  return { rows, sourceAt };
+}
+
+/** Bound original passages only normalize whitespace; user text is never a line-label codec. */
 function recallNote(snippet: string): string {
   const text = snippet
     .split("\n")
-    .map((line) => line.replace(/^L\d+:\s*/u, "").trim())
+    .map((line) => line.trim())
     .filter(Boolean)
     .join(" ");
   if (text.length <= RECALL_NOTE_MAX_CHARS) return text;
@@ -402,7 +500,7 @@ export class IgrepMemoryBuilder {
     // that the canonical seed refuses can become a rebuild of this candidate.
     let mode = source.mode;
     const ingestSource = async (session: Parameters<typeof ingest>[0]) => {
-      const expected = await memorySourceFingerprint(session.transcriptPath, "transcript", session.sessionId, signal);
+      const expected = await memorySourceFingerprint(session.transcriptPath, "transcript", session.sessionId, { signal });
       if (expected.rows !== session.messageCount) throw new Error("Main memory transcript row count changed");
       let paths: { dialoguePath: string; sessionPath: string };
       try {
@@ -502,7 +600,7 @@ export class IgrepMemoryBuilder {
       await rm(join(workspace, ".igrep"), { recursive: true, force: true });
       await mkdir(join(workspace, ".igrep"), { recursive: true, mode: 0o700 });
       for (const session of sessions) {
-        const current = await memorySourceFingerprint(session.transcriptPath, "transcript", session.sessionId, signal);
+        const current = await memorySourceFingerprint(session.transcriptPath, "transcript", session.sessionId, { signal });
         if (current.digest !== session.expectedDigest || current.rows !== session.messageCount) {
           throw new Error("Main memory transcript changed before source-only recovery");
         }
@@ -581,6 +679,9 @@ interface IngestedMemorySource {
 // C0 controls as a control picture followed by U+2421. Decode strictly rather
 // than treating a newline's searchable representation as rewritten Main text.
 function decodeDialogueContent(content: string): string {
+  // Most passages contain no transport escapes. Avoid allocating one string
+  // per character when the official encoding cannot have changed any byte.
+  if (!/[\u2400-\u241f\u2421]/u.test(content)) return content;
   const decoded: string[] = [];
   for (let index = 0; index < content.length; index += 1) {
     const character = content[index]!;
@@ -599,6 +700,7 @@ function decodeDialogueContent(content: string): string {
 }
 
 function dialoguePreservesSource(view: string, source: string): boolean {
+  if (view === source) return true;
   let original = 0;
   for (let index = 0; index < view.length;) {
     // The official rule-based view may insert absolute dates. Every original
@@ -618,17 +720,44 @@ function dialoguePreservesSource(view: string, source: string): boolean {
   return original === source.length;
 }
 
-async function memorySourceFingerprint(path: string, kind: "transcript" | "session" | "dialogue", sessionId: string, signal?: AbortSignal, sessionPath?: string) {
+/** Readline replaces invalid UTF-8; original evidence must retain every byte. */
+function verifyUtf8Stream(stream: ReturnType<typeof createReadStream>): () => void {
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  let invalid = false;
+  stream.on("data", chunk => {
+    if (invalid) return;
+    if (typeof chunk === "string") { invalid = true; return; }
+    // Record failure here, then reject through the awaited reader. Throwing
+    // from an event listener would escape the caller's cleanup/error boundary.
+    try { decoder.decode(chunk, { stream: true }); } catch { invalid = true; }
+  });
+  return () => {
+    try { if (!invalid) decoder.decode(); } catch { invalid = true; }
+    if (invalid) throw new MemorySourceIntegrityError("dialogue_format_invalid");
+  };
+}
+
+async function memorySourceFingerprint(
+  path: string,
+  kind: "transcript" | "session" | "dialogue",
+  sessionId: string | undefined,
+  options: { signal?: AbortSignal; sessionPath?: string; sessionRows?: readonly Record<string, unknown>[]; collectRows?: boolean } = {},
+) {
+  const { signal, sessionPath, sessionRows } = options;
   throwIfAborted(signal);
   const digest = createHash("sha256");
   const dialogueDigest = createHash("sha256");
   const bytes = createHash("sha256");
   const stream = createReadStream(path, { signal });
   stream.on("data", (chunk) => { bytes.update(chunk); });
+  const verifyUtf8 = verifyUtf8Stream(stream);
   const lines = createInterface({ input: stream, crlfDelay: Infinity });
   const sourceStream = sessionPath ? createReadStream(sessionPath, { signal }) : undefined;
+  const verifySourceUtf8 = sourceStream ? verifyUtf8Stream(sourceStream) : undefined;
   const sourceLines = sourceStream ? createInterface({ input: sourceStream, crlfDelay: Infinity }) : undefined;
   const sourceIterator = sourceLines?.[Symbol.asyncIterator]();
+  const records: Record<string, unknown>[] | undefined = options.collectRows ? [] : undefined;
+  let expectedSessionId = sessionId;
   let rows = 0;
   try {
     for await (const line of lines) {
@@ -640,16 +769,22 @@ async function memorySourceFingerprint(path: string, kind: "transcript" | "sessi
       const sourceAt = kind === "dialogue" ? tuple?.[0]
         : kind === "session" ? objectRecord(row?.source_at)?.instant_utc : row?.source_at;
       let content = kind === "dialogue" ? tuple?.[1] : row?.content;
+      if (kind === "session" && expectedSessionId === undefined) {
+        if (typeof row?.session_id !== "string" || !row.session_id) throw new MemorySourceIntegrityError("dialogue_format_invalid");
+        expectedSessionId = row.session_id;
+      }
       if (typeof content !== "string" || typeof sourceAt !== "string" || !Number.isFinite(Date.parse(sourceAt))
         || (kind !== "dialogue" && (!row || !["user", "assistant"].includes(String(row.role))))
         || (kind === "session" && (row?.schema !== "igrep.mem.session/1" || row.agent !== "deepseek-harness"
-          || row.session_id !== sessionId || row.turn_index !== rows + 1))) {
+          || row.session_id !== expectedSessionId || row.turn_index !== rows + 1))) {
         throw new MemorySourceIntegrityError("dialogue_format_invalid");
       }
       if (kind === "dialogue") {
-        const original = await sourceIterator?.next();
-        let canonical: Record<string, unknown> | null = null;
-        try { canonical = original && !original.done ? objectRecord(JSON.parse(original.value)) : null; } catch { /* rejected below */ }
+        let canonical = sessionRows?.[rows] ?? null;
+        if (!sessionRows) {
+          const original = await sourceIterator?.next();
+          try { canonical = original && !original.done ? objectRecord(JSON.parse(original.value)) : null; } catch { /* rejected below */ }
+        }
         if (typeof canonical?.content !== "string" || !dialoguePreservesSource(decodeDialogueContent(content), canonical.content)) {
           throw new MemorySourceIntegrityError("dialogue_source_mismatch");
         }
@@ -657,21 +792,30 @@ async function memorySourceFingerprint(path: string, kind: "transcript" | "sessi
       }
       // Main sends UTC timestamps. Preserve sub-millisecond precision if an
       // already validated source contains it, while normalizing UTC notation.
-      const fraction = /\.(\d+)/u.exec(sourceAt)?.[1] ?? "";
-      const extraPrecision = fraction.slice(3).replace(/0+$/u, "");
-      const instant = new Date(sourceAt).toISOString().replace(/Z$/u, `${extraPrecision}Z`);
+      const instant = memorySourceInstant(sourceAt);
       digest.update(JSON.stringify([row?.role, content, instant])).update("\n");
       dialogueDigest.update(JSON.stringify([content, instant])).update("\n");
+      if (records) records.push(row!);
       rows += 1;
     }
+    if (sessionRows && rows !== sessionRows.length) throw new MemorySourceIntegrityError("dialogue_source_mismatch");
     if (sourceIterator && !(await sourceIterator.next()).done) throw new MemorySourceIntegrityError("dialogue_source_mismatch");
+    verifyUtf8();
+    verifySourceUtf8?.();
   } finally {
     lines.close();
     stream.destroy();
     sourceLines?.close();
     sourceStream?.destroy();
   }
-  return { rows, digest: digest.digest("hex"), dialogueDigest: dialogueDigest.digest("hex"), bytes: bytes.digest("hex") };
+  return { rows, records, digest: digest.digest("hex"), dialogueDigest: dialogueDigest.digest("hex"), bytes: bytes.digest("hex") };
+}
+
+function memorySourceInstant(sourceAt: string): string {
+  if (!Number.isFinite(Date.parse(sourceAt))) throw new MemorySourceIntegrityError("dialogue_format_invalid");
+  const fraction = /\.(\d+)/u.exec(sourceAt)?.[1] ?? "";
+  const extraPrecision = fraction.slice(3).replace(/0+$/u, "");
+  return new Date(sourceAt).toISOString().replace(/Z$/u, `${extraPrecision}Z`);
 }
 
 /**
@@ -715,9 +859,9 @@ async function verifyMemorySourceCorpus(workspace: string, sessions: readonly In
   for (const session of sessions) {
     throwIfAborted(signal);
     await regularFile(session.sessionPath);
-    const source = await memorySourceFingerprint(session.sessionPath, "session", session.sessionId, signal);
+    const source = await memorySourceFingerprint(session.sessionPath, "session", session.sessionId, { signal });
     await regularFile(session.dialoguePath);
-    const actual = await memorySourceFingerprint(session.dialoguePath, "dialogue", session.sessionId, signal, session.sessionPath);
+    const actual = await memorySourceFingerprint(session.dialoguePath, "dialogue", session.sessionId, { signal, sessionPath: session.sessionPath });
     if (actual.rows !== session.messageCount || actual.dialogueDigest !== session.expectedDialogueDigest
       || source.rows !== session.messageCount || source.digest !== session.expectedDigest) {
       throw new MemorySourceIntegrityError("dialogue_source_mismatch");
@@ -815,14 +959,15 @@ export async function probeIgrepLifecycle(
   const workspaces = [join(root, "scope-a"), join(root, "scope-b")] as const;
   const nonce = dependencies.nonce?.() ?? `${process.pid}-${Date.now()}`;
   const sentinels = [`scope-a-${nonce}`, `scope-b-${nonce}`] as const;
+  const sourceAt = new Date().toISOString();
   const run = dependencies.run ?? runJsonCommand;
   const status = dependencies.status ?? ((workspace: string) =>
     new IgrepMemoryProbe(command).status(workspace));
   const ingest = async (workspace: string, sentinel: string, sessionId: string) => {
     const transcript = join(workspace, "readiness.jsonl");
     await writeFile(transcript, [
-      JSON.stringify({ role: "user", content: `readiness ${sentinel}` }),
-      JSON.stringify({ role: "assistant", content: `acknowledged ${sentinel}` }),
+      JSON.stringify({ role: "user", content: `readiness ${sentinel}`, source_at: sourceAt, source_timezone: "UTC" }),
+      JSON.stringify({ role: "assistant", content: `acknowledged ${sentinel}`, source_at: sourceAt, source_timezone: "UTC" }),
       "",
     ].join("\n"), { mode: 0o600 });
     await run({
@@ -831,7 +976,7 @@ export async function probeIgrepLifecycle(
         "mem", "ingest",
         "--workspace", workspace,
         "--transcript", transcript,
-        "--agent", "idream-readiness",
+        "--agent", "deepseek-harness",
         "--session-id", sessionId,
         "--format", "json",
       ],

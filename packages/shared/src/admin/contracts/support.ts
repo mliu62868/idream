@@ -116,6 +116,7 @@ export const supportRequestListResponseSchema = z
 
 export const supportRequestPatchSchema = z
   .object({
+    expectedUpdatedAt: adminIsoDateTimeSchema,
     status: supportRequestStatusSchema.optional(),
     assignedToId: z.string().trim().min(1).max(160).nullable().optional(),
     priority: z.number().int().min(1).max(5).optional(),
@@ -128,6 +129,7 @@ export const supportRequestPatchSchema = z
 
 export const supportRequestEscalateSchema = z
   .object({
+    expectedUpdatedAt: adminIsoDateTimeSchema,
     reason: z.string().trim().min(3).max(2_000),
     confirmation: z.string().trim().min(1).max(160),
   })

@@ -94,6 +94,7 @@ import {
 } from "@/lib/generation-write-client";
 import { publicOptimisticMutationFailure } from "./optimistic-write-state";
 import { useReportDialog } from "./ReportDialog";
+import { VideoSequenceControls } from "./VideoSequenceControls";
 import { canStartAgeGatedLoad } from "@/lib/age-gate";
 
 type MediaItem = {
@@ -728,7 +729,7 @@ export function GeneratorWorkspace() {
         currentUrl.toString(),
         nextCharacterId,
       );
-      window.history.replaceState(window.history.state, "", nextUrl);
+      window.history.replaceState(null, "", nextUrl);
     },
     [remixFeedItemId],
   );
@@ -820,7 +821,7 @@ export function GeneratorWorkspace() {
       : videoModeEnabled;
   // Null while the form does not describe a route the server can price.
   const generationQuoteRequest: GenerationQuoteRequest | null =
-    contextReady && modeAvailable &&
+    mode !== "video" && contextReady && modeAvailable &&
     config?.viewer.authenticated === true &&
     (
       imageEditMode
@@ -1347,6 +1348,12 @@ export function GeneratorWorkspace() {
     void refreshConfig();
   }, [generationBalanceChanged, refreshConfig]);
 
+  const refreshVideoSequenceAuthority = useCallback(() => {
+    refreshBalanceAndQuoteAuthority();
+    void refreshJobs();
+    void refreshMedia(galleryTabRef.current);
+  }, [refreshBalanceAndQuoteAuthority, refreshJobs, refreshMedia]);
+
   const refreshIdentityMedia = useCallback(async () => {
     const viewerRequest = beginPrivateViewerRequest();
     if (!viewerRequest) return;
@@ -1808,6 +1815,7 @@ export function GeneratorWorkspace() {
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (mode === "video") return;
     // The disabled button already names what's missing; implicit submits stop here.
     if (!formCanSubmit) return;
     setStatus("");
@@ -2572,6 +2580,8 @@ export function GeneratorWorkspace() {
               <div className="rounded-full bg-[rgb(36,36,36)] px-3 py-2 text-[12px] font-bold text-white">
                 {config && !modeAvailable
                   ? "Unavailable"
+                  : mode === "video"
+                    ? "Review price below"
                   : estimatedCost === null
                     ? "Price unavailable"
                     : `${estimatedCost} coins`}
@@ -2967,11 +2977,10 @@ export function GeneratorWorkspace() {
               </div>
             ) : null}
 
+            {mode === "video" ? anonymousViewer ? <Link className="mt-4 flex h-12 w-full items-center justify-center rounded-full bg-[rgb(255,48,170)] text-[14px] font-black text-white" href={authHrefForTarget("/signup", authReturnTarget)}>Join free to generate</Link> : <VideoSequenceControls key={receiptOwnerScope ?? "signed-out"} viewerScope={receiptOwnerScope} characterId={generationBody.characterId} generationContextToken={generationBody.generationContextToken} consistencyMode={consistencyMode} seed={generationBody.seed} disabled={!modeAvailable || !contextReady || formUnconfirmed} unavailableMessage={modeUnavailableMessage ?? undefined} onStatusChange={refreshVideoSequenceAuthority} /> : <>
             <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
                 {imageEditMode
                   ? "Edit instructions"
-                  : mode === "video"
-                  ? videoModeCopy.promptLabel
                   : characterImageMode
                     ? "Describe the moment"
                     : "Scene Prompt"}
@@ -2986,9 +2995,7 @@ export function GeneratorWorkspace() {
                     imageEditMode
                       ? "Describe exactly what should change. Everything else stays the same."
                       : canDescribeMoment
-                      ? mode === "video"
-                        ? videoModeCopy.promptPlaceholder
-                        : characterImageMode
+                      ? characterImageMode
                         ? `What is ${selectedCharacter?.title ?? "the character"} doing, where are they, and how does the moment feel?`
                         : "Scene, pose, mood"
                       : "Premium control"
@@ -3029,7 +3036,7 @@ export function GeneratorWorkspace() {
                       setCount(Math.max(1, Math.min(maxCount, Number(event.target.value))))
                     }
                     disabled={
-                      formUnconfirmed || mode === "video" ||
+                      formUnconfirmed ||
                       !modeAvailable ||
                       !generationQuote
                     }
@@ -3084,7 +3091,7 @@ export function GeneratorWorkspace() {
                   }}
                   value={formUnconfirmed && modelSelection.explicit ? modelSelection.id : modelSelectionProjection.selectValue}
                 >
-                  <option value="">{mode === "video" ? "Auto (animate source)" : "Auto (identity-aware)"}</option>
+                  <option value="">Auto (identity-aware)</option>
                   {formUnconfirmed && modelSelection.explicit && !availableModels.some((item) => item.id === modelSelection.id) && (
                     <option value={modelSelection.id}>Original model selection</option>
                   )}
@@ -3461,11 +3468,6 @@ export function GeneratorWorkspace() {
               </Link>
             )}
 
-            {mode === "video" && !formUnconfirmed && generationQuote?.video && (
-              <p className="mt-3 text-[12px] text-white/70" data-testid="generator-video-specifications">
-                About {Math.round(generationQuote.video.durationSeconds)} seconds · {generationQuote.video.width}×{generationQuote.video.height} · {generationQuote.video.audio === "generated" ? "Generated audio" : "No audio"}
-              </p>
-            )}
             {formUnconfirmed && <p className="mt-3 text-[12px] text-white/70">Check the existing request with its original settings and price.</p>}
             {!formUnconfirmed && pendingReceipts.length > 0 && <p className="mt-3 text-[12px] text-white/70">You have an earlier request to check in Jobs. This changed request uses the new price below and may create another job.</p>}
             {receiptOwnerScope && receiptStorageWarning && <p role="status" className="mt-3 text-[12px] text-white/70">{receiptStorageWarning}</p>}
@@ -3564,6 +3566,7 @@ export function GeneratorWorkspace() {
                 {status}
               </p>
             )}
+            </>}
           </form>
 
           <div className="grid gap-5">

@@ -2,7 +2,8 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, Check, ImageIcon, Loader2, Sparkles, Wand2 } from "lucide-react";
 import { CHARACTER_VISIBILITY, isCatalogMember } from "@idream/shared/catalog";
 import { legacySoulDetailsMarkdown } from "@idream/shared/chat/persona";
@@ -49,7 +50,7 @@ import {
 
 type DraftPayload = {
   ok?: boolean;
-  error?: { message?: string };
+  error?: { message?: string; details?: { blocker?: string } };
   data?: {
     draft?: ServerCharacterDraft | null;
     character?: { id: string; name: string; visibility: string; imageUrl?: string | null; published?: boolean; visual?: CharacterEditVisual };
@@ -62,6 +63,7 @@ type DraftPayload = {
 
 export type ServerCharacterDraft = {
   id: string;
+  updatedAt: string;
   step: number;
   gender: string | null;
   style: string | null;
@@ -105,12 +107,6 @@ const EDIT_IDENTITY_KEYS = ["age", "gender", "style", "appearance", "ethnicity",
 export function editKeepsIdentity(state: WizardState, baseline: WizardState) {
   return EDIT_IDENTITY_KEYS.every((key) => state[key] === baseline[key]);
 }
-
-function editCharacterIdFromLocation() {
-  return new URLSearchParams(window.location.search).get("edit")?.trim() ?? "";
-}
-
-const noLocationSubscription = () => () => {};
 
 // Templates store free-form Json; pull a usable string for the draft's prompt-shaped fields.
 function pickString(value: unknown, ...keys: string[]): string {
@@ -174,6 +170,7 @@ const VISUAL_FIELDS = [
 
 export type WizardState = {
   draftId: string;
+  draftUpdatedAt: string;
   previewBatch: CreatePreviewBatch | null;
   restoredPreviewCandidate: CreatePreviewCandidate | null;
   confirmedPreviewJobId: string;
@@ -200,6 +197,7 @@ export type WizardState = {
 
 const INITIAL: WizardState = {
   draftId: "",
+  draftUpdatedAt: "",
   previewBatch: null,
   restoredPreviewCandidate: null,
   confirmedPreviewJobId: "",
@@ -239,6 +237,7 @@ export function wizardStateFromServerDraft(
   return parseWizardDraft({
     ...INITIAL,
     draftId: value.id,
+    draftUpdatedAt: value.updatedAt,
     step: Math.min(value.step, STEPS.length - 1),
     name: value.name ?? "",
     age,
@@ -266,9 +265,20 @@ function samePreviewInputs(left: WizardState, right: WizardState) {
 }
 
 export function CreateWorkspace() {
+  const query = useSearchParams();
+  const editCharacterId = query.get("edit")?.trim() ?? "";
+  const draftId = query.get("draft")?.trim() ?? "";
+  if ((editCharacterId && draftId) || query.getAll("draft").length > 1 || query.getAll("edit").length > 1) {
+    return <section className="mx-auto my-16 max-w-xl p-6" role="alert"><h1 className="text-lg font-bold">Choose one draft or character to edit.</h1><Link className="mt-4 inline-block underline" href="/creator-studio">Back to Creator Studio</Link></section>;
+  }
+  // A query change names a different workspace. Its old callbacks and local
+  // keystrokes must not become another draft's state.
+  return <CreateWizard key={`${editCharacterId}:${draftId}`} editCharacterId={editCharacterId} draftId={draftId} />;
+}
+
+function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; draftId: string }) {
   const { accepted: ageGateAccepted } = useAgeGateAccess();
   // CR-06: /create?edit=<characterId> reuses this wizard on an edit draft.
-  const editCharacterId = useSyncExternalStore(noLocationSubscription, editCharacterIdFromLocation, () => "");
   const [editTarget, setEditTarget] = useState<CharacterEditTarget | null>(null);
   const [editError, setEditError] = useState("");
   const [state, setState] = useState<WizardState>(initialCharacterDraft);
@@ -281,9 +291,11 @@ export function CreateWorkspace() {
   const [createdVisibility, setCreatedVisibility] = useState("");
   const [pending, setPending] = useState(false);
   const [hydrated, setHydrated] = useState(false);
+  const [draftConflict, setDraftConflict] = useState(false);
+  const [draftReloadAttempt, setDraftReloadAttempt] = useState(0);
   const [viewerScope, setViewerScope] = useState<string | null>(null);
   const storageKey = viewerScope
-    ? `${draftStorageKeyForScope(viewerScope)}${editCharacterId ? `:edit:${editCharacterId}` : ""}`
+    ? `${draftStorageKeyForScope(viewerScope)}${editCharacterId ? `:edit:${editCharacterId}` : draftId ? `:draft:${draftId}` : ""}`
     : null;
   const [viewerAuthorityState, setViewerAuthorityState] = useState<
     "loading" | "ready" | "error" | "changed"
@@ -344,18 +356,33 @@ export function CreateWorkspace() {
       if (viewerBlockedRef.current || !viewerScope) {
         return Promise.reject(new Error("Your account changed. Reload to open its private draft."));
       }
+      if (draftConflict && method !== "GET") {
+        return Promise.reject(new Error("Load the latest saved draft before saving. Your current inputs have been kept."));
+      }
+      const draftWrite = path.startsWith("/api/v1/character-drafts/") &&
+        (method === "PATCH" || path.endsWith("/tags") || path.endsWith("/preview-anchor") || path.endsWith("/submit"));
+      const requestBody = draftWrite && isRecord(body) && stateRef.current.draftUpdatedAt
+        ? { ...body, expectedUpdatedAt: stateRef.current.draftUpdatedAt }
+        : body;
       return api(
         path,
-        body,
+        requestBody,
         method,
         () => createDraftTransfer(viewerScope, stateRef.current),
-        { ...options, viewerScope, onViewerChanged: invalidateViewer },
+        { ...options, viewerScope, onViewerChanged: invalidateViewer, onDraftConflict: () => setDraftConflict(true) },
       ).then((payload) => {
         if (viewerBlockedRef.current) throw new Error("Your account changed. Reload to open its private draft.");
+        if (method !== "GET" && payload.data?.draft?.updatedAt) {
+          const saved = { draftId: payload.data.draft.id, draftUpdatedAt: payload.data.draft.updatedAt };
+          // Sequential wizard actions must use the just-committed version even
+          // before React has rendered the next step.
+          stateRef.current = { ...stateRef.current, ...saved };
+          setState((current) => ({ ...current, ...saved }));
+        }
         return payload;
       });
     },
-    [invalidateViewer, viewerScope],
+    [draftConflict, invalidateViewer, viewerScope],
   );
   const persistPreviewBatch = useCallback(
     (batch: CreatePreviewBatch) => {
@@ -453,6 +480,20 @@ export function CreateWorkspace() {
     } catch {
       // ignore malformed storage
     }
+    const reconcileLocalDraft = (local: WizardState | null, server: WizardState) => {
+      if (!local) return server;
+      if (server.draftUpdatedAt && local.draftUpdatedAt !== server.draftUpdatedAt) {
+        // A pre-version browser copy is safe to upgrade only when its saved
+        // fields equal the server. Otherwise the user must choose the latest.
+        if (!local.draftUpdatedAt && samePreviewInputs(local, server) &&
+          local.tags === server.tags && JSON.stringify(local.voiceSelection) === JSON.stringify(server.voiceSelection)) {
+          return { ...local, draftUpdatedAt: server.draftUpdatedAt };
+        }
+        setDraftConflict(true);
+        return null;
+      }
+      return local;
+    };
     const applyRestored = (
       next: WizardState,
       serverAsset?: { id?: string; url: string; isSynthetic?: boolean } | null,
@@ -520,6 +561,26 @@ export function CreateWorkspace() {
         );
       }
     };
+    if (draftId) {
+      if (!viewerScope || isAnonymousScope(viewerScope)) {
+        queueMicrotask(() => { if (!controller.signal.aborted) { setEditError("Sign in to the account that owns this draft."); setHydrated(true); } });
+        return () => controller.abort();
+      }
+      void requestApi(`/api/v1/character-drafts/${encodeURIComponent(draftId)}`, undefined, "GET", { signal: controller.signal })
+        .then((payload) => {
+          if (controller.signal.aborted) return;
+          const serverState = payload.data?.draft ? wizardStateFromServerDraft(payload.data.draft) : null;
+          if (!serverState || serverState.draftId !== draftId) throw new Error("This draft is no longer available.");
+          const local = restored?.draftId === draftId ? restored : null;
+          const reconciled = reconcileLocalDraft(local, serverState);
+          applyRestored(reconciled ?? local ?? serverState,
+            reconciled ? payload.data?.asset ?? null : null,
+            reconciled ? payload.data?.previewJob ?? null : null);
+        })
+        .catch((error) => { if (!controller.signal.aborted) setEditError(messageFrom(error)); })
+        .finally(() => { if (!controller.signal.aborted) setHydrated(true); });
+      return () => controller.abort();
+    }
     if (editCharacterId && viewerScope && !isAnonymousScope(viewerScope)) {
       void requestApi(`/api/v1/characters/${encodeURIComponent(editCharacterId)}/edit-draft`, {}, "POST", { signal: controller.signal })
         .then((payload) => {
@@ -541,10 +602,11 @@ export function CreateWorkspace() {
           if (!serverState || !character || !baseline) throw new Error("This character could not be opened for editing.");
           setEditTarget({ id: character.id, name: character.name, imageUrl: character.imageUrl ?? null, baseline, published: character.published === true });
           const local = restored?.draftId === serverState.draftId ? restored : null;
+          const reconciled = reconcileLocalDraft(local, serverState);
           applyRestored(
-            { ...(local ?? serverState), visibility: local?.visibility ?? character.visibility },
-            payload.data?.asset ?? null,
-            payload.data?.previewJob ?? null,
+            { ...(reconciled ?? local ?? serverState), visibility: local?.visibility ?? character.visibility },
+            reconciled ? payload.data?.asset ?? null : null,
+            reconciled ? payload.data?.previewJob ?? null : null,
           );
           if (character.imageUrl && !local?.confirmedPreviewJobId && !serverState.confirmedPreviewJobId) {
             setPreview(character.imageUrl);
@@ -592,6 +654,11 @@ export function CreateWorkspace() {
         }
         const serverState = wizardStateFromServerDraft(payload.data.draft);
         if (serverState) {
+          if (restored?.draftId === serverState.draftId) {
+            const reconciled = reconcileLocalDraft(restored, serverState);
+            if (!reconciled) return;
+            restored = reconciled;
+          }
           // Recover a lost confirmation without discarding unsaved local traits
           // or attaching a server image to different local inputs.
           if (restored && (restored.draftId !== serverState.draftId || !samePreviewInputs(restored, serverState))) return;
@@ -612,7 +679,7 @@ export function CreateWorkspace() {
       if (!controller.signal.aborted) setHydrated(true);
     });
     return () => controller.abort();
-  }, [editCharacterId, requestApi, storageKey, viewerScope]);
+  }, [draftId, draftReloadAttempt, editCharacterId, requestApi, storageKey, viewerScope]);
 
   useEffect(() => {
     if (!hydrated || !storageKey || viewerBlockedRef.current) return;
@@ -1151,9 +1218,6 @@ export function CreateWorkspace() {
     try {
       const draftId = await ensureDraft();
       await saveStep(STEPS.length);
-      await requestApi(`/api/v1/character-drafts/${draftId}/tags`, {
-        tags: normalizedTags(state.tags),
-      });
       const submitted = await requestApi(`/api/v1/character-drafts/${draftId}/submit`, {
         visibility: state.visibility,
       });
@@ -1204,12 +1268,13 @@ export function CreateWorkspace() {
     }
   }
 
-  if (hydrated && editCharacterId && editError) {
+  if (hydrated && (editCharacterId || draftId) && editError) {
     return (
       <section className="mx-auto my-16 max-w-xl rounded-2xl border border-white/10 bg-[rgb(18,18,18)] p-6 text-center" role="alert" data-testid="edit-unavailable">
-        <h1 className="text-lg font-black text-white">This character can&apos;t be edited</h1>
+        <h1 className="text-lg font-black text-white">{draftId ? "This draft could not be opened" : "This character can't be edited"}</h1>
         <p className="mt-2 text-sm leading-6 text-neutral-300">{editError}</p>
-        <Link href="/custom" className="mt-4 inline-block rounded-full bg-white px-5 py-3 font-bold text-black">Back to My AI</Link>
+        {draftId && <button type="button" className="mt-4 mr-4 rounded-full bg-white px-5 py-3 font-bold text-black" onClick={() => { setHydrated(false); setEditError(""); setDraftReloadAttempt(attempt => attempt + 1); }}>Retry saved draft</button>}
+        <Link href={draftId ? "/creator-studio" : "/custom"} className="mt-4 inline-block rounded-full bg-white px-5 py-3 font-bold text-black">{draftId ? "Back to Creator Studio" : "Back to My AI"}</Link>
       </section>
     );
   }
@@ -1965,7 +2030,7 @@ export function CreateWorkspace() {
                 <button
                   className="inline-flex h-11 items-center gap-2 rounded-full bg-white px-5 text-[13px] font-black text-[rgb(13,13,13)] disabled:cursor-not-allowed disabled:bg-[rgb(55,55,55)] disabled:text-[rgb(114,113,112)]"
                   data-testid="create-next"
-                  disabled={pending || (step === 3 && !identityReady)}
+                  disabled={pending || draftConflict || (step === 3 && !identityReady)}
                   onClick={() => void next()}
                   type="button"
                 >
@@ -1982,6 +2047,13 @@ export function CreateWorkspace() {
               </p>
             )}
 
+            {draftConflict && <div className="mt-4 rounded-[12px] border border-white/15 p-4 text-[13px] leading-6 text-white" data-testid="create-draft-conflict" role="alert">
+              <p>This draft changed in another tab. Your current inputs are kept here. Loading the latest saved draft replaces them with the saved version.</p>
+              <button className="mt-2 rounded-full bg-white px-4 py-2 font-bold text-black" onClick={() => {
+                if (storageKey) { try { window.localStorage.removeItem(storageKey); } catch { setStatus("Could not clear browser storage. Try again."); return; } }
+                setHydrated(false); setDraftConflict(false); setStatus(""); setDraftReloadAttempt((attempt) => attempt + 1);
+              }} type="button">Load latest saved draft</button>
+            </div>}
             {status && (
               <p
                 aria-live="polite"
@@ -2074,7 +2146,7 @@ async function api(
   body?: unknown,
   method = "POST",
   createResumeTarget?: () => string | null,
-  options?: { idempotencyKey?: string; signal?: AbortSignal; viewerScope?: string; onViewerChanged?: () => void },
+  options?: { idempotencyKey?: string; signal?: AbortSignal; viewerScope?: string; onViewerChanged?: () => void; onDraftConflict?: () => void },
 ) {
   const response = await fetch(path, {
     method,
@@ -2106,6 +2178,9 @@ async function api(
   const payload = ((await response.json().catch(() => null)) ?? {}) as DraftPayload;
   if (response.status === 409 && payload.error?.message?.startsWith("Your account changed")) {
     options?.onViewerChanged?.();
+  }
+  if (response.status === 409 && payload.error?.details?.blocker === "version_mismatch") {
+    options?.onDraftConflict?.();
   }
   if (!response.ok || payload.ok === false) {
     throw new Error(payload.error?.message ?? GENERIC_FAILURE_MESSAGE);
@@ -2175,6 +2250,7 @@ export function parseWizardDraft(value: unknown): WizardState | null {
   if (!isRecord(value)) return null;
   const restored: WizardState = {
     draftId: draftString(value.draftId, 200),
+    draftUpdatedAt: typeof value.draftUpdatedAt === "string" && Number.isFinite(Date.parse(value.draftUpdatedAt)) ? new Date(value.draftUpdatedAt).toISOString() : "",
     previewBatch: parseCreatePreviewBatch(value.previewBatch),
     restoredPreviewCandidate: parseCreatePreviewCandidate(value.restoredPreviewCandidate),
     confirmedPreviewJobId: draftString(

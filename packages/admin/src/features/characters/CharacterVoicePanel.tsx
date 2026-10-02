@@ -32,6 +32,7 @@ import {
 } from "@/features/operations/WorkspaceUi";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
 import { cn } from "@/lib/utils";
+import { VoiceCallHistory } from "./VoiceCallHistory";
 
 type RunCommittedMutation = <T>(input: {
   readonly action: string;
@@ -1124,6 +1125,7 @@ export function CharacterVoicePanel({
         </div>
       </details>
 
+      <VoiceCallHistory key={data.character.id} characterId={data.character.id} />
       {dialogSpec ? <ConfirmDialog onClose={() => setDialog(null)} spec={dialogSpec} /> : null}
     </div>
   );

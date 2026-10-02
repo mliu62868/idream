@@ -601,7 +601,7 @@ function PlacementForm({ run, itemIndex, permissions, reload }: { run: CreativeR
         body,
       });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Staged placement withdrawal failed");
+      setError(cause instanceof Error ? cause.message : "Placement withdrawal failed");
       setBusy(false);
       return;
     }
@@ -616,6 +616,9 @@ function PlacementForm({ run, itemIndex, permissions, reload }: { run: CreativeR
   };
   const canWithdrawStagedPlacement = item.placement?.status === "scheduled" &&
     item.placement.verificationState === "verifying";
+  const canWithdrawLivePlacement = item.placement?.status === "published" &&
+    item.placement.verificationState === "passed";
+  const canWithdrawPlacement = canWithdrawStagedPlacement || canWithdrawLivePlacement;
   return (
     <>
       <section className="mt-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
@@ -670,13 +673,13 @@ function PlacementForm({ run, itemIndex, permissions, reload }: { run: CreativeR
             </label>
           </>
         ) : null}
-        {canWithdrawStagedPlacement ? (
+        {canWithdrawPlacement ? (
           <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
             {t("Withdrawal reason")}
             <textarea
               className={`${textAreaClass} mt-1`}
               onChange={(event) => setWithdrawalReason(event.target.value)}
-              placeholder={t("Explain why the staged candidate must be withdrawn")}
+              placeholder={t(canWithdrawLivePlacement ? "Explain why this campaign must leave the live surface" : "Explain why the staged candidate must be withdrawn")}
               value={withdrawalReason}
             />
           </label>
@@ -700,13 +703,13 @@ function PlacementForm({ run, itemIndex, permissions, reload }: { run: CreativeR
               <RefreshCcw className="h-4 w-4" /> {t("Verify & activate")}
             </WorkspaceButton>
           )}
-          {canWithdrawStagedPlacement ? (
+          {canWithdrawPlacement ? (
             <WorkspaceButton
               disabled={!permissions.place || busy || withdrawalReason.trim().length < 3}
               onClick={() => void withdraw()}
               tone="danger"
             >
-              <X className="h-4 w-4" /> {t("Withdraw staged placement")}
+              <X className="h-4 w-4" /> {t(canWithdrawLivePlacement ? "Withdraw live placement" : "Withdraw staged placement")}
             </WorkspaceButton>
           ) : null}
         </div>

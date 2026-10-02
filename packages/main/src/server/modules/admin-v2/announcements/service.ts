@@ -2,22 +2,24 @@
 //       写操作要 reason + typed confirmation，并留审计行。
 // INTENT: 存储仍是 AppSetting 里的一个 JSON 数组（零迁移），公开读经
 //         `server/announcements/store` 的 activeAnnouncements。
-// INVARIANT: id 由服务端生成；写后整组覆盖。
+// INVARIANT: 整组 JSON 的读改写与审计共用事务锁；单条版本阻止覆盖陈旧编辑。
 import { randomUUID } from "node:crypto";
+import type { Prisma } from "@prisma/client";
 import { Errors } from "@/server/lib/errors";
-import { prisma } from "@/server/lib/db";
 import {
   activeAnnouncements,
+  ANNOUNCEMENTS_KEY,
   type Announcement,
   readAnnouncements,
   writeAnnouncements,
 } from "@/server/announcements/store";
 import {
   actorWithPermission,
-  jsonBody,
   queryParams,
   type AdminActor,
+  type AdminV2RequestBody,
 } from "@/server/modules/admin-v2/shared/authority";
+import { executeAdminMutation } from "@/server/modules/admin-v2/shared/admin-mutation";
 import {
   decodeAdminListCursor,
   encodeAdminListCursor,
@@ -25,11 +27,11 @@ import {
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 
 const PROMO_READ = "growth.promo.read" as const;
-const PROMO_WRITE = "growth.promo.write" as const;
 
 const safeExternalHrefRe = /^(https?:)?\/\//i;
 
 function writeAudit(
+  tx: Prisma.TransactionClient,
   request: Request,
   actor: AdminActor,
   input: {
@@ -40,7 +42,7 @@ function writeAudit(
     after?: unknown;
   },
 ) {
-  return prisma.adminAuditLog.create({
+  return tx.adminAuditLog.create({
     data: {
       actorId: actor.id,
       actorRole: actor.role,
@@ -53,6 +55,24 @@ function writeAudit(
       requestId: request.headers.get("x-request-id") ?? randomUUID(),
     },
   });
+}
+
+async function lockedAnnouncements(tx: Prisma.TransactionClient) {
+  // The setting may not exist yet; a row lock alone cannot serialize its first two writers.
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"announcements-write"}))`;
+  return readAnnouncements(tx);
+}
+
+function assertAnnouncementVersion(item: Announcement, expectedVersion: number) {
+  if (item.version !== expectedVersion) throw Errors.conflict("Announcement changed. Refresh and reopen it before trying again.", {
+    code: "announcement_version_conflict", expectedVersion, actualVersion: item.version,
+  });
+}
+
+function assertAnnouncementWindow(item: Pick<Announcement, "startsAt" | "endsAt">) {
+  if (item.startsAt && item.endsAt && Date.parse(item.startsAt) >= Date.parse(item.endsAt)) {
+    throw Errors.badRequest("Announcement end time must be after its start time");
+  }
 }
 
 // SPEC: 写操作的响应也必须带 serving —— 契约是 .strict()，而且「我刚激活的这条，现在真的在
@@ -120,91 +140,84 @@ function announcementCursorId(value: unknown) {
 }
 
 export async function createAnnouncement(request: Request) {
-  const actor = await actorWithPermission(request, PROMO_WRITE);
-  const body = await jsonBody(request, "announcementCreateRequestSchema");
-  if (body.confirmation !== body.title) {
-    throw Errors.badRequest("Confirmation did not match announcement title");
-  }
-  const items = await readAnnouncements();
-  const announcement: Announcement = {
-    id: randomUUID(),
-    title: body.title,
-    body: body.body,
-    level: body.level,
-    active: body.active,
-    startsAt: body.startsAt ?? null,
-    endsAt: body.endsAt ?? null,
-    href: normalizeAnnouncementHref(body.href),
-    createdAt: new Date().toISOString(),
-  };
-  await writeAnnouncements([announcement, ...items]);
-  await writeAudit(request, actor, {
-    action: "growth.announcement.create",
-    targetId: announcement.id,
-    reason: body.reason,
-    after: {
-      title: announcement.title,
-      level: announcement.level,
-      active: announcement.active,
+  return executeAdminMutation<AdminV2RequestBody<"announcementCreateRequestSchema+idempotency-key">>(
+    "POST /api/v2/admin/announcements", request, {
+      params: {},
+      target: () => ({ type: "app_setting", id: ANNOUNCEMENTS_KEY }),
+      mutate: async (tx, { actor, body }) => {
+        if (body.confirmation !== body.title) throw Errors.badRequest("Confirmation did not match announcement title");
+        const items = await lockedAnnouncements(tx);
+        const announcement: Announcement = {
+          id: randomUUID(), version: 1,
+          title: body.title, body: body.body, level: body.level, active: body.active,
+          startsAt: body.startsAt ?? null, endsAt: body.endsAt ?? null,
+          href: normalizeAnnouncementHref(body.href), createdAt: new Date().toISOString(),
+        };
+        assertAnnouncementWindow(announcement);
+        await writeAnnouncements([announcement, ...items], tx);
+        await writeAudit(tx, request, actor, {
+          action: "growth.announcement.create", targetId: announcement.id, reason: body.reason,
+          after: { title: announcement.title, level: announcement.level, active: announcement.active },
+        });
+        return { announcement: withServingState(announcement) };
+      },
     },
-  });
-  return { announcement: withServingState(announcement) };
+  );
 }
 
 export async function patchAnnouncement(request: Request, id: string) {
-  const actor = await actorWithPermission(request, PROMO_WRITE);
-  const body = await jsonBody(request, "announcementPatchRequestSchema");
-  if (body.confirmation !== id) {
-    throw Errors.badRequest("Confirmation did not match target");
-  }
-  const items = await readAnnouncements();
-  const index = items.findIndex((item) => item.id === id);
-  if (index < 0) throw Errors.notFound("Announcement not found");
-  const before = items[index]!;
-  const updated: Announcement = {
-    ...before,
-    title: body.title ?? before.title,
-    body: body.body ?? before.body,
-    level: body.level ?? before.level,
-    active: body.active ?? before.active,
-    startsAt: body.startsAt === undefined ? before.startsAt : body.startsAt,
-    endsAt: body.endsAt === undefined ? before.endsAt : body.endsAt,
-    href: body.href === undefined ? before.href : normalizeAnnouncementHref(body.href),
-  };
-  const next = [...items];
-  next[index] = updated;
-  await writeAnnouncements(next);
-  // INVARIANT: 审计记录每个实际变化字段的前后值 —— 改了标题 / 正文 / 时间窗却只留 active/level，
-  //            事后无从得知公告原来写的是什么。
-  const changed = (["title", "body", "level", "active", "startsAt", "endsAt", "href"] as const)
-    .filter((key) => before[key] !== updated[key]);
-  await writeAudit(request, actor, {
-    action: "growth.announcement.update",
-    targetId: id,
-    reason: body.reason,
-    before: Object.fromEntries(changed.map((key) => [key, before[key]])),
-    after: Object.fromEntries(changed.map((key) => [key, updated[key]])),
-  });
-  return { announcement: withServingState(updated) };
+  return executeAdminMutation<AdminV2RequestBody<"announcementPatchRequestSchema+idempotency-key">>(
+    "PATCH /api/v2/admin/announcements/:id", request, {
+      params: { id }, target: () => ({ type: "announcement", id }), expectedVersion: body => body.entityVersion,
+      mutate: async (tx, { actor, body }) => {
+        if (body.confirmation !== id) throw Errors.badRequest("Confirmation did not match target");
+        const items = await lockedAnnouncements(tx);
+        const index = items.findIndex(item => item.id === id);
+        if (index < 0) throw Errors.notFound("Announcement not found");
+        const before = items[index]!;
+        assertAnnouncementVersion(before, body.entityVersion);
+        const updated: Announcement = {
+          ...before, version: before.version + 1,
+          title: body.title ?? before.title, body: body.body ?? before.body,
+          level: body.level ?? before.level, active: body.active ?? before.active,
+          startsAt: body.startsAt === undefined ? before.startsAt : body.startsAt,
+          endsAt: body.endsAt === undefined ? before.endsAt : body.endsAt,
+          href: body.href === undefined ? before.href : normalizeAnnouncementHref(body.href),
+        };
+        assertAnnouncementWindow(updated);
+        const next = [...items];
+        next[index] = updated;
+        await writeAnnouncements(next, tx);
+        // Audit every changed field, not only active/level; copy and schedule changes need the same history.
+        const changed = (["title", "body", "level", "active", "startsAt", "endsAt", "href"] as const)
+          .filter(key => before[key] !== updated[key]);
+        await writeAudit(tx, request, actor, {
+          action: "growth.announcement.update", targetId: id, reason: body.reason,
+          before: Object.fromEntries(changed.map(key => [key, before[key]])),
+          after: Object.fromEntries(changed.map(key => [key, updated[key]])),
+        });
+        return { announcement: withServingState(updated) };
+      },
+    },
+  );
 }
 
 export async function deleteAnnouncement(request: Request, id: string) {
-  const actor = await actorWithPermission(request, PROMO_WRITE);
-  const body = await jsonBody(request, "announcementDeleteRequestSchema");
-  if (body.confirmation !== id) {
-    throw Errors.badRequest("Confirmation did not match target");
-  }
-  const items = await readAnnouncements();
-  if (!items.some((item) => item.id === id)) {
-    throw Errors.notFound("Announcement not found");
-  }
-  await writeAnnouncements(items.filter((item) => item.id !== id));
-  await writeAudit(request, actor, {
-    action: "growth.announcement.delete",
-    targetId: id,
-    reason: body.reason,
-  });
-  return { deleted: true as const };
+  return executeAdminMutation<AdminV2RequestBody<"announcementDeleteRequestSchema+idempotency-key">>(
+    "DELETE /api/v2/admin/announcements/:id", request, {
+      params: { id }, target: () => ({ type: "announcement", id }), expectedVersion: body => body.entityVersion,
+      mutate: async (tx, { actor, body }) => {
+        if (body.confirmation !== id) throw Errors.badRequest("Confirmation did not match target");
+        const items = await lockedAnnouncements(tx);
+        const item = items.find(item => item.id === id);
+        if (!item) throw Errors.notFound("Announcement not found");
+        assertAnnouncementVersion(item, body.entityVersion);
+        await writeAnnouncements(items.filter(item => item.id !== id), tx);
+        await writeAudit(tx, request, actor, { action: "growth.announcement.delete", targetId: id, reason: body.reason });
+        return { deleted: true as const };
+      },
+    },
+  );
 }
 
 function normalizeAnnouncementHref(value: string | null | undefined) {

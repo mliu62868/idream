@@ -40,6 +40,7 @@ import { UpgradeWorkspace } from "./UpgradeWorkspace";
 function activeHrefForPath(path: string) {
   if (path === "/login" || path === "/signup") return "";
   if (path.startsWith("/create")) return "/create";
+  if (path.startsWith("/creator-studio")) return "/creator-studio";
   if (path.startsWith("/chat")) return "/chat";
   if (path.startsWith("/generate") || path.startsWith("/generator")) {
     return "/generate";
@@ -56,7 +57,9 @@ function activeHrefForPath(path: string) {
     path.startsWith("/type") ||
     path.startsWith("/comparison") ||
     path.includes("alternatives") ||
+    path.startsWith("/images") ||
     path.startsWith("/videos") ||
+    path.startsWith("/glossary") ||
     path.startsWith("/ai-instructions") ||
     path.startsWith("/ai-girl") ||
     path.startsWith("/ai-girlfriend") ||
@@ -217,7 +220,9 @@ function MarketingPage({ route }: Readonly<{ route: OurdreamRoute }>) {
 function CreatePage({ route }: Readonly<{ route: OurdreamRoute }>) {
   return (
     <RouteShell route={route}>
-      <CreateWorkspace />
+      <Suspense fallback={<p className="p-6 text-neutral-300">Loading your character draft…</p>}>
+        <CreateWorkspace />
+      </Suspense>
     </RouteShell>
   );
 }

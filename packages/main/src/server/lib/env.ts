@@ -102,6 +102,7 @@ const EnvSchema = z.object({
   // Voice clips arrive as WAV from both gateways; Main re-encodes to MP3 before
   // storage. Set to an absolute path when ffmpeg is not on PATH.
   VOICE_FFMPEG_BIN: z.string().min(1).default("ffmpeg"),
+  VIDEO_FFPROBE_BIN: z.string().min(1).default("ffprobe"),
   JOB_STALE_TIMEOUT_MS: z.coerce.number().int().positive().default(10 * 60 * 1_000),
   GEN_VIDEO_TIMEOUT_MS: z.coerce
     .number()

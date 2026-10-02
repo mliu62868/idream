@@ -356,7 +356,7 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
     expect(redGraft).toMatchObject({
       modelId: "redgraft-ltx25-fast2k-int8-convrot",
       backendKind: "comfyui",
-      version: 2,
+      version: 4,
       capabilities: [
         "video",
         "img2video",
@@ -373,10 +373,24 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
     if (!redGraft || redGraft.backendKind !== "comfyui") {
       throw new Error("expected RedGraft LTX 2.5 ComfyUI descriptor");
     }
+    expect(redGraft.apiPrompt["320:335"]).toMatchObject({
+      class_type: "IDreamGemma4MLXCLIPLoader",
+      inputs: { clip_name: "gemma4-12b-ltx-v1-mlx-q8.safetensors" },
+    });
+    expect(redGraft.apiPrompt["900:3"]?.inputs).toMatchObject({
+      after: ["900:1", 0], release: ["320:335", 0],
+    });
     expect(redGraft.apiPrompt["320:333"]?.inputs).toMatchObject({
       unet_name: "redgraftLTX25Fast2K_ltx25RedgraftNSFW.safetensors",
       weight_dtype: "default",
     });
+    expect(redGraft.apiPrompt["900:4"]).toMatchObject({
+      class_type: "IDreamMPSGraphAttention",
+      inputs: { model: ["320:333", 0], compute_precision: "bf16" },
+    });
+    for (const id of ["320:282", "320:314"]) {
+      expect(redGraft.apiPrompt[id]?.inputs.model).toEqual(["900:4", 0]);
+    }
     expect(redGraft.apiPrompt["75"]?.inputs).toMatchObject({
       filename_prefix: "idream-redgraft-ltx25",
     });

@@ -357,10 +357,15 @@ export function useViewerGate(options?: ViewerGateOptions): ViewerGate {
   // the generation must move before a child's passive refresh effect asks for a
   // ticket, or that read goes out under the old generation and is aborted here.
   useLayoutEffect(() => {
+    // Subscription remounts temporarily forget the session. No new owner has
+    // been confirmed yet; anonymous is an explicit identity, not null.
+    if (session.identity === null) return;
     const previous = seenRef.current;
     seenRef.current = session.identity;
     // The first answer is not a change: nothing private has been read yet.
-    if (previous === null || previous === session.identity) return;
+    // A remount may resolve the same owner into a new object. Only the
+    // confirmed scope determines whether private projections changed owner.
+    if (previous === null || identityKey(previous) === identityKey(session.identity)) return;
     // INVARIANT: in this order. Bumping the generation first makes every reply
     // still in the air `discarded`, so a reset cannot be overwritten by an
     // answer the previous account asked for.

@@ -148,6 +148,18 @@ class MemoryLifecycleTest(unittest.TestCase):
         self.assertIsNone(owner.cond_stage_model)
         self.assertIsNone(owner.patcher.model)
 
+    def test_releases_declared_mlx_owner_without_touching_live_torch_models(self):
+        release = Mock(return_value=10_000.0)
+        owner = types.SimpleNamespace(release_completed=release)
+        diffusion_model = FakeLoadedModel('mps', size_mb=16_201)
+        fake_management.current_loaded_models = [diffusion_model]
+
+        memory_lifecycle.release_off_device_models(owner)
+
+        release.assert_called_once_with()
+        self.assertEqual(diffusion_model.unload_calls, [])
+        self.assertEqual(fake_management.current_loaded_models, [diffusion_model])
+
     def test_clip_loaders_are_never_reused_after_owner_discard(self):
         self.assertTrue(
             math.isnan(memory_lifecycle.IDreamFreshCheckpointCLIPLoader.IS_CHANGED()),

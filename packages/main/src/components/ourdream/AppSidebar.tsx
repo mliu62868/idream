@@ -9,6 +9,8 @@ import {
   ExternalLink,
   MessageCircle,
   Newspaper,
+  Package,
+  Palette,
   PlusSquare,
   ShieldCheck,
   Sparkles,
@@ -27,6 +29,8 @@ const primaryIcons = [
   Bot,
   Newspaper,
   BookOpen,
+  Package,
+  Palette,
   UsersRound,
 ];
 

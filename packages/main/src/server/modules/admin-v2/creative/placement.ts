@@ -77,6 +77,13 @@ export async function publishDistributionPlacement(input: {
         purpose: run.purpose,
       });
     }
+    // INVARIANT: verifying self-transitions preserve pending work during withdrawal, not admit a second stage.
+    if (run.verificationState === "verifying") {
+      throw Errors.conflict("Verify or withdraw the staged placement before staging another destination", {
+        code: "creative_placement_verification_pending",
+        runId: run.id,
+      });
+    }
     if (
       !isCreativeRunWorkflowTransitionAllowed(run.workflowStage, "verification") ||
       !isCreativeRunVerificationTransitionAllowed(run.verificationState, "verifying")
@@ -250,6 +257,11 @@ export async function withdrawCreativePlacement(input: {
   readonly requestId: string;
 }, db?: Prisma.TransactionClient) {
   const execute = async (tx: Prisma.TransactionClient) => {
+    const locator = await tx.mediaAssetPlacement.findUnique({
+      where: { id: input.placementId },
+    });
+    if (!locator) throw Errors.notFound("Creative placement not found");
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`creative-placement:${locator.slot}:${locator.targetType}:${locator.targetId}`}))`;
     const run = await tx.contentProductionBatch.findFirst({
       where: operationalContentProductionBatchWhere({ id: input.runId }),
     });
@@ -263,46 +275,78 @@ export async function withdrawCreativePlacement(input: {
       where: { id: input.placementId },
     });
     if (!placement) throw Errors.notFound("Creative placement not found");
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`creative-placement:${placement.slot}:${placement.targetType}:${placement.targetId}`}))`;
     const metadata = jsonRecord(placement.metadata);
     if (metadata.creativeRunId !== run.id) {
       throw Errors.notFound("Placement does not belong to Creative Run");
     }
-    if (placement.status !== "scheduled" || placement.verificationState !== "verifying") {
-      throw Errors.conflict("Only a staged placement can be withdrawn", {
+    const staged = placement.status === "scheduled" && placement.verificationState === "verifying";
+    const live = placement.status === "published" && placement.verificationState === "passed";
+    if (!staged && !live) {
+      throw Errors.conflict("Only a staged or live placement can be withdrawn", {
         status: placement.status,
         verificationState: placement.verificationState,
       });
     }
+    if (placement.slot !== "campaign" || placement.targetType !== "campaign" || run.purpose !== "campaign") {
+      throw Errors.forbidden("Only Campaign Creative placements can be withdrawn here");
+    }
     if (
-      run.lifecycleState !== "active" ||
-      run.workflowStage !== "verification" ||
-      run.verificationState !== "verifying" ||
-      !isCreativeRunLifecycleTransitionAllowed(run.lifecycleState, "active") ||
-      !isCreativeRunWorkflowTransitionAllowed(run.workflowStage, "placement") ||
-      !isCreativeRunVerificationTransitionAllowed(run.verificationState, "pending") ||
+      !["active", "closed"].includes(run.lifecycleState) ||
+      (staged && (run.lifecycleState !== "active" || run.workflowStage !== "verification" || run.verificationState !== "verifying")) ||
       !isCreativePlacementVerificationTransitionAllowed(placement.verificationState, "overridden")
     ) {
-      throw Errors.conflict("Creative Run cannot withdraw the staged placement from its present state", {
+      throw Errors.conflict("Creative Run cannot withdraw the placement from its present state", {
         lifecycleState: run.lifecycleState,
         workflowStage: run.workflowStage,
         runVerificationState: run.verificationState,
         placementVerificationState: placement.verificationState,
       });
     }
+    const itemId = typeof metadata.creativeRunItemId === "string" ? metadata.creativeRunItemId : null;
+    const item = live && itemId
+      ? await tx.contentProductionItem.findFirst({ where: { id: itemId, batchId: run.id, mediaAssetId: placement.mediaAssetId } })
+      : null;
+    if (live && (!item || item.status !== "published")) {
+      throw Errors.conflict("Live placement lost its published Creative Run item authority");
+    }
+    const otherPlacements = live ? await tx.mediaAssetPlacement.findMany({
+      where: {
+        id: { not: placement.id },
+        status: { in: ["scheduled", "published"] },
+        metadata: { path: ["creativeRunId"], equals: run.id },
+      },
+    }) : [];
+    const stillPlaced = otherPlacements.some((candidate) =>
+      candidate.status === "published" && candidate.verificationState === "passed" &&
+      jsonRecord(candidate.metadata).creativeRunItemId === itemId,
+    );
+    const itemStatus = stillPlaced ? "published" : "generated";
+    if (item && !isCreativeRunItemTransitionAllowed(item.status, itemStatus)) {
+      throw Errors.conflict("Creative Run item cannot leave this placement");
+    }
+    const continuation = live
+      ? otherPlacements.some((candidate) => candidate.status === "scheduled" && candidate.verificationState === "verifying")
+        ? { lifecycleState: "active" as const, workflowStage: "verification" as const, verificationState: "verifying" as const, status: "reviewing" as const }
+        : deriveCreativeRunContinuation((await tx.contentProductionItem.findMany({ where: { batchId: run.id }, select: { id: true, status: true } })).map((candidate) => candidate.id === itemId ? itemStatus : candidate.status))
+      : { lifecycleState: "active" as const, workflowStage: "placement" as const, verificationState: "pending" as const, status: "reviewing" as const };
+    if (
+      !isCreativeRunLifecycleTransitionAllowed(run.lifecycleState, continuation.lifecycleState) ||
+      !isCreativeRunWorkflowTransitionAllowed(run.workflowStage, continuation.workflowStage) ||
+      !isCreativeRunVerificationTransitionAllowed(run.verificationState, continuation.verificationState)
+    ) {
+      throw Errors.conflict("Creative Run cannot accept the placement withdrawal state");
+    }
     const withdrawnAt = new Date();
     const claimedRun = await tx.contentProductionBatch.updateMany({
       where: {
         id: run.id,
         version: run.version,
-        lifecycleState: "active",
-        workflowStage: "verification",
-        verificationState: "verifying",
+        lifecycleState: run.lifecycleState,
+        workflowStage: run.workflowStage,
+        verificationState: run.verificationState,
       },
       data: {
-        workflowStage: "placement",
-        verificationState: "pending",
-        status: "reviewing",
+        ...continuation,
         version: { increment: 1 },
       },
     });
@@ -315,8 +359,8 @@ export async function withdrawCreativePlacement(input: {
       where: {
         id: placement.id,
         version: placement.version,
-        status: "scheduled",
-        verificationState: "verifying",
+        status: placement.status,
+        verificationState: placement.verificationState,
       },
       data: {
         status: "archived",
@@ -337,6 +381,15 @@ export async function withdrawCreativePlacement(input: {
         expectedVersion: placement.version,
       });
     }
+    if (item && !stillPlaced) {
+      const claimedItem = await tx.contentProductionItem.updateMany({
+        where: { id: item.id, batchId: run.id, version: item.version, status: item.status, mediaAssetId: placement.mediaAssetId },
+        data: { status: itemStatus, version: { increment: 1 } },
+      });
+      if (claimedItem.count !== 1) throw Errors.conflict("Creative Run item changed during placement withdrawal");
+    }
+    // INVARIANT: withdrawal removes this placement only. A superseded rollback
+    // target needs a fresh publish decision; it must never return to serving here.
     const updatedRun = await tx.contentProductionBatch.findUniqueOrThrow({
       where: { id: run.id },
     });
@@ -353,12 +406,14 @@ export async function withdrawCreativePlacement(input: {
           placementVerificationState: placement.verificationState,
           runVersion: run.version,
           runVerificationState: run.verificationState,
+          ...(item ? { itemStatus: item.status, itemVersion: item.version } : {}),
         }),
         after: toInputJson({
           placementStatus: "archived",
           placementVerificationState: "overridden",
           runVersion: updatedRun.version,
           runVerificationState: updatedRun.verificationState,
+          ...(item ? { itemStatus, itemVersion: item.version + (stillPlaced ? 0 : 1) } : {}),
         }),
         requestId: input.requestId,
       },
@@ -377,6 +432,7 @@ export async function withdrawCreativePlacement(input: {
           verificationState: "overridden",
           runVerificationState: updatedRun.verificationState,
           runVersion: updatedRun.version,
+          ...(item ? { itemStatus, itemVersion: item.version + (stillPlaced ? 0 : 1) } : {}),
         }),
       },
     });

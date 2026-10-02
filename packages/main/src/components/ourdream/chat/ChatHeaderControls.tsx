@@ -9,6 +9,7 @@ import { MemoryToggle } from "./MemoryToggle";
 // INTENT: mobile-first; wraps cleanly at 390px so nothing is occluded.
 export function ChatHeaderControls({
   generateHref,
+  generationUnavailable = false,
   memoryEnabled,
   memoryPending,
   onToggleMemory,
@@ -16,6 +17,7 @@ export function ChatHeaderControls({
   onOpenMemory,
 }: Readonly<{
   generateHref: string | null;
+  generationUnavailable?: boolean;
   memoryEnabled: boolean;
   memoryPending: boolean;
   onToggleMemory: () => void;
@@ -26,7 +28,7 @@ export function ChatHeaderControls({
     <div className="mt-4">
       <div className="flex flex-wrap items-center gap-2">
         <MemoryToggle enabled={memoryEnabled} pending={memoryPending} onToggle={onToggleMemory} />
-        {generateHref ? (
+        {generationUnavailable ? null : generateHref ? (
           <Link
             className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-[rgb(36,36,36)] px-3 py-1 text-[12px] font-semibold text-[rgb(170,170,170)] transition-colors hover:text-white"
             data-testid="chat-generate-link"

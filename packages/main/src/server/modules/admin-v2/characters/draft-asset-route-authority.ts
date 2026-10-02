@@ -15,6 +15,7 @@ export type DraftAssetRouteEntry = {
   readonly itemId: string | null;
   readonly reviewDecisionId: string | null;
   readonly generationJobId: string | null;
+  readonly customerIdentityRevisionId: string | null;
   readonly bootstrapIdentity: boolean;
   readonly generationRouteFingerprint: string | null;
 };
@@ -42,6 +43,7 @@ export function draftAssetRouteEntries(
               itemId: null,
               reviewDecisionId: null,
               generationJobId: null,
+              customerIdentityRevisionId: null,
               bootstrapIdentity: false,
               generationRouteFingerprint: null,
             },
@@ -65,6 +67,7 @@ export function draftAssetRouteEntries(
               typeof entry.generationJobId === "string"
                 ? entry.generationJobId
                 : null,
+            customerIdentityRevisionId: typeof entry.customerIdentityRevisionId === "string" ? entry.customerIdentityRevisionId : null,
             bootstrapIdentity: entry.bootstrapIdentity === true,
             generationRouteFingerprint:
               typeof entry.generationRouteFingerprint === "string"

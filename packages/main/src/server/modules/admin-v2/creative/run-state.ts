@@ -96,11 +96,14 @@ export function deriveCreativeRunContinuation(
   if (allResolved) {
     const runtimeVerified = requiresVerifiedPlacement &&
       itemStatuses.some((status) => status === "published");
+    // INVARIANT: finishing every item is not successful completion when none
+    // produced a generated, approved, or published result.
+    const successful = itemStatuses.some((status) => ["generated", "approved", "published"].includes(status));
     return {
       lifecycleState: "closed" as const,
       workflowStage: runtimeVerified ? "verification" as const : requiresReview ? "review" as const : "generation" as const,
       verificationState: runtimeVerified ? "passed" as const : "pending" as const,
-      status: "completed" as const,
+      status: successful ? "completed" as const : "failed" as const,
     };
   }
   const workflowStage = itemStatuses.some((status) => ["queued", "regenerate_requested"].includes(status))

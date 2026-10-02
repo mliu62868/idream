@@ -10,6 +10,7 @@ import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDi
 import { DangerButton, GhostButton, PrimaryButton } from "@/components/admin/ui/buttons";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { AssetImage } from "@/components/admin/ui/AssetImage";
+import { INPUT_CLASS } from "@/components/admin/ui/FormPage";
 import { EngineeringDetails } from "@/components/admin/generation/EngineeringDetails";
 import { LoadingWorkspace } from "@/features/operations/WorkspaceUi";
 import { InfoGrid, WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
@@ -17,16 +18,13 @@ import {
   PATCH_ACTIONS,
   PLACEMENTS_BASE,
   placementPatchPayload,
+  validCampaignDraft,
+  type PlacementDraft,
   type Placement,
 } from "./placements-api";
 
-// SPEC: 铺位详情页 —— 字段 + 关联资产预览 + 发布/暂停/归档（spec §7 详情页）。
-// INTENT: 无单条 GET，复用列表接口按 id 过滤（与其余三件套架构一致）；铺位没有可编辑字段
-// （slot/targetType/targetId 由创建时定死），详情页只做状态流转，没有 view/edit 模式切换。
-// INVARIANTS: placementPatchSchema（server admin/content/placements.ts）要求 reason（≥3 字符）—— 三个动作全部
-// 走 ConfirmDialog 采集 reason；归档是破坏性操作（archived 后铺位不再生效），要求输入 slot 打对——
-// 铺位没有名字，用 slot 代替（T16 图片库同款例外）。
-type PendingAction = (typeof PATCH_ACTIONS)[number] | null;
+// Publication is a separate byte-verifying command; a status PATCH cannot bypass it.
+type PendingAction = (typeof PATCH_ACTIONS)[number] | "publish" | "copy" | null;
 
 export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; id: string }) {
   const { t, value } = useAdminI18n();
@@ -36,6 +34,7 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
   const [error, setError] = useState<string | null>(null);
   const [refreshWarning, setRefreshWarning] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingAction>(null);
+  const [copy, setCopy] = useState<Pick<PlacementDraft, "eyebrow" | "title" | "ctaLabel" | "href"> | null>(null);
   const { feedback, reportSuccess, clearFeedback } = useWriteFeedback();
 
   const reload = useCallback(async (propagateError = false) => {
@@ -64,6 +63,39 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
 
   const confirmSpec: ConfirmSpec | null = useMemo(() => {
     if (!row || !pending) return null;
+    if (pending === "copy" && copy) return {
+      title: t("Save changes"), submitLabel: t("Save changes"),
+      onSubmit: async (reason) => {
+        await adminV2Operation("PATCH /api/v2/admin/content/placements/:id", {
+          path: { id }, ifMatch: row.version, body: { confirmation: id, reason, metadata: {
+            eyebrow: copy.eyebrow.trim(), title: copy.title.trim(),
+            ctaLabel: copy.ctaLabel.trim() || null, href: copy.href.trim() || null,
+          } },
+        });
+        setCopy(null);
+        reportSuccess(t("Campaign copy saved. Publish to make it visible in Community."));
+        try { await reload(true); }
+        catch (refreshError) {
+          setError(null);
+          setRefreshWarning(t("Placement copy was saved, but the latest projection could not be refreshed: {message}. Use Refresh before another write.", { message: requestErrorMessage(refreshError, t) }));
+        }
+      },
+    };
+    if (pending === "publish") return {
+      title: t("Publish"), submitLabel: t("Publish"),
+      summary: t("This campaign will become visible in Community. You can pause it from this page."),
+      onSubmit: async (reason) => {
+        await adminV2Operation("POST /api/v2/admin/content/placements/:id/publish", {
+          path: { id }, ifMatch: row.version, body: { reason, confirmation: id },
+        });
+        reportSuccess(t("Published. This campaign is visible in Community."));
+        try { await reload(true); }
+        catch (refreshError) {
+          setError(null);
+          setRefreshWarning(t("Placement publication was committed, but the latest projection could not be refreshed: {message}. Use Refresh before another write.", { message: requestErrorMessage(refreshError, t) }));
+        }
+      },
+    };
     if (pending === "paused") {
       return {
         title: t("Pause"),
@@ -111,7 +143,7 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
         }
       },
     };
-  }, [pending, row, id, t, value, reload, reportSuccess]);
+  }, [pending, row, id, t, value, reload, reportSuccess, copy]);
 
   if (loading) {
     return <LoadingWorkspace label="Loading…" />;
@@ -131,7 +163,7 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
     return (
       <EmptyState
         action={
-          <Link href="/admin/content/placements">
+            <Link href="/admin/creative/placements">
             <PrimaryButton>{t("Back to placements")}</PrimaryButton>
           </Link>
         }
@@ -147,9 +179,12 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
   const canArchive = canPublish &&
     !row.managedRunId &&
     row.status !== "archived";
-  const actions = canPause || canArchive || refreshWarning ? (
+  const canPublishArtwork = canPublish && row.canPublish && !copy;
+  const canEditCopy = canPublish && !row.managedRunId && row.slot === "campaign" && ["draft", "paused"].includes(row.status);
+  const actions = canPublishArtwork || canPause || canArchive || refreshWarning ? (
     <>
       {refreshWarning ? <GhostButton onClick={() => void reload()}>{t("Refresh")}</GhostButton> : null}
+      {canPublishArtwork ? <PrimaryButton disabled={Boolean(refreshWarning)} onClick={() => setPending("publish")}>{t("Publish")}</PrimaryButton> : null}
       {canPause ? <GhostButton disabled={Boolean(refreshWarning)} onClick={() => setPending("paused")}>{t("Pause")}</GhostButton> : null}
       {canArchive ? <DangerButton disabled={Boolean(refreshWarning)} onClick={() => setPending("archived")}>{t("Archive")}</DangerButton> : null}
     </>
@@ -158,7 +193,7 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
   return (
     <DetailPage
       actions={actions}
-      backHref="/admin/content/placements"
+      backHref="/admin/creative/placements"
       backLabel={t("Back to placements")}
       status={row.status}
       title={value(row.slot)}
@@ -179,9 +214,11 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
       {/* SPEC: 草稿铺位上没有"上线"按钮，就得在这一页说清楚上线权在谁手里、下一步去哪。 */}
       {/* INTENT: 这条规则以前只写在列表页顶部的横幅上，从列表点进详情后它就消失了 ——
           运营在详情页只看到「暂停 / 归档」，无从知道为什么没有发布按钮。 */}
-      {!row.managedRunId && row.status === "draft" ? (
+      {!row.managedRunId && row.status === "draft" && !row.canPublish ? (
         <div className="rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]">
-          {t("Standalone placements are draft records only. Customer-visible campaign activation happens from a verified Creative Run; Character images publish through a Character Release.")}{" "}
+          {t(row.slot === "campaign"
+            ? "Uploaded Campaigns need valid copy and an approved image. Generated campaigns publish from their Creative Run."
+            : "This slot has no customer-facing renderer. It can be saved as a draft only.")}{" "}
           {row.targetType === "character" ? (
             <Link className="font-semibold underline" href={`/admin/characters/${row.targetId}?tab=release`}>
               {t("Open this Character's release")}
@@ -195,6 +232,22 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
       ) : null}
 
       <AssetImage asset={row.asset} preview />
+      {row.slot === "campaign" ? <DetailSection title={t("Campaign")}>{copy ? <div className="grid gap-3 sm:grid-cols-2">
+        {([
+          ["eyebrow", "Campaign eyebrow", 80], ["title", "Campaign title", 120],
+          ["ctaLabel", "Campaign CTA label", 60], ["href", "Campaign CTA href", 512],
+        ] as const).map(([key, label, maxLength]) => <label key={key} className="grid gap-1 text-sm">{t(label)}<input aria-label={t(label)} className={INPUT_CLASS} maxLength={maxLength} value={copy[key]} onChange={event => setCopy({ ...copy, [key]: event.target.value })} /></label>)}
+        <p className="text-sm text-[var(--ad-text-muted)]">{t("Add both a CTA label and destination, or leave both blank.")}</p>
+        <div className="flex gap-2"><GhostButton onClick={() => setCopy(null)}>{t("Cancel")}</GhostButton><PrimaryButton disabled={Boolean(refreshWarning) || !validCampaignDraft({ ...copy, slot: "campaign", targetType: "campaign" })} onClick={() => setPending("copy")}>{t("Save changes")}</PrimaryButton></div>
+      </div> : <><InfoGrid items={[
+        { label: t("Campaign eyebrow"), value: String(row.metadata?.eyebrow ?? "—") },
+        { label: t("Campaign title"), value: String(row.metadata?.title ?? "—") },
+        { label: t("Campaign CTA label"), value: String(row.metadata?.ctaLabel ?? "—") },
+        { label: t("Campaign CTA href"), value: String(row.metadata?.href ?? "—") },
+      ]} />{canEditCopy ? <GhostButton disabled={Boolean(refreshWarning)} onClick={() => setCopy({
+        eyebrow: String(row.metadata?.eyebrow ?? ""), title: String(row.metadata?.title ?? ""),
+        ctaLabel: String(row.metadata?.ctaLabel ?? ""), href: String(row.metadata?.href ?? ""),
+      })}>{t("Edit")}</GhostButton> : null}</>}</DetailSection> : null}
 
       <DetailSection title={t("Basic info")}>
         <InfoGrid

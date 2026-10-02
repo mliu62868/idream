@@ -216,6 +216,7 @@ describe("GET /api/v1/support/history", () => {
         },
         body: JSON.stringify({
           status: "resolved",
+          expectedUpdatedAt: (await prisma.supportRequest.findUniqueOrThrow({ where: { ticketId } })).updatedAt.toISOString(),
           resolutionNotes: "private operator note with customer@example.test",
           reason: "The issue was fixed and verified",
           confirmation: ticketId,

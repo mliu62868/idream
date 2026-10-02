@@ -7,6 +7,7 @@ const allowedAuthRedirectPrefixes = [
   "/ai-girlfriend",
   "/ai-instructions",
   "/characters",
+  "/changelog",
   "/chat",
   "/comparison",
   "/community",

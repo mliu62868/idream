@@ -74,7 +74,7 @@ describe("Voice Clip accepted price", () => {
       });
       expectOk(played, 201);
       expect(before - await dreamcoinBalance(userId)).toBe(quoted.data.quote.maxCostDreamcoins);
-      const request = await prisma.voiceClipRequest.findUniqueOrThrow({ where: { userId_messageId: { userId, messageId: body.messageId } } });
+      const request = await prisma.voiceClipRequest.findUniqueOrThrow({ where: { userId_messageId_replyAttempt: { userId, messageId: body.messageId, replyAttempt: 1 } } });
       expect(request.billingAuthority).toMatchObject({ intent: "play", maxCostDreamcoins: quoted.data.quote.maxCostDreamcoins, allowanceMinutes: 0 });
       await expect(prisma.voiceClipRequest.update({ where: { id: request.id }, data: {
         billingAuthority: { ...request.billingAuthority as Record<string, unknown>, maxCostDreamcoins: 0 },
@@ -96,7 +96,7 @@ describe("Voice Clip accepted price", () => {
     const before = await dreamcoinBalance(userId);
     try {
       expectError(await api("POST", "generation/voice", { userId, ageGate: true, autoGenerationQuote: false, body: { ...body, quoteToken: quoted.data.quote.quoteToken } }), 500);
-      const original = await prisma.voiceClipRequest.findUniqueOrThrow({ where: { userId_messageId: { userId, messageId: body.messageId } } });
+      const original = await prisma.voiceClipRequest.findUniqueOrThrow({ where: { userId_messageId_replyAttempt: { userId, messageId: body.messageId, replyAttempt: 1 } } });
       await prisma.pricingRule.update({ where: { id: price.id }, data: { baseCost: price.baseCost + 41 } });
       const skipped = await api("POST", "generation/voice", { userId, ageGate: true, body: { ...body, intent: "prewarm" } });
       expectOk(skipped);
@@ -121,7 +121,7 @@ describe("Voice Clip accepted price", () => {
     const before = await dreamcoinBalance(userId);
     try {
       expectError(await api("POST", "generation/voice", { userId, ageGate: true, autoGenerationQuote: false, body: { ...body, quoteToken: quoted.data.quote.quoteToken } }), 500);
-      const original = await prisma.voiceClipRequest.findUniqueOrThrow({ where: { userId_messageId: { userId, messageId: body.messageId } } });
+      const original = await prisma.voiceClipRequest.findUniqueOrThrow({ where: { userId_messageId_replyAttempt: { userId, messageId: body.messageId, replyAttempt: 1 } } });
       expect(original.status).toBe("running");
       await prisma.voiceClipRequest.update({ where: { id: original.id }, data: { leaseExpiresAt: new Date(0) } });
       await prisma.pricingRule.update({ where: { id: price.id }, data: { baseCost: price.baseCost + 43 } });

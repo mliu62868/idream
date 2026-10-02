@@ -24,6 +24,7 @@ import type { ExpectedMigration, MigrationAuthority } from "./migration-authorit
 import {
   buildRemoteBlobRestorePutArgs,
   captureRuntimeQuiescence,
+  canonicalRecoverySchema,
   executeRecoveryRehearsal,
   listSourceBlobVersions,
   orderDatabaseAclEntries,
@@ -51,6 +52,7 @@ function fakeRunner(
   failStage?: string,
   pm2Processes: readonly Record<string, unknown>[] = [],
   realTar = false,
+  schemaRestore?: { source: string; restored: string },
 ) {
   const archives = new Map<string, string>();
   const calls: string[] = [];
@@ -227,7 +229,9 @@ function fakeRunner(
       }
       if (input.stage.endsWith("_tables")) return result(`${table}\n`);
       if (input.stage.endsWith("_sequences")) return result("");
-      if (input.stage.endsWith("_schema")) return result(schema);
+      if (input.stage.endsWith("_schema")) return result(schemaRestore
+        ? schema + (input.stage === "restore_schema" ? schemaRestore.restored : schemaRestore.source)
+        : schema);
       if (input.stage === "restore_database_absence") return result("0\n");
       if (input.stage === "postgres_custom_dump") {
         const args = input.args ?? [];
@@ -272,6 +276,31 @@ function fakeRunner(
 }
 
 describe("recovery rehearsal executor", () => {
+  it("accepts PostgreSQL's associative AND flattening after a CHECK restore", () => {
+    const schema = (check: string) => Buffer.from(`CREATE TABLE public.voice_calls (\n  CONSTRAINT voice_calls_budget_check CHECK ${check}\n);\n`);
+    expect(canonicalRecoverySchema(schema('((("maxCostDreamcoins" >= 0 AND "maxCostDreamcoins" <= 100) AND "connectedMs" >= 0))')))
+      .toEqual(canonicalRecoverySchema(schema('(("maxCostDreamcoins" >= 0 AND "maxCostDreamcoins" <= 100 AND "connectedMs" >= 0))')));
+  });
+
+  it("keeps genuine expression, grouping, literal and ownership changes distinct", () => {
+    const canonical = (sql: string) => canonicalRecoverySchema(Buffer.from(sql));
+    const budget = 'CONSTRAINT budget CHECK ((("cost" >= 0 AND "cost" <= 100) AND "elapsed" >= 0));';
+    expect(canonical(budget)).not.toEqual(canonical(budget.replace('<= 100', '<= 101')));
+    expect(canonical('CHECK ((a OR b) AND c)')).not.toEqual(canonical('CHECK (a OR (b AND c))'));
+    expect(canonical("CHECK ((label = '(a AND b)' AND cost >= 0) AND elapsed >= 0)"))
+      .not.toEqual(canonical("CHECK ((label = '(a AND c)' AND cost >= 0) AND elapsed >= 0)"));
+    expect(canonical('CHECK (cost BETWEEN 0 AND 100)')).not.toEqual(canonical('CHECK (cost BETWEEN 0 AND 101)'));
+    expect(canonical('CHECK (((cost + fee) * 2 > 0) AND active)'))
+      .not.toEqual(canonical('CHECK ((cost + fee * 2 > 0) AND active)'));
+    const body = (check: string) => `CREATE FUNCTION expression_text() RETURNS text LANGUAGE sql AS $$SELECT '${check}'$$;`;
+    expect(canonical(body('CHECK ((a AND b) AND c)')))
+      .not.toEqual(canonical(body('CHECK (a AND b AND c)')));
+    expect(canonical(`${budget}\nALTER TABLE public.voice_calls OWNER TO runtime_a;`))
+      .not.toEqual(canonical(`${budget}\nALTER TABLE public.voice_calls OWNER TO runtime_b;`));
+    expect(canonical(`${budget}\nGRANT SELECT ON public.voice_calls TO runtime_a;`))
+      .not.toEqual(canonical(`${budget}\nGRANT SELECT, UPDATE ON public.voice_calls TO runtime_a;`));
+  });
+
   it("preserves remote Blob metadata, checksum, version-retention, and legal hold on the independent restore", () => {
     expect(buildRemoteBlobRestorePutArgs({
       bucket: "idream-recovery-eu",
@@ -563,7 +592,10 @@ describe("recovery rehearsal executor", () => {
       databaseExecutionUsers,
       quiescenceEnvironments,
       runner,
-    } = fakeRunner(counts, undefined, [], canonicalPointers);
+    } = fakeRunner(counts, undefined, [], canonicalPointers, canonicalPointers ? {
+      source: 'CREATE TABLE public.voice_calls (cost integer, elapsed integer, CHECK (((cost >= 0 AND cost <= 100) AND elapsed >= 0)));\n',
+      restored: 'CREATE TABLE public.voice_calls (cost integer, elapsed integer, CHECK ((cost >= 0 AND cost <= 100 AND elapsed >= 0)));\n',
+    } : undefined);
     const exactMigrationAuthority: MigrationAuthority = {
       expectedCount: 2,
       appliedCount: 2,

@@ -13,6 +13,7 @@ import {
   purgeTestData,
 } from "@/server/test/helpers";
 import { adminV2 } from "@/server/test/admin-v2-http";
+import { getAuthCtx } from "@/server/lib/auth";
 
 // SPEC (docs/architecture/11-testing.md §4 — authz/authorization):
 // - unauthenticated access to user endpoints → 401
@@ -341,7 +342,9 @@ describe("auth lifecycle (cookie session)", () => {
     const cookie = `idream_admin_session=${adminToken}`;
     const before = await api("GET", "me", { cookie });
     expectOk(before);
-    expect(before.data.user.id).toBe(adminId);
+    // Admin cookies authenticate Admin requests, without impersonating a Main customer.
+    expect(before.data.user).toBeNull();
+    expect((await getAuthCtx(new Request("http://localhost/api/v2/admin/bootstrap", { headers: { cookie } }))).userId).toBe(adminId);
 
     const logout = await api("POST", "auth/logout", { cookie });
     expect(logout.status).toBe(204);

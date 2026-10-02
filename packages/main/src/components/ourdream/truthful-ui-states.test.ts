@@ -339,6 +339,7 @@ describe("truthful public UI states", () => {
 
     expect(wizardStateFromServerDraft({
       id: "draft-1",
+      updatedAt: "2026-10-01T00:00:00.000Z",
       step: 2,
       name: "Mira",
       gender: "trans",

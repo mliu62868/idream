@@ -10,13 +10,29 @@ export const characterReleaseAssetPlacementSchema = z.object({
   slotKey: characterReleaseAssetSlotSchema,
   assetId: z.string().trim().min(1),
   slotVersion: z.number().int().positive(),
-  // Production lineage is optional: imported images are first-class library assets.
+  // Imported assets have no generation lineage; customer previews reference
+  // their immutable identity receipt instead of a Creative Run/Item.
   runId: z.string().trim().min(1).optional(),
   itemId: z.string().trim().min(1).optional(),
   reviewDecisionId: z.string().trim().min(1).optional(),
   generationJobId: z.string().trim().min(1).optional(),
+  customerIdentityRevisionId: z.string().trim().min(1).optional(),
   bootstrapIdentity: z.boolean().optional(),
 }).strict().superRefine((placement, ctx) => {
+  if (placement.customerIdentityRevisionId) {
+    if (!placement.generationJobId) {
+      ctx.addIssue({ code: "custom", path: ["generationJobId"], message: "Customer identity placements require their original generation job" });
+    }
+    for (const field of ["runId", "itemId", "reviewDecisionId"] as const) {
+      if (placement[field] !== undefined) {
+        ctx.addIssue({ code: "custom", path: [field], message: "Customer identity placements cannot carry Creative lineage" });
+      }
+    }
+    if (placement.bootstrapIdentity === true) {
+      ctx.addIssue({ code: "custom", path: ["bootstrapIdentity"], message: "Customer identity placements are not Creative identity bootstrap" });
+    }
+    return;
+  }
   // Imports have no generation lineage; partial generated evidence is never an import.
   if (![placement.runId, placement.itemId, placement.generationJobId].some(Boolean)) return;
   // Daily adoption has no manual review gate. Historical review IDs remain

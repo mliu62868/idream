@@ -1,8 +1,8 @@
 "use client";
 
 // SPEC: 公告/banner 后台面板（ADMIN_CONSOLE_PLAN §3）。新建 / 启停 / 删除，写后 refetch。
-// INTENT: 自取数、无 props；样式对齐 TagsView。启停/删除经 inline typed confirmation。
-import { useCallback, useEffect, useState } from "react";
+// INTENT: 自取数，写入口跟随实际权限。启停/删除经 inline typed confirmation。
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2, Pencil, Plus, RefreshCcw, Search, Trash2 } from "lucide-react";
 import type { AdminPageInfo } from "@idream/shared/admin";
 import { apiGet, apiWrite } from "@/components/admin/api";
@@ -16,11 +16,17 @@ import { useAdminFormat } from "@/components/admin/ui/format";
 import { announcementWindowOrdered, isoToLocalInput, localInputToIso } from "@/features/announcements-schedule";
 import { Pagination } from "@/components/admin/ui/Pagination";
 import { StatusPill } from "@/components/admin/ui/StatusPill";
+import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
+import { useUnsavedChanges } from "@/components/admin/ui/useUnsavedChanges";
+import { createLatestRequestGate } from "@/lib/latest-request";
+import { authorityRequestFailed, authorityRequestStarted, authorityRequestSucceeded, createAuthorityState } from "@/lib/authority-state";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import {
   WriteFeedbackBanner,
-  canGoPrevious,
   listPageFromParams,
+  previousListPage,
   requestErrorMessage,
+  syncListUrl,
   useWriteFeedback,
 } from "@/components/admin/section-kit";
 import {
@@ -31,9 +37,11 @@ import {
 } from "./announcements-query";
 
 const PAGE_SIZE = 25;
+const listKeys = { cursor: "announcementCursor", page: "page" };
 
 type Announcement = {
   id: string;
+  version: number;
   title: string;
   body: string;
   level: "info" | "promo" | "warning";
@@ -55,46 +63,61 @@ type AnnouncementActionDraft = {
 const inputClass =
   "rounded-md h-10 w-full min-w-0 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]";
 
-export function AnnouncementsView() {
+export function AnnouncementsView({ canWrite }: { canWrite: boolean }) {
   const { t, value: valueLabel } = useAdminI18n();
   const format = useAdminFormat();
-  const [items, setItems] = useState<Announcement[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [list, setList] = useState(() => createAuthorityState<{ items: Announcement[]; pageInfo: AdminPageInfo }>());
   const [error, setError] = useState<{ message: string; cause: unknown } | null>(null);
   const [actionDraft, setActionDraft] = useState<AnnouncementActionDraft | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
+  const [formBusy, setFormBusy] = useState(false);
+  const [formDirty, setFormDirty] = useState(false);
   const [editing, setEditing] = useState<Announcement | null>(null);
   const { feedback, reportSuccess, clearFeedback } = useWriteFeedback();
   const [query, setQuery] = useState<AnnouncementQuery>({ announcementSearch: "", announcementLevel: "", announcementActive: "", announcementCursor: "" });
-  const [pageInfo, setPageInfo] = useState<AdminPageInfo>({ endCursor: null, hasNextPage: false });
   const [page, setPage] = useState(1);
+  const [hasPageHistory, setHasPageHistory] = useState(false);
+  const requestGate = useRef(createLatestRequestGate());
+  const { confirmDiscard, guard } = useUnsavedChanges(Boolean(
+    formDirty || (actionDraft && (actionDraft.reason || actionDraft.confirmation)),
+  ));
 
   const load = useCallback(async (params = new URLSearchParams(window.location.search)) => {
-    setLoading(true);
+    const request = requestGate.current.begin();
+    const restored = announcementQueryFromSearch(params.toString());
+    const queryKey = announcementListPath(restored);
+    setList((current) => authorityRequestStarted(current, queryKey));
     setError(null);
     try {
-      const restored = announcementQueryFromSearch(params.toString());
       setQuery(restored);
-      setPage(listPageFromParams(params));
-      const data = await apiGet<{ items: Announcement[]; pageInfo: AdminPageInfo }>(announcementListPath(restored));
-      setItems(data.items);
-      setPageInfo(data.pageInfo);
+      setPage(syncListUrl(params, listPageFromParams(params), listKeys));
+      setHasPageHistory(previousListPage(listKeys).hasHistory);
+      const data = await apiGet<{ items: Announcement[]; pageInfo: AdminPageInfo }>(queryKey);
+      if (!request.isCurrent()) return;
+      setList(authorityRequestSucceeded(queryKey, data));
     } catch (err) {
-      setError({ message: requestErrorMessage(err, t), cause: err });
-    } finally {
-      setLoading(false);
+      if (!request.isCurrent()) return;
+      setList((current) => authorityRequestFailed(current, queryKey, requestErrorMessage(err, t), err));
     }
   }, [t]);
 
   useEffect(() => {
+    const gate = requestGate.current;
     const timer = window.setTimeout(() => void load(), 0);
     const onPopState = () => void load(new URLSearchParams(window.location.search));
     window.addEventListener("popstate", onPopState);
+    window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, onPopState);
     return () => {
       window.clearTimeout(timer);
       window.removeEventListener("popstate", onPopState);
+      window.removeEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, onPopState);
+      gate.invalidate();
     };
   }, [load]);
+
+  const items = list.data?.items ?? [];
+  const loading = list.loading;
+  const pageInfo = list.data?.pageInfo ?? { endCursor: null, hasNextPage: false };
 
   // INVARIANT: page 只进地址栏，不进 announcementListPath —— 游标分页的请求里没有页码这个概念，
   // 但没有它，后退回上一页时页码就只能靠猜。
@@ -105,22 +128,24 @@ export function AnnouncementsView() {
       { ...updates, page: nextPage > 1 ? String(nextPage) : null },
       nextPage === 1,
     );
-    window.history.pushState(null, "", next);
+    syncListUrl(new URLSearchParams(next.split("?")[1] ?? ""), nextPage, listKeys);
     void load(new URLSearchParams(window.location.search));
   }
 
   function startAction(kind: AnnouncementActionDraft["kind"], item: Announcement) {
+    if (!canWrite || formBusy || actionBusy) return;
     setError(null);
     clearFeedback();
     setActionDraft({ kind, item, reason: "", confirmation: "" });
   }
 
   async function submitAction() {
-    if (!actionDraft || !canConfirmAnnouncementAction(actionDraft)) return;
+    if (!canWrite || actionBusy || !actionDraft || !canConfirmAnnouncementAction(actionDraft)) return;
     setActionBusy(true);
     try {
       if (actionDraft.kind === "toggle") {
         await apiWrite(`/api/v2/admin/announcements/${actionDraft.item.id}`, "PATCH", {
+          entityVersion: actionDraft.item.version,
           active: !actionDraft.item.active,
           reason: actionDraft.reason.trim(),
           confirmation: actionDraft.confirmation.trim(),
@@ -129,6 +154,7 @@ export function AnnouncementsView() {
         await adminV2Operation("DELETE /api/v2/admin/announcements/:id", {
           path: { id: actionDraft.item.id },
           body: {
+            entityVersion: actionDraft.item.version,
             reason: actionDraft.reason.trim(),
             confirmation: actionDraft.confirmation.trim(),
           },
@@ -158,7 +184,13 @@ export function AnnouncementsView() {
   const tableRows: DataTableRow[] = items.map((item) => ({
     id: item.id,
     cells: [
-      item.title,
+      <div key="title">
+        <p>{item.title}</p>
+        {!canWrite ? <>
+          <p className="mt-1 whitespace-pre-wrap text-xs text-[var(--ad-text-muted)]">{item.body}</p>
+          {item.href ? <code className="mt-1 block break-all text-xs">{item.href}</code> : null}
+        </> : null}
+      </div>,
       <span className="text-[var(--ad-text-muted)]" key="level">{valueLabel(item.level)}</span>,
       // SPEC: 这一列回答的是「站上现在有没有在显示」，不是「有没有勾启用」。
       // INTENT: 启用只是三个条件之一，另两个是时间窗。一条窗口已过的公告过去在这里写着
@@ -169,14 +201,18 @@ export function AnnouncementsView() {
         status={item.serving ? "active" : item.active ? "pending" : "disabled"}
       />,
       <span className="text-xs text-[var(--ad-text-muted)]" key="window">{announcementWindowLabel(item, t, format)}</span>,
-      <div className="flex justify-end gap-2" key="actions">
+      canWrite ? <div className="flex justify-end gap-2" key="actions">
         <button
           aria-label={t("Edit announcement")}
           className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs"
-          disabled={actionBusy}
+          disabled={actionBusy || formBusy || editing?.id === item.id}
           onClick={() => {
-            clearFeedback();
-            setEditing(item);
+            // A refreshed row version must not be paired with this form's old input.
+            if (formBusy || editing?.id === item.id) return;
+            confirmDiscard(() => {
+              clearFeedback();
+              setEditing(item);
+            });
           }}
           type="button"
         >
@@ -184,7 +220,7 @@ export function AnnouncementsView() {
         </button>
         <button
           className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs"
-          disabled={actionBusy}
+          disabled={actionBusy || formBusy}
           onClick={() => startAction("toggle", item)}
           type="button"
         >
@@ -193,18 +229,19 @@ export function AnnouncementsView() {
         <button
           aria-label={t("Delete announcement")}
           className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-red-text)]/20 px-2 text-xs text-[var(--ad-red-text)]"
-          disabled={actionBusy}
+          disabled={actionBusy || formBusy}
           onClick={() => startAction("delete", item)}
           type="button"
         >
           <Trash2 className="h-3.5 w-3.5" />
         </button>
-      </div>,
+      </div> : <span className="text-xs text-[var(--ad-text-muted)]" key="actions">{t("Read only")}</span>,
     ],
   }));
 
   return (
     <div className="space-y-5">
+      {guard}
       <form className="grid items-end gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 md:grid-cols-4" onSubmit={(event) => {
         event.preventDefault();
         navigate({ announcementSearch: query.announcementSearch, announcementLevel: query.announcementLevel, announcementActive: query.announcementActive }, 1);
@@ -223,7 +260,7 @@ export function AnnouncementsView() {
         <button className="inline-flex h-10 items-center justify-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white" type="submit"><Search className="h-4 w-4" />{t("Apply")}</button>
       </form>
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold">{t("Announcements")} ({items.length})</h2>
+        <h2 className="text-sm font-semibold">{t("Announcements")}</h2>
         <button
           className="rounded-md inline-flex h-9 items-center gap-2 border border-[var(--ad-border)] px-3 text-sm disabled:opacity-50"
           disabled={loading}
@@ -235,12 +272,17 @@ export function AnnouncementsView() {
         </button>
       </div>
       <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
+      {list.error ? <AuthorityRequestError cause={list.cause} message={list.error} requestKind="read" snapshotAt={list.refreshedAt} onRetry={() => void load()} /> : null}
       {error ? <AuthorityRequestError cause={error.cause} message={error.message} onRetry={() => void load()} /> : null}
 
       <AnnouncementForm
+        busy={formBusy}
+        canWrite={canWrite}
         editing={editing}
         key={editing?.id ?? "create"}
-        onCancel={() => setEditing(null)}
+        onBusyChange={setFormBusy}
+        onDirtyChange={setFormDirty}
+        onCancel={() => { if (!formBusy) setEditing(null); }}
         onSaved={(message) => {
           setEditing(null);
           reportSuccess(message);
@@ -248,7 +290,7 @@ export function AnnouncementsView() {
         reload={load}
       />
 
-      {actionDraft ? (
+      {canWrite && actionDraft ? (
         <section className="rounded-lg border border-[var(--ad-yellow-text)]/20 bg-[var(--ad-yellow-bg)] p-3">
           <p className="text-xs font-semibold text-[var(--ad-yellow-text)]">
             {actionDraft.kind === "delete"
@@ -259,7 +301,7 @@ export function AnnouncementsView() {
             <span className="font-mono">{actionDraft.item.id}</span>
           </p>
           <p className="mt-1 text-xs text-[var(--ad-text-muted)]">{actionDraft.item.title}</p>
-          <div className="mt-3 grid gap-3 md:grid-cols-[1fr_260px_auto_auto]">
+          <fieldset className="mt-3 grid gap-3 md:grid-cols-[1fr_260px_auto_auto]" disabled={actionBusy}>
             <Field label={t("Reason (≥3)")}>
               <input
                 aria-label={t("Announcement action reason")}
@@ -278,6 +320,7 @@ export function AnnouncementsView() {
             />
             <button
               className="rounded-md inline-flex h-10 items-center justify-center border border-[var(--ad-border)] px-3 text-sm"
+              disabled={actionBusy}
               onClick={() => setActionDraft(null)}
               type="button"
             >
@@ -292,18 +335,18 @@ export function AnnouncementsView() {
               {actionBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
               {actionDraft.kind === "delete" ? t("Confirm delete") : t("Confirm update")}
             </button>
-          </div>
+          </fieldset>
         </section>
       ) : null}
 
-      {error && items.length === 0 ? null : (
+      {(error || list.error) && items.length === 0 ? null : (
         <DataTable
           caption="Announcements"
           empty={
             <EmptyState
               hint={filtered
                 ? t("The authority searched every announcement. Clear the filters to see them all.")
-                : t("Create one above to broadcast it site-wide.")}
+                : canWrite ? t("Create one above to broadcast it site-wide.") : undefined}
               kind={filtered ? "filtered" : "empty"}
               onClearFilters={filtered ? () => navigate({ announcementSearch: null, announcementLevel: null, announcementActive: null }, 1) : undefined}
               title={filtered ? t("No announcements match these filters.") : t("No announcements.")}
@@ -317,11 +360,14 @@ export function AnnouncementsView() {
       )}
       <Pagination
         hasNext={Boolean(pageInfo.hasNextPage && pageInfo.endCursor)}
-        // 这个 operation 的查询契约没有 `before` —— 置灰，不假装已经在第一页（section-kit 有全部理由）。
-        hasPrevious={canGoPrevious(pageInfo, false)}
+        hasPrevious={Boolean(query.announcementCursor)}
+        previousLabel={query.announcementCursor && !hasPageHistory ? t("Back to first page") : undefined}
         loading={loading}
         onNext={() => navigate({ announcementCursor: pageInfo.endCursor }, page + 1)}
-        onPrevious={() => undefined}
+        onPrevious={() => {
+          const previous = previousListPage(listKeys);
+          navigate({ announcementCursor: previous.cursor ?? null }, previous.page);
+        }}
         page={page}
         pageSize={PAGE_SIZE}
         rowCount={items.length}
@@ -357,12 +403,20 @@ function announcementWindowLabel(
 // INTENT: 服务端 PATCH 一直支持改标题 / 正文 / 级别 / 链接 / 时间窗，后台却只发 active，
 //         写错一个字只能删了重建。启停仍走行内的启用 / 停用，不在这张表单里。
 function AnnouncementForm({
+  busy,
+  canWrite,
   editing,
+  onBusyChange,
+  onDirtyChange,
   onSaved,
   onCancel,
   reload,
 }: {
+  busy: boolean;
+  canWrite: boolean;
   editing: Announcement | null;
+  onBusyChange: (busy: boolean) => void;
+  onDirtyChange: (dirty: boolean) => void;
   onSaved: (message: string) => void;
   onCancel: () => void;
   reload: () => void;
@@ -380,17 +434,24 @@ function AnnouncementForm({
   const [endsAt, setEndsAt] = useState(isoToLocalInput(editing?.endsAt ?? null));
   const [reason, setReason] = useState("");
   const [confirmation, setConfirmation] = useState("");
-  const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const trimmedTitle = title.trim();
   const expectedConfirmation = editing ? editing.id : trimmedTitle;
+  const dirty = title !== (editing?.title ?? "") || body !== (editing?.body ?? "") ||
+    href !== (editing?.href ?? "") || level !== (editing?.level ?? "info") || !active ||
+    startsAt !== isoToLocalInput(editing?.startsAt ?? null) || endsAt !== isoToLocalInput(editing?.endsAt ?? null) ||
+    Boolean(reason || confirmation);
+  // The parent owns navigation and target changes; this keyed form owns input.
+  useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
 
   async function submit() {
-    setBusy(true);
+    if (!canWrite || busy) return;
+    onBusyChange(true);
     setErr(null);
     try {
       if (editing) {
         await apiWrite(`/api/v2/admin/announcements/${editing.id}`, "PATCH", {
+          entityVersion: editing.version,
           title: trimmedTitle,
           body: body.trim(),
           href: href.trim() || null,
@@ -419,6 +480,8 @@ function AnnouncementForm({
       setTitle("");
       setBody("");
       setHref("");
+      setLevel("info");
+      setActive(true);
       setStartsAt("");
       setEndsAt("");
       setReason("");
@@ -434,7 +497,7 @@ function AnnouncementForm({
     } catch (error) {
       setErr(requestErrorMessage(error, t));
     } finally {
-      setBusy(false);
+      onBusyChange(false);
     }
   }
 
@@ -454,6 +517,8 @@ function AnnouncementForm({
   if (!announcementWindowOrdered(startsAt, endsAt)) missing.push("an end time after the start time");
   const canCreate = !busy && missing.length === 0;
 
+  if (!canWrite) return <PermissionNotice permission="growth.promo.write" />;
+
   return (
     <details open={editing ? true : undefined} className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
       <summary className="cursor-pointer text-sm font-semibold"><h2 className="inline">
@@ -461,7 +526,8 @@ function AnnouncementForm({
         {editing ? <span className="ml-2 font-mono text-xs font-normal text-[var(--ad-text-muted)]">{editing.id}</span> : null}
       </h2></summary>
       <p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t("An in-product banner — this is the site-wide broadcast channel. Active means visible to everyone.")}</p>
-      <div className="mt-3 grid items-end gap-3 md:grid-cols-2">
+      {/* The parent also freezes target changes while this write owns the form. */}
+      <fieldset className="mt-3 grid items-end gap-3 md:grid-cols-2" disabled={busy}>
         <Field label={t("Title")}>
           <input className={inputClass} onChange={(e) => setTitle(e.target.value)} placeholder={t("Title")} value={title} />
         </Field>
@@ -520,6 +586,7 @@ function AnnouncementForm({
         {editing ? (
           <button
             className="rounded-md inline-flex h-10 items-center justify-center border border-[var(--ad-border)] px-3 text-sm"
+            disabled={busy}
             onClick={onCancel}
             type="button"
           >
@@ -536,7 +603,7 @@ function AnnouncementForm({
           {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : editing ? <Pencil className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
           {editing ? t("Save changes") : t("Create")}
         </button>
-      </div>
+      </fieldset>
       {expectedConfirmation ? <p className="mt-3 break-all text-xs text-[var(--ad-text-muted)]">{t("Confirmation target: {target}", { target: expectedConfirmation })}</p> : null}
       {missing.length > 0 ? (
         <div className="mt-2 text-xs text-[var(--ad-text-muted)]" id="announcement-create-missing">

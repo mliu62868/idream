@@ -8,6 +8,57 @@ import { expect, it } from "vitest";
 
 const run = promisify(execFile);
 
+it.each([
+  { name: "explicit source with a separate Python environment", source: "correct", code: 0 },
+  { name: "existing Python-under-Comfy layout", source: "absent", code: 0 },
+  { name: "wrong explicit source despite a valid legacy Python layout", source: "wrong", code: 1 },
+])("checks FP8 plugin in $name", async ({ source, code }) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "idream-fp8-preflight-"));
+  const workflowDirectory = path.join(directory, "workflows");
+  const comfyRoot = path.join(directory, "ComfyUI");
+  const plugin = path.join(comfyRoot, "custom_nodes/ComfyUI-AppleSilicon-FP8/__init__.py");
+  const server = createServer((request, response) => {
+    response.setHeader("content-type", "application/json");
+    const node = request.url?.split("/object_info/")[1];
+    response.end(JSON.stringify(node
+      ? { [node]: { input: { required: { unet_name: [["fixture.safetensors"]] } } } }
+      : { system: {}, devices: [] }));
+  });
+  try {
+    await mkdir(workflowDirectory);
+    await mkdir(path.dirname(plugin), { recursive: true });
+    await writeFile(plugin, "# fixture");
+    await writeFile(path.join(workflowDirectory, "fp8.json"), JSON.stringify({
+      workflowKey: "fp8-fixture", backendKind: "comfyui", capabilities: ["video"],
+      apiPrompt: { loader: { class_type: "UNETLoader", inputs: { unet_name: "fixture.safetensors", weight_dtype: "fp8_e4m3fn" } } },
+    }));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test listener");
+    const endpoint = `http://127.0.0.1:${address.port}`;
+    const result = await run("bun", [path.resolve(import.meta.dirname, "preflight.ts")], {
+      timeout: 10_000,
+      env: {
+        ...process.env,
+        GEN_IMAGE_PROVIDER: "mock", GEN_VIDEO_PROVIDER: "mock", GEN_WORKFLOW_DIR: workflowDirectory,
+        COMFYUI_ROOT: source === "correct" ? comfyRoot : source === "wrong" ? path.join(directory, "wrong-source") : "",
+        COMFYUI_VENV_PYTHON: path.join(source === "correct" ? path.join(directory, "separate-runtime") : comfyRoot, ".venv/bin/python3"),
+        COMFYUI_IMAGE_API_URL: endpoint, COMFYUI_VIDEO_API_URL: endpoint, COMFYUI_H3_API_URL: endpoint,
+        FFPROBE_BIN: "/usr/bin/true", FFMPEG_BIN: "/usr/bin/true",
+      },
+    }).then(
+      (value) => ({ code: 0, stdout: value.stdout }),
+      (error: { code: number; stdout: string }) => ({ code: error.code, stdout: error.stdout }),
+    );
+    expect(result.code).toBe(code);
+    if (code === 1) expect(result.stdout).toContain("wrong-source/custom_nodes/ComfyUI-AppleSilicon-FP8/__init__.py is missing");
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 15_000);
+
 it("rejects visible Qwen image models whose bytes differ from the qualified recipe", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "idream-qwen-preflight-"));
   const workflowDirectory = path.join(directory, "workflows");

@@ -30,6 +30,101 @@ async function waitForOutboxStatus(status: string): Promise<void> {
 
 describe("main to chat durable outbox", () => {
   it.each([
+    [MAIN_TO_CHAT_EVENTS.agentRunCancelRequestedV1, "headers"],
+    [MAIN_TO_CHAT_EVENTS.agentRunCancelRequestedV1, "body"],
+    [MAIN_TO_CHAT_EVENTS.accountDeletionRequestedV2, "headers"],
+    [MAIN_TO_CHAT_EVENTS.accountDeletionRequestedV2, "body"],
+  ] as const)("retries %s after stalled response %s and continues another aggregate", async (eventType, phase) => {
+    const hangingId = `${eventId}-hanging`;
+    const followingId = `${eventId}-following`;
+    const oldest = await prisma.mainOutboxEvent.findFirst({
+      orderBy: { createdAt: "asc" }, select: { createdAt: true },
+    });
+    const fixtureCreatedAt = Math.min(0, oldest?.createdAt.getTime() ?? 0) - 2;
+    for (const [index, id] of [hangingId, followingId].entries()) {
+      const type = index === 0 ? eventType : MAIN_TO_CHAT_EVENTS.agentRunCancelRequestedV1;
+      await recordMainToChatEvent({
+        eventId: id,
+        eventType: type,
+        schemaVersion: type === MAIN_TO_CHAT_EVENTS.accountDeletionRequestedV2 ? 2 : 1,
+        aggregateType: type === MAIN_TO_CHAT_EVENTS.accountDeletionRequestedV2 ? "user" : "chat_turn",
+        aggregateId: id,
+        payload: type === MAIN_TO_CHAT_EVENTS.accountDeletionRequestedV2
+          ? { userId: id }
+          : { version: 1, userId: id, turnId: id, attempt: 1 },
+      });
+      await prisma.mainOutboxEvent.update({
+        where: { id }, data: { createdAt: new Date(fixtureCreatedAt + index), nextRunAt: new Date(0) },
+      });
+    }
+    const nativeTimeout = AbortSignal.timeout.bind(AbortSignal);
+    // Keep real DB timers; shorten only the HTTP deadline for this regression.
+    const deadline = vi.spyOn(AbortSignal, "timeout").mockImplementation(() => nativeTimeout(25));
+    let entered!: () => void;
+    const requestEntered = new Promise<void>((resolve) => { entered = resolve; });
+    let releaseResponse = () => {};
+    const acknowledgement = eventType === MAIN_TO_CHAT_EVENTS.agentRunCancelRequestedV1
+      ? { ok: true }
+      : { acknowledged: true, status: "persisted", receiptId: hangingId };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const isHanging = eventType === MAIN_TO_CHAT_EVENTS.agentRunCancelRequestedV1
+        ? url.includes(encodeURIComponent(hangingId))
+        : url.endsWith("/internal/events/account-deletion-v2/ingest");
+      if (!isHanging) return Response.json({ ok: true });
+      const signal = init?.signal;
+      if (phase === "headers") {
+        return new Promise<Response>((resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+          releaseResponse = () => resolve(Response.json(acknowledgement));
+          entered();
+        });
+      }
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          signal?.addEventListener("abort", () => controller.error(signal.reason), { once: true });
+          releaseResponse = () => {
+            if (signal?.aborted) return;
+            controller.enqueue(new TextEncoder().encode(JSON.stringify(acknowledgement)));
+            controller.close();
+          };
+          entered();
+        },
+      });
+      return new Response(body, { headers: { "content-type": "application/json" } });
+    }));
+    // These two oldest rows make an isolated batch in the shared test database.
+    const dispatch = dispatchPendingChatEvents({ lane: "lifecycle", batch: 2 });
+    let guard: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await requestEntered;
+      const result = await Promise.race([
+        dispatch,
+        new Promise<null>((resolve) => { guard = setTimeout(() => resolve(null), 500); }),
+      ]);
+      expect(result).toEqual({ delivered: 1, failed: 1 });
+      expect(deadline).toHaveBeenCalledWith(30_000);
+      await expect(prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: hangingId } }))
+        .resolves.toMatchObject({
+          status: "pending", attempts: 1, leaseToken: null, leaseExpiresAt: null,
+          lastError: { message: expect.stringMatching(/timeout|aborted/iu) },
+        });
+      const retried = await prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: hangingId } });
+      expect(retried.nextRunAt.getTime()).toBeGreaterThan(Date.now());
+      await expect(prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: followingId } }))
+        .resolves.toMatchObject({ status: "delivered", attempts: 1 });
+    } finally {
+      clearTimeout(guard);
+      // The old implementation has no deadline; release its fixture after the
+      // failed assertion so the dispatcher/heartbeat cannot leak into another test.
+      releaseResponse();
+      await dispatch;
+      deadline.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([
     MAIN_TO_CHAT_EVENTS.companionMemoryProjectRequestedV1,
     MAIN_TO_CHAT_EVENTS.companionMemoryRebuildRequestedV1,
   ])("delivers cancellation, purge and account deletion while an older %s is blocked", async (memoryEventType) => {

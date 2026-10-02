@@ -14,6 +14,7 @@ vi.mock("@/server/modules/admin-v2/jobs/unknown-review-reminder", () => ({ scanD
 vi.mock("@/server/modules/ourdream/voice-clip-recovery", () => ({ recoverExpiredVoiceClips: mocks.recover }));
 vi.mock("@/server/modules/ourdream/subscription-lifecycle", () => ({ entitlementMap: vi.fn() }));
 vi.mock("@/server/modules/ourdream/generation-character-authority", () => ({ readableCharacter: vi.fn() }));
+vi.mock("@/server/modules/chat/voice-call", () => ({ expireVoiceCalls: vi.fn(async () => undefined) }));
 vi.mock("./process-entrypoint", () => ({ isProcessEntrypoint: () => false }));
 
 beforeEach(() => { vi.resetModules(); vi.clearAllMocks(); vi.useFakeTimers(); });

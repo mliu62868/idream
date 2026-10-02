@@ -24,6 +24,7 @@ const generationControlsSchema = z
     orientation: z.enum(generationOrientations).optional(),
     model: z.string().trim().min(1).max(120).optional(),
     seconds: z.number().int().min(1).max(30).optional(),
+    videoQuality: z.enum(["preview", "standard"]).optional(),
   })
   .strict();
 

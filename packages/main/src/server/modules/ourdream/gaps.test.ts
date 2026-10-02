@@ -724,16 +724,51 @@ describe("community collections", () => {
       },
     });
 
-    const response = await dispatchV1(
-      new Request(`http://localhost/api/v1/media/${mediaId}/content`, {
-        headers: { cookie: `idream_admin_session=${adminToken}` },
-      }),
-      ["media", mediaId, "content"],
-    );
+    const previousSecret = process.env.ADMIN_BFF_SIGNING_SECRET;
+    process.env.ADMIN_BFF_SIGNING_SECRET = "media-preview-secret-for-real-session-test";
+    let response: Response;
+    try {
+      response = await dispatchV1(
+        new Request(`http://localhost/api/v1/media/${mediaId}/content`, {
+          headers: { cookie: `idream_admin_session=${adminToken}` },
+        }),
+        ["media", mediaId, "content"],
+      );
+    } finally {
+      if (previousSecret === undefined) delete process.env.ADMIN_BFF_SIGNING_SECRET;
+      else process.env.ADMIN_BFF_SIGNING_SECRET = previousSecret;
+    }
 
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("image/webp");
     expect(await response.text()).toBe("admin private preview");
+  });
+
+  it("allows a role-user creative bundle to preview another operator's private production asset", async () => {
+    const ownerId = `${P}creative-media-owner`;
+    const operatorId = `${P}creative-media-operator`;
+    const customerId = `${P}creative-media-customer`;
+    const adminToken = `${P}creative-media-token`;
+    const customerToken = `${P}creative-customer-token`;
+    const mediaId = `${P}creative-private-media`;
+    const storageKey = `${P}creative-private.webp`;
+    await mkdir(dirname(resolveLocalBlobPath(storageKey)), { recursive: true });
+    await writeFile(resolveLocalBlobPath(storageKey), Buffer.from("creative bundle preview"));
+    for (const id of [ownerId, operatorId, customerId]) await createUser({ id });
+    await prisma.adminUserGrantBundle.create({ data: { userId: operatorId, bundleKey: "creative_operator", createdById: "seed-admin-user", reason: "Verify creative operator media preview" } });
+    for (const [userId, token] of [[operatorId, adminToken], [customerId, customerToken]]) {
+      await prisma.session.create({ data: { userId, token, expiresAt: new Date(Date.now() + 100_000) } });
+    }
+    await prisma.mediaAsset.create({ data: { id: mediaId, ownerId, type: "image", url: `/user-content/${Buffer.from(mediaId).toString("base64url")}/content.webp`, storageKey, contentType: "image/webp", visibility: "private", safetyStatus: "passed", metadata: { providerKey: storageKey } } });
+    const read = (headers: Record<string, string>) => dispatchV1(new Request(`http://localhost/api/v1/media/${mediaId}/content`, { headers }), ["media", mediaId, "content"]);
+    const cookie = `idream_admin_session=${adminToken}; idream_session=${customerToken}`;
+    const preview = await read({ cookie, "x-idream-admin-read-authority": "not_applicable" });
+    expect(preview.status).toBe(200);
+    expect(await preview.text()).toBe("creative bundle preview");
+    // Main-origin images retain the customer identity, even while Admin is open.
+    expect((await read({ cookie })).status).toBe(403);
+    await prisma.adminUserGrantBundle.updateMany({ where: { userId: operatorId }, data: { revokedAt: new Date() } });
+    expect((await read({ cookie, "x-idream-admin-read-authority": "not_applicable" })).status).toBe(403);
   });
 });
 

@@ -7,7 +7,7 @@ import { providers } from "@/server/providers";
 import { api, createCharacter, createMedia, createUser, dreamcoinBalance, expectError, expectOk, generationTestProviders, grantCoins, purgeTestData, runQueuedGenerationJobs } from "@/server/test/helpers";
 import { characterContentHash } from "@/server/modules/admin-v2/shared/character-content-identity";
 import { characterVisualProfileSnapshotHash, referenceSetSnapshotHash } from "@/server/modules/admin-v2/characters/release-snapshot";
-import { parseGenerationContextResponse } from "@/lib/public-api-contracts";
+import { parseChatSessionDetailResponse, parseGenerationContextResponse } from "@/lib/public-api-contracts";
 import { quoteAuthorityFor } from "../ourdream/generation-quote";
 import * as attempts from "../generation/generation-attempt-authority";
 import { editChatTurn, getChatSession } from "./turn-ledger";
@@ -94,6 +94,11 @@ async function videoBody(f: Awaited<ReturnType<typeof fixture>>, image = true) {
 }
 function submit(f: Awaited<ReturnType<typeof fixture>>, body: unknown, key = `${f.id}-video`) {
   return api("POST", `chat/${f.sessionId}/video`, { userId: f.userId, ageGate: true, body, headers: { "Idempotency-Key": key, "x-idream-viewer-scope": `user:${f.userId}` } });
+}
+async function videoHistory(f: Awaited<ReturnType<typeof fixture>>, jobId: string) {
+  const session = await getChatSession(f.userId, f.sessionId);
+  return parseChatSessionDetailResponse({ ok: true, data: { session } }).session.messages
+    .flatMap(message => message.attachments ?? []).find(attachment => attachment.generationJobId === jobId);
 }
 
 describe("explicit Chat video admission and delivery", () => {
@@ -205,6 +210,31 @@ describe("explicit Chat video admission and delivery", () => {
     expect(await dreamcoinBalance(f.userId)).toBe(500 - retryBody.quoteAuthority.costDreamcoins);
   }, 20_000);
 
+  it.each(["claimed", "attempted", "running", "queued_started", "missing", "unknown"] as const)("does not offer cancellation for a %s dispatch while preserving the reserved video", async (state) => {
+    const f = await fixture(); const body = await videoBody(f);
+    const dispatch = attempts.dispatchGenerationAttemptOutbox;
+    vi.spyOn(attempts, "dispatchGenerationAttemptOutbox").mockImplementation((db) => dispatch(db, { outboxIds: [] }));
+    const generate = vi.spyOn((await generationTestProviders()).video, "generate");
+    const created = await submit(f, body); expectOk(created, 202);
+    const jobId = created.data.job.id as string;
+    const attempt = await prisma.generationAttempt.findFirstOrThrow({ where: { requestId: jobId }, orderBy: { attemptNo: "desc" } });
+    const outboxId = `generation_initial_${jobId}`;
+    if (state === "claimed") await prisma.mainOutboxEvent.update({ where: { id: outboxId }, data: { status: "processing", attempts: 1 } });
+    if (state === "attempted") await prisma.mainOutboxEvent.update({ where: { id: outboxId }, data: { attempts: 1 } });
+    if (state === "missing") await prisma.mainOutboxEvent.delete({ where: { id: outboxId } });
+    if (["running", "queued_started", "unknown"].includes(state)) await prisma.generationAttempt.update({ where: { id: attempt.id }, data: { status: state === "queued_started" ? "queued" : state, startedAt: new Date() } });
+    expect(await videoHistory(f, jobId)).toMatchObject({
+      generationJobId: jobId, status: state === "running" ? "running" : "accepted", canCancel: false,
+      ...(state === "unknown" ? { errorCode: "provider_outcome_unknown" } : {}),
+    });
+    expectError(await api("POST", `generation/jobs/${jobId}/cancel`, { userId: f.userId, ageGate: true }), 409);
+    expect(await prisma.generationJob.findUniqueOrThrow({ where: { id: jobId } })).toMatchObject({ status: "queued" });
+    expect(await prisma.chatTurnAttachment.findFirstOrThrow({ where: { generationJobId: jobId } })).toMatchObject({ status: "accepted" });
+    expect(await dreamcoinBalance(f.userId)).toBe(500 - body.quoteAuthority.costDreamcoins);
+    expect(await prisma.dreamcoinLedger.count({ where: { sourceId: jobId, reason: "refund" } })).toBe(0);
+    expect(generate).not.toHaveBeenCalled();
+  });
+
   it("atomically cancels only untouched dispatches and refunds once without later provider submission", async () => {
     const f = await fixture(); const body = await videoBody(f);
     const dispatch = attempts.dispatchGenerationAttemptOutbox;
@@ -213,6 +243,7 @@ describe("explicit Chat video admission and delivery", () => {
     const created = await submit(f, body); expectOk(created, 202);
     const jobId = created.data.job.id as string;
     expect(await prisma.mainOutboxEvent.findFirstOrThrow({ where: { aggregateId: jobId } })).toMatchObject({ status: "pending", attempts: 0 });
+    expect(await videoHistory(f, jobId)).toMatchObject({ generationJobId: jobId, status: "accepted", canCancel: true });
     const cancel = () => api("POST", `generation/jobs/${jobId}/cancel`, { userId: f.userId, ageGate: true });
     const first = await cancel(); expectOk(first); expect(first.data.refundAmount).toBe(body.quoteAuthority.costDreamcoins);
     const repeat = await cancel(); expectOk(repeat); expect(repeat.data.refundAmount).toBe(0);

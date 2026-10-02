@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import { notFound } from "next/navigation";
 import { SESSION_COOKIE } from "@/server/lib/auth";
 import { prisma } from "@/server/lib/db";
+import { publicPackAudienceWhere } from "@/server/modules/ourdream/pack-authority";
 import {
   activeCustomerUserWhere,
   directCharacterAudienceWhere,
@@ -41,6 +42,7 @@ export function requirePublicCreatorForAnonymous(id: string) {
         OR: [
           { charactersCreated: { some: publicCharacterAudienceWhere } },
           { comics: { some: { status: "published", visibility: { in: ["public", "unlisted"] } } } },
+          { packs: { some: publicPackAudienceWhere() } },
         ],
       },
       select: { id: true },
@@ -60,4 +62,11 @@ export function requirePublicComicForAnonymous(id: string) {
       select: { id: true },
     }),
   );
+}
+
+export function requirePublicPackForAnonymous(id: string, releaseId?: string) {
+  return notFoundUnlessPublic(() => prisma.pack.findFirst({ where: {
+    id, ...publicPackAudienceWhere(),
+    ...(releaseId ? { currentReleaseId: releaseId } : {}),
+  }, select: { id: true } }));
 }

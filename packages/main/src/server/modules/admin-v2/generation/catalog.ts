@@ -4,10 +4,13 @@
 //         archived lifecycle; presets have no versions, so they only ever get edited in place.
 // INVARIANT: only `scope: "built_in"` presets are visible here. User and community presets
 //            belong to their owners and are not operator-editable content.
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
+import { generationRecipeTestMatrixResponseSchema } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
+import { ok } from "@/server/lib/http";
+import { dispatchGenerationAttemptOutbox, reserveInitialGenerationAttempt } from "@/server/modules/generation/generation-attempt-authority";
 import {
   actorWithPermission,
   jsonBody,
@@ -20,8 +23,10 @@ import {
   decodeAdminListCursor,
   encodeAdminListCursor,
 } from "@/server/modules/admin-v2/shared/list-cursor";
-import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
+import { jsonRecord, toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { adminRequestId, assertTargetConfirmation } from "./model-profiles";
+import { inspectRecipeValidation, loadRecipeMatrix, recipeFingerprint } from "./recipe-validation";
+import { findActiveRecipe, resolveImageRecipeNegative } from "@/server/modules/ourdream/generation-profile-selection";
 
 const DEFAULT_CATALOG_PAGE_SIZE = 25;
 
@@ -162,10 +167,15 @@ export async function patchGenerationRecipe(request: Request, recipeId: string) 
       const before = await tx.generationRecipe.findUnique({ where: { id: recipeId } });
       if (!before) throw Errors.notFound("Prompt template not found");
       if (before.status !== "draft") throw Errors.badRequest("Only draft templates can be edited");
-      const updated = await tx.generationRecipe.update({
+      const movingFamily = body.recipeKey !== undefined && body.recipeKey !== before.recipeKey;
+      const latest = movingFamily ? await tx.generationRecipe.findFirst({
+        where: { recipeKey: body.recipeKey }, orderBy: { version: "desc" }, select: { version: true },
+      }) : null;
+      let updated = await tx.generationRecipe.update({
         where: { id: recipeId },
         data: {
           recipeKey: body.recipeKey,
+          version: movingFamily ? (latest?.version ?? 0) + 1 : undefined,
           label: body.label,
           mode: body.mode,
           useCase: body.useCase,
@@ -177,6 +187,9 @@ export async function patchGenerationRecipe(request: Request, recipeId: string) 
           dryRunSummary: body.dryRunSummary ? toInputJson(body.dryRunSummary) : undefined,
         },
       });
+      if (recipeFingerprint(updated) !== recipeFingerprint(before)) {
+        updated = await tx.generationRecipe.update({ where: { id: recipeId }, data: { dryRunSummary: Prisma.DbNull } });
+      }
       await writeCatalogAudit(tx, actor, requestId, {
         action: "generation.prompt_template.update",
         targetType: "generation_prompt_template",
@@ -208,10 +221,14 @@ export async function publishGenerationRecipe(request: Request, recipeId: string
       if (template.status !== "draft") {
         throw Errors.badRequest("Only draft templates can be published");
       }
-      const dryRunSummary = body.dryRunSummary
-        ? toInputJson(body.dryRunSummary)
-        : template.dryRunSummary;
-      if (!dryRunSummary) throw Errors.badRequest("Publish requires dry-run summary");
+      // Submitted JSON is not generation evidence. Recheck the persisted matrix's exact jobs.
+      const summary = jsonRecord(template.dryRunSummary);
+      if (summary.source !== "admin_recipe_validation" || summary.status !== "passed" || typeof summary.profileId !== "string") {
+        throw Errors.badRequest("Run and verify the saved sample matrix before publishing this recipe.");
+      }
+      const validation = await inspectRecipeValidation(tx, await loadRecipeMatrix(tx, template.id, summary.profileId, actor.id));
+      if (validation.status !== "passed") throw Errors.badRequest("Recipe validation is no longer valid. Run and verify the saved matrix again.", { validation });
+      const dryRunSummary = template.dryRunSummary ?? Prisma.DbNull;
       const previous = await tx.generationRecipe.findFirst({
         where: { recipeKey: template.recipeKey, status: "active" },
       });
@@ -241,6 +258,94 @@ export async function publishGenerationRecipe(request: Request, recipeId: string
   });
 }
 
+export async function previewGenerationRecipe(request: Request, recipeId: string) {
+  const actor = await actorWithPermission(request, "generation.config.read");
+  const query = queryParams(request, "GET /api/v2/admin/generation/recipes/:id/preview");
+  const matrix = await loadRecipeMatrix(prisma, recipeId, query.profileId, actor.id);
+  return {
+    fingerprint: matrix.fingerprint, profileId: matrix.profile.id,
+    samples: matrix.samples.map(({ index, prompt, negativePrompt, orientation, issues }) => ({ index, prompt, negativePrompt, orientation, issues })),
+    issues: matrix.issues,
+    validation: await inspectRecipeValidation(prisma, matrix),
+  };
+}
+
+export async function testGenerationRecipeMatrix(request: Request, recipeId: string) {
+  const actor = await actorWithPermission(request, "generation.config.write");
+  const body = await jsonBody(request, "generationRecipeTestMatrixRequestSchema+idempotency-key");
+  const requestId = adminRequestId(request);
+  const result = generationRecipeTestMatrixResponseSchema.parse(await executeAtomicIdempotentMutation({
+    environment: env.APP_ENV, actor, idempotencyKey: requireIdempotencyKey(request), requestId,
+    commandType: "generation.prompt_template.test_matrix", target: { type: "generation_prompt_template", id: recipeId }, payload: body,
+    mutate: async (tx) => {
+      assertTargetConfirmation(body.confirmation, recipeId);
+      const matrix = await loadRecipeMatrix(tx, recipeId, body.profileId, actor.id);
+      if (matrix.recipe.status !== "draft") throw Errors.badRequest("Only draft recipes can run validation samples.");
+      if (matrix.fingerprint !== body.fingerprint) throw Errors.versionConflict("Recipe inputs changed after preview. Refresh the preview before running samples.");
+      const issues = [...matrix.issues, ...matrix.samples.flatMap(sample => sample.issues)];
+      if (issues.length) throw Errors.badRequest("The saved sample matrix needs corrections before it can run.", { issues });
+      if ((await inspectRecipeValidation(tx, matrix)).status === "running") throw Errors.conflict("The current sample matrix is still running. Refresh its results.");
+      const jobs: { id: string; sampleIndex: number; status: string }[] = [];
+      for (const sample of matrix.samples) {
+        const job = await tx.generationJob.create({ data: {
+          userId: actor.id, characterId: sample.characterId, mode: matrix.mode, prompt: sample.prompt, negativePrompt: sample.negativePrompt,
+          controls: toInputJson({
+            orientation: sample.orientation, model: matrix.profile.profileKey, profileId: matrix.profile.profileKey,
+            width: sample.dimensions.width, height: sample.dimensions.height, adminTest: true,
+            sourceImageAssetId: sample.sourceImageAssetId,
+            ...(matrix.recipe.useCase === "enhance" ? { enhancementScale: 2 } : {}),
+          }),
+          referenceAssetIds: sample.sourceImageAssetId ? [sample.sourceImageAssetId] : undefined,
+          presetIds: [], model: matrix.profile.pipelineModel, profileId: matrix.profile.profileKey, profileVersion: matrix.profile.version,
+          recipeId: matrix.productionRecipe.recipeKey, recipeVersion: matrix.productionRecipe.version, orientation: sample.orientation,
+          outputCount: 1, status: "queued", costDreamcoins: 0, provider: matrix.profile.runner,
+          sourceType: "admin_recipe_test", sourceId: `${recipeId}:${requestId}:${sample.index}`,
+          sourceMeta: toInputJson({ recipeRecordId: recipeId, fingerprint: matrix.fingerprint, profileFingerprint: matrix.profileFingerprint, sampleIndex: sample.index,
+            ...(matrix.recipeNegative?.negativeRecipe ? { negativeRecipe: matrix.recipeNegative.negativeRecipe, promptRecipeFingerprint: matrix.recipeNegative.promptRecipeFingerprint } : {}),
+          }),
+        } });
+        await tx.generationJobEvent.createMany({ data: ["created", "queued"].map(type => ({ jobId: job.id, type, message: "Admin recipe sample accepted", metadata: { recipeId, sampleIndex: sample.index } })) });
+        await reserveInitialGenerationAttempt(tx, { requestId: job.id, dispatch: { outboxId: `generation_initial_${job.id}`, eventType: "generation.retry.dispatch.v2", payload: { source: "admin_recipe_test" } } });
+        jobs.push({ id: job.id, sampleIndex: sample.index, status: job.status });
+      }
+      await tx.generationRecipe.update({ where: { id: recipeId }, data: { dryRunSummary: toInputJson({
+        source: "admin_recipe_validation", status: "queued", fingerprint: matrix.fingerprint,
+        profileId: matrix.profile.id, profileFingerprint: matrix.profileFingerprint, jobIds: jobs.map(job => job.id),
+        ranBy: actor.id, ranAt: new Date().toISOString(),
+      }) } });
+      await writeCatalogAudit(tx, actor, requestId, { action: "generation.prompt_template.test_matrix", targetType: "generation_prompt_template", targetId: recipeId, reason: body.reason, after: { fingerprint: matrix.fingerprint, jobIds: jobs.map(job => job.id) } });
+      return { fingerprint: matrix.fingerprint, jobs };
+    },
+  }));
+  await dispatchGenerationAttemptOutbox(prisma, { outboxIds: result.jobs.map(job => `generation_initial_${job.id}`) });
+  return ok(result, { status: 202 });
+}
+
+export async function verifyGenerationRecipe(request: Request, recipeId: string) {
+  const actor = await actorWithPermission(request, "generation.config.write");
+  const body = await jsonBody(request, "generationRecipeVerifyRequestSchema+idempotency-key");
+  const requestId = adminRequestId(request);
+  return executeAtomicIdempotentMutation({
+    environment: env.APP_ENV, actor, idempotencyKey: requireIdempotencyKey(request), requestId,
+    commandType: "generation.prompt_template.verify", target: { type: "generation_prompt_template", id: recipeId }, payload: body,
+    mutate: async (tx) => {
+      assertTargetConfirmation(body.confirmation, recipeId);
+      const recipe = await tx.generationRecipe.findUnique({ where: { id: recipeId } });
+      if (!recipe) throw Errors.notFound("Generation recipe not found");
+      if (recipe.status !== "draft") throw Errors.badRequest("Only draft recipes can record validation.");
+      const summary = jsonRecord(recipe.dryRunSummary);
+      if (typeof summary.profileId !== "string") throw Errors.badRequest("Run the saved sample matrix before verifying results.");
+      const matrix = await loadRecipeMatrix(tx, recipeId, summary.profileId, actor.id);
+      if (matrix.fingerprint !== body.fingerprint) throw Errors.versionConflict("Recipe inputs changed after preview. Refresh before verifying results.");
+      const validation = await inspectRecipeValidation(tx, matrix);
+      if (validation.status !== "ready" && validation.status !== "passed") throw Errors.badRequest("Every saved matrix sample needs a verified generated output and library delivery.", { validation });
+      await tx.generationRecipe.update({ where: { id: recipeId }, data: { dryRunSummary: toInputJson({ ...summary, status: "passed", verifiedBy: actor.id, verifiedAt: new Date().toISOString() }) } });
+      await writeCatalogAudit(tx, actor, requestId, { action: "generation.prompt_template.verify", targetType: "generation_prompt_template", targetId: recipeId, reason: body.reason, after: { fingerprint: matrix.fingerprint, sampleCount: matrix.samples.length, status: "passed" } });
+      return { validation: { ...validation, status: "passed" } };
+    },
+  });
+}
+
 export async function rollbackGenerationRecipe(request: Request, recipeId: string) {
   const actor = await actorWithPermission(request, "generation.config.write");
   const body = await jsonBody(request, "generationConfigCommandRequestSchema+idempotency-key");
@@ -257,24 +362,56 @@ export async function rollbackGenerationRecipe(request: Request, recipeId: strin
       const current = await tx.generationRecipe.findUnique({ where: { id: recipeId } });
       if (!current) throw Errors.notFound("Prompt template not found");
       assertTargetConfirmation(body.confirmation, current.id);
-      const previous = await tx.generationRecipe.findFirst({
+      if (current.status !== "active") throw Errors.badRequest("Only the active recipe version can be rolled back.");
+      // INVARIANT: publication order can differ from version order after rollback.
+      // Audit history survives operator deletion; command receipts do not.
+      const publication = await tx.adminAuditLog.findFirst({
         where: {
-          recipeKey: current.recipeKey,
-          status: "archived",
-          version: { lt: current.version },
+          action: "generation.prompt_template.publish",
+          targetType: "generation_prompt_template",
+          targetId: current.id,
         },
-        orderBy: { version: "desc" },
-        select: { id: true },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        select: { before: true },
       });
-      if (!previous) throw Errors.notFound("No previous template version to roll back to");
+      if (!publication) {
+        throw Errors.notFound("No recorded previous published template to roll back to");
+      }
+      let previous: RecipeRow | null = null;
+      if (publication.before !== null) {
+        const prior = jsonRecord(publication.before);
+        if (prior.recipeKey !== current.recipeKey || prior.status !== "active" || typeof prior.version !== "number" || !Number.isInteger(prior.version) || prior.version < 1) {
+          throw Errors.notFound("No recorded previous published template to roll back to");
+        }
+        // Older snapshots lack ids. Refuse ambiguous history rather than guessing.
+        const candidates = await tx.generationRecipe.findMany({
+          where: {
+            recipeKey: current.recipeKey, version: prior.version, status: "archived",
+            ...(typeof prior.id === "string" ? { id: prior.id } : {}),
+          },
+          take: 2,
+        });
+        if (candidates.length > 1) throw Errors.conflict("The recorded previous template version is ambiguous");
+        previous = candidates[0] ?? null;
+        if (!previous) throw Errors.notFound("No previous template version to roll back to");
+      }
       await tx.generationRecipe.updateMany({
         where: { recipeKey: current.recipeKey, status: "active" },
         data: { status: "archived", archivedAt: new Date() },
       });
-      const restored = await tx.generationRecipe.update({
+      // A first publication restores this family's previous absence of an active recipe.
+      const restored = previous ? await tx.generationRecipe.update({
         where: { id: previous.id },
         data: { status: "active", publishedAt: new Date(), archivedAt: null },
-      });
+      }) : await tx.generationRecipe.findUniqueOrThrow({ where: { id: current.id } });
+      // INVARIANT: reverting one family must not break the current image/negative pair.
+      // Check the effective post-rollback selection before committing either change.
+      const affectedUseCases = new Set([current, previous].flatMap(recipe =>
+        recipe && recipe.useCase !== "enhance" && (recipe.mode === "image" || recipe.mode === "negative") ? [recipe.useCase] : []));
+      for (const useCase of affectedUseCases) {
+        const image = await findActiveRecipe("image", useCase, tx);
+        if (image) await resolveImageRecipeNegative(image, tx);
+      }
       await writeCatalogAudit(tx, actor, requestId, {
         action: "generation.prompt_template.rollback",
         targetType: "generation_prompt_template",
@@ -286,7 +423,7 @@ export async function rollbackGenerationRecipe(request: Request, recipeId: strin
       return {
         recipe: recipeView(restored),
         fromVersion: current.version,
-        toVersion: restored.version,
+        toVersion: previous?.version ?? null,
       };
     },
   });
@@ -480,7 +617,9 @@ function labelPage<Row extends { label: string; id: string }, View>(
 
 function recipeAuditSnapshot(recipe: RecipeRow) {
   return {
+    id: recipe.id,
     recipeKey: recipe.recipeKey,
+    label: recipe.label,
     mode: recipe.mode,
     useCase: recipe.useCase,
     version: recipe.version,

@@ -8,6 +8,9 @@ import {
 const origin = "https://app.example";
 
 describe("auth redirect helpers", () => {
+  it("returns a signed-in reader to the gated changelog", () => {
+    expect(safeInternalAuthRedirect("/changelog", "https://idream.test")).toBe("/changelog");
+  });
   it("preserves account and checkout fragments for safe internal product routes", () => {
     expect(safeInternalAuthRedirect("/profile#billing", origin)).toBe(
       "/profile#billing",

@@ -27,9 +27,7 @@ export function isoToLocalInput(value: string | null): string {
 }
 
 /**
- * INVARIANT: 结束早于开始的窗口永远不会展示。权威不校验先后（`activeAnnouncements`
- * 只是两个独立的比较），所以这条得在发出去之前挡住，否则运营会得到一条存成功、
- * 却永远看不见的公告，而且没有任何提示。
+ * INVARIANT: 结束必须晚于开始；前端及写入权威都校验，避免保存永远不会展示的窗口。
  */
 export function announcementWindowOrdered(startsAt: string, endsAt: string): boolean {
   const from = localInputToIso(startsAt);

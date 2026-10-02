@@ -227,6 +227,26 @@ async function installInvariantAuthorityConstraints(url: string) {
       "../../../prisma/migrations/20260909090500_voice_clip_billing_authority/migration.sql",
       import.meta.url,
     ), "utf8"));
+    await client.query(await readFile(new URL(
+      "../../../prisma/migrations/20261001010000_voice_clip_reply_attempt/migration.sql",
+      import.meta.url,
+    ), "utf8"));
+    const voiceCallAuthority = await readFile(new URL(
+      "../../../prisma/migrations/20261001020000_voice_calls/migration.sql", import.meta.url,
+    ), "utf8");
+    await client.query(voiceCallAuthority.slice(voiceCallAuthority.indexOf("-- Authority constraints")));
+    const affiliateAuthority = await readFile(new URL(
+      "../../../prisma/migrations/20261001030000_affiliate_attribution_evidence/migration.sql", import.meta.url,
+    ), "utf8");
+    await client.query(affiliateAuthority.slice(affiliateAuthority.indexOf("-- Authority constraints")));
+    // The test schema is empty before seed. Install the complete Scene checks
+    // and immutable bindings from the migration instead of a weaker db-push copy.
+    const sequenceCounts = await client.query<{ sequences: string; scenes: string }>('SELECT (SELECT count(*) FROM "video_sequences")::text AS sequences, (SELECT count(*) FROM "video_sequence_scenes")::text AS scenes');
+    if (sequenceCounts.rows[0]?.sequences !== "0" || sequenceCounts.rows[0]?.scenes !== "0") throw new Error("Refusing to recreate nonempty video sequence tables");
+    await client.query('DROP TABLE "video_sequence_scenes"; DROP TABLE "video_sequences"');
+    await client.query(await readFile(new URL(
+      "../../../prisma/migrations/20261002020000_video_sequences/migration.sql", import.meta.url,
+    ), "utf8"));
     // db push cannot install triggers/CHECKs. This newly reset, pre-seed table
     // is empty: recreate it from the complete immutable migration, with no
     // copied cash constraints or edits to already-applied migration history.
@@ -279,7 +299,7 @@ async function installReleaseManifestContract(client: pg.Client) {
   );
   if (!installed.rows[0]?.present) await client.query(trimFunction);
   await client.query(await readFile(new URL(
-    "../../../prisma/migrations/20260913120000_release_manifest_optional_review_lineage/migration.sql",
+    "../../../prisma/migrations/20261002030000_customer_identity_release_lineage/migration.sql",
     import.meta.url,
   ), "utf8"));
 }

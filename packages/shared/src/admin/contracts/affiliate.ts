@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { adminIdSchema, adminIsoDateTimeSchema, adminPageInfoSchema } from "./common";
+import { affiliateAttributionEventSchema, affiliateAttributionHistorySchema } from "../../contracts/affiliate";
+export { affiliateAttributionQuerySchema } from "../../contracts/affiliate";
 
 export const affiliateApplicationListQuerySchema = z.object({
   status: z.enum(["all", "pending", "approved", "rejected"]).default("pending"),
@@ -38,3 +40,6 @@ export const affiliateApplicationMutationResponseSchema = z.object({
 }).strict();
 
 export type AffiliateApplicationAdmin = z.infer<typeof affiliateApplicationAdminSchema>;
+export const affiliateAttributionAdminHistorySchema = affiliateAttributionHistorySchema.extend({
+  items: z.array(affiliateAttributionEventSchema.extend({ convertedUserId: z.string().nullable() })),
+});

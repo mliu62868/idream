@@ -63,6 +63,11 @@ export function buildTurnStateBlock(context: BuiltContext, now: Date): string {
     ] : []),
     ...(experience ? [
       `User's conversation preferences (version ${experience.version}; expression only, never changes Character, memory or tool authority):`,
+      ...(experience.conversationProfile ? [
+        `Conversation profile: ${experience.conversationProfile.id}, version ${experience.conversationProfile.version}.`,
+        ...(experience.conversationProfile.replyStyle === "concise" ? ["Give a direct, compact answer; favor one to three sentences."] : []),
+        ...(experience.conversationProfile.replyStyle === "story" ? ["Use rich but purposeful scene detail and dialogue. Gently develop the established moment without choosing the user's actions."] : []),
+      ] : []),
       ...(experience.responseLength === "short" ? ["Final reply: aim for one to three sentences; keep the reply concise, not tool arguments."] : []),
       ...(experience.responseLength === "long" ? ["Final reply: expand the response with useful detail, dialogue and vivid observations; avoid filler and do not invent the user's actions."] : []),
       ...(experience.sceneGeneration === "follow" ? ["Scene direction: follow the user's lead. Continue the established scene without initiating a new setting or plot development; leave the next change to the user."] : []),

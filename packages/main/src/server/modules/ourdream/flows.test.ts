@@ -416,7 +416,7 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
     const patched = await api("PATCH", `character-drafts/${draftId}`, {
       userId,
       ageGate: true,
-      body: {
+      body: { expectedUpdatedAt: (await prisma.characterDraft.findUniqueOrThrow({ where: { id: draftId } })).updatedAt.toISOString(),
         step: 2,
         age: 120,
         advancedDetails: {
@@ -443,7 +443,7 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
     const rejected = await api("PATCH", `character-drafts/${draftId}`, {
       userId,
       ageGate: true,
-      body: { advancedDetails: { personality: "legacy split field" } },
+      body: { expectedUpdatedAt: (await prisma.characterDraft.findUniqueOrThrow({ where: { id: draftId } })).updatedAt.toISOString(), advancedDetails: { personality: "legacy split field" } },
     });
     expectError(rejected, 400, "bad_request");
   });
@@ -463,7 +463,7 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
     const patched = await api("PATCH", `character-drafts/${draftId}`, {
       userId,
       ageGate: true,
-      body: {
+      body: { expectedUpdatedAt: (await prisma.characterDraft.findUniqueOrThrow({ where: { id: draftId } })).updatedAt.toISOString(),
         step: 3,
         age: 22,
         appearance: { hair: "red" },
@@ -512,7 +512,7 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
     const changedIdentity = await api("PATCH", `character-drafts/${draftId}`, {
       userId,
       ageGate: true,
-      body: { appearance: { prompt: "silver hair with a new identity-defining face" } },
+      body: { expectedUpdatedAt: (await prisma.characterDraft.findUniqueOrThrow({ where: { id: draftId } })).updatedAt.toISOString(), appearance: { prompt: "silver hair with a new identity-defining face" } },
     });
     expectOk(changedIdentity);
     const staleIdentitySubmit = await api("POST", `character-drafts/${draftId}/submit`, {
@@ -630,7 +630,7 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
     const completeWithoutImage = await api("PATCH", `character-drafts/${draftId}`, {
       userId,
       ageGate: true,
-      body: {
+      body: { expectedUpdatedAt: (await prisma.characterDraft.findUniqueOrThrow({ where: { id: draftId } })).updatedAt.toISOString(),
         age: 25,
         advancedDetails: {
           description: "A sharp-witted investigative reporter who values honest answers.",
@@ -675,7 +675,7 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
     const madeIncomplete = await api("PATCH", `character-drafts/${draftId}`, {
       userId,
       ageGate: true,
-      body: {
+      body: { expectedUpdatedAt: (await prisma.characterDraft.findUniqueOrThrow({ where: { id: draftId } })).updatedAt.toISOString(),
         // firstMessage is not part of the identity projection, so the confirmed
         // identity survives and the persona check is what blocks publishing.
         advancedDetails: {
@@ -701,7 +701,7 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
     const completedPersona = await api("PATCH", `character-drafts/${draftId}`, {
       userId,
       ageGate: true,
-      body: {
+      body: { expectedUpdatedAt: (await prisma.characterDraft.findUniqueOrThrow({ where: { id: draftId } })).updatedAt.toISOString(),
         age: 25,
         advancedDetails: {
           description: "A sharp-witted investigative reporter who values honest answers.",

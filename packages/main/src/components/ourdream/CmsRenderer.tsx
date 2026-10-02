@@ -3,9 +3,10 @@ import Link from "next/link";
 import { ArrowRight } from "lucide-react";
 import type { PublishedRoutePage } from "@/server/cms/published-route";
 import type { OurdreamRoute } from "@/types/ourdream";
+import type { buildCmsFamilyDirectory } from "@/lib/resource-library";
 import { RouteShell } from "./OurdreamRoutePage";
 
-export function CmsRenderer({ page }: Readonly<{ page: PublishedRoutePage }>) {
+export function CmsRenderer({ page, directory, label = "iDream guide" }: Readonly<{ page: PublishedRoutePage; directory?: ReturnType<typeof buildCmsFamilyDirectory>; label?: string }>) {
   const body = page.body;
   const route: OurdreamRoute = {
     path: page.path,
@@ -25,7 +26,7 @@ export function CmsRenderer({ page }: Readonly<{ page: PublishedRoutePage }>) {
       <article className="px-4 py-10 md:px-[60px] md:py-14">
         <div className="mx-auto max-w-3xl">
           <p className="text-[12px] font-black uppercase leading-4 text-[rgb(253,95,194)]">
-            iDream guide
+            {label}
           </p>
           <h1 className="mt-3 text-[40px] font-black uppercase leading-none tracking-normal text-white md:text-[60px]">
             {body.heading}
@@ -36,10 +37,27 @@ export function CmsRenderer({ page }: Readonly<{ page: PublishedRoutePage }>) {
           <p className="mt-6 text-[15px] font-medium leading-8 text-white/85">
             {body.intro}
           </p>
-          {body.sections.map((section) => (
+          {directory ? <section className="mt-8 space-y-4" aria-label="Published directory">
+            <form action={page.path} method="get" className="flex flex-wrap gap-2 text-sm">
+              <input aria-label="Search published pages" name="q" maxLength={200} defaultValue={directory.search} placeholder="Search this directory" className="min-w-0 flex-1 rounded-lg bg-white/10 px-3 py-2 text-white" />
+              <button className="rounded-full bg-white px-4 py-2 font-bold text-black" type="submit">Search</button>
+              {directory.search ? <Link className="px-3 py-2 underline" href={page.path}>Clear search</Link> : null}
+            </form>
+            {directory.items.length ? <div className="grid gap-3 sm:grid-cols-2">{directory.items.map(item => <Link key={item.path} href={item.path} className="rounded-xl border border-white/10 bg-white/5 p-4">
+              <h2 className="font-bold text-white">{item.title}</h2><p className="mt-2 text-sm leading-6 text-white/65">{item.description}</p><span className="mt-3 block text-sm font-semibold">Read more →</span>
+            </Link>)}</div> : <p className="text-sm text-white/60">{directory.search ? "No published pages match this search." : "No detail pages have been published yet."}</p>}
+            {directory.pageCount > 1 ? <nav aria-label="Directory pages" className="flex items-center justify-between gap-3 text-sm">
+              {directory.page > 1 ? <Link className="underline" href={`${page.path}?${new URLSearchParams({ ...(directory.search ? { q: directory.search } : {}), page: String(directory.page - 1) })}`}>Previous</Link> : <span />}
+              <span>Page {directory.page} of {directory.pageCount}</span>
+              {directory.page < directory.pageCount ? <Link className="underline" href={`${page.path}?${new URLSearchParams({ ...(directory.search ? { q: directory.search } : {}), page: String(directory.page + 1) })}`}>Next</Link> : <span />}
+            </nav> : null}
+          </section> : null}
+          <nav className="mt-8 flex flex-wrap gap-3 text-sm text-white/75" aria-label="On this page">{body.sections.map((section, index) => <a className="underline" key={section.heading} href={`#section-${index + 1}`}>{section.heading}</a>)}</nav>
+          {body.sections.map((section, index) => (
             <section
               className="mt-10 rounded-[16px] border border-white/10 bg-[rgb(18,18,18)] p-6"
               key={section.heading}
+              id={`section-${index + 1}`}
             >
               <h2 className="text-[26px] font-black uppercase leading-8 text-white">
                 {section.heading}

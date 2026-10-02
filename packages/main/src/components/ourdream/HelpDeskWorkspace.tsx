@@ -4,6 +4,7 @@ import Link from "next/link";
 import {
   ArrowRight,
   Bug,
+  BookOpen,
   CheckCircle2,
   ExternalLink,
   LifeBuoy,
@@ -208,6 +209,12 @@ const roadmapItems = [
     title: "Features",
     copy: "Suggest a feature below; everyone can vote on what should ship next.",
   },
+  {
+    icon: BookOpen,
+    title: "Changelog",
+    copy: "Read product updates with Premium and Deluxe. Basic support and roadmap voting remain open to everyone.",
+    href: "/changelog",
+  },
 ] as const;
 
 export function HelpDeskWorkspace() {
@@ -283,6 +290,19 @@ export function HelpDeskWorkspace() {
     return scope;
   }, []);
 
+  const fetchForViewer = useCallback((input: RequestInfo | URL, init?: RequestInit) => {
+    const scope = viewerScopeRef.current;
+    if (!scope) return Promise.reject(new Error("We couldn't confirm your sign-in. Refresh and try again."));
+    const headers = new Headers(init?.headers);
+    // The cookie can change before the focus /me reply. Main must refuse an
+    // old account's retained form before creating a ticket, idea or vote.
+    const method = (init?.method ?? "GET").toUpperCase();
+    if (scope.startsWith("user:") || (method !== "GET" && method !== "HEAD")) {
+      headers.set("x-idream-viewer-scope", scope);
+    }
+    return fetch(input, { ...init, headers });
+  }, []);
+
   const canSubmit = useMemo(
     () => subject.trim().length >= 3 && description.trim().length >= 10 && !submitting,
     [description, subject, submitting],
@@ -321,7 +341,7 @@ export function HelpDeskWorkspace() {
       const query = new URLSearchParams();
       if (feedbackFilter) query.set("status", feedbackFilter);
       if (cursor) query.set("cursor", cursor);
-      const response = await fetch(`/api/v1/feedback/items${query.size ? `?${query}` : ""}`, { method: "GET", cache: "no-store", signal: controller.signal });
+      const response = await fetchForViewer(`/api/v1/feedback/items${query.size ? `?${query}` : ""}`, { method: "GET", cache: "no-store", signal: controller.signal });
       const raw = await response.json();
       if (!isCurrent()) return;
       if (!response.ok) {
@@ -352,7 +372,7 @@ export function HelpDeskWorkspace() {
         setFeedbackMoreLoading(false);
       }
     }
-  }, [ageGateAccepted, feedbackFilter]);
+  }, [ageGateAccepted, feedbackFilter, fetchForViewer]);
 
   const loadHelpDeskHistory = useCallback(async () => {
     const requestedScope = viewerScopeRef.current;
@@ -361,7 +381,7 @@ export function HelpDeskWorkspace() {
     setHistoryError("");
     setHistoryErrorRetryable(true);
     try {
-      const response = await fetch("/api/v1/support/history", {
+      const response = await fetchForViewer("/api/v1/support/history", {
         cache: "no-store",
       });
       const raw = await response.json();
@@ -382,7 +402,7 @@ export function HelpDeskWorkspace() {
     } finally {
       if (viewerScopeRef.current === requestedScope) setHistoryLoading(false);
     }
-  }, []);
+  }, [fetchForViewer]);
 
   useEffect(() => {
     if (!ageGateAccepted) return;
@@ -411,6 +431,8 @@ export function HelpDeskWorkspace() {
             feedbackRequestRef.current?.abort();
             setFeedbackItems([]); setFeedbackNextCursor(null); setFeedbackMoreLoading(false);
             setFeedbackVotingId(""); setFeedbackSubmitting(false);
+            setHistory(EMPTY_HELP_DESK_HISTORY); setHistoryLoading(false); setHistoryError("");
+            setTicketId(""); setSubmitting(false); setAppealSubmitting(false);
           }
           viewerScopeRef.current = nextScope;
           setViewerScope(nextScope);
@@ -420,6 +442,8 @@ export function HelpDeskWorkspace() {
           feedbackRequestRef.current?.abort();
           setFeedbackItems([]); setFeedbackNextCursor(null); setFeedbackMoreLoading(false);
           setFeedbackLoading(false); setFeedbackLoadError("Could not confirm your account. Refresh to try again.");
+          setHistory(EMPTY_HELP_DESK_HISTORY); setHistoryLoading(false);
+          setTicketId(""); setSubmitting(false); setAppealSubmitting(false);
           viewerScopeRef.current = null;
           setViewerScope(null);
           setStatus("We couldn't confirm your sign-in, so your saved draft isn't restored yet. Refresh to try again.");
@@ -562,7 +586,7 @@ export function HelpDeskWorkspace() {
 
     async function applyPendingVote() {
       try {
-        const response = await fetch(`/api/v1/feedback/items/${vote.itemId}/vote`, {
+        const response = await fetchForViewer(`/api/v1/feedback/items/${vote.itemId}/vote`, {
           method: vote.action === "unvote" ? "DELETE" : "POST",
         });
         const raw = await response.json();
@@ -609,17 +633,18 @@ export function HelpDeskWorkspace() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [feedbackFilter, feedbackLoading, pendingFeedbackVote, viewerScope]);
+  }, [feedbackFilter, feedbackLoading, fetchForViewer, pendingFeedbackVote, viewerScope]);
 
   async function submitRequest(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!canSubmit) return;
+    const requestedScope = viewerScopeRef.current;
 
     setSubmitting(true);
     setStatus("");
     setTicketId("");
     try {
-      const response = await fetch("/api/v1/support/requests", {
+      const response = await fetchForViewer("/api/v1/support/requests", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -631,6 +656,7 @@ export function HelpDeskWorkspace() {
         }),
       });
       const payload = (await response.json()) as SupportPayload;
+      if (viewerScopeRef.current !== requestedScope) return;
       if (!response.ok || payload.ok === false) {
         if (response.status === 401) {
           const scope = await resolveViewerScope().catch(() => null);
@@ -658,9 +684,9 @@ export function HelpDeskWorkspace() {
       setSupportDraft(INITIAL_SUPPORT_DRAFT);
       void loadHelpDeskHistory();
     } catch {
-      setStatus("Support request failed. Try again.");
+      if (viewerScopeRef.current === requestedScope) setStatus("Support request failed. Try again.");
     } finally {
-      setSubmitting(false);
+      if (viewerScopeRef.current === requestedScope) setSubmitting(false);
     }
   }
 
@@ -672,7 +698,7 @@ export function HelpDeskWorkspace() {
     setFeedbackSubmitting(true);
     setFeedbackStatus("");
     try {
-      const response = await fetch("/api/v1/feedback/items", {
+      const response = await fetchForViewer("/api/v1/feedback/items", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -722,7 +748,7 @@ export function HelpDeskWorkspace() {
     setFeedbackVotingId(item.id);
     setFeedbackStatus("");
     try {
-      const response = await fetch(`/api/v1/feedback/items/${item.id}/vote`, {
+      const response = await fetchForViewer(`/api/v1/feedback/items/${item.id}/vote`, {
         method: item.userVoted ? "DELETE" : "POST",
       });
       const raw = await response.json();
@@ -765,11 +791,12 @@ export function HelpDeskWorkspace() {
   async function submitAppeal(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!canSubmitAppeal) return;
+    const requestedScope = viewerScopeRef.current;
 
     setAppealSubmitting(true);
     setAppealStatus("");
     try {
-      const response = await fetch("/api/v1/appeals", {
+      const response = await fetchForViewer("/api/v1/appeals", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -780,6 +807,7 @@ export function HelpDeskWorkspace() {
         }),
       });
       const payload = (await response.json()) as AppealPayload;
+      if (viewerScopeRef.current !== requestedScope) return;
       if (!response.ok || payload.ok === false || !payload.data?.appeal) {
         if (response.status === 401) {
           const scope = await resolveViewerScope().catch(() => null);
@@ -804,9 +832,9 @@ export function HelpDeskWorkspace() {
       setAppealDraft(INITIAL_APPEAL_DRAFT);
       void loadHelpDeskHistory();
     } catch {
-      setAppealStatus("Appeal failed. Try again.");
+      if (viewerScopeRef.current === requestedScope) setAppealStatus("Appeal failed. Try again.");
     } finally {
-      setAppealSubmitting(false);
+      if (viewerScopeRef.current === requestedScope) setAppealSubmitting(false);
     }
   }
 
@@ -1061,7 +1089,7 @@ export function HelpDeskWorkspace() {
         <div>
           <div className="flex items-center justify-between gap-4">
             <h2 className="text-[24px] font-black uppercase leading-7 text-white">
-              Bugs & features
+              Feedback & updates
             </h2>
           </div>
           <div className="mt-4 grid gap-3">
@@ -1077,6 +1105,7 @@ export function HelpDeskWorkspace() {
                 <p className="mt-3 text-[13px] font-medium leading-6 text-[rgb(170,170,170)]">
                   {item.copy}
                 </p>
+                {"href" in item ? <Link className="mt-4 inline-flex items-center gap-2 text-sm font-bold text-white underline underline-offset-4" href={item.href} prefetch={false}>Read product updates <ArrowRight className="h-4 w-4" aria-hidden="true" /></Link> : null}
               </article>
             ))}
           </div>

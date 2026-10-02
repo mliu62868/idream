@@ -34,7 +34,7 @@ import { createChatContextDirective, deleteChatContextDirective, listChatContext
 import { getChatExperiencePreference, updateChatExperiencePreference } from "@/server/modules/chat/experience-preferences";
 import { getProactiveSettings, updateProactiveSettings } from "@/server/modules/chat/proactive-messages";
 import { routeVoiceInput } from "@/server/modules/chat/voice-input";
-import { getVoiceCallCapability, startVoiceCall } from "@/server/modules/chat/voice-call";
+import { routeVoiceCall } from "@/server/modules/chat/voice-call";
 import { createGroupConversation, getGroupConversation, groupSpeakerSession, listGroupCandidates, listGroupConversations, updateGroupConversation } from "@/server/modules/chat/group-conversations";
 
 const PRIVATE_HEADERS = {
@@ -88,6 +88,8 @@ async function routeMainChat(request: Request, segments: string[], userId: strin
   if (root === "chat") {
     const voiceInput = await routeVoiceInput(request, path, userId);
     if (voiceInput) return voiceInput;
+    const voiceCall = await routeVoiceCall(request, path, userId);
+    if (voiceCall) return voiceCall;
   }
   const body = method === "GET" || method === "HEAD" ? {} : await jsonBody(request);
 
@@ -153,10 +155,6 @@ async function routeMainChat(request: Request, segments: string[], userId: strin
 
   if (root === "chat" && path[0] === "sessions" && path[1]) {
     const sessionId = path[1];
-    if (path[2] === "voice-call" && path.length === 3) {
-      if (method === "GET") return json(await getVoiceCallCapability(userId, sessionId));
-      if (method === "POST") return json(await startVoiceCall(userId, sessionId));
-    }
     if (path[2] === "proactive" && path.length === 3) {
       if (method === "GET") return json(await getProactiveSettings(userId, sessionId));
       if (method === "PUT") return json(await updateProactiveSettings(userId, sessionId, body));

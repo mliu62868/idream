@@ -18,7 +18,6 @@ type AdminConsoleClientOnlyProps = {
   initialPermissions: AdminPermissionKey[];
   preferences: AdminShellPreferences;
   shellSignals: AdminShellSignals;
-  devLogout?: boolean;
 };
 
 export function AdminConsoleClientOnly(props: AdminConsoleClientOnlyProps) {

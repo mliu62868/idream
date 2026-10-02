@@ -28,6 +28,24 @@ function latestByCreatedAt<T extends { id: string; createdAt: Date }>(rows: read
   )[0] ?? null;
 }
 
+function runItemPlacements<T extends { metadata: Prisma.JsonValue }>(
+  placements: readonly T[],
+  runId: string,
+  itemId: string,
+) {
+  const owned = placements.filter((placement) => {
+    const metadata = jsonRecord(placement.metadata);
+    return metadata.creativeRunId === runId && metadata.creativeRunItemId === itemId;
+  });
+  // Managed placement history remains authoritative after withdrawal. A
+  // separate reuse of the asset must not mark this Run as placed again.
+  if (owned.length > 0) return owned;
+  return placements.filter((placement) => {
+    const metadata = jsonRecord(placement.metadata);
+    return typeof metadata.creativeRunId !== "string" && typeof metadata.creativeRunItemId !== "string";
+  });
+}
+
 function automaticCompositionSummary(metadata: unknown) {
   const quality = jsonRecord(jsonRecord(metadata).quality);
   const composition = jsonRecord(quality.composition);
@@ -246,10 +264,10 @@ function deriveCreativeRunSummary(
           costDreamcoins: item.job.costDreamcoins,
         } : null,
         asset: asset ? { id: asset.id, safetyStatus: asset.safetyStatus, deletedAt: asset.deletedAt } : null,
-        placements: asset?.placements.map((placement) => ({
+        placements: asset ? runItemPlacements(asset.placements, run.id, item.id).map((placement) => ({
           status: placement.status,
           verificationState: placement.verificationState as "pending" | "verifying" | "passed" | "failed" | "overridden",
-        })) ?? [],
+        })) : [],
       };
     }),
     ledgerEntries: allLedgerFacts.filter((fact) => fact.sourceId !== null && jobIds.has(fact.sourceId)),
@@ -327,10 +345,10 @@ export async function getCreativeRunDetail(input: {
         status: item.status,
         job: item.job ? { id: item.job.id, status: item.job.status, errorCode: item.job.errorCode, costDreamcoins: item.job.costDreamcoins } : null,
         asset: asset ? { id: asset.id, safetyStatus: asset.safetyStatus, deletedAt: asset.deletedAt } : null,
-        placements: asset?.placements.map((placement) => ({
+        placements: asset ? runItemPlacements(asset.placements, run.id, item.id).map((placement) => ({
           status: placement.status,
           verificationState: placement.verificationState as "pending" | "verifying" | "passed" | "failed" | "overridden",
-        })) ?? [],
+        })) : [],
       };
     }),
     ledgerEntries,
@@ -431,7 +449,7 @@ export async function getCreativeRunDetail(input: {
         latestAttempt,
       );
       const placement = asset
-        ? latestByCreatedAt(asset.placements.filter((candidate) =>
+        ? latestByCreatedAt(runItemPlacements(asset.placements, run.id, item.id).filter((candidate) =>
             ["published", "scheduled"].includes(candidate.status)
           ))
         : null;

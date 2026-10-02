@@ -84,10 +84,13 @@ export function characterAssetRunReceiptMessage(input: {
   readonly executionOutcome: string;
   readonly items: readonly { readonly asset: unknown | null }[];
 }) {
-  return input.executionOutcome === "succeeded" &&
+  if (["pending", "running"].includes(input.executionOutcome)) {
+    return "The image request is in progress. Resource waits may extend the time; choose an image once it is ready.";
+  }
+  return ["succeeded", "partially_succeeded"].includes(input.executionOutcome) &&
     input.items.some((item) => item.asset !== null)
     ? "Generation is complete. Choose an image to use."
-    : "The image request is in progress. Resource waits may extend the time; choose an image once it is ready.";
+    : null;
 }
 
 export function canOfferCharacterAssetTerminalRejection(input: {

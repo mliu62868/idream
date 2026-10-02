@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { compileCharacterSoul } from "@idream/shared";
+import { characterVideoProductionRecipe, compileCharacterSoul } from "@idream/shared";
 import { POST as createCreativeRun } from "@/app/api/v2/admin/creative/runs/route";
 import { prisma } from "@/server/lib/db";
 import { getCharacterWorkspace } from "@/server/modules/admin-v2/characters/workspace";
@@ -56,7 +56,7 @@ describe("Character video Creative Run authority", () => {
     const profile = await prisma.generationModelProfile.findFirst({
       where: {
         profileKey: "profile_video_redgraft_ltx25_v1",
-        version: 2,
+        version: characterVideoProductionRecipe.recipeVersion,
       },
     });
     expect(profile && isDefaultProductionVideoProfile(profile)).toBe(true);
@@ -269,7 +269,7 @@ describe("Character video Creative Run authority", () => {
       mode: "video",
       characterId,
       profileId: "profile_video_redgraft_ltx25_v1",
-      profileVersion: 2,
+      profileVersion: characterVideoProductionRecipe.recipeVersion,
       recipeId: "template_video_character_default",
       orientation: "2:3",
       outputCount: 1,
@@ -292,9 +292,9 @@ describe("Character video Creative Run authority", () => {
     expect(attempts).toHaveLength(1);
     expect(attempts[0]).toMatchObject({
       profileKey: "profile_video_redgraft_ltx25_v1",
-      profileVersion: 2,
+      profileVersion: characterVideoProductionRecipe.recipeVersion,
       workflowKey: "redgraft-ltx25-i2v",
-      workflowVersion: 2,
+      workflowVersion: characterVideoProductionRecipe.workflowVersion,
     });
     expect(await prisma.mainOutboxEvent.findUniqueOrThrow({
       where: {

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { compileCharacterSoul } from "@idream/shared";
+import { compileCharacterSoul, COMPANION_PRODUCT_PROMPT_VERSION } from "@idream/shared";
 import { BFF_HEADER } from "@idream/shared/bff";
 
 const db = vi.hoisted(() => ({
@@ -52,7 +52,7 @@ function completedDshTrace() {
   return {
     authority: "dsh_terminal_candidate",
     prompt: {
-      productPromptVersion: "companion-product-1",
+      productPromptVersion: COMPANION_PRODUCT_PROMPT_VERSION,
       preparedTurnVersion: 4,
       systemPromptDigest: "c".repeat(64),
       soulFingerprint: "d".repeat(64),
@@ -336,7 +336,7 @@ describe("chat service DSH evidence", () => {
 
     expect(evidence).toEqual({
       ok: true,
-      productPromptVersion: "companion-product-1",
+      productPromptVersion: COMPANION_PRODUCT_PROMPT_VERSION,
       preparedTurnVersion: 4,
       systemPromptDigest: "c".repeat(64),
       soulFingerprint: "d".repeat(64),

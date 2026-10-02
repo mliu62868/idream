@@ -13,6 +13,8 @@ import { scanDueUnknownGenerationReviews } from "@/server/modules/admin-v2/jobs/
 import { recoverExpiredVoiceClips } from "@/server/modules/ourdream/voice-clip-recovery";
 import { entitlementMap } from "@/server/modules/ourdream/subscription-lifecycle";
 import { readableCharacter } from "@/server/modules/ourdream/generation-character-authority";
+import { expireVoiceCalls } from "@/server/modules/chat/voice-call";
+import { advanceVideoSequences } from "@/server/modules/ourdream/video-sequence";
 import { isProcessEntrypoint } from "./process-entrypoint";
 
 const BUSY_DELAY_MS = 50;
@@ -30,6 +32,24 @@ let nextQueueOffset = 0;
 let voiceRecovery: Promise<void> | null = null;
 let voiceRecoveryCursor: string | null = null;
 let lastVoiceRecoveryAt = 0;
+let callExpiry: Promise<void> | null = null;
+let lastCallExpiryAt = 0;
+let videoSequenceAdvance: Promise<void> | null = null;
+let lastVideoSequenceAdvanceAt = 0;
+
+function maybeAdvanceVideoSequences(now = Date.now()) {
+  if (videoSequenceAdvance || now - lastVideoSequenceAdvanceAt < IDLE_DELAY_MS) return;
+  lastVideoSequenceAdvanceAt = now;
+  videoSequenceAdvance = advanceVideoSequences().catch(error => logger.error({ error }, "video sequence recovery failed")).finally(() => { videoSequenceAdvance = null; });
+}
+
+function maybeExpireVoiceCalls(now = Date.now()) {
+  if (callExpiry || now - lastCallExpiryAt < IDLE_DELAY_MS) return;
+  lastCallExpiryAt = now;
+  callExpiry = expireVoiceCalls().catch(error => {
+    logger.error({ error }, "voice call lease expiry failed");
+  }).finally(() => { callExpiry = null; });
+}
 
 function maybeRecoverVoiceClips(now = Date.now()) {
   if (voiceRecovery || now - lastVoiceRecoveryAt < RECONCILE_INTERVAL_MS) return;
@@ -65,11 +85,15 @@ export async function runFinalizerLoop(): Promise<void> {
       logger.error({ err }, "finalizer drain failed");
     }
     maybeRecoverVoiceClips();
+    maybeExpireVoiceCalls();
+    maybeAdvanceVideoSequences();
     await maybeReconcileStaleJobs();
     await dispatchPendingGenerationTerminalRecords().catch((err) => logger.error({ err }, "generation terminal record dispatch failed"));
     await sleep(processed > 0 ? BUSY_DELAY_MS : IDLE_DELAY_MS);
   }
   await voiceRecovery;
+  await callExpiry;
+  await videoSequenceAdvance;
 }
 
 function finalizerQueuesForIteration(): string[] {

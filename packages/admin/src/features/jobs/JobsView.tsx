@@ -78,6 +78,7 @@ export function JobsView({ permissions }: { readonly permissions: JobsViewPermis
   const [cursorTrail, setCursorTrail] = useState<string[]>([]);
   const detailTriggerRef = useRef<HTMLButtonElement | null>(null);
   const jobsGate = useRef(createLatestRequestGate());
+  const detailGate = useRef(createLatestRequestGate());
 
   const loadJobs = useCallback(async (next: GenerationJobQueryDraft) => {
     const encoded = buildGenerationJobQuery(next);
@@ -100,19 +101,21 @@ export function JobsView({ permissions }: { readonly permissions: JobsViewPermis
   }, []);
 
   const showJobDetail = useCallback(async (id: string | null) => {
+    const request = detailGate.current.begin();
     setSelectedJobId(id);
     setDetail(null);
     setDetailError(null);
+    setDetailBusy(Boolean(id));
     if (!id) return;
-    setDetailBusy(true);
     try {
-      setDetail(generationJobDetailResponseSchema.parse(
+      const response = generationJobDetailResponseSchema.parse(
         await apiGet<unknown>(`/api/v2/admin/jobs/${encodeURIComponent(id)}`),
-      ));
+      );
+      if (request.isCurrent()) setDetail(response);
     } catch (cause) {
-      setDetailError(cause instanceof Error ? cause.message : t("Job detail load failed"));
+      if (request.isCurrent()) setDetailError(cause instanceof Error ? cause.message : t("Job detail load failed"));
     } finally {
-      setDetailBusy(false);
+      if (request.isCurrent()) setDetailBusy(false);
     }
   }, [t]);
 
@@ -133,9 +136,11 @@ export function JobsView({ permissions }: { readonly permissions: JobsViewPermis
 
   useEffect(() => {
     const gate = jobsGate.current;
+    const details = detailGate.current;
     window.addEventListener(GENERATION_JOBS_REFRESH_EVENT, reload);
     return () => {
       gate.invalidate();
+      details.invalidate();
       window.removeEventListener(GENERATION_JOBS_REFRESH_EVENT, reload);
     };
   }, [reload]);
@@ -453,7 +458,7 @@ function GenerationJobInspector({ canReconcile, detail, error, jobId, loading, o
   return (
     <section aria-labelledby="generation-job-detail-title" className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
       <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[var(--ad-border)] p-4">
-        <div className="min-w-0"><p className="text-xs font-semibold uppercase text-[var(--ad-text-muted)]">{t("Generation Request authority")}</p><h2 className="mt-1 truncate font-mono text-base font-semibold" id="generation-job-detail-title">{shortId(jobId)}</h2></div>
+        <div className="min-w-0"><p className="text-xs font-semibold uppercase text-[var(--ad-text-muted)]">{t("Generation Request authority")}</p><h2 className="mt-1 font-mono text-base font-semibold" id="generation-job-detail-title"><CopyableId value={jobId} /></h2></div>
         <div className="flex shrink-0 items-center gap-2">
           {/* SPEC: 这一页把机器侧的事实列全了，人侧的一条没有——运营动过什么，只在审计日志里。
               INTENT: 实测把一个 23 天前的死信重新入队后，页面上凭空多出一个 Attempt #2，
@@ -490,7 +495,7 @@ function GenerationJobInspector({ canReconcile, detail, error, jobId, loading, o
             caption="Generation Attempts"
             headers={["Attempt", "Outcome", "Provider / route", "Failure authority", "Finished"]}
             rows={detail.attempts.map((attempt) => [
-              `#${attempt.attemptNo} · ${shortId(attempt.id)}`,
+              <span className="inline-flex items-center gap-1" key="attempt">{`#${attempt.attemptNo} ·`} <CopyableId value={attempt.id} /></span>,
               value(attempt.status),
               [attempt.provider, attempt.profileKey, attempt.workflowKey].filter(Boolean).join(" · ") || "—",
               [attempt.errorClass, attempt.errorCode, attempt.retryability].filter(Boolean).join(" · ") || "—",
@@ -501,8 +506,8 @@ function GenerationJobInspector({ canReconcile, detail, error, jobId, loading, o
             caption="Provider Transport Executions"
             headers={["Transport", "Attempt / provider", "Technical outcome", "Provider cost", "Terminal record", "Finished"]}
             rows={detail.transportExecutions.map((execution) => [
-              `#${execution.transportAttemptNo} · ${shortId(execution.id)}`,
-              `${shortId(execution.attemptId)} · ${execution.provider ?? "—"}`,
+              <span className="inline-flex items-center gap-1" key="transport">{`#${execution.transportAttemptNo} ·`} <CopyableId value={execution.id} /></span>,
+              <span className="inline-flex items-center gap-1" key="attempt-provider"><CopyableId value={execution.attemptId} />{" · "}{execution.provider ?? "—"}</span>,
               value(execution.status),
               execution.costMicros === null ? "Unavailable" : `${format.count(execution.costMicros)} μ`,
               execution.terminalRecordRef ?? "—",
@@ -513,12 +518,12 @@ function GenerationJobInspector({ canReconcile, detail, error, jobId, loading, o
             <AuthorityTable
               caption="Artifacts and validation"
               headers={["Artifact", "Attempt", "Validation", "Archive", "Asset"]}
-              rows={detail.artifacts.map((artifact) => [shortId(artifact.id), shortId(artifact.attemptId), value(artifact.validationState), value(artifact.archiveState), artifact.assetId ? shortId(artifact.assetId) : "—"])}
+              rows={detail.artifacts.map((artifact) => [<CopyableId key="artifact" value={artifact.id} />, <CopyableId key="attempt" value={artifact.attemptId} />, value(artifact.validationState), value(artifact.archiveState), <CopyableId key="asset" value={artifact.assetId ?? ""} />])}
             />
             <AuthorityTable
               caption="Delivery outcomes"
               headers={["Artifact", "Target", "Outcome", "Delivered"]}
-              rows={detail.deliveries.map((delivery) => [shortId(delivery.artifactId), `${delivery.targetType}:${shortId(delivery.targetId)}`, value(delivery.status), delivery.deliveredAt ? format.dateTime(delivery.deliveredAt) : "—"])}
+              rows={detail.deliveries.map((delivery) => [<CopyableId key="artifact" value={delivery.artifactId} />, <span className="inline-flex items-center gap-1" key="target">{delivery.targetType}{":"}<CopyableId value={delivery.targetId} /></span>, value(delivery.status), delivery.deliveredAt ? format.dateTime(delivery.deliveredAt) : "—"])}
             />
           </div>
           {/* SPEC: 用户对这次生成打的分——运营手上唯一的第一手「产出到底行不行」信号。
@@ -532,9 +537,9 @@ function GenerationJobInspector({ canReconcile, detail, error, jobId, loading, o
             caption="User feedback on this generation"
             headers={["Feedback", "User", "Asset", "Verdict", "Surface", "Standing", "Recorded"]}
             rows={detail.feedback.map((entry) => [
-              shortId(entry.id),
-              shortId(entry.actorId),
-              shortId(entry.mediaAssetId),
+              <CopyableId key="feedback" value={entry.id} />,
+              <CopyableId key="actor" value={entry.actorId} />,
+              <CopyableId key="asset" value={entry.mediaAssetId} />,
               `${value(entry.dimension)} · ${value(entry.value)}`,
               value(entry.sourceSurface),
               entry.active
@@ -546,19 +551,19 @@ function GenerationJobInspector({ canReconcile, detail, error, jobId, loading, o
           <AuthorityTable
             caption="Immutable Attempt events"
             headers={["Sequence", "Attempt", "Typed event", "Outcome", "Occurred"]}
-            rows={detail.events.map((event) => [String(event.sequence), shortId(event.attemptId), event.eventType, event.outcome ? value(event.outcome) : "—", format.dateTime(event.occurredAt)])}
+            rows={detail.events.map((event) => [String(event.sequence), <CopyableId key="attempt" value={event.attemptId} />, event.eventType, event.outcome ? value(event.outcome) : "—", format.dateTime(event.occurredAt)])}
           />
           <AuthorityTable
             caption="Append-only Settlement entries"
             headers={["Ledger entry", "Kind", "Reason", "Dreamcoins", "Occurred"]}
-            rows={detail.settlementEntries.map((entry) => [shortId(entry.ledgerEntryId), entry.kind, entry.reason, String(entry.deltaDreamcoins), format.dateTime(entry.createdAt)])}
+            rows={detail.settlementEntries.map((entry) => [<CopyableId key="ledger" value={entry.ledgerEntryId} />, entry.kind, entry.reason, String(entry.deltaDreamcoins), format.dateTime(entry.createdAt)])}
           />
           <AuthorityTable
             caption="Unknown outcome reconciliation decisions"
             headers={["Decision", "Attempt / actor", "Reason", "Evidence", "Review / settlement", "Occurred"]}
             rows={detail.unknownReconciliations.map((decision) => [
               value(decision.resolution),
-              `${shortId(decision.attemptId)} · ${shortId(decision.actorId)}`,
+              <span className="inline-flex items-center gap-1" key="attempt-actor"><CopyableId value={decision.attemptId} />{" · "}<CopyableId value={decision.actorId} /></span>,
               decision.reason,
               decision.providerEvidenceRefs.join(" · ") || "—",
               decision.nextReviewAt
@@ -575,12 +580,12 @@ function GenerationJobInspector({ canReconcile, detail, error, jobId, loading, o
   );
 }
 
-// SPEC: 详情面板里的七张只读证据表，故意不是 DataTable。
+// SPEC: 详情面板里的只读证据表，故意不是 DataTable。
 // INTENT: DataTable 的 caption 是 sr-only、空态是一整块 EmptyState、每行还要一个稳定 id——
-// 七张表叠在一个抽屉里就变成七个大空块、七段看不见的标题，而这些行（事件序号、结算流水）
+// 多张表叠在一个抽屉里就变成多个大空块、看不见的标题，而这些行（事件序号、结算流水）
 // 本来就没有可点进去的实体。这里要的恰恰相反：可见的小标题 + 一行灰字说"还没有记录"。
 // 列表页那张真表已经在用 DataTable，这不是漏迁。
-function AuthorityTable({ caption, headers, rows }: { caption: string; headers: string[]; rows: string[][] }) {
+function AuthorityTable({ caption, headers, rows }: { caption: string; headers: string[]; rows: ReactNode[][] }) {
   const { t } = useAdminI18n();
   const translatedCaption = t(caption);
   return (

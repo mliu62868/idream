@@ -1,4 +1,5 @@
 import {
+  decoratePlacementReplay,
   getPlacement,
   patchPlacement,
 } from "@/server/modules/admin-v2/content/placements";
@@ -38,7 +39,7 @@ export async function PATCH(request: Request, context: Context) {
         }
         return patchPlacement({ tx, request, actor, id, expectedVersion, body });
       },
-      decorateResult: (result, replayed) => ({ ...(result as object), replayed }),
+      decorateResult: decoratePlacementReplay,
     })
   );
 }

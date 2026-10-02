@@ -11,7 +11,7 @@ import {
   mockVideoMp4Bytes,
 } from "@idream/shared";
 import { FREE_DAILY_MESSAGES } from "@idream/shared/chat/limits";
-import { voiceClipQuoteSchema } from "@idream/shared/contracts";
+import { videoSequenceDtoSchema, videoSequenceQuoteSchema, voiceClipQuoteSchema } from "@idream/shared/contracts";
 import { resolveLocalBlobPath } from "@idream/shared/storage/local-blob";
 import { hasPendingCompanionMemoryMutation } from "@/server/modules/chat/companion-memory-authority";
 import { ACCOUNT_DELETION_GRACE_PERIOD_MS } from "@/server/account-deletion-authority";
@@ -1860,11 +1860,15 @@ async function enableVideoGenerationForUser(email: string) {
     where: { key: "video_gen" },
     select: { enabled: true, rolloutPercent: true },
   });
-  await prisma.entitlement.upsert({
-    where: { userId_key: { userId: user.id, key: "video_generation" } },
-    update: { value: true, source: "e2e" },
-    create: { userId: user.id, key: "video_generation", value: true, source: "e2e" },
-  });
+  // Deluxe includes Premium controls: the successful Scene journey requires
+  // both video access and permission to enter its motion prompt (PRD UP-05).
+  for (const key of ["video_generation", "premium_controls"]) {
+    await prisma.entitlement.upsert({
+      where: { userId_key: { userId: user.id, key } },
+      update: { value: true, source: "e2e" },
+      create: { userId: user.id, key, value: true, source: "e2e" },
+    });
+  }
   await prisma.featureFlag.update({
     where: { key: "video_gen" },
     data: { enabled: true, rolloutPercent: 100 },
@@ -4166,7 +4170,7 @@ test("chat UI requires the quoted Voice price confirmation and reuses accepted c
       url: expect.stringContaining("/api/v1/media/"),
     });
   const acceptedRequest = await prisma.voiceClipRequest.findUniqueOrThrow({
-    where: { userId_messageId: { userId, messageId: assistantMessageId } },
+    where: { userId_messageId_replyAttempt: { userId, messageId: assistantMessageId, replyAttempt: 1 } },
     include: { usageFacts: true },
   });
   expect(acceptedRequest.billingAuthority).toMatchObject({
@@ -4812,7 +4816,7 @@ test("generator UI queues an image job and surfaces completed media in the galle
   await expect(likedCard).toHaveCount(0, { timeout: 10_000 });
 });
 
-test("generator UI queues a video job and surfaces completed video in the gallery", async ({
+test("generator UI quotes one video scene and delivers its completed sequence and gallery assets", async ({
   page,
 }) => {
   test.setTimeout(120_000);
@@ -4840,13 +4844,52 @@ test("generator UI queues a video job and surfaces completed video in the galler
     await page.goto(`/generate?characterId=${characterId}`);
     await page.getByRole("button", { name: "Video", exact: true }).click();
     await expect(page.getByRole("combobox", { name: "Character", exact: true })).toHaveValue(characterId);
-    const generate = page.getByRole("button", { name: "Generate" });
-    // Generous slack: generator config can be slow to serve under full-suite load (see image test).
-    await expect(generate).toBeEnabled({ timeout: 45_000 });
-    await generate.click();
-
-    await expectGenerationAccepted(page, 30_000);
-    const job = await latestGenerationJob(page.request, "video");
+    const sequenceControls = page.getByRole("region", { name: "Video sequence", exact: true });
+    const review = sequenceControls.getByRole("button", { name: "Review video price", exact: true });
+    await expect(review).toBeEnabled({ timeout: 45_000 });
+    await expect(sequenceControls.getByRole("combobox", { name: "Video aspect ratio" })).toHaveValue(characterVideoProductionRecipe.orientation);
+    await expect(sequenceControls.getByRole("combobox", { name: "Video resolution" })).toHaveValue("standard");
+    await expect(sequenceControls.getByRole("combobox", { name: "Video sound" })).toHaveValue("generated");
+    await expect(sequenceControls.getByRole("combobox", { name: "Scene 1 duration" })).toHaveValue(String(characterVideoProductionRecipe.durationSeconds));
+    const motion = "The character slowly waves toward the camera in this controlled video scene.";
+    await sequenceControls.getByRole("textbox", { name: "Scene 1 prompt" }).fill(motion);
+    const quoted = page.waitForResponse((response) => response.request().method() === "POST" && new URL(response.url()).pathname === "/api/v1/generation/video-sequences/quote");
+    await review.click();
+    const quoteResponse = await quoted;
+    expect(quoteResponse.status()).toBe(200);
+    const price = videoSequenceQuoteSchema.parse((await quoteResponse.json()).data?.quote);
+    expect(price.costDreamcoins).toBe(100);
+    expect(price.costs).toEqual([{ ordinal: 0, costDreamcoins: 100 }]);
+    expect(price.scenes).toEqual([{ ordinal: 0, video: {
+      durationSeconds: characterVideoProductionRecipe.expectedDurationSeconds,
+      width: characterVideoProductionRecipe.width,
+      height: characterVideoProductionRecipe.height,
+      audio: "generated",
+    } }]);
+    const pricePanel = sequenceControls.locator('[aria-label="Video price"]');
+    await expect(pricePanel).toContainText("Total 100 coins");
+    const accept = pricePanel.getByRole("button", { name: "Accept 100 coins & create video", exact: true });
+    await expect(accept).toBeEnabled();
+    const accepted = page.waitForResponse((response) => response.request().method() === "POST" && new URL(response.url()).pathname === "/api/v1/generation/video-sequences");
+    await accept.click();
+    const acceptedResponse = await accepted;
+    expect(acceptedResponse.status()).toBe(202);
+    expect(acceptedResponse.request().postDataJSON()).toMatchObject({
+      characterId, quoteFingerprint: price.fingerprint, audio: "generated",
+      scenes: [{ prompt: motion, seconds: characterVideoProductionRecipe.durationSeconds }],
+    });
+    expect(acceptedResponse.request().headers()["idempotency-key"]).toBeTruthy();
+    const sequence = videoSequenceDtoSchema.parse((await acceptedResponse.json()).data?.sequence);
+    expect(sequence.scenes).toHaveLength(1);
+    expect(sequence.scenes[0]!.ordinal).toBe(0);
+    expect(sequence.cost).toEqual({ charged: 100, refunded: 0, finalCharge: 100 });
+    const job = sequence.scenes[0]!.job;
+    expect((await latestGenerationJob(page.request, "video")).id).toBe(job.id);
+    const sequenceStatus = sequenceControls.locator('[aria-label="Video sequence status"]');
+    await expect(sequenceStatus).toBeVisible();
+    await expect(prisma.videoSequence.findUniqueOrThrow({ where: { id: sequence.id } })).resolves.toMatchObject({
+      acceptedQuote: expect.objectContaining({ fingerprint: price.fingerprint, costDreamcoins: 100 }),
+    });
     await expect(prisma.generationJob.findUniqueOrThrow({ where: { id: job.id } })).resolves.toMatchObject({
       characterId,
       provider: characterVideoProductionRecipe.runner,
@@ -4863,21 +4906,51 @@ test("generator UI queues a video job and surfaces completed video in the galler
     });
     await drainWorker(page.request, job.id);
 
-    await expect(page.getByText("Generation complete.")).toBeVisible({ timeout: 30_000 });
-    await expectGeneratedAssetServed(page.request, job.id, "video");
+    await expect(sequenceStatus.getByRole("status")).toHaveText("Sequence completed · reserved 100 · refunded 0 · final charge 100 coins", { timeout: 30_000 });
+    const completedResponse = await page.request.get(`/api/v1/generation/video-sequences/${sequence.id}`);
+    expect(completedResponse.ok()).toBeTruthy();
+    const completed = videoSequenceDtoSchema.parse((await completedResponse.json()).data?.sequence);
+    expect(completed).toMatchObject({ id: sequence.id, status: "completed", errorCode: null, cost: { charged: 100, refunded: 0, finalCharge: 100 } });
+    const sceneAsset = await expectGeneratedAssetServed(page.request, job.id, "video");
+    expect(completed.scenes[0]!.assets.map((asset) => asset.id)).toEqual([sceneAsset.id]);
+    const sequenceAsset = completed.asset;
+    expect(sequenceAsset).not.toBeNull();
+    if (!sequenceAsset) throw new Error("A completed sequence must deliver its packaged video");
+    expect(sequenceAsset.id).not.toBe(sceneAsset.id);
+    expect(sequenceAsset).toMatchObject({ width: characterVideoProductionRecipe.width, height: characterVideoProductionRecipe.height, metadata: {
+      source: "video_sequence", sequenceId: sequence.id, audio: "generated", sceneGenerationJobIds: [job.id],
+    } });
+    await expect(sequenceStatus.locator("video")).toHaveAttribute("src", sequenceAsset.url);
+    await expect(sequenceStatus.getByRole("link", { name: "Download complete video", exact: true })).toHaveAttribute("href", sequenceAsset.downloadUrl);
+    const packagedResponse = await page.request.get(sequenceAsset.url);
+    expect(packagedResponse.ok()).toBeTruthy();
+    expect(packagedResponse.headers()["content-type"]).toContain("video/mp4");
+    expectMp4Bytes(await packagedResponse.body(), sequenceAsset.url);
+    const debits = await prisma.dreamcoinLedger.findMany({ where: { userId: owner.id, sourceId: job.id } });
+    expect(debits).toHaveLength(1);
+    expect(debits[0]).toMatchObject({ delta: -100, reason: "generation_spend", idempotencyKey: `generation:${job.id}:reserve`, balanceAfter: price.balance - 100 });
     await page.getByRole("button", { name: "Videos" }).click();
-    await expect(page.getByTestId("gallery-media-video")).toHaveCount(1, { timeout: 30_000 });
-    await expect(page.getByTestId("gallery-media-video")).toBeVisible();
-    await expect(page.getByTestId("gallery-media-video").locator("source")).toHaveAttribute(
-      "src",
-      /\/user-content\/.+\.mp4$/,
-    );
+    // One native Scene and one packaged sequence are distinct owned deliveries.
+    // Preserve exact uniqueness of each instead of hiding either from Gallery.
+    await expect(page.getByTestId("gallery-media-video")).toHaveCount(2, { timeout: 30_000 });
+    for (const assetId of [sceneAsset.id, sequenceAsset.id]) {
+      const video = page.locator(`[data-media-id="${assetId}"]`).getByTestId("gallery-media-video");
+      await expect(video).toHaveCount(1);
+      await expect(video).toBeVisible();
+      await expect(video.locator("source")).toHaveAttribute("src", /\/user-content\/.+\.mp4$/);
+      await video.evaluate(async (element: HTMLVideoElement) => { element.muted = true; await element.play(); });
+      await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentTime)).toBeGreaterThan(0.1);
+      await video.evaluate((element: HTMLVideoElement) => element.pause());
+    }
     // Stopping new video generation must not hide videos already delivered.
     await prisma.featureFlag.update({ where: { key: "video_gen" }, data: { enabled: false } });
     await page.reload();
     await expect(page.getByRole("button", { name: "Video", exact: true })).toHaveCount(0);
     await page.getByRole("button", { name: "Videos", exact: true }).click();
-    await expect(page.getByTestId("gallery-media-video")).toBeVisible();
+    await expect(page.getByTestId("gallery-media-video")).toHaveCount(2);
+    for (const assetId of [sceneAsset.id, sequenceAsset.id]) {
+      await expect(page.locator(`[data-media-id="${assetId}"]`).getByTestId("gallery-media-video")).toBeVisible();
+    }
   } finally {
     await restoreVideoGenerationRuntime(previousRuntime);
   }
@@ -6212,7 +6285,7 @@ test("profile subroutes preserve anonymous auth return targets", async ({ page }
   ).toBe("Redeem code input");
 });
 
-test("my ai shows deferred group chat and pack tabs as explicit empty states", async ({
+test("my ai exposes group chat and Pack empty states with working creation links", async ({
   page,
 }) => {
   const consoleErrors: string[] = [];
@@ -6232,7 +6305,7 @@ test("my ai shows deferred group chat and pack tabs as explicit empty states", a
     "aria-pressed",
     "false",
   );
-  await expect(page.getByRole("button", { name: "packs" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "packs" })).toHaveAttribute("aria-pressed", "false");
 
   await page.getByRole("button", { name: "group chats" }).click();
   await expect(page.getByRole("button", { name: "group chats" })).toHaveAttribute(
@@ -6245,6 +6318,13 @@ test("my ai shows deferred group chat and pack tabs as explicit empty states", a
   await expect(
     page.getByTestId("library-empty-state").getByRole("link", { name: "Create a group chat" }),
   ).toHaveAttribute("href", "/chat/groups");
+  await page.getByRole("button", { name: "packs" }).click();
+  await expect(page.getByRole("button", { name: "packs" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: "group chats" })).toHaveAttribute("aria-pressed", "false");
+  await expect(page.getByRole("heading", { name: "No Packs yet" })).toBeVisible();
+  await expect(page.getByTestId("library-empty-state").getByRole("link", { name: "Create a Pack" })).toHaveAttribute("href", "/packs/new");
+  await expect(page.getByRole("link", { name: "Manage your Packs" })).toHaveAttribute("href", "/packs?scope=mine");
+  await expect(page.getByRole("link", { name: "Browse free Packs" })).toHaveAttribute("href", "/packs");
   expect(consoleErrors.filter((message) => !message.includes("favicon"))).toEqual([]);
 });
 
@@ -6302,6 +6382,8 @@ test("profile account management signs out sessions and deletes the account", as
   await page.goto("/profile");
   await page.getByRole("button", { name: "Sign out all sessions" }).click();
   await expect(page).toHaveURL(/\/login$/);
+  // API fixture account changes must not race the old login document's redirect.
+  await page.goto("about:blank");
 
   const { email } = await startSignedInAdultSession(page, "profile-delete");
   const user = await prisma.user.findUniqueOrThrow({

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { adminIsoDateTimeSchema, adminJsonValueSchema } from "./common";
+import { adminIsoDateTimeSchema, adminJsonValueSchema, adminPageInfoSchema } from "./common";
 
 /**
  * SPEC: Admin CMS/SEO 页面的公开请求与响应契约。
@@ -64,6 +64,8 @@ export const cmsPageListQuerySchema = z
     status: cmsPageContentStatusSchema.optional(),
     q: z.string().trim().min(1).max(200).optional(),
     limit: z.coerce.number().int().min(1).max(200).default(100),
+    cursor: z.string().trim().min(1).optional(),
+    before: z.string().trim().min(1).optional(),
   })
   .strict();
 
@@ -72,7 +74,7 @@ export const cmsPageDetailQuerySchema = z
   .strict();
 
 export const cmsPageListResponseSchema = z
-  .object({ items: z.array(cmsPageSummarySchema).readonly() })
+  .object({ items: z.array(cmsPageSummarySchema).readonly(), pageInfo: adminPageInfoSchema })
   .strict();
 
 export const cmsPageDetailResponseSchema = z
@@ -117,6 +119,9 @@ export const cmsPagePatchRequestSchema = z
 
 export const cmsPagePublicationRequestSchema = z
   .object({
+    // Retry failed cache invalidation against the same state/version without
+    // unpublishing or republishing the page.
+    action: z.enum(["set_status", "revalidate"]).default("set_status"),
     path: cmsPagePathFieldSchema,
     contentStatus: z.enum(["draft", "published"]),
     expectedUpdatedAt: adminIsoDateTimeSchema,

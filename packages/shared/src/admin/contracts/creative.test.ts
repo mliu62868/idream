@@ -83,11 +83,12 @@ describe("Creative Run create contract", () => {
 
   it("pins RedGraft LTX 2.5 and all validated MPS assets as the default route", () => {
     expect(redgraftLtx25VideoProductionRecipe).toMatchObject({
-      recipeVersion: 2,
+      recipeVersion: 6,
+      optionsProfileVersion: 7,
       profileKey: "profile_video_redgraft_ltx25_v1",
       pipelineModel: "redgraft-ltx25-fast2k-int8-convrot",
       workflowKey: "redgraft-ltx25-i2v",
-      workflowVersion: 2,
+      workflowVersion: 4,
       checkpointFilename:
         "redgraftLTX25Fast2K_ltx25RedgraftNSFW.safetensors",
       width: 768,

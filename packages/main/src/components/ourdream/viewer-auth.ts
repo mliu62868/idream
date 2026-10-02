@@ -75,17 +75,21 @@ export function resolveViewerAuthority(
   return sharedResolver.resolve(fetcher);
 }
 
-/**
- * INVARIANT: must be called wherever the signed-in identity changes without a
- * full page load. Nothing in the app calls it today, and that is a finding
- * rather than an oversight: all four identity transitions — sign-in/sign-up
- * (AuthWorkspace), log out (AuthNav), sign out everywhere and account deletion
- * (ProfileWorkspace) — navigate on success via `window.location`, which tears
- * down this module along with the rest of the heap. The moment one of them
- * becomes a client-side (router.push) transition, it has to call this.
- */
+/** Forget a cached answer after an identity mutation or live recheck. */
 export function invalidateViewerAuthority(): void {
   sharedResolver.invalidate();
+}
+
+export const VIEWER_AUTH_CHANGE_STORAGE_KEY = "idream.auth-change";
+
+/** Other tabs still hold private state even when the mutating tab navigates. */
+export function announceViewerAuthorityChange(): void {
+  invalidateViewerAuthority();
+  try {
+    window.localStorage.setItem(VIEWER_AUTH_CHANGE_STORAGE_KEY, crypto.randomUUID());
+  } catch {
+    // Storage can be disabled; AuthNav also checks the live identity on focus.
+  }
 }
 
 /**

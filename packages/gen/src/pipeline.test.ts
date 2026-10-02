@@ -416,7 +416,7 @@ describe("processImageGenerate", () => {
     ]);
   });
 
-  it("persists an immutable terminal record and waits for main durable ACK before completing", async () => {
+  it("persists measured accounting without inventing GPU time and waits for main durable ACK", async () => {
     const acknowledgeTerminalRecord = vi.fn(async (_: GenerationTerminalRecordIngest) => {});
     const providers = makeProviders({
       image: {
@@ -467,6 +467,7 @@ describe("processImageGenerate", () => {
         attemptId: "attempt_img_1",
         generationJobId: "job_img_1",
         model: "mock-image",
+        usage: { model: "mock-image" },
         provider: env.IMAGE_PROVIDER,
         providerInvoked: true,
         providerRequestId: "provider-request-image-1",
@@ -1473,10 +1474,23 @@ describe("processVideoGenerate", () => {
     );
   });
 
-  it("persists and acknowledges a succeeded video terminal record", async () => {
+  it("persists measured video accounting without inventing GPU time from clip duration", async () => {
     const recordTransportExecution = vi.fn(async () => {});
     const providers = makeProviders();
     const acknowledgeTerminalRecord = vi.fn(async (_: GenerationTerminalRecordIngest) => {});
+    vi.mocked(providers.video.generate).mockResolvedValueOnce({
+      ok: true,
+      data: { asset: { key: "mock/videos/seed_v1.mp4", seconds: 6, body: mockVideoMp4Bytes() } },
+      invocation: {
+        providerRequestId: "provider-request-video-1",
+        usage: { performance: {
+          resourceWaitMs: 60,
+          requests: [{ providerRequestId: "provider-request-video-1", providerExecutionMs: 4200 }],
+        } },
+        costMicros: 450_000,
+        pricingVersion: "mock-video-v2",
+      },
+    });
 
     await processVideoGenerate(videoPayload(), {
       providers,
@@ -1504,6 +1518,17 @@ describe("processVideoGenerate", () => {
         provider: env.VIDEO_PROVIDER,
         providerInvoked: true,
         model: "mock-video",
+        usage: { model: "mock-video" },
+        accounting: {
+          usage: { performance: {
+            resourceWaitMs: 60,
+            requests: [{ providerRequestId: "provider-request-video-1", providerExecutionMs: 4200 }],
+            artifactPersistenceMs: expect.any(Number),
+          } },
+          latencyMs: expect.any(Number),
+          costMicros: 450_000,
+          pricingVersion: "mock-video-v2",
+        },
         assets: [{
           ordinal: 0,
           key: "gen/job_vid_1/video.mp4",

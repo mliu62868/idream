@@ -48,6 +48,7 @@ export async function beginAdmittedChatTurn(input: {
   content: string;
   idempotencyKey: string;
   origin?: "user" | "proactive";
+  voiceCall?: { id: string; leaseToken: string; utteranceId: string };
 }) {
   assertAgentRuntimeConfigured();
   const begun = await beginChatTurn(input);

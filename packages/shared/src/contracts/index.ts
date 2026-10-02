@@ -13,3 +13,6 @@ export * from "./support";
 export * from "./chat-turns";
 export * from "./chat-runtime-diagnostics";
 export * from "./voice-input";
+export * from "./voice-call";
+export * from "./affiliate";
+export * from "./video-sequence";

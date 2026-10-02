@@ -43,6 +43,32 @@ function button(label: string) { return [...container.querySelectorAll("button")
 async function click(target: HTMLButtonElement) { expect(target).toBeTruthy(); await act(async () => target.click()); }
 
 describe("Comic workspace authority and saved order", () => {
+  it("restores a chapter deep link after pages load without moving the reader on focus refresh", async () => {
+    const previousUrl = window.location.href;
+    window.history.replaceState(null, "", "/comics/comic-a#chapter-chapter-a");
+    const scroll = vi.spyOn(HTMLElement.prototype, "scrollIntoView").mockImplementation(() => {});
+    let finishRead!: (response: Response) => void;
+    let reads = 0;
+    vi.stubGlobal("fetch", vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url) === "/api/v1/me") return viewer();
+      reads += 1;
+      if (reads === 1) return new Promise<Response>((resolve) => { finishRead = resolve; });
+      return envelope(comic(false));
+    }));
+    try {
+      await act(async () => root.render(createElement(ComicReader, { id: "comic-a" })));
+      await until(() => Boolean(finishRead));
+      expect(document.getElementById("chapter-chapter-a")).toBeNull();
+      await act(async () => finishRead(envelope(comic(false))));
+      await until(() => container.querySelectorAll("figure").length === 2);
+      expect(scroll).toHaveBeenCalledTimes(1);
+      expect(scroll.mock.contexts[0]).toBe(document.getElementById("chapter-chapter-a"));
+      await act(async () => window.dispatchEvent(new Event("focus")));
+      await until(() => reads === 2);
+      expect(scroll).toHaveBeenCalledTimes(1);
+    } finally { window.history.replaceState(null, "", previousUrl); }
+  });
+
   it("lets a reader report someone else's Comic, and never shows Report on the author's own", async () => {
     const reports: unknown[] = [];
     let author = false;

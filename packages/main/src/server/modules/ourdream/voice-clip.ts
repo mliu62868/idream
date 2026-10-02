@@ -188,7 +188,7 @@ async function resolveVoiceClipInput(
     sceneVersion: messageAuthority.sceneVersion ?? 0,
     scene: authoritativeScene,
   });
-  const requestFingerprint = canonicalJsonHash({
+  const legacyFingerprintInput = {
     schemaVersion: "voice-clip-request-v1",
     userId: user.id,
     characterId: body.characterId,
@@ -197,16 +197,24 @@ async function resolveVoiceClipInput(
     text: authoritativeText,
     sceneVersion: messageAuthority.sceneVersion ?? 0,
     scene: authoritativeScene,
+  };
+  const replyAttempt = z.number().int().positive().parse(messageAuthority.attempt);
+  const requestFingerprint = canonicalJsonHash({
+    ...legacyFingerprintInput, schemaVersion: "voice-clip-request-v2", replyAttempt,
   });
-  return { user, body, synthesisPayload, requestFingerprint };
+  return { user, body, synthesisPayload, replyAttempt, requestFingerprint, legacyRequestFingerprint: canonicalJsonHash(legacyFingerprintInput) };
 }
 
 async function existingVoiceRequest(input: Awaited<ReturnType<typeof resolveVoiceClipInput>>) {
   const existing = await prisma.voiceClipRequest.findUnique({
-    where: { userId_messageId: { userId: input.user.id, messageId: input.body.messageId } },
+    where: { userId_messageId_replyAttempt: { userId: input.user.id, messageId: input.body.messageId, replyAttempt: input.replyAttempt } },
     include: { mediaAsset: true },
   });
-  if (existing && (existing.requestFingerprint !== input.requestFingerprint || existing.characterId !== input.body.characterId)) {
+  // A proven legacy version keeps its original ID, accepted quote, provider key
+  // and immutable fingerprint. New requests always pin the reply attempt.
+  const matchesLegacy = existing?.id === legacyVoiceRequestId(input.user.id, input.body.messageId) &&
+    existing.requestFingerprint === input.legacyRequestFingerprint;
+  if (existing && ((!matchesLegacy && existing.requestFingerprint !== input.requestFingerprint) || existing.characterId !== input.body.characterId)) {
     throw Errors.conflict("Voice message id is bound to a different synthesis request", { requestId: existing.id });
   }
   if (existing?.errorCode === "provider_outcome_unknown") {
@@ -254,7 +262,7 @@ export async function quoteVoiceClip(request: Request, deps: VoiceClipDependenci
     if (character.age < 18) throw Errors.badRequest("Character is not eligible for voice", { policyCode: "UNDERAGE" });
   }
   const terms = accepted ? stored : await newVoiceBilling({
-    userId: input.user.id, requestFingerprint: input.requestFingerprint, intent: input.body.intent, entitlements,
+    userId: input.user.id, requestFingerprint: existing?.requestFingerprint ?? input.requestFingerprint, intent: input.body.intent, entitlements,
   });
   const quote: VoiceClipQuote = {
     quoteToken: accepted || !terms ? null : signVoiceClipQuote(terms, env.BETTER_AUTH_SECRET),
@@ -268,15 +276,38 @@ export async function quoteVoiceClip(request: Request, deps: VoiceClipDependenci
   return ok({ quote });
 }
 
-export async function createVoiceClip(request: Request, deps: VoiceClipDependencies) {
+// Call consent and voice identity are Main-owned. Public callers cannot supply
+// this execution authority; ordinary message playback keeps the quote protocol.
+export type VoiceClipExecutionAuthority = {
+  callUtteranceId: string;
+  providerPayload: z.infer<typeof pinnedVoiceProviderPayloadSchema>;
+  billingAuthority: (requestFingerprint: string) => VoiceClipBillingAuthority;
+};
+
+export async function createVoiceClip(request: Request, deps: VoiceClipDependencies, authority?: VoiceClipExecutionAuthority) {
   const input = await resolveVoiceClipInput(request, deps);
-  const { user, body, synthesisPayload, requestFingerprint } = input;
+  const { user, body, synthesisPayload, replyAttempt } = input;
   const existing = await existingVoiceRequest(input);
+  const requestFingerprint = existing?.requestFingerprint ?? input.requestFingerprint;
+  if (authority && existing && canonicalJsonHash(existing.providerPayload) !== canonicalJsonHash(authority.providerPayload)) {
+    throw Errors.conflict("This reply already has a different pinned voice identity");
+  }
   // Playback of an already delivered asset survives plan expiry and a disabled
   // new-generation capability. The exact selected reply still owns this clip.
   if (existing?.status === "succeeded" && existing.mediaAsset &&
     existing.mediaAsset.deletedAt === null && isCurrentVoiceClip(existing.mediaAsset)) {
+    if (authority && !existing.voiceCallUtteranceId) {
+      // The same reply may already have a paid clip. Reuse it without moving
+      // its immutable request or attributing its earlier charge to this Call.
+      await prisma.voiceCallUtterance.updateMany({ where: { id: authority.callUtteranceId, status: "linked", settledAt: null }, data: {
+        status: "delivered", voiceRequestId: existing.id, mediaAssetId: existing.mediaAsset.id, settledAt: new Date(),
+      } });
+    }
     return ok(voiceClipResponse(existing.mediaAsset));
+  }
+  if (!authority && await prisma.voiceCallUtterance.findFirst({ where: { assistantMessageId: body.messageId, replyAttempt,
+    status: { in: ["transcribing", "linked"] }, call: { status: { in: ["active", "muted"] } } }, select: { id: true } })) {
+    throw Errors.conflict("Use the active Call controls for this spoken reply");
   }
   const previouslyDelivered = Boolean(existing && await hasDeliveredVoiceUsage(existing.id));
   const stored = storedVoiceBilling(existing);
@@ -312,7 +343,7 @@ export async function createVoiceClip(request: Request, deps: VoiceClipDependenc
     });
   }
 
-  let billingAuthority = acceptedBilling;
+  let billingAuthority = acceptedBilling ?? authority?.billingAuthority(requestFingerprint) ?? null;
   if (!billingAuthority && previouslyDelivered) {
     const now = new Date();
     billingAuthority = {
@@ -340,9 +371,13 @@ export async function createVoiceClip(request: Request, deps: VoiceClipDependenc
     prisma,
     new Date(billingAuthority.allowanceWindowStartsAt),
   );
-  const staleAssets = await voiceAssetsForMessage(user.id, body.messageId);
+  const requestId = existing?.id ?? voiceRequestId(user.id, body.messageId, replyAttempt);
+  const staleAssets = await prisma.mediaAsset.findMany({
+    where: voiceAssetWhere({ id: requestId, userId: user.id, messageId: body.messageId, replyAttempt }),
+    orderBy: { createdAt: "desc" },
+  });
   const hasStaleCachedClip = staleAssets.length > 0 || await hasDeliveredVoiceUsage(
-    voiceRequestId(user.id, body.messageId),
+    requestId,
   );
   if (
     prewarming &&
@@ -366,23 +401,25 @@ export async function createVoiceClip(request: Request, deps: VoiceClipDependenc
 
   // A retry of an existing request keeps its pinned provider payload (see
   // claimVoiceRequest), so this choice is made once, on the first Play.
-  const voiceAuthority = await resolveCharacterVoiceAuthority({
+  const voiceAuthority = authority ? null : await resolveCharacterVoiceAuthority({
     characterId: character.id,
     systemDefaultOnly: entitlements.voice_enabled !== true,
   });
-  const proposedProviderPayload = pinnedVoiceProviderPayloadSchema.parse({
-    providerKey: voiceAuthority.providerKey,
-    voiceId: voiceAuthority.voiceId,
-    voiceAuthority: voiceAuthority.source,
-    systemVoiceSettingVersion: voiceAuthority.settingVersion,
-    characterVoiceProfileVersion: voiceAuthority.characterVoiceProfileVersion,
+  const proposedProviderPayload = authority?.providerPayload ?? pinnedVoiceProviderPayloadSchema.parse({
+    providerKey: voiceAuthority!.providerKey,
+    voiceId: voiceAuthority!.voiceId,
+    voiceAuthority: voiceAuthority!.source,
+    systemVoiceSettingVersion: voiceAuthority!.settingVersion,
+    characterVoiceProfileVersion: voiceAuthority!.characterVoiceProfileVersion,
     tone: characterVoiceTone(character),
-    delivery: voiceAuthority.delivery,
+    delivery: voiceAuthority!.delivery,
   });
   const claim = await claimVoiceRequest({
     userId: user.id,
     characterId: character.id,
     messageId: body.messageId,
+    replyAttempt,
+    voiceCallUtteranceId: authority?.callUtteranceId,
     requestFingerprint,
     synthesisPayload,
     billingAuthority,
@@ -391,6 +428,7 @@ export async function createVoiceClip(request: Request, deps: VoiceClipDependenc
   if (claim.kind === "replay") {
     return ok(voiceClipResponse(claim.asset));
   }
+  if (authority) await prisma.voiceCallUtterance.updateMany({ where: { id: authority.callUtteranceId, settledAt: null }, data: { voiceRequestId: claim.request.id } });
   const claimedSynthesisPayload = voiceClipSynthesisPayloadSchema.parse(
     claim.request.synthesisPayload,
   );
@@ -643,7 +681,6 @@ async function executeOwnedVoiceClaim(input: {
   const budgetDecision = await authorizeVoiceSynthesisTurn({
     claim,
     userId: user.id,
-    messageId: claim.request.messageId,
     prewarming,
     entitlements,
     overflowCost,
@@ -662,6 +699,15 @@ async function executeOwnedVoiceClaim(input: {
       cost: overflowCost,
       required: overflowCost,
     });
+  }
+  if (claim.request.voiceCallUtteranceId) {
+    const utterance = await prisma.voiceCallUtterance.findUnique({ where: { id: claim.request.voiceCallUtteranceId }, include: { call: true } });
+    const live = utterance && utterance.status !== "cancelled" && utterance.call.status === "active" &&
+      utterance.call.deadlineAt > new Date() && utterance.call.leaseExpiresAt > new Date();
+    if (!live) {
+      await failOwnedVoiceRequest(claim, "voice_call_delivery_revoked", { reason: "call_authority_expired" });
+      throw Errors.gone("Call is no longer active; no new synthesis was started");
+    }
   }
   // INVARIANT: one logical message keeps one provider key across lease expiry,
   // process restart, and transport ambiguity. attemptNo remains telemetry only.
@@ -733,7 +779,7 @@ async function executeOwnedVoiceClaim(input: {
       }
 
       const activeStaleAssets = await tx.mediaAsset.findMany({
-        where: voiceAssetWhere(user.id, claim.request.messageId),
+        where: voiceAssetWhere(owned),
         orderBy: { createdAt: "desc" },
       });
       const staleAssetIds = activeStaleAssets.map((asset) => asset.id);
@@ -764,6 +810,22 @@ async function executeOwnedVoiceClaim(input: {
       );
       const requiresOverflow = !previouslyDelivered && staleAssetIds.length === 0 && remainingMs < durationMs;
       const cost = requiresOverflow ? overflowCost : 0;
+      const callUtterance = owned.voiceCallUtteranceId ? await tx.voiceCallUtterance.findUnique({
+        where: { id: owned.voiceCallUtteranceId }, include: { call: true },
+      }) : null;
+      const callCost = callUtterance ? (await tx.voiceCallUtterance.aggregate({ where: { callId: callUtterance.callId }, _sum: { costDreamcoins: true } }))._sum.costDreamcoins ?? 0 : 0;
+      const callLive = callUtterance && callUtterance.status !== "cancelled" && callUtterance.call.status === "active" &&
+        callUtterance.call.deadlineAt > new Date() && callUtterance.call.leaseExpiresAt > new Date();
+      if (owned.voiceCallUtteranceId && (!callLive || callCost + cost > callUtterance!.call.maxCostDreamcoins)) {
+        await tx.voiceClipRequest.update({ where: { id: owned.id }, data: {
+          status: "failed", errorCode: "voice_call_delivery_revoked", leaseOwner: null, leaseExpiresAt: null, completedAt: new Date(),
+        } });
+        if (!providerUsageRecorded) await tx.voiceUsageFact.create({ data: {
+          id: `voice_usage_${owned.id}_${owned.attemptNo}`, requestId: owned.id, attemptNo: owned.attemptNo,
+          userId: user.id, characterId: character.id, mediaAssetId: null, durationMs, costDreamcoins: 0, intent: body.intent,
+        } });
+        return { kind: "delivery_revoked" } as const;
+      }
       const quoteRequired = !prewarming && !billing && requiresOverflow;
       if (quoteRequired || (prewarming && requiresOverflow)) {
         // INVARIANT: provider execution is an immutable usage fact even when
@@ -860,6 +922,7 @@ async function executeOwnedVoiceClaim(input: {
         requestId: owned.id,
         attemptNo: owned.attemptNo,
         messageId: claim.request.messageId,
+        replyAttempt: owned.replyAttempt,
         sessionId: body.sessionId ?? null,
         voiceId: providerPayload.voiceId,
         voiceAuthority: providerPayload.voiceAuthority,
@@ -939,6 +1002,13 @@ async function executeOwnedVoiceClaim(input: {
           completedAt: new Date(),
         },
       });
+      if (callUtterance) {
+        const usage = await tx.voiceUsageFact.aggregate({ where: { requestId: owned.id }, _sum: { durationMs: true, costDreamcoins: true } });
+        await tx.voiceCallUtterance.updateMany({ where: { id: callUtterance.id, settledAt: null }, data: {
+          status: "delivered", voiceRequestId: owned.id, mediaAssetId: created.id,
+          durationMs: usage._sum.durationMs ?? 0, costDreamcoins: usage._sum.costDreamcoins ?? 0, settledAt: new Date(),
+        } });
+      }
       await onSuccessCommit?.(tx, {
         requestId: owned.id,
         attemptNo: owned.attemptNo,
@@ -966,6 +1036,7 @@ async function executeOwnedVoiceClaim(input: {
         required: overflowCost,
       });
     }
+    if (commit.kind === "delivery_revoked") throw Errors.gone("Call ended, was interrupted, or reached its accepted budget before voice delivery");
     return ok(voiceClipResponse(commit.asset), { status: 201 });
   } catch (cause) {
     // INTENT: keep deterministic provider bytes when the transaction result is
@@ -1006,7 +1077,6 @@ type VoiceSynthesisBudgetDecision =
 async function authorizeVoiceSynthesisTurn(input: {
   claim: Extract<VoiceRequestClaim, { kind: "owner" }>;
   userId: string;
-  messageId: string;
   prewarming: boolean;
   entitlements: Record<string, Prisma.JsonValue>;
   overflowCost: number;
@@ -1066,7 +1136,7 @@ async function authorizeVoiceSynthesisTurn(input: {
 
       const hasCachedClip =
         (await tx.mediaAsset.count({
-          where: voiceAssetWhere(input.userId, input.messageId),
+          where: voiceAssetWhere(owned),
         })) > 0 || await hasDeliveredVoiceUsage(owned.id, tx);
       const remainingMs = await voiceMinutesRemainingMs(
         input.userId,
@@ -1136,12 +1206,14 @@ async function claimVoiceRequest(input: {
   userId: string;
   characterId: string;
   messageId: string;
+  replyAttempt: number;
+  voiceCallUtteranceId?: string;
   requestFingerprint: string;
   synthesisPayload: VoiceClipSynthesisPayload;
   billingAuthority: VoiceClipBillingAuthority;
   providerPayload: z.infer<typeof pinnedVoiceProviderPayloadSchema>;
 }): Promise<VoiceRequestClaim> {
-  const requestId = voiceRequestId(input.userId, input.messageId);
+  const requestId = voiceRequestId(input.userId, input.messageId, input.replyAttempt);
   const leaseOwner = randomUUID();
   const now = new Date();
   try {
@@ -1151,6 +1223,8 @@ async function claimVoiceRequest(input: {
         userId: input.userId,
         characterId: input.characterId,
         messageId: input.messageId,
+        replyAttempt: input.replyAttempt,
+        voiceCallUtteranceId: input.voiceCallUtteranceId,
         requestFingerprint: input.requestFingerprint,
         synthesisPayload: toInputJson(input.synthesisPayload),
         billingAuthority: toInputJson(input.billingAuthority),
@@ -1171,9 +1245,10 @@ async function claimVoiceRequest(input: {
   while (Date.now() <= deadline) {
     const existing = await prisma.voiceClipRequest.findUniqueOrThrow({
       where: {
-        userId_messageId: {
+        userId_messageId_replyAttempt: {
           userId: input.userId,
           messageId: input.messageId,
+          replyAttempt: input.replyAttempt,
         },
       },
       include: { mediaAsset: true },
@@ -1374,22 +1449,20 @@ async function hasDeliveredVoiceUsage(
   })) > 0;
 }
 
-function voiceAssetsForMessage(userId: string, messageId: string) {
-  return prisma.mediaAsset.findMany({
-    where: voiceAssetWhere(userId, messageId),
-    orderBy: { createdAt: "desc" },
-  });
-}
-
-function voiceAssetWhere(
-  userId: string,
-  messageId: string,
-): Prisma.MediaAssetWhereInput {
+function voiceAssetWhere(request: Pick<VoiceClipRequest, "id" | "userId" | "messageId" | "replyAttempt">): Prisma.MediaAssetWhereInput {
   return {
-    ownerId: userId,
+    ownerId: request.userId,
     type: "voice",
     deletedAt: null,
-    metadata: { path: ["messageId"], equals: messageId },
+    OR: [
+      { metadata: { path: ["requestId"], equals: request.id } },
+      // Pre-ledger clips have no request ID. They can only restore the original
+      // reply; never waive payment for a later regenerated or edited version.
+      ...(request.replyAttempt === 1 ? [{ AND: [
+        { metadata: { path: ["messageId"], equals: request.messageId } },
+        { metadata: { path: ["requestId"], equals: Prisma.DbNull } },
+      ] }] : []),
+    ],
   };
 }
 
@@ -1400,7 +1473,14 @@ function voiceProviderIdempotencyKey(requestId: string) {
   return `voice:${requestId}:provider`;
 }
 
-function voiceRequestId(userId: string, messageId: string) {
+function voiceRequestId(userId: string, messageId: string, replyAttempt: number) {
+  const hash = createHash("sha256")
+    .update(`${userId}\u0000${messageId}\u0000${replyAttempt}`)
+    .digest("hex");
+  return `voice_clip_request_${hash}`;
+}
+
+function legacyVoiceRequestId(userId: string, messageId: string) {
   const hash = createHash("sha256")
     .update(`${userId}\u0000${messageId}`)
     .digest("hex");
@@ -1441,7 +1521,7 @@ function resolvePinnedVoiceProvider(
     : createVoiceClipPortForKey(providerKey);
 }
 
-function characterVoiceTone(character: {
+export function characterVoiceTone(character: {
   name: string;
   style: string;
 }) {

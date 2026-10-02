@@ -105,7 +105,7 @@ describe("Creative Run continuation after placement verification", () => {
       lifecycleState: "closed",
       workflowStage: "generation",
       verificationState: "pending",
-      status: "completed",
+      status: "failed",
     });
   });
 });

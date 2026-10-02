@@ -3,10 +3,11 @@ import {
   evaluateCreativeMediaAuthority,
   parseCreativeMediaAuthorityEvidence,
 } from "@/server/lib/creative-media-authority";
-import { nonSyntheticMediaAssetWhere } from "@/server/lib/media-asset-authority";
+import { inspectOperatorUploadAuthority, mediaAssetPlatformStatus, nonSyntheticMediaAssetWhere } from "@/server/lib/media-asset-authority";
 import { operationalMediaAssetPlacementWhere } from "@/server/modules/metric-data-scope";
 
 type Db = PrismaClient | Prisma.TransactionClient;
+export const UPLOADED_CAMPAIGN_AUTHORITY_SCHEMA = "uploaded-campaign-placement-v1";
 type CampaignPlacement = Prisma.MediaAssetPlacementGetPayload<{
   include: {
     mediaAsset: {
@@ -95,7 +96,7 @@ export function parseCommunityCampaignAuthoredCopy(
 
 // Shared by the customer-facing Community renderer and Admin verification.
 // This is the runtime serving predicate, not an Admin projection query.
-export async function resolveCommunityCampaignPlacements(db: Db, limit = 6) {
+export async function resolveCommunityCampaignPlacements(db: Db, limit = 6, mediaAssetId?: string) {
   const normalizedLimit = Math.max(0, Math.trunc(limit));
   if (normalizedLimit === 0) return [];
   const batchSize = Math.max(25, Math.min(normalizedLimit, 100));
@@ -104,6 +105,7 @@ export async function resolveCommunityCampaignPlacements(db: Db, limit = 6) {
   while (accepted.length < normalizedLimit) {
     const candidates = await db.mediaAssetPlacement.findMany({
       where: operationalMediaAssetPlacementWhere({
+        ...(mediaAssetId ? { mediaAssetId } : {}),
         slot: "campaign",
         status: "published",
         verificationState: "passed",
@@ -167,6 +169,19 @@ export async function resolveCommunityCampaignPlacements(db: Db, limit = 6) {
       const v2Owned = typeof metadata.creativeRunId === "string" ||
         typeof metadata.creativeRunItemId === "string";
       if (evidence.kind === "invalid" || (v2Owned && evidence.kind !== "present")) continue;
+      const upload = inspectOperatorUploadAuthority(placement.mediaAsset);
+      if (upload) {
+        const pinned = metadata.uploadedCampaignAuthority as Record<string, unknown> | undefined;
+        const current = placement.mediaAsset.metadata as Record<string, unknown> | null;
+        // INVARIANT: uploaded artwork serves only through its own verified byte provenance,
+        // never by inventing a GenerationJob or weakening generated-media authority.
+        if (!v2Owned && upload.publishable && mediaAssetPlatformStatus(current) === "approved" &&
+            pinned?.schemaVersion === UPLOADED_CAMPAIGN_AUTHORITY_SCHEMA &&
+            pinned.assetId === placement.mediaAssetId && pinned.sha256 === current?.sha256 &&
+            pinned.storageKey === placement.mediaAsset.storageKey) accepted.push(placement);
+        if (accepted.length === normalizedLimit) break;
+        continue;
+      }
       const sourceJobId = placement.mediaAsset.sourceJobId;
       const authority = evaluateCreativeMediaAuthority({
         metadata: placement.mediaAsset.metadata,

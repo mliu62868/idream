@@ -12,6 +12,7 @@ import {
   isMediaAssetOperationalForAuthority,
 } from "@/server/lib/media-asset-authority";
 import { creativeReviewQuality } from "@/server/modules/admin-v2/shared/creative-review-quality";
+import { resolveCustomerIdentitySource, type CustomerIdentitySource } from "./customer-identity-source";
 import {
   characterDraftAssetPurposes,
   draftAssetRouteEntries,
@@ -50,6 +51,7 @@ type QualificationFacts = {
   readonly customerPublishable: boolean;
   readonly currentVisualAuthority: CurrentVisualAuthority | null;
   readonly selectedEntries: ReturnType<typeof draftAssetRouteEntries>;
+  readonly customerIdentity: CustomerIdentitySource | null;
 };
 
 function record(value: unknown): Record<string, unknown> {
@@ -174,6 +176,10 @@ function sourceFacts(facts: QualificationFacts) {
     };
   }
   if (facts.asset.sourceJobId) {
+    if (facts.customerIdentity && facts.item === null) return {
+      source: "generation" as const, sourceAuthorityValid: true,
+      purposes: characterDraftAssetPurposes, bootstrapIdentity: false,
+    };
     const item = facts.item;
     const job = item?.job ?? null;
     const purpose = item?.batch.purpose;
@@ -254,6 +260,9 @@ function qualifyCharacterImage(facts: QualificationFacts) {
         entry.itemId === null &&
         entry.generationJobId === null;
     }
+    if (facts.customerIdentity) return entry.customerIdentityRevisionId === facts.customerIdentity.revisionId &&
+      entry.generationJobId === facts.customerIdentity.job.id && entry.runId === null && entry.itemId === null &&
+      entry.reviewDecisionId === null && entry.bootstrapIdentity === false;
     return Boolean(
       facts.item &&
       entry.runId === facts.item.batchId &&
@@ -278,9 +287,9 @@ function qualifyCharacterImage(facts: QualificationFacts) {
     authority: {
       runId: source.source === "generation" ? facts.item?.batchId ?? null : null,
       itemId: source.source === "generation" ? facts.item?.id ?? null : null,
-      reviewDecisionId: facts.review?.id ?? null,
+      reviewDecisionId: facts.customerIdentity ? null : facts.review?.id ?? null,
       generationJobId:
-        source.source === "generation" ? facts.item?.jobId ?? null : null,
+        source.source === "generation" ? facts.customerIdentity?.job.id ?? facts.item?.jobId ?? null : null,
     },
     review: reviewDto(source.source, facts.review),
   });
@@ -371,6 +380,11 @@ async function loadQualificationFacts(
     select: { draftAssetPack: true },
   });
   const selectedEntries = draftAssetRouteEntries(project?.draftAssetPack ?? {});
+  const selectedIdentity = Object.values(selectedEntries).find(entry => entry.customerIdentityRevisionId)?.customerIdentityRevisionId;
+  const customerIdentity = assets.some(asset => asset.sourceJobId && !itemByAssetId.has(asset.id))
+    ? (selectedIdentity ? await resolveCustomerIdentitySource(db, { characterId, revisionId: selectedIdentity }) : null)
+      ?? await resolveCustomerIdentitySource(db, { characterId })
+    : null;
   const publishability = await resolveMediaAssetAuthorityMap(db, assets);
   return assets.map((asset) => {
     const item = itemByAssetId.get(asset.id) ?? null;
@@ -385,6 +399,7 @@ async function loadQualificationFacts(
       customerPublishable: publishability.get(asset.id)?.publishable === true,
       currentVisualAuthority: visualAuthority,
       selectedEntries,
+      customerIdentity: customerIdentity?.asset.id === asset.id ? customerIdentity : null,
     } satisfies QualificationFacts;
   });
 }
@@ -448,6 +463,7 @@ export async function resolveSelectableCharacterImage(
     qualification,
     entry: {
       assetId: asset.id,
+      ...(facts.customerIdentity ? { customerIdentityRevisionId: facts.customerIdentity.revisionId } : {}),
       ...(qualification.authority.runId
         ? { runId: qualification.authority.runId }
         : {}),

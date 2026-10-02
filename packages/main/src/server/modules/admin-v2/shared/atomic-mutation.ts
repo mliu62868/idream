@@ -45,6 +45,15 @@ export async function executeAtomicIdempotentMutation<
     payload: input.payload,
     retryMode: "idempotent",
   });
+  const replay = (existing: { readonly requestHash: string; readonly result: unknown }) => {
+    if (existing.requestHash !== requestHash) {
+      throw Errors.conflict("Idempotency key is bound to another mutation", {
+        existingRequestHash: existing.requestHash,
+        submittedRequestHash: requestHash,
+      });
+    }
+    return respond(existing.result, true);
+  };
   if (input.prepare) {
     const existing = await prisma.controlPlaneCommand.findUnique({
       where: {
@@ -54,22 +63,20 @@ export async function executeAtomicIdempotentMutation<
         },
       },
     });
-    if (existing) {
-      if (existing.requestHash !== requestHash) {
-        throw Errors.conflict(
-          "Idempotency key is bound to another mutation",
-          {
-            existingRequestHash: existing.requestHash,
-            submittedRequestHash: requestHash,
-          },
-        );
-      }
-      return respond(existing.result, true);
-    }
+    if (existing) return replay(existing);
   }
-  const prepared = input.prepare
-    ? await input.prepare()
-    : undefined as Prepared;
+  let prepared: Prepared;
+  try {
+    prepared = input.prepare ? await input.prepare() : undefined as Prepared;
+  } catch (cause) {
+    // INVARIANT: a committed same-key command wins over authority changed by its own concurrent publication.
+    // Preparation remains a single attempt; without a receipt its original failure is authoritative.
+    const existing = await prisma.controlPlaneCommand.findUnique({
+      where: { scope_idempotencyKey: { scope, idempotencyKey: input.idempotencyKey } },
+    });
+    if (existing) return replay(existing);
+    throw cause;
+  }
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
       return await prisma.$transaction(async (tx) => {
@@ -77,15 +84,7 @@ export async function executeAtomicIdempotentMutation<
         const existing = await tx.controlPlaneCommand.findUnique({
           where: { scope_idempotencyKey: { scope, idempotencyKey: input.idempotencyKey } },
         });
-        if (existing) {
-          if (existing.requestHash !== requestHash) {
-            throw Errors.conflict("Idempotency key is bound to another mutation", {
-              existingRequestHash: existing.requestHash,
-              submittedRequestHash: requestHash,
-            });
-          }
-          return respond(existing.result, true);
-        }
+        if (existing) return replay(existing);
 
         const result = toInputJson(await input.mutate(tx, prepared));
         // INVARIANT: 只有能被响应契约表达的 result 才会被写进 controlPlaneCommand。

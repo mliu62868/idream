@@ -1,5 +1,7 @@
 "use client";
 
+import { announceViewerAuthorityChange } from "./viewer-auth";
+
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { z } from "zod";
 import { RecoveryCodeCard } from "./RecoveryCodeCard";
@@ -157,6 +159,7 @@ export function EmailPasswordRecovery({ onBack, onComplete }: { onBack: () => vo
       const response = await fetch("/api/v1/auth/password-reset/confirm", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email, challengeId: emailCode.challenge.challengeId, code, password }) });
       const result = await readResponse(response, recoverySchema);
       if (!alive.current) return;
+      announceViewerAuthorityChange();
       setCode(""); setPassword(""); emailCode.clear(); setReplacement(result);
     } catch (error) {
       if (!alive.current) return;

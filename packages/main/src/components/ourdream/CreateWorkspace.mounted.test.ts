@@ -15,10 +15,14 @@ vi.mock("next/image", () => ({
   }) => createElement("img", props),
 }));
 vi.mock("./AgeGateBoundary", () => ({ useAgeGateAccess: () => ({ accepted: true }) }));
+vi.mock("next/navigation", () => ({
+  useSearchParams: () => new URLSearchParams(window.location.search),
+}));
 
 import { CreateWorkspace, draftStorageKeyForScope, initialCharacterDraft } from "./CreateWorkspace";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+beforeEach(() => window.history.replaceState(null, "", "/create"));
 
 describe("CreateWorkspace identity confirmation", () => {
   let container: HTMLDivElement;
@@ -116,6 +120,69 @@ describe("CreateWorkspace identity confirmation", () => {
       asset: { id: "asset-4", url: "/api/v1/media/asset-4/content", isSynthetic: false },
     } });
   }
+
+  it("opens the exact older draft from Studio and leaves the latest browser draft alone", async () => {
+    const latest = window.localStorage.getItem(draftStorageKeyForScope("user:creator-1"));
+    window.history.replaceState(null, "", "/create?draft=older-draft");
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation((input, init) => String(input) === "/api/v1/character-drafts/older-draft"
+      ? Promise.resolve(Response.json({ ok: true, data: { draft: {
+        id: "older-draft", updatedAt: "2026-10-01T00:00:00.000Z", step: 0, name: "Older saved character",
+        appearance: {}, hair: {}, body: {}, tags: [], advancedDetails: { age: 25 }, previewJobId: null,
+      } } })) : originalFetch(input, init));
+    await act(async () => root.render(createElement(CreateWorkspace)));
+    await waitUntil(() => container.querySelector<HTMLInputElement>('input[placeholder="Nova Reyes"]')?.value === "Older saved character");
+    expect(window.localStorage.getItem(draftStorageKeyForScope("user:creator-1"))).toBe(latest);
+    expect(JSON.parse(window.localStorage.getItem(`${draftStorageKeyForScope("user:creator-1")}:draft:older-draft`)!)).toMatchObject({
+      draftId: "older-draft", draftUpdatedAt: "2026-10-01T00:00:00.000Z",
+    });
+    expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).endsWith("/current"))).toBe(false);
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("shows a missing explicit draft instead of editing the latest draft", async () => {
+    window.history.replaceState(null, "", "/create?draft=missing-draft");
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation((input, init) => String(input) === "/api/v1/character-drafts/missing-draft"
+      ? Promise.resolve(Response.json({ ok: false, error: { message: "This draft is no longer available." } }, { status: 404 }))
+      : originalFetch(input, init));
+    await act(async () => root.render(createElement(CreateWorkspace)));
+    await waitUntil(() => container.textContent?.includes("This draft is no longer available.") === true);
+    expect(container.querySelector('input[placeholder="Nova Reyes"]')).toBeNull();
+    expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).endsWith("/current"))).toBe(false);
+  });
+
+  it("discards an older draft read after navigation to another exact draft", async () => {
+    window.localStorage.clear();
+    window.history.replaceState(null, "", "/create?draft=older-draft");
+    let finishOld!: (value: Response) => void;
+    const oldRead = new Promise<Response>(resolve => { finishOld = resolve; });
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    const payload = (id: string, name: string) => Response.json({ ok: true, data: { draft: {
+      id, updatedAt: "2026-10-01T00:00:00.000Z", step: 0, name,
+      appearance: {}, hair: {}, body: {}, tags: [], advancedDetails: { age: 25 }, previewJobId: null,
+    } } });
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      if (String(input) === "/api/v1/character-drafts/older-draft") return oldRead;
+      if (String(input) === "/api/v1/character-drafts/newer-draft") return Promise.resolve(payload("newer-draft", "Newer saved character"));
+      return originalFetch(input, init);
+    });
+    await act(async () => root.render(createElement(CreateWorkspace)));
+    await waitUntil(() => vi.mocked(fetch).mock.calls.some(([input]) => String(input) === "/api/v1/character-drafts/older-draft"));
+    window.history.replaceState(null, "", "/create?draft=newer-draft");
+    await act(async () => root.render(createElement(CreateWorkspace)));
+    await waitUntil(() => container.querySelector<HTMLInputElement>('input[placeholder="Nova Reyes"]')?.value === "Newer saved character");
+    await act(async () => finishOld(payload("older-draft", "Late older character")));
+    expect(container.querySelector<HTMLInputElement>('input[placeholder="Nova Reyes"]')?.value).toBe("Newer saved character");
+    expect(window.localStorage.getItem(`${draftStorageKeyForScope("user:creator-1")}:draft:older-draft`)).toBeNull();
+  });
+
+  it("rejects ambiguous draft and character edit sources before reading either", async () => {
+    window.history.replaceState(null, "", "/create?draft=older-draft&edit=character-1");
+    await act(async () => root.render(createElement(CreateWorkspace)));
+    expect(container.textContent).toContain("Choose one draft or character to edit.");
+    expect(vi.mocked(fetch).mock.calls.filter(([input]) => String(input).includes("character-drafts") || String(input).includes("edit-draft"))).toHaveLength(0);
+  });
 
   it("reloads an expired running batch and reconciles the same completed job", async () => {
     savePendingPreview();
@@ -561,6 +628,82 @@ describe("CreateWorkspace identity confirmation", () => {
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
   }
+
+  it("uses the confirmed preview revision when saving the next step", async () => {
+    const key = draftStorageKeyForScope("user:creator-1");
+    const initialRevision = "2026-10-01T00:00:00.000Z";
+    const confirmationRevision = "2026-10-01T00:00:01.000Z";
+    const saved = JSON.parse(window.localStorage.getItem(key)!);
+    window.localStorage.setItem(key, JSON.stringify({ ...saved, draftUpdatedAt: initialRevision }));
+    const server = { id: "draft-1", updatedAt: initialRevision, step: 3, name: "Avery", gender: "female", style: "realistic", appearance: {}, hair: {}, body: {}, tags: [], advancedDetails: { age: 21, description: "Warm and direct", firstMessage: "Hello there" }, previewJobId: null };
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) === "/api/v1/character-drafts/current") return Response.json({ ok: true, data: { draft: server } });
+      if (String(input) === "/api/v1/character-drafts/draft-1" && init?.method === "PATCH") {
+        expect(JSON.parse(String(init.body)).expectedUpdatedAt).toBe(confirmationRevision);
+        return Response.json({ ok: true, data: { draft: { ...server, step: 4, previewJobId: "preview-1", updatedAt: "2026-10-01T00:00:02.000Z" } } });
+      }
+      return originalFetch(input, init);
+    });
+    await act(async () => root.render(createElement(CreateWorkspace)));
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="create-confirm-identity"]')));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="create-confirm-identity"]')!.click());
+    expect(JSON.parse(String(vi.mocked(fetch).mock.calls.find(([input]) => String(input).endsWith("/preview-anchor"))![1]?.body)).expectedUpdatedAt).toBe(initialRevision);
+    await act(async () => releaseConfirmation!(Response.json({ ok: true, data: { draft: { ...server, previewJobId: "preview-1", updatedAt: confirmationRevision } } })));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="create-next"]')!.click());
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="create-step-publish"]')));
+    expect(container.querySelector('[data-testid="create-draft-conflict"]')).toBeNull();
+  });
+
+  it("keeps unsaved inputs on a stale-tab save and loads the latest saved draft only on request", async () => {
+    const key = draftStorageKeyForScope("user:creator-1");
+    const oldRevision = "2026-10-01T00:00:00.000Z";
+    let server = { id: "draft-1", updatedAt: oldRevision, step: 0, name: "Original name", gender: "female", style: "realistic", appearance: {}, hair: {}, body: {}, tags: [], advancedDetails: { age: 21, description: "Warm and direct" }, previewJobId: null };
+    window.localStorage.setItem(key, JSON.stringify({ ...initialCharacterDraft(), draftId: "draft-1", draftUpdatedAt: oldRevision, name: "Original name", description: "Warm and direct" }));
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) === "/api/v1/character-drafts/current") return Response.json({ ok: true, data: { draft: server } });
+      if (String(input) === "/api/v1/character-drafts/draft-1" && init?.method === "PATCH") {
+        const body = JSON.parse(String(init.body));
+        if (body.expectedUpdatedAt && body.expectedUpdatedAt !== server.updatedAt) return Response.json({ ok: false, error: { code: "conflict", message: "This draft changed in another tab. Load the latest saved draft before saving. Your current inputs have been kept.", details: { blocker: "version_mismatch" } } }, { status: 409 });
+        server = { ...server, ...body, updatedAt: "2026-10-01T00:00:02.000Z" };
+        return Response.json({ ok: true, data: { draft: server } });
+      }
+      return originalFetch(input, init);
+    });
+    await act(async () => root.render(createElement(CreateWorkspace)));
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="create-next"]')));
+    server = { ...server, name: "New name from another tab", updatedAt: "2026-10-01T00:00:01.000Z" };
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="create-next"]')!.click());
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="create-status"]') || container.textContent?.includes("A free-text summary of how they look.")));
+    expect(server.name).toBe("New name from another tab");
+    expect(container.querySelector<HTMLInputElement>('input[placeholder="Nova Reyes"]')!.value).toBe("Original name");
+    expect(container.querySelector('[data-testid="create-draft-conflict"]')?.textContent).toContain("current inputs");
+    const reload = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "Load latest saved draft");
+    expect(reload).toBeDefined();
+    await act(async () => reload!.click());
+    await waitUntil(() => container.querySelector<HTMLInputElement>('input[placeholder="Nova Reyes"]')?.value === "New name from another tab");
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="create-next"]')!.click());
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="create-step-appearance"]')));
+    expect(JSON.parse(window.localStorage.getItem(key)!).draftUpdatedAt).toBe(server.updatedAt);
+  });
+
+  it.each(["", "2026-10-01T00:00:00.000Z"])("does not adopt the latest revision for a conflicting local draft on refresh (saved revision=%s)", async (draftUpdatedAt) => {
+    const key = draftStorageKeyForScope("user:creator-1");
+    window.localStorage.setItem(key, JSON.stringify({ ...initialCharacterDraft(), draftId: "draft-1", draftUpdatedAt, name: "Unsaved local name" }));
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) === "/api/v1/character-drafts/current") return Response.json({ ok: true, data: { draft: {
+        id: "draft-1", updatedAt: "2026-10-01T00:00:01.000Z", step: 0, name: "Latest saved name", gender: "female", style: "realistic", appearance: {}, hair: {}, body: {}, tags: [], advancedDetails: { age: 21 }, previewJobId: null,
+      } } });
+      return originalFetch(input, init);
+    });
+    await act(async () => root.render(createElement(CreateWorkspace)));
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="create-next"]')));
+    expect(container.querySelector('[data-testid="create-draft-conflict"]')).not.toBeNull();
+    expect(container.querySelector<HTMLInputElement>('input[placeholder="Nova Reyes"]')!.value).toBe("Unsaved local name");
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(0);
+  });
 
   async function waitUntil(predicate: () => boolean) {
     const deadline = Date.now() + 2_000;

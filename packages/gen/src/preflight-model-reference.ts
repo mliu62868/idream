@@ -14,8 +14,8 @@ export function modelLoaderNodeForReference(
   slot: string,
 ): string | null {
   if (slot === "model_name" && classType === "UpscaleModelLoader") return "UpscaleModelLoader";
-  if (slot === "clip_name" && classType === "CLIPLoaderGGUF") {
-    return "CLIPLoaderGGUF";
+  if (slot === "clip_name" && (classType === "CLIPLoaderGGUF" || classType === "IDreamGemma4MLXCLIPLoader")) {
+    return classType;
   }
   return SLOT_TO_NODE[slot] ?? null;
 }

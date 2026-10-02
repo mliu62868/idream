@@ -65,6 +65,12 @@ CLIP_TYPES = (
 def discard_completed_model_owner(owner: object) -> float:
     """Drop a declared completed text encoder from its cached owner container."""
 
+    release = getattr(owner, "release_completed", None)
+    if callable(release):
+        # MLX weights belong to this prompt's CLIP owner, outside Comfy's
+        # Torch patcher registry. The same barrier proves their last use.
+        return release()
+
     patcher = getattr(owner, "patcher", None)
     model = getattr(owner, "cond_stage_model", None)
     if (

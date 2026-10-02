@@ -3,6 +3,7 @@ import { idempotencyKeys, MAIN_QUEUES } from "@idream/shared/contracts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { jobQueue } from "@/server/jobs/queue";
+import { recordGenerationAttemptEvent } from "@/server/ai/generation-attempt-events";
 import {
   createUser,
   purgeQueuedGenerationJobs,
@@ -10,6 +11,7 @@ import {
 } from "@/server/test/helpers";
 
 const prefix = "zt-purge-queue-";
+const foreignPrefix = "zt-purge-generation-foreign-";
 
 beforeAll(async () => {
   await purgeTestData(prefix);
@@ -17,6 +19,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await purgeTestData(prefix);
+  await purgeTestData(foreignPrefix);
   await prisma.$disconnect();
 });
 
@@ -140,12 +143,72 @@ describe("purgeTestData generation queue ownership", () => {
     expect(
       await prisma.generationJob.findUnique({ where: { id: generationJob.id } }),
     ).toBeNull();
+    expect(await prisma.generationAttempt.findUnique({ where: { id: attempt.id } })).toBeNull();
     expect(await jobQueue.getByDedupeKey("ai.image.generate", workKey)).toBeNull();
     expect(await jobQueue.getByDedupeKey("app.ai.finalize", finalizeKey)).toBeNull();
     expect(await jobQueue.getByDedupeKey(
       MAIN_QUEUES.generationTerminalIngest,
       relayKey,
     )).toBeNull();
+  });
+
+  it("removes exact owned generation evidence while preserving another Request", async () => {
+    async function fixture(userPrefix: string) {
+      const userId = `${userPrefix}${randomUUID()}`;
+      await createUser({ id: userId });
+      return prisma.$transaction(async (tx) => {
+        const request = await tx.generationJob.create({ data: {
+          userId, mode: "image", controls: {}, presetIds: [], status: "completed", deliveredOutputCount: 1,
+        } });
+        const attempt = await tx.generationAttempt.create({ data: { requestId: request.id, attemptNo: 1 } });
+        const terminal = await recordGenerationAttemptEvent(tx, {
+          eventId: `${attempt.id}:succeeded`, attemptId: attempt.id, eventType: "generation.attempt.succeeded.v1",
+          outcome: "succeeded", occurredAt: new Date(), payload: { requestId: request.id },
+        });
+        const transport = await tx.generationTransportExecution.create({ data: {
+          attemptId: attempt.id, transportAttemptNo: 1, status: "succeeded", startedAt: terminal.occurredAt, finishedAt: terminal.occurredAt,
+        } });
+        const asset = await tx.mediaAsset.create({ data: { ownerId: userId, sourceJobId: request.id, type: "image", url: "/test.png", metadata: {} } });
+        const artifact = await tx.generationArtifact.create({ data: {
+          attemptId: attempt.id, ordinal: 0, assetId: asset.id, terminalRecordChecksum: "a".repeat(64), validationState: "valid",
+        } });
+        const delivery = await tx.generationDelivery.create({ data: {
+          requestId: request.id, artifactId: artifact.id, targetType: "user_library", targetId: userId, status: "delivered", deliveredAt: terminal.occurredAt,
+        } });
+        const ledger = await tx.dreamcoinLedger.create({ data: { userId, delta: -1, balanceAfter: 0, reason: "generation_spend", sourceId: request.id, idempotencyKey: request.id } });
+        const settlement = await tx.generationSettlementLink.create({ data: { requestId: request.id, ledgerEntryId: ledger.id, kind: "capture" } });
+        const fulfillment = await tx.generationFulfillmentFact.create({ data: {
+          requestId: request.id, sourceService: "test", sourceEventId: request.id, artifactId: artifact.id, userId,
+          environment: "test", dataClass: "fixture", trustClass: "canonical", eligible: false, occurredAt: terminal.occurredAt, validFrom: terminal.occurredAt,
+        } });
+        const outbox = await tx.mainOutboxEvent.create({ data: {
+          eventType: "generation.request.dispatch.v1", aggregateType: "generation_request", aggregateId: request.id, payload: {},
+        } });
+        return { request, attempt, terminal, transport, artifact, delivery, settlement, fulfillment, outbox };
+      });
+    }
+    const owned = await fixture(prefix);
+    const foreign = await fixture(foreignPrefix);
+    await purgeTestData(prefix);
+
+    expect(await prisma.generationAttempt.findUnique({ where: { id: owned.attempt.id } })).toBeNull();
+    expect(await prisma.generationAttemptEvent.findUnique({ where: { id: owned.terminal.id } })).toBeNull();
+    expect(await prisma.generationTransportExecution.findUnique({ where: { id: owned.transport.id } })).toBeNull();
+    expect(await prisma.generationArtifact.findUnique({ where: { id: owned.artifact.id } })).toBeNull();
+    expect(await prisma.generationDelivery.findUnique({ where: { id: owned.delivery.id } })).toBeNull();
+    expect(await prisma.generationSettlementLink.findUnique({ where: { id: owned.settlement.id } })).toBeNull();
+    expect(await prisma.generationFulfillmentFact.findUnique({ where: { id: owned.fulfillment.id } })).toBeNull();
+    expect(await prisma.mainOutboxEvent.findUnique({ where: { id: owned.outbox.id } })).toBeNull();
+
+    expect(await prisma.generationJob.findUnique({ where: { id: foreign.request.id } })).toEqual(foreign.request);
+    expect(await prisma.generationAttempt.findUnique({ where: { id: foreign.attempt.id } })).toMatchObject({ requestId: foreign.request.id, status: "succeeded" });
+    expect(await prisma.generationAttemptEvent.findUnique({ where: { id: foreign.terminal.id } })).toMatchObject({ payloadHash: foreign.terminal.payloadHash });
+    expect(await prisma.generationTransportExecution.findUnique({ where: { id: foreign.transport.id } })).toEqual(foreign.transport);
+    expect(await prisma.generationArtifact.findUnique({ where: { id: foreign.artifact.id } })).toEqual(foreign.artifact);
+    expect(await prisma.generationDelivery.findUnique({ where: { id: foreign.delivery.id } })).toEqual(foreign.delivery);
+    expect(await prisma.generationSettlementLink.findUnique({ where: { id: foreign.settlement.id } })).toEqual(foreign.settlement);
+    expect(await prisma.generationFulfillmentFact.findUnique({ where: { id: foreign.fulfillment.id } })).toEqual(foreign.fulfillment);
+    expect(await prisma.mainOutboxEvent.findUnique({ where: { id: foreign.outbox.id } })).toEqual(foreign.outbox);
   });
 
   it("removes attempt-scoped work by generation id without touching another job", async () => {

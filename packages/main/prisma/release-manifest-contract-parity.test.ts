@@ -16,7 +16,7 @@ import { describe, expect, it } from "vitest";
 const migration = readFileSync(
   path.join(
     process.cwd(),
-    "prisma/migrations/20260913120000_release_manifest_optional_review_lineage/migration.sql",
+    "prisma/migrations/20261002030000_customer_identity_release_lineage/migration.sql",
   ),
   "utf8",
 );
@@ -98,6 +98,7 @@ describe("Release placement manifest database parity", () => {
   });
 
   it("keeps the placement key set closed", () => {
+    expect(migration).toContain("'customerIdentityRevisionId'");
     expect(migration).toContain("'bootstrapIdentity'\n        ]::TEXT[]");
     expect(
       parseCharacterReleaseAssetManifest(

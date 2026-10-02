@@ -271,6 +271,7 @@ function CharacterDetail({
     command: pendingCommand,
     notice: mutationNotice,
     recoveryError: commandRecoveryError,
+    recoveryErrorCommandId,
     writesLocked: commandWritesLocked,
   } = useSyncExternalStore(
     journal.subscribe,
@@ -701,6 +702,11 @@ function CharacterDetail({
             role="alert"
           >
             {renderCharacterCommandMessage(commandRecoveryError, t)}
+            {recoveryErrorCommandId ? (
+              <Link className="ml-2 underline" href={`/admin/system/audit?commandId=${encodeURIComponent(recoveryErrorCommandId)}`}>
+                {t("Open command evidence")}
+              </Link>
+            ) : null}
           </p>
         ) : null}
         {publicationPrepRecovery && permissions.writeProject ? (
@@ -960,6 +966,11 @@ function CharacterDetail({
           role="alert"
         >
           {renderCharacterCommandMessage(commandRecoveryError, t)}
+          {recoveryErrorCommandId ? (
+            <Link className="ml-2 underline" href={`/admin/system/audit?commandId=${encodeURIComponent(recoveryErrorCommandId)}`}>
+              {t("Open command evidence")}
+            </Link>
+          ) : null}
         </p>
       ) : null}
       {mutationNotice ? (

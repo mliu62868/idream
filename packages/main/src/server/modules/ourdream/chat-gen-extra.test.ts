@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { resolveLocalBlobPath } from "@idream/shared/storage/local-blob";
+import { characterVideoProductionRecipe } from "@idream/shared";
 import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
 import { dispatchV1 } from "@/server/modules/ourdream/service";
@@ -27,9 +28,9 @@ const P = "zt-cgx-";
 const SYS = `${P}sys`;
 const CHAR = `${P}char`;
 const PINNED_RETRY_JOB_AUTHORITY = {
-  model: "redcraft-krea2-redmix3-txt2img",
+  model: "redqw21",
   profileId: "profile_image_default_v1",
-  profileVersion: 2,
+  profileVersion: 4,
   orientation: "1:1",
   outputCount: 1,
   provider: "comfyui",
@@ -90,7 +91,7 @@ describe("video generation (Deluxe)", () => {
         controls: {
           sourceImageAssetId: expect.any(String),
           workflowKey: "redgraft-ltx25-i2v",
-          workflowVersion: 2,
+          workflowVersion: characterVideoProductionRecipe.workflowVersion,
         },
         referenceImages: [
           expect.objectContaining({

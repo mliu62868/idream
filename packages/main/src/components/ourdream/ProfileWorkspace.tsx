@@ -65,6 +65,7 @@ import { authHrefForTarget, authNextTargetFromPath } from "./authRedirect";
 import {
   fetchProtectedForViewer,
   invalidateViewerAuthority,
+  announceViewerAuthorityChange,
   isTimeoutError,
   VIEWER_CHECK_TIMEOUT_MS,
   VIEWER_UNCONFIRMED_MESSAGE,
@@ -212,7 +213,7 @@ export function loadProfileForViewer(fetcher: ViewerFetcher = fetch) {
   );
 }
 
-const tabs = ["recent", "characters", "created", "presets", "media", "group-chats"] as const;
+const tabs = ["recent", "characters", "created", "presets", "media", "group-chats", "packs"] as const;
 type LibraryTab = (typeof tabs)[number];
 
 function libraryTabFromSearch(search: string): LibraryTab {
@@ -227,6 +228,7 @@ const tabLabels: Record<LibraryTab, string> = {
   presets: "Presets",
   media: "Media",
   "group-chats": "Group chats",
+  packs: "Packs",
 };
 
 function emptyStateForTab(tab: LibraryTab, emptyCta: string | null) {
@@ -269,6 +271,12 @@ function emptyStateForTab(tab: LibraryTab, emptyCta: string | null) {
       copy: "Bring 2–12 Characters into a conversation and choose who replies each time.",
       ctaHref: "/chat/groups",
       ctaLabel: "Create a group chat",
+    },
+    packs: {
+      title: "No Packs yet",
+      copy: "Create a Pack from your Gallery, or claim free current content from a creator.",
+      ctaHref: "/packs/new",
+      ctaLabel: "Create a Pack",
     },
   };
   return { ...defaults[tab], ctaHref: emptyCta ?? defaults[tab].ctaHref };
@@ -893,6 +901,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
     try {
       const response = await fetchForOwner("/api/v1/account/sign-out-all", { method: "POST" });
       if (response.ok) {
+        announceViewerAuthorityChange();
         window.location.href = "/login";
         return;
       }
@@ -922,13 +931,14 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
       const payload = await response.json().catch(() => null);
       if (!ownerRequestIsCurrent() || serial !== securityRequestSerialRef.current) return;
       if (response.ok || response.status >= 500) {
+        announceViewerAuthorityChange();
         window.location.href = accountDeletionLoginHref({ data: { receipt: payload?.data?.receipt ?? receipt } });
         return;
       }
       setStatus(payload?.error?.message ?? "Account deletion failed. You can retry after correcting the error.");
     } catch {
       if (!ownerRequestIsCurrent() || serial !== securityRequestSerialRef.current) return;
-      if (receipt) { window.location.href = `/login#deletion=${encodeURIComponent(receipt)}`; return; }
+      if (receipt) { announceViewerAuthorityChange(); window.location.href = `/login#deletion=${encodeURIComponent(receipt)}`; return; }
       setStatus("Password verification could not finish. Check your connection and try again.");
     } finally {
       if (serial === securityRequestSerialRef.current) { setSecurityPassword(""); setSecurityPending(false); }
@@ -1122,7 +1132,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
     }
   }
 
-  async function addMediaToCollection(mediaAssetId: string, collectionId: string) {
+  async function addMediaToCollection(mediaAssetId: string, collectionId: string, publishMedia: boolean) {
     setLibraryStatus("");
     if (!collectionId) {
       setLibraryStatus("Choose a collection first.");
@@ -1132,7 +1142,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
       const response = await fetchForOwner(`/api/v1/media/collections/${collectionId}/items`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ mediaAssetId }),
+        body: JSON.stringify({ mediaAssetId, publishMedia }),
       });
       const payload = (await response.json()) as {
         ok?: boolean;
@@ -1419,6 +1429,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
           )}
         </div>
         {tab === "group-chats" && <Link className="mt-4 inline-flex min-h-11 items-center rounded-full border border-white/20 px-5 text-sm font-bold hover:bg-white/10" href="/chat/groups">Create and manage group chats</Link>}
+        {tab === "packs" && <div className="mt-4 flex flex-wrap gap-3"><Link className="inline-flex min-h-11 items-center rounded-full border border-white/20 px-5 text-sm font-bold hover:bg-white/10" href="/packs?scope=mine">Manage your Packs</Link><Link className="inline-flex min-h-11 items-center rounded-full border border-white/20 px-5 text-sm font-bold hover:bg-white/10" href="/packs">Browse free Packs</Link></div>}
         {tab === "media" && <Link className="mt-4 inline-flex min-h-11 items-center rounded-full border border-white/20 px-5 text-sm font-bold hover:bg-white/10" href="/creator-studio/comics">Create and manage your Comics</Link>}
         {tab === "media" && mediaCollections.length > 0 && <section aria-label="Your collections" className="mt-4 rounded-xl border border-white/10 p-4">
           <h2 className="mb-3 font-bold">Your collections</h2>
@@ -1950,7 +1961,7 @@ function LibraryCard({
   invalidPreviewImageIds: Set<string>;
   item: LibraryItem;
   isPreset?: boolean;
-  onAddToCollection?: (mediaAssetId: string, collectionId: string) => Promise<void>;
+  onAddToCollection?: (mediaAssetId: string, collectionId: string, publishMedia: boolean) => Promise<void>;
   onCreateCollection?: (
     mediaAssetId: string,
     input: { name: string; visibility: CollectionVisibility },
@@ -1973,6 +1984,7 @@ function LibraryCard({
   const [collectionName, setCollectionName] = useState("");
   const [publishCollection, setPublishCollection] = useState(false);
   const [selectedCollectionId, setSelectedCollectionId] = useState("");
+  const [publishMedia, setPublishMedia] = useState(false);
   const [collectionBusy, setCollectionBusy] = useState(false);
   // INTENT: 加入合集是低频操作；整套表单常驻每张卡，手机上的媒体库会被撑到九千多像素高。
   const [collectionOpen, setCollectionOpen] = useState(false);
@@ -1988,7 +2000,9 @@ function LibraryCard({
     (isVisualMediaItem && source ? isBuiltInMediaPlaceholderUrl(source) : false) ||
     (isMediaItem && !source);
   const href =
-    item.type === "group_chat"
+    item.type === "pack" && typeof item.href === "string" && item.href.startsWith("/packs/")
+      ? item.href
+      : item.type === "group_chat"
       ? `/chat/groups/${encodeURIComponent(item.id)}`
       : item.type === "chat"
       ? `/chat/${encodeURIComponent(item.id)}`
@@ -2006,6 +2020,8 @@ function LibraryCard({
   const confirmMediaDelete = isMediaItem && deleteConfirmMediaId === item.id;
   // 缩略图是 4:3 顶部裁切；原图只能靠这个链接看全。
   const fullImageUrl = item.type === "image" && !mediaUnavailable ? item.url ?? source : undefined;
+  const selectedCollection = collections?.find((collection) => collection.id === (selectedCollectionId || collections[0]?.id));
+  const needsPublication = selectedCollection?.visibility === "public" && item.visibility !== "public_pack";
 
   async function createCollectionFromMedia() {
     if (!onCreateCollection) return;
@@ -2022,8 +2038,9 @@ function LibraryCard({
     if (!onAddToCollection) return;
     const collectionId = selectedCollectionId || collections?.[0]?.id || "";
     setCollectionBusy(true);
-    await onAddToCollection(item.id, collectionId);
+    await onAddToCollection(item.id, collectionId, needsPublication && publishMedia);
     setCollectionBusy(false);
+    setPublishMedia(false);
   }
 
   const content = (
@@ -2149,7 +2166,7 @@ function LibraryCard({
             <button
               aria-expanded={collectionOpen}
               className="inline-flex h-9 w-fit items-center gap-2 rounded-full bg-black/30 px-3 text-[12px] font-bold text-white"
-              onClick={() => setCollectionOpen((open) => !open)}
+              onClick={() => { setCollectionOpen((open) => !open); setPublishMedia(false); }}
               type="button"
             >
               <FolderPlus className="h-3.5 w-3.5" />
@@ -2157,28 +2174,34 @@ function LibraryCard({
             </button>
             {collectionOpen && <div className="grid gap-3 rounded-[12px] border border-white/10 bg-black/20 p-3">
               {(collections?.length ?? 0) > 0 && (
-                <div className="flex gap-2">
-                  <select
-                    aria-label="Existing collection"
-                    className="min-w-0 flex-1 rounded-[10px] bg-[rgb(18,18,18)] px-3 text-[12px] font-semibold text-white outline-none"
-                    onChange={(event) => setSelectedCollectionId(event.target.value)}
-                    value={selectedCollectionId || collections?.[0]?.id || ""}
-                  >
-                    {collections?.map((collection) => (
-                      <option key={collection.id} value={collection.id}>
-                        {collection.name} ({collection.itemCount})
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    aria-label="Add media to collection"
-                    className="inline-flex h-9 items-center justify-center rounded-full bg-[rgb(46,46,46)] px-3 text-[12px] font-bold text-white disabled:opacity-50"
-                    disabled={collectionBusy}
-                    onClick={() => void addToSelectedCollection()}
-                    type="button"
-                  >
-                    Add
-                  </button>
+                <div className="grid gap-2">
+                  <div className="flex gap-2">
+                    <select
+                      aria-label="Existing collection"
+                      className="min-w-0 flex-1 rounded-[10px] bg-[rgb(18,18,18)] px-3 text-[12px] font-semibold text-white outline-none"
+                      onChange={(event) => { setSelectedCollectionId(event.target.value); setPublishMedia(false); }}
+                      value={selectedCollectionId || collections?.[0]?.id || ""}
+                    >
+                      {collections?.map((collection) => (
+                        <option key={collection.id} value={collection.id}>
+                          {collection.name} ({collection.itemCount}) · {COLLECTION_VISIBILITY_LABELS[collection.visibility] ?? "private"}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      aria-label="Add media to collection"
+                      className="inline-flex h-9 items-center justify-center rounded-full bg-[rgb(46,46,46)] px-3 text-[12px] font-bold text-white disabled:opacity-50"
+                      disabled={collectionBusy || (needsPublication && !publishMedia)}
+                      onClick={() => void addToSelectedCollection()}
+                      type="button"
+                    >
+                      Add
+                    </button>
+                  </div>
+                  {needsPublication && <label className="flex items-start gap-2 text-[12px] leading-5 text-[rgb(220,220,220)]">
+                    <input aria-label="Publish this media to Community" checked={publishMedia} className="mt-1 h-4 w-4 shrink-0 accent-[rgb(253,95,194)]" onChange={(event) => setPublishMedia(event.target.checked)} type="checkbox" />
+                    <span>Publish this media to Community when adding it. Anyone can view it in this public collection.</span>
+                  </label>}
                 </div>
               )}
               <div className="grid gap-2">

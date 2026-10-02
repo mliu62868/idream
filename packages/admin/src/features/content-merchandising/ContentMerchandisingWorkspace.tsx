@@ -39,6 +39,7 @@ import {
   type AuthorityState,
 } from "@/lib/authority-state";
 import { createLatestRequestGate } from "@/lib/latest-request";
+import { listPageFromParams, previousListPage, syncListUrl } from "@/components/admin/section-kit";
 import {
   CONTENT_PAGE_SIZE,
   contentListPath,
@@ -49,6 +50,7 @@ import {
 
 type Row = Record<string, unknown>;
 type CharacterResponse = { items: Row[]; pageInfo: PageInfo };
+const listKeys = { cursor: "contentCursor", page: "contentPage" };
 export type FeaturedRuntimeBlocker = {
   code: string;
   message: string;
@@ -127,8 +129,8 @@ export function ContentMerchandisingWorkspace({
   );
   const [saving, setSaving] = useState(false);
   const [confirmSpec, setConfirmSpec] = useState<ConfirmSpec | null>(null);
-  // 游标分页没有页码，只有「上一页用的是哪个游标」。这条轨迹就是 Pagination 的第 N 页。
-  const [cursorTrail, setCursorTrail] = useState<string[]>([]);
+  const [page, setPage] = useState(1);
+  const [hasPageHistory, setHasPageHistory] = useState(false);
   const characterGate = useRef(createLatestRequestGate());
   const featuredGate = useRef(createLatestRequestGate());
 
@@ -190,8 +192,9 @@ export function ContentMerchandisingWorkspace({
       const next = currentQuery();
       setQuery(next);
       setDraft(next);
-      // 回退到的那一页是哪一页，历史条目里没记；不知道就说不知道，把「上一页」置灰。
-      setCursorTrail([]);
+      const params = new URLSearchParams(contentWorkspaceUrl(window.location.pathname, window.location.search, next).split("?")[1] ?? "");
+      setPage(syncListUrl(params, listPageFromParams(params, listKeys.page), listKeys));
+      setHasPageHistory(previousListPage(listKeys).hasHistory);
       load(next);
     };
     restore();
@@ -205,20 +208,17 @@ export function ContentMerchandisingWorkspace({
     };
   }, [load]);
 
-  // SPEC: 任何改变结果集的动作都回到第一页 —— 所以 trail 默认清空，只有翻页自己传轨迹。
-  function navigate(next: ContentQuery, trail: string[] = []) {
-    window.history.pushState(
-      null,
-      "",
-      contentWorkspaceUrl(
+  // Filters return to page one. Visited cursor history lives with each URL entry.
+  function navigate(next: ContentQuery, nextPage = 1) {
+    const href = contentWorkspaceUrl(
         window.location.pathname,
         window.location.search,
         next,
-      ),
     );
+    setPage(syncListUrl(new URLSearchParams(href.split("?")[1] ?? ""), nextPage, listKeys));
+    setHasPageHistory(previousListPage(listKeys).hasHistory);
     setQuery(next);
     setDraft(next);
-    setCursorTrail(trail);
     void loadCharacters(next);
   }
 
@@ -229,6 +229,7 @@ export function ContentMerchandisingWorkspace({
 
   const expectedConfirmation = parseCsv(featuredInput).join(",") || "CLEAR";
   async function saveFeatured() {
+    if (!canWrite) return;
     setSaving(true);
     setSaveConflict(null);
     setSaveResult(null);
@@ -268,6 +269,7 @@ export function ContentMerchandisingWorkspace({
     entityVersion?: number,
   ) {
     const expected = `${id}:${field}:${value}`;
+    if (!canWrite) return;
     setConfirmSpec({
       title: field === "visibility"
         ? t("{action} character {id}", { action: t(contentCommandLabel(field, value)), id })
@@ -614,22 +616,24 @@ export function ContentMerchandisingWorkspace({
           hasNext={Boolean(
             characters.data.pageInfo.hasNextPage && characters.data.pageInfo.endCursor,
           )}
-          hasPrevious={cursorTrail.length > 0}
+          hasPrevious={Boolean(query.cursor)}
+          previousLabel={query.cursor && !hasPageHistory ? t("Back to first page") : undefined}
           loading={characters.loading}
           onNext={() => {
             const endCursor = characters.data?.pageInfo.endCursor;
             if (!endCursor) return;
-            navigate({ ...query, cursor: endCursor }, [...cursorTrail, query.cursor]);
+            navigate({ ...query, cursor: endCursor }, page + 1);
           }}
-          onPrevious={() =>
-            navigate({ ...query, cursor: cursorTrail.at(-1) ?? "" }, cursorTrail.slice(0, -1))
-          }
-          page={cursorTrail.length + 1}
+          onPrevious={() => {
+            const previous = previousListPage(listKeys);
+            navigate({ ...query, cursor: previous.cursor ?? "" }, previous.page);
+          }}
+          page={page}
           pageSize={CONTENT_PAGE_SIZE}
           rowCount={characters.data.items.length}
         />
       ) : null}
-      {confirmSpec ? (
+      {canWrite && confirmSpec ? (
         <ConfirmDialog
           onClose={() => setConfirmSpec(null)}
           spec={confirmSpec}

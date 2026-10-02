@@ -138,7 +138,7 @@ describe("voice generation service contract", () => {
       });
       resumeRead();
       expectOk(await operation, 201);
-      const request = await prisma.voiceClipRequest.findUniqueOrThrow({ where: { userId_messageId: { userId, messageId } } });
+      const request = await prisma.voiceClipRequest.findUniqueOrThrow({ where: { userId_messageId_replyAttempt: { userId, messageId, replyAttempt: 1 } } });
       expect(request.providerPayload).toMatchObject(transition === "activate" ? {
         providerKey: "pocket_tts", voiceId: voiceB, voiceAuthority: "character_clone", characterVoiceProfileVersion: 2,
       } : {
@@ -186,7 +186,7 @@ describe("voice generation service contract", () => {
       ).toBe(1);
       expect(
         await prisma.voiceClipRequest.findUnique({
-          where: { userId_messageId: { userId, messageId } },
+          where: { userId_messageId_replyAttempt: { userId, messageId, replyAttempt: 1 } },
         }),
       ).toMatchObject({ status: "succeeded", attemptNo: 1 });
       expect(
@@ -290,7 +290,7 @@ describe("voice generation service contract", () => {
       });
       await expect(
         prisma.voiceClipRequest.findUniqueOrThrow({
-          where: { userId_messageId: { userId, messageId } },
+          where: { userId_messageId_replyAttempt: { userId, messageId, replyAttempt: 1 } },
         }),
       ).resolves.toMatchObject({
         status: "failed",
@@ -425,7 +425,7 @@ describe("voice generation service contract", () => {
       });
       expect(prewarm.status).toBe(500);
       const initial = await prisma.voiceClipRequest.findUniqueOrThrow({
-        where: { userId_messageId: { userId, messageId } },
+        where: { userId_messageId_replyAttempt: { userId, messageId, replyAttempt: 1 } },
       });
       expect(initial).toMatchObject({
         status: "running",
@@ -519,7 +519,7 @@ describe("voice generation service contract", () => {
       });
       expectOk(first, 201);
       const request = await prisma.voiceClipRequest.findUniqueOrThrow({
-        where: { userId_messageId: { userId, messageId } },
+        where: { userId_messageId_replyAttempt: { userId, messageId, replyAttempt: 1 } },
       });
       const canonicalProviderKey = `voice:${request.id}:provider`;
       expect(request.providerRequestId).toBe(canonicalProviderKey);
@@ -604,7 +604,7 @@ describe("voice generation service contract", () => {
       expect(switchedProviderCall).not.toHaveBeenCalled();
       expect(
         await prisma.voiceClipRequest.findUniqueOrThrow({
-          where: { userId_messageId: { userId, messageId } },
+          where: { userId_messageId_replyAttempt: { userId, messageId, replyAttempt: 1 } },
         }),
       ).toMatchObject({
         status: "succeeded",
@@ -752,7 +752,7 @@ describe("voice generation service contract", () => {
       expectOk(response, 201);
       expect(
         await prisma.voiceClipRequest.findUniqueOrThrow({
-          where: { userId_messageId: { userId, messageId } },
+          where: { userId_messageId_replyAttempt: { userId, messageId, replyAttempt: 1 } },
           select: { providerPayload: true },
         }),
       ).toMatchObject({
@@ -1180,7 +1180,7 @@ describe("voice generation service contract", () => {
       expectOk(played, 201);
       expect(await dreamcoinBalance(userId)).toBe(100 - price);
       expect((await prisma.voiceClipRequest.findUniqueOrThrow({
-        where: { userId_messageId: { userId, messageId: `${P}msg-2` } }, select: { providerPayload: true },
+        where: { userId_messageId_replyAttempt: { userId, messageId: `${P}msg-2`, replyAttempt: 1 } }, select: { providerPayload: true },
       })).providerPayload).toMatchObject({ voiceAuthority: "system_default", characterVoiceProfileVersion: null });
     } finally {
       await prisma.character.update({ where: { id: CHAR }, data: { voiceId: null } });

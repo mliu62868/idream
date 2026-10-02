@@ -131,15 +131,20 @@ export async function getAuthCtx(request?: Request): Promise<AuthCtx> {
     ? headers?.get("x-idream-user-id")
     : undefined;
   const testUser = testUserId ? await findActiveUser(testUserId) : null;
-  // 后台登录态优先于普通用户登录态：同一浏览器下后台 cookie 存在时按后台身份解析。
-  const adminCookieUser = testUser
-    ? null
-    : await userFromCustomSession(cookies.get(ADMIN_SESSION_COOKIE));
-  const cookieUser =
-    testUser || adminCookieUser
-      ? null
-      : await userFromCustomSession(cookies.get(SESSION_COOKIE));
-  const user = testUser ?? adminCookieUser ?? cookieUser;
+  // INVARIANT: Admin sign-in must not replace Main customer identity on the same host.
+  // Admin's media proxy supplies provenance to choose the operator session.
+  // This selects an identity only; the media handler still checks its effective permissions.
+  const pathname = request ? new URL(request.url).pathname : "";
+  const adminMediaRead = request?.method === "GET" &&
+    (/^\/user-content\/[^/]+\/[^/]+$/.test(pathname) || /^\/api\/v1\/media\/[^/]+\/content$/.test(pathname));
+  const adminRequest = pathname === "/admin" || pathname.startsWith("/admin/") || pathname.startsWith("/api/v2/admin/") ||
+    (adminMediaRead && headers?.get("x-idream-admin-read-authority") === "not_applicable");
+  const primaryCookie = adminRequest ? ADMIN_SESSION_COOKIE : SESSION_COOKIE;
+  const primaryUser = testUser ? null : await userFromCustomSession(cookies.get(primaryCookie));
+  const fallbackCookie = adminRequest ? SESSION_COOKIE : adminMediaRead ? ADMIN_SESSION_COOKIE : undefined;
+  const fallbackUser = testUser || primaryUser || !fallbackCookie
+    ? null : await userFromCustomSession(cookies.get(fallbackCookie));
+  const user = testUser ?? primaryUser ?? fallbackUser;
 
   const acceptedInDb = await hasAgeGateAcceptance({
     userId: user?.id,

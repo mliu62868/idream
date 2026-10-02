@@ -447,6 +447,15 @@ describe("Character workspace — 每个命令出口都接到了运营界面", (
       await waitUntil(() => commandTab()?.disabled === false, "writes to unlock");
 
       expect(bannerContaining(`command ${status}`) !== null).toBe(expectsAlert);
+      const evidenceLink = container.querySelector<HTMLAnchorElement>('a[href="/admin/system/audit?commandId=command-1"]');
+      if (expectsAlert) {
+        expect(evidenceLink).not.toBeNull();
+        expect(evidenceLink?.textContent).toBe("Open command evidence");
+        expect(evidenceLink?.closest('[role="alert"]')?.textContent).toContain(`command ${status}`);
+      } else {
+        expect(evidenceLink).toBeNull();
+      }
+      expect(adminV2Request.mock.calls.some(([, options]) => options?.method === "POST")).toBe(false);
     },
   );
 

@@ -1756,7 +1756,7 @@ describe("image generation service contract", () => {
     const patchResponse = await api("PATCH", `character-drafts/${draftId}`, {
       userId,
       ageGate: true,
-      body: {
+      body: { expectedUpdatedAt: (await prisma.characterDraft.findUniqueOrThrow({ where: { id: draftId } })).updatedAt.toISOString(),
         age: 25,
         appearance: { face: { eyes: "hazel" }, hair: { color: "auburn", style: "long waves" } },
         body: { build: "athletic" },
@@ -1863,7 +1863,7 @@ describe("image generation service contract", () => {
     const completedPersona = await api("PATCH", `character-drafts/${draftId}`, {
       userId,
       ageGate: true,
-      body: { age: 25, advancedDetails: COMPLETE_PERSONA_DETAILS },
+      body: { expectedUpdatedAt: (await prisma.characterDraft.findUniqueOrThrow({ where: { id: draftId } })).updatedAt.toISOString(), age: 25, advancedDetails: COMPLETE_PERSONA_DETAILS },
     });
     expectOk(completedPersona);
     const preview = await createCompletedPreviewFixture(userId, draftId, assetId);
@@ -1924,7 +1924,7 @@ describe("image generation service contract", () => {
     const completedPersona = await api("PATCH", `character-drafts/${draftId}`, {
       userId,
       ageGate: true,
-      body: { age: 25, advancedDetails: COMPLETE_PERSONA_DETAILS },
+      body: { expectedUpdatedAt: (await prisma.characterDraft.findUniqueOrThrow({ where: { id: draftId } })).updatedAt.toISOString(), age: 25, advancedDetails: COMPLETE_PERSONA_DETAILS },
     });
     expectOk(completedPersona);
     const assetId = `${P}synthetic-preview-asset`;
@@ -1989,7 +1989,7 @@ describe("image generation service contract", () => {
     const patched = await api("PATCH", `character-drafts/${draftId}`, {
       userId,
       ageGate: true,
-      body: {
+      body: { expectedUpdatedAt: (await prisma.characterDraft.findUniqueOrThrow({ where: { id: draftId } })).updatedAt.toISOString(),
         age: 26,
         appearance: { face: { eyes: "blue" }, hair: { color: "black" } },
         body: { build: "soft athletic" },

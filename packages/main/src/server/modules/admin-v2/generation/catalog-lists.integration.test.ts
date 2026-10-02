@@ -78,12 +78,13 @@ describe("generation catalogue lists (v2)", () => {
         id,
         recipeKey: `${token}-recipe-key-${index}`,
         label: `${token} recipe ${index}`,
-        mode: "image",
-        useCase: "character",
+        mode: index === 0 ? "video" : "image",
+        useCase: index === 0 ? "enhance" : "character",
         body: "prompt",
-        presetOrder: [],
-        safetyHints: {},
-        sampleMatrix: [],
+        presetOrder: ["pose", "outfit"],
+        safetyHints: { retain: "existing-configuration" },
+        sampleMatrix: [{ orientation: "1:1" }],
+        dryRunSummary: { sampleCount: 20, configurationPassRate: 1 },
         status: "draft",
       })),
     });
@@ -196,5 +197,60 @@ describe("generation catalogue lists (v2)", () => {
 
     const missing = await adminV2("GET", "/api/v2/admin/generation/recipes/nope", admin);
     expect(missing.status).toBe(404);
+  });
+
+  it("preserves omitted recipe configuration and verification evidence when a draft label is edited", async () => {
+    const saved = await adminV2("PATCH", `/api/v2/admin/generation/recipes/${recipeIds[0]}`, {
+      ...admin,
+      body: { label: `${token} renamed recipe` },
+    });
+    expect(saved.status, JSON.stringify(saved.error)).toBe(200);
+    const readBack = await adminV2("GET", `/api/v2/admin/generation/recipes/${recipeIds[0]}`, admin);
+    expect(readBack.status, JSON.stringify(readBack.error)).toBe(200);
+    expect(readBack.data.recipe).toMatchObject({
+      label: `${token} renamed recipe`,
+      mode: "video",
+      useCase: "enhance",
+      presetOrder: ["pose", "outfit"],
+      safetyHints: { retain: "existing-configuration" },
+      sampleMatrix: [{ orientation: "1:1" }],
+      dryRunSummary: { sampleCount: 20, configurationPassRate: 1 },
+    });
+    const audit = await adminV2("GET", `/api/v2/admin/audit-log?action=generation.prompt_template.update&search=${recipeIds[0]}`, admin);
+    expect(audit.status, JSON.stringify(audit.error)).toBe(200);
+    expect(audit.data.items).toHaveLength(1);
+    expect(audit.data.items[0].before).toMatchObject({ label: `${token} recipe 0` });
+    expect(audit.data.items[0].after).toMatchObject({ label: `${token} renamed recipe` });
+    expect(audit.data.items[0].before).not.toHaveProperty("body");
+    expect(audit.data.items[0].after).not.toHaveProperty("body");
+  });
+
+  it("preserves a private preset's configuration through archive, archived edits and restore", async () => {
+    const id = `${token}-private-preset`;
+    const originalLabel = `${token} private preset`;
+    const renamedLabel = `${token} renamed private preset`;
+    const controls = { promptFragment: "Keep this private preset configuration" };
+    await prisma.generationPreset.create({
+      data: { id, scope: "built_in", type: "background", label: originalLabel, controls, visibility: "private", status: "active" },
+    });
+    try {
+      for (const change of [
+        { body: { status: "archived" }, status: "archived", label: originalLabel },
+        { body: { label: renamedLabel }, status: "archived", label: renamedLabel },
+        { body: { status: "active" }, status: "active", label: renamedLabel },
+        { body: { status: "archived" }, status: "archived", label: renamedLabel },
+      ]) {
+        const saved = await adminV2("PATCH", `/api/v2/admin/generation/presets/${id}`, { ...admin, body: change.body });
+        expect(saved.status, JSON.stringify(saved.error)).toBe(200);
+        const expected = { id, label: change.label, status: change.status, visibility: "private", controls };
+        expect(saved.data.preset).toMatchObject(expected);
+        const readBack = await adminV2("GET", `/api/v2/admin/generation/presets/${id}`, admin);
+        expect(readBack.status, JSON.stringify(readBack.error)).toBe(200);
+        expect(readBack.data.preset).toMatchObject(expected);
+        expect(await prisma.generationPreset.findUniqueOrThrow({ where: { id } })).toMatchObject(expected);
+      }
+    } finally {
+      await prisma.generationPreset.deleteMany({ where: { id } });
+    }
   });
 });

@@ -104,4 +104,55 @@ describe("audit repeat collapsing and row selection", () => {
     expect(container.textContent).toContain("1 selected");
     expect(container.textContent).not.toContain("4 selected");
   });
+
+  it("makes the recorded before/after snapshots and request ID available without loading unredacted source objects", async () => {
+    apiGet.mockResolvedValue({
+      items: [{
+        ...batchRun[0],
+        requestId: "request-recipe-update-1",
+        before: { label: "Previous recipe label", body: "[redacted]" },
+        after: { label: "Updated recipe label", body: "[redacted]" },
+      }],
+      pageInfo: { endCursor: null, hasNextPage: false },
+    });
+    await mounted();
+    const details = container.querySelector<HTMLDetailsElement>("details");
+    expect(details).not.toBeNull();
+    expect(details?.open).toBe(false);
+    await act(async () => { details!.open = true; });
+    expect(details?.textContent).toContain("Before change");
+    expect(details?.textContent).toContain("After change");
+    expect(details?.textContent).toContain("Previous recipe label");
+    expect(details?.textContent).toContain("Updated recipe label");
+    expect(details?.querySelector('[title="request-recipe-update-1"]')).not.toBeNull();
+    expect(details?.textContent).toContain("[redacted]");
+    expect(apiGet.mock.calls).toHaveLength(1);
+    expect(apiGet.mock.calls[0][0]).toContain("/api/v2/admin/audit-log");
+  });
+
+  it("opens the linked failed command with its authoritative failure and Release blockers", async () => {
+    window.history.replaceState(null, "", "/admin/system/audit?commandId=failed-resume");
+    apiGet.mockImplementation(async (path) => path === "/api/v2/admin/commands/failed-resume" ? {
+      commandId: "failed-resume", commandType: "character.serving.resume", target: { type: "character_serving", id: "paused-character" },
+      requestId: "resume-request", createdAt: "2026-10-02T14:53:30.000Z",
+      status: "failed", verificationState: "failed", needsReconciliation: false, updatedAt: "2026-10-02T14:53:30.000Z",
+      error: { code: "serving_resume_validation_failed", message: "Current Release failed validation", validationRunId: "failed-validation",
+        servingState: "paused",
+        blockers: ["release_assets_customer_publishable", "release_asset_source_authority", "release_asset_generation_authority"] },
+    } : { items: batchRun, pageInfo: { endCursor: null, hasNextPage: false } });
+    await mounted();
+    await waitUntil(() => container.querySelector('[title="failed-resume"]') !== null);
+    const evidence = [...container.querySelectorAll<HTMLDetailsElement>("details")].find(
+      (details) => details.querySelector("summary")?.textContent === "Command evidence",
+    );
+    expect(evidence).toBeDefined();
+    expect(evidence?.open).toBe(false);
+    await act(async () => { evidence!.open = true; });
+    for (const fact of ["serving_resume_validation_failed", "failed-validation", "paused", "release_assets_customer_publishable",
+      "release_asset_source_authority", "release_asset_generation_authority"]) expect(evidence?.textContent).toContain(fact);
+    expect(apiGet.mock.calls.map(([path]) => path).sort()).toEqual([
+      "/api/v2/admin/audit-log?commandId=failed-resume&limit=25",
+      "/api/v2/admin/commands/failed-resume",
+    ].sort());
+  });
 });

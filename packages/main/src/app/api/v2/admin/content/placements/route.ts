@@ -1,5 +1,6 @@
 import {
   createPlacement,
+  decoratePlacementReplay,
   listPlacements,
 } from "@/server/modules/admin-v2/content/placements";
 import { executeAdminMutation } from "@/server/modules/admin-v2/shared/admin-mutation";
@@ -30,7 +31,7 @@ export function POST(request: Request) {
       params: {},
       target: ({ body }) => ({ type: "media_asset", id: body.mediaAssetId }),
       mutate: (tx, { actor, body }) => createPlacement({ tx, request, actor, body }),
-      decorateResult: (result, replayed) => ({ ...(result as object), replayed }),
+      decorateResult: decoratePlacementReplay,
     })
   );
 }

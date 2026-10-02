@@ -1,9 +1,9 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LlmAdapter, LlmError, type GenerateOptions, type StreamChunk, type TokenUsage } from "@deepseek-ai/dsh-llm";
 import type {
-  CompanionCommitAck,
   CompanionEvent,
   CompanionInvocation,
   CompanionTerminalCandidate,
@@ -14,11 +14,15 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { companionCompositionDigest, companionIgrepConfig } from "./composition";
 import {
   CompanionEngine,
+  CompanionCapacityError,
   type CompanionEngineOptions,
   type CompanionRuntimePort,
 } from "./engine";
 import { AttemptWorkspaceStore } from "./workspace";
 import { OpenAiCompatibleAdapter } from "./openai-adapter";
+import { compilePreparedTurn } from "../prepared-turn";
+import { resolvePolicy } from "../policy";
+import type { BuiltContext } from "../context";
 
 const IGREP_LLM = { url: "https://maintenance.example/v1", model: "maintenance-model" };
 const temporary: string[] = [];
@@ -280,16 +284,23 @@ class MemoryReplyAdapter extends LlmAdapter {
     private readonly text: string,
     private readonly nativeCall = false,
     private readonly usages: readonly (TokenUsage | undefined)[] = [],
+    private readonly provisionalText = "",
   ) { super(); }
 
   async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     this.requests.push(options);
     if (this.nativeCall && this.requests.length === 1) {
+      if (this.provisionalText) {
+        yield { type: "block-start", index: 0, blockType: "text" };
+        yield { type: "text-delta", index: 0, text: this.provisionalText };
+        yield { type: "block-end", index: 0, block: { type: "text", text: this.provisionalText } };
+      }
+      const index = this.provisionalText ? 1 : 0;
       const args = JSON.stringify({ query: "rooftop code word" });
-      yield { type: "block-start", index: 0, blockType: "tool-call" };
-      yield { type: "tool-call-delta", index: 0, id: "memory-1" as never,
+      yield { type: "block-start", index, blockType: "tool-call" };
+      yield { type: "tool-call-delta", index, id: "memory-1" as never,
         name: "memory_search", argumentsDelta: args };
-      yield { type: "block-end", index: 0, block: { type: "tool-call",
+      yield { type: "block-end", index, block: { type: "tool-call",
         id: "memory-1" as never, name: "memory_search", arguments: args } };
       if (this.usages[0]) yield { type: "usage", usage: this.usages[0] };
       yield { type: "finish", reason: { kind: "tool-calls" } };
@@ -305,24 +316,30 @@ class MemoryReplyAdapter extends LlmAdapter {
 }
 
 const recallMarker = "idreamrecall_08a47391c06ac75d765597abfd2af7c5";
+const recallHit = { citation: "memory/dialogues/deepseek-harness-rooftop.jsonl#L1", snippet: `The rooftop code word is ${recallMarker}.`, sourceClass: "dialogue", score: 1 };
 // The engine speaks the real igrep protocol; only the subprocess is replaced,
 // so wake/recall parsing and note rendering stay under test here.
 const memoryPorts: Partial<CompanionEngineOptions> = {
-  runIgrep: async ({ args }) => args.includes("wake")
-    ? { markdownContext: "" }
-    : args.includes("reproject") ? { provider: "igrep", action: "reproject", migrated: false }
-    : {
-        results: [{
-          citation: "dialogue:1",
-          snippet: `The rooftop code word is ${recallMarker}.`,
-          sourceClass: "dialogue",
-        }],
-      },
+  runIgrep: async ({ args }) => {
+    if (args.includes("wake")) return { markdownContext: "" };
+    if (args.includes("reproject")) {
+      const workspace = args[args.indexOf("--workspace") + 1]!;
+      const at = "2026-09-30T23:55:00.000Z";
+      for (const directory of ["dialogues", "sessions"]) await mkdir(join(workspace, ".igrep/mem/memory", directory), { recursive: true });
+      await writeFile(join(workspace, ".igrep/mem/memory/sessions/deepseek-harness-rooftop.jsonl"), JSON.stringify({
+        schema: "igrep.mem.session/1", agent: "deepseek-harness", id: "event-1", session_id: "rooftop", turn_index: 1,
+        role: "user", content: recallHit.snippet, source_at: { instant_utc: at },
+      }) + "\n");
+      await writeFile(join(workspace, ".igrep/mem/memory/dialogues/deepseek-harness-rooftop.jsonl"), JSON.stringify([at, recallHit.snippet]) + "\n");
+      return { provider: "igrep", action: "reproject", migrated: false };
+    }
+    return { results: [recallHit] };
+  },
 };
 
 function port(input?: {
   executeTool?: (call: CompanionToolCall) => Promise<CompanionToolResult>;
-  commit?: (candidate: CompanionTerminalCandidate) => Promise<CompanionCommitAck>;
+  commit?: CompanionRuntimePort["commit"];
 }) {
   const events: CompanionEvent[] = [];
   const candidates: CompanionTerminalCandidate[] = [];
@@ -361,6 +378,87 @@ async function waitFor(check: () => boolean): Promise<void> {
 }
 
 describe("Chat embedded companion runtime", () => {
+  it.each(["normal", "private"] as const)("rejects %s pool pressure before execution without producing a failure event", async (mode) => {
+    const runtime = await engine(new BlockingAdapter(), undefined, { ...memoryPorts, maxConcurrentAgents: { normal: 1, private: 1 } });
+    const value = mode === "normal" ? normalInvocation() : invocation();
+    const running = port();
+    const first = runtime.run(value, running.runtimePort);
+    await waitFor(() => running.events.some(event => event.type === "started"));
+    const deferred = port();
+    const overflow = runtime.run({ ...value, invocationId: "overflow", attemptId: "overflow", userId: "another-user" }, deferred.runtimePort);
+    await expect(overflow).rejects.toBeInstanceOf(CompanionCapacityError);
+    await expect(overflow).rejects.toMatchObject({
+      name: "CompanionCapacityError", pool: mode,
+    });
+    expect(deferred.events).toEqual([]);
+    expect(deferred.candidates).toEqual([]);
+    runtime.cancel(value.invocationId, "user");
+    await first;
+  });
+
+  it("fits a compiled free-tier Turn after actual DSH memory composition and records the final physical request", async () => {
+    const policy = resolvePolicy({ modelTier: "free", unlimitedMessages: false, voiceEnabled: false, imageToolEnabled: false });
+    const source: BuiltContext = {
+      userLocale: "en", hasRecentImageContext: false,
+      persona: {
+        characterId: "character-1", creatorId: null, name: "Mara", age: 31,
+        description: "A precise adult companion.", systemPrompt: "Stay specific and grounded.",
+        visibility: "public", status: "approved", deletedAt: null, voiceId: null,
+        visualProfileId: null, visualProfileVersion: null, identityPrompt: null,
+        imageToolEnabled: false, contentVersion: null, release: null,
+        characterContentVersionId: "content-1", characterReleaseId: null,
+        soulFingerprint: "a".repeat(64), compilerVersion: "character-soul-3",
+      },
+      policy: { ...policy, modelProfile: { ...policy.modelProfile, adapter: "openai-compatible-v1", provider: "openai", baseUrl: "https://provider.example/v1", model: "fixture", supportsTools: true } },
+      recentMessages: Array.from({ length: 7 }, (_, index) => ({
+        id: `message-${index}`, role: index % 2 === 0 ? "user" : "assistant",
+        content: index === 6 ? "How are you tonight?" : `Established fact ${index}: ${"t".repeat(2_950)}`,
+      })),
+      scene: { schemaVersion: 1, version: 1, location: "the library", time: "tonight", participants: ["Mara"], emotionalBeat: "calm", unresolvedThreads: [] },
+      sceneVersion: 1, lastExchangeAt: null, dropped: [], contextRevision: 0n,
+    };
+    const { context: _context, ...preparedTurn } = compilePreparedTurn(source, "message-6", new Date("2026-08-24T15:04:00Z"));
+    expect(preparedTurn.budget.usedInputTokens).toBeLessThan(preparedTurn.budget.maxInputTokens);
+    expect(preparedTurn.budget.dropped).toEqual([]);
+    const value = { ...normalInvocation(), preparedTurn };
+    let body = "";
+    let requests = 0;
+    const runtime = await engine(new OneStepAdapter(), undefined, {
+      ...memoryPorts,
+      plugin: async () => ({ name: "igrep", inject: ["tools"], apply(ctx) {
+        ctx.tools.register({ name: "memory_search", description: "Recall shared facts.",
+          parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+          output: { schema: { type: "object", properties: {} }, render: () => [] },
+          async execute() { return { results: [] }; },
+        });
+      } }),
+      adapter: (profile, requiredToolName, requestPolicy) => new OpenAiCompatibleAdapter({
+        profile, requiredToolName, ...requestPolicy, apiKey: "fixture-key",
+        fetch: async (_url, init) => {
+          requests += 1;
+          body = String(init?.body);
+          return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: "Ready." }, finish_reason: "stop" }], usage: { prompt_tokens: 100, completion_tokens: 2 } })}\n\ndata: [DONE]\n\n`);
+        },
+      }),
+    });
+    const connection = port();
+    await runtime.run(value, connection.runtimePort);
+    expect(requests).toBe(1);
+    expect(connection.candidates).toHaveLength(1);
+    expect(connection.events.some(event => event.type === "failed")).toBe(false);
+    const request = JSON.parse(body) as { messages: unknown[]; tools: unknown[] };
+    const evidence = connection.candidates[0]?.modelRequests?.[0];
+    expect(evidence?.droppedReplayMessageIds).toEqual(["message-0", "message-1"]);
+    expect(evidence?.bodyDigest).toBe(createHash("sha256").update(body).digest("hex"));
+    expect(evidence?.estimatedInputTokens).toBe(Math.ceil(JSON.stringify({ messages: request.messages, tools: request.tools }).length / 4));
+    expect(evidence?.estimatedInputTokens).toBeLessThanOrEqual(preparedTurn.budget.maxInputTokens);
+    const wire = JSON.stringify(request.messages);
+    expect(wire).not.toContain("Established fact 0:");
+    expect(wire).not.toContain("Established fact 1:");
+    for (const text of ["Established fact 2:", "Established fact 5:", "Stay specific and grounded.", "the library", "How are you tonight?", "memory_search"]) expect(wire).toContain(text);
+    expect(source.recentMessages).toHaveLength(7);
+  });
+
   it.each(["normal", "private"] as const)("rebinds only normal memory snapshots before reads (%s)", async (mode) => {
     const operations: string[] = [];
     const adapter = new MemoryReplyAdapter("Ready.");
@@ -509,8 +607,10 @@ describe("Chat embedded companion runtime", () => {
         ctx.tools.register({
           name: "memory_search", description: "Recall a shared conversation.",
           parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
-          output: { schema: { type: "string" }, render: (_args, value) => [{ type: "text", text: String(value) }] },
-          async execute() { executed += 1; return recallMarker; },
+          output: { schema: { type: "object", properties: { results: { type: "array", items: { type: "object", properties: {
+            citation: { type: "string" }, snippet: { type: "string" }, sourceClass: { type: "string" }, score: { type: "number" },
+          }, required: ["citation", "snippet", "sourceClass", "score"] } } }, required: ["results"] }, render: (_args, value) => [{ type: "text", text: JSON.stringify(value) }] },
+          async execute() { executed += 1; return { results: [recallHit] }; },
         });
       } }),
     });
@@ -522,6 +622,60 @@ describe("Chat embedded companion runtime", () => {
     expect(connection.candidates[0]?.content).toBe(`We chose ${recallMarker}.`);
     expect(connection.candidates[0]?.usage).toEqual(expected);
     expect(connection.events.some(event => event.type === "failed")).toBe(false);
+  });
+
+  it.each([false, true])("binds native memory_search to original dated sources and blocks invalid citations (invalid=%s)", async (invalid) => {
+    const original = "Yesterday (2026-09-30), I wrote 'tomorrow we meet' in an old letter.";
+    const adapter = new MemoryReplyAdapter("The old letter said tomorrow.", true, [], "I am checking the old letter.");
+    const runtime = await engine(adapter, undefined, {
+      runIgrep: async (options) => {
+        if (options.args.includes("reproject")) {
+          const workspace = options.args[options.args.indexOf("--workspace") + 1]!;
+          const name = "deepseek-harness-dated.jsonl";
+          for (const directory of ["dialogues", "sessions"]) await mkdir(join(workspace, ".igrep/mem/memory", directory), { recursive: true });
+          await writeFile(join(workspace, ".igrep/mem/memory/sessions", name), JSON.stringify({
+            schema: "igrep.mem.session/1", agent: "deepseek-harness", id: "event-1", session_id: "dated", turn_index: 1,
+            role: "user", content: original, source_at: { instant_utc: "2026-10-01T00:05:00.000Z", timezone: "UTC" },
+          }) + "\n");
+          await writeFile(join(workspace, ".igrep/mem/memory/dialogues", name), JSON.stringify([
+            "2026-10-01T00:05:00.000Z", original.replace("tomorrow", "tomorrow（2026-10-02）"),
+          ]) + "\n");
+          return { provider: "igrep", action: "reproject", migrated: false };
+        }
+        return options.args.includes("wake") ? { markdownContext: "" } : { results: [] };
+      },
+      plugin: async () => ({ name: "igrep", inject: ["tools"], apply(ctx) {
+        ctx.tools.register({
+          name: "memory_search", description: "Recall attributed conversations.",
+          parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+          output: {
+            schema: { type: "object", properties: { results: { type: "array", items: { type: "object", properties: {
+              citation: { type: "string" }, snippet: { type: "string" }, sourceClass: { type: "string" }, score: { type: "number" },
+            }, required: ["citation", "snippet", "sourceClass", "score"] } }, warnings: { type: "array", items: { type: "string" } } }, required: ["results"] },
+            render: (_args, value) => [{ type: "text", text: JSON.stringify(value) }],
+          },
+          async execute() { return { results: [{
+            citation: `memory/dialogues/deepseek-harness-${invalid ? "foreign" : "dated"}.jsonl#L1`,
+            snippet: original.replace("tomorrow", "tomorrow（2026-10-02）"), sourceClass: "dialogue", score: 1,
+          }], warnings: [] }; },
+        });
+      } }),
+    });
+    const connection = port();
+    await runtime.run(normalInvocation(), connection.runtimePort);
+    expect(adapter.requests).toHaveLength(invalid ? 1 : 2);
+    const messages = JSON.stringify(adapter.requests.at(-1)!.messages);
+    expect(messages).not.toContain("tomorrow（2026-10-02）");
+    if (invalid) {
+      expect(connection.candidates).toHaveLength(0);
+      expect(connection.events).toContainEqual(expect.objectContaining({ type: "igrep_observation", operation: "memory", outcome: "failure" }));
+      expect(connection.events).toContainEqual(expect.objectContaining({ type: "text_reset" }));
+    } else {
+      expect(messages).toContain(original);
+      expect(messages).toContain("2026-10-01T00:05:00.000Z");
+      expect(connection.candidates).toHaveLength(1);
+      expect(connection.events.some(event => event.type === "failed")).toBe(false);
+    }
   });
 
   it("streams one terminal candidate and commits it directly through Chat", async () => {
@@ -786,6 +940,19 @@ describe("Chat embedded companion runtime", () => {
     });
   });
 
+  it("classifies a fixed dynamic input overflow without claiming a provider outage", async () => {
+    const adapter = new class extends LlmAdapter {
+      async *stream(): AsyncIterable<StreamChunk> {
+        throw new LlmError("assembled model request exceeds the prepared input budget", "INPUT_BUDGET_EXCEEDED");
+      }
+    }();
+    const runtime = await engine(adapter);
+    const connection = port();
+    await runtime.run(invocation(), connection.runtimePort);
+    expect(connection.candidates).toEqual([]);
+    expect(connection.events.at(-1)).toMatchObject({ type: "failed", error: { code: "input_budget_exceeded", retryable: false } });
+  });
+
   // A stopped model server used to surface as non-retryable invocation_failed.
   it("reports an unreachable model endpoint as a retryable provider outage", async () => {
     const runtime = await engine(new UnreachableProviderAdapter());
@@ -826,6 +993,26 @@ describe("Chat embedded companion runtime", () => {
     expect(runtime.cancel(invocation().invocationId, "user")).toBe(true);
     await run;
 
+    expect(connection.events.at(-1)).toMatchObject({ type: "cancelled", reason: "user" });
+  });
+
+  it("passes the active cancellation signal through a pending terminal projection", async () => {
+    const runtime = await engine(new OneStepAdapter());
+    const committing = Promise.withResolvers<void>();
+    let projectionSignal: AbortSignal | undefined;
+    const connection = port({ commit: async (_candidate, signal) => {
+      projectionSignal = signal;
+      committing.resolve();
+      await new Promise<void>((_resolve, reject) => signal?.addEventListener("abort", () => reject(signal.reason), { once: true }));
+      throw new Error("cancelled projection must not settle");
+    } });
+    const running = runtime.run(invocation(), connection.runtimePort);
+    await committing.promise;
+    expect(projectionSignal?.aborted).toBe(false);
+    expect(runtime.cancel(invocation().invocationId, "user")).toBe(true);
+    await running;
+    expect(projectionSignal?.aborted).toBe(true);
+    expect(connection.candidates).toEqual([]);
     expect(connection.events.at(-1)).toMatchObject({ type: "cancelled", reason: "user" });
   });
 

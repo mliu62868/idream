@@ -10,6 +10,8 @@ import {
   isProductionVideoProfile,
 } from "@/server/modules/generation/production-video-profile";
 import { isExecutableGenerationProfile } from "./generation-profile-catalog";
+import { cleanPromptText, imageNegativePrompt } from "./generation-prompt";
+import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
 
 export type GenerationReferenceRouteRequirement = {
   readonly assetId: string;
@@ -340,14 +342,24 @@ export async function selectGenerationProfile(
   return fallbackProfile;
 }
 
+export async function findActiveRecipe(
+  mode: "image" | "video",
+  useCase: string,
+  db: Pick<Prisma.TransactionClient, "generationRecipe"> = prisma,
+) {
+  return db.generationRecipe.findFirst({
+    where: { mode, useCase, status: "active" },
+    // Versions are ordered within a key; the newest publication owns the default across keys.
+    orderBy: [{ publishedAt: { sort: "desc", nulls: "last" } }, { version: "desc" }, { id: "asc" }],
+  });
+}
+
 export async function selectRecipe(
   mode: "image" | "video",
-  useCase: "character" | "freeplay",
+  useCase: string,
+  db: Pick<Prisma.TransactionClient, "generationRecipe"> = prisma,
 ) {
-  const recipe = await prisma.generationRecipe.findFirst({
-    where: { mode, useCase, status: "active" },
-    orderBy: { version: "desc" },
-  });
+  const recipe = await findActiveRecipe(mode, useCase, db);
   if (!recipe) {
     throw Errors.unavailable(
       "No active generation prompt recipe is configured",
@@ -355,6 +367,35 @@ export async function selectRecipe(
     );
   }
   return recipe;
+}
+
+type RecipeNegativeInput = Pick<Prisma.GenerationRecipeGetPayload<Record<string, never>>, "recipeKey" | "version" | "useCase" | "negativeBase">;
+export type NegativeRecipeSnapshot = { recipeKey: string; version: number; body: string };
+
+// An optional negative recipe supplements the selected image recipe; it never selects or replaces that image recipe.
+// The draft override is only for validating exactly the negative version that an operator is about to publish.
+export async function resolveImageRecipeNegative(
+  recipe: RecipeNegativeInput,
+  db: Pick<Prisma.TransactionClient, "generationRecipe"> = prisma,
+  draftNegative?: NegativeRecipeSnapshot,
+) {
+  const selected = draftNegative ?? await db.generationRecipe.findFirst({
+    where: { mode: "negative", useCase: recipe.useCase, status: "active" },
+    orderBy: [{ publishedAt: { sort: "desc", nulls: "last" } }, { version: "desc" }, { id: "asc" }],
+    select: { recipeKey: true, version: true, body: true },
+  });
+  const negativeRecipe = selected ? { recipeKey: selected.recipeKey, version: selected.version, body: selected.body } : null;
+  const combinedBase = negativeRecipe ? cleanPromptText([recipe.negativeBase, negativeRecipe.body].filter(Boolean).join(", "), Infinity) : null;
+  // The production default assembler has a 700-character base budget. A validated
+  // negative publication must not promise exclusions that this assembler drops.
+  if (combinedBase && combinedBase.length > 700) {
+    throw Errors.badRequest("Shorten the combined image base and negative recipe body to 700 characters.");
+  }
+  return {
+    base: negativeRecipe ? imageNegativePrompt(combinedBase, null) : recipe.negativeBase,
+    negativeRecipe,
+    promptRecipeFingerprint: canonicalSha256({ recipeKey: recipe.recipeKey, recipeVersion: recipe.version, negativeBase: recipe.negativeBase, negativeRecipe }),
+  };
 }
 
 type PublicTextToImageGenerationProfile = {

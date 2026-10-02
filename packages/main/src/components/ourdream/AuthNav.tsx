@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { RefreshCw } from "lucide-react";
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import {
   parseAuthMeResponse,
   type AuthUser,
@@ -14,6 +14,12 @@ import {
   authNavLogoutPresentation,
   authNavMode,
 } from "./auth-nav-state";
+
+import {
+  announceViewerAuthorityChange,
+  invalidateViewerAuthority,
+  VIEWER_AUTH_CHANGE_STORAGE_KEY,
+} from "./viewer-auth";
 
 // SPEC: top-bar auth state. Reads /api/v1/me on mount; shows the signed-in user
 // (avatar + name + log out) when a session cookie is present, otherwise the
@@ -35,6 +41,7 @@ function AuthNavContent() {
   const [logoutState, setLogoutState] = useState<
     "idle" | "pending" | "error"
   >("idle");
+  const confirmedIdentity = useRef<string | null | undefined>(undefined);
   const [hash, setHash] = useState("");
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -46,14 +53,22 @@ function AuthNavContent() {
 
   useEffect(() => {
     const controller = new AbortController();
-    fetch("/api/v1/me", { signal: controller.signal })
+    fetch("/api/v1/me", { cache: "no-store", signal: controller.signal })
       .then((response) => {
         if (!response.ok) throw new Error("Account authority unavailable");
         return response.json();
       })
       .then((payload) => {
         if (controller.signal.aborted) return;
-        setUser(parseAuthMeResponse(payload).user);
+        const nextUser = parseAuthMeResponse(payload).user;
+        const identity = nextUser?.id ?? null;
+        if (confirmedIdentity.current !== undefined && confirmedIdentity.current !== identity) {
+          invalidateViewerAuthority();
+          window.location.reload();
+          return;
+        }
+        confirmedIdentity.current = identity;
+        setUser(nextUser);
         setLoadState("ready");
       })
       .catch(() => {
@@ -63,6 +78,29 @@ function AuthNavContent() {
       });
     return () => controller.abort();
   }, [loadAttempt]);
+
+  useEffect(() => {
+    function refreshIdentity() {
+      setLoadAttempt((attempt) => attempt + 1);
+    }
+    function onVisible() {
+      if (document.visibilityState === "visible") refreshIdentity();
+    }
+    function onStorage(event: StorageEvent) {
+      if (event.key !== VIEWER_AUTH_CHANGE_STORAGE_KEY || event.storageArea !== window.localStorage) return;
+      invalidateViewerAuthority();
+      // A full reload drops every workspace's old private state and late response.
+      window.location.reload();
+    }
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("focus", refreshIdentity);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("focus", refreshIdentity);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
 
   useEffect(() => {
     function syncHash() {
@@ -80,6 +118,7 @@ function AuthNavContent() {
     try {
       const response = await fetch("/api/v1/auth/logout", { method: "POST" });
       if (!response.ok) throw new Error("Logout failed");
+      announceViewerAuthorityChange();
       window.location.assign("/");
     } catch {
       setLogoutState("error");

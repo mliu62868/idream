@@ -22,6 +22,7 @@ type DraftAssetEntry = {
   itemId?: string;
   reviewDecisionId?: string;
   generationJobId?: string;
+  customerIdentityRevisionId?: string;
   generationRouteFingerprint?: string;
   bootstrapIdentity?: boolean;
 };
@@ -45,6 +46,7 @@ function draftAssetEntries(
         if (typeof entry.assetId !== "string") return [];
         return [[purpose, {
           assetId: entry.assetId,
+          ...(typeof entry.customerIdentityRevisionId === "string" ? { customerIdentityRevisionId: entry.customerIdentityRevisionId } : {}),
           ...(typeof entry.runId === "string" ? { runId: entry.runId } : {}),
           ...(typeof entry.itemId === "string" ? { itemId: entry.itemId } : {}),
           ...(typeof entry.reviewDecisionId === "string"

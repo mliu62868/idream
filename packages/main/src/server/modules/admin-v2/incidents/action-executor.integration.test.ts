@@ -7,6 +7,8 @@ import {
   previewIncidentActionPlan,
 } from "./service";
 import { executeIncidentActionPlanCommand } from "./action-executor";
+import { adminV2 } from "@/server/test/admin-v2-http";
+import { expectError, expectOk } from "@/server/test/helpers";
 
 describe("Incident action-plan durable executor", () => {
   const suffix = randomUUID();
@@ -120,17 +122,49 @@ describe("Incident action-plan durable executor", () => {
   }
 
   it("settles only the outstanding captured spend", async () => {
-    await expect(execute("refund", attemptIds[0])).resolves.toMatchObject({ status: "succeeded" });
+    const executed = await execute("refund", attemptIds[0]);
+    expect(executed).toMatchObject({ status: "succeeded" });
     const refunds = await prisma.dreamcoinLedger.findMany({ where: { sourceId: jobIds[0], reason: "refund" } });
     expect(refunds.reduce((sum, entry) => sum + entry.delta, 0)).toBe(12);
     expect(refunds).toEqual(expect.arrayContaining([expect.objectContaining({ delta: 7 })]));
     await expect(prisma.generationSettlementLink.count({ where: { requestId: jobIds[0] } })).resolves.toBe(3);
     await expect(prisma.generationJob.findUnique({ where: { id: jobIds[0] } })).resolves.toMatchObject({ status: "failed" });
+    const plan = await prisma.incidentActionPlan.findUniqueOrThrow({ where: { id: executed.targetId } });
+    const endpoint = `incidents/${plan.incidentId}/action-plans/${plan.id}/execute`;
+    const intent = {
+      userId: actorId, role: "admin", idempotencyKey: executed.idempotencyKey,
+      body: { entityVersion: executed.expectedVersion, confirmation: `${plan.incidentId}:${plan.id}:refund` },
+    };
+    const replay = await adminV2("POST", endpoint, intent);
+    expectOk(replay);
+    expect(replay.data.commandId).toBe(executed.id);
+    expectError(await adminV2("POST", endpoint, { ...intent, idempotencyKey: `${executed.idempotencyKey}:new` }), 409, "conflict");
+    await expect(previewIncidentActionPlan({ incidentId: plan.incidentId, action: "refund", actorId }))
+      .rejects.toThrow("Incident action has no eligible occurrences");
+    await expect(prisma.controlPlaneCommand.count({ where: { targetId: plan.id } })).resolves.toBe(1);
+    await expect(prisma.dreamcoinLedger.count({ where: { sourceId: jobIds[0], reason: "refund" } })).resolves.toBe(2);
   });
 
   it("pauses the exact provider route from the Incident signature", async () => {
     await expect(execute("pause_route", attemptIds[1])).resolves.toMatchObject({ status: "succeeded" });
     await expect(prisma.generationProviderRoute.findFirst({ where: { profileKey: pauseProfileKey } })).resolves.toMatchObject({ enabled: false });
+    const command = await prisma.controlPlaneCommand.findUniqueOrThrow({ where: { id: commandIds.at(-1)! } });
+    const plan = await prisma.incidentActionPlan.findUniqueOrThrow({ where: { id: command.targetId } });
+    const replayInput = {
+      userId: actorId, role: "admin", idempotencyKey: command.idempotencyKey,
+      body: { entityVersion: command.expectedVersion, confirmation: `${plan.incidentId}:${plan.id}:pause_route` },
+    };
+    const endpoint = `incidents/${plan.incidentId}/action-plans/${plan.id}/execute`;
+    const replay = await adminV2("POST", endpoint, replayInput);
+    expectOk(replay);
+    expect(replay.data.commandId).toBe(command.id);
+    await prisma.incidentActionPlan.update({ where: { id: plan.id }, data: { expiresAt: new Date(0) } });
+    const expiredReplay = await adminV2("POST", endpoint, replayInput);
+    expectOk(expiredReplay);
+    expect(expiredReplay.data).toEqual(replay.data);
+    expectError(await adminV2("POST", endpoint, { ...replayInput, body: { ...replayInput.body, entityVersion: plan.incidentVersion + 1 } }), 409, "conflict");
+    expectError(await adminV2("POST", endpoint, { ...replayInput, idempotencyKey: `${command.idempotencyKey}:new` }), 409, "conflict");
+    expect(await prisma.controlPlaneCommand.count({ where: { targetId: plan.id } })).toBe(1);
   });
 
   it("rolls back to an existing immutable profile version", async () => {

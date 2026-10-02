@@ -12,6 +12,8 @@ import path from "node:path";
 import { z } from "zod";
 import { createMediaEnhancement, mediaEnhancementAvailable, mediaEnhancementBodySchema, mediaEnhancementQuoteBodySchema, quoteMediaEnhancement } from "./media-enhancement";
 import { isEnhanceEligible } from "./media-enhancement-source";
+import { videoSequenceRequestSchema } from "@idream/shared/contracts";
+import { createVideoSequence, quoteVideoSequence, readVideoSequence, listVideoSequences, stopVideoSequence, retryVideoComposition, videoSequenceCapabilities } from "./video-sequence";
 import type { ChatImageRequestedPayload } from "@/server/ai/schemas";
 import {
   isProductionVideoProfile,
@@ -55,7 +57,8 @@ import {
   followUser,
   unfollowUser,
 } from "./discovery";
-import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import { effectivePermissions } from "@/server/admin/effective-permissions";
+import { resolveCommunityCampaignPlacements } from "./community-campaigns";
 import { currentModerationEffectOwner } from "@/server/modules/admin-v2/moderation/moderation-effect";
 import { listActiveTemplates } from "./character-templates";
 import { isReusablePlatformAssetWhere } from "@/server/modules/ourdream/chat-image-reuse";
@@ -141,6 +144,8 @@ import { dispatchAccountAccess, newRecoveryCode, storeRecoveryCode } from "./acc
 import { passwordAccountForUser } from "@/server/lib/auth/password-account";
 import { dispatchChatVideo } from "@/server/modules/chat/video-action";
 import { dispatchComics } from "./comics";
+import { dispatchPacks, packLibrary } from "./packs";
+import { creatorStudio } from "./creator-studio";
 import {
   redeemCodeDreamcoins,
   redeemCodeHashCandidates,
@@ -164,7 +169,6 @@ import {
   AFFILIATE_ATTRIBUTION_WINDOW_DAYS,
   AFFILIATE_TERMS_PATH,
   affiliateDashboard,
-  affiliateVisitorKey,
   applyAffiliate,
   attributeAffiliateSignup,
   recordAffiliateClick,
@@ -274,9 +278,11 @@ import {
 import {
   MAX_CHARACTER_TAGS,
   assertDraftOwner,
+  assertDraftRevision,
   characterPreviewMatchesDraft,
   previewCharacterDraft,
   submitCharacterDraft,
+  updateDraftWithRevision,
 } from "./character-draft-write";
 import { openCharacterEditDraft, wizardVisualProjection } from "./character-edit";
 import { loadForYouProfile, rankForYou, type ForYouProfile } from "./for-you-ranking";
@@ -353,6 +359,7 @@ const draftCreateSchema = z.object({
 }).strict();
 
 const draftPatchSchema = z.object({
+  expectedUpdatedAt: z.string().datetime().optional(),
   step: z.number().int().min(0).max(12).optional(),
   gender: z.enum(GENDERS).nullable().optional(),
   style: z.enum(CHARACTER_STYLES).nullable().optional(),
@@ -366,10 +373,12 @@ const draftPatchSchema = z.object({
 }).strict();
 
 const draftSubmitSchema = z.object({
+  expectedUpdatedAt: z.string().datetime().optional(),
   visibility: z.enum(CHARACTER_VISIBILITY).default("private"),
 }).strict();
 
 const draftPreviewSelectSchema = z.object({
+  expectedUpdatedAt: z.string().datetime().optional(),
   previewJobId: z.string().trim().min(1),
 });
 
@@ -428,6 +437,7 @@ const mediaCollectionUpdateSchema = z.object({
 
 const mediaCollectionItemSchema = z.object({
   mediaAssetId: z.string(),
+  publishMedia: z.boolean().default(false),
 });
 
 const profilePatchSchema = z.object({
@@ -551,6 +561,8 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
   if (videoResponse) return videoResponse;
   const comicResponse = await dispatchComics(request, segments);
   if (comicResponse) return comicResponse;
+  const packResponse = await dispatchPacks(request, segments);
+  if (packResponse) return packResponse;
 
 
   if (resource === "auth") {
@@ -635,7 +647,7 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
       const ctx = await getAuthCtx(request);
       const user = requireUser(ctx);
       return ok({
-        ...(await affiliateDashboard(prisma, user.id)),
+        ...(await affiliateDashboard(prisma, user.id, Object.fromEntries(new URL(request.url).searchParams))),
         terms: await loadAffiliateTerms(),
         attributionWindowDays: AFFILIATE_ATTRIBUTION_WINDOW_DAYS,
       });
@@ -649,7 +661,6 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
       const cookie = parseCookieHeader(request.headers.get("cookie")).get(AFFILIATE_COOKIE);
       const click = await recordAffiliateClick(prisma, {
         code,
-        visitorKey: affiliateVisitorKey(request),
         cookieVisitorKey: cookie?.startsWith(`${code}:`) ? cookie.slice(code.length + 1) : null,
         landingPath,
         viewerUserId: ctx.userId,
@@ -688,6 +699,7 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
     if (!id && method === "POST") return createDraft(request);
     if (id === "quick-start" && !action && method === "POST") return quickStartDraft(request);
     if (id === "current" && !action && method === "GET") return currentDraft(request);
+    if (id && !action && method === "GET") return exactDraft(request, id);
     if (id && !action && method === "PATCH") return updateDraft(request, id);
     if (id && action === "preview" && method === "POST") return previewDraft(request, id);
     if (id && action === "preview" && method === "GET") return previewStatus(request, id);
@@ -704,6 +716,7 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
   }
 
   if (resource === "generation") {
+    if (id === "video-sequences") return videoSequences(request, action, child);
     if (id === "context" && !action && method === "GET") return generationContextRead(request);
     if (id === "config" && !action && method === "GET") return generationConfig(request);
     if (id === "quote" && !action && method === "POST") return generationQuote(request);
@@ -850,6 +863,7 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
   if (resource === "creators" && id && !action && method === "GET") {
     return creatorProfile(request, id);
   }
+  if (resource === "creator-studio" && !id && method === "GET") return creatorStudio(request);
 
   throw Errors.notFound("API route not found", { path: `/${segments.join("/")}` });
 }
@@ -1988,22 +2002,19 @@ async function updateDraft(request: Request, id: string) {
         })
       : undefined;
 
-  const draft = await prisma.characterDraft.update({
-    where: { id },
-    data: {
-      step: body.step,
-      gender: body.gender,
-      style: body.style,
-      name: body.name,
-      appearance: body.appearance ? toInputJson(body.appearance) : undefined,
-      hair: body.hair ? toInputJson(body.hair) : undefined,
-      body: body.body ? toInputJson(body.body) : undefined,
-      advancedDetails: nextAdvancedDetails
-        ? toInputJson(nextAdvancedDetails)
-        : undefined,
-      tags: body.tags ? toInputJson(body.tags.map(slugify)) : undefined,
-      previewJobId: identityChanged ? null : undefined,
-    },
+  const draft = await updateDraftWithRevision(currentDraft, body.expectedUpdatedAt, {
+    step: body.step,
+    gender: body.gender,
+    style: body.style,
+    name: body.name,
+    appearance: body.appearance ? toInputJson(body.appearance) : undefined,
+    hair: body.hair ? toInputJson(body.hair) : undefined,
+    body: body.body ? toInputJson(body.body) : undefined,
+    advancedDetails: nextAdvancedDetails
+      ? toInputJson(nextAdvancedDetails)
+      : undefined,
+    tags: body.tags ? toInputJson(body.tags.map(slugify)) : undefined,
+    previewJobId: identityChanged ? null : undefined,
   });
 
   return ok({ draft });
@@ -2052,6 +2063,22 @@ async function currentDraft(request: Request) {
   return ok(await draftResumePayload(draft, user.id));
 }
 
+// Studio links name one owned, unsubmitted Create draft; never substitute latest.
+async function exactDraft(request: Request, id: string) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
+  const draft = await prisma.characterDraft.findFirst({ where: { id, ownerId: user.id, editsCharacterId: null } });
+  if (!draft || readCurrentCharacterDraftDetails(draft.advancedDetails).submittedCharacterId ||
+    await prisma.characterContentVersion.findFirst({ where: { sourceType: "user", sourceId: id }, select: { characterId: true } })) {
+    throw Errors.notFound("This draft is no longer available.");
+  }
+  const response = ok(await draftResumePayload(draft, user.id));
+  response.headers.set("cache-control", "private, no-store");
+  return response;
+}
+
 // The durable half of wizard resume: the draft, its matching preview job and asset.
 async function draftResumePayload(draft: CharacterDraft, userId: string) {
   const storedPreviewJob = draft.previewJobId
@@ -2069,8 +2096,10 @@ async function draftResumePayload(draft: CharacterDraft, userId: string) {
   // format, or a visual trait changed) must not read back as "confirmed" with no
   // image; drop the confirmation so the wizard asks for a fresh choice.
   if (draft.previewJobId && !previewJob) {
-    await prisma.characterDraft.updateMany({ where: { id: draft.id, previewJobId: draft.previewJobId }, data: { previewJobId: null } });
-    draft = { ...draft, previewJobId: null };
+    const updatedAt = new Date(Math.max(Date.now(), draft.updatedAt.getTime() + 1));
+    const cleared = await prisma.characterDraft.updateMany({ where: { id: draft.id, previewJobId: draft.previewJobId, updatedAt: draft.updatedAt }, data: { previewJobId: null, updatedAt } });
+    if (!cleared.count) throw Errors.versionConflict("This draft changed during recovery. Load the latest saved draft to continue.");
+    draft = { ...draft, previewJobId: null, updatedAt };
   }
   const asset = previewJob?.resultAssetId
     ? await prisma.mediaAsset.findUnique({ where: { id: previewJob.resultAssetId } })
@@ -2182,6 +2211,7 @@ async function selectPreviewAnchor(request: Request, id: string) {
     await tx.$queryRaw`SELECT id FROM character_drafts WHERE id = ${id} AND "ownerId" = ${user.id} FOR UPDATE`;
     const current = await tx.characterDraft.findFirst({ where: { id, ownerId: user.id } });
     if (!current) throw Errors.notFound("Character draft not found");
+    if (body.expectedUpdatedAt !== undefined) assertDraftRevision(current, body.expectedUpdatedAt);
     const job = await tx.characterPreviewJob.findFirst({
       where: { id: body.previewJobId, draftId: id, status: "completed", resultAssetId: { not: null } },
     });
@@ -2194,7 +2224,7 @@ async function selectPreviewAnchor(request: Request, id: string) {
     if (!await characterPreviewMatchesDraft(current, job.id, tx)) {
       throw Errors.badRequest("This preview no longer matches the draft. Generate new candidates before confirming an identity.");
     }
-    const draft = await tx.characterDraft.update({ where: { id }, data: { previewJobId: job.id } });
+    const draft = await tx.characterDraft.update({ where: { id }, data: { previewJobId: job.id, updatedAt: new Date(Math.max(Date.now(), current.updatedAt.getTime() + 1)) } });
     return { draft, previewJob: job, asset: mediaDTO(asset) };
   });
   return ok(selected);
@@ -2210,6 +2240,7 @@ async function submitDraft(request: Request, id: string) {
     userId: user.id,
     draftId: id,
     visibility: body.visibility,
+    expectedUpdatedAt: body.expectedUpdatedAt,
   });
   // Input moderation already ran synchronously inside the submit action; no async pass.
   // A committed Character remains a successful save when optional telemetry is unavailable.
@@ -2222,12 +2253,9 @@ async function updateDraftTags(request: Request, id: string) {
   const user = requireUser(ctx);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
-  const body = z.object({ tags: z.array(z.string()).max(MAX_CHARACTER_TAGS) }).parse(await jsonBody(request));
-  await assertDraftOwner(id, user.id);
-  const draft = await prisma.characterDraft.update({
-    where: { id },
-    data: { tags: toInputJson(body.tags.map(slugify)) },
-  });
+  const body = z.object({ tags: z.array(z.string()).max(MAX_CHARACTER_TAGS), expectedUpdatedAt: z.string().datetime().optional() }).parse(await jsonBody(request));
+  const current = await assertDraftOwner(id, user.id);
+  const draft = await updateDraftWithRevision(current, body.expectedUpdatedAt, { tags: toInputJson(body.tags.map(slugify)) });
   return ok({ draft });
 }
 
@@ -2424,6 +2452,28 @@ async function generationQuote(request: Request) {
   requireExpectedViewer(request, user.id);
   const body = generationJobSchema.parse(await jsonBody(request));
   return generationQuoteForUser(user.id, body, "public_generator");
+}
+
+async function videoSequences(request: Request, action?: string, child?: string) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
+  requireExpectedViewer(request, user.id);
+  if (request.method === "GET" && action === "capabilities" && !child) return ok({ capabilities: await videoSequenceCapabilities(user.id) });
+  if (request.method === "POST" && action === "quote" && !child) return ok({ quote: await quoteVideoSequence(user.id, videoSequenceRequestSchema.parse(await jsonBody(request))) });
+  if (request.method === "POST" && !action) return ok({ sequence: await createVideoSequence(user.id, videoSequenceRequestSchema.parse(await jsonBody(request)), requireGenerationWriteIdempotencyKey(request)) }, { status: 202 });
+  if (request.method === "GET" && action === "request" && !child) {
+    const key = z.string().min(8).max(160).parse(new URL(request.url).searchParams.get("key"));
+    const sequence = await prisma.videoSequence.findUnique({ where: { userId_idempotencyKey: { userId: user.id, idempotencyKey: key } }, select: { id: true } });
+    if (!sequence) throw Errors.notFound("The original video sequence was not accepted");
+    return ok({ sequence: await readVideoSequence(user.id, sequence.id) });
+  }
+  if (request.method === "GET" && !action) return ok({ sequences: await listVideoSequences(user.id) });
+  if (request.method === "GET" && action && !child) return ok({ sequence: await readVideoSequence(user.id, action) });
+  if (request.method === "POST" && action && child === "stop") return ok({ sequence: await stopVideoSequence(user.id, action) });
+  if (request.method === "POST" && action && child === "retry-composition") return ok({ sequence: await retryVideoComposition(user.id, action) });
+  throw Errors.notFound("Video sequence route not found");
 }
 
 async function generationQuoteForUser(
@@ -3099,7 +3149,8 @@ async function getMediaCollection(request: Request, collectionId: string) {
 // SPEC: 公开合集只让「因它而公开」的媒体随它进退。合集把 private 成员提升为 public_pack 时
 // 打上 publicViaCollection 标记；移出或改私有后，不再属于任何公开合集的带标记成员退回 private。
 // INVARIANT: 不带标记的 public_pack（例如角色发布图、先前已公开的媒体）永不被合集收回；
-// 仍被角色 / 活动 / Comic 引用的媒体也保持公开，否则会拆掉已上线的内容。
+// 只有仍在面向用户发布的角色 / 活动保留全局公开权。私人引用只阻止删除，
+// Comic 通过自己的 scoped content 交付，不要求源素材公开。
 const COLLECTION_PUBLICITY_MARKER = "publicViaCollection";
 
 async function publishMediaForPublicCollection(
@@ -3108,6 +3159,7 @@ async function publishMediaForPublicCollection(
   mediaAssetIds: readonly string[],
 ) {
   if (mediaAssetIds.length === 0) return;
+  await lockCharacterMediaAssetAuthorities(tx, mediaAssetIds);
   await tx.$executeRaw`
     UPDATE media_assets
     SET visibility = 'public_pack',
@@ -3142,7 +3194,18 @@ async function retractCollectionOnlyPublicMedia(
   const ids = candidates.map((asset) => asset.id);
   await lockCharacterMediaAssetAuthorities(tx, ids);
   for (const id of ids) {
-    if ((await mediaAssetAuthorityDependencies(tx, id)).length > 0) continue;
+    // A second collection may have committed its publication while this
+    // transaction waited for the shared media lock. Recheck under that lock.
+    if (await tx.mediaCollectionItem.findFirst({ where: { mediaAssetId: id, collection: { visibility: "public" } }, select: { mediaAssetId: true } })) continue;
+    const dependencies = await mediaAssetAuthorityDependencies(tx, id);
+    const publishedCharacterIds = [...new Set(dependencies.flatMap(dependency =>
+      dependency.kind === "character_primary_image" || dependency.kind === "character_release"
+        ? [dependency.characterId] : []))];
+    const publishedCharacter = publishedCharacterIds.length ? await tx.character.findFirst({
+      where: { AND: [{ id: { in: publishedCharacterIds } }, directCharacterAudienceWhere] },
+      select: { id: true },
+    }) : null;
+    if (publishedCharacter || (await resolveCommunityCampaignPlacements(tx, 1, id)).length > 0) continue;
     await tx.$executeRaw`
       UPDATE media_assets
       SET visibility = 'private', metadata = metadata - ${COLLECTION_PUBLICITY_MARKER}::text
@@ -3303,7 +3366,13 @@ async function addMediaToCollection(request: Request, collectionId: string) {
     const maximum = await tx.mediaCollectionItem.aggregate({ where: { collectionId }, _max: { sortOrder: true } });
     const sortOrder = (maximum._max.sortOrder ?? -1) + 1;
     if (collection.visibility === "public") {
-      assertPublicCollectionMediaAsset(media);
+      await lockCharacterMediaAssetAuthorities(tx, [media.id]);
+      const currentMedia = await tx.mediaAsset.findFirst({ where: { id: media.id, ownerId: user.id, deletedAt: null } });
+      if (!currentMedia) throw Errors.notFound("Media asset not found");
+      assertPublicCollectionMediaAsset(currentMedia);
+      if (currentMedia.visibility !== "public_pack" && !body.publishMedia) {
+        throw Errors.conflict("This collection is public. Confirm that you want to publish this media before adding it.");
+      }
       await publishMediaForPublicCollection(tx, user.id, [media.id]);
     }
     await tx.mediaCollectionItem.upsert({
@@ -3937,8 +4006,10 @@ async function contentMedia(request: Request, id: string) {
     return contentMediaAsset(request, asset);
   }
   const ctx = await getAuthCtx(request);
-  if (ctx.userId && ctx.role && ctx.role !== "user") {
-    await actorWithPermission(request, "content.asset.read");
+  const permissions = ctx.userId ? await effectivePermissions(ctx.userId, ctx.role) : null;
+  // Shared media URLs authenticate with sessions, including permission-bundle operators.
+  // They are also used by Main images, which have no Admin BFF transport signature.
+  if (permissions?.has("content.asset.read") || permissions?.has("creative.asset.read")) {
     const asset = await prisma.mediaAsset.findFirst({
       where: { id, deletedAt: null },
     });
@@ -4199,6 +4270,7 @@ async function library(request: Request, tab: string) {
   const user = requireUser(ctx);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
+  if (tab === "packs") return ok({ items: await packLibrary(user.id), emptyCta: "/packs/new" });
 
   if (tab === "recent") {
     // Chat remains authoritative in the chat service, but the library home must
@@ -5121,10 +5193,9 @@ async function findPublicReadableMediaAsset(id: string) {
       ],
     },
   });
-  return media &&
-      evaluateMediaAssetCustomerPublishability({ metadata: media.metadata }).publishable
-    ? media
-    : null;
+  if (media && evaluateMediaAssetCustomerPublishability({ metadata: media.metadata }).publishable) return media;
+  // A verified campaign exposes its artwork only while the exact placement is live.
+  return (await resolveCommunityCampaignPlacements(prisma, 1, id))[0]?.mediaAsset ?? null;
 }
 
 async function assertReadableMediaAsset(id: string, userId: string) {
@@ -5137,7 +5208,7 @@ async function assertReadableMediaAsset(id: string, userId: string) {
         publicReadableMediaAssetWhere,
       ],
     },
-  });
+  }) ?? await findPublicReadableMediaAsset(id);
   if (
     !media ||
     !isMediaAssetOperationalForAuthority(media.metadata)

@@ -2,6 +2,7 @@ import type { Prisma } from "@prisma/client";
 import { generationTerminalRecordSchema, generationTerminalRecordChecksum } from "@idream/shared/contracts";
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
+import { recordGenerationAttemptEvent } from "@/server/ai/generation-attempt-events";
 
 // Projection fixture for the facts written atomically by unknown reconciliation.
 // The real ingest/adopt transaction is exercised in unknown-reconciliation.integration.test.ts.
@@ -10,11 +11,16 @@ export async function recoveredGenerationFixture(tx: Prisma.TransactionClient, a
   const job = await tx.generationJob.findUniqueOrThrow({ where: { id: asset.sourceJobId! } });
   if (job.status !== "completed" || job.deliveredOutputCount !== 1) throw new Error("Recovered projection fixture requires a completed one-output Request");
   const previous = await tx.generationAttempt.findFirstOrThrow({ where: { requestId: job.id }, orderBy: { attemptNo: "desc" } });
-  const attempt = await tx.generationAttempt.create({ data: {
-    requestId: job.id, attemptNo: previous.attemptNo + 1, status: "unknown", provider: previous.provider,
+  const queuedAttempt = await tx.generationAttempt.create({ data: {
+    requestId: job.id, attemptNo: previous.attemptNo + 1, provider: previous.provider,
     profileKey: previous.profileKey, profileVersion: previous.profileVersion, workflowKey: previous.workflowKey, workflowVersion: previous.workflowVersion,
-    errorCode: "ambiguous_non_replayable", operatorGuidance: "Reconcile provider before retrying.",
   } });
+  await recordGenerationAttemptEvent(tx, {
+    eventId: `${queuedAttempt.id}:unknown`, attemptId: queuedAttempt.id, eventType: "generation.attempt.unknown.v1",
+    outcome: "unknown", occurredAt: new Date(), payload: { requestId: job.id },
+    errorCode: "ambiguous_non_replayable", operatorGuidance: "Reconcile provider before retrying.",
+  });
+  const attempt = await tx.generationAttempt.findUniqueOrThrow({ where: { id: queuedAttempt.id } });
   const terminal = generationTerminalRecordSchema.parse({
     version: 1, outcome: "succeeded", attemptId: attempt.id, attemptNo: attempt.attemptNo,
     providerIdempotencyKey: `generation:${attempt.id}:provider`, requestId: `generation_dispatch_${attempt.id}`,

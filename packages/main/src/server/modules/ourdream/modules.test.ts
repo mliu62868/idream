@@ -730,9 +730,10 @@ describe("library tabs", () => {
     expect(groupChats.data.items).toEqual([]);
     expect(groupChats.data.emptyCta).toBeNull();
 
-    // Packs are not a product surface; the tab id is unknown, not an empty list.
     const packs = await api("GET", "library/packs", { userId, ageGate: true });
-    expect(packs.status).toBe(404);
+    expectOk(packs);
+    expect(packs.data.items).toEqual([]);
+    expect(packs.data.emptyCta).toBe("/packs/new");
 
     const recent = await api("GET", "library/recent", { userId, ageGate: true });
     expectOk(recent);

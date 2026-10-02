@@ -23,7 +23,7 @@ export const RECIPES_KEYS = [
   "Label", "Loading…", "Manage prompt recipes for image generation.", "Mode",
   "Name", "Negative Base", "New prompt recipe", "No prompt recipes yet.",
   "Only draft recipes can be edited.", "Prompt Recipes", "Publish", "Publish recipe",
-  "Recipe details", "Recipe ID", "Recipe Key", "Recipe not found.", "Request failed",
+  "Recipe details", "Recipe ID", "Recipe Key", "Recipe not found.", "Could not load recipe.", "Request failed", "Retry",
   "Rollback", "Rollback recipe", "Save changes", "Search by name", "Status", "Updated",
   "Use Case", "Version",
 ];
@@ -33,8 +33,8 @@ export const RECIPES_KEYS = [
 export const PRESETS_KEYS = [
   "All", "Archive preset", "Back to presets", "Basic info", "Cancel", "Category",
   "Controls (JSON)", "Create preset", "Create the first preset to get started.",
-  "Edit profile", "Label", "Loading…", "Manage built-in generation presets.", "New preset",
-  "No built-in presets are seeded yet.", "Preset details", "Preset ID", "Preset not found.",
+  "Edit preset", "Label", "Loading…", "Manage built-in generation presets.", "New preset",
+  "No built-in presets are seeded yet.", "Preset details", "Preset ID", "Preset not found.", "Could not load preset.", "Retry",
   "Preset type", "Presets", "Request failed", "Restore", "Save changes", "Search by name",
   "Status", "Type", "Visibility",
 ];

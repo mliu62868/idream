@@ -15,6 +15,7 @@ import {
 import { canonicalSha256 } from "../shared/canonical-json";
 import { toInputJson } from "../shared/prisma-json";
 import { CHARACTER_RELEASE_POLICY_VERSION } from "./character-release-contract";
+import { resolveCustomerIdentitySource, customerIdentityGenerationMatches, type CustomerIdentitySource } from "./customer-identity-source";
 import { characterDraftAssetPurposes } from "./draft-asset-route-authority";
 import {
   evaluateEffectiveGenerationRouteAuthority,
@@ -154,6 +155,7 @@ function referenceManifestEntries(value: Prisma.JsonValue | null) {
  * 持久化的 Release 行结构上就是一份候选快照，无需适配器。
  */
 export interface CharacterReleaseSnapshotCandidate {
+  readonly id?: string;
   readonly projectId: string;
   readonly revisionId: string | null;
   readonly characterContentVersionId: string | null;
@@ -385,6 +387,16 @@ export async function evaluateCharacterReleaseSnapshot(
     }
   }
   const attemptsByAssetId = await resolveGenerationAssetSuccessAttempts(tx, placementAssets);
+  const customerSources = new Map<string, CustomerIdentitySource>();
+  if (project && profile && referenceSet) for (const placement of manifestPlacements) {
+    if (!placement.customerIdentityRevisionId) continue;
+    const source = await resolveCustomerIdentitySource(tx, {
+      characterId: project.characterId, revisionId: placement.customerIdentityRevisionId,
+      visualProfileId: profile.id, referenceSetRevisionId: referenceSet.id,
+      releaseId: release.id,
+    });
+    if (source?.asset.id === placement.assetId && source.projectId === project.id) customerSources.set(placement.slotKey, source);
+  }
   const rawPlacementProvenance = Array.isArray(provenance.placements)
     ? provenance.placements.map(releaseRecord)
     : [];
@@ -407,9 +419,10 @@ export async function evaluateCharacterReleaseSnapshot(
       const item = placement.itemId
         ? placementItemById.get(placement.itemId)
         : null;
-      const job = item?.job ?? null;
+      const customerSource = customerSources.get(placement.slotKey);
+      const job = customerSource?.job ?? item?.job ?? null;
       const latestAttempt = placement.generationJobId
-        ? attemptsByAssetId.get(placement.assetId)
+        ? customerSource?.attempt ?? attemptsByAssetId.get(placement.assetId)
         : null;
       const pinnedCandidates = rawPlacementProvenance.filter(
         (candidate) => candidate.slotKey === placement.slotKey,
@@ -527,6 +540,8 @@ export async function evaluateCharacterReleaseSnapshot(
               placement.generationJobId === null &&
               !placementItemByAssetId.has(placement.assetId),
             )
+          : placement.customerIdentityRevisionId
+          ? Boolean(customerSources.get(placement.slotKey) && !placement.runId && !placement.itemId && !placement.reviewDecisionId && !placement.bootstrapIdentity)
           : Boolean(
               asset?.characterId === project?.characterId &&
               item?.mediaAssetId === placement.assetId,
@@ -543,6 +558,15 @@ export async function evaluateCharacterReleaseSnapshot(
   );
   const invalidGenerationAuthoritySlots = manifestPlacements.flatMap(
     (placement) => {
+      if (placement.customerIdentityRevisionId) {
+        const source = customerSources.get(placement.slotKey);
+        const pinned = rawPlacementProvenance.filter(candidate => candidate.slotKey === placement.slotKey);
+        return source && placement.generationJobId === source.job.id && !placement.runId && !placement.itemId &&
+          !placement.reviewDecisionId && !placement.bootstrapIdentity &&
+          source.receipt.visualProfileVersion === release.visualProfileVersion &&
+          pinned.length === 1 && pinned[0]?.assetId === placement.assetId && pinned[0]?.bootstrapIdentity === false &&
+          customerIdentityGenerationMatches(source, pinned[0]) ? [] : [placement.slotKey];
+      }
       if (!placement.generationJobId) {
         return [];
       }

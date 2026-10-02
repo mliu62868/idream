@@ -1,4 +1,5 @@
 import { validatedAutomaticFailureCorrection, type AutomaticFailureCorrectionDb } from "@/server/ai/generation-unknown-resolution-evidence";
+import { videoSceneDispatchDeferred } from "./video-sequence-dispatch";
 import {
   Prisma,
   type GenerationAttempt,
@@ -1110,6 +1111,7 @@ export async function dispatchGenerationAttemptOutbox(
   let delivered = 0;
   let failed = 0;
   for (const row of rows) {
+    if (await videoSceneDispatchDeferred(db, row.aggregateId)) continue;
     const leaseExpiresAt = new Date(now.getTime() + 60_000);
     const payload = jsonRecord(row.payload);
     let queueInput: EnqueueJobInput | null = null;

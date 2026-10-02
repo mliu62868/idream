@@ -7,8 +7,10 @@ import {
   assertProductionBlobReady,
   assertProductionModerationReady,
   assertProductionProviderReady,
+  createMockGenProviders,
   providers,
 } from "./providers";
+import { createVideoMediaProbe } from "./backend/video-media-probe";
 
 const oldEnv = { ...process.env };
 
@@ -21,6 +23,40 @@ afterEach(() => {
 });
 
 describe("generation provider assembly", () => {
+  it.each([
+    { seconds: 5, controls: { width: 768, height: 1152, workflowKey: "redgraft-ltx25-i2v" }, frames: 121, duration: 5.041667 },
+    { seconds: 3, controls: { width: 512, height: 512, workflowKey: "redgraft-ltx25-i2v", videoOptionsVersion: "redgraft-video-options-v1", orientation: "1:1", videoQuality: "preview" }, frames: 73, duration: 3.041667 },
+    { seconds: 2, controls: { width: 64, height: 96 }, frames: 48, duration: 2 },
+  ])("mock video delivers a decodable $seconds-second request envelope with native sound", async ({ seconds, controls, frames, duration }) => {
+    const result = await createMockGenProviders().video.generate({ prompt: "Controlled local transport fixture", seconds, controls });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.error.message);
+    expect(result.data.asset.body).toBeInstanceOf(Uint8Array);
+    const media = await createVideoMediaProbe()(result.data.asset.body!);
+    expect(media).toMatchObject({ width: controls.width, height: controls.height, frameCount: frames, framesPerSecond: 24, hasAudio: true });
+    expect(media.durationSeconds).toBeCloseTo(duration, 2);
+    expect(result.data.asset).toMatchObject({ width: controls.width, height: controls.height, seconds: media.durationSeconds, contentType: "video/mp4" });
+  });
+
+  it("does not report successful mock delivery when the configured encoder is unavailable", async () => {
+    process.env.GEN_FFMPEG_BIN = "/missing/idream-test-ffmpeg";
+    const result = await createMockGenProviders().video.generate({ prompt: "Controlled transport failure", seconds: 2 });
+    expect(result).toMatchObject({ ok: false, error: { code: "invalid_video_output", retryable: false } });
+    if (result.ok) throw new Error("An unavailable encoder cannot produce an asset");
+    expect(result.error.message).toContain("ENOENT");
+  });
+
+  it("preserves cached media when a consumer mutates its delivered bytes", async () => {
+    const video = createMockGenProviders().video;
+    const first = await video.generate({ prompt: "First delivery", seconds: 1 });
+    if (!first.ok || !first.data.asset.body) throw new Error("Missing first transport fixture");
+    first.data.asset.body.fill(0);
+    const replay = await video.generate({ prompt: "Later delivery", seconds: 1 });
+    if (!replay.ok || !replay.data.asset.body) throw new Error("Missing replay transport fixture");
+    const media = await createVideoMediaProbe()(replay.data.asset.body);
+    expect(media).toMatchObject({ width: 64, height: 96, frameCount: 24, framesPerSecond: 24, hasAudio: true });
+    expect(media.durationSeconds).toBeCloseTo(1, 2);
+  });
  
  
  

@@ -19,10 +19,6 @@ describe("recipeDraftPayload", () => {
       useCase: "character",
       body: "a prompt body",
       negativeBase: null,
-      presetOrder: [],
-      safetyHints: { source: "admin_console" },
-      sampleMatrix: [],
-      dryRunSummary: { source: "admin_console", status: "draft_created" },
     });
   });
 
@@ -43,7 +39,7 @@ describe("recipeDraftPayload", () => {
 describe("recipeStateLabelKey", () => {
   it("maps active/draft/archived to operator-facing phrases", () => {
     expect(recipeStateLabelKey({ status: "active" })).toBe("Published");
-    expect(recipeStateLabelKey({ status: "draft" })).toBe("Ready to publish");
+    expect(recipeStateLabelKey({ status: "draft" })).toBe("Draft");
     expect(recipeStateLabelKey({ status: "archived" })).toBe("Archived");
   });
 

@@ -13,7 +13,7 @@ import {
 import { OurdreamRoutePage } from "@/components/ourdream/OurdreamRoutePage";
 import { CmsRenderer } from "@/components/ourdream/CmsRenderer";
 import { loadPublishedRoutePage, loadPublishedRoutePagesForDistribution } from "@/server/cms/published-route";
-import { buildResourceLibrary } from "@/lib/resource-library";
+import { buildResourceLibrary, buildCmsFamilyDirectory, cmsFamilyIndexPaths } from "@/lib/resource-library";
 import {
   hasTrustedStaticRouteContent,
   publicRouteRenderDecision,
@@ -100,6 +100,10 @@ export default async function Page({ params, searchParams }: PageProps) {
   const resolution = await loadCmsResolution(path);
   const renderDecision = publicRouteRenderDecision(route, resolution.state);
   if (renderDecision === "cms" && resolution.state === "published") {
+    if (cmsFamilyIndexPaths.some(indexPath => indexPath === path)) {
+      const [pages, query] = await Promise.all([loadPublishedRoutePagesForDistribution(), searchParams]);
+      return <CmsRenderer page={resolution.page} directory={buildCmsFamilyDirectory(path, pages, query)} />;
+    }
     return <CmsRenderer page={resolution.page} />;
   }
 

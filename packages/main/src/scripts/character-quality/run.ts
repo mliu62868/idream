@@ -275,7 +275,8 @@ async function main() {
         const body = { characterId: state.characterId, sessionId: spoken.sessionId, messageId: spoken.assistantMessageId, text: spoken.text, intent: "play" };
         state.voiceIntent ??= { messageId: spoken.assistantMessageId!, startedAt: new Date().toISOString() };
         await save(output, state);
-        let existing = await prisma.voiceClipRequest.findUnique({ where: { userId_messageId: { userId: actorId, messageId: spoken.assistantMessageId! } } });
+        const voiceReply = await prisma.chatTurn.findUniqueOrThrow({ where: { assistantMessageId: spoken.assistantMessageId! }, select: { attempt: true } });
+        let existing = await prisma.voiceClipRequest.findUnique({ where: { userId_messageId_replyAttempt: { userId: actorId, messageId: spoken.assistantMessageId!, replyAttempt: voiceReply.attempt } } });
         const continuation = qualityVoiceContinuation(existing?.status ?? null);
         if (continuation === "submit") {
           const quoted = await call("POST", "/api/v1/generation/voice/quote", body);
@@ -293,7 +294,7 @@ async function main() {
           }
           if (existing?.status !== "succeeded") throw new Error(`Original Voice request remains ${existing?.status ?? "missing"}; inspect before resuming, without another synthesis request`);
         }
-        const request = await prisma.voiceClipRequest.findUniqueOrThrow({ where: { userId_messageId: { userId: actorId, messageId: spoken.assistantMessageId! } }, include: { usageFacts: true } });
+        const request = await prisma.voiceClipRequest.findUniqueOrThrow({ where: { userId_messageId_replyAttempt: { userId: actorId, messageId: spoken.assistantMessageId!, replyAttempt: voiceReply.attempt } }, include: { usageFacts: true } });
         if (request.status !== "succeeded" || !request.mediaAssetId) throw new Error("Voice request has no succeeded original delivery");
         if (state.voice && (state.voice.requestId !== request.id || state.voice.mediaAssetId !== request.mediaAssetId)) throw new Error("Voice delivery authority changed; preserve the original evidence");
         const payload = record(request.providerPayload);

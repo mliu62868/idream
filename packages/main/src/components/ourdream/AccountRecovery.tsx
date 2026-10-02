@@ -3,6 +3,7 @@
 import { useState, type FormEvent } from "react";
 import { RecoveryCodeCard } from "./RecoveryCodeCard";
 export { RecoveryCodeCard } from "./RecoveryCodeCard";
+import { announceViewerAuthorityChange } from "./viewer-auth";
 import { EmailPasswordRecovery } from "./AccountEmailVerification";
 
 
@@ -26,6 +27,7 @@ export function AccountRecovery({ onBack, onComplete }: { onBack: () => void; on
         setStatus(response.status === 429 ? "Too many attempts. Wait 15 minutes before trying again." : payload.error?.message ?? "Recovery failed. Check your code and try again.");
         return;
       }
+      announceViewerAuthorityChange();
       setPassword(""); setCode(""); setReplacement({ code: payload.data.recoveryCode, ownerId: payload.data.userId });
     } catch { setStatus("The result could not be confirmed. Try logging in with your new password first. If it works, generate a new recovery code in Account management; otherwise retry your saved code."); }
     finally { setPending(false); }

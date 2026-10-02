@@ -396,6 +396,7 @@ describe("Main-owned Chat façade", () => {
       try {
         const suffix = randomUUID();
         const userId = `public-chat-user-${suffix}`;
+        const creatorId = `public-chat-creator-${suffix}`;
         const characterId = `public-chat-character-${suffix}`;
         const contentId = `public-chat-content-${suffix}`;
         const contentV2Id = `public-chat-content-v2-${suffix}`;
@@ -409,12 +410,17 @@ describe("Main-owned Chat façade", () => {
           slotVersion: 1,
         }));
         const assetIds = placements.map(placement => placement.assetId);
-        await tx.user.create({
-          data: { id: userId, email: `${suffix}@chat.test`, emailVerified: true },
+        await tx.user.createMany({
+          data: [
+            { id: userId, email: `${suffix}@chat.test`, emailVerified: true, dataClass: "customer" },
+            { id: creatorId, email: `creator-${suffix}@chat.test`, emailVerified: true, dataClass: "customer" },
+          ],
         });
         await tx.character.create({
           data: {
             id: characterId,
+            creatorId,
+            source: "user",
             name: "Released Companion",
             age: 26,
             description: "Release-only public fixture.",
@@ -424,24 +430,33 @@ describe("Main-owned Chat façade", () => {
             advancedDetails: {},
           },
         });
+        function fixtureSoul(version: number) {
+          const soul = compileCharacterSoul({
+            name: "Released Companion", age: 26, gender: "female",
+            characterPromise: "A warm and observant companion.",
+            detailsMarkdown: `The immutable character voice for release ${version}.`,
+          });
+          if (!soul.ok) throw new Error("Invalid public fixture Soul");
+          return soul.snapshot;
+        }
+        const firstSoul = fixtureSoul(1);
         await tx.characterContentVersion.create({
           data: {
             id: contentId,
             characterId,
             version: 1,
-            contentHash: createHash("sha256").update(contentId).digest("hex"),
-            personaSnapshot: {},
+            contentHash: firstSoul.compiled.fingerprint,
+            personaSnapshot: JSON.parse(JSON.stringify(firstSoul)),
             openingSnapshot: { firstMessage: "Hello." },
             appearanceSnapshot: {},
             sourceType: "test",
           },
         });
-        await expect(createChatSession(userId, { characterId })).rejects.toThrow(
-          "active Serving Release",
-        );
+        // An unqualified public Character is outside the direct-link audience.
+        await expect(createChatSession(userId, { characterId })).rejects.toMatchObject({ status: 404 });
         await tx.mediaAsset.createMany({
           data: assetIds.map(id => ({
-            id, ownerId: userId, characterId, type: "image",
+            id, ownerId: creatorId, characterId, type: "image",
             url: `/user-content/${id}/content.webp`, storageKey: `tests/${id}.webp`,
             contentType: "image/webp", visibility: "public_pack", safetyStatus: "passed",
             metadata: { synthetic: false, provider: "pipeline" },
@@ -553,13 +568,14 @@ describe("Main-owned Chat façade", () => {
         await expectRevisionsDenied();
         await tx.characterServing.update({ where: { characterId }, data: { state: "live" } });
 
+        const secondSoul = fixtureSoul(2);
         await tx.characterContentVersion.create({
           data: {
             id: contentV2Id,
             characterId,
             version: 2,
-            contentHash: createHash("sha256").update(contentV2Id).digest("hex"),
-            personaSnapshot: {},
+            contentHash: secondSoul.compiled.fingerprint,
+            personaSnapshot: JSON.parse(JSON.stringify(secondSoul)),
             openingSnapshot: { firstMessage: "Hello from release two." },
             appearanceSnapshot: {},
             sourceType: "test",

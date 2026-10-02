@@ -29,6 +29,7 @@ import {
   servingDto,
 } from "./workspace-release";
 import { loadCharacterVisualWorkspace } from "./workspace-visual";
+import { inspectCustomerIdentitySource, resolveCustomerIdentitySource } from "./customer-identity-source";
 
 /**
  * SPEC: 角色运营台一次请求要看到的全部事实，按面板组装：Soul / Project / Visual /
@@ -109,6 +110,27 @@ export async function getCharacterWorkspace(characterId: string) {
     }),
   ]);
   if (!character) throw Errors.notFound("Character not found");
+  // Old shared drafts can already have a Project but no immutable handoff of
+  // their confirmed Preview. Expose the existing explicit prepare command;
+  // reading the workspace must never create publication evidence.
+  if (project && character.source === "user" && character.creatorId && character.currentContentVersionId &&
+    ["public", "unlisted"].includes(character.visibility) && character.status === "approved" &&
+    (!serving || (serving.state === "inactive" && !serving.currentReleaseId)) &&
+    !await resolveCustomerIdentitySource(prisma, { characterId })) {
+    const submission = await prisma.characterSubmission.findFirst({ where: {
+      characterId, submitterId: character.creatorId, status: "approved",
+    }, orderBy: [{ submittedAt: "desc" }, { id: "desc" }] });
+    // A candidate must remain accessible so operators can abandon it before
+    // refreshing preparation. The prepare command enforces the same guard.
+    if (submission && !await prisma.characterRelease.findFirst({
+      where: { projectId: project.id, status: "approved" }, select: { id: true },
+    }) && await inspectCustomerIdentitySource(prisma, {
+      characterId, submissionId: submission.id, contentVersionId: character.currentContentVersionId,
+    })) throw Errors.notFound("Character identity publication preparation is incomplete", {
+      reason: "customer_publication_prep_missing", characterId, submissionId: submission.id,
+      recoveryOperation: "POST /api/v2/admin/characters/:id/project",
+    });
+  }
   if (!project) {
     const publicationSubmission =
       character.source === "user" &&

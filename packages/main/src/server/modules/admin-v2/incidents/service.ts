@@ -520,6 +520,22 @@ export async function executeIncidentActionPlan(input: {
   readonly idempotencyKey: string;
   readonly requestId?: string;
 }) {
+  const scope = `incident-action:${input.actor.id}`;
+  const requestHash = canonicalSha256({
+    incidentId: input.incidentId,
+    actionPlanId: input.actionPlanId,
+    expectedVersion: input.expectedVersion,
+    confirmation: input.confirmation,
+  });
+  // An accepted command remains recoverable after it changes the Incident or
+  // consumes eligibility. Only new commands must revalidate the current plan.
+  const prior = await prisma.controlPlaneCommand.findUnique({
+    where: { scope_idempotencyKey: { scope, idempotencyKey: input.idempotencyKey } },
+  });
+  if (prior) {
+    if (prior.requestHash !== requestHash) throw Errors.conflict("Idempotency key is bound to another action plan");
+    return prior;
+  }
   const plan = await prisma.incidentActionPlan.findUnique({ where: { id: input.actionPlanId } });
   if (!plan || plan.incidentId !== input.incidentId) throw Errors.notFound("Incident action plan not found");
   const expectedConfirmation = `${input.incidentId}:${plan.id}:${plan.action}`;
@@ -545,21 +561,7 @@ export async function executeIncidentActionPlan(input: {
   const currentHash = canonicalSha256({ action: plan.action, eligibleIds, skippedIds });
   if (currentHash !== plan.eligibleIdsHash) throw Errors.conflict("Incident occurrence set changed; preview again");
 
-  const scope = `incident-action:${input.actor.id}`;
   const requestId = input.requestId ?? randomUUID();
-  const requestHash = canonicalSha256({
-    incidentId: input.incidentId,
-    actionPlanId: plan.id,
-    expectedVersion: input.expectedVersion,
-    confirmation: input.confirmation,
-  });
-  const prior = await prisma.controlPlaneCommand.findUnique({
-    where: { scope_idempotencyKey: { scope, idempotencyKey: input.idempotencyKey } },
-  });
-  if (prior) {
-    if (prior.requestHash !== requestHash) throw Errors.conflict("Idempotency key is bound to another action plan");
-    return prior;
-  }
   try {
     return await prisma.$transaction(async (tx) => {
       const command = await tx.controlPlaneCommand.create({

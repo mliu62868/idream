@@ -395,7 +395,7 @@ function normalizePlainDump(value: Buffer) {
   return Buffer.from(`${filtered.join("\n")}\n`);
 }
 
-function canonicalSchema(value: Buffer) {
+export function canonicalRecoverySchema(value: Buffer) {
   const filtered = value.toString("utf8").split(/\r?\n/u).filter((line) =>
     !line.startsWith("-- Dumped from database version ") &&
     !line.startsWith("-- Dumped by pg_dump version ") &&
@@ -403,7 +403,99 @@ function canonicalSchema(value: Buffer) {
     !line.startsWith("\\restrict ") &&
     !line.startsWith("\\unrestrict ")
   );
-  return Buffer.from(`${filtered.join("\n")}\n`);
+  return Buffer.from(normalizeCheckConjunctions(`${filtered.join("\n")}\n`));
+}
+
+function normalizeCheckConjunctions(sql: string) {
+  // PostgreSQL can flatten nested AND nodes when re-parsing its own dump.
+  // Normalize only that associative grouping; names, operands, operators,
+  // ordering, non-CHECK DDL, ownership and ACLs remain exact authority.
+  const tokens: Array<{ text: string; start: number; end: number }> = [];
+  for (let offset = 0; offset < sql.length;) {
+    if (/\s/u.test(sql[offset]!)) { offset += 1; continue; }
+    const start = offset;
+    const quote = sql[offset];
+    const dollarQuote = sql.slice(offset).match(/^\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$/u)?.[0];
+    if (quote === "'" || quote === '"') {
+      const escaped = quote === "'" && tokens.at(-1)?.text.toUpperCase() === "E" && tokens.at(-1)?.end === offset;
+      offset += 1;
+      while (offset < sql.length) {
+        if (escaped && sql[offset] === "\\") { offset += 2; continue; }
+        if (sql[offset] === quote) {
+          offset += 1;
+          if (sql[offset] === quote) { offset += 1; continue; }
+          break;
+        }
+        offset += 1;
+      }
+    } else if (dollarQuote) {
+      const end = sql.indexOf(dollarQuote, offset + dollarQuote.length);
+      if (end < 0) return sql;
+      offset = end + dollarQuote.length;
+    } else if (sql.startsWith("--", offset)) {
+      const end = sql.indexOf("\n", offset);
+      offset = end < 0 ? sql.length : end;
+      continue;
+    } else if (sql.startsWith("/*", offset)) {
+      let depth = 1;
+      offset += 2;
+      while (offset < sql.length && depth > 0) {
+        if (sql.startsWith("/*", offset)) { depth += 1; offset += 2; }
+        else if (sql.startsWith("*/", offset)) { depth -= 1; offset += 2; }
+        else offset += 1;
+      }
+      if (depth > 0) return sql;
+      continue;
+    } else {
+      offset += sql.slice(offset).match(/^[A-Za-z_][A-Za-z_0-9$]*/u)?.[0].length ?? 1;
+    }
+    tokens.push({ text: sql.slice(start, offset), start, end: offset });
+  }
+  const closeByOpen = new Map<number, number>();
+  const stack: number[] = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (tokens[index]!.text === "(") stack.push(index);
+    else if (tokens[index]!.text === ")") {
+      const open = stack.pop();
+      if (open === undefined) return sql;
+      closeByOpen.set(open, index);
+    }
+  }
+  if (stack.length > 0) return sql;
+  function terms(start: number, end: number): string[] {
+    while (tokens[start]?.text === "(" && closeByOpen.get(start) === end - 1) { start += 1; end -= 1; }
+    const leaf = () => [sql.slice(tokens[start]!.start, tokens[end - 1]!.end)];
+    const boundaries: number[] = [];
+    for (let index = start; index < end; index += 1) {
+      if (tokens[index]!.text === "(") { index = closeByOpen.get(index)!; continue; }
+      const word = tokens[index]!.text.toUpperCase();
+      // BETWEEN's AND and CASE/subquery syntax are not boolean split points.
+      if (["OR", "BETWEEN", "CASE", "SELECT"].includes(word)) return leaf();
+      if (word === "AND") boundaries.push(index);
+    }
+    if (boundaries.length === 0) return leaf();
+    const result: string[] = [];
+    for (const boundary of [...boundaries, end]) {
+      if (boundary === start) return leaf();
+      result.push(...terms(start, boundary));
+      start = boundary + 1;
+    }
+    return result;
+  }
+  let result = "";
+  let offset = 0;
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (tokens[index]!.text.toUpperCase() !== "CHECK" || tokens[index + 1]?.text !== "(") continue;
+    const open = index + 1;
+    const close = closeByOpen.get(open)!;
+    if (close === open + 1) continue;
+    const operands = terms(open, close + 1);
+    const expression = operands.length === 1 ? `(${operands[0]})` : `(${operands.map((operand) => `(${operand})`).join(" AND ")})`;
+    result += sql.slice(offset, tokens[open]!.start) + expression;
+    offset = tokens[close]!.end;
+    index = close;
+  }
+  return result + sql.slice(offset);
 }
 
 function quoteLiteral(value: string) {
@@ -672,7 +764,7 @@ function captureCanonicalSchema(
   stage: string,
   database = connection.database,
 ) {
-  return canonicalSchema(runner.run({
+  return canonicalRecoverySchema(runner.run({
     command: "pg_dump",
     args: [
       "--schema-only",

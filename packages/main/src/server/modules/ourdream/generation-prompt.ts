@@ -199,11 +199,12 @@ function buildImageGenerationPrompt(input: {
   }
 
   if (!input.character) {
+    // Freeplay can depict objects or scenery; a portrait finish invents a human subject.
     return clampPrompt(
       [
-        "High quality original companion portrait",
+        "High quality original image",
         `Requested scene: ${request}`,
-        "single coherent subject, expressive face, natural pose, well-lit face, properly exposed, sharp focus, detailed eyes, natural skin texture, clean composition",
+        "coherent scene, properly exposed, sharp focus, detailed textures, clean composition",
       ].join(". "),
       2_000,
     );
@@ -238,9 +239,10 @@ function buildImageGenerationPrompt(input: {
         ? `Stable visual traits: ${direction.stableTraits.join(", ")}`
         : null,
       consistencyPromptFragment(input.consistencyMode),
-      !isChatContinuitySource(input.sourceType) && cleanPromptText(character.description, 500)
-        ? `Character notes: ${cleanPromptText(character.description, 500)}`
-        : null,
+      // Biography describes the Character's premise, not this image. Keeping
+      // its setting here can override the requested scene (for example, a
+      // yacht biography competing with a conservatory). Identity comes from
+      // the pinned visual facts above; the moment comes from the request.
       `Requested scene: ${request}`,
     ]
       .filter(Boolean)
@@ -248,14 +250,10 @@ function buildImageGenerationPrompt(input: {
   const finish = "single coherent subject, face and body matching the character, expressive eyes, natural pose, well-lit visible face, properly exposed, sharp focus, detailed skin and hair, clean photographic composition";
   if (isChatContinuitySource(input.sourceType)) {
     if (mandatory.length > 2_000) throw new RangeError("The complete Chat image facts and pinned identity exceed the 2000-character generation budget");
-    let compiled = mandatory;
-    const notes = cleanPromptText(character.description, 500);
-    // Keep ordinary biography and style when they fit. Budget pressure may
-    // omit those optional pieces, never part of the requested scene.
-    for (const optional of [notes ? `Character notes: ${notes}` : "", finish]) {
-      if (optional && compiled.length + optional.length + 2 <= 2_000) compiled += `. ${optional}`;
-    }
-    return compiled;
+    // Photographic polish may be omitted, never a required visual fact.
+    return mandatory.length + finish.length + 2 <= 2_000
+      ? `${mandatory}. ${finish}`
+      : mandatory;
   }
   return clampPrompt(`${mandatory}. ${finish}`, 2_000);
 }
@@ -348,11 +346,17 @@ function consistencyPromptFragment(mode: "balanced" | "strict" | "creative") {
 
 export function imageNegativePrompt(
   base: string | null,
-  visualProfile: GenerationVisualProfile | null,
+  visualProfile: Pick<GenerationVisualProfile, "negativeIdentityPrompt"> | null,
 ) {
   const cleanBase = cleanPromptText(base, 900);
   const identityNegative = cleanPromptText(visualProfile?.negativeIdentityPrompt, 400);
-  return [cleanBase, identityNegative].filter(Boolean).join(", ") || null;
+  const seen = new Set<string>();
+  return [cleanBase, identityNegative].filter(Boolean).join(", ").split(",").map(term => term.trim()).filter(term => {
+    const key = term.toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).join(", ") || null;
 }
 
 export function buildMomentSpec(

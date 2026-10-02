@@ -6,6 +6,7 @@ import { proxyChatRequest } from "@/server/bff/chat-proxy";
 import { createCharacter, createUser, purgeTestData } from "@/server/test/helpers";
 import { beginChatTurn, commitChatTerminal, createChatSession, editChatTurn, regenerateChatTurn, setChatMemory } from "./turn-ledger";
 import { clearCompanionMemory } from "./companion-memory-authority";
+import { DEFAULT_PROFILE_EXPERIENCE } from "./conversation-profiles";
 
 const prefix = `zt-chat-experience-${randomUUID()}-`;
 afterAll(async () => {
@@ -50,6 +51,38 @@ async function finish(snapshot: NonNullable<Awaited<ReturnType<typeof beginChatT
 }
 
 describe("versioned conversation preferences", () => {
+  it("publishes explicit profile capabilities and costs, rejects obsolete selections, and freezes the selected version", async () => {
+    const f = await fixture();
+    const catalog = (await f.call("GET")).json.catalog;
+    expect(catalog).toMatchObject({ version: 1 });
+    expect(catalog.items).toHaveLength(5);
+    expect(new Set(catalog.items.map((item: { id: string }) => item.id)).size).toBe(5);
+    for (const profile of catalog.items) {
+      expect(profile).toMatchObject({ version: 1, costDreamcoins: 0, messageUnits: 1 });
+      expect(profile.description.length).toBeGreaterThan(10);
+    }
+    const quick = catalog.items.find((item: { id: string }) => item.id === "quick");
+    const choose = { ...quick.preferences, conversationProfile: { id: quick.id, version: quick.version }, version: 0 };
+    expect((await f.call("PUT", { ...choose, conversationProfile: { id: "quick", version: 0 } })).status).toBe(409);
+    expect((await f.call("PUT", { ...choose, conversationProfile: { ...choose.conversationProfile, answerMaxOutputTokens: 999999 } })).status).toBe(400);
+    const saved = await f.call("PUT", choose);
+    expect(saved.status).toBe(200);
+    expect(saved.json.settings.conversationProfile).toMatchObject({ id: "quick", version: 1, answerMaxOutputTokens: 256 });
+    expect((await f.call("PUT", choose)).json).toEqual(saved.json);
+    const original = await f.begin();
+    expect(original.snapshot?.experience?.conversationProfile).toEqual(saved.json.settings.conversationProfile);
+    await finish(original.snapshot!);
+    const story = catalog.items.find((item: { id: string }) => item.id === "story");
+    expect((await f.call("PUT", { ...story.preferences, conversationProfile: { id: story.id, version: 1 }, version: 1 })).status).toBe(200);
+    const regenerated = await regenerateChatTurn(f.userId, original.snapshot!.assistantMessageId);
+    expect(regenerated.snapshot.experience?.conversationProfile?.id).toBe("quick");
+    await finish(regenerated.snapshot);
+    const next = await f.begin();
+    expect(next.snapshot?.experience?.conversationProfile).toMatchObject({ id: "story", version: 1, answerMaxOutputTokens: 2048 });
+    expect(next.snapshot?.characterContentVersionId).toBe(original.snapshot?.characterContentVersionId);
+    expect(next.snapshot?.characterReleaseId).toBe(original.snapshot?.characterReleaseId);
+  });
+
   it("persists owned choices with exact retries, rejects stale concurrent changes and cleans up with the account", async () => {
     const f = await fixture();
     const other = await fixture();
@@ -104,7 +137,7 @@ describe("versioned conversation preferences", () => {
   it("keeps historical missing preferences unchanged and starts a new chat at defaults after Clear", async () => {
     const f = await fixture();
     const first = await f.begin();
-    expect(first.snapshot?.experience).toEqual({ responseLength: "auto", interactionIntensity: "balanced", sceneGeneration: "follow", version: 0 });
+    expect(first.snapshot?.experience).toEqual(DEFAULT_PROFILE_EXPERIENCE);
     const historical = JSON.parse(JSON.stringify(first.snapshot));
     delete historical.experience;
     await prisma.chatTurn.update({ where: { id: first.snapshot!.turnId }, data: { executionSnapshot: historical } });
@@ -117,7 +150,7 @@ describe("versioned conversation preferences", () => {
     expect((await f.call("GET")).json.editable).toBe(false);
     expect((await f.call("PUT", { responseLength: "short", interactionIntensity: "gentle", version: 1 })).status).toBe(410);
     const fresh = await createChatSession(f.userId, { characterId: f.characterId });
-    expect((await f.call("GET", undefined, f.userId, fresh.id)).json.settings).toEqual({ responseLength: "auto", interactionIntensity: "balanced", sceneGeneration: "follow", version: 0 });
+    expect((await f.call("GET", undefined, f.userId, fresh.id)).json.settings).toEqual(DEFAULT_PROFILE_EXPERIENCE);
   });
 
   it("does not backfill the new Scene preference into an accepted historical snapshot", async () => {

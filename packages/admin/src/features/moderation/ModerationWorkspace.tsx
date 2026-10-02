@@ -2,6 +2,7 @@
 
 import { useAdminI18n } from "@/components/admin/i18n";
 import { ComicReviewPanel } from "./ComicReviewPanel";
+import { PackOperationsPanel } from "./PackOperationsPanel";
 import Image from "next/image";
 import type { FormEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -262,6 +263,7 @@ export function ModerationWorkspace({ canDecide, canReadComics = false, canRevie
         title={t("Moderation Cases")}
       />
       {canReadComics && <ComicReviewPanel canReview={canReviewComics} />}
+      {canReadComics && <PackOperationsPanel canBlock={canDecide} />}
       <div
         className="flex flex-wrap justify-between gap-2 text-xs text-[var(--ad-text-muted)]"
         role="status"

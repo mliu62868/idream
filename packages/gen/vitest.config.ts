@@ -22,6 +22,9 @@ export default defineConfig({
         "../shared/src/media/generated-image-sanity.ts",
         import.meta.url,
       ).pathname,
+      "@idream/shared/media/video-probe": new URL(
+        "../shared/src/media/video-probe.ts", import.meta.url,
+      ).pathname,
       "@idream/shared/media/image-orientation": new URL(
         "../shared/src/media/image-orientation.ts",
         import.meta.url,

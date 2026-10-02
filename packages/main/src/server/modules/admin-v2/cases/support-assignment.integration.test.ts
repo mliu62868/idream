@@ -47,7 +47,7 @@ describe("Case and Support assignment authority", () => {
 
     expectOk(await adminV2("PATCH", `support/requests/${request.ticketId}`, {
       userId: ADMIN, role: "admin",
-      body: { status: "waiting_on_user", customerMessage: "Which image failed to save?", reason: "Need reproduction details", confirmation: request.ticketId },
+      body: { expectedUpdatedAt: (await prisma.supportRequest.findUniqueOrThrow({ where: { id: request.id } })).updatedAt.toISOString(), status: "waiting_on_user", customerMessage: "Which image failed to save?", reason: "Need reproduction details", confirmation: request.ticketId },
     }));
     await expectAssignment(adminCase.id, request.id, OWNER, "high", 2);
     expectOk(await api("POST", `support/requests/${request.ticketId}/messages`, {
@@ -57,7 +57,7 @@ describe("Case and Support assignment authority", () => {
     await expect(prisma.adminCase.findUniqueOrThrow({ where: { id: adminCase.id } })).resolves.toMatchObject({ status: "in_progress" });
     expectOk(await adminV2("PATCH", `support/requests/${request.ticketId}`, {
       userId: ADMIN, role: "admin",
-      body: { status: "resolved", customerMessage: "Your download is ready.", reason: "Verified image delivery", confirmation: request.ticketId },
+      body: { expectedUpdatedAt: (await prisma.supportRequest.findUniqueOrThrow({ where: { id: request.id } })).updatedAt.toISOString(), status: "resolved", customerMessage: "Your download is ready.", reason: "Verified image delivery", confirmation: request.ticketId },
     }));
     await expectAssignment(adminCase.id, request.id, OWNER, "high", 2);
   });
@@ -88,7 +88,7 @@ describe("Case and Support assignment authority", () => {
     await expect(prisma.supportRequest.findUniqueOrThrow({ where: { id: request.id } })).resolves.toMatchObject({ updatedAt: afterFirst.updatedAt });
     expectError(await adminV2("POST", `cases/${adminCase.id}/assignment`, { ...command, body: { ...command.body, priority: "high" } }), 409, "conflict");
     expectOk(await adminV2("PATCH", `support/requests/${request.ticketId}`, {
-      userId: ADMIN, role: "admin", body: { status: "open", reason: "Continue triage", confirmation: request.ticketId },
+      userId: ADMIN, role: "admin", body: { expectedUpdatedAt: (await prisma.supportRequest.findUniqueOrThrow({ where: { id: request.id } })).updatedAt.toISOString(), status: "open", reason: "Continue triage", confirmation: request.ticketId },
     }));
     await expectAssignment(adminCase.id, request.id, null, "low", 4);
   });

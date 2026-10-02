@@ -195,6 +195,12 @@ export async function recordCreativeReviewDecision(input: {
         workflowStage: continuation.workflowStage,
         verificationState: continuation.verificationState,
         status: continuation.status,
+        // The same CAS freezes every counter with the projected child decision;
+        // rejection removes a generated result from completedItems too.
+        totalItems: projectedItemStatuses.length,
+        completedItems: projectedItemStatuses.filter((status) => ["generated", "approved", "published"].includes(status)).length,
+        failedItems: projectedItemStatuses.filter((status) => status === "failed").length,
+        approvedItems: projectedItemStatuses.filter((status) => ["approved", "published"].includes(status)).length,
         version: { increment: 1 },
       },
     });
@@ -245,12 +251,8 @@ export async function recordCreativeReviewDecision(input: {
         reviewerId: input.actor.id,
       },
     });
-    const approvedItems = await tx.contentProductionItem.count({
-      where: { batchId: run.id, status: { in: ["approved", "published"] } },
-    });
-    const updatedRun = await tx.contentProductionBatch.update({
+    const updatedRun = await tx.contentProductionBatch.findUniqueOrThrow({
       where: { id: run.id, version: run.version + 1 },
-      data: { approvedItems },
     });
     await tx.adminAuditLog.create({
       data: {

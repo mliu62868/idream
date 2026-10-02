@@ -18,6 +18,8 @@ export const primaryNavItems: NavItem[] = [
   { label: "My AI", href: "/custom" },
   { label: "Feed", href: "/feed" },
   { label: "Comics", href: "/comics" },
+  { label: "Packs", href: "/packs" },
+  { label: "Creator Studio", href: "/creator-studio" },
   { label: "Community", href: "/community" },
 ];
 

@@ -230,8 +230,8 @@ export async function refreshContentProductionBatchStats(
   //   的批次只能叫 completed —— 一个叫 completed 的状态，任何人读到都会理解成
   //   "成功完成"，而它的真实含义却是"流程终结了，可能全军覆没"。命名在说谎。
   //   v2 读模型的 executionOutcome 早就有 failed，是 legacy 状态机缺了这一格。
-  // INVARIANT: 判据必须与 invariants.ts 的 creative_run_child_projection_mismatch
-  //   里那段 CASE 保持逐字一致，否则每推进一次状态就制造一条不变式违规。
+  // INVARIANT: 待审核/生成中的 legacy 状态取这些子项事实；普通制作终态
+  //   由同一 deriveCreativeRunContinuation 判定，SQL 检查也使用它的终态集合。
   const status =
     totalItems > 0 && reviewedItems === totalItems
       ? completedItems > 0

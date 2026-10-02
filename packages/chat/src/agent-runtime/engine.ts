@@ -14,7 +14,7 @@ import {
   type UserMessage,
 } from "@deepseek-ai/dsh-llm";
 import { Session, SessionId, SessionSeq, type SessionEvent, type TurnEndReason } from "@deepseek-ai/dsh-session";
-import { type ToolDefinition } from "@deepseek-ai/dsh-tools";
+import { type PostToolDecision, type ToolDefinition } from "@deepseek-ai/dsh-tools";
 import { type CompanionReadiness } from "@idream/shared/chat/companion-runtime";
 import {
   companionEventSchema,
@@ -48,6 +48,7 @@ import type {
 } from "./workspace";
 import {
   observeIgrepWake,
+  originalIgrepMemoryHits,
   recallIgrepMemory,
   reprojectIgrepMemory,
   type IgrepPluginModule,
@@ -72,6 +73,7 @@ export interface CompanionEngineOptions {
   plugin(): Promise<IgrepPluginModule>;
   adapter(profile: PreparedTurnProfile, requiredToolName: CompanionToolCall["name"] | undefined, requestPolicy: {
     maxInputTokens: number;
+    replayMessageIds: readonly string[];
     observeRequest(evidence: CompanionModelRequestEvidence): void;
     samplingTemperature?: number;
   }): LlmAdapter;
@@ -99,7 +101,15 @@ export interface CompanionEngineOptions {
 export interface CompanionRuntimePort {
   emit(event: CompanionEvent): Promise<void> | void;
   executeTool(call: CompanionToolCall): Promise<CompanionToolResult>;
-  commit(candidate: CompanionTerminalCandidate): Promise<CompanionCommitAck>;
+  commit(candidate: CompanionTerminalCandidate, signal?: AbortSignal): Promise<CompanionCommitAck>;
+}
+
+/** Resource pressure defers the admitted attempt; it is not a product failure. */
+export class CompanionCapacityError extends Error {
+  constructor(readonly pool: "normal" | "private") {
+    super(`${pool} companion agent pool is at capacity`);
+    this.name = "CompanionCapacityError";
+  }
 }
 
 // SPEC: signed Gate-E probes use one high-entropy marker family. Persist only
@@ -128,6 +138,10 @@ const COMPANION_MEMORY_GUIDANCE = [
   "When recalling a specific fact, preserve its complete name, identifier, number",
   "or date exactly as the person gave it. Prefer the person's original statement",
   "over an assistant paraphrase; a shorter paraphrase does not replace their fact.",
+  "Dialogue evidence includes its original source time and timezone. Resolve",
+  "relative dates in that source's context; a quoted earlier statement keeps the",
+  "quoted event's context. If the original does not establish a date, preserve",
+  "the quotation or uncertainty instead of inventing an absolute date.",
   "Brevity and natural expression must not omit part of the requested fact.",
 ].join(" ") + "\n\n{{igrep_memory_profile}}";
 
@@ -251,6 +265,13 @@ function invocationFailure(input: {
       code: validStatus ? `provider_http_${status}` : "provider_http_error",
       message: "companion provider request failed",
       retryable: status === 429 || (typeof status === "number" && status >= 500),
+    };
+  }
+  if (input.turnFailure?.code === "INPUT_BUDGET_EXCEEDED") {
+    return {
+      code: "input_budget_exceeded",
+      message: "fixed companion input exceeds its budget",
+      retryable: false,
     };
   }
   const providerCodes: Record<string, string> = {
@@ -638,7 +659,7 @@ export class CompanionEngine {
     const activeInPool = [...this.active.values()].filter(({ invocation: current, agentDisposed }) =>
       !agentDisposed && (current.memoryMode === "private" ? "private" : "normal") === pool).length;
     if (activeInPool >= limit) {
-      throw new Error(`${pool} companion agent pool is at capacity`);
+      throw new CompanionCapacityError(pool);
     }
     const active = new ActiveInvocation(invocation);
     this.active.set(invocation.invocationId, active);
@@ -712,6 +733,7 @@ export class CompanionEngine {
       failurePhase = "agent";
       const current = invocation.preparedTurn.messages.find((message) => message.sourceKind === "current_user");
       if (!current || current.role !== "user") throw new Error("current user message is missing");
+      const memoryWorkspacePath = workspace.path;
       const igrepStartedAt = new Map<string, number>();
       ctx.on("tools/pre-execute", async (execution, next) => {
         if (execution.name === "memory_search") {
@@ -720,33 +742,51 @@ export class CompanionEngine {
         return next();
       }, { prepend: true });
       ctx.on("tools/post-execute", async (execution, result, next) => {
+        let decision: PostToolDecision = await next();
         const operation = execution.name === "memory_search" ? "memory" : null;
         if (operation) {
           const startedAt = igrepStartedAt.get(String(execution.callId)) ?? Date.now();
           igrepStartedAt.delete(String(execution.callId));
-          const value = !result.isError && result.value && typeof result.value === "object"
-            && !Array.isArray(result.value)
-            ? result.value as Record<string, unknown>
-            : null;
-          const resultCount = Array.isArray(value?.results) ? value.results.length : undefined;
-          const evidenceMatches = operation === "memory" && resultCount !== undefined
-            ? auditRecallEvidenceMatches(value)
-            : 0;
-          if (result.isError || resultCount === undefined) igrepFailure = operation;
+          let resultCount: number | undefined;
+          let evidenceMatches = 0;
+          if (!result.isError && decision.kind === "accept") {
+            try {
+              const candidate = decision.value ?? result.value;
+              if (decision.content !== undefined || !candidate || typeof candidate !== "object" || Array.isArray(candidate)
+                || !Array.isArray(candidate.results) || (candidate.warnings !== undefined && (!Array.isArray(candidate.warnings) || candidate.warnings.length > 0))) {
+                throw new Error("igrep memory-search returned unverifiable evidence");
+              }
+              // The official plugin has already enforced its scope binding and
+              // source witnesses. Replace only the facts, through DSH's value
+              // replacement seam, so schema validation/rendering remain official.
+              const originals = await originalIgrepMemoryHits(memoryWorkspacePath, candidate.results, execution.signal);
+              const results = candidate.results.map((hit, index) => {
+                if (!hit || typeof hit !== "object" || Array.isArray(hit)) throw new Error("igrep memory-search returned unverifiable evidence");
+                return { ...hit, snippet: originals[index]!.snippet };
+              });
+              decision = { kind: "accept", value: { ...candidate, results },
+                ...(decision.additionalContexts ? { additionalContexts: decision.additionalContexts } : {}) };
+              resultCount = results.length;
+              evidenceMatches = auditRecallEvidenceMatches(results);
+            } catch {
+              decision = { kind: "block", feedback: [{ type: "text", text: "igrep memory-search returned unverifiable evidence" }] };
+            }
+          }
+          if (resultCount === undefined) igrepFailure = operation;
           event({
             type: "igrep_observation",
             operation,
-            outcome: result.isError || resultCount === undefined
+            outcome: resultCount === undefined
               ? "failure"
               : resultCount === 0
                 ? "empty"
                 : "hit",
-            ...(result.isError || resultCount === undefined ? {} : { resultCount }),
+            ...(resultCount === undefined ? {} : { resultCount }),
             ...(evidenceMatches > 0 ? { evidenceMatches } : {}),
             durationMs: Math.max(0, Date.now() - startedAt),
           });
         }
-        return next();
+        return decision;
       }, { prepend: true });
       const modelRequests: CompanionModelRequestEvidence[] = [];
       const adapter = this.options.adapter(
@@ -754,6 +794,7 @@ export class CompanionEngine {
         invocation.preparedTurn.requiredAction?.name,
         {
           maxInputTokens: invocation.preparedTurn.budget.maxInputTokens,
+          replayMessageIds: invocation.preparedTurn.messages.filter(message => message.sourceKind === "replay").map(message => message.id),
           observeRequest: evidence => { modelRequests.push(evidence); },
           ...(needsFactualSampling(current.content)
             ? { samplingTemperature: Math.min(invocation.preparedTurn.profile.sampling.temperature, 0.2) }
@@ -1023,6 +1064,9 @@ export class CompanionEngine {
               currentStepText = "";
               event({ type: "text_reset" });
             }
+            // Retract provisional text before rejecting the next step. An
+            // unverifiable lookup cannot become a successful remembered answer.
+            if (igrepFailure) throw new Error("companion memory evidence is unavailable");
             return next();
           }, { prepend: true });
 
@@ -1071,7 +1115,7 @@ export class CompanionEngine {
               event({ type: "text_delta", delta: content });
             }
             await event({ type: "terminal_candidate", candidate });
-            const ack = await port.commit(candidate);
+            const ack = await port.commit(candidate, active.cancellation.signal);
             if (ack.attemptId !== invocation.attemptId) {
               throw new Error("commit ack attempt id mismatch");
             }

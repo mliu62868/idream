@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { COMPANION_PRODUCT_PROMPT_VERSION } from "./companion-agent-prompt";
 import {
   COMPANION_RUNTIME_PROTOCOL_VERSION,
   companionWorkspaceRebuildBudget,
@@ -31,7 +32,7 @@ const messages: CompanionWorkspaceRebuildMessage[] = [
 function imageToolEvidence(tool: unknown) {
   return {
     authority: "dsh_terminal_candidate",
-    prompt: { productPromptVersion: "companion-product-1", preparedTurnVersion: 5, systemPromptDigest: "c".repeat(64), soulFingerprint: "d".repeat(64) },
+    prompt: { productPromptVersion: COMPANION_PRODUCT_PROMPT_VERSION, preparedTurnVersion: 5, systemPromptDigest: "c".repeat(64), soulFingerprint: "d".repeat(64) },
     runtime: "embedded_dsh",
     memoryMode: "normal",
     provider: "openai",
@@ -86,6 +87,14 @@ describe("shared companion authority contracts", () => {
     const evidence = imageToolEvidence(imageReservation);
     evidence.execution.toolCalls = 0;
     expect(projectCompanionProbeDshEvidence(evidence, "normal")).toMatchObject({ ok: false, error: expect.stringContaining("execution.tools") });
+  });
+
+  it("does not relabel prior-contract terminal evidence as current probe qualification", () => {
+    const evidence = imageToolEvidence(imageReservation);
+    const historical = { ...evidence, prompt: { ...evidence.prompt, productPromptVersion: "companion-product-1" } };
+    expect(projectCompanionProbeDshEvidence(historical, "normal"))
+      .toMatchObject({ ok: false, error: expect.stringContaining("prompt.productPromptVersion") });
+    expect(historical.prompt.productPromptVersion).toBe("companion-product-1");
   });
 
   it("accepts only contiguous, complete user-assistant rebuild exchanges", () => {
@@ -164,7 +173,7 @@ describe("shared companion authority contracts", () => {
     const projected = projectCompanionProbeDshEvidence({
       authority: "dsh_terminal_candidate",
       prompt: {
-        productPromptVersion: "companion-product-1",
+        productPromptVersion: COMPANION_PRODUCT_PROMPT_VERSION,
         preparedTurnVersion: 4,
         systemPromptDigest: "c".repeat(64),
         soulFingerprint: "d".repeat(64),
@@ -192,7 +201,7 @@ describe("shared companion authority contracts", () => {
 
     expect(projected).toMatchObject({
       ok: true,
-      productPromptVersion: "companion-product-1",
+      productPromptVersion: COMPANION_PRODUCT_PROMPT_VERSION,
       preparedTurnVersion: 4,
       systemPromptDigest: "c".repeat(64),
       soulFingerprint: "d".repeat(64),

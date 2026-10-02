@@ -27,6 +27,7 @@ import {
   evaluateDraftAssetPackAuthority,
 } from "./draft-asset-pack-authority";
 import { draftAssetRouteEntries } from "./draft-asset-route-authority";
+import { resolveCustomerIdentitySource, type CustomerIdentitySource } from "./customer-identity-source";
 
 type DraftPackEntry = {
   assetId: string;
@@ -34,6 +35,7 @@ type DraftPackEntry = {
   itemId: string | null;
   reviewDecisionId: string | null;
   generationJobId: string | null;
+  customerIdentityRevisionId: string | null;
   generationRouteFingerprint: string | null;
   bootstrapIdentity: boolean;
   selectedFromProject: boolean;
@@ -52,6 +54,7 @@ function draftPackEntry(
       itemId: null,
       reviewDecisionId: null,
       generationJobId: null,
+      customerIdentityRevisionId: null,
       generationRouteFingerprint: null,
       bootstrapIdentity: false,
       selectedFromProject: true,
@@ -70,6 +73,7 @@ function draftPackEntry(
         : null,
     generationJobId:
       typeof entry.generationJobId === "string" ? entry.generationJobId : null,
+    customerIdentityRevisionId: typeof entry.customerIdentityRevisionId === "string" ? entry.customerIdentityRevisionId : null,
     generationRouteFingerprint:
       typeof entry.generationRouteFingerprint === "string"
         ? entry.generationRouteFingerprint
@@ -215,6 +219,7 @@ export async function createCharacterRelease(
               itemId: null,
               reviewDecisionId: null,
               generationJobId: null,
+              customerIdentityRevisionId: null,
               generationRouteFingerprint: null,
               bootstrapIdentity: false,
               selectedFromProject: Boolean(project.draftImageAssetId),
@@ -254,15 +259,24 @@ export async function createCharacterRelease(
       where: { id: { in: selectedEntries.map((entry) => entry.assetId) } },
     });
     const attemptsByAssetId = await resolveGenerationAssetSuccessAttempts(tx, selectedAssets);
+    const customerSources = new Map<string, CustomerIdentitySource>();
+    for (const entry of selectedEntries) {
+      if (!entry.customerIdentityRevisionId) continue;
+      const source = await resolveCustomerIdentitySource(tx, {
+        characterId: input.characterId, revisionId: entry.customerIdentityRevisionId,
+      });
+      if (source?.asset.id === entry.assetId) customerSources.set(entry.assetId, source);
+    }
     // 血缘不完整的槽位不进 provenance：候选快照因此缺 pinned 条目，规则引擎的
     // release_asset_generation_authority 与 release_assets_customer_publishable 当场失败关闭。
     const placementGenerationProvenance = draftAssetEntries.flatMap((entry) => {
       const item = entry.itemId
         ? (selectedItemById.get(entry.itemId) ?? null)
         : null;
-      const job = item?.job ?? null;
+      const customerSource = customerSources.get(entry.assetId);
+      const job = customerSource?.job ?? item?.job ?? null;
       const attempt = entry.generationJobId
-        ? (attemptsByAssetId.get(entry.assetId) ?? null)
+        ? (customerSource?.attempt ?? attemptsByAssetId.get(entry.assetId) ?? null)
         : null;
       if (!job || !attempt || job.id !== entry.generationJobId) return [];
       return [
@@ -291,6 +305,10 @@ export async function createCharacterRelease(
           attemptId: attempt.id,
           attemptNo: attempt.attemptNo,
           completedAt: job.completedAt?.toISOString() ?? null,
+          ...(customerSource ? {
+            ...customerSource.receipt.generation,
+            customerIdentityRevisionId: customerSource.revisionId,
+          } : {}),
         },
       ];
     });
@@ -328,6 +346,7 @@ export async function createCharacterRelease(
         ...(entry.generationJobId
           ? { generationJobId: entry.generationJobId }
           : {}),
+        ...(entry.customerIdentityRevisionId ? { customerIdentityRevisionId: entry.customerIdentityRevisionId } : {}),
         ...(entry.bootstrapIdentity ? { bootstrapIdentity: true } : {}),
       })),
     };

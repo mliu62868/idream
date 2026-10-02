@@ -21,6 +21,14 @@ function runner(profile, port, killTimeout) {
       ...(profile === "image" ? {
         COMFYUI_VENV_PYTHON: "/Users/kk/ComfyUI-Installs/idream-image-qwen21/ComfyUI/.venv/bin/python3",
       } : {}),
+      // Source stays fixed while the video-only Torch/MPSGraph dependencies
+      // and native extension cache are isolated from image and H3 runtimes.
+      ...(profile === "video" ? {
+        COMFYUI_ROOT: "/Users/kk/ComfyUI-Installs/idream-ltx25-v0342/ComfyUI",
+        COMFYUI_VENV_PYTHON: "/Users/kk/ComfyUI-Installs/idream-ltx25-mpsgraph/.venv/bin/python3",
+        MPS_SDPA_SKIP_CALIBRATION: "1",
+        TORCH_EXTENSIONS_DIR: "/Users/kk/ComfyUI-Installs/idream-ltx25-mpsgraph/torch_extensions",
+      } : {}),
     },
   };
 }

@@ -1,9 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { buildResourceLibrary } from "./resource-library";
+import { buildResourceLibrary, buildCmsFamilyDirectory } from "./resource-library";
 
 const article = (path: string, overrides = {}) => ({
   path, title: "Keeping a character consistent", description: "A published character guide.",
   canonical: null, indexingStatus: "index" as const, ...overrides,
+});
+
+describe("CMS content family directory", () => {
+  it("includes only discoverable details in the current family and follows publication changes", () => {
+    const pages = [article("/images"), article("/images/edit-a-source"), article("/videos/animate-a-character"), article("/images/noindex", { indexingStatus: "noindex" as const }), article("/images/duplicate", { canonical: "/images/edit-a-source" })];
+    expect(buildCmsFamilyDirectory("/images", pages).items.map(page => page.path)).toEqual(["/images/edit-a-source"]);
+    expect(buildCmsFamilyDirectory("/images", pages.filter(page => page.path !== "/images/edit-a-source")).items).toEqual([]);
+  });
+  it("searches actual published titles and keeps every result reachable with stable pagination", () => {
+    const pages = Array.from({ length: 31 }, (_, index) => article(`/glossary/term-${String(index).padStart(2, "0")}`, { title: `Source concept ${index}` }));
+    const first = buildCmsFamilyDirectory("/glossary", pages, { q: "Source" }), next = buildCmsFamilyDirectory("/glossary", pages, { q: "Source", page: "2" });
+    expect(first.items).toHaveLength(24); expect(next.items).toHaveLength(7); expect(new Set([...first.items, ...next.items].map(page => page.path)).size).toBe(31);
+    expect(buildCmsFamilyDirectory("/glossary", pages, { q: "SOURCE CONCEPT 30" }).items.map(page => page.path)).toEqual(["/glossary/term-30"]);
+    expect(buildCmsFamilyDirectory("/glossary", pages, { q: "nonexistent" }).total).toBe(0);
+  });
 });
 
 describe("Resources Hub publication and pagination", () => {

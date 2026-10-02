@@ -58,7 +58,9 @@ export async function resolveProductionRecipe(
           status: "active",
           useCase,
         },
-    orderBy: { version: "desc" },
+    orderBy: recipeId
+      ? { version: "desc" }
+      : [{ publishedAt: { sort: "desc", nulls: "last" } }, { version: "desc" }, { id: "asc" }],
   });
   if (!recipe) {
     throw Errors.badRequest(

@@ -395,11 +395,47 @@ export const generationRecipeCreateRequestSchema = z
   .strict();
 
 export const generationRecipePatchRequestSchema =
-  generationRecipeCreateRequestSchema.partial();
+  generationRecipeCreateRequestSchema.partial().extend({
+    // INVARIANT: omitted PATCH fields preserve persisted values; Zod defaults belong to creation.
+    mode: generationRecipeCreateRequestSchema.shape.mode.unwrap().optional(),
+    useCase: generationRecipeCreateRequestSchema.shape.useCase.unwrap().optional(),
+    presetOrder: generationRecipeCreateRequestSchema.shape.presetOrder.unwrap().optional(),
+    safetyHints: generationRecipeCreateRequestSchema.shape.safetyHints.unwrap().optional(),
+    sampleMatrix: generationRecipeCreateRequestSchema.shape.sampleMatrix.unwrap().optional(),
+  });
 
 export const generationRecipeResponseSchema = z
   .object({ recipe: generationRecipeSchema })
   .strict();
+
+export const generationRecipePreviewQuerySchema = z.object({ profileId: adminIdSchema }).strict();
+const recipeFingerprintSchema = z.string().regex(/^[a-f0-9]{64}$/);
+export const generationRecipeValidationSchema = z.object({
+  status: z.enum(["not_run", "running", "ready", "passed", "failed", "stale"]),
+  issues: z.array(z.string()).readonly(),
+  jobs: z.array(z.object({ id: adminIdSchema, sampleIndex: z.number().int().nonnegative(), status: z.string(), assetUrls: z.array(z.string()).readonly() }).strict()).readonly(),
+}).strict();
+export const generationRecipePreviewResponseSchema = z.object({
+  fingerprint: recipeFingerprintSchema,
+  profileId: adminIdSchema,
+  samples: z.array(z.object({
+    index: z.number().int().nonnegative(), prompt: z.string(), negativePrompt: z.string().nullable(),
+    orientation: z.string(), issues: z.array(z.string()).readonly(),
+  }).strict()).readonly(),
+  issues: z.array(z.string()).readonly(),
+  validation: generationRecipeValidationSchema,
+}).strict();
+export const generationRecipeTestMatrixRequestSchema = generationConfigCommandRequestSchema.extend({
+  profileId: adminIdSchema,
+  fingerprint: recipeFingerprintSchema,
+});
+export const generationRecipeTestMatrixResponseSchema = z.object({
+  fingerprint: recipeFingerprintSchema,
+  jobs: z.array(z.object({ id: adminIdSchema, sampleIndex: z.number().int().nonnegative(), status: z.string() }).strict()).readonly(),
+}).strict();
+export const generationRecipeVerifyRequestSchema = generationConfigCommandRequestSchema.extend({ fingerprint: recipeFingerprintSchema });
+export const generationRecipeVerifyResponseSchema = z.object({ validation: generationRecipeValidationSchema }).strict();
+export type GenerationRecipePreview = z.infer<typeof generationRecipePreviewResponseSchema>;
 
 export const generationRecipePublishResponseSchema = z
   .object({
@@ -412,7 +448,8 @@ export const generationRecipeRollbackResponseSchema = z
   .object({
     recipe: generationRecipeSchema,
     fromVersion: z.number().int().positive(),
-    toVersion: z.number().int().positive(),
+    // First publication rollback restores the family to having no active version.
+    toVersion: z.number().int().positive().nullable(),
   })
   .strict();
 
@@ -461,7 +498,12 @@ export const generationPresetCreateRequestSchema = z
   .strict();
 
 export const generationPresetPatchRequestSchema =
-  generationPresetCreateRequestSchema.partial();
+  generationPresetCreateRequestSchema.partial().extend({
+    // INVARIANT: omitted PATCH fields preserve persisted values; defaults belong to creation.
+    controls: generationPresetCreateRequestSchema.shape.controls.unwrap().optional(),
+    visibility: generationPresetCreateRequestSchema.shape.visibility.unwrap().optional(),
+    status: generationPresetCreateRequestSchema.shape.status.unwrap().optional(),
+  });
 
 export const generationPresetResponseSchema = z
   .object({ preset: generationPresetSchema })

@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { CONVERSATION_PROFILE_CATALOG } from "@/server/modules/chat/conversation-profiles";
 
 // The browser renders the real Chat component and CSS. Every API is intercepted:
 // this layout regression must never create a user, Turn or model request.
@@ -19,7 +20,7 @@ for (const viewport of [{ width: 1291, height: 745 }, { width: 390, height: 844 
       if (pathname === "/api/v1/me") body = { ok: true, data: { user: { id: "layout-user", email: "layout@example.invalid", displayName: "Layout", image: null }, ageGate: { accepted: true }, entitlements: {}, dreamcoins: { balance: 0 } } };
       if (pathname === "/api/v1/announcements") body = { ok: true, data: { items: [] } };
       if (pathname === "/api/v1/chat/sessions/layout-proof") body = { ok: true, data: { session: { id: "layout-proof", ownerScope: "user:layout-user", title: "Layout proof", characterId: "layout-character", memoryEnabled: false, messages, character: { name: "Mira", canUpdateIdentity: false } } } };
-      if (pathname === "/api/v1/chat/sessions/layout-proof/experience") body = { settings: { responseLength: "short", interactionIntensity: "gentle", sceneGeneration: "follow", version: 1 }, editable: true };
+      if (pathname === "/api/v1/chat/sessions/layout-proof/experience") body = { settings: { responseLength: "short", interactionIntensity: "gentle", sceneGeneration: "follow", version: 1 }, editable: true, catalog: CONVERSATION_PROFILE_CATALOG };
       if (pathname === "/api/v1/chat/sessions/layout-proof/messages" && request.method() === "POST") {
         const userMessage = { id: "user-new", role: "user", content: "Another quiet moment?", status: "sent" };
         const assistant = { id: "assistant-new", role: "assistant", content: "Only the soft patter of rain.", status: "sent", replyToMessageId: "user-new", attempt: 1, attachments: [] };

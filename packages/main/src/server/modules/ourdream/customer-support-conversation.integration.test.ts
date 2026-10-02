@@ -26,11 +26,22 @@ async function fileRequest() {
 }
 
 describe("customer support conversation", () => {
+  it("rejects a retained support form from another user or anonymous scope before creating a ticket", async () => {
+    const body = { category: "bug", subject: `${P}retained draft`, description: "This description belongs to the original browser identity." };
+    for (const scope of [`user:${CUSTOMER}`, `anonymous:${P}browser`]) {
+      expectError(await api("POST", "support/requests", { userId: OTHER, ageGate: true, headers: { "x-idream-viewer-scope": scope }, body }), 409, "conflict");
+    }
+    expect(await prisma.supportRequest.count({ where: { userId: OTHER, subject: body.subject } })).toBe(0);
+    expectError(await api("POST", "support/requests", { ageGate: true, headers: { "x-idream-viewer-scope": `anonymous:${P}browser` }, body }), 401);
+    expectOk(await api("POST", "support/requests", { userId: CUSTOMER, ageGate: true, headers: { "x-idream-viewer-scope": `user:${CUSTOMER}` }, body }), 201);
+    expectError(await api("GET", "support/history", { userId: OTHER, ageGate: true, headers: { "x-idream-viewer-scope": `user:${CUSTOMER}` } }), 409, "conflict");
+  });
+
   it("delivers the operator's question and returns a customer's reply to the active queue", async () => {
     const ticketId = await fileRequest();
     const waiting = await adminV2("PATCH", `support/requests/${ticketId}`, {
       userId: ADMIN, role: "admin",
-      body: { status: "waiting_on_user", customerMessage: "Which image failed to save?", reason: "Need reproduction details", confirmation: ticketId },
+      body: { expectedUpdatedAt: (await prisma.supportRequest.findUniqueOrThrow({ where: { ticketId } })).updatedAt.toISOString(), status: "waiting_on_user", customerMessage: "Which image failed to save?", reason: "Need reproduction details", confirmation: ticketId },
     });
     expectOk(waiting);
     const question = await api("GET", `support/requests/${ticketId}`, { userId: CUSTOMER });
@@ -70,7 +81,7 @@ describe("customer support conversation", () => {
     const ticketId = await fileRequest();
     const command = {
       userId: ADMIN, role: "admin", idempotencyKey: crypto.randomUUID(),
-      body: { customerMessage: "We are checking the failed download.", reason: "Acknowledge request", confirmation: ticketId },
+      body: { expectedUpdatedAt: (await prisma.supportRequest.findUniqueOrThrow({ where: { ticketId } })).updatedAt.toISOString(), customerMessage: "We are checking the failed download.", reason: "Acknowledge request", confirmation: ticketId },
     };
     expectOk(await adminV2("PATCH", `support/requests/${ticketId}`, command));
     expectOk(await adminV2("PATCH", `support/requests/${ticketId}`, command));
@@ -88,7 +99,7 @@ describe("customer support conversation", () => {
     expect(replies[1].data.request.messages).toHaveLength(1);
     expectError(await api("POST", `support/requests/${ticketId}/messages`, { ...input, body: { ...input.body, body: "Different content" } }), 409, "conflict");
     const resolved = await adminV2("PATCH", `support/requests/${ticketId}`, {
-      userId: ADMIN, role: "admin", body: { status: "resolved", customerMessage: "Downloads work again. Please refresh your gallery.", resolutionNotes: "private provider incident: secret@internal.test", reason: "Verified recovery", confirmation: ticketId },
+      userId: ADMIN, role: "admin", body: { expectedUpdatedAt: (await prisma.supportRequest.findUniqueOrThrow({ where: { ticketId } })).updatedAt.toISOString(), status: "resolved", customerMessage: "Downloads work again. Please refresh your gallery.", resolutionNotes: "private provider incident: secret@internal.test", reason: "Verified recovery", confirmation: ticketId },
     });
     expectOk(resolved);
     const replay = await api("POST", `support/requests/${ticketId}/messages`, input);
@@ -116,12 +127,12 @@ describe("customer support conversation", () => {
 
   it("closes only a resolved request and preserves the customer-facing resolution", async () => {
     const ticketId = await fileRequest();
-    const close = { userId: ADMIN, role: "admin", body: { status: "closed", reason: "Close completed case", confirmation: ticketId } };
+    const close = { userId: ADMIN, role: "admin", body: { expectedUpdatedAt: (await prisma.supportRequest.findUniqueOrThrow({ where: { ticketId } })).updatedAt.toISOString(), status: "closed", reason: "Close completed case", confirmation: ticketId } };
     expectError(await adminV2("PATCH", `support/requests/${ticketId}`, close), 409, "conflict");
     expectOk(await adminV2("PATCH", `support/requests/${ticketId}`, {
-      userId: ADMIN, role: "admin", body: { status: "resolved", customerMessage: "Your download is ready.", reason: "Checked the download", confirmation: ticketId },
+      userId: ADMIN, role: "admin", body: { expectedUpdatedAt: (await prisma.supportRequest.findUniqueOrThrow({ where: { ticketId } })).updatedAt.toISOString(), status: "resolved", customerMessage: "Your download is ready.", reason: "Checked the download", confirmation: ticketId },
     }));
-    expectOk(await adminV2("PATCH", `support/requests/${ticketId}`, close));
+    expectOk(await adminV2("PATCH", `support/requests/${ticketId}`, { ...close, body: { ...close.body, expectedUpdatedAt: (await prisma.supportRequest.findUniqueOrThrow({ where: { ticketId } })).updatedAt.toISOString() } }));
     const detail = await api("GET", `support/requests/${ticketId}`, { userId: CUSTOMER });
     expectOk(detail);
     expect(detail.data.request).toMatchObject({ status: "closed", canReply: false, messages: [{ body: "Your download is ready." }] });
@@ -129,11 +140,12 @@ describe("customer support conversation", () => {
 
   it("refuses a stale reply to a request another operator already resolved instead of reopening it", async () => {
     const ticketId = await fileRequest();
+    const expectedUpdatedAt = (await prisma.supportRequest.findUniqueOrThrow({ where: { ticketId } })).updatedAt.toISOString();
     expectOk(await adminV2("PATCH", `support/requests/${ticketId}`, {
-      userId: ADMIN, role: "admin", body: { status: "resolved", customerMessage: "Fixed on our side.", reason: "Resolved", confirmation: ticketId },
+      userId: ADMIN, role: "admin", body: { expectedUpdatedAt, status: "resolved", customerMessage: "Fixed on our side.", reason: "Resolved", confirmation: ticketId },
     }));
     expectError(await adminV2("PATCH", `support/requests/${ticketId}`, {
-      userId: ADMIN, role: "admin", body: { status: "waiting_on_user", customerMessage: "Late reply from a stale panel.", reason: "Customer-visible support reply", confirmation: ticketId },
+      userId: ADMIN, role: "admin", body: { expectedUpdatedAt, status: "waiting_on_user", customerMessage: "Late reply from a stale panel.", reason: "Customer-visible support reply", confirmation: ticketId },
     }), 409, "conflict");
     const detail = await api("GET", `support/requests/${ticketId}`, { userId: CUSTOMER });
     expectOk(detail);

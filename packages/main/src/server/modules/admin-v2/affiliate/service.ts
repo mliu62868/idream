@@ -8,6 +8,7 @@ import { executeAtomicIdempotentMutation } from "../shared/atomic-mutation";
 import { actorWithPermission, jsonBody, queryParams } from "../shared/authority";
 import { requireIdempotencyKey } from "../shared/idempotency";
 import { CREATED_AT_DESC_KEYS, paginateAdminKeyset } from "../shared/list-cursor";
+import { affiliateAttributionHistory } from "@/server/modules/ourdream/affiliate";
 
 function applicationDTO(item: AffiliateApplication) {
   return affiliateApplicationAdminSchema.parse({
@@ -38,6 +39,14 @@ export async function listAffiliateApplications(request: Request) {
     }),
   });
   return { items: result.items.map(applicationDTO), pageInfo: result.pageInfo };
+}
+
+export async function readAffiliateAttribution(request: Request, id: string) {
+  await actorWithPermission(request, "growth.promo.read");
+  const query = queryParams(request, "GET /api/v2/admin/affiliate/applications/:id/attribution");
+  const application = await prisma.affiliateApplication.findFirst({ where: { id, user: { dataClass: "customer" } }, select: { userId: true } });
+  if (!application) throw Errors.notFound("Affiliate application not found");
+  return affiliateAttributionHistory(prisma, application.userId, query, true);
 }
 
 // Approval activates the existing attribution code. It does not authorize a payout or publish commercial terms.

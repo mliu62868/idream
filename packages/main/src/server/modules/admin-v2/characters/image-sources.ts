@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { resolveCustomerIdentitySource } from "./customer-identity-source";
 import {
   characterImageSourceListResponseSchema,
   characterImageSourceUploadRequestSchema,
@@ -66,6 +67,8 @@ export async function listCharacterImageSources(input: {
   const purpose = input.purpose ?? IMAGE_SOURCE_PURPOSE;
   const limit = input.limit ?? LIST_LIMIT;
   const search = input.search?.trim().toLowerCase() ?? "";
+  const customerIdentity = purpose === CHARACTER_LIBRARY_PURPOSE
+    ? await resolveCustomerIdentitySource(prisma, { characterId: input.characterId }) : null;
   const queryIdentity = { characterId: input.characterId, purpose, search };
   const scope = "character-image-sources";
   const cursorKeys = input.cursor
@@ -93,6 +96,7 @@ export async function listCharacterImageSources(input: {
         : {
             // Publication changes visibility, not membership in this library.
             OR: [
+              ...(customerIdentity ? [{ id: customerIdentity.asset.id }] : []),
               {
                 metadata: {
                   path: ["purpose"],

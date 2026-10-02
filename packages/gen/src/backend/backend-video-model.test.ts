@@ -3,6 +3,7 @@ import { BackendVideoModel } from "./backend-video-model";
 import { BackendInvocationError, type GenBackend } from "./types";
 import { workflowDescriptorSchema } from "./workflow";
 import type { VerifiedVideoMedia } from "./video-media-probe";
+import { REDGRAFT_VIDEO_OPTIONS, redgraftVideoEnvelope } from "@idream/shared/contracts";
 import h3ProductionDescriptor from "../../workflows/minimax-h3-redcraft-i2v.json";
 import productionDescriptor from "../../workflows/redgraft-ltx25-i2v.json";
 
@@ -61,7 +62,7 @@ function validGenerationInput() {
     model: "redgraft-ltx25-i2v",
     controls: {
       workflowKey: "redgraft-ltx25-i2v",
-      workflowVersion: 2,
+      workflowVersion: productionDescriptor.version,
       width: 768,
       height: 1152,
     },
@@ -74,6 +75,31 @@ function validGenerationInput() {
 }
 
 describe("BackendVideoModel", () => {
+  it.each([3, 5].flatMap(seconds => ["2:3", "1:1"].flatMap(orientation => ["preview", "standard"].map(quality => ({ seconds, orientation, quality })))))
+    ("binds bounded v7 $seconds-second $orientation $quality inputs and verifies measured output", async options => {
+      const accepted = redgraftVideoEnvelope(options);
+      const stub = backend({ width: accepted.width, height: accepted.height, durationSeconds: accepted.expectedDurationSeconds, framesPerSecond: 24, frameCount: accepted.frameCount, hasAudio: true });
+      const model = new BackendVideoModel({ resolveForModel: vi.fn(() => ({ backend: stub, descriptor })) });
+      const result = await model.generate({ ...validGenerationInput(), seconds: options.seconds,
+        controls: { ...validGenerationInput().controls, width: accepted.width, height: accepted.height, orientation: options.orientation, videoQuality: options.quality, generationProfileVersion: 7, videoOptionsVersion: REDGRAFT_VIDEO_OPTIONS.version } });
+      expect(result).toMatchObject({ ok: true, data: { asset: { width: accepted.width, height: accepted.height, seconds: accepted.expectedDurationSeconds } } });
+      expect(stub.submit).toHaveBeenCalledWith(expect.objectContaining({ slots: expect.objectContaining({ width: accepted.width, height: accepted.height, seconds: options.seconds, fps: 24 }) }));
+    });
+
+  it("cannot use a v7 parameter contract under a historical v2 profile or return mismatched measured frames", async () => {
+    const stub = backend();
+    const model = new BackendVideoModel({ resolveForModel: vi.fn(() => ({ backend: stub, descriptor })) });
+    const controls = { ...validGenerationInput().controls, width: 512, height: 512, orientation: "1:1", videoQuality: "preview", videoOptionsVersion: REDGRAFT_VIDEO_OPTIONS.version };
+    expect(await model.generate({ ...validGenerationInput(), seconds: 3, controls: { ...controls, generationProfileVersion: 2 } })).toMatchObject({ ok: false, error: { code: "unsupported_video_envelope" } });
+    expect(await model.generate({ ...validGenerationInput(), seconds: 3, controls: { ...controls, generationProfileVersion: 3 } })).toMatchObject({ ok: false, error: { code: "unsupported_video_envelope" } });
+    expect(await model.generate({ ...validGenerationInput(), seconds: 3, controls: { ...controls, generationProfileVersion: 4 } })).toMatchObject({ ok: false, error: { code: "unsupported_video_envelope" } });
+    expect(await model.generate({ ...validGenerationInput(), seconds: 3, controls: { ...controls, generationProfileVersion: 5 } })).toMatchObject({ ok: false, error: { code: "unsupported_video_envelope" } });
+    expect(await model.generate({ ...validGenerationInput(), seconds: 3, controls: { ...controls, generationProfileVersion: 6 } })).toMatchObject({ ok: false, error: { code: "unsupported_video_envelope" } });
+    expect(stub.submit).not.toHaveBeenCalled();
+    expect(await model.generate({ ...validGenerationInput(), seconds: 3, controls: { ...controls, generationProfileVersion: 7 } })).toMatchObject({ ok: false, error: { code: "invalid_video_output" } });
+    expect(stub.submit).toHaveBeenCalledTimes(1);
+  });
+
   it("prepares the selected ComfyUI runner inside the host lease before submit", async () => {
     const events: string[] = [];
     const stub = backend();
@@ -139,7 +165,7 @@ describe("BackendVideoModel", () => {
       requestId: "request-video-1",
       controls: {
         workflowKey: "redgraft-ltx25-i2v",
-        workflowVersion: 2,
+        workflowVersion: productionDescriptor.version,
         width: 768,
         height: 1152,
       },
@@ -272,7 +298,7 @@ describe("BackendVideoModel", () => {
       requestId: "request-redgraft-video-1",
       controls: {
         workflowKey: "redgraft-ltx25-i2v",
-        workflowVersion: 2,
+        workflowVersion: productionDescriptor.version,
         width: 768,
         height: 1152,
         fps: 24,
@@ -478,7 +504,7 @@ describe("BackendVideoModel", () => {
       model: "redgraft-ltx25-i2v",
       controls: {
         workflowKey: "redgraft-ltx25-i2v",
-        workflowVersion: 1,
+        workflowVersion: 2,
       },
       referenceImages: [{
         assetId: "source-1",
@@ -545,6 +571,21 @@ describe("BackendVideoModel", () => {
     expect(stub.submit).not.toHaveBeenCalled();
   });
 
+  it.each(["320:282", "320:314", "900:4"])("rejects attention precision or stage binding drift at %s", async (nodeId) => {
+    const stub = backend();
+    const tampered = structuredClone(descriptor);
+    if (tampered.backendKind !== "comfyui") throw new Error("expected comfyui");
+    const node = tampered.apiPrompt[nodeId];
+    if (!node?.inputs || typeof node.inputs !== "object") throw new Error("expected attention binding");
+    if (nodeId === "900:4") node.inputs.compute_precision = "comfy";
+    else node.inputs.model = ["320:333", 0];
+    const model = new BackendVideoModel({ resolveForModel: vi.fn(() => ({ backend: stub, descriptor: tampered })) });
+    expect(await model.generate(validGenerationInput())).toMatchObject({
+      ok: false, error: { code: "unsupported_video_workflow", retryable: false },
+    });
+    expect(stub.submit).not.toHaveBeenCalled();
+  });
+
   it("rejects a descriptor whose seconds slot was rebound", async () => {
     const stub = backend();
     const tampered = workflowDescriptorSchema.parse({
@@ -580,7 +621,7 @@ describe("BackendVideoModel", () => {
       model: "redgraft-ltx25-i2v",
       controls: {
         workflowKey: "redgraft-ltx25-i2v",
-        workflowVersion: 2,
+        workflowVersion: productionDescriptor.version,
       },
       referenceImages: [{
         assetId: "source-1",
@@ -628,7 +669,7 @@ describe("BackendVideoModel", () => {
       model: "redgraft-ltx25-i2v",
       controls: {
         workflowKey: "redgraft-ltx25-i2v",
-        workflowVersion: 2,
+        workflowVersion: productionDescriptor.version,
         width: 1024,
         height: 1152,
       },
@@ -656,7 +697,7 @@ describe("BackendVideoModel", () => {
       model: "other-video-model",
       controls: {
         workflowKey: "redgraft-ltx25-i2v",
-        workflowVersion: 2,
+        workflowVersion: productionDescriptor.version,
         width: 768,
         height: 1152,
       },

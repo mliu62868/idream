@@ -525,6 +525,9 @@ describe("seed data provenance", () => {
           enabled: true,
           rolloutPercent: true,
           status: true,
+          version: true,
+          runnerConfig: true,
+          dryRunSummary: true,
         },
       }),
     ).resolves.toEqual({
@@ -533,6 +536,9 @@ describe("seed data provenance", () => {
       enabled: true,
       rolloutPercent: 100,
       status: "active",
+      version: 6,
+      runnerConfig: expect.objectContaining({ workflowVersion: 4 }),
+      dryRunSummary: expect.objectContaining({ status: "not_run", source: "seed_configuration_state" }),
     });
   }, 15_000);
 

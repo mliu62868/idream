@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { comicDetailSchema, type ComicDetail } from "@idream/shared/comics";
 import { useViewerGate } from "@/hooks/useViewerGate";
 import { useViewerResource } from "@/hooks/useViewerResource";
@@ -67,6 +67,17 @@ export function ComicReader({ id }: { id: string }) {
   // that hiccups; here the failure means this Comic is withdrawn or gone, and
   // leaving its pages on screen would keep serving revoked content.
   const comic = error ? null : reader.data;
+  const restoredComic = useRef<string | null>(null);
+  useEffect(() => {
+    if (!comic || restoredComic.current === comic.id) return;
+    restoredComic.current = comic.id;
+    // Chapter targets arrive after the browser's initial fragment navigation.
+    // Restore once; account revalidation must not move someone already reading.
+    const chapterId = window.location.hash.slice(1);
+    if (comic.episodes.some((episode) => chapterId === `chapter-${episode.id}`)) {
+      document.getElementById(chapterId)?.scrollIntoView({ block: "start" });
+    }
+  }, [comic]);
   return <ComicShell>
     {reader.status.phase === "loading" && <p role="status">Loading Comic…</p>}
     {error && <div role="alert"><p>{error}</p><button className={`${comicButton} mt-4`} onClick={() => { setUnavailable(""); void reader.refresh(); }} type="button">Reload Comic</button></div>}

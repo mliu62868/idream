@@ -59,7 +59,7 @@ async function createOwnedCharacter(userId: string) {
   const created = await api("POST", "character-drafts", { userId, ageGate: true, body: { name: "Avery", age: 25, gender: "female", style: "realistic" } });
   expectOk(created);
   const draftId = created.data.draft.id as string;
-  expectOk(await api("PATCH", `character-drafts/${draftId}`, { userId, ageGate: true, body: {
+  expectOk(await api("PATCH", `character-drafts/${draftId}`, { userId, ageGate: true, body: { expectedUpdatedAt: (await prisma.characterDraft.findUniqueOrThrow({ where: { id: draftId } })).updatedAt.toISOString(),
     ...form,
     tags: [tag.slug],
     advancedDetails: { description: "A warm radio host", firstMessage: "Welcome back.", detailsMarkdown: "## Occupation\nRadio host" },
@@ -108,7 +108,7 @@ describe("Character edit (CR-06 / CR-08)", () => {
     await createUser({ id: stranger });
     expectError(await api("POST", `characters/${characterId}/edit-draft`, { userId: stranger, ageGate: true }), 404, "not_found");
 
-    expectOk(await api("PATCH", `character-drafts/${draftId}`, { userId, ageGate: true, body: {
+    expectOk(await api("PATCH", `character-drafts/${draftId}`, { userId, ageGate: true, body: { expectedUpdatedAt: (await prisma.characterDraft.findUniqueOrThrow({ where: { id: draftId } })).updatedAt.toISOString(),
       ...form,
       name: "Avery Vale",
       tags: [],
@@ -157,7 +157,7 @@ describe("Character edit (CR-06 / CR-08)", () => {
     const opened = await api("POST", `characters/${characterId}/edit-draft`, { userId, ageGate: true });
     expectOk(opened);
     const draftId = opened.data.draft.id as string;
-    expectOk(await api("PATCH", `character-drafts/${draftId}`, { userId, ageGate: true, body: {
+    expectOk(await api("PATCH", `character-drafts/${draftId}`, { userId, ageGate: true, body: { expectedUpdatedAt: (await prisma.characterDraft.findUniqueOrThrow({ where: { id: draftId } })).updatedAt.toISOString(),
       ...form, hair: { prompt: "Short silver bob" },
     } }));
     const refused = await api("POST", `character-drafts/${draftId}/submit`, { userId, ageGate: true, body: { visibility: "private" } });
@@ -209,10 +209,10 @@ describe("Character edit (CR-06 / CR-08)", () => {
     expect(opened.data.character).toMatchObject({ published: true, visibility: "public" });
     const draftId = opened.data.draft.id as string;
 
-    expectOk(await api("PATCH", `character-drafts/${draftId}`, { userId, ageGate: true, body: { ...form, hair: { prompt: "Short silver bob" } } }));
+    expectOk(await api("PATCH", `character-drafts/${draftId}`, { userId, ageGate: true, body: { expectedUpdatedAt: (await prisma.characterDraft.findUniqueOrThrow({ where: { id: draftId } })).updatedAt.toISOString(), ...form, hair: { prompt: "Short silver bob" } } }));
     expectError(await api("POST", `character-drafts/${draftId}/submit`, { userId, ageGate: true, body: { visibility: "public" } }), 409, "conflict");
 
-    expectOk(await api("PATCH", `character-drafts/${draftId}`, { userId, ageGate: true, body: {
+    expectOk(await api("PATCH", `character-drafts/${draftId}`, { userId, ageGate: true, body: { expectedUpdatedAt: (await prisma.characterDraft.findUniqueOrThrow({ where: { id: draftId } })).updatedAt.toISOString(),
       ...form,
       name: "Avery Vale",
       advancedDetails: { description: "A late-night radio host", firstMessage: "You're up late again.", detailsMarkdown: "## Occupation\nNight-shift radio host" },
@@ -259,7 +259,7 @@ describe("Character edit (CR-06 / CR-08)", () => {
     const opened = await api("POST", `characters/${characterId}/edit-draft`, { userId, ageGate: true });
     expectOk(opened);
     const draftId = opened.data.draft.id as string;
-    expectOk(await api("PATCH", `character-drafts/${draftId}`, { userId, ageGate: true, body: {
+    expectOk(await api("PATCH", `character-drafts/${draftId}`, { userId, ageGate: true, body: { expectedUpdatedAt: (await prisma.characterDraft.findUniqueOrThrow({ where: { id: draftId } })).updatedAt.toISOString(),
       ...form,
       advancedDetails: { description: "A late-night radio host", firstMessage: "You're up late again.", detailsMarkdown: "## Occupation\nNight-shift radio host" },
     } }));
@@ -282,7 +282,7 @@ describe("Character edit (CR-06 / CR-08)", () => {
     const opened = await api("POST", `characters/${characterId}/edit-draft`, { userId, ageGate: true });
     expectOk(opened);
     const draftId = opened.data.draft.id as string;
-    expectOk(await api("PATCH", `character-drafts/${draftId}`, { userId, ageGate: true, body: {
+    expectOk(await api("PATCH", `character-drafts/${draftId}`, { userId, ageGate: true, body: { expectedUpdatedAt: (await prisma.characterDraft.findUniqueOrThrow({ where: { id: draftId } })).updatedAt.toISOString(),
       ...form,
       advancedDetails: { description: "A late-night radio host", firstMessage: "You're up late again.", detailsMarkdown: "" },
     } }));
