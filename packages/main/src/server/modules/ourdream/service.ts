@@ -6,6 +6,7 @@ import {
   MEDIA_ASSET_VISIBILITY,
 } from "@idream/shared/catalog";
 import { parseCharacterReleaseAssetManifest } from "@idream/shared/admin";
+import { REFERRAL_REWARD } from "@idream/shared/coins";
 import { resolveLocalBlobPath, resolveLocalBlobRoot } from "@idream/shared/storage/local-blob";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -330,12 +331,9 @@ const signupSchema = z.object({
 // Referral economy (give/get): both the new user and the inviter receive dreamcoins
 // when an invitee signs up with a valid ref code. Idempotent per invitee via the
 // ledger idempotencyKey, so replays/retries never double-mint.
-const REFERRAL_INVITEE_BONUS = 150;
-const REFERRAL_INVITER_REWARD = 150;
-// INTENT: 邀请奖励能把一次性小号的注册额度汇集到一个账号上。每个邀请人滚动 30 天内最多
-// 领 10 次，且必须是正常的 active customer；超限只停发邀请人奖励，被邀请人照常注册和领奖。
-const REFERRAL_INVITER_REWARD_LIMIT = 10;
-const REFERRAL_INVITER_REWARD_WINDOW_MS = 30 * 86_400_000;
+// INTENT: 邀请奖励能把一次性小号的注册额度汇集到一个账号上。每个邀请人滚动窗口内有上限，
+// 且必须是正常的 active customer；超限只停发邀请人奖励，被邀请人照常注册和领奖。
+const REFERRAL_INVITER_REWARD_WINDOW_MS = REFERRAL_REWARD.inviterWindowDays * 86_400_000;
 
 const loginSchema = z.object({
   email: z
@@ -962,7 +960,7 @@ async function signup(request: Request) {
             rewardStatus: "granted",
             createdAt: { gte: new Date(Date.now() - REFERRAL_INVITER_REWARD_WINDOW_MS) },
           },
-        }) < REFERRAL_INVITER_REWARD_LIMIT;
+        }) < REFERRAL_REWARD.inviterLimit;
         const conversion = await tx.referral.create({
           data: {
             inviterId: referral.inviterId,
@@ -976,7 +974,7 @@ async function signup(request: Request) {
           kind: "referral",
           beneficiary: "invitee",
           userId: created.id,
-          amount: REFERRAL_INVITEE_BONUS,
+          amount: REFERRAL_REWARD.inviteeDreamcoins,
           sourceId: conversion.id,
           idempotencyKey: `referral_invitee:${created.id}`,
         });
@@ -985,7 +983,7 @@ async function signup(request: Request) {
             kind: "referral",
             beneficiary: "inviter",
             userId: referral.inviterId,
-            amount: REFERRAL_INVITER_REWARD,
+            amount: REFERRAL_REWARD.inviterDreamcoins,
             sourceId: created.id,
             idempotencyKey: `referral_inviter:${created.id}`,
           });

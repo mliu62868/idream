@@ -1,5 +1,5 @@
 import { prisma } from "@/server/lib/db";
-import { isDefaultProductionVideoProfile } from "@/server/modules/generation/production-video-profile";
+import { isProductionVideoProfile } from "@/server/modules/generation/production-video-profile";
 import {
   featureFlagEnabled,
   hasCharacterGenerationRecipe,
@@ -38,7 +38,7 @@ export async function publicOfferAvailability(): Promise<PublicOfferAvailability
       videoEnabled &&
       videoProfiles.some(
         (profile) =>
-          isDefaultProductionVideoProfile(profile) &&
+          isProductionVideoProfile(profile) &&
           isExecutableGenerationProfile(profile),
       ) &&
       hasCharacterGenerationRecipe(videoRecipes) &&

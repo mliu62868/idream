@@ -26,6 +26,7 @@ import {
   Volume2,
 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { REFERRAL_REWARD } from "@idream/shared/coins";
 import { UserPersonaPanel } from "./UserPersonaPanel";
 import { RecoveryCodeCard } from "./AccountRecovery";
 import { AccountAgeVerification } from "./AccountAgeVerification";
@@ -158,6 +159,8 @@ export function createdCharacterPublicationStatus(input: {
 }
 
 // INTENT: 用户语言，不回显数据库枚举原值；未知值落到「unavailable」而不是原样透出。
+const referralTermsCopy = `Friends who join with your link get ${REFERRAL_REWARD.inviteeDreamcoins} dreamcoins, and you get ${REFERRAL_REWARD.inviterDreamcoins} for each (up to ${REFERRAL_REWARD.inviterLimit} rewards every ${REFERRAL_REWARD.inviterWindowDays} days).`;
+
 const CHARACTER_STATUS_LABELS: Record<string, string> = {
   draft: "draft",
   approved: "private",
@@ -512,6 +515,9 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
   const [query, setQuery] = useState("");
   const mediaSearchQuery = tab === "media" ? query.trim() : "";
   const [redeemCode, setRedeemCode] = useState("");
+  // INTENT: 兑换结果就地显示在输入框下，而不是页面底部共享的 profile-status 行——
+  // 后者在 Affiliate/Billing 卡之后，用户输错码时根本看不到反馈。
+  const [redeemFeedback, setRedeemFeedback] = useState<{ error: boolean; text: string } | null>(null);
   const [mutedTags, setMutedTags] = useState<string[]>([]);
   const [preferencesAuthority, setPreferencesAuthority] = useState(initialAuthorityStatus);
   const [preferenceTags, setPreferenceTags] = useState<ProfileTag[]>([]);
@@ -747,10 +753,10 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
   }, [ageGateAccepted, profileOwnerScope, refreshMediaCollections, tab]);
 
   async function redeem() {
-    setStatus("");
+    setRedeemFeedback(null);
     const code = redeemCode.trim();
     if (!code) {
-      setStatus("Enter a code.");
+      setRedeemFeedback({ error: true, text: "Enter a code." });
       return;
     }
     try {
@@ -762,13 +768,13 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
       const payload = (await response.json()) as ApiErrorPayload;
       if (!ownerRequestIsCurrent()) return;
       if (!response.ok || payload.ok === false) {
-        setStatus(payload.error?.message ?? "Redeem failed");
+        setRedeemFeedback({ error: true, text: payload.error?.message ?? "Redeem failed" });
         return;
       }
-      setStatus("Code redeemed.");
+      setRedeemFeedback({ error: false, text: "Code redeemed." });
       await refreshProfile();
     } catch {
-      setStatus("Network error. Please try again.");
+      setRedeemFeedback({ error: true, text: "Network error. Please try again." });
     }
   }
 
@@ -792,7 +798,8 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
       // 未被使用的邀请行本身不是一次注册。
       const signups = rows.filter((row) => row.inviteeId);
       const rewarded = signups.filter((row) => row.rewardStatus === "granted").length;
-      // 注册即时结算：没拿到奖励的只会是超过邀请奖励上限，不存在「等待中」。
+      // 注册即时结算，不存在「等待中」。没拿到奖励可能是超限，也可能是邀请人账号不符合资格，
+      // 行上不区分原因，所以只说「未发放」。
       setReferralResults({
         total: signups.length,
         rewarded,
@@ -1605,9 +1612,14 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
               Redeem
               <div className="mt-2 flex gap-2">
                 <input
+                  aria-describedby={redeemFeedback ? "redeem-code-feedback" : undefined}
+                  aria-invalid={redeemFeedback?.error || undefined}
                   aria-label="Redeem code input"
                   className="min-w-0 flex-1 rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] normal-case text-white outline-none"
-                  onChange={(event) => setRedeemCode(event.target.value)}
+                  onChange={(event) => {
+                    setRedeemCode(event.target.value);
+                    setRedeemFeedback(null);
+                  }}
                   /* 单字段输入框按 Enter 就该提交；这里不是 form，只有一个图标按钮，
                      不接这个键等于让用户以为兑换码没被接受。 */
                   onKeyDown={(event) => {
@@ -1627,9 +1639,22 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
                   <Gift className="h-4 w-4" />
                 </button>
               </div>
+              {redeemFeedback && (
+                <p
+                  className={`mt-2 text-[12px] font-semibold normal-case ${redeemFeedback.error ? "text-[rgb(255,140,140)]" : "text-[rgb(170,170,170)]"}`}
+                  data-testid="profile-redeem-feedback"
+                  id="redeem-code-feedback"
+                  role={redeemFeedback.error ? "alert" : "status"}
+                >
+                  {redeemFeedback.text}
+                </p>
+              )}
             </label>
             <div className="rounded-[14px] bg-[rgb(18,18,18)] p-4">
               <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">Referral</p>
+              <p className="mt-2 text-[12px] font-semibold leading-5 text-[rgb(170,170,170)]" data-testid="profile-referral-terms">
+                {referralTermsCopy}
+              </p>
               <button
                 className="mt-2 inline-flex h-10 items-center gap-2 rounded-full bg-[rgb(36,36,36)] px-4 text-[13px] font-bold text-white"
                 onClick={invite}
@@ -1665,7 +1690,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
                 >
                   {referralResults.total === 0
                     ? "No one has signed up with your link yet."
-                    : `${referralResults.total} signed up with your link · ${referralResults.rewarded} rewarded${referralResults.unrewarded > 0 ? ` · ${referralResults.unrewarded} past the limit of 10 rewards every 30 days` : ""}.`}
+                    : `${referralResults.total} signed up with your link · ${referralResults.rewarded} rewarded${referralResults.unrewarded > 0 ? ` · ${referralResults.unrewarded} not rewarded` : ""}.`}
                 </p>
               ) : null}
             </div>

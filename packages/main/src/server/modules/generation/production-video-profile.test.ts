@@ -3,7 +3,6 @@ import {
   isDefaultProductionVideoProfile,
   isProductionVideoProfile,
   productionVideoRecipeForProfile,
-  PRODUCTION_DEFAULT_VIDEO_PROFILE,
   PRODUCTION_H3_VIDEO_PROFILE,
   PRODUCTION_REDGRAFT_LTX25_VIDEO_PROFILE,
   PRODUCTION_REDGRAFT_LTX25_VIDEO_OPTIONS_PROFILE,
@@ -12,7 +11,7 @@ import {
 
 function exactProfile() {
   return {
-    ...PRODUCTION_DEFAULT_VIDEO_PROFILE,
+    ...PRODUCTION_REDGRAFT_LTX25_VIDEO_PROFILE,
     mode: "video",
     convertedModelPath: null,
     enabled: true,
@@ -33,9 +32,9 @@ describe("default production video profile authority", () => {
     [
       "runnerConfig",
       {
-        ...PRODUCTION_DEFAULT_VIDEO_PROFILE.runnerConfig,
+        ...PRODUCTION_REDGRAFT_LTX25_VIDEO_PROFILE.runnerConfig,
         capabilities: {
-          ...PRODUCTION_DEFAULT_VIDEO_PROFILE.runnerConfig.capabilities,
+          ...PRODUCTION_REDGRAFT_LTX25_VIDEO_PROFILE.runnerConfig.capabilities,
           fps: 25,
         },
       },
@@ -113,6 +112,9 @@ describe("production video profile catalog", () => {
     const options = { ...PRODUCTION_REDGRAFT_LTX25_VIDEO_OPTIONS_PROFILE, mode: "video", convertedModelPath: null, enabled: true, status: "active" };
     expect(hasProductionVideoOptions(options)).toBe(true);
     expect(isProductionVideoProfile(options)).toBe(true);
+    // The v7 options publication is the same default Character route: admin
+    // runs, plan feature projection, and Generate must agree on it.
+    expect(isDefaultProductionVideoProfile(options)).toBe(true);
     expect(productionVideoRecipeForProfile(options)?.workflowVersion).toBe(4);
     expect(hasProductionVideoOptions(exactRedGraftProfile())).toBe(false);
     expect(hasProductionVideoOptions({ ...options, version: 2 })).toBe(false);

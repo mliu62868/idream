@@ -9,6 +9,7 @@ import {
 } from "react";
 import { ArrowRight } from "lucide-react";
 import Link from "next/link";
+import { REFERRAL_REWARD } from "@idream/shared/coins";
 import { parseViewerAuthorityResponse } from "@/lib/public-api-contracts";
 import { authHrefForTarget, safeInternalAuthRedirect } from "./authRedirect";
 import { AccountRecovery, RecoveryCodeCard } from "./AccountRecovery";
@@ -33,13 +34,13 @@ export function AuthWorkspace({
     () => new URLSearchParams(window.location.hash.slice(1)).get("deletion"),
     () => null,
   );
-  const accountDeletionGraceEndsAt = accountDeletionGraceEndsAtFromSearch(
-    useSyncExternalStore(
-      subscribeLocationSearch,
-      () => window.location.search,
-      () => "",
-    ),
+  const locationSearch = useSyncExternalStore(
+    subscribeLocationSearch,
+    () => window.location.search,
+    () => "",
   );
+  const accountDeletionGraceEndsAt = accountDeletionGraceEndsAtFromSearch(locationSearch);
+  const referralCode = mode === "signup" ? signupReferralCode(locationSearch) : undefined;
   const shouldShowSignupLoginRecovery =
     mode === "signup" && status === "Email already registered";
 
@@ -76,9 +77,7 @@ export function AuthWorkspace({
       // Carry the referral code from /signup?ref=DREAM-XXXX through to the API so the
       // invitee + inviter both get their dreamcoins.
       const ref =
-        mode === "signup"
-          ? new URLSearchParams(window.location.search).get("ref")?.trim() || undefined
-          : undefined;
+        mode === "signup" ? signupReferralCode(window.location.search) : undefined;
       const response = await fetch(`/api/v1/auth/${mode}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -147,6 +146,14 @@ export function AuthWorkspace({
           data-auth-ready={interactive ? "true" : "false"}
           onSubmit={submit}
         >
+          {referralCode && (
+            <p
+              className="mb-4 rounded-[12px] border border-[rgb(253,95,194)]/30 bg-[rgb(36,36,36)] p-3 text-[13px] font-semibold leading-5 text-[rgb(220,220,220)]"
+              data-testid="signup-referral-bonus"
+            >
+              {signupReferralBonusCopy}
+            </p>
+          )}
           {mode === "login" && accountDeletionGraceEndsAt && (
             <p
               className="mb-4 rounded-[12px] border border-white/10 bg-[rgb(36,36,36)] p-3 text-[13px] font-medium leading-5 text-[rgb(190,190,190)]"
@@ -259,6 +266,13 @@ function authSignupHref() {
 function authLoginRecoveryHref() {
   const target = authRedirectTarget();
   return target === "/" ? "/login" : authHrefForTarget("/login", target);
+}
+
+// The invitee reward is only minted for a valid code, which the server decides at signup.
+export const signupReferralBonusCopy = `You're joining with an invite link: a valid invite adds ${REFERRAL_REWARD.inviteeDreamcoins} bonus dreamcoins to your new account.`;
+
+export function signupReferralCode(search: string) {
+  return new URLSearchParams(search).get("ref")?.trim() || undefined;
 }
 
 export function accountDeletionGraceEndsAtFromSearch(search: string) {

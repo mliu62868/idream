@@ -42,6 +42,37 @@ function button(text: string) {
 }
 async function click(text: string) { await act(async () => button(text).click()); }
 
+describe("coin checkout feedback stays where the user is looking", () => {
+  it("brings the review into view with focus, marks the chosen offer, and honors reduced motion", async () => {
+    const scrolled: Array<{ label: string | null; options: unknown }> = [];
+    vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (this: Element, options?: boolean | ScrollIntoViewOptions) {
+      scrolled.push({ label: this.getAttribute("aria-label"), options });
+    });
+    vi.spyOn(window, "matchMedia").mockImplementation((query: string) => ({ matches: query.includes("reduce") }) as MediaQueryList);
+    vi.stubGlobal("fetch", vi.fn<Fetcher>(async (url) => reads(String(url))));
+    await mount(); await click("Review purchase");
+    const review = container.querySelector('[aria-label="Review coin purchase"]')!;
+    expect(scrolled).toContainEqual({ label: "Review coin purchase", options: { behavior: "auto", block: "start" } });
+    expect(document.activeElement).toBe(review.querySelector("h2"));
+    expect(button("Review purchase").getAttribute("aria-pressed")).toBe("true");
+    vi.restoreAllMocks();
+  });
+
+  it("puts the new invoice link at the result and explains an unpaid invoice in payment terms", async () => {
+    const fetcher = vi.fn<Fetcher>(async (url, init) => init?.method === "POST" ? ok({ purchase, balance: 7 }) : reads(String(url)));
+    vi.stubGlobal("fetch", fetcher);
+    await mount(); await click("Review purchase"); await click("Continue to crypto checkout");
+    const invoice = container.querySelector<HTMLAnchorElement>('[role="status"] a')!;
+    expect(invoice.textContent).toBe("Open payment invoice");
+    expect(invoice.getAttribute("href")).toBe(purchase.checkoutUrl);
+    expect(document.activeElement).toBe(invoice);
+    const history = container.querySelector('[aria-label="Coin purchases"]')!.textContent;
+    expect(history).toContain("Awaiting payment");
+    expect(history).toContain("you are not charged");
+    expect(history).not.toMatch(/\bcreated\b/);
+  });
+});
+
 describe("coin checkout recovery and viewer ownership", () => {
   it("loads prices without creating an invoice and shows exact terms before explicit payment submission", async () => {
     const fetcher = vi.fn<Fetcher>(async (url) => reads(String(url))); vi.stubGlobal("fetch", fetcher);
@@ -78,7 +109,7 @@ describe("coin checkout recovery and viewer ownership", () => {
       "content-type": "application/json", "idempotency-key": saved.key, "x-idream-viewer-scope": "user:owner-a" } });
     expect(writes[0][1]?.body).toBe(writes[1][1]?.body);
     expect(readPendingCoinCheckout(window.sessionStorage, "owner-a")).toBeNull();
-    expect(container.textContent).toContain("invoice is saved");
+    expect(container.textContent).toContain("Your invoice is ready");
     expect(container.textContent).not.toContain("125 dreamcoins added");
   });
 

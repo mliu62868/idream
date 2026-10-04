@@ -578,8 +578,30 @@ describe("ProfileWorkspace media pagination", () => {
     expect(container.querySelector<HTMLInputElement>('[aria-label="Referral link"]')?.value)
       .toContain("/signup?ref=DREAM-VIEWERA");
     expect(container.querySelector('[data-testid="profile-referral-results"]')?.textContent)
-      .toContain("2 signed up with your link · 1 rewarded · 1 past the limit of 10 rewards every 30 days.");
+      .toContain("2 signed up with your link · 1 rewarded · 1 not rewarded.");
+    // Both sides of the give/get see the amount before anyone signs up.
+    expect(container.querySelector('[data-testid="profile-referral-terms"]')?.textContent)
+      .toBe("Friends who join with your link get 150 dreamcoins, and you get 150 for each (up to 10 rewards every 30 days).");
     expect(requests).not.toContain("/api/v1/referrals/invite");
+  });
+
+  it("shows a rejected redeem code as an error beside its input, not in the page-level status", async () => {
+    override = (path) => path === "/api/v1/redeem-codes/redeem"
+      ? Promise.resolve(Response.json({ ok: false, error: { message: "Redeem code not found" } }, { status: 404 }))
+      : undefined;
+    await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/profile" })));
+    await settle();
+    const input = container.querySelector<HTMLInputElement>('[aria-label="Redeem code input"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "NOPE");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await click(button("Redeem code"));
+    const feedback = container.querySelector('[data-testid="profile-redeem-panel"] [role="alert"]');
+    expect(feedback?.textContent).toBe("Redeem code not found");
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    expect(input.getAttribute("aria-describedby")).toBe(feedback?.id);
+    expect(container.querySelector('[data-testid="profile-status"]')).toBeNull();
   });
 
   it("retries the failed page without silently returning to the first 40 items", async () => {
