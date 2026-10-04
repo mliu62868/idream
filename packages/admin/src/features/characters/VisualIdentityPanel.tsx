@@ -5,6 +5,8 @@ import Link from "next/link";
 import Image from "next/image";
 import type { CharacterWorkspaceDetail } from "@idream/shared/admin";
 import { useEffect, useMemo, useState } from "react";
+import { ConfirmDialog } from "@/components/admin/ui/ConfirmDialog";
+import { readVisualIdentityDraft, writeVisualIdentityDraft, type VisualIdentityDraft } from "./visual-identity-drafts";
 import { apiWrite } from "@/components/admin/api";
 import { characterAssetReadinessAction } from "@/features/characters/character-asset-studio-authority";
 import {
@@ -67,11 +69,13 @@ export function requiresReviewedIdentityBootstrap(input: {
 }
 
 export function VisualIdentityPanel({
+  actorId = "current-operator",
   data,
   navigateToTab,
   permissions,
   runCommittedMutation,
 }: {
+  actorId?: string;
   data: VisualIdentityPanelData;
   permissions: Pick<
     CharacterWorkspacePermissions,
@@ -88,15 +92,22 @@ export function VisualIdentityPanel({
 }) {
   const { t } = useAdminI18n();
   const identity = data.visual.activeIdentity;
-  const [identityPrompt, setIdentityPrompt] = useState(
-    identity?.identityPrompt ?? "",
-  );
-  const [negativeIdentityPrompt, setNegativeIdentityPrompt] = useState(
-    identity?.negativeIdentityPrompt ?? "",
-  );
-  const [style, setStyle] = useState(identity?.style ?? data.character.style);
-  const [defaultSeed, setDefaultSeed] = useState(identity?.defaultSeed ?? "");
-  const [identityReason, setIdentityReason] = useState("");
+  const storageKey = `idream.admin.visual-draft:${actorId}:${data.character.id}`;
+  const [draft, setDraft] = useState<VisualIdentityDraft | null>(null);
+  const [discardOpen, setDiscardOpen] = useState(false);
+  const identityAuthority = JSON.stringify([identity?.id ?? null, identity?.version ?? 0]);
+  const referenceAuthority = JSON.stringify([identityAuthority, data.visual.activeReferenceSet?.id ?? null, data.visual.activeReferenceSet?.revision ?? 0]);
+  const identityForm = draft?.identity ?? {
+    identityId: identity?.id ?? null,
+    identityVersion: identity?.version ?? 0,
+    identityPrompt: identity?.identityPrompt ?? "",
+    negativeIdentityPrompt: identity?.negativeIdentityPrompt ?? "",
+    style: identity?.style ?? data.character.style,
+    defaultSeed: identity?.defaultSeed ?? "",
+    reason: "",
+  };
+  const { identityPrompt, negativeIdentityPrompt, style, defaultSeed, reason: identityReason } = identityForm;
+  const identityStale = identityForm.identityId !== (identity?.id ?? null) || identityForm.identityVersion !== (identity?.version ?? 0);
   const [identityConfirmed, setIdentityConfirmed] = useState(false);
   const routeEvaluation = data.visual.routeEvaluation;
   const activeGenerationRoute =
@@ -178,13 +189,13 @@ export function VisualIdentityPanel({
       ) ?? [],
     [data.visual.activeReferenceSet],
   );
-  const [selectedReferenceIds, setSelectedReferenceIds] = useState<string[]>(
-    () =>
-      data.visual.activeReferenceSet
-        ? activeReferenceIds
-        : referenceCandidates.map((asset) => asset.mediaAssetId),
-  );
-  const [referenceReason, setReferenceReason] = useState("");
+  const referenceForm = draft?.references ?? {
+    authority: referenceAuthority,
+    selectedIds: data.visual.activeReferenceSet ? activeReferenceIds : referenceCandidates.map((asset) => asset.mediaAssetId),
+    reason: "",
+  };
+  const { selectedIds: selectedReferenceIds, reason: referenceReason } = referenceForm;
+  const referencesStale = referenceForm.authority !== referenceAuthority;
   const [referenceConfirmed, setReferenceConfirmed] = useState(false);
   const [selectedLookId, setSelectedLookId] = useState<string | null>(null);
   const [lookArchiveReason, setLookArchiveReason] = useState("");
@@ -192,6 +203,23 @@ export function VisualIdentityPanel({
     null,
   );
   const [error, setError] = useState<string | null>(null);
+  function keepDraft(next: VisualIdentityDraft | null) {
+    setDraft(next);
+    if (!writeVisualIdentityDraft(storageKey, next)) {
+      setError(t("Draft kept until this tab reloads. Browser storage is unavailable."));
+    }
+  }
+  function editIdentity(patch: Partial<typeof identityForm>) {
+    keepDraft({ ...draft, identity: { ...identityForm, ...patch } });
+  }
+  function editReferences(patch: Partial<typeof referenceForm>) {
+    keepDraft({ ...draft, references: { ...referenceForm, ...patch } });
+  }
+  function clearDraftPart(part: keyof VisualIdentityDraft) {
+    const next = { ...draft };
+    delete next[part];
+    keepDraft(Object.keys(next).length ? next : null);
+  }
   const removedReferenceIds = referenceIdsRemovedFromPublishedSet(
     activeReferenceIds,
     selectedReferenceIds,
@@ -218,23 +246,25 @@ export function VisualIdentityPanel({
   }, [data.visual.readiness.blockers]);
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      setSelectedReferenceIds(
-        data.visual.activeReferenceSet
-          ? activeReferenceIds
-          : referenceCandidates.map((asset) => asset.mediaAssetId),
-      );
+      const restored = readVisualIdentityDraft(storageKey);
+      setDraft((current) => current ?? restored.draft);
+      if (restored.error) setError(t(restored.error));
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [
-    activeReferenceIds,
-    data.visual.activeIdentity?.id,
-    data.visual.activeReferenceSet,
-    referenceCandidates,
-  ]);
+  }, [storageKey, t]);
+  useEffect(() => {
+    if (!draft) return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [draft]);
   const createIdentityVersion = async () => {
+    if (identityStale || !permissions.writeVisual || busy) return;
     setBusy("identity");
     setError(null);
     const body = {
+      expectedActiveIdentityId: identityForm.identityId,
+      expectedActiveIdentityVersion: identityForm.identityVersion,
       identityPrompt: identityPrompt.trim() || undefined,
       negativeIdentityPrompt: negativeIdentityPrompt.trim() || undefined,
       style,
@@ -254,7 +284,7 @@ export function VisualIdentityPanel({
             body,
           ),
         afterRefresh: () => {
-          setIdentityReason("");
+          clearDraftPart("identity");
           setIdentityConfirmed(false);
         },
       });
@@ -278,13 +308,17 @@ export function VisualIdentityPanel({
         apiWrite(
           `/api/v2/admin/content/characters/${data.character.id}/visual-profiles`,
           "POST",
-          body,
+          {
+            ...body,
+            expectedActiveIdentityId: identity?.id ?? null,
+            expectedActiveIdentityVersion: identity?.version ?? 0,
+          },
         ),
     });
   };
 
   const publishReferenceSet = async () => {
-    if (!identity) return;
+    if (!identity || referencesStale || !permissions.writeVisual || busy) return;
     setBusy("references");
     setError(null);
     const selected = referenceCandidates.filter((asset) =>
@@ -319,7 +353,7 @@ export function VisualIdentityPanel({
             body,
           }),
         afterRefresh: () => {
-          setReferenceReason("");
+          clearDraftPart("references");
           setReferenceConfirmed(false);
         },
       });
@@ -376,6 +410,10 @@ export function VisualIdentityPanel({
 
   return (
     <div className="space-y-5">
+      {draft ? <div className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-[var(--ad-yellow-bg)] px-4 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">
+        <span>{t(identityStale || referencesStale ? "Draft is based on an older version. Copy or discard it." : "Unsaved draft · kept in this tab")}</span>
+        <button className="min-h-9 underline" disabled={busy !== null} onClick={() => setDiscardOpen(true)} type="button">{t("Discard draft")}</button>
+      </div> : null}
       <VisualIdentityExperimentWorkbench
         canActivate={permissions.writeVisual}
         canCreate={permissions.createAssets ?? false}
@@ -591,21 +629,12 @@ export function VisualIdentityPanel({
                           <span className="flex min-w-0 items-center gap-2 text-xs font-semibold">
                             <input
                               checked={checked}
-                              disabled={!row.selectable}
-                              onChange={(event) =>
-                                setSelectedReferenceIds((current) =>
-                                  event.target.checked
-                                    ? [
-                                        ...new Set([
-                                          ...current,
-                                          row.asset.mediaAssetId,
-                                        ]),
-                                      ]
-                                    : current.filter(
-                                        (id) => id !== row.asset.mediaAssetId,
-                                      ),
-                                )
-                              }
+                              disabled={!row.selectable || !permissions.writeVisual || busy !== null}
+                              onChange={(event) => {
+                                editReferences({ selectedIds: event.target.checked
+                                  ? [...new Set([...selectedReferenceIds, row.asset.mediaAssetId])]
+                                  : selectedReferenceIds.filter((id) => id !== row.asset.mediaAssetId) });
+                              }}
                               type="checkbox"
                             />
                             <span className="truncate">
@@ -664,8 +693,9 @@ export function VisualIdentityPanel({
                     {t("Publication reason")}
                     <input
                       className={`${fieldClass} mt-1`}
+                      disabled={!permissions.writeVisual || busy !== null}
                       onChange={(event) =>
-                        setReferenceReason(event.target.value)
+                        editReferences({ reason: event.target.value })
                       }
                       value={referenceReason}
                     />
@@ -674,6 +704,7 @@ export function VisualIdentityPanel({
                     <input
                       checked={referenceConfirmed}
                       className="mt-0.5"
+                      disabled={!permissions.writeVisual || busy !== null}
                       onChange={(event) =>
                         setReferenceConfirmed(event.target.checked)
                       }
@@ -688,6 +719,7 @@ export function VisualIdentityPanel({
                   <div className="mt-4">
                     <WorkspaceButton
                       disabled={
+                        referencesStale ||
                         !permissions.writeVisual ||
                         busy !== null ||
                         selectedReferenceIds.length === 0 ||
@@ -784,7 +816,7 @@ export function VisualIdentityPanel({
                     <WorkspaceButton
                       // 归档 Look 是可逆的（status 可改回 active），按钮本身即确认动作——
                       // 不再要求先填理由、再默写内部 ID。
-                      disabled={busy !== null}
+                      disabled={!permissions.writeVisual || busy !== null}
                       onClick={() => void archiveLook()}
                       tone="primary"
                     >
@@ -831,7 +863,7 @@ export function VisualIdentityPanel({
               <summary className="cursor-pointer font-semibold">
                 {t("Advanced identity controls")}
               </summary>
-              <section className="mt-4" aria-labelledby="new-identity-title">
+              <fieldset className="mt-4" disabled={!permissions.writeVisual || busy !== null} aria-labelledby="new-identity-title">
                 <h3 className="font-semibold" id="new-identity-title">
                   {t("Create identity version")}
                 </h3>
@@ -888,7 +920,7 @@ export function VisualIdentityPanel({
                   {t("Identity lock")}
                   <textarea
                     className={`${textAreaClass} mt-1`}
-                    onChange={(event) => setIdentityPrompt(event.target.value)}
+                    onChange={(event) => editIdentity({ identityPrompt: event.target.value })}
                     value={identityPrompt}
                   />
                 </label>
@@ -897,7 +929,7 @@ export function VisualIdentityPanel({
                   <textarea
                     className={`${textAreaClass} mt-1`}
                     onChange={(event) =>
-                      setNegativeIdentityPrompt(event.target.value)
+                      editIdentity({ negativeIdentityPrompt: event.target.value })
                     }
                     value={negativeIdentityPrompt}
                   />
@@ -907,7 +939,7 @@ export function VisualIdentityPanel({
                     {t("Style")}
                     <select
                       className={`${fieldClass} mt-1`}
-                      onChange={(event) => setStyle(event.target.value)}
+                      onChange={(event) => editIdentity({ style: event.target.value })}
                       value={style}
                     >
                       {["realistic", "anime", "hybrid", "other"].map(
@@ -921,7 +953,7 @@ export function VisualIdentityPanel({
                     {t("Seed")}
                     <input
                       className={`${fieldClass} mt-1`}
-                      onChange={(event) => setDefaultSeed(event.target.value)}
+                      onChange={(event) => editIdentity({ defaultSeed: event.target.value })}
                       value={defaultSeed}
                     />
                   </label>
@@ -930,7 +962,7 @@ export function VisualIdentityPanel({
                   {t("Change reason")}
                   <input
                     className={`${fieldClass} mt-1`}
-                    onChange={(event) => setIdentityReason(event.target.value)}
+                    onChange={(event) => editIdentity({ reason: event.target.value })}
                     value={identityReason}
                   />
                 </label>
@@ -948,6 +980,7 @@ export function VisualIdentityPanel({
                 <div className="mt-4">
                   <WorkspaceButton
                     disabled={
+                      identityStale ||
                       requiresReviewedBootstrap ||
                       blockedIdentityRepair ||
                       !permissions.writeVisual ||
@@ -966,7 +999,7 @@ export function VisualIdentityPanel({
                     {t("Read-only: content.official.write is not granted.")}
                   </p>
                 ) : null}
-              </section>
+              </fieldset>
             </details>
             <details
               className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"
@@ -1034,6 +1067,16 @@ export function VisualIdentityPanel({
           </aside>
         </div>
       </details>
+      {discardOpen ? <ConfirmDialog onClose={() => setDiscardOpen(false)} spec={{
+        title: t("Discard draft?"), requireReason: false, submitLabel: t("Discard draft"),
+        onSubmit: async () => {
+          setError(null);
+          keepDraft(null);
+          setIdentityConfirmed(false);
+          setReferenceConfirmed(false);
+          setDiscardOpen(false);
+        },
+      }} /> : null}
     </div>
   );
 }

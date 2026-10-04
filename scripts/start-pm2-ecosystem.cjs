@@ -1,7 +1,8 @@
 const { spawnSync } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
-const { existsSync, readFileSync } = require("node:fs");
+const { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } = require("node:fs");
 const { createRequire } = require("node:module");
+const { homedir } = require("node:os");
 const path = require("node:path");
 const {
   loadGenEnvironment,
@@ -911,11 +912,35 @@ function runPm2Ecosystem(options = {}) {
   return resumed.status ?? 1;
 }
 
+function withPm2TransitionLock(run, environment = process.env) {
+  // Every checkout sharing a PM2 daemon must serialize the entire drain,
+  // restart, ownership proof and resume; a per-repository lock is insufficient.
+  const directory = path.resolve(environment.PM2_HOME || path.join(environment.HOME || homedir(), ".pm2"));
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const lockPath = path.join(directory, "idream-transition.lock");
+  let descriptor;
+  try {
+    descriptor = openSync(lockPath, "wx", 0o600);
+  } catch (error) {
+    if (error.code !== "EEXIST") throw error;
+    process.stderr.write(`PM2 transition is locked: ${lockPath}. Inspect the owner before removing a stale lock; no PM2 or queue operation was run.\n`);
+    return 1;
+  }
+  try {
+    writeFileSync(descriptor, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), repository: repoRoot }) + "\n");
+    return run();
+  } finally {
+    closeSync(descriptor);
+    unlinkSync(lockPath);
+  }
+}
+
 if (require.main === module) {
-  process.exitCode = runPm2Ecosystem();
+  process.exitCode = withPm2TransitionLock(() => runPm2Ecosystem());
 }
 
 module.exports = {
+  withPm2TransitionLock,
   verifyDevelopmentRuntime,
   verifyAsrRuntime,
   productionAdmissionTargets,

@@ -27,6 +27,7 @@ const {
   verifyDevelopmentRuntime,
   verifyProductionRuntime,
   verifyAsrRuntime,
+  withPm2TransitionLock,
 } = require("./start-pm2-ecosystem.cjs");
 
 function loadConfig(mode, overrides = {}) {
@@ -260,6 +261,61 @@ test("every first-party JavaScript and TypeScript service is executed by Bun", (
     for (const app of config.apps) {
       assert.equal(path.basename(app.interpreter), "bun", `${mode}:${app.name}`);
     }
+  }
+});
+
+for (const executable of [process.execPath, "bun"]) {
+  test(`PM2 wrapper on ${path.basename(executable)} rejects an existing transition before invoking PM2`, () => {
+    const { spawnSync } = require("node:child_process");
+    const { tmpdir } = require("node:os");
+    const directory = fs.mkdtempSync(path.join(tmpdir(), "idream-pm2-transition-"));
+    const lockPath = path.join(directory, "idream-transition.lock");
+    const marker = path.join(directory, "pm2-calls.jsonl");
+    const owner = JSON.stringify({ pid: process.pid, repository: "/controlled/other-checkout" });
+    fs.writeFileSync(lockPath, owner);
+    const pm2 = path.join(directory, "pm2");
+    fs.writeFileSync(pm2, `#!/usr/bin/env node
+require("node:fs").appendFileSync(process.env.IDREAM_TEST_PM2_CALLS, JSON.stringify(process.argv.slice(2)) + "\\n");
+process.exit(7);
+`);
+    fs.chmodSync(pm2, 0o700);
+    try {
+      const result = spawnSync(executable, [path.join(__dirname, "start-pm2-ecosystem.cjs"), "current", "restart"], {
+        cwd: repoRoot,
+        env: { ...process.env, APP_ENV: "production", PM2_HOME: directory, PATH: `${directory}${path.delimiter}${process.env.PATH}`, IDREAM_TEST_PM2_CALLS: marker },
+        encoding: "utf8",
+        timeout: 3000,
+      });
+      assert.equal(result.error, undefined);
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stderr, /PM2 transition.*locked/u);
+      assert.equal(fs.existsSync(marker), false, "A competing wrapper invoked PM2");
+      assert.equal(fs.readFileSync(lockPath, "utf8"), owner);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+}
+
+test("the PM2 transition lock spans the callback and releases after success or failure", () => {
+  const { tmpdir } = require("node:os");
+  const directory = fs.mkdtempSync(path.join(tmpdir(), "idream-pm2-transition-"));
+  const environment = { PM2_HOME: directory };
+  const lockPath = path.join(directory, "idream-transition.lock");
+  try {
+    let competingCalls = 0;
+    assert.equal(withPm2TransitionLock(() => {
+      assert.equal(JSON.parse(fs.readFileSync(lockPath, "utf8")).pid, process.pid);
+      assert.equal(withPm2TransitionLock(() => { competingCalls += 1; }, environment), 1);
+      assert.equal(competingCalls, 0);
+      return 0;
+    }, environment), 0);
+    assert.equal(fs.existsSync(lockPath), false);
+    assert.throws(() => withPm2TransitionLock(() => { throw new Error("controlled failure"); }, environment), /controlled failure/u);
+    assert.equal(fs.existsSync(lockPath), false);
+    assert.equal(withPm2TransitionLock(() => 0, environment), 0);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
   }
 });
 

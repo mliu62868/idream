@@ -502,6 +502,7 @@ export const contentTemplateCreateRequestSchema = z.object({
 }).strict();
 
 export const contentTemplateUpdateRequestSchema = z.object({
+  expectedUpdatedAt: adminIsoDateTimeSchema,
   name: z.string().trim().min(1).max(80).optional(),
   summary: z.string().trim().max(200).nullable().optional(),
   gender: z.string().trim().max(40).nullable().optional(),
@@ -516,6 +517,7 @@ export const contentTemplateUpdateRequestSchema = z.object({
 }).strict();
 
 export const contentTemplateActiveRequestSchema = z.object({
+  expectedUpdatedAt: adminIsoDateTimeSchema,
   active: z.boolean(),
   reason: reasonSchema,
   confirmation: confirmationSchema,
@@ -528,7 +530,6 @@ export const contentTemplateActiveRequestSchema = z.object({
 export const contentTagQuerySchema = z.object({
   search: z.string().trim().min(1).max(200).optional(),
   category: shortText(40).optional(),
-  limit: z.coerce.number().int().min(1).max(500).default(200),
 }).strict();
 
 export const contentTagSchema = z.object({

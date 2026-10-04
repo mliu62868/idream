@@ -17,6 +17,8 @@ import { writeContentAudit } from "./audit";
 //            去重后删除 source tag 本体；全部写审计。
 
 export async function listAdminTags(query: ContentTagQuery) {
+  // Both taxonomy merging and character assignment need the complete governed
+  // vocabulary. A silent cap makes later tags unreachable in both workspaces.
   const tags = await prisma.tag.findMany({
     where: {
       ...(query.category ? { category: query.category } : {}),
@@ -26,7 +28,6 @@ export async function listAdminTags(query: ContentTagQuery) {
     },
     include: { _count: { select: { characters: true } } },
     orderBy: [{ category: "asc" }, { slug: "asc" }],
-    take: query.limit,
   });
 
   return {

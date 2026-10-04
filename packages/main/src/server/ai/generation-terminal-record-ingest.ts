@@ -1,8 +1,8 @@
+import { generationTerminalRecordChecksum } from "@idream/shared/contracts/durable-server";
 import { Prisma } from "@prisma/client";
 import {
   aiFinalizePayloadSchema,
   generationTerminalFinalizeDedupeKey,
-  generationTerminalRecordChecksum,
   generationTerminalRecordIngestSchema,
   type GenerationTerminalRecordIngest,
 } from "@idream/shared/contracts";

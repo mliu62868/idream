@@ -1,5 +1,6 @@
+import { generationTerminalRecordChecksum } from "@idream/shared/contracts/durable-server";
 import { afterAll, describe, expect, it } from "vitest";
-import { generationTerminalFinalizeDedupeKey, generationTerminalRecordChecksum, idempotencyKeys, MAIN_QUEUES } from "@idream/shared/contracts";
+import { generationTerminalFinalizeDedupeKey, idempotencyKeys, MAIN_QUEUES } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
 import { jobQueue } from "@/server/jobs/queue";
 import { postDreamcoinEntry } from "@/server/modules/billing/ledger";

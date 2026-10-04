@@ -186,7 +186,7 @@ describe("Character create wizard", () => {
       createElement(CharacterCreateWizard, { canCreate: false }),
     );
     expect(html).toContain("No permission");
-    expect(html).toContain("character.project.write");
+    expect(html).toContain("Creating or editing characters requires character write permission");
     expect(html).not.toContain("Continue to visual direction");
   });
 
@@ -194,6 +194,7 @@ describe("Character create wizard", () => {
     const html = renderToStaticMarkup(
       createElement(CharacterWorkspace, {
         actorId: "test-admin",
+        canCreateCharacters: true,
         view: { kind: "new" },
         permissions: new Set<AdminPermissionKey>(["character.project.write"]),
       }),

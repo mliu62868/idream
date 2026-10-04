@@ -62,7 +62,7 @@ async function bindFixtureJob(attachmentId: string, job: Awaited<ReturnType<type
 }
 
 function effect(snapshot: NonNullable<Awaited<ReturnType<typeof beginChatTurn>>["snapshot"]>): ChatToolEffect {
-  return { version: 2, turnId: snapshot.turnId, attempt: snapshot.attempt, callId: randomUUID(), name: "generate_image_async", effectScope: "turn_action", intent: { requestedNudity: "unspecified" }, arguments: { prompt: "One person seated by a rain-streaked cafe window.", outputCount: 1, orientation: "4:5" } };
+  return { version: 2, turnId: snapshot.turnId, attempt: snapshot.attempt, callId: randomUUID(), name: "generate_image_async", effectScope: "turn_action", intent: { requestedNudity: "unspecified" }, arguments: { subject: "companion", prompt: "One person seated by a rain-streaked cafe window.", outputCount: 1, orientation: "4:5" } };
 }
 
 async function complete(snapshot: NonNullable<Awaited<ReturnType<typeof beginChatTurn>>["snapshot"]>, content = "Here you go.") {
@@ -140,12 +140,25 @@ async function editFixture(text: string) {
 }
 
 describe("Main image action authorization", () => {
+  it("rejects a new model image without subject before creating an attachment or spending", async () => {
+    const { begin, generated, userId } = await fixture();
+    const { snapshot } = await begin("Generate one image of the balcony plants. No people.");
+    if (!snapshot) throw new Error("Missing snapshot");
+    const call = effect(snapshot);
+    call.arguments = { prompt: "The balcony plants in their terracotta pots. No people." };
+    await expect(applyChatToolEffect(call)).rejects.toMatchObject({ code: "bad_request" });
+    expect(generated).not.toHaveBeenCalled();
+    expect(await prisma.chatTurnAttachment.count({ where: { turnId: snapshot.turnId } })).toBe(0);
+    expect(await prisma.generationJob.count({ where: { userId } })).toBe(0);
+    expect(await dreamcoinBalance(userId)).toBe(40);
+  });
+
   it("rejects an oversized new-image direction before attachments, jobs or debit instead of discarding its final relation", async () => {
     const { begin, generated, userId } = await fixture();
     const { snapshot } = await begin("Send a picture of our current scene.");
     if (!snapshot) throw new Error("Missing snapshot");
     const call = effect(snapshot);
-    call.arguments = { prompt: "Soft light over the wooden windowsill. ".repeat(25) + "The blue notebook must remain to the left of the white cup." };
+    call.arguments = { subject: "companion", prompt: "Soft light over the wooden windowsill. ".repeat(25) + "The blue notebook must remain to the left of the white cup." };
     await expect(applyChatToolEffect(call)).rejects.toMatchObject({ code: "bad_request", message: expect.stringContaining("Shorten the request") });
     expect(generated).not.toHaveBeenCalled();
     expect(await prisma.chatTurnAttachment.count({ where: { turnId: snapshot.turnId } })).toBe(0);
@@ -167,6 +180,26 @@ describe("Main image action authorization", () => {
     await complete(snapshot);
     expect(await applyChatToolEffect({ ...call, callId: randomUUID(), arguments: { instruction: "Replace the room again" } })).toMatchObject({ accepted: true, duplicate: true });
     expect(generated).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["companion", "scene"] as const)("edits the last %s image after its newer video delivery", async subject => {
+    const text = "Edit this image: change only the terracotta pot to blue. Keep everything else unchanged.";
+    const { snapshot, call, generated, asset, userId, characterId } = await editFixture(text);
+    if (subject === "scene") await prisma.mediaAsset.update({ where: { id: asset.id }, data: { characterId: null } });
+    const imageAttachment = await prisma.chatTurnAttachment.findFirstOrThrow({ where: { mediaAssetId: asset.id } });
+    const video = await prisma.mediaAsset.create({ data: {
+      id: `${userId}-video`, ownerId: userId, characterId: subject === "scene" ? null : characterId,
+      type: "video", url: "/test-source.mp4", safetyStatus: "passed", metadata: {},
+    } });
+    await prisma.chatTurnAttachment.create({ data: {
+      id: `${userId}-video-attachment`, turnId: imageAttachment.turnId,
+      kind: "generated_video", status: "completed", mediaAssetId: video.id,
+      createdAt: new Date(imageAttachment.createdAt.getTime() + 1),
+    } });
+    expect(await applyChatToolEffect(call)).toMatchObject({ accepted: true });
+    expect(generated).toHaveBeenCalledTimes(1);
+    expect(generated.mock.calls[0]?.[0]).toMatchObject({ subject, promptHint: text, controls: { sourceImageAssetId: asset.id } });
+    expect(await prisma.chatTurnAttachment.findFirstOrThrow({ where: { turnId: snapshot.turnId } })).toMatchObject({ promptHint: text });
   });
 
   it.each([
@@ -301,7 +334,7 @@ describe("Main image action authorization", () => {
       content: "Send me a portrait by the rainy cafe window wearing a blue raincoat.", idempotencyKey: randomUUID() });
     if (!snapshot) throw new Error("Missing snapshot");
     const call = effect(snapshot);
-    call.arguments = { prompt: "One person seated by a rainy cafe window wearing a blue raincoat, portrait in soft light.", orientation: "4:5", outputCount: 1 };
+    call.arguments = { subject: "companion", prompt: "One person seated by a rainy cafe window wearing a blue raincoat, portrait in soft light.", orientation: "4:5", outputCount: 1 };
     const accepted = await applyChatToolEffect(call);
     expect(accepted).toMatchObject({ accepted: true, status: "accepted", mediaAssetId: null });
     expect(generated).toHaveBeenCalledTimes(1);
@@ -474,7 +507,7 @@ describe("Main image action authorization", () => {
 
     const edited = await editChatTurn(userId, snapshot.userMessageId, "Send me a photo on the beach at sunset.");
     if (!edited.snapshot) throw new Error("Missing edited snapshot");
-    const beachCall = { ...call, attempt: edited.attempt, callId: randomUUID(), arguments: { prompt: "One person on a beach at sunset.", orientation: "4:5" as const, outputCount: 1 } };
+    const beachCall = { ...call, attempt: edited.attempt, callId: randomUUID(), arguments: { subject: "companion", prompt: "One person on a beach at sunset.", orientation: "4:5" as const, outputCount: 1 } };
     const beach = await applyChatToolEffect(beachCall);
     expect(beach).toMatchObject({ accepted: true, duplicate: false });
     expect(beach.attachmentId).not.toBe(window.attachmentId);
@@ -533,7 +566,7 @@ describe("Main image action authorization", () => {
     delete legacyMetadata.turnActionInvalidatedByEdit;
     await prisma.chatTurnAttachment.update({ where: { id: attachmentId }, data: { metadata: legacyMetadata } });
     const beach = await applyChatToolEffect({ ...call, attempt: edited.attempt, callId: randomUUID(),
-      arguments: { prompt: "One person on a beach at sunset.", orientation: "4:5", outputCount: 1 } });
+      arguments: { subject: "companion", prompt: "One person on a beach at sunset.", orientation: "4:5", outputCount: 1 } });
     expect(beach).toMatchObject({ accepted: true, duplicate: false });
     expect(beach.attachmentId).not.toBe(attachmentId);
     expect(generated).toHaveBeenCalledTimes(1);
@@ -572,7 +605,7 @@ describe("Main image action authorization", () => {
     expect((await prisma.chatTurnAttachment.findUniqueOrThrow({ where: { id: attachmentId } })).metadata)
       .toMatchObject({ turnActionInvalidatedByEdit: true });
     const beach = await applyChatToolEffect({ ...call, attempt: edited.attempt, callId: randomUUID(),
-      arguments: { prompt: "One person on a beach at sunset.", orientation: "4:5", outputCount: 1 } });
+      arguments: { subject: "companion", prompt: "One person on a beach at sunset.", orientation: "4:5", outputCount: 1 } });
     expect(beach).toMatchObject({ accepted: true, duplicate: false });
     expect(beach.attachmentId).not.toBe(attachmentId);
     expect(generated).toHaveBeenCalledTimes(1);

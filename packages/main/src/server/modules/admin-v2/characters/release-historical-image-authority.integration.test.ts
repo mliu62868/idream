@@ -9,6 +9,10 @@ import { CHARACTER_RELEASE_POLICY_VERSION, evaluateCharacterReleaseSnapshot, typ
 import { characterReleaseSnapshotHash, characterVisualProfileSnapshotHash, referenceSetSnapshotHash } from "./release-snapshot";
 import { createCharacterSoulVersion } from "./soul-version";
 import { createCharacterRelease } from "./release-lifecycle";
+import { characterDraftSnapshots } from "./draft-content";
+import { toInputJson } from "../shared/prisma-json";
+import { acceptControlPlaneCommand } from "../shared/control-plane-command";
+import { executeCharacterReleaseCommand } from "./release-executor";
 
 const P = "zt-release-history-";
 
@@ -145,6 +149,61 @@ function candidateSnapshotHash(candidate: CharacterReleaseSnapshotCandidate) {
 }
 
 describe("Release historical image authority", () => {
+  it.each(["ordinary", "underage", "minor", "csam"])("rechecks %s in pre-existing content before publication", async (term) => {
+    const candidate = await imageCandidate(`text-safety-${term}`);
+    const characterId = `${P}text-safety-${term}`;
+    const actorId = `${characterId}-owner`;
+    // Materialize a historical write directly; the authoring entrance now
+    // rejects blocked text, so it cannot be used to set up this release risk.
+    const snapshots = characterDraftSnapshots({ persona: {
+      name: "Mara", age: 28, gender: "female", characterPromise: "A thoughtful adult companion",
+      detailsMarkdown: term === "ordinary" ? "Warm and observant" : term, firstMessage: "How was your day?",
+    }, visualDirection: { identityAnchor: "Adult portrait", stableTraits: ["brown eyes"], style: "realistic", referenceDirection: "Studio light" } });
+    const content = await prisma.characterContentVersion.create({ data: {
+      characterId, version: 1, contentHash: snapshots.contentHash,
+      personaSnapshot: toInputJson(snapshots.personaSnapshot), openingSnapshot: toInputJson(snapshots.openingSnapshot),
+      appearanceSnapshot: toInputJson(snapshots.appearanceSnapshot), sourceType: "historical_text_safety_test",
+    } });
+    const revision = await prisma.characterRevision.create({ data: {
+      projectId: candidate.projectId, revision: 1, characterContentVersionId: content.id, projectSnapshot: {},
+    } });
+    const pinned = { ...candidate, revisionId: revision.id, characterContentVersionId: content.id };
+    pinned.snapshotHash = candidateSnapshotHash(pinned);
+    const evaluation = await evaluate(pinned);
+    if (term === "ordinary") {
+      expect(evaluation.failed).toEqual([]);
+      return;
+    }
+    expect(evaluation.failed.map((check) => check.key)).toEqual(["soul_release_policy"]);
+    expect(evaluation.checks.find((check) => check.key === "soul_release_policy")).toMatchObject({
+      passed: false, evidence: { textModerationStatus: "blocked", policyCode: term === "csam" ? "potential_underage_content" : "age_under_18" },
+    });
+    const release = await prisma.characterRelease.create({ data: {
+      ...pinned, generationProvenance: toInputJson(pinned.generationProvenance),
+      releasePlacementManifest: toInputJson(pinned.releasePlacementManifest), status: "approved", readiness: "ready",
+    } });
+    const serving = await prisma.characterServing.create({ data: { characterId, state: "inactive" } });
+    const accepted = await acceptControlPlaneCommand(prisma, {
+      environment: "test", actor: { id: actorId, role: "admin" }, idempotencyKey: `${characterId}-publish`,
+      commandType: "character.release.publish", target: { type: "character_release", id: release.id },
+      expectedVersion: release.version, payload: {}, retryMode: "idempotent", reason: "Recheck historical text", requestId: `${characterId}-request`,
+    });
+    try {
+      expect(await executeCharacterReleaseCommand(prisma, { commandId: accepted.commandId, workerId: actorId })).toMatchObject({
+        status: "failed", errorCode: "release_validation_failed",
+      });
+      expect(await prisma.characterServing.findUniqueOrThrow({ where: { characterId } })).toEqual(serving);
+      expect(await prisma.characterRelease.findUniqueOrThrow({ where: { id: release.id } })).toMatchObject({ status: "approved", readiness: "blocked", publishedAt: null });
+      const validationRun = await prisma.releaseValidationRun.findFirstOrThrow({ where: { releaseId: release.id } });
+      expect(await prisma.releaseCheckResult.findFirstOrThrow({ where: {
+        validationRunId: validationRun.id, checkKey: "soul_release_policy",
+      } })).toMatchObject({ result: "failed", evidence: { textModerationStatus: "blocked" } });
+    } finally {
+      await prisma.controlPlaneCommandAttempt.deleteMany({ where: { commandId: accepted.commandId } });
+      await prisma.controlPlaneCommand.delete({ where: { id: accepted.commandId } });
+    }
+  });
+
   it.each([false, true])("validates placements chosen after generation while retaining exact origins (bootstrap: %s)", async (bootstrap) => {
     const candidate = await imageCandidate(`cross-placement-${bootstrap}`, 1, bootstrap);
     const placementSlots = ["character_hero", "character_chat", "character_avatar"];

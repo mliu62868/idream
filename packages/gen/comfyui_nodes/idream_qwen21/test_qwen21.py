@@ -84,6 +84,47 @@ class TurboTests(unittest.TestCase):
 
 
 class ConditioningTests(unittest.TestCase):
+    def test_positive_only_encoding_keeps_both_rgba_references_and_source_geometry(self):
+        class Clip:
+            def __init__(self):
+                self.encoded = []
+                self.tokenized_images = []
+            def tokenize(self, text, **kwargs):
+                self.tokenized_images.append(kwargs["images"])
+                self.assert_keep_vision = kwargs["keep_vision"]
+                return text
+            def encode_from_tokens_scheduled(self, text):
+                self.encoded.append(text)
+                return [[torch.tensor([len(text)]), {}]]
+        class Vae:
+            def __init__(self): self.images = []
+            def encode(self, image):
+                self.images.append(image)
+                return torch.full((1, 64, image.shape[1] // 16, image.shape[2] // 16), float(image[0, 0, 0, 0]))
+        source = torch.full((1, 1024, 832, 4), .2)
+        source[..., 3] = .5
+        identity = torch.full((1, 768, 512, 4), .8)
+        identity[..., 3] = 1
+        clip, vae = Clip(), Vae()
+        # Input map order differs from the semantic numbered slots.
+        output = IDreamQwen21TextEncode.execute(clip, "change shirt", "blur", vae, 0,
+            {"image_2": identity, "image_1": source}, cfg=1).result
+        self.assertEqual(clip.encoded, ["change shirt"])
+        self.assertFalse(clip.assert_keep_vision)
+        self.assertEqual(tuple(output[2]["samples"].shape), (1, 64, 64, 52))
+        self.assertEqual(len(vae.images), 2)
+        torch.testing.assert_close(vae.images[0], source)
+        torch.testing.assert_close(vae.images[1], identity)
+        for images in clip.tokenized_images:
+            self.assertEqual(len(images), 2)
+            torch.testing.assert_close(images[0], source[..., :3] * .5 + .5)
+            torch.testing.assert_close(images[1], identity[..., :3])
+        for conditioning in output[:2]:
+            refs = conditioning[0][1]["reference_latents"]
+            self.assertEqual([tuple(ref.shape) for ref in refs], [(1, 64, 64, 52), (1, 64, 48, 32)])
+            torch.testing.assert_close(refs[0], torch.full_like(refs[0], .2))
+            torch.testing.assert_close(refs[1], torch.full_like(refs[1], .8))
+
     def test_unconditional_encoder_runs_only_when_cfg_uses_it(self):
         class Clip:
             def __init__(self): self.prompts = []

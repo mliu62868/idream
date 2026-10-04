@@ -50,7 +50,7 @@ function activeHrefForPath(path: string) {
   if (path.startsWith("/age-verification")) return "/profile";
   if (path.startsWith("/feed")) return "/feed";
   if (path.startsWith("/community")) return "/community";
-  if (path.startsWith("/helpdesk")) return "/helpdesk";
+  if (path.startsWith("/helpdesk") || path === "/changelog") return "/helpdesk";
   if (path.startsWith("/safety")) return "/safety/introduction";
   if (
     path.startsWith("/resources-hub") ||

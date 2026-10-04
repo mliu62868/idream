@@ -1,12 +1,45 @@
 # iDream 当前功能覆盖审计
 
-更新日期：2026-10-02
+更新日期：2026-10-03
 
 > 本文引用的 `docs/product-audits/` 与 `output/` 证据路径已于 2026-09-13 移出工作树（历史审计产物，git 历史中仍可检索）。路径保留用于说明当时证据的形态与归属，不再是可直接打开的文件。新的审计证据按 `docs/agents/audit-brief.md` 写进本地 `.scratch/<slug>/`。
 
 ## 结论
 
 iDream 的核心用户与运营链、全仓检查和两轮完整恢复已有受控本机证据；模型语义质量仍有真实失败；最终源码、构建与运行绑定以独立封存和实际恢复记录为准。完整目标仍是对标 OurDream.ai 的 18+ AI 角色扮演 / 伴侣平台，覆盖 Create、Chat、Generate、My AI、Feed/Community、商业化及内容运营。用户已确认先完成本机与部署材料，目标环境尚未提供。下文以最新日期的状态为准，旧报告保留原日期和结果；本地 development 不代表公开生产发布。
+
+## 2026-10-03 16:07 UTC Scene 与三场景旁白修复
+
+当前工作树 Scene execution policy 27 在独立来源核验后才接纳人物身份、出入场和唯一第三人称延续；命名人物不能降级为 null/reference，assistant 失败保留已验证 user checkpoint。原最多四次请求、共享输入 8192 / 输出 768 和无重试边界保持。此项修复已有定向协议回归，真实模型语义尚未 qualified；下文 policy18 及私有候选记录保留原历史归属。
+
+三场景旁白合成改以解码画面帧数决定延帧，修复原音轨更长及容器时长舍入造成的时间轴错误；旁白失败状态受 composition owner 保护，重试复用已保存语音，界面明确缺失语音仍需生成。[本轮证据](../../.scratch/scene-three-narration-20261003/REPORT.md)绑定源码摘要 `d4817328…`，测试前后 1826 文件一致：Chat 定向 242/242、Main 媒体/UI 23/23，通过真实 ffmpeg 三画面顺序、三段尾音及准确帧数检查；本轮 Main/Chat 类型、Chat build、Main 定向 lint 通过。最终数据库集成因 connect EPERM 尚未执行，真实模型/Pocket/Gen 三场景产品链路未运行；Chat 全套尝试为 696通过/7失败，不能据定向成功签发全套或完整产品资格。
+
+## 2026-10-03 多参考图片加速
+
+两条多参考工作流沿用单参考已验证的 MPS 单次正向编码、Viggle v0.3 r128 未合并 LoRA、六步 Euler / CFG 1：源图＋身份参考为 workflow 7，身份锚＋补充参考为 workflow 6。参考图角色、顺序和尺寸契约保持原样；开发库使用 [N+1 发布脚本](../../db/sql/2026-10-03-qwen21-multi-reference-acceleration.sql)，保留历史配置、任务与计费 pins。
+
+[受控实测与产品链路记录](../../.scratch/qwen21-multi-acceleration-20261003/REPORT.md)分别绑定实际 source。同图片、同指令、同 seed 的源图＋身份参考原生生成从 479.118 秒降至 81.536 秒，仍输出 832×1024，蓝毛衣修改与人物、杯子、姿势、咖啡馆构图保持；身份锚＋补充参考原生生成 84.520 秒，两张参考均进入编码和采样。Gen 325、Main 配置/发布 23、原生节点 8 项回归通过；这些样本证明本机所测路线，不代表所有角色的质量成功率或生产容量。
+
+## 2026-10-03 04:58 UTC 当前冻结检查与剩余资格
+
+冻结 `434f8d57…` / source `6610e59e…` 实际完成五包7343测试通过、0失败、4原opt-in跳过，Main4445/Admin1509/Chat615/Gen317/Shared457；四原coverage门槛、五包lint/type/build与PM2177通过。[同源实际汇总](../../.scratch/full-product-audit-2026-10-01/verification/source-checkpoint-20261003T0405Z/SUMMARY.json)。后续冻结 `3113700e…` / source `9494dfe0…` 的五包lint/type/build通过；与上述7343测试源仅[5文件精确差异](../../.scratch/full-product-audit-2026-10-01/verification/source-checkpoint-20261003T0445Z/DELTA_BINDING.json)，不重标旧测试。该源安装版Google Chrome154 headed在built Main/Admin实际完整运行原174项，174通过/0失败/0flake/0skip、333.222秒。当前栏目重新进入使用普通锚点，修复Feed聚焦后侧栏无法清除item参数；原Feed回归首次通过。APP_ENV=test且依赖独占；实际Chrome PID24347启动/退出、源码不变及专库/客户端/Redis/路径清理绑定[新完整结果](../../.scratch/full-product-audit-2026-10-01/verification/source-checkpoint-20261003T0445Z/e2e-native-chrome-built-20261003/RESULT_BINDING.json)。旧173通过/1失败及两份trace保持原归属；fixture不替代实际provider资格。
+
+Scene私有85e14/5b113752的714离线测试及构建通过，但原13真实筛选仅1通过/1失败/11未执行、5HTTP、0retry；明确名字被误判null/reference，strict身份检查拒绝，未合入canonical。Whisper固定8次新增实际推理已结束，质量仍RED、worker已回收；Parakeet12次的clean回归与EL/FR失败也保留，未切默认。 [独立音频/decoder复审](../../.scratch/full-product-audit-2026-10-01/asr-acoustic-review/paired-six/ASR_DECODER_INPUT_REVIEW.md)核实12 PCM、6 direct/HTTP文本与旧评分，无可证实的最小产品配置修复；不改gold或吞掉语义错误。原launch CLI的prepare阶段已实施，177项回归及原完整gate差分通过；报告始终launchQualified=false，受限wrapper bootstrap仍未实施。
+
+用户确认先完成本机与部署材料，目标未提供；真人麦克风/耳语、欧洲语音广度、媒体容量对标和真实production首次启动/公网资格尚未关闭。完整实际ID、SSE、账本/清理及source边界见[本轮报告](../../.scratch/full-product-audit-2026-10-01/REPORT.md)，下面03:07及更早记录保留历史时点。
+
+## 2026-10-03 03:07 UTC 追加：新的冻结检查与真实组件证据
+
+本轮仍先完成本机与部署材料；支付、年龄检查和合规不在范围，公开目标尚未提供。以下替代旧时点的“待重跑”描述，原失败、原 source 与需求继续保留。
+
+- 不可变 commit `04c0eb27928e3ae9c669712c10f46bfa0099c92f` / source `60e814ce…` 的五包标准测试实际7268通过、0失败、4原opt-in跳过，Main4392/Admin1509/Chat593/Gen317/Shared457；Main四原coverage门槛、五包lint/type/build和PM2177/177通过。[实际汇总](../../.scratch/full-product-audit-2026-10-01/verification/source-checkpoint-20261003T0210Z/SUMMARY.json)不代表后续增量源完整coverage已重跑。
+- 后续 source `f494f22a…` / commit `d6e106f1…` 仅10文件[精确差异](../../.scratch/full-product-audit-2026-10-01/verification/incremental-checkpoint-20261003T0220Z/DELTA_BINDING.json)。check、Chat600、Main78项mounted/alias和4项资源清理集成、110 migration authority与14项fresh/upgrade通过。完整174项fixture E2E实际168通过、2失败、4重试后通过；[原完整结果](../../.scratch/full-product-audit-2026-10-01/verification/incremental-checkpoint-20261003T0220Z/e2e-after-interruption-20261003T0236Z/e2e.report.json)及trace保留，未签发全通过。自有专库/Redis/路径只读确认已清。中断的前一轮另记INTERRUPTED，未改标。
+- 免费角色Moment描述可保存/应用/编辑Preset，Freeplay和negative prompt原premium权限继续保留。[真实Chrome与DB闭环](../../.scratch/full-product-audit-2026-10-01/free-character-preset-native-final-binding-20261003.json)正常保存→应用→刷新→编辑→刷新→删除→刷新；临时Preset归档，原Preset未变，A20coins/8ledger、0生成Job。Admin Soul/compiled prompt正常可见，原fingerprint保持，无保存/生成。
+- Changelog改为实时server权益的独立会员入口；公共catch-all在正文/metadata读前拒绝编码同路由，公共CMS列表/sitemap排除。26相关纯回归通过，两轮真实Admin发布/会员读取/免费匿名隔离/撤下及登录目标已完成；[最终只读证明](../../.scratch/full-product-audit-2026-10-01/changelog-second-cycle-final-db-proof-20261003.json)保留5条实际audit与原前三条，临时权益清理、D50coins/3ledger不变。
+- 默认Main开发入口使用Webpack，官方wrapper实际readiness/ownership/resume通过；浏览器Node crypto边界修复与实际HMR修改/还原可见无pageerror，[记录](../../.scratch/full-product-audit-2026-10-01/main-webpack-hmr-native-proof-20261003.json)。编译/哈希server权威未移动或改变，共享persona export ledger原遗漏已补，完整Shared457通过。
+- 默认Parakeet固定滤镜12次新真实HTTP对照完成，0retry，原resident服务active0；DE noisy与FR noisy有收益，EL/DE clean退化且EL/FR仍质量RED，未启用滤镜/切模型。[实际12请求、pin与资源](../../.scratch/full-product-audit-2026-10-01/asr-acoustic-review/paired-six/EXECUTION_RESULT.md)不证明25语言、耳语或实体听感资格。
+
+尚未关闭：私有统一Scene候选仍需原13真实筛选及canonical整合；首次production冷启动循环仍缺完整受限bootstrap与真实网络/origin条件，当前只补离线prepare阶段；上面fixture失败/flake需按trace完成修复或定向复验，媒体容量完整对标及目标公开资格未完成。完整历史、每个组件/source/失败见[本轮报告](../../.scratch/full-product-audit-2026-10-01/REPORT.md)，不能拼成一个不存在的整仓全通过。
 
 ## 2026-10-02 当前实施、单域证据与未取得的资格
 
@@ -920,7 +953,7 @@ Chrome 实测通过的流程：年龄门禁（拦截 fresh 访客）、注册(�
 ## 不应误判为缺失的点
 
 - `sd.cpp` 路线已整体退役：runner 值 `sd_cpp` 由 `db/sql/2026-08-03-generation-model-profile-runner-retire-sd-cpp.sql` 清除，`SdcppBackend` 实现也已移除。legacy external Pipeline 已于 2026-09-12 删除，退役 runner 不能作为当前 authority。
-- `Video` 按有效 feature、backend/profile execution binding、character recipe/pricing 与 entitlement 判断；RedGraft v2 保留历史契约，H3 仍禁用，GN-19 v3 是尚未取得 provider 资格的 disabled draft。实现新参数不等于发布新路线，freeplay 或没有物化主图的角色不能误报可生成。
+- `Video` 按有效 feature、backend/profile execution binding、character recipe/pricing 与 entitlement 判断；RedGraft v2 保留历史契约，H3 仍禁用。GN-19 v3 的 disabled draft 是历史状态；最新 v7/workflow4 已有两场景生成、旁白、合成、下载和 ledger 实证，范围见本页最新覆盖记录，不能推及全部组合或公开生产资格。freeplay 或没有物化主图的角色不能误报可生成。
 - Community 在没有公开 dreamer 数据时显示空状态是正常状态；有数据时 E2E 覆盖 dreamer card 和 profile report。
 - 本地 mock checkout 只证明权益/ledger/UI 闭环；现在 UI 明确标为 demo-only，不代表真实支付可上线。
 

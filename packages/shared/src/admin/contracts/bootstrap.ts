@@ -19,6 +19,7 @@ export const adminBootstrapSchema = z.object({
   actor: z.object({ id: z.string().min(1), role: z.string().min(1) }).nullable(),
   permissions: z.array(adminPermissionKeySchema),
   canReadDashboard: z.boolean(),
+  canCreateCharacters: z.boolean(),
   devLogin: z.object({
     enabled: z.boolean(),
     accounts: z.array(z.object({

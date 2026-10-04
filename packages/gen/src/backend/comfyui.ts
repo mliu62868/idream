@@ -17,6 +17,7 @@ import {
   probeVideoMedia,
   type VideoMediaProbe,
 } from "./video-media-probe";
+import { normalizeVideoSoundtrack, type VideoSoundtrackNormalizer } from "./video-soundtrack";
 import {
   BackendInvocationError,
   type BackendHandle,
@@ -76,6 +77,7 @@ export class ComfyUIBackend implements GenBackend {
   private readonly pollIntervalMs: number;
   private readonly workflowSync: WorkflowSync;
   private readonly videoMediaProbe: VideoMediaProbe;
+  private readonly videoSoundtrackNormalizer: VideoSoundtrackNormalizer;
   private readonly workflowGraphs = new Map<string, Promise<JsonRecord>>();
   private readonly pending = new Map<string, PendingJob>();
 
@@ -84,11 +86,13 @@ export class ComfyUIBackend implements GenBackend {
     pollIntervalMs?: number;
     workflowSync?: WorkflowSync;
     videoMediaProbe?: VideoMediaProbe;
+    videoSoundtrackNormalizer?: VideoSoundtrackNormalizer;
   }) {
     this.apiUrl = trimTrailingSlash(opts.apiUrl);
     this.pollIntervalMs = opts.pollIntervalMs ?? 1_000;
     this.workflowSync = opts.workflowSync ?? syncComfyUiWorkflow;
     this.videoMediaProbe = opts.videoMediaProbe ?? probeVideoMedia;
+    this.videoSoundtrackNormalizer = opts.videoSoundtrackNormalizer ?? normalizeVideoSoundtrack;
   }
 
   capabilities(): Capabilities {
@@ -213,7 +217,7 @@ export class ComfyUIBackend implements GenBackend {
       const { output, providerExecutionMs, cachedNodeCount } = await this.waitForOutput(handle.id, timeoutMs, controller.signal);
       const waitMs = performance.now() - waitStartedAt;
       const downloadStartedAt = performance.now();
-      const bytes = await this.fetchComfyOutput(output, controller.signal);
+      let bytes = await this.fetchComfyOutput(output, controller.signal);
       const downloadMs = performance.now() - downloadStartedAt;
       const validationStartedAt = performance.now();
       const outputKind = pending?.outputKind ?? outputKindFromFilename(output.filename);
@@ -221,6 +225,19 @@ export class ComfyUIBackend implements GenBackend {
       if (outputKind === "video") {
         try {
           verifiedVideo = await this.videoMediaProbe(bytes);
+          if (verifiedVideo.hasAudio) {
+            const normalized = await this.videoSoundtrackNormalizer(bytes);
+            if (normalized !== bytes) {
+              const normalizedMedia = await this.videoMediaProbe(normalized);
+              if (!normalizedMedia.hasAudio || normalizedMedia.width !== verifiedVideo.width || normalizedMedia.height !== verifiedVideo.height ||
+                  normalizedMedia.framesPerSecond !== verifiedVideo.framesPerSecond || normalizedMedia.frameCount !== verifiedVideo.frameCount ||
+                  Math.abs(normalizedMedia.durationSeconds - verifiedVideo.durationSeconds) > 0.05) {
+                throw new Error("Native soundtrack processing changed its video envelope");
+              }
+              bytes = normalized;
+              verifiedVideo = normalizedMedia;
+            }
+          }
         } catch (error) {
           throw new BackendInvocationError(
             "backend_error",

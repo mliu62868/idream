@@ -67,6 +67,29 @@ describe("Character overview settings writes", () => {
     }
   });
 
+  it("loads the complete vocabulary and saves a tag beyond the old 500 row limit", async () => {
+    const items = Array.from({ length: 501 }, (_, index) => ({
+      id: `tag-${index}`, label: `Tag ${index}`, category: null, isSensitive: false,
+    }));
+    api.apiGet.mockImplementation(async (path: string) => {
+      if (!path.startsWith("/api/v2/admin/content/tags")) return { character: { tags: [] } };
+      const limit = new URL(path, "http://admin.local").searchParams.get("limit");
+      return { items: limit ? items.slice(0, Number(limit)) : items };
+    });
+    api.apiWrite.mockResolvedValue({});
+    await act(async () => root.render(<CharacterTagsPanel canWrite characterId="character-1" />));
+    await settle();
+
+    expect(button("Tag 500")).toBeDefined();
+    await act(async () => button("Tag 500").click());
+    await act(async () => button("Save tags").click());
+    expect(api.apiWrite).toHaveBeenCalledWith(
+      "/api/v2/admin/content/characters/character-1/tags",
+      "PUT",
+      { tagIds: ["tag-500"], confirmation: "character-1:tags" },
+    );
+  });
+
   // SPEC: 服务端 tagIds.max(24)；到上限后未选的标签不可点，并说明原因，而不是保存时吃 400。
   it("caps the selection at 24 tags with a visible hint", async () => {
     const items = Array.from({ length: 26 }, (_, index) => ({ id: `tag-${index}`, label: `Tag ${index}`, category: null, isSensitive: false }));

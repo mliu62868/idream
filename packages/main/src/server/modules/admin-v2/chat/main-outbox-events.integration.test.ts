@@ -1,3 +1,4 @@
+import { durableEnvelopeHash } from "@idream/shared/contracts/durable-server";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   mainToChatOutboxReplayRequestSchema,
@@ -8,7 +9,6 @@ import {
 } from "@idream/shared/admin";
 import {
   LEGACY_MAIN_TO_CHAT_EVENTS,
-  durableEnvelopeHash,
   type DurableEventEnvelope,
 } from "@idream/shared/contracts";
 import { POST as replayMainToChatOutboxRoute } from "@/app/api/v2/admin/chat/main-outbox-events/commands/replay/route";

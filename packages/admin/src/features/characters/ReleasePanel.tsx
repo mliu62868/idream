@@ -283,8 +283,7 @@ export function ReleasePanel({
 
   const submitCommand = async (
     kind: "publish" | "rollback" | "withdraw",
-    releaseId: string,
-    version: number,
+    release: { id: string; version: number } | (() => Promise<{ id: string; version: number }>),
   ) => {
     if (writesLocked) return;
     if (
@@ -294,12 +293,18 @@ export function ReleasePanel({
     ) {
       return;
     }
-    const body = {
-      entityVersion: version,
-      reason: { code: `operator_${kind}`, summary: reason.trim() || t(kind === "withdraw" ? "Discard candidate" : kind === "rollback" ? "Roll back" : "Publish current Character") },
-      confirmation: `${data.character.id}:${releaseId}:${kind}`,
-    };
+    const generation = journal.getGeneration();
     try {
+      // Candidate creation and command acceptance are one operator action. Keep
+      // the workspace locked while the candidate POST is still in flight.
+      const prepared = typeof release === "function" ? await release() : release;
+      if (!journal.isCurrentGeneration(generation)) return;
+      const releaseId = prepared.id;
+      const body = {
+        entityVersion: prepared.version,
+        reason: { code: `operator_${kind}`, summary: reason.trim() || t(kind === "withdraw" ? "Discard candidate" : kind === "rollback" ? "Roll back" : "Publish current Character") },
+        confirmation: `${data.character.id}:${releaseId}:${kind}`,
+      };
       const outcome = await journal.submit({
         action: `Release ${kind}`,
         signature: `${kind}:${releaseId}:${JSON.stringify(body)}`,
@@ -325,24 +330,23 @@ export function ReleasePanel({
     setError(null);
     setAuthorityBlockers([]);
     try {
-      let releaseRef = candidate
+      const releaseRef = candidate
         ? { id: candidate.release.id, version: candidate.release.version }
-        : undefined;
-      if (!releaseRef) {
-        const publishReason = reason.trim() || t("Publish current Character");
-        const mutation = characterReleaseCreateMutation(
-          data.character.id,
-          data.project.version,
-          publishReason,
-          `${data.character.id}:publish`,
-        );
-        const created = await adminV2Operation(
-          mutation.operationId,
-          mutation.options,
-        );
-        releaseRef = { id: created.id, version: created.version };
-      }
-      await submitCommand("publish", releaseRef.id, releaseRef.version);
+        : async () => {
+            const publishReason = reason.trim() || t("Publish current Character");
+            const mutation = characterReleaseCreateMutation(
+              data.character.id,
+              data.project.version,
+              publishReason,
+              `${data.character.id}:publish`,
+            );
+            const created = await adminV2Operation(
+              mutation.operationId,
+              mutation.options,
+            );
+            return { id: created.id, version: created.version };
+          };
+      await submitCommand("publish", releaseRef);
     } catch (cause) {
       const blockers = releaseBlockersFromError(cause);
       if (blockers.length > 0) setAuthorityBlockers(blockers);
@@ -363,7 +367,7 @@ export function ReleasePanel({
     setBusy("withdraw");
     setError(null);
     try {
-      await submitCommand("withdraw", candidate.release.id, candidate.release.version);
+      await submitCommand("withdraw", { id: candidate.release.id, version: candidate.release.version });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t("Could not discard candidate"));
     } finally {
@@ -441,8 +445,7 @@ export function ReleasePanel({
     try {
       await submitCommand(
         "rollback",
-        rollbackSource.release.id,
-        data.serving?.version ?? 0,
+        { id: rollbackSource.release.id, version: data.serving?.version ?? 0 },
       );
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t("Rollback failed"));

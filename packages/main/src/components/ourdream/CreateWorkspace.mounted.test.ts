@@ -453,6 +453,49 @@ describe("CreateWorkspace identity confirmation", () => {
     });
   });
 
+  it.each([false, true])("keeps newly typed appearance when current-draft validation returns late (next saved: %s)", async (saveBeforeValidation) => {
+    const appearance = "Adult gardener with short brown hair, green eyes, wearing a sage green cardigan and jeans, standing on a sunny balcony.";
+    const revision = "2026-10-02T00:00:00.000Z";
+    const key = draftStorageKeyForScope("user:creator-1");
+    window.localStorage.setItem(key, JSON.stringify({
+      ...initialCharacterDraft(), draftId: "draft-1", draftUpdatedAt: revision,
+      step: 1, name: "Avery", hair: "Short brown hair", body: "Average build",
+      description: "Warm and direct", firstMessage: "Hello there",
+    }));
+    let finishValidation!: (response: Response) => void;
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) === "/api/v1/character-drafts/current") {
+        return new Promise<Response>(resolve => { finishValidation = resolve; });
+      }
+      if (String(input) === "/api/v1/character-drafts/draft-1" && init?.method === "PATCH") {
+        return Response.json({ ok: true, data: { draft: { id: "draft-1", updatedAt: "2026-10-02T00:00:01.000Z" } } });
+      }
+      return originalFetch(input, init);
+    });
+    await act(async () => root.render(createElement(CreateWorkspace)));
+    await waitUntil(() => Boolean(finishValidation) && Boolean(container.querySelector('[data-testid="create-step-appearance"]')));
+    await changeField("Appearance", appearance);
+    const next = async () => act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "Next")?.click());
+    if (saveBeforeValidation) await next();
+    await act(async () => finishValidation(Response.json({ ok: true, data: { draft: {
+      id: "draft-1", updatedAt: revision, step: 1, name: "Avery", gender: "female", style: "realistic",
+      appearance: { prompt: "" }, hair: { prompt: "Short brown hair" }, body: { type: "Average build" }, tags: [],
+      advancedDetails: { age: 21, description: "Warm and direct", firstMessage: "Hello there" }, previewJobId: null,
+    } } })));
+
+    if (saveBeforeValidation) {
+      expect(container.querySelector('[data-testid="create-step-soul"]')).not.toBeNull();
+      expect(container.textContent).not.toContain("Load the latest saved draft");
+      expect(JSON.parse(window.localStorage.getItem(key)!)).toMatchObject({ appearance, draftUpdatedAt: "2026-10-02T00:00:01.000Z", step: 2 });
+    } else {
+      expect(field("Appearance").value).toBe(appearance);
+      await next();
+    }
+    const saved = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input) === "/api/v1/character-drafts/draft-1" && init?.method === "PATCH");
+    expect(JSON.parse(String(saved?.[1]?.body))).toMatchObject({ appearance: { prompt: appearance }, expectedUpdatedAt: revision });
+  });
+
   it("starts fresh when the server no longer has the locally saved draft (it was saved as a character)", async () => {
     window.localStorage.setItem(draftStorageKeyForScope("user:creator-1"), JSON.stringify({
       ...initialCharacterDraft(), draftId: "draft-saved", step: 4, name: "Already saved", confirmedPreviewJobId: "preview-1",

@@ -80,7 +80,32 @@ describe("Pack authoring, claims and viewer authority", () => {
     id = "reader-b"; await act(async () => window.dispatchEvent(new Event("focus")));
     await until(() => container.textContent?.includes("signed-in account changed") === true);
     await act(async () => finish(sources()));
-    expect(container.querySelector<HTMLInputElement>("input")?.value).toBe(""); expect(container.querySelectorAll("img")).toHaveLength(0); expect(button("Save draft").disabled).toBe(true);
+    expect(container.querySelectorAll("input, textarea, select, img")).toHaveLength(0); expect(button("Save draft")).toBeUndefined(); expect(button("Reload editor").disabled).toBe(false);
+  });
+  it.each([
+    { route: "new Pack", id: undefined },
+    { route: "saved Pack", id: "pack-a" },
+  ])("offers a working full editor reload after the account changes on the $route route", async ({ id }) => {
+    let currentViewer = "author-a";
+    const reload = vi.spyOn(window.location, "reload").mockImplementation(() => {});
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/api/v1/me") return viewer(currentViewer);
+      if (path.includes("/sources")) return sources();
+      return envelope(pack());
+    }));
+    await act(async () => root.render(createElement(PackStudio, { id })));
+    await until(() => container.querySelectorAll('input[type="checkbox"]').length === 2 && !button("Save draft").disabled);
+    currentViewer = "reader-b";
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await until(() => container.textContent?.includes("signed-in account changed") === true);
+
+    const reloadEditor = button("Reload editor");
+    expect(reloadEditor).toBeTruthy();
+    expect(reloadEditor.disabled).toBe(false);
+    expect(container.querySelectorAll("input, textarea, select, img")).toHaveLength(0);
+    await click(reloadEditor);
+    expect(reload).toHaveBeenCalledTimes(1);
   });
   it("claims an exact free edition, persists the receipt on refresh, and shows its protected image/audio downloads", async () => {
     let current: PackDetail = { ...pack(true), canManage: false, manifest: null, release: { ...pack(true).release!, canAccess: false, items: pack(true).release!.items.map(item => ({ ...item, url: null, downloadUrl: null })) } };

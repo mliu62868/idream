@@ -59,7 +59,7 @@ describe("content read-only operator journeys", () => {
   function button(label: string) { return [...container.querySelectorAll("button")].find(node => node.textContent?.trim() === label); }
   function noWrites() { expect(fetchMock.mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true); }
   function readerView(sectionId: string, permission: AdminPermissionKey, view: AdminSubview = { kind: "list" }) {
-    const context: SectionContext = { permissions: new Set([permission]), actorId: "reader", canRead: true, view, workMode: "growth_analyst" };
+    const context: SectionContext = { permissions: new Set([permission]), canCreateCharacters: false, actorId: "reader", canRead: true, view, workMode: "growth_analyst" };
     return navItems.find(item => item.id === sectionId)!.render(context);
   }
 

@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { createHash } from "node:crypto";
 import { generationQualitySchema } from "./payloads";
 
 export const durableEventEnvelopeSchema = z.object({
@@ -213,22 +212,4 @@ export function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   const record = value as Record<string, unknown>;
   return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
-}
-
-/** The receiver hashes the complete immutable envelope, excluding only its identity key. */
-export function durableEnvelopeHash(envelope: DurableEventEnvelope): string {
-  return createHash("sha256")
-    .update(canonicalJson({
-      eventType: envelope.eventType,
-      schemaVersion: envelope.schemaVersion,
-      occurredAt: envelope.occurredAt,
-      aggregateType: envelope.aggregateType,
-      aggregateId: envelope.aggregateId,
-      payload: envelope.payload,
-    }))
-    .digest("hex");
-}
-
-export function generationTerminalRecordChecksum(record: GenerationTerminalRecord): string {
-  return createHash("sha256").update(canonicalJson(record)).digest("hex");
 }

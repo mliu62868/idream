@@ -175,6 +175,7 @@ describe("Character media availability", () => {
     await act(async () => {
       root.render(
         <CharacterPlacementEditor
+          canRead
           canWrite
           data={characterWorkspaceDetail()}
           runCommittedMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}

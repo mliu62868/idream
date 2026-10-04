@@ -105,6 +105,19 @@ describe("Character placement qualification", () => {
     container.remove();
   });
 
+  it("does not offer a chooser or request images without image-read permission", async () => {
+    const runCommittedMutation = vi.fn();
+    await act(async () => root.render(<CharacterPlacementEditor
+      canRead={false} canWrite data={characterWorkspaceDetail()} runCommittedMutation={runCommittedMutation}
+    />));
+    const choices = [...container.querySelectorAll<HTMLButtonElement>("article button")];
+    expect(choices).toHaveLength(3);
+    expect(choices.every((button) => button.disabled)).toBe(true);
+    await act(async () => choices[0].click());
+    expect(adminV2Operation).not.toHaveBeenCalled();
+    expect(runCommittedMutation).not.toHaveBeenCalled();
+  });
+
   it("reuses the placement request after its committed response is lost", async () => {
     const available = reviewedUpload("available-cover", "review-cover");
     let writes = 0;
@@ -120,7 +133,7 @@ describe("Character placement qualification", () => {
       return { result, refreshed: true };
     });
     await act(async () => root.render(<CharacterPlacementEditor
-      canWrite data={characterWorkspaceDetail()} runCommittedMutation={runCommittedMutation}
+      canRead canWrite data={characterWorkspaceDetail()} runCommittedMutation={runCommittedMutation}
     />));
     await act(async () => container.querySelector("article button")?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     await waitUntil(() => container.textContent?.includes("Use image") === true);
@@ -165,6 +178,7 @@ describe("Character placement qualification", () => {
     await act(async () => {
       root.render(
         <CharacterPlacementEditor
+          canRead
           canWrite
           data={characterWorkspaceDetail({
             preview: {

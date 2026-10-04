@@ -68,15 +68,48 @@ export function ComicReader({ id }: { id: string }) {
   // leaving its pages on screen would keep serving revoked content.
   const comic = error ? null : reader.data;
   const restoredComic = useRef<string | null>(null);
+  const readerInteracted = useRef(false);
+  useEffect(() => {
+    readerInteracted.current = false;
+    const markInteraction = () => { readerInteracted.current = true; };
+    const events = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
+    for (const event of events) window.addEventListener(event, markInteraction, { passive: true });
+    return () => { for (const event of events) window.removeEventListener(event, markInteraction); };
+  }, [id]);
   useEffect(() => {
     if (!comic || restoredComic.current === comic.id) return;
-    restoredComic.current = comic.id;
-    // Chapter targets arrive after the browser's initial fragment navigation.
-    // Restore once; account revalidation must not move someone already reading.
     const chapterId = window.location.hash.slice(1);
-    if (comic.episodes.some((episode) => chapterId === `chapter-${episode.id}`)) {
-      document.getElementById(chapterId)?.scrollIntoView({ block: "start" });
+    const chapterIndex = comic.episodes.findIndex((episode) => chapterId === `chapter-${episode.id}`);
+    const target = document.getElementById(chapterId);
+    if (chapterIndex < 0 || !target) return;
+    // Real dimensions reserve the layout before decoding. Legacy pages without
+    // dimensions must settle first, including lazy images above a deep link.
+    const pending = new Set(comic.episodes.slice(0, chapterIndex).flatMap((episode) => {
+      const images = document.getElementById(`chapter-${episode.id}`)?.querySelectorAll("img");
+      return episode.pages.filter((page) => page.url).flatMap((page, index) => {
+        const image = images?.[index];
+        return image && !(page.width && page.height) && !image.complete ? [image] : [];
+      });
+    }));
+    let active = true;
+    const restore = () => {
+      if (!active || pending.size) return;
+      restoredComic.current = comic.id;
+      // Account refreshes and slow images must not move someone already reading.
+      if (!readerInteracted.current && target.isConnected) target.scrollIntoView({ block: "start" });
+    };
+    const cleanups: Array<() => void> = [];
+    for (const image of pending) {
+      const loaded = () => { pending.delete(image); restore(); };
+      const failed = () => { active = false; }; // The image error removes the Comic.
+      image.addEventListener("load", loaded, { once: true });
+      image.addEventListener("error", failed, { once: true });
+      cleanups.push(() => { image.removeEventListener("load", loaded); image.removeEventListener("error", failed); });
+      image.loading = "eager";
+      if (image.complete) loaded();
     }
+    restore();
+    return () => { active = false; for (const cleanup of cleanups) cleanup(); };
   }, [comic]);
   return <ComicShell>
     {reader.status.phase === "loading" && <p role="status">Loading Comic…</p>}
@@ -91,10 +124,10 @@ export function ComicReader({ id }: { id: string }) {
         {comic.canManage && <div className="mt-5 flex flex-wrap items-center gap-4"><Link className={comicButton} href={`/creator-studio/comics/${encodeURIComponent(id)}`}>Manage Comic</Link><span className="text-sm text-neutral-300">{comicStateLabel(comic.status, comic.visibility)}</span></div>}
       </header>
       <nav aria-label="Chapters" className="mb-8 flex flex-wrap gap-3">{comic.episodes.map((episode, index) => <a className={comicButton} href={`#chapter-${episode.id}`} key={episode.id}>{index + 1}. {episode.title}</a>)}</nav>
-      {comic.episodes.map((episode, episodeIndex) => <section className="mb-12 scroll-mt-6" id={`chapter-${episode.id}`} key={episode.id}>
+      {comic.episodes.map((episode, episodeIndex) => <section className="mb-12 scroll-mt-24" id={`chapter-${episode.id}`} key={episode.id}>
         <h2 className="mb-5 text-2xl font-bold">{episodeIndex + 1}. {episode.title}</h2>
         <div className="space-y-7">{episode.pages.map((page, index) => <figure key={page.id}>
-          {page.url ? <Image alt={page.caption || `${episode.title}, page ${index + 1}`} className="h-auto w-full rounded-lg" width={1024} height={1536} src={page.url} unoptimized onError={() => setUnavailable("A page is no longer available. Reload to check this Comic.")} /> : <p className="rounded-lg bg-white/5 p-8 text-neutral-300">This page is unavailable.{comic.canManage ? " Remove it in the Comic editor." : ""}</p>}
+          {page.url ? <Image alt={page.caption || `${episode.title}, page ${index + 1}`} className="h-auto w-full rounded-lg" width={page.width && page.height ? page.width : 1024} height={page.width && page.height ? page.height : 1536} src={page.url} unoptimized onError={() => setUnavailable("A page is no longer available. Reload to check this Comic.")} /> : <p className="rounded-lg bg-white/5 p-8 text-neutral-300">This page is unavailable.{comic.canManage ? " Remove it in the Comic editor." : ""}</p>}
           {page.caption && <figcaption className="mt-3 whitespace-pre-line leading-7 text-neutral-200">{page.caption}</figcaption>}
           {page.remixHref && <Link className="mt-3 inline-flex min-h-11 items-center text-sm font-semibold underline underline-offset-4" href={page.remixHref}>Remix this page</Link>}
           {page.character && <div className="mt-3 flex flex-wrap gap-4 text-sm"><button className="min-h-11 underline underline-offset-4 disabled:opacity-40" disabled={chatPending} onClick={() => void startChat(page.character!.id)} type="button">{chatPending ? "Starting Chat…" : `Chat with ${page.character.name}`}</button><Link className="inline-flex min-h-11 items-center underline underline-offset-4" href={page.character.remixHref}>Create with this Character</Link></div>}

@@ -18,6 +18,10 @@ if (!uv) {
 // expires, so a restart with PyPI or the host proxy unreachable exits and PM2
 // crash-loops the resident voice runtime. uv still resolves the hashed lock
 // from cache; a lock change fails here until install runs again.
+// The locked Python environment must not import packages from another runtime.
+const childEnv = { ...process.env, HF_HUB_OFFLINE: "1", HF_HUB_DISABLE_TELEMETRY: "1" };
+delete childEnv.PYTHONPATH;
+delete childEnv.PYTHONHOME;
 const child = spawn(
   uv,
   [
@@ -39,7 +43,7 @@ const child = spawn(
   ],
   {
     cwd: path.resolve(__dirname, ".."),
-    env: { ...process.env, HF_HUB_OFFLINE: "1", HF_HUB_DISABLE_TELEMETRY: "1" },
+    env: childEnv,
     stdio: "inherit",
   },
 );

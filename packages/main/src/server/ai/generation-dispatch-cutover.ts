@@ -1,3 +1,4 @@
+import { generationTerminalRecordChecksum } from "@idream/shared/contracts/durable-server";
 import type {
   GenerationAttempt,
   GenerationJob,
@@ -9,7 +10,6 @@ import {
   aiFinalizePayloadSchema,
   generationDispatchRequestId,
   generationTerminalFinalizeDedupeKey,
-  generationTerminalRecordChecksum,
   generationTerminalRecordIngestSchema,
   GENERATION_CUTOVER_QUEUES,
   GEN_QUEUES,

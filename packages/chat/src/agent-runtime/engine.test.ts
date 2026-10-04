@@ -378,6 +378,39 @@ async function waitFor(check: () => boolean): Promise<void> {
 }
 
 describe("Chat embedded companion runtime", () => {
+  it.each([
+    { missingAttempt: 1, zero: false, expected: null },
+    { missingAttempt: 2, zero: false, expected: null },
+    { missingAttempt: 0, zero: false, expected: { promptTokens: 80, completionTokens: 20, reasoningTokens: 0 } },
+    { missingAttempt: 0, zero: true, expected: { promptTokens: 0, completionTokens: 0, reasoningTokens: 0 } },
+  ])("preserves complete or unknown usage across real forced-tool adapter attempts: $missingAttempt $zero", async ({ missingAttempt, zero, expected }) => {
+    const value = requiredImageInvocation();
+    let requests = 0;
+    const adapter = new OpenAiCompatibleAdapter({
+      profile: value.preparedTurn.profile, apiKey: "fixture-key", requiredToolName: "generate_image_async",
+      fetch: async () => {
+        requests++;
+        return new Response(`data: ${JSON.stringify({
+          choices: [{ delta: { content: requests === 1 ? "I will frame the view." : '{"prompt":"Mira at the observatory","subject":"companion"}' }, finish_reason: "stop" }],
+          ...(requests === missingAttempt ? {} : { usage: { input_tokens: zero ? 0 : 40, output_tokens: zero ? 0 : 10 } }),
+        })}\n\ndata: [DONE]\n\n`);
+      },
+    });
+    const runtime = await engine(adapter);
+    const connection = port();
+    await runtime.run(value, connection.runtimePort);
+    expect(requests).toBe(2);
+    expect(connection.candidates).toHaveLength(1);
+    expect(connection.candidates[0]).toMatchObject({ usage: expected, execution: { toolCalls: 1 } });
+    expect(connection.events.some(event => event.type === "failed")).toBe(false);
+    // The local acknowledgement is measured zero; a missing physical receipt
+    // still leaves the terminal total unknown and never publishes a partial sum.
+    expect(connection.events.filter(event => event.type === "usage").map(event => event.usage)).toEqual([
+      ...(expected === null ? [] : [expected]),
+      { promptTokens: 0, completionTokens: 0, reasoningTokens: 0 },
+    ]);
+  });
+
   it.each(["normal", "private"] as const)("rejects %s pool pressure before execution without producing a failure event", async (mode) => {
     const runtime = await engine(new BlockingAdapter(), undefined, { ...memoryPorts, maxConcurrentAgents: { normal: 1, private: 1 } });
     const value = mode === "normal" ? normalInvocation() : invocation();
@@ -412,7 +445,9 @@ describe("Chat embedded companion runtime", () => {
       policy: { ...policy, modelProfile: { ...policy.modelProfile, adapter: "openai-compatible-v1", provider: "openai", baseUrl: "https://provider.example/v1", model: "fixture", supportsTools: true } },
       recentMessages: Array.from({ length: 7 }, (_, index) => ({
         id: `message-${index}`, role: index % 2 === 0 ? "user" : "assistant",
-        content: index === 6 ? "How are you tonight?" : `Established fact ${index}: ${"t".repeat(2_950)}`,
+        // Leave just enough room for the pinned product contract. The additional
+        // DSH memory guidance and tool schema must still force one whole exchange out.
+        content: index === 6 ? "How are you tonight?" : `Established fact ${index}: ${"t".repeat(2_850)}`,
       })),
       scene: { schemaVersion: 1, version: 1, location: "the library", time: "tonight", participants: ["Mara"], emotionalBeat: "calm", unresolvedThreads: [] },
       sceneVersion: 1, lastExchangeAt: null, dropped: [], contextRevision: 0n,
@@ -496,6 +531,7 @@ describe("Chat embedded companion runtime", () => {
       { id: "prior-user", sourceKind: "replay", role: "user", content: "Who brought what?" },
       { id: "prior-briar", sourceKind: "replay", role: "assistant", speaker: speakers[0], content: "I brought the cup." },
       { id: "prior-cedar", sourceKind: "replay", role: "assistant", speaker: speakers[1], content: "I moved the book." },
+      { id: "preferences:current", sourceKind: "plugin", role: "user", content: "Saved interaction preferences: use a single short sentence." },
     );
     const requests: Array<{ messages: unknown[] }> = [];
     const adapter = new OpenAiCompatibleAdapter({
@@ -519,6 +555,7 @@ describe("Chat embedded companion runtime", () => {
     const request = JSON.stringify(requests[0]?.messages);
     for (const speaker of speakers) expect(request).toContain(JSON.stringify(speaker).replaceAll('"', '\\"'));
     expect(request.indexOf("I brought the cup.")).toBeLessThan(request.indexOf("I moved the book."));
+    expect(request.indexOf("Saved interaction preferences:")).toBeLessThan(request.indexOf("Conversation records ("));
   });
 
   it.each(["normal", "private"] as const)("restricts plugin tools in %s mode at presentation and dispatch", async (mode) => {
@@ -594,7 +631,7 @@ describe("Chat embedded companion runtime", () => {
 
   it.each([
     { finalUsage: { inputTokens: 30, outputTokens: 7, reasoningTokens: 2 }, expected: { promptTokens: 55, completionTokens: 11, reasoningTokens: 3 } },
-    { finalUsage: undefined, expected: { promptTokens: 25, completionTokens: 4, reasoningTokens: 1 } },
+    { finalUsage: undefined, expected: null },
   ])("accounts for every model step around native memory_search, including missing final usage: $finalUsage", async ({ finalUsage, expected }) => {
     let executed = 0;
     const adapter = new MemoryReplyAdapter(`We chose ${recallMarker}.`, true, [

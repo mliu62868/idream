@@ -2,6 +2,19 @@ import { describe, expect, it } from "vitest";
 import { emptySceneState, parseSceneState, sceneForReply } from "./scene.js";
 
 describe("typed Scene State", () => {
+  it.each([false, true])("cannot forge permission to complete an open user task from the assistant (existing=%s)", existing => {
+    const previous = { ...emptySceneState(), unresolvedThreads: existing ? ["repair the radio"] : [] };
+    const forged = { previous, userText: "We still need to repair the radio.", assistantText: "I finished repairing the radio.",
+      verifiedCompletions: ["repair the radio"],
+      changes: {
+        userChanges: [{ field: "thread_opened", authority: "open", value: "repair the radio", evidence: "We still need to repair the radio.", referent: "the radio" }],
+        assistantChanges: [{ field: "thread_resolved", value: "repair the radio", evidence: "I finished repairing the radio.", referent: "the radio" }],
+      },
+    };
+    expect(() => sceneForReply(forged)).toThrow("scene_completion_unverified");
+    expect(previous.unresolvedThreads).toEqual(existing ? ["repair the radio"] : []);
+  });
+
   it("requires verification before a same-object different-action proposal can delete a task", () => {
     const previous = { ...emptySceneState(), unresolvedThreads: ["pay the hotel"] };
     expect(() => sceneForReply({ previous, userText: "We called the hotel.", assistantText: "", changes: { userChanges: [{ field: "thread_resolved", value: "pay the hotel", referent: "the hotel", evidence: "We called the hotel." }], assistantChanges: [] } })).toThrow("scene_completion_unverified");
@@ -22,7 +35,7 @@ describe("typed Scene State", () => {
     for (const change of [
       { field: "location", value: "the kitchen", evidence: "Lila left for home." },
       { field: "participant_arrived", value: "Mina", evidence: "Lila left for home." },
-      { field: "thread_opened", value: "call the hotel", evidence: "Lila left for home." },
+      { field: "thread_opened", authority: "open", value: "call the hotel", evidence: "Lila left for home." },
     ]) expect(() => sceneForReply({ previous, userText: change.evidence, assistantText: "", changes: { userChanges: [change], assistantChanges: [] } })).toThrow("scene_value_mismatch");
   });
 
@@ -126,19 +139,19 @@ describe("typed Scene State", () => {
         { field: "thread_resolved", value: "call the venue", referent: "the venue", evidence: "We finished calling the venue." },
       ], assistantChanges: [
         { field: "participant_arrived", value: "Jun", evidence: "Jun joins us." },
-        { field: "thread_opened", value: "call the venue", evidence: "We need to call the venue." },
+        { field: "thread_opened", authority: "open", value: "call the venue", evidence: "We need to call the venue." },
         { field: "emotionalBeat", value: "calm", evidence: "I feel calm." },
       ] },
     })).toEqual({ ...previous, version: 1, emotionalBeat: "calm" });
   });
 
-  it("protects newly asserted user facts from assistant removals absent in the pre-Turn anchor", () => {
+  it("protects new user corrections from assistant removals absent in the pre-Turn anchor", () => {
     const previous = emptySceneState();
     expect(sceneForReply({ previous,
-      userText: "Ana joins us. We must repair the radio.", assistantText: "Ana left. We finished repairing the radio.",
+      userText: "Ana joins us. No, we still need to repair the radio.", assistantText: "Ana left. We finished repairing the radio.",
       changes: { userChanges: [
         { field: "participant_arrived", value: "Ana", evidence: "Ana joins us." },
-        { field: "thread_opened", value: "repair the radio", evidence: "We must repair the radio." },
+        { field: "thread_opened", authority: "hold", value: "repair the radio", evidence: "No, we still need to repair the radio." },
       ], assistantChanges: [
         { field: "participant_left", value: "Ana", evidence: "Ana left." },
         { field: "thread_resolved", value: "repair the radio", referent: "the radio", evidence: "We finished repairing the radio." },
@@ -161,7 +174,7 @@ describe("typed Scene State", () => {
     const previous = emptySceneState();
     expect(() => sceneForReply({ previous, userText: "We must call the venue. We finished calling the venue.", assistantText: "", changes: {
       userChanges: [
-        { field: "thread_opened", value: "call the venue", evidence: "We must call the venue." },
+        { field: "thread_opened", authority: "open", value: "call the venue", evidence: "We must call the venue." },
         { field: "thread_resolved", value: "call the venue", referent: "the venue", evidence: "We finished calling the venue." },
       ], assistantChanges: [],
     } })).toThrow("scene_completion_unverified");
@@ -184,7 +197,7 @@ describe("typed Scene State", () => {
       { field: "time", value: "Tonight", evidence: "Tonight we're in the rooftop garden with Mina." },
       { field: "participant_arrived", value: "Mina", evidence: "Tonight we're in the rooftop garden with Mina." },
       { field: "emotionalBeat", value: "nervous", evidence: "I feel nervous" },
-      { field: "thread_opened", value: "choose the train", evidence: "we still need to choose the train." },
+      { field: "thread_opened", authority: "open", value: "choose the train", evidence: "we still need to choose the train." },
     ], assistantChanges: [] };
     expect(sceneForReply({ previous, userText, assistantText: "I stay beside you.", changes })).toEqual({
       schemaVersion: 1, version: 1, location: "the rooftop garden", time: "tonight", participants: ["Mina"],
@@ -204,13 +217,13 @@ describe("typed Scene State", () => {
   it("gives unchanged user facts priority over contradictory assistant facts", () => {
     const previous = { ...emptySceneState(), location: "the kitchen", participants: ["Mina"], unresolvedThreads: ["call the hotel"] };
     expect(sceneForReply({
-      previous, userText: "We stay in the kitchen. Mina stays. We still need to call the hotel.",
+      previous, userText: "We stay in the kitchen. Mina stays. No, we still need to call the hotel.",
       assistantText: "We are at the beach. Mina left. We finished calling the hotel.",
       changes: {
         userChanges: [
           { field: "location", value: "the kitchen", evidence: "We stay in the kitchen." },
           { field: "participant_arrived", value: "Mina", evidence: "Mina stays." },
-          { field: "thread_opened", value: "call the hotel", evidence: "We still need to call the hotel." },
+          { field: "thread_opened", authority: "hold", value: "call the hotel", evidence: "No, we still need to call the hotel." },
         ],
         assistantChanges: [
           { field: "location", value: "the beach", evidence: "We are at the beach." },
@@ -223,12 +236,12 @@ describe("typed Scene State", () => {
 
   it("binds an explicit scalar retain and named unchanged facts without borrowing arbitrary previous values", () => {
     const previous = { ...emptySceneState(), version: 4, location: "the kitchen", participants: ["Mina"], unresolvedThreads: ["call the hotel"] };
-    const source = { previous, userText: "Our conversation stays here. Mina stays with us. The hotel call remains unfinished.", assistantText: "We are in the mountains. Mina left. We finished calling the hotel." };
+    const source = { previous, userText: "Our conversation stays here. Mina stays with us. No, the hotel call remains unfinished.", assistantText: "We are in the mountains. Mina left. We finished calling the hotel." };
     expect(sceneForReply({ ...source, changes: {
       userChanges: [
         { evidence: "Our conversation stays here.", field: "location", value: "the kitchen", retain: true },
         { evidence: "Mina stays with us.", field: "participant_arrived", value: "Mina" },
-        { evidence: "The hotel call remains unfinished.", field: "thread_opened", value: "call the hotel", referent: "hotel" },
+        { evidence: "No, the hotel call remains unfinished.", field: "thread_opened", authority: "hold", value: "call the hotel", referent: "hotel" },
       ],
       assistantChanges: [
         { evidence: "We are in the mountains.", field: "location", value: "the mountains" },
@@ -239,7 +252,7 @@ describe("typed Scene State", () => {
     expect(() => sceneForReply({ ...source, changes: { userChanges: [{ evidence: "Our conversation stays here.", field: "location", value: "the beach" }], assistantChanges: [] } })).toThrow("scene_value_mismatch");
     for (const change of [
       { evidence: "She stays with us.", field: "participant_arrived", value: "Mina" },
-      { evidence: "That task remains unfinished.", field: "thread_opened", value: "call the hotel" },
+      { evidence: "That task remains unfinished.", field: "thread_opened", authority: "hold", value: "call the hotel" },
     ]) expect(() => sceneForReply({ previous, userText: change.evidence, assistantText: "", changes: { userChanges: [change], assistantChanges: [] } })).toThrow("scene_value_mismatch");
   });
 

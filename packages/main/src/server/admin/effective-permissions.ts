@@ -56,6 +56,16 @@ export async function userHasPermission(
   return (await effectivePermissions(userId, role)).has(key);
 }
 
+// A scoped producer can edit assigned Characters, but cannot grant itself a
+// new Character by creating one outside that scope.
+export async function canCreateCharacterProjects(
+  userId: string | undefined,
+  role: ActorRole | undefined,
+): Promise<boolean> {
+  if (!userId || !await userHasPermission(userId, role, "character.project.write")) return false;
+  return await effectiveCharacterIdsForPermission(userId, role, "character.project.write") === null;
+}
+
 export async function effectivePermissionScope(
   userId: string,
   role: ActorRole | undefined,

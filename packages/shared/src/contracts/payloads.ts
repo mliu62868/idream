@@ -28,8 +28,8 @@ export const chatStreamEventSchema = z.discriminatedUnion("type", [
     type: z.literal("done"),
     attempt: z.number().int().min(1),
     usage: z.object({
-      promptTokens: z.number().int().min(0),
-      completionTokens: z.number().int().min(0),
+      promptTokens: z.number().int().min(0).nullable(),
+      completionTokens: z.number().int().min(0).nullable(),
     }),
   }),
   z.object({
@@ -103,6 +103,8 @@ export const chatImageRequestedPayloadSchema = z
     characterReleaseId: z.string().min(1).optional(),
     releaseSnapshotHash: z.string().min(1).optional(),
     referenceSetRevisionId: z.string().min(1).optional(),
+    // Chat ownership remains with characterId even when the image depicts only scenery.
+    subject: z.enum(["companion", "scene"]),
     promptHint: z.string().nullable(),
     conversationContext: z.string().nullable(),
     intent: z.object({

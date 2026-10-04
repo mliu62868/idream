@@ -1047,19 +1047,20 @@ describe("GeneratorWorkspace media journeys", () => {
     expect(container.querySelector('[data-generation-job-id="late-enhance"]')).not.toBeNull();
   });
 
-  it("opens a linked saved preset using its own controls without submitting a generation", async () => {
+  it.each([true, false])("opens a linked saved preset using its own controls without submitting a generation (premium: %s)", async (premium) => {
     window.history.replaceState(null, "", "/generate?presetId=rain-preset");
     const originalFetch = globalThis.fetch;
     const generationWrites: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       if (path === "/api/v1/generation/jobs" && init?.method === "POST") generationWrites.push(String(init.body));
+      if (path.startsWith("/api/v1/characters?")) return Response.json({ ok: true, data: { items: [{ id: "character", title: "Mira", image: "/user-content/portrait.png" }] } });
       if (path === "/api/v1/generation/presets?scope=user") return Response.json({ ok: true, data: { items: [{
         id: "rain-preset", type: "user", category: null, label: "Rainy cafe", visibility: "private",
         controls: { prompt: "Rain on the cafe window", backgroundPresetId: "cafe-background" },
       }] } });
       if (path === "/api/v1/generation/config") return Response.json({ ok: true, data: {
-        ...config,
+        ...config, entitlements: { premium_controls: premium },
         presets: [{ id: "cafe-background", type: "background", category: null, label: "Cafe" }],
       } });
       return originalFetch(input, init);
@@ -1071,12 +1072,130 @@ describe("GeneratorWorkspace media journeys", () => {
     expect(generationWrites).toEqual([]);
   });
 
+  it.each(["A sunny balcony", ""])("saves an edited character moment preset for a free account (prompt: %s)", async (newPrompt) => {
+    window.history.replaceState(null, "", "/generate?presetId=moment-preset");
+    const originalFetch = globalThis.fetch;
+    const writes: Record<string, unknown>[] = [];
+    const preset = { id: "moment-preset", type: "mode", category: null, label: "Garden", visibility: "private",
+      controls: { prompt: "Original rainy garden", backgroundPresetId: "garden-background" } };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.startsWith("/api/v1/characters?")) return Response.json({ ok: true, data: { items: [{ id: "character", title: "Mira", image: "/user-content/portrait.png" }] } });
+      if (path === "/api/v1/generation/config") return Response.json({ ok: true, data: {
+        ...config, entitlements: { premium_controls: false },
+        presets: [{ id: "garden-background", type: "background", category: null, label: "Garden" }],
+      } });
+      if (path === "/api/v1/generation/presets?scope=user") return Response.json({ ok: true, data: { items: [preset] } });
+      if (path === "/api/v1/generation/presets/moment-preset" && init?.method === "PATCH") {
+        writes.push(JSON.parse(String(init.body)));
+        return Response.json({ ok: true, data: { preset } });
+      }
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(button("Edit preset Garden"));
+    const prompt = container.querySelector<HTMLTextAreaElement>('[aria-label="Prompt"]')!;
+    expect(prompt.disabled).toBe(false);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(prompt, newPrompt);
+      prompt.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await click(button("Save changes"));
+    expect(writes).toHaveLength(1);
+    expect(writes[0].controls).toEqual({ backgroundPresetId: "garden-background", ...(newPrompt ? { prompt: newPrompt } : {}) });
+  });
+
+  it("saves a new character moment preset for a free account", async () => {
+    const originalFetch = globalThis.fetch;
+    const writes: Record<string, unknown>[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).startsWith("/api/v1/characters?")) return Response.json({ ok: true, data: { items: [{ id: "character", title: "Mira", image: "/user-content/portrait.png" }] } });
+      if (String(input) === "/api/v1/generation/config") return Response.json({ ok: true, data: { ...config, entitlements: { premium_controls: false } } });
+      if (String(input) === "/api/v1/generation/presets" && init?.method === "POST") {
+        const body = JSON.parse(String(init.body)); writes.push(body);
+        return Response.json({ ok: true, data: { preset: { id: "new-moment", ...body } } });
+      }
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(container.querySelector('[data-testid="generator-advanced-toggle"]')!);
+    await act(async () => {
+      const prompt = container.querySelector<HTMLTextAreaElement>('[aria-label="Prompt"]')!;
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(prompt, "A quiet balcony at dawn");
+      prompt.dispatchEvent(new Event("input", { bubbles: true }));
+      const name = container.querySelector<HTMLInputElement>('[aria-label="Preset name"]')!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(name, "Balcony");
+      name.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await click(button("Save"));
+    expect(writes).toEqual([expect.objectContaining({ label: "Balcony", controls: { prompt: "A quiet balcony at dawn" } })]);
+  });
+
+  it("keeps freeplay prompt controls locked and preserves a saved prompt when renaming", async () => {
+    window.history.replaceState(null, "", "/generate?presetId=locked-preset");
+    const originalFetch = globalThis.fetch;
+    const writes: Record<string, unknown>[] = [];
+    const preset = { id: "locked-preset", type: "mode", category: null, label: "Locked garden", visibility: "private", controls: { prompt: "Saved while Premium" } };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/generation/config") return Response.json({ ok: true, data: { ...config, entitlements: { premium_controls: false } } });
+      if (path === "/api/v1/generation/presets?scope=user") return Response.json({ ok: true, data: { items: [preset] } });
+      if (path === "/api/v1/generation/presets/locked-preset" && init?.method === "PATCH") {
+        writes.push(JSON.parse(String(init.body))); return Response.json({ ok: true, data: { preset } });
+      }
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(button("Edit preset Locked garden"));
+    const prompt = container.querySelector<HTMLTextAreaElement>('[aria-label="Prompt"]')!;
+    expect(prompt.disabled).toBe(true);
+    expect(prompt.value).toBe("");
+    await click(button("Save changes"));
+    expect(writes).toHaveLength(1);
+    expect(writes[0].controls).toEqual({ prompt: "Saved while Premium" });
+  });
+
   it("does not apply a linked preset that is absent from this viewer's saved presets", async () => {
     window.history.replaceState(null, "", "/generate?presetId=another-users-preset");
     await mount();
     expect(container.textContent).toContain("This saved preset is unavailable. Choose one of your presets below.");
     expect(container.querySelector<HTMLTextAreaElement>('[aria-label="Prompt"]')?.value).toBe("");
     expect(container.textContent).not.toContain("Applied preset");
+  });
+
+  it("restores the pending video's original character and pinned image instead of the catalog default", async () => {
+    const originalFetch = globalThis.fetch;
+    const request = { characterId: "original-character", consistencyMode: "balanced", orientation: "2:3", quality: "preview", audio: "generated", scenes: [{ prompt: "A calm wave", seconds: 3 }] };
+    localStorage.setItem("idream:video-sequence:user:generator-viewer", JSON.stringify({ key: "original-request-key", id: "original-sequence", request }));
+    const sequence = { id: "original-sequence", status: "generating", errorCode: null, request,
+      scenes: [{ ordinal: 0, narrationState: "pending", job: { id: "original-scene", status: "running", controls: { sourceImageAssetId: "pinned-original-image" }, cost: { charged: 100, refunded: 0, finalCharge: 100 } }, assets: [] }],
+      cost: { charged: 100, refunded: 0, finalCharge: 100 }, asset: null, createdAt: "2026-10-02T00:00:00.000Z", completedAt: null };
+    const writes: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (init?.method === "POST") writes.push(path);
+      if (path === "/api/v1/generation/config") return Response.json({ ok: true, data: {
+        ...config, entitlements: { premium_controls: true, video_generation: true },
+        video: { enabled: true, availability: { state: "available" }, requiredEntitlement: "video_generation",
+          recipes: [{ id: "video-recipe", rowId: "video-recipe-v1", label: "Animate character", mode: "video", useCase: "character", version: 1 }],
+          models: [{ id: "video-model", label: "Video", maxCount: 1, costMultiplier: 1, entitlement: null }] },
+      } });
+      if (path.startsWith("/api/v1/characters?")) return Response.json({ ok: true, data: { items: [
+        { id: "default-character", title: "Default character", image: "/user-content/default.png" },
+        { id: "original-character", title: "Original character", image: "/user-content/new-catalog-portrait.png" },
+      ].map(character => ({ ...character, age: "28", description: "Photographer", likes: "0", chats: "0", creator: "iDream" })), nextCursor: null } });
+      if (path.endsWith("/video-sequences/capabilities")) return Response.json({ ok: true, data: { capabilities: videoCapabilities } });
+      if (path.endsWith("/video-sequences")) return Response.json({ ok: true, data: { sequences: [sequence] } });
+      if (path.endsWith("/original-sequence")) return Response.json({ ok: true, data: { sequence } });
+      return originalFetch(input, init);
+    }));
+    await mount(); await click(button("Video"));
+    expect(container.querySelector<HTMLSelectElement>("#generator-character")?.value).toBe("original-character");
+    expect(container.querySelector<HTMLSelectElement>("#generator-character")?.disabled).toBe(true);
+    expect(container.querySelector<HTMLInputElement>("#generator-freeplay")?.disabled).toBe(true);
+    expect(container.querySelector('[data-testid="generator-video-source"] img')?.getAttribute("src")).toBe("/api/v1/media/pinned-original-image/content");
+    expect(container.querySelector<HTMLTextAreaElement>('[aria-label="Scene 1 prompt"]')?.value).toBe("A calm wave");
+    expect(writes).toHaveLength(0);
   });
 
   it.each([

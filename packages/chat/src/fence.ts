@@ -27,6 +27,14 @@ export type FenceScope =
   | { scope: "turn"; turnId: string }
   | { scope: "attempt"; turnId: string; attempt: number };
 
+/** A durable cancellation or purge denied this write; it is not a storage failure. */
+export class ChatFenceError extends Error {
+  constructor(scope: FenceScope) {
+    super(`${describe(scope)} is fenced`);
+    this.name = "ChatFenceError";
+  }
+}
+
 interface UserFenceRecord {
   schemaVersion: 1;
   deletedAt: string;
@@ -153,7 +161,7 @@ export async function isFenced(scope: FenceScope): Promise<boolean> {
 
 export async function assertNotFenced(scopes: readonly FenceScope[]): Promise<void> {
   for (const scope of scopes) {
-    if (await isFenced(scope)) throw new Error(`${describe(scope)} is fenced`);
+    if (await isFenced(scope)) throw new ChatFenceError(scope);
   }
 }
 

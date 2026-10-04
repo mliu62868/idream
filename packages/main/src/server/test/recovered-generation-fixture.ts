@@ -1,5 +1,6 @@
+import { generationTerminalRecordChecksum } from "@idream/shared/contracts/durable-server";
 import type { Prisma } from "@prisma/client";
-import { generationTerminalRecordSchema, generationTerminalRecordChecksum } from "@idream/shared/contracts";
+import { generationTerminalRecordSchema } from "@idream/shared/contracts";
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { recordGenerationAttemptEvent } from "@/server/ai/generation-attempt-events";

@@ -29,9 +29,9 @@ export function chatVideoAttachmentId(userId: string, key: string) {
 async function resolveChatVideoRequest(userId: string, sessionId: string, request: VideoRequest, key: string) {
   const context = await resolveGenerationContext(userId, request.generationContextToken);
   if (context.source.kind !== "chat" || context.source.sessionId !== sessionId) throw Errors.conflict("The selected image belongs to a different chat. Open Animate on the original reply.");
-  if (!context.sourceMedia || !context.characterId || !context.pins) throw Errors.badRequest("Choose a delivered image in this chat before requesting a video.");
+  if (!context.sourceMedia) throw Errors.badRequest("Choose a delivered image in this chat before requesting a video.");
   const body = generationJobSchema.parse({
-    mode: "video", characterId: context.characterId,
+    mode: "video", characterId: context.characterId ?? undefined, freeplay: context.identityMode === "source_only",
     generationContextToken: request.generationContextToken, prompt: request.prompt,
     model: request.model, outputCount: 1, quoteAuthority: request.quoteAuthority,
   });

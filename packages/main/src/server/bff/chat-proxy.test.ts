@@ -242,6 +242,41 @@ describe("Main-owned Chat façade", () => {
     ]));
   });
 
+  it("projects the Turn's frozen memory mode after a later session toggle and reload", async () => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const sessionId = await ensureSession(proxyChatRequest);
+    const toggle = (memoryEnabled: boolean) => proxyChatRequest(authRequest(
+      `/api/v1/chat/sessions/${sessionId}/memory`,
+      { method: "POST", body: JSON.stringify({ memoryEnabled }) },
+    ), ["chat", "sessions", sessionId, "memory"]);
+    expect((await toggle(false)).status).toBe(200);
+    const begun = await beginChatTurn({ userId: USER_ID, sessionId, content: "A temporary detail.", idempotencyKey: randomUUID() });
+    expect(begun.userMessage).toMatchObject({ memoryEnabled: false });
+    expect(begun.assistant).toMatchObject({ memoryEnabled: false });
+    expect(begun.snapshot?.memoryEnabled).toBe(false);
+    await commitChatTerminal({
+      version: 1, turnId: begun.snapshot!.turnId, sessionId,
+      assistantMessageId: begun.assistant.id, attempt: begun.snapshot!.attempt,
+      status: "sent", content: "Temporary detail logged.", model: "test-model", promptTokens: 1, completionTokens: 1,
+      ...nextSceneFixture(begun.snapshot!), terminalEvidence: TEST_TERMINAL_EVIDENCE,
+    });
+    expect((await toggle(true)).status).toBe(200);
+    const normal = await sendAndCommit(proxyChatRequest, sessionId, "An ordinary detail.", "All right.");
+    for (let reload = 0; reload < 2; reload += 1) {
+      const response = await proxyChatRequest(authRequest(`/api/v1/chat/sessions/${sessionId}`), ["chat", "sessions", sessionId]);
+      expect(response.status).toBe(200);
+      const { data } = await response.json() as { data: { session: { memoryEnabled: boolean; messages: Array<{ id: string; memoryEnabled?: boolean }> } } };
+      expect(data.session.memoryEnabled).toBe(true);
+      expect(data.session.messages).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: begun.userMessage.id, memoryEnabled: false }),
+        expect.objectContaining({ id: begun.assistant.id, memoryEnabled: false }),
+        expect.objectContaining({ id: normal.userMessageId, memoryEnabled: true }),
+        expect.objectContaining({ id: normal.assistantMessageId, memoryEnabled: true }),
+      ]));
+      expect(data.session.messages.find(message => message.id === `opening:${sessionId}`)).not.toHaveProperty("memoryEnabled");
+    }
+  });
+
   it("rejects a new Product Turn before mutation when AgentRun execution is unconfigured", async () => {
     const { proxyChatRequest } = await import("./chat-proxy");
     const sessionId = await ensureSession(proxyChatRequest);
@@ -1700,6 +1735,7 @@ describe("Main-owned Chat façade", () => {
         effectScope: "turn_action",
         intent: { requestedNudity: "unspecified" },
         arguments: {
+          subject: "companion",
           prompt: "A detailed portrait beside a sunlit window",
           orientation: "4:5",
           outputCount: 1,

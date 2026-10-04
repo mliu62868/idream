@@ -827,6 +827,8 @@ describe("Character image Creative Run authority", () => {
           "x-request-id": randomUUID(),
         },
         body: JSON.stringify({
+          expectedActiveIdentityId: null,
+          expectedActiveIdentityVersion: 0,
           identityPrompt: "Mara, the same composed late-night radio host",
           reason: "Repair the uniquely referenced seed-style Character image",
           confirmation: `${characterId}:visual-profile`,

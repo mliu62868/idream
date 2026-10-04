@@ -1,6 +1,6 @@
+import { generationTerminalRecordChecksum } from "@idream/shared/contracts/durable-server";
 import {
   generationProviderInvocationRef,
-  generationTerminalRecordChecksum,
   generationTerminalRecordIngestSchema,
   generationTerminalRecordRef,
   generationTerminalRecordSchema,

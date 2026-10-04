@@ -1,6 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { imageOrientations } from "@idream/shared/media/image-orientation";
+import { imageGeneratePayloadSchema } from "@idream/shared/contracts";
 import { generationQuoteAuthoritySchema } from "./generation-quote-contract";
 
 const generationOrientations = [...imageOrientations, "2:3"] as [
@@ -43,7 +44,7 @@ export const generationJobSchema = z
     controls: generationControlsSchema.default({}),
     presetIds: z.array(z.string()).max(12).default([]),
     orientation: z.enum(generationOrientations).optional(),
-    outputCount: z.number().int().min(1).max(8).default(1),
+    outputCount: imageGeneratePayloadSchema.shape.count.default(1),
     model: z.string().max(80).optional(),
     remixFeedItemId: z.string().max(180).optional(),
     generationContextToken: z.string().min(1).max(4096).optional(),

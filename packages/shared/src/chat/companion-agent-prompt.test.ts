@@ -9,7 +9,7 @@ import { IMAGE_AGENT_TOOL_DEFINITIONS } from "./image-action";
 
 describe("Companion Product Agent Contract", () => {
   it("defines the shared adult-companion outcome before Character-specific expression", () => {
-    expect(COMPANION_PRODUCT_PROMPT_VERSION).toBe("companion-product-2");
+    expect(COMPANION_PRODUCT_PROMPT_VERSION).toBe("companion-product-4");
     expect(COMPANION_PRODUCT_AGENT_PROMPT).toContain(
       "Make the user feel actively wanted, understood, and accompanied",
     );

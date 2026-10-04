@@ -190,7 +190,7 @@ export function evaluateTerminalCandidate(
       finishReason: facts.finishReasonKind === "max-tokens" ? "length" : "stop",
       provider: facts.profile.provider,
       model: facts.profile.model,
-      usage: { ...facts.usage },
+      usage: facts.usage === null ? null : { ...facts.usage },
       execution: { steps: facts.steps, toolCalls: facts.toolCalls },
       tools: facts.reservations,
       completedAt: facts.completedAt,

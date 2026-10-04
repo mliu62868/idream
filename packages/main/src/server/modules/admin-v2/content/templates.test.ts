@@ -121,7 +121,7 @@ describe("character template library service (feature B)", () => {
     const online = await call("POST", `${TEMPLATES}/${id}/active`, {
       userId: admin,
       role: "admin",
-      body: { active: true, reason: "publish template", confirmation: id },
+      body: { expectedUpdatedAt: created.data.template.updatedAt, active: true, reason: "publish template", confirmation: id },
     });
     expect(online.status).toBe(200);
     expect(online.data.template.isActive).toBe(true);
@@ -129,7 +129,7 @@ describe("character template library service (feature B)", () => {
     const offline = await call("POST", `${TEMPLATES}/${id}/active`, {
       userId: admin,
       role: "admin",
-      body: { active: false, reason: "take offline", confirmation: id },
+      body: { expectedUpdatedAt: online.data.template.updatedAt, active: false, reason: "take offline", confirmation: id },
     });
     expect(offline.data.template.isActive).toBe(false);
 
@@ -150,7 +150,7 @@ describe("character template library service (feature B)", () => {
     const rejected = await call("POST", `${TEMPLATES}/${id}/active`, {
       userId: admin,
       role: "admin",
-      body: { active: false, reason: "take offline", confirmation: "OFFLINE" },
+      body: { expectedUpdatedAt: created.data.template.updatedAt, active: false, reason: "take offline", confirmation: "OFFLINE" },
     });
     expect(rejected.status).toBe(400);
     expect(rejected.code).toBe("bad_request");
@@ -191,7 +191,7 @@ describe("character template library service (feature B)", () => {
     const cleared = await call("PATCH", `${TEMPLATES}/${created.data.template.id}`, {
       userId: admin,
       role: "admin",
-      body: { summary: null, gender: null, style: null, reason: "clear optional fields" },
+      body: { expectedUpdatedAt: created.data.template.updatedAt, summary: null, gender: null, style: null, reason: "clear optional fields" },
     });
     expect(cleared.status).toBe(200);
     expect(cleared.data.template).toMatchObject({ summary: null, gender: null, style: null });
@@ -202,7 +202,7 @@ describe("character template library service (feature B)", () => {
     const result = await call("PATCH", `${TEMPLATES}/${P}does-not-exist`, {
       userId: admin,
       role: "admin",
-      body: { name: "Nope", reason: "missing" },
+      body: { expectedUpdatedAt: "2026-10-02T00:00:00.000Z", name: "Nope", reason: "missing" },
     });
     expect(result.status).toBe(404);
   });

@@ -56,6 +56,7 @@ type Actor = {
 
 type AdminConsoleClientProps = {
   actor: Actor | null;
+  canCreateCharacters?: boolean;
   initialSection: string;
   initialAccess: boolean;
   initialPermissions: AdminPermissionKey[];
@@ -156,6 +157,7 @@ function SoulDraftNavigationGuard({ actorId }: { actorId: string }) {
 
 function AdminConsoleContent({
   actor,
+  canCreateCharacters = false,
   initialAccess,
   initialPermissions,
   path,
@@ -422,6 +424,7 @@ function AdminConsoleContent({
             ) : (
               activeItem.render({
                 actorId: actor.id,
+                canCreateCharacters,
                 canRead: canAccessActiveSection,
                 permissions,
                 view: path.view,

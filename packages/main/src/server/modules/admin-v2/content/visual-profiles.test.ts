@@ -176,6 +176,8 @@ describe("Visual Passport (character visual profiles)", () => {
           userId: support,
           role: "support",
           body: {
+            expectedActiveIdentityId: null,
+            expectedActiveIdentityVersion: 0,
             identityPrompt: "should not be created",
             reason: "should be blocked by permission",
             confirmation: confirmationFor(characterId),
@@ -199,6 +201,8 @@ describe("Visual Passport (character visual profiles)", () => {
           userId: admin,
           role: "admin",
           body: {
+            expectedActiveIdentityId: null,
+            expectedActiveIdentityVersion: 0,
             identityPrompt: "text alone cannot establish image authority",
             reason: "attempt unanchored identity",
             confirmation: confirmationFor(characterId),
@@ -317,6 +321,8 @@ describe("Visual Passport (character visual profiles)", () => {
           userId: admin,
           role: "admin",
           body: {
+            expectedActiveIdentityId: null,
+            expectedActiveIdentityVersion: 0,
             identityPrompt: "hand-authored identity prompt",
             reason: "bootstrap passport",
             confirmation: confirmationFor(characterId),
@@ -362,6 +368,8 @@ describe("Visual Passport (character visual profiles)", () => {
         userId: admin,
         role: "admin",
         body: {
+          expectedActiveIdentityId: null,
+          expectedActiveIdentityVersion: 0,
           identityPrompt: "ambiguous shared identity",
           reason: "attempt shared legacy repair",
           confirmation: confirmationFor(characterId),
@@ -405,6 +413,8 @@ describe("Visual Passport (character visual profiles)", () => {
         userId: admin,
         role: "admin",
         body: {
+          expectedActiveIdentityId: null,
+          expectedActiveIdentityVersion: 0,
           identityPrompt: "must not steal foreign identity",
           reason: "reject cross-Character image ownership",
           confirmation: confirmationFor(characterId),
@@ -451,6 +461,8 @@ describe("Visual Passport (character visual profiles)", () => {
           userId: admin,
           role: "admin",
           body: {
+            expectedActiveIdentityId: null,
+            expectedActiveIdentityVersion: 0,
             identityPrompt: "must not revive archived media",
             reason: "reject archived identity bootstrap",
             confirmation: confirmationFor(characterId),
@@ -509,6 +521,8 @@ describe("Visual Passport (character visual profiles)", () => {
           userId: admin,
           role: "admin",
           body: {
+            expectedActiveIdentityId: legacy.id,
+            expectedActiveIdentityVersion: legacy.version,
             identityPrompt: "Reviewed identity carried from the current Character image",
             reason: "repair the unanchored legacy identity",
             confirmation: confirmationFor(characterId),
@@ -537,6 +551,8 @@ describe("Visual Passport (character visual profiles)", () => {
     await createMedia({ id: imageAssetId, ownerId: admin });
     await createCharacter({ id: characterId, name: "Idempotent Target", imageAssetId });
     const body = {
+      expectedActiveIdentityId: null,
+      expectedActiveIdentityVersion: 0,
       identityPrompt: "stable identity authority",
       reason: "create one stable identity version",
       confirmation: confirmationFor(characterId),
@@ -574,11 +590,114 @@ describe("Visual Passport (character visual profiles)", () => {
     expect(first.data?.replayed).toBe(false);
     expect(replay.ok).toBe(true);
     expect(replay.data?.replayed).toBe(true);
+    expect(replay.data?.item).toEqual(first.data?.item);
     expect(collision.status).toBe(409);
     expect(await prisma.characterVisualProfile.count({ where: { characterId } })).toBe(1);
     expect(await prisma.adminAuditLog.count({
       where: { action: "content.visual_profile.create", targetId: characterId },
     })).toBe(1);
+  });
+
+  it("rejects a stale tab without replacing the current identity, references or draft assets", async () => {
+    const admin = await seedActor("admin", "stale-tab");
+    const characterId = `${P}char-stale-tab`;
+    const imageAssetId = `${P}image-stale-tab`;
+    await createMedia({ id: imageAssetId, ownerId: admin });
+    await createCharacter({ id: characterId, name: "Stale Tab", imageAssetId });
+    await prisma.mediaAsset.update({ where: { id: imageAssetId }, data: { characterId } });
+    const loadedIdentity = await seedVisualProfile({
+      characterId, version: 1, status: "active", anchorAssetIds: [imageAssetId],
+    });
+    const body = {
+      expectedActiveIdentityId: loadedIdentity.id,
+      expectedActiveIdentityVersion: loadedIdentity.version,
+      identityPrompt: "The first tab's chosen identity",
+      reason: "Save the loaded visual identity",
+      confirmation: confirmationFor(characterId),
+    };
+    const first = await call(createCharacterVisualProfile(makeRequest(
+      "POST", `/${characterId}/visual-profiles`, { userId: admin, role: "admin", body },
+    ), characterId));
+    expect(first.ok).toBe(true);
+    const current = await prisma.characterVisualProfile.findFirstOrThrow({
+      where: { characterId, status: "active" },
+    });
+    const project = await prisma.characterProject.create({ data: {
+      characterId, draftImageAssetId: imageAssetId,
+      draftAssetPack: { character_cover: { assetId: imageAssetId } },
+    } });
+    const references = await prisma.referenceSetRevision.findMany({
+      where: { visualProfileId: current.id }, include: { references: true },
+    });
+    const profiles = await prisma.characterVisualProfile.findMany({ where: { characterId } });
+
+    const stale = await call(createCharacterVisualProfile(makeRequest(
+      "POST", `/${characterId}/visual-profiles`, {
+        userId: admin, role: "admin",
+        body: { ...body, identityPrompt: "The second tab's stale identity" },
+      },
+    ), characterId));
+    expect(stale.status).toBe(409);
+    expect(stale.errorDetails).toMatchObject({
+      expectedIdentityId: loadedIdentity.id,
+      expectedIdentityVersion: 1,
+      currentIdentityId: current.id,
+      currentIdentityVersion: 2,
+      deepLink: `/admin/characters/${characterId}?tab=visual`,
+    });
+    expect(await prisma.characterVisualProfile.findMany({ where: { characterId } })).toEqual(profiles);
+    expect(await prisma.referenceSetRevision.findMany({
+      where: { visualProfileId: current.id }, include: { references: true },
+    })).toEqual(references);
+    expect(await prisma.characterProject.findUniqueOrThrow({ where: { id: project.id } })).toEqual(project);
+    expect(await prisma.controlPlaneCommand.count({ where: { targetId: characterId } })).toBe(1);
+    expect(await prisma.adminAuditLog.count({
+      where: { action: "content.visual_profile.create", targetId: characterId },
+    })).toBe(1);
+  });
+
+  it("compares the version as well as the active identity id", async () => {
+    const admin = await seedActor("admin", "version-pin");
+    const characterId = `${P}char-version-pin`;
+    await createCharacter({ id: characterId, name: "Version Pin" });
+    const current = await seedVisualProfile({ characterId, version: 2, status: "active" });
+    const result = await call(createCharacterVisualProfile(makeRequest(
+      "POST", `/${characterId}/visual-profiles`, {
+        userId: admin, role: "admin", body: {
+          expectedActiveIdentityId: current.id,
+          expectedActiveIdentityVersion: 1,
+          reason: "Reject the incorrect loaded version",
+          confirmation: confirmationFor(characterId),
+        },
+      },
+    ), characterId));
+    expect(result.status).toBe(409);
+    expect(result.errorDetails).toMatchObject({
+      expectedIdentityId: current.id, expectedIdentityVersion: 1,
+      currentIdentityId: current.id, currentIdentityVersion: 2,
+    });
+    expect(await prisma.characterVisualProfile.findMany({ where: { characterId } })).toEqual([current]);
+  });
+
+  it("allows only one first identity when two workspaces both loaded null authority", async () => {
+    const admin = await seedActor("admin", "first-identity-race");
+    const characterId = `${P}char-first-identity-race`;
+    const imageAssetId = `${P}image-first-identity-race`;
+    await createMedia({ id: imageAssetId, ownerId: admin });
+    await createCharacter({ id: characterId, name: "First Identity Race", imageAssetId });
+    const results = await Promise.all(["First workspace", "Second workspace"].map((identityPrompt) =>
+      call(createCharacterVisualProfile(makeRequest(
+        "POST", `/${characterId}/visual-profiles`, { userId: admin, role: "admin", body: {
+          expectedActiveIdentityId: null, expectedActiveIdentityVersion: 0,
+          identityPrompt, reason: "Establish the first identity", confirmation: confirmationFor(characterId),
+        } },
+      ), characterId)),
+    ));
+    expect(results.map((result) => result.status).sort()).toEqual([200, 409]);
+    expect(await prisma.characterVisualProfile.findMany({
+      where: { characterId }, select: { version: true, status: true },
+    })).toEqual([{ version: 1, status: "active" }]);
+    expect(await prisma.controlPlaneCommand.count({ where: { targetId: characterId } })).toBe(1);
   });
 
   it("mints v(prev+1) active, archives the prior active, and carries forward unspecified traits/pool", async () => {
@@ -593,7 +712,7 @@ describe("Visual Passport (character visual profiles)", () => {
       where: { id: { in: [anchorAssetId, referenceAssetId] } },
       data: { characterId },
     });
-    await seedVisualProfile({
+    const prior = await seedVisualProfile({
       characterId,
       version: 1,
       status: "active",
@@ -608,6 +727,8 @@ describe("Visual Passport (character visual profiles)", () => {
           userId: admin,
           role: "admin",
           body: {
+            expectedActiveIdentityId: prior.id,
+            expectedActiveIdentityVersion: prior.version,
             identityPrompt: "revised identity prompt",
             reason: "refresh identity prompt",
             confirmation: confirmationFor(characterId),
@@ -656,6 +777,8 @@ describe("Visual Passport (character visual profiles)", () => {
           userId: admin,
           role: "admin",
           body: {
+            expectedActiveIdentityId: null,
+            expectedActiveIdentityVersion: 0,
             identityPrompt: "should 404",
             reason: "should 404",
             confirmation: confirmationFor(missingId),
@@ -679,6 +802,8 @@ describe("Visual Passport (character visual profiles)", () => {
           userId: admin,
           role: "admin",
           body: {
+            expectedActiveIdentityId: null,
+            expectedActiveIdentityVersion: 0,
             identityPrompt: "valid prompt",
             reason: "ab",
             confirmation: confirmationFor(characterId),
@@ -702,6 +827,8 @@ describe("Visual Passport (character visual profiles)", () => {
           userId: admin,
           role: "admin",
           body: {
+            expectedActiveIdentityId: null,
+            expectedActiveIdentityVersion: 0,
             identityPrompt: "valid prompt",
             reason: "valid reason",
             confirmation: "wrong-token",
@@ -727,6 +854,8 @@ describe("Visual Passport (character visual profiles)", () => {
           userId: admin,
           role: "admin",
           body: {
+            expectedActiveIdentityId: null,
+            expectedActiveIdentityVersion: 0,
             identityPrompt: "hand-authored, never derived",
             reason: "manual mint",
             confirmation: confirmationFor(characterId),
@@ -755,6 +884,8 @@ describe("Visual Passport (character visual profiles)", () => {
           userId: admin,
           role: "admin",
           body: {
+            expectedActiveIdentityId: null,
+            expectedActiveIdentityVersion: 0,
             faceTraits: { eyes: "green" },
             hairTraits: { color: "black" },
             reason: "derive from traits",
@@ -902,6 +1033,8 @@ describe("Visual Passport (character visual profiles)", () => {
         userId: admin,
         role: "admin",
         body: {
+          expectedActiveIdentityId: original.id,
+          expectedActiveIdentityVersion: original.version,
           identityPrompt:
             "Preserve the exact person shown in the canonical portrait.",
           faceTraits: {
@@ -955,6 +1088,8 @@ describe("Visual Passport (character visual profiles)", () => {
         userId: admin,
         role: "admin",
         body: {
+          expectedActiveIdentityId: original.id,
+          expectedActiveIdentityVersion: original.version,
           identityPrompt:
             "Preserve the exact person shown in the canonical portrait.",
           faceTraits: {

@@ -2,7 +2,6 @@ import type {
   CharacterDraftPersona,
   CharacterDraftVisualDirection,
 } from "@idream/shared/admin";
-import { characterProjectDraftResumeSchema } from "@idream/shared/admin";
 import { loadCharacterSoulSnapshot } from "@idream/shared";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
@@ -17,7 +16,8 @@ import {
   toInputJson,
 } from "../shared/prisma-json";
 import { characterWorkspaceLink } from "./character-deep-link";
-import { characterDraftSnapshots } from "./draft-content";
+import { characterContentModerationText, characterDraftSnapshots } from "./draft-content";
+import { moderateText } from "@/server/moderation/text-authority";
 import {
   characterAssetPack,
   evaluateDraftAssetRouteAuthority,
@@ -148,7 +148,7 @@ export async function getCharacterProjectDraftForResume(characterId: string) {
   const soul = loadedSoul.ok ? loadedSoul.snapshot.soul : null;
   const opening = record(content.openingSnapshot);
   const appearance = record(content.appearanceSnapshot);
-  return characterProjectDraftResumeSchema.parse({
+  return {
     authority: {
       characterId,
       projectId: project.id,
@@ -178,7 +178,7 @@ export async function getCharacterProjectDraftForResume(characterId: string) {
         referenceDirection: text(appearance.referenceDirection),
       },
     },
-  });
+  };
 }
 
 export async function updateCharacterProjectDraft(input: {
@@ -232,11 +232,14 @@ export async function updateCharacterProjectDraft(input: {
     } | null = null;
     let revision: { id: string; revision: number } | null = null;
     if (input.content) {
-      const snapshots = characterDraftSnapshots(input.content);
       const latestContent = await tx.characterContentVersion.findFirst({
         where: { characterId: input.characterId },
         orderBy: { version: "desc" },
       });
+      const snapshots = characterDraftSnapshots(input.content, latestContent?.appearanceSnapshot);
+      const moderation = await moderateText("character", input.characterId,
+        characterContentModerationText(snapshots), "character_authoring");
+      if (moderation.status === "blocked") throw Errors.forbidden("Character failed safety checks", moderation);
       if (
         !latestContent ||
         latestContent.contentHash !== snapshots.contentHash

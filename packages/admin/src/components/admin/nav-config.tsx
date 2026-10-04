@@ -108,6 +108,8 @@ export type { WorkMode };
 //         任何编译期约束，加错 key 也只是少一个按钮。
 export type SectionContext = {
   readonly permissions: ReadonlySet<AdminPermissionKey>;
+  // Scoped write grants can edit an existing Character without allowing creation.
+  readonly canCreateCharacters: boolean;
   readonly canRead: boolean;
   readonly workMode: WorkMode;
   readonly actorId: string;
@@ -177,7 +179,7 @@ export const navItems: NavItem[] = [
     render: (ctx) => <TodayWorkspace workMode={ctx.workMode} /> }),
 
   item({ id: "content/official", label: "Characters", href: "/admin/characters", icon: UserRound, group: "Characters", read: readForOperations("GET /api/v2/admin/characters/:id", "GET /api/v2/admin/characters/portfolio"), chrome: "compact",
-    render: (ctx) => <CharacterWorkspace actorId={ctx.actorId} permissions={ctx.permissions} view={ctx.view} /> }),
+    render: (ctx) => <CharacterWorkspace actorId={ctx.actorId} canCreateCharacters={ctx.canCreateCharacters} permissions={ctx.permissions} view={ctx.view} /> }),
   item({ id: "content/templates", label: "Character Starters", href: "/admin/characters/starters", icon: Sparkles, group: "Characters", read: readForOperations("GET /api/v2/admin/content/templates"),
     render: (ctx) => <StartersSection
       canAssist={ctx.permissions.has("content.official.write")}

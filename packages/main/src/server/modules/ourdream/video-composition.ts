@@ -44,10 +44,16 @@ export async function composeVideoScenes(input: {
         const speech = JSON.parse(raw.stdout) as { format?: { duration?: string }; streams?: Array<{ codec_type?: string }> };
         const duration = Number(speech.format?.duration);
         if (!Number.isFinite(duration) || duration <= 0 || duration > 30 || !speech.streams?.some(stream => stream.codec_type === "audio")) throw new Error("Narration must be valid audio up to 30 seconds");
-        const seconds = Math.ceil(Math.max(duration, media.durationSeconds) * 24) / 24;
+        // Native audio can outlast its picture stream, and container duration
+        // rounds rational frame times (13/24 becomes .542). Narration replaces
+        // that audio, so only decoded picture frames determine the hold point.
+        if (media.frameCount === null) throw new Error("Narration requires a decoded picture frame count");
+        const pictureFrames = media.frameCount;
+        const pictureSeconds = pictureFrames / 24;
+        const seconds = Math.max(Math.ceil(duration * 24), pictureFrames) / 24;
         durations.push(seconds);
-        args.push("-i", speechPath, "-map", "0:v:0", "-map", "1:a:0", "-vf", `tpad=stop_mode=clone:stop_duration=${Math.max(0, seconds - media.durationSeconds)}`,
-          "-af", "apad", "-t", String(seconds), "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2");
+        args.push("-i", speechPath, "-map", "0:v:0", "-map", "1:a:0", "-vf", `setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop_duration=${Math.max(0, seconds - pictureSeconds)}`,
+          "-af", "asetpts=PTS-STARTPTS,apad", "-t", String(seconds), "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2");
       } else {
         if (input.audio === "generated" && !media.hasAudio) throw new Error("Generated soundtrack is missing");
         durations.push(media.durationSeconds);

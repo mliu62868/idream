@@ -61,6 +61,7 @@ async function detail(comic: ComicRow, viewerId?: string, admin = false): Promis
         const character = page.mediaAsset?.characterId ? byId.get(page.mediaAsset.characterId) : null;
         return {
           id: page.id, mediaAssetId: page.mediaAssetId, ordinal: page.ordinal, caption: page.caption,
+          width: page.mediaAsset?.width ?? null, height: page.mediaAsset?.height ?? null,
           url: usableMedia(page.mediaAsset, comic.creatorId) ? (admin ? collectionMediaViewUrl(page.mediaAsset!) : contentUrl(comic.id, page.id)) : null,
           remixHref: comic.allowRemix && comic.status === "published" && comic.visibility !== "private" && publicAuthor(comic) && publishable(comic)
             ? `/generate?${new URLSearchParams({ comicId: comic.id, comicVersion: String(comic.version), comicPageId: page.id })}` : null,

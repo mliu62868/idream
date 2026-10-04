@@ -46,6 +46,7 @@ export const comicDetailSchema = comicSummarySchema.extend({
     pages: z.array(z.object({
       id: z.string(), mediaAssetId: z.string().nullable(), ordinal: z.number().int(),
       caption: z.string(), url: z.string().nullable(), remixHref: z.string().nullable(),
+      width: z.number().int().positive().nullable(), height: z.number().int().positive().nullable(),
       character: z.object({
         id: z.string(), name: z.string(), remixHref: z.string(),
       }).strict().nullable(),

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ComicDetail } from "@idream/shared/comics";
 
 vi.mock("next/link", () => ({ default: ({ href, children, ...props }: ComponentProps<"a">) => createElement("a", { ...props, href: String(href) }, children) }));
-vi.mock("next/image", () => ({ default: ({ src, alt, onError }: ComponentProps<"img">) => createElement("img", { src, alt, onError }) }));
+vi.mock("next/image", () => ({ default: ({ src, alt, onError, width, height }: ComponentProps<"img">) => createElement("img", { src, alt, onError, width, height }) }));
 vi.mock("./AgeGateBoundary", () => ({ useAgeGateAccess: () => ({ accepted: true }) }));
 vi.mock("./ComicShell", () => ({ ComicShell: ({ children }: { children: ReactNode }) => createElement("main", {}, children) }));
 import { ComicReader } from "./ComicReader";
@@ -24,8 +24,8 @@ function comic(canManage = true): ComicDetail {
     pageCount: 2, episodeCount: 1, coverUrl: "/comic/page-a", updatedAt: "2026-09-10T00:00:00.000Z",
     publishedAt: canManage ? null : "2026-09-10T00:00:00.000Z", canManage, reviewNote: null,
     episodes: [{ id: "chapter-a", ordinal: 0, title: "Departure", pages: [
-      { id: "page-a", mediaAssetId: "image-a", ordinal: 0, caption: "At the station", url: "/comic/page-a", character: null, remixHref: null },
-      { id: "page-b", mediaAssetId: "image-b", ordinal: 1, caption: "On the train", url: "/comic/page-b", character: null, remixHref: null },
+      { id: "page-a", mediaAssetId: "image-a", ordinal: 0, caption: "At the station", url: "/comic/page-a", width: 512, height: 640, character: null, remixHref: null },
+      { id: "page-b", mediaAssetId: "image-b", ordinal: 1, caption: "On the train", url: "/comic/page-b", width: 768, height: 512, character: null, remixHref: null },
     ] }],
   };
 }
@@ -61,11 +61,44 @@ describe("Comic workspace authority and saved order", () => {
       expect(document.getElementById("chapter-chapter-a")).toBeNull();
       await act(async () => finishRead(envelope(comic(false))));
       await until(() => container.querySelectorAll("figure").length === 2);
+      expect([...container.querySelectorAll("img")].map((image) => [image.width, image.height])).toEqual([[512, 640], [768, 512]]);
       expect(scroll).toHaveBeenCalledTimes(1);
       expect(scroll.mock.contexts[0]).toBe(document.getElementById("chapter-chapter-a"));
       await act(async () => window.dispatchEvent(new Event("focus")));
       await until(() => reads === 2);
       expect(scroll).toHaveBeenCalledTimes(1);
+    } finally { window.history.replaceState(null, "", previousUrl); }
+  });
+
+  it.each(["loaded", "scrolled", "failed"] as const)("handles a %s legacy image above a chapter deep link", async (outcome) => {
+    const previousUrl = window.location.href;
+    window.history.replaceState(null, "", "/comics/comic-a#chapter-chapter-b");
+    const scroll = vi.spyOn(HTMLElement.prototype, "scrollIntoView").mockImplementation(() => {});
+    vi.spyOn(HTMLImageElement.prototype, "complete", "get").mockReturnValue(false);
+    const story = comic(false);
+    story.episodes[0]!.pages[0]!.width = null;
+    story.episodes[0]!.pages[0]!.height = null;
+    story.episodes.push({ id: "chapter-b", ordinal: 1, title: "Arrival", pages: [] });
+    story.episodeCount = 2;
+    vi.stubGlobal("fetch", vi.fn(async (url: RequestInfo | URL) => String(url) === "/api/v1/me" ? viewer() : envelope(story)));
+    try {
+      await act(async () => root.render(createElement(ComicReader, { id: "comic-a" })));
+      await until(() => container.querySelectorAll("img").length === 2);
+      const pendingImage = container.querySelector("img")!;
+      expect(scroll).not.toHaveBeenCalled();
+      expect(pendingImage.loading).toBe("eager");
+      if (outcome === "scrolled") window.dispatchEvent(new Event("wheel"));
+      await act(async () => pendingImage.dispatchEvent(new Event(outcome === "failed" ? "error" : "load")));
+      if (outcome === "loaded") {
+        expect(scroll).toHaveBeenCalledTimes(1);
+        expect(scroll.mock.contexts[0]).toBe(document.getElementById("chapter-chapter-b"));
+      } else {
+        expect(scroll).not.toHaveBeenCalled();
+      }
+      if (outcome === "failed") {
+        expect(container.textContent).toContain("A page is no longer available.");
+        expect(container.querySelectorAll("figure")).toHaveLength(0);
+      }
     } finally { window.history.replaceState(null, "", previousUrl); }
   });
 

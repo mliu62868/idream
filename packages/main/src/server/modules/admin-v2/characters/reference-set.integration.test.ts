@@ -361,6 +361,8 @@ describe("Character Reference Set publication", () => {
             "idempotency-key": `${prefix}next-identity`,
           },
           body: JSON.stringify({
+            expectedActiveIdentityId: profileId,
+            expectedActiveIdentityVersion: 1,
             identityPrompt: "Immutable identity fixture after reference pruning",
             reason: "Carry only the current Reference Set into the next identity version",
             confirmation: `${characterId}:visual-profile`,
@@ -485,6 +487,8 @@ describe("Character Reference Set publication", () => {
               "idempotency-key": `${prefix}archived-fallback-command`,
             },
             body: JSON.stringify({
+              expectedActiveIdentityId: null,
+              expectedActiveIdentityVersion: 0,
               identityPrompt: "This archived image must not define identity",
               reason: "Prove the current image fallback is revalidated after its media lock",
               confirmation: `${fallbackCharacterId}:visual-profile`,
@@ -552,6 +556,8 @@ describe("Character Reference Set publication", () => {
               "idempotency-key": `${prefix}archived-anchor-command`,
             },
             body: JSON.stringify({
+              expectedActiveIdentityId: inheritedProfileId,
+              expectedActiveIdentityVersion: 1,
               identityPrompt: "The archived anchor must not carry into V2",
               reason: "Prove inherited anchors are revalidated after their media locks",
               confirmation: `${inheritedCharacterId}:visual-profile`,

@@ -9,7 +9,8 @@ import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { operationalCharacterWhere } from "@/server/modules/metric-data-scope";
 import { lockCharacterGenerationAuthority } from "./generation-authority-lock";
-import { characterSoulVersionSnapshots } from "./draft-content";
+import { characterContentModerationText, characterSoulVersionSnapshots } from "./draft-content";
+import { moderateText } from "@/server/moderation/text-authority";
 
 export type CharacterSoulVersionResult = {
   readonly characterId: string;
@@ -75,15 +76,17 @@ export async function createCharacterSoulVersion(input: {
     try {
       snapshots = characterSoulVersionSnapshots({
         persona: input.persona,
-        appearanceSnapshot: input.visualDirection
-          ? { ...appearanceRecord(currentContent.appearanceSnapshot), ...input.visualDirection }
-          : currentContent.appearanceSnapshot,
+        appearanceSnapshot: currentContent.appearanceSnapshot,
+        visualDirection: input.visualDirection,
       });
     } catch (cause) {
       throw Errors.badRequest(
         cause instanceof Error ? cause.message : "Character Soul compilation failed",
       );
     }
+    const moderation = await moderateText("character", input.characterId,
+      characterContentModerationText(snapshots), "character_authoring");
+    if (moderation.status === "blocked") throw Errors.forbidden("Character failed safety checks", moderation);
     if (currentContent.contentHash === snapshots.contentHash) {
       if (!latestRevision || latestRevision.characterContentVersionId !== currentContent.id) {
         throw Errors.conflict("The current Character draft has no matching revision", {
@@ -173,10 +176,4 @@ export async function createCharacterSoulVersion(input: {
   };
 
   return inTransaction(db, execute);
-}
-
-function appearanceRecord(value: unknown): Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {};
 }

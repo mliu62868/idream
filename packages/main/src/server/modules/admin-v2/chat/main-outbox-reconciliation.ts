@@ -1,7 +1,7 @@
+import { durableEnvelopeHash } from "@idream/shared/contracts/durable-server";
 import {
   MAIN_TO_CHAT_EVENTS,
   LEGACY_MAIN_TO_CHAT_EVENTS,
-  durableEnvelopeHash,
   durableEventEnvelopeSchema,
   resolveMainToChatTarget,
   type DurableEventEnvelope,

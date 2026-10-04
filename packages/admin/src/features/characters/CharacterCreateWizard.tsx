@@ -17,6 +17,7 @@ import {
   ShieldAlert,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import {
   useCallback,
   useEffect,
@@ -41,6 +42,10 @@ import {
 } from "@/lib/durable-mutation-intent";
 import { reconcileDurableMutationIntent } from "@/lib/durable-mutation-recovery";
 import { characterCreateStepFieldErrors } from "./character-form-validation";
+import { useUnsavedChanges } from "@/components/admin/ui/useUnsavedChanges";
+import { operatorErrorCopy } from "@/components/admin/ui/request-error-copy";
+import { RequestErrorDetails } from "@/components/admin/ui/RequestErrorDetails";
+import { ConfirmDialog } from "@/components/admin/ui/ConfirmDialog";
 
 type Draft = CharacterProjectDraft;
 type SaveState =
@@ -207,9 +212,11 @@ function draftFromCreateIntent(
 export function CharacterCreateWizard({
   actorId = "anonymous",
   canCreate,
+  canResumeDraft = false,
 }: {
   actorId?: string;
   canCreate: boolean;
+  canResumeDraft?: boolean;
 }) {
   const { t } = useAdminI18n();
   const router = useRouter();
@@ -221,10 +228,14 @@ export function CharacterCreateWizard({
   const [authority, setAuthority] =
     useState<CharacterProjectDraftAuthority | null>(null);
   const [saveState, setSaveState] = useState<SaveState>("Not saved");
-  const [error, setError] = useState<string | null>(null);
+  const [lastSavedKey, setLastSavedKey] = useState<string | null>(null);
+  const [requestedCharacterId, setRequestedCharacterId] = useState<string | null>(null);
+  const [finishing, setFinishing] = useState(false);
+  const [error, setError] = useState<string | AdminV2RequestError | null>(null);
   const [recoveryNotice, setRecoveryNotice] = useState<string | null>(null);
   const [resumeState, setResumeState] = useState<ResumeState>("checking");
   const [confirmStartNew, setConfirmStartNew] = useState(false);
+  const [discardLocalDraftOpen, setDiscardLocalDraftOpen] = useState(false);
   const [validationAttemptedStep, setValidationAttemptedStep] = useState<
     number | null
   >(null);
@@ -234,6 +245,18 @@ export function CharacterCreateWizard({
   const lastSavedKeyRef = useRef<string | null>(null);
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const userEditedRef = useRef(false);
+  const previousStepRef = useRef(step);
+  const { guard } = useUnsavedChanges(
+    !createIntent && (authority
+      ? draftKey(draft) !== lastSavedKey
+      : saveState === "In memory only"),
+  );
+
+  useEffect(() => {
+    if (previousStepRef.current === step) return;
+    previousStepRef.current = step;
+    wizardRef.current?.querySelector<HTMLElement>("#character-create-current-step")?.focus();
+  }, [step]);
 
   const persistNow = useCallback(
     async (snapshot: Draft, allowCreate: boolean) => {
@@ -279,6 +302,7 @@ export function CharacterCreateWizard({
             );
             authorityRef.current = resumed.authority;
             lastSavedKeyRef.current = draftKey(resumed.draft);
+            setLastSavedKey(lastSavedKeyRef.current);
             setAuthority(resumed.authority);
             setDraft(resumed.draft);
             setStep(firstIncompleteCharacterCreateStep(resumed.draft));
@@ -335,6 +359,7 @@ export function CharacterCreateWizard({
       try {
         if (!authorityRef.current) {
           if (!allowCreate) return;
+          if (!canCreate) throw new Error("Creating characters requires access to all characters. You can still edit your assigned characters.");
           if (resumeTargetRef.current !== null) {
             throw new Error(
               resumeTargetRef.current
@@ -352,6 +377,7 @@ export function CharacterCreateWizard({
             );
             authorityRef.current = resumed.authority;
             lastSavedKeyRef.current = draftKey(resumed.draft);
+            setLastSavedKey(lastSavedKeyRef.current);
             setAuthority(resumed.authority);
             setDraft(resumed.draft);
             setStep(firstIncompleteCharacterCreateStep(resumed.draft));
@@ -492,6 +518,7 @@ export function CharacterCreateWizard({
           setAuthority(next);
         }
         lastSavedKeyRef.current = key;
+        setLastSavedKey(key);
         setSaveState("Saved");
       } catch (cause) {
         if (cause instanceof AdminV2RequestError && cause.status === 409)
@@ -533,7 +560,7 @@ export function CharacterCreateWizard({
             setCreateIntent(null);
           }
           setError(
-            cause instanceof Error
+            cause instanceof AdminV2RequestError ? cause : cause instanceof Error
               ? cause.message
               : "Character draft could not be saved",
           );
@@ -541,7 +568,7 @@ export function CharacterCreateWizard({
         throw cause;
       }
     },
-    [createIntent, createScope],
+    [canCreate, createIntent, createScope],
   );
 
   const persist = useCallback(
@@ -560,6 +587,7 @@ export function CharacterCreateWizard({
 
   const restoreDraft = useCallback(async (characterId: string) => {
     resumeTargetRef.current = characterId;
+    setRequestedCharacterId(characterId);
     setResumeState("restoring");
     setSaveState("Saving");
     setError(null);
@@ -572,6 +600,7 @@ export function CharacterCreateWizard({
       );
       authorityRef.current = resumed.authority;
       lastSavedKeyRef.current = draftKey(resumed.draft);
+      setLastSavedKey(lastSavedKeyRef.current);
       setAuthority(resumed.authority);
       setDraft(resumed.draft);
       setStep(firstIncompleteCharacterCreateStep(resumed.draft));
@@ -581,7 +610,7 @@ export function CharacterCreateWizard({
       setResumeState("restore_failed");
       setSaveState("Failed to save");
       setError(
-        cause instanceof Error
+        cause instanceof AdminV2RequestError ? cause : cause instanceof Error
           ? cause.message
           : "Server draft could not be restored",
       );
@@ -593,8 +622,13 @@ export function CharacterCreateWizard({
       const characterId = new URLSearchParams(window.location.search).get(
         "draft",
       );
-      if (characterId) {
+      if (characterId && (canCreate || canResumeDraft)) {
         if (!authorityRef.current) void restoreDraft(characterId);
+        return;
+      }
+      if (!canCreate) {
+        resumeTargetRef.current = null;
+        setResumeState("new");
         return;
       }
       const pendingIntent = readActiveDurableMutationIntent({
@@ -619,10 +653,10 @@ export function CharacterCreateWizard({
       setResumeState("new");
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [actorId, createScope, restoreDraft]);
+  }, [actorId, canCreate, canResumeDraft, createScope, restoreDraft]);
 
   useEffect(() => {
-    if (!authority) return;
+    if (!authority || !characterProjectDraftSchema.safeParse(draft).success) return;
     const timer = window.setTimeout(() => {
       void persist(draft, false).catch(() => undefined);
     }, 800);
@@ -636,29 +670,41 @@ export function CharacterCreateWizard({
     setSaveState(saved ? "Saved locally" : "In memory only");
   }, [actorId, createIntent, draft]);
 
-  if (!canCreate) {
+  if (!canCreate && !(canResumeDraft && resumeState !== "new")) {
     return (
       <section className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-6 sm:p-8">
         <ShieldAlert className="h-6 w-6 text-[var(--ad-text-muted)]" />
         <h2 className="mt-4 text-lg font-semibold">{t("No permission")}</h2>
         <p className="mt-2 text-sm text-[var(--ad-text-muted)]">
-          {t("Your effective grants do not include character.project.write.")}
+          {t(canResumeDraft ? "Creating characters requires access to all characters. You can still edit your assigned characters." : "Creating or editing characters requires character write permission.")}
         </p>
       </section>
     );
   }
 
-  async function next() {
+  async function goToStep(targetStep: number) {
     if (["checking", "restoring", "restore_failed"].includes(resumeState)) {
       return;
     }
-    if (!createIntent && !isCharacterCreateStepComplete(draft, step)) {
+    if (targetStep <= step && !createIntent) {
+      setValidationAttemptedStep(null);
+      setStep(targetStep);
+      return;
+    }
+    if (targetStep > step && !createIntent && !isCharacterCreateStepComplete(draft, step)) {
       setValidationAttemptedStep(step);
       window.setTimeout(() => {
         wizardRef.current
           ?.querySelector<HTMLElement>('[aria-invalid="true"]')
           ?.focus();
       }, 0);
+      return;
+    }
+    // Navigation to an editable section must remain possible while another
+    // section is invalid. Only valid snapshots can be saved to the authority.
+    if (targetStep < steps.length - 1 && !createIntent && !characterProjectDraftSchema.safeParse(draft).success) {
+      setValidationAttemptedStep(null);
+      setStep(targetStep);
       return;
     }
     try {
@@ -670,14 +716,14 @@ export function CharacterCreateWizard({
         );
       }
       setValidationAttemptedStep(null);
-      setStep((current) => Math.min(steps.length - 1, current + 1));
+      setStep(targetStep);
     } catch {
       // The persistent state and inline error explain the failure.
     }
   }
 
   async function finish() {
-    if (["checking", "restoring", "restore_failed"].includes(resumeState)) {
+    if (finishing || ["checking", "restoring", "restore_failed"].includes(resumeState)) {
       return;
     }
     if (
@@ -691,14 +737,18 @@ export function CharacterCreateWizard({
       window.setTimeout(() => wizardRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus(), 0);
       return;
     }
+    setFinishing(true);
     try {
       await persist(draft, true);
       const destination = authorityRef.current?.deepLink;
       if (destination) {
         clearLocalDraft(actorId);
         router.push(destination);
+      } else {
+        setFinishing(false);
       }
     } catch {
+      setFinishing(false);
       // Stay on Review so the operator can resolve and retry.
     }
   }
@@ -719,8 +769,12 @@ export function CharacterCreateWizard({
       : {};
   const currentStepComplete = isCharacterCreateStepComplete(draft, step) && Object.keys(fieldErrors).length === 0;
   const navigationLocked =
+    finishing ||
     saveState === "Saving" ||
     ["checking", "restoring", "restore_failed"].includes(resumeState);
+  const draftNotResumable = error instanceof AdminV2RequestError &&
+    error.status === 409 && isRecord(error.details) &&
+    error.details.reason === "draft_not_resumable";
 
   const startNewCharacter = () => {
     const url = new URL(window.location.href);
@@ -734,7 +788,9 @@ export function CharacterCreateWizard({
     );
     authorityRef.current = null;
     resumeTargetRef.current = null;
+    setRequestedCharacterId(null);
     lastSavedKeyRef.current = null;
+    setLastSavedKey(null);
     userEditedRef.current = false;
     const pendingIntent = readActiveDurableMutationIntent({
       scope: createScope,
@@ -761,6 +817,14 @@ export function CharacterCreateWizard({
       data-testid="character-create-wizard"
       ref={wizardRef}
     >
+      {guard}
+      {discardLocalDraftOpen ? <ConfirmDialog onClose={() => setDiscardLocalDraftOpen(false)} spec={{
+        title: t("Discard draft?"), requireReason: false, submitLabel: t("Discard draft"),
+        onSubmit: async () => { startNewCharacter(); setDiscardLocalDraftOpen(false); },
+      }} /> : null}
+      <Link className="mb-4 inline-flex min-h-11 items-center gap-2 text-sm font-medium underline underline-offset-4" href="/admin/characters">
+        <ArrowLeft aria-hidden="true" className="h-4 w-4" /> {t("Back to characters")}
+      </Link>
       <header className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 sm:p-6">
         <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">
           {t("Character Studio ·")}{" "}
@@ -779,7 +843,12 @@ export function CharacterCreateWizard({
                   )}
             </p>
           </div>
-          <SaveIndicator state={saveState} />
+          <div className="flex items-center gap-2">
+            <SaveIndicator state={authority && saveState === "Saved" && draftKey(draft) !== lastSavedKey ? "Not saved" : saveState} />
+            {canCreate && !authority && !createIntent && draftKey(draft) !== draftKey(initialDraft) ? (
+              <WorkspaceButton disabled={navigationLocked} onClick={() => setDiscardLocalDraftOpen(true)}>{t("Discard draft")}</WorkspaceButton>
+            ) : null}
+          </div>
         </div>
         <ol
           className="mt-5 grid grid-cols-1 gap-2 sm:grid-cols-3"
@@ -787,24 +856,29 @@ export function CharacterCreateWizard({
         >
           {steps.map((label, index) => (
             <li
-              aria-current={index === step ? "step" : undefined}
-              className={cn(
-                "rounded-md border px-3 py-2 text-xs",
-                index === step
-                  ? "border-[var(--ad-ink)] font-semibold"
-                  : "border-[var(--ad-border)] text-[var(--ad-text-muted)]",
-              )}
               key={label}
             >
-              <span className="mr-1 tabular-nums">{index + 1}.</span>
-              {t(label)}
+              <button
+                aria-current={index === step ? "step" : undefined}
+                className={cn(
+                  "flex min-h-11 w-full items-center gap-2 rounded-md border px-3 py-2 text-left text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)] disabled:opacity-50",
+                  index === step ? "border-[var(--ad-ink)] font-semibold" : "border-[var(--ad-border)] text-[var(--ad-text-muted)] enabled:hover:bg-black/[0.03]",
+                )}
+                disabled={navigationLocked || Boolean(createIntent) || index > Math.max(step, firstIncompleteCharacterCreateStep(draft))}
+                onClick={() => void goToStep(index)}
+                type="button"
+              >
+                <span className="tabular-nums">{index + 1}.</span>
+                {t(label)}
+                {index < 2 && isCharacterCreateStepComplete(draft, index) ? <Check aria-hidden="true" className="ml-auto h-4 w-4" /> : null}
+              </button>
             </li>
           ))}
         </ol>
       </header>
 
       <div className="mt-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 sm:p-6">
-        <h2 className="text-lg font-semibold">{t(currentLabel)}</h2>
+        <h2 className="text-lg font-semibold focus:outline-none" id="character-create-current-step" tabIndex={-1}>{t(currentLabel)}</h2>
         <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
           {authority
             ? t("Private server draft · version {version}", {
@@ -816,6 +890,7 @@ export function CharacterCreateWizard({
           className="mt-5"
           disabled={
             ["checking", "restoring"].includes(resumeState) ||
+            finishing ||
             Boolean(createIntent)
           }
         >
@@ -851,12 +926,12 @@ export function CharacterCreateWizard({
               : t(stepRequirements[step])}
         </p>
         {error ? (
-          <p
+          <div
             className="mt-4 rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"
             role="alert"
           >
-            {error}
-          </p>
+            <CharacterCreateError error={error} draftNotResumable={draftNotResumable} />
+          </div>
         ) : null}
         {recoveryNotice ? (
           <p
@@ -877,15 +952,19 @@ export function CharacterCreateWizard({
               )}
             </p>
             <div className="mt-3 flex flex-wrap gap-2">
-              <WorkspaceButton
+              {draftNotResumable && requestedCharacterId ? (
+                <Link className="inline-flex min-h-11 items-center rounded-md border border-[var(--ad-border)] px-3 text-sm font-medium underline underline-offset-4" href={`/admin/characters/${encodeURIComponent(requestedCharacterId)}?tab=soul`}>
+                  {t("Open character settings")}
+                </Link>
+              ) : <WorkspaceButton
                 onClick={() => {
                   const target = resumeTargetRef.current;
                   if (typeof target === "string") void restoreDraft(target);
                 }}
               >
                 {t("Retry restore")}
-              </WorkspaceButton>
-              {!confirmStartNew ? (
+              </WorkspaceButton>}
+              {canCreate ? !confirmStartNew ? (
                 <WorkspaceButton onClick={() => setConfirmStartNew(true)}>
                   {t("Start a new Character instead")}
                 </WorkspaceButton>
@@ -898,7 +977,7 @@ export function CharacterCreateWizard({
                     {t("Confirm start new")}
                   </WorkspaceButton>
                 </>
-              )}
+              ) : null}
             </div>
           </div>
         ) : null}
@@ -919,12 +998,16 @@ export function CharacterCreateWizard({
                 )}
           </p>
         ) : null}
-        <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-between">
+      </div>
+        <footer className="sticky bottom-0 z-10 mt-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 sm:p-4">
+          <p className="mb-3 text-xs text-[var(--ad-text-muted)]">
+            {t(authority ? "Saved changes stay private until you publish the character." : "This draft stays on this browser until you save the character.")}
+          </p>
+          <div className="flex items-center justify-between gap-3">
           <WorkspaceButton
             disabled={step === 0 || navigationLocked}
             onClick={() => {
-              setValidationAttemptedStep(null);
-              setStep((current) => Math.max(0, current - 1));
+              void goToStep(Math.max(0, step - 1));
             }}
           >
             <ArrowLeft className="h-4 w-4" /> {t("Back")}
@@ -933,7 +1016,7 @@ export function CharacterCreateWizard({
             <WorkspaceButton
               aria-describedby="character-create-step-requirements"
               disabled={navigationLocked}
-              onClick={() => void next()}
+              onClick={() => void goToStep(Math.min(steps.length - 1, step + 1))}
               tone="primary"
             >
               {createIntent
@@ -958,8 +1041,8 @@ export function CharacterCreateWizard({
               <Check className="h-4 w-4" /> {t("Save character")}
             </WorkspaceButton>
           )}
-        </div>
-      </div>
+          </div>
+        </footer>
     </section>
   );
 }
@@ -976,9 +1059,20 @@ function SaveIndicator({ state }: { state: SaveState }) {
       ) : state === "Saved" ? (
         <Check className="h-3.5 w-3.5" />
       ) : null}
-      {t(state)}
+      {t(state === "Saved" ? "Saved to server" : state)}
     </span>
   );
+}
+
+function CharacterCreateError({ error, draftNotResumable }: { error: string | AdminV2RequestError; draftNotResumable: boolean }) {
+  const { t } = useAdminI18n();
+  if (typeof error === "string") return t(error);
+  const copy = operatorErrorCopy(error);
+  return <>
+    <p className="font-semibold">{t(draftNotResumable ? "This character has no resumable creation draft." : copy.headline)}</p>
+    <p className="mt-1">{t(draftNotResumable ? "Open the character settings to continue editing it." : copy.nextStep, copy.nextStepValues)}</p>
+    <RequestErrorDetails technical={copy.technical} />
+  </>;
 }
 
 function Grid({ children }: { children: ReactNode }) {
@@ -1010,11 +1104,8 @@ function Field({
   const inputId = `character-create-${name.replaceAll(".", "-")}`;
   const errorId = `${inputId}-error`;
   return (
-    <label
-      className="text-xs font-semibold text-[var(--ad-text-muted)]"
-      htmlFor={inputId}
-    >
-      {t(label)}
+    <div className="text-xs font-semibold text-[var(--ad-text-muted)]">
+      <label htmlFor={inputId}>{t(label)}</label>
       <input
         aria-describedby={error ? errorId : undefined}
         aria-invalid={error ? true : undefined}
@@ -1037,7 +1128,7 @@ function Field({
           {t(error)}
         </span>
       ) : null}
-    </label>
+    </div>
   );
 }
 
@@ -1062,11 +1153,8 @@ function Area({
   const inputId = `character-create-${name.replaceAll(".", "-")}`;
   const errorId = `${inputId}-error`;
   return (
-    <label
-      className="text-xs font-semibold text-[var(--ad-text-muted)]"
-      htmlFor={inputId}
-    >
-      {t(label)}
+    <div className="text-xs font-semibold text-[var(--ad-text-muted)]">
+      <label htmlFor={inputId}>{t(label)}</label>
       <textarea
         aria-describedby={error ? errorId : undefined}
         aria-invalid={error ? true : undefined}
@@ -1086,7 +1174,7 @@ function Area({
           {t(error)}
         </span>
       ) : null}
-    </label>
+    </div>
   );
 }
 
@@ -1156,6 +1244,7 @@ function PersonaStep({ draft, errors, update }: StepProps) {
         />
       </Grid>
       <Area
+        error={errors.detailsMarkdown}
         label="Additional details · Markdown (optional)"
         name="persona.detailsMarkdown"
         onChange={(value) => set("detailsMarkdown", value)}
@@ -1200,7 +1289,7 @@ function VisualStep({ draft, errors, update }: StepProps) {
           setStableTraitsText(value);
           set("stableTraits", lines(value));
         }}
-        placeholder={"Dark wavy hair\nWarm brown eyes"}
+        placeholder={t("Dark wavy hair\nWarm brown eyes")}
         value={stableTraitsText}
       />
       <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
@@ -1283,6 +1372,7 @@ function ReviewStep({
               {t(section.title)}
             </h3>
             <button
+              aria-label={t("Edit {section}", { section: t(section.title) })}
               className="text-xs font-semibold underline"
               onClick={() =>
                 onEdit(section.title === "Persona & conversation" ? 0 : 1)

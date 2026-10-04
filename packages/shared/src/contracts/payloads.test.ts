@@ -1,9 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
+  chatStreamEventSchema,
   chatImageRequestedPayloadSchema,
   imageGeneratePayloadSchema,
   videoGeneratePayloadSchema,
 } from "./payloads";
+
+it.each([
+  { promptTokens: null, completionTokens: null },
+  { promptTokens: 0, completionTokens: 0 },
+  { promptTokens: 40, completionTokens: 10 },
+])("preserves unknown or measured usage in the committed done event: %j", usage => {
+  expect(chatStreamEventSchema.parse({ type: "done", attempt: 1, usage })).toEqual({ type: "done", attempt: 1, usage });
+});
 
 const request = {
   version: 1 as const,
@@ -14,6 +23,7 @@ const request = {
   messageId: "message-1",
   userId: "user-1",
   characterId: "character-1",
+  subject: "companion" as const,
   promptHint: "a sunset selfie",
   conversationContext: "user: send a sunset selfie",
   intent: { requestedNudity: "unspecified" as const },

@@ -113,6 +113,7 @@ describe("embedded companion runtime contracts", () => {
       completedAt: "2026-08-28T12:00:00.000Z",
     };
     expect(companionTerminalCandidateSchema.safeParse(candidate).success).toBe(true);
+    expect(companionTerminalCandidateSchema.parse({ ...candidate, usage: null }).usage).toBeNull();
     expect(companionTerminalCandidateSchema.safeParse({
       ...candidate,
       execution: { steps: 1, toolCalls: 1 },

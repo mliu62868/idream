@@ -1,3 +1,4 @@
+import { generationTerminalRecordChecksum } from "@idream/shared/contracts/durable-server";
 import { resolveGenerationAssetSuccessAttempts } from "@/server/ai/generation-asset-success-authority";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -7,7 +8,6 @@ import {
   unknownGenerationReconciliationResultSchema,
 } from "@idream/shared/admin";
 import {
-  generationTerminalRecordChecksum,
   generationTerminalRecordSchema,
 } from "@idream/shared/contracts";
 import { GET as getJobRoute } from "@/app/api/v2/admin/jobs/[id]/route";

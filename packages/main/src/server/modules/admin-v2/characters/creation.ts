@@ -11,7 +11,8 @@ import { Errors } from "@/server/lib/errors";
 import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
-import { characterDraftSnapshots } from "./draft-content";
+import { characterContentModerationText, characterDraftSnapshots } from "./draft-content";
+import { moderateText } from "@/server/moderation/text-authority";
 import { characterWorkspaceTabLink } from "./character-deep-link";
 
 const CREATE_COMMAND = "character.project.create";
@@ -108,6 +109,10 @@ export async function createCharacterProject(input: {
       persona,
       visualDirection,
     });
+  const moderation = await moderateText("character", characterId, characterContentModerationText({
+    personaSnapshot, openingSnapshot, appearanceSnapshot,
+  }), "character_authoring");
+  if (moderation.status === "blocked") throw Errors.forbidden("Character failed safety checks", moderation);
   const projectSnapshot = {
     contentHash,
   };

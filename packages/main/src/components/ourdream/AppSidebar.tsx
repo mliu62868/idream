@@ -51,8 +51,10 @@ export function AppSidebar({
         <nav className="mt-4 flex flex-col gap-1 px-3">
           {primaryNavItems.map((item, index) => {
             const Icon = primaryIcons[index];
+            // Re-entering a section clears focus/filter state, including cached queries.
+            const NavLink = item.href === activeHref ? "a" : Link;
             return (
-              <Link
+              <NavLink
                 key={item.label}
                 aria-current={item.href === activeHref ? "page" : undefined}
                 className={cn(
@@ -63,7 +65,7 @@ export function AppSidebar({
               >
                 <Icon className="h-4 w-4" strokeWidth={2.2} />
                 <span>{item.label}</span>
-              </Link>
+              </NavLink>
             );
           })}
         </nav>

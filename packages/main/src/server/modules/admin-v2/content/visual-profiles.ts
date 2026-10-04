@@ -9,6 +9,7 @@
 //   - 锚点只读继承当前 active Visual Profile；参考图只读继承当前 active Reference Set，
 //     避免已从 Rn 清退的历史图被带入 Vn+1。
 //   - archive 旧 active 与创建新 active 必须在同一事务内完成。
+//   - 操作者加载工作区时的 active id/version 必须仍然有效；首次创建以 null/0 为基线。
 import type { Prisma } from "@prisma/client";
 import type { CharacterVisualProfileCreateRequest } from "@idream/shared/admin";
 import { parseSingleContinuousFrameEvidence } from "@idream/shared/media/generated-image-sanity";
@@ -281,6 +282,21 @@ export async function createCharacterVisualProfile(input: {
     where: { characterId, status: "active" },
     orderBy: { version: "desc" },
   });
+  if (
+    (discoveredActive?.id ?? null) !== body.expectedActiveIdentityId ||
+    (discoveredActive?.version ?? 0) !== body.expectedActiveIdentityVersion
+  ) {
+    throw Errors.conflict(
+      "The active Visual Identity changed after this workspace was loaded",
+      {
+        expectedIdentityId: body.expectedActiveIdentityId,
+        expectedIdentityVersion: body.expectedActiveIdentityVersion,
+        currentIdentityId: discoveredActive?.id ?? null,
+        currentIdentityVersion: discoveredActive?.version ?? 0,
+        deepLink: `/admin/characters/${characterId}?tab=visual`,
+      },
+    );
+  }
   const discoveredAnchorAssetIds = discoveredActive
     ? jsonStringArray(discoveredActive.anchorAssetIds)
     : [];

@@ -86,6 +86,21 @@ describe("ChatSessionClient streaming composer", () => {
   let sessionReads: number;
   let releaseSend: ((response: Response) => void) | undefined;
 
+  it("shows the Main-owned private-turn receipt on history regardless of the current session mode", async () => {
+    sessionMessages = [
+      opening,
+      { ...userTurn, memoryEnabled: false },
+      { ...streamingReply, content: "Temporary marker logged.", status: "sent", memoryEnabled: false },
+      { ...streamingReply, id: "normal-reply", content: "Normal reply.", status: "sent", memoryEnabled: true },
+    ];
+    await mountSession();
+    expect(container.querySelector('[data-message-id="assistant-1"] [data-testid="chat-private-turn"]')?.textContent)
+      .toContain("Not saved to long-term memory");
+    expect(container.querySelector('[data-message-id="normal-reply"] [data-testid="chat-private-turn"]')).toBeNull();
+    expect(container.querySelector('[data-message-id="assistant-0"] [data-testid="chat-private-turn"]')).toBeNull();
+    expect(container.querySelector('[data-message-id="user-1"] [data-testid="chat-private-turn"]')).toBeNull();
+  });
+
   beforeEach(() => {
     // Use run-owned browser storage, never Node's ambient localStorage shim.
     // It survives component remounts in a test, just like a real browser tab.
@@ -939,6 +954,21 @@ describe("ChatSessionClient streaming composer", () => {
     );
     expect(image?.alt).toBe("Generated character image from this chat");
     expect(image?.alt).not.toContain("internal prompt");
+  });
+
+  it.each([false, true])("keeps scene images free of character identity actions (preview failed: %s)", async previewFailed => {
+    sessionMessages = [{ ...opening, turnId: "turn-scene", attempt: 1, attachments: [{
+      id: "attachment-scene", kind: "generated_image", imageSubject: "scene", status: "completed",
+      mediaAssetId: "media-scene", mediaUrl: "/api/v1/media/media-scene/content", width: 512, height: 640,
+    }] }];
+    await mountSession();
+    const image = container.querySelector<HTMLImageElement>('[data-testid="chat-image-attachment"]');
+    expect(image?.alt).toBe("Generated scene image from this chat");
+    if (previewFailed) await act(async () => image?.dispatchEvent(new Event("error")));
+    expect(container.querySelector('[aria-label="Character identity feedback"]')).toBeNull();
+    expect(container.textContent).not.toMatch(/Looks like them|Doesn.t match|Use for identity/);
+    expect(container.textContent).toContain("More like this");
+    expect(container.textContent).toContain("Open in Generate");
   });
 
   it("generates voice only after the reader presses Play", async () => {

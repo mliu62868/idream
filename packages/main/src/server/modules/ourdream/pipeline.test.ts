@@ -1,3 +1,4 @@
+import { generationTerminalRecordChecksum } from "@idream/shared/contracts/durable-server";
 import { deflateSync } from "node:zlib";
 import type { Prisma } from "@prisma/client";
 import {
@@ -5,7 +6,6 @@ import {
   redgraftLtx25VideoProductionRecipe,
 } from "@idream/shared";
 import {
-  generationTerminalRecordChecksum,
   generationTerminalRecordSchema,
 } from "@idream/shared/contracts";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";

@@ -18,6 +18,10 @@ if (!uv) {
 // bundled mlx-audio predates it, so the gateway owns a hashed lock instead of
 // borrowing oMLX's Python. --offline keeps a restart from crash-looping when
 // PyPI or the host proxy is unreachable, same as Pocket TTS.
+// The locked Python environment must not import packages from another runtime.
+const childEnv = { ...process.env };
+delete childEnv.PYTHONPATH;
+delete childEnv.PYTHONHOME;
 const child = spawn(
   uv,
   [
@@ -37,7 +41,7 @@ const child = spawn(
   ],
   {
     cwd: path.resolve(__dirname, ".."),
-    env: process.env,
+    env: childEnv,
     stdio: "inherit",
   },
 );

@@ -97,7 +97,7 @@ export function TagsView({ canWrite }: { canWrite: boolean }) {
   // 等于没有 memo。稳住这个引用，筛选与分类计算才真的只在数据变化时重算。
   const tags = useMemo(() => authority.data ?? [], [authority.data]);
 
-  // SPEC: 接口一次返回全部标签（无分页/无服务端搜索），所以筛选就地做——几百个标签时
+  // SPEC: 接口一次返回完整词表，搜索/分类与合并目标共享它，所以筛选就地做——几百个标签时
   // 没有搜索的表等于没法用。
   const categories = useMemo(
     () => [...new Set(tags.map((tag) => tag.category).filter((item): item is string => Boolean(item)))].sort(),

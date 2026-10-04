@@ -1,5 +1,5 @@
+import { generationTerminalRecordChecksum } from "@idream/shared/contracts/durable-server";
 import {
-  generationTerminalRecordChecksum,
   idempotencyKeys,
   MAIN_QUEUES,
 } from "@idream/shared/contracts";

@@ -9,6 +9,7 @@ describe("Character Project creation authority", () => {
   const suffix = randomUUID();
   const actorId = `character-create-admin-${suffix}`;
   const deniedActorId = `character-create-denied-${suffix}`;
+  const scopedActorId = `character-create-scoped-${suffix}`;
   const idempotencyKey = `character-create-${suffix}`;
   const requestId = `character-create-request-${suffix}`;
   const createdIds: string[] = [];
@@ -72,8 +73,19 @@ describe("Character Project creation authority", () => {
           role: "user",
           status: "active",
         },
+        {
+          id: scopedActorId,
+          email: `${scopedActorId}@example.test`,
+          role: "user",
+          status: "active",
+        },
       ],
     });
+    await prisma.adminUserGrantBundle.create({ data: {
+      userId: scopedActorId, bundleKey: "character_producer",
+      scope: { characterIds: ["assigned-character"] }, createdById: actorId,
+      reason: "Limit the producer to assigned Characters",
+    } });
   });
 
   afterAll(async () => {
@@ -109,8 +121,10 @@ describe("Character Project creation authority", () => {
       where: { id: { in: projectIds } },
     });
     await prisma.character.deleteMany({ where: { id: { in: characterIds } } });
+    await prisma.moderationEvent.deleteMany({ where: { targetId: { in: characterIds } } });
+    await prisma.adminUserGrantBundle.deleteMany({ where: { userId: scopedActorId } });
     await prisma.user.deleteMany({
-      where: { id: { in: [actorId, deniedActorId] } },
+      where: { id: { in: [actorId, deniedActorId, scopedActorId] } },
     });
     await prisma.$disconnect();
   });
@@ -263,6 +277,74 @@ describe("Character Project creation authority", () => {
       { params: Promise.resolve({ id: createdIds[0] }) },
     );
     expect(resume.status).toBe(403);
+  });
+
+  it("rejects scoped producer creation before any Character or command is written", async () => {
+    const name = `Out-of-scope new Character ${suffix}`;
+    const response = await createCharacterProjectRoute(request(scopedActorId, "user", {
+      ...body, persona: { ...body.persona, name },
+    }, `scoped-create-${suffix}`));
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error: {
+      details: { permission: "character.project.write", reason: "global_scope_required" },
+    } });
+    expect(await prisma.character.count({ where: { name } })).toBe(0);
+    expect(await prisma.controlPlaneCommand.count({ where: { actorId: scopedActorId } })).toBe(0);
+  });
+
+  it.each([
+    { term: "underage", field: "details" },
+    { term: "minor", field: "opening" },
+    { term: "csam", field: "appearance" },
+  ])("rejects $term in $field despite an adult numeric age", async ({ term, field }) => {
+    const name = `Blocked Character ${suffix}`;
+    const key = `blocked-create-${term}-${suffix}`;
+    const response = await createCharacterProjectRoute(request(actorId, "admin", {
+      ...body,
+      persona: { ...body.persona, name,
+        ...(field === "details" ? { detailsMarkdown: term } : {}),
+        ...(field === "opening" ? { firstMessage: term } : {}),
+      },
+      visualDirection: { ...body.visualDirection, ...(field === "appearance" ? { referenceDirection: term } : {}) },
+    }, key));
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error: {
+      message: "Character failed safety checks",
+      details: { status: "blocked", policyCode: term === "csam" ? "potential_underage_content" : "age_under_18" },
+    } });
+    expect(await prisma.character.count({ where: { name } })).toBe(0);
+    expect(await prisma.controlPlaneCommand.count({ where: { actorId, idempotencyKey: key } })).toBe(0);
+  });
+
+  it("returns a recoverable conflict for a legacy draft missing visual direction", async () => {
+    const legacyId = `legacy-resume-${suffix}`;
+    const projectId = `legacy-resume-project-${suffix}`;
+    const contentId = `legacy-resume-content-${suffix}`;
+    await prisma.character.create({ data: {
+      id: legacyId, name: "Legacy companion", age: 28, gender: "female", description: "Legacy promise", source: "official",
+      appearance: {}, advancedDetails: {},
+    } });
+    await prisma.characterProject.create({ data: { id: projectId, characterId: legacyId } });
+    await prisma.characterContentVersion.create({ data: {
+      id: contentId, characterId: legacyId, version: 1, contentHash: legacyId,
+      personaSnapshot: { name: "Legacy companion", age: 28, gender: "female", description: "Legacy promise" },
+      openingSnapshot: { firstMessage: "Legacy opening" }, appearanceSnapshot: { style: "realistic" }, sourceType: "test",
+    } });
+    try {
+      const response = await resumeCharacterProjectRoute(new Request(`http://localhost/api/v2/admin/characters/${legacyId}/project`, {
+        headers: { "x-idream-user-id": actorId, "x-idream-role": "admin" },
+      }), { params: Promise.resolve({ id: legacyId }) });
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ error: {
+        details: { reason: "draft_not_resumable" },
+        message: expect.stringContaining("Edit it from its Character page"),
+      } });
+      expect(await prisma.characterContentVersion.count({ where: { characterId: legacyId } })).toBe(1);
+    } finally {
+      await prisma.characterContentVersion.delete({ where: { id: contentId } });
+      await prisma.characterProject.delete({ where: { id: projectId } });
+      await prisma.character.delete({ where: { id: legacyId } });
+    }
   });
 
   it("requires an Idempotency-Key before accepting a create request", async () => {

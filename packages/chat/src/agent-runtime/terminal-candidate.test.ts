@@ -55,6 +55,11 @@ function imageActionFacts(overrides: Partial<TerminalCandidateFacts> = {}): Term
 }
 
 describe("evaluateTerminalCandidate", () => {
+  it("preserves unknown measured usage without changing a valid reply", () => {
+    expect(evaluateTerminalCandidate(facts({ usage: null }))).toMatchObject({
+      accepted: true, candidate: { content: "I missed you today.", usage: null },
+    });
+  });
   // SPEC: 五个 validationCode 各有一条触发用例，且必须与 requiredAction 的有无对齐 ——
   // 四条图片规则只在有 requiredAction 时成立，误伤普通轮次就是把正常回复判死。
   const rejections: {

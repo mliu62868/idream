@@ -1,8 +1,9 @@
+import { generationTerminalRecordChecksum } from "@idream/shared/contracts/durable-server";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { Client } from "pg";
-import { generationTerminalRecordChecksum, generationTerminalRecordSchema } from "@idream/shared/contracts";
+import { generationTerminalRecordSchema } from "@idream/shared/contracts";
 import sharp from "sharp";
 import { prisma } from "@/server/lib/db";
 import { providers } from "@/server/providers";

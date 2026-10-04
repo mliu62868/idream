@@ -232,7 +232,7 @@ function makeBackend(videoMediaProbe?: VideoMediaProbe) {
   return new ComfyUIBackend({
     apiUrl: "http://x",
     workflowSync: testWorkflowSync,
-    ...(videoMediaProbe ? { videoMediaProbe } : {}),
+    ...(videoMediaProbe ? { videoMediaProbe, videoSoundtrackNormalizer: async (bytes: Uint8Array) => bytes } : {}),
   });
 }
 

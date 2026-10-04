@@ -48,7 +48,7 @@ type VisualIdentityExperimentData = Pick<CharacterWorkspaceDetail, "visual"> & {
 };
 
 export type ActivateIdentityCandidateInput =
-  CharacterVisualProfileCreateRequest;
+  Omit<CharacterVisualProfileCreateRequest, "expectedActiveIdentityId" | "expectedActiveIdentityVersion">;
 
 type ExperimentMode = "text_to_image" | "image_to_image";
 type SeedStrategy = "random" | "locked" | "reuse_source";

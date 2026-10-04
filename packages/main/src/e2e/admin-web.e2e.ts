@@ -1464,10 +1464,15 @@ test("admin prepares a historical shared character without manual approval or pu
     await expect(dialog.getByRole("textbox")).toHaveCount(0);
     const prepared = page.waitForResponse((response) => response.request().method() === "POST"
       && new URL(response.url()).pathname === `/api/v2/admin/characters/${characterId}/project`);
+    const workspaceLoaded = page.waitForResponse((response) => response.request().method() === "GET"
+      && new URL(response.url()).pathname === `/api/v2/admin/characters/${characterId}`);
     await dialog.getByRole("button", { name: "Prepare publication workspace", exact: true }).click();
     expect((await prepared).status()).toBe(200);
     await expect(dialog).toHaveCount(0);
     await expect(page).toHaveURL(`${adminURL}/admin/characters/${characterId}?tab=assets`);
+    // The URL changes before load finishes; keep the fixture until the workspace is visible.
+    expect((await workspaceLoaded).status()).toBe(200);
+    await expect(page.getByRole("heading", { level: 2, name: characterName, exact: true })).toBeVisible();
 
     const character = await prisma.character.findUniqueOrThrow({ where: { id: characterId } });
     expect(character.status).toBe("approved");
@@ -2229,7 +2234,19 @@ test("admin insights configuration check UI confirms the selected profile and au
       .getByRole("textbox", { name: "Reason (≥3)", exact: true })
       .fill("E2E profile configuration check");
     await expect(confirmDryRun).toBeEnabled();
-    await confirmDryRun.click();
+    const [configurationCheck] = await Promise.all([
+      page.waitForResponse(
+        (response) => response.request().method() === "POST" &&
+          response.url() === `${adminURL}/api/v2/admin/generation/model-profiles/${profile.id}/commands/dry-run`,
+        { timeout: 30_000 },
+      ),
+      confirmDryRun.click(),
+    ]);
+    const configurationResult = await configurationCheck.json();
+    expect(configurationCheck.status(), JSON.stringify(configurationResult)).toBe(200);
+    expect(configurationResult.data?.dryRun).toMatchObject({
+      status: "pass", passed: 2, total: 2,
+    });
     await expect(
       page.getByText(
         "Configuration check pass: 2/2 configuration cases passed. No provider call was made.",

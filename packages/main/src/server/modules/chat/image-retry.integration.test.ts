@@ -61,7 +61,7 @@ async function fixture() {
     } });
     return job;
   });
-  const effect = { version: 2 as const, turnId: snapshot.turnId, attempt: 1, callId: randomUUID(), name: "generate_image_async" as const, effectScope: "turn_action" as const, intent: { requestedNudity: "unspecified" as const }, arguments: { prompt: "Avery beside the rainy window.", orientation: "4:5", outputCount: 1 } };
+  const effect = { version: 2 as const, turnId: snapshot.turnId, attempt: 1, callId: randomUUID(), name: "generate_image_async" as const, effectScope: "turn_action" as const, intent: { requestedNudity: "unspecified" as const }, arguments: { subject: "companion", prompt: "Avery beside the rainy window.", orientation: "4:5", outputCount: 1 } };
   const accepted = await applyChatToolEffect(effect);
   if (!accepted.accepted || !accepted.generationJobId) throw new Error("Missing original image action");
   await prisma.chatTurnAttachment.update({ where: { id: accepted.attachmentId }, data: { status: "failed", errorCode: "provider_error" } });

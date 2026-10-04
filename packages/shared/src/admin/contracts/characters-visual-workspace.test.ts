@@ -38,6 +38,8 @@ describe("Character Visual workspace contract", () => {
     };
     expect(
       characterVisualProfileCreateRequestSchema.safeParse({
+        expectedActiveIdentityId: null,
+        expectedActiveIdentityVersion: 0,
         candidateAuthority,
         reason: "Activate reviewed candidate",
         confirmation: "character-1:visual-profile",
@@ -45,6 +47,8 @@ describe("Character Visual workspace contract", () => {
     ).toBe(false);
     expect(
       characterVisualProfileCreateRequestSchema.safeParse({
+        expectedActiveIdentityId: null,
+        expectedActiveIdentityVersion: 0,
         identityPrompt:
           "Preserve the exact person shown in the canonical portrait.",
         faceTraits: {
@@ -58,6 +62,29 @@ describe("Character Visual workspace contract", () => {
         confirmation: "character-1:visual-profile",
       }).success,
     ).toBe(true);
+  });
+
+  it("requires an explicit and consistent active identity baseline", () => {
+    const request = {
+      reason: "Create a visual identity version",
+      confirmation: "character-1:visual-profile",
+    };
+    expect(characterVisualProfileCreateRequestSchema.safeParse(request).success)
+      .toBe(false);
+    for (const pin of [
+      { expectedActiveIdentityId: null, expectedActiveIdentityVersion: 2 },
+      { expectedActiveIdentityId: "identity-1", expectedActiveIdentityVersion: 0 },
+    ]) {
+      expect(characterVisualProfileCreateRequestSchema.safeParse({ ...request, ...pin }).success)
+        .toBe(false);
+    }
+    for (const pin of [
+      { expectedActiveIdentityId: null, expectedActiveIdentityVersion: 0 },
+      { expectedActiveIdentityId: "identity-1", expectedActiveIdentityVersion: 2 },
+    ]) {
+      expect(characterVisualProfileCreateRequestSchema.safeParse({ ...request, ...pin }).success)
+        .toBe(true);
+    }
   });
 
   it("keeps selection, published references, qualification evidence and readiness distinct", () => {

@@ -56,8 +56,10 @@ const IDREAM_COMPOSITION_IDENTITY = Object.freeze({
     commit: 1,
   }),
 });
-// Scene deletion requires an independent, source-isolated task completion check.
-const EXECUTION_POLICY_VERSION = 18;
+// Scene participants and tasks require independent source-bound identity/state receipts.
+// Terminal totals remain unknown if any physical model request was unmeasured.
+// Saved expression preferences stay outside quoted facts, without tool or memory authority.
+const EXECUTION_POLICY_VERSION = 27;
 const EFFECTFUL_TOOL_CONCURRENCY = 1;
 export const FORBIDDEN_COMPANION_EXECUTION_SERVICES = [
   "shell",

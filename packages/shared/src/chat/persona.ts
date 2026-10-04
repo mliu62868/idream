@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { renderCharacterSoulMarkdown } from "./persona-render";
+export { legacySoulDetailsMarkdown } from "./persona-render";
 
 export const CHARACTER_SOUL_SCHEMA_VERSION = 3 as const;
 export const CHARACTER_SOUL_COMPILER_VERSION = "character-soul-3" as const;
@@ -182,64 +183,6 @@ export function compileCharacterSoul(
     renderedMarkdown: systemPrompt,
     diagnostics,
   };
-}
-
-/**
- * Historical write boundaries call this before v3 compilation. It folds every
- * flat Soul field shipped by the old clients into one Markdown value; the v3
- * compiler itself stays strict and never guesses whether an unknown key matters.
- */
-export function legacySoulDetailsMarkdown(
-  value: unknown,
-): string {
-  const row = record(value) ?? {};
-  const sections: string[] = [];
-  const explicitDetails = hasOwn(row, "detailsMarkdown")
-    ? markdownText(row.detailsMarkdown)
-    : "";
-  if (explicitDetails) sections.push(explicitDetails);
-
-  appendDetailSection(sections, "Personality", [optionalText(row.personality)]);
-  appendBulletSection(sections, "Values", legacyStringList(row.values));
-  appendBulletSection(sections, "Wants", legacyStringList(row.wants));
-  appendBulletSection(sections, "Fears", legacyStringList(row.fears));
-  appendBulletSection(sections, "Contradictions", legacyStringList(row.contradictions));
-  appendDetailSection(sections, "Background", [optionalText(row.backstory)]);
-  appendDetailSection(sections, "Voice", [
-    field("Tone", optionalText(row.tone) || optionalText(row.speakingStyle)),
-    field("Cadence", optionalText(row.cadence)),
-    list("Vocabulary", legacyStringList(row.vocabulary)),
-    list("Habits", legacyStringList(row.voiceHabits ?? row.habits)),
-    list("Avoid", legacyStringList(row.voiceAvoid ?? row.avoid)),
-  ]);
-
-  const interaction = record(row.interaction) ?? {};
-  appendDetailSection(
-    sections,
-    "Interaction",
-    Object.entries(interaction).flatMap(([key, entry]) => {
-      const content = legacyValueText(entry);
-      return content ? [field(title(key), content)] : [];
-    }),
-  );
-  const canon = record(row.canon) ?? {};
-  appendBulletSection(sections, "Canon facts", legacyStringList(canon.facts));
-  appendBulletSection(sections, "Canon unknowns", legacyStringList(canon.unknowns));
-  appendBulletSection(sections, "Dialogue examples", legacyStringList(row.exampleDialogue));
-
-  const negativeDialogue = Array.isArray(row.negativeDialogue)
-    ? row.negativeDialogue.flatMap((entry) => {
-        const example = record(entry);
-        if (!example) return [];
-        const assistant = optionalText(example.assistant);
-        const reason = optionalText(example.reason);
-        return assistant || reason
-          ? [[assistant ? `Assistant: ${assistant}` : "", reason ? `Reason: ${reason}` : ""].filter(Boolean).join("\n")]
-          : [];
-      })
-    : [];
-  appendDetailSection(sections, "Dialogue counterexamples", negativeDialogue);
-  return sections.join("\n\n");
 }
 
 /**
@@ -805,24 +748,6 @@ function stringArray(
     }
   });
   return result;
-}
-
-function legacyStringList(value: unknown): string[] {
-  if (typeof value === "string") {
-    const normalized = value.trim();
-    return normalized ? [normalized] : [];
-  }
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((item) => {
-    const normalized = optionalText(item);
-    return normalized ? [normalized] : [];
-  });
-}
-
-function legacyValueText(value: unknown): string {
-  if (typeof value === "string") return value.trim();
-  if (Array.isArray(value)) return legacyStringList(value).join("; ");
-  return "";
 }
 
 function appendDetailSection(target: string[], heading: string, values: string[]): void {

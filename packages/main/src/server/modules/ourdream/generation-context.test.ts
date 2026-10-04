@@ -55,6 +55,28 @@ async function issued(input = selector) {
 }
 
 describe("Chat to Generate authority", () => {
+  it("keeps a delivered scene source-only for handoff and animation without replacing its subject", async () => {
+    const prompt = "A basil plant in a terracotta pot on a sunny balcony, no people.";
+    const origin = { imageSubject: "scene", chatCharacterId: "character-1", sessionId: selector.sessionId, exchangeId: selector.turnId };
+    db.generationJob.findFirst.mockResolvedValue({ id: "job-original", characterId: null, visualProfileId: null,
+      visualProfileVersion: null, referenceSetRevisionId: null, sourceType: "chat_image", sourceMeta: origin, momentSpec: { rawInput: prompt } });
+    const input = { ...selector, mediaAssetId: "image-original" };
+    const { handoff, token } = await issued(input);
+    expect(handoff).toMatchObject({ identityMode: "source_only", character: null, characterId: null, pins: null, prompt,
+      chatCharacterId: "character-1", sourceMedia: { id: "image-original" } });
+    expect(db.characterVisualProfile.findFirst).not.toHaveBeenCalled();
+    expect(generationContextSource(handoff, token, "same-request")).toMatchObject({ sourceMeta: {
+      chatCharacterId: "character-1", sessionId: selector.sessionId, exchangeId: selector.turnId,
+      identityMode: "source_only", sourceMediaId: "image-original" } });
+    const body = applyGenerationContext(generationJobSchema.parse({ mode: "video", freeplay: true, generationContextToken: token }), handoff, { allowVideo: true });
+    expect(body).toMatchObject({ freeplay: true, controls: { sourceImageAssetId: "image-original" } });
+    expect(body.characterId).toBeUndefined();
+    expect(body.visualProfileId).toBeUndefined();
+    expect(() => applyGenerationContext({ ...body, freeplay: false, characterId: "character-1" }, handoff, { allowVideo: true })).toThrow("original character or source image");
+    db.generationJob.findFirst.mockResolvedValueOnce({ id: "job-original", characterId: null, sourceType: "chat_image", sourceMeta: { ...origin, exchangeId: "another-turn" } });
+    await expect(resolveGenerationContext("user-original", token)).rejects.toThrow("does not match its original Chat request");
+  });
+
   it("continues the original completed scene and immutable character after a newer Release", async () => {
     const { handoff, token } = await issued();
     expect(handoff.character).toMatchObject({ name: "Original companion", age: 25, gender: "female", description: "A curious companion" });

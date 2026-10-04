@@ -1,6 +1,6 @@
+import { durableEnvelopeHash } from "@idream/shared/contracts/durable-server";
 import {
   durableAckSchema,
-  durableEnvelopeHash,
   durableEventEnvelopeSchema,
 } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";

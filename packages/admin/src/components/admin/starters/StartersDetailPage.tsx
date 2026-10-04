@@ -25,13 +25,15 @@ import {
 } from "./starters-api";
 
 // SPEC: 角色模板详情页 —— 查看 + 就地编辑 + 上/下线（spec §7 详情页）。
-// INTENT: 无单条 GET，复用列表接口按 id 过滤；编辑态字段与新建页同构。
+// INVARIANT: 编辑草稿与发布确认保留打开时的版本；后台重读不能授权覆盖并发变更。
 type Mode = "view" | "edit";
-type PendingAction = "save" | "activate" | "deactivate" | null;
+type EditDraft = StarterDraft & { expectedUpdatedAt: string };
+type PendingAction = { kind: "save" } | { kind: "activate" | "deactivate"; name: string; expectedUpdatedAt: string } | null;
 
-function draftFromRow(row: Starter): StarterDraft {
+function draftFromRow(row: Starter): EditDraft {
   const scopes: readonly string[] = SCOPES;
   return {
+    expectedUpdatedAt: row.updatedAt,
     name: row.name,
     summary: row.summary ?? "",
     gender: row.gender ?? "",
@@ -55,7 +57,7 @@ export function StartersDetailPage({ id, canWrite }: { id: string; canWrite: boo
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>("view");
-  const [draft, setDraft] = useState<StarterDraft | null>(null);
+  const [draft, setDraft] = useState<EditDraft | null>(null);
   const [pending, setPending] = useState<PendingAction>(null);
   const { feedback, reportSuccess, clearFeedback } = useWriteFeedback();
 
@@ -98,7 +100,7 @@ export function StartersDetailPage({ id, canWrite }: { id: string; canWrite: boo
   // INVARIANT: 三个写操作都带幂等键（与 recipes/presets 同一约定），服务端重试不会写两次。
   const confirmSpec: ConfirmSpec | null = useMemo(() => {
     if (!row || !pending) return null;
-    if (pending === "save") {
+    if (pending.kind === "save") {
       if (!draft) return null;
       return {
         title: t("Save changes"),
@@ -107,7 +109,7 @@ export function StartersDetailPage({ id, canWrite }: { id: string; canWrite: boo
           await apiWrite(
             `${STARTERS_LIST}/${id}`,
             "PATCH",
-            starterPayload({ ...draft, reason }),
+            { ...starterPayload({ ...draft, reason }), expectedUpdatedAt: draft.expectedUpdatedAt },
           );
           await reload();
           setMode("view");
@@ -116,16 +118,16 @@ export function StartersDetailPage({ id, canWrite }: { id: string; canWrite: boo
         },
       };
     }
-    if (pending === "activate") {
+    if (pending.kind === "activate") {
       return {
         title: t("Publish"),
-        destructive: { expectedName: row.name },
+        destructive: { expectedName: pending.name },
         submitLabel: t("Publish"),
         onSubmit: async (reason) => {
           await apiWrite(
             `${STARTERS_LIST}/${id}/active`,
             "POST",
-            { active: true, reason, confirmation: id },
+            { active: true, reason, confirmation: id, expectedUpdatedAt: pending.expectedUpdatedAt },
           );
           await reload();
           reportSuccess(t("{name} is published and offered in character creation.", { name: row.name }));
@@ -134,13 +136,13 @@ export function StartersDetailPage({ id, canWrite }: { id: string; canWrite: boo
     }
     return {
       title: t("Offline"),
-      destructive: { expectedName: row.name },
+      destructive: { expectedName: pending.name },
       submitLabel: t("Offline"),
       onSubmit: async (reason) => {
         await apiWrite(
           `${STARTERS_LIST}/${id}/active`,
           "POST",
-          { active: false, reason, confirmation: id },
+          { active: false, reason, confirmation: id, expectedUpdatedAt: pending.expectedUpdatedAt },
         );
         await reload();
         reportSuccess(t("{name} is offline and no longer offered in character creation.", { name: row.name }));
@@ -171,15 +173,15 @@ export function StartersDetailPage({ id, canWrite }: { id: string; canWrite: boo
     ) : mode === "edit" ? (
       <>
         <GhostButton onClick={cancelEdit}>{t("Cancel")}</GhostButton>
-        <PrimaryButton onClick={() => setPending("save")}>{t("Save changes")}</PrimaryButton>
+        <PrimaryButton onClick={() => setPending({ kind: "save" })}>{t("Save changes")}</PrimaryButton>
       </>
     ) : (
       <>
         <GhostButton onClick={() => startEdit(row)}>{t("Edit profile")}</GhostButton>
         {row.isActive ? (
-          <DangerButton onClick={() => setPending("deactivate")}>{t("Offline")}</DangerButton>
+          <DangerButton onClick={() => setPending({ kind: "deactivate", name: row.name, expectedUpdatedAt: row.updatedAt })}>{t("Offline")}</DangerButton>
         ) : (
-          <PrimaryButton onClick={() => setPending("activate")}>{t("Publish")}</PrimaryButton>
+          <PrimaryButton onClick={() => setPending({ kind: "activate", name: row.name, expectedUpdatedAt: row.updatedAt })}>{t("Publish")}</PrimaryButton>
         )}
       </>
     );

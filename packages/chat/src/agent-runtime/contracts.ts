@@ -217,7 +217,7 @@ export const companionTerminalCandidateSchema = z.object({
   finishReason: z.enum(["stop", "length"]),
   provider: nonEmptyString,
   model: nonEmptyString,
-  usage: companionUsage,
+  usage: companionUsage.nullable(),
   execution: z.object({ steps: positiveInteger, toolCalls: nonNegativeInteger }).strict(),
   tools: z.array(companionToolReservationSchema),
   completedAt: isoDateTime,

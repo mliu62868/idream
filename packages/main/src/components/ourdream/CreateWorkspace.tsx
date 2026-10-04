@@ -6,8 +6,7 @@ import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, Check, ImageIcon, Loader2, Sparkles, Wand2 } from "lucide-react";
 import { CHARACTER_VISIBILITY, isCatalogMember } from "@idream/shared/catalog";
-import { legacySoulDetailsMarkdown } from "@idream/shared/chat/persona";
-import { renderCharacterSoulMarkdown } from "@idream/shared/chat/persona-render";
+import { legacySoulDetailsMarkdown, renderCharacterSoulMarkdown } from "@idream/shared/chat/persona-render";
 import {
   characterStyleFormOptions,
   genderFormOptions,
@@ -641,6 +640,11 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
         { signal: controller.signal },
       ).then((payload) => {
         if (controller.signal.aborted) return;
+        // Local restoration already opens the editor while this check runs.
+        // A new state object means the user or a completed save has moved on;
+        // replaying the restored snapshot would erase input or rewind a step.
+        // The next write still checks the current saved revision on the server.
+        if (restored && stateRef.current.draftId === restored.draftId && stateRef.current !== restored) return;
         if (!payload.data?.draft) {
           // Only an explicit null means "no current draft"; the local copy is stale.
           if (verifyLocalDraft && payload.data?.draft === null) {

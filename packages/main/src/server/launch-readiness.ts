@@ -87,6 +87,14 @@ export interface LaunchReadinessReport {
   checks: LaunchReadinessCheck[];
 }
 
+export interface RuntimePreparationReport extends LaunchReadinessReport {
+  stage: "prepare-runtime";
+  prepared: boolean;
+  ok: false;
+  launchQualified: false;
+  pendingEvidence: string[];
+}
+
 type EnvLike = Record<string, string | undefined>;
 
 function canonicalJsonValue(value: unknown): unknown {
@@ -144,6 +152,12 @@ export interface LaunchReadinessOptions extends LaunchReadinessProbeOptions {
   preflightChecks?: LaunchReadinessCheck[];
 }
 
+export type RuntimePreparationOptions = Pick<
+  LaunchReadinessOptions,
+  "env" | "capabilities" | "now" | "preflightChecks" |
+  "productConfigProbe" | "publicCatalogProbe"
+>;
+
 export interface LaunchReadinessCliOptions {
   envFile?: string;
   adminEnvFile?: string;
@@ -152,6 +166,7 @@ export interface LaunchReadinessCliOptions {
   reportFile?: string;
   help: boolean;
   json: boolean;
+  prepareRuntime?: boolean;
 }
 
 export const currentLaunchCapabilities: LaunchReadinessCapabilities = {
@@ -1436,9 +1451,6 @@ function addImagePipelineChecks(
   checks: LaunchReadinessCheck[],
   env: EnvLike,
   capabilities: LaunchReadinessCapabilities,
-  probe: ImagePipelineProbeEvidence | null,
-  productConfigProbe: ProductConfigProbeEvidence | null,
-  now: Date,
 ) {
   const configured = env.GEN_IMAGE_PROVIDER ?? "mock";
   const genComfyuiApiUrl = genComfyUiAuthority(env, "image");
@@ -1494,12 +1506,6 @@ function addImagePipelineChecks(
       });
     }
   }
-
-  // INVARIANT: every production image adapter must prove one real execution.
-  // The same Gen probe now binds either the OpenAI-compatible pipeline target
-  // or the exact workflow-native backend and emits immutable TerminalRecord
-  // evidence, so backend deployments cannot pass on configuration alone.
-  addImagePipelineProbeCheck(checks, env, probe, productConfigProbe, now);
 }
 
 function addVideoPipelineChecks(
@@ -2605,11 +2611,16 @@ function isInternalReturnPath(value: string | null | undefined) {
 function resolveProbeEvidence(
   env: EnvLike,
   options: LaunchReadinessOptions,
+  includeRuntimeEvidence = true,
 ): { [K in ProbeName]: ProbeEvidenceOf<K> | null } {
   const resolved: Record<string, unknown> = {};
   for (const name of PROBE_NAMES) {
-    resolved[name] =
-      options[name] !== undefined ? options[name] : loadProbeReport(env, name);
+    // Product configuration and public catalog probes only need Main data;
+    // preparation still validates them without requiring a running service.
+    resolved[name] = includeRuntimeEvidence ||
+      name === "productConfigProbe" || name === "publicCatalogProbe"
+      ? options[name] !== undefined ? options[name] : loadProbeReport(env, name)
+      : null;
   }
   return resolved as { [K in ProbeName]: ProbeEvidenceOf<K> | null };
 }
@@ -2665,12 +2676,7 @@ function requiredRevisionProbeNames(
   return names;
 }
 
-function addSourceRevisionAuthorityCheck(
-  checks: LaunchReadinessCheck[],
-  env: EnvLike,
-  probes: { [K in ProbeName]: ProbeEvidenceOf<K> | null },
-  scope: LaunchScope,
-) {
+function serviceSourceRevisionProblems(env: EnvLike) {
   const expectedRevision = env.IDREAM_MAIN_SOURCE_REVISION?.trim() ?? "";
   const serviceRevisions = [
     env.IDREAM_MAIN_SOURCE_REVISION,
@@ -2685,6 +2691,71 @@ function addSourceRevisionAuthorityCheck(
   ) {
     problems.push("Main, Admin, Chat, and Gen source revisions are missing or inconsistent");
   }
+  return problems;
+}
+
+function addRuntimeProbeConfigurationCheck(checks: LaunchReadinessCheck[], env: EnvLike) {
+  const problems: string[] = [];
+  // These configuration requirements otherwise live inside the deferred
+  // evidence evaluators. Deferring a service never makes its config optional.
+  if (!isUrl(env.ADMIN_WEB_URL)) problems.push("ADMIN_WEB_URL is missing or invalid");
+  if (!hasMinLength(env.SENTRY_RELEASE, 1)) problems.push("SENTRY_RELEASE is missing or invalid");
+  const voiceProvider = env.VOICE_PROVIDER ?? "mock";
+  const voiceUrl = voiceProvider === "pocket-tts" ? env.POCKET_TTS_API_URL
+    : voiceProvider === "fish-audio" ? env.FISH_AUDIO_API_URL
+    : env.PIPELINE_VOICE_API_URL ?? env.PIPELINE_API_URL;
+  if (voiceProvider !== "mock" && !isUrl(voiceUrl)) {
+    problems.push("The configured voice provider URL is missing or invalid");
+  }
+  const identityProvider = env.VOICE_IDENTITY_PROVIDER?.trim();
+  if (identityProvider && !isUrl(identityProvider === "pocket-tts"
+    ? env.POCKET_TTS_API_URL : env.FISH_AUDIO_API_URL)) {
+    problems.push("The configured voice identity provider URL is missing or invalid");
+  }
+  addCheck(checks, {
+    id: "runtime-probe-configuration",
+    area: "Runtime",
+    status: problems.length === 0 ? "pass" : "fail",
+    message: problems.length === 0
+      ? "Deferred Web, Voice and Sentry evidence has the required runtime configuration."
+      : `Runtime probe configuration is incomplete: ${problems.join("; ")}.`,
+    remediation: problems.length === 0 ? undefined
+      : "Configure the exact Admin URL, selected voice endpoints and Sentry release before running their live probes.",
+  });
+}
+
+function addSourceRevisionConfigurationCheck(
+  checks: LaunchReadinessCheck[],
+  env: EnvLike,
+  probes: { [K in ProbeName]: ProbeEvidenceOf<K> | null },
+) {
+  const expectedRevision = env.IDREAM_MAIN_SOURCE_REVISION?.trim() ?? "";
+  const problems = serviceSourceRevisionProblems(env);
+  for (const name of ["productConfigProbe", "publicCatalogProbe"] as const) {
+    if (!expectedRevision || probes[name]?.sourceRevision?.trim() !== expectedRevision) {
+      problems.push(`${PROBE_REPORTS[name].reportEnvKey} is not bound to the expected revision`);
+    }
+  }
+  addCheck(checks, {
+    id: "source-revision-configuration",
+    area: "Runtime",
+    status: problems.length === 0 ? "pass" : "fail",
+    message: problems.length === 0
+      ? `Service configuration and database probe evidence are bound to ${expectedRevision}; runtime source evidence remains pending.`
+      : `Source revision configuration is incomplete: ${problems.join("; ")}.`,
+    remediation: problems.length === 0 ? undefined
+      : "Configure one immutable revision in all four services and rerun the read-only product config and public catalog probes from it.",
+  });
+}
+
+function addSourceRevisionAuthorityCheck(
+  checks: LaunchReadinessCheck[],
+  env: EnvLike,
+  probes: { [K in ProbeName]: ProbeEvidenceOf<K> | null },
+  scope: LaunchScope,
+) {
+  const expectedRevision = env.IDREAM_MAIN_SOURCE_REVISION?.trim() ?? "";
+  const problems = serviceSourceRevisionProblems(env);
   for (const name of requiredRevisionProbeNames(scope, env, probes)) {
     const revision = probes[name]?.sourceRevision?.trim() ?? "";
     if (!expectedRevision || revision !== expectedRevision) {
@@ -2726,12 +2797,35 @@ function addSourceRevisionAuthorityCheck(
 export function assessLaunchReadiness(
   options: LaunchReadinessOptions = {},
 ): LaunchReadinessReport {
+  return assessReadiness(options, true).report;
+}
+
+export function assessRuntimePreparation(
+  options: RuntimePreparationOptions = {},
+): RuntimePreparationReport {
+  const { report, pendingEvidence } = assessReadiness(options, false);
+  return {
+    ...report,
+    stage: "prepare-runtime",
+    prepared: report.ok,
+    // INVARIANT: even a ready preparation artifact can never be a successful
+    // launch/probe report. Only the complete gate can certify live evidence.
+    ok: false,
+    launchQualified: false,
+    pendingEvidence,
+  };
+}
+
+function assessReadiness(
+  options: LaunchReadinessOptions,
+  includeRuntimeEvidence: boolean,
+) {
   const env = options.env ?? process.env;
   const configuredScope = resolveLaunchScope(env.LAUNCH_SCOPE);
   const scope = configuredScope ?? "full";
   const capabilities = mergeCapabilities(options.capabilities);
   // INVARIANT: 显式传入（含 null）优先于按 env 读文件；未传才落回 *_PROBE_REPORT。
-  const probes = resolveProbeEvidence(env, options);
+  const probes = resolveProbeEvidence(env, options, includeRuntimeEvidence);
   const now = options.now ?? new Date();
   const checks: LaunchReadinessCheck[] = [...(options.preflightChecks ?? [])];
 
@@ -2750,7 +2844,11 @@ export function assessLaunchReadiness(
         ? "Set LAUNCH_SCOPE to full or core; unknown values never weaken the full launch gate."
         : undefined,
   });
-  addSourceRevisionAuthorityCheck(checks, env, probes, scope);
+  if (includeRuntimeEvidence) addSourceRevisionAuthorityCheck(checks, env, probes, scope);
+  else {
+    addSourceRevisionConfigurationCheck(checks, env, probes);
+    addRuntimeProbeConfigurationCheck(checks, env);
+  }
 
   addCheck(checks, {
     id: "app-env-production",
@@ -2865,7 +2963,7 @@ export function assessLaunchReadiness(
     remediation:
       "Use separate random secrets for INTERNAL_TOKEN and CRON_SECRET.",
   });
-  addWebSurfaceProbeCheck(checks, env, probes.webSurfaceProbe, now);
+  if (includeRuntimeEvidence) addWebSurfaceProbeCheck(checks, env, probes.webSurfaceProbe, now);
 
   addRequiredCheck(checks, env, {
     id: "redis-url",
@@ -2931,20 +3029,19 @@ export function assessLaunchReadiness(
       "Set ADMIN_BFF_SIGNING_SECRET to the same shared secret used by packages/admin.",
   });
   addChatServiceChecks(checks, env);
-  addChatServiceProbeCheck(checks, env, probes.chatServiceProbe, now);
-  addAdminTextProbeCheck(checks, env, probes.adminTextProbe, now);
+  if (includeRuntimeEvidence) {
+    addChatServiceProbeCheck(checks, env, probes.chatServiceProbe, now);
+    addAdminTextProbeCheck(checks, env, probes.adminTextProbe, now);
+  }
 
-  addImagePipelineChecks(
-    checks,
-    env,
-    capabilities,
-    probes.imagePipelineProbe,
-    probes.productConfigProbe,
-    now,
-  );
+  addImagePipelineChecks(checks, env, capabilities);
+  // Configuration alone never satisfies the complete generation gate.
+  if (includeRuntimeEvidence) {
+    addImagePipelineProbeCheck(checks, env, probes.imagePipelineProbe, probes.productConfigProbe, now);
+  }
   addProductConfigProbeCheck(checks, env, probes.productConfigProbe, now);
   addPublicCatalogProbeCheck(checks, env, probes.publicCatalogProbe, now);
-  addGenerationPersistenceProbeCheck(
+  if (includeRuntimeEvidence) addGenerationPersistenceProbeCheck(
     checks,
     env,
     "image",
@@ -2954,55 +3051,57 @@ export function assessLaunchReadiness(
     now,
   );
   addVideoPipelineChecks(checks, env, capabilities, probes.productConfigProbe);
-  addVideoGenerationProbeCheck(
-    checks,
-    env,
-    probes.productConfigProbe,
-    probes.videoGenerationProbe,
-    now,
-    characterVideoProductionRecipe,
-    "videoGenerationProbe",
-    "video-generation-live-probe",
-  );
-  addVideoGenerationProbeCheck(
-    checks,
-    env,
-    probes.productConfigProbe,
-    probes.videoH3GenerationProbe,
-    now,
-    minimaxH3VideoProductionRecipe,
-    "videoH3GenerationProbe",
-    "video-h3-generation-live-probe",
-  );
-  addGenerationPersistenceProbeCheck(
-    checks,
-    env,
-    "video",
-    probes.videoGenerationPersistenceProbe,
-    probes.videoGenerationProbe,
-    probes.productConfigProbe,
-    now,
-    {
-      probeName: "videoGenerationPersistenceProbe",
-      checkId: "generation-video-main-persistence",
-      recipe: characterVideoProductionRecipe,
-    },
-  );
-  addGenerationPersistenceProbeCheck(
-    checks,
-    env,
-    "video",
-    probes.videoH3GenerationPersistenceProbe,
-    probes.videoH3GenerationProbe,
-    probes.productConfigProbe,
-    now,
-    {
-      probeName: "videoH3GenerationPersistenceProbe",
-      checkId: "generation-video-h3-main-persistence",
-      recipe: minimaxH3VideoProductionRecipe,
-    },
-  );
-  addVoiceModelProbeCheck(checks, env, probes.voiceModelProbe, now);
+  if (includeRuntimeEvidence) {
+    addVideoGenerationProbeCheck(
+      checks,
+      env,
+      probes.productConfigProbe,
+      probes.videoGenerationProbe,
+      now,
+      characterVideoProductionRecipe,
+      "videoGenerationProbe",
+      "video-generation-live-probe",
+    );
+    addVideoGenerationProbeCheck(
+      checks,
+      env,
+      probes.productConfigProbe,
+      probes.videoH3GenerationProbe,
+      now,
+      minimaxH3VideoProductionRecipe,
+      "videoH3GenerationProbe",
+      "video-h3-generation-live-probe",
+    );
+    addGenerationPersistenceProbeCheck(
+      checks,
+      env,
+      "video",
+      probes.videoGenerationPersistenceProbe,
+      probes.videoGenerationProbe,
+      probes.productConfigProbe,
+      now,
+      {
+        probeName: "videoGenerationPersistenceProbe",
+        checkId: "generation-video-main-persistence",
+        recipe: characterVideoProductionRecipe,
+      },
+    );
+    addGenerationPersistenceProbeCheck(
+      checks,
+      env,
+      "video",
+      probes.videoH3GenerationPersistenceProbe,
+      probes.videoH3GenerationProbe,
+      probes.productConfigProbe,
+      now,
+      {
+        probeName: "videoH3GenerationPersistenceProbe",
+        checkId: "generation-video-h3-main-persistence",
+        recipe: minimaxH3VideoProductionRecipe,
+      },
+    );
+    addVoiceModelProbeCheck(checks, env, probes.voiceModelProbe, now);
+  }
 
   if ((env.MODERATION_PROVIDER ?? "mock") === "safety-gateway") {
     addRequiredCheck(checks, env, {
@@ -3035,7 +3134,7 @@ export function assessLaunchReadiness(
       message: `MODERATION_PROVIDER=${env.MODERATION_PROVIDER ?? "mock"} does not require MODERATION_API_KEY.`,
     });
   }
-  addSafetyGatewayProbeCheck(checks, env, probes.safetyGatewayProbe, now);
+  if (includeRuntimeEvidence) addSafetyGatewayProbeCheck(checks, env, probes.safetyGatewayProbe, now);
   if (scope === "full") {
     addAtLeastOneCheck(checks, env, {
       id: "payment-api-key",
@@ -3072,7 +3171,7 @@ export function assessLaunchReadiness(
       remediation:
         "Configure and verify the production payment webhook secret.",
     });
-    addPaymentProviderProbeCheck(checks, env, probes.paymentProviderProbe, now);
+    if (includeRuntimeEvidence) addPaymentProviderProbeCheck(checks, env, probes.paymentProviderProbe, now);
     addRequiredCheck(checks, env, {
       id: "age-verification-service-url",
       area: "Compliance",
@@ -3118,7 +3217,7 @@ export function assessLaunchReadiness(
       remediation:
         "Set AGE_VERIFY_CALLBACK_URL to the public signed-webhook endpoint for Go.cam callbacks.",
     });
-    addAgeVerificationProbeCheck(checks, env, probes.ageVerificationProbe, now);
+    if (includeRuntimeEvidence) addAgeVerificationProbeCheck(checks, env, probes.ageVerificationProbe, now);
   }
 
   addRequiredCheck(checks, env, {
@@ -3155,7 +3254,7 @@ export function assessLaunchReadiness(
     label: "Object storage secret key",
     remediation: "Configure object storage secret credentials.",
   });
-  addBlobStorageProbeCheck(checks, env, probes.blobStorageProbe, now);
+  if (includeRuntimeEvidence) addBlobStorageProbeCheck(checks, env, probes.blobStorageProbe, now);
 
   addRequiredCheck(checks, env, {
     id: "sentry-dsn",
@@ -3192,7 +3291,7 @@ export function assessLaunchReadiness(
     remediation:
       "Set NEXT_PUBLIC_SENTRY_DSN to the same public DSN used by the Next.js server runtimes.",
   });
-  addSentryCanaryProbeCheck(
+  if (includeRuntimeEvidence) addSentryCanaryProbeCheck(
     checks,
     env,
     {
@@ -3205,7 +3304,7 @@ export function assessLaunchReadiness(
   );
 
   const summary = summarize(checks);
-  return {
+  const report: LaunchReadinessReport = {
     ok: summary.fail === 0,
     generatedAt: now.toISOString(),
     sourceRevision: env.IDREAM_MAIN_SOURCE_REVISION?.trim() || null,
@@ -3214,6 +3313,22 @@ export function assessLaunchReadiness(
     summary,
     checks,
   };
+  // Bind deferred work to the same loaded database evidence used above; never
+  // reread a changing feature-flag report after deciding preparation status.
+  const pendingEvidence = includeRuntimeEvidence ? [] : [
+    ...[...requiredRevisionProbeNames(scope, env, probes)]
+      .filter((name) => name !== "productConfigProbe" && name !== "publicCatalogProbe")
+      .map((name) => PROBE_REPORTS[name].reportEnvKey),
+    "Immutable production process/source definitions, HTTP/model readiness and exact worker ownership.",
+    "Target DNS/TLS/ingress isolation, direct-port boundaries and external browser acceptance.",
+  ];
+  return { report, pendingEvidence };
+}
+
+function formatReadinessCheck(check: LaunchReadinessCheck) {
+  const remediation = check.status !== "pass" && check.remediation
+    ? ` Remediation: ${check.remediation}` : "";
+  return `[${check.status.toUpperCase()}] ${check.area} / ${check.id}: ${check.message}${remediation}`;
 }
 
 export function formatLaunchReadinessReport(report: LaunchReadinessReport) {
@@ -3222,16 +3337,20 @@ export function formatLaunchReadinessReport(report: LaunchReadinessReport) {
   ];
 
   for (const check of report.checks) {
-    const remediation =
-      check.status !== "pass" && check.remediation
-        ? ` Remediation: ${check.remediation}`
-        : "";
-    lines.push(
-      `[${check.status.toUpperCase()}] ${check.area} / ${check.id}: ${check.message}${remediation}`,
-    );
+    lines.push(formatReadinessCheck(check));
   }
 
   return lines.join("\n");
+}
+
+export function formatRuntimePreparationReport(report: RuntimePreparationReport) {
+  return [
+    `Runtime preparation: ${report.prepared ? "READY" : "FAIL"} (${report.summary.pass} pass, ${report.summary.fail} fail, ${report.summary.warn} warn)`,
+    "Launch qualified: NO. Preparation does not authorize startup or public ingress.",
+    ...report.checks.map(formatReadinessCheck),
+    "Pending runtime/public evidence:",
+    ...report.pendingEvidence.map((item) => `  - ${item}`),
+  ].join("\n");
 }
 
 export function parseLaunchReadinessCliArgs(
@@ -3241,6 +3360,10 @@ export function parseLaunchReadinessCliArgs(
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
+    if (arg === "--prepare-runtime") {
+      options.prepareRuntime = true;
+      continue;
+    }
     if (arg === "--json") {
       options.json = true;
       continue;
@@ -3331,6 +3454,7 @@ function formatLaunchReadinessHelp() {
     "       bun run --filter @idream/main check:launch -- [options]",
     "",
     "Options:",
+    "  --prepare-runtime         Check configuration/data preparation; never qualifies launch.",
     "  --launch-env-file <path>  Load dotenv values before running the launch gate.",
     "  --admin-env-file <path>   Load Admin runtime authority from its dotenv file.",
     "  --chat-env-file <path>    Load Chat runtime authority from its dotenv file.",
@@ -3661,17 +3785,19 @@ async function runLaunchReadinessCli() {
       await addMainToChatBacklogPreflight(env, preflightChecks);
       await addRecoveryRehearsalPreflight(env, preflightChecks);
       await addCharacterSoulAuthorityPreflight(env, preflightChecks);
-      const report = assessLaunchReadiness({ env, preflightChecks });
+      const preparation = cliOptions.prepareRuntime
+        ? assessRuntimePreparation({ env, preflightChecks }) : null;
+      const report = preparation ?? assessLaunchReadiness({ env, preflightChecks });
       const output = cliOptions.json
         ? `${JSON.stringify(report, null, 2)}\n`
-        : `${formatLaunchReadinessReport(report)}\n`;
+        : `${preparation ? formatRuntimePreparationReport(preparation) : formatLaunchReadinessReport(report)}\n`;
 
       if (cliOptions.reportFile) {
         await writeLaunchReadinessReport(cliOptions.reportFile, report);
       }
 
       process.stdout.write(output);
-      process.exitCode = report.ok ? 0 : 1;
+      process.exitCode = (preparation ? preparation.prepared : report.ok) ? 0 : 1;
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

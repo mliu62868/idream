@@ -63,6 +63,17 @@ describe("Chat video confirmation and history", () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
+  it("shows a readable duration for frame-based video profiles", async () => {
+    const fetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, options?: RequestInit) =>
+      String(input).endsWith("/video/quote")
+        ? Promise.resolve(json({ quote: { ...quote, video: { ...quote.video, durationSeconds: 121 / 24 } } }))
+        : fetch(input, options)));
+    await render(createElement(ChatVideoComposer, { sources: [source], initialPrompt: "Leaves move in the breeze.", ownerScope: "user:viewer", onClose: vi.fn(), onSubmit: vi.fn() }));
+    await click("Check video price");
+    expect(container.textContent).toContain("5.04-second video · 40 Dreamcoins");
+  });
+
   it("invalidates the confirmed price when the user chooses another source image", async () => {
     const submit = vi.fn(async () => true);
     await render(createElement(ChatVideoComposer, { sources: [source, { ...source, mediaAssetId: "other-image", turnId: "other-turn", url: "/other.png" }], initialPrompt: "Look at the camera.", ownerScope: "user:viewer", onClose: vi.fn(), onSubmit: submit }));

@@ -9,6 +9,7 @@
 //            in the authority modules rather than spread wholesale, so a new column cannot
 //            silently widen a public response.
 import { z } from "zod";
+import { imageGeneratePayloadSchema } from "../../contracts/payloads";
 import {
   adminIdSchema,
   adminIsoDateTimeSchema,
@@ -116,7 +117,7 @@ export const generationModelProfileCreateRequestSchema = z
     cfgScale: z.number().min(1).max(30).default(1),
     costMultiplier: z.number().min(0.1).max(20).default(1),
     requiredEntitlement: z.string().trim().max(120).nullable().optional(),
-    maxCount: z.number().int().min(1).max(8).default(4),
+    maxCount: imageGeneratePayloadSchema.shape.count.default(4),
     concurrencyLimit: z.number().int().min(1).max(100).default(1),
     enabled: z.boolean().default(false),
     rolloutPercent: servingRolloutPercentSchema.default(0),
@@ -145,7 +146,7 @@ export const generationModelProfilePatchRequestSchema = z
     cfgScale: z.number().min(1).max(30).optional(),
     costMultiplier: z.number().min(0.1).max(20).optional(),
     requiredEntitlement: z.string().trim().max(120).nullable().optional(),
-    maxCount: z.number().int().min(1).max(8).optional(),
+    maxCount: imageGeneratePayloadSchema.shape.count.optional(),
     concurrencyLimit: z.number().int().min(1).max(100).optional(),
     enabled: z.boolean().optional(),
     rolloutPercent: servingRolloutPercentSchema.optional(),

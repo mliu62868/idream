@@ -8,15 +8,11 @@ import { characterContentHash } from "@/server/modules/admin-v2/shared/character
 export function characterDraftSnapshots(content: {
   persona: CharacterDraftPersona;
   visualDirection: CharacterDraftVisualDirection;
-}) {
+}, previousAppearance: unknown = {}) {
   return characterSoulVersionSnapshots({
     persona: content.persona,
-    appearanceSnapshot: {
-      identityAnchor: content.visualDirection.identityAnchor,
-      stableTraits: content.visualDirection.stableTraits,
-      style: content.visualDirection.style,
-      referenceDirection: content.visualDirection.referenceDirection,
-    },
+    appearanceSnapshot: previousAppearance,
+    visualDirection: content.visualDirection,
   });
 }
 
@@ -27,6 +23,7 @@ export function characterDraftSnapshots(content: {
 export function characterSoulVersionSnapshots(content: {
   persona: CharacterDraftPersona;
   appearanceSnapshot: unknown;
+  visualDirection?: CharacterDraftVisualDirection;
 }) {
   const { firstMessage, ...soul } = content.persona;
   const compiled = compileCharacterSoul(soul);
@@ -37,7 +34,11 @@ export function characterSoulVersionSnapshots(content: {
   }
   const personaSnapshot = compiled.snapshot;
   const openingSnapshot = { firstMessage };
-  const appearanceSnapshot = content.appearanceSnapshot;
+  // Both authoring entrances preserve source images and structured legacy
+  // traits. Only the four editable visual direction keys may be replaced.
+  const appearanceSnapshot = content.visualDirection
+    ? { ...appearanceRecord(content.appearanceSnapshot), ...content.visualDirection }
+    : content.appearanceSnapshot;
   return {
     personaSnapshot,
     openingSnapshot,
@@ -50,4 +51,22 @@ export function characterSoulVersionSnapshots(content: {
     renderedSoulMarkdown: compiled.renderedMarkdown,
     diagnostics: compiled.diagnostics,
   };
+}
+
+export function characterContentModerationText(content: {
+  personaSnapshot: unknown;
+  openingSnapshot: unknown;
+  appearanceSnapshot: unknown;
+}) {
+  return JSON.stringify({
+    persona: content.personaSnapshot,
+    opening: content.openingSnapshot,
+    appearance: content.appearanceSnapshot,
+  });
+}
+
+function appearanceRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
 }

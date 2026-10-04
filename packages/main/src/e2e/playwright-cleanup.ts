@@ -251,9 +251,14 @@ async function writeIsolatedTsconfig(
 ) {
   const absolutePath = path.resolve(packageRoot, relativeTsconfigPath);
   await mkdir(path.dirname(absolutePath), { recursive: true });
+  // Next's Webpack alias loader otherwise uses this nested config directory
+  // as the implicit base, even though paths are inherited from the package root.
   await writeFile(
     absolutePath,
-    `${JSON.stringify({ extends: "../../tsconfig.json" }, null, 2)}\n`,
+    `${JSON.stringify({
+      extends: "../../tsconfig.json",
+      compilerOptions: { baseUrl: "../.." },
+    }, null, 2)}\n`,
     { encoding: "utf8", flag: "wx" },
   );
 }

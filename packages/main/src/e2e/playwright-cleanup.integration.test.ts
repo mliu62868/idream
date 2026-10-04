@@ -64,9 +64,11 @@ describe("Playwright resource lifecycle", () => {
       await expect(access(staleBlobPath)).rejects.toThrow();
       expect(JSON.parse(await readFile(mainTsconfigPath, "utf8"))).toEqual({
         extends: "../../tsconfig.json",
+        compilerOptions: { baseUrl: "../.." },
       });
       expect(JSON.parse(await readFile(adminTsconfigPath, "utf8"))).toEqual({
         extends: "../../tsconfig.json",
+        compilerOptions: { baseUrl: "../.." },
       });
       await writeFile(ownedBlobPath, "owned");
 

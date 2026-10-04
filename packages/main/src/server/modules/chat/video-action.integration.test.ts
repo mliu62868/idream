@@ -102,6 +102,36 @@ async function videoHistory(f: Awaited<ReturnType<typeof fixture>>, jobId: strin
 }
 
 describe("explicit Chat video admission and delivery", () => {
+  it("animates a scene-only Chat delivery without introducing companion identity or losing Turn ownership", async () => {
+    const f = await fixture();
+    await prisma.generationJob.update({ where: { id: `${f.id}-source-job` }, data: {
+      characterId: null, visualProfileId: null, visualProfileVersion: null, referenceSetRevisionId: null,
+      sourceMeta: { sessionId: f.sessionId, exchangeId: f.turnId, imageSubject: "scene", chatCharacterId: f.characterId },
+      momentSpec: { rawInput: "A basil plant in a terracotta pot. No person in the scene." },
+    } });
+    await prisma.mediaAsset.update({ where: { id: f.source.id }, data: { characterId: null } });
+    const source = await context(f, true);
+    expect(source).toMatchObject({ identityMode: "source_only", characterId: null, pins: null });
+    const request = { generationContextToken: source.token, prompt: "A gentle breeze moves only the basil leaves. Keep the camera still." };
+    const quote = await api("POST", `chat/${f.sessionId}/video/quote`, { userId: f.userId, ageGate: true, body: request });
+    expectOk(quote);
+    const body = { ...request, quoteAuthority: quoteAuthorityFor(quote.data.quote, 1)! };
+    const generated = vi.spyOn((await generationTestProviders()).video, "generate");
+    const [created, replay] = await Promise.all([submit(f, body), submit(f, body)]);
+    expectOk(created, 202); expectOk(replay, 202);
+    expect(replay.data.job.id).toBe(created.data.job.id);
+    const jobId = created.data.job.id as string;
+    const job = await prisma.generationJob.findUniqueOrThrow({ where: { id: jobId } });
+    expect(job).toMatchObject({ characterId: null, visualProfileId: null, referenceSetRevisionId: null,
+      sourceMeta: { sessionId: f.sessionId, exchangeId: f.turnId, chatCharacterId: f.characterId, identityMode: "source_only" },
+      controls: { sourceImageAssetId: f.source.id } });
+    expect(await prisma.dreamcoinLedger.count({ where: { sourceId: jobId, reason: "generation_spend" } })).toBe(1);
+    await runQueuedGenerationJobs(8, videoQueues);
+    expect(generated).toHaveBeenCalledTimes(1);
+    expect(generated.mock.calls[0]?.[0].referenceImages).toEqual([expect.objectContaining({ assetId: f.source.id, role: "source_image" })]);
+    expect(await videoHistory(f, jobId)).toMatchObject({ generationJobId: jobId, status: "completed" });
+  });
+
   it("keeps the frozen source and original Turn, charges once on concurrent confirmation, and preserves playable history while disabled", async () => {
     const f = await fixture();
     const originalTurn = await prisma.chatTurn.findUniqueOrThrow({ where: { id: f.turnId } });

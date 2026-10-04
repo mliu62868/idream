@@ -1,9 +1,8 @@
+import { durableEnvelopeHash, generationTerminalRecordChecksum } from "./durable-server";
 import { describe, expect, it } from "vitest";
 import {
   durableAckSchema,
-  durableEnvelopeHash,
   durableEventEnvelopeSchema,
-  generationTerminalRecordChecksum,
   generationTerminalRecordSchema,
   generationTransportExecutionEventSchema,
 } from "./durable";

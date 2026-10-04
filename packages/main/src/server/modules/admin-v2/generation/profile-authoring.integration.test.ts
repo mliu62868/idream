@@ -9,6 +9,8 @@ describe("generation profile authoring and recovery authority", () => {
   const admin = { userId: actorId, role: "admin" };
   const oldId = `${key}-old`;
   const activeId = `${key}-active`;
+  const legacyKeys = [5, 8].map((count) => `${key}-legacy-${count}`);
+  const rollbackKey = `${key}-capacity-rollback`;
   beforeAll(async () => {
     await prisma.user.create({ data: { id: actorId, email: `${actorId}@example.test`, role: "admin", status: "active", dataClass: "internal" } });
     await prisma.generationModelProfile.createMany({ data: [
@@ -20,7 +22,7 @@ describe("generation profile authoring and recovery authority", () => {
   afterAll(async () => {
     await prisma.adminAuditLog.deleteMany({ where: { actorId } });
     await prisma.controlPlaneCommand.deleteMany({ where: { actorId } });
-    await prisma.generationModelProfile.deleteMany({ where: { profileKey: key } });
+    await prisma.generationModelProfile.deleteMany({ where: { profileKey: { in: [key, ...legacyKeys, rollbackKey] } } });
     await prisma.user.deleteMany({ where: { id: actorId } });
     await prisma.$disconnect();
   });
@@ -59,5 +61,57 @@ describe("generation profile authoring and recovery authority", () => {
     const disabled = await adminV2("PATCH", `/api/v2/admin/generation/model-profiles/${activeId}`, { ...admin, body: { enabled: false, reason: "Emergency disable regression", confirmation: activeId } });
     expect(disabled.status, JSON.stringify(disabled.error)).toBe(200);
     expect(disabled.data.profile.enabled).toBe(false);
+  });
+
+  it.each([5, 8])("rejects %i-output authoring without changing a valid draft", async (maxCount) => {
+    vi.stubEnv("ADMIN_MODEL_DIAGNOSTICS_ENABLED", "true");
+    const profileKey = `${key}-legacy-${maxCount}`;
+    const id = `${profileKey}-draft`;
+    const created = await adminV2("POST", "/api/v2/admin/generation/model-profiles", {
+      ...admin, body: { profileKey, label: "Unsupported capacity", pipelineModel: "test-model", allowedOrientations: ["1:1"], maxCount },
+    });
+    expect(created.status).toBe(400);
+    expect(await prisma.generationModelProfile.count({ where: { profileKey } })).toBe(0);
+    await prisma.generationModelProfile.create({ data: {
+      id, profileKey, label: "Legacy image profile", pipelineModel: "test-model", allowedOrientations: ["1:1"], mode: "image", status: "draft", maxCount: 4,
+    } });
+    const edited = await adminV2("PATCH", `/api/v2/admin/generation/model-profiles/${id}`, { ...admin, body: { maxCount } });
+    expect(edited.status).toBe(400);
+    expect((await prisma.generationModelProfile.findUniqueOrThrow({ where: { id } })).maxCount).toBe(4);
+  });
+
+  it.each([5, 8])("does not certify or publish a legacy %i-output image profile", async (maxCount) => {
+    const profileKey = `${key}-legacy-${maxCount}`;
+    const id = `${profileKey}-publish`;
+    await prisma.generationModelProfile.create({ data: {
+      id, profileKey, label: "Legacy delivery capacity", pipelineModel: "test-model", allowedOrientations: ["1:1"], mode: "image", status: "draft", enabled: false, version: 2, maxCount,
+    } });
+    const checked = await adminV2("POST", `/api/v2/admin/generation/model-profiles/${id}/commands/dry-run`, {
+      ...admin, body: { reason: "Check legacy delivery capacity", confirmation: id },
+    });
+    expect(checked.status, JSON.stringify(checked.error)).toBe(200);
+    expect(checked.data.dryRun.status).toBe("fail");
+    expect(checked.data.dryRun.samples.every((sample: { issues: string[] }) => sample.issues.includes("unsupported maxCount for image delivery"))).toBe(true);
+    const published = await adminV2("POST", `/api/v2/admin/generation/model-profiles/${id}/commands/publish`, {
+      ...admin, body: { reason: "Reject legacy delivery promise", confirmation: id },
+    });
+    expect(published.status).toBe(400);
+    expect(published.error?.details).toMatchObject({ maxCount, supportedMaxCount: 4 });
+    expect(await prisma.generationModelProfile.findUniqueOrThrow({ where: { id }, select: { status: true, enabled: true } })).toEqual({ status: "draft", enabled: false });
+  });
+
+  it("refuses to roll back to an undeliverable historical profile without archiving the active version", async () => {
+    const archivedId = `${rollbackKey}-old`, currentId = `${rollbackKey}-current`;
+    await prisma.generationModelProfile.createMany({ data: [
+      { id: archivedId, profileKey: rollbackKey, label: "Old capacity", pipelineModel: "test-model", allowedOrientations: ["1:1"], mode: "image", status: "archived", version: 1, maxCount: 8 },
+      { id: currentId, profileKey: rollbackKey, label: "Current capacity", pipelineModel: "test-model", allowedOrientations: ["1:1"], mode: "image", status: "active", version: 2, maxCount: 4, enabled: true },
+    ] });
+    const rolledBack = await adminV2("POST", `/api/v2/admin/generation/model-profiles/${currentId}/commands/rollback`, {
+      ...admin, body: { reason: "Do not restore an unsupported quantity", confirmation: currentId },
+    });
+    expect(rolledBack.status).toBe(400);
+    expect(rolledBack.error?.details).toMatchObject({ maxCount: 8, supportedMaxCount: 4 });
+    expect(await prisma.generationModelProfile.findUniqueOrThrow({ where: { id: currentId }, select: { status: true, enabled: true } })).toEqual({ status: "active", enabled: true });
+    expect((await prisma.generationModelProfile.findUniqueOrThrow({ where: { id: archivedId } })).status).toBe("archived");
   });
 });

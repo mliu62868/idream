@@ -2585,6 +2585,9 @@ async function resolveFeedRemixGenerationSource(
 }
 
 export async function createChatImageGenerationJob(payload: ChatImageRequestedPayload, turnAttempt?: number) {
+  if (payload.subject !== "companion" && payload.subject !== "scene") {
+    throw Errors.badRequest("Choose whether the requested image includes the companion before generating");
+  }
   if (turnAttempt !== undefined && !payload.exchangeId) {
     throw Errors.badRequest("A Chat image attachment requires its Turn identity");
   }
@@ -2593,9 +2596,10 @@ export async function createChatImageGenerationJob(payload: ChatImageRequestedPa
     throw Errors.forbidden("User cannot generate images");
   }
   const releasePin = await chatReleaseGenerationPin(payload);
+  const sceneOnly = payload.subject === "scene";
   const prompt = compileChatImagePrompt(
     payload.promptHint ?? "candid in-character photo",
-    payload.intent.requestedNudity,
+    sceneOnly ? "unspecified" : payload.intent.requestedNudity,
   );
   const orientation = normalizeImageOrientation(payload.controls.orientation, "4:5");
   const sourceImageAssetId = payload.controls.sourceImageAssetId;
@@ -2603,14 +2607,13 @@ export async function createChatImageGenerationJob(payload: ChatImageRequestedPa
     payload.userId,
     {
       mode: "image",
-      characterId: payload.characterId,
-      freeplay: false,
-      // INVARIANT: Chat images depict the pinned companion, so identity wins over
-      // stylistic freedom. The Agent owns only the mutable scene; Main pins the
-      // strongest reference weights and the sealed identity profile.
+      characterId: sceneOnly ? undefined : payload.characterId,
+      freeplay: sceneOnly,
+      // Companion requests retain the sealed identity. A scene-only request
+      // uses the existing Freeplay route; Chat ownership is separate provenance.
       consistencyMode: "strict",
       prompt,
-      visualProfileId: releasePin?.visualProfileId ?? payload.visualProfileId,
+      visualProfileId: sceneOnly ? undefined : releasePin?.visualProfileId ?? payload.visualProfileId,
       // Explicit whitelist — never blind-spread payload.controls, it's an untrusted
       // passthrough bag from chat and could otherwise leak arbitrary keys into the job.
       controls: {
@@ -2626,7 +2629,7 @@ export async function createChatImageGenerationJob(payload: ChatImageRequestedPa
       // Explicit profile requests are fail-closed; source intent is never
       // silently discarded in favor of plain text-to-image generation.
       model:
-        sourceImageAssetId && !payload.characterId
+        sourceImageAssetId && sceneOnly
           ? "chat-image-edit"
           : undefined,
     },
@@ -2643,6 +2646,8 @@ export async function createChatImageGenerationJob(payload: ChatImageRequestedPa
           exchangeId: payload.exchangeId ?? null,
           messageId: payload.messageId,
           characterReleaseId: payload.characterReleaseId ?? null,
+          chatCharacterId: payload.characterId,
+          imageSubject: payload.subject,
           promptHint: payload.promptHint,
           conversationContext: payload.conversationContext,
         }),
@@ -2651,12 +2656,12 @@ export async function createChatImageGenerationJob(payload: ChatImageRequestedPa
       // exact qualified portrait projection. Modern Releases never fall back:
       // their sealed identity and Reference Set are the generation authority.
       fallbackToActiveOnStaleVisualProfile:
-        releasePin?.legacy === true && releasePin.visualProfileId === null,
+        !sceneOnly && releasePin?.legacy === true && releasePin.visualProfileId === null,
       expectedVisualProfileVersion:
-        releasePin?.visualProfileVersion ?? payload.visualProfileVersion,
+        sceneOnly ? undefined : releasePin?.visualProfileVersion ?? payload.visualProfileVersion,
       expectedReferenceSetRevisionId:
-        releasePin?.referenceSetRevisionId ?? undefined,
-      requireCharacterVisualIdentity: true,
+        sceneOnly ? undefined : releasePin?.referenceSetRevisionId ?? undefined,
+      requireCharacterVisualIdentity: !sceneOnly,
     },
   );
 }

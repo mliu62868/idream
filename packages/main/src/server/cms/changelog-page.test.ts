@@ -6,6 +6,10 @@ const mocks = vi.hoisted(() => ({
   headers: vi.fn(), auth: vi.fn(), entitlements: vi.fn(), publication: vi.fn(),
 }));
 vi.mock("next/headers", () => ({ headers: mocks.headers }));
+vi.mock("next/navigation", () => ({
+  notFound: () => { throw new Error("NEXT_HTTP_ERROR_FALLBACK;404"); },
+  permanentRedirect: vi.fn(),
+}));
 vi.mock("next/link", () => ({ default: ({ href, children }: { href: string; children: React.ReactNode }) => createElement("a", { href }, children) }));
 vi.mock("@/server/lib/auth", () => ({ getAuthCtx: mocks.auth }));
 vi.mock("@/server/modules/ourdream/subscription-lifecycle", () => ({ entitlementMap: mocks.entitlements }));
@@ -13,6 +17,7 @@ vi.mock("./published-route", () => ({ loadPublishedRoutePage: mocks.publication 
 vi.mock("@/components/ourdream/OurdreamRoutePage", () => ({ RouteShell: ({ children }: { children: React.ReactNode }) => createElement("main", null, children) }));
 vi.mock("@/components/ourdream/CmsRenderer", () => ({ CmsRenderer: ({ page }: { page: { body: { intro: string } } }) => createElement("article", null, page.body.intro) }));
 import ChangelogPage from "@/app/changelog/page";
+import PublicCmsPage, { generateMetadata } from "@/app/[...slug]/page";
 
 describe("Changelog per-request publication gate", () => {
   beforeEach(() => {
@@ -52,5 +57,11 @@ describe("Changelog per-request publication gate", () => {
   it.each(["invalid", "unavailable"])("does not turn %s into empty content", async (state) => {
     mocks.publication.mockResolvedValue({ state });
     await expect(ChangelogPage()).rejects.toThrow("temporarily unavailable");
+  });
+  it.each(["page", "metadata"])("refuses Changelog in the public catch-all %s before reading CMS", async (surface) => {
+    mocks.publication.mockResolvedValue({ state: "absent", reason: "missing" });
+    const props = { params: Promise.resolve({ slug: ["changelog"] }), searchParams: Promise.resolve({}) };
+    await expect(surface === "page" ? PublicCmsPage(props) : generateMetadata(props)).rejects.toThrow("NEXT_HTTP_ERROR_FALLBACK;404");
+    expect(mocks.publication).not.toHaveBeenCalled();
   });
 });

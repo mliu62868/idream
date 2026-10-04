@@ -31,6 +31,11 @@ const SINGLE_CONSUMER_LEDGER: Record<string, { consumer: string; reason: string 
     reason:
       "Product catalog (plans/pricing) is re-exported from the root barrel, which all four packages import. The subpath exists so main's server code can pull the catalog without dragging in the whole root barrel. Retire it if main stops being the only direct importer.",
   },
+  "@idream/shared/chat/persona": {
+    consumer: "main",
+    reason:
+      "Main compiles immutable Character Soul snapshots through this server-only subpath; Chat validates those same snapshots with loadCharacterSoulSnapshot through the root barrel. Both services must share the compiler and fingerprint contract. Browser previews use persona-render so node:crypto stays outside client bundles.",
+  },
   "@idream/shared/admin/contracts": {
     consumer: "main",
     reason:

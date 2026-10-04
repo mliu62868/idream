@@ -81,6 +81,36 @@ describe("TagsView write gating", () => {
     });
   });
 
+  it("searches, categorizes and opens editing and merge targets beyond the old limits", async () => {
+    const items = Array.from({ length: 501 }, (_, index) => ({
+      ...tag,
+      id: `tag-${index}`,
+      slug: `tag-${String(index).padStart(3, "0")}`,
+      label: `Tag ${index}`,
+      category: index === 500 ? "last-category" : "common",
+    }));
+    fetchMock.mockImplementation(async () => Response.json({ ok: true, data: { items } }));
+    await act(async () => root.render(<TagsView canWrite />));
+    await waitFor(() => container.textContent?.includes("Tag taxonomy — 501") ?? false);
+
+    for (const name of ["Source tag", "Target tag"]) {
+      const select = container.querySelector<HTMLSelectElement>(`select[aria-label="${name}"]`)!;
+      expect([...select.options].some((option) => option.value === "tag-500")).toBe(true);
+    }
+    const category = container.querySelector<HTMLSelectElement>('select[aria-label="Category"]')!;
+    await act(async () => {
+      category.value = "last-category";
+      category.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    const search = container.querySelector<HTMLInputElement>('input[aria-label="Search by slug, label, or category"]')!;
+    await changeInput(search, "Tag 500");
+    expect(container.textContent).toContain("Tag taxonomy — 1 of 501");
+    expect(container.querySelector("tbody")?.textContent).toContain("Tag 500");
+    expect(container.querySelector("tbody")?.textContent).not.toContain("Tag 499");
+    await act(async () => button(container, "Edit")?.click());
+    expect(container.querySelector<HTMLInputElement>('tbody input[aria-label="Label"]')?.value).toBe("Tag 500");
+  });
+
   function postCalls() {
     return fetchMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === "POST") as [
       string,

@@ -1,8 +1,9 @@
+import { durableEnvelopeHash } from "@idream/shared/contracts/durable-server";
 import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { mkdtemp } from "node:fs/promises";
-import { durableEnvelopeHash, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
+import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const purgeCompanionWorkspace = vi.hoisted(() => vi.fn(async () => ({ purged: 1 })));

@@ -1,5 +1,6 @@
+import { generationTerminalRecordChecksum } from "@idream/shared/contracts/durable-server";
 import { randomUUID } from "node:crypto";
-import { generationTerminalRecordChecksum } from "@idream/shared/contracts";
+
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { EnqueueJobInput } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";

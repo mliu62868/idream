@@ -22,6 +22,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      "@idream/shared/contracts/durable-server": new URL("../shared/src/contracts/durable-server.ts", import.meta.url).pathname,
       "@idream/shared/contracts": new URL("../shared/src/contracts/index.ts", import.meta.url).pathname,
       "@idream/shared/bff": new URL("../shared/src/bff/signing.ts", import.meta.url).pathname,
       "@idream/shared/chat/limits": new URL("../shared/src/chat/limits.ts", import.meta.url).pathname,

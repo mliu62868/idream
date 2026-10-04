@@ -1,6 +1,6 @@
 // SPEC: 角色模板 Starters 三件套的共享契约 —— 类型/端点/payload 构造（SSoT，三页共用）。
-// INVARIANTS: payload 字段与旧单页角色模板视图的 POST/PATCH body 完全一致（后端不变）。
-import { legacySoulDetailsMarkdown } from "@idream/shared/chat/persona";
+// INVARIANT: 新建与编辑共用内容字段；编辑调用额外携带读取时的 expectedUpdatedAt。
+import { legacySoulDetailsMarkdown } from "@idream/shared/chat/persona-render";
 
 export type Starter = {
   id: string;
@@ -14,6 +14,7 @@ export type Starter = {
   tags: string[];
   isActive: boolean;
   sortOrder: number;
+  updatedAt: string;
 };
 
 export const SCOPES = ["built_in", "community"] as const;

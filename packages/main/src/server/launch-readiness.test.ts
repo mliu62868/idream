@@ -16,8 +16,10 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import {
   assessLaunchReadiness as assessLaunchReadinessRaw,
+  assessRuntimePreparation,
   currentLaunchCapabilities,
   formatLaunchReadinessReport,
+  formatRuntimePreparationReport,
   parseLaunchReadinessCliArgs,
   writeLaunchReadinessReport,
   type LaunchReadinessReport,
@@ -4789,5 +4791,186 @@ describe("launch readiness", () => {
     expect(mainValues.POCKET_TTS_MODEL).toBe("pocket-tts");
     expect(mainValues.POCKET_TTS_LANGUAGE).toBe("english");
     expect(mainValues.POCKET_TTS_API_TOKEN).toBeTruthy();
+  });
+});
+
+describe("runtime preparation", () => {
+  function preparationOptions() {
+    return {
+      env: productionEnv,
+      now,
+      productConfigProbe: {
+        ...passingProductConfigProbe(),
+        sourceRevision: productionEnv.IDREAM_MAIN_SOURCE_REVISION,
+      },
+      publicCatalogProbe: {
+        ...passingPublicCatalogProbe(),
+        sourceRevision: productionEnv.IDREAM_MAIN_SOURCE_REVISION,
+      },
+    };
+  }
+
+  it("parses an explicit preparation stage without changing the default CLI", () => {
+    expect(parseLaunchReadinessCliArgs([])).toEqual({ help: false, json: false });
+    expect(parseLaunchReadinessCliArgs([
+      "--prepare-runtime",
+      "--launch-env-file=main.env",
+      "--json",
+    ])).toEqual({
+      prepareRuntime: true,
+      envFile: "main.env",
+      help: false,
+      json: true,
+    });
+    expect(() => parseLaunchReadinessCliArgs(["--skip-runtime"])).toThrow(
+      "Unknown option: --skip-runtime",
+    );
+  });
+
+  it("keeps a prepared configuration distinct from complete launch qualification", () => {
+    const options = preparationOptions();
+    const prepared = assessRuntimePreparation(options);
+    expect(prepared).toMatchObject({
+      stage: "prepare-runtime",
+      prepared: true,
+      ok: false,
+      launchQualified: false,
+      summary: { fail: 0, warn: 0 },
+      sourceRevision: productionEnv.IDREAM_MAIN_SOURCE_REVISION,
+    });
+    expect(prepared.pendingEvidence).toEqual(expect.arrayContaining([
+      "CHAT_SERVICE_PROBE_REPORT",
+      "WEB_SURFACE_PROBE_REPORT",
+      "GENERATION_IMAGE_PERSISTENCE_PROBE_REPORT",
+      "VOICE_MODEL_PROBE_REPORT",
+    ]));
+    expect(prepared.pendingEvidence.some((item) => item.includes("DNS/TLS"))).toBe(true);
+    expect(prepared.pendingEvidence.some((item) => item.includes("ownership"))).toBe(true);
+    expect(formatRuntimePreparationReport(prepared)).toContain("Launch qualified: NO");
+    expect(formatRuntimePreparationReport(prepared)).not.toContain("Launch readiness: PASS");
+
+    const launch = assessLaunchReadinessRaw(options);
+    expect(launch.ok).toBe(false);
+    expect(failedIds(launch)).toEqual(expect.arrayContaining([
+      "source-revision-authority",
+      "chat-service-live-probe",
+      "web-surface-live-probe",
+      "pipeline-image-live-probe",
+      "generation-image-main-persistence",
+    ]));
+    expect(launch).not.toHaveProperty("prepared");
+    expect(launch).not.toHaveProperty("stage");
+  });
+
+  it.each([
+    ["APP_ENV", "development", "app-env-production"],
+    ["DATABASE_URL", "not-a-database", "database-url"],
+    ["MAIN_WEB_URL", "https://localhost", "main-web-url"],
+    ["BETTER_AUTH_SECRET", "too-short", "better-auth-secret"],
+    ["IDREAM_CHAT_INTERNAL_TOKEN", "different-token", "internal-token"],
+    ["IDREAM_GEN_BULLMQ_PREFIX", "idream:test", "bullmq-prefix"],
+    ["CHAT_MODEL_PROVIDER", "mock", "chat-model-provider"],
+    ["GEN_IMAGE_PROVIDER", "mock", "gen-image-provider"],
+    ["IDREAM_GEN_SOURCE_REVISION", "idream@different-release", "source-revision-configuration"],
+  ])("rejects invalid %s during preparation and the complete gate", (key, value, checkId) => {
+    const options = preparationOptions();
+    const env = { ...options.env, [key]: value };
+    const prepared = assessRuntimePreparation({ ...options, env });
+    expect(prepared.prepared).toBe(false);
+    expect(prepared.ok).toBe(false);
+    expect(checkById(prepared, checkId)?.status).toBe("fail");
+    const launch = assessLaunchReadinessRaw({ ...options, env });
+    expect(launch.ok).toBe(false);
+    expect(checkById(launch, key === "IDREAM_GEN_SOURCE_REVISION"
+      ? "source-revision-authority" : checkId)?.status).toBe("fail");
+  });
+
+  it("requires fresh, same-source database configuration and catalog evidence", () => {
+    const options = preparationOptions();
+    const absent = assessRuntimePreparation({ env: options.env, now });
+    expect(absent.prepared).toBe(false);
+    expect(failedIds(absent)).toEqual(expect.arrayContaining([
+      "product-config-live-probe",
+      "public-catalog-live-probe",
+      "source-revision-configuration",
+    ]));
+    const foreign = assessRuntimePreparation({
+      ...options,
+      productConfigProbe: { ...options.productConfigProbe, sourceRevision: "idream@foreign-release" },
+    });
+    expect(foreign.prepared).toBe(false);
+    expect(checkById(foreign, "source-revision-configuration")?.status).toBe("fail");
+    const stale = assessRuntimePreparation({
+      ...options,
+      publicCatalogProbe: { ...options.publicCatalogProbe, checkedAt: "2026-06-20T00:00:00.000Z" },
+    });
+    expect(stale.prepared).toBe(false);
+    expect(checkById(stale, "public-catalog-live-probe")?.status).toBe("fail");
+  });
+
+  it.each([
+    ["ADMIN_WEB_URL", "web-surface-live-probe"],
+    ["PIPELINE_VOICE_API_URL", "voice-model-live-probe"],
+    ["SENTRY_RELEASE", "sentry-live-probe"],
+  ])("rejects incomplete configuration for deferred %s evidence", (key, launchCheckId) => {
+    const options = preparationOptions();
+    const env = { ...options.env, [key]: "" };
+    const prepared = assessRuntimePreparation({ ...options, env });
+    expect(prepared.prepared).toBe(false);
+    expect(checkById(prepared, "runtime-probe-configuration")?.status).toBe("fail");
+    expect(checkById(assessLaunchReadinessRaw({ ...options, env }), launchCheckId)?.status).toBe("fail");
+  });
+
+  it("rejects database pricing defects and video enabled with a mock provider", () => {
+    const options = preparationOptions();
+    const pricing = assessRuntimePreparation({
+      ...options,
+      productConfigProbe: { ...options.productConfigProbe, activeImagePricingRules: 2 },
+    });
+    expect(pricing.prepared).toBe(false);
+    expect(checkById(pricing, "product-config-live-probe")?.status).toBe("fail");
+    const video = assessRuntimePreparation({
+      ...options,
+      env: { ...options.env, GEN_VIDEO_PROVIDER: "mock" },
+      productConfigProbe: {
+        ...passingVideoEnabledProductConfigProbe(),
+        sourceRevision: productionEnv.IDREAM_MAIN_SOURCE_REVISION,
+      },
+    });
+    expect(video.prepared).toBe(false);
+    expect(checkById(video, "gen-video-provider")?.status).toBe("fail");
+    expect(video.pendingEvidence).toContain("VIDEO_GENERATION_PROBE_REPORT");
+  });
+
+  it.each([
+    "database-migration-authority",
+    "main-to-chat-failed-backlog",
+    "recovery-rehearsal-authority",
+    "character-soul-pin-drain",
+  ])("retains the original read-only %s preflight rejection", (id) => {
+    const report = assessRuntimePreparation({
+      ...preparationOptions(),
+      preflightChecks: [{ id, area: "Authority", status: "fail", message: "Controlled authority defect" }],
+    });
+    expect(report.prepared).toBe(false);
+    expect(checkById(report, id)).toMatchObject({ status: "fail", message: "Controlled authority defect" });
+  });
+
+  it("does not turn its JSON artifact into successful provider evidence", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "idream-runtime-preparation-"));
+    try {
+      const target = path.join(dir, "preparation.json");
+      const prepared = assessRuntimePreparation(preparationOptions());
+      await writeLaunchReadinessReport(target, prepared);
+      expect(JSON.parse(readFileSync(target, "utf8"))).toEqual(prepared);
+      const launch = assessLaunchReadinessRaw({
+        ...preparationOptions(),
+        env: { ...productionEnv, PIPELINE_IMAGE_PROBE_REPORT: target },
+      });
+      expect(launch.ok).toBe(false);
+      expect(checkById(launch, "pipeline-image-live-probe")?.status).toBe("fail");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

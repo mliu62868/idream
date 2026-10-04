@@ -353,13 +353,22 @@ async function completeGenericCreativePlacement(
     name: "Stage campaign candidate",
   });
   await expect(stagePlacement).toBeEnabled();
+  // A cold dev route can compile longer than the UI assertion budget. Wait for
+  // the accepted mutation before asserting its state or allowing fixture cleanup.
+  const placementPath = `/api/v2${new URL(page.url()).pathname}/placements`;
   if (input.keyboard) {
     await stagePlacement.focus();
     await expect(stagePlacement).toBeFocused();
-    await stagePlacement.press("Enter");
-  } else {
-    await stagePlacement.click();
   }
+  const [placementResponse] = await Promise.all([
+    page.waitForResponse(
+      (response) => new URL(response.url()).pathname === placementPath &&
+        response.request().method() === "POST",
+      { timeout: 60_000 },
+    ),
+    input.keyboard ? stagePlacement.press("Enter") : stagePlacement.click(),
+  ]);
+  expect(placementResponse.status(), "Campaign staging must succeed").toBe(200);
   await expect(page.getByText("campaign · verifying")).toBeVisible();
 }
 
@@ -1167,7 +1176,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
             },
           },
           allowedOrientations: ["4:5", "16:9"],
-          maxCount: 6,
+          maxCount: 4,
           concurrencyLimit: 2,
           enabled: true,
           rolloutPercent: 100,

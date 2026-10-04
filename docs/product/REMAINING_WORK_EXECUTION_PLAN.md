@@ -1,8 +1,40 @@
 # iDream 剩余工作执行计划
 
-更新日期：2026-10-02
+更新日期：2026-10-03
 
 本文件以最新状态列出尚未完成的工作，保留带日期的历史结果。已实施能力与证据见 [当前覆盖](CURRENT_FUNCTIONAL_COVERAGE.md)。用户已确认先完成本机与部署材料，目标环境尚未提供；本轮排除支付、年龄检查、合规及 AF-03 收益/佣金/结算。
+
+## 2026-10-03 16:07 UTC Scene 与三场景旁白剩余验收
+
+工作树已落地 Scene policy27 的人物身份/关系来源核验、user checkpoint 保留，以及三场景旁白按真实帧数对齐、owner 保护失败状态、已完成语音复用与界面提示。源码 `d4817328…` 的定向 Chat242/Main23 全通过，三场景 ffmpeg 已核验画面顺序、尾音和帧数；[完整证据与限制](../../.scratch/scene-three-narration-20261003/REPORT.md)单独绑定，不重标历史真实失败。
+
+1. 在授权运行环境恢复可用连接后，执行同源 Main Scene authority / VideoSequence 集成。当前最终复验因 PostgreSQL connect EPERM 为 0 执行；新增第三条旁白失败、缺失条重试、再次打包与持久化/下载/账本回归尚未获得最终数据库通过记录。Chat 全套 703 项中 7 项仍失败，须在可监听环境复验，保留原失败。
+2. 对同源 Scene 按原 13 → 47 → holdout 7 执行真实模型语义资格，保持原评分、请求/资源预算和首败材料。来源身份核验的离线通过不证明实际抽取或 classifier 能力；明确名字误判 null/reference 等历史质量失败仍未关闭。
+3. 完成真实三场景 Gen、固定 Pocket voice、合成、刷新持久化、逐段/完整下载、额度对账及失败恢复，记录实际 provider/model/workflow、request/attempt/artifact 与耗时。当前服务探测未连接且 PM2 控制 EPERM，未绕过 wrapper；已有两场景证据与本轮三场景 ffmpeg fixture 不替代这项完整产品验收。
+
+## 2026-10-03 04:58 UTC 当前执行顺序
+
+冻结434f8d/6610e59e已完成五包7343标准测试、coverage四门槛、全仓check及PM2177；后续3113700e/9494dfe0仅5文件增量，五包check与安装版Google Chrome built Main/Admin原174套件全部首次通过，0失败/重试通过/跳过，333.222秒。新旧证据独立绑定，原预算保持，自有资源已清。以下继续按真实剩余依赖推进，下面03:07及更早内容保留各自历史时点：
+
+1. Feed侧栏清除聚焦状态已修复，原回归和整套174项Chrome首次通过；旧两次失败保留。后续canonical仍按精确文件差异维护资格，不无因重复全仓验证。[新完整Chrome证明](../../.scratch/full-product-audit-2026-10-01/verification/source-checkpoint-20261003T0445Z/e2e-native-chrome-built-20261003/RESULT_BINDING.json)。
+2. Scene85e14原13真实筛选再次1PASS/1FAIL/11未执行，明确命名的人物被verifier判null/reference。保留原SSE/评分/身份检查/预算，在私有候选做最小诊断和回归，达标后才整合canonical与真实产品复验。
+3. Parakeet12及固定Whisper8实际对照都已结束且quality RED，不启默认滤镜/切模型。25语言、真人低声与实体麦克风仍待独立材料/现场输入，不重复消费已闭合窗口。[真实Whisper结果](../../.scratch/full-product-audit-2026-10-01/asr-acoustic-review/paired-six/WHISPER_FIXED_CONTRAST_EXECUTION.md)。
+4. 原launch CLI prepare已实现且177回归与完整gate差分通过，prepared永不签发资格；受限production bootstrap和目标网络/origin未闭合。最终gate已补同一四服务env参数，旧分析标历史。[部署材料](../../.scratch/full-product-audit-2026-10-01/verification/deployment/README.md)。
+5. 最终canonical按精确差异补同源构建、运行与恢复绑定；媒体容量对标及目标DNS/TLS/存储/监控/公开Chrome资格仍待。支付/年龄/合规排除，完整需求保持；旧同边界恢复不重标为新source。
+
+## 2026-10-03 03:07 UTC 执行状态补充
+
+用户确认先完成本机与部署材料，公开目标未提供；支付、年龄与合规不在本轮范围。完整需求不因当前缺口缩减。
+
+已闭合新的不可变 `60e814ce…` 五包7268测试/四原coverage门槛/五包check/PM2177；后续 `f494f22a…` 10文件增量check、Chat600、Main78+4、110迁移authority及14演练通过。其完整174 fixture E2E为168通过/2失败/4重试后通过，原完整结果保留，不能写成全通过。免费角色Moment preset与Admin Soul预览已补真实Chrome；Changelog两轮发布/权益隔离/撤下及只读清理、Webpack真实HMR与正式wrapper恢复均完成。证据入口为[本轮报告](../../.scratch/full-product-audit-2026-10-01/REPORT.md)。
+
+按实际剩余依赖继续：
+
+1. 逐条诊断上述fixture原trace，补Help Desk普通客户fixture的定向首轮证明；CMS组合超时、Create预览4/2及其他flake须有原请求/Job时序证据，不能直接扩大timeout或吞403。
+2. 私有Scene统一原人物/指代/任务权限协议，保留原32与失败样本、预算/评分；完成私有冻结与只读审查后重新按原32GiB准入真实原13筛选，达标后再整合canonical与受控产品验证。原默认/27B/9B失败仍保留。
+3. 12个新的Parakeet原音频/固定降噪HTTP已完成：噪声改善但clean回归，EL/FR仍RED，不启默认。固定Whisper候选仅准备最少8个新增对照，必须与Scene窗口串行、原decoder/gold/质量/资源阈值不变；25语及母语/实体听感继续待验。[实际报告](../../.scratch/full-product-audit-2026-10-01/asr-acoustic-review/paired-six/EXECUTION_RESULT.md)。
+4. 完成原launch CLI离线prepare阶段，明确prepared与launchQualified=false，原完整gate不变；首次production完整循环仍需受限bootstrap、启动前待执行工作核验和真实网络隔离。域名/设施未提供时不编造隔离receipt、origin或新PM2 daemon来签发资格。[独立复审](../../.scratch/full-product-audit-2026-10-01/verification/deployment/cold-bootstrap-independent-review-20261003/REVIEW.md)。
+5. 最终canonical稳定后按实际差异补检查与运行绑定，保留全部旧snapshot/恢复/probe标签；完成图片/视频容量matched/equivalent/divergence及目标DNS/TLS/存储/监控/公开Chrome资格。既有e4bc完整恢复只证明其原source，不自动继承。
 
 ## 2026-10-02 当前待办
 

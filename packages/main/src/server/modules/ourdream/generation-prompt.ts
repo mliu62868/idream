@@ -192,8 +192,10 @@ function buildImageGenerationPrompt(input: {
     return [
       "Edit the supplied source image; do not create a new portrait",
       "Preserve its composition, framing, camera angle, pose, background and lighting unless the requested edit explicitly changes them",
-      "Any separate identity reference identifies the same adult person only; do not copy that reference's crop, pose, clothes or background",
-      "Preserve the source subject's face, age, hair and body proportions",
+      ...(input.character ? [
+        "Any separate identity reference identifies the same adult person only; do not copy that reference's crop, pose, clothes or background",
+        "Preserve the source subject's face, age, hair and body proportions",
+      ] : ["Preserve the source image's subjects, objects and visual details; do not add a person or other subject unless explicitly requested"]),
       `Apply only this requested edit: ${request}`,
     ].join(". ");
   }

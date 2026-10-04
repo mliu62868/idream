@@ -14,7 +14,7 @@ const summary = { id: "comic-fixture", title: "Controlled Comic", description: "
   coverUrl: null, updatedAt: "2026-09-10T00:00:00Z", publishedAt: null, canManage: true };
 const detail = { ...summary, reviewNote: null, episodes: [{ id: "chapter-fixture", title: "Chapter one", ordinal: 0,
   pages: [{ id: "page-fixture", mediaAssetId: "asset-fixture", ordinal: 0, caption: "A submitted page",
-    url: null, remixHref: null, character: null }] }] };
+    url: null, width: 512, height: 640, remixHref: null, character: null }] }] };
 let container: HTMLDivElement;
 let root: Root;
 beforeEach(() => {

@@ -186,12 +186,13 @@ async function timed<T>(run: () => Promise<T>): Promise<
 }
 
 function wireUsage(usage?: TokenUsage) {
+  if (!usage) return null;
   return {
-    promptTokens: (usage?.inputTokens ?? 0)
-      + (usage?.cacheReadTokens ?? 0)
-      + (usage?.cacheWriteTokens ?? 0),
-    completionTokens: usage?.outputTokens ?? 0,
-    reasoningTokens: usage?.reasoningTokens ?? 0,
+    promptTokens: usage.inputTokens
+      + (usage.cacheReadTokens ?? 0)
+      + (usage.cacheWriteTokens ?? 0),
+    completionTokens: usage.outputTokens,
+    reasoningTokens: usage.reasoningTokens ?? 0,
   };
 }
 
@@ -359,8 +360,8 @@ function seedMessage(
 /**
  * SPEC: the seed is history plus every per-turn context message, in prompt
  * order; only the current user message enters through `followup` with
- * `source.kind = "user"`. Plugin-sourced user messages (Chat's turn state,
- * Chat's recall notes) are therefore invisible to igrep ingest.
+ * `source.kind = "user"`. Plugin-sourced state, saved preferences and recall
+ * notes are therefore invisible to igrep ingest.
  */
 export function buildReplaySeed(
   invocation: CompanionInvocation,
@@ -420,7 +421,7 @@ export function buildReplaySeed(
         item,
         invocation.preparedTurn.profile,
         item.sourceKind === "plugin"
-          ? (item.id.startsWith("state:") ? "snapshot" : item.id.startsWith("recall:") ? "recall" : "replay")
+          ? (item.id.startsWith("state:") || item.id.startsWith("preferences:") ? "snapshot" : item.id.startsWith("recall:") ? "recall" : "replay")
           : "replay",
       ) as UserMessage, {
         surfaceOp: "append",
@@ -604,7 +605,7 @@ export async function probeCompanionBridges(invocation: CompanionInvocation): Pr
     name: "generate_image_async",
     effectScope: "attempt",
     intent: { requestedNudity: "unspecified" },
-    arguments: { prompt: "readiness" },
+    arguments: { prompt: "readiness", subject: "companion" },
   };
   if ((await bridge.execute(call, controller.signal)).outcome !== "succeeded") {
     throw new Error("tool bridge readiness probe did not round-trip");
@@ -804,7 +805,8 @@ export class CompanionEngine {
       ctx.llm.registerAdapter([invocation.preparedTurn.profile.provider], adapter);
 
       let latestAssistant: AssistantMessage | undefined;
-      const totalUsage = wireUsage();
+      const totalUsage = { promptTokens: 0, completionTokens: 0, reasoningTokens: 0 };
+      let usageComplete = true;
       let latestFinish: StreamChunk & { type: "finish" } | undefined;
       let providerAttribution: ReturnType<typeof wireAttribution>;
       let acknowledgement: ReturnType<typeof imageAcknowledgement> | undefined;
@@ -854,6 +856,9 @@ export class CompanionEngine {
         yield { type: "block-start", index: 0, blockType: "text" };
         yield { type: "text-delta", index: 0, text };
         yield { type: "block-end", index: 0, block: { type: "text", text } };
+        // This acknowledgement never calls the adapter. Its known zero cost
+        // must not make a measured tool step look unmeasured.
+        yield { type: "usage", usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 } };
         yield { type: "finish", reason: { kind: "stop" } };
       }, { prepend: true });
 
@@ -888,12 +893,16 @@ export class CompanionEngine {
           // DSH's completion anchor carries usage for one model request. A
           // tool round trip adds another request; Main records the whole Turn.
           const usage = wireUsage(sessionEvent.data.usage);
-          totalUsage.promptTokens += usage.promptTokens;
-          totalUsage.completionTokens += usage.completionTokens;
-          totalUsage.reasoningTokens += usage.reasoningTokens;
-          event({ type: "usage", usage });
-          if (usage.reasoningTokens > 0) {
-            event({ type: "reasoning_usage", reasoningTokens: usage.reasoningTokens });
+          // A later measured step cannot turn an earlier unknown cost into zero.
+          if (!usage) usageComplete = false;
+          else {
+            totalUsage.promptTokens += usage.promptTokens;
+            totalUsage.completionTokens += usage.completionTokens;
+            totalUsage.reasoningTokens += usage.reasoningTokens;
+            event({ type: "usage", usage });
+            if (usage.reasoningTokens > 0) {
+              event({ type: "reasoning_usage", reasoningTokens: usage.reasoningTokens });
+            }
           }
         } else if (sessionEvent.type === "turn/end") {
           turnEnd = sessionEvent.data.reason;
@@ -1082,7 +1091,7 @@ export class CompanionEngine {
               toolCalls: bridge.callCount,
               reservations: bridge.reservations,
               profile: invocation.preparedTurn.profile,
-              usage: { ...totalUsage },
+              usage: usageComplete ? { ...totalUsage } : null,
               steps: stepCount,
               completedAt: new Date().toISOString(),
               modelRequests,

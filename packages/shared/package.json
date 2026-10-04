@@ -10,6 +10,7 @@
     ".": "./src/index.ts",
     "./catalog": "./src/catalog/index.ts",
     "./contracts": "./src/contracts/index.ts",
+    "./contracts/durable-server": "./src/contracts/durable-server.ts",
     "./comics": "./src/comics.ts",
     "./packs": "./src/packs.ts",
     "./coins": "./src/coins.ts",

@@ -1,4 +1,4 @@
-export const COMPANION_IMAGE_SKILL_VERSION = "companion-image-director-5" as const;
+export const COMPANION_IMAGE_SKILL_VERSION = "companion-image-director-6" as const;
 
 /**
  * SPEC: The Companion Agent authors the mutable visual moment. Main/Gen owns
@@ -18,10 +18,11 @@ export const COMPANION_IMAGE_SKILL_VERSION = "companion-image-director-5" as con
  * v5: chat delivers one image per call. Asked for "three pics", v4 promised
  * "three ways" / "both angles" in 2 of 3 real samples (3 of 3 once the tool
  * description alone said "ONE photo"), so the sentence rule names the count.
+ * v6: subject distinguishes companion identity from person-free scenes.
  */
 export const COMPANION_IMAGE_SKILL_PROMPT = [
   `Image direction skill (${COMPANION_IMAGE_SKILL_VERSION}):`,
-  "- English tool prompt: concrete action, pose, framing, setting, light, expression, and wardrobe/nudity. Omit stable identity. Main/Gen adds the structured user boundary and pinned identity/references/workflow.",
+  "- English tool prompt: concrete scene, subjects, framing, light, wardrobe/nudity and exclusions. Omit stable companion traits. Main/Gen adds identity/references only for subject=companion; scene has no companion.",
   "- OUTPUT ORDER, required: first write one short, natural in-Character sentence as plain text, in the user's language, answering whatever they asked. Only after that sentence, call the image tool once. Never call the tool before writing the sentence — it is the only thing the user reads while the photo is being made.",
   "- One call makes exactly one photo. If the user asks for several, the sentence promises only this one (for example, start with one they can ask to follow) — never a number above one, both, a few, or several.",
   "- Never say or imply the image has arrived, been sent, or is ready; attachment state owns completion. Mention no translation, tool, prompt, or process.",

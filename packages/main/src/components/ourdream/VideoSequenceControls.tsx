@@ -1,10 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import Image from "next/image";
 import { videoSequenceRequestSchema, videoSequenceCapabilitiesSchema, videoSequenceQuoteSchema, videoSequenceDtoSchema,
   type VideoSequenceRequest, type VideoSequenceQuote, type VideoSequenceDto } from "@idream/shared/contracts";
 
-type Props = { viewerScope: string | null; characterId?: string; generationContextToken?: string; consistencyMode: "balanced" | "strict" | "creative"; seed?: string; disabled?: boolean; unavailableMessage?: string; onStatusChange?: () => void };
+export type VideoSequenceRecovery = { request: VideoSequenceRequest; sourceImageAssetId: string | null };
+type Props = { viewerScope: string | null; characterId?: string; generationContextToken?: string; consistencyMode: "balanced" | "strict" | "creative"; seed?: string; disabled?: boolean; unavailableMessage?: string; onStatusChange?: () => void; onRecoveryChange?: (value: VideoSequenceRecovery | null) => void };
 type Receipt = { key: string; request: VideoSequenceRequest; id: string | null };
 class VideoRequestError extends Error { constructor(message: string, readonly status: number) { super(message); } }
 
@@ -113,7 +115,9 @@ export function VideoSequenceControls(props: Props) {
     return () => { epoch.current += 1; };
   }, [props.viewerScope, storageKey, refresh, recoverOriginal, retainReceipt]);
   useEffect(() => {
-    if (!sequence || !["generating", "composing", "unknown"].includes(sequence.status)) return;
+    // Stopping future scenes does not stop a provider invocation already running.
+    if (!sequence || (!["generating", "composing", "unknown"].includes(sequence.status) &&
+      !sequence.scenes.some(scene => ["queued", "moderating_input", "running", "moderating_output"].includes(scene.job.status)))) return;
     // A pending user selection owns the target before its response can render.
     const timer = setInterval(() => { if (!sequenceReadPending.current && selectedSequenceId.current === sequence.id) void loadSequence(sequence.id); }, 3000);
     return () => clearInterval(timer);
@@ -127,6 +131,13 @@ export function VideoSequenceControls(props: Props) {
   useEffect(() => {
     if (statusKey) onStatusChange?.();
   }, [statusKey, onStatusChange]);
+
+  // Recovery owns both the script and its accepted image. A current catalog
+  // portrait may have changed since admission and cannot stand in for that image.
+  const recoveryKey = receipt ? JSON.stringify({ request: sequence?.id === receipt.id ? sequence.request : receipt.request,
+    sourceImageAssetId: sequence?.id === receipt.id ? sequence.scenes[0]?.job.controls.sourceImageAssetId ?? null : null }) : null;
+  const onRecoveryChange = props.onRecoveryChange;
+  useEffect(() => { onRecoveryChange?.(recoveryKey ? JSON.parse(recoveryKey) as VideoSequenceRecovery : null); }, [recoveryKey, onRecoveryChange]);
 
   const request = () => videoSequenceRequestSchema.parse({ characterId: props.characterId, generationContextToken: props.generationContextToken,
     consistencyMode: props.consistencyMode, seed: props.seed, scenes: scenes.map(scene => ({ ...scene, narration: audio === "narration" ? scene.narration : undefined })), orientation, quality, audio });
@@ -189,18 +200,19 @@ export function VideoSequenceControls(props: Props) {
     {quote ? <div className="rounded-xl bg-white/5 p-4 text-sm" aria-label="Video price">
       {quote.scenes.map((scene, ordinal) => <p key={scene.ordinal}>Scene {ordinal + 1} · {scene.video.durationSeconds.toFixed(2)}s · {scene.video.width}×{scene.video.height} · {quote.costs[ordinal]?.costDreamcoins} coins</p>)}
       <p className="mt-2 font-bold">Total {quote.costDreamcoins} coins · balance {quote.balance}</p>
-      <p className="mt-2 text-white/70">Unexecuted scenes are refunded. Delivered scenes retain their charge. Packaging retries cost no additional coins.{quote.narrationExtendsLastFrame ? " Narration is included; a longer line extends the final frame until it finishes." : ""}</p>
+      <p className="mt-2 text-white/70">Unexecuted scenes are refunded. Delivered scenes retain their charge. Retries reuse completed results at no additional cost.{quote.narrationExtendsLastFrame ? " Narration is included; a longer line extends the final frame until it finishes." : ""}</p>
       <button type="button" className="mt-3 rounded-full bg-white px-4 py-2 font-bold text-black disabled:opacity-50" disabled={locked || quote.balance < quote.costDreamcoins} onClick={() => void accept()}>Accept {quote.costDreamcoins} coins & create video</button>
     </div> : null}
     {error ? <p role="alert" className="text-sm text-amber-200">{error}</p> : null}
     {history.length > 1 ? <label className="block text-sm">Recent sequences<select className={inputClass} aria-label="Recent video sequences" value={sequence?.id ?? ""} disabled={busy || Boolean(receipt)} onChange={event => void loadSequence(event.target.value)}>{history.map(value => <option key={value.id} value={value.id}>{new Date(value.createdAt).toLocaleString()} · {value.status} · {value.cost.finalCharge} coins</option>)}</select></label> : null}
     {sequence ? <div className="space-y-2 rounded-xl border border-white/10 p-4 text-sm" aria-label="Video sequence status">
       <p role="status">Sequence {sequence.status} · reserved {sequence.cost.charged} · refunded {sequence.cost.refunded} · final charge {sequence.cost.finalCharge} coins</p>
-      {sequence.scenes.map(scene => <p key={scene.ordinal}>Scene {scene.ordinal + 1}: {scene.job.status} · {scene.job.cost.finalCharge} coins {scene.assets.map(asset => <a key={asset.id} href={asset.downloadUrl} className="ml-2 underline">Download scene {scene.ordinal + 1}</a>)}</p>)}
+      {sequence.scenes[0]?.job.controls.sourceImageAssetId ? <div className="flex items-center gap-3"><Image alt="Original video reference" src={`/api/v1/media/${encodeURIComponent(sequence.scenes[0].job.controls.sourceImageAssetId)}/content`} width={80} height={96} unoptimized className="h-24 w-20 rounded-lg object-cover object-top" /><p>Original animation reference</p></div> : null}
+      {sequence.scenes.map(scene => <p key={scene.ordinal}>Scene {scene.ordinal + 1}: {scene.job.status} · {scene.job.cost.finalCharge} coins{sequence.request.audio === "narration" ? ` · narration ${scene.narrationState === "completed" ? "ready" : scene.narrationState === "failed" ? "failed" : scene.narrationState === "running" ? "in progress" : "pending"}` : ""} {scene.assets.map(asset => <a key={asset.id} href={asset.downloadUrl} className="ml-2 underline">Download scene {scene.ordinal + 1}</a>)}</p>)}
       {sequence.asset ? <><video controls playsInline className="max-h-96 w-full rounded-lg" src={sequence.asset.url} /><a className="block underline" href={sequence.asset.downloadUrl}>Download complete video</a></> : null}
       {sequence.status === "unknown" ? <p className="text-amber-200">A provider result needs reconciliation. Later scenes stopped; this request will not call that provider again automatically.</p> : null}
       {sequence.status === "failed" || sequence.status === "cancelled" ? <p className="text-white/65">Keep any completed scenes above. Unexecuted scenes have been stopped; review a new quote for any remaining work.</p> : null}
-      {sequence.status === "composition_failed" ? <button className="underline" type="button" disabled={statusLocked} onClick={() => void action("retry-composition")}>Retry packaging · no model requests or extra coins</button> : null}
+      {sequence.status === "composition_failed" ? <><p className="text-white/65">Your completed scenes are saved.{sequence.request.audio === "narration" ? " Completed narration is saved too; missing lines will be generated on retry." : ""}</p><button className="underline" type="button" disabled={statusLocked} onClick={() => void action("retry-composition")}>Retry finishing · no extra coins</button></> : null}
       {["generating", "composing", "unknown"].includes(sequence.status) ? <button className="underline" type="button" disabled={statusLocked} onClick={() => void action("stop")}>Stop remaining scenes</button> : null}
       <button className="ml-3 underline" type="button" disabled={statusLocked} onClick={() => void loadSequence(sequence.id)}>Refresh sequence</button>
     </div> : null}

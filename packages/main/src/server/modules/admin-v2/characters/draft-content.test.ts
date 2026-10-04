@@ -41,4 +41,23 @@ describe("characterDraftSnapshots", () => {
     expect(snapshots.renderedSoulMarkdown).toContain("# Mara Vale — Character Soul");
     expect(snapshots.diagnostics).toEqual([]);
   });
+
+  it("preserves source image and structured traits when editing the four direction fields", () => {
+    const previousAppearance = {
+      identityAnchor: "Old anchor", stableTraits: ["brown eyes"], style: "anime",
+      referenceDirection: "Old direction", sourceImage: "/original.webp",
+      structured: { bodyTraits: { height: "tall" } },
+    };
+    const original = structuredClone(previousAppearance);
+    const visualDirection = {
+      identityAnchor: "Adult radio host", stableTraits: ["brown eyes"], style: "realistic" as const,
+      referenceDirection: "Warm studio light",
+    };
+    const snapshots = characterDraftSnapshots({ persona: {
+      name: "Mara", age: 28, gender: "female", characterPromise: "A thoughtful companion",
+      detailsMarkdown: "", firstMessage: "How was your day?",
+    }, visualDirection }, previousAppearance);
+    expect(snapshots.appearanceSnapshot).toEqual({ ...original, ...visualDirection });
+    expect(previousAppearance).toEqual(original);
+  });
 });

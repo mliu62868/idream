@@ -1,4 +1,7 @@
 import { readFileSync } from "node:fs";
+import { ChildProcess, type SpawnOptions } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -12,6 +15,7 @@ import {
   assertPlaywrightCleanupPlan,
   createPlaywrightCleanupPlan,
 } from "./playwright-cleanup";
+import { runPlaywrightNextServer } from "./start-playwright-next-server.mjs";
 
 const sourceAuthority = vi.hoisted(() => ({
   computeSourceRevision: vi.fn(() => `idream-worktree-${"a".repeat(64)}`),
@@ -20,6 +24,23 @@ const sourceAuthority = vi.hoisted(() => ({
 vi.mock("../../../../scripts/source-revision.cjs", () => sourceAuthority);
 
 describe("managed Playwright environment", () => {
+  it.each([
+    ["main", 2, "3110"],
+    ["admin", 3, "3111"],
+  ] as const)("builds the run-owned %s before serving browser requests", (name, index, port) => {
+    const environment = resolvePlaywrightEnvironment({
+      PW_BASE_URL: "http://127.0.0.1:3110",
+      PW_RUN_ID: "a1b2c3d4",
+    });
+    const server = managedPlaywrightWebServers(environment)[index];
+
+    expect(server.command).toBe(`node src/e2e/start-playwright-next-server.mjs ${name} ${port}`);
+    expect(server.env.APP_ENV).toBe("test");
+    expect(server.env.NODE_ENV).toBe("production");
+    expect(server.gracefulShutdown).toEqual({ signal: "SIGTERM", timeout: 30_000 });
+    expect(server.timeout).toBe(120_000);
+  });
+
   it("binds all eight services to current source instead of an ambient deployment stamp", async () => {
     const previousEnv = { ...process.env };
     try {
@@ -399,5 +420,193 @@ describe("managed Playwright environment", () => {
     expect(() => resolvePlaywrightEnvironment({
       PW_RUN_ID: "NOT-RUN!",
     })).toThrow("8 lowercase hexadecimal");
+  });
+});
+
+describe("Playwright built Next lifecycle", () => {
+  function harness(name = "main", port = "3110") {
+    const environment = resolvePlaywrightEnvironment({
+      PW_BASE_URL: "http://127.0.0.1:3110",
+      PW_RUN_ID: "a1b2c3d4",
+      IDREAM_SOURCE_REVISION: `idream-worktree-${"c".repeat(64)}`,
+    });
+    const managed = managedPlaywrightWebServers(environment)[name === "main" ? 2 : 3];
+    const env = Object.freeze({
+      ...managed.env,
+      NODE_ENV: "development",
+      IDREAM_NEXT_DEVELOPMENT: "1",
+    });
+    const build = new ChildProcess();
+    const server = new ChildProcess();
+    const buildKill = vi.spyOn(build, "kill").mockReturnValue(true);
+    const serverKill = vi.spyOn(server, "kill").mockReturnValue(true);
+    const spawn = vi.fn<(command: string, args: string[], options: SpawnOptions) => ChildProcess>()
+      .mockReturnValueOnce(build)
+      .mockReturnValueOnce(server);
+    const signals = new EventEmitter();
+    const options = { env, spawn, signals };
+    return { environment, name, port, env, build, server, buildKill, serverKill, spawn, signals, options };
+  }
+
+  function expectSignalHandlersRemoved(signals: EventEmitter) {
+    expect(signals.listenerCount("SIGINT")).toBe(0);
+    expect(signals.listenerCount("SIGTERM")).toBe(0);
+  }
+
+  it.each([
+    ["main", "3110"],
+    ["admin", "3111"],
+  ])("uses %s's installed Node CLI and the same run-owned authority for build and start", async (name, port) => {
+    const h = harness(name, port);
+    const running = runPlaywrightNextServer(name, port, h.options);
+    const cwd = path.resolve(import.meta.dirname, `../../../${name}`);
+    const nextCli = createRequire(path.join(cwd, "package.json")).resolve("next/dist/bin/next");
+    const childEnv: NodeJS.ProcessEnv = { ...h.env, NODE_ENV: "production" };
+    delete childEnv.IDREAM_NEXT_DEVELOPMENT;
+
+    expect(h.spawn).toHaveBeenCalledExactlyOnceWith("node", [nextCli, "build"], {
+      cwd, env: childEnv, stdio: "inherit",
+    });
+    expect(h.serverKill).not.toHaveBeenCalled();
+    h.build.emit("close", 0, null);
+    await vi.waitFor(() => expect(h.spawn).toHaveBeenCalledTimes(2));
+    expect(h.spawn).toHaveBeenLastCalledWith("node", [nextCli, "start", "--port", port], {
+      cwd, env: childEnv, stdio: "inherit",
+    });
+    expect(childEnv).toMatchObject({
+      APP_ENV: "test",
+      DATABASE_URL: h.environment.databaseURL,
+      REDIS_URL: h.environment.redisURL,
+      BULLMQ_PREFIX: h.environment.bullmqPrefix,
+      PW_RUN_ID: h.environment.runId,
+      IDREAM_SOURCE_REVISION: `idream-worktree-${"c".repeat(64)}`,
+      IDREAM_NEXT_DIST_DIR: `.next/playwright-${name}-${port}-a1b2c3d4`,
+      IDREAM_NEXT_TSCONFIG: `.next/playwright-config-${name}-${port}-a1b2c3d4/tsconfig.json`,
+    });
+    expect(h.env.NODE_ENV).toBe("development");
+    expect(h.env.IDREAM_NEXT_DEVELOPMENT).toBe("1");
+    h.server.emit("close", 9, null);
+    await expect(running).resolves.toBe(9);
+    expectSignalHandlersRemoved(h.signals);
+  });
+
+  it.each([
+    [7, null, 7],
+    [null, "SIGKILL", 1],
+  ])("does not start after build exit %s / %s", async (code, signal, expected) => {
+    const h = harness();
+    const running = runPlaywrightNextServer(h.name, h.port, h.options);
+    h.build.emit("close", code, signal);
+
+    await expect(running).resolves.toBe(expected);
+    expect(h.spawn).toHaveBeenCalledTimes(1);
+    expect(h.serverKill).not.toHaveBeenCalled();
+    expectSignalHandlersRemoved(h.signals);
+  });
+
+  it("does not start or leave signal handlers when Node cannot spawn", async () => {
+    const h = harness();
+    const error = new Error("Node executable unavailable");
+    h.spawn.mockReset().mockImplementationOnce(() => { throw error; });
+
+    await expect(runPlaywrightNextServer(h.name, h.port, h.options)).rejects.toBe(error);
+    expect(h.spawn).toHaveBeenCalledTimes(1);
+    expectSignalHandlersRemoved(h.signals);
+  });
+
+  it("does not start after an asynchronous build error", async () => {
+    const h = harness();
+    const running = runPlaywrightNextServer(h.name, h.port, h.options);
+    const error = new Error("Node child failed");
+    h.build.emit("error", error);
+
+    await expect(running).rejects.toBe(error);
+    expect(h.spawn).toHaveBeenCalledTimes(1);
+    expectSignalHandlersRemoved(h.signals);
+  });
+
+  it.each(["SIGINT", "SIGTERM"])("forwards %s only to the active build and never starts afterward", async (signal) => {
+    const h = harness();
+    const running = runPlaywrightNextServer(h.name, h.port, h.options);
+    h.signals.emit(signal);
+
+    expect(h.buildKill).toHaveBeenCalledExactlyOnceWith(signal);
+    expect(h.serverKill).not.toHaveBeenCalled();
+    h.build.emit("close", null, signal);
+    await expect(running).resolves.toBe(0);
+    expect(h.spawn).toHaveBeenCalledTimes(1);
+    expectSignalHandlersRemoved(h.signals);
+  });
+
+  it("does not start when shutdown arrives between build completion and server launch", async () => {
+    const h = harness();
+    const running = runPlaywrightNextServer(h.name, h.port, h.options);
+    h.build.emit("close", 0, null);
+    h.signals.emit("SIGTERM");
+
+    await expect(running).resolves.toBe(0);
+    expect(h.spawn).toHaveBeenCalledTimes(1);
+    expect(h.buildKill).not.toHaveBeenCalled();
+    expectSignalHandlersRemoved(h.signals);
+  });
+
+  it.each(["SIGINT", "SIGTERM"])("forwards %s only to the built server and waits for its exit", async (signal) => {
+    const h = harness();
+    const running = runPlaywrightNextServer(h.name, h.port, h.options);
+    h.build.emit("close", 0, null);
+    await vi.waitFor(() => expect(h.spawn).toHaveBeenCalledTimes(2));
+    let exited = false;
+    void running.then(() => { exited = true; });
+    h.signals.emit(signal);
+
+    expect(h.buildKill).not.toHaveBeenCalled();
+    expect(h.serverKill).toHaveBeenCalledExactlyOnceWith(signal);
+    await Promise.resolve();
+    expect(exited).toBe(false);
+    h.server.emit("close", null, signal);
+    await expect(running).resolves.toBe(0);
+    expectSignalHandlersRemoved(h.signals);
+  });
+
+  it("preserves a server error during requested shutdown", async () => {
+    const h = harness();
+    const running = runPlaywrightNextServer(h.name, h.port, h.options);
+    h.build.emit("close", 0, null);
+    await vi.waitFor(() => expect(h.spawn).toHaveBeenCalledTimes(2));
+    h.signals.emit("SIGTERM");
+    h.server.emit("close", 5, null);
+
+    await expect(running).resolves.toBe(5);
+    expectSignalHandlersRemoved(h.signals);
+  });
+
+  it.each([
+    { APP_ENV: "production" },
+    { PLAYWRIGHT_E2E: "0" },
+    { PW_RUN_ID: "ffffffff" },
+    { IDREAM_SOURCE_REVISION: "" },
+    { IDREAM_NEXT_DIST_DIR: ".next" },
+    { IDREAM_NEXT_TSCONFIG: "tsconfig.json" },
+    { IDREAM_NEXT_DIST_DIR: ".next/playwright-admin-3111-a1b2c3d4" },
+  ])("rejects foreign authority %j before any build", async (override) => {
+    const h = harness();
+    await expect(runPlaywrightNextServer(h.name, h.port, {
+      ...h.options, env: { ...h.env, ...override },
+    })).rejects.toThrow("this test run's source, distDir, and tsconfig authority");
+
+    expect(h.spawn).not.toHaveBeenCalled();
+    expectSignalHandlersRemoved(h.signals);
+  });
+
+  it.each([
+    ["gen", "3110"],
+    ["main", "0"],
+    ["main", "65536"],
+    ["main", "3110; exit 0"],
+  ])("rejects invalid target %s / %s before any build", async (name, port) => {
+    const h = harness();
+    await expect(runPlaywrightNextServer(name, port, h.options)).rejects.toThrow("Usage:");
+    expect(h.spawn).not.toHaveBeenCalled();
+    expectSignalHandlersRemoved(h.signals);
   });
 });

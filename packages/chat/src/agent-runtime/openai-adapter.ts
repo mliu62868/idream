@@ -50,6 +50,8 @@ interface OpenAiStreamPayload {
   usage?: {
     prompt_tokens?: number;
     completion_tokens?: number;
+    input_tokens?: number;
+    output_tokens?: number;
     prompt_tokens_details?: { cached_tokens?: number };
     completion_tokens_details?: { reasoning_tokens?: number };
   };
@@ -203,15 +205,22 @@ function finishReason(value: string | undefined): FinishReason {
 
 function usageOf(payload: OpenAiStreamPayload): TokenUsage | undefined {
   if (!payload.usage) return undefined;
-  const cachedTokens = Math.max(0, payload.usage.prompt_tokens_details?.cached_tokens ?? 0);
+  const promptTokens = payload.usage.prompt_tokens ?? payload.usage.input_tokens;
+  const completionTokens = payload.usage.completion_tokens ?? payload.usage.output_tokens;
+  // Missing counters are unknown: treating them as zero would reuse a spent budget.
+  if (typeof promptTokens !== "number" || !Number.isSafeInteger(promptTokens) || promptTokens < 0
+    || typeof completionTokens !== "number" || !Number.isSafeInteger(completionTokens) || completionTokens < 0) return undefined;
+  const cachedTokens = payload.usage.prompt_tokens_details?.cached_tokens ?? 0;
+  const reasoningTokens = payload.usage.completion_tokens_details?.reasoning_tokens ?? 0;
+  // Detail counters are subsets of the measured totals. Invalid details must
+  // not introduce NaN into downstream budget comparisons or invent a subtotal.
+  if (!Number.isSafeInteger(cachedTokens) || cachedTokens < 0 || cachedTokens > promptTokens
+    || !Number.isSafeInteger(reasoningTokens) || reasoningTokens < 0 || reasoningTokens > completionTokens) return undefined;
   return {
-    inputTokens: Math.max(0, (payload.usage.prompt_tokens ?? 0) - cachedTokens),
-    outputTokens: Math.max(0, payload.usage.completion_tokens ?? 0),
+    inputTokens: promptTokens - cachedTokens,
+    outputTokens: completionTokens,
     ...(cachedTokens > 0 ? { cacheReadTokens: cachedTokens } : {}),
-    reasoningTokens: Math.max(
-      0,
-      payload.usage.completion_tokens_details?.reasoning_tokens ?? 0,
-    ),
+    reasoningTokens,
   };
 }
 
@@ -341,6 +350,7 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
 
     let omission: RequiredToolOmission | undefined;
     let totalUsage: TokenUsage | undefined;
+    let usageComplete = true;
     let argumentsJson: string | null = null;
     // SPEC: the prose of a first forced attempt that skipped the tool is kept and
     // replayed as this step's line, beside whichever tool call finally arrives.
@@ -356,9 +366,11 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
     };
     for (const jsonCompatibilityMode of [false, true]) {
       const chunks: StreamChunk[] = [];
+      let attemptUsageKnown = false;
       try {
         for await (const chunk of this.streamOnce(options, jsonCompatibilityMode)) {
           if (chunk.type === "usage") {
+            attemptUsageKnown = true;
             totalUsage = {
               inputTokens: (totalUsage?.inputTokens ?? 0) + (chunk.usage.inputTokens ?? 0),
               outputTokens: (totalUsage?.outputTokens ?? 0) + (chunk.usage.outputTokens ?? 0),
@@ -368,18 +380,21 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
             };
           } else chunks.push(chunk);
         }
+        usageComplete &&= attemptUsageKnown;
         const kept = requiredToolOnlyChunks(chunks, this.requiredToolName);
         const saidSomething = kept.some((chunk) => chunk.type === "text-delta" && chunk.text.trim());
         const nextIndex = 1 + Math.max(-1, ...kept.flatMap((chunk) => "index" in chunk ? [chunk.index] : []));
         for (const chunk of kept) {
           if (chunk.type === "finish") {
             if (omittedLine && !saidSomething) yield* lineChunks(nextIndex);
-            if (totalUsage) yield { type: "usage", usage: totalUsage };
+            if (usageComplete && totalUsage) yield { type: "usage", usage: totalUsage };
           }
           yield chunk;
         }
         return;
       } catch (error) {
+        // A later measured retry cannot turn an earlier unknown cost into zero.
+        usageComplete &&= attemptUsageKnown;
         if (!(error instanceof RequiredToolOmission)) throw error;
         omission = error;
         const content = chunks
@@ -405,23 +420,15 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
         }
       }
     }
-    // A compatibility answer cut off at the token limit is just as unusable as
-    // prose, and the fallback below reads only the user's words, never the
-    // truncated output — so it applies to both.
-    if (!argumentsJson && (omission?.finishReason.kind === "stop" || omission?.finishReason.kind === "max-tokens")) {
-      // INTENT: the local model sometimes answers in prose on both forced
-      // attempts. The current user request already names the picture and Main
-      // re-derives authorization from its own frozen copy of that text, so
-      // using it as the direction adds no permission; failing the whole Turn
-      // left the user with "Reply unavailable" for a plain photo request.
+    // An edit has a Main-owned source and can preserve the user's exact edit.
+    // A new image also needs a subject decision; guessing companion here would
+    // turn person-free scene requests into paid portraits when the model fails.
+    if (!argumentsJson && this.requiredToolName === "edit_last_image"
+      && (omission?.finishReason.kind === "stop" || omission?.finishReason.kind === "max-tokens")) {
       const userText = textOf(options.messages.findLast((message) => message.role === "user" && (!message.source || message.source.kind === "user"))?.content ?? [])
         .trim().slice(0, 1_000);
-      // The prompt schema needs 12+ characters; "selfie pls" is still a clear request.
-      const direction = userText.length >= 12 ? userText : `A photo: ${userText}`;
       argumentsJson = userText
-        ? requiredToolArgumentsJson(this.requiredToolName, JSON.stringify(
-            this.requiredToolName === "edit_last_image" ? { instruction: userText } : { prompt: direction },
-          ))
+        ? requiredToolArgumentsJson(this.requiredToolName, JSON.stringify({ instruction: userText }))
         : null;
       if (argumentsJson) {
         logger.warn({
@@ -455,7 +462,7 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
       },
     };
     if (omittedLine) yield* lineChunks(1);
-    if (totalUsage) yield { type: "usage", usage: totalUsage };
+    if (usageComplete && totalUsage) yield { type: "usage", usage: totalUsage };
     yield { type: "finish", reason: { kind: "tool-calls" }, replayState: omission.replayState };
   }
 
@@ -643,7 +650,9 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
         const chunks: StreamChunk[] = [];
         responseId ??= payload.id;
         actualProvider ??= payload.provider;
-        usage = usageOf(payload) ?? usage;
+        // Null/absent is a normal stream placeholder. A supplied invalid
+        // receipt invalidates the previous snapshot instead of reviving it.
+        if (payload.usage != null) usage = usageOf(payload);
         const choice = payload.choices?.[0];
         nativeFinish = choice?.finish_reason ?? nativeFinish;
         const delta = choice?.delta;

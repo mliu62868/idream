@@ -105,7 +105,13 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
   if (turn.attempt !== effect.attempt || !["pending", "generating"].includes(turn.assistantStatus)) {
     throw Errors.conflict("Tool effect does not belong to the active Chat attempt");
   }
-  const parsedCall = parseImageAgentToolCall(effect.name, effect.arguments);
+  // Only a durable pre-subject action has the old companion-only meaning.
+  // New model output must make its own explicit, validated subject choice.
+  const historicalSubject = record(record(prior?.metadata)?.request)?.subject;
+  const argumentsToParse = prior && effect.name === "generate_image_async" && effect.arguments.subject === undefined
+    ? { ...effect.arguments, subject: historicalSubject ?? "companion" }
+    : effect.arguments;
+  const parsedCall = parseImageAgentToolCall(effect.name, argumentsToParse);
   if (!parsedCall) throw Errors.badRequest("Invalid image tool arguments");
   let call = sceneOwnedCall(parsedCall);
   if (!turn.characterContentVersionId) {
@@ -134,7 +140,7 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
       // generation direction after wardrobe constraints. Reject before any
       // attachment or paid reservation rather than losing the final fact.
       try {
-        compileChatImagePrompt(call.arguments.prompt, effect.intent.requestedNudity);
+        compileChatImagePrompt(call.arguments.prompt, call.arguments.subject === "scene" ? "unspecified" : effect.intent.requestedNudity);
       } catch (error) {
         if (error instanceof RangeError) throw Errors.badRequest(error.message);
         throw error;
@@ -195,6 +201,11 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
     if (call.name === "edit_last_image" && !sourceImageAssetId) {
       throw Errors.conflict("There is no delivered Chat image to edit");
     }
+    const subject = call.name === "generate_image_async" ? call.arguments.subject
+      : (await prisma.mediaAsset.findFirstOrThrow({
+          where: { id: sourceImageAssetId, ownerId: turn.session.userId, type: "image", deletedAt: null },
+          select: { characterId: true },
+        })).characterId === null ? "scene" : "companion";
     const payload = {
       version: 1 as const,
       kind: "chat.image.requested" as const,
@@ -205,6 +216,7 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
       messageId: turn.assistantMessageId,
       userId: turn.session.userId,
       characterId: turn.session.characterId,
+      subject,
       ...(turn.characterReleaseId ? { characterReleaseId: turn.characterReleaseId } : {}),
       promptHint: promptHint(call),
       conversationContext: turn.userContent.slice(0, 1_200),
@@ -353,6 +365,7 @@ function effectRequestSnapshot(call: ImageAgentToolCall) {
   return call.name === "generate_image_async"
     ? {
         name: call.name,
+        subject: call.arguments.subject,
         orientation: call.arguments.orientation,
         outputCount: call.arguments.outputCount,
       }
@@ -382,6 +395,8 @@ function persistedTurnActionCall(
     arguments: {
       ...fallback.arguments,
       prompt: hint,
+      // Old requesting receipts were accepted under the companion-only contract.
+      subject: request?.subject === "scene" ? "scene" : "companion",
       orientation:
         orientation === "4:5" || orientation === "1:1" || orientation === "16:9"
           ? orientation
@@ -398,6 +413,7 @@ function persistedTurnActionCall(
 async function lastDeliveredImage(sessionId: string, before: Date): Promise<string | undefined> {
   const attachments = await prisma.chatTurnAttachment.findMany({
     where: {
+      kind: "generated_image",
       status: "completed",
       mediaAssetId: { not: null },
       turn: { sessionId, createdAt: { lt: before } },

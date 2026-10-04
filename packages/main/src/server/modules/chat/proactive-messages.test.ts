@@ -180,6 +180,7 @@ describe("proactive transcript projection", () => {
     assistantContent: "The studio's quiet tonight.",
     assistantStatus: "sent",
     attempt: 1,
+    memoryEnabled: true,
     sceneVersion: 0,
     scene: null,
     createdAt: new Date("2026-09-12T00:00:00.000Z"),

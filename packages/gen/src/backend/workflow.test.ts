@@ -65,22 +65,45 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
       const workflow = descriptors.find((descriptor) => descriptor.workflowKey === key);
       if (!workflow || workflow.backendKind !== "comfyui") throw new Error(`missing ${key}`);
       const encoder = Object.values(workflow.apiPrompt).find((node) => node.class_type === "IDreamFreshCLIPLoader");
-      expect(encoder?.inputs).toMatchObject({ clip_name: "qwen3vl_8b_int8_convrot.safetensors", type: "qwen_image", device: key === "qwen-image-edit-img2img" ? "mps" : "cpu" });
+      expect(encoder?.inputs).toMatchObject({ clip_name: "qwen3vl_8b_int8_convrot.safetensors", type: "qwen_image", device: key === "redqw21" ? "cpu" : "mps" });
       expect(Object.values(workflow.apiPrompt).filter((node) => node.class_type === "IDreamQwen21VAELoader")).toHaveLength(1);
     }
     for (const key of ["qwen-image-edit-img2img", "qwen-image-edit-multi-reference", "qwen-image-edit-multi-identity"]) {
       const workflow = descriptors.find((descriptor) => descriptor.workflowKey === key);
       if (!workflow || workflow.backendKind !== "comfyui") throw new Error(`missing ${key}`);
       expect(workflow.apiPrompt["1"]?.inputs.unet_name).toBe("redqw21_unlocked_v2_bf16.safetensors");
-      if (key !== "qwen-image-edit-img2img") {
-        expect(workflow.apiPrompt["3"]?.class_type).toBe("TextEncodeQwenImage21");
-        expect(workflow.apiPrompt["2"]?.inputs).toMatchObject({
-          steps: 16, cfg: 2, sampler_name: "euler", scheduler: "simple",
-        });
-      }
       const references = Object.fromEntries(workflow.inputs.filter((slot) => slot.type === "image").map((slot) => [slot.key, `${slot.key}.png`]));
       expect(bindComfySlots(workflow, { prompt: "test", width: 512, height: 640, seed: 1, ...references })["9"]?.inputs).toMatchObject({ width: 512, height: 640 });
     }
+  });
+
+  it.each([
+    ["qwen-image-edit-img2img", ["3", 2]],
+    ["qwen-image-edit-multi-reference", ["3", 2]],
+    ["qwen-image-edit-multi-identity", ["9", 0]],
+  ])("uses the six-step adapter and GPU positive-only conditioning for %s", async (key, latent) => {
+    const descriptors = await loadWorkflowDescriptors(WORKFLOWS_DIR);
+    const workflow = descriptors.find((descriptor) => descriptor.workflowKey === key);
+    if (!workflow || workflow.backendKind !== "comfyui") throw new Error(`missing ${key}`);
+    const references = Object.fromEntries(workflow.inputs.filter((slot) => slot.type === "image").map((slot) => [slot.key, `${slot.key}.png`]));
+    const graph = bindComfySlots(workflow, { prompt: "change shirt", seed: 4115733296, steps: 6, ...references });
+    expect(graph["3"]).toMatchObject({ class_type: "IDreamQwen21TextEncode", inputs: { cfg: 1 } });
+    expect(graph["4"]?.inputs.device).toBe("mps");
+    expect(graph["1:lora"]).toMatchObject({
+      class_type: "IDreamQwen21TurboLora",
+      inputs: { model: ["1:cache", 0], lora_name: "Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors" },
+    });
+    expect(graph["2:guider"]).toMatchObject({ class_type: "BasicGuider", inputs: { model: ["1:lora", 0], conditioning: ["900:0", 0] } });
+    expect(graph["2:sigmas"]).toMatchObject({ class_type: "IDreamQwen21TurboSigmas", inputs: { latent, steps: 6 } });
+    expect(graph["2:noise"]?.inputs.noise_seed).toBe(4115733296);
+    expect(graph["2:sampler"]?.inputs.sampler_name).toBe("euler");
+    expect(graph["2"]).toMatchObject({
+      class_type: "SamplerCustomAdvanced",
+      inputs: { noise: ["2:noise", 0], guider: ["2:guider", 0], sampler: ["2:sampler", 0], sigmas: ["2:sigmas", 0], latent_image: latent },
+    });
+    expect(workflow.inputs.find((slot) => slot.key === "steps")?.default).toBe(6);
+    expect(graph["900:0"]?.inputs).toEqual({ passthrough: ["3", 0], after: ["3", 1], release: ["4", 0] });
+    expect(Object.values(graph).some((node) => node.class_type === "KSampler")).toBe(false);
   });
 
   it("serves REDQW21 text-to-image and single-anchor identity from one graph", async () => {
@@ -252,7 +275,7 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
     expect(() => workflowDescriptorSchema.parse(multiIdentity)).not.toThrow();
     expect(multiIdentity).toMatchObject({
       modelId: "redqw21-multi-identity",
-      version: 5,
+      version: 6,
       identity: {
         mode: "multi_identity",
         maxReferences: 2,
@@ -295,7 +318,7 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
     );
     expect(identityAndSource).toMatchObject({
       modelId: "redqw21-multi-reference",
-      version: 6,
+      version: 7,
       identity: {
         mode: "multi_reference",
         maxReferences: 2,

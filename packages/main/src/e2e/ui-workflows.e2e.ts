@@ -2469,6 +2469,7 @@ async function expectGenerationAccepted(page: Page, timeout = 10_000) {
 }
 
 async function generateAndConfirmCharacterIdentity(page: Page, resume = false) {
+  const deadline = Date.now() + 90_000;
   await page
     .getByRole("button", { name: resume ? "Check preview status" : /^(Generate|Retry) preview candidates$/ })
     .click();
@@ -2480,16 +2481,22 @@ async function generateAndConfirmCharacterIdentity(page: Page, resume = false) {
     { timeout: 10_000 },
   );
   const candidates = page.getByTestId("create-preview-candidates").locator("button");
-  for (let attempt = 0; attempt < 16; attempt += 1) {
+  // Gen runs separately; an empty Main worker batch does not settle its jobs.
+  // Use the existing generation completion budget for the whole preview pack.
+  while (Date.now() < deadline) {
     if ((await candidates.count()) === 4) break;
+    const currentProgress = await progress.textContent();
+    if (/\b(failed|blocked|refunded)\b/i.test(currentProgress ?? "")) {
+      throw new Error(`Character preview reached a terminal failure: ${currentProgress}`);
+    }
     const worker = await page.request.post("/api/internal/worker", {
       headers: { authorization: `Bearer ${internalToken()}` },
-      timeout: 90_000,
+      timeout: Math.max(1, deadline - Date.now()),
     });
     expect(worker.ok(), await worker.text()).toBeTruthy();
     await page.waitForTimeout(350);
   }
-  await expect(candidates).toHaveCount(4, { timeout: 20_000 });
+  await expect(candidates).toHaveCount(4, { timeout: Math.max(1, deadline - Date.now()) });
   await expect(progress).toHaveText("Candidate 4 of 4 · completed · 4 completed");
   await page.getByTestId("create-confirm-identity").click();
   await expect(page.getByText("Identity confirmed. This is how the character will look.")).toBeVisible({
@@ -3690,7 +3697,7 @@ test("chat UI starts from character detail, sends a message, and persists histor
 
 test("chat UI opens Generate with character context and renders chat image attachments", async ({
   page,
-}) => {
+}, testInfo) => {
   const { email } = await startSignedInAdultSession(page, "chat-image-ui");
   const character = await seedOwnedCharacterGenerationAuthority(email);
   const characterId = character.characterId;
@@ -3729,6 +3736,23 @@ test("chat UI opens Generate with character context and renders chat image attac
   const assistantMessageId = await assistantBubble.getAttribute("data-message-id");
   expect(assistantMessageId).toBeTruthy();
 
+  const firstTerminal = await prisma.chatTurn.findUniqueOrThrow({
+    where: { assistantMessageId: assistantMessageId! },
+    select: { id: true, attempt: true, assistantStatus: true, terminalEvidence: true },
+  });
+  await testInfo.attach("chat-image-first-terminal-accounting", {
+    body: JSON.stringify(firstTerminal, null, 2), contentType: "application/json",
+  });
+  expect(firstTerminal).toMatchObject({
+    attempt: 1,
+    assistantStatus: "sent",
+    terminalEvidence: {
+      replyUsage: { promptTokens: 12, completionTokens: 8, reasoningTokens: 0 },
+      execution: { steps: 2, toolCalls: 1 },
+    },
+  });
+  expect(firstTerminal.terminalEvidence).toHaveProperty("modelRequests.length", 1);
+
   const attachment = await prisma.chatTurnAttachment.findFirstOrThrow({
     where: { turn: { assistantMessageId: assistantMessageId! }, kind: "generated_image" },
     select: { id: true, generationJobId: true, status: true, errorCode: true, metadata: true },
@@ -3763,6 +3787,23 @@ test("chat UI opens Generate with character context and renders chat image attac
   await expect.poll(() => prisma.chatTurn.findUnique({
     where: { assistantMessageId: assistantMessageId! }, select: { attempt: true, assistantStatus: true },
   })).toEqual({ attempt: 2, assistantStatus: "sent" });
+
+  const regeneratedTerminal = await prisma.chatTurn.findUniqueOrThrow({
+    where: { assistantMessageId: assistantMessageId! },
+    select: { id: true, attempt: true, assistantStatus: true, terminalEvidence: true },
+  });
+  await testInfo.attach("chat-image-regenerated-terminal-accounting", {
+    body: JSON.stringify(regeneratedTerminal, null, 2), contentType: "application/json",
+  });
+  expect(regeneratedTerminal).toMatchObject({
+    attempt: 2,
+    assistantStatus: "sent",
+    terminalEvidence: {
+      replyUsage: { promptTokens: 12, completionTokens: 8, reasoningTokens: 0 },
+      execution: { steps: 2, toolCalls: 1 },
+    },
+  });
+  expect(regeneratedTerminal.terminalEvidence).toHaveProperty("modelRequests.length", 1);
   expect(await prisma.chatTurnAttachment.findMany({
     where: { turn: { assistantMessageId: assistantMessageId! } },
     select: { id: true, generationJobId: true, mediaAssetId: true, status: true },
@@ -4956,6 +4997,79 @@ test("generator UI quotes one video scene and delivers its completed sequence an
   }
 });
 
+test("cancelled video sequences keep observing an active scene until its download arrives", async ({ page }, testInfo) => {
+  const { email } = await startSignedInAdultSession(page, "video-cancel-poll");
+  const previousRuntime = await enableVideoGenerationForUser(email);
+  const owner = await prisma.user.findUniqueOrThrow({ where: { email }, select: { id: true } });
+  const ledgerBefore = await prisma.dreamcoinLedger.count({ where: { userId: owner.id } });
+  const bytes = await readFile(path.join(process.cwd(), "src/e2e/fixtures/collection-playback.mp4"));
+  const mediaIds = [await seedDownloadableVideoMedia(email, bytes), await seedDownloadableVideoMedia(email, bytes)];
+  const asset = (id: string) => ({ id, url: `/api/v1/media/${id}/content`, downloadUrl: `/api/v1/media/${id}/content?download=1` });
+  const initial = videoSequenceDtoSchema.parse({
+    id: "e2e-ui-cancel-poll-sequence", status: "generating", errorCode: null,
+    request: { characterId: "e2e-ui-video-character", audio: "generated", scenes: [
+      { prompt: "A calm wave", seconds: 3 }, { prompt: "Turn toward the plant", seconds: 3 }, { prompt: "Smile again", seconds: 3 },
+    ] },
+    scenes: ["completed", "running", "queued"].map((status, ordinal) => ({
+      ordinal, narrationState: "pending", job: { id: `e2e-ui-cancel-poll-scene-${ordinal}`, status, controls: {},
+        cost: { charged: 100, refunded: 0, finalCharge: 100 } }, assets: ordinal === 0 ? [asset(mediaIds[0]!)] : [],
+    })),
+    cost: { charged: 300, refunded: 0, finalCharge: 300 }, asset: null, createdAt: new Date().toISOString(), completedAt: null,
+  });
+  const cancelled = { ...initial, status: "cancelled", cost: { charged: 300, refunded: 100, finalCharge: 200 },
+    scenes: initial.scenes.map(scene => scene.ordinal === 2 ? { ...scene, job: { ...scene.job, status: "cancelled", cost: { charged: 100, refunded: 100, finalCharge: 0 } } } : scene) };
+  const delivered = { ...cancelled, scenes: cancelled.scenes.map(scene => scene.ordinal === 1
+    ? { ...scene, job: { ...scene.job, status: "completed" }, assets: [asset(mediaIds[1]!)] } : scene) };
+  let stopped = false, sequenceReads = 0;
+  const posts: string[] = [];
+  // This stages the observed parent/child timing in a real browser. Native
+  // provider execution and refund authority are verified separately.
+  await page.route("**/api/v1/generation/video-sequences**", async route => {
+    const request = route.request(), pathname = new URL(request.url()).pathname;
+    if (request.method() === "POST") posts.push(pathname);
+    if (request.method() === "GET" && pathname === "/api/v1/generation/video-sequences") {
+      await route.fulfill({ json: { ok: true, data: { sequences: [stopped ? delivered : initial] } } });
+    } else if (request.method() === "POST" && pathname === `/api/v1/generation/video-sequences/${initial.id}/stop`) {
+      stopped = true;
+      await route.fulfill({ json: { ok: true, data: { sequence: cancelled } } });
+    } else if (request.method() === "GET" && pathname === `/api/v1/generation/video-sequences/${initial.id}`) {
+      sequenceReads += 1;
+      await route.fulfill({ json: { ok: true, data: { sequence: stopped ? delivered : initial } } });
+    } else await route.continue();
+  });
+  try {
+    await page.goto("/generate");
+    await page.getByRole("button", { name: "Video", exact: true }).click();
+    const controls = page.getByRole("region", { name: "Video sequence", exact: true });
+    const status = controls.locator('[aria-label="Video sequence status"]');
+    await expect(status).toContainText("Scene 2: running");
+    const readsBeforeStop = sequenceReads;
+    await controls.getByRole("button", { name: "Stop remaining scenes", exact: true }).click();
+    await expect(status.getByRole("status")).toHaveText("Sequence cancelled · reserved 300 · refunded 100 · final charge 200 coins");
+    await expect(status).toContainText("Scene 2: completed", { timeout: 10_000 });
+    await expect(status).toContainText("Scene 3: cancelled");
+    const downloaded = page.waitForEvent("download");
+    await status.getByRole("link", { name: "Download scene 2", exact: true }).click();
+    const download = await downloaded;
+    expect(await download.failure()).toBeNull();
+    const file = await download.path();
+    expect(file).not.toBeNull();
+    expect(await readFile(file!)).toEqual(bytes);
+    await page.waitForTimeout(3_500);
+    expect(sequenceReads).toBe(readsBeforeStop + 1);
+    expect(posts).toEqual([`/api/v1/generation/video-sequences/${initial.id}/stop`]);
+    expect(await prisma.dreamcoinLedger.count({ where: { userId: owner.id } })).toBe(ledgerBefore);
+    await page.screenshot({ path: testInfo.outputPath("cancelled-sequence-delivered.png"), fullPage: true });
+    await testInfo.attach("cancelled-sequence-observation", { contentType: "application/json", body: JSON.stringify({
+      source: "run-owned staged sequence responses and native MP4 fixture; no model requests",
+      posts, sequenceReads, finalCharge: delivered.cost.finalCharge, secondSceneMediaId: mediaIds[1],
+      downloadedBytes: bytes.length, ledgerUnchanged: true,
+    }, null, 2) });
+  } finally {
+    await restoreVideoGenerationRuntime(previousRuntime);
+  }
+});
+
 test("generator user-preset round-trip and bulk media route are wired", async ({ page }) => {
   await startSignedInAdultSession(page, "presets");
   const ctx = page.request;
@@ -5719,6 +5833,11 @@ test("feed remix signup redirect preserves anonymous generator intent", async ({
 
 test("feed UI supports share, report, and remix actions", async ({ page }) => {
   test.setTimeout(120_000);
+  // This journey asserts clipboard/fallback feedback. Chrome on macOS also
+  // exposes native sharing, whose successful handoff or cancellation is silent.
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "share", { configurable: true, value: undefined });
+  });
   await startSignedInAdultSession(page, "feed-actions");
   const token = `E2E Feed ${Date.now()} ${Math.floor(Math.random() * 1e6)}`;
   const ids = await seedExploreCharacters(token);

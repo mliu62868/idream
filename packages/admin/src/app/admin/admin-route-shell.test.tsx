@@ -22,6 +22,7 @@ const testSignals: AdminShellSignals = {
 
 function shellProps(overrides: {
   actor?: { id: string; role: string };
+  canCreateCharacters?: boolean;
   initialPermissions?: AdminPermissionKey[];
   initialSection?: string;
   preferences?: Partial<AdminShellPreferences>;
@@ -29,6 +30,7 @@ function shellProps(overrides: {
 } = {}) {
   return {
     actor: overrides.actor ?? { id: "operator-1", role: "admin" },
+    canCreateCharacters: overrides.canCreateCharacters ?? false,
     initialAccess: true,
     initialPermissions: overrides.initialPermissions ?? (["dashboard.read"] as AdminPermissionKey[]),
     initialSection: overrides.initialSection ?? "today",
@@ -234,6 +236,35 @@ describe("canonical Admin route shell", () => {
     expect(markup).toContain('aria-controls="admin-account-menu"');
     expect(source).not.toContain("isCharacterWorkspace");
     expect(source).not.toContain('"content/official"');
+  });
+
+  it("only shows Character creation when bootstrap allows creating a new object", () => {
+    const initialPermissions: AdminPermissionKey[] = [
+      "character.project.read",
+      "character.project.write",
+      "character.release.read",
+      "character.performance.read",
+    ];
+    const scopedMarkup = renderToString(
+      <AdminConsoleClient {...shellProps({
+        initialSection: "characters",
+        initialPermissions,
+        canCreateCharacters: false,
+      })} />,
+    );
+    const createMarkup = renderToString(
+      <AdminConsoleClient {...shellProps({
+        initialSection: "characters",
+        initialPermissions,
+        canCreateCharacters: true,
+      })} />,
+    );
+
+    expect(scopedMarkup).toContain("Search characters");
+    expect(scopedMarkup).not.toContain('href="/admin/characters/new"');
+    expect(scopedMarkup).not.toContain("Create Character");
+    expect(createMarkup).toContain('href="/admin/characters/new"');
+    expect(createMarkup).toContain("Create Character");
   });
 
   // SPEC: 拒绝页必须给出下一步：缺哪几个键、在哪儿授予、授予者需要什么。

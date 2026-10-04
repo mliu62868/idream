@@ -6,6 +6,17 @@
 // packages/main/src/server/modules/admin-v2/characters/{production-journey,readiness,renderer-preview}.ts。
 // 它们在 admin 源码里没有字面量，静态扫描判不出「在用」。删之前先查后端。
 export const adminZhCharacters: Record<string, string> = {
+  "Dark wavy hair\nWarm brown eyes": "黑色微卷发\n温暖的棕色眼睛",
+  "Creating or editing characters requires character write permission.": "创建或编辑角色需要角色写入权限。",
+  "This character has no resumable creation draft.": "这个角色没有可继续填写的创建草稿。",
+  "Open the character settings to continue editing it.": "打开角色设置，继续编辑这个角色。",
+  "Open character settings": "打开角色设置",
+  "Back to characters": "返回角色列表",
+  "Saved to server": "已保存到服务端",
+  "Saved changes stay private until you publish the character.": "已保存的改动仍是私密草稿，发布后才会更新线上角色。",
+  "This draft stays on this browser until you save the character.": "保存角色前，草稿仅保存在当前浏览器。",
+  "Edit {section}": "编辑{section}",
+  "Creating characters requires access to all characters. You can still edit your assigned characters.": "创建角色需要全局角色权限。你仍可编辑已授权的角色。",
   "Required release assets": "必需发布素材",
   "Live release pointer": "线上发布指向",
   "Customer-facing character availability": "客户可用的角色状态",

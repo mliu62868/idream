@@ -22,6 +22,8 @@
 
 PM2 是生命周期管理器；一方服务和 Web 启动器使用 Bun，Main/Admin 的 Next 开发子进程使用 Node，以支持冷启动时的 Turbopack 外部包解析。Docker Compose 只提供本地 PostgreSQL/Redis。
 
+官方 wrapper 以同一个 `PM2_HOME/idream-transition.lock` 串行执行 drain、重启、ownership 检查和 queue resume；同一 PM2 daemon 的不同工作树也共享此锁。已有锁时在任何 PM2 或队列操作前拒绝，正常返回或抛错都会释放。进程被强行终止后可能留下锁：先读取其中的 PID、创建时间和仓库位置，核对该进程及切换子进程均已结束，再移除该锁并重新走官方 wrapper。不能删除仍有进程持有的锁，也不能绕过队列排空或 ownership 拒绝。
+
 Main/Admin 开发启动器必须等到其 Next 子进程结束，再显式以该退出码退出。仅设置 `process.exitCode` 会被 PM2 宿主的 IPC 保活，导致端口已经消失但 PM2 仍显示 online，不能触发故障恢复。`scripts/development-process-exit.test.cjs` 用真实 Node/Bun 子进程和仍被引用的 IPC 验证此边界。浏览器拒绝连接时核对实际 HTTP readiness 与子进程；恢复仍使用仓库 wrapper，不以 PM2 online 单独判定成功。
 
 ```bash

@@ -48,6 +48,7 @@ import type { GenerationQuoteAuthority } from "./generation-quote-contract";
 import {
   acceptGenerationJobForUser,
   assertGenerationSourceImageAuthorityInTx,
+  generationChatCharacterId,
   wakeQueuedGenerationDispatch,
 } from "./generation-job-authority";
 import {
@@ -133,13 +134,14 @@ export async function quoteGenerationRetry(input: {
     // A failed Job remains history after its attachment adopts a replacement.
     // Do not advertise another paid retry; reservation still rechecks this
     // binding under locks, and an accepted key bypasses quotes when replayed.
-    const attachment = job.characterId ? await prisma.chatTurnAttachment.findFirst({
+    const chatCharacterId = generationChatCharacterId(job);
+    const attachment = chatCharacterId ? await prisma.chatTurnAttachment.findFirst({
       where: {
         generationJobId: job.id,
         ...(job.sourceId ? { id: job.sourceId } : {}),
         kind: job.sourceType === "chat_video" ? "generated_video" : "generated_image",
         status: { in: ["failed", "refunded"] },
-        turn: { session: { userId: input.userId, characterId: job.characterId, status: { not: "deleted" } } },
+        turn: { session: { userId: input.userId, characterId: chatCharacterId, status: { not: "deleted" } } },
       },
       select: { metadata: true, turn: { select: { attempt: true } } },
     }) : null;

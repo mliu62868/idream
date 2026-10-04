@@ -5,9 +5,10 @@ import type { SupportConversation } from "@idream/shared/contracts";
 import { parseSupportConversationResponse, parseSupportReplyResponse, parseViewerAuthorityResponse } from "@/lib/public-api-contracts";
 import { apiEnvelopeErrorMessage } from "@/lib/viewer-resource-client";
 
-export function HelpDeskConversation({ ticketId, viewerScope, onUpdated }: {
+export function HelpDeskConversation({ ticketId, viewerScope, updatedAt, onUpdated }: {
   ticketId: string;
   viewerScope: string;
+  updatedAt: string;
   onUpdated: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -16,6 +17,7 @@ export function HelpDeskConversation({ ticketId, viewerScope, onUpdated }: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const serial = useRef(0);
+  const historyVersion = useRef(updatedAt);
   const notifyUpdated = useRef(onUpdated);
   useEffect(() => { notifyUpdated.current = onUpdated; }, [onUpdated]);
   const pendingReply = useRef<{ messageId: string; body: string } | null>(null);
@@ -59,6 +61,22 @@ export function HelpDeskConversation({ ticketId, viewerScope, onUpdated }: {
     window.addEventListener("focus", refresh);
     return () => { serial.current += 1; window.removeEventListener("focus", refresh); };
   }, [open, request]);
+
+  useEffect(() => {
+    if (historyVersion.current === updatedAt) return;
+    if (!open || conversation?.updatedAt === updatedAt) {
+      historyVersion.current = updatedAt;
+      return;
+    }
+    // Refresh an expanded conversation when the history discovers an operator
+    // update. Keep the draft and let a pending reply settle before re-reading.
+    if (busy) return;
+    const timer = window.setTimeout(() => {
+      historyVersion.current = updatedAt;
+      void request();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [updatedAt, open, busy, conversation?.updatedAt, request]);
 
   return <div className="mt-3 border-t border-white/10 pt-3">
     <button aria-expanded={open} className="font-bold text-white underline underline-offset-4" disabled={busy} onClick={() => {

@@ -54,17 +54,15 @@ describe("Character release history empty state", () => {
     vi.restoreAllMocks();
   });
 
-  async function render(data: CharacterWorkspaceDetail, canPublish = true) {
+  async function render(data: CharacterWorkspaceDetail, canPublish = true, journal = createCharacterCommandJournal({
+    actorId: "release-operator", characterId: data.character.id, storage: null,
+  })) {
     await act(async () => {
       root.render(
         <AdminI18nProvider locale="zh">
           <ReleasePanel
             data={data}
-            journal={createCharacterCommandJournal({
-              actorId: "release-operator",
-              characterId: data.character.id,
-              storage: null,
-            })}
+            journal={journal}
             permissions={characterWorkspacePermissions(
               new Set<AdminPermissionKey>(canPublish ? ["character.release.publish", "content.takedown.write"] : []),
               false,
@@ -81,6 +79,40 @@ describe("Character release history empty state", () => {
     return [...container.querySelectorAll<HTMLButtonElement>("button")]
       .find((button) => button.textContent?.trim() === "发布角色");
   }
+
+  it("locks the workspace before creating a release candidate and keeps it locked through command acceptance", async () => {
+    const data = readyCharacter();
+    const request = vi.spyOn(transport, "adminV2Request");
+    const journal = createCharacterCommandJournal({ actorId: "release-operator", characterId: data.character.id, storage: null });
+    let finishCandidate!: (value: unknown) => void;
+    request.mockImplementation(async (path) => {
+      expect(journal.getSnapshot().writesLocked).toBe(true);
+      if (path.endsWith("/releases")) return new Promise((resolve) => { finishCandidate = resolve; });
+      return { commandId: "publish-command" };
+    });
+    await render(data, true, journal);
+    await act(async () => publishButton()!.click());
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(journal.getSnapshot().notice?.kind).toBe("mutation_in_flight");
+    expect(journal.getSnapshot().writesLocked).toBe(true);
+    expect(journal.beginSubmission("another write")).toBe(false);
+    await act(async () => finishCandidate({ id: "candidate-1", version: 3 }));
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(request.mock.calls[1][0]).toContain("/releases/candidate-1/commands/publish");
+    expect(journal.getSnapshot().command?.commandId).toBe("publish-command");
+    expect(journal.getSnapshot().writesLocked).toBe(true);
+  });
+
+  it("releases the submission lock when candidate creation is explicitly rejected", async () => {
+    const data = readyCharacter();
+    const journal = createCharacterCommandJournal({ actorId: "release-operator", characterId: data.character.id, storage: null });
+    vi.spyOn(transport, "adminV2Request").mockRejectedValue(new transport.AdminV2RequestError("Character draft changed before publishing", 409, "conflict"));
+    await render(data, true, journal);
+    await act(async () => publishButton()!.click());
+    expect(journal.getSnapshot().writesLocked).toBe(false);
+    expect(journal.getSnapshot().command).toBeNull();
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+  });
 
   it.each([true, false])("opens availability controls only for the current release's alert (current: %s)", async (isCurrent) => {
     const request = vi.spyOn(transport, "adminV2Request");

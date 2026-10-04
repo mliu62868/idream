@@ -13,7 +13,7 @@ import { logger } from "./logger.js";
 import type { ChatAuthoritySnapshot } from "@idream/shared/bff";
 import type { ChatExecutionSnapshot } from "@idream/shared/contracts";
 import { buildContext, type BuiltContext } from "./context.js";
-import { buildCompanionSystemPrompt, buildTurnStateBlock } from "./prompt.js";
+import { buildCompanionSystemPrompt, buildTurnPreferencesBlock, buildTurnStateBlock } from "./prompt.js";
 import { registryChatTools } from "./agent-tools.js";
 import { dropOldestReplayExchange, estimateModelRequestInputTokens, formatModelRequestInput } from "./agent-runtime/model-request-format.js";
 import {
@@ -111,6 +111,7 @@ function buildPreparedMessages(
   context: BuiltContext,
   currentUserMessageId: string,
   turnState: string,
+  turnPreferences: string,
 ): PreparedTurnInput["messages"] {
   const systemContent = buildCompanionSystemPrompt(context);
   const messages: PreparedTurnInput["messages"] = [{
@@ -122,6 +123,12 @@ function buildPreparedMessages(
   for (const message of context.recentMessages) {
     const isCurrent = message.id === currentUserMessageId;
     if (isCurrent) {
+      if (turnPreferences) messages.push({
+        id: `preferences:${currentUserMessageId}`,
+        sourceKind: "plugin",
+        role: "user",
+        content: turnPreferences,
+      });
       // The state stays immediately before the current message and is never
       // ingested as user-authored memory.
       messages.push({
@@ -201,8 +208,9 @@ export function fitPreparedTurnBudget(
         ]
       : []),
   ].join("\n");
+  const turnPreferences = buildTurnPreferencesBlock(fitted);
   const calculate = () => {
-    const messages = buildPreparedMessages(fitted, currentUserMessageId, turnState);
+    const messages = buildPreparedMessages(fitted, currentUserMessageId, turnState, turnPreferences);
     const input = { messages, tools, requiredTool: Boolean(requiredAction) };
     const nativeTokens = estimateModelRequestInputTokens(formatModelRequestInput(input));
     // A provider may require the JSON compatibility retry. Fit both complete

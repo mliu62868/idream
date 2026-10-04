@@ -1,0 +1,117 @@
+{
+  "note": "Offline composition of four separately captured physical responses to byte-identical requests. Extraction captures are later exact-input diagnostics, not the unavailable original product response bytes. This fixture does not claim a successful natural-model turn.",
+  "model": "Ornith-1.5-35B-A3B-Abliterated-MLX-4bit",
+  "previous": {
+    "time": "dawn",
+    "version": 9,
+    "location": "greenhouse",
+    "participants": [
+      "Mina"
+    ],
+    "emotionalBeat": "calm",
+    "schemaVersion": 1,
+    "unresolvedThreads": [
+      "water the basil"
+    ]
+  },
+  "userText": "We are in a greenhouse at dawn. I feel calm. Mina is here with us. We still need to water the basil.",
+  "assistantText": "The greenhouse glass is still fogged faintly at the bottom from our breathing, that first pale light going soft gold across the benches. I hand you the watering can — yours to fill, yours to pour.\n\n\"Low and slow,\" I remind you, crouching by the terracotta so the morning sun can warm our backs. \"Around the base, not the leaves.\"\n\nMina's already got a tray of seedlings on the far bench, humming under her breath, pretending she isn't listening to us fuss over one pot like it's a whole season.\n\nI settle onto the warm timber bench beside you, close enough that our shoulders almost touch. \"There's room here,\" I say, tapping the empty patch of soil beside the basil. \"Thyme or oregano — both like what you told me about the morning light and staying tidy.\" I glance at you. \"Which one's taking root next to Juniper?\"",
+  "responses": [
+    {
+      "phaseId": "user:extraction",
+      "bodyDigest": "8c8cbaf25bbf714c88e779a4fed145a1cd0b659bc5c8dc73747f5d20abe49d3b",
+      "requestId": "chatcmpl-50a9ef9e",
+      "content": "{\"location\":[{\"evidence\":\"We are in a greenhouse at dawn.\",\"value\":\"greenhouse\",\"scope\":\"current\"}],\"time\":[{\"evidence\":\"We are in a greenhouse at dawn.\",\"value\":\"dawn\",\"scope\":\"current\"}],\"participant_present\":[{\"evidence\":\"Mina is here with us.\",\"value\":\"Mina\",\"scope\":\"current\"}],\"participant_absent\":[],\"emotionalBeat\":[{\"evidence\":\"I feel calm.\",\"value\":\"calm\",\"scope\":\"current\"}],\"thread_unfinished\":[{\"evidence\":\"We still need to water the basil.\",\"value\":\"water the basil\",\"scope\":\"current\",\"referent\":\"the basil\",\"authority\":\"open\"}],\"thread_completed\":[]}",
+      "usage": {
+        "prompt_tokens": 1161,
+        "completion_tokens": 136,
+        "total_tokens": 1297,
+        "input_tokens": 1161,
+        "output_tokens": 136,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "time_to_first_token": 0.69,
+        "time_to_first_visible_token": 0.69,
+        "total_time": 2.1,
+        "prompt_eval_duration": 0.69,
+        "generation_duration": 1.41,
+        "prompt_tokens_per_second": 1681.78,
+        "generation_tokens_per_second": 96.51
+      },
+      "finishReason": "stop"
+    },
+    {
+      "phaseId": "user:completion",
+      "bodyDigest": "99b9e2eccfdbb89d518c04eb78e94ae671df2384b5143057e7770ffa8a45b691",
+      "requestId": "chatcmpl-fcae539b",
+      "content": "{\"statuses\":[\"pending\"]}",
+      "usage": {
+        "prompt_tokens": 287,
+        "completion_tokens": 6,
+        "total_tokens": 293,
+        "input_tokens": 287,
+        "output_tokens": 6,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "time_to_first_token": 0.27,
+        "time_to_first_visible_token": 0.27,
+        "total_time": 0.34,
+        "prompt_eval_duration": 0.27,
+        "generation_duration": 0.07,
+        "prompt_tokens_per_second": 1057.23,
+        "generation_tokens_per_second": 83.01
+      },
+      "finishReason": "stop"
+    },
+    {
+      "phaseId": "assistant:extraction",
+      "bodyDigest": "940d434c91d3e52f4acb46fa6cdb82cdef1a00a3de1668fc2e0311a8ec1bafb8",
+      "requestId": "chatcmpl-15fc8d87",
+      "content": "{\"location\":[{\"evidence\":\"The greenhouse glass is still fogged faintly at the bottom from our breathing\",\"value\":\"greenhouse\",\"scope\":\"current\"}],\"time\":[{\"evidence\":\"that first pale light going soft gold across the benches\",\"value\":\"morning\",\"scope\":\"current\"}],\"participant_present\":[{\"evidence\":\"I hand you the watering can\",\"value\":\"you\",\"scope\":\"current\"},{\"evidence\":\"Mina's already got a tray of seedlings on the far bench\",\"value\":\"Mina\",\"scope\":\"current\"}],\"participant_absent\":[],\"emotionalBeat\":[],\"thread_unfinished\":[{\"evidence\":\"I hand you the watering can — yours to fill, yours to pour\",\"value\":\"water the plants\",\"scope\":\"current\",\"referent\":\"the watering can\",\"authority\":\"open\"},{\"evidence\":\"Thyme or oregano — both like what you told me about the morning light and staying tidy\",\"value\":\"plant thyme or oregano\",\"scope\":\"current\",\"referent\":\"thyme or oregano\",\"authority\":\"open\"}],\"thread_completed\":[]}",
+      "usage": {
+        "prompt_tokens": 1333,
+        "completion_tokens": 217,
+        "total_tokens": 1550,
+        "input_tokens": 1333,
+        "output_tokens": 217,
+        "prompt_tokens_details": {
+          "cached_tokens": 1326
+        },
+        "time_to_first_token": 0.4,
+        "time_to_first_visible_token": 0.4,
+        "total_time": 21.79,
+        "prompt_eval_duration": 0.4,
+        "generation_duration": 21.38,
+        "prompt_tokens_per_second": 17.45,
+        "generation_tokens_per_second": 10.15
+      },
+      "finishReason": "stop"
+    },
+    {
+      "phaseId": "assistant:completion",
+      "bodyDigest": "351bed0e2d4783f57bdcd790d89505a717d9657938b393f0a0a493f666909769",
+      "requestId": "chatcmpl-c3d6dbaf",
+      "content": "{\n  \"statuses\": [\n    \"pending\"\n  ]\n}",
+      "usage": {
+        "prompt_tokens": 460,
+        "completion_tokens": 18,
+        "total_tokens": 478,
+        "input_tokens": 460,
+        "output_tokens": 18,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "time_to_first_token": 0.34,
+        "time_to_first_visible_token": 0.34,
+        "total_time": 0.55,
+        "prompt_eval_duration": 0.34,
+        "generation_duration": 0.21,
+        "prompt_tokens_per_second": 1347.08,
+        "generation_tokens_per_second": 84.9
+      },
+      "finishReason": "stop"
+    }
+  ]
+}

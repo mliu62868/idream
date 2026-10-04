@@ -1,8 +1,8 @@
+import { generationTerminalRecordChecksum } from "@idream/shared/contracts/durable-server";
 import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Prisma } from "@prisma/client";
 import {
-  generationTerminalRecordChecksum,
   generationTerminalRecordSchema,
 } from "@idream/shared/contracts";
 import type { AiFinalizePayload } from "@/server/ai/schemas";
@@ -787,6 +787,43 @@ describe("image generation service contract", () => {
     await expect(dreamcoinBalance(userId)).resolves.toBe(balanceBefore);
   });
 
+  it.each([5, 8])("rejects a legacy %i-output profile before quote, admission, or ledger mutation", async (maxCount) => {
+    const userId = `${P}capacity-${maxCount}`;
+    await createUser({ id: userId });
+    await grantCoins(userId, 1_000, "seed");
+    await prisma.entitlement.createMany({ data: ["premium_controls", "premium_models"].map((key) => ({ userId, key, value: true, source: "test" })) });
+    const profile = await prisma.generationModelProfile.findFirstOrThrow({
+      where: { profileKey: "profile_image_default_v1", status: "active" },
+    });
+    const body = { mode: "image" as const, freeplay: true, outputCount: 1, controls: { model: profile.profileKey } };
+    const initial = await api("POST", "generation/quote", { userId, ageGate: true, body });
+    expectOk(initial);
+    const quote = initial.data.quote as ExactGenerationQuote;
+    const balance = await dreamcoinBalance(userId);
+    const ledgerCount = await prisma.dreamcoinLedger.count({ where: { userId } });
+    for (const route of ["generation/quote", "generation/jobs"]) {
+      const overLimit = await api("POST", route, {
+        userId, ageGate: true, body: { ...body, outputCount: maxCount, quoteAuthority: quoteAuthority(quote) },
+      });
+      expectError(overLimit, 400, "bad_request");
+    }
+    try {
+      await prisma.generationModelProfile.update({ where: { id: profile.id }, data: { maxCount } });
+      const unavailableQuote = await api("POST", "generation/quote", { userId, ageGate: true, body });
+      // The client pinned an explicit profile, so losing that route is a conflict.
+      expectError(unavailableQuote, 409, "conflict");
+      const rejected = await api("POST", "generation/jobs", {
+        userId, ageGate: true, body: { ...body, quoteAuthority: quoteAuthority(quote) },
+      });
+      expectError(rejected, 409, "conflict");
+      await expect(prisma.generationJob.count({ where: { userId } })).resolves.toBe(0);
+      await expect(prisma.dreamcoinLedger.count({ where: { userId } })).resolves.toBe(ledgerCount);
+      await expect(dreamcoinBalance(userId)).resolves.toBe(balance);
+    } finally {
+      await prisma.generationModelProfile.update({ where: { id: profile.id }, data: { maxCount: profile.maxCount } });
+    }
+  });
+
   it("returns quote drift as 409 before current max-count or orientation validation", async () => {
     const userId = `${P}quote-drift-user`;
     await createUser({ id: userId });
@@ -1336,6 +1373,7 @@ describe("image generation service contract", () => {
 
     await expect(import("@/server/modules/ourdream/service").then((mod) =>
       mod.createChatImageGenerationJob({
+        subject: "companion",
         version: 1,
         kind: "chat.image.requested",
         requestId: `${P}legacy-chat-request`,
@@ -1430,6 +1468,7 @@ describe("image generation service contract", () => {
 
     const job = await import("@/server/modules/ourdream/service").then((mod) =>
       mod.createChatImageGenerationJob({
+        subject: "companion",
         version: 1,
         kind: "chat.image.requested",
         requestId: `${P}legacy-chat-projection-request`,
@@ -1503,6 +1542,7 @@ describe("image generation service contract", () => {
     try {
       const job = await import("@/server/modules/ourdream/service").then((mod) =>
         mod.createChatImageGenerationJob({
+          subject: "companion",
           version: 1,
           kind: "chat.image.requested",
           requestId: `${P}chat-release-reference-request`,
@@ -3033,10 +3073,11 @@ describe("image generation service contract", () => {
     await expect(dreamcoinBalance(userId)).resolves.toBe(100);
   });
 
-  it("keeps chat image scene prompts separate from the character visual identity", async () => {
-    const userId = `${P}chat-identity-user`;
-    const characterId = `${P}chat-identity-char`;
-    const anchorId = `${P}chat-identity-anchor`;
+  it.each(["companion", "scene"] as const)("keeps chat image %s subjects separate from the character visual identity", async subject => {
+    const userId = `${P}chat-identity-${subject}-user`;
+    const characterId = `${P}chat-identity-${subject}-char`;
+    const anchorId = `${P}chat-identity-${subject}-anchor`;
+    const visualId = `${P}chat-${subject}-cvp`;
     await createUser({ id: userId });
     await createCharacter({
       id: characterId,
@@ -3053,7 +3094,7 @@ describe("image generation service contract", () => {
         characterId,
         type: "image",
         url: "/images/ourdream/card-sarah-mercer.webp",
-        storageKey: `${P}chat-identity-anchor.webp`,
+        storageKey: `${P}chat-identity-${subject}-anchor.webp`,
         visibility: "private",
         safetyStatus: "passed",
         metadata: {},
@@ -3061,7 +3102,7 @@ describe("image generation service contract", () => {
     });
     await prisma.characterVisualProfile.create({
       data: {
-        id: `${P}chat-cvp`,
+        id: visualId,
         characterId,
         version: 1,
         status: "active",
@@ -3080,8 +3121,8 @@ describe("image generation service contract", () => {
       },
     });
     await createSealedReferenceSet({
-      id: `${P}chat-reference-set`,
-      visualProfileId: `${P}chat-cvp`,
+      id: `${P}chat-${subject}-reference-set`,
+      visualProfileId: visualId,
       references: [
         {
           mediaAssetId: anchorId,
@@ -3094,7 +3135,7 @@ describe("image generation service contract", () => {
     await grantCoins(userId, 100, "seed");
     // This case verifies identity/scene separation for an accepted direction.
     // Oversized complete directions are rejected, not silently truncated.
-    const agentScene = [
+    const agentScene = subject === "scene" ? "A close-up of a basil plant in a terracotta pot on a sunny balcony. No people visible." : [
       "sitting beside a rain-streaked window, soft evening light",
       "soft rain reflections and warm practical light, ".repeat(15),
       "fully clothed in a silk robe",
@@ -3104,22 +3145,32 @@ describe("image generation service contract", () => {
       mod.createChatImageGenerationJob({
         version: 1,
         kind: "chat.image.requested",
-        requestId: `${P}chat-req`,
-        attachmentId: `${P}attachment`,
-        sessionId: `${P}session`,
-        messageId: `${P}message`,
+        requestId: `${P}chat-${subject}-req`,
+        attachmentId: `${P}attachment-${subject}`,
+        sessionId: `${P}session-${subject}`,
+        messageId: `${P}message-${subject}`,
         userId,
         characterId,
+        subject,
         promptHint: agentScene,
         conversationContext: "The user asked for a quiet photo from the current scene.",
-        intent: { requestedNudity: "full" },
+        intent: { requestedNudity: subject === "scene" ? "unspecified" : "full" },
         controls: { orientation: "4:5", outputCount: 1 },
       }),
     );
 
     const stored = await prisma.generationJob.findUniqueOrThrow({ where: { id: job.id } });
     expect(stored.sourceType).toBe("chat_image");
-    expect(stored.visualProfileId).toBe(`${P}chat-cvp`);
+    if (subject === "scene") {
+      expect(stored).toMatchObject({ characterId: null, visualProfileId: null, visualProfileVersion: null, referenceSetRevisionId: null, referenceAssetIds: null });
+      expect(stored.prompt).toContain(agentScene);
+      expect(stored.prompt).not.toMatch(/portrait|Locked identity|same face|visible face|Mira Dawn|copper curly hair/iu);
+      expect(stored.controls).not.toHaveProperty("visualIdentity");
+      expect(stored.sourceMeta).toMatchObject({ chatCharacterId: characterId, imageSubject: "scene" });
+      await runQueuedGenerationJobs(4);
+      return;
+    }
+    expect(stored.visualProfileId).toBe(visualId);
     expect(stored.prompt).toContain("Locked identity");
     expect(stored.prompt).toContain("copper curly hair");
     expect(stored.prompt).toContain("rain-streaked window");
@@ -3130,7 +3181,7 @@ describe("image generation service contract", () => {
     expect(stored.controls).toMatchObject({
       consistencyMode: "strict",
       visualIdentity: {
-        visualProfileId: `${P}chat-cvp`,
+        visualProfileId: visualId,
         visualProfileVersion: 1,
       },
     });

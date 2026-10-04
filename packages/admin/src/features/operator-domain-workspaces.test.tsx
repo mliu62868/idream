@@ -70,6 +70,7 @@ describe("Character and Creative operator workspaces", () => {
     const html = renderToStaticMarkup(
       <CharacterWorkspace
         actorId="test-admin"
+        canCreateCharacters
         permissions={FULL_CHARACTER_PERMISSIONS}
         view={{ kind: "list" }}
       />,

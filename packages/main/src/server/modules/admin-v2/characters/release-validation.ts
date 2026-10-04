@@ -7,6 +7,8 @@ import {
   loadCharacterSoulSnapshot,
 } from "@idream/shared";
 import { env } from "@/server/lib/env";
+import { checkTextModeration } from "@/server/moderation/text-authority";
+import { characterContentModerationText } from "./draft-content";
 import {
   evaluateMediaAssetCustomerPublishability,
   hasHydratableMediaBlobAuthority,
@@ -719,6 +721,11 @@ export async function evaluateCharacterReleaseSnapshot(
   const historicalSoulReadOnly =
     release.legacy && storedSoulSchemaVersion !== 3;
   const opening = content ? releaseRecord(content.openingSnapshot) : {};
+  // Recheck the exact pinned content, including records authored before these
+  // automatic checks existed. Existing session pins remain immutable.
+  const textModeration = content
+    ? await checkTextModeration(characterContentModerationText(content))
+    : null;
   const checks: ValidationCheck[] = [
     {
       key: "release_generation_authority_kind",
@@ -775,11 +782,14 @@ export async function evaluateCharacterReleaseSnapshot(
       // explicitly legacy Releases. Every newly governed Release must pin v3.
       passed:
         soulResult?.ok === true &&
+        textModeration?.status === "passed" &&
         (historicalSoulReadOnly ||
           (storedSoulSchemaVersion === 3 &&
             soulResult.diagnostics.length === 0)),
       evidence: {
         legacyRelease: release.legacy,
+        textModerationStatus: textModeration?.status ?? null,
+        policyCode: textModeration?.policyCode ?? null,
         warningCodes: soulResult?.ok
           ? soulResult.diagnostics
               .filter((item) => item.severity === "warning")

@@ -4,7 +4,6 @@ import {
 } from "@/server/modules/admin-v2/content/templates";
 import {
   actorWithPermission,
-  jsonBody,
   queryParams,
 } from "@/server/modules/admin-v2/shared/authority";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
@@ -20,9 +19,5 @@ export function GET(request: Request) {
 }
 
 export function POST(request: Request) {
-  return adminV2Route(request, async () => {
-    const actor = await actorWithPermission(request, "content.template.write");
-    const body = await jsonBody(request, "contentTemplateCreateRequestSchema");
-    return createTemplate({ request, actor, body });
-  });
+  return adminV2Route(request, () => createTemplate(request));
 }

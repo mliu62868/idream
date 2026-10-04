@@ -2,6 +2,7 @@
 import { act, createElement, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+vi.mock("next/image", () => ({ default: ({ unoptimized: _unoptimized, ...props }: ComponentProps<"img"> & { unoptimized?: boolean }) => createElement("img", props) }));
 import { VideoSequenceControls } from "./VideoSequenceControls";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -9,10 +10,10 @@ const scope = "user:sequence-viewer", storageKey = `idream:video-sequence:${scop
 const cap = { options: { seconds: [3, 5], orientations: ["2:3", "1:1"], qualities: ["preview", "standard"] }, audio: ["generated", "silent", "narration"] };
 const price = { fingerprint: "a".repeat(64), costDreamcoins: 200, balance: 500, audio: "narration", narrationExtendsLastFrame: true, narrationExtraCostDreamcoins: 0,
   costs: [{ ordinal: 0, costDreamcoins: 100 }, { ordinal: 1, costDreamcoins: 100 }], scenes: [{ ordinal: 0, video: { durationSeconds: 3.0417, width: 512, height: 512, audio: "generated" } }, { ordinal: 1, video: { durationSeconds: 5.0417, width: 512, height: 512, audio: "generated" } }] };
-function sequence(status = "generating") { return { id: "sequence-original", status, errorCode: null, scenes: [{ ordinal: 0, narrationState: "pending", job: { id: "native-original", status: "queued", cost: { charged: 100, refunded: 0, finalCharge: 100 } }, assets: [] }], cost: { charged: 100, refunded: 0, finalCharge: 100 }, asset: null, createdAt: "2026-10-02T00:00:00.000Z", completedAt: null }; }
+function sequence(status = "generating") { return { id: "sequence-original", status, errorCode: null, request: { characterId: "character-one", consistencyMode: "balanced", orientation: "2:3", quality: "standard", audio: "generated", scenes: [{ prompt: "A calm wave", seconds: 5 }] }, scenes: [{ ordinal: 0, narrationState: "pending", job: { id: "native-original", status: "queued", controls: { sourceImageAssetId: "original-reference" }, cost: { charged: 100, refunded: 0, finalCharge: 100 } }, assets: [] }], cost: { charged: 100, refunded: 0, finalCharge: 100 }, asset: null, createdAt: "2026-10-02T00:00:00.000Z", completedAt: null }; }
 function deliveredSequence(id: string) {
   const asset = { id: `${id}-complete`, url: `/api/v1/media/${id}-complete/content`, downloadUrl: `/api/v1/media/${id}-complete/content?download=1` };
-  return { ...sequence("completed"), id, scenes: [{ ...sequence().scenes[0]!, job: { ...sequence().scenes[0]!.job, id: `${id}-scene`, status: "completed" }, assets: [asset] }],
+  return { ...sequence("completed"), id, scenes: [{ ...sequence().scenes[0]!, job: { ...sequence().scenes[0]!.job, id: `${id}-scene`, status: "completed", controls: { sourceImageAssetId: `${id}-reference` } }, assets: [asset] }],
     asset: { ...asset, width: 512, height: 768, metadata: {} }, completedAt: "2026-10-02T00:00:10.000Z" };
 }
 const envelope = (data: unknown, status = 200) => Response.json({ ok: true, data }, { status });
@@ -98,6 +99,7 @@ describe("Video sequence exact acceptance and recoverable delivery UI", () => {
     expect(container.querySelector('a[href="/api/v1/media/sequence-b-complete/content?download=1"]')).not.toBeNull();
     expect(container.querySelector("video")?.getAttribute("src")).toBe(second.asset.url);
     expect(onStatusChange).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('img[alt="Original video reference"]')?.getAttribute("src")).toBe("/api/v1/media/sequence-b-reference/content");
     expect(calls.filter(call => call.init?.method === "POST")).toHaveLength(0);
   });
 
@@ -186,6 +188,35 @@ describe("Video sequence exact acceptance and recoverable delivery UI", () => {
     expect(calls.filter(call => call.init?.method === "POST")).toHaveLength(0);
   });
 
+  it("tracks an in-flight scene after cancellation until delivery without another paid submission", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const original = sequence();
+    const scene = original.scenes[0]!;
+    const asset = (id: string) => ({ id, url: `/api/v1/media/${id}/content`, downloadUrl: `/api/v1/media/${id}/content?download=1` });
+    const first = { ...original, request: { ...original.request, scenes: [{ prompt: "A calm wave", seconds: 5 }, { prompt: "Turn toward the plant", seconds: 5 }, { prompt: "Smile again", seconds: 5 }] },
+      scenes: [
+        { ...scene, ordinal: 0, job: { ...scene.job, id: "scene-one", status: "completed" }, assets: [asset("scene-one-video")] },
+        { ...scene, ordinal: 1, job: { ...scene.job, id: "scene-two", status: "running" } },
+        { ...scene, ordinal: 2, job: { ...scene.job, id: "scene-three", status: "queued" } },
+      ], cost: { charged: 300, refunded: 0, finalCharge: 300 } };
+    const cancelled = { ...first, status: "cancelled", cost: { charged: 300, refunded: 100, finalCharge: 200 },
+      scenes: first.scenes.map(value => value.ordinal === 2 ? { ...value, job: { ...value.job, status: "cancelled", cost: { charged: 100, refunded: 100, finalCharge: 0 } } } : value) };
+    const delivered = { ...cancelled, scenes: cancelled.scenes.map(value => value.ordinal === 1 ? { ...value, job: { ...value.job, status: "completed" }, assets: [asset("scene-two-video")] } : value) };
+    customize = (path, init) => path.endsWith("/video-sequences") ? Promise.resolve(envelope({ sequences: [first] }))
+      : path.endsWith("/sequence-original/stop") && init?.method === "POST" ? Promise.resolve(envelope({ sequence: cancelled }))
+      : path.endsWith("/sequence-original") ? Promise.resolve(envelope({ sequence: delivered })) : undefined;
+    await mount(); await click("Stop remaining scenes");
+    expect(container.textContent).toContain("Sequence cancelled · reserved 300 · refunded 100 · final charge 200 coins");
+    expect(container.textContent).toContain("Scene 2: running");
+    await act(async () => vi.advanceTimersByTime(3000)); await settle();
+    expect(container.textContent).toContain("Scene 2: completed");
+    expect(container.querySelector('a[href="/api/v1/media/scene-two-video/content?download=1"]')).not.toBeNull();
+    expect(calls.filter(call => call.path.endsWith("/sequence-original"))).toHaveLength(1);
+    await act(async () => vi.advanceTimersByTime(9000)); await settle();
+    expect(calls.filter(call => call.path.endsWith("/sequence-original"))).toHaveLength(1);
+    expect(calls.filter(call => call.init?.method === "POST").map(call => call.path)).toEqual(["/api/v1/generation/video-sequences/sequence-original/stop"]);
+  });
+
   it("reports a failed current sequence read while keeping its delivered video available", async () => {
     const first = deliveredSequence("sequence-a");
     customize = path => path.endsWith("/video-sequences") ? Promise.resolve(envelope({ sequences: [first] }))
@@ -224,7 +255,22 @@ describe("Video sequence exact acceptance and recoverable delivery UI", () => {
   it("offers packaging recovery and the delivered scene without issuing a new native generation", async () => {
     const failed = { ...sequence("composition_failed"), scenes: [{ ...sequence().scenes[0]!, job: { ...sequence().scenes[0]!.job, status: "completed" }, assets: [{ id: "delivered-scene", url: "/api/v1/media/delivered-scene/content", downloadUrl: "/api/v1/media/delivered-scene/content?download=1" }] }] };
     customize = (path, init) => path.endsWith("/video-sequences") && !init?.method ? Promise.resolve(envelope({ sequences: [failed] })) : undefined;
-    await mount(); expect(container.querySelector('a[href="/api/v1/media/delivered-scene/content?download=1"]')).not.toBeNull(); await click("Retry packaging · no model requests or extra coins");
+    await mount(); expect(container.querySelector('a[href="/api/v1/media/delivered-scene/content?download=1"]')).not.toBeNull(); await click("Retry finishing · no extra coins");
+    expect(calls.filter(call => call.init?.method === "POST").map(call => call.path)).toEqual(["/api/v1/generation/video-sequences/sequence-original/retry-composition"]);
+  });
+
+  it("shows all three narration states and explains missing-line recovery without promising no model calls", async () => {
+    const original = sequence("composition_failed");
+    const failed = { ...original, request: { ...original.request, audio: "narration", scenes: ["First line.", "Second line.", "Third line."].map(narration => ({ prompt: "A calm wave", seconds: 5, narration })) },
+      scenes: ["completed", "completed", "failed"].map((narrationState, ordinal) => ({ ...original.scenes[0]!, ordinal, narrationState, job: { ...original.scenes[0]!.job, id: `scene-${ordinal}`, status: "completed" } })) };
+    customize = (path, init) => path.endsWith("/video-sequences") && !init?.method ? Promise.resolve(envelope({ sequences: [failed] })) : undefined;
+    await mount();
+    expect(container.textContent).toContain("Scene 1: completed · 100 coins · narration ready");
+    expect(container.textContent).toContain("Scene 2: completed · 100 coins · narration ready");
+    expect(container.textContent).toContain("Scene 3: completed · 100 coins · narration failed");
+    expect(container.textContent).toContain("missing lines will be generated on retry");
+    expect(container.textContent).not.toContain("no model requests");
+    await click("Retry finishing · no extra coins");
     expect(calls.filter(call => call.init?.method === "POST").map(call => call.path)).toEqual(["/api/v1/generation/video-sequences/sequence-original/retry-composition"]);
   });
 

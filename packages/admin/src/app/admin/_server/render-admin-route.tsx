@@ -94,6 +94,7 @@ export async function renderAdminRoute(
   return (
     <AdminConsoleClientOnly
       actor={bootstrap.actor}
+      canCreateCharacters={bootstrap.canCreateCharacters}
       initialAccess={Boolean(bootstrap.actor)}
       initialPermissions={bootstrap.permissions}
       initialSection={initialSection}

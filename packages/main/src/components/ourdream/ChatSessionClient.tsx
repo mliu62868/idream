@@ -1812,6 +1812,11 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
                       ) : (
                         message.content
                       )}
+                      {!isUser && message.memoryEnabled === false ? (
+                        <p className="mt-2 text-[11px] leading-4 text-white/60" data-testid="chat-private-turn">
+                          Not saved to long-term memory. This turn stays in chat history.
+                        </p>
+                      ) : null}
                       {(message.attachments ?? []).length > 0 ? (
                         <div className="mt-3 space-y-2">
                           {message.attachments?.map((attachment) => attachment.kind === "generated_video" ? <ChatVideoAttachmentCard
@@ -2194,6 +2199,7 @@ function ChatImageAttachmentCard({
   const invalidPreview = invalidPreviewKey === previewKey;
   const isLegacyTestAsset = attachment.isSynthetic === true;
   const costLabel = chatAttachmentCostLabel(attachment);
+  const isSceneImage = attachment.imageSubject === "scene";
 
   if (attachment.status === "completed" && attachment.mediaUrl && source && !invalidPreview) {
     return (
@@ -2203,7 +2209,7 @@ function ChatImageAttachmentCard({
       <figure className="relative w-full max-w-[260px] overflow-hidden rounded-[12px] border border-white/10 bg-black/20">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
-          alt="Generated character image from this chat"
+          alt={isSceneImage ? "Generated scene image from this chat" : "Generated character image from this chat"}
           className="aspect-[4/5] w-full object-cover"
           data-asset-id={attachment.mediaAssetId ?? undefined}
           data-testid="chat-image-attachment"
@@ -2226,8 +2232,8 @@ function ChatImageAttachmentCard({
         ) : null}
         {attachment.mediaAssetId ? (
           <ChatImageAttachmentActions
-            canAddToIdentity={canAddToIdentity}
-            characterId={characterId}
+            canAddToIdentity={!isSceneImage && canAddToIdentity}
+            characterId={isSceneImage ? null : characterId}
             generateHref={generateHref}
             onAnimate={onAnimate}
             onAddToIdentity={onAddToIdentity}
@@ -2333,8 +2339,8 @@ function ChatImageAttachmentCard({
       ) : null}
       {completedUnavailable ? (
         <ChatImageAttachmentActions
-          canAddToIdentity={canAddToIdentity}
-          characterId={characterId}
+          canAddToIdentity={!isSceneImage && canAddToIdentity}
+          characterId={isSceneImage ? null : characterId}
           generateHref={generateHref}
           onAnimate={onAnimate}
           onAddToIdentity={onAddToIdentity}
@@ -2350,6 +2356,7 @@ function ChatImageAttachmentCard({
 
 function ChatImageAttachmentActions({
   canAddToIdentity,
+  characterId,
   generateHref,
   onAnimate,
   onAddToIdentity,
@@ -2371,7 +2378,7 @@ function ChatImageAttachmentActions({
   return (
     <div className="grid gap-2 border-t border-white/10 p-2">
       {/* 单列：卡片收窄到 260px 后，两列会让「Looks like them」在固定 h-8 的按钮里折行溢出。 */}
-      <div className="grid grid-cols-1 gap-2" aria-label="Character identity feedback">
+      {characterId ? <div className="grid grid-cols-1 gap-2" aria-label="Character identity feedback">
         <button
           className="inline-flex h-8 items-center justify-center gap-1.5 whitespace-nowrap rounded-full bg-emerald-400/15 px-3 text-[11px] font-bold text-emerald-100"
           onClick={onIdentityMatch}
@@ -2388,7 +2395,7 @@ function ChatImageAttachmentActions({
           <X className="h-3.5 w-3.5" />
           Doesn&apos;t match
         </button>
-      </div>
+      </div> : null}
       <div className={`grid gap-2 ${canAddToIdentity ? "grid-cols-2" : "grid-cols-1"}`}>
         {/* Two narrow columns wrap these labels; grow instead of clipping them. */}
         <button

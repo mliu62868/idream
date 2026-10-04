@@ -224,4 +224,42 @@ describe("admin tag taxonomy governance", () => {
     const found = response.data.items.find((item: { id: string }) => item.id === tag.id);
     expect(found).toMatchObject({ characterCount: 1, category: `${P}cat` });
   });
+
+  it("keeps all 501 tags reachable through listing, category search, editing and merging", async () => {
+    const admin = await setupActor("admin", "large-vocabulary");
+    const category = `${P}large-cat`;
+    const rows = Array.from({ length: 501 }, (_, index) => ({
+      id: `${P}large-${String(index).padStart(3, "0")}`,
+      slug: `${P}large-${String(index).padStart(3, "0")}`,
+      label: `Large vocabulary tag ${index}`,
+      category,
+    }));
+    await prisma.tag.createMany({ data: rows });
+    const actor = { userId: admin, role: "admin" as const };
+    const last = rows.at(-1)!;
+
+    const all = await adminV2Api("GET", "/api/v2/admin/content/tags", actor);
+    expect(all.status, JSON.stringify(all.json)).toBe(200);
+    expect(all.data.items.filter((item: { category: string | null }) => item.category === category)).toHaveLength(501);
+
+    const filtered = await adminV2Api("GET", `/api/v2/admin/content/tags?category=${category}&search=${P}large-`, actor);
+    expect(filtered.status, JSON.stringify(filtered.json)).toBe(200);
+    expect(filtered.data.items.map((item: { id: string }) => item.id)).toEqual(rows.map((row) => row.id));
+
+    const edited = await adminV2Api("PATCH", `/api/v2/admin/content/tags/${last.id}`, {
+      ...actor, body: { label: "Last tag renamed", confirmation: last.slug, reason: "rename tail vocabulary entry" },
+    });
+    expect(edited.status, JSON.stringify(edited.json)).toBe(200);
+    expect((await prisma.tag.findUniqueOrThrow({ where: { id: last.id } })).label).toBe("Last tag renamed");
+
+    const character = await createCharacter({ id: `${P}large-character`, creatorId: admin });
+    await prisma.characterTag.create({ data: { characterId: character.id, tagId: last.id } });
+    const merged = await adminV2Api("POST", "/api/v2/admin/content/tags/merge", {
+      ...actor, body: { sourceId: last.id, targetId: rows[0].id, confirmation: `${last.id}:${rows[0].id}`, reason: "merge tail vocabulary entry" },
+    });
+    expect(merged.status, JSON.stringify(merged.json)).toBe(200);
+    expect(merged.data).toMatchObject({ merged: true, movedCount: 1 });
+    expect(await prisma.tag.findUnique({ where: { id: last.id } })).toBeNull();
+    expect(await prisma.characterTag.findUnique({ where: { characterId_tagId: { characterId: character.id, tagId: rows[0].id } } })).not.toBeNull();
+  });
 });

@@ -88,6 +88,14 @@ describe("public text-to-image generation profiles", () => {
     ])).resolves.toEqual([]);
   });
 
+  it.each([5, 8])("excludes a %i-output profile before offering an undeliverable quote", async (maxCount) => {
+    catalog.generationWorkflowDescriptor.mockResolvedValue({
+      capabilities: ["textToImage"], inputs: [{ type: "text" }],
+    });
+    await expect(filterPublicTextToImageGenerationProfiles([{ ...profile, maxCount }])).resolves.toEqual([]);
+    await expect(filterPublicTextToImageGenerationProfiles([{ ...profile, maxCount: 4 }])).resolves.toEqual([{ ...profile, maxCount: 4 }]);
+  });
+
   it("rejects image-input workflows from the public text-to-image catalog", async () => {
     catalog.generationWorkflowDescriptor.mockResolvedValue({
       capabilities: ["textToImage", "imageToImage"],

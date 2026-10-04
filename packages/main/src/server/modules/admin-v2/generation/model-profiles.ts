@@ -8,6 +8,7 @@
 //            diagnostics flag. The gate is asserted after authentication so an unauthenticated
 //            caller still gets 401 rather than a 404 that leaks the flag state.
 import type { Prisma } from "@prisma/client";
+import { imageGeneratePayloadSchema } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
@@ -406,6 +407,7 @@ async function publishModelProfileAuthority(
   if (!profile) throw Errors.notFound("Model profile not found");
   assertTargetConfirmation(body.confirmation, profile.id);
   if (profile.status !== "draft") throw Errors.badRequest("Only draft profiles can be published");
+  assertImageOutputCapacity(profile);
   if (profile.mode === "video" && !(await featureEnabled(tx, "video_gen"))) {
     throw Errors.forbidden("Video generation is disabled by feature flag");
   }
@@ -473,9 +475,10 @@ async function rollbackModelProfileAuthority(
       version: { lt: current.version },
     },
     orderBy: { version: "desc" },
-    select: { id: true },
+    select: { id: true, mode: true, maxCount: true },
   });
   if (!previous) throw Errors.notFound("No previous profile version to roll back to");
+  assertImageOutputCapacity(previous);
   await tx.generationModelProfile.updateMany({
     where: { profileKey: current.profileKey, status: "active" },
     data: { status: "archived", archivedAt: new Date() },
@@ -590,6 +593,15 @@ function mergeModelProfilePublishEvidence(
     ...(reviewSource ? { reviewSource } : {}),
     ...(reviewStatus ? { reviewStatus } : {}),
   });
+}
+
+function assertImageOutputCapacity(profile: { mode: string; maxCount: number }) {
+  if (profile.mode === "image" && !imageGeneratePayloadSchema.shape.count.safeParse(profile.maxCount).success) {
+    throw Errors.badRequest("Image profile maximum count exceeds delivery capacity", {
+      maxCount: profile.maxCount,
+      supportedMaxCount: imageGeneratePayloadSchema.shape.count.maxValue,
+    });
+  }
 }
 
 function assertModelProfilePublishable(

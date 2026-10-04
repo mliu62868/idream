@@ -1489,7 +1489,7 @@ export function HelpDeskHistoryPanel({
                   {item.resolution ? (
                     <p>Resolution: {historyStatusLabel(item.resolution.outcome)}</p>
                   ) : null}
-                  {viewerScope ? <HelpDeskConversation key={`${viewerScope}:${item.id}`} ticketId={item.ticketId} viewerScope={viewerScope} onUpdated={onRefresh} /> : null}
+                  {viewerScope ? <HelpDeskConversation key={`${viewerScope}:${item.id}`} ticketId={item.ticketId} viewerScope={viewerScope} updatedAt={item.updatedAt} onUpdated={onRefresh} /> : null}
                 </HistoryCard>
               ))}
             </HistoryGroup>

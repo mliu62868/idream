@@ -94,7 +94,7 @@ import {
 } from "@/lib/generation-write-client";
 import { publicOptimisticMutationFailure } from "./optimistic-write-state";
 import { useReportDialog } from "./ReportDialog";
-import { VideoSequenceControls } from "./VideoSequenceControls";
+import { VideoSequenceControls, type VideoSequenceRecovery } from "./VideoSequenceControls";
 import { canStartAgeGatedLoad } from "@/lib/age-gate";
 
 type MediaItem = {
@@ -486,6 +486,7 @@ export function GeneratorWorkspace() {
   const [charactersRefreshNonce, setCharactersRefreshNonce] = useState(0);
   const [characterId, setCharacterId] = useState("");
   const [freeplay, setFreeplay] = useState(false);
+  const [videoSequenceRecovery, setVideoSequenceRecovery] = useState<VideoSequenceRecovery | null>(null);
   const [mode, setMode] = useState<GenerationMode>("image");
   const [imageWorkflow, setImageWorkflow] = useState<ImageWorkflow>("presets");
   const [prompt, setPrompt] = useState("");
@@ -965,6 +966,9 @@ export function GeneratorWorkspace() {
   const videoModeCopy = generatorVideoModeCopy(
     selectedCharacter?.title ?? "character",
   );
+  const videoSourceImage = videoSequenceRecovery
+    ? videoSequenceRecovery.sourceImageAssetId ? `/api/v1/media/${encodeURIComponent(videoSequenceRecovery.sourceImageAssetId)}/content` : null
+    : selectedCharacter?.image;
   // 锚点几乎总是同时出现在参考集里（编辑角色的身份修复就是 anchor === reference），
   // 两个数组直接相加会把同一张图数两遍 —— 界面上写的是「N images」，得是真实张数。
   const identityReferenceCount = useMemo(() => {
@@ -1065,6 +1069,7 @@ export function GeneratorWorkspace() {
     setIdentityMedia([]);
     setIdentityMediaAuthority(readyAuthorityStatus());
     setSelectedEditSource(null);
+    setVideoSequenceRecovery(null);
     setImageEditSources([]);
     setMediaCursorTrail([null]);
     setSelectedMediaIds(new Set());
@@ -1353,6 +1358,15 @@ export function GeneratorWorkspace() {
     void refreshJobs();
     void refreshMedia(galleryTabRef.current);
   }, [refreshBalanceAndQuoteAuthority, refreshJobs, refreshMedia]);
+
+  const recoverVideoSequenceContext = useCallback((value: VideoSequenceRecovery | null) => {
+    setVideoSequenceRecovery(value);
+    if (!value) return;
+    setCharacterId(value.request.characterId);
+    setFreeplay(false);
+    setConsistencyMode(value.request.consistencyMode);
+    setSeed(value.request.seed ?? "");
+  }, []);
 
   const refreshIdentityMedia = useCallback(async () => {
     const viewerRequest = beginPrivateViewerRequest();
@@ -2227,7 +2241,7 @@ export function GeneratorWorkspace() {
     }
     const controls: Record<string, string> = presetEditorType === "setup" ? currentPresetControls({
       backgroundPresetId,
-      canUsePrompt,
+      canDescribeMoment,
       modePresetId,
       outfitPresetId,
       posePresetId,
@@ -2237,9 +2251,9 @@ export function GeneratorWorkspace() {
       setStatus("Describe this preset before saving.");
       return;
     }
-    // An unavailable premium control is not permission to erase the owner's
+    // An unavailable prompt control is not permission to erase the owner's
     // previously saved prompt while they update the name or other fields.
-    if (editingPreset && presetEditorType === "setup" && !canUsePrompt) {
+    if (editingPreset && presetEditorType === "setup" && !canDescribeMoment) {
       const originalPrompt = presetControlString(editingPreset.controls, "prompt");
       if (originalPrompt) controls.prompt = originalPrompt;
     }
@@ -2281,7 +2295,7 @@ export function GeneratorWorkspace() {
             modePresetId,
             outfitPresetId,
             posePresetId,
-            prompt: canUsePrompt ? prompt.trim() : "",
+            prompt: canDescribeMoment ? prompt.trim() : "",
             savedAt: Date.now(),
           };
           savePresetDraft(viewerScope, draft);
@@ -2328,13 +2342,13 @@ export function GeneratorWorkspace() {
       setBackgroundPresetId(presetControlString(controls, "backgroundPresetId"));
       setPosePresetId(presetControlString(controls, "posePresetId"));
       setOutfitPresetId(presetControlString(controls, "outfitPresetId"));
-      setPrompt(canUsePrompt ? presetControlString(controls, "prompt") : "");
+      setPrompt(canDescribeMoment ? presetControlString(controls, "prompt") : "");
     }
     setMode("image");
     setImageWorkflow("presets");
     setDeleteConfirmPresetId(null);
     setStatus(`Applied preset "${preset.label}".`);
-  }, [canUsePrompt]);
+  }, [canDescribeMoment]);
 
   function editPreset(preset: UserPreset) {
     if (presetSavingRef.current) return;
@@ -2797,6 +2811,7 @@ export function GeneratorWorkspace() {
                     className="mt-2 h-12 w-full rounded-[10px] bg-[rgb(36,36,36)] px-4 text-[13px] font-semibold text-white outline-none"
                     disabled={
                       freeplay ||
+                      (mode === "video" && Boolean(videoSequenceRecovery)) ||
                       !charactersAuthority.hasSnapshot ||
                       characters.length === 0
                     }
@@ -2849,6 +2864,7 @@ export function GeneratorWorkspace() {
                 <label className="mt-3 flex items-center gap-2 text-[13px] font-semibold text-white">
                   <input
                     checked={freeplay}
+                    disabled={mode === "video" && Boolean(videoSequenceRecovery)}
                     className="h-4 w-4 accent-[rgb(255,64,180)]"
                     id="generator-freeplay"
                     name="freeplay"
@@ -2957,14 +2973,14 @@ export function GeneratorWorkspace() {
                 data-testid="generator-video-source"
               >
                 <div className="relative h-24 w-20 shrink-0 overflow-hidden rounded-[8px] bg-[rgb(36,36,36)]">
-                  <Image
+                  {videoSourceImage ? <Image
                     alt={`${selectedCharacter.title} animation source`}
                     className="object-cover object-top"
                     fill
                     sizes="80px"
-                    src={selectedCharacter.image}
-                    unoptimized={isPrivateMediaUrl(selectedCharacter.image)}
-                  />
+                    src={videoSourceImage}
+                    unoptimized={isPrivateMediaUrl(videoSourceImage)}
+                  /> : <span className="p-2 text-xs text-white/60">Checking original reference…</span>}
                 </div>
                 <div className="min-w-0 py-1">
                   <p className="text-[12px] font-black uppercase text-white">
@@ -2977,7 +2993,7 @@ export function GeneratorWorkspace() {
               </div>
             ) : null}
 
-            {mode === "video" ? anonymousViewer ? <Link className="mt-4 flex h-12 w-full items-center justify-center rounded-full bg-[rgb(255,48,170)] text-[14px] font-black text-white" href={authHrefForTarget("/signup", authReturnTarget)}>Join free to generate</Link> : <VideoSequenceControls key={receiptOwnerScope ?? "signed-out"} viewerScope={receiptOwnerScope} characterId={generationBody.characterId} generationContextToken={generationBody.generationContextToken} consistencyMode={consistencyMode} seed={generationBody.seed} disabled={!modeAvailable || !contextReady || formUnconfirmed} unavailableMessage={modeUnavailableMessage ?? undefined} onStatusChange={refreshVideoSequenceAuthority} /> : <>
+            {mode === "video" ? anonymousViewer ? <Link className="mt-4 flex h-12 w-full items-center justify-center rounded-full bg-[rgb(255,48,170)] text-[14px] font-black text-white" href={authHrefForTarget("/signup", authReturnTarget)}>Join free to generate</Link> : <VideoSequenceControls key={receiptOwnerScope ?? "signed-out"} viewerScope={receiptOwnerScope} characterId={generationBody.characterId} generationContextToken={generationBody.generationContextToken} consistencyMode={consistencyMode} seed={generationBody.seed} disabled={!modeAvailable || !contextReady || formUnconfirmed} unavailableMessage={modeUnavailableMessage ?? undefined} onStatusChange={refreshVideoSequenceAuthority} onRecoveryChange={recoverVideoSequenceContext} /> : <>
             <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
                 {imageEditMode
                   ? "Edit instructions"
@@ -4585,14 +4601,14 @@ function presetControlString(controls: Record<string, unknown>, key: string): st
 
 function currentPresetControls({
   backgroundPresetId,
-  canUsePrompt,
+  canDescribeMoment,
   modePresetId,
   outfitPresetId,
   posePresetId,
   prompt,
 }: {
   backgroundPresetId: string;
-  canUsePrompt: boolean;
+  canDescribeMoment: boolean;
   modePresetId: string;
   outfitPresetId: string;
   posePresetId: string;
@@ -4603,7 +4619,7 @@ function currentPresetControls({
   if (backgroundPresetId) controls.backgroundPresetId = backgroundPresetId;
   if (posePresetId) controls.posePresetId = posePresetId;
   if (outfitPresetId) controls.outfitPresetId = outfitPresetId;
-  if (canUsePrompt && prompt.trim()) controls.prompt = prompt.trim();
+  if (canDescribeMoment && prompt.trim()) controls.prompt = prompt.trim();
   return controls;
 }
 

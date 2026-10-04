@@ -138,6 +138,36 @@ async function loadChatContext(userId: string, selector: z.infer<typeof chatSele
       throw Errors.gone("The original Character Release is unavailable. Return to the chat to choose an available version.");
     }
   }
+  if (selector.mediaAssetId) {
+    const attachment = turn.attachments.find(item => item.mediaAssetId === selector.mediaAssetId && item.status === "completed" && attachmentAttempt(item.metadata) === turn.attempt);
+    const job = attachment?.generationJobId ? await db.generationJob.findFirst({
+      where: { id: attachment.generationJobId, userId, characterId: null, status: "completed" },
+    }) : null;
+    if (job?.characterId === null) {
+      const origin = jsonRecord(job.sourceMeta);
+      if (job.sourceType !== "chat_image" || origin.imageSubject !== "scene" || origin.chatCharacterId !== character.id
+        || origin.sessionId !== turn.sessionId || origin.exchangeId !== turn.id
+        || job.visualProfileId || job.visualProfileVersion || job.referenceSetRevisionId) {
+        throw Errors.conflict("The delivered scene does not match its original Chat request.");
+      }
+      const asset = await db.mediaAsset.findFirst({ where: { id: selector.mediaAssetId, sourceJobId: job.id, ownerId: userId,
+        characterId: null, type: "image", deletedAt: null, safetyStatus: "passed" } });
+      if (!asset || !isMediaAssetOperationalForAuthority(asset.metadata) || !hasHydratableMediaBlobAuthority(asset)) {
+        throw Errors.notFound("The image is no longer an available delivery of this chat reply.");
+      }
+      const rawInput = jsonRecord(job.momentSpec).rawInput;
+      const prompt = typeof rawInput === "string" && rawInput.trim() ? rawInput : attachment!.promptHint ?? "";
+      const scene = parsedScene.data;
+      const digest = canonicalJsonHash({ version: 1, userId, ...selector, chatCharacterId: character.id,
+        characterContentVersionId: content.id, characterReleaseId: release?.id ?? null, contentHash: content.contentHash,
+        scene, userContent: turn.userContent, assistantContent: turn.assistantContent, acceptedBrief: prompt, sourceGenerationJobId: job.id });
+      const url = collectionMediaViewUrl(asset);
+      return { ...selector, source: { kind: "chat" as const, ...selector }, identityMode: "source_only" as const,
+        digest, pins: null, character: null, characterId: null, characterName: null, chatCharacterId: character.id,
+        scene, prompt, sourceMedia: { id: asset.id, url, thumbnailUrl: url }, sourceGenerationJobId: job.id, legacyRelease: false,
+        authorityMediaAssetIds: [asset.id], returnHref: `/chat/${encodeURIComponent(selector.sessionId)}`, sourceLabel: "your chat" };
+    }
+  }
   let visualProfileId = snapshot.characterVisualProfileId;
   let visualProfileVersion = snapshot.characterVisualProfileVersion;
   let referenceSetRevisionId = release?.referenceSetRevisionId ?? null;
@@ -203,7 +233,7 @@ async function loadChatContext(userId: string, selector: z.infer<typeof chatSele
     visualProfileHash: visualProfile.immutableHash, scene, userContent: turn.userContent, assistantContent: turn.assistantContent,
     acceptedBrief, sourceGenerationJobId });
   return { ...selector, source: { kind: "chat" as const, ...selector }, identityMode: "character" as const,
-    digest, pins, character, characterId: character.id, characterName: character.name,
+    digest, pins, character, characterId: character.id, characterName: character.name, chatCharacterId: character.id,
     scene, prompt, sourceMedia, sourceGenerationJobId, legacyRelease: release?.legacy ?? false,
     authorityMediaAssetIds: sourceMedia ? [sourceMedia.id] : [],
     returnHref: `/chat/${encodeURIComponent(selector.sessionId)}`, sourceLabel: "your chat" };
@@ -263,7 +293,7 @@ async function loadComicContext(userId: string, source: Extract<GenerationContex
     chapterTitle: episode.title, caption: page.caption, sourceMediaId: sourceMedia.id, pins, identityHash: identity?.identityHash ?? null });
   return { source, identityMode: identity ? "character" as const : "source_only" as const,
     digest, pins, character: identity?.character ?? null, characterId: identity?.character.id ?? null,
-    characterName: identity?.character.name ?? null, scene: null, prompt, sourceMedia,
+    characterName: identity?.character.name ?? null, chatCharacterId: null, scene: null, prompt, sourceMedia,
     sourceGenerationJobId: null, legacyRelease: false,
     authorityMediaAssetIds: comic.episodes.flatMap(item => item.pages.flatMap(item => item.mediaAssetId ? [item.mediaAssetId] : [])),
     returnHref: `/comics/${encodeURIComponent(comic.id)}#chapter-${episode.id}`, sourceLabel: comic.title };
@@ -321,7 +351,7 @@ export function applyGenerationContext(body: GenerationCreateBody, context: Gene
 
 export function generationContextSource(context: GenerationContext, token: string, idempotencyKey: string): GenerationSource {
   return { sourceType: context.source.kind === "chat" ? "chat_handoff" : "comic_remix", sourceId: `${context.digest}:${idempotencyKey}`,
-    sourceMeta: { ...(context.source.kind === "chat" ? { sessionId: context.source.sessionId, exchangeId: context.source.turnId, attempt: context.source.attempt } :
+    sourceMeta: { ...(context.source.kind === "chat" ? { sessionId: context.source.sessionId, exchangeId: context.source.turnId, attempt: context.source.attempt, chatCharacterId: context.chatCharacterId } :
       { comicId: context.source.comicId, comicVersion: context.source.comicVersion, comicPageId: context.source.pageId }),
       generationContextToken: token, generationContextDigest: context.digest, identityMode: context.identityMode, ...context.pins,
       sourceMediaId: context.sourceMedia?.id ?? null, sourceGenerationJobId: context.sourceGenerationJobId,

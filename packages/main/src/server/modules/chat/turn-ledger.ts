@@ -1628,6 +1628,7 @@ function begunResult(
     assistantContent: string;
     assistantStatus: string;
     createdAt: Date;
+    memoryEnabled: boolean;
     sceneVersion: number;
     scene: Prisma.JsonValue | null;
   },
@@ -1688,6 +1689,7 @@ function publicMessages(session: {
     sceneVersion: number;
     scene: Prisma.JsonValue | null;
     createdAt: Date;
+    memoryEnabled: boolean;
     attachments: Array<{
       id: string;
       kind: string;
@@ -1736,6 +1738,7 @@ function publicUserMessage(turn: {
   userContent: string;
   userStatus: string;
   createdAt: Date;
+  memoryEnabled: boolean;
 }) {
   return {
     id: turn.userMessageId,
@@ -1743,6 +1746,7 @@ function publicUserMessage(turn: {
     content: turn.userContent,
     status: turn.userStatus,
     createdAt: turn.createdAt.toISOString(),
+    memoryEnabled: turn.memoryEnabled,
     attachments: [],
   };
 }
@@ -1757,6 +1761,7 @@ function publicAssistantMessage(turn: {
   sceneVersion: number;
   scene: Prisma.JsonValue | null;
   createdAt: Date;
+  memoryEnabled: boolean;
   attachments?: Array<{
     id: string;
     kind: string;
@@ -1781,12 +1786,16 @@ function publicAssistantMessage(turn: {
     sceneVersion: turn.sceneVersion,
     scene: turn.scene,
     createdAt: turn.createdAt.toISOString(),
+    memoryEnabled: turn.memoryEnabled,
     attachments: (turn.attachments ?? [])
       .filter((attachment) => attachmentAttempt(attachment.metadata) === turn.attempt)
       .map((attachment) => ({
         id: attachment.id,
         kind: attachment.kind,
         status: attachment.status,
+        ...(attachment.kind === "generated_image" ? {
+          imageSubject: jsonRecord(jsonRecord(attachment.metadata).request ?? null).subject === "scene" ? "scene" : "companion",
+        } : {}),
         generationJobId: attachment.generationJobId,
         mediaAssetId: attachment.mediaAssetId,
         promptHint: attachment.promptHint,
@@ -1874,6 +1883,7 @@ async function enrichAttachmentMedia(messages: Array<Record<string, unknown>>, u
     },
     select: {
       id: true,
+      characterId: true,
       url: true,
       thumbnailUrl: true,
       width: true,
@@ -1903,6 +1913,9 @@ async function enrichAttachmentMedia(messages: Array<Record<string, unknown>>, u
         return asset
           ? {
               ...projected,
+              // The delivered asset also covers edits whose request metadata
+              // contains only the edit instruction, not a new subject choice.
+              ...(projected.kind === "generated_image" ? { imageSubject: asset.characterId ? "companion" : "scene" } : {}),
               mediaUrl: asset.url,
               thumbnailUrl: asset.thumbnailUrl ?? asset.url,
               width: projected.width ?? asset.width,

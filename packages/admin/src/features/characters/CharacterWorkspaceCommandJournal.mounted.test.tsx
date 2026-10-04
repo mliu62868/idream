@@ -40,6 +40,7 @@ import { AdminI18nProvider } from "@/components/admin/i18n";
 import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import { characterWorkspaceDetail } from "./character-workspace-fixture";
 import { CharacterWorkspace } from "./CharacterWorkspace";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 
 /**
  * SPEC: 这一屏证明的不是 journal 的判断对不对（那由 character-command-journal.test.ts 覆盖），
@@ -265,6 +266,52 @@ describe("Character workspace — 每个命令出口都接到了运营界面", (
   });
 
   // SPEC: 有落盘日志时首屏直接落在 Release 页签，并锁住写入。
+  it("does not release an in-flight save through shell refresh", async () => {
+    window.history.replaceState(null, "", "/admin/characters/character-1?tab=assets");
+    let finishCommit!: () => void;
+    imageSelectionCommit.mockImplementation(() => new Promise((resolve) => { finishCommit = resolve; }));
+    await render();
+    await act(async () => clickButton("Use image in placement").click());
+    expect(clickButton("Use image in placement").disabled).toBe(true);
+    const readsBefore = adminV2Request.mock.calls.length;
+    await act(async () => window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)));
+    expect(adminV2Request.mock.calls.length).toBe(readsBefore);
+    expect(clickButton("Use image in placement").disabled).toBe(true);
+    expect(bannerContaining("Saving your changes")).not.toBeNull();
+    await act(async () => finishCommit());
+    await waitUntil(() => !clickButton("Use image in placement").disabled, "save to settle");
+  });
+
+  it("reconciles overlapping authority refreshes with the newest projection", async () => {
+    window.history.replaceState(null, "", "/admin/characters/character-1?tab=assets");
+    imageSelectionCommit.mockResolvedValue(undefined);
+    let reads = 0;
+    const finishes: ((value: typeof workspace) => void)[] = [];
+    adminV2Request.mockImplementation(async (path) => {
+      if (path !== "/api/v2/admin/characters/character-1") throw new Error(`unexpected request: ${path}`);
+      reads += 1;
+      if (reads === 1) return workspace;
+      if (reads === 2) throw new Error("projection unavailable");
+      return new Promise((resolve) => finishes.push(resolve));
+    });
+    await render();
+    await act(async () => clickButton("Use image in placement").click());
+    await waitUntil(() => bannerContaining("projection unavailable") !== null, "failed projection");
+    await act(async () => {
+      window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT));
+      window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT));
+    });
+    await waitUntil(() => finishes.length === 2, "overlapping refreshes");
+    const renamed = (name: string) => ({ ...workspace, preview: { ...workspace.preview, draft: { ...workspace.preview.draft, name } } });
+    await act(async () => finishes[1](renamed("Newest character")));
+    await waitUntil(() => text().includes("Newest character"), "newest projection");
+    await act(async () => finishes[0](renamed("Obsolete character")));
+    expect(text()).toContain("Newest character");
+    expect(text()).not.toContain("Obsolete character");
+    expect(clickButton("Use image in placement").disabled).toBe(false);
+    expect(bannerContaining("projection unavailable")).toBeNull();
+  });
+
   it("restores a persisted command, locks writes, and lands on the release tab", async () => {
     seedPendingCommand();
     adminV2Request.mockImplementation(async (path) => {

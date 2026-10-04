@@ -106,6 +106,8 @@ describe("Comic authoring, exact-version review and revocable publication", () =
 
   it("preserves chapter/page order, publishes the exact version and serves private-source bytes through Comic authority", async () => {
     const { comic, manifest, mediaIds } = await draft("ordered");
+    await prisma.mediaAsset.update({ where: { id: mediaIds[0]! }, data: { width: 512, height: 640 } });
+    await prisma.mediaAsset.update({ where: { id: mediaIds[1]! }, data: { width: 768, height: 512 } });
     const ordered: ComicManifest = { ...manifest, episodes: [
       { title: "Second scene first", pages: [{ mediaAssetId: mediaIds[1]!, caption: "First in the reader" }] },
       { title: "The beginning", pages: [{ mediaAssetId: mediaIds[0]!, caption: "Second in the reader" }] },
@@ -119,6 +121,7 @@ describe("Comic authoring, exact-version review and revocable publication", () =
     const read = comicDetailSchema.parse(response.data);
     expect(read.episodes.map((episode) => episode.title)).toEqual(["Second scene first", "The beginning"]);
     expect(read.episodes.flatMap((episode) => episode.pages.map((page) => page.mediaAssetId))).toEqual([...mediaIds].reverse());
+    expect(read.episodes.flatMap((episode) => episode.pages.map((page) => [page.width, page.height]))).toEqual([[768, 512], [512, 640]]);
     expect(read.canManage).toBe(false);
     expect(JSON.stringify(response.data)).not.toMatch(/PRIVATE_GENERATION_PROMPT|storageKey|sourceJobId|sourceProvenance/);
     expect(response.headers.get("cache-control")).toContain("no-store");

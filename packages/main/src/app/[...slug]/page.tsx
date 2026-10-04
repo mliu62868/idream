@@ -55,6 +55,8 @@ export async function generateMetadata({
 }: PageProps): Promise<Metadata> {
   const { slug } = await params;
   const path = pathFromSlug(slug);
+  // Changelog content must pass its dedicated per-request membership gate.
+  if (path === "/changelog") notFound();
   const route = getOurdreamRoute(path);
   const resolution = await loadCmsResolution(path);
   const renderDecision = publicRouteRenderDecision(route, resolution.state);
@@ -90,6 +92,7 @@ export async function generateMetadata({
 export default async function Page({ params, searchParams }: PageProps) {
   const { slug } = await params;
   const path = pathFromSlug(slug);
+  if (path === "/changelog") notFound();
 
   const route = getOurdreamRoute(path);
   const authority = publicRouteAuthority(path, route);

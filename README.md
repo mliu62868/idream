@@ -257,6 +257,23 @@ Generate production secrets:
 bun run --silent launch:secrets
 ```
 
+Check cold-start preparation before collecting runtime evidence:
+
+```bash
+bun run launch:prepare:runtime -- \
+  --launch-env-file .tmp/production-launch.env \
+  --admin-env-file .tmp/production-admin.env \
+  --chat-env-file .tmp/production-chat.env \
+  --gen-env-file .tmp/production-gen.env \
+  --report .tmp/runtime-preparation.json --json
+```
+
+Use the actual four service files. This read-only stage checks configuration,
+source, database authority, pins and recovery preparation; its report always has
+`ok=false` and `launchQualified=false`. A zero exit code means `prepared=true`,
+which never replaces `check:launch`. A first production target still needs a
+verified restricted bootstrap; the current wrapper has no such action.
+
 Run launch probes:
 
 ```bash
@@ -277,7 +294,7 @@ excluded from launch readiness.
 Run the final direct gate:
 
 ```bash
-bun run check:launch -- --launch-env-file .tmp/production-launch.env
+bun run check:launch -- --launch-env-file .tmp/production-launch.env --admin-env-file .tmp/production-admin.env --chat-env-file .tmp/production-chat.env --gen-env-file .tmp/production-gen.env
 ```
 
 `LAUNCH_SCOPE=full` is the default. A release that explicitly excludes Billing

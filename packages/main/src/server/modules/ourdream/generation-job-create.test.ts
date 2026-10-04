@@ -5,6 +5,11 @@ import { fitChatImageRequestToRoute } from "./generation-job-create";
 const chatRoute = { maxCount: 1, allowedOrientations: ["4:5", "16:9"] };
 
 describe("fitChatImageRequestToRoute", () => {
+  it.each([5, 8])("rejects an undeliverable %i-output request at the input boundary", (outputCount) => {
+    expect(generationJobSchema.safeParse({ characterId: "c1", outputCount }).success).toBe(false);
+    expect(generationJobSchema.parse({ characterId: "c1", outputCount: 4 }).outputCount).toBe(4);
+  });
+
   it("turns a companion's 'a few square pics' into what the chat route delivers", () => {
     const body = generationJobSchema.parse({ characterId: "c1", prompt: "Selfie", orientation: "1:1", outputCount: 3, controls: { orientation: "1:1" } });
     const fitted = fitChatImageRequestToRoute(body, chatRoute);

@@ -30,15 +30,15 @@ describe("Help Desk support conversation", () => {
     }));
   });
   afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.unstubAllGlobals(); });
-  async function mount(scope = "user:customer") {
+  async function mount(scope = "user:customer", currentTicket = ticket) {
     await act(async () => root.render(createElement(HelpDeskHistoryPanel, {
       key: scope, viewerScope: scope, authenticated: true, error: "", loading: false,
-      history: { supportRequests: [ticket], reports: [], appeals: [] }, onRefresh: vi.fn(),
+      history: { supportRequests: [currentTicket], reports: [], appeals: [] }, onRefresh: vi.fn(),
     })));
     await settle();
   }
   async function click(label: string) {
-    const button = [...container.querySelectorAll("button")].find((node) => node.textContent?.trim() === label);
+    const button = [...container.querySelectorAll("button")].find((node) => node.getAttribute("aria-label") === label || node.textContent?.trim() === label);
     expect(button, label).toBeDefined(); await act(async () => button!.click()); await settle();
   }
   async function type(value: string) {
@@ -83,6 +83,38 @@ describe("Help Desk support conversation", () => {
     expect([...container.querySelectorAll("span")].some((node) => node.textContent === "Resolved")).toBe(true);
     expect(container.querySelector("textarea")).toBeNull();
   });
+  it.each([false, true])("refreshes the open conversation when Help Desk history changes (resolved=%s)", async (resolved) => {
+    let changed = false;
+    const updatedAt = "2026-09-02T12:01:00.000Z";
+    const originalFetch = fetch;
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).startsWith("/api/v1/support/requests/") && !init?.method) {
+        return Promise.resolve(envelope({ request: changed ? {
+          ...conversation, updatedAt, status: resolved ? "resolved" : ticket.status, canReply: !resolved,
+          messages: [...conversation.messages, { id: "follow-up", author: "support", body: "Your image is available after reload.", createdAt: updatedAt }],
+        } : conversation }));
+      }
+      return originalFetch(input, init);
+    }));
+    function History() {
+      const [currentTicket, setTicket] = useState(ticket);
+      return createElement(HelpDeskHistoryPanel, {
+        viewerScope: "user:customer", authenticated: true, error: "", loading: false,
+        history: { supportRequests: [currentTicket], reports: [], appeals: [] },
+        onRefresh: () => setTicket(changed ? { ...ticket, updatedAt, status: resolved ? "resolved" : ticket.status } : ticket),
+      });
+    }
+    await act(async () => root.render(createElement(History)));
+    await settle(); await click("View conversation"); await type("My unfinished follow-up");
+    changed = true;
+    await click("Refresh Help Desk history");
+    expect(container.textContent).toContain("Your image is available after reload.");
+    expect(container.textContent).toContain(resolved ? "Status: Resolved" : "Status: Waiting for your reply");
+    if (resolved) expect(container.querySelector("textarea")).toBeNull();
+    else expect(container.querySelector("textarea")?.value).toBe("My unfinished follow-up");
+    const reads = vi.mocked(fetch).mock.calls.filter(([input, init]) => String(input).startsWith("/api/v1/support/requests/") && !init?.method);
+    expect(reads).toHaveLength(2);
+  });
   it("clears a reply draft when the signed-in customer changes before submission", async () => {
     await mount(); await click("View conversation"); await type("Private account detail");
     viewer = "another-customer";
@@ -92,18 +124,23 @@ describe("Help Desk support conversation", () => {
     expect(container.querySelector("textarea")?.value ?? "").toBe("");
     expect(container.textContent).toContain("Your account changed");
   });
-  it("settles a pending reply after a same-account history refresh", async () => {
+  it.each([false, true])("settles a pending reply after a same-account history refresh (new version=%s)", async (newVersion) => {
     const originalFetch = fetch;
     let complete!: (response: Response) => void;
     const pending = new Promise<Response>((resolve) => { complete = resolve; });
     vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => init?.method === "POST" ? pending : originalFetch(input, init)));
     await mount(); await click("View conversation"); await type("Image from the first page."); await click("Send reply");
-    await mount();
-    complete(envelope({ request: { ...conversation, messages: [...conversation.messages, { id: "late-reply", author: "customer", body: "Image from the first page.", createdAt: ticket.createdAt }] }, replayed: false }));
+    const updatedAt = newVersion ? "2026-09-02T12:01:00.000Z" : ticket.updatedAt;
+    await mount("user:customer", { ...ticket, updatedAt });
+    expect(container.querySelector("textarea")?.value).toBe("Image from the first page.");
+    expect(container.querySelector("textarea")?.disabled).toBe(true);
+    complete(envelope({ request: { ...conversation, updatedAt, messages: [...conversation.messages, { id: "late-reply", author: "customer", body: "Image from the first page.", createdAt: updatedAt }] }, replayed: false }));
     await settle();
     expect(container.querySelector("textarea")?.value).toBe("");
     expect(container.querySelector("textarea")?.disabled).toBe(false);
     expect(container.textContent).toContain("Image from the first page.");
+    const reads = vi.mocked(fetch).mock.calls.filter(([input, init]) => String(input).startsWith("/api/v1/support/requests/") && !init?.method);
+    expect(reads).toHaveLength(1);
   });
   it("does not insert a late reply after the account panel is replaced", async () => {
     const originalFetch = fetch;

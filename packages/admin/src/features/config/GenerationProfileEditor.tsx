@@ -15,7 +15,7 @@ const textFields = [
   ["profileKey", "Profile key"], ["label", "Label"], ["runner", "Runner"], ["pipelineModel", "Pipeline model"], ["workflowKey", "Workflow key"], ["sourceModelPath", "Source model path"], ["convertedModelPath", "Converted model path"], ["sampler", "Sampler"], ["scheduler", "Scheduler"], ["requiredEntitlement", "Required entitlement"],
 ] as const;
 const numberFields = [
-  ["defaultWidth", "Default width", 128, 4096, 1], ["defaultHeight", "Default height", 128, 4096, 1], ["steps", "Steps", 1, 150, 1], ["cfgScale", "CFG scale", 1, 30, 0.1], ["costMultiplier", "Cost multiplier", 0.1, 20, 0.1], ["maxCount", "Maximum count", 1, 8, 1], ["concurrencyLimit", "Concurrency limit", 1, 100, 1],
+  ["defaultWidth", "Default width", 128, 4096, 1], ["defaultHeight", "Default height", 128, 4096, 1], ["steps", "Steps", 1, 150, 1], ["cfgScale", "CFG scale", 1, 30, 0.1], ["costMultiplier", "Cost multiplier", 0.1, 20, 0.1], ["maxCount", "Maximum count", 1, 4, 1], ["concurrencyLimit", "Concurrency limit", 1, 100, 1],
 ] as const;
 
 export function GenerationProfileEditor({ source, editing, onSaved, onCancel }: { source: Profile | null; editing: boolean; onSaved: (id: string) => void; onCancel: () => void }) {

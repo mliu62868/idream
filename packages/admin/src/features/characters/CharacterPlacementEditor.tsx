@@ -23,10 +23,12 @@ type PlacementPurpose = (typeof placements)[number]["purpose"];
 
 export function CharacterPlacementEditor({
   data,
+  canRead,
   canWrite,
   runCommittedMutation,
 }: {
   data: CharacterWorkspaceDetail;
+  canRead: boolean;
   canWrite: boolean;
   runCommittedMutation: RunCommittedCharacterMutation;
 }) {
@@ -41,6 +43,7 @@ export function CharacterPlacementEditor({
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const loadAssets = useCallback(async (cursor: string | null = null) => {
+    if (!canRead) return;
     const version = ++requestVersion.current;
     setLoading(true);
     setLoadError(null);
@@ -60,9 +63,10 @@ export function CharacterPlacementEditor({
     } finally {
       if (version === requestVersion.current) setLoading(false);
     }
-  }, [data.character.id, t]);
+  }, [canRead, data.character.id, t]);
 
   function openChooser(purpose: PlacementPurpose) {
+    if (!canRead || !canWrite) return;
     setChoosing(purpose);
     setError(null);
     void loadAssets();
@@ -149,7 +153,7 @@ export function CharacterPlacementEditor({
                     {t(slot.status === "available" ? "Selected" : "Missing")}
                   </span>
                 </div>
-                <WorkspaceButton className="mt-3 w-full justify-center" disabled={!canWrite} onClick={() => openChooser(placement.purpose)}>
+                <WorkspaceButton className="mt-3 w-full justify-center" disabled={!canRead || !canWrite} onClick={() => openChooser(placement.purpose)}>
                   <Replace className="h-4 w-4" /> {t(slot.assetId ? "Replace image" : "Choose image")}
                 </WorkspaceButton>
               </div>

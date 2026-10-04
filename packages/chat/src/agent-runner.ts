@@ -31,7 +31,7 @@ import {
   type AgentRunRecoveryCandidate,
 } from "./agent-run-store.js";
 import { env } from "./env.js";
-import { fenceAttemptsThrough, isFenced } from "./fence.js";
+import { ChatFenceError, fenceAttemptsThrough, isFenced } from "./fence.js";
 import { logger } from "./logger.js";
 import {
   prepareCompanionTurn,
@@ -94,7 +94,15 @@ function startAgentRun(run: AgentRunRecoveryCandidate): boolean {
   };
   activeRuns.set(key, active);
   active.done = executeAgentRun(turnId, attempt, controller.signal)
-    .catch((error) => logger.error({ err: error, turnId, attempt }, "AgentRun failed"))
+    .catch((error) => {
+      // Cancellation may win between the last read and any fenced write,
+      // including terminal recovery. Main already owns that terminal result.
+      if (error instanceof ChatFenceError) {
+        logger.debug({ turnId, attempt }, "AgentRun writer fenced");
+        return;
+      }
+      logger.error({ err: error, turnId, attempt }, "AgentRun failed");
+    })
     .finally(() => {
       if (activeRuns.get(key) === active) activeRuns.delete(key);
     });
@@ -220,7 +228,8 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
         sceneProjectionEvidence = sceneProjection;
         await appendAgentRunEvent(turnId, attempt, "scene.projected", sceneProjection);
         (commitSignal ?? signal).throwIfAborted();
-        const completeUsage = sceneProjection.requests.length === 0 || sceneProjection.usage !== null;
+        const replyUsage = candidate.usage;
+        const completeUsage = replyUsage !== null && (sceneProjection.requests.length === 0 || sceneProjection.usage !== null);
         const terminal: ChatTerminalCommit = {
           version: 1,
           turnId: snapshot.turnId,
@@ -230,8 +239,8 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
           status: "sent",
           content: candidate.content,
           model: candidate.model,
-          promptTokens: completeUsage ? candidate.usage.promptTokens + (sceneProjection.usage?.promptTokens ?? 0) : null,
-          completionTokens: completeUsage ? candidate.usage.completionTokens + (sceneProjection.usage?.completionTokens ?? 0) : null,
+          promptTokens: completeUsage ? replyUsage.promptTokens + (sceneProjection.usage?.promptTokens ?? 0) : null,
+          completionTokens: completeUsage ? replyUsage.completionTokens + (sceneProjection.usage?.completionTokens ?? 0) : null,
           sceneVersion: scene.version,
           scene,
           terminalEvidence: { ...terminalEvidence(
@@ -268,6 +277,9 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
     // the model or any tool effect.
     await finalizeAcceptedProposal(committedProposal, committedAck);
   } catch (error) {
+    // A cancelled or purged writer cannot replace Main's result with a new
+    // failure proposal. Other runtime/storage errors retain their normal path.
+    if (error instanceof ChatFenceError) return;
     if (committedAck) throw error;
     if (error instanceof CompanionCapacityError && !signal.aborted) {
       // Capacity is temporary. Keep the exact admitted input for the existing
@@ -377,8 +389,8 @@ async function settleTerminalProposal(
       type: "done",
       attempt: terminal.attempt,
       usage: {
-        promptTokens: terminal.promptTokens ?? 0,
-        completionTokens: terminal.completionTokens ?? 0,
+        promptTokens: terminal.promptTokens,
+        completionTokens: terminal.completionTokens,
       },
     });
   } else {

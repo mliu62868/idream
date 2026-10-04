@@ -47,6 +47,36 @@ function terminal(snapshot: ChatExecutionSnapshot): ChatTerminalCommit {
 }
 
 describe("Main Scene terminal authority", () => {
+  it.each([
+    { name: "unknown", promptTokens: null, completionTokens: null },
+    { name: "measured zero", promptTokens: 0, completionTokens: 0 },
+    { name: "complete measured total", promptTokens: 126, completionTokens: 36 },
+  ])("persists $name usage and consumes a delivered Turn exactly once", async ({ promptTokens, completionTokens }) => {
+    const f = await fixture();
+    const snapshot = await f.begin();
+    const selected = {
+      ...terminal(snapshot), promptTokens, completionTokens,
+      terminalEvidence: { ...terminal(snapshot).terminalEvidence, replyUsage: promptTokens === null ? null : { promptTokens, completionTokens, reasoningTokens: 0 } },
+    };
+    await expect(prisma.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId: snapshot.turnId } })).resolves.toMatchObject({ consumedAt: null, voidedAt: null });
+    const first = await commitChatTerminal(selected);
+    await expect(prisma.chatTurn.findUniqueOrThrow({ where: { id: snapshot.turnId } })).resolves.toMatchObject({
+      assistantStatus: "sent", assistantContent: selected.content, promptTokens, completionTokens,
+      sceneVersion: selected.sceneVersion, scene: selected.scene, terminalEvidence: selected.terminalEvidence,
+    });
+    await expect(chatVoiceAuthority(f.userId, f.sessionId, snapshot.assistantMessageId)).resolves.toMatchObject({ text: selected.content, sceneVersion: selected.sceneVersion, scene: selected.scene });
+    const fact = await prisma.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId: snapshot.turnId } });
+    expect(fact).toMatchObject({ consumedAt: expect.any(Date), voidedAt: null });
+    const revision = (await prisma.recentChat.findUniqueOrThrow({ where: { sessionId: f.sessionId } })).contextRevision;
+
+    await expect(commitChatTerminal(selected)).resolves.toEqual({ ...first, duplicate: true });
+    await expect(prisma.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId: snapshot.turnId } })).resolves.toEqual(fact);
+    await expect(prisma.chatTurnUsageFact.count({ where: { userId: f.userId } })).resolves.toBe(1);
+    await expect(prisma.recentChat.findUniqueOrThrow({ where: { sessionId: f.sessionId } })).resolves.toMatchObject({ contextRevision: revision });
+    await expect(prisma.characterStats.findUniqueOrThrow({ where: { characterId: f.characterId } })).resolves.toMatchObject({ chatsCount: 1 });
+    await expect(commitChatTerminal({ ...selected, promptTokens: promptTokens === null ? 0 : null, completionTokens: completionTokens === null ? 0 : null })).rejects.toThrow("CAS");
+  });
+
   it("rejects a missing Scene at a positive revision before selecting the reply", async () => {
     const f = await fixture();
     const snapshot = await f.begin();

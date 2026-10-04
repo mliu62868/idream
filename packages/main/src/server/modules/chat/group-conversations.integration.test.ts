@@ -185,7 +185,7 @@ describe("Main group conversation authority", () => {
     const call: ChatToolEffect = {
       version: 2, turnId: snapshot.turnId, attempt: snapshot.attempt, callId: randomUUID(),
       name: "generate_image_async", effectScope: "turn_action", intent: { requestedNudity: "unspecified" },
-      arguments: { prompt: "One person seated by a rain-streaked cafe window.", outputCount: 1, orientation: "4:5" },
+      arguments: { subject: "companion", prompt: "One person seated by a rain-streaked cafe window.", outputCount: 1, orientation: "4:5" },
     };
     // Generation's reservation boundary is replaced only in this consent
     // fixture; the delivery suite exercises the real debit and dispatch.

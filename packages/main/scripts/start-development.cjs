@@ -50,9 +50,15 @@ async function runDevelopment(options = {}) {
   // Next 16.2 creates external-package symlinks during cold compilation. Bun
   // 1.4 cannot reliably resolve their dependencies in that same process; use
   // Node for Next instead of relying on a previous build warming those paths.
+  const args = runtime.argv.slice(2);
+  // INTENT: Turbopack kept stale server modules after ordinary source edits in
+  // the real Chrome audit. Webpack provides reliable development hot updates;
+  // preserve an explicit caller choice of either supported bundler.
+  const bundler = args.some((arg) => ["--webpack", "--turbopack", "--turbo"].includes(arg))
+    ? [] : ["--webpack"];
   const child = runChild(
     "node",
-    [nextCli, "dev", ...runtime.argv.slice(2)],
+    [nextCli, "dev", ...bundler, ...args],
     {
       cwd: packageRoot,
       env: runtime.env,

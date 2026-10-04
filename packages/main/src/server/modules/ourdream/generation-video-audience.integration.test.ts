@@ -1,6 +1,7 @@
+import { generationTerminalRecordChecksum } from "@idream/shared/contracts/durable-server";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { generationProviderIdempotencyKey, generationTerminalFinalizeDedupeKey, generationTerminalRecordChecksum, idempotencyKeys, MAIN_QUEUES, videoGeneratePayloadSchema } from "@idream/shared/contracts";
+import { generationProviderIdempotencyKey, generationTerminalFinalizeDedupeKey, idempotencyKeys, MAIN_QUEUES, videoGeneratePayloadSchema } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
 import { jobQueue } from "@/server/jobs/queue";
 import { postDreamcoinEntry } from "@/server/modules/billing/ledger";

@@ -1,10 +1,29 @@
 import { describe, expect, it } from "vitest";
 import {
+  generationModelProfileCreateRequestSchema,
+  generationModelProfilePatchRequestSchema,
   generationPresetCreateRequestSchema,
   generationPresetPatchRequestSchema,
   generationRecipeCreateRequestSchema,
   generationRecipePatchRequestSchema,
 } from "./generation-ops";
+
+describe("generation profile output capacity", () => {
+  const profile = {
+    profileKey: "image-capacity", label: "Image capacity", pipelineModel: "redqw21", allowedOrientations: ["1:1"],
+  };
+
+  it.each([5, 8])("rejects a %i-output promise that Gen cannot deliver", (maxCount) => {
+    expect(generationModelProfileCreateRequestSchema.safeParse({ ...profile, maxCount }).success).toBe(false);
+    expect(generationModelProfilePatchRequestSchema.safeParse({ maxCount }).success).toBe(false);
+  });
+
+  it("preserves the supported boundary and partial-update behavior", () => {
+    expect(generationModelProfileCreateRequestSchema.parse({ ...profile, maxCount: 4 }).maxCount).toBe(4);
+    expect(generationModelProfilePatchRequestSchema.parse({ maxCount: 4 })).toEqual({ maxCount: 4 });
+    expect(generationModelProfilePatchRequestSchema.parse({ label: "Renamed" })).toEqual({ label: "Renamed" });
+  });
+});
 
 describe("recipe draft request defaults", () => {
   it("applies defaults only when creating, so a partial edit does not rewrite hidden configuration or its route", () => {

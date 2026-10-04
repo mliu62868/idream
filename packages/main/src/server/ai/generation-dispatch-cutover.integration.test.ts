@@ -1,7 +1,7 @@
+import { generationTerminalRecordChecksum } from "@idream/shared/contracts/durable-server";
 import { randomUUID } from "node:crypto";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import {
-  generationTerminalRecordChecksum,
   GEN_QUEUES,
   idempotencyKeys,
   MAIN_QUEUES,

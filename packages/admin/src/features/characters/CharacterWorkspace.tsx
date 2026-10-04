@@ -46,7 +46,7 @@ import {
   type PollDecision,
   type PollingTask,
 } from "@/lib/authority-resource";
-import { createLatestRequestGate } from "@/lib/latest-request";
+import { createLatestRequestGate, type LatestRequestToken } from "@/lib/latest-request";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { cn } from "@/lib/utils";
 import { characterWorkspacePermissions } from "./character-workspace-permissions";
@@ -279,6 +279,7 @@ function CharacterDetail({
     journal.getSnapshot,
   );
   const requestGate = useRef(createLatestRequestGate());
+  const latestLoad = useRef<{ token: LatestRequestToken; promise: Promise<CharacterWorkspaceDetail> } | null>(null);
   // INVARIANT: 初值不许读地址栏或 journal 快照 —— 服务端得出 "project"、客户端首帧
   // 得出 URL 里的 tab，两边分叉就是 hydration mismatch。真实 tab 在挂载 effect 里对齐。
   const [tab, setTab] = useState<Tab>("project");
@@ -288,27 +289,41 @@ function CharacterDetail({
     setLoading(true);
     setError(null);
     setPublicationPrepRecovery(null);
-    try {
-      const next = await adminV2Operation("GET /api/v2/admin/characters/:id", {
-        path: { id },
-      });
-      if (request.isCurrent()) setData(next);
-    } catch (cause) {
-      if (request.isCurrent()) {
-        const recovery = customerPublicationPrepRecoveryFromError(cause, id);
-        setPublicationPrepRecovery(recovery);
-        setError(
-          recovery
-            ? null
-            : cause instanceof AdminV2RequestError
-              ? cause
-              : characterWorkspaceLoadError(cause),
-        );
+    const pending: Promise<CharacterWorkspaceDetail> = (async () => {
+      try {
+        const next = await adminV2Operation("GET /api/v2/admin/characters/:id", {
+          path: { id },
+        });
+        // A superseded authority read must follow the newer read, including the
+        // projection returned to the journal; ignoring setData alone can unlock it
+        // against an older activeCommand snapshot.
+        if (!request.isCurrent() && latestLoad.current && latestLoad.current.token !== request) {
+          return latestLoad.current.promise;
+        }
+        if (request.isCurrent()) setData(next);
+        return next;
+      } catch (cause) {
+        if (!request.isCurrent() && latestLoad.current && latestLoad.current.token !== request) {
+          return latestLoad.current.promise;
+        }
+        if (request.isCurrent()) {
+          const recovery = customerPublicationPrepRecoveryFromError(cause, id);
+          setPublicationPrepRecovery(recovery);
+          setError(
+            recovery
+              ? null
+              : cause instanceof AdminV2RequestError
+                ? cause
+                : characterWorkspaceLoadError(cause),
+          );
+        }
+        throw cause;
+      } finally {
+        if (request.isCurrent()) setLoading(false);
       }
-      throw cause;
-    } finally {
-      if (request.isCurrent()) setLoading(false);
-    }
+    })();
+    latestLoad.current = { token: request, promise: pending };
+    return pending;
   }, [id]);
   const preparePublicationWorkspace = useCallback(
     async (pending: CustomerPublicationPrepRecovery) => {
@@ -338,23 +353,8 @@ function CharacterDetail({
     },
     [id, load],
   );
-  const loadAuthoritative = useCallback(async () => {
-    requestGate.current.invalidate();
-    setLoading(true);
-    setError(null);
-    try {
-      const next = await adminV2Operation("GET /api/v2/admin/characters/:id", {
-        path: { id },
-      });
-      setData(next);
-      return next;
-    } catch (cause) {
-      setError(cause instanceof AdminV2RequestError ? cause : characterWorkspaceLoadError(cause));
-      throw cause;
-    } finally {
-      setLoading(false);
-    }
-  }, [id]);
+  const loadAuthoritative = load;
+  const reloadProject = useCallback(async () => { await load(); }, [load]);
   const refreshCommittedProjection = useCallback(
     async (action: string, commandId?: string, afterRefresh?: () => void) => {
       const result = await journal.refresh({
@@ -465,6 +465,7 @@ function CharacterDetail({
   const refreshAuthoritativeWorkspace = useCallback(async () => {
     const current = journal.getSnapshot().notice;
     if (
+      current?.kind === "mutation_in_flight" ||
       current?.kind === "command_pending" ||
       current?.kind === "command_submission_unknown" ||
       current?.kind === "command_reconfirmation_required"
@@ -1140,8 +1141,8 @@ function CharacterDetail({
           />
         ) : tab === "visual" ? (
           <VisualIdentityPanel
+            actorId={actorId}
             data={data}
-            key={data.visual.activeIdentity?.id ?? "visual-empty"}
             navigateToTab={selectTab}
             permissions={guardedPermissions}
             runCommittedMutation={runCommittedMutation}
@@ -1151,6 +1152,7 @@ function CharacterDetail({
           // INTENT: 位置编辑器曾放在「运营 → 上线预览」，导入的图只能跨区去那里才能用上。
           <div id="character-image-studio">
             <CharacterPlacementEditor
+              canRead={permissions.readImages}
               canWrite={guardedPermissions.writeProject}
               data={data}
               runCommittedMutation={runCommittedMutation}
@@ -1168,7 +1170,7 @@ function CharacterDetail({
               commitProjectMutation={runCommittedMutation}
               data={data}
               onContinue={selectTab}
-              onProjectReload={load}
+              onProjectReload={reloadProject}
             />
           </div>
         ) : tab === "video" ? (
@@ -1183,7 +1185,7 @@ function CharacterDetail({
             canReadProduction={permissions.readProduction}
             data={data}
             onCreateImage={() => selectTab("assets")}
-            onProjectReload={load}
+            onProjectReload={reloadProject}
             runCommittedMutation={runCommittedMutation}
           />
         ) : tab === "voice" ? (
@@ -1240,10 +1242,12 @@ function CharacterDetail({
 
 export function CharacterWorkspace({
   actorId,
+  canCreateCharacters = false,
   view,
   permissions: granted,
 }: {
   actorId: string;
+  canCreateCharacters?: boolean;
   view: AdminSubview;
   permissions: ReadonlySet<AdminPermissionKey>;
 }) {
@@ -1252,7 +1256,8 @@ export function CharacterWorkspace({
     return (
       <CharacterCreateWizard
         actorId={actorId}
-        canCreate={permissions.writeProject}
+        canCreate={canCreateCharacters && permissions.writeProject}
+        canResumeDraft={permissions.writeProject}
         key={actorId}
       />
     );
@@ -1268,7 +1273,7 @@ export function CharacterWorkspace({
     <CharacterPortfolio
       canReadUnprepared={permissions.readContent}
       canOpenAssets={permissions.readImages}
-      canCreate={permissions.writeProject}
+      canCreate={canCreateCharacters && permissions.writeProject}
       canOpenProjects={permissions.read}
       canRead={permissions.read}
       mode="studio"

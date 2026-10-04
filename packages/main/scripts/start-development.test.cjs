@@ -66,7 +66,7 @@ test("development startup generates Prisma Client before spawning Next", async (
     },
     {
       command: "node",
-      args: [nextCli, "dev", "--hostname", "127.0.0.1"],
+      args: [nextCli, "dev", "--webpack", "--hostname", "127.0.0.1"],
       options: {
         cwd: packageRoot,
         env: runtime.env,
@@ -101,7 +101,7 @@ test("development startup fails closed when Prisma generation fails", async () =
   assert.equal(spawnedNext, false);
 });
 
-test("Bun bootstrap starts Next on Node so cold Turbopack externals resolve", async () => {
+test("Bun bootstrap starts Next on Node so cold externals resolve", async () => {
   const child = new EventEmitter();
   child.kill = () => true;
   const runtime = new EventEmitter();
@@ -127,6 +127,26 @@ test("Bun bootstrap starts Next on Node so cold Turbopack externals resolve", as
   assert.equal(await lifecycle, 0);
   assert.deepEqual(commands, ["/runtime/bun", "node"]);
 });
+
+for (const flag of ["--webpack", "--turbopack", "--turbo"]) {
+  test(`development startup preserves an explicit ${flag} choice`, async () => {
+    const child = new EventEmitter();
+    const runtime = new EventEmitter();
+    Object.assign(runtime, {
+      argv: ["/runtime/node", "start-development.cjs", flag, "--port", "3940"],
+      env: {}, execPath: "/runtime/node",
+    });
+    let actualArgs;
+    const lifecycle = runDevelopment({
+      process: runtime,
+      spawnSync: () => ({ status: 0 }),
+      spawn: (_command, args) => { actualArgs = args; return child; },
+    });
+    child.emit("exit", 0, null);
+    assert.equal(await lifecycle, 0);
+    assert.deepEqual(actualArgs, [nextCli, "dev", flag, "--port", "3940"]);
+  });
+}
 
 test("development startup preserves Playwright-owned Next directories", async () => {
   const child = new EventEmitter();

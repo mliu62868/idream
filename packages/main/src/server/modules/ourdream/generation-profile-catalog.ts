@@ -1,6 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { imageOrientations } from "@idream/shared/media/image-orientation";
+import { imageGeneratePayloadSchema } from "@idream/shared/contracts";
 
 export async function featureFlagEnabled(key: string) {
   const flag = await prisma.featureFlag.findUnique({
@@ -28,8 +29,7 @@ export function isExecutableGenerationProfile(profile: {
 }) {
   return (
     profile.rolloutPercent === 100 &&
-    profile.maxCount >= 1 &&
-    profile.maxCount <= 8 &&
+    imageGeneratePayloadSchema.shape.count.safeParse(profile.maxCount).success &&
     supportedProfileOrientations(profile.allowedOrientations).length > 0
   );
 }

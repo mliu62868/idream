@@ -22,11 +22,11 @@ export async function videoFixture(input: { width?: number; height?: number; fra
   } finally { await rm(directory, { recursive: true, force: true }); }
 }
 
-export async function narrationFixture(seconds: number) {
+export async function narrationFixture(seconds: number, frequency = 880) {
   const directory = await mkdtemp(join(tmpdir(), "idream-narration-fixture-"));
   try {
     const output = join(directory, "fixture.wav");
-    await run("ffmpeg", ["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=24000", "-t", String(seconds), "-c:a", "pcm_s16le", output], { timeout: 30_000 });
+    await run("ffmpeg", ["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", `sine=frequency=${frequency}:sample_rate=24000`, "-t", String(seconds), "-c:a", "pcm_s16le", output], { timeout: 30_000 });
     return new Uint8Array(await readFile(output));
   } finally { await rm(directory, { recursive: true, force: true }); }
 }

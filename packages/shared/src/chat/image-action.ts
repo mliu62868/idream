@@ -6,6 +6,7 @@ export const EDIT_LAST_IMAGE_TOOL = "edit_last_image" as const;
 
 export const generateImageAsyncArgsSchema = z.object({
   prompt: z.string().trim().min(12).max(1_200),
+  subject: z.enum(["companion", "scene"]),
   caption: z.string().trim().min(1).max(500).optional(),
   orientation: z.enum(["4:5", "1:1", "16:9"]).optional(),
   outputCount: z.number().int().min(1).max(4).optional(),
@@ -18,6 +19,7 @@ export const editLastImageArgsSchema = z.object({
 
 export interface GenerateImageAsyncArgs {
   prompt: string;
+  subject: "companion" | "scene";
   caption?: string;
   orientation: "4:5" | "1:1" | "16:9";
   outputCount: number;
@@ -48,14 +50,18 @@ export const IMAGE_AGENT_TOOL_DEFINITIONS: readonly ChatToolDefinition[] = [
     // capability). Advertising a count or a square format let the Character
     // promise "three ways" or "both angles" and deliver one.
     description:
-      "Generate and send ONE photo of yourself to the user. Use whenever the user asks for a picture, selfie, or to see you or a scene. Each call delivers exactly one photo: if the user asks for several, send the best one now and say they can ask for the next.",
+      "Send exactly one photo. If several are requested, send the best one now and offer the next.",
     parameters: {
       type: "object",
       properties: {
         prompt: {
           type: "string",
           description:
-            "English scene prompt: action, pose, framing, setting, light, expression, and requested wardrobe/nudity only. Never add stable identity traits (age, hair, eyes, skin, face, body); Main pins identity/references.",
+            "English scene, subjects, wardrobe/nudity and exclusions. Never add stable identity traits (age, hair, eyes, skin, face, body); Main pins identity/references.",
+        },
+        subject: {
+          type: "string", enum: ["companion", "scene"],
+          description: "Follow the latest user: companion for selfies/scenes with you; scene for objects/scenery without you or no-people requests. Only companion adds identity.",
         },
         caption: {
           type: "string",
@@ -63,7 +69,7 @@ export const IMAGE_AGENT_TOOL_DEFINITIONS: readonly ChatToolDefinition[] = [
         },
         orientation: { type: "string", enum: ["4:5", "16:9"], description: "4:5 portrait (default) or 16:9 landscape" },
       },
-      required: ["prompt"],
+      required: ["prompt", "subject"],
     },
   },
   {

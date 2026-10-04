@@ -60,7 +60,7 @@ export function CharacterTagsPanel({
     setError(null);
     try {
       const [tags, character] = await Promise.all([
-        apiGet<{ items: TagRow[] }>("/api/v2/admin/content/tags?limit=500"),
+        apiGet<{ items: TagRow[] }>("/api/v2/admin/content/tags"),
         apiGet<{ character: { tags: CharacterTag[] } }>(
           `/api/v2/admin/content/characters/${encodeURIComponent(characterId)}`,
         ),

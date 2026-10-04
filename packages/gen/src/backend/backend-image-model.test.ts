@@ -146,7 +146,7 @@ describe("BackendImageModel", () => {
     if (workflow.backendKind !== "comfyui") throw new Error("Qwen edit must use its ComfyUI graph");
     expect(workflow.apiPrompt["3"].inputs).toMatchObject({ "images.image_1": ["9", 0], "images.image_2": ["8:scale", 0] });
     expect(workflow.apiPrompt["9"].inputs.image).toEqual(["12", 0]);
-    expect(workflow.version).toBe(6);
+    expect(workflow.version).toBe(7);
     const backend = makeStubBackend();
     const result = await modelWithDescriptor(backend, workflow).generate({
       prompt: "Add a red scarf; keep the source framing.", count: 1, model: workflow.modelId,

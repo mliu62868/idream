@@ -45,7 +45,8 @@ async function dismissAgeGateIfPresent(page: Page) {
 
 function uniqueEmail(routePath: string) {
   const slug = routePath === "/" ? "home" : routePath.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "");
-  return `e2e-route-${slug}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@test.local`;
+  // Public customer routes include Help Desk, which excludes reserved fixture accounts.
+  return `e2e-route-${slug}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@customer.invalid`;
 }
 
 async function startSignedInAdultSession(page: Page, routePath: string) {
@@ -83,6 +84,11 @@ test.describe("public route smoke", () => {
       }
       await expect(page).toHaveTitle(route.title);
       await expect(page.locator("main")).toBeVisible();
+      if (route.path === "/helpdesk") {
+        await expect(page.getByTestId("helpdesk-history")).toContainText(
+          "No support requests, reports, or appeals yet.",
+        );
+      }
 
       const routeHealth = await page.evaluate((prohibitedPhrases) => {
         const bodyText = document.body?.innerText ?? "";

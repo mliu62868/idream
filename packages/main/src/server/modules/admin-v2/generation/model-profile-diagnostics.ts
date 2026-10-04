@@ -9,6 +9,7 @@
 //            admissibility reads it), while the response only carries this run's verdict.
 import { randomUUID } from "node:crypto";
 import type { Prisma } from "@prisma/client";
+import { imageGeneratePayloadSchema } from "@idream/shared/contracts";
 import { generationProfileTestJobResponseSchema } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
@@ -137,6 +138,9 @@ export async function runGenerationProfileDryRun(request: Request, profileId: st
           const issues: string[] = [];
           if (!profile.pipelineModel.trim()) issues.push("pipelineModel empty");
           if (profile.maxCount < 1) issues.push("maxCount < 1");
+          if (profile.mode === "image" && !imageGeneratePayloadSchema.shape.count.safeParse(profile.maxCount).success) {
+            issues.push("unsupported maxCount for image delivery");
+          }
           if (profile.steps < 1) issues.push("steps < 1");
           if (!orientations.length) issues.push("no allowedOrientations");
           issues.push(...runnerConfigIssues(profile.runnerConfig));

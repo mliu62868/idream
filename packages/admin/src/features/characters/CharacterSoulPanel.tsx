@@ -7,7 +7,7 @@ import {
   type CharacterDraftVisualDirection,
   type CharacterWorkspaceDetail,
 } from "@idream/shared/admin";
-import { compileCharacterSoul } from "@idream/shared/chat/persona";
+import { renderCharacterSoulMarkdown } from "@idream/shared/chat/persona-render";
 import Link from "next/link";
 import { useEffect, useId, useRef, useState } from "react";
 import { clearSoulDraft, readSoulDraft, writeSoulDraft, type SoulDraft, type SoulVisualForm } from "./soul-drafts";
@@ -240,7 +240,8 @@ function SoulEditor({
           <p className="mt-1">{t(requestError.nextStep, requestError.nextStepValues)}</p>
           <RequestErrorDetails technical={requestError.technical} />
         </div> : null}
-        <div className="mt-5">
+        <div className="sticky bottom-0 z-10 mt-5 flex items-center justify-between gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3">
+          <p className="text-xs text-[var(--ad-text-muted)]">{t("Saved changes stay private until you publish the character.")}</p>
           <WorkspaceButton disabled={!canWrite || busy || stale || !dirty} onClick={() => void save()} tone="primary">
             {busy ? t("Saving…") : t("Save")}
           </WorkspaceButton>
@@ -264,19 +265,25 @@ function SoulEditor({
   );
 }
 
+const soulPreviewSchema = characterDraftPersonaSchema.pick({
+  name: true,
+  age: true,
+  gender: true,
+  characterPromise: true,
+  detailsMarkdown: true,
+});
+
 export function compileSoulDraftPreview(persona: CharacterDraftPersona) {
-  const compiled = compileCharacterSoul({
+  const parsed = soulPreviewSchema.safeParse({
     name: persona.name,
     age: persona.age,
     gender: persona.gender,
     characterPromise: persona.characterPromise,
     detailsMarkdown: persona.detailsMarkdown,
   });
-  if (!compiled.ok) return null;
-  return {
-    markdown: compiled.renderedMarkdown,
-    systemPrompt: compiled.snapshot.compiled.systemPrompt,
-  };
+  if (!parsed.success) return null;
+  const markdown = renderCharacterSoulMarkdown(parsed.data);
+  return { markdown, systemPrompt: markdown };
 }
 
 export function soulDraftFromWorkspace(data: CharacterWorkspaceDetail): CharacterDraftPersona | null {

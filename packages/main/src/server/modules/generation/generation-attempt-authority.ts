@@ -1,5 +1,5 @@
 import { validatedAutomaticFailureCorrection, type AutomaticFailureCorrectionDb } from "@/server/ai/generation-unknown-resolution-evidence";
-import { videoSceneDispatchDeferred } from "./video-sequence-dispatch";
+import { videoSceneDispatchDeferred, videoSceneDispatchDeferredSql } from "./video-sequence-dispatch";
 import {
   Prisma,
   type GenerationAttempt,
@@ -1096,18 +1096,16 @@ export async function dispatchGenerationAttemptOutbox(
   } = {},
 ) {
   const now = input.now ?? new Date();
-  const rows = await db.mainOutboxEvent.findMany({
-    where: {
-      eventType: {
-        in: [...MAIN_OUTBOX_GENERATION_DISPATCH_EVENT_TYPES],
-      },
-      status: { in: ["pending", "dispatched"] },
-      nextRunAt: { lte: now },
-      ...(input.outboxIds ? { id: { in: [...input.outboxIds] } } : {}),
-    },
-    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-    take: Math.min(100, Math.max(1, input.limit ?? 25)),
-  });
+  if (input.outboxIds?.length === 0) return { delivered: 0, failed: 0 };
+  const rows = await db.$queryRaw<MainOutboxEvent[]>(Prisma.sql`
+    SELECT dispatch.* FROM main_outbox_events dispatch
+    WHERE dispatch."eventType" IN (${Prisma.join([...MAIN_OUTBOX_GENERATION_DISPATCH_EVENT_TYPES])})
+      AND dispatch.status IN ('pending', 'dispatched') AND dispatch."nextRunAt" <= ${now}
+      ${input.outboxIds ? Prisma.sql`AND dispatch.id IN (${Prisma.join([...input.outboxIds])})` : Prisma.empty}
+      AND NOT ${videoSceneDispatchDeferredSql(Prisma.sql`dispatch."aggregateId"`)}
+    ORDER BY dispatch."createdAt" ASC, dispatch.id ASC
+    LIMIT ${Math.min(100, Math.max(1, input.limit ?? 25))}
+  `);
   let delivered = 0;
   let failed = 0;
   for (const row of rows) {

@@ -13,6 +13,7 @@ type AdminActor = {
 
 type AdminConsoleClientOnlyProps = {
   actor: AdminActor | null;
+  canCreateCharacters: boolean;
   initialSection: string;
   initialAccess: boolean;
   initialPermissions: AdminPermissionKey[];

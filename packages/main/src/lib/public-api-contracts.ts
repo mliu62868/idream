@@ -1371,6 +1371,7 @@ const chatAttachmentSchema = z
     id: nonEmptyString,
     kind: nonEmptyString,
     status: nonEmptyString,
+    imageSubject: z.enum(["companion", "scene"]).optional(),
     generationJobId: z.string().nullable().optional(),
     canCancel: z.boolean().optional(),
     mediaAssetId: z.string().nullable().optional(),
@@ -1390,6 +1391,8 @@ const chatMessageSchema = z
     id: nonEmptyString,
     role: nonEmptyString,
     content: z.string(),
+    /** Main pins this per Turn; a later session toggle cannot change it. */
+    memoryEnabled: z.boolean().optional(),
     status: z.string().optional(),
     replyToMessageId: nonEmptyString.nullable().optional(),
     attachments: z.array(chatAttachmentSchema).optional(),

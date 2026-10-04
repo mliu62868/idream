@@ -1,8 +1,8 @@
+import { generationTerminalRecordChecksum } from "@idream/shared/contracts/durable-server";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Prisma } from "@prisma/client";
 import { renderPrometheusMetrics, resetMetricsForTests } from "@idream/shared";
 import {
-  generationTerminalRecordChecksum,
   generationTerminalRecordSchema,
   idempotencyKeys,
   MAIN_QUEUES,

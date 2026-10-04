@@ -1,8 +1,9 @@
+import { generationTerminalRecordChecksum } from "@idream/shared/contracts/durable-server";
 import { markProductionItemGenerated } from "@/server/modules/content-production-state";
 import type { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { generationTerminalRecordChecksum, generationTerminalRecordSchema } from "@idream/shared/contracts";
+import { generationTerminalRecordSchema } from "@idream/shared/contracts";
 import { generationJobDetailResponseSchema, generationJobQuerySchema } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
 import { jobQueue } from "@/server/jobs/queue";

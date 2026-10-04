@@ -8,7 +8,7 @@ import type {
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { moderateText } from "@/server/moderation/text-authority";
-import type { AdminActor } from "../shared/authority";
+import { executeAdminMutation } from "../shared/admin-mutation";
 import {
   decodeAdminListCursor,
   encodeAdminListCursor,
@@ -110,123 +110,137 @@ export async function getTemplate(id: string) {
   return { template: templateDTO(template) };
 }
 
-export async function createTemplate(input: {
-  request: Request;
-  actor: AdminActor;
-  body: ContentTemplateCreateRequest;
-}) {
-  const { request, actor, body } = input;
-  await moderateTemplate("pending", body);
-
-  const template = await prisma.characterTemplate.create({
-    data: {
-      scope: body.scope,
-      name: body.name,
-      summary: body.summary ?? null,
-      gender: body.gender ?? null,
-      style: body.style ?? null,
-      appearance: toInputJson(body.appearance),
-      advancedDetails: toInputJson(body.advancedDetails),
-      tags: toInputJson(body.tags),
-      coverAssetId: body.coverAssetId ?? null,
-      sortOrder: body.sortOrder,
-      isActive: false,
-      createdById: actor.id,
+export async function createTemplate(request: Request) {
+  return executeAdminMutation<ContentTemplateCreateRequest, void>(
+    "POST /api/v2/admin/content/templates", request, {
+      params: {},
+      target: () => ({ type: TARGET_TYPE, id: "library" }),
+      prepare: async ({ body }) => moderateTemplate("pending", body),
+      mutate: async (tx, { actor, body }) => {
+        const template = await tx.characterTemplate.create({
+          data: {
+            scope: body.scope,
+            name: body.name,
+            summary: body.summary ?? null,
+            gender: body.gender ?? null,
+            style: body.style ?? null,
+            appearance: toInputJson(body.appearance),
+            advancedDetails: toInputJson(body.advancedDetails),
+            tags: toInputJson(body.tags),
+            coverAssetId: body.coverAssetId ?? null,
+            sortOrder: body.sortOrder,
+            isActive: false,
+            createdById: actor.id,
+          },
+        });
+        await writeContentAudit(request, actor, {
+          action: "content.template.create",
+          targetType: TARGET_TYPE,
+          targetId: template.id,
+          reason: body.reason,
+          after: { scope: template.scope, name: template.name, isActive: template.isActive },
+        }, tx);
+        return { template: templateDTO(template) };
+      },
     },
-  });
-
-  await writeContentAudit(request, actor, {
-    action: "content.template.create",
-    targetType: TARGET_TYPE,
-    targetId: template.id,
-    reason: body.reason,
-    after: { scope: template.scope, name: template.name, isActive: template.isActive },
-  });
-
-  return { template: templateDTO(template) };
+  );
 }
 
-export async function updateTemplate(input: {
-  request: Request;
-  actor: AdminActor;
-  id: string;
-  body: ContentTemplateUpdateRequest;
-}) {
-  const { request, actor, id, body } = input;
-  const existing = await prisma.characterTemplate.findUnique({ where: { id } });
-  if (!existing) throw Errors.notFound("Template not found");
+export async function updateTemplate(request: Request, id: string) {
+  return executeAdminMutation<ContentTemplateUpdateRequest, void>(
+    "PATCH /api/v2/admin/content/templates/:id", request, {
+      params: { id },
+      target: () => ({ type: TARGET_TYPE, id }),
+      prepare: async ({ body }) => {
+        const existing = await prisma.characterTemplate.findUnique({ where: { id } });
+        if (!existing) throw Errors.notFound("Template not found");
+        assertTemplateVersion(existing.updatedAt, body.expectedUpdatedAt);
+        const touchesText = body.name !== undefined || body.summary !== undefined ||
+          body.advancedDetails !== undefined || body.tags !== undefined;
+        if (touchesText) {
+          await moderateTemplate(id, {
+            name: body.name ?? existing.name,
+            // null clears the summary; it must not fall back to the old value.
+            summary: body.summary !== undefined ? body.summary : existing.summary,
+            advancedDetails: body.advancedDetails ?? existing.advancedDetails,
+            tags: body.tags ?? (existing.tags as string[]),
+          });
+        }
+      },
+      mutate: async (tx, { actor, body }) => {
+        const existing = await tx.characterTemplate.findUnique({ where: { id } });
+        if (!existing) throw Errors.notFound("Template not found");
+        assertTemplateVersion(existing.updatedAt, body.expectedUpdatedAt);
+        const changed = await tx.characterTemplate.updateMany({
+          where: { id, updatedAt: existing.updatedAt },
+          data: {
+            // The timestamp is also the CAS token, so every accepted write must
+            // advance it, including two writes within the same millisecond.
+            updatedAt: new Date(Math.max(Date.now(), existing.updatedAt.getTime() + 1)),
+            scope: body.scope,
+            name: body.name,
+            summary: body.summary,
+            gender: body.gender,
+            style: body.style,
+            appearance: body.appearance !== undefined ? toInputJson(body.appearance) : undefined,
+            advancedDetails: body.advancedDetails !== undefined ? toInputJson(body.advancedDetails) : undefined,
+            tags: body.tags !== undefined ? toInputJson(body.tags) : undefined,
+            coverAssetId: body.coverAssetId,
+            sortOrder: body.sortOrder,
+          },
+        });
+        if (changed.count !== 1) throw Errors.versionConflict("Template changed before the edit was saved");
+        const template = await tx.characterTemplate.findUniqueOrThrow({ where: { id } });
+        await writeContentAudit(request, actor, {
+          action: "content.template.update",
+          targetType: TARGET_TYPE,
+          targetId: id,
+          reason: body.reason,
+          before: { name: existing.name, scope: existing.scope, sortOrder: existing.sortOrder },
+          after: { name: template.name, scope: template.scope, sortOrder: template.sortOrder },
+        }, tx);
+        return { template: templateDTO(template) };
+      },
+    },
+  );
+}
 
-  // 改了任一文本字段就重新过审；用 patch ?? existing 的合并值送审。
-  const touchesText =
-    body.name !== undefined ||
-    body.summary !== undefined ||
-    body.advancedDetails !== undefined ||
-    body.tags !== undefined;
-  if (touchesText) {
-    await moderateTemplate(id, {
-      name: body.name ?? existing.name,
-      // null 是「清空」，不能被 ?? 当成「没改」退回旧值。
-      summary: body.summary !== undefined ? body.summary : existing.summary,
-      advancedDetails: body.advancedDetails ?? existing.advancedDetails,
-      tags: body.tags ?? (existing.tags as string[]),
+export async function setTemplateActive(request: Request, id: string) {
+  return executeAdminMutation<ContentTemplateActiveRequest>(
+    "POST /api/v2/admin/content/templates/:id/active", request, {
+      params: { id },
+      target: () => ({ type: TARGET_TYPE, id }),
+      mutate: async (tx, { actor, body }) => {
+        const existing = await tx.characterTemplate.findUnique({ where: { id } });
+        if (!existing) throw Errors.notFound("Template not found");
+        if (body.confirmation !== id) throw Errors.badRequest("Confirmation did not match target");
+        assertTemplateVersion(existing.updatedAt, body.expectedUpdatedAt);
+        const changed = await tx.characterTemplate.updateMany({
+          where: { id, updatedAt: existing.updatedAt },
+          data: { isActive: body.active, updatedAt: new Date(Math.max(Date.now(), existing.updatedAt.getTime() + 1)) },
+        });
+        if (changed.count !== 1) throw Errors.versionConflict("Template changed before publication was updated");
+        const template = await tx.characterTemplate.findUniqueOrThrow({ where: { id } });
+        await writeContentAudit(request, actor, {
+          action: "content.template.active",
+          targetType: TARGET_TYPE,
+          targetId: id,
+          reason: body.reason,
+          before: { isActive: existing.isActive },
+          after: { isActive: template.isActive },
+        }, tx);
+        return { template: templateDTO(template) };
+      },
+    },
+  );
+}
+
+function assertTemplateVersion(actual: Date, expected: string) {
+  if (actual.toISOString() !== new Date(expected).toISOString()) {
+    throw Errors.versionConflict("Template changed since it was loaded", {
+      actualUpdatedAt: actual.toISOString(), expectedUpdatedAt: expected,
     });
   }
-
-  const template = await prisma.characterTemplate.update({
-    where: { id },
-    data: {
-      scope: body.scope,
-      name: body.name,
-      summary: body.summary,
-      gender: body.gender,
-      style: body.style,
-      appearance: body.appearance !== undefined ? toInputJson(body.appearance) : undefined,
-      advancedDetails:
-        body.advancedDetails !== undefined ? toInputJson(body.advancedDetails) : undefined,
-      tags: body.tags !== undefined ? toInputJson(body.tags) : undefined,
-      coverAssetId: body.coverAssetId,
-      sortOrder: body.sortOrder,
-    },
-  });
-
-  await writeContentAudit(request, actor, {
-    action: "content.template.update",
-    targetType: TARGET_TYPE,
-    targetId: id,
-    reason: body.reason,
-    before: { name: existing.name, scope: existing.scope, sortOrder: existing.sortOrder },
-    after: { name: template.name, scope: template.scope, sortOrder: template.sortOrder },
-  });
-
-  return { template: templateDTO(template) };
-}
-
-export async function setTemplateActive(input: {
-  request: Request;
-  actor: AdminActor;
-  id: string;
-  body: ContentTemplateActiveRequest;
-}) {
-  const { request, actor, id, body } = input;
-  const existing = await prisma.characterTemplate.findUnique({ where: { id } });
-  if (!existing) throw Errors.notFound("Template not found");
-  if (body.confirmation !== id) throw Errors.badRequest("Confirmation did not match target");
-
-  const template = await prisma.characterTemplate.update({
-    where: { id },
-    data: { isActive: body.active },
-  });
-
-  await writeContentAudit(request, actor, {
-    action: "content.template.active",
-    targetType: TARGET_TYPE,
-    targetId: id,
-    reason: body.reason,
-    before: { isActive: existing.isActive },
-    after: { isActive: template.isActive },
-  });
-
-  return { template: templateDTO(template) };
 }
 
 function cursorText(value: unknown) {

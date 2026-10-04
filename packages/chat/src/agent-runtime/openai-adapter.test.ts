@@ -142,6 +142,104 @@ describe("OpenAI-compatible DSH adapter", () => {
     await expect(drain(adapter)).rejects.toThrow("without a finish reason");
   });
 
+  it.each([
+    { name: "absent", usage: undefined },
+    { name: "empty", usage: {} },
+    { name: "input only", usage: { prompt_tokens: 13 } },
+    { name: "output only", usage: { completion_tokens: 7 } },
+    { name: "negative", usage: { prompt_tokens: -1, completion_tokens: 7 } },
+    { name: "fractional", usage: { prompt_tokens: 13, completion_tokens: 0.5 } },
+    { name: "string", usage: { prompt_tokens: "13", completion_tokens: 7 } },
+    { name: "non-finite", usage: { prompt_tokens: Infinity, completion_tokens: 7 } },
+  ])("keeps $name token counts unknown instead of inventing zero usage", async ({ usage }) => {
+    const adapter = adapterFor("https://provider.example/v1", async () => new Response(
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "Done." }, finish_reason: "stop" }], usage })}\n\ndata: [DONE]\n\n`,
+    ));
+    const chunks: StreamChunk[] = [];
+    for await (const chunk of adapter.stream({ provider: "openrouter", model: "deepseek/test", messages: [] })) chunks.push(chunk);
+    expect(chunks.filter(chunk => chunk.type === "usage")).toEqual([]);
+    expect(chunks.at(-1)).toMatchObject({ type: "finish", reason: { kind: "stop" } });
+  });
+
+  it.each([
+    { name: "string cache", details: '"prompt_tokens_details":{"cached_tokens":"unknown"}' },
+    { name: "negative cache", details: '"prompt_tokens_details":{"cached_tokens":-1}' },
+    { name: "fractional cache", details: '"prompt_tokens_details":{"cached_tokens":0.5}' },
+    { name: "cache above input", details: '"prompt_tokens_details":{"cached_tokens":14}' },
+    { name: "non-finite cache", details: '"prompt_tokens_details":{"cached_tokens":1e400}' },
+    { name: "string reasoning", details: '"completion_tokens_details":{"reasoning_tokens":"unknown"}' },
+    { name: "negative reasoning", details: '"completion_tokens_details":{"reasoning_tokens":-1}' },
+    { name: "fractional reasoning", details: '"completion_tokens_details":{"reasoning_tokens":0.5}' },
+    { name: "reasoning above output", details: '"completion_tokens_details":{"reasoning_tokens":8}' },
+    { name: "non-finite reasoning", details: '"completion_tokens_details":{"reasoning_tokens":1e400}' },
+  ])("does not publish known usage for $name counters", async ({ details }) => {
+    // Preserve the raw numeric exponent: JSON.stringify(Infinity) would test null instead.
+    const adapter = adapterFor("https://provider.example/v1", async () => new Response(
+      `data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":13,"completion_tokens":7,${details}}}\n\ndata: [DONE]\n\n`,
+    ));
+    const chunks: StreamChunk[] = [];
+    for await (const chunk of adapter.stream({ provider: "openrouter", model: "deepseek/test", messages: [] })) chunks.push(chunk);
+    expect(chunks.filter(chunk => chunk.type === "usage")).toEqual([]);
+    expect(chunks.at(-1)).toMatchObject({ type: "finish", reason: { kind: "stop" } });
+  });
+
+  it.each([
+    { prompt_tokens: 13, completion_tokens: 7, prompt_tokens_details: { cached_tokens: "unknown" } },
+    { prompt_tokens: 13 },
+    {},
+  ])("does not reuse an earlier usage snapshot after an invalid receipt: %j", async usage => {
+    const adapter = adapterFor("https://provider.example/v1", async () => new Response([
+      'data: {"choices":[{"delta":{"content":"Done."},"finish_reason":null}],"usage":{"prompt_tokens":13,"completion_tokens":1}}\n\n',
+      `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], usage })}\n\ndata: [DONE]\n\n`,
+    ].join("")));
+    const chunks: StreamChunk[] = [];
+    for await (const chunk of adapter.stream({ provider: "openrouter", model: "deepseek/test", messages: [] })) chunks.push(chunk);
+    expect(chunks.filter(chunk => chunk.type === "usage")).toEqual([]);
+    expect(chunks.at(-1)).toMatchObject({ type: "finish", reason: { kind: "stop" } });
+  });
+
+  it.each([undefined, null])("retains measured usage across an ordinary %j usage placeholder", async usage => {
+    const adapter = adapterFor("https://provider.example/v1", async () => new Response([
+      'data: {"choices":[{"delta":{"content":"Done."},"finish_reason":null}],"usage":{"prompt_tokens":13,"completion_tokens":1}}\n\n',
+      `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], usage })}\n\ndata: [DONE]\n\n`,
+    ].join("")));
+    const chunks: StreamChunk[] = [];
+    for await (const chunk of adapter.stream({ provider: "openrouter", model: "deepseek/test", messages: [] })) chunks.push(chunk);
+    expect(chunks).toContainEqual({ type: "usage", usage: { inputTokens: 13, outputTokens: 1, reasoningTokens: 0 } });
+  });
+
+  it.each([
+    { name: "explicit zero", usage: { prompt_tokens: 0, completion_tokens: 0 }, inputTokens: 0, outputTokens: 0 },
+    { name: "provider aliases", usage: { input_tokens: 13, output_tokens: 7 }, inputTokens: 13, outputTokens: 7 },
+    { name: "canonical zero with aliases", usage: { prompt_tokens: 0, completion_tokens: 0, input_tokens: 13, output_tokens: 7 }, inputTokens: 0, outputTokens: 0 },
+  ])("preserves $name counts as known usage", async ({ usage, inputTokens, outputTokens }) => {
+    const adapter = adapterFor("https://provider.example/v1", async () => new Response(
+      `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], usage })}\n\ndata: [DONE]\n\n`,
+    ));
+    const chunks: StreamChunk[] = [];
+    for await (const chunk of adapter.stream({ provider: "openrouter", model: "deepseek/test", messages: [] })) chunks.push(chunk);
+    expect(chunks).toContainEqual({ type: "usage", usage: { inputTokens, outputTokens, reasoningTokens: 0 } });
+  });
+
+  it.each([1, 2])("keeps aggregate tool usage unknown when physical attempt %i lacks usage", async missingAttempt => {
+    let requests = 0;
+    const adapter = adapterFor("https://provider.example/v1", async () => {
+      requests++;
+      return new Response(`data: ${JSON.stringify({
+        choices: [{ delta: { content: requests === 1 ? "I will edit it." : '{"instruction":"Move the vase toward the window"}' }, finish_reason: "stop" }],
+        ...(requests === missingAttempt ? {} : { usage: { prompt_tokens: 13, completion_tokens: 7 } }),
+      })}\n\ndata: [DONE]\n\n`);
+    }, { requiredToolName: "edit_last_image" });
+    const chunks: StreamChunk[] = [];
+    for await (const chunk of adapter.stream({
+      provider: "openrouter", model: "deepseek/test", messages: [],
+      tools: [{ name: "edit_last_image", description: "Edit image", parameters: { type: "object", properties: {} } }],
+    })) chunks.push(chunk);
+    expect(requests).toBe(2);
+    expect(chunks).toContainEqual(expect.objectContaining({ type: "tool-call-delta", name: "edit_last_image" }));
+    expect(chunks.filter(chunk => chunk.type === "usage")).toEqual([]);
+  });
+
   it("rejects dynamic DSH context exceeding the prepared budget before contacting a provider", async () => {
     let requests = 0;
     const adapter = adapterFor("https://provider.example/v1", async () => {
@@ -162,7 +260,7 @@ describe("OpenAI-compatible DSH adapter", () => {
     const evidence: CompanionModelRequestEvidence[] = [];
     const adapter = adapterFor("https://provider.example/v1", async (_url, init) => {
       requests.push(JSON.parse(String(init?.body)));
-      const args = JSON.stringify({ prompt: "A fully clothed rainy library portrait" });
+      const args = JSON.stringify({ prompt: "A fully clothed rainy library portrait", subject: "companion" });
       return new Response(`data: ${JSON.stringify({ choices: [{
         delta: mode === "native" ? { tool_calls: [{ index: 0, id: "image-1", function: { name: "generate_image_async", arguments: args } }] }
           : { content: requests.length === 1 ? "I will make the image." : args },
@@ -420,8 +518,8 @@ describe("OpenAI-compatible DSH adapter", () => {
       requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
       const jsonMode = mode === "json";
       const delta = jsonMode
-        ? { content: requests.length === 1 ? "I will make the image." : JSON.stringify({ prompt: "A clothed portrait at the rainy window with the blue notebook beside it" }) }
-        : { tool_calls: [{ index: 0, id: "current-image-call", function: { name: "generate_image_async", arguments: JSON.stringify({ prompt: "A clothed portrait at the rainy window with the blue notebook beside it" }) } }] };
+        ? { content: requests.length === 1 ? "I will make the image." : JSON.stringify({ prompt: "A clothed portrait at the rainy window with the blue notebook beside it", subject: "companion" }) }
+        : { tool_calls: [{ index: 0, id: "current-image-call", function: { name: "generate_image_async", arguments: JSON.stringify({ prompt: "A clothed portrait at the rainy window with the blue notebook beside it", subject: "companion" }) } }] };
       return new Response([
         `data: ${JSON.stringify({ id: `scene-request-${requests.length}`, provider: "DeepSeek", choices: [{ delta, finish_reason: null }] })}\n\n`,
         `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: jsonMode ? "stop" : "tool_calls" }] })}\n\n`,
@@ -602,7 +700,7 @@ describe("OpenAI-compatible DSH adapter", () => {
     const adapter = adapterFor("https://provider.example/v1", async () => new Response(
       [
         `data: ${JSON.stringify({ id: "native-1", choices: [{ delta: { content: "Elbow-deep in clay — give me a second." } }] })}`,
-        `data: ${JSON.stringify({ id: "native-1", choices: [{ delta: { tool_calls: [{ index: 0, id: "call-1", function: { name: "generate_image_async", arguments: JSON.stringify({ prompt: "A potter beside her kiln" }) } }] } }] })}`,
+        `data: ${JSON.stringify({ id: "native-1", choices: [{ delta: { tool_calls: [{ index: 0, id: "call-1", function: { name: "generate_image_async", arguments: JSON.stringify({ prompt: "A potter beside her kiln", subject: "companion" }) } }] } }] })}`,
         `data: ${JSON.stringify({ id: "native-1", choices: [{ delta: {}, finish_reason: "tool_calls" }] })}`,
         "",
       ].map((line) => line ? `${line}\n\n` : "").join(""),
@@ -624,7 +722,7 @@ describe("OpenAI-compatible DSH adapter", () => {
   });
 
   it.each([
-    { name: "generate_image_async" as const, args: { prompt: "A clothed portrait beside a closed blue notebook" }, expected: { prompt: "A clothed portrait beside a closed blue notebook", orientation: "4:5", outputCount: 1 } },
+    { name: "generate_image_async" as const, args: { prompt: "A clothed portrait beside a closed blue notebook", subject: "companion" }, expected: { prompt: "A clothed portrait beside a closed blue notebook", subject: "companion", orientation: "4:5", outputCount: 1 } },
     { name: "edit_last_image" as const, args: { instruction: "Move the closed blue notebook right of the white cup" }, expected: { instruction: "Move the closed blue notebook right of the white cup" } },
   ])("accepts complete validated $name JSON from the first response without resampling", async ({ name, args, expected }) => {
     let requests = 0;
@@ -670,24 +768,18 @@ describe("OpenAI-compatible DSH adapter", () => {
     expect(chunks).toEqual([]);
   });
 
-  it("directs the image from the user's words when the compatibility answer is cut off", async () => {
-    // Observed on the local 35B: the retry rambles to the token limit, and the
-    // Turn used to fail as "Reply unavailable" although the request was clear.
+  it("does not invent a new-image subject when the compatibility answer is cut off", async () => {
     const adapter = adapterFor("https://provider.example/v1", async () => new Response(`data: ${JSON.stringify({ choices: [{
       delta: { content: "The couch is soft and the lamp is warm and I" },
       finish_reason: "length",
     }] })}\n\n`), { requiredToolName: "generate_image_async" });
     const chunks: StreamChunk[] = [];
-    for await (const chunk of adapter.stream({
+    await expect((async () => { for await (const chunk of adapter.stream({
       provider: "openrouter", model: "deepseek/test",
       messages: [{ id: "u" as never, role: "user", source: { kind: "user" }, content: [{ type: "text", text: "Send me a photo of you reading on the couch." }] }],
       tools: [{ name: "generate_image_async", description: "Generate", parameters: { type: "object", properties: { prompt: { type: "string" } } } }],
-    })) chunks.push(chunk);
-    expect(chunks).toContainEqual(expect.objectContaining({
-      type: "tool-call-delta",
-      name: "generate_image_async",
-      argumentsDelta: expect.stringContaining("reading on the couch"),
-    }));
+    })) chunks.push(chunk); })()).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+    expect(chunks.some(chunk => chunk.type === "tool-call-delta")).toBe(false);
   });
 
   it.each([
@@ -746,7 +838,7 @@ describe("OpenAI-compatible DSH adapter", () => {
         const content = requests.length === 1
           ? "I will send one."
           : JSON.stringify({
-              prompt: "Adult woman taking a full nude mirror selfie in warm bedroom light",
+              prompt: "Adult woman taking a full nude mirror selfie in warm bedroom light", subject: "companion",
             });
         return new Response([
           `data: ${JSON.stringify({
@@ -795,7 +887,7 @@ describe("OpenAI-compatible DSH adapter", () => {
       type: "tool-call-delta",
       name: "generate_image_async",
       argumentsDelta: JSON.stringify({
-        prompt: "Adult woman taking a full nude mirror selfie in warm bedroom light",
+        prompt: "Adult woman taking a full nude mirror selfie in warm bedroom light", subject: "companion",
         orientation: "4:5",
         outputCount: 1,
       }),
@@ -829,7 +921,7 @@ describe("OpenAI-compatible DSH adapter", () => {
         requests += 1;
         const content = requests === 1
           ? "One cozy cafe, give me a second."
-          : JSON.stringify({ prompt: "Woman reading in a warm cozy cafe", orientation: "4:5" });
+          : JSON.stringify({ prompt: "Woman reading in a warm cozy cafe", subject: "companion", orientation: "4:5" });
         return new Response([
           `data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: null }] })}\n\n`,
           `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`,
@@ -854,7 +946,7 @@ describe("OpenAI-compatible DSH adapter", () => {
     expect(chunks).toContainEqual(expect.objectContaining({
       type: "tool-call-delta",
       name: "generate_image_async",
-      argumentsDelta: JSON.stringify({ prompt: "Woman reading in a warm cozy cafe", orientation: "4:5", outputCount: 1 }),
+      argumentsDelta: JSON.stringify({ prompt: "Woman reading in a warm cozy cafe", subject: "companion", orientation: "4:5", outputCount: 1 }),
     }));
     // The first attempt's line (not the JSON) rides along for the engine to validate.
     expect(chunks.filter((chunk) => chunk.type === "text-delta").map((chunk) => chunk.text)).toEqual([
@@ -868,7 +960,7 @@ describe("OpenAI-compatible DSH adapter", () => {
     expect(spokenLineBeforePayload('{"prompt":"beach"}')).toBe("");
   });
 
-  it("directs the required image from the user request when both forced attempts answer in prose", async () => {
+  it("does not spend on a guessed image subject when both forced attempts answer in prose", async () => {
     let requests = 0;
     const adapter = adapterFor("https://provider.example/v1", async () => {
       requests += 1;
@@ -878,42 +970,30 @@ describe("OpenAI-compatible DSH adapter", () => {
       }] })}\n\n`);
     }, { requiredToolName: "generate_image_async" });
     const chunks: StreamChunk[] = [];
-    for await (const chunk of adapter.stream({
+    await expect((async () => { for await (const chunk of adapter.stream({
       provider: "openrouter", model: "deepseek/test",
       messages: [{
         id: "current-user" as never, role: "user", source: { kind: "user" },
         content: [{ type: "text", text: "Send me a selfie of you on your balcony at sunset." }],
       }],
       tools: [{ name: "generate_image_async", description: "Generate an image", parameters: { type: "object", properties: {} } }],
-    })) chunks.push(chunk);
+    })) chunks.push(chunk); })()).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
 
     expect(requests).toBe(2);
-    // The first attempt's line still reaches the engine, which decides whether to use it.
-    expect(chunks.filter((chunk) => chunk.type === "text-delta").map((chunk) => chunk.text)).toEqual([
-      "Make that 5:4, golden hour looks better wide.",
-    ]);
-    expect(chunks).toContainEqual(expect.objectContaining({
-      type: "tool-call-delta",
-      name: "generate_image_async",
-      argumentsDelta: JSON.stringify({ prompt: "Send me a selfie of you on your balcony at sunset.", orientation: "4:5", outputCount: 1 }),
-    }));
-    expect(chunks.at(-1)).toMatchObject({ type: "finish", reason: { kind: "tool-calls" } });
+    expect(chunks.some(chunk => chunk.type === "tool-call-delta")).toBe(false);
   });
 
-  it("keeps a very short photo request usable as the fallback direction", async () => {
+  it("does not default a short request to a companion when the provider gives no subject", async () => {
     const adapter = adapterFor("https://provider.example/v1", async () => new Response(`data: ${JSON.stringify({ choices: [{
       delta: { content: "Hold still." }, finish_reason: "stop",
     }] })}\n\n`), { requiredToolName: "generate_image_async" });
     const chunks: StreamChunk[] = [];
-    for await (const chunk of adapter.stream({
+    await expect((async () => { for await (const chunk of adapter.stream({
       provider: "openrouter", model: "deepseek/test",
       messages: [{ id: "current-user" as never, role: "user", source: { kind: "user" }, content: [{ type: "text", text: "selfie pls" }] }],
       tools: [{ name: "generate_image_async", description: "Generate an image", parameters: { type: "object", properties: {} } }],
-    })) chunks.push(chunk);
-    expect(chunks).toContainEqual(expect.objectContaining({
-      type: "tool-call-delta",
-      argumentsDelta: JSON.stringify({ prompt: "A photo: selfie pls", orientation: "4:5", outputCount: 1 }),
-    }));
+    })) chunks.push(chunk); })()).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+    expect(chunks.some(chunk => chunk.type === "tool-call-delta")).toBe(false);
   });
 
   it("rejects an unpinned provider before converting its required-tool JSON", async () => {

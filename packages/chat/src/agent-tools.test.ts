@@ -10,6 +10,15 @@ import {
 } from "./agent-tools.js";
 
 describe("DSH image tool registry", () => {
+  it("requires an explicit image subject and preserves a scene without a companion", () => {
+    const prompt = "A still life of a basil plant in a terracotta pot on a sunny balcony. No people visible.";
+    expect(findAgentTool(GENERATE_IMAGE_ASYNC_TOOL)?.parseCall({ prompt, subject: "scene" })).toMatchObject({
+      name: GENERATE_IMAGE_ASYNC_TOOL, arguments: { prompt, subject: "scene" },
+    });
+    expect(findAgentTool(GENERATE_IMAGE_ASYNC_TOOL)?.parseCall({ prompt })).toBeNull();
+    expect(findAgentTool(GENERATE_IMAGE_ASYNC_TOOL)?.parseCall({ prompt, subject: "unknown" })).toBeNull();
+  });
+
   it("exposes only the Chat-owned image bridge schemas", () => {
     expect(AGENT_TOOL_REGISTRY.map((tool) => tool.name)).toEqual([
       GENERATE_IMAGE_ASYNC_TOOL,
@@ -18,7 +27,7 @@ describe("DSH image tool registry", () => {
     expect(registryChatTools()).toEqual([
       expect.objectContaining({
         name: GENERATE_IMAGE_ASYNC_TOOL,
-        parameters: expect.objectContaining({ required: ["prompt"] }),
+        parameters: expect.objectContaining({ required: ["prompt", "subject"] }),
       }),
       expect.objectContaining({
         name: EDIT_LAST_IMAGE_TOOL,
@@ -30,10 +39,12 @@ describe("DSH image tool registry", () => {
   it("validates generated-image calls without a second planner", () => {
     expect(findAgentTool(GENERATE_IMAGE_ASYNC_TOOL)?.parseCall({
       prompt: "A detailed portrait beside a sunlit window",
+      subject: "companion",
     })).toEqual({
       name: GENERATE_IMAGE_ASYNC_TOOL,
       arguments: {
         prompt: "A detailed portrait beside a sunlit window",
+        subject: "companion",
         orientation: "4:5",
         outputCount: 1,
       },

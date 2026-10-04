@@ -58,3 +58,41 @@ it("speaks the official igrep non-stream profile-maintenance protocol", async ()
     expect((await response.json()).choices[0]).toMatchObject({ message: { role: "assistant", content }, finish_reason: "stop" });
   }
 });
+
+it.each([false, true])("returns explicit empty Scene facts without claiming semantic extraction (stream=%s)", async stream => {
+  const response = await completion({ stream, response_format: { type: "json_schema", json_schema: { name: "scene_changes" } },
+    messages: [{ role: "user", content: JSON.stringify({ text: "We are in a greenhouse. We need to water the basil." }) }],
+  });
+  expect(response.status).toBe(200);
+  const event = stream ? JSON.parse((await response.text()).split("\n")[0]!.slice(6)) : await response.json();
+  const message = stream ? event.choices[0].delta : event.choices[0].message;
+  expect(JSON.parse(message.content)).toEqual({ location: [], time: [], participant_present: [], participant_absent: [], emotionalBeat: [], thread_unfinished: [], thread_completed: [] });
+  expect(event.choices[0].finish_reason).toBe("stop");
+  expect(message.tool_calls).toBeUndefined();
+});
+
+it.each([
+  { known: ["water the basil"], candidates: [], expected: { known: ["pending"], candidates: [], bindings: [] } },
+  { known: ["water the basil"], candidates: ["water basil"], expected: { known: ["pending"], candidates: ["uncertain"], bindings: [null] } },
+  { known: ["water the basil"], candidates: ["water the basil"], expected: { known: ["uncertain"], candidates: ["uncertain"], bindings: [0] } },
+  { known: Array.from({ length: 17 }, (_, index) => `task ${index}`), candidates: [], expected: { known: Array(17).fill("pending"), candidates: [], bindings: [] } },
+  { known: Array.from({ length: 17 }, (_, index) => `task ${index}`), candidates: ["task 16"], expected: { known: [...Array(16).fill("pending"), "uncertain"], candidates: ["uncertain"], bindings: [16] } },
+])("keeps fixture task decisions conservative for $candidates", async ({ known, candidates, expected }) => {
+  const response = await completion({ response_format: { type: "json_schema", json_schema: { name: "scene_task_decisions" } },
+    messages: [{ role: "user", content: JSON.stringify({ text: "I finished watering basil.", known, candidates }) }],
+  });
+  expect(response.status).toBe(200);
+  const event = await response.json();
+  expect(JSON.parse(event.choices[0].message.content)).toEqual(expected);
+  expect(event.choices[0].finish_reason).toBe("stop");
+});
+
+it.each([
+  { text: "source", known: "water the basil", candidates: [] },
+  { text: "source", known: [], candidates: [7] },
+  { text: "source", known: [], candidates: Array.from({ length: 17 }, (_, index) => `task ${index}`) },
+])("rejects malformed Scene decision input instead of falling back to chat", async payload => {
+  const response = await completion({ response_format: { type: "json_schema", json_schema: { name: "scene_task_decisions" } }, messages: [{ role: "user", content: JSON.stringify(payload) }] });
+  expect(response.status).toBe(400);
+  expect((await response.json()).error.message).toBe("Invalid Scene decision fixture input");
+});

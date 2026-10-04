@@ -63,6 +63,14 @@ describe("image generation prompt", () => {
     expect(text).not.toMatch(/portrait|face|eyes|skin|human|person/i);
   });
 
+  it("edits a scene-only source without adding companion facial constraints", () => {
+    const text = buildGenerationPrompt({ mode: "image", character: null, visualProfile: null, consistencyMode: "strict",
+      userPrompt: "Change only the basil pot to blue.", presetFragment: "", lookFragment: "", sourceImageAssetId: "scene-source", sourceType: "chat_image" });
+    expect(text).toContain("Change only the basil pot to blue.");
+    expect(text).toContain("do not add a person");
+    expect(text).not.toMatch(/same adult person|subject's face|body proportions/iu);
+  });
+
   it("deduplicates composed image exclusions without dropping identity constraints", () => {
     expect(imageNegativePrompt("blur, duplicate person, BLUR", { negativeIdentityPrompt: "different face, duplicate person" }))
       .toBe("blur, duplicate person, different face");

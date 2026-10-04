@@ -280,7 +280,7 @@ async function lockGenerationChatAttachment(
       userId: input.userId,
       at: { attachment: candidate.id },
       expect: {
-        characterId: data.characterId ?? null,
+        characterId: generationChatCharacterId(data),
         attachmentAttemptMatchesTurn: true,
         conflictMessage: retryConflict,
       },
@@ -305,7 +305,7 @@ async function lockGenerationChatAttachment(
       userId: input.userId,
       at: { turn: binding.turnId },
       expect: {
-        characterId: data.characterId ?? null,
+        characterId: generationChatCharacterId(data),
         attempt: binding.attempt,
         assistantStatus: ["sent"],
         conflictMessage: videoConflict,
@@ -333,7 +333,7 @@ async function lockGenerationChatAttachment(
     userId: input.userId,
     at: { attachment: attachmentId },
     expect: {
-      characterId: data.characterId ?? null,
+      characterId: generationChatCharacterId(data),
       attempt: binding.attempt,
       assistantStatus: ["pending", "generating"],
       attachmentAttemptMatchesTurn: true,
@@ -352,6 +352,14 @@ async function lockGenerationChatAttachment(
     throw Errors.conflict(imageConflict);
   }
   return current;
+}
+
+// A scene-only image has no depicted Character, but its frozen Chat origin
+// still binds admission/retry to the same companion and Turn under the lock.
+export function generationChatCharacterId(data: { characterId?: string | null; sourceMeta?: unknown }): string | null {
+  const source = jsonRecord(data.sourceMeta);
+  return data.characterId ?? ((source.imageSubject === "scene" || source.identityMode === "source_only")
+    && typeof source.chatCharacterId === "string" ? source.chatCharacterId : null);
 }
 
 export function isUniqueConstraintError(error: unknown): boolean {

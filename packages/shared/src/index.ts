@@ -1,5 +1,6 @@
 // @idream/shared — cross-service contracts SSoT.
 export * from "./contracts/index";
+export * from "./contracts/durable-server";
 export * from "./bff/signing";
 export * from "./chat/persona";
 export * from "./chat/persona-render";

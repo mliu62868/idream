@@ -28,6 +28,7 @@ vi.mock("next/navigation", () => ({
 }));
 
 import { CharacterCreateWizard } from "./CharacterCreateWizard";
+import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import {
   beginDurableMutationIntent,
   readActiveDurableMutationIntent,
@@ -168,6 +169,8 @@ describe("Character create wizard restore authority", () => {
     const name = container.querySelector<HTMLInputElement>('[name="persona.name"]');
     expect(name).not.toBeNull();
     expect(name?.getAttribute("aria-invalid")).toBe("true");
+    expect(name?.labels?.[0]?.textContent).toBe("Name");
+    expect(document.getElementById(name!.getAttribute("aria-describedby")!)?.textContent).toBe("Replace the placeholder with real character information.");
     expect(document.activeElement).toBe(name);
     expect(container.textContent).toContain("Replace the placeholder with real character information.");
     expect(adminV2Request).not.toHaveBeenCalled();
@@ -193,6 +196,144 @@ describe("Character create wizard restore authority", () => {
     expect(input.value).toBe(text);
     const saved = JSON.parse(window.localStorage.getItem("idream.admin.character-create-draft.v3:operator-a")!);
     expect(saved.visualDirection.stableTraits).toEqual(["Brown eyes", "Dark brown hair", "Light freckles"]);
+  });
+
+  it("shows the optional Markdown limit at the editable field and focuses it", async () => {
+    window.localStorage.setItem("idream.admin.character-create-draft.v3:operator-a", JSON.stringify({
+      ...restoredDraft,
+      persona: { ...restoredDraft.persona, detailsMarkdown: "x".repeat(24_001) },
+    }));
+    await act(async () => root.render(<CharacterCreateWizard actorId="operator-a" canCreate />));
+    await waitUntil(() => container.querySelector<HTMLTextAreaElement>('[name="persona.detailsMarkdown"]')?.value.length === 24_001);
+    const next = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Continue to visual direction"))!;
+    await act(async () => next.click());
+    await waitUntil(() => container.querySelector('[name="persona.detailsMarkdown"]')?.getAttribute("aria-invalid") === "true");
+    const details = container.querySelector('[name="persona.detailsMarkdown"]')!;
+    expect(container.textContent).toContain("Additional details must be 24000 characters or fewer.");
+    expect(document.activeElement).toBe(details);
+    expect(adminV2Request).not.toHaveBeenCalled();
+  });
+
+  it("allows revisiting completed steps and keeps data without creating early", async () => {
+    window.localStorage.setItem("idream.admin.character-create-draft.v3:operator-a", JSON.stringify(restoredDraft));
+    await act(async () => root.render(<CharacterCreateWizard actorId="operator-a" canCreate />));
+    await waitUntil(() => container.textContent?.includes("Persona & conversation") === true);
+    const persona = container.querySelector("ol button") as HTMLButtonElement;
+    await act(async () => persona.click());
+    expect(container.querySelector<HTMLInputElement>('[name="persona.name"]')?.value).toBe("Mira");
+    expect(document.activeElement?.id).toBe("character-create-current-step");
+    const visual = container.querySelectorAll<HTMLButtonElement>("ol button")[1];
+    await act(async () => visual.click());
+    expect(container.querySelector<HTMLTextAreaElement>('[name="visualDirection.stableTraits"]')?.value).toBe("dark wavy hair");
+    expect(adminV2Request).not.toHaveBeenCalled();
+  });
+
+  it("discards a local creation draft only after confirmation without writing a character", async () => {
+    const storageKey = "idream.admin.character-create-draft.v3:operator-a";
+    window.localStorage.setItem(storageKey, JSON.stringify(restoredDraft));
+    await act(async () => root.render(<CharacterCreateWizard actorId="operator-a" canCreate />));
+    await waitUntil(() => container.textContent?.includes("Persona & conversation") === true);
+    await act(async () => [...container.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Discard draft")!.click());
+    expect(window.localStorage.getItem(storageKey)).not.toBeNull();
+    const confirm = [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find((button) => button.textContent?.trim() === "Discard draft")!;
+    await act(async () => confirm.click());
+    expect(window.localStorage.getItem(storageKey)).toBeNull();
+    expect(container.querySelector<HTMLInputElement>('[name="persona.name"]')?.value).toBe("");
+    expect(adminV2Request).not.toHaveBeenCalled();
+  });
+
+  it("lets an assigned editor resume an authorized draft without offering creation", async () => {
+    window.history.replaceState(null, "", "/admin/characters/new?draft=assigned-character");
+    adminV2Request.mockImplementation(async (path, options) => {
+      if (path.endsWith("/assigned-character/project") && options?.method === "GET") return {
+        authority: { characterId: "assigned-character", projectId: "assigned-project", projectVersion: 3, deepLink: "/admin/characters/assigned-character" },
+        draft: restoredDraft,
+      };
+      throw new Error("Unexpected write");
+    });
+    await act(async () => root.render(<CharacterCreateWizard actorId="scoped-operator" canCreate={false} canResumeDraft />));
+    await waitUntil(() => container.textContent?.includes("Persona & conversation") === true);
+    expect(container.textContent).toContain("Saved to server");
+    expect(container.textContent).not.toContain("Start a new Character instead");
+    const save = [...container.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Save character")!;
+    await act(async () => save.click());
+    expect(routerPush).toHaveBeenCalledWith("/admin/characters/assigned-character");
+    expect(adminV2Request.mock.calls.some(([, options]) => options?.method === "POST")).toBe(false);
+  });
+
+  it("allows returning to an earlier step with invalid unsaved server-draft values", async () => {
+    window.history.replaceState(null, "", "/admin/characters/new?draft=assigned-character");
+    adminV2Request.mockImplementation(async () => ({
+      authority: { characterId: "assigned-character", projectId: "assigned-project", projectVersion: 3, deepLink: "/admin/characters/assigned-character" },
+      draft: restoredDraft,
+    }));
+    await act(async () => root.render(<CharacterCreateWizard actorId="operator-a" canCreate />));
+    await waitUntil(() => container.textContent?.includes("Persona & conversation") === true);
+    await openReviewSection(container, 1);
+    const anchor = container.querySelector<HTMLTextAreaElement>('[name="visualDirection.identityAnchor"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(anchor, "");
+      anchor.dispatchEvent(new Event("input", { bubbles: true }));
+      [...container.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Back")!.click();
+    });
+    expect(container.querySelector('[name="persona.name"]')).not.toBeNull();
+    expect(adminV2Request.mock.calls.some(([, options]) => options?.method === "PATCH")).toBe(false);
+    await act(async () => [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("2."))!.click());
+    expect(container.querySelector<HTMLTextAreaElement>('[name="visualDirection.identityAnchor"]')?.value).toBe("");
+    expect(adminV2Request.mock.calls.some(([, options]) => options?.method === "PATCH")).toBe(false);
+  });
+
+  it("locks review edits during the final save and unlocks after a rejected write", async () => {
+    window.history.replaceState(null, "", "/admin/characters/new?draft=assigned-character");
+    const pendingWrites: Array<{ resolve(value: unknown): void; reject(cause: unknown): void }> = [];
+    adminV2Request.mockImplementation(async (_path, options) => {
+      if (options?.method === "PATCH") return new Promise((resolve, reject) => pendingWrites.push({ resolve, reject }));
+      return { authority: { characterId: "assigned-character", projectId: "assigned-project", projectVersion: 3, deepLink: "/admin/characters/assigned-character" }, draft: restoredDraft };
+    });
+    await act(async () => root.render(<CharacterCreateWizard actorId="operator-a" canCreate />));
+    await waitUntil(() => container.textContent?.includes("Persona & conversation") === true);
+    await openReviewSection(container, 1);
+    const reference = container.querySelector<HTMLTextAreaElement>('[name="visualDirection.referenceDirection"]')!;
+    const editReference = async (value: string) => act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(reference, value);
+      reference.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await editReference("Warm light A");
+    await act(async () => [...container.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Continue")!.click());
+    await waitUntil(() => pendingWrites.length === 1);
+    await editReference("Warm light B");
+    await act(async () => pendingWrites[0]!.resolve({ version: 4 }));
+    await waitUntil(() => container.textContent?.includes("Persona & conversation") === true);
+    await act(async () => [...container.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Save character")!.click());
+    await waitUntil(() => pendingWrites.length === 2);
+    expect(container.querySelector("fieldset")?.disabled).toBe(true);
+    expect(routerPush).not.toHaveBeenCalled();
+    await act(async () => pendingWrites[1]!.reject(new AdminV2RequestError("Rejected", 400, "bad_request")));
+    expect(container.querySelector("fieldset")?.disabled).toBe(false);
+    expect(routerPush).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Warm light B");
+  });
+
+  it("guards leaving a server draft while autosave has not committed the edit", async () => {
+    window.history.replaceState(null, "", "/admin/characters/new?draft=assigned-character");
+    adminV2Request.mockImplementation(async () => ({
+      authority: { characterId: "assigned-character", projectId: "assigned-project", projectVersion: 3, deepLink: "/admin/characters/assigned-character" },
+      draft: restoredDraft,
+    }));
+    await act(async () => root.render(<CharacterCreateWizard actorId="operator-a" canCreate />));
+    await waitUntil(() => container.textContent?.includes("Persona & conversation") === true);
+    await openReviewSection(container, 0);
+    const name = container.querySelector<HTMLInputElement>('[name="persona.name"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(name, "Unsaved Mira");
+      name.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => container.querySelector<HTMLAnchorElement>('a[href="/admin/characters"]')!.click());
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Discard unsaved changes?");
+    const cancel = [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find((button) => button.textContent?.trim() === "Cancel")!;
+    await act(async () => cancel.click());
+    expect(name.value).toBe("Unsaved Mira");
+    expect(adminV2Request.mock.calls.some(([, options]) => options?.method === "PATCH")).toBe(false);
   });
 
   it("locks navigation before a requested draft has been checked", async () => {
@@ -403,6 +544,19 @@ describe("Character create wizard restore authority", () => {
     expect(container.querySelector("textarea")?.value).toBe(
       "Updated only in this tab",
     );
+  });
+
+  it("directs a non-resumable character to its settings without offering an ineffective retry", async () => {
+    window.history.replaceState(null, "", "/admin/characters/new?draft=character-old");
+    adminV2Request.mockRejectedValue(new AdminV2RequestError(
+      "Character has no resumable project draft", 409, "conflict", { reason: "draft_not_resumable" },
+    ));
+    await act(async () => root.render(<CharacterCreateWizard actorId="operator-a" canCreate={false} canResumeDraft />));
+    await waitUntil(() => container.textContent?.includes("This character has no resumable creation draft.") === true);
+    expect(container.querySelector('a[href="/admin/characters/character-old?tab=soul"]')?.textContent).toBe("Open character settings");
+    expect(container.textContent).not.toContain("Retry restore");
+    expect(container.textContent).not.toContain("Start a new Character instead");
+    expect(adminV2Request.mock.calls.some(([, options]) => options?.method === "POST")).toBe(false);
   });
 
   it("fails closed after restore failure and returns to a blank local draft only after explicit confirmation", async () => {

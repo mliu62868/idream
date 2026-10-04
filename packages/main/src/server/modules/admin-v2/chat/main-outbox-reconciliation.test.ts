@@ -1,7 +1,7 @@
+import { durableEnvelopeHash } from "@idream/shared/contracts/durable-server";
 import { describe, expect, it } from "vitest";
 import {
   LEGACY_MAIN_TO_CHAT_EVENTS,
-  durableEnvelopeHash,
   durableEventEnvelopeSchema,
 } from "@idream/shared/contracts";
 import {

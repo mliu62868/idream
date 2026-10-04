@@ -55,6 +55,8 @@ export const CHARACTER_CANONICAL_PORTRAIT_IDENTITY_PROMPT =
 
 export const characterVisualProfileCreateRequestSchema = z
   .object({
+    expectedActiveIdentityId: adminIdSchema.nullable(),
+    expectedActiveIdentityVersion: z.number().int().nonnegative(),
     identityPrompt: z.string().trim().min(1).max(2_000).optional(),
     negativeIdentityPrompt: z.string().trim().max(2_000).optional(),
     style: characterVisualStyleSchema.optional(),
@@ -77,6 +79,17 @@ export const characterVisualProfileCreateRequestSchema = z
     confirmation: z.string().trim().min(1).max(200),
   })
   .superRefine((value, context) => {
+    if (
+      (value.expectedActiveIdentityId === null) !==
+      (value.expectedActiveIdentityVersion === 0)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["expectedActiveIdentityVersion"],
+        message:
+          "Expected active Visual Identity id and version must describe the same authority state.",
+      });
+    }
     if (value.candidateAuthority && !value.identityPrompt) {
       context.addIssue({
         code: "custom",

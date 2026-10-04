@@ -43,6 +43,27 @@ const { createMockGenProviders } = await import(genProviderModulePath) as {
 const imageModel = createMockGenProviders().image;
 
 function fixtureChatMessage(body: Record<string, unknown>) {
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  const format = body.response_format as { type?: string; json_schema?: { name?: string } } | undefined;
+  if (format?.type === "json_schema" && format.json_schema?.name === "scene_changes") {
+    // This fixture supplies no narrative facts; it does not qualify extraction.
+    return { role: "assistant", content: JSON.stringify({ location: [], time: [], participant_present: [], participant_absent: [], emotionalBeat: [], thread_unfinished: [], thread_completed: [] }) };
+  }
+  if (format?.type === "json_schema" && format.json_schema?.name === "scene_task_decisions") {
+    const source = messages.findLast(message => message?.role === "user");
+    const input = JSON.parse(typeof source?.content === "string" ? source.content : "null") as { text?: unknown; known?: unknown; candidates?: unknown } | null;
+    const isTable = (value: unknown): value is string[] => Array.isArray(value)
+      && value.every(label => typeof label === "string" && label.trim().length > 0);
+    if (typeof input?.text !== "string" || !isTable(input.known) || !isTable(input.candidates) || input.candidates.length > 16) throw new Error("Invalid Scene decision fixture input");
+    const { known, candidates } = input;
+    // No controlled semantic receipt authorizes candidate facts or completion.
+    // Exact-label bindings are structural only; uncertain still rejects the decision.
+    return { role: "assistant", content: JSON.stringify({
+      known: known.map(label => candidates.includes(label) ? "uncertain" : "pending"),
+      candidates: candidates.map(() => "uncertain"),
+      bindings: candidates.map(label => { const index = known.indexOf(label); return index < 0 ? null : index; }),
+    }) };
+  }
   const choice = body.tool_choice as { function?: { name?: string } } | undefined;
   const name = choice?.function?.name;
   const tools = Array.isArray(body.tools) ? body.tools : [];
@@ -55,12 +76,11 @@ function fixtureChatMessage(body: Record<string, unknown>) {
       tool_calls: [{ id: `call_${randomUUID()}`, type: "function", function: {
         name,
         arguments: JSON.stringify(name === "generate_image_async"
-          ? { prompt: "An adult companion smiling beside a rain-streaked cafe window.", outputCount: 1, orientation: "4:5" }
+          ? { subject: "companion", prompt: "An adult companion smiling beside a rain-streaked cafe window.", outputCount: 1, orientation: "4:5" }
           : { instruction: "Keep the companion's identity and move the portrait beside a rainy cafe window.", outputCount: 1, orientation: "4:5" }),
       } }],
     };
   }
-  const messages = Array.isArray(body.messages) ? body.messages : [];
   const system = messages.filter(message => message?.role === "system")
     .map(message => typeof message.content === "string" ? message.content : "").join("\n");
   // The official igrep maintenance protocol is plain text, not JSON: no

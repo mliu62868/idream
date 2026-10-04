@@ -2,7 +2,7 @@ import { adminBootstrapResponseSchema, adminBootstrapSchema } from "@idream/shar
 import { deriveAdminShellSignals } from "@/server/admin/shell-signals";
 import { DEV_ADMIN_ACCOUNT_HINTS } from "@/server/admin/dev-login-accounts";
 import { devLoginEnabled } from "@/server/admin/dev-login";
-import { effectivePermissions } from "@/server/admin/effective-permissions";
+import { canCreateCharacterProjects, effectivePermissions } from "@/server/admin/effective-permissions";
 import { getAuthCtx } from "@/server/lib/auth";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
@@ -24,6 +24,7 @@ export async function GET(request: Request) {
       actor: actor.userId ? { id: actor.userId, role: actor.role ?? "user" } : null,
       permissions: [...permissions].sort(),
       canReadDashboard: permissions.has("dashboard.read"),
+      canCreateCharacters: await canCreateCharacterProjects(actor.userId, actor.role),
       devLogin: {
         enabled: devLoginEnabled(),
         accounts: devLoginEnabled() ? DEV_ADMIN_ACCOUNT_HINTS : [],

@@ -14,6 +14,8 @@ import {
   type AgentRunInput,
 } from "./agent-run-store.js";
 import {
+  ChatFenceError,
+  assertNotFenced,
   fenceAttemptsThrough,
   fenceUser,
   isFenced,
@@ -35,6 +37,13 @@ beforeEach(async () => {
 afterEach(async () => {
   delete process.env.CHAT_FS_ROOT;
   await Promise.all(temporary.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+});
+
+it("distinguishes a cancelled attempt from storage and runtime errors", async () => {
+  const scope = { scope: "attempt", turnId: "turn-typed-fence", attempt: 1 } as const;
+  await fenceAttemptsThrough(scope.turnId, scope.attempt);
+  await expect(assertNotFenced([scope])).rejects.toBeInstanceOf(ChatFenceError);
+  await expect(assertNotFenced([{ ...scope, attempt: 2 }])).resolves.toBeUndefined();
 });
 
 function runInput(overrides: {
