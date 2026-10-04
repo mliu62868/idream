@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { AuthWorkspace } from "./AuthWorkspace";
+import { AuthWorkspace, signupReferralBonusCopy, signupReferralCode } from "./AuthWorkspace";
 
 describe("AuthWorkspace hydration authority", () => {
   it.each([
@@ -21,4 +21,13 @@ describe("AuthWorkspace hydration authority", () => {
       );
     },
   );
+});
+
+describe("signup referral bonus", () => {
+  it("reads the invite code the signup request carries and states the invitee amount", () => {
+    expect(signupReferralCode("?ref=%20DREAM-ABC%20&next=%2Fchat")).toBe("DREAM-ABC");
+    expect(signupReferralCode("?ref=")).toBeUndefined();
+    expect(signupReferralCode("")).toBeUndefined();
+    expect(signupReferralBonusCopy).toContain("150 bonus dreamcoins");
+  });
 });

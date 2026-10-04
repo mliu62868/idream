@@ -17,6 +17,17 @@ export const coinOfferSchema = coinOfferDraftSchema.extend({
   fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
 });
 
+// SPEC: referral give/get. Signup settles both rewards immediately; the inviter
+// reward stops after `inviterLimit` grants per rolling window, the invitee's never does.
+// INTENT: one constant for the ledger writes and the copy shown on /signup and Profile,
+// so the advertised amount cannot drift from what is minted.
+export const REFERRAL_REWARD = {
+  inviteeDreamcoins: 150,
+  inviterDreamcoins: 150,
+  inviterLimit: 10,
+  inviterWindowDays: 30,
+} as const;
+
 export const coinCheckoutRequestSchema = z.object({
   offerId: z.string().min(1).max(160),
   offerFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
