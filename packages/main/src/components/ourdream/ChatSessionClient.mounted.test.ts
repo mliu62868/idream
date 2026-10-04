@@ -690,6 +690,45 @@ describe("ChatSessionClient streaming composer", () => {
     expect(pinned!.querySelector("form")).not.toBeNull();
   });
 
+  it("re-follows the latest reply when the composer dock grows after entry, until the reader scrolls up", async () => {
+    const observers: { callback: ResizeObserverCallback; targets: Element[] }[] = [];
+    vi.stubGlobal("ResizeObserver", class {
+      targets: Element[] = [];
+      constructor(public callback: ResizeObserverCallback) { observers.push(this); }
+      observe(target: Element) { this.targets.push(target); }
+      unobserve() {}
+      disconnect() {}
+    });
+    const scrollTo = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+    // The dock (sticky) covers the viewport from y=500; the latest message ends far below it.
+    const rect = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+      return (this.classList.contains("sticky") ? { top: 500, bottom: 800 } : { top: 0, bottom: 3_000 }) as DOMRect;
+    });
+    try {
+      await mountSession();
+      const dockObserver = observers.find(observer => observer.targets.some(target => target.querySelector("form")));
+      expect(dockObserver).toBeDefined();
+      // A late block (voice controls) mounting in the dock: follow to the page end,
+      // where the dock sits in flow below the list and cannot cover the latest reply.
+      scrollTo.mockClear();
+      await act(async () => dockObserver!.callback([], dockObserver as unknown as ResizeObserver));
+      expect(scrollTo).toHaveBeenCalledWith({ top: document.documentElement.scrollHeight, behavior: "auto" });
+
+      // The reader scrolls up with the latest message hidden under the dock: released.
+      for (const y of [400, 300]) {
+        Object.defineProperty(window, "scrollY", { configurable: true, value: y });
+        await act(async () => window.dispatchEvent(new Event("scroll")));
+      }
+      scrollTo.mockClear();
+      await act(async () => dockObserver!.callback([], dockObserver as unknown as ResizeObserver));
+      expect(scrollTo).not.toHaveBeenCalled();
+    } finally {
+      rect.mockRestore();
+      scrollTo.mockRestore();
+      Reflect.deleteProperty(window, "scrollY");
+    }
+  });
+
   it("ignores the old attempt's delayed recovery after the reader regenerates", async () => {
     await startStreamingReply();
     const originalFetch = vi.mocked(fetch).getMockImplementation()!;

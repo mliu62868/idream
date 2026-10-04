@@ -40,7 +40,7 @@ const onTurn = vi.fn(), beforeConnect = vi.fn();
 function Harness({ owner = "user:owner", session = "s", controls = false }: { owner?: string; session?: string; controls?: boolean }) {
   const controller = useVoiceCall({ sessionPath: `/api/v1/chat/sessions/${session}`, ownerScope: owner, enabled: true, onTurn, beforeConnect });
   useEffect(() => { voice = controller; }, [controller]);
-  return controls ? createElement(VoiceCallControls, { voice: controller, disabled: false }) : createElement("span", {}, controller.phase);
+  return controls ? createElement(VoiceCallControls, { voice: controller, disabled: false, open: true, onClose: () => {} }) : createElement("span", {}, controller.phase);
 }
 async function render(props: { owner?: string; session?: string; controls?: boolean } = {}) { await act(async () => root.render(createElement(Harness, props))); }
 async function flush() { await act(async () => { for (let i = 0; i < 25; i++) await Promise.resolve(); }); }

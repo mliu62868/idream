@@ -33,7 +33,7 @@ import { useGenerationReceipts } from "@/hooks/useGenerationReceipts";
 import { useVoiceInput } from "@/hooks/useVoiceInput";
 import { useVoiceCall } from "@/hooks/useVoiceCall";
 import { VoiceInputButton, VoiceInputStatus } from "./chat/VoiceInputControls";
-import { VoiceCallControls } from "./chat/VoiceCallControls";
+import { VoiceCallButton, VoiceCallControls } from "./chat/VoiceCallControls";
 import { AppSidebar } from "./AppSidebar";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { ChatHeaderControls } from "./chat/ChatHeaderControls";
@@ -164,14 +164,12 @@ export function applyLocalStreamState(
 }
 
 // SPEC: Follow the newest message only while the reader is parked at it: the end
-//       of the message list sits at most the slack below the viewport bottom.
+//       of the message list sits at most the slack below the top of the sticky
+//       composer dock (what is under the dock is not visible).
 //       Only the reader scrolling up releases the pin.
 // INTENT: a stream re-renders on every token; without this the reader is dragged
 //         back down and can never scroll up through the history mid-reply.
-//         Measured against the list end, not the page end: the follow-scroll parks
-//         that end above the sticky composer, which on desktop is more than the
-//         slack above the page end, so a page-end rule unpinned the follow itself.
-//         A smooth follow-scroll is also still travelling when the next message
+//         A smooth jump-to-latest is still travelling when the next message
 //         lands, so its own scroll events must not count as the reader leaving.
 export function chatViewPinAfterScroll(input: {
   readonly wasPinned: boolean;
@@ -181,6 +179,12 @@ export function chatViewPinAfterScroll(input: {
 }): boolean {
   if (input.latestBelowViewportPx <= STICK_TO_BOTTOM_SLACK_PX) return true;
   return input.wasPinned && input.scrollY >= input.previousScrollY;
+}
+
+// The composer dock sits in flow right after the message list, so at the page
+// end the latest message is fully above it regardless of the dock's height.
+function scrollChatToEnd(behavior: ScrollBehavior) {
+  window.scrollTo({ top: document.documentElement.scrollHeight, behavior });
 }
 
 const ACTIVE_CHAT_ATTACHMENT_STATUSES = new Set([
@@ -245,6 +249,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
   const [memoryPending, setMemoryPending] = useState(false);
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
+  const [voiceCallOpen, setVoiceCallOpen] = useState(false);
   const [voicePreparingIds, setVoicePreparingIds] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -298,6 +303,8 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
     useRef<Map<string, { key: string; promise: Promise<VoiceClipRequestResult> }>>(new Map());
   const voiceClipUrlsRef = useRef<Map<string, { key: string; url: string }>>(new Map());
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const messageListRef = useRef<HTMLDivElement | null>(null);
+  const composerDockRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const voiceInput = useVoiceInput({
     sessionPath,
@@ -349,11 +356,14 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
     let previousScrollY = window.scrollY;
     const onScroll = () => {
       const latestEnd = messagesEndRef.current?.getBoundingClientRect().bottom;
+      // The sticky composer dock covers the bottom of the viewport, so "visible"
+      // ends at its top edge, not at the viewport edge.
+      const visibleBottom = composerDockRef.current?.getBoundingClientRect().top ?? window.innerHeight;
       pinnedToBottomRef.current = chatViewPinAfterScroll({
         wasPinned: pinnedToBottomRef.current,
         previousScrollY,
         scrollY: window.scrollY,
-        latestBelowViewportPx: latestEnd === undefined ? 0 : latestEnd - window.innerHeight,
+        latestBelowViewportPx: latestEnd === undefined ? 0 : latestEnd - visibleBottom,
       });
       previousScrollY = window.scrollY;
       if (pinnedToBottomRef.current) setJumpToLatestVisible(false);
@@ -362,22 +372,31 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
-  // SPEC: Keep the newest message (and its streaming deltas) in view; without this
-  //       the reply renders below the fold and the input is pushed off-screen.
-  // INTENT: a reader who scrolled up keeps their place and gets a jump control
-  //         instead; smooth scrolling is dropped mid-stream because per-token
-  //         animations restart each other and never settle.
+  // SPEC: Keep the newest message (and its streaming deltas) in view whenever the
+  //       message list or the sticky composer dock changes size — new messages,
+  //       tokens, images, and dock blocks that mount late (voice controls) alike.
+  // INTENT: following on `messages` alone ran before late dock blocks mounted, so on
+  //         entry the dock grew over the latest reply (audit P1-1). The follow target
+  //         is the page end: there the dock sits in flow right below the list, so the
+  //         latest message clears it whatever the dock's height — no scroll-margin guess.
+  //         Header blocks above the list are not observed: opening Conversation
+  //         preferences must not yank its reader down to the composer.
+  //         Jumps are instant; per-token smooth animations restart each other.
   useEffect(() => {
-    if (!pinnedToBottomRef.current) {
-      setJumpToLatestVisible(true);
-      return;
-    }
-    messagesEndRef.current?.scrollIntoView({
-      behavior: hasGeneratingReply ? "auto" : "smooth",
-      block: "end",
+    const list = messageListRef.current;
+    const dock = composerDockRef.current;
+    if (!list || !dock || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (pinnedToBottomRef.current) scrollChatToEnd("auto");
     });
-    // Streaming state is derived from messages; re-running per token is the point.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    observer.observe(list);
+    observer.observe(dock);
+    return () => observer.disconnect();
+  }, [loadState]);
+
+  // A reader who scrolled up keeps their place and gets a jump control instead.
+  useEffect(() => {
+    if (!pinnedToBottomRef.current) setJumpToLatestVisible(true);
   }, [messages]);
 
   useEffect(() => {
@@ -391,6 +410,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
       observedAttemptsRef.current.clear();
       pinnedToBottomRef.current = true;
       setJumpToLatestVisible(false);
+      setVoiceCallOpen(false);
       audioRef.current?.pause();
       audioRef.current = null;
       voicePlaybackIntentRef.current += 1;
@@ -1609,7 +1629,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
   function jumpToLatest() {
     pinnedToBottomRef.current = true;
     setJumpToLatestVisible(false);
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    scrollChatToEnd("smooth");
   }
 
   async function recoverAssistantFromSession(assistantId: string) {
@@ -1696,7 +1716,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
                   </ul>
                 </section>
               ) : null}
-              <div className="mt-6 flex min-h-[55vh] flex-1 flex-col gap-3 rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-4">
+              <div ref={messageListRef} className="mt-6 flex min-h-[55vh] flex-1 flex-col gap-3 rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-4">
                 {/* 群聊没有开场白：说清楚怎么开始，而不是替角色编一句。 */}
                 {group && messages.length === 0 ? (
                   <p className="m-auto max-w-md text-center text-sm leading-6 text-white/65" data-testid="group-chat-empty">
@@ -1911,8 +1931,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
                     </div>
                   );
                 })}
-                {/* Keep auto-follow and New messages above the sticky composer/mobile navigation. */}
-                <div className="scroll-mb-40 md:scroll-mb-20" ref={messagesEndRef} />
+                <div ref={messagesEndRef} />
               </div>
               {jumpToLatestVisible ? (
                 <button
@@ -1929,7 +1948,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
                   INTENT: 输入框是 sticky，状态段落原本跟在它后面的普通流里，长会话时会被顶到
                   文档底部、永远在视口外——点「Play voice」被套餐拦下、日额度用尽、安全策略拦截、
                   发送失败这些提示用户一条都看不到，表现得像按钮没反应。 */}
-              <div className="sticky bottom-20 z-10 mt-4 bg-[rgb(13,13,13)] md:bottom-0">
+              <div ref={composerDockRef} className="sticky bottom-20 z-10 mt-4 bg-[rgb(13,13,13)] md:bottom-0">
                 {status ? (
                   <p
                     aria-live="polite"
@@ -1965,7 +1984,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
                     : <>This Character is currently unavailable. Your conversation stays readable. {groupMode ? "Choose another speaker to continue." : <Link className="font-bold underline" href="/">Explore Characters</Link>}</>}
                 </p>
               ) : null}
-              {!groupMode ? <VoiceCallControls voice={voiceCall} disabled={pending || hasGeneratingReply || conversationReadOnly || voiceInput.blocksSend} /> : null}
+              {!groupMode ? <VoiceCallControls voice={voiceCall} open={voiceCallOpen} onClose={() => setVoiceCallOpen(false)} disabled={pending || hasGeneratingReply || conversationReadOnly || voiceInput.blocksSend} /> : null}
               <form
                 className="flex items-end gap-2 py-2"
                 onSubmit={submit}
@@ -1995,6 +2014,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
                   }}
                   value={content}
                 />
+                {!groupMode ? <VoiceCallButton voice={voiceCall} open={voiceCallOpen} onToggle={() => setVoiceCallOpen(value => !value)} /> : null}
                 <VoiceInputButton voice={voiceInput} disabled={voiceCall.active || pending || speakerPending || conversationReadOnly || (groupMode && sendOutcomeUnknown)} />
                 {hasGeneratingReply ? (
                   <button

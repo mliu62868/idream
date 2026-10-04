@@ -16,7 +16,7 @@ async function choose(label: string, value: string) { await act(async () => { fi
 async function click(text: string) { await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === text)!.click()); }
 
 describe("Conversation preferences", () => {
-  it("saves selected choices with their version and restores them on refresh", async () => {
+  it("saves each choice as it is made, with its version, and restores them on refresh", async () => {
     let settings = { responseLength: "auto", interactionIntensity: "balanced", version: 0 };
     const requests: unknown[] = [];
     vi.stubGlobal("fetch", vi.fn(async (_url, init) => {
@@ -24,12 +24,14 @@ describe("Conversation preferences", () => {
       return Response.json({ settings, editable: true, catalog });
     }));
     await render();
+    // No separate Save step: a choice the reader sees is a choice that applies.
+    expect([...container.querySelectorAll("button")].map(button => button.textContent)).not.toContain("Save preferences");
     await choose("Reply length", "short");
+    expect(requests).toEqual([{ responseLength: "short", interactionIntensity: "balanced", sceneGeneration: "follow", version: 0 }]);
+    expect(container.textContent).toContain("Saved for new messages");
     await choose("Interaction style", "gentle");
     await choose("Scene direction", "advance");
-    await click("Save preferences");
-    expect(requests).toEqual([{ responseLength: "short", interactionIntensity: "gentle", sceneGeneration: "advance", version: 0 }]);
-    expect(container.textContent).toContain("Saved for new messages");
+    expect(requests.at(-1)).toEqual({ responseLength: "short", interactionIntensity: "gentle", sceneGeneration: "advance", version: 2 });
     await act(async () => root.render(null));
     await render();
     expect(field("Reply length").value).toBe("short");
@@ -47,10 +49,11 @@ describe("Conversation preferences", () => {
     expect(field("Scene direction").value).toBe("follow");
     await choose("Reply length", "long");
     await choose("Scene direction", "advance");
-    await click("Save preferences");
     expect(field("Reply length").value).toBe("long");
     expect(field("Scene direction").value).toBe("advance");
     expect(container.textContent).toContain("Changed elsewhere");
+    expect(container.textContent).toContain("Not saved yet");
+    expect(container.textContent).not.toContain("Saved preferences");
     await click("Reload preferences");
     expect(field("Reply length").value).toBe("short");
     expect(field("Scene direction").value).toBe("follow");
@@ -72,16 +75,24 @@ describe("Conversation preferences", () => {
 
   it("shows profile capabilities and cost before saving only the selected identity and version", async () => {
     const writes: unknown[] = [];
+    let settings: Record<string, unknown> = { responseLength: "auto", interactionIntensity: "balanced", version: 0 };
     vi.stubGlobal("fetch", vi.fn(async (_url, init) => {
-      if (init?.method === "PUT") writes.push(JSON.parse(String(init.body)));
-      return Response.json({ settings: { responseLength: "auto", interactionIntensity: "balanced", version: 0 }, editable: true, catalog });
+      if (init?.method === "PUT") {
+        const body = JSON.parse(String(init.body));
+        writes.push(body);
+        // Like the server: store the selection and answer with the full profile snapshot.
+        const entry = catalog.items.find(item => item.id === body.conversationProfile?.id);
+        settings = { ...body, version: body.version + 1, conversationProfile: entry ? {
+          id: entry.id, version: entry.version, replyStyle: entry.replyStyle, answerMaxOutputTokens: entry.answerMaxOutputTokens,
+          messageUnits: entry.messageUnits, costDreamcoins: entry.costDreamcoins } : undefined };
+      }
+      return Response.json({ settings, editable: true, catalog });
     }));
     await render();
     await choose("Conversation profile", "quick");
     expect(field("Reply length").value).toBe("short");
     expect(container.textContent).toContain("1 message · 0 Dreamcoins");
     expect(container.textContent).toContain("one to three sentences");
-    await click("Save preferences");
     expect(writes).toEqual([{ responseLength: "short", interactionIntensity: "balanced", sceneGeneration: "follow", version: 0, conversationProfile: { id: "quick", version: 1 } }]);
     await choose("Conversation profile", "story");
     await choose("Scene direction", "follow");
