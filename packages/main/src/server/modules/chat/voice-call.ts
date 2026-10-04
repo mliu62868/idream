@@ -14,7 +14,7 @@ import { resolveCharacterVoiceAuthority } from "@/server/modules/voice-defaults"
 import { providers } from "@/server/providers";
 import { asrReady, requestAsr } from "@/server/providers/asr/parakeet-redux";
 import { readVoiceUpload } from "@/server/providers/asr/upload";
-import { createVoiceClip, characterVoiceTone, pinnedVoiceProviderPayloadSchema } from "../ourdream/voice-clip";
+import { createVoiceClip, characterVoiceTone, pinnedVoiceProviderPayloadSchema, voiceMinutesRemainingMs } from "../ourdream/voice-clip";
 import { acceptVoiceClipQuote, signVoiceClipQuote } from "../ourdream/voice-clip-quote";
 import { entitlementMap } from "../ourdream/subscription-lifecycle";
 import { readableCharacter } from "../ourdream/generation-character-authority";
@@ -44,7 +44,12 @@ async function sessionAuthority(userId: string, sessionId: string) {
 async function callTerms(userId: string, sessionId: string, body: Start) {
   const session = await sessionAuthority(userId, sessionId);
   const entitlements = await entitlementMap(userId);
-  const identity = await resolveCharacterVoiceAuthority({ characterId: session.characterId, systemDefaultOnly: entitlements.voice_enabled !== true });
+  let identity = await resolveCharacterVoiceAuthority({ characterId: session.characterId, systemDefaultOnly: entitlements.voice_enabled !== true });
+  // INTENT: Calls only run on local English Pocket TTS. A Character voice on
+  // another provider (a Fish clone) falls back to the system default voice the
+  // free route uses, so a voice plan never makes the Call worse than no plan.
+  const voiceFallback = identity.source === "character_clone" && identity.providerKey !== "pocket_tts";
+  if (voiceFallback) identity = await resolveCharacterVoiceAuthority({ characterId: session.characterId, systemDefaultOnly: true });
   if (identity.providerKey !== "pocket_tts") throw Errors.unavailable("This voice is not qualified for English local calls");
   const character = await readableCharacter(session.characterId, userId);
   const providerPayload = pinnedVoiceProviderPayloadSchema.parse({
@@ -64,7 +69,7 @@ async function callTerms(userId: string, sessionId: string, body: Start) {
     allowanceWindowStartsAt: new Date(now.getTime() - 30 * 86_400_000).toISOString(),
     quotedAt: now.toISOString(), expiresAt: new Date(now.getTime() + 5 * 60_000).toISOString(),
   });
-  return { session, providerPayload, billing, fingerprint };
+  return { session, providerPayload, billing, fingerprint, voiceFallback };
 }
 async function publicCall(call: VoiceCall) {
   const totals = await prisma.voiceCallUtterance.aggregate({ where: { callId: call.id }, _sum: { costDreamcoins: true, durationMs: true } });
@@ -138,6 +143,11 @@ async function markPendingCancelled(tx: Prisma.TransactionClient, callId: string
 }
 // Missing heartbeat never adds unobserved connected time. The hard deadline
 // releases exclusive ownership even when the browser/process never returns.
+// INVARIANT: only an explicit stop (end, mute, interrupt) or the hard deadline
+// cancels in-flight spoken turns. A lost lease or a paused tab merely
+// disconnects: the text reply keeps generating into the transcript and Resume
+// picks the same utterance back up. Nothing is charged meanwhile, because TTS
+// delivery and its settlement both require a live lease.
 export async function expireVoiceCalls(userId?: string) {
   const now = new Date();
   const calls = await prisma.voiceCall.findMany({ where: { ...(userId ? { userId } : {}), status: { not: "ended" },
@@ -151,7 +161,7 @@ export async function expireVoiceCalls(userId?: string) {
       await tx.voiceCall.update({ where: { id: current.id }, data: {
         status: ended ? "ended" : "disconnected", ...(ended ? { endedAt: now, settledAt: now, activeKey: null, endReason: "duration_limit" } : {}),
       } });
-      return markPendingCancelled(tx, current.id);
+      return ended ? markPendingCancelled(tx, current.id) : [];
     });
     for (const utterance of pending) await cancelUtterance(observed.userId, utterance);
   }
@@ -176,7 +186,7 @@ async function controlCall(userId: string, sessionId: string, id: string, token:
       ...(action === "resume" ? { leaseToken: randomUUID() } : {}),
       ...(ended ? { endedAt: now, settledAt: now, endReason: "user_ended", activeKey: null } : {}),
     } });
-    return { call: updated, pending: ["end", "mute", "interrupt", "disconnect"].includes(action) ? await markPendingCancelled(tx, id) : [] };
+    return { call: updated, pending: ["end", "mute", "interrupt"].includes(action) ? await markPendingCancelled(tx, id) : [] };
   });
   for (const utterance of result.pending) await cancelUtterance(userId, utterance);
   return publicCall(result.call);
@@ -262,6 +272,8 @@ export async function routeVoiceCall(request: Request, path: string[], userId: s
       const terms = await callTerms(userId, sessionId, body);
       return reply({ quoteToken: signVoiceClipQuote(terms.billing, env.BETTER_AUTH_SECRET), costPerReply: terms.billing.overflowCostDreamcoins,
         allowanceMinutes: terms.billing.allowanceMinutes, maxCostDreamcoins: body.maxCostDreamcoins, maxDurationMs: body.maxDurationMs,
+        remainingAllowanceMs: await voiceMinutesRemainingMs(userId, { voice_minutes: terms.billing.allowanceMinutes }, prisma, new Date(terms.billing.allowanceWindowStartsAt)),
+        voiceFallback: terms.voiceFallback,
         billingUnit: "generated reply audio; call time is free", language: "en", transport: "turn-based" });
     }
     return reply({ call: await startVoiceCall(userId, sessionId, body) });

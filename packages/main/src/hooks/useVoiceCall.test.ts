@@ -239,13 +239,54 @@ describe("mounted Call microphone and playback ownership", () => {
     expect(voice.notice).toContain("Resume this original call"); expect(voice.quote).toBeNull();
     expect(fetcher.mock.calls.filter(([url, init]) => url.endsWith("/voice-call") && init?.method === "POST")).toHaveLength(1);
   });
-  it("closes microphone resources and fences pending work when heartbeat fails", async () => {
+  it("rides out one failed heartbeat without dropping the call or the reply in progress", async () => {
+    const base = fetcher.getMockImplementation()!, reply = deferred<Response>();
+    let blips = 1;
+    fetcher.mockImplementation((url, init) => {
+      if (url.endsWith("/heartbeat") && blips > 0) { blips -= 1; return Promise.reject(new TypeError("Failed to fetch")); }
+      if (/\/utterances\/[^/]+$/.test(url) && init?.method === "POST") return reply.promise;
+      return base(url, init);
+    });
+    await render(); await connect(false); await act(async () => voice.submitRecording(new Blob(["English recording"]))); await flush();
+    await act(async () => { await vi.advanceTimersByTimeAsync(4100); });
+    expect(voice.phase).toBe("thinking"); expect(voice.call?.status).toBe("active");
+    await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
+    await act(async () => { reply.resolve(await base(`/x/utterances/${crypto.randomUUID()}`, {})); }); await flush();
+    expect(voice.phase).toBe("speaking"); expect(Player.instances).toHaveLength(1);
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/disconnect"))).toHaveLength(0);
+  });
+  it("shows the call as lost only after the lease lapses, then stops heartbeating", async () => {
     const base = fetcher.getMockImplementation()!;
-    fetcher.mockImplementation((url, init) => url.endsWith("/heartbeat") ? Promise.reject(new Error("offline")) : base(url, init));
-    await render(); await connect(); await act(async () => { await vi.advanceTimersByTimeAsync(4100); });
+    fetcher.mockImplementation((url, init) => url.endsWith("/heartbeat") ? Promise.reject(new TypeError("offline")) : base(url, init));
+    await render(); await connect(); await act(async () => { await vi.advanceTimersByTimeAsync(12_100); });
+    expect(voice.phase).toBe("listening"); expect(track.stop).not.toHaveBeenCalled();
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/heartbeat"))).toHaveLength(3);
+    await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
     expect(track.stop).toHaveBeenCalledOnce(); expect(voice.phase).toBe("disconnected"); expect(voice.call?.status).toBe("disconnected");
-    const attempts = fetcher.mock.calls.filter(([url]) => url.endsWith("/heartbeat")).length;
+    expect(voice.notice).toContain("reply in progress is kept");
     await act(async () => { await vi.advanceTimersByTimeAsync(8000); });
-    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/heartbeat"))).toHaveLength(attempts);
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/heartbeat"))).toHaveLength(3);
+  });
+  it("treats a definite heartbeat refusal as lost immediately", async () => {
+    const base = fetcher.getMockImplementation()!;
+    fetcher.mockImplementation((url, init) => url.endsWith("/heartbeat")
+      ? Promise.resolve(Response.json({ error: "conflict", message: "This call is controlled by another tab" }, { status: 409 })) : base(url, init));
+    await render(); await connect(); await act(async () => { await vi.advanceTimersByTimeAsync(4100); });
+    expect(voice.phase).toBe("disconnected"); expect(voice.notice).toContain("another tab"); expect(track.stop).toHaveBeenCalledOnce();
+  });
+  it("resumes the reply that was still generating when the call disconnected", async () => {
+    const base = fetcher.getMockImplementation()!, pendingId = crypto.randomUUID();
+    fetcher.mockImplementation(async (url, init) => {
+      if (serverCall && url.endsWith(`/voice-call/${serverCall.id}`) && !init?.method) return Response.json({ call: serverCall, utterances: [
+        { utteranceId: crypto.randomUUID(), status: "delivered" }, { utteranceId: pendingId, status: "linked" },
+      ] });
+      return base(url, init);
+    });
+    await render(); await connect(false);
+    await act(async () => { serverCall = { ...serverCall!, status: "disconnected" }; await voice.refresh(); });
+    expect(voice.phase).toBe("disconnected");
+    await act(async () => { await voice.resume(false); }); await flush();
+    expect(fetcher.mock.calls.some(([url, init]) => url.endsWith(`/utterances/${pendingId}`) && !init?.method)).toBe(true);
+    expect(utterancePosts()).toHaveLength(0); expect(onTurn).toHaveBeenCalledOnce(); expect(voice.phase).toBe("speaking");
   });
 });

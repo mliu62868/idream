@@ -159,17 +159,53 @@ describe("canonical Call recording, recovery and settlement", () => {
     expect((await run(f, "POST", `/${call.id}/utterances/${id}`, { token: call.leaseToken, audio: new Blob(["changed audio"]) })).response.status).toBe(409);
     await run(f, "POST", `/${call.id}/end`, { token: call.leaseToken });
   });
-  it("expires the owner lease, cancels pending work and resumes the same Call with a new lease", async () => {
+  it("expires the owner lease without cancelling the reply, and Resume speaks that same reply once", async () => {
     const f = await fixture(), call = await start(f), id = await utterance(f, call);
     await prisma.voiceCall.update({ where: { id: call.id }, data: { leaseExpiresAt: new Date(Date.now() - 1) } });
     await expireVoiceCalls(f.userId);
     expect(await prisma.voiceCall.findUniqueOrThrow({ where: { id: call.id } })).toMatchObject({ status: "disconnected", connectedMs: 0 });
-    expect((await prisma.voiceCallUtterance.findUniqueOrThrow({ where: { id } })).status).toBe("cancelled");
+    const kept = await prisma.voiceCallUtterance.findUniqueOrThrow({ where: { id } });
+    expect(kept.status).toBe("linked");
+    expect((await prisma.chatTurn.findUniqueOrThrow({ where: { id: kept.turnId! } })).assistantStatus).toBe("sent");
+    expect((await run(f, "POST", `/${call.id}/utterances/${id}/voice`, { token: call.leaseToken })).response.status).toBe(410);
+    expect(synthesize).not.toHaveBeenCalled();
     const resumed = await run(f, "POST", `/${call.id}/resume`);
     expect(resumed.response.status).toBe(200); expect(resumed.value.call.id).toBe(call.id); expect(resumed.value.call.leaseToken).not.toBe(call.leaseToken);
     expect((await run(f, "POST", `/${call.id}/heartbeat`, { token: call.leaseToken })).response.status).toBe(409);
-    expect(await prisma.voiceCall.count({ where: { userId: f.userId } })).toBe(1); expect(await dreamcoinBalance(f.userId)).toBe(20);
+    const detail = await run(f, "GET", `/${call.id}`, { token: resumed.value.call.leaseToken });
+    expect(detail.value.utterances).toEqual([expect.objectContaining({ utteranceId: id, status: "linked", assistantStatus: "sent" })]);
+    expect((await run(f, "POST", `/${call.id}/utterances/${id}/voice`, { token: resumed.value.call.leaseToken })).response.status).toBe(201);
+    expect(synthesize).toHaveBeenCalledTimes(1); expect(await dreamcoinBalance(f.userId)).toBe(18);
+    expect(await prisma.voiceCall.count({ where: { userId: f.userId } })).toBe(1);
     await run(f, "POST", `/${call.id}/end`, { token: resumed.value.call.leaseToken });
+  });
+  it("keeps the in-flight reply across an explicit tab disconnect but cancels it when the hard deadline ends the Call", async () => {
+    const f = await fixture(), call = await start(f, 4, 60_000), id = await utterance(f, call);
+    expect((await run(f, "POST", `/${call.id}/disconnect`, { token: call.leaseToken })).response.status).toBe(200);
+    expect((await prisma.voiceCallUtterance.findUniqueOrThrow({ where: { id } })).status).toBe("linked");
+    vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(Date.now() + 61_000);
+    await expireVoiceCalls(f.userId);
+    expect(await prisma.voiceCall.findUniqueOrThrow({ where: { id: call.id } })).toMatchObject({ status: "ended", endReason: "duration_limit" });
+    expect((await prisma.voiceCallUtterance.findUniqueOrThrow({ where: { id } })).status).toBe("cancelled");
+    expect(await dreamcoinBalance(f.userId)).toBe(20);
+  });
+  it("falls back to the standard voice when a voice plan's Character voice cannot run a local Call", async () => {
+    const f = await fixture();
+    await prisma.entitlement.create({ data: { userId: f.userId, key: "voice_enabled", value: true, source: "subscription" } });
+    const referenceId = `${f.characterId}-reference`, voiceId = `${f.characterId}-fish`;
+    await prisma.mediaAsset.create({ data: { id: referenceId, ownerId: f.userId, characterId: f.characterId, type: "voice",
+      url: `/user-content/${referenceId}/content.wav`, visibility: "private", contentType: "audio/wav", metadata: { filename: "voice.wav", sizeBytes: 2048 } } });
+    await prisma.characterVoiceProfile.create({ data: { characterId: f.characterId, version: 1, provider: "fish_audio", providerVoiceId: voiceId,
+      model: "fish", language: "english", status: "active", referenceAssetId: referenceId, sampleText: "Own voice", createdById: f.userId } });
+    await prisma.character.update({ where: { id: f.characterId }, data: { voiceId } });
+    const body = { id: randomUUID(), clientLeaseToken: randomUUID(), language: "en", maxCostDreamcoins: 2, maxDurationMs: 180_000 };
+    const quote = await run(f, "POST", "/quote", { body });
+    expect(quote.response.status).toBe(200); expect(quote.value.voiceFallback).toBe(true);
+    const connected = await run(f, "POST", "", { body: { ...body, quoteToken: quote.value.quoteToken } });
+    expect(connected.response.status).toBe(200);
+    const stored = await prisma.voiceCall.findUniqueOrThrow({ where: { id: body.id } });
+    expect(stored.providerPayload).toMatchObject({ providerKey: "pocket_tts", voiceAuthority: "system_default" });
+    await run(f, "POST", `/${body.id}/end`, { token: body.clientLeaseToken });
   });
   it("enforces the total Call budget across replies without starting another synthesis", async () => {
     const f = await fixture(), call = await start(f, 2), first = await utterance(f, call);

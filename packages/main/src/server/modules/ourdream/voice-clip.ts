@@ -1415,7 +1415,9 @@ async function failOwnedVoiceRequest(
   });
 }
 
-async function voiceMinutesRemainingMs(
+// INVARIANT: plan minutes count only clips the allowance covered. A clip paid
+// in coins (free tier, or overflow) never also consumes plan minutes.
+export async function voiceMinutesRemainingMs(
   userId: string,
   entitlements: Record<string, Prisma.JsonValue>,
   db: Prisma.TransactionClient | typeof prisma = prisma,
@@ -1428,7 +1430,7 @@ async function voiceMinutesRemainingMs(
   if (allowanceMinutes <= 0) return 0;
   const since = windowStartsAt ?? new Date(Date.now() - 30 * 24 * 60 * 60 * 1_000);
   const usage = await db.voiceUsageFact.aggregate({
-    where: { userId, occurredAt: { gte: since } },
+    where: { userId, occurredAt: { gte: since }, costDreamcoins: 0 },
     _sum: { durationMs: true },
   });
   return Math.max(
