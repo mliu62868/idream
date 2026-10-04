@@ -175,7 +175,7 @@ describe("Character first identity bootstrap authority", () => {
         prompt: "A definitive first portrait of Mara.",
         controls: {},
         presetIds: [],
-        model: "redcraft-krea2-redmix3-txt2img",
+        model: "redqw21",
         profileId: "redcraft-krea2",
         profileVersion: 1,
         orientation: "4:5",

@@ -18,7 +18,7 @@ type ProbeOptions = {
 
 type CandidateDefinition = {
   key: string;
-  profileId: string;
+  profileKey: string;
   expectedIntent?: string;
   expectedRunner: "comfyui";
   expectedPipelineModel?: string;
@@ -59,12 +59,13 @@ type AssetInspection = {
   hasVaeTensors: boolean;
   diffusionModelOnly: boolean;
   hasFp8ScaleTensors: boolean;
-  suggestedRuntime: "sd_cpp_external_components" | "comfyui_fp8_krea2_checkpoint" | "unknown";
+  suggestedRuntime: "sd_cpp_external_components" | "comfyui_fp8_checkpoint" | "unknown";
 };
 
 type CandidateReport = {
   key: string;
-  profileId: string;
+  profileKey: string;
+  profileId: string | null;
   label: string;
   found: boolean;
   runner: string | null;
@@ -102,49 +103,18 @@ type ProbeReport = {
 
 export const generationModelCandidateDefinitions: CandidateDefinition[] = [
   {
-    key: "redcraft_krea2_default",
-    profileId: "seed-profile-image-default-v1",
+    key: "redqw21_default",
+    profileKey: "profile_image_default_v1",
     expectedRunner: "comfyui",
-    expectedPipelineModel: "redcraft-krea2-redmix3-fp8",
-    expectedWorkflowKey: "redcraft-krea2-redmix3-txt2img",
+    expectedPipelineModel: "redqw21",
+    expectedWorkflowKey: "redqw21",
+    expectedSourceSha256: "9830a9925759a4b69ea1346133d08917ec2390b8495ea7f0eb613f37e7c46647",
     minSampleCount: 1,
     requireActive: true,
     requireConsistency: false,
     requireVerification: false,
   },
-  {
-    key: "redcraft_krea2_text",
-    profileId: "seed-profile-sdcpp-redcraft-krea2-text-v1",
-    expectedIntent: "comfyui_krea2_text_checkpoint",
-    expectedRunner: "comfyui",
-    minSampleCount: 20,
-    requireActive: false,
-    requireConsistency: true,
-    requireVerification: true,
-  },
-  {
-    key: "redcraft_krea2_redmix3",
-    profileId: "seed-profile-redcraft-krea2-redmix3-v1",
-    expectedIntent: "redmix3_text_to_image_comparison",
-    expectedRunner: "comfyui",
-    expectedPipelineModel: "redcraft-krea2-redmix3-fp8",
-    expectedWorkflowKey: "redcraft-krea2-redmix3-txt2img",
-    expectedSourceSha256:
-      "F6088960C0FEBD27CBD372FC758BB07D012F2D8AE3CD10C45C903D48B94409EA",
-    minSampleCount: 1,
-    requireActive: false,
-    requireConsistency: false,
-    requireVerification: true,
-  },
 ];
-
-const candidateKeyAliases: Readonly<Record<string, string>> = {
-  pornmaster_zimage_default: "redcraft_krea2_default",
-};
-
-export function resolveGenerationModelCandidateKey(key: string) {
-  return candidateKeyAliases[key] ?? key;
-}
 
 export function evaluateGenerationModelCandidateActivation(input: {
   requireActive: boolean;
@@ -225,7 +195,7 @@ function readOptions(): ProbeOptions {
 
 async function main() {
   const options = readOptions();
-  const report = await runProbe(options);
+  const report = await runGenerationModelCandidateProbe(options);
 
   if (options.report) {
     await writeProbeReport(options.report, report);
@@ -235,7 +205,7 @@ async function main() {
   if (!report.ok) process.exitCode = 1;
 }
 
-async function runProbe(options: ProbeOptions): Promise<ProbeReport> {
+export async function runGenerationModelCandidateProbe(options: ProbeOptions): Promise<ProbeReport> {
   const checkedAt = new Date().toISOString();
   const startedAt = Date.now();
 
@@ -258,9 +228,13 @@ async function runProbe(options: ProbeOptions): Promise<ProbeReport> {
       });
     }
     const profiles = await prisma.generationModelProfile.findMany({
-      where: { id: { in: definitions.map((candidate) => candidate.profileId) } },
+      where: {
+        profileKey: { in: definitions.map((candidate) => candidate.profileKey) },
+        status: "active",
+      },
       select: {
         id: true,
+        profileKey: true,
         label: true,
         runner: true,
         pipelineModel: true,
@@ -275,12 +249,12 @@ async function runProbe(options: ProbeOptions): Promise<ProbeReport> {
         mode: true,
       },
     });
-    const profileById = new Map(profiles.map((profile) => [profile.id, profile]));
+    const profileByKey = new Map(profiles.map((profile) => [profile.profileKey, profile]));
     const candidates = await Promise.all(
       definitions.map((candidate) =>
         inspectCandidate(
           candidate,
-          profileById.get(candidate.profileId),
+          profileByKey.get(candidate.profileKey),
           options.requireReady,
         ),
       ),
@@ -344,8 +318,7 @@ function parseCandidateKeys(value: string) {
       value
         .split(",")
         .map((item) => item.trim())
-        .filter(Boolean)
-        .map(resolveGenerationModelCandidateKey),
+        .filter(Boolean),
     ),
   ];
 }
@@ -406,7 +379,8 @@ async function inspectCandidate(
   if (!profile) {
     return {
       key: candidate.key,
-      profileId: candidate.profileId,
+      profileKey: candidate.profileKey,
+      profileId: null,
       label: "",
       found: false,
       runner: null,
@@ -434,6 +408,10 @@ async function inspectCandidate(
 
   const runnerConfig = jsonRecord(profile.runnerConfig);
   const dryRunSummary = jsonRecord(profile.dryRunSummary);
+  const configuredSourceSha256 =
+    stringField(runnerConfig, "diffusionModelSha256") ??
+    stringField(runnerConfig, "sourceModelSha256") ??
+    stringField(runnerConfig, "civitaiSha256");
   const verificationStatus = stringField(runnerConfig, "verificationStatus");
   const failureMode = stringField(dryRunSummary, "failureMode");
   const sampleCount = numberField(dryRunSummary, "sampleCount");
@@ -485,9 +463,9 @@ async function inspectCandidate(
       ? `templateIntent is ${stringField(runnerConfig, "templateIntent") || "missing"}`
       : null,
     candidate.expectedSourceSha256 &&
-    stringField(runnerConfig, "civitaiSha256")?.toUpperCase() !==
+    configuredSourceSha256?.toUpperCase() !==
       candidate.expectedSourceSha256.toUpperCase()
-      ? `configured source SHA-256 is ${stringField(runnerConfig, "civitaiSha256") || "missing"}`
+      ? `configured source SHA-256 is ${configuredSourceSha256 || "missing"}`
       : null,
     sourceHash.blockedReason,
     candidate.requireVerification && !isPassedVerificationStatus(verificationStatus)
@@ -516,7 +494,8 @@ async function inspectCandidate(
 
   return {
     key: candidate.key,
-    profileId: candidate.profileId,
+    profileKey: candidate.profileKey,
+    profileId: profile.id,
     label: profile.label,
     found: true,
     runner: profile.runner,
@@ -621,7 +600,7 @@ async function inspectSafetensorsAsset(
       tensorKeys.length > 0 && tensorKeys.every((key) => key.startsWith("model.diffusion_model."));
     const suggestedRuntime =
       hasComfyUiWorkflow && hasCheckpointLoaderSimple && hasFp8ScaleTensors
-        ? "comfyui_fp8_krea2_checkpoint"
+        ? "comfyui_fp8_checkpoint"
         : diffusionModelOnly
           ? "sd_cpp_external_components"
           : "unknown";

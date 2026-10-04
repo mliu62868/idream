@@ -1,50 +1,101 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   calculateGenerationModelSourceSha256,
   evaluateGenerationModelCandidateActivation,
   evaluateGenerationModelCandidateSourceHash,
   generationModelCandidateDefinitions,
-  resolveGenerationModelCandidateKey,
+  runGenerationModelCandidateProbe,
   shouldVerifyGenerationModelCandidateSourceHash,
 } from "./probe-generation-model-candidates";
 
+const probeDb = vi.hoisted(() => ({
+  generationModelProfile: { findMany: vi.fn() },
+  $disconnect: vi.fn(),
+}));
+
+vi.mock("@/server/lib/db", () => ({ prisma: probeDb }));
+
+afterEach(() => vi.resetAllMocks());
+
 describe("generation model candidate authority", () => {
-  it("pins the active default to the exact Redcraft ComfyUI route", () => {
-    expect(
-      generationModelCandidateDefinitions.find(
-        (candidate) => candidate.key === "redcraft_krea2_default",
-      ),
-    ).toMatchObject({
-      profileId: "seed-profile-image-default-v1",
-      expectedRunner: "comfyui",
-      expectedPipelineModel: "redcraft-krea2-redmix3-fp8",
-      expectedWorkflowKey: "redcraft-krea2-redmix3-txt2img",
-      requireActive: true,
+  it("pins the active default to the exact REDQW21 ComfyUI route and source hash", () => {
+    expect(generationModelCandidateDefinitions).toEqual([
+      {
+        key: "redqw21_default",
+        profileKey: "profile_image_default_v1",
+        expectedRunner: "comfyui",
+        expectedPipelineModel: "redqw21",
+        expectedWorkflowKey: "redqw21",
+        expectedSourceSha256: "9830a9925759a4b69ea1346133d08917ec2390b8495ea7f0eb613f37e7c46647",
+        minSampleCount: 1,
+        requireActive: true,
+        requireConsistency: false,
+        requireVerification: false,
+      },
+    ]);
+  });
+
+  it("queries the active profile by key and reports its published row ID", async () => {
+    probeDb.generationModelProfile.findMany.mockResolvedValue([
+      {
+        id: "published-redqw21-default-v4",
+        profileKey: "profile_image_default_v1",
+        label: "Default REDQW21",
+        runner: "comfyui",
+        pipelineModel: "redqw21",
+        workflowKey: "redqw21",
+        sourceModelPath: null,
+        convertedModelPath: null,
+        status: "active",
+        enabled: true,
+        rolloutPercent: 100,
+        runnerConfig: {
+          diffusionModelSha256: generationModelCandidateDefinitions[0].expectedSourceSha256,
+        },
+        dryRunSummary: { sampleCount: 1 },
+        mode: "image",
+      },
+    ]);
+    const report = await runGenerationModelCandidateProbe({
+      candidateKeys: ["redqw21_default"], report: null, requireReady: false,
+    });
+    expect(probeDb.generationModelProfile.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { profileKey: { in: ["profile_image_default_v1"] }, status: "active" },
+      }),
+    );
+    expect(report.candidates[0]).toMatchObject({
+      profileKey: "profile_image_default_v1",
+      profileId: "published-redqw21-default-v4",
+      found: true,
+      pipelineModel: "redqw21",
+    });
+    expect(report.candidates[0].blockedReasons).not.toContain("configured source SHA-256 is missing");
+  });
+
+  it("reports a missing active profile without inventing a seed row ID", async () => {
+    probeDb.generationModelProfile.findMany.mockResolvedValue([]);
+    const report = await runGenerationModelCandidateProbe({
+      candidateKeys: ["redqw21_default"], report: null, requireReady: false,
+    });
+    expect(report).toMatchObject({ ok: false });
+    expect(report.candidates[0]).toMatchObject({
+      profileKey: "profile_image_default_v1", profileId: null, found: false,
     });
   });
 
-  it("tracks RedMix3 as a pinned BF16 conversion candidate", () => {
-    expect(
-      generationModelCandidateDefinitions.find(
-        (candidate) => candidate.key === "redcraft_krea2_redmix3",
-      ),
-    ).toMatchObject({
-      profileId: "seed-profile-redcraft-krea2-redmix3-v1",
-      expectedIntent: "redmix3_text_to_image_comparison",
-      expectedRunner: "comfyui",
-      expectedPipelineModel: "redcraft-krea2-redmix3-fp8",
-      expectedWorkflowKey: "redcraft-krea2-redmix3-txt2img",
-      expectedSourceSha256:
-        "F6088960C0FEBD27CBD372FC758BB07D012F2D8AE3CD10C45C903D48B94409EA",
-      minSampleCount: 1,
-      requireActive: false,
-      requireConsistency: false,
-      requireVerification: true,
-    });
-  });
+  it.each(["redcraft_krea2_default", "pornmaster_zimage_default"])(
+    "rejects retired candidate key %s before querying profiles", async (key) => {
+      const report = await runGenerationModelCandidateProbe({
+        candidateKeys: [key], report: null, requireReady: false,
+      });
+      expect(report.error?.code).toBe("unknown_generation_model_candidate");
+      expect(probeDb.generationModelProfile.findMany).not.toHaveBeenCalled();
+    },
+  );
 
   it("requires the observed checkpoint hash to match the exact model version", () => {
     expect(
@@ -123,17 +174,6 @@ describe("generation model candidate authority", () => {
         enabled: false,
         rolloutPercent: 0,
       }),
-    ).toBe(false);
-  });
-
-  it("accepts the historical Pornmaster key only as an input alias", () => {
-    expect(
-      resolveGenerationModelCandidateKey("pornmaster_zimage_default"),
-    ).toBe("redcraft_krea2_default");
-    expect(
-      generationModelCandidateDefinitions.some(
-        (candidate) => candidate.key === "pornmaster_zimage_default",
-      ),
     ).toBe(false);
   });
 

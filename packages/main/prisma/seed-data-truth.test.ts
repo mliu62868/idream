@@ -374,127 +374,98 @@ describe("seed data provenance", () => {
     ).toBe(true);
   });
 
-  it("keeps only supported scaled-FP8 RedCraft Krea2 profiles executable", async () => {
-    const profiles = await prisma.generationModelProfile.findMany({
-      where: {
-        pipelineModel: {
-          in: [
-            "redcraft-krea2-redmix3-fp8",
-            "redcraft-krea2-identity-edit",
-          ],
-        },
-        status: "active",
-      },
-      select: {
-        profileKey: true,
-        pipelineModel: true,
-        workflowKey: true,
-        sourceModelPath: true,
-        convertedModelPath: true,
-        steps: true,
-        enabled: true,
-        rolloutPercent: true,
-        version: true,
-        runnerConfig: true,
-      },
-      orderBy: { profileKey: "asc" },
-    });
-
-    // Premium + single-identity; the default moved to REDQW21.
-    expect(profiles).toHaveLength(2);
-    for (const profile of profiles) {
-      expect(profile).toMatchObject({
-        sourceModelPath: expect.stringMatching(
-          /models\/diffusion_models\/Krea2RedMix3\.0-fp8-scaled-ComfyUI\.safetensors$/,
-        ),
-        convertedModelPath: null,
-        enabled: true,
-        rolloutPercent: 100,
-        runnerConfig: {
-          precisionPolicy: "fp8_resident_bf16_transient_mps",
-        },
-      });
-    }
-    expect(profiles).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          profileKey: "character-image-single-identity-redcraft",
-          pipelineModel: "redcraft-krea2-identity-edit",
-          workflowKey: "redcraft-krea2-identity-edit",
-          steps: 8,
-          version: 5,
-          runnerConfig: expect.objectContaining({ workflowVersion: 5 }),
-        }),
-      ]),
-    );
-
-    const unsupportedActive = await prisma.generationModelProfile.count({
+  it("retires executable Krea routes and preserves the single-identity profile contract on REDQW21 V2", async () => {
+    const retiredActive = await prisma.generationModelProfile.count({
       where: {
         status: "active",
         OR: [
-          { pipelineModel: "redcraft-krea2-comfyui" },
-          { pipelineModel: "redcraft-krea2-redmix3-bf16" },
-          { convertedModelPath: { contains: "RedMix3.0-bf16" } },
+          { pipelineModel: { contains: "krea", mode: "insensitive" } },
+          { workflowKey: { contains: "krea", mode: "insensitive" } },
+          { sourceModelPath: { contains: "Krea", mode: "insensitive" } },
+          { convertedModelPath: { contains: "RedMix3", mode: "insensitive" } },
         ],
       },
     });
-    expect(unsupportedActive).toBe(0);
+    expect(retiredActive).toBe(0);
+
+    const profile = await prisma.generationModelProfile.findFirstOrThrow({
+      where: { profileKey: "character-image-single-identity-redcraft", status: "active" },
+    });
+    expect(profile).toMatchObject({
+      pipelineModel: "redqw21-image-edit",
+      workflowKey: "qwen-image-edit-img2img",
+      sourceModelPath: expect.stringMatching(/redqw21_unlocked_v2_fp8\.safetensors$/),
+      convertedModelPath: expect.stringMatching(/redqw21_unlocked_v2_bf16\.safetensors$/),
+      steps: 6,
+      scheduler: "viggle_turbo",
+      version: 6,
+      costMultiplier: 1.3,
+      requiredEntitlement: null,
+      enabled: true,
+      rolloutPercent: 100,
+      runnerConfig: {
+        apiModelId: "redqw21-image-edit",
+        workflowVersion: 5,
+        precisionPolicy: "bf16_resident_mps",
+        textEncoderPrecision: "int8_convrot",
+        textEncoderDevice: "mps",
+        publicSelection: { explicitOnly: true },
+        turboLora: { unmerged: true, strength: 1 },
+        capabilities: {
+          textToImage: false,
+          stableSeed: true,
+          referenceImages: true,
+          initImage: true,
+          lora: true,
+        },
+      },
+      dryRunSummary: { status: "not_run", source: "seed_configuration_state" },
+    });
+    expect(JSON.stringify(profile.runnerConfig)).not.toMatch(/krea|redmix3/i);
   });
 
-  it("seeds REDQW21 as the default image route and keeps Premium on RedMix3", async () => {
+  it("seeds REDQW21 for default and Premium while preserving Premium pricing and access", async () => {
     const profiles = await prisma.generationModelProfile.findMany({
       where: {
-        profileKey: {
-          in: ["profile_image_default_v1", "profile_image_premium_v1"],
-        },
+        profileKey: { in: ["profile_image_default_v1", "profile_image_premium_v1"] },
         status: "active",
-      },
-      select: {
-        profileKey: true,
-        pipelineModel: true,
-        workflowKey: true,
-        runner: true,
-        version: true,
-        runnerConfig: true,
-        enabled: true,
-        rolloutPercent: true,
       },
       orderBy: { profileKey: "asc" },
     });
 
-    expect(profiles).toEqual([
-      {
-        profileKey: "profile_image_default_v1",
+    expect(profiles).toHaveLength(2);
+    for (const profile of profiles) {
+      expect(profile).toMatchObject({
         pipelineModel: "redqw21",
         workflowKey: "redqw21",
         runner: "comfyui",
+        sourceModelPath: expect.stringMatching(/redqw21_bf16\.safetensors$/),
+        convertedModelPath: null,
+        defaultWidth: 512,
+        defaultHeight: 512,
+        steps: 10,
+        scheduler: "simple",
         version: 4,
-        runnerConfig: expect.objectContaining({
+        runnerConfig: {
           workflowVersion: 3,
           vaeTemporalPadding: "torch_cat",
           textEncoderPrecision: "int8_convrot",
           textEncoderDevice: "cpu",
           textEncoderSha256: "8bfd0f6e12abf2d2d697ecc888e5e90b0d6741d6708f05799f53afa560452e8f",
-          capabilities: expect.objectContaining({
-            textToImage: true,
-            referenceImages: true,
-            initImage: false,
-          }),
-        }),
+          capabilities: { textToImage: true, referenceImages: true, initImage: false },
+        },
         enabled: true,
         rolloutPercent: 100,
-      },
-      {
-        profileKey: "profile_image_premium_v1",
-        pipelineModel: "redcraft-krea2-redmix3-fp8",
-        workflowKey: "redcraft-krea2-redmix3-txt2img",
-        runner: "comfyui",
-        version: 2,
-        runnerConfig: expect.objectContaining({ workflowVersion: 2 }),
-        enabled: true,
-        rolloutPercent: 100,
-      },
-    ]);
+      });
+    }
+    expect(profiles[0]).toMatchObject({
+      profileKey: "profile_image_default_v1", costMultiplier: 1, requiredEntitlement: null, maxCount: 1,
+    });
+    expect(profiles[1]).toMatchObject({
+      profileKey: "profile_image_premium_v1", costMultiplier: 1.5, requiredEntitlement: "premium_models", maxCount: 4,
+      dryRunSummary: { status: "not_run", source: "seed_configuration_state" },
+    });
+    expect(profiles[1].runnerConfig).toEqual(profiles[0].runnerConfig);
   });
 
   it("archives the legacy LTX route and seeds RedGraft as the replacement", async () => {

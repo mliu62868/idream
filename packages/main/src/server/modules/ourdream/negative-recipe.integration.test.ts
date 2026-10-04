@@ -26,7 +26,7 @@ describe("production negative recipe consumption", () => {
     await createUser({ id: adminId, role: "admin", dataClass: "internal" });
     await prisma.generationModelProfile.create({ data: {
       id: profileId, profileKey: profileId, label: "Negative recipe route", mode: "image", runner: "comfyui",
-      workflowKey: "redcraft-krea2-redmix3-txt2img", pipelineModel: "redcraft-krea2-redmix3-fp8",
+      workflowKey: "redqw21", pipelineModel: "redcraft-krea2-redmix3-fp8",
       runnerConfig: { workflowVersion: 2, capabilities: { textToImage: true, referenceImages: false, initImage: false } },
       allowedOrientations: ["1:1"], maxCount: 1, status: "active", enabled: true, rolloutPercent: 100,
     } });

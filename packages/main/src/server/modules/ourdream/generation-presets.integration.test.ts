@@ -105,7 +105,7 @@ describe("generation preset catalog authority", () => {
     if (!await prisma.generationModelProfile.findFirst({ where: { mode: "image", status: "active", enabled: true } })) {
       await prisma.generationModelProfile.create({ data: {
         id: `${P}profile`, profileKey: `${P}text-to-image`, label: "Preset image route", mode: "image", runner: "comfyui",
-        pipelineModel: "redcraft-krea2-redmix3-fp8", workflowKey: "redcraft-krea2-redmix3-txt2img",
+        pipelineModel: "redcraft-krea2-redmix3-fp8", workflowKey: "redqw21",
         runnerConfig: { workflowVersion: 2, capabilities: { textToImage: true, stableSeed: true, referenceImages: false, initImage: false, lora: false } },
         version: 2, defaultWidth: 512, defaultHeight: 512, allowedOrientations: ["1:1"], maxCount: 1,
         status: "active", enabled: true, costMultiplier: 1,

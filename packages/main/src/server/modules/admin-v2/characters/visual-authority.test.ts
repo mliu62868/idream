@@ -38,7 +38,7 @@ describe("operational Character generation route", () => {
   // single-anchor Character images.
   it("prefers the cheapest compatible profile over profile key order", async () => {
     const workflows = await Promise.all(
-      ["redqw21", "redcraft-krea2-identity-edit", "qwen-image-edit-multi-identity"].map(workflow),
+      ["redqw21", "qwen-image-edit-img2img", "qwen-image-edit-multi-identity"].map(workflow),
     );
     catalog.generationWorkflowDescriptor.mockImplementation(async (key: string) =>
       workflows.find((candidate) => candidate.workflowKey === key) ?? null,
@@ -48,7 +48,7 @@ describe("operational Character generation route", () => {
       generationModelProfile: {
         findMany: vi.fn(async () => [
           imageProfile("character-image-multi-identity", "qwen-image-edit-multi-identity", 1.4),
-          imageProfile("character-image-single-identity-redcraft", "redcraft-krea2-identity-edit", 1.3),
+          imageProfile("character-image-single-identity-redcraft", "qwen-image-edit-img2img", 1.3),
           imageProfile("profile_image_default_v1", "redqw21", 1),
         ]),
       },
@@ -70,7 +70,7 @@ describe("operational Character generation route", () => {
   });
 
   it("does not let a materialized operator route pin production to an older profile", async () => {
-    const workflows = await Promise.all(["redqw21", "redcraft-krea2-identity-edit"].map(workflow));
+    const workflows = await Promise.all(["redqw21", "qwen-image-edit-img2img"].map(workflow));
     catalog.generationWorkflowDescriptor.mockImplementation(async (key: string) =>
       workflows.find((candidate) => candidate.workflowKey === key) ?? null,
     );
@@ -81,7 +81,7 @@ describe("operational Character generation route", () => {
           routeFingerprint: "old",
           generationProfileKey: "character-image-single-identity-redcraft",
           generationProfileVersion: 1,
-          workflowKey: "redcraft-krea2-identity-edit",
+          workflowKey: "qwen-image-edit-img2img",
           workflowVersion: 5,
           style: "realistic",
           matrixKey: "operator-single-image-v1",
@@ -97,13 +97,13 @@ describe("operational Character generation route", () => {
       },
       generationModelProfile: {
         findMany: vi.fn(async () => [
-          imageProfile("character-image-single-identity-redcraft", "redcraft-krea2-identity-edit", 1.3),
+          imageProfile("character-image-single-identity-redcraft", "qwen-image-edit-img2img", 1.3),
           imageProfile("profile_image_default_v1", "redqw21", 1),
         ]),
         // The old route is still fully valid: its profile stays active so
         // Releases pinned to it keep serving.
         findFirst: vi.fn(async () => ({
-          ...imageProfile("character-image-single-identity-redcraft", "redcraft-krea2-identity-edit", 1.3),
+          ...imageProfile("character-image-single-identity-redcraft", "qwen-image-edit-img2img", 1.3),
           enabled: true,
           rolloutPercent: 100,
         })),

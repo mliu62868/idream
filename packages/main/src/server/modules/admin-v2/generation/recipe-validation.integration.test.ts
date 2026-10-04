@@ -21,7 +21,7 @@ describe("recipe sample validation and publication", () => {
     await prisma.user.create({ data: { id: adminId, email: `${adminId}@example.test`, role: "admin", status: "active", dataClass: "internal" } });
     await prisma.generationModelProfile.create({ data: {
       id: profileId, profileKey: profileId, label: "Recipe test profile", mode: "image", runner: "comfyui",
-      workflowKey: "redcraft-krea2-redmix3-txt2img", pipelineModel: "redcraft-krea2-redmix3-bf16",
+      workflowKey: "redqw21", pipelineModel: "redqw21",
       allowedOrientations: ["1:1", "4:5"], maxCount: 1, status: "active", enabled: true, rolloutPercent: 100,
     } });
   });

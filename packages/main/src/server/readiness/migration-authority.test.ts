@@ -150,6 +150,7 @@ describe("migration readiness authority", () => {
     const drifted = exactPostconditionSnapshot({
       runtime: {
         retiredRunnerCount: 1,
+        executableKreaCount: 0,
         retiredArtifactStateCount: 0,
         profileShadowColumnCount: 0,
         runnerDefault: "'comfyui'::text",
@@ -188,6 +189,10 @@ describe("migration readiness authority", () => {
     expect(queries[2]).toContain("t.tgattr::text <> ''");
     expect(queries[2]).toContain("format_type(a.atttypid, a.atttypmod)");
     expect(queries[2]).toContain("a.attnotnull");
+    expect(queries[2]).toContain(`"pipelineModel" = 'redqw21'`);
+    expect(queries[2]).toContain(`"runnerConfig" ->> 'workflowVersion')::numeric >= 3`);
+    expect(queries[2]).toContain("status <> 'archived'");
+    expect(queries[2]).not.toContain("seed-profile-image-premium-v2");
     expect(queries[2]).toContain("pg_get_expr(d.adbin, d.adrelid)");
   });
 });
@@ -200,17 +205,12 @@ function exactPostconditionSnapshot(
     premium: {
       totalCount: 2,
       activeCount: 1,
-      versionOneCount: 1,
-      versionTwoCount: 1,
-      versionThreeCount: 0,
-      legacyIdCount: 1,
-      replacementIdCount: 1,
-      freshCanonicalCount: 0,
-      legacyArchivedCount: 1,
-      replacementCount: 1,
+      archivedCount: 1,
+      canonicalActiveCount: 1,
     },
     runtime: {
       retiredRunnerCount: 0,
+      executableKreaCount: 0,
       retiredArtifactStateCount: 0,
       profileShadowColumnCount: 0,
       runnerDefault: "'comfyui'::text",
@@ -440,14 +440,8 @@ describe("migration schema postconditions", () => {
       premium: {
         totalCount: 2,
         activeCount: 2,
-        versionOneCount: 1,
-        versionTwoCount: 1,
-        versionThreeCount: 0,
-        legacyIdCount: 1,
-        replacementIdCount: 1,
-        freshCanonicalCount: 0,
-        legacyArchivedCount: 0,
-        replacementCount: 1,
+        archivedCount: 1,
+        canonicalActiveCount: 1,
       },
       voice: {
         constraintCount: 1,
@@ -463,7 +457,7 @@ describe("migration schema postconditions", () => {
     });
 
     expect(evaluateMigrationPostconditions(snapshot)).toEqual([
-      "redmix3-premium: terminal profile shape drifted",
+      "qwen-image-premium: terminal profile shape drifted",
       "voice-scene-payload: exact validated constraint drifted",
       "account-deletion: constraint account_deletions_terminal_check is not authoritative",
       "account-deletion: index account_deletions_userId_key is not usable",
@@ -471,34 +465,30 @@ describe("migration schema postconditions", () => {
     ]);
   });
 
-  it("accepts the released in-place image workflow update but rejects an unrecognized profile version", () => {
-    const premium = {
-      totalCount: 1, activeCount: 1, versionOneCount: 0, versionTwoCount: 1,
-      versionThreeCount: 0,
-      legacyIdCount: 1, replacementIdCount: 0, freshCanonicalCount: 1,
-      legacyArchivedCount: 0, replacementCount: 0,
-    };
+  it("accepts fresh REDQW21 Premium and immutable archived revisions", () => {
+    const premium = { totalCount: 1, activeCount: 1, archivedCount: 0, canonicalActiveCount: 1 };
     expect(evaluateMigrationPostconditions(exactPostconditionSnapshot({ premium }))).toEqual([]);
     expect(evaluateMigrationPostconditions(exactPostconditionSnapshot({
-      premium: { ...premium, versionTwoCount: 0 },
-    }))).toContain("redmix3-premium: terminal profile shape drifted");
-    expect(evaluateMigrationPostconditions(exactPostconditionSnapshot({
-      premium: { ...premium, freshCanonicalCount: 0 },
-    }))).toContain("redmix3-premium: terminal profile shape drifted");
+      premium: { ...premium, totalCount: 5, archivedCount: 4 },
+    }))).toEqual([]);
   });
 
-  it("accepts the released existing-installation v3/workflow2 replacement without relaxing its shape", () => {
-    const premium = {
-      ...exactPostconditionSnapshot().premium,
-      versionTwoCount: 0,
-      versionThreeCount: 1,
-    };
-    expect(evaluateMigrationPostconditions(exactPostconditionSnapshot({ premium }))).toEqual([]);
+  it("rejects an incomplete REDQW21 route or a non-archived extra Premium revision", () => {
+    const premium = exactPostconditionSnapshot().premium;
+    for (const drift of [
+      { canonicalActiveCount: 0 },
+      { activeCount: 2 },
+      { archivedCount: 0 },
+    ]) {
+      expect(evaluateMigrationPostconditions(exactPostconditionSnapshot({
+        premium: { ...premium, ...drift },
+      }))).toContain("qwen-image-premium: terminal profile shape drifted");
+    }
+  });
+
+  it("rejects Krea configuration on any non-archived route", () => {
     expect(evaluateMigrationPostconditions(exactPostconditionSnapshot({
-      premium: { ...premium, replacementCount: 0 },
-    }))).toContain("redmix3-premium: terminal profile shape drifted");
-    expect(evaluateMigrationPostconditions(exactPostconditionSnapshot({
-      premium: { ...premium, versionThreeCount: 0 },
-    }))).toContain("redmix3-premium: terminal profile shape drifted");
+      runtime: { ...exactPostconditionSnapshot().runtime, executableKreaCount: 1 },
+    }))).toEqual(["runtime-profiles: non-archived Krea configuration remains"]);
   });
 });

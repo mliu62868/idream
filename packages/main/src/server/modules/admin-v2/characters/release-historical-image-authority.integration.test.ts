@@ -50,7 +50,7 @@ async function imageCandidate(suffix: string, attemptVersion = 1, bootstrapIdent
     createdFrom: bootstrapIdentity ? `identity_bootstrap:${bootstrapJobId}` : "test", snapshotHash: referenceHash,
     references: { create: { mediaAssetId: anchor.id, position: 0, role: "identity_anchor", selectionReason: "Test identity", weight: 1 } },
   } });
-  const workflowKey = "redcraft-krea2-identity-edit";
+  const workflowKey = "qwen-image-edit-img2img";
   const workflowVersion = (await generationWorkflowDescriptor(workflowKey))!.version;
   const currentProfileKey = `${id}-current-route`;
   await prisma.generationModelProfile.create({ data: {

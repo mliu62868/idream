@@ -66,7 +66,6 @@
     "launch:probe:generation-model-candidates": "bun run --filter @idream/main probe:generation-model-candidates",
     "launch:probe:generation-persistence": "bun run --filter @idream/main probe:generation-persistence",
     "launch:probe:pipeline": "node scripts/run-internal-pipeline-probes.mjs",
-    "benchmark:redcraft-krea2-identity": "node scripts/benchmark-redcraft-krea2-identity.mjs",
     "launch:prepare:voice:kokoro": "node scripts/prepare-omlx-kokoro.mjs",
     "launch:probe:voice:local": "node scripts/run-local-voice-probe.mjs",
     "voice:fish:start": "bun scripts/start-fish-audio.cjs",

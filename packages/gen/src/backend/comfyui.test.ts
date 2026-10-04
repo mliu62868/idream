@@ -23,7 +23,7 @@ describe("ComfyUI execution evidence", () => {
 });
 
 const descriptor = workflowDescriptorSchema.parse({
-  workflowKey: "t2i", modelId: "redcraft-krea2-redmix3-fp8", backendKind: "comfyui",
+  workflowKey: "t2i", modelId: "image-model", backendKind: "comfyui",
   comfyWorkflow: { id: "11111111-1111-4111-8111-111111111111", name: "iDream Test T2I" },
   version: 1, capabilities: ["textToImage"],
   apiPrompt: { "9": { class_type: "SaveImage", inputs: {} },
@@ -291,7 +291,7 @@ describe("ComfyUIBackend", () => {
       },
       idream_workflow: {
         key: "t2i",
-        model_id: "redcraft-krea2-redmix3-fp8",
+        model_id: "image-model",
         version: 1,
       },
     });

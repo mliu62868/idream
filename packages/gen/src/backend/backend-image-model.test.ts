@@ -689,11 +689,11 @@ describe("BackendImageModel numericControl", () => {
     const tunableDescriptor = workflowDescriptorSchema.parse({
       ...descriptor,
       inputs: [
-        { key: "ref_boost", type: "int", default: 4, target: { nodeId: "8", field: "ref_boost" } },
+        { key: "sample_count", type: "int", default: 4, target: { nodeId: "8", field: "sample_count" } },
         { key: "guidance", type: "float", default: 1, target: { nodeId: "9", field: "guidance" } },
       ],
       apiPrompt: {
-        "8": { class_type: "TestInt", inputs: { ref_boost: 4 } },
+        "8": { class_type: "TestInt", inputs: { sample_count: 4 } },
         "9": { class_type: "TestFloat", inputs: { guidance: 1 } },
       },
     });
@@ -704,13 +704,13 @@ describe("BackendImageModel numericControl", () => {
       model: "m",
       controls: {
         ...PIN,
-        ref_boost: 2,
+        sample_count: 2,
         guidance: 0.75,
         undeclared: 99,
       },
     });
 
-    expect(submittedSlots(backend)).toMatchObject({ ref_boost: 2, guidance: 0.75 });
+    expect(submittedSlots(backend)).toMatchObject({ sample_count: 2, guidance: 0.75 });
     expect(submittedSlots(backend)).not.toHaveProperty("undeclared");
   });
 
@@ -719,18 +719,18 @@ describe("BackendImageModel numericControl", () => {
     const tunableDescriptor = workflowDescriptorSchema.parse({
       ...descriptor,
       inputs: [
-        { key: "ref_boost", type: "int", default: 4, target: { nodeId: "8", field: "ref_boost" } },
+        { key: "sample_count", type: "int", default: 4, target: { nodeId: "8", field: "sample_count" } },
       ],
-      apiPrompt: { "8": { class_type: "TestInt", inputs: { ref_boost: 4 } } },
+      apiPrompt: { "8": { class_type: "TestInt", inputs: { sample_count: 4 } } },
     });
 
     await modelWithDescriptor(backend, tunableDescriptor).generate({
       prompt: "a cat",
       count: 1,
       model: "m",
-      controls: { ...PIN, ref_boost: 2.5 },
+      controls: { ...PIN, sample_count: 2.5 },
     });
 
-    expect(submittedSlots(backend)).not.toHaveProperty("ref_boost");
+    expect(submittedSlots(backend)).not.toHaveProperty("sample_count");
   });
 });

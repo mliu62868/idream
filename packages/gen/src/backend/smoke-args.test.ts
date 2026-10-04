@@ -37,15 +37,10 @@ describe("backend smoke generation arguments", () => {
         "--seed",
         "486071801727172",
         "--steps=12",
-        "--ref-boost=2",
-        "--grounding-px",
-        "512",
       ]),
     ).toEqual({
       seed: "486071801727172",
       steps: 12,
-      refBoost: 2,
-      groundingPx: 512,
     });
   });
 
@@ -57,15 +52,6 @@ describe("backend smoke generation arguments", () => {
       ).toThrow("--steps must be a positive integer");
     },
   );
-
-  it.each([
-    ["--ref-boost", "-1"],
-    ["--ref-boost", "abc"],
-    ["--grounding-px", "-1"],
-    ["--grounding-px", "1.5"],
-  ])("rejects invalid %s=%s", (flag, value) => {
-    expect(() => resolveSmokeGenerationOverrides([flag, value])).toThrow();
-  });
 });
 
 describe("backend smoke reference arguments", () => {

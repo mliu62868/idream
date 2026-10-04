@@ -92,12 +92,6 @@ async function main() {
           ? {}
           : { steps: 10 }
         : { steps: generationOverrides.steps }),
-      ...(generationOverrides.refBoost === undefined
-        ? {}
-        : { ref_boost: generationOverrides.refBoost }),
-      ...(generationOverrides.groundingPx === undefined
-        ? {}
-        : { grounding_px: generationOverrides.groundingPx }),
     },
     ...(referenceImages ? { referenceImages } : {}),
   });

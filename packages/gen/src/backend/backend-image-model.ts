@@ -350,7 +350,7 @@ function numericControl(controls: Record<string, unknown> | undefined, key: stri
 }
 
 // SPEC: A descriptor may expose workflow-native numeric controls beyond the
-// common width/height/steps set (for example Krea2 ref_boost and grounding_px).
+// common width/height/steps set.
 // Only declared numeric slots cross this boundary; prompt, seed, dimensions,
 // image bindings, workflow pins, and arbitrary request controls keep their
 // dedicated authorities above.

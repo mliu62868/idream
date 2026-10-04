@@ -202,7 +202,7 @@ describe("customer shared Character publication", () => {
     const actor = { id: fixture.userId, role: "admin" as const };
     await prisma.generationModelProfile.create({ data: {
       profileKey: `${fixture.userId}-route`, label: "Controlled identity route", mode: "image", runner: "comfyui",
-      pipelineModel: "redcraft-krea2-identity-edit", workflowKey: "redcraft-krea2-identity-edit", runnerConfig: { capabilities: { referenceImages: true, initImage: true } },
+      pipelineModel: "qwen-image-edit-img2img", workflowKey: "qwen-image-edit-img2img", runnerConfig: { capabilities: { referenceImages: true, initImage: true } },
       allowedOrientations: ["4:5"], version: 1, status: "active", enabled: true, rolloutPercent: 100, costMultiplier: 0.0001,
     } });
     await ensureOperationalGenerationRoute(prisma, { style: "realistic", policyVersion: CHARACTER_RELEASE_POLICY_VERSION,

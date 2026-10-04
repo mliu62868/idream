@@ -34,17 +34,12 @@ export type MigrationPostconditionSnapshot = {
   readonly premium: {
     readonly totalCount: number;
     readonly activeCount: number;
-    readonly versionOneCount: number;
-    readonly versionTwoCount: number;
-    readonly versionThreeCount: number;
-    readonly legacyIdCount: number;
-    readonly replacementIdCount: number;
-    readonly freshCanonicalCount: number;
-    readonly legacyArchivedCount: number;
-    readonly replacementCount: number;
+    readonly archivedCount: number;
+    readonly canonicalActiveCount: number;
   };
   readonly runtime: {
     readonly retiredRunnerCount: number;
+    readonly executableKreaCount: number;
     readonly retiredArtifactStateCount: number;
     readonly profileShadowColumnCount: number;
     readonly runnerDefault: string | null;
@@ -281,26 +276,19 @@ export function evaluateMigrationPostconditions(
   }
   const failures: string[] = [];
   const premium = snapshot.premium;
+  // INTENT: immutable archived revisions may remain, but the current Premium
+  // route must be the fully published REDQW21 configuration after retirement.
   const premiumShapeIsExact =
-    (premium.totalCount === 0 &&
-      premium.legacyIdCount === 0 &&
-      premium.replacementIdCount === 0) ||
-    (premium.totalCount === 1 &&
-      premium.activeCount === 1 &&
-      premium.versionOneCount + premium.versionTwoCount + premium.versionThreeCount === 1 &&
-      premium.legacyIdCount === 1 &&
-      premium.replacementIdCount === 0 &&
-      premium.freshCanonicalCount === 1) ||
-    (premium.totalCount === 2 &&
-      premium.activeCount === 1 &&
-      premium.versionOneCount === 1 &&
-      premium.versionTwoCount + premium.versionThreeCount === 1 &&
-      premium.legacyIdCount === 1 &&
-      premium.replacementIdCount === 1 &&
-      premium.legacyArchivedCount === 1 &&
-      premium.replacementCount === 1);
+    premium.totalCount === 0 ||
+    (premium.activeCount === 1 &&
+      premium.canonicalActiveCount === 1 &&
+      premium.archivedCount === premium.totalCount - 1);
   if (!premiumShapeIsExact) {
-    failures.push("redmix3-premium: terminal profile shape drifted");
+    failures.push("qwen-image-premium: terminal profile shape drifted");
+  }
+
+  if (snapshot.runtime.executableKreaCount !== 0) {
+    failures.push("runtime-profiles: non-archived Krea configuration remains");
   }
 
   if (snapshot.runtime.retiredRunnerCount !== 0) {
@@ -398,17 +386,14 @@ WITH premium AS (
   SELECT
     count(*)::int AS "totalCount",
     count(*) FILTER (WHERE "status" = 'active')::int AS "activeCount",
-    count(*) FILTER (WHERE "version" = 1)::int AS "versionOneCount",
-    count(*) FILTER (WHERE "version" = 2)::int AS "versionTwoCount",
-    count(*) FILTER (WHERE "version" = 3)::int AS "versionThreeCount",
-    count(*) FILTER (WHERE "id" = 'seed-profile-image-premium-v1')::int AS "legacyIdCount",
-    count(*) FILTER (WHERE "id" = 'seed-profile-image-premium-v2')::int AS "replacementIdCount",
+    count(*) FILTER (WHERE "status" = 'archived')::int AS "archivedCount",
     count(*) FILTER (WHERE
-      "id" = 'seed-profile-image-premium-v1'
-      -- The conditioning-lifecycle rollout advances the fresh canonical row
-      -- in place. Accept only the released profile/workflow pin pairs.
-      AND (("version" = 1 AND coalesce("runnerConfig" ->> 'workflowVersion', '1') = '1')
-        OR ("version" IN (2, 3) AND "runnerConfig" ->> 'workflowVersion' = '2'))
+      "version" >= 3
+      AND CASE
+        WHEN "runnerConfig" ->> 'workflowVersion' ~ '^[0-9]+$'
+          THEN ("runnerConfig" ->> 'workflowVersion')::numeric >= 3
+        ELSE false
+      END
       AND "mode" = 'image'
       AND "status" = 'active'
       AND "publishedAt" IS NOT NULL
@@ -417,56 +402,17 @@ WITH premium AS (
       AND "rolloutPercent" = 100
       AND "requiredEntitlement" = 'premium_models'
       AND "runner" = 'comfyui'
-      AND "pipelineModel" = 'redcraft-krea2-redmix3-fp8'
-      AND "workflowKey" = 'redcraft-krea2-redmix3-txt2img'
+      AND "pipelineModel" = 'redqw21'
+      AND "workflowKey" = 'redqw21'
       AND "sourceModelPath" IS NOT NULL
       AND "modelFormat" = 'safetensors'
       AND "runnerConfig" IS NOT NULL
-      AND "runnerConfig" ->> 'apiModelId' = 'redcraft-krea2-redmix3-fp8'
-      AND ("runnerConfig" ->> 'modelPath' = "sourceModelPath"
-        OR "runnerConfig" ->> 'diffusionModelPath' = "sourceModelPath")
+      AND "runnerConfig" ->> 'apiModelId' = 'redqw21'
+      AND "runnerConfig" ->> 'diffusionModelPath' = "sourceModelPath"
       AND "runnerConfig" #>> '{capabilities,textToImage}' = 'true'
-      AND ("runnerConfig" ->> 'workflowPath' = 'redcraft-krea2-redmix3-txt2img.json'
-        OR "runnerConfig" ->> 'workflowPath' LIKE '%/redcraft-krea2-redmix3-txt2img.json')
-    )::int AS "freshCanonicalCount",
-    count(*) FILTER (WHERE
-      "id" = 'seed-profile-image-premium-v1'
-      AND "version" = 1
-      AND "mode" = 'image'
-      AND "runner" = 'comfyui'
-      AND "pipelineModel" = 'redcraft-krea2-comfyui'
-      AND "workflowKey" = 'redcraft-krea2-txt2img'
-      AND "status" = 'archived'
-      AND "archivedAt" IS NOT NULL
-      -- The supported-FP8 rollout explicitly disabled this already archived route.
-      AND (("enabled" = true AND "rolloutPercent" = 100)
-        OR ("enabled" = false AND "rolloutPercent" = 0))
-      AND "requiredEntitlement" = 'premium_models'
-    )::int AS "legacyArchivedCount",
-    count(*) FILTER (WHERE
-      "id" = 'seed-profile-image-premium-v2'
-      AND (("version" = 2 AND coalesce("runnerConfig" ->> 'workflowVersion', '1') IN ('1', '2'))
-        OR ("version" = 3 AND "runnerConfig" ->> 'workflowVersion' = '2'))
-      AND "mode" = 'image'
-      AND "status" = 'active'
-      AND "publishedAt" IS NOT NULL
-      AND "archivedAt" IS NULL
-      AND "enabled" = true
-      AND "rolloutPercent" = 100
-      AND "requiredEntitlement" = 'premium_models'
-      AND "runner" = 'comfyui'
-      AND "pipelineModel" = 'redcraft-krea2-redmix3-fp8'
-      AND "workflowKey" = 'redcraft-krea2-redmix3-txt2img'
-      AND "sourceModelPath" IS NOT NULL
-      AND "modelFormat" = 'safetensors'
-      AND "runnerConfig" IS NOT NULL
-      AND "runnerConfig" ->> 'apiModelId' = 'redcraft-krea2-redmix3-fp8'
-      AND ("runnerConfig" ->> 'modelPath' = "sourceModelPath"
-        OR "runnerConfig" ->> 'diffusionModelPath' = "sourceModelPath")
-      AND "runnerConfig" #>> '{capabilities,textToImage}' = 'true'
-      AND ("runnerConfig" ->> 'workflowPath' = 'redcraft-krea2-redmix3-txt2img.json'
-        OR "runnerConfig" ->> 'workflowPath' LIKE '%/redcraft-krea2-redmix3-txt2img.json')
-    )::int AS "replacementCount"
+      AND ("runnerConfig" ->> 'workflowPath' = 'redqw21.json'
+        OR "runnerConfig" ->> 'workflowPath' LIKE '%/redqw21.json')
+    )::int AS "canonicalActiveCount"
   FROM public.generation_model_profiles
   WHERE "profileKey" = 'profile_image_premium_v1'
 ), account_tables AS (
@@ -636,6 +582,7 @@ SELECT
   (current_setting('server_version_num')::int / 10000)::int AS "postgresMajor",
   to_jsonb(premium) AS premium,
   jsonb_build_object(
+    'executableKreaCount', (SELECT count(*)::int FROM public.generation_model_profiles WHERE status <> 'archived' AND concat_ws(' ', "pipelineModel", "workflowKey", "sourceModelPath", "convertedModelPath", "runnerConfig"::text) ~* 'krea'),
     'retiredRunnerCount', (SELECT count(*)::int FROM public.generation_model_profiles WHERE runner = 'sd_cpp'),
     'retiredArtifactStateCount', (SELECT count(*)::int FROM public.generation_artifacts WHERE "validationState" = 'late_after_cancel'),
     'profileShadowColumnCount', (SELECT count(*)::int FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'character_visual_profiles' AND column_name = 'referenceAssetIds'),

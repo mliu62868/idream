@@ -1137,8 +1137,8 @@ test.describe.serial("Admin v2 operator workspaces", () => {
           label: "E2E pipeline identity bootstrap",
           mode: "image",
           runner: "comfyui",
-          pipelineModel: "redcraft-krea2-redmix3-fp8",
-          workflowKey: "redcraft-krea2-redmix3-txt2img",
+          pipelineModel: "redqw21",
+          workflowKey: "redqw21",
           runnerConfig: {
             capabilities: {
               textToImage: true,

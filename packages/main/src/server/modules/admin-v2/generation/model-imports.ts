@@ -7,7 +7,7 @@
 //            unauthenticated caller still gets 401 rather than a 404 that leaks the flag.
 import { randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { mkdir, open, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -362,7 +362,6 @@ async function modelImportAsset(
   modifiedAt: Date,
 ): Promise<ModelImportAsset> {
   const format = modelFormatFromPath(filePath);
-  const metadataText = format === "safetensors" ? await readSafetensorsMetadataText(filePath) : "";
   return {
     kind,
     name: path.basename(filePath),
@@ -370,7 +369,7 @@ async function modelImportAsset(
     format,
     sizeBytes,
     modifiedAt: modifiedAt.toISOString(),
-    draftPatch: modelImportDraftPatch(kind, filePath, format, metadataText),
+    draftPatch: modelImportDraftPatch(kind, filePath, format),
   };
 }
 
@@ -378,7 +377,6 @@ function modelImportDraftPatch(
   kind: ModelImportKind,
   filePath: string,
   format: "safetensors" | "gguf",
-  metadataText = "",
 ): Record<string, unknown> {
   const slug = slugFromFilePath(filePath);
   if (kind === "lora") {
@@ -396,44 +394,6 @@ function modelImportDraftPatch(
   if (kind === "llm") return { llmPath: filePath };
   if (kind === "vae") return { vaePath: filePath };
 
-  if (isComfyuiFp8Krea2ModelImport(slug, filePath, metadataText)) {
-    return {
-      profileTemplate: "reference_identity_comfyui",
-      profileKey: `comfyui_${slug}`,
-      label: `${titleFromSlug(slug)} ComfyUI candidate`,
-      runner: "comfyui",
-      pipelineModel: slug,
-      sourceModelPath: filePath,
-      diffusionModelPath: filePath,
-      convertedModelPath: "",
-      modelFormat: format,
-      conversionEnabled: false,
-      steps: "10",
-      sampler: "er_sde",
-      scheduler: "simple",
-      cfgScale: "1",
-      runnerConfig: {
-        apiModelId: slug,
-        profileTemplate: "reference_identity_comfyui",
-        templateIntent: "comfyui_reference_identity",
-        verificationStatus: "requires_comfyui_fp8_krea2_runtime",
-        componentStatus: {
-          workflow: "metadata_embedded_not_imported",
-          textEncoder: "requires_comfyui_qwen3vl_text_encoder",
-          vae: "requires_comfyui_krea2_vae",
-        },
-        assetFormat: "fp8_scaled_comfyui_checkpoint",
-        note: "This Krea2 asset is a ComfyUI fp8-scaled checkpoint. Keep it as a ComfyUI draft until an imported workflow and local runtime probe pass.",
-        capabilities: {
-          textToImage: true,
-          stableSeed: true,
-          referenceImages: true,
-          initImage: true,
-          lora: false,
-        },
-      },
-    };
-  }
   // INTENT: an unrecognized checkpoint drafts as a plain ComfyUI profile. The old fallback
   // drafted an sd.cpp profile carrying a GGUF conversion step; that runner is retired, so the
   // draft would have described a profile nothing can execute.
@@ -448,41 +408,6 @@ function modelImportDraftPatch(
     modelFormat: format,
     conversionEnabled: false,
   };
-}
-
-function isComfyuiFp8Krea2ModelImport(slug: string, filePath: string, metadataText: string) {
-  const haystack = `${slug} ${filePath} ${metadataText}`.toLowerCase();
-  return (
-    /krea[-_ ]?2/i.test(haystack) &&
-    (haystack.includes("comfyui") || haystack.includes("checkpointloadersimple")) &&
-    (haystack.includes("fp8") || haystack.includes("fp8_scaled") || haystack.includes("comfy_quant"))
-  );
-}
-
-async function readSafetensorsMetadataText(filePath: string) {
-  let handle: Awaited<ReturnType<typeof open>> | null = null;
-  try {
-    handle = await open(filePath, "r");
-    const sizeBuffer = Buffer.alloc(8);
-    await handle.read(sizeBuffer, 0, 8, 0);
-    const headerLength = Number(sizeBuffer.readBigUInt64LE(0));
-    if (!Number.isFinite(headerLength) || headerLength <= 0 || headerLength > 8 * 1024 * 1024) {
-      return "";
-    }
-    const headerBuffer = Buffer.alloc(headerLength);
-    await handle.read(headerBuffer, 0, headerLength, 8);
-    const header = JSON.parse(headerBuffer.toString("utf8")) as unknown;
-    if (!isRecord(header)) return "";
-    const metadata = isRecord(header.__metadata__) ? header.__metadata__ : {};
-    return Object.entries(metadata)
-      .map(([key, value]) => `${key}:${typeof value === "string" ? value : JSON.stringify(value)}`)
-      .join("\n")
-      .slice(0, 80_000);
-  } catch {
-    return "";
-  } finally {
-    await handle?.close().catch(() => {});
-  }
 }
 
 function safeImportFileName(name: string) {
@@ -539,8 +464,4 @@ function titleFromSlug(slug: string) {
     .filter(Boolean)
     .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
     .join(" ");
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

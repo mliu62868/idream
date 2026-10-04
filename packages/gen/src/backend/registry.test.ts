@@ -37,7 +37,7 @@ describe("buildBackendRegistry", () => {
 
   it("indexes descriptors by modelId and resolves the matching backend kind", async () => {
     dir = await mkdtemp(path.join(tmpdir(), "gen-registry-"));
-    await writeFile(path.join(dir, "comfy.json"), descriptorJson("redcraft-krea2-redmix3-fp8", "comfyui"));
+    await writeFile(path.join(dir, "comfy.json"), descriptorJson("image-model", "comfyui"));
     await writeFile(path.join(dir, "drawthings.json"), descriptorJson("z-turbo", "drawthings"));
 
     const registry = await buildBackendRegistry({
@@ -46,16 +46,16 @@ describe("buildBackendRegistry", () => {
       workflowDir: dir,
     });
 
-    const comfy = registry.resolveForModel("redcraft-krea2-redmix3-fp8");
+    const comfy = registry.resolveForModel("image-model");
     expect(comfy.backend.kind).toBe("comfyui");
-    expect(comfy.descriptor.modelId).toBe("redcraft-krea2-redmix3-fp8");
+    expect(comfy.descriptor.modelId).toBe("image-model");
 
     const drawthings = registry.resolveForModel("z-turbo");
     expect(drawthings.backend.kind).toBe("drawthings");
     expect(drawthings.descriptor.modelId).toBe("z-turbo");
 
     // Same backend instance is reused across models of the same kind.
-    const comfyAgain = registry.resolveForModel("redcraft-krea2-redmix3-fp8");
+    const comfyAgain = registry.resolveForModel("image-model");
     expect(comfyAgain.backend).toBe(comfy.backend);
   });
 
@@ -123,7 +123,7 @@ describe("buildBackendRegistry", () => {
 
   it("throws a clear error for an unknown modelId", async () => {
     dir = await mkdtemp(path.join(tmpdir(), "gen-registry-"));
-    await writeFile(path.join(dir, "comfy.json"), descriptorJson("redcraft-krea2-redmix3-fp8", "comfyui"));
+    await writeFile(path.join(dir, "comfy.json"), descriptorJson("image-model", "comfyui"));
 
     const registry = await buildBackendRegistry({
       comfyImageApiUrl: "http://127.0.0.1:8189",
@@ -136,7 +136,7 @@ describe("buildBackendRegistry", () => {
 
   it("resolves by workflowKey as well as modelId (dual index)", async () => {
     dir = await mkdtemp(path.join(tmpdir(), "gen-registry-"));
-    await writeFile(path.join(dir, "comfy.json"), descriptorJson("redcraft-krea2-redmix3-fp8", "comfyui"));
+    await writeFile(path.join(dir, "comfy.json"), descriptorJson("image-model", "comfyui"));
     await writeFile(path.join(dir, "drawthings.json"), descriptorJson("z-turbo", "drawthings"));
 
     const registry = await buildBackendRegistry({
@@ -145,7 +145,7 @@ describe("buildBackendRegistry", () => {
       workflowDir: dir,
     });
 
-    const comfyByModelId = registry.resolveForModel("redcraft-krea2-redmix3-fp8");
+    const comfyByModelId = registry.resolveForModel("image-model");
     const comfyByWorkflowKey = registry.resolveForModel("comfyui-t2i");
     expect(comfyByWorkflowKey.descriptor).toBe(comfyByModelId.descriptor);
     expect(comfyByWorkflowKey.backend).toBe(comfyByModelId.backend);
@@ -158,7 +158,7 @@ describe("buildBackendRegistry", () => {
 
   it("throws a clear error for an unknown workflowKey", async () => {
     dir = await mkdtemp(path.join(tmpdir(), "gen-registry-"));
-    await writeFile(path.join(dir, "comfy.json"), descriptorJson("redcraft-krea2-redmix3-fp8", "comfyui"));
+    await writeFile(path.join(dir, "comfy.json"), descriptorJson("image-model", "comfyui"));
 
     const registry = await buildBackendRegistry({
       comfyImageApiUrl: "http://127.0.0.1:8189",
@@ -285,31 +285,18 @@ describe("buildBackendRegistry", () => {
 
   });
 
-  it("binds the production RedCraft Identity workflow to the image runner", async () => {
+  it("rejects retired Krea model and workflow ids", async () => {
     const registry = await buildBackendRegistry({
       comfyImageApiUrl: "http://127.0.0.1:8189",
       comfyVideoApiUrl: "http://127.0.0.1:8188",
       workflowDir: path.resolve(import.meta.dirname, "../../workflows"),
     });
-    const identity = registry.resolveForModel(
+    for (const id of [
+      "redcraft-krea2-redmix3-fp8",
+      "redcraft-krea2-redmix3-txt2img",
       "redcraft-krea2-identity-edit",
-    ).descriptor;
-    const prompt = bindComfySlots(identity, {
-      prompt: "preserve the same adult character",
-      negative: "text, watermark, duplicate person",
-      identity_image: "identity.png",
-      seed: 10,
-    });
-
-    expect(prompt["1"].inputs.unet_name).toBe(
-      "Krea2RedMix3.0-fp8-scaled-ComfyUI.safetensors",
-    );
-    expect(prompt["5"].inputs.image).toBe("identity.png");
-    expect(prompt["8"].inputs).toMatchObject({
-      source_latent: ["7", 0],
-      ref_boost: 4,
-      target_latent: ["7", 0],
-    });
-    expect(prompt["11"].inputs).toMatchObject({ steps: 8, cfg: 1 });
+    ]) {
+      expect(() => registry.resolveForModel(id)).toThrow(id);
+    }
   });
 });

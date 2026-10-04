@@ -6,7 +6,6 @@ import {
   workflowDescriptorSchema,
   loadWorkflowDescriptors,
   workflowRunsWithoutReferences,
-  type WorkflowDescriptor,
 } from "./workflow";
 
 // Resolve packages/gen/workflows relative to this test file (not process.cwd()),
@@ -15,31 +14,6 @@ const WORKFLOWS_DIR = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../../workflows",
 );
-
-function expectImageMemoryBarrier(
-  descriptor: WorkflowDescriptor | undefined,
-  samplerNodeId: string,
-  positiveNodeId: string,
-  negativeNodeId: string,
-  releaseNodeId: string,
-  releaseOutputIndex: number,
-) {
-  if (!descriptor || descriptor.backendKind !== "comfyui") {
-    throw new Error("expected ComfyUI image descriptor");
-  }
-  expect(descriptor.apiPrompt["900:0"]).toMatchObject({
-    class_type: "IDreamUnloadOffDeviceModels",
-    inputs: {
-      passthrough: [positiveNodeId, 0],
-      after: [negativeNodeId, 0],
-      release: [releaseNodeId, releaseOutputIndex],
-    },
-  });
-  expect(descriptor.apiPrompt[samplerNodeId]?.inputs.positive).toEqual([
-    "900:0",
-    0,
-  ]);
-}
 
 // Pure-function tests (bindComfySlots/bindWorkflowArgs) and the onSkip-callback
 // contract now live at packages/shared/src/gen/workflow.test.ts, alongside the
@@ -54,8 +28,9 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
       expect(() => workflowDescriptorSchema.parse(descriptor)).not.toThrow();
     }
     const modelIds = descriptors.map((descriptor) => descriptor.modelId);
-    expect(modelIds).toContain("redcraft-krea2-redmix3-fp8");
-    expect(modelIds).toContain("redcraft-krea2-identity-edit");
+    expect(modelIds).toContain("redqw21");
+    expect(modelIds).toContain("redqw21-image-edit");
+    expect(modelIds.some((modelId) => /krea/i.test(modelId))).toBe(false);
   });
 
   it("retires every Rapid-AIO weight while keeping the three image-input contracts on REDQW21 V2", async () => {
@@ -126,114 +101,6 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
     expect(bindComfySlots(redqw21, { prompt: "p", seed: 1 })["10"]).toBeUndefined();
     expect(bindComfySlots(redqw21, { prompt: "p", seed: 1, identity_image: "a.png" })["5"]?.inputs["images.image_1"])
       .toEqual(["10", 0]);
-  });
-
-  it("keeps RedMix3 scaled-FP8 resident without a whole-model BF16 descriptor", async () => {
-    const descriptors = await loadWorkflowDescriptors(WORKFLOWS_DIR);
-    const redMix3 = descriptors.find(
-      (descriptor) => descriptor.modelId === "redcraft-krea2-redmix3-fp8",
-    );
-
-    expect(redMix3).toMatchObject({
-      workflowKey: "redcraft-krea2-redmix3-txt2img",
-      backendKind: "comfyui",
-      version: 2,
-    });
-    if (!redMix3 || redMix3.backendKind !== "comfyui") {
-      throw new Error("expected RedMix3 scaled-FP8 ComfyUI descriptor");
-    }
-    expect(redMix3.apiPrompt["1"]?.inputs).toEqual({
-      unet_name: "Krea2RedMix3.0-fp8-scaled-ComfyUI.safetensors",
-      weight_dtype: "default",
-    });
-    expect(redMix3.apiPrompt["2"]?.class_type).toBe("IDreamFreshCLIPLoader");
-    expect(JSON.stringify(redMix3)).not.toContain("RedMix3.0-bf16");
-    expectImageMemoryBarrier(redMix3, "7", "4", "5", "2", 0);
-  });
-
-  it("keeps full Identity Edit on FP8 residency and pre-encodes before sampling", async () => {
-    const descriptors = await loadWorkflowDescriptors(WORKFLOWS_DIR);
-    const identityEdit = descriptors.find(
-      (descriptor) => descriptor.modelId === "redcraft-krea2-identity-edit",
-    );
-
-    expect(identityEdit).toMatchObject({
-      workflowKey: "redcraft-krea2-identity-edit",
-      backendKind: "comfyui",
-      version: 5,
-      identity: {
-        mode: "single_reference",
-        maxReferences: 1,
-      },
-    });
-    if (!identityEdit || identityEdit.backendKind !== "comfyui") {
-      throw new Error("expected RedCraft Identity Edit ComfyUI descriptor");
-    }
-    expect(identityEdit.apiPrompt["1"]?.inputs).toEqual({
-      unet_name: "Krea2RedMix3.0-fp8-scaled-ComfyUI.safetensors",
-      weight_dtype: "default",
-    });
-    expect(identityEdit.apiPrompt["2"]?.class_type).toBe(
-      "IDreamFreshCLIPLoader",
-    );
-    expect(identityEdit.apiPrompt["4"]?.inputs).toMatchObject({
-      lora_name: "Krea2/krea2_identity_edit_v1_2.safetensors",
-      strength_model: 1,
-    });
-    expect(identityEdit.apiPrompt["6"]).toBeUndefined();
-    expect(identityEdit.apiPrompt["8"]?.inputs).toMatchObject({
-      source_latent: ["7", 0],
-      ref_boost: 4,
-      fit_mode: "fit",
-      target_latent: ["7", 0],
-    });
-    expect(identityEdit.apiPrompt["9"]?.inputs).toMatchObject({
-      grounding_px: 768,
-    });
-    expect(identityEdit.apiPrompt["10"]?.inputs).toMatchObject({
-      grounding_px: 768,
-    });
-    expect(identityEdit.apiPrompt["11"]?.inputs).toMatchObject({
-      steps: 8,
-      cfg: 1,
-      sampler_name: "euler",
-      scheduler: "simple",
-    });
-    expect(JSON.stringify(identityEdit)).not.toContain("RedMix3.0-bf16");
-    expectImageMemoryBarrier(identityEdit, "11", "9", "10", "2", 0);
-  });
-
-  it("keeps shared RedCraft loaders cache-identical across text and identity routes", async () => {
-    const descriptors = await loadWorkflowDescriptors(WORKFLOWS_DIR);
-    const textToImage = descriptors.find(
-      (descriptor) =>
-        descriptor.workflowKey === "redcraft-krea2-redmix3-txt2img",
-    );
-    const identityEdit = descriptors.find(
-      (descriptor) => descriptor.workflowKey === "redcraft-krea2-identity-edit",
-    );
-
-    if (
-      !textToImage ||
-      textToImage.backendKind !== "comfyui" ||
-      !identityEdit ||
-      identityEdit.backendKind !== "comfyui"
-    ) {
-      throw new Error("expected both RedCraft ComfyUI descriptors");
-    }
-
-    for (const classType of [
-      "UNETLoader",
-      "IDreamFreshCLIPLoader",
-      "VAELoader",
-    ]) {
-      const loaderFor = (descriptor: typeof textToImage) =>
-        Object.values(descriptor.apiPrompt).find(
-          (node) => node.class_type === classType,
-        );
-
-      expect(loaderFor(identityEdit)).toEqual(loaderFor(textToImage));
-    }
   });
 
   it("loads the qwen-image-edit img2img descriptor and validates it against the schema", async () => {

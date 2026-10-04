@@ -1418,14 +1418,14 @@ describe("generation config control plane", () => {
         runner: "comfyui",
         pipelineModel: "mock-image-workflow",
         allowedOrientations: ["1:1"],
-        workflowKey: "redcraft-krea2-redmix3-txt2img",
+        workflowKey: "redqw21",
       },
     });
     expectOk(draft);
-    expect(draft.data.profile.workflowKey).toBe("redcraft-krea2-redmix3-txt2img");
+    expect(draft.data.profile.workflowKey).toBe("redqw21");
     expect(
       await prisma.generationModelProfile.findUnique({ where: { id: draft.data.profile.id } }),
-    ).toMatchObject({ workflowKey: "redcraft-krea2-redmix3-txt2img" });
+    ).toMatchObject({ workflowKey: "redqw21" });
 
     const unknownPatch = await adminV2(
       "PATCH",
@@ -1455,11 +1455,11 @@ describe("generation config control plane", () => {
       {
         userId: admin,
         role: "admin",
-        body: { workflowKey: "redcraft-krea2-redmix3-txt2img" },
+        body: { workflowKey: "redqw21" },
       },
     );
     expectOk(restorePatch);
-    expect(restorePatch.data.profile.workflowKey).toBe("redcraft-krea2-redmix3-txt2img");
+    expect(restorePatch.data.profile.workflowKey).toBe("redqw21");
   });
 
   it("routes a generation job through workflowKey when the selected profile has one", async () => {
@@ -1483,7 +1483,7 @@ describe("generation config control plane", () => {
         mode: "image",
         runner: "comfyui",
         pipelineModel: "mock-image-workflow-route",
-        workflowKey: "redcraft-krea2-redmix3-txt2img",
+        workflowKey: "redqw21",
         allowedOrientations: ["1:1"],
         version: 1,
         status: "active",
@@ -1502,7 +1502,7 @@ describe("generation config control plane", () => {
     expect(gen.data.job.profileId).toBe(profileKey);
 
     const stored = await prisma.generationJob.findUnique({ where: { id: gen.data.job.id } });
-    expect(stored?.model).toBe("redcraft-krea2-redmix3-txt2img");
+    expect(stored?.model).toBe("redqw21");
 
     await runQueuedGenerationJobs(4);
   });
@@ -2497,8 +2497,8 @@ describe("generation config control plane", () => {
         label: "Production refund profile",
         mode: "image",
         runner: "comfyui",
-        pipelineModel: "redcraft-krea2-redmix3-txt2img",
-        workflowKey: "redcraft-krea2-redmix3-txt2img",
+        pipelineModel: "redqw21",
+        workflowKey: "redqw21",
         runnerConfig: {
           workflowVersion: 2,
           capabilities: { textToImage: true },
@@ -2749,9 +2749,7 @@ describe("generation config control plane", () => {
       expect(krea2Model.data.asset).toMatchObject({
         kind: "model",
         format: "safetensors",
-        // A Krea2 checkpoint without the ComfyUI fp8 metadata signature gets the
-        // same generic ComfyUI draft as any other import: the sd.cpp branch that
-        // used to add llmPath/vaePath/backend=vae=cpu is retired with the runner.
+        // Retired model assets receive no special serving template.
         draftPatch: expect.objectContaining({
           runner: "comfyui",
           sourceModelPath: krea2ModelPath,
@@ -2771,22 +2769,15 @@ describe("generation config control plane", () => {
         kind: "model",
         format: "safetensors",
         draftPatch: expect.objectContaining({
-          profileTemplate: "reference_identity_comfyui",
           runner: "comfyui",
           sourceModelPath: redcraftComfyuiPath,
           diffusionModelPath: redcraftComfyuiPath,
           convertedModelPath: "",
           conversionEnabled: false,
-          steps: "10",
-          sampler: "er_sde",
-          scheduler: "simple",
-          cfgScale: "1",
-          runnerConfig: expect.objectContaining({
-            verificationStatus: "requires_comfyui_fp8_krea2_runtime",
-            assetFormat: "fp8_scaled_comfyui_checkpoint",
-          }),
         }),
       });
+
+      expect(redcraftComfyuiModel.data.asset.draftPatch).not.toHaveProperty("profileTemplate");
 
       const lora = await adminV2("POST", "/api/v2/admin/generation/model-imports/commands/register", {
         userId: admin,
@@ -4302,7 +4293,7 @@ describe("admin dual-approval (F5)", () => {
   });
 });
 
-// ───────────────────────── Phase 3: CMS · 合规 · 生成质量/流程 (ADMIN_CONSOLE_PLAN) ─────────────────────────
+// ───────────────────────── Phase 3: CMS · 合规 · 生成质量/流程 ─────────────────────────
 
 describe("admin compliance: DSAR + age verification (T2)", () => {
   it("exports/erases users and overrides age verification with gating", async () => {

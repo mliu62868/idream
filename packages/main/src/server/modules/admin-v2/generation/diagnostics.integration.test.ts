@@ -47,7 +47,7 @@ describe("generation diagnostics (v2, read-only)", () => {
 
     const items = result.data.items as Array<Record<string, unknown>>;
     const keys = items.map((item) => item.workflowKey);
-    expect(keys).toContain("redcraft-krea2-redmix3-txt2img");
+    expect(keys).toContain("redqw21");
     expect(keys).toContain("qwen-image-edit-img2img");
     expect(keys).toContain("qwen-image-edit-multi-identity");
     expect(keys).toContain("pornmaster-zimage-drawthings-txt2img");

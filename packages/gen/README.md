@@ -24,9 +24,8 @@ projects all image/video outcomes from the same terminal record authority.
 
 ## Backend abstraction (`GEN_IMAGE_PROVIDER=backend`)
 
-`providers.image` (see `src/providers.ts`) supports a `backend` provider that
-talks directly to a local generation backend instead of an external
-OpenAI-compatible pipeline gateway:
+The `backend` adapter in `providers.image` (see `src/providers.ts`) executes
+released workflows directly on a local generation backend:
 
 - **`GenBackend`** (`src/backend/types.ts`) — a small `submit`/`poll`/`health`
   contract implemented per backend kind: `ComfyUIBackend` (`src/backend/comfyui.ts`,
@@ -59,14 +58,12 @@ through it. `GEN_WORKFLOW_DIR` defaults to
 `packages/gen/workflows` (repo-root relative); the smoke script below resolves
 it explicitly so it works regardless of cwd.
 
-The active image graphs treat text encoding as a prompt-scoped phase. Krea2
-loads a fresh standalone CLIP for conditioning; Qwen separates checkpoint
-MODEL/VAE ownership from a fresh checkpoint CLIP. Once every positive,
-negative, and reference branch has materialized conditioning,
-`IDreamUnloadOffDeviceModels` destroys that CLIP owner while leaving the
-diffusion model and VAE available to the sampler and decoder. Fresh loaders are
-deliberately non-cacheable so a later prompt never observes the destroyed
-owner.
+The active Qwen image graphs load a fresh standalone CLIP for each prompt.
+Once every positive, negative, and reference branch has materialized
+conditioning, `IDreamUnloadOffDeviceModels` destroys that CLIP owner while
+leaving the diffusion model and VAE available to the sampler and decoder.
+Fresh loaders are deliberately non-cacheable so a later prompt never observes
+the destroyed owner.
 
 #### FP8 on Apple Silicon (MPS)
 
@@ -76,14 +73,6 @@ custom node in `custom_nodes/` — it re-applies its runtime patches on every
 ComfyUI startup, so a ComfyUI upgrade needs **no re-patching**. Do NOT install
 the older `fp4-fp8-for-torch-mps` pip package alongside it; both patch the
 same MPS ops and stack unpredictably.
-
-RedCraft RedMix3 uses the author/release scaled-FP8 checkpoint directly. On
-M1–M4, the 8-bit weights remain the resident/storage representation and the
-compatibility layer decodes one operation at a time to BF16 for MPS GEMM. This
-is intentional: it preserves the roughly 12 GiB resident checkpoint instead of
-materializing a roughly 24 GiB whole-model BF16 serving copy. Do not add
-`--supports-fp8-compute`; on this host it would quantize BF16 activations only to
-decode them again before the same BF16 GEMM.
 
 After every ComfyUI upgrade (then `bun run comfyui:restart`):
 
@@ -110,22 +99,22 @@ Per-patch status is logged at startup — inspect with
 (major ComfyUI Desktop upgrade) keeps the node but may drop its pip deps;
 reinstall with the venv python: `pip install -r <node dir>/requirements.txt`.
 
-### RedCraft Krea2 routes
+### Qwen image routes
 
-The active text-to-image descriptor is
-`redcraft-krea2-redmix3-txt2img@2`. Identity Edit uses
-`redcraft-krea2-identity-edit@5`: the full v1.2 LoRA at strength 1,
-`ref_boost=4`, `grounding_px=768`, 832×1216, 8 steps, CFG 1, Euler/Simple. Its
-pixel path receives `vae + source_image + target_latent` and pre-encodes the
-fitted source before sampling; the required `source_latent` socket uses the
-same empty target latent as a type-correct placeholder, avoiding a redundant
-source VAE encode.
+`redqw21@3` serves text-to-image and optional single-anchor identity input.
+The REDQW21 V2 edit graphs are `qwen-image-edit-img2img@5`,
+`qwen-image-edit-multi-reference@7`, and `qwen-image-edit-multi-identity@6`.
+They use the BF16 diffusion checkpoint, ConvRot INT8 Qwen3-VL encoder,
+Qwen Image 2.1 VAE, and the Viggle six-step adapter. Production profiles must
+pin the matching descriptor key and version.
 
-Only the active FP8 profiles may point at these descriptors. The legacy
-`/Users/kk/Downloads/models/redcraftKREA2RedMix_krea2Edition.safetensors`
-profiles remain archived because that file is absent. The materialized BF16
-comparison profile also remains archived: its file is absent and its matched
-warm A/B did not justify doubling resident model bytes.
+Krea text-to-image and Identity Edit routes are retired. Their descriptors,
+Draw Things patches, smoke controls, and benchmark entry point have been
+removed. The database retirement script is
+[`2026-10-04-retire-krea-image-profiles.sql`](../../db/sql/2026-10-04-retire-krea-image-profiles.sql);
+it rebinds published presets to Qwen and archives old profiles while preserving
+historical attempt and billing records. Old Krea diffusion weights and Identity Edit LoRA have been deleted,
+including their retirement archive. Draw Things Krea registrations are removed.
 
 ### Pointing at Draw Things
 
@@ -365,9 +354,10 @@ development and production. A source-file restart can otherwise interrupt an
 in-flight clip after coins were reserved. Main's video stale timeout is 35
 minutes, deliberately longer than this provider timeout.
 
-**fp8 → bf16 note:** on Apple Silicon (MPS), fp8-quantized checkpoints are not
-supported — they must be dequantized to bf16 before ComfyUI can load them on
-MPS. See `docs/superpowers/specs/2026-07-07-image-generation-redesign-design.md`
-§4.2b for the conversion approach (per-tensor `weight * weight_scale` dequant);
-the workflow descriptors in `packages/gen/workflows/` already point at the
-converted bf16 filenames.
+**Checkpoint format:** use the exact format and bytes pinned by the selected
+workflow descriptor and checked by `preflight`. The current REDQW21 V2 editor
+pins converted BF16 diffusion weights. For a route requiring FP8 runtime
+handling, follow the MPS patch setup above. Do not convert or rename weights
+outside that artifact contract. For offline conversion, distinguish
+scaled FP8 (`weight * weight_scale`) from plain FP8; see the dated
+[format conversion record](../../docs/superpowers/specs/2026-07-07-image-generation-redesign-design.md#格式转换).

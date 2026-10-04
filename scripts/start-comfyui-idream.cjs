@@ -31,8 +31,7 @@ const profiles = {
     outputDirectory: path.join(sharedRoot, "output"),
     userDirectory: path.join(sharedRoot, "user"),
   },
-  // INTENT: Krea2 Identity Edit was materially faster with PyTorch attention;
-  // separate state prevents that choice from changing RedGraft's math path.
+  // INTENT: keep image attention and model state isolated from RedGraft.
   image: {
     port: "8189",
     // INTENT: the image runner needs Qwen-Image-2.1 nodes (TextEncodeQwenImage21,
