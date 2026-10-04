@@ -421,6 +421,10 @@ describe("customer shared Character publication", () => {
     }));
     // Approval must not expose an unqualified Character to a visitor or the directory.
     expect((await api("GET", `characters/${result.characterId}`, { ageGate: true })).status).toBe(404);
+    // The owner still opens it, but must not be handed a Share link that 404s for visitors.
+    const ownerView = await api("GET", `characters/${result.characterId}`, { userId: result.userId, ageGate: true });
+    expectOk(ownerView);
+    expect(ownerView.data.character).toMatchObject({ publicationState: "awaiting_publication", shareable: false });
     const explore = await api("GET", "characters", { ageGate: true, query: { q: `Avery ${visibility}` } });
     expectOk(explore);
     expect(explore.data.items).toEqual([]);

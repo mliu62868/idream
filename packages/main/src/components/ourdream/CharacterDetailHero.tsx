@@ -26,7 +26,11 @@ export function CharacterDetailHero({
       className="relative max-w-7xl overflow-hidden rounded-[24px] border border-white/10 bg-[rgb(20,20,20)]"
       data-testid="character-detail-renderer"
     >
-      <div className="relative aspect-video min-h-[440px] bg-[rgb(36,36,36)]">
+      {/* INVARIANT: 图框宽度必须显式 w-full。宽度为 auto 时浏览器把 min-h 经 aspect-ratio
+          换算成 min-width（440×16/9≈782px），窄屏下图框撑出卡片、被 overflow 裁掉右半，
+          竖图角色的脸落在卡片外。宽度定死后 min-h 只作用于高度：窄屏是 440px 高的竖框，
+          桌面仍是 16:9。 */}
+      <div className="relative aspect-video min-h-[440px] w-full bg-[rgb(36,36,36)]" data-testid="character-detail-hero-frame">
         <Image
           alt={`${character.title} character hero`}
           className="object-cover object-top"

@@ -87,6 +87,46 @@ describe("Create authoring authority", () => {
     expect((await prisma.mediaAsset.findUniqueOrThrow({ where: { id: second.asset.id } })).characterId).toBeNull();
   });
 
+  it("resumes every completed candidate that still matches the draft, not only the latest job", async () => {
+    const userId = `${prefix}resume-candidates-owner`;
+    await createUser({ id: userId });
+    const draft = await prisma.characterDraft.create({ data: {
+      ownerId: userId, name: "Avery", gender: "female", style: "realistic", step: 3,
+      appearance: { prompt: "Freckles" }, hair: {}, body: {}, tags: [],
+      advancedDetails: { age: 25, description: "A warm companion", firstMessage: "Hello there." },
+    } });
+    const createdAt = (minute: number) => new Date(Date.UTC(2026, 9, 4, 9, minute));
+    const completed = async (label: string, minute: number) => {
+      const asset = await prisma.mediaAsset.create({ data: {
+        id: `${prefix}resume-${label}`, ownerId: userId, type: "image", url: `/user-content/resume-${label}.png`,
+        storageKey: `${prefix}resume-${label}.png`, visibility: "private", safetyStatus: "passed", metadata: { synthetic: false },
+      } });
+      const preview = await prisma.characterPreviewJob.create({ data: {
+        draftId: draft.id, status: "completed", provider: "test", resultAssetId: asset.id, completedAt: createdAt(minute), createdAt: createdAt(minute),
+      } });
+      await recordPreviewInput(draft.id, preview.id, userId);
+      return preview;
+    };
+    const first = await completed("first", 1);
+    const second = await completed("second", 2);
+    // A candidate made for appearance the user has since changed is not offered back.
+    const stale = await completed("stale", 3);
+    await prisma.generationJob.update({ where: { id: `${prefix}${stale.id}` }, data: { prompt: "an older appearance" } });
+    // The newest job failed: it used to be the only one resume looked at.
+    const failed = await prisma.characterPreviewJob.create({ data: {
+      draftId: draft.id, status: "failed", errorCode: "backend_error", provider: "test", createdAt: createdAt(4),
+    } });
+    await recordPreviewInput(draft.id, failed.id, userId);
+
+    const resumed = await api("GET", "character-drafts/current", { userId, ageGate: true });
+    expectOk(resumed);
+    expect(resumed.data.previewJob).toMatchObject({ id: failed.id, status: "failed" });
+    expect(resumed.data.previewCandidates).toEqual([
+      expect.objectContaining({ previewJobId: second.id, assetId: `${prefix}resume-second` }),
+      expect.objectContaining({ previewJobId: first.id, assetId: `${prefix}resume-first` }),
+    ]);
+  });
+
   it("preserves face, hair and body in the Character, content snapshot and active visual profile", async () => {
     const userId = `${prefix}owner`;
     await createUser({ id: userId });

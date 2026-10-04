@@ -3410,9 +3410,11 @@ test("create UI resumes a draft and prepares public characters for publication",
   await page.getByLabel("Name").fill(characterName);
   await page.getByLabel("Age").fill("17");
   await page.getByTestId("create-next").click();
-  await expect(page.getByTestId("create-status")).toHaveText("Age must be between 18 and 120.");
-  await expect(page.getByTestId("create-status")).toHaveAttribute("role", "status");
-  await expect(page.getByTestId("create-status")).toHaveAttribute("aria-live", "polite");
+  // The refusal lands on the field itself: focused, marked invalid, described by its error.
+  await expect(page.locator("#create-field-age")).toBeFocused();
+  await expect(page.locator("#create-field-age")).toHaveAttribute("aria-invalid", "true");
+  await expect(page.locator("#create-field-age")).toHaveAttribute("aria-describedby", "create-field-age-error");
+  await expect(page.locator("#create-field-age-error")).toHaveText("Age must be between 18 and 120.");
   await expect(page.getByTestId("create-step-identity")).toBeVisible();
 
   await page.getByLabel("Age").fill("24");

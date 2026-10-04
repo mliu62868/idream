@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { api, createUser, expectError, expectOk, purgeTestData } from "@/server/test/helpers";
-import { beginChatTurn, commitChatTerminal, createChatSession } from "@/server/modules/chat/turn-ledger";
+import { beginChatTurn, commitChatTerminal, createChatSession, getChatSession, listChatSessions, renameChatSession } from "@/server/modules/chat/turn-ledger";
 import { projectCharacterProductionJourney } from "@/server/modules/admin-v2/characters/production-journey";
 import { characterPreviewPrompt } from "./character-draft-write";
 
@@ -79,6 +79,7 @@ describe("Character edit (CR-06 / CR-08)", () => {
     const originalContent = await prisma.characterContentVersion.findUniqueOrThrow({ where: { id: original.currentContentVersionId! } });
 
     const session = await createChatSession(userId, { characterId });
+    expect(session.title).toBe("Avery");
     const first = await beginChatTurn({ userId, sessionId: session.id, content: "Hi.", idempotencyKey: randomUUID() });
     await commitChatTerminal({
       version: 1, turnId: first.snapshot!.turnId, sessionId: first.snapshot!.sessionId, assistantMessageId: first.snapshot!.assistantMessageId,
@@ -143,6 +144,14 @@ describe("Character edit (CR-06 / CR-08)", () => {
     const secondTurn = await prisma.chatTurn.findUniqueOrThrow({ where: { id: second.snapshot!.turnId } });
     expect(secondTurn.characterContentVersionId).toBe(newContent.id);
     expect(secondTurn.characterVisualProfileId).toBe(visual.id);
+    // The default chat title follows the rename the conversation already follows;
+    // a name the user typed is theirs and survives.
+    expect((await getChatSession(userId, session.id)).title).toBe("Avery Vale");
+    expect((await listChatSessions(userId)).find((row) => row.id === session.id)?.title).toBe("Avery Vale");
+    expect((await renameChatSession(userId, session.id, "Late shift")).title).toBe("Late shift");
+    await prisma.character.update({ where: { id: characterId }, data: { name: "Avery Vane" } });
+    expect((await getChatSession(userId, session.id)).title).toBe("Late shift");
+    await prisma.character.update({ where: { id: characterId }, data: { name: "Avery Vale" } });
 
     // A replayed submit returns the edited Character without appending again.
     const replay = await api("POST", `character-drafts/${draftId}/submit`, { userId, ageGate: true, body: { visibility: "private" } });

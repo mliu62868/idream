@@ -373,6 +373,7 @@ describe("CreateWorkspace identity confirmation", () => {
           },
           previewJob: { id: "saved-preview", status: "completed" },
           asset: { id: "saved-asset", url: "/api/v1/media/saved-asset/content", isSynthetic: false },
+          previewCandidates: [{ previewJobId: "saved-preview", assetId: "saved-asset", url: "/api/v1/media/saved-asset/content", isSynthetic: false }],
         } });
       }
       return originalFetch(input, init);
@@ -391,6 +392,40 @@ describe("CreateWorkspace identity confirmation", () => {
     expect(container.querySelector('img[src="/api/v1/media/saved-asset/content"]')).not.toBeNull();
     expect(container.querySelector<HTMLButtonElement>('[data-testid="create-confirm-identity"]')?.disabled)
       .toBe(false);
+  });
+
+  it("restores every completed candidate on another device even when the latest preview failed", async () => {
+    window.localStorage.clear();
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) === "/api/v1/character-drafts/current") {
+        return Response.json({ ok: true, data: {
+          draft: {
+            id: "draft-1", step: 3, name: "Avery", gender: "female", style: "realistic",
+            appearance: { prompt: "Dark hair" }, hair: {}, body: {}, tags: [],
+            advancedDetails: { age: 25, description: "Warm and direct", firstMessage: "Hello there" },
+            previewJobId: null,
+          },
+          previewJob: { id: "failed-preview", status: "failed", errorCode: "backend_error" },
+          asset: null,
+          previewCandidates: [
+            { previewJobId: "preview-b", assetId: "asset-b", url: "/api/v1/media/asset-b/content", isSynthetic: false },
+            { previewJobId: "preview-a", assetId: "asset-a", url: "/api/v1/media/asset-a/content", isSynthetic: false },
+          ],
+        } });
+      }
+      return originalFetch(input, init);
+    });
+    await act(async () => root.render(createElement(CreateWorkspace)));
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="create-step-preview"]')));
+
+    const candidates = container.querySelector('[data-testid="create-preview-candidates"]');
+    expect(candidates?.querySelector('img[src="/api/v1/media/asset-a/content"]')).not.toBeNull();
+    expect(candidates?.querySelector('img[src="/api/v1/media/asset-b/content"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("Preview generation failed");
+    expect(container.querySelector<HTMLButtonElement>('[data-testid="create-confirm-identity"]')?.disabled)
+      .toBe(false);
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
   it("restores an unknown server preview and only checks that exact job on a new device", async () => {
@@ -523,6 +558,7 @@ describe("CreateWorkspace identity confirmation", () => {
           advancedDetails: { age: 21, description: "Warm and direct", firstMessage: "Hello there" }, previewJobId: null },
         previewJob: { id: "saved-preview", status: "completed" },
         asset: { id: "saved-asset", url: "/api/v1/media/saved-asset/content", isSynthetic: false },
+        previewCandidates: [{ previewJobId: "saved-preview", assetId: "saved-asset", url: "/api/v1/media/saved-asset/content", isSynthetic: false }],
       } });
       return originalFetch(input, init);
     });
@@ -569,6 +605,38 @@ describe("CreateWorkspace identity confirmation", () => {
     await changeField("Occupation", "Doctor");
     expect(field("Additional details (optional)").value).toBe("x".repeat(24_000));
     expect(container.textContent).toContain("Additional details must be 24,000 characters or fewer.");
+  });
+
+  it("marks required Soul fields and reports every missing one beside its field at once", async () => {
+    window.localStorage.setItem(draftStorageKeyForScope("user:creator-1"), JSON.stringify({
+      ...initialCharacterDraft(), draftId: "draft-1", step: 2, name: "Avery", description: "", firstMessage: "",
+    }));
+    await act(async () => root.render(createElement(CreateWorkspace)));
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="create-step-soul"]')));
+    const promise = container.querySelector<HTMLTextAreaElement>("#create-field-promise")!;
+    const firstMessage = container.querySelector<HTMLTextAreaElement>("#create-field-first-message")!;
+    expect(promise.getAttribute("aria-required")).toBe("true");
+    expect(firstMessage.getAttribute("aria-required")).toBe("true");
+    expect(container.querySelector("#create-field-details")?.getAttribute("aria-required")).toBeNull();
+    expect(promise.getAttribute("aria-invalid")).toBeNull();
+
+    await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "Next")?.click());
+    expect(document.activeElement).toBe(promise);
+    for (const [input, message] of [[promise, "Write the character promise."], [firstMessage, "Write the character's first message."]] as const) {
+      expect(input.getAttribute("aria-invalid")).toBe("true");
+      const described = container.querySelector(`#${input.getAttribute("aria-describedby")}`);
+      expect(described?.textContent).toBe(message);
+      // The message sits inside the field it is about, not in a distant status line.
+      expect(input.closest("label")?.contains(described!)).toBe(true);
+    }
+    expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
+
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(promise, "Warm and direct");
+      promise.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(promise.getAttribute("aria-invalid")).toBeNull();
+    expect(firstMessage.getAttribute("aria-invalid")).toBe("true");
   });
 
   it("saves catalog suggestions and custom details in the same Soul and restores both", async () => {
@@ -804,8 +872,7 @@ describe("CreateWorkspace quick start", () => {
   }
 
   function nameInput() {
-    const label = [...container.querySelectorAll("label")].find(item => item.querySelector("span")?.textContent === "Name");
-    return label!.querySelector("input")!;
+    return container.querySelector<HTMLInputElement>("#create-field-name")!;
   }
 
   it("prefills the wizard through the template path and leaves every field editable", async () => {
@@ -851,7 +918,7 @@ describe("CreateWorkspace quick start", () => {
 
   it("caps the Name field at the server's 80 characters", async () => {
     await act(async () => root.render(createElement(CreateWorkspace)));
-    await waitUntil(() => [...container.querySelectorAll("label")].some(item => item.querySelector("span")?.textContent === "Name"));
+    await waitUntil(() => Boolean(container.querySelector("#create-field-name")));
     expect(nameInput().maxLength).toBe(80);
   });
 

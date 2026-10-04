@@ -57,6 +57,7 @@ type DraftPayload = {
     visibilityWarning?: string | null;
     asset?: { id?: string; url: string; isSynthetic?: boolean };
     previewJob?: { id: string; status: string; errorCode?: string | null };
+    previewCandidates?: unknown[];
   };
 };
 
@@ -171,7 +172,8 @@ export type WizardState = {
   draftId: string;
   draftUpdatedAt: string;
   previewBatch: CreatePreviewBatch | null;
-  restoredPreviewCandidate: CreatePreviewCandidate | null;
+  // Candidates found on the server when this browser has no batch of its own.
+  restoredPreviewCandidates: CreatePreviewCandidate[];
   confirmedPreviewJobId: string;
   confirmedPreviewUrl: string;
   step: number;
@@ -198,7 +200,7 @@ const INITIAL: WizardState = {
   draftId: "",
   draftUpdatedAt: "",
   previewBatch: null,
-  restoredPreviewCandidate: null,
+  restoredPreviewCandidates: [],
   confirmedPreviewJobId: "",
   confirmedPreviewUrl: "",
   step: 0,
@@ -286,6 +288,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
   const [restoredPreviewReviewId, setRestoredPreviewReviewId] = useState("");
   const [selectedPreviewJobId, setSelectedPreviewJobId] = useState("");
   const [status, setStatus] = useState("");
+  const [showFieldErrors, setShowFieldErrors] = useState(false);
   const [createdCharacterId, setCreatedCharacterId] = useState("");
   const [createdVisibility, setCreatedVisibility] = useState("");
   const [pending, setPending] = useState(false);
@@ -338,8 +341,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
   }, []);
 
   const step = state.step;
-  const previewCandidates = state.previewBatch?.candidates ??
-    (state.restoredPreviewCandidate ? [state.restoredPreviewCandidate] : []);
+  const previewCandidates = state.previewBatch?.candidates ?? state.restoredPreviewCandidates;
   const set = useCallback(
     <K extends keyof WizardState>(key: K, value: WizardState[K]) =>
       setState((current) => ({ ...current, [key]: value })),
@@ -497,6 +499,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
       next: WizardState,
       serverAsset?: { id?: string; url: string; isSynthetic?: boolean } | null,
       serverPreviewJob?: { id: string; status: string; errorCode?: string | null } | null,
+      serverCandidates?: unknown[] | null,
     ) => {
       if (viewerBlockedRef.current) return;
       restored = next.previewBatch
@@ -505,18 +508,12 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
       if (serverAsset?.url && next.confirmedPreviewJobId) {
         restored = { ...restored, confirmedPreviewUrl: serverAsset.url };
       }
-      // The server may have finished a preview before this browser ever saw
-      // it. Restore that exact candidate without enqueueing another batch.
-      if (!next.previewBatch && serverPreviewJob?.status === "completed" && serverAsset) {
-        restored = {
-          ...restored,
-          restoredPreviewCandidate: parseCreatePreviewCandidate({
-            previewJobId: serverPreviewJob.id,
-            assetId: serverAsset.id,
-            url: serverAsset.url,
-            isSynthetic: serverAsset.isSynthetic,
-          }),
-        };
+      // The server may have finished previews before this browser ever saw
+      // them. Restore every one still valid for these inputs, without
+      // enqueueing another batch; a later failed job must not hide them.
+      const recovered = (serverCandidates ?? []).flatMap((item) => parseCreatePreviewCandidate(item) ?? []);
+      if (!next.previewBatch && recovered.length) {
+        restored = { ...restored, restoredPreviewCandidates: recovered };
       }
       // Another device has no batch count or request key. Keep only the known
       // job and check it without inventing a replacement four-image batch.
@@ -538,7 +535,9 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
       setState(applied);
       const restoredCandidate = applied.previewBatch?.candidates.find(
         (candidate) => candidate.previewJobId === applied.confirmedPreviewJobId,
-      ) ?? applied.previewBatch?.candidates[0] ?? applied.restoredPreviewCandidate;
+      ) ?? applied.previewBatch?.candidates[0] ?? applied.restoredPreviewCandidates.find(
+        (candidate) => candidate.previewJobId === applied.confirmedPreviewJobId,
+      ) ?? applied.restoredPreviewCandidates[0];
       const restoredPreviewUrl = applied.confirmedPreviewUrl || restoredCandidate?.url;
       if (restoredPreviewUrl) {
         setPreview(restoredPreviewUrl);
@@ -574,7 +573,8 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
           const reconciled = reconcileLocalDraft(local, serverState);
           applyRestored(reconciled ?? local ?? serverState,
             reconciled ? payload.data?.asset ?? null : null,
-            reconciled ? payload.data?.previewJob ?? null : null);
+            reconciled ? payload.data?.previewJob ?? null : null,
+            reconciled ? payload.data?.previewCandidates : null);
         })
         .catch((error) => { if (!controller.signal.aborted) setEditError(messageFrom(error)); })
         .finally(() => { if (!controller.signal.aborted) setHydrated(true); });
@@ -606,6 +606,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
             { ...(reconciled ?? local ?? serverState), visibility: local?.visibility ?? character.visibility },
             reconciled ? payload.data?.asset ?? null : null,
             reconciled ? payload.data?.previewJob ?? null : null,
+            reconciled ? payload.data?.previewCandidates : null,
           );
           if (character.imageUrl && !local?.confirmedPreviewJobId && !serverState.confirmedPreviewJobId) {
             setPreview(character.imageUrl);
@@ -620,7 +621,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
       return () => controller.abort();
     }
     const recoverMissingCandidate = Boolean(restored?.draftId && restored.step === 3 &&
-      !restored.previewBatch && !restored.restoredPreviewCandidate && !restored.confirmedPreviewJobId);
+      !restored.previewBatch && !restored.restoredPreviewCandidates.length && !restored.confirmedPreviewJobId);
     // A local copy of a server draft is checked once: if the server no longer
     // has it as the current draft (it was saved as a character), start fresh.
     const verifyLocalDraft = Boolean(restored?.draftId && !editCharacterId && viewerScope && !isAnonymousScope(viewerScope));
@@ -670,6 +671,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
             restored ?? serverState,
             payload.data.asset ?? null,
             payload.data.previewJob ?? null,
+            payload.data.previewCandidates,
           );
         }
       }).catch(() => {
@@ -802,7 +804,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
     setState((current) => ({
       ...current,
       previewBatch: null,
-      restoredPreviewCandidate: null,
+      restoredPreviewCandidates: [],
       confirmedPreviewJobId: "",
       confirmedPreviewUrl: "",
       ...fields(current),
@@ -881,7 +883,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
       ...current,
       [key]: value,
       previewBatch: null,
-      restoredPreviewCandidate: null,
+      restoredPreviewCandidates: [],
       confirmedPreviewJobId: "",
       confirmedPreviewUrl: "",
     }));
@@ -909,9 +911,9 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
   const identityKept = editTarget !== null && (editTarget.published || !state.confirmedPreviewJobId) &&
     editKeepsIdentity(state, editTarget.baseline);
   const identityReady = editTarget?.published ? identityKept : Boolean(state.confirmedPreviewJobId) || identityKept;
-  const nameError = state.name.trim().length < 2 ? "Name needs at least 2 characters." : "";
-  const ageError = state.age < 18 || state.age > 120 ? "Age must be between 18 and 120." : "";
-  const personaError = requiredPersonaMessage(state);
+  const currentFieldErrors = stepFieldErrors(step, state);
+  // Errors appear once Next was refused on this step, then track edits live.
+  const shownFieldErrors = new Map(showFieldErrors ? currentFieldErrors : []);
 
   async function ensureDraft(): Promise<string> {
     if (state.draftId) return state.draftId;
@@ -960,12 +962,10 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
   }
 
   async function next() {
-    if (step === 0 && (nameError || ageError)) {
-      setStatus(nameError || ageError);
-      return;
-    }
-    if (step === 2 && personaError) {
-      setStatus(personaError);
+    if (currentFieldErrors.length) {
+      setShowFieldErrors(true);
+      setStatus("");
+      document.getElementById(currentFieldErrors[0]![0])?.focus();
       return;
     }
     if (step === 3 && !identityReady) {
@@ -976,6 +976,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
     setStatus("");
     try {
       await saveStep(step + 1);
+      setShowFieldErrors(false);
       set("step", Math.min(step + 1, STEPS.length - 1));
     } catch (error) {
       setStatus(messageFrom(error));
@@ -990,6 +991,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
 
   function goToStep(target: number) {
     setStatus("");
+    setShowFieldErrors(false);
     set("step", target);
   }
 
@@ -1102,7 +1104,13 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
           url: payload.data?.asset?.url, isSynthetic: payload.data?.asset?.isSynthetic,
         }) : null;
         if (candidate) {
-          setState((current) => ({ ...current, restoredPreviewCandidate: candidate }));
+          setState((current) => ({
+            ...current,
+            restoredPreviewCandidates: [
+              candidate,
+              ...current.restoredPreviewCandidates.filter((item) => item.previewJobId !== candidate.previewJobId),
+            ],
+          }));
           setPreview(candidate.url);
           setSelectedPreviewJobId(candidate.previewJobId);
           setPreviewStatus("complete");
@@ -1139,7 +1147,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
       setState((current) => ({
         ...current,
         previewBatch: batch,
-        restoredPreviewCandidate: null,
+        restoredPreviewCandidates: [],
         confirmedPreviewJobId: retrying ? current.confirmedPreviewJobId : "",
         confirmedPreviewUrl: retrying ? current.confirmedPreviewUrl : "",
       }));
@@ -1258,7 +1266,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
         setState((current) => ({
           ...current,
           previewBatch: null,
-          restoredPreviewCandidate: null,
+          restoredPreviewCandidates: [],
           confirmedPreviewJobId: "",
           confirmedPreviewUrl: "",
           step: 3,
@@ -1528,8 +1536,9 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
 
             {step === 0 && (
               <div className="grid gap-3 md:grid-cols-2" data-testid="create-step-identity">
-                <Field label="Name">
+                <Field error={shownFieldErrors.get("create-field-name")} fieldId="create-field-name" label="Name" required>
                   <input
+                    {...fieldControlProps("create-field-name", shownFieldErrors.get("create-field-name"))}
                     className={FIELD_LEAD_INPUT_CLASS}
                     onChange={(event) => setSoulField("name", event.target.value)}
                     maxLength={80}
@@ -1537,8 +1546,9 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
                     value={state.name}
                   />
                 </Field>
-                <Field label="Age" hint={ageError || "18+ only"}>
+                <Field error={shownFieldErrors.get("create-field-age")} fieldId="create-field-age" hint="18+ only" label="Age" required>
                   <input
+                    {...fieldControlProps("create-field-age", shownFieldErrors.get("create-field-age"))}
                     className={FIELD_LEAD_INPUT_CLASS}
                     max={120}
                     min={18}
@@ -1613,13 +1623,18 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
                   <h2 className="text-[18px] font-black text-white">Define who they are</h2>
                   <p className="mt-1 text-[13px] leading-5 text-[rgb(170,170,170)]">
                     These details become the character&apos;s stable chat persona, not just profile copy.
+                    Fields marked <span aria-hidden="true" className="text-[rgb(253,95,194)]">*</span><span className="sr-only">with an asterisk</span> are required.
                   </p>
                 </div>
                 <Field
+                  error={shownFieldErrors.get("create-field-promise")}
+                  fieldId="create-field-promise"
                   hint="A one- or two-sentence promise that defines what makes this character worth talking to."
                   label="Character promise"
+                  required
                 >
                   <textarea
+                    {...fieldControlProps("create-field-promise", shownFieldErrors.get("create-field-promise"))}
                     className="mt-3 min-h-28 w-full rounded-[12px] border border-white/10 bg-[rgb(13,13,13)] p-4 text-[14px] font-medium leading-6 text-white outline-none"
                     maxLength={1000}
                     onChange={(event) => setIdentityField("description", event.target.value)}
@@ -1681,10 +1696,14 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
                   {voicePreviewUrl && <audio aria-label="Selected voice preview" className="mt-3 w-full" controls src={voicePreviewUrl} />}
                 </div>
                 <Field
+                  error={shownFieldErrors.get("create-field-first-message")}
+                  fieldId="create-field-first-message"
                   hint="This is the exact opening line for a new conversation."
                   label="First message"
+                  required
                 >
                   <textarea
+                    {...fieldControlProps("create-field-first-message", shownFieldErrors.get("create-field-first-message"))}
                     className="mt-3 min-h-20 w-full rounded-[12px] border border-white/10 bg-[rgb(13,13,13)] p-4 text-[14px] font-medium leading-6 text-white outline-none"
                     maxLength={4000}
                     onChange={(event) => setSoulField("firstMessage", event.target.value)}
@@ -1693,10 +1712,15 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
                   />
                 </Field>
                 <Field
+                  error={shownFieldErrors.get("create-field-details")}
+                  fieldId="create-field-details"
                   hint="Guided fields above update this same text. Add background, speech style, custom details, scenarios, or dialogue examples here."
                   label="Additional details (optional)"
                 >
                   <textarea
+                    aria-describedby={shownFieldErrors.has("create-field-details") ? fieldErrorId("create-field-details") : undefined}
+                    aria-invalid={shownFieldErrors.has("create-field-details") || undefined}
+                    id="create-field-details"
                     className="mt-3 min-h-56 w-full rounded-[12px] border border-white/10 bg-[rgb(13,13,13)] p-4 font-mono text-[13px] font-medium leading-6 text-white outline-none"
                     maxLength={24000}
                     onChange={(event) => setSoulField("detailsMarkdown", event.target.value)}
@@ -1795,7 +1819,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
                   )
                 ) : (<>
                 <p className="text-[13px] font-medium text-[rgb(170,170,170)]">
-                  {state.restoredPreviewCandidate && !state.previewBatch
+                  {state.restoredPreviewCandidates.length > 0 && !state.previewBatch
                     ? "Your saved preview is ready. Confirm this identity or generate new candidates."
                     : `Generate up to four identity candidates and choose the image that should define how ${state.name} looks.`}
                 </p>
@@ -2120,20 +2144,45 @@ const FIELD_TEXT_INPUT_CLASS =
 const FIELD_LEAD_INPUT_CLASS =
   "mt-2 w-full rounded-[10px] border border-white/10 bg-[rgb(13,13,13)] px-3 py-2 text-[18px] font-bold leading-6 text-white outline-none focus:border-[rgb(253,95,194)]";
 
+// SPEC: required 只画星号（输入框自己带 aria-required）；error 显示在字段内，id 由
+//   fieldErrorId(fieldId) 给出，输入框用 aria-describedby 指向它、aria-invalid 标红。
 function Field({
   label,
   hint,
+  required,
+  error,
+  fieldId,
   children,
-}: Readonly<{ label: string; hint?: string; children: React.ReactNode }>) {
+}: Readonly<{ label: string; hint?: string; required?: boolean; error?: string; fieldId?: string; children: React.ReactNode }>) {
   return (
-    <label className="block rounded-[14px] bg-[rgb(36,36,36)] p-4 text-left text-white">
+    <label className={`block rounded-[14px] bg-[rgb(36,36,36)] p-4 text-left text-white${error ? " ring-1 ring-[rgb(255,120,120)]" : ""}`}>
       <span className="block text-[12px] font-bold uppercase leading-4 text-[rgb(114,113,112)]">
         {label}
+        {required && <span aria-hidden="true" className="ml-1 text-[rgb(253,95,194)]">*</span>}
       </span>
       {children}
+      {error && fieldId && (
+        <span className="mt-2 block text-[12px] font-semibold text-[rgb(255,150,150)]" id={fieldErrorId(fieldId)}>
+          {error}
+        </span>
+      )}
       {hint && <span className="mt-1 block text-[11px] font-medium text-[rgb(170,170,170)]">{hint}</span>}
     </label>
   );
+}
+
+function fieldErrorId(fieldId: string) {
+  return `${fieldId}-error`;
+}
+
+// Props for the control inside a Field: required state and, once shown, its error.
+function fieldControlProps(fieldId: string, error: string | undefined) {
+  return {
+    id: fieldId,
+    "aria-required": true,
+    "aria-invalid": error ? true : undefined,
+    "aria-describedby": error ? fieldErrorId(fieldId) : undefined,
+  } as const;
 }
 
 // INTENT: 不附 errorCode —— 它是内部枚举不是可查的单号，客服拿它什么也查不到。
@@ -2256,7 +2305,9 @@ export function parseWizardDraft(value: unknown): WizardState | null {
     draftId: draftString(value.draftId, 200),
     draftUpdatedAt: typeof value.draftUpdatedAt === "string" && Number.isFinite(Date.parse(value.draftUpdatedAt)) ? new Date(value.draftUpdatedAt).toISOString() : "",
     previewBatch: parseCreatePreviewBatch(value.previewBatch),
-    restoredPreviewCandidate: parseCreatePreviewCandidate(value.restoredPreviewCandidate),
+    restoredPreviewCandidates: Array.isArray(value.restoredPreviewCandidates)
+      ? value.restoredPreviewCandidates.flatMap((item) => parseCreatePreviewCandidate(item) ?? [])
+      : [],
     confirmedPreviewJobId: draftString(
       value.confirmedPreviewJobId,
       200,
@@ -2361,11 +2412,24 @@ function updateSoulDetail(markdown: string, label: string, value: string) {
   return [markdown.slice(0, section.start).trimEnd(), replacement, markdown.slice(section.end).trimStart()].filter(Boolean).join("\n\n");
 }
 
-function requiredPersonaMessage(state: WizardState) {
-  if (!state.description.trim()) return "Write the character promise before continuing.";
-  if (state.description.length > 1_000) return "Character promise must be 1,000 characters or fewer.";
-  if (!state.firstMessage.trim()) return "Write the character's first message before continuing.";
-  if (state.firstMessage.length > 4_000) return "First message must be 4,000 characters or fewer.";
-  if (state.detailsMarkdown.length > 24_000) return "Additional details must be 24,000 characters or fewer.";
-  return "";
+// SPEC: 每一步的字段错误一次全部算出，键是字段的 DOM id（按页面顺序），
+//   提交失败时全部显示并聚焦第一个。
+function stepFieldErrors(step: number, state: WizardState): Array<[string, string]> {
+  const errors: Array<[string, string | false]> = step === 0
+    ? [
+        ["create-field-name", state.name.trim().length < 2 && "Name needs at least 2 characters."],
+        ["create-field-age", (state.age < 18 || state.age > 120) && "Age must be between 18 and 120."],
+      ]
+    : step === 2
+      ? [
+          ["create-field-promise", !state.description.trim()
+            ? "Write the character promise."
+            : state.description.length > 1_000 && "Character promise must be 1,000 characters or fewer."],
+          ["create-field-first-message", !state.firstMessage.trim()
+            ? "Write the character's first message."
+            : state.firstMessage.length > 4_000 && "First message must be 4,000 characters or fewer."],
+          ["create-field-details", state.detailsMarkdown.length > 24_000 && "Additional details must be 24,000 characters or fewer."],
+        ]
+      : [];
+  return errors.flatMap(([id, message]) => message ? [[id, message] as [string, string]] : []);
 }
