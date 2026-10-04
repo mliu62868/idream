@@ -47,9 +47,6 @@ function productionVideoProfile(recipe: CharacterVideoProductionRecipe) {
   } as const;
 }
 
-export const PRODUCTION_DEFAULT_VIDEO_PROFILE = productionVideoProfile(
-  characterVideoProductionRecipe,
-);
 export const PRODUCTION_H3_VIDEO_PROFILE = productionVideoProfile(
   minimaxH3VideoProductionRecipe,
 );
@@ -103,10 +100,13 @@ type ProductionVideoProfileCandidate = {
 // INVARIANT: Main only advertises, quotes, or dispatches the exact route that
 // the Gen worker accepts. Operator pricing and labels remain independently
 // editable; execution-critical model, workflow, entitlement, and envelope do not.
+// SPEC: true for every published version of the default Character recipe
+// (base and video-options publication). Derived from the recipe catalog so
+// "is this the Character video route" never pins a profile version by hand.
 export function isDefaultProductionVideoProfile(
   profile: ProductionVideoProfileCandidate,
 ) {
-  return profileMatchesAuthority(profile, PRODUCTION_DEFAULT_VIDEO_PROFILE);
+  return productionVideoRecipeForProfile(profile) === characterVideoProductionRecipe;
 }
 
 export function productionVideoRecipeForProfile(
