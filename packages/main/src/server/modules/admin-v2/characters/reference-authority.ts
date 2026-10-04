@@ -3,11 +3,9 @@ import { prisma } from "@/server/lib/db";
 
 // SPEC: 角色参考图的唯一读取入口。权威 = active ReferenceSetRevision 的 references；
 //       anchors 由 reference.role 现算，不存第二份。
-// INTENT: 此前同一事实存在三处（CharacterVisualProfile.anchorAssetIds / .referenceAssetIds
-//       两个 Json 影子列 + 本表），调用方各自决定信哪个——有的「revision 优先、影子回退」，
-//       有的干脆只读影子（如 workspace.ts 的 anchorAssetIds）。裁决逻辑本身成了新的事实来源。
-//       付费生成主链路（service.ts referenceAuthority）从来只认本表，所以本表是权威，
-//       影子列待删（见 docs/superpowers/specs/2026-07-25-visual-reference-single-authority-design.md）。
+// INTENT: 消费方复用同一 active revision 权威，不自行选择旧副本或回退来源。
+//       候选图片库与已采用参考集分开；候选选择不自动改变有效 revision。
+//       见 docs/architecture/16-character-asset-studio-authority.md。
 
 // anchors 与付费主链路口径一致：primary_face + identity_anchor 才是身份锚点，
 // identity_reference 只是补充参考，不能当锚。

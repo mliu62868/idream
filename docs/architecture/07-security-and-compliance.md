@@ -1,8 +1,10 @@
 # 07 · 安全与合规
 
-更新日期：2026-09-01
+技术基线日期：2026-09-01；产品配置与文档边界校正：2026-10-04
 
-这是一个 **18+ 成人 AI 产品**。本文件的多数条目是**法律 / 平台政策强制**，不是可选优化。对齐 `BackendFeatureSpec §3.6/§4.4` 与 `PRD §6.1/§6.9`。
+这是一个 **18+ 成人 AI 产品**。本文定义年龄、权限、内容处置、隐私与安全机制；产品分类和公开承诺以 [内容策略](../product/CONTENT_POLICY.md) 为准。机制目标不代表当前 provider 已具备全部检测覆盖，具体法律义务由独立合规/法务确认。
+
+现行配置固定为 `MODERATION_PROVIDER=mock`，保留但不启用 `safety-gateway`；保留 `underage/minor/csam` 基础拦截与角色 `age >= 18`。本文不增加更换审核 provider、日常人工审批或真实分类器/上报管线的产品待办。实现与运行证据见 [当前覆盖](../product/CURRENT_FUNCTIONAL_COVERAGE.md)，不从历史设计推断已经上线。
 
 > ⚠️ 法律免责：本文档给出工程实现框架，不构成法律意见。CSAM/年龄验证/数据保护的具体义务因司法辖区而异，**上线前必须经法务确认**。
 
@@ -31,7 +33,7 @@
 
 ## 3. 内容审核流水线（P0，安全核心）
 
-**五层**（对齐 spec moderation layers）：
+以下**五类职责**保留机制设计（对齐 spec moderation layers），不要求现行配置新增五个服务/队列或启用自动深检；具体检测范围与举报/申诉处置分别核验：
 
 | 层 | 时机 | 实现 |
 | --- | --- | --- |
@@ -53,19 +55,18 @@
 5. **违法内容**。
 6. **规避尝试（evasion）**：拼写变体、绕过提示词等。
 
-### 3.2 CSAM 专项（法律强制，最高优先级）
-> **实现状态（2026-06-13）**：真实检测/上报**暂缓**为 TODO（见 12 暂缓项）。MVP 保留接口、moderation 事件、角色 age≥18 硬规则与关键词 mock；**面向公众上线前必须补齐真实检测 + NCMEC 上报**。设计不弱化。
-- **检测**：图像走 **哈希匹配（PhotoDNA/NCMEC 已知 CSAM 哈希）** + 专用未成年分类器；文本走未成年情境分类。
-- **生成与审核 provider 分离**（ADR-6）：生成可用 NSFW 托管，但 CSAM 检测用最强安全服务，独立密钥。
-- **命中处置**：立即拦截、保全证据（不可删）、冻结相关账户、**按法律向 NCMEC 等机构上报**（美国 18 U.S.C. §2258A 等义务，按辖区）。建立内部上报 runbook 与责任人。
-- 这条**不可因 MVP 简化而跳过**。即使用 mock provider，未成年硬规则（年龄字段、关键词）也必须生效。
+### 3.2 未成年人内容与独立合规职责
+
+未成年人/未成年外观内容仍是禁止项，mock 的 `underage/minor/csam` 基础拦截与角色年龄硬规则不可关闭。举报和异常处置保留明确对象、原因、授权与审计。
+
+2026-06-13 的真实分类、哈希匹配与机构上报提案属于历史设计，不是当前产品/工程应重新启动的流水线。涉未成年素材自动检测管线、证据保全与法定上报由独立合规/法务负责，具体义务依实际辖区确认；不将其列为现行产品功能缺口或据本文自动启用 `safety-gateway`。
 
 ### 3.3 创建前校验（CR-09）
-角色 submit 时校验：年龄≥18、禁止内容、真实人物、现有 IP、非自愿、规避。未过 → `rejected` + policyCode，可改后重交（状态机 spec §4.1）。
+角色创建/提交强制年龄≥18与基础输入拦截；完整政策类别见内容策略，不宣称 mock 能识别全部类别。未通过时给明确原因并保留可修改草稿；通过基础检查不自动公开，发布按 [后台规格 §4.1](../product/BackendFeatureSpec.md#41-character-lifecycle) 的现行权威进行。
 
 ## 4. 政策码（policyCode）表
 
-稳定机器码，贯穿 `moderation_events`/`moderation_reviews`/拦截错误 `CONTENT_BLOCKED.details.policy`：
+以下是历史分类码设计，不能直接当当前 API 枚举或检测覆盖。实际事件/错误映射以 Shared/provider 与 Main `src/server/lib/constants.ts` 为准：
 
 `UNDERAGE` · `CSAM_HASH_MATCH` · `DEEPFAKE` · `REAL_PERSON_LIKENESS` · `IP_INFRINGEMENT` · `NON_CONSENT` · `ILLEGAL` · `EVASION_ATTEMPT` · `PROHIBITED_OTHER` · `SELF_HARM` · `VIOLENCE_EXTREME`。
 
@@ -116,8 +117,8 @@ ADR-10 对照决策：
 
 - [ ] 首访必过 age gate 才见成人内容 / 用 Create·Generate·Chat。
 - [ ] 受限辖区需身份验证通过才能用受限路由。
-- [ ] 未成年/真人肖像/深伪/禁内容/规避命中都产生 `moderation_events`。
-- [ ] CSAM 检测 + 上报 runbook 就位（即便其余 MVP 简化）。
+- [ ] 既定 mock 的未成年人基础拦截产生正确拒绝与事件，政策分类不冒充已检测类别。
+- [ ] `safety-gateway` 保留但未启用，日常制作没有人工审批；独立合规职责不混入本产品流水线验收。
 - [ ] 角色 age 强制 ≥18。
 - [ ] 所有用户内容可举报、进队列、可处置；举报人匿名。
 - [ ] Premium 门服务端 entitlement 强制；客户端 plan 不可信。

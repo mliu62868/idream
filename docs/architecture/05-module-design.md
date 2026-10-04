@@ -1,194 +1,105 @@
 # 05 · 模块设计
 
-更新日期：2026-06-28
+更新日期：2026-10-04
 
-下面各"模块"是**逻辑业务域**，不是独立目录。as-built：除 admin 外的所有产品域都内聚在单一 mega-module `src/server/modules/ourdream/service.ts`，由 `dispatchV1` 按 resource 段分发到对应 handler，handler **直接用 Prisma**（无独立 repository/schema/types 层；Zod 校验内联在 handler 里）。admin 在 `modules/admin/`（service.ts + characters/），chat 已拆为独立服务 `packages/chat`。本文件给每个逻辑域的**职责、关键流程、关键不变量**；端点签名见 `BackendFeatureSpec §5`，数据见 03，跨域通用机制见 04/06。
+本文维护逻辑业务域的职责和协作边界，不重复 schema、API 清单或实现进度。产品契约见[后台规格](../product/BackendFeatureSpec.md)，持久化形状以 Main Prisma schema 为准；实际状态见[当前覆盖](../product/CURRENT_FUNCTIONAL_COVERAGE.md)。
 
-逻辑域依赖图见 01 §3。下面按 P0 顺序。
-
----
+Main 保存产品事实并执行领域命令；Admin 是独立 UI/BFF；Chat 执行不可变 Turn 快照；Gen 执行图片/视频 workflow。Main 的实现分布在 `modules/ourdream`、`modules/chat`、`modules/admin-v2` 等现有模块，不把历史目录或大文件形状当作新的分层要求。目录与依赖规则见[工程约定](09-project-structure.md)。
 
 ## 1. identity
 
-**职责**：注册/登录/登出/会话（委托 better-auth）、`/me` 聚合、角色与状态、匿名身份合并。
+负责 better-auth 注册、登录、会话、账号状态及匿名身份关联。Main 聚合用户、已购访问、权益、余额和年龄状态，所有者与权限在服务端校验；客户端状态不能代替授权。
 
-**关键流程**：
-- `auth/[...all]` 直接挂 better-auth handler；service 只读封装 `getAuthCtx()`（04 §6）。
-- `GET /me`：聚合 user + plan（来自 billing）+ entitlements + dreamcoin 余额（ledger 派生）+ age gate/verification 状态。**一个请求给前端全部门控信息**，避免多次往返。
-- **匿名合并**：用户注册时，把 cookie 中 `anonymousId` 关联的 age gate/分析事件回填到 `userId`（service `mergeAnonymous()`）。
-
-**不变量**：session 只读不在业务层伪造；role 升级仅 admin 经审计操作。
-
----
+恢复码、会话撤销、账号删除和跨账号隔离保留独立身份与回执。角色或权限变更通过有权命令与审计，不伪造会话。协议见[API 设计](04-api-design.md)与[安全架构](07-security-and-compliance.md)。
 
 ## 2. compliance（age gate + age verification）
 
-**职责**：记录 age gate 接受；按辖区/风险触发身份验证；维护验证状态与复验。
+首访成人内容前确认 age gate；身份年龄验证另按已确定辖区/风险规则触发、存储和复验。当前身份验证 provider 未发布、默认 `not_required`，不能从历史国家示例推断已启用。
 
-**关键流程**：
-- `POST /age-gate/accept`：写 `age_gate_acceptances`（带 country/sourcePath/policyVersion），同时 set cookie（proxy 读它做乐观放行）。匿名也可接受。
-- `GET /age-verification/status`：根据 `ctx`、`jurisdiction`（IP/账单地）、风险信号计算 `not_required|required|...`。
-- `POST /age-verification/sessions`：调 `AgeVerificationProvider.createSession()`，返回跳转 URL；落 `age_verifications(status=pending)`。
-- `POST /age-verification/webhooks/:provider`：验签 → 幂等 → 入队 `age.verification.webhook` → worker 更新状态（见 06）。
-
-**门控**：`requireAgeVerified` 守卫 chat/generate/create/explicit 内容（04 §6）。**这是合规硬约束**（07 §2）。
-
----
+当有效规则要求身份验证时，受限操作必须由服务端守卫拒绝未验证身份。provider、签名回调、结果与政策版本须独立取得资格；age gate 不代替真实身份验证。见[内容策略](../product/CONTENT_POLICY.md#6-分辖区年龄验证age-gate-vs-identity-verification)。
 
 ## 3. catalog（角色目录）
 
-**职责**：公开角色搜索/筛选/排序/分页、详情、标签 facets、like、统计。
+负责公开发现、详情、标签、搜索、排序、分页、收藏与可解释统计。公共读取使用有效 Character Serving/Release、受众和安全规则，不能只凭历史 `Character.status` 判断；私有角色依所有者授权使用。
 
-**关键流程**：
-- `GET /characters`：`listCharactersQuery`（04 §4）→ repository 按 `visibility=public AND status=approved` + filters + 排序键 + cursor。**搜索走 provider 感知 `nameMatch`**（03 §2）。
-- 排序：`popular`→`stats.likesCount`+period 窗口；`newest`→`createdAt`；`for_you`→ MVP 用 popular 占位，P2 接推荐；`following`→ join `follows`（需登录）。
-- `GET /characters/:id`：`toPublicDTO`（**剔除 `systemPrompt` 等内部字段**）；`after()` 自增 views（异步、去抖）。
-- `POST/DELETE /characters/:id/like`：`CharacterLike` upsert/delete + `character_stats.likesCount` 增量（事务）。
-- 缓存：列表/详情读模型用 `use cache` + `cacheTag('character:'+id)`/`'catalog'`；写操作 `revalidateTag`（ADR-10）。
-
-**不变量**：私有/未审角色绝不出现在公开列表；DTO 不泄漏内部字段。
-
----
+查询、稳定游标、缓存和 DTO 遵守公开读取边界，角色变更与发布使对应投影失效。内部 prompt、私有资料和运营证据不进入公共 DTO；无内容、无资格与读取失败分别表达。发布边界见[素材权威](16-character-asset-studio-authority.md)。
 
 ## 4. chat
 
-**职责**：Main 的 Chat Turn Ledger 保存 ChatSession、user message、唯一选中 assistant 回复、Scene、附件、额度与计费；`packages/chat` 的深模块内嵌执行 AgentRun、DSH 与 igrep。
+Main 保存 Session、产品 Turn、当前 attempt、selected reply、Scene、附件、用量与账目，向 Chat 交付不可变执行快照。Chat 内嵌 AgentRun、DSH/official igrep，只保留执行、恢复与未决 Main ACK 证据，不连接数据库。
 
-**关键流程**：
+终态候选经 Main exact-attempt CAS 接纳，才成为保存的回复；SSE 断流恢复原 attempt。编辑/重生成遵守最近 Turn 修订边界，旧结果不能覆盖新回复。长期记忆只派生自 Main committed Turns，删除/修订后的隔离与重建不召回已撤销来源。
 
-- `POST /chat/sessions`：Main 校验 Character 可见性和 immutable content/Release pin，创建 `RecentChat`。
-- `POST /chat/sessions/:id/messages`：Main 做 owner、输入策略、额度与幂等检查，在一个事务写 user + pending assistant Turn，再签名执行快照给 Chat。
-- Chat 原子写 `input.json`，调用 DSH；token 经 Redis/SSE 暂态传输。
-- DSH 图片工具进入 Main `ToolEffectPort`；Main reserve/admit Generation，Gen 执行，Main settle/refund。
-- Chat terminal candidate 必须通过 Main exact-attempt CAS；收到 durable ACK 后发 `done` 并删除成功 run。Main 另行异步投影已提交 Turn 到 memory。
-- 编辑/重生成增加 `attempt`，保留一个产品回复 identity；历史和附件只展示当前选中 attempt。
-- 删除会话由 Main 删除产品 Turn；Chat 不中断新对话，但在 rebuild cutover 前关闭该关系的长期记忆。账号删除另行精确清理 AgentRun 和 DSH workspace。
-
-**不变量**：Chat 不连接数据库，不保存余额/usage ledger，不把 DSH event、SSE token、workspace transcript 或旧 attempt 当作产品消息。相同 ToolEffect replay 不得重复生成或扣费。
-
----
+Product Action 经 Main 接纳和计费，再由 Gen/Voice 交付；群聊、Input、Clip 与 Call 各有身份、权限和计量边界。执行与恢复协议只在[ADR-21](21-companion-chat-deep-runtime.md)维护，用户行为见[Chat 契约](../product/CHAT_SERVICE_PRD.md)。
 
 ## 5. creator
 
-**职责**：多步草稿、tag 管理、预览生成、提交审核、发布/私有、编辑/复制/删除。
+负责完整多步创建、可恢复草稿、Soul/外观/声音、视觉候选与身份确认、标签、编辑、复制和删除。Quick Start 只预填，不能代替完整创建；预览使用统一 Generation 执行与终态投影，不另建 provider 路径。
 
-**关键流程**：
-- `POST /character-drafts` + `PATCH :id`：按 `step` 渐进保存（gender→style→appearance→hair→body→name→advanced→tags），immutable 更新。
-- `POST :id/preview`：同事务创建 `CharacterPreviewJob` + cost=0 的 `GenerationJob(sourceType=character_preview)` + 首个 Attempt/dispatch Outbox；统一 `ai.image.generate` worker 生成，正式 terminal finalizer 按 source 投影 `previewJobId`/asset。
-- `POST :id/submit`：**创建前校验**（年龄≥18、禁止内容、真实人物/IP/非自愿/规避，见 07 §3）→ 建 `Character(status=draft→pending_review)` + `CharacterSubmission` → 入队输入审核 → 私有可直接 `approved` 自用，公开需过审。
-- `PATCH/DELETE /characters/:id`：`requireOwner`；删除=archive（软删）。
+私有保存、创作交接、发布候选和线上 Serving 是不同事实。日常角色和图片经既定基础检查后准备并显式发布，无人工评分或逐图批准；草稿变化不改线上内容或已固定的会话版本。角色 age≥18 与基础未成年人拦截不可关闭。
 
-**不变量**：公开可见要求 `approved`；私有草稿可先存，但聊天/生成前仍需输入审核（spec 4.1）。
-
----
+图片库、身份/reference 来源、独立复制、依赖归档、三槽位编排与发布/回滚见[素材权威](16-character-asset-studio-authority.md)和[运营指南](../product/CHARACTER_ASSET_STUDIO_OPERATIONS_GUIDE.md)。
 
 ## 6. generation（图片/视频 + presets）
 
-**职责**：异步生成任务、preset 库（built-in/user/community）、Premium prompt 门、dreamcoin 预留结算、结果资产。
+Main 接受前固定资格、角色/来源、recipe/profile/workflow、报价与幂等身份，在事务内预留费用并提交 Request/Attempt 与 dispatch Outbox。Gen 根据精确 workflow pins 调用 backend，先保存不可变 TerminalRecord，再重投 Main durable ingest；不直写产品数据库或余额。
 
-**关键流程**（详见 06 §6）：
-- `POST /generation/jobs`：校验 mode/character|Freeplay/controls → **Premium 门**（`custom_prompt`/`negative_prompt`/`video_gen` 需 entitlement）→ **dreamcoin 预留**（reserve，08 §4）→ 落 `GenerationJob(queued)` → 入队 `generation.image|video`。
-- worker：输入审核 → 调 `ImageModel/VideoModel` → 输出审核 → 落 `MediaAsset`（私有 blob）→ **结算 dreamcoin**（settle/refund）→ job `completed`。
-- `GET /generation/jobs/:id`：轮询状态/进度；失败给 `errorCode` + 是否可重试 + 是否已退款。
-- presets：`GET /generation/presets?type=&scope=&category=&q=`；built_in 为 seed 数据，user/community 为 UGC（ADR-10 决策：二者第一天共存，`scope` 区分）。
+Main 从终态记录投影 Artifact、Delivery 与 Settlement；provider 成功不等于用户收到作品。重放不再次调用 provider 或扣费；unknown 先 reconcile，明确失败/部分交付按原报价唯一退款。协议见[深模块边界](17-deep-module-authority-boundaries.md)和[异步执行](06-async-jobs-and-ai.md)。
 
-**不变量**：先 reserve 再 running；release 资产仅在输出审核通过后；失败/拦截要 refund 或标记 blocked（不扣费）。video 为 P1（接口同构，按 entitlement 开）。
-
----
+Create、Edit、Enhance、Chat Animate 与 Generate 序列各保留 source、控制和交付契约；Video 按独立能力/权益开放。built-in/user/community presets 保留所有者与定义版本。产品结果见[图片契约](../product/CHARACTER_IMAGE_GENERATION_SYSTEM.md)，实际 backend 配置见[Gen 说明](../../packages/gen/README.md)。
 
 ## 7. media（图库）
 
-**职责**：Images/Videos/Liked 浏览、filter、bulk manage、download、delete、like。
+负责资产列表、筛选、收藏、合集、批量管理、播放/下载与删除。资产所有者、来源、可见性、公开资格和文件授权分别判断；个人网格只读本人资产，社区公开读取另用有效公开规则。
 
-**关键流程**：
-- `GET /media?type=image|video&liked=1&cursor=`：`requireOwner`（只看自己的）；签名 URL 由 `BlobStore.signGetUrl` 现签（ADR-8）。
-- `POST/DELETE /media/:id/like`、`POST /media/bulk`（批量删/改可见性/加 collection）、`DELETE /media/:id`（软删 + 异步清对象存储）、`GET /media/:id/download`（短时签名 URL）。
-
-**不变量**：媒体私有；签名 URL 短 TTL；删除走软删 + 后台清理 job。
-
----
+签名文件 URL 有限时效并可按原权限恢复，不能变成永久公开地址。删除/归档先检查依赖，再按领域命令与异步清理收敛；不得复活已删除来源。到期不锁回既有交付，删资产不自动退款。存储与账务见[运行与恢复](10-operations.md)及[经济契约](../product/ECONOMY_AND_PRICING.md)。
 
 ## 8. billing（订阅/权益/dreamcoin）
 
-见 [08-billing-and-entitlements.md](./08-billing-and-entitlements.md)（独立成篇）。核心：plans → checkout → webhook 幂等 → subscription → entitlements 派生 → dreamcoin ledger。
+一次性加密预付访问与独立 Coin Store 充值分别固定 offer、checkout 和 provider confirmation。唯一入账/激活后派生权益，不自动续费；物理 `Subscription` 名称不改变预付产品语义。
 
----
+报价、append-only ledger、正常访问退款、精确 grant 冲销/恢复、人工调币与普通到期分别维护。唯一工程协议见[计费与权益](08-billing-and-entitlements.md)，价格与承诺见[经济契约](../product/ECONOMY_AND_PRICING.md)。
 
 ## 9. safety（信任与安全）
 
-见 [07-security-and-compliance.md](./07-security-and-compliance.md) §3–5。核心：审核事件、举报、审核队列、申诉、政策版本。
+固定 `MODERATION_PROVIDER=mock`，保留 `underage/minor/csam` 与角色 age≥18，保留但不启用 safety-gateway。输入/输出基础检测记录真实拒绝与事件，不宣称覆盖全部语义分类，也不新增日常人工发布关卡。
 
-**模块职责**：暴露 `moderation.input/output()`（供 chat/creator/generation 调用）、`reports.submit()`、`appeals.submit()`、`admin.queue()`/`admin.decision()`。
-
----
+举报、处置、申诉与政策版本独立维护；敏感明文仅在逐目标 consent/Legal Hold 及每次访问审计下可读。内容规则见[内容策略](../product/CONTENT_POLICY.md)，工程隔离见[安全架构](07-security-and-compliance.md)。
 
 ## 10. library（My AI）
 
-**职责**：聚合读模型，拼 `BackendFeatureSpec §5.6` 的各 tab。
+聚合本人 Recent/Characters/Created/Presets/Media 与已开放的 Group Chats/Packs，不持有第二套资产或会话权威。继续、管理和删除调用所属领域命令，状态与数量来自真实查询。
 
-**关键流程**：纯读聚合，**不拥有数据**，调其它模块 service：
-- `recent` = Main `RecentChat` + 最近角色。
-- `characters` = 用户可见/自有角色。
-- `created` = `creatorId=me`。
-- `group-chats`/`packs` = P1（先返回空集 + Create CTA，UI 已具备空态）。
-- `presets` = `generation_presets(ownerId=me)`。
-- `media` 入口复用 media 模块。
-
-**不变量**：library 只读；跨模块只调 service 不碰他人 repository（01 §3）。
-
----
+未发布能力不展示空的死入口；既有深链给准确不可用原因和返回路径。本人空库、读取失败、官方灵感与既有 Grant 访问权分开。完整任务见[功能地图](../product/ProductFeatureMap.md)与[主站验收](../product/MAIN_SITE_HEALTH_CHECKLIST.md)。
 
 ## 11. profile & account
 
-**职责**：资料、偏好、通知、语言、兑换码、推荐、账号管理（登出全部/删号）。
+聚合本人资料、偏好、通知、兑换/推荐、余额与预付访问。语言入口仅在真实 UI 字典、路由内容和 locale persistence 齐备后发布；页面不借静态选项承诺能力。
 
-**关键流程**：
-- `GET/PATCH /profile`、`/profile/preferences`、`/profile/language` → `user_preferences`。
-- `POST /redeem-codes/redeem`：校验 `codeHash` + 未过期 + 未超限 + 该用户未兑换 → 事务写 `redeem_code_redemptions` + 入队 `reward.ledger`（发 dreamcoin/entitlement）。幂等（唯一约束）。
-- `GET /referrals` / `POST /referrals/invite`：生成/读 `referrals` code 与进度；被邀请人转化时入队 `reward.ledger`。
-- `POST /account/sign-out-all`：吊销该用户全部 session。
-- `POST /account/delete-request`：进入删号流程（标记 + 宽限期 + 异步清理，隐私见 07 §6）。
-
-**不变量**：奖励发放经 `reward.ledger` 队列**恰好一次**（06 §8）；兑换/推荐有防滥用限流。
-
----
+兑换/推荐按已接受资格和稳定身份唯一追加奖励；登出全部撤销原会话。账号删除处理 Main 来源、公开/私有资产、Chat AgentRun/DSH 派生与必要保留记录，提供查询和恢复，不以一次按钮成功代表清理完成。工程要求见[安全架构](07-security-and-compliance.md)与[ADR-21](21-companion-chat-deep-runtime.md)。
 
 ## 12. feed & community（P1）
 
-**职责**：推荐流 + 互动；榜单/创作者/collections。
+完整目标包括 Feed 发现和互动、榜单、创作者/Follow/Studio、合集、Packs、Comics 与创作者经济。公开对象、来源/Remix 权利、购买固定版本、immutable Grant、收益和 settlement 分别维护，不能用 UI 骨架代替结果。
 
-**关键流程**：
-- `GET /feed`（cursor）、`/feed/restart`、`feed/items/:id/{like,share,remix,report}`。remix → 起草草稿或生成流。
-- `community/leaderboards`（dreamers/characters/collections，按 release/gender/style filter）、`community/collections`、`users/:id/follow`。
-
-**MVP 取舍**（ADR-10 对照）：UI 视觉已具备；后台 P1 先实现 **API + 上报/分享/like 骨架**（不泄漏举报人），推荐与榜单算法 P2。
-
----
+读取及命令调用现行 Main 领域入口；权限、费用、幂等与恢复见[后台规格](../product/BackendFeatureSpec.md)。各能力实际证据由[当前覆盖](../product/CURRENT_FUNCTIONAL_COVERAGE.md#资产与社区)维护，不在此复制 MVP 顺序或待开发状态。
 
 ## 13. seo（路由内容）
 
-**职责**：169 条 RoutePage 运营库存的 metadata 与 CMS 发布；库存条目本身不构成公开正文权威。
+RoutePage 运营库存不构成公开正文权威。只有有效 published authority 参与公开 SSR、metadata 与 sitemap，更新使对应缓存失效；专用产品页由精确 registry 授权，其余无公开资格的路径返回 404。
 
-**关键流程**：`route_pages` 存 path/template/title/description/canonical/contentStatus/indexingStatus/body；只有满足版本化 published authority 的记录才参与公开 SSR、metadata 与 sitemap，`use cache` + tag 失效。当前 169 条库存均为 `template/noindex`、published CMS 为 0；三个真正撰写的静态文章和专用产品页由精确正向 registry 授权，其余泛化路径返回 404。文章正文从“库存模板”升级为“published”是内容运营任务（PRD SE-06）。
-
----
+内容运营发布真实正文与版本，库存/发布数量从实际查询取得，具日期证据见[当前覆盖](../product/CURRENT_FUNCTIONAL_COVERAGE.md#发现与公开内容)。不以模板数量证明公开内容完整。
 
 ## 14. analytics（埋点）
 
-见 09 §可观测性。`events.track(name, props, ctx)` 经 `after()` 异步落 `analytics_events` 并/或外发；覆盖 PRD §9 全部核心事件。
+分析事件作行为观察；经营指标使用 canonical Product Event、eligible fact 与版本化 Metric Registry。埋点发送成功不能代替持久事实或宣称全部已验收，客户端通用 track 不签发服务端成功。
 
----
+来源/信任、唯一事件、投影恢复、cohort 成熟度、认证与实验边界见[运营系统 ADR](15-admin-operating-system-authority-adr.md)；产品口径见[后台规格](../product/BackendFeatureSpec.md#8-经营指标与实验)，日志约定见[工程约定](09-project-structure.md#6-可观测性约定埋点日志)。
 
-## 15. admin（内部审核后台）
+## 15. admin（运营控制面）
 
-**职责**：审核队列、用户/内容/任务管理、人工决定、封禁/下架/退款、生成配置、角色 CMS、产品配置和运营排障。as-built：admin 是独立模块 `modules/admin/`（`service.ts` + `characters/`：official/templates/tags/review/assist），权限在 `server/admin`（permissions/effective-permissions/dev-login），经 `dispatchV1` 的 `admin` resource → `dispatchAdmin` 进入。完整产品方案见 [ADMIN_CONSOLE_PLAN.md](../product/ADMIN_CONSOLE_PLAN.md)。
+负责角色/素材创作与发布、生成排障、Case/Incident、用户、计费、配置、指标、举报/申诉和审计。入口见[Admin 导航](../product/ADMIN_NAVIGATION.md)。
 
-**关键流程**：
-- `GET /admin/moderation/queue`：按 `content_reports(status,priority)` 排序（未成年=优先级 1，可即时隐藏目标）。
-- `POST /admin/moderation/:id/decision`：写 `moderation_reviews` + 改目标状态（角色→removed、媒体→blocked、用户→suspended）+ 记 policyCode + 审计。
-- `GET /admin/generation/jobs/:id`：展示 generation job timeline、profile/template version、provider error、ledger/refund 和 media 状态。
-- `POST /admin/generation/model-profiles/:id/publish`：发布模型 profile 新版本，写审计，触发 `generation/config` 读取新 active profile。
-- `POST /admin/billing/adjustments`：人工补偿只能写 `dreamcoin_ledger` adjustment，不允许直接覆盖余额。
-- 仅 `requireAdmin`/moderator/细粒度 permission；所有写操作进 `AdminAuditLog`。
+独立 `@idream/admin` 仅有 UI/BFF；Main `/api/v2/admin/*` 经 Shared manifest、签名 actor、细粒度权限与领域命令执行。有效 legacy 调用由其现有入口承接，不另维护平行 API。事务、确认、版本锁、未知接纳与恢复见[后台契约](../product/BackendFeatureSpec.md#510-adminops-control-plane)和[深模块边界](17-deep-module-authority-boundaries.md)。
 
-**MVP**：admin 是受保护的内部 Route Handlers + `/admin` 极简页面。P0 目标是"举报能进队列、能被处置；生成任务能排障；模型 profile/prompt template/preset 能配置发布；用户、ledger、订阅能查询且高风险操作可审计"。Prisma Studio 只能作为本地开发辅助，不能作为处理真实用户和资金相关操作的生产后台。
+运营从信号进入对象、执行有权命令、读回实际结果并核验费用/审计。人工补偿不覆盖余额或冒充 provider 退款；草稿采用不改变 Serving；工单关闭不代替副作用完成。实际用户/运营验收见[Admin 清单](../product/ADMIN_PRODUCT_HEALTH_CHECKLIST.md)，数据库开发工具不承担生产运营。

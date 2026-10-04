@@ -4,7 +4,7 @@
 
 状态：已采纳；本地代码态完成，生产切换仍受观察 Gate 约束
 
-关联方案：[`ADMIN_CONSOLE_FIRST_PRINCIPLES_REMEDIATION_PLAN.md`](../product/ADMIN_CONSOLE_FIRST_PRINCIPLES_REMEDIATION_PLAN.md)
+产品契约：[后台规格](../product/BackendFeatureSpec.md)；运行证据与待办分别见[当前覆盖](../product/CURRENT_FUNCTIONAL_COVERAGE.md)和[剩余工作](../product/REMAINING_WORK_EXECUTION_PLAN.md)。
 
 ## Context
 

@@ -1,6 +1,6 @@
 "use client";
 
-// SPEC: 公告/banner 后台面板（ADMIN_CONSOLE_PLAN §3）。新建 / 启停 / 删除，写后 refetch。
+// SPEC: 公告/banner 后台面板（BackendFeatureSpec 公告契约）。新建 / 启停 / 删除，写后 refetch。
 // INTENT: 自取数，写入口跟随实际权限。启停/删除经 inline typed confirmation。
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2, Pencil, Plus, RefreshCcw, Search, Trash2 } from "lucide-react";

@@ -2,7 +2,7 @@
 
 更新日期：2026-09-09
 状态：Accepted / Implemented
-产品说明：[联合评审方案](../product/CHARACTER_ASSET_STUDIO_REVIEW.md)
+产品说明：[角色图片契约](../product/CHARACTER_IMAGE_GENERATION_SYSTEM.md)
 运营流程：[Character Asset Studio 运营手册](../product/CHARACTER_ASSET_STUDIO_OPERATIONS_GUIDE.md)
 
 ## 1. 决策

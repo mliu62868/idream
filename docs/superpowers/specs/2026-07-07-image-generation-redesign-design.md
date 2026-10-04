@@ -1,310 +1,53 @@
-# 生图系统第一性原理重构 —— 设计方案
+# FP8 → BF16 与 MPS bring-up 原始记录
 
-> **产品体验部分已被 `docs/product/CHARACTER_IMAGE_GENERATION_SYSTEM.md` 收敛取代。** 本文继续作为 workflow-native 底座、模型 bring-up 与 P1–P5 实现历史的技术记录。
+记录日期：2026-07-07。
 
-更新日期：2026-07-07
-状态：设计草案 / 待用户评审（尚未实现）
-适用范围：生图底座抽象（ComfyUI + sdcpp）、运营配置台（底座/模版/角色/预生图）、角色一致性、聊天 Agent 生图能力。
+本文保留当时 RedCraft Krea2 与 Qwen Rapid-AIO v19 的格式检查、转换和本机实图观察。当前模型、路由和运行命令以 [Gen 运行说明](../../../packages/gen/README.md) 为准；产品目标见 [角色图片契约](../../product/CHARACTER_IMAGE_GENERATION_SYSTEM.md)。
 
-> 本文是 SSoT 草案。它**吸收并收敛**已有的三份文档，不推翻其中的好思想：
-> - `docs/product/GENERATION_ADMIN_OPERATIONS_REDESIGN.md`（运营对象模型 Profile/Recipe/Batch/Asset/Placement/Metric，很好，保留）
-> - `docs/product/CHARACTER_CONSISTENT_IMAGE_GENERATION_PRD.md`（CharacterVisualProfile 一致性，保留但修正若干 smell）
-> - `docs/product/CHARACTER_IMAGE_GENERATION_FLOW_BLUEPRINT.md`（用户体验/文案，保留）
+## 环境与证据范围
 
----
+当时使用 ComfyUI Desktop `v0.27.0+20`、Apple Silicon MPS，活动实例位于 `~/ComfyUI-Installs/idream (1)/ComfyUI`，共享模型目录为 `~/ComfyUI-Shared/models/`。MPS 实测请求发往本机 `8188`；CPU 对照使用临时 headless `--cpu` 实例 `8199`。
 
-## 0. 一句话结论
+原记录没有绑定 source fingerprint、request/artifact ID、文件 hash 或完整原始日志。以下耗时、文件大小和视觉判断保留为当日观察，不能证明当前服务资格、受控性能分位数、其他模型兼容性或完整身份一致性。当前仓库的 [转换器](../../../packages/gen/scripts/dequant_fp8_to_bf16.py) 可用于核对格式处理规则，本次文档清理未重新执行转换或生成。
 
-**"生图模版"在第一性原理上 = 一张带类型化输入槽（typed input slots）的 workflow 图，绑定到一个后端（backend）。** 运营选一张图、填槽位；工程维护图；聊天 Agent、角色预生图、用户生图都复用同一套 `Backend → Workflow → Profile` 契约。围绕这一句话，同时治好三个根因问题。
+## MPS dtype 错误与 CPU 对照
 
----
+RedCraft Krea2 workflow 在 MPS 的 KSampler 节点抛出：
 
-## 1. 现状诊断（三个根因问题）
-
-代码远比"从零"要成熟，问题是**抽象拧巴 + 对象只建了一半 + Agent 是雏形**。
-
-### 问题 1：生图底座抽象拧巴 —— 用 OpenAI 图片 API 去套 ComfyUI（最深的债）
-
-现状链路：
-```
-gen worker (IMAGE_PROVIDER=pipeline) → OpenAI 兼容 HTTP 网关 → 真实 runner
-                                        ├─ sdcpp-openai-image-server.ts  :8091 → sd-cli
-                                        └─ comfyui-openai-image-server.ts :8092 → ComfyUI :8191
-```
-`/images/generations` 只能表达 `prompt/width/height/steps/seed`，网关把这些**注入到 workflow 里固定的 node id**。代价：
-
-- ComfyUI 的价值就是**任意节点图**。塞进扁平 OpenAI 请求 = 把它阉割成只会 text2img 的黑盒。**Qwen-Image-Edit（编辑模型，必须吃参考图+编辑指令）、角色一致性（IPAdapter/reference 节点、LoRA 栈、denoise 控制）根本无法表达。**
-- 两个 bespoke HTTP server 各自重实现 OpenAI 路由/鉴权/健康检查 = 重复面。
-- **实测证据**：RedCraft Krea2 在 sdcpp/Apple Silicon 上全白图（fp8/Metal VAE 问题），确认它是 ComfyUI FP8 checkpoint；在 ComfyUI split-node workflow 下跑通、20 样本 17/20（0.85）达标，却因"等一个 hosted gateway"被永久 `draft+disabled`。**那个 gateway 就是本机 ComfyUI Desktop。**
-
-### 问题 2：运营配置对象只建了一半
-
-redesign 文档的 Profile/Recipe/Batch/Asset/Placement/Metric 词汇，代码里：
-- Recipe 塌缩进 `GenerationPromptTemplate`（不是一等对象）。
-- `GenerationModelProfile` 把 runner 参数、LoRA JSON、文件路径、安全字段混在一页 → 运营得像工程师。
-- `CharacterVisualProfile` 有 schema 无 admin UI。
-- per-character 预生图没有专属入口（只能去 Production Studio 手填 purpose+target）。
-- Metric 回路完全没有；Batch 成本是 `0` stub。
-
-### 问题 3：聊天 Agent 生图是雏形
-
-单个硬编码工具 `generate_image_async` + 正则关键字门 + "文本 XOR 图片"（出图就不能同时说话）+ Agent 看不见自己生成的图。加一个能力要手改 `agent-tools.ts` + `generate.ts` 两个文件。无工具注册表、无按角色/档位配置。
-
----
-
-## 2. 第一性原理对象模型（统一契约）
-
-从"团队要稳定生产并运营图片"倒推，定义一条自顶向下、层层复用的契约链。**每一层职责单一、边界清晰、可独立测试。**
-
-```
-Backend(底座)  ──has──▶  Workflow(生图模版)  ──referenced by──▶  Profile(可发布能力)
-   runner实例                 图+输入槽+能力位                  默认槽值+灰度+权益+定价
-                                                                     ▲
-                                     Recipe(prompt+neg+preset包) ────┘  (可选，复用文案)
-                                                                     ▲
-        Character ──has active──▶ VisualPassport(身份护照) ──feeds──┘  (角色一致性槽值)
-                                                                     ▲
-        Batch(运营生产任务) / ChatAgentTool(聊天能力) ──都调用──────┘
-                                     │
-                                     ▼
-                              Asset ──placed──▶ Placement       Metric(表现回路)
-```
-
-### 2.1 各对象定义
-
-| 对象 | 是什么 | 谁维护 | 新建/改造 |
-|------|--------|--------|-----------|
-| **Backend 底座** | 一个 runner 实例 + 健康。类型 `comfyui`（直连本机 Desktop `/prompt`）/ `sdcpp`（sd-cli 快速通道）/ `external`（远端 OpenAI 兼容，可选）。配置：endpoint 或 binary 路径、model root、并发、健康探针。 | 工程 seed | **新建一等对象**（现在藏在 env 里） |
-| **Workflow 生图模版** | 版本化的**图 + 声明式输入槽 + 能力位**，绑定一个 Backend。ComfyUI：graph JSON + `slot→{nodeId,field}` 映射表；sdcpp：sd-cli 参数模版。**两个目标模型就活在这里。** | 工程 seed（运营只读/选用） | **新建**（现在是硬编码 node id + env） |
-| **Profile 可发布能力** | Workflow + 默认槽值 + 灰度 + 权益门 + 定价 + capabilities。运营发布/回滚的单位。 | 运营发布 | 改造 `GenerationModelProfile`：**改为引用 Workflow，不再内嵌 runner 参数** |
-| **Recipe** | prompt + negative + preset 的可复用命名组合，引用 Profile/Workflow。 | 运营 | 从 `GenerationPromptTemplate` 提升语义（对象可沿用，补 metric） |
-| **Preset** | 背景/姿势/服装等槽位预设。 | 运营 | 沿用 `GenerationPreset` |
-| **VisualPassport 身份护照** | = `CharacterVisualProfile`。角色身份 SoT。**修正：结构化 traits 是唯一真源，`identityPrompt` 降级为带 hash 的派生缓存。** anchors/references/seed/adapterRefs（LoRA/IPAdapter）。 | 运营/用户创建向导 | 沿用 schema + **新建 admin 编辑 UI**；修正真源关系 |
-| **Batch 生产任务** | 一次运营批量出图（角色封面/Feed/首页/SEO/活动）。 | 运营 | 沿用 `ContentProductionBatch` + **新建 per-character 面板** |
-| **Asset / Placement** | 可复用素材 + 投放位。 | 运营 | 沿用 |
-| **Metric 表现** | profile/recipe/workflow/placement 的点击/转化/Remix/失败成本 rollup。 | 系统 | **新建** |
-| **ChatAgentTool** | 聊天能力注册表项：`{name, description, intentHints, argsSchema, profileRef, enabledFor}`，映射到一个 Profile。 | 工程注册 + 运营开关 | **新建注册表**（现在单硬编码工具） |
-
-### 2.2 关键设计裁决（修正已有文档的 smell）
-
-1. **traits = 真源，identityPrompt = 派生缓存**：护照存结构化 traits；`identityPrompt` 由版本化 assembler 生成并存 `assembledPromptHash`，避免两者漂移。
-2. **护照身份版本（不可变）与参考池（可变）分离**：`referenceAssetIds` 池可增删而不铸新版本；只有影响身份的改动才铸新 `active` 版本 → 抑制版本爆炸。
-3. **一致性模式（Strict/Balanced/Creative）必须机械化**：workflow-native + Qwen-Edit/IPAdapter 后，三档真正映射到 reference weight / denoise / seed 锁定，而非文本 XOR 之下三档趋同（现状假承诺）。
-4. **prompt 分层收敛为一套**：文档里 5/7/8 层不一致 → 定为 **5 层**：Identity / Scene / Style / Continuity / Quality。用户输入只填 Scene。
-5. **用户面统一术语**："身份护照 / Identity Lock"，代码内部叫 `CharacterVisualProfile`；用户 UI 禁止出现 IPAdapter/LoRA/CFG/VAE。
-
----
-
-## 3. 底座架构（workflow-native，去 shim）
-
-### 3.1 统一 GenBackend 接口（`packages/gen`）
-
-```ts
-// SPEC: 所有生图后端的统一契约。gen worker 只认这个接口，不再认 OpenAI HTTP shim。
-// INTENT: 把"如何生成"下沉到 Workflow 的槽位绑定，backend 只负责执行+取回。
-// INVARIANTS: backend 不碰 DB、不结算；只产出 bytes/handle。
-interface GenBackend {
-  readonly id: string
-  readonly kind: "comfyui" | "sdcpp" | "external"
-  capabilities(): Capabilities            // textToImage/img2img/referenceImages/stableSeed/lora/edit
-  submit(job: ResolvedGenJob): Promise<BackendHandle>
-  poll(handle: BackendHandle): Promise<BackendResult>   // { status, assets[] }
-  health(): Promise<BackendHealth>
-}
-```
-
-`ResolvedGenJob` = 一个 Workflow + 一组已解析槽值（prompt/neg/w/h/seed/refImages/denoise/lora…）+ 请求元数据。
-
-### 3.2 两个后端实现
-
-- **ComfyUIBackend**：加载 Workflow 的 graph JSON，按 Workflow **声明的 `slot→{nodeId,field}` 映射**把槽值写进节点输入（**不再硬编码 node id**）→ `POST /prompt` → 轮询 `/history/{id}` → `GET /view` 取图。直连本机 ComfyUI Desktop 的 API URL（见 §4）。
-- **SdcppBackend**：按 Workflow 的参数模版把槽值绑成 sd-cli 参数 → spawn → 读 PNG。保留为**简单 text2img 快速通道**（Z-Image/Pornmaster turbo，8 步、cfg=1，秒级）。
-
-**删除** `sdcpp-openai-image-server.ts` / `comfyui-openai-image-server.ts` 两个 OpenAI 兼容 server。gen worker 直调 backend。`IMAGE_PROVIDER=pipeline→external` 仅保留给"接远端 OpenAI 兼容 API"这一真实用途。
-
-### 3.3 Workflow 描述符（"生图模版"的落地形态）
-
-```jsonc
-{
-  "workflowKey": "redcraft-krea2-txt2img",
-  "backendKind": "comfyui",
-  "version": 3,
-  "capabilities": ["textToImage", "stableSeed"],
-  "graphPath": "workflows/redcraft-krea2-comfyui-text.json",
-  "inputs": [                              // 声明式输入槽 —— 运营看到的就是这些
-    { "key": "prompt",   "type": "text",  "target": { "nodeId": "6",  "field": "text" } },
-    { "key": "negative", "type": "text",  "target": { "nodeId": "7",  "field": "text" } },
-    { "key": "width",    "type": "int",   "target": { "nodeId": "5",  "field": "width" },  "default": 832 },
-    { "key": "height",   "type": "int",   "target": { "nodeId": "5",  "field": "height" }, "default": 1216 },
-    { "key": "seed",     "type": "int",   "target": { "nodeId": "3",  "field": "seed" } },
-    { "key": "steps",    "type": "int",   "target": { "nodeId": "3",  "field": "steps" }, "default": 25 }
-  ]
-}
-```
-这一个结构同时解决：ComfyUI 黑盒问题（图是可见的、槽是声明的）+ 运营配置问题（运营填槽而非读底层字段）。sdcpp 的 `target` 换成 `{ "argFlag": "--steps" }`。
-
----
-
-## 4. 两个目标模型端到端跑通（本机 ComfyUI Desktop）
-
-**本机现状**：ComfyUI Desktop 已装，活动实例 `~/ComfyUI-Installs/idream (1)/ComfyUI`（v0.27.0+20，mac-mps，`--enable-manager`），模型共享目录 `~/ComfyUI-Shared/models/`。
-
-### 4.1 RedCraft OR2 INT8（NSFW，已下载）—— ✅ 依赖全齐，零下载（2026-07-07 探测确认）
-- workflow 引用的 3 个模型全部在盘：`diffusion_models/redcraftKREA2RedMix_krea2Edition.safetensors`、`text_encoders/qwen3vl_4b_fp8_scaled.safetensors`、`vae/qwen_image_vae.safetensors`。
-- Backend=`comfyui`，Workflow=`redcraft-krea2-txt2img`（`packages/gen/workflows/redcraft-krea2-comfyui-text.json` 已存在、已 17/20 达标）。
-- **动作**：启动本机 Desktop 的 ComfyUI server → 捕获 API URL 写入 Backend 配置 → **把 Profile 从 `draft/disabled` 解禁为 `active`**（无需补依赖）。
-- 再补一张 `redcraft-krea2-ref`（IPAdapter/reference 变体）供角色一致性用。
-
-### 4.2 Qwen-Image-Edit-Rapid-AIO（尚未下载）
-- AIO = all-in-one 单文件，从 HuggingFace `Phr00t/Qwen-Image-Edit-Rapid-AIO` 下载到 `~/ComfyUI-Shared/models/checkpoints/`（或 diffusion_models，按 AIO 打包方式）。
-- Backend=`comfyui`，Workflow=`qwen-image-edit-img2img`（以 Desktop 自带 blueprint `Image Edit (Qwen 2511).json` 为起点改造，声明 `source_image` + `edit_prompt` 槽）。
-- **它是角色一致性 / "More like this" / 聊天"再来一张"的核心编辑通道**（吃参考图做身份保持）。
-
-### 4.2b ⚠️ P0 spike 关键发现：fp8 × Apple Silicon(MPS) 硬冲突（2026-07-07 实测）
-
-在本机 ComfyUI 8188 提交 RedCraft Krea2 workflow，KSampler 节点直接抛：
-```
+```text
 TypeError: Trying to convert Float8_e4m3fn to the MPS backend but it does not have support for that dtype.
   comfy/ldm/krea2/model.py → comfy_kitchen/tensor/fp8.py::dequantize
 ```
-- **根因**：模型是 fp8（Float8_e4m3fn）权重，**MPS 不支持 fp8 dtype**。文档里那次 17/20 达标跑在 **CPU split-node workflow**；默认 MPS 设备必炸。这与 sdcpp 当初"白图"同源。
-- **波及面**：Qwen-Image-Edit-**Rapid-AIO** 的 "Rapid AIO" 通常也是 fp8/int8，**同一堵墙**。即"这台 Mac 上跑这两个 fp8 模型"是系统性约束，非个案。
-- **设计含义（正反馈到 §2/§3）**：Backend 必须携带 `device(mps|cpu|cuda)` + dtype 能力；Workflow 声明 dtype 需求；不兼容组合由 Backend **health 拦截**（正是现在发生的）。同一"逻辑模型"可有 fp8-cuda / fp16-mps 两个 Workflow 变体。
 
-**社区实证解法（2026-07-07 调研，见 §8 决策 5）**——共识：Mac 上 fp8 无硬件支持，官方建议 fp16/bf16 或 GGUF：
+当时 checkpoint 的 FP8 权重不能直接迁入该 MPS 环境。此前记录的 `17/20` 达标使用 CPU split-node workflow，不是 MPS FP8 出图证据。临时 `--cpu` 对照在 `384×512`、6 步下约 `54s` 产出人像，证明当时图和依赖能够在 CPU 路径执行。
 
-| 方案 | 做法 | MPS 全速 | 打核心补丁 | 额外依赖 | 代价 |
-|------|------|:---:|:---:|------|------|
-| **A. fp16/bf16（★推荐，ComfyUI 官方路线）** | 下现成 fp16 版，或一次性把 fp8 dequant 成 fp16 safetensors | ✅ | 否 | 无 | ~2x 文件（128GB 无所谓）|
-| GGUF | city96 等的 GGUF（`city96/Qwen-Image-gguf`、`realrebelai/KREA-2_GGUFs`）+ ComfyUI-GGUF 节点 | ✅ | 否 | **Krea2 需 patched GGUF fork**（标准节点报 Unexpected architecture）| 小；本机省内存意义不大 |
-| CPU 回退补丁 | patch `comfy/float.py`+`quant_ops.py`+`comfy_kitchen/.../quantization.py`，fp8 算子挪 CPU 再搬回（Discussion #13273）| 部分 | ✅ 每次升级重打 | patcher 脚本 | 保留原 fp8 小文件；与本 ComfyUI "minimal change" 原则冲突 |
-| B. 全 `--cpu` | ComfyUI 加 `--cpu`（`MPS_FALLBACK` 对 comfy_kitchen 自定义算子不可靠）| ❌ | 否 | 无 | 慢（分钟级/张）；仅适合异步预生图 |
-| C. Mac 用 bf16 友好模型 | 本地用已跑通的 bf16（pornmaster Z-Image），fp8 模型留 prod CUDA | ✅ | 否 | 无 | 不满足"本机跑这两个 fp8 模型" |
+## 格式转换
 
-**推荐：A（fp16/bf16）**——官方路线、不打补丁、MPS 全速、prod 仍用原 fp8；优先查现成 fp16 版，无则写一次性 dequant 脚本。GGUF 备选。
-参考：ComfyUI Discussion #13273（MPS fp8 workaround）、Issue #5533/#6995/#6859（同类报错）。
+两种 checkpoint 布局分别处理，不能只按文件名或统一 dtype cast 转换：
 
-### 4.3 Phase 0 验证闭环（demo 驱动，先跑通再抽象）
+| 当时检查的格式 | 权重与 metadata | 转换规则 |
+|---|---|---|
+| RedCraft RedMix scaled-FP8 | linear `.weight` 为 F8_E4M3，`.weight_scale` 为标量 F32、per-tensor；`.comfy_quant` 是 U8 的 `{"format":"float8_e4m3fn"}` 标签 | `weight.float() * weight_scale` 后转 BF16，移除量化 sidecar，非 FP8 张量保留 |
+| Qwen Rapid-AIO v19 plain-FP8 | 2662 个直接存储的 F8_E4M3 权重，无 per-tensor scale；AIO 包含 model/text_encoders/vae 三个命名空间 | FP8 直接 widening cast 为 BF16；`text_encoders.qwen25_7b.logit_scale` 是真实权重，必须保留 |
 
-**✅ 第一条通路已跑通（2026-07-07）**：临时 headless `--cpu` ComfyUI（8199）→ RedCraft Krea2 出图成功（54s/384×512/6步，真实人像）。证明 workflow 图正确、依赖齐全；唯一阻塞是 fp8×MPS。
+`torch.Tensor.dequantize()` 只把原始 FP8 转成 F32，没有应用 scaled-FP8 的 scale，不能代替第一行的反量化。判定 `_scale` 为量化 sidecar 时，必须存在对应 FP8 权重；真实模型参数不能因名字含 scale 被删除。
 
-**✅✅ 方案 A（fp16/bf16）端到端验证成功（2026-07-07）**：
-- 摸清格式：RedMix 是 **comfy_kitchen scaled-fp8**——每个量化 linear 有 `.weight`(F8_E4M3) + `.weight_scale`(**标量** F32, per-tensor) + `.comfy_quant`(U8, 仅 `{"format":"float8_e4m3fn"}` 标签)。**正确 dequant = `weight.float() * weight_scale` → bf16，丢弃两个 sidecar**。（`torch.Tensor.dequantize()` 是陷阱：只给原始 fp8→f32，不乘 scale。）
-- 转换器（standalone，可复用于文本编码器/Qwen-Edit）：读 safetensors → fp8 权重按上式 dequant 成 bf16、非 fp8 原样保留 → 存新 safetensors。RedMix diffusion：256 fp8→bf16 + 174 bf16 = 430 张，**24GB，31s**。文本编码器 `qwen3vl_4b_fp8_scaled` 同法转 → `qwen3vl_4b_bf16`（8.3GB，7s）。VAE `qwen_image_vae` 本就纯 BF16，MPS 安全，无需转。
-- **MPS 全速复验**：bf16 workflow 提交你的 8188 → `ok:true`、832×1216、10 步、**MPS 原生出图**（含 24GB 冷加载共 ~145s，热态更快），肉眼确认高质量连贯人像、身份与 fp8 版一致 → **转换数学正确**。
-- 产物落位 `~/ComfyUI-Shared/models/{diffusion_models/redcraftKREA2RedMix_krea2Edition-bf16.safetensors, text_encoders/qwen3vl_4b_bf16.safetensors}`；原 fp8 保留给 prod CUDA。
-- 延迟提示：12B 模型 MPS 高分辨率非秒级 → 聊天交互走 sdcpp 快速通道/降分辨率，预生图 batch 用 ComfyUI（异步可接受）。转换器待 P1 收进 repo（`packages/gen/scripts/`）。
+## RedCraft 原始验证
 
-**✅✅✅ Qwen-Image-Edit-Rapid-AIO v19 端到端跑通（2026-07-07，P0 两模型全部收口）**：
-- 下载 `Phr00t/Qwen-Image-Edit-Rapid-AIO` v19 NSFW（28.4GB；作者：v19 编辑一致性最佳）。格式为**plain fp8**（2662 个 F8_E4M3 直存权重，无 per-tensor scale；`text_encoders.qwen25_7b.logit_scale` 是真实权重非 sidecar）——转换器已泛化：scaled-fp8 走 `w*scale`，plain-fp8 走直接 cast → bf16 53GB（AIO 单文件含 model/text_encoders/vae 三命名空间，CheckpointLoaderSimple 一次加载）。
-- **t2i 冒烟**：作者官方图（CheckpointLoaderSimple → TextEncodeQwenImageEditPlus → KSampler **4步/cfg1/sa_solver/beta**）→ 768×768 照片级人像，**64s 含 53GB 冷加载**，MPS 原生。
-- **编辑冒烟（核心能力）**：P0 RedCraft 人像 → LoadImage → `TextEncodeQwenImageEditPlus{image1, vae}` → "换红色晚礼服、保持身份" → **72s 出图，身份保持完美**（脸/发色/发型/光向/机位全稳，仅换装）。核心节点为 ComfyUI 原生（fixed-textencode-node 可选增强，>1 图输入时再装）。
-- **运维教训 1（OOM）**：RedCraft bf16 24GB 驻留时再加载 Qwen 53GB → ComfyUI 进程被 macOS 直接杀死（128GB 统一内存也不够двух大模型并存 + 激活）。⇒ P2 Backend 层需要：同 backend **串行换载大模型**（勿并发加载）、health 探针在加载期报 busy、必要时先 `/free` 卸载。
-- **运维教训 2（系统代理）**：macOS 上 python `urllib` 自动读系统代理（`_scproxy`），代理会把 127.0.0.1 请求回 **502 Bad Gateway**（curl 不读系统代理所以正常）。生产链路（Node `fetch`）不受影响；本机 python 探针一律用 `ProxyHandler({})` 直连。
+- Diffusion 转换为 `256` 个 FP8→BF16 张量，另保留 `174` 个 BF16 张量，共 `430` 个；产物约 `24GB`，转换约 `31s`。
+- `qwen3vl_4b_fp8_scaled` 同法转成 `qwen3vl_4b_bf16`，约 `8.3GB`、`7s`；`qwen_image_vae` 原为纯 BF16，未转换。
+- MPS BF16 workflow 在 `832×1216`、10 步下返回 `ok:true`，含 24GB 冷加载约 `145s`。当时肉眼观察为连贯人像、身份与 FP8 对照相近；没有受控身份评分或热态分位数。
+- 当时产物名为 `diffusion_models/redcraftKREA2RedMix_krea2Edition-bf16.safetensors` 与 `text_encoders/qwen3vl_4b_bf16.safetensors`；原 FP8 文件保留供 CUDA 使用。这些是旧产物来源记录。
 
-后续 demo 闭环：
-```
-demos/2026-07-comfyui-bringup/
-  run.sh          # 起 ComfyUI + 对 redcraft/qwen-edit 两个 workflow 各提交一次
-  expected.txt    # 两张非空非白、过 sanity 的图 + 一致性抽检
-```
-这一步**先于**§3 的抽象重构落地，用来 de-risk 最大技术未知。
+## Qwen v19 原始验证
 
----
+当时下载 `Phr00t/Qwen-Image-Edit-Rapid-AIO` v19 NSFW，源文件约 `28.4GB`，plain-FP8→BF16 后 AIO 约 `53GB`，由 `CheckpointLoaderSimple` 一次加载。
 
-## 5. 运营配置台（Admin）信息架构
+- t2i：`CheckpointLoaderSimple → TextEncodeQwenImageEditPlus → KSampler`，4 步、CFG 1、`sa_solver/beta`，`768×768`；含冷加载约 `64s`，MPS 产出人像。
+- 编辑：以该次 RedCraft 人像为 source，`LoadImage → TextEncodeQwenImageEditPlus{image1, vae}`，要求“换红色晚礼服、保持身份”，约 `72s` 出图。当时肉眼观察为脸、发色、发型、光向和机位保持，仅换装；这是单次编辑观察，不能外推为质量保证。
+- 当时验证使用 ComfyUI 原生节点。多图、后续版本及其他 runtime 的资格需独立证据。
 
-沿用 redesign 文档的两大工作区，补齐缺失面（**粗体=新建**）。
+## 当时的故障观察
 
-```
-Generation Ops
-  ├─ Overview（健康总览）
-  ├─ Backends 底座          ← 新建：ComfyUI/sdcpp 实例、URL/路径、健康、并发
-  ├─ Workflows 生图模版      ← 新建：图注册表、输入槽、能力位、样例图、版本
-  ├─ Profiles & Rollout     ← 改造：引用 Workflow + 默认槽值 + 灰度 + 定价
-  ├─ Prompt Recipes         ← 沿用 + 补 Metric
-  ├─ Jobs & Incidents       ← 沿用
-  └─ Provider Health        ← 沿用（并入 Backends 健康）
-
-Content Ops
-  ├─ Production Studio       ← 沿用（Batch 出图）
-  ├─ Asset Library          ← 沿用（含 igrep 复用检索）
-  ├─ Placements             ← 沿用
-  ├─ Official Characters    ← 沿用 + 内嵌↓
-  │    └─ Visual Passport 编辑器   ← 新建：traits/anchors/refs/seed/版本/一致性分
-  │    └─ 角色预生图面板            ← 新建：一键出封面/主图/Feed/chat 包 → Batch
-  ├─ Templates / Tags / Review Queue ← 沿用
-  └─ CMS / SEO              ← 沿用
-```
-
-新建对象的 admin API 走现有 segment dispatcher（`packages/main/src/server/modules/admin/service.ts`）：`generation/backends`、`generation/workflows`、`content/characters/{id}/visual-profile`、`content/characters/{id}/pregen`。
-
----
-
-## 6. 聊天 Agent 生图能力
-
-### 6.1 工具注册表（替换单硬编码工具）
-
-```ts
-// packages/chat/src/agent-tools.ts
-interface AgentTool {
-  name: string
-  description: string
-  intentHints: string[]            // 供 planner/意图门
-  argsSchema: ZodSchema
-  profileRef: string               // 映射到一个可发布 Profile
-  enabledFor: { tiers: Tier[]; characterScope?: "all" | string[] }
-}
-const REGISTRY: AgentTool[] = [ generateSelfie, editLastImage /* Qwen-Edit */, /* 未来: voice, video */ ]
-```
-
-### 6.2 四项改造
-1. **注册表 + 运营可配置**：admin 控制"哪些角色/档位开哪些工具"（= 你要的"配置 agent 生图能力"）。
-2. **原生 function-calling 优先，JSON planner 兜底**：`ChatModel` 增加 `tools` 传参；模型支持则原生工具调用，否则回退现有 planner。正则门保留为**成本优化的预门**（省第二次 LLM 调用），但可被"强意图"覆盖。
-3. **文本 + 图片同回合**：出图时先流式说话，再挂图（去掉 text XOR image）。
-4. **Agent 结果感知**：图完成后把"已生成图（+简述）"回喂上下文，让角色能点评自己发的照片。
-5. **护照注入前移**：聊天请求即注入角色 active VisualPassport 的身份槽，一致性不再只靠 planner 写好 prompt。
-
-### 6.3 复用现有链路
-chat→main→gen→finalizer→chat 的 outbox/inbox 事件链（`chat.image.requested/accepted/completed/failed`）**保持不变**，只是 payload 携带 `profileRef` + 护照槽值；新增工具 = 注册表加项，不动链路。
-
----
-
-## 7. 分阶段落地（每阶段可独立验证）
-
-| 阶段 | 内容 | 验证 |
-|------|------|------|
-| **P0 底座打通** | 本机 ComfyUI Desktop 起服务；RedCraft Krea2 解禁；下载并跑通 Qwen-Edit。demo 闭环。 | `demos/2026-07-comfyui-bringup/run.sh` 出两张达标图 |
-| **P1 底座抽象** ✅ | `GenBackend` 接口 + ComfyUI/Sdcpp 两实现；删两个 OpenAI shim；Workflow 描述符 + 声明式槽绑定；gen worker 直调。已合入 master（2026-07-07）。 | 现有 image 生成 e2e 绿；真实 smoke 832×1216 |
-| **P2 运营配置** ✅ | workflow 描述符上移 `@idream/shared/gen-workflow`；registry 双键(modelId+workflowKey)；ComfyUIBackend 参考图上传+image 槽；qwen-image-edit 描述符+编辑 smoke(70s 走抽象层保脸)；admin `generation/backends`+`generation/workflows` API+页；Profile.workflowKey 路由(SQL 交用户)；Visual Passport 编辑器。分支 `feat/image-gen-p2-ops-console`，Tasks 1-8 双审全绿。 | typecheck 6/6 + lint 全绿；Chrome 全链走查(待 dev SQL) |
-| **P3 角色预生图 + Metric** ✅ | per-character 预生图面板 → Batch（`admin/content/characters/{id}/pregen`，pack cover/hero/chat）；Metric 聚合端点+视图（零 DDL，按需聚合替代物化表）；Batch 成本接 PricingRule 真值；production batch job 补 workflowKey 路由（与 P2 一致）。分支 `feat/image-gen-p3-pregen-metrics`。 | 一键为官方角色出封面/chat 包并投放；验收集成用例覆盖 pregen→审→投放→角色头像更新闭环，lint/typecheck/build 全绿 |
-| **P4 聊天 Agent** ✅ | 工具注册表（`AGENT_TOOL_REGISTRY`）；原生 function-calling 优先 + planner 兜底（三重安全网：FC 不可用/空结果/异常）；文本+图同回合；护照注入前移（system prompt 身份槽 + payload 携 visualProfileId/version）；结果感知（完成后回喂"[You sent a photo: …]"）；per-角色运营开关（`advancedDetails.imageToolEnabled`，admin 可切）。分支 `feat/image-gen-p4-chat-agent`。 | web.test.ts 单条验收用例走通全链 mock seam："发张自拍"→FC 同回合出文本+attachment→outbox 带护照槽→完成后下一轮"换个场景，去雪山"→新 FC 出图 + 模型上下文含已发照片简述；真模型 smoke（oMLX Qwen3.6-35B-A3B, `launch:probe:chat`）通过；真服务 live 走查因 dev DB 未应用 P4 边界 SQL 而受阻（见附记），协议正确性已由 mock 验收覆盖 |
-
-| **P5 能力深化** ✅ | `edit_last_image` 聊天工具落地（注册表第二工具，判别联合 `AgentToolCallPlan` + 通用 dispatch；controls 白名单 `sourceImageAssetId` → main 路由 `chat-image-edit` 描述符，profile 不可用时确定性降级丢源图）；投放位曝光/点击埋点接入 metrics placements（campaign 卡片范围）+ Remix 汇总；traits 版本化 assembler 派生 identityPrompt + adapterRefs 派生 hash + `identityStale` 面板提示；`GEN_FINALIZER_QUEUES` 按 gen-split 拓扑收敛 + readiness 探针；pricing 单测补齐 + pregen resolver 更名。视频仍按 V1.1 既定决策不做。分支 `feat/image-gen-p5-deepening`。 | web.test.ts 单条连续验收：生成→completed→"把刚才那张改成雪山背景"→edit_last_image→outbox `controls.sourceImageAssetId`=上一张 asset；新会话无源图直接改图→outbox 无 `sourceImageAssetId`（降级）。chat 133 + main 156（admin-console/event-consumer/image-generation-service/generation-pricing/launch-readiness）全绿；`bun run check`（lint+typecheck+build，5 包）全绿。真模型 live 走查：oMLX Qwen3.6-35B-A3B 用注册表两工具真实 FC 触发——"改上一张"→选中 `edit_last_image`；新场景请求→选中 `generate_image_async`；中性消息→不触发工具，三例均命中预期（探针受本机 HTTP_PROXY 误配 NO_PROXY 拦截含工具名请求，绕过代理后复现）。ComfyUI img2img 真图为可选加分项，未跑（避免与已加载 FC 模型双载 OOM），非阻塞。 |
-
-**P4 部署依赖（USER 步骤，未合并到本次交付）**：`db/sql/2026-07-08-chat-visual-passport-and-tool-flags.sql`（`core.chat_character_view` + `billing.chat_entitlement_view`，纯 `CREATE OR REPLACE VIEW`，无表结构变更）须在部署前应用到 dev/prod；`packages/chat` 需随后跑一次 `db:generate`。测试库（`test/provision.mjs`）已自动带上，不受影响；本地持久 dev DB 尚未应用，因此 P4 Task 7 的真服务 live 走查在 session 创建时报 `visual_profile_id` 列缺失——按既定规则（模式变更 SQL 只由用户执行）未由本次会话代跑，已作为已知障碍记录。
-
-**P5 部署依赖**：无新 SQL。`chat-image-edit` profile 由 `packages/main/prisma/seed.ts` 写入，dev/prod 部署前需跑一次 `bun prisma db seed`（或等效 seed 命令），否则 edit 路由确定性降级为普通生成（非缺陷，是既定回退行为）。
-
-## 8. 待你确认的开放决策
-
-1. **底座抽象方向**：**✅ 已采纳 workflow-native（去 shim）**（2026-07-07 用户确认）。
-2. **sdcpp 去留**：**✅ 已定：保留为秒级 text2img 快速通道**（Z-Image/Pornmaster turbo，8 步 cfg=1），一致性/编辑全交给 ComfyUI（2026-07-07 用户确认）。
-3. **聊天调用机制**：**✅ 已定：原生 function-calling 作为调用机制 + 机制无关工具注册表 + JSON planner 能力兜底**（2026-07-07）。
-   - 澄清：function-calling / MCP / skill 不是同层三选一——FC=调用机制，MCP=跨进程工具来源/传输标准（最终仍靠 FC 调用），skill=过程性提示词打包（服务端模型前无 skill runtime）。
-   - **不用 MCP**：热路径上多进程+发现+延迟、零收益，且不替代 FC。唯一回头场景 = 以后把"生图能力"作平台边界暴露给外部/第三方 agent 共享，那时用 MCP server 封装。
-   - **不用 skill 机制**：其价值以"注册表工具 description/intentHints/few-shot + 角色 system prompt 指引"的提示词形态交付。
-   - 原生 FC 额外收益：一次调用 in-band、结构上解锁"文本+图片同回合"。
-   - **✅ P0 探测已过（P4 Task 7 live 验证）**：本机 oMLX（Qwen3.6-35B-A3B-uncensored-heretic, `enable_thinking:false`）稳定支持 OpenAI `tools`；`bun run launch:probe:chat` 真模型 smoke 通过。原生 FC 已作为 P4 上线主路径落地，planner 仍是三重兜底（FC 不可用/空结果/异常）。
-4. **提交策略**：本文档尚未 commit（你不在时不擅自提交/改代码）。你点头后我再 commit 并进入 writing-plans 拆实现计划。
-5. **fp8×MPS 落地**：**✅ 已定：方案 A —— fp16/bf16**（2026-07-07 用户确认）。本地运行时把 fp8 权重转 fp16 供 MPS 全速；prod CUDA 仍用原 fp8。优先现成 fp16 版，无则一次性 dequant 脚本（需按 scaled-fp8 语义处理 scale 张量）。
-
----
-
-## 附：本机环境已确认事实（供实现期参照）
-
-- ComfyUI Desktop 活动实例：`~/ComfyUI-Installs/idream (1)/ComfyUI`（standalone，mac-mps，v0.27.0+20，`--enable-manager`）；base_path 配在 `extra_models_config.yaml`。
-- 模型共享目录：`~/ComfyUI-Shared/models/`；`diffusion_models/` 已有 `redcraftKREA2RedMix_krea2Edition.safetensors`、`darkBeastKrea2_*`、`pornmasterZImage_turbo*`。
-- Desktop 自带 `blueprints/`（官方 workflow 模板）含 `Text to Image (Qwen-Image)`、`Image Edit (Qwen 2511)` 等，可作起点。
-- sdcpp：`~/code/sd.cpp-webui`（PATH 无 `sd`，需确认 sd-cli 产物路径）。
-- 现有 gen 契约：`ai.image.generate` / `app.ai.finalize` 队列、`imageGeneratePayloadSchema`、`ImageModel/VideoModel/ModerationProvider/BlobStore` provider 抽象，均在 `packages/shared/src/contracts` 与 `packages/gen/src/providers.ts`。
+- RedCraft BF16 24GB 驻留后再加载 Qwen 53GB，ComfyUI 进程被 macOS 杀死。记录环境有 128GB 统一内存；该次 OOM 包含驻留模型与激活，不能仅按两份文件大小推算并发容量。
+- macOS Python `urllib` 读取系统代理（`_scproxy`）后，本机 `127.0.0.1` 请求返回 `502 Bad Gateway`，同期 curl 请求正常。该次探针的规避方式是 `ProxyHandler({})` 直连；这是一条本机探针故障记录。

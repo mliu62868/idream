@@ -54,6 +54,8 @@ Chat admission health 每个短 TTL 窗口重新检查文件、Redis、DSH/igrep
 
 切换是单次切换：停止接纳、等待有界 drain、隔离旧 AgentRun/workspace 文件，然后启动新 runtime。旧格式不进入新 implementation，也不做不可恢复删除。Scene 继续由 Main Turn 权威持有；edit/regenerate 都回到被丢弃回复之前的 Scene 锚点，再用新回复计算一次 delta，因此 Scene version 不会因 attempt 增加而重复推进，也不会保留旧回复产生的场景内容。
 
+2026-10-04 起 Chat 在 commit 中不再运行 Scene 投影：Scene 原样推进一版，terminalEvidence 不再带 `sceneProjection`。依据是 72 轮实测只有 14 轮 applied、对抗用例 12/16 失败、却占 done 前时延约 45%，并曾把已生成回复拖到 180 s deadline 整轮失败；`packages/chat/src/scene.ts` 保留，待更便宜或更准确的投影器通过资格验证后再启用。
+
 Scene v1 的持久形状由 Shared 唯一定义，Main execution snapshot / terminal、Chat、公开响应和语音快照复用同一 schema；`scene=null` 只允许 version 0，非空 Scene 的内外版本必须一致。Main 的终态接纳不能只信任 Chat 或 TypeScript：新 sent 必须从匹配当前 attempt 的冻结 execution snapshot 恰好推进一版，failed/blocked/cancelled 完整保留该锚点；缺失、错 attempt 或损坏锚点拒绝。完全相同的已提交终态只重放 ACK，不再次推进，保留历史合法 null/0 终态的精确重放。该校验不改变 v1 数据格式，也不证明 Scene 的自然语言内容已被正确理解。
 
 模型首 token 前仅受首字阶段约束，不能被较短的 idle 设置提前截断；首 token 后只有真实文本、推理或工具名称/参数输出续期 idle。HTTP 字节、SSE 心跳和空 delta 不是模型进度。真实输出持续推进时允许超过首字窗口，整轮仍由已有 AgentRun deadline/AbortSignal 约束，不新增固定 completion 超时。

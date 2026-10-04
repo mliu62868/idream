@@ -1,135 +1,100 @@
 # Companion Chat PRD
 
-## 1. 产品定义
+更新日期：2026-10-04
 
-Companion Chat 是 Main 产品中的角色陪伴会话。用户看到的是稳定的会话列表和 Turn；AgentRun、模型 trace、工具中间步骤不是产品对象。
+本文定义完整 Chat 产品契约，关联 [PRD](PRD.md) CH-01–16。实现与运行资格见 [当前覆盖](CURRENT_FUNCTIONAL_COVERAGE.md)，执行边界见 [ADR-21](../architecture/21-companion-chat-deep-runtime.md)，待办见 [剩余工作](REMAINING_WORK_EXECUTION_PLAN.md)。目标、已实施和已验证分别判断。
 
-### 1.1 所有角色共享的 Product Agent Contract
+## 1. 用户承诺
 
-`SOUL.md` 只定义「这个角色是谁、如何表达」。所有角色共同的 Chat 产品行为由版本化的 Product Agent Contract 定义，并在每个 `PreparedTurn` 中固定版本：
+用户得到的是与同一角色持续互动：最新意图被回应，角色身份稳定，获授权的历史、Scene 与记忆能够延续，接受的动作和费用可查证、可恢复。模型输出或 provider 成功只是链路中的一步。
 
-- 用户感受到的是主动、直接、在场的成人陪伴，而不是通用助手、客服流程或问卷。
-- 先完成最新且明确的用户意图，再用 Soul 添加角色语气、情绪、调侃和场景推进。
-- 角色张力可以改变表达，但不能把产品能力变成资格审查、交换条件、拖延或任意拒绝。
-- 不默认用问题、选项菜单或复述把行动推回给用户；信息足够时做一个合理的角色内选择。
-- 附件和工具状态拥有交付事实；角色文案必须与已经接受的产品动作一致。
+| 用户任务 | 产品结果 | 需求 |
+|---|---|---|
+| 从角色卡开始或继续聊天 | 明确角色身份与开场，历史跨刷新/设备恢复 | CH-01–03、10 |
+| 编辑、重生成、停止或删除 | 同一 Turn 的修订关系清楚，旧结果不覆盖新回复 | CH-05、06 |
+| 控制记忆和互动方式 | Auto Memory、pins、instructions、互动设置与 profile 有来源、版本和删除边界 | CH-04、11、12、16 |
+| 看见、编辑或听见角色 | 图片、视频与声音按各自已发布能力交付 | CH-06、07 |
+| 群聊或双向通话 | 回复归属明确，记忆、权限、额度和中断恢复可靠 | CH-13、14 |
+| 用麦克风写消息 | 转写成可编辑草稿，明确 Send 才形成 Turn | CH-15 |
 
-唯一运行时层级为：
+### 共同产品行为
 
-```text
-Product Agent Contract（所有角色共同的陪伴行为）
-  -> Runtime Authority（本 Turn 的能力与事实约束）
-  -> immutable Character Soul（角色身份与表达）
-  -> Turn State（opening / transcript / memory / Scene / time）
-```
+| 输入 | 职责 |
+|---|---|
+| Product Agent Contract | 所有角色共享的行为规则、动作与交付承诺 |
+| Soul | 角色身份、背景和表达；不自行改变产品资格 |
+| 已授权当轮事实 | Main 固定所有者、Character/Release、attempt、能力、预算、Scene 与已接受动作 |
+| 历史与上下文 | 已提交对话、获授权记忆和用户控制帮助延续互动；引用与旧邀约不是新授权 |
 
-不得把共同产品行为复制进每个 Soul，也不得建立第二套角色 prompt 或 provider prompt。
+角色应主动、直接地回应最新明确意图，用角色语气推进互动。信息足够时作合理选择，不能把能力变成问卷、交换条件、拖延或任意拒绝；事实不足时不编造用户偏好或共同经历。应保留开场、说话者与时间来源，让记忆在相关时自然出现。
 
-## 2. 产品不变量
+Main 的权限、预算与交付事实限定能做什么；在此范围内，共同规则和最新明确意图优先于角色任性、旧剧情或召回建议。换场景不默认为永久身份变更。正文可以自然表达，但只能按实际状态说“已接受”“正在生成”或“已完成”。共同规则不复制到每个 Soul，prompt 组织由 [PreparedTurn](../../packages/chat/src/prepared-turn.ts)、[prompt 实现](../../packages/chat/src/prompt.ts) 与 ADR-21 承载。
 
-1. 一个 `Turn` = 一条 user message + 一条 selected final assistant reply。
-2. 用户刷新、换设备或 Chat runner 重启后，消息列表由 Main PostgreSQL 恢复。
-3. regenerate/edit 替换同一 Turn 的 assistant 结果，不展示内部候选分叉。
-4. Chat runner 故障不能丢失已经提交的用户消息；该 Turn 显示可恢复的 pending/failed 状态。
-5. Scene、Character content/release pin 与选中附件归属精确 Turn attempt；同一用户意图形成的必需产品动作跨 regenerate 复用同一计费效果并重绑当前 attempt。
-6. Agent 执行完成只有在 Main 持久接受最终回复后才对用户成立。
-7. 每个终态都能归因到精确 Product Agent Contract 版本和 Soul fingerprint。
-8. 已接受的产品动作不能与最终角色文案相互矛盾；概率模型失败时仍保留动作并返回确定性真实文案。
+## 2. 产品事实与所有权
 
-## 3. 数据所有权
+- 普通 Turn 包含一条用户消息和一条 selected final assistant reply。opening 与 proactive 有显式来源；内部工具步骤、未选候选和 trace 不进入用户历史。
+- Main PostgreSQL 持有 Session、Turn/attempt、Character/Release、Scene、附件、交付、额度和账务。刷新、跨设备与运行恢复都读取 Main。
+- Chat 无数据库，在同一进程内嵌 DSH/official igrep，使用自托管 OpenAI-compatible 模型。本地 AgentRun 只保留执行和未决接纳证据，不形成第二套产品状态机。
+- 回复完成以 Main 持久接纳为准；流式文本和 Agent 轨迹不是已保存历史，也不是记忆来源。每个终态能追溯到适用的 Contract、Soul 与实际模型请求。
+- Scene、附件与角色版本固定到精确 attempt；同一意图的必需动作跨重生成复用原请求与计费效果，编辑改变意图则使旧动作身份失效。
+- 套餐与 conversation profile 可以控制额度、速度和高成本能力，不能换掉角色人格或基础连续性。产品不建立 Relationship 等级/分数。
+- 既定审核保持 `MODERATION_PROVIDER=mock` 的 `underage/minor/csam` 拦截与角色年龄 ≥18；聊天保留举报、账号与隐私边界。
 
-Main PostgreSQL 保存：
+## 3. 用户流程与恢复
 
-- ChatSession
-- Turn 及 user/assistant wire message ID
-- selected final reply、状态、模型/token 摘要
-- Scene snapshot/version
-- ChatTurnAttachment
-- Generation、Delivery、DreamCoin reservation/settlement/refund
-- 用户、Character、Soul/Release、entitlement、idempotency
+| 动作 | 结果与边界 |
+|---|---|
+| 建立会话 | 校验当前访问/Serving 资格，继续 active 单聊或创建带固定开场的新会话，角色身份与内容版本明确 |
+| 明确 Send | 用户消息先持久保存；同一幂等请求返回同一 Turn，不同内容冲突。输入阻断不调用 Agent |
+| 等待回复 | 使用接受时的角色、历史、Scene、记忆与控制版本；可以流式阅读，Main 接纳后才显示完成 |
+| 断网、刷新或重启 | 恢复同一 attempt 或给出明确失败；传输重连不新建回复，已失败/取消需显式重试 |
+| 编辑或重生成 | 替换同一 Turn 的 selected reply；活跃回复时不并行创建候选。回到被替换回复之前的 Scene，再由新回复推进一次 |
+| Stop | 绑定用户观察到的 attempt；Main 先接受取消，再终止执行，迟到命令不能取消新回复 |
+| 删除或清除 | Main 历史与相关记忆来源失效，迟到回复、附件或投影不得使已删除内容复活 |
 
-Chat 本地文件保存：
+Main 负责 durable 接纳、租约、终态与超时回收；Chat 只重放未确定 ACK 的结果。具体恢复、来源栅栏与清理协议见 ADR-21。
 
-- AgentRun immutable input
-- execution events
-- terminal commit evidence
-- boundaries 与账号删除回执
+Group Chat 支持 2–12 个角色和选择/`@` 应答。每个 Turn 固定应答角色，保留跨说话者身份与顺序；某角色的记忆、邀约和媒体不借给另一角色。单聊或整个群聊同时最多有一个可执行回复，较新的 blocked Turn 不能绕过旧回复。
 
-DSH official igrep 保存通用 companion memory。产品不建立 Relationship 等级/分数状态。
+主动消息由用户在单聊显式开启，默认关闭，当前节奏契约为 6–168 小时。等待用户回应时不重复发送，停用、权限撤销或删除后停止调度。它不消费用户主动发送额度，仍保留独立用量事实。
 
-## 4. 用户流程
+## 4. 记忆与用户控制
 
-### 4.1 建立会话
+- Auto Memory 的长期记忆只从 Main committed Turn 异步投影；普通投影延迟不阻塞回复。用户能看到当轮模式，并暂停、纠正后重建或清除角色记忆。
+- memory off 不读写长期通用记忆，并忽略依赖记忆的 pins；显式 Custom Instructions 仍生效。破坏性修订重建完成前，受影响新 attempt 不使用旧记忆。
+- Pinned Memories、Custom Instructions、response length、scene generation、active messages、互动强度与 conversation-profile Catalog 分别版本化固定到 Turn，不静默改写 Soul、在途回复或历史。
+- Profile 在执行前明示能力与成本，底层 provider/model 由服务端选择；用户控制、群聊角色和记忆有明确可见性、归属与跨账号隔离。
+- Scene 保持人物、地点、衣着和叙事连续性。结构合法、版本推进和来源绑定不代替实际语义正确。
+- 清除与账号删除同时处理 Main 来源、资产和 Chat 派生文件，撤销在途旧投影；执行/记忆清理按 ADR-21。
 
-Main 根据用户可见性与 age≥18 规则读取 Character，固定 immutable content/release，创建或返回该用户与 Character 的唯一 active ChatSession，并保存 opening message snapshot。
+## 5. 媒体动作
 
-### 4.2 发消息
+| 能力 | 用户动作 | 交付契约 |
+|---|---|---|
+| 图片 / Image Edit | 描述时刻，或修改有权使用的图片 | Main 固定身份、Scene、source/reference 与生成请求，状态和结果回到原回复 |
+| Chat Animate | 在已交付图片上描述运动并接受报价 | 独立 Chat video 与视频能力/权益检查，固定 source、原 Turn/attempt、route 与价格 |
+| 自然语言视频动作 | 在对话中请求视频 | 必须单独发布 Chat capability 与 Product Action，不能由 Animate 或共享 renderer 推定可用 |
+| Generate Video / GN-19 | 在 Generate 选择合格视频配方和序列控制 | 多 scene、时长、比例、质量档及可选 voice/audio 单独验收，不代替 Chat 视频 |
+| Voice Clip | 对已完成回复明确 Play | 接受价格上限后合成，固定 selected reply/声音与账务，已交付声音可重播 |
+| Mic / Voice Call | 草稿输入或双向通话 | 分别按 CH-15/14 接纳、恢复和计量，不能用单条 Clip 代替通话 |
 
-Main 校验身份、会话、输入、每日额度和 `Idempotency-Key`，然后先写入 Turn。未通过输入规则时直接把该 Turn 终结为 blocked，不调用 Agent。
+图片的身份、编辑、反馈与质量见 [角色图片契约](CHARACTER_IMAGE_GENERATION_SYSTEM.md)；Clip、输入与 Call 见 [语音契约](VOICE_RELEASE_CHECKLIST.md)。明确且有权执行的图片意图直接形成动作，角色语气不能否认已接受动作或虚报完成。
 
-通过后 Main 把精确 snapshot 签名交给 Chat。snapshot 包含用户/Character authority、当前 user content、最近已提交 Turn、Scene、memory 模式和 attempt。
+角色应能在后续对话中延续自己已交付的图片，保持正确来源、状态与已知描述。生成 brief 只说明想生成什么，不能据此声称看见或验证了实际像素细节。
 
-### 4.3 回复与恢复
+## 6. 费用与既有权益
 
-Chat 本地保存 AgentRun 后执行 DSH。流式 token 只改善体验；最终内容通过 CAS 提交 Main。刷新页面总是读取 Main selected reply。
+- 消息额度由 Main 的原 Turn 产品日、预留与已消费事实决定；编辑、重试、取消和跨日修订不按点击次数重复计量。
+- 图片/视频在接受时预留预算，Main 根据真实交付唯一结算或释放/退款。复用素材、重复请求与未知结果按接受条款处理，客户端不能推断费用。
+- Voice 优先使用接受的计划分钟，再按 clip 兜底 Dreamcoin。价格、已购权益与退款规则见 [经济契约](ECONOMY_AND_PRICING.md)。
+- 计划到期或能力关闭只影响新接纳；用户仍可按原访问权限阅读历史、播放和下载既有媒体。
 
-进程中断后，Chat worker 扫描“有 input、无 terminal”的 AgentRun 并恢复。旧 attempt 的晚到结果必须被 Main 拒绝。
+## 7. 验收
 
-### 4.4 编辑、再生成、取消、删除
-
-- edit/regenerate 增加 attempt，并重置同一 assistant message 为 pending。
-- 活跃生成时拒绝再次 edit/regenerate，避免两个 attempt 同时成为候选。
-- cancel 先在 Main 把精确 attempt 终结为 cancelled，再通知 Chat/DSH 中止。
-- 删除 Turn 或 Session 直接删除 Main 产品事实；Main 是列表权威。
-
-## 5. 图片与视频生成
-
-明确图片意图直接调用图片 ToolEffect，不反问资格。Soul 只决定表达，Main 决定产品动作和计费，Gen 决定 provider 执行。
-
-计费语义：
-
-- ToolEffect 被 Main 接受时创建幂等 Generation Request 并预留/扣减预算。
-- 交付成功由 Main 既有 Generation terminal/delivery 流程结算。
-- blocked/failed/cancelled 由同一流程释放或退款。
-- 可复用的既有平台素材可按 0 成本返回。
-- 禁止“provider 成功后再调用一个普通 hook 扣费”，因为超时和重试会产生未计费交付或重复扣费。
-
-当前 Chat 产品只注册图片生成/编辑工具；没有对用户承诺未实现的聊天视频工具。未来增加 video 时复用同一 ToolEffectPort。
-
-## 6. 消息展示
-
-Main API 将每个 Turn 展平为：
-
-1. user message；
-2. selected assistant message；
-3. assistant attachments（含 Main 校验后的 media URL）。
-
-opening message 是 Session snapshot，不伪造成数据库 Turn。内部 tool call、provisional text、runtime trace 和未选候选不返回给用户。
-
-## 7. 记忆
-
-- `memoryEnabled=true` 使用 normal DSH/igrep workspace。
-- no-memory 使用 private profile，不写入长期通用记忆。
-- Main terminal ACK 是 memory commit gate。
-- boundaries 为用户可控文件；删除账号时与 AgentRun、DSH workspace 一并清除。
-
-## 8. 计量
-
-- 文本免费额度按 Main 当天已提交的用户 Turn 计数。
-- unlimited entitlement 由 Main 判断。
-- voice 从 Main selected assistant reply 读取并走 Main voice 计费。
-- image/video 使用 Generation Request → Attempt → Artifact → Delivery → Settlement。
-
-## 9. 验收
-
-- 相同 idempotency key + 相同内容只产生一个 Turn；不同内容冲突。
-- Main 已写 Turn 后才有 AgentRun。
-- Main terminal ACK 前没有 SSE `done` 或 memory commit。
-- runner 重启能恢复不完整 AgentRun。
-- regenerate 的旧 attempt 晚到不会覆盖新 attempt。
-- 图片工具只建立一个 Generation Request；成功结算，失败退款。
-- 明确图片动作成功后直接提交按用户 locale 选择的确定性确认文案；该路径不调用 Caption 模型，角色拒绝、讨价还价或 provider 超时不能覆盖已接受动作。
-- 第一轮 `PreparedTurn` 包含 Session 从不可变 ContentVersion 固定的 opening message。
-- `PreparedTurn.trace` 与 Main terminal evidence 均包含 Product Agent Contract 版本及 Soul fingerprint。PreparedTurn 固定产品 system 摘要；Main terminal 另保留每次实际 provider 请求的最终 system SHA-256 和完整请求正文摘要，覆盖 DSH 动态注入，不能把编译摘要冒充最终请求摘要。
-- Chat package 在依赖、源码、构建和运行环境中都不需要 PostgreSQL/Prisma。
-- 账号删除会清除 Main 产品事实、Blob、AgentRun、boundaries 和 DSH workspace。
+1. 真实模型回应最新意图，身份、开场、时间与已知事实连续；不拒绝已接受动作、不编造用户事实、不泄露内部过程。
+2. 同一请求、重连、接管和重生成不多建 Turn/动作或多扣费；旧 attempt、旧账号和权限撤销后的结果不回流。
+3. Main 接纳前不显示最终完成；刷新/跨设备/重启后历史、选中回复、Scene 与附件恢复一致。
+4. 记忆开关、纠正、清除、控制版本和群聊隔离在实际模型输入/输出中正确，不只证明 schema 合法。
+5. 图片、编辑、Chat 视频、Generate 序列与声音分别证明真实交付、质量、持久化、下载、失败恢复和唯一结算。
+6. Stop、删除、账号清理与计划到期保留正确权限、来源和既有权益；状态、错误与重试在移动端及键盘操作中可用。
+7. 记录所测 source revision、实际模型/工作流、请求/attempt/产物、首字/完成耗时和用量；技术成功、语义/像素/听感质量、设备/语言及公开环境资格分别给结论。

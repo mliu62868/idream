@@ -1,10 +1,10 @@
 # ADR-13：全项目深模块权威边界
 
-更新日期：2026-08-01
+决策日期：2026-08-01；现行边界与引用校对：2026-10-04
 
-状态：Accepted / Implemented in source；live authority chains verified；browser operator journey and customer default-profile cutover pending
+状态：Accepted；产品 Turn 与 Chat 执行边界按 [ADR-21](21-companion-chat-deep-runtime.md) 更新。实施及运行资格见当前覆盖，不维护历史 pending。
 
-实施计划：[Deep Module Authority Execution Plan](../product/DEEP_MODULE_AUTHORITY_EXECUTION_PLAN.md)
+产品契约：[后台规格](../product/BackendFeatureSpec.md)；证据：[当前覆盖](../product/CURRENT_FUNCTIONAL_COVERAGE.md)；执行：[剩余工作](../product/REMAINING_WORK_EXECUTION_PLAN.md)。
 
 深化自：[ADR-11](./15-admin-operating-system-authority-adr.md)、[ADR-12](./16-character-asset-studio-authority.md)
 
@@ -12,7 +12,7 @@
 
 项目已经建立 Generation Request/Attempt、Dreamcoin Ledger、Admin Command、状态矩阵、跨服务 Outbox/Inbox、Character Release/Serving 等正确的领域名词和持久化事实。
 
-当前主要问题不是缺少更多实体，而是关键 Interface 仍然偏浅：
+决策时的问题是关键 Interface 偏浅，调用方承担重复可靠性协议：
 
 - `main` 与 `gen` 都存在图片/视频执行路径，部署开关会改变“谁真正调用 provider”；
 - `DreamcoinLedger` 有公共 helper，但仍有重复 helper 和直接写表调用；
@@ -44,7 +44,7 @@ Main
         ▼
 Gen
   claim transport work
-  GenerationExecution invokes image/video adapter
+  runGeneration invokes modality backend
   persist terminal record
   enqueue record into Main-owned durable relay
 ```
@@ -63,8 +63,6 @@ Gen
 - provider outcome 不明确且 provider 不支持确定性幂等时，不自动重放 provider invocation。
 - 图片与视频共用 `GenerationExecution` 的 resume → transport → invoke → retry decision → terminal persist + relay admission 生命周期；modality adapter 只负责调用与产物归一化。
   - 2026-09-12 兑现：入口是 `runGeneration(payload, modality, ports)`，`GenerationExecution` 类不再导出。此前这条承诺只做了一半 —— 生命周期确实在类里，但**调用顺序**留给了调用方，图片与视频各拼一遍（归一化后两段 preamble 只差三行），且四条约束（resume 返回 true 要提前 return、prepare 抛错必走 `failPreparation`、blocked 走 `block("input")`、`execute` 前不得碰 provider）只写在代码里、没写在任何文档或头注释里，只能靠 diff 两条路径反推。modality 现在只声明 `{configuredAdapter, model, prepare, invoke, normalizeArtifacts}`，说不出顺序，也就无法说错。收口后 288 个 gen 测试零改动通过。
-
-未来若部署到 serverless，不恢复 Main 内执行路径；单独部署 Gen adapter。
 
 #### 2.1.1 unknown 是独立终态，不是 failed 的一个可选字段
 
@@ -94,7 +92,7 @@ provider 幂等键、dispatch requestId、terminal record 存储路径、finaliz
 
 实际后端由 workflow 描述符的 `backendKind` 决定，与 `payload.provider` 无关。后端身份的真 pin 是 `workflowKey@workflowVersion`，图片与视频**同强度强制**（图片侧曾有「两者都缺则跳过校验」的逃生口，已删）。
 
-`GenerationModelProfile.runner` 的默认值 `sd_cpp` 指向一个 gen 里已不存在的 runner，保留是因为线上可能有沿用默认值的 profile；gen 把它映射到 backend 适配器后照常执行。要收敛需单独的 DB 迁移。
+Gen 只执行已发布的 workflow-native backend 与精确版本 pins；已退役的 runner 不映射回现行 backend，也不作为默认值或回退路径。
 
 #### 2.1.4 dispatch envelope authority 与 refund cause
 
@@ -251,6 +249,8 @@ Sender domain TX
 
 Chat → Main 使用同一 envelope、receipt、hash、ACK 和重试语义。
 
+本节用于持久生命周期事件；产品 Turn 的不可变快照、执行结果与终态接纳按 ADR-21，不恢复 Chat 产品数据库或普通对话 outbox。账号擦除的专属 terminal handshake 见 §6，其 ACK 要求真实删除与 Main completion 投影完成。
+
 ### 2.6 Character Production Journey 是服务端投影
 
 `CharacterProductionJourney` 是基于现有权威事实实时计算的运营投影，不新增 Journey 状态表。
@@ -260,8 +260,8 @@ Chat → Main 使用同一 envelope、receipt、hash、ACK 和重试语义。
 - active `CharacterVisualProfile`；
 - sealed active `ReferenceSetRevision`；
 - active non-stale `GenerationRouteQualification`；
-- Character Creative Run、Review Decision 与 draft asset pack；
-- QA、candidate Release 与 `CharacterServing`；
+- Character Creative Run、合格素材与 draft asset pack；
+- 基础自动检查、candidate Release 与 `CharacterServing`；
 - live monitor / performance facts。
 
 统一输出至少包含：
@@ -321,7 +321,7 @@ type CharacterProductionJourney = {
 | dispatch 证据归属判定 | `checkExactGenerationDispatchAuthority` | job / attempt / dispatch / evidence |
 | 退款金额与幂等身份 | `refundGenerationRequest` | 类型化 refund cause |
 | 跨服务 env 默认值 | `shared/contracts/env` | 变量名（判据：两进程取值不同就会坏） |
-| chat 轮次写入协议 | `withTurnAuthority` | userId / sessionId + 回调 |
+| 产品 Turn、attempt 与 terminal ACK | Main Turn authority（ADR-21） | 不可变 Turn snapshot 与精确执行结果 |
 | 生成报价与提交校验 | `ourdream/generation-quote` | 六字段令牌（含双指纹） |
 | 订阅激活与权益派生 | `ourdream/subscription-lifecycle` | 计划 + provider 发票 + checkout purchase-order |
 | Feed 分页连续性 | `ourdream/discovery` 的签名游标 | limit（快照与排除集由游标自带） |
@@ -397,7 +397,7 @@ type CharacterProductionJourney = {
    是恒真的。真正会漂移的是索引本身被删被改名，所以换成一条集合相等检查
    （`projection_dedupe_constraint_missing`：期望的唯一约束集合必须恰好存在于 `pg_index`）。
    **行数几乎没变，但它从「查一个不可能的状态」变成了「查那个不可能性还成立吗」。**
-4. **删不掉但需要 DB 约束的，只出 SQL，不自己执行**，并且约束落地前不要先删检查
+4. **需要 DB 约束的，交付 migration/SQL 并按目标环境授权执行**，约束落地前不要先删检查
    （见 `packages/main/prisma/manual/2026-08-03-invariant-collapse-check-constraints.sql`：admin_cases 的
    activeKey 身份约束一旦生效，三条 Case 检查同时不可表示）。
 5. **不是所有检查器都能收**。跨存储集合关系（Redis Bull row ↔ PostgreSQL Outbox row）、
@@ -500,7 +500,7 @@ admission/direct producer，后停 Gen worker，finalizer 最后。`pm2 jlist` �
 receipt 使用独立 namespace，不能被旧 generic no-op receipt 阻断；Chat 前滚时把旧 `consumed`
 receipt 视为可修复证据，只有专属 Main ACK 后才写 `consumed_v2`。
 
-本 ADR 不要求新增数据库表。若实施发现必须修改 schema，只提交 Prisma migration / SQL 脚本，由用户执行；agent 不直接连接数据库改表。
+本 ADR 不要求新增数据库表。必要 schema 变更交付 migration/SQL；开发/专用测试库按项目授权核对目标与隔离后执行，生产库由用户或发布系统执行。
 
 ## 7. Verification
 
@@ -514,4 +514,4 @@ receipt 视为可修复证据，只有专属 Main ACK 后才写 `consumed_v2`。
 - 真实 HTTP 请求与持久化终态检查；
 - Character Journey 阶段的真实浏览器 operator journey。
 
-完整命令和阶段 Gate 见实施计划。
+命令以各 package 脚本和[运维手册](10-operations.md)为准；按本次改动选择验证，证据记录到当前覆盖，未关闭项进入剩余工作。

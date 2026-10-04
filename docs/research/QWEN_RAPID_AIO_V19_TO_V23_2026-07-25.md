@@ -74,7 +74,7 @@ Phr00t 发布的 v19–v23 是约 28.4 GB 的 FP8 AIO。iDream 当前不是直�
 - [`qwen-image-edit-img2img.json`](../../packages/gen/workflows/qwen-image-edit-img2img.json) 当前固定 `Qwen-Rapid-AIO-NSFW-v19-bf16.safetensors`、4 steps、CFG 1；
 - [`qwen-image-edit-multi-identity.json`](../../packages/gen/workflows/qwen-image-edit-multi-identity.json) 双身份参考同样固定 v19 BF16；
 - [`qwen-image-edit-multi-reference.json`](../../packages/gen/workflows/qwen-image-edit-multi-reference.json) 多参考路由也固定 v19 BF16；
-- [本机 P0 记录](../superpowers/specs/2026-07-07-image-generation-redesign-design.md#qwen-image-edit-rapid-aio-v19-端到端跑通2026-07-07p0-两模型全部收口) 记录了 v19 FP8 → BF16、MPS t2i 和编辑实图成功。
+- [2026-07-07 本机记录](../superpowers/specs/2026-07-07-image-generation-redesign-design.md#qwen-v19-原始验证) 记录了 v19 FP8 → BF16、MPS t2i 和编辑实图成功。
 
 关键含义：
 

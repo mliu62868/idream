@@ -38,7 +38,7 @@ type ListResponse = { items: Row[]; pageInfo?: PageInfo; enforcementEnabled?: bo
 
 /**
  * SPEC: 一条待审批请求在审批人眼里的完整形状。
- * INTENT: 审批台是双人确认的落点（ADMIN_CONSOLE_PLAN 设计原则 3）。第二个人要挡住的是
+ * INTENT: 审批台是双人确认的落点（后台高风险命令契约）。第二个人要挡住的是
  *         「动作对，参数错」——同样是 credit.adjust，+10 和 +1000000 在列表里长得一模一样。
  *         权威接口一直在返回 payload，只是以前没人把它画出来；现在它是审批的主证据。
  */

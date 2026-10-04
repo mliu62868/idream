@@ -1,6 +1,6 @@
 # iDream 后台技术架构（Architecture）
 
-更新日期：2026-09-01
+技术基线日期：2026-09-01；产品文档权威关系整理：2026-10-04
 目标产品：全面对标 OurDream.ai 的 18+ AI 角色扮演 / AI 伴侣平台
 对标站点：https://ourdream.ai/（定义产品完整度参考；iDream 自身代码、数据与运行证据仍是实现权威）
 
@@ -9,25 +9,26 @@
 `docs/product/` 已经回答了 **"做什么"**（PRD、用户故事、功能图、后台功能规格）。
 本目录 `docs/architecture/` 回答 **"怎么做"** —— 在 **Next.js 16 + Prisma + PostgreSQL + Redis/BullMQ** 技术栈、bun + Turborepo monorepo（`packages/{main,chat,gen,admin,shared}`）上，把产品规格落地成可执行、可验证、不丢功能的工程方案。
 
-事实来源（SSoT）链路：
+需求、契约与实现证据的关系（不是一条可让代码自动取消需求的优先级链）：
 
 ```
 docs/product/PRD.md                 ← 产品需求（什么）
 docs/product/ProductFeatureMap.md   ← 功能/页面映射
 docs/product/BackendFeatureSpec.md  ← 后台模块/实体/状态机/API surface/授权矩阵 + 生成契约
-docs/product/ECONOMY_AND_PRICING.md ← 经济模型/dreamcoin 费率卡（计费 SSoT；数值以 seed.ts 为准）
+docs/product/ECONOMY_AND_PRICING.md ← 经济承诺与费率口径；实际已购权利固定到offer/quote快照
 docs/product/CONTENT_POLICY.md      ← 内容安全政策/禁止项/申诉流程（政策 SSoT）
-docs/product/ADMIN_CONSOLE_PLAN.md  ← 全产品管理后台/配置控制面方案
-docs/product/CURRENT_FUNCTIONAL_COVERAGE.md ← 实现状态（已落地/暂缓）唯一事实来源
+docs/product/ADMIN_NAVIGATION.md   ← 运营入口；角色创作/发布操作见专项指南
+docs/product/CURRENT_FUNCTIONAL_COVERAGE.md ← 具日期/source的实现与运行证据汇集
+docs/product/REMAINING_WORK_EXECUTION_PLAN.md ← 唯一现行未闭合工作
         │
         ▼
 docs/architecture/*                 ← 技术实现方案（本目录，怎么做）
         │
         ▼
-packages/main/prisma/schema.prisma + packages/*/src ← 代码（最终事实来源）
+packages/main/prisma/schema.prisma + packages/*/src + 同source运行证据 ← 实际行为
 ```
 
-> 原则：本目录**不复制** BackendFeatureSpec 已有的"实体字段表 / API 列表 / 授权矩阵 / 状态机"，而是引用它，并补齐"用这个技术栈如何真正实现"。当两者冲突时，以本目录的技术决策（02）为准，并回写更新 BackendFeatureSpec。
+> 原则：本目录**不复制** BackendFeatureSpec 已有的"实体字段表 / API 列表 / 授权矩阵 / 状态机"，而是引用它，并补齐"用这个技术栈如何真正实现"。技术协议冲突按现行ADR核对并回写；若涉及用户需求、权利或经济承诺，则明确记录实现差异，不能按当前代码/技术决定静默废除产品要求。产品文档完整分工见 [产品索引](../product/README.md)。
 
 ## 1. 阅读顺序
 
@@ -39,7 +40,7 @@ packages/main/prisma/schema.prisma + packages/*/src ← 代码（最终事实来
 | 03 | [03-data-model.md](./03-data-model.md) | Main Prisma schema 参考、迁移与 seed 策略；旧 Chat PG 设计由 ADR-20 取代 | 后台工程 |
 | 04 | [04-api-design.md](./04-api-design.md) | API 规范：响应/错误/校验/分页/鉴权/限流/幂等/SSE | 前后端 |
 | 05 | [05-module-design.md](./05-module-design.md) | 后台模块职责与关键流程（as-built） | 后台工程 |
-| 06 | [06-async-jobs-and-ai.md](./06-async-jobs-and-ai.md) | Redis/BullMQ、跨服务队列、AI provider 抽象、生成流水线 | 后台工程 |
+| 06 | [06-async-jobs-and-ai.md](./06-async-jobs-and-ai.md) | Main/Gen 队列、持久事件、AI provider 与生成执行 | 后台工程 |
 | 07 | [07-security-and-compliance.md](./07-security-and-compliance.md) | 鉴权、年龄合规、内容审核、隐私、密钥、审计 | 全员 + 法务 |
 | 08 | [08-billing-and-entitlements.md](./08-billing-and-entitlements.md) | 订阅、PSP、webhook 幂等、权益派生、dreamcoin ledger | 后台工程 |
 | 09 | [09-project-structure.md](./09-project-structure.md) | monorepo 目录结构、分层约定、命名、加端点流程 | 所有工程 |
@@ -56,8 +57,8 @@ packages/main/prisma/schema.prisma + packages/*/src ← 代码（最终事实来
 | 20 | [20-local-file-chat-authority.md](./20-local-file-chat-authority.md) | Main 产品 Turn 权威、Chat 本地 AgentRun 与生成结算边界 | Product、架构、后端、运营 |
 | 21 | [21-companion-chat-deep-runtime.md](./21-companion-chat-deep-runtime.md) | 单进程 Agent 运行、Main 驱动记忆投影与最小本地恢复证据 | Product、架构、后端、运营 |
 
-> 实现状态（已落地/暂缓）以 [`CURRENT_FUNCTIONAL_COVERAGE.md`](../product/CURRENT_FUNCTIONAL_COVERAGE.md) 为唯一事实来源；剩余工作执行计划见 [`REMAINING_WORK_EXECUTION_PLAN.md`](../product/REMAINING_WORK_EXECUTION_PLAN.md)。
-> 管理后台方案见 [ADMIN_CONSOLE_PLAN.md](../product/ADMIN_CONSOLE_PLAN.md)；生成（图片/视频/语音）契约见 [BackendFeatureSpec.md](../product/BackendFeatureSpec.md) §5.5。
+> 实施与运行证据汇集在 [`CURRENT_FUNCTIONAL_COVERAGE.md`](../product/CURRENT_FUNCTIONAL_COVERAGE.md)，结论须按原日期、源码与环境核验；唯一现行待办见 [`REMAINING_WORK_EXECUTION_PLAN.md`](../product/REMAINING_WORK_EXECUTION_PLAN.md)。
+> 后台契约见 [BackendFeatureSpec.md](../product/BackendFeatureSpec.md)，运营入口见 [ADMIN_NAVIGATION.md](../product/ADMIN_NAVIGATION.md)，角色创作与发布见 [运营指南](../product/CHARACTER_ASSET_STUDIO_OPERATIONS_GUIDE.md)。
 
 ## 2. 技术栈一览
 
@@ -71,10 +72,10 @@ packages/main/prisma/schema.prisma + packages/*/src ← 代码（最终事实来
 | 鉴权 | better-auth（email+password + session，Prisma adapter） | 备选 Auth.js v5，见 02-ADR-3 |
 | 校验 | Zod | 系统边界强制校验（API 入参、env、provider 回调） |
 | UI | shadcn/ui + @base-ui/react + Tailwind v4 | 既有，前端不在本目录范围 |
-| 支付 | 抽象 `PaymentProvider`；**生产用加密货币**（推荐自托管 BTCPay Server，非托管/无 AUP 风险） | 见 02-ADR-4 |
+| 支付 | `PaymentProvider`；既定加密货币、一次性预付访问 | 见 02-ADR-4、08；具体 provider 按目标环境取得资格 |
 | 异步 | Main/Gen 使用 Redis/BullMQ；Chat 是有界 HTTP AgentRun，Redis 只缓存 SSE；跨服务删除等命令使用 durable event/receipt | 见 06、14、17 |
 | AI | 抽象 `ChatModel`/`ImageModel`/`VideoModel`/`Voice`/`Moderation` | Chat 使用自托管 OpenAI-compatible endpoint；Image/Video 使用 Gen workflow-native BackendRegistry（ComfyUI/DrawThings），legacy external pipeline adapter 已于 2026-09-12 删除，见 02-ADR-6 |
-| 管理后台 | 独立 `@idream/admin` web/BFF + main `/api/v2/admin/*` authority；v1 仅兼容观测 | Today、Character、Creative、Incident、Case、Metrics、系统控制面，见 ADR-11 |
+| 管理后台 | 独立 `@idream/admin` web/BFF + Main `/api/v2/admin/*` authority；尚有调用方的 legacy 命令按现有契约承接 | Today、Character、Creative、Incident、Case、Metrics、系统控制面，见 ADR-11与Admin导航 |
 | 对象存储 | 抽象 `BlobStore`；S3 兼容（R2）/ 本地 fs（dev） | 签名 URL，见 02-ADR-8 |
 | 限流 | DB 令牌桶 / Redis（prod 推荐） | 见 02-ADR-9 |
 | 部署 | pm2 完整多进程拓扑（`ecosystem.config.js`）；Docker Compose 仅提供本地 PostgreSQL/Redis | 见 10 |
@@ -90,10 +91,10 @@ packages/main/prisma/schema.prisma + packages/*/src ← 代码（最终事实来
 | ADR-1 | **monorepo + 按执行时间分级拆服务**：`main`（产品 Turn/计费权威）/ `chat`（Agent 执行，本地 run）/ `gen`（图片/视频 worker） | 慢负载从快 web 剥离；产品事实仍集中在 Main |
 | ADR-2 | **Main PostgreSQL only**（dev=prod 同栈，无 SQLite 双库、无 `db-provider` 切换脚本） | Main 领域继续使用 PostgreSQL；Chat 存储由 ADR-20 取代 |
 | ADR-3 | **better-auth** 自管 user/session/account 表，域字段（plan 等）外挂 | 现代、Prisma 原生、email+password+session+限流齐全 |
-| ADR-4 | **支付抽象 + 加密货币**（BTCPay Server / NOWPayments 等）；付费访问按"一次性预付周期 + 到期后用户重新购买"建模 | 加密支付绕开卡组织成人内容限制；自托管非托管无 AUP 风险 |
+| ADR-4 | **支付抽象 + 加密货币**；一次性预付周期，到期后用户重新购买 | 符合既定支付边界，结算与权益以可信 provider 证据履约 |
 | ADR-5 | **Main/Gen Redis/BullMQ + 常驻 PM2 worker；Chat 不建队列** | 生成任务需要 durable retry；Chat token 流需要直接 AgentRun/SSE |
 | ADR-6 | **AI provider 全部抽象**；Chat 与媒体生成采用不同执行接口 | Chat 走 OpenAI-compatible endpoint；Image/Video 由 workflow descriptor 固定 backend/model/input slots，避免把 deprecated pipeline 当成运行权威 |
-| ADR-7 | **年龄验证 provider 抽象**（Go.cam 等），按司法辖区/风险触发，状态进 `age_verifications` | 安全文档点名 Go.cam；UK OSA / 美国多州法律强制 |
+| ADR-7 | **身份年龄验证 provider 抽象**，按已确定的辖区/风险范围触发 | age gate、验证状态与 provider 发布资格分别管理，法律适用须独立核验 |
 | ADR-8 | **对象存储抽象 + S3 兼容(R2)/Vercel Blob(private)**，私有 + 签名 URL | 媒体资产私密、防盗链、成人 CDN 友好 |
 | ADR-9 | **限流：dev DB 令牌桶 / prod Upstash Redis** | 鉴权/生成/聊天端点必须限流，防滥用与成本失控 |
 | ADR-10 | **缓存：公开 SEO/目录用 Cache Components(`use cache`+`cacheTag`)，产品/鉴权 API 全动态** | Next 16 缓存模型；角色更新按 tag 失效 |
@@ -107,12 +108,12 @@ packages/main/prisma/schema.prisma + packages/*/src ← 代码（最终事实来
 
 ## 4. 不可妥协的合规底线（贯穿全文，P0）
 
-这是一个 **18+ 成人 AI 产品**，下列项是**法律 / 平台政策强制**，不是可选优化（详见 07）：
+这是一个 **18+ 成人 AI 产品**，下列项是产品底线与已定配置边界（详见 [内容策略](../product/CONTENT_POLICY.md) 与07）；政策要求不代表当前provider能自动检测全部类别：
 
 1. **未成年内容零容忍**：输入与输出命中未成年内容即拦截、留证；角色年龄强制 `>= 18`。（涉未成年素材的自动检测管线与法定上报由**合规/法务侧独立负责，不在本产品/工程设计范围**。）
 2. **年龄门槛 + 身份年龄验证**：成人内容前置 age gate；按司法辖区触发第三方身份验证后才能使用受限路由。
-3. **深度伪造 / 真实人物 / 受版权 IP / 非自愿框架 / 规避尝试**：创建与生成阶段必须检测并拒绝。
-4. **支付与模型供应商**：已定 **加密货币支付 + 自托管开源模型**；Chat 使用 OpenAI-compatible endpoint，Image/Video 使用 workflow-native backend。**MVP 阶段支付用 mock**；**第三方年龄验证暂缓为上线前 deferred TODO**（设计不弱化，见 12 暂缓项 / 07）。
+3. **内容分类与处置**：深度伪造、真实人物、受版权IP、非自愿与规避等规则由内容策略维护；现行 `MODERATION_PROVIDER=mock` 保留基础未成年人拦截，`safety-gateway`保留但不启用，不另列更换审核方案为缺口。
+4. **支付与模型供应商**：已定 **加密货币支付 + 自托管开源模型**；Chat 使用 OpenAI-compatible endpoint，Image/Video 使用 workflow-native backend。真实支付与第三方年龄验证按独立目标环境gate取得证据，mock支付与本地age gate不能代替相应资格（见当前覆盖、剩余工作及07）。
 5. **隐私**：聊天默认私密；敏感内容不进公开 feed；举报人身份不对被举报方披露。
 
 ## 5. 当前代码现状（基线）
@@ -123,7 +124,7 @@ packages/main/prisma/schema.prisma + packages/*/src ← 代码（最终事实来
 - `packages/main`：Next 16 全栈（`src/app` 前端 + `src/server` 后端，`/api/v1/[...resource]` catch-all → `dispatchV1`），Prisma + PostgreSQL，better-auth，计费/权益/生成/角色/admin。
 - `packages/chat`：不连接 PostgreSQL；内嵌 DSH/official igrep，保存未决/失败 AgentRun 与 SSE 暂态；产品 Turn/附件/Scene/计费由 Main PostgreSQL 管理。
 - `packages/gen`：图片/视频生成 worker（写 blob）。
-- 实现状态（已落地/暂缓）以 [`CURRENT_FUNCTIONAL_COVERAGE.md`](../product/CURRENT_FUNCTIONAL_COVERAGE.md) 为准；路线图见 [12-roadmap.md](./12-roadmap.md)。
+- 实现与运行证据见 [`CURRENT_FUNCTIONAL_COVERAGE.md`](../product/CURRENT_FUNCTIONAL_COVERAGE.md)；当前待办统一在 [剩余工作](../product/REMAINING_WORK_EXECUTION_PLAN.md)。
 
 ## 6. 验证闭环（贯穿实现）
 
@@ -136,4 +137,4 @@ bun run check       # lint + typecheck + build
 bun run check:launch # 上线就绪体检（launch-readiness）
 ```
 
-E2E（Playwright）与各 `launch:probe:*` 探针见 11/10。DB 迁移由用户手工执行；旧 Chat Turn 导入 Main 及 Chat PG 退出顺序见 ADR-20。
+E2E（Playwright）与各 `launch:probe:*` 探针见11/10。开发库/专用测试库迁移按项目授权核对目标连接与隔离，生产库schema由用户/发布系统执行；旧Chat Turn导入Main及Chat PG退出按ADR-20发现实际需求，不重复历史cutover。

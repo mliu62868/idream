@@ -1,10 +1,12 @@
 # iDream 用户故事
 
-更新日期：2026-09-05
+更新日期：2026-10-04
 
-> **本文档是目标用户旅程与验收规格，不描述实现进度。** 当前真实实现状态以 [`CURRENT_FUNCTIONAL_COVERAGE.md`](./CURRENT_FUNCTIONAL_COVERAGE.md) 为单一事实来源。
+> **本文档是目标用户旅程与验收规格，不描述实现进度。** 实现与运行证据统一从 [`CURRENT_FUNCTIONAL_COVERAGE.md`](./CURRENT_FUNCTIONAL_COVERAGE.md) 查找，再核对相同 source revision 的代码、报告及适用范围。
 
 ## 1. 主要用户旅程
+
+旅程从用户想完成的结果开始，页面是入口。A/B 分别回答“找到谁、创造谁”，C/D/H/J 回答“怎样互动和产出”，E 回答“怎样找回、复用和分发”，F 回答“怎样购买资源”，G/I 回答“怎样推广、求助和退出”。各路径独立验收，不能用聊天成功替代创作、资产或付费闭环。
 
 ### Journey A：发现角色并进入真实任务
 
@@ -26,13 +28,13 @@
 1. 用户从角色详情或 My AI 创建/恢复 Chat session。
 2. Main 加载固定 Soul/Release、recent transcript、Scene 与可用 memory，用户可控制记忆状态。
 3. 用户可编辑最近一轮、重新生成、重命名、删除或举报。
-4. 用户明确要求图片、编辑或语音时，产品按 capability、entitlement、成本和 identity pins 建立可追踪 Product Action；Video 仅在独立 Chat capability 发布后适用。
+4. 用户明确要求图片、编辑或语音时，按 capability、entitlement、成本和 identity pins 建立可追踪 Product Action；已交付图片上的 Animate 与自然语言视频动作分别发布、报价和验收。
 5. 结果绑定当前 attempt 并进入 Chat/Gallery；重放不重复执行或扣费，未交付按权威状态退款。
 
 ### Journey D：独立生成并管理媒体
 
 1. 用户进入 Generate，选择 Image；Video 进入发布范围后可选择 Video。
-2. 用户选择 Character 或 Freeplay，并配置 Presets/Image Edit、背景、姿势、服装、Prompt 和 Advanced Settings。
+2. Image 选择 Character 或 Freeplay 并配置预设、姿势、服装、Prompt 和 Advanced Settings；Video 使用合格且有权使用的 I2V 角色与已发布的视频控制。
 3. 提交前看到成本、余额和 entitlement；提交后看到 Request/Attempt 状态。
 4. 成功结果进入 Images/Liked/Videos，用户可筛选、下载、收藏、删除或批量管理。
 5. Character 模式保持视觉身份；失败、取消或拦截按权威结算/退款。
@@ -65,7 +67,7 @@
 ### Journey H：声音互动与跨日回访
 
 1. 用户选择或试听角色声音，在 Chat 播放一条语音，或在通话能力已发布时进入双向通话。
-2. 发起前了解语音片段与通话的费用单位、可用额度，并明确授予麦克风权限。
+2. 发起前了解片段与通话各自的费用单位和额度；进入通话前主动授予麦克风权限。
 3. 拒绝权限、断网或余额不足时可结束/恢复，不显示假连接，也不继续无声计费。
 4. 通话结束后能查看时长与用量；下次回到角色时按用户允许的上下文继续。Voice Clip 可用不等于 Voice Call 已完成。
 
@@ -76,7 +78,26 @@
 3. 找回登录状态后返回原任务；删除账号前明确资产、余额、公开内容和可恢复性的影响。
 4. 删除执行中、失败与完成分别可见；删除后其他账号不能从缓存或共享链接读到应被撤除的私有内容。
 
+### Journey J：语音输入形成用户消息（PRD CH-15）
+
+1. 用户在单聊或群聊输入框主动开启麦克风；权限、录音状态与最多 60 秒的限制可理解。
+2. 用户结束录音后得到可编辑转写草稿，检查、改写或丢弃；只有明确 Send 才成为用户消息。
+3. 录音和转写不自动创建产品 Turn、memory 或媒体，不扣 dreamcoin、消息额度或 TTS 分钟；明确发送后才遵循正常 Chat 契约。
+4. 拒绝权限、无声、设备中断、断网、取消，以及转写途中编辑草稿/切角色/切账号时，都不覆盖较新输入、不发给错误收件人，录音资源能释放。
+5. 英语及已明确欧洲目标语言按语言、普通语音、真实耳语、噪声和关键意义分别验收；转写样本或声音播放不能替代 Voice Call。
+
 ## 2. 用户故事与验收条件
+
+### 通用验收约束
+
+下面每条故事的验收条件与本节约束共同生效：
+
+- **输入与结果**：记录原目标、必需输入和最终可观察结果；页面可打开、控件选中或非空输出不代表任务完成。
+- **权限与适用性**：区分游客/本人/非本人、私有/链接可见/公开、有效权益和能力发布条件；关闭态正确不能抵扣未交付的目标。
+- **持久化与继续**：刷新、返回和重登后能找回本人任务；新配置、换号或旧响应不能覆盖已接受版本和当前对象。
+- **失败与未知**：区分校验拒绝、执行失败、处理中、部分交付和结果未知；未知先查原请求，用户明确的新任务与原键恢复分别处理。
+- **成本与权利**：涉及付费或额度时，执行前告知报价/额度及消耗条件，交付、预留、结算与退款一致；重复传输不重复收费，到期不锁回既有成果。
+- **证据与质量**：正常、异常、恢复、权限及质量分别留证；一条技术通过不推及全部 Catalog、语言、设备或公开生产。
 
 ### 2.1 年龄门槛
 
@@ -93,7 +114,7 @@
 | --- | --- | --- | --- |
 | US-EX-01 | 作为探索用户，我希望看到推荐角色卡流，以便快速选择感兴趣的角色。 | P0 | 首屏展示多张角色卡；卡片包含图片、名称、年龄、简介、likes、chat count、creator |
 | US-EX-02 | 作为探索用户，我希望按 For You、Popular、Newest、Following 等模式排序，以便找到不同推荐集合。 | P0 | 排序控件可打开；选择后列表更新；URL 或状态可反映当前排序和 period label |
-| US-EX-03 | 作为探索用户，我希望搜索角色和场景关键词，以便直接找到目标内容。 | P0 | 搜索框可输入；提交后返回匹配结果；无结果时展示空态 |
+| US-EX-03 | 作为探索用户，我希望搜索角色、场景关键词、指南和生成器，以便直接找到目标内容或任务。 | P0 | 搜索框可输入；提交后返回匹配结果及正确类型/入口；无结果与读取失败分开 |
 | US-EX-04 | 作为探索用户，我希望按性别、风格、年龄过滤，以便减少浏览成本。 | P0 | 每个筛选条件可选择、清除和组合；结果数量随条件变化 |
 | US-EX-05 | 作为探索用户，我希望点击有实际公开内容的分类 chips，以便浏览 Romantic、Slow Burn 等主题。 | P0 | chip 有 active 状态；点击后结果和 URL/state 更新；再次点击或 All 可重置；未获发布 authority 或没有真实公开内容的域不以空结果 chip 出现 |
 | US-EX-06 | 作为探索用户，我希望列表可以继续加载，以便浏览更多角色。 | P1 | 到达底部时加载下一批；加载中有 spinner；失败可重试 |
@@ -106,11 +127,11 @@
 | --- | --- | --- | --- |
 | US-CH-01 | 作为用户，我希望点击角色卡查看角色详情，以便确认是否开始聊天。 | P0 | 详情页展示角色资料、标签、热度、creator、开始聊天 CTA |
 | US-CH-02 | 作为用户，我希望从角色详情直接开始聊天，以便快速进入角色扮演。 | P0 | 登录用户直接创建或恢复会话；未登录用户进入 Join Free；成功后进入聊天界面 |
-| US-CH-03 | 作为聊天用户，我希望跨独立访问回到同一个角色时，TA 仍记得共同经历并延续上次场景。 | P0 | 加载同一 Soul/Release pins、recent transcript、Scene 与 official igrep memory；刷新和新会话不把上下文重置为初见 |
-| US-CH-04 | 作为聊天用户，我希望知道记忆是否启用，并能暂停、纠正或清除，以便掌控这段历史。 | P0 | 显示当前 memory 状态；可关闭/开启、按角色清除；纠正后从 Main committed Turns 重建，不出现第二套手工 memory authority |
+| US-CH-03 | 作为聊天用户，我希望跨独立访问回到同一个角色时，TA 仍记得共同经历并延续上次场景。 | P0 | 按各会话固定的 Soul/Release pins 加载有效 recent transcript、Scene 与允许的 official igrep memory；刷新恢复原会话，新会话按关系作用域延续而不强制初见；显式角色发布不静默改写旧会话身份 |
+| US-CH-04 | 作为聊天用户，我希望知道记忆是否启用，并能暂停、纠正或清除，以便掌控这段历史。 | P0 | 显示当前 memory 状态；可关闭/开启、按角色清除；纠正后从 Main committed Turns 重建；关闭/清除隔离期不召回旧记忆，清除完成以 durable ACK 为准；不出现第二套手工 memory authority |
 | US-CH-05 | 作为聊天用户，我希望管理聊天历史，以便继续、删除、重命名、编辑最近一轮或重新生成。 | P1 | My AI/Chat 可继续、删除、重命名；latest-only 修订边界明确；regenerate 保持同一产品 Turn 并正确更新 Scene |
-| US-CH-06 | 作为聊天用户，我希望明确要求图片、编辑或语音后真正收到结果，而不是只得到口头承诺。 | P0 | accepted Product Action 有等待/失败/交付状态；交付附件与当前 attempt 精确绑定；未交付前回复不声称完成 |
-| US-CH-07 | 作为付费用户，我希望重试或重新生成不会重复执行同一动作或重复扣费。 | P0 | 同一 effect identity 只产生一个权威 Generation/Media/settlement；replay 返回相同结果或明确冲突 |
+| US-CH-06 | 作为聊天用户，我希望明确要求图片、编辑或语音后真正收到结果，而不是只得到口头承诺。 | P0 | accepted Product Action 有等待/失败/交付状态；附件与当前 attempt 精确绑定；未交付不声称完成；Chat Animate 固定源图/运动方向并独立验收，自然语言视频动作须另行发布，Generate Video 不代验 |
+| US-CH-07 | 作为付费用户，我希望重试或重新生成不会重复执行同一动作或重复扣费。 | P0 | SSE 重连、worker replay、regenerate 复用同一 effect identity，只产生一个权威 Generation/Media/settlement；replay 返回相同结果或明确冲突 |
 | US-CH-08 | 作为用户，我希望角色不会因套餐或底层模型变化突然变成另一个人。 | P0 | Soul/Release/Visual/Voice identity 独立于执行模型；套餐只影响消息/语音 allowance、速度和高成本能力 |
 | US-CH-09 | 作为平台运营者，我希望聊天遵循既定内容策略和账号边界。 | P0 | 命中禁止内容时按产品政策处理；用户可举报 |
 | US-CH-10 | 作为聊天用户，我希望管理 Auto Memory、Pinned Memories 和 Custom Instructions。 | P1 | 固定事实/指令有明确来源、作用域、修改/删除状态；与 Main committed Turns + official igrep 一致 |
@@ -118,6 +139,7 @@
 | US-CH-12 | 作为聊天用户，我希望在一个 Group Chat 中让最多 12 个角色交互，并选择或 `@` 指定回复者。 | P1 | 角色编排、参与者容量、历史、memory、额度、Product Action 和权限在服务端权威收敛 |
 | US-CH-13 | 作为聊天用户，我希望发起双向 Voice Call，而不只是播放单条语音。 | P1 | 通话建立/中断/恢复/结束状态、Voice Identity、时长、额度/结算可追踪 |
 | US-CH-14 | 作为聊天用户，我希望从版本化 conversation-profile Catalog 选择体验档位，并在使用前知道能力和成本。 | P1 | 2026-09-01 历史对标基线为 5 个用户可感知档位；档位不改变 Soul/Release 身份；服务端决定底层 provider/model；执行前 quote 与 entitlement 可见 |
+| US-CH-15 | 作为单聊或群聊用户，我希望用麦克风形成可编辑草稿，再由我明确发送，以便更方便地表达而保留控制。 | P1 | 对应 PRD CH-15 / Journey J；最多 60 秒；取消、权限/设备/网络中断、无声与草稿/收件人/账号变化可恢复且不误覆盖、误发；仅转写不创建 Turn/memory/媒体、不扣 dreamcoin/消息额度/TTS 分钟；目标语言与真实输入质量逐项验收，不用它代替 Call |
 
 ### 2.4 创建角色
 
@@ -132,7 +154,7 @@
 | US-CR-07 | 作为创作者，我希望选择角色公开或私有，以便控制分发范围。 | P1 | 私有角色可直接使用；公开角色通过基础自动检查后进入发布准备、Release 与 Serving；不设置日常人工批准关卡 |
 | US-CR-08 | 作为希望快速起步的用户，我希望用一句描述预填创建向导。 | P1 | Quick Start 只预填完整向导；用户仍可审阅和修改所有字段、预览、可见性与发布设置 |
 | US-CR-09 | 作为平台运营者，我希望创建流程遵循既定内容策略和成年人角色底线。 | P0 | 失败时阻止创建并返回可理解的规则结果 |
-| US-CR-10 | 作为 Product DRI，我希望创建 Catalog 广度可量化，以免少量选项被误判为完整对标。 | P1 | parity matrix 对 40+ personality、19 voice、135 occupation、29 relationship type 的公开基线逐项标记 matched/equivalent/intentional divergence |
+| US-CR-10 | 作为 Product DRI，我希望创建 Catalog 广度可量化，以免少量选项被误判为完整对标。 | P1 | 对功能地图 §1.1 的 2026-09-01 公开基线逐项标记 matched/equivalent/intentional divergence；数量与语义分别记录 |
 
 ### 2.5 图片生成与条件 Video
 
@@ -141,8 +163,8 @@
 | US-GN-01 | 作为生成用户，我希望使用 Image 生成，并在 Video 进入当前发布范围时选择 Image 或 Video 模式，以便匹配输出类型。 | P0 | Image 模式可用；Video 关闭时不显示不可用入口；Video 启用时模式切换状态明确，字段、执行前报价和扣币规则随模式变化 |
 | US-GN-02 | 作为生成用户，我希望在 Image 中选择角色或 Freeplay，并在 Video 启用时只选择满足当前 I2V contract 且自己有权使用的角色（含合格私有角色）。 | P0 | Image 未选 Character/Freeplay 时不可提交；Video 不提供无契约的 Freeplay，选择后展示 exact Character/Release 摘要 |
 | US-GN-03 | 作为生成用户，我希望选择 Mode Presets 或 Image Edit，以便快速进入常用生成模式。 | P1 | Presets/Image Edit 可选；不同模式展示对应字段 |
-| US-GN-04 | 作为生成用户，我希望选择背景、姿势和服装 preset，以便控制结果方向。 | P1 | 每个控件有内置、My Presets、Community、Custom、Create a Preset；组合值进入任务 payload |
-| US-GN-05 | 作为 Premium 用户，我希望使用 custom prompt 和 negative prompt，以便获得更细粒度控制。 | P1 | 免费用户看到锁定和升级入口；Premium 用户可输入并提交 |
+| US-GN-04 | 作为生成用户，我希望选择背景、姿势和服装 preset，以便控制结果方向。 | P1 | 每个控件有内置、My Presets、Community、Custom、Create a Preset；仅本人 preset 可编辑，组合值进入任务 payload；Video 不提交仅 Image 支持的 pose |
+| US-GN-05 | 作为 Premium 用户，我希望使用 custom prompt 和 negative prompt，以便获得更细粒度控制。 | P1 | 免费用户看到锁定和升级入口，保留已填输入；Premium 用户可输入并提交 |
 | US-GN-06 | 作为生成用户，我希望配置模型/风格、比例和数量，以便控制输出质量和成本。 | P1 | Advanced Settings 可保存到任务 payload；premium/experimental 选项受 entitlement 控制 |
 | US-GN-07 | 作为生成用户，我希望看到生成进度，以便知道任务是否仍在运行。 | P0 | 点击 Generate 后出现任务状态；完成后进入图库；失败时可重试 |
 | US-GN-08 | 作为生成用户，我希望查看 Images 和 Liked，并查看已有 Videos，以便管理历史结果。 | P0 | 可用 tab 可切换；按类型展示资产；liked 只展示收藏内容；Video 新生成关闭时仍能访问既有视频；无历史资产且未发布该能力时不显示空的 Videos 死入口 |
@@ -151,7 +173,7 @@
 | US-GN-11 | 作为聊天用户，我希望从当前 Chat 上下文发起的生成继承同一角色和场景。 | P0 | payload 固定 Character/Release/VisualProfile/Scene/accepted brief；结果回绑当前 Turn 与 Gallery |
 | US-GN-12 | 作为付费用户，我希望执行前看到成本，失败后自动退款。 | P0 | 提交前显示 required/balance；Request/Attempt/Delivery/settlement 可追踪；确证终态未交付按幂等规则退款；结果未知时先核对原请求，不立即重新生成或承诺退款完成 |
 | US-GN-13 | 作为生成用户，我希望分别使用 Create、Edit 和 Enhance，并在允许时使用 source/reference asset。 | P1 | 模式契约、source asset、accepted brief、权限/provenance、quote 和 result lineage 可追踪 |
-| US-GN-14 | 作为视频生成用户，我希望配置多 scene、时长、比例、质量和可选 AI voice/audio。 | P1 | 只在精确 workflow/provider/capacity/entitlement 可用时显示；逐段状态、交付与结算可追踪 |
+| US-GN-14 | 作为 Generate Video 用户，我希望配置多 scene、时长、比例、质量和可选 AI voice/audio。 | P1 | 只在精确 workflow/provider/capacity/entitlement 可用时显示；逐段状态、交付与结算可追踪；不代验 Chat Animate 或自然语言视频动作 |
 
 ### 2.6 My AI、Feed 与 Community
 
@@ -159,7 +181,7 @@
 | --- | --- | --- | --- |
 | US-PF-01 | 作为登录用户，我希望在 My AI 查看 Recent、Characters、Presets、Created 和 Media，以便继续聊天、创作或资产管理任务。 | P0 | 所有核心 tab 均有真实数据、加载态、空态、搜索和后续操作 |
 | US-PF-02 | 作为登录用户，我希望从 Recent 继续最近会话，也能从其他 tab 直接进入对应任务。 | P0 | Recent 可继续 Chat；Characters/Created 可进入编辑、Chat 或 Generate；Presets/Media 有对应管理动作；Group Chats/Packs 未获发布 authority 时默认隐藏新任务入口，既有深链显示不可用原因与返回路径 |
-| US-PF-03 | 作为创作者，我希望编辑或删除自己创建的角色。 | P1 | Created 列表支持 edit、duplicate、delete；危险操作二次确认 |
+| US-PF-03 | 作为创作者，我希望编辑或删除自己创建的角色。 | P1 | Created 列表支持 edit、duplicate、delete；删除前说明关联聊天、媒体和公开内容的影响，危险操作二次确认 |
 | US-PF-04 | 作为登录用户，我希望在 Profile 管理余额、预付访问/重新购买、兑换码、推荐和账号，以便控制账户状态。 | P0 | Profile 显示对应入口；敏感操作二次确认或重新认证 |
 | US-PF-05 | 作为社区用户，我希望浏览 feed，以便发现其他用户发布的角色或内容。 | P1 | Feed 有卡片流、Chat、Remix、Like、Share、Report |
 | US-PF-06 | 作为社区用户，我希望浏览 Dreamers/Characters/Collections 榜单。 | P1 | Community tabs 可切换；release/gender/style filters 更新榜单 |
@@ -226,21 +248,7 @@
 
 ## 3. 关键边界场景
 
-- 未登录用户点击聊天、创建保存、生成或收藏时，应进入 Join Free，并在登录后返回原任务。
-- 年龄未确认用户直接访问 `/generate`、`/chat`、角色详情或成人 SEO 页，应先看到 age gate。
-- 年龄或司法辖区需要更强验证时，应触发身份年龄验证，不应只依赖 age gate acceptance。
-- 角色或生成 prompt 含禁止内容时，应阻止提交而不是静默失败。
-- 免费用户点击 Premium-only 字段，应看到升级说明，不应丢失当前输入。
-- 明确 Product Action 已被接受但尚未交付时，聊天只能显示等待/失败事实，不得用自然语言伪装成已完成。
-- 同一 Product Action 的 SSE 重连、worker replay 或 regenerate 必须复用 effect identity，不得产生第二次生成或第二笔扣费。
-- Chat 记忆关闭或清除期间，新 Turn 不得读取旧 relationship workspace；清除完成状态以 durable ACK 为准。
-- 套餐到期后，用户仍可访问既有聊天和媒体；只有新请求的高阶 entitlement 被关闭。
-- Video 启用时，Video 模式不应提交只在 Image 模式支持的 pose 字段。
-- preset 来源需要区分 built-in、My Presets 和 Community，用户不能编辑不属于自己的 preset。
-- 生成任务失败时，应展示失败原因、是否扣费、重试入口。
-- 删除角色时，如果有关联聊天、媒体或公开内容，需要说明影响范围。
-- Feed Share/Report、Profile Invite/Redeem、访问周期购买等操作必须有 auth 和 side-effect handling。
-- 长尾 SEO 页面缺少真实正文时，不能误导为完整内容页，应进入内容补齐队列。
+单域权限、记忆、重放和资产边界随 §2 故事验收；下表补充跨域输入与恢复，具体执行方法见 [主站清单](MAIN_SITE_HEALTH_CHECKLIST.md)。
 
 ### 3.1 跨功能验收场景
 
@@ -254,13 +262,12 @@
 | 付款确认延迟 | 付款返回处理中，刷新并重复收到确认 | 显示待确认并提供查询；以真实确认开通一次；不让用户盲目再付 |
 | 部分媒体交付 | 批量/多 scene 任务只完成部分结果 | 每项交付与扣费可核对，未完成部分按报价规则处理；不一概标成功或全额退款 |
 | 通话中断 | 麦克风拒绝、断网、额度耗尽或用户挂断 | 状态与计费结束一致；重连不产生双通话或重复用量 |
+| 转写与输入竞争 | 单聊/群聊录音转写未完成时改草稿、切回复者/会话/账号或取消 | 旧结果不覆盖新输入、不跨收件人写草稿；停止录音并释放资源，仅明确 Send 形成消息与正常用量 |
 | 作品分享与购买 | 私有作品加入合集，或购买指定 Pack | 加入合集不自动公开；买家只获得被明确授权的作品，不继承作者私人会话 |
 | 客服与退款 | 用户从失败任务提工单，运营处理后用户重访 | 保留原任务/订单关联，客户状态可更新；内部说明不作为客户结果 |
 
-这些是待执行的验收规格，不是本轮测试记录。
-
 ## 4. 分期与故事使用规则
 
-分期唯一入口为 [PRD §12](PRD.md#12-交付阶段与完整范围)。阶段 A 必须覆盖本文件所有 P0 故事；P0/P1 混合项按明确适用条件验收。阶段 B 覆盖全部 P1，包括 Voice Call、视频、群聊、Packs、Comics、社区、Coin Store 和联盟。阶段 C 是已有完整能力的规模优化。优先级不是完成状态，不重复维护容易失配的 MVP ID 清单。
+分期唯一入口为 [PRD §12](PRD.md#12-交付阶段与完整范围)。阶段 A 必须覆盖本文件所有 P0 故事；P0/P1 混合项按明确适用条件验收。阶段 B 覆盖全部 P1，包括独立语音输入、Voice Call、视频、群聊、Packs、Comics、社区、Coin Store 和联盟。阶段 C 是已有完整能力的规模优化。优先级不是完成状态，不重复维护容易失配的 MVP ID 清单。
 
 已有故事 ID 保持稳定，新增故事引用 PRD 需求族；不假设 `US-CH-xx` 与 `CH-xx` 数字一一对应。各域映射见 [对标矩阵](PRODUCT_PARITY_MATRIX.md)。每次实现应把该故事拆为正常结果、拒绝/失败、恢复、权限和计费验收，再关联所测 revision 与证据。

@@ -1,6 +1,6 @@
 # Admin 产品与运营体检清单（Chrome 执行版）
 
-编制日期：2026-09-13。用途：下一轮逐项检查 Admin 功能完整性、业务逻辑和运营闭环。**本文是验收规格，不是已通过报告；所有检查项初始均为未执行。**
+更新日期：2026-10-04。用途：逐项核验 Admin 功能、业务逻辑和运营闭环。本文是验收规格，所有检查项均未执行；实施状态与运行结果分开记录。
 
 ## 1. 结论与判断原则
 
@@ -27,11 +27,9 @@ Admin 应让运营把“发现问题或机会”推进到“用户得到正确�
 
 - 产品目标：[PRD](PRD.md)、[后台规格](BackendFeatureSpec.md)、[产品对标矩阵](PRODUCT_PARITY_MATRIX.md)、[经济规格](ECONOMY_AND_PRICING.md)。本文沿用仓库已采纳定位，不新增关于竞品现状的结论。
 - 当前阶段：[当前覆盖](CURRENT_FUNCTIONAL_COVERAGE.md)、[剩余工作](REMAINING_WORK_EXECUTION_PLAN.md)。历史证据只能说明其所绑定版本。
-- 后台设计：[Admin 导航](ADMIN_NAVIGATION.md)、[第一性原理方案](ADMIN_CONSOLE_FIRST_PRINCIPLES_REMEDIATION_PLAN.md)、[角色素材运营手册](CHARACTER_ASSET_STUDIO_OPERATIONS_GUIDE.md)、[Admin 权威 ADR](../architecture/15-admin-operating-system-authority-adr.md)、[Chat 权威 ADR](../architecture/21-companion-chat-deep-runtime.md)。
+- 后台设计：[Admin 导航](ADMIN_NAVIGATION.md)、[角色素材运营手册](CHARACTER_ASSET_STUDIO_OPERATIONS_GUIDE.md)、[Admin 权威 ADR](../architecture/15-admin-operating-system-authority-adr.md)、[Chat 权威 ADR](../architecture/21-companion-chat-deep-runtime.md)。
 - 代码入口：[导航](../../packages/admin/src/components/admin/nav-config.tsx)、[路由解析](../../packages/admin/src/components/admin/nav-routes.ts)、[角色工作台](../../packages/admin/src/features/characters/CharacterWorkspace.tsx)、[共享契约目录](../../packages/shared/src/admin/contracts)、[操作清单](../../packages/shared/src/admin/contract-registry.ts)。后文“已有入口”仅指静态定位到入口。
-- 编制时 HEAD：`bd42bcd0b1772bd579b2c2229c4c3e236b5a39f9`；开始读取时 `bun run source:revision`：`idream-worktree-224dfd960058434e1953fb1da96153a5e286eb50d5dd019468a386696d2ce26f`。工作区含大量已有未提交改动，阅读期间也可能继续变化；此值不是固定运行验收版本。
-
-本轮只读梳理产品、导航、工作台和契约并编写文档，未启动服务、未执行 Chrome 业务操作、未访问数据库或调用生成/支付。下一轮按[检查任务书](../agents/audit-brief.md)固定 source revision 后再执行。用户明确要求将本清单放入 `docs/`，因此本文保存在此；实际发现和运行证据仍放 `.scratch/`。
+执行前按 [检查任务书](../agents/audit-brief.md) 固定 source revision、服务 revision、环境、路由与权限；实际发现和运行证据写入 `.scratch/`，本文不承载日期流水账。
 
 ### 2.2 已定边界，禁止按旧方案误判
 
@@ -45,7 +43,7 @@ Admin 应让运营把“发现问题或机会”推进到“用户得到正确�
 8. 完整平台目标仍包含 Group Chat、Voice Call、Packs、Comics、Creator Economy 与 Affiliate。当前缺入口须记范围缺口；已关闭且如实说明的能力可通过“曝光边界”检查，但不能因此通过“功能实现”检查。
 9. 旧文档与上述决策冲突时使用最新明确决策；遇到没有决策依据的冲突，记“待澄清”，不能按代码现状自动缩减目标。
 
-已定位的具体冲突：[经济规格 §4.2](ECONOMY_AND_PRICING.md) 仍将访问计划争议/人工退款笼统写成 `admin_adjust`；[账务架构 §7](../architecture/08-billing-and-entitlements.md) 已明确正常已结算预付访问的全额退款使用专门 provider refund、冻结权益并精确冲销本次 grant。本清单按后者的专门流程验收，人工币补偿单独检查；旧泛化说明应另行修订，不据此把正确退款逻辑报成缺陷。
+退款口径已同步到 [经济规格 §4.2](ECONOMY_AND_PRICING.md)：正常已结算预付访问全额退款走 provider refund、冻结权益并精确冲销本次 grant，人工币补偿另查 `admin_adjust`。工程步骤见 [账务架构 §7](../architecture/08-billing-and-entitlements.md)；文档矛盾修正不代表退款链路本轮已运行通过。
 
 ## 3. Chrome 检查怎么执行
 
@@ -83,7 +81,7 @@ Admin 应让运营把“发现问题或机会”推进到“用户得到正确�
 
 | 勾选 / ID | Chrome 操作 | 正确结果 | 证据 |
 | --- | --- | --- | --- |
-| [ ] G-01 | 从菜单、全局搜索、复制 URL、新标签直接进入；刷新、后退、前进 | 页面/对象/子视图一致，未知路由真实 404，缺对象明确，不误回首页 | A |
+| [ ] G-01 | 从菜单、全局搜索、复制 URL、新标签直接进入；走内容列表→详情→编辑/新建；刷新、后退、前进 | 页面/对象/子视图一致；内容浏览与新建分开且可深链，浏览不被创建表单遮挡，详情编辑和返回保留对象及筛选上下文；未知路由真实 404，缺对象明确，不误回首页 | A |
 | [ ] G-02 | 查询已知对象、无结果、中文、完整 ID、长字符串；切换筛选和排序 | 查询范围明确，列表/计数/排序同口径，清空可恢复，旧请求不覆盖新筛选 | A |
 | [ ] G-03 | 翻到第二页及最后一页，再更换筛选；访问旧记录详情 | 无漏项/重项；筛选后游标重置；总数与当前页数不混淆 | A/E |
 | [ ] G-04 | 查看初次加载、空态、接口失败、部分接口失败；点击重试 | 空数据不等于健康/未配置；局部失败不抹掉可用区域；无无限 loading | A |
@@ -95,16 +93,16 @@ Admin 应让运营把“发现问题或机会”推进到“用户得到正确�
 | [ ] G-10 | 两标签打开同版本，A 保存后 B 用旧版本提交 | 明确版本冲突和刷新入口；业务 blockers 不误报版本冲突；不覆盖 A | A/E |
 | [ ] G-11 | 执行异步命令，离开页面再回来 | 区分已接纳、执行中、成功、失败、未知、投影未刷新；可查询原 command 终态 | A/E |
 | [ ] G-12 | 保存成功后到消费面复验，再按正式入口回滚/撤销 | 用户结果正确；回滚按领域契约保留历史；没有“页面成功、后台没生效” | A/U/E |
-| [ ] G-13 | 中文/英文切换、刷新和再次登录；查看失败、确认和空态 | 术语一致、偏好持久、无内部码大段泄露；ID 可复制，日期和金额有单位 | A |
+| [ ] G-13 | 中文/英文切换、刷新和再次登录；查看失败、确认和空态，展开工程详情 | 术语一致、偏好持久、无内部码大段泄露；工程细节和原始报错默认折叠且可追踪，运营先看到可理解原因；ID 可复制，日期和金额有单位 | A |
 | [ ] G-14 | 键盘操作筛选、菜单、弹窗、抽屉；窄屏查看长表格 | 焦点可见；Esc/关闭后焦点恢复；正文不被遮挡；按钮可达，状态不只靠颜色 | A |
-| [ ] G-15 | 查看每页主要动作、禁用动作和关联链接 | 运营能知道下一步；禁用解释缺什么并指向可用修复入口；不用抄内部 ID 才能走正常流程 | A |
+| [ ] G-15 | 查看每页用途、主要动作、禁用动作、失败提示和关联链接 | 每页有一句用途，运营能知道下一步；禁用解释缺什么并指向可用修复入口，失败提供合法的核对/恢复行动；不用抄内部 ID 才能走正常流程 | A |
 | [ ] G-16 | 查对应审计和关联记录，复查执行前后差异 | actor、target、reason、request/command、结果、时间可关联；拒绝/失败不伪造成功副作用 | A/E |
 | [ ] G-17 | 对每个批量动作先预览、变更筛选/目标版本，再确认；构造部分不可执行对象 | 确认绑定实际对象集合与版本；eligible/skipped/失败及费用可见；不把操作中变化的全列表当已确认集合；原子或逐项处理按领域契约明示 | A/E |
 | [ ] G-18 | 点击外壳全局刷新，对比当前工作台请求与更新时间，再用页内刷新 | 实际更新当前数据；不能只转动图标；查询失败不保留新时间搭配旧窗口数据 | A |
 
 ## 4. 页面与功能入口总表
 
-以下为编制时定位到的 **38 个导航/兼容目的地**，全部需要分配检查结果。相同 pathname 的 query 子视图是独立目的地。基址使用 PRE-01 中的 Admin 地址。
+以下功能入口均需分配检查结果，实际 URL 以当前导航/路由契约核对。相同 pathname 的 query 子视图是独立目的地。基址使用 PRE-01 中的 Admin 地址。
 
 | 分组 | 页面 | 当前相对 URL | 核心检查 |
 | --- | --- | --- | --- |
@@ -147,31 +145,9 @@ Admin 应让运营把“发现问题或机会”推进到“用户得到正确�
 | 系统管理 | 团队访问 | `/admin/system/access` | GV |
 | 系统管理 | 审计日志 | `/admin/system/audit` | GV |
 
-注意：`/new`、`/{id}` 是同表该行路径后的简写，执行时从实际 UI 复制完整链接；不猜测未声明的新建路由。角色详情进一步检查 `tab=project/soul/visual/assets/video/voice/preview/release/monitor`。`/admin`、已有 legacy URL、`/admin/characters/review` 等兼容链接按路由解析核对落点，不能因为名字叫 review 就恢复旧人工审核流程。审核/客服/风控兼容页的剩余动作还必须从统一工单或搜索可发现；仅知道 URL 才能访问不算运营入口完整。
+`/new`、`/{id}` 是该行路径的简写，执行时复制 UI 完整链接。角色详情核对 `tab=project/soul/visual/assets/video/voice/preview/release/monitor`；兼容链接按当前路由解析验证，不据名称恢复人工审核。审核/客服/风控兼容页的剩余动作还必须从统一工单或搜索可发现；仅知道 URL 才能访问不算运营入口完整。
 
-测试账号准备时可直接使用以下当前读取权限分组；写权限另按具体操作契约配置，不能从读权限推导：
-
-| 页面集合 | 当前入口读取权限（`+` 表示同时需要） |
-| --- | --- |
-| 今日工作 | `dashboard.read` |
-| 角色工作台 | `character.project.read` + `character.release.read` + `character.performance.read` |
-| 角色表现 | `character.performance.read` |
-| 模板、分类、精选、CMS | `content.read` |
-| 运营素材 / 展示位 / 生成历史 | 分别为 `creative.asset.read` / `creative.placement.read` / `creative.run.read` |
-| 工单 / 用户 / 账号请求 | 分别为 `case.read` / `customer.read` / `compliance.read` |
-| 审核 / 客服 / 风控 | 分别为 `safety.review.read` / `support.request.read` / `billing.read` |
-| 账务、定价 | `billing.read` |
-| 促销、公告 | `growth.promo.read` |
-| 产品健康、数据一致性 | `analytics.metric.read` |
-| 实验 | `experiment.manage`（当前没有独立只读入口权限，不能假设分析员天然可读） |
-| 事故 / 生成任务 / 聊天运维 | 分别为 `ops.incident.read` / `generation.job.read` / `chat.ops.read` |
-| 提供方、死信 | `ops.queue.read` |
-| 后端诊断、生成健康、配置诊断 | `generation.config.read`（2026-09-13 修正：三页首屏分别调 `generation/backends`、`generation/metrics`、`generation/model-profiles`，此前入口分别写成 `ops.queue.read` 与 `analytics.metric.read`，菜单可见但整页 403，见 OP-02） |
-| 配置与灰度 | `generation.config.read` + `ops.queue.read` + `generation.job.read` |
-| 提示配方、预设、工作流诊断 | `generation.config.read` |
-| 审批 / 团队访问 / 审计日志 | 分别为 `admin.approval.review` / `user.read` / `audit.read` |
-
-依据：[工作台权限映射](../../packages/admin/src/components/admin/workspace-access.ts)、导航及[API manifest](../../packages/shared/src/admin/api-manifest.ts)。若运行版本改变权限，先更新映射再准备账号。
+账号准备按 [工作台权限映射](../../packages/admin/src/components/admin/workspace-access.ts)、导航及 [API manifest](../../packages/shared/src/admin/api-manifest.ts) 的实际 read/write 契约授权；不从读权限推导写权限，也不维护第二张静态映射表。
 
 ## 5. 完整功能检查表
 
@@ -195,8 +171,8 @@ Admin 应让运营把“发现问题或机会”推进到“用户得到正确�
 
 | 勾选 / ID | 操作与验收标准 | 证据 |
 | --- | --- | --- |
-| [ ] CH-01 | 搜索、筛选官方/用户角色、草稿/线上/暂停/归档；状态、可见性、上线资格、素材齐备程度分别说明，列表与详情一致 | A |
-| [ ] CH-02 | 新建成年角色，填写资料、风格、外观、人格和开场；保存私有草稿并刷新；创建一次且直接找到下一步图片工作区 | A/E |
+| [ ] CH-01 | 用角色卡片/缩略图直接看形象，搜索、筛选官方/用户角色、草稿/线上/暂停/归档；状态、可见性、上线资格、素材齐备程度分别说明，列表与详情一致 | A |
+| [ ] CH-02 | 新建成年角色，填写资料、风格、外观、人格和开场；用一句话灵感启动 AI 辅助预填，逐字段可编辑且仍须通过成年与必填校验；保存私有草稿并刷新；创建一次且直接找到下一步图片工作区 | A/E |
 | [ ] CH-03 | 以 17/18 岁边界和缺字段提交；未成年拒绝，合法成年可继续；安全拦截不靠浏览器绕过 | A/E |
 | [ ] CH-04 | 修改 Soul、开场、外观；保存生成新内容版本；草稿与已发布内容明确分离，历史版本不原地变更 | A/E |
 | [ ] CH-05 | 中途离开、刷新、重新登录、提交结果未知后恢复；保留已保存草稿和原命令，不重复创建角色 | A/E |
@@ -204,7 +180,8 @@ Admin 应让运营把“发现问题或机会”推进到“用户得到正确�
 | [ ] CH-07 | 打开历史待审、未准备与用户提交角色；“准备发布”重验基础检查；准备不等于线上 Serving | A/U/E |
 | [ ] CH-08 | 归档未上线草稿并恢复，暂停角色直接退出运营；保留内容和素材；归档对象不再参与正常发现 | A/U/E |
 | [ ] CH-09 | 检查 Chat 工具/capability 配置、记忆与角色设定的说明；不可把计划等级变成不同人格/基础记忆质量 | A/U/E |
-| [ ] CT-01 | 创建/编辑/停用角色模板，主站 Create 实际选择；只预填同一创建链，不跳过必需步骤或改变归属 | A/U |
+| [ ] CH-10 | 核对角色创作交接的内容版本、视觉身份和角色图片库，再进入发布运营选择槽位；交接不创建 Release、不改变 Serving；内容/图片返工回到创作，不能靠修改候选绕过不可变快照 | A/U/E |
+| [ ] CT-01 | 创建/编辑/停用角色模板，用一句话 AI 辅助预填并逐字段编辑；主站 Create 实际选择；只预填同一创建链，不替代成年与字段校验、不跳过必需步骤或改变归属 | A/U |
 | [ ] CT-02 | 管理分类/标签及排序、同义名称和适用风格；重名/非法值拒绝；主站筛选能找到正确角色，无死分类 | A/U |
 | [ ] CT-03 | 删除/停用被角色、模板或公开页面引用的分类；依赖可见并按契约阻止或解除，历史展示不无声损坏 | A/U/E |
 | [ ] CT-04 | 合并两个有引用的标签；确认源/目标与影响，角色、筛选、统计引用一致；不能误丢其他分类或重复计数 | A/U/E |
@@ -216,7 +193,7 @@ Admin 应让运营把“发现问题或机会”推进到“用户得到正确�
 | [ ] IM-01 | 上传合法图片及损坏/超限/伪格式文件；成功文件可预览、归属当前角色，失败可理解且不产生虚假可用素材 | A/E |
 | [ ] IM-02 | 从角色工作台生成首图并“设为角色身份”；创建可追溯视觉身份/参考集与草稿主图，不要求旧手工审批 | A/E |
 | [ ] IM-03 | 同角色生成第二批图；记录实际 workflow/profile、引用、seed/规格和请求；变更身份后旧结果不能冒充新来源 | A/E |
-| [ ] IM-04 | 搜索整个图片库、加载较早图片、预览大图；不是只搜索当前页；产物失效明确显示不可用 | A |
+| [ ] IM-04 | 用图片网格/缩略图直接浏览素材，搜索整个图片库、加载较早图片、预览大图；不是只搜索当前页；产物失效明确显示不可用 | A |
 | [ ] IM-05 | 为肖像、详情、聊天选择三张不同可用图；允许生成图跨用途采用；同图重复占位、跨角色或失效来源被拒绝 | A/U/E |
 | [ ] IM-06 | 修改展示位后刷新并对照线上；草稿保留而线上不提前改变；只换引用，不重新生成或复制资产 | A/U/E |
 | [ ] IM-07 | 归档未引用图和正在被使用的图；显示依赖；批量操作按契约全成或全拒，不能只处理半组还报成功 | A/E |
@@ -379,13 +356,13 @@ Admin 应让运营把“发现问题或机会”推进到“用户得到正确�
 | [ ] OP-04 | 校验 profile/workflow/模型/资源绑定及真实 probe；配置检查与真实 provider 调用明确区分；修改关键配置使旧验证证据失效 | A/E |
 | [ ] OP-05 | 启用、灰度、扩大、停用、回滚版本；目标由服务端提供并跨页可找到；变更理由、影响和资格阻断可读 | A/U/E |
 | [ ] OP-06 | 开关、灰度 cohort、能力资格、角色 recipe 与用户 entitlement 联动；用户新请求只进入合法路线，旧请求固定原路线 | A/U/E |
-| [ ] OP-07 | 配方与预设新建/编辑/复制/启停，校验字段和模式；Main 显示允许的参数，不提供 backend 实际不支持的选项 | A/U/E |
+| [ ] OP-07 | 配方与预设新建/编辑/复制/启停，校验字段和模式；配方详情可试运行，展示拼接预览与证据来源，配置检查和真实生成分开，不能用固定 summary 或成功提示签发资格；Main 显示允许的参数，不提供 backend 实际不支持的选项 | A/U/E |
 | [ ] OP-08 | 工作流诊断可查版本、descriptor、输入输出和依赖；退役 runner 不回流；诊断失败能定位可修复配置 | A/E |
 | [ ] OP-09 | 查看生成健康分位数、错误率、等待/执行/交付耗时与样本窗口；口径一致，低样本及过期数据不伪装 SLA 达标 | A/E |
 | [ ] OP-10 | Profile Diagnostics 按实际配置对象查问题；不能把 `/growth/funnels` 路径误当已实现增长漏斗能力 | A |
 | [ ] OP-11 | 系统声音默认配置与试听入口可发现；目录、保存值、性别/语言映射及角色独立 active profile 关系明确；改变默认不覆盖角色已有声音 | A/U/E |
 | [ ] OP-12 | 从生成健康失败计数下钻 Jobs，核对相同日期窗口、profile、recipe、source 与状态；切 7/30 天后不能只换标题或跳到全时间失败集合 | A/E |
-| [ ] OP-13 | 普通运营使用已登记的内置 profile，核对 dry-run、测试图、发布/回滚与资格；模型文件/组件/workflow 由工程配置维护。仅显式开启 `ADMIN_MODEL_DIAGNOSTICS_ENABLED=true` 的工程诊断环境检查模型目录、注册/上传、来源/格式/失败及重复导入；默认关闭时授权请求返回 404 是预期，不要求普通 Admin 导入入口，导入不等于合格上线（[既定边界](ADMIN_CONSOLE_PLAN.md)） | A/E |
+| [ ] OP-13 | 普通运营使用已登记的内置 profile，核对 dry-run、测试图、发布/回滚与资格；模型文件/组件/workflow 由工程配置维护。仅显式开启 `ADMIN_MODEL_DIAGNOSTICS_ENABLED=true` 的工程诊断环境检查模型目录、注册/上传、来源/格式/失败及重复导入；默认关闭时授权请求返回 404 是预期，不要求普通 Admin 导入入口，导入不等于合格上线（[能力配置契约](BackendFeatureSpec.md#510-adminops-control-plane)） | A/E |
 
 ### 5.12 指标、角色表现与实验（MT、EX）
 

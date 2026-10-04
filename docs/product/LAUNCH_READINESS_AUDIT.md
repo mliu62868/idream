@@ -1,6 +1,6 @@
 # iDream 上线验收入口
 
-更新日期：2026-09-06
+更新日期：2026-10-04（验收入口整理；未新增运行资格）
 
 当前状态与证据以 [当前功能覆盖](CURRENT_FUNCTIONAL_COVERAGE.md) 为准；任务顺序见 [剩余工作](REMAINING_WORK_EXECUTION_PLAN.md)，运行步骤见 [运维手册](../architecture/10-operations.md)。本页提供验收入口，不保存一个会被新改动自动继承的“已通过”结论。
 
@@ -13,6 +13,8 @@
 - 本地 development 和受控 audit 数据只证明技术链路。公开发布、真实支付、真实用户成熟窗口与经营指标认证分别需要目标环境证据。
 
 ## 验收顺序
+
+功能验收先回答“用户能否完成任务”，部署验收再回答“目标环境能否持续提供该能力”。按域入口为 [主站清单](MAIN_SITE_HEALTH_CHECKLIST.md)、[Admin清单](ADMIN_PRODUCT_HEALTH_CHECKLIST.md)、[核心质量](CORE_EXPERIENCE_VALIDATION.md) 和 [声音清单](VOICE_RELEASE_CHECKLIST.md)；Mic输入、Voice Clip、Voice Call、Chat Animate与Generate视频序列分别取证，不相互替代。
 
 1. 固定 source revision，核对工作区、实际进程、环境与 listener；运行适合本批改动的测试和构建。新源码不得冒用旧报告。
 2. 按运维手册通过 PM2 wrapper 完成 drain、readiness、ownership 检查与必要启停。已有运行库先核查 migration/cutover 实际状态，不重复执行历史迁移。
@@ -52,7 +54,3 @@ bun run check:launch -- \
 ```
 
 `PASS` 与同版本真实浏览器、模型、恢复和观察窗证据共同决定发布结论。缺少生产输入或观察窗时，应报告具体未满足项，不能把 unknown 写成成功。
-
-## 历史证据
-
-2026-07-18 及更早上线审计快照 原文保留。其独立 Chat DB、旧视频开关、模型、端口、测试数量和命令只描述当时环境，不作为当前操作指南。

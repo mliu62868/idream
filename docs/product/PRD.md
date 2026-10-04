@@ -1,13 +1,15 @@
 # iDream 产品需求文档
 
-更新日期：2026-10-01
+更新日期：2026-10-04（产品与功能文档梳理；未新增运行验收）
 
 > **本文档是目标产品规格参考（需求 / 信息架构 / 功能地图 / 转化漏斗），不描述实现进度。**
-> 当前真实实现状态以 [`CURRENT_FUNCTIONAL_COVERAGE.md`](./CURRENT_FUNCTIONAL_COVERAGE.md) 为单一事实来源（SSoT），请勿在本文重新加入逐行实现状态列。
+> 实现证据统一汇集在 [`CURRENT_FUNCTIONAL_COVERAGE.md`](./CURRENT_FUNCTIONAL_COVERAGE.md)，每项结论仍受其日期、source revision、环境和验证范围限制。需求不能被实现现状取消，旧运行结果也不能被新源码自动继承。
 
 ## 1. 文档目的
 
-本文档定义 iDream 的产品定位、目标用户、功能优先级、页面信息架构、经济承诺和成功指标。**OurDream.ai 是 iDream 的主要产品对标：其公开可验证的发现、创建、聊天、生成、资产、社区、付费与内容体验共同构成完整度参考。**历史官方公开面证据见 [`OURDREAM_PRODUCT_PARITY_SNAPSHOT_2026-09-01.md`](../research/OURDREAM_PRODUCT_PARITY_SNAPSHOT_2026-09-01.md)；最新公开资料复核见 [2026-09-05 补充记录](../research/OURDREAM_PRODUCT_REVIEW_2026-09-05.md)。代码、数据和运行状态仍以 iDream 自己的 SSoT 为准。文档分工与阅读顺序见 [产品文档索引](README.md)。
+本文档从成年人希望获得的体验与控制出发，定义产品承诺、完整功能范围、优先级与验收原则。阅读顺序是用户目标 → 产品对象与边界 → 能力 → 完整旅程 → 度量与发布条件。页面和技术栈是实现这些目标的手段。
+
+**OurDream.ai 是 iDream 的主要产品对标：其公开可验证的发现、创建、聊天、生成、资产、社区、付费与内容体验共同构成完整度参考。**依据是 [2026-09-01 快照](../research/OURDREAM_PRODUCT_PARITY_SNAPSHOT_2026-09-01.md) 与 [2026-09-05 补充记录](../research/OURDREAM_PRODUCT_REVIEW_2026-09-05.md)，不代表今天的竞品状态。本次梳理不重新签发竞品观察或 iDream 功能通过结论。文档分工与阅读顺序见 [产品文档索引](README.md)。
 
 ## 2. 产品定位
 
@@ -22,7 +24,7 @@ iDream 是一个 **全面对标 OurDream.ai 的 18+ AI 角色扮演 / AI 伴侣�
 - **完整互动**：Chat 支持历史、Scene、记忆、编辑、重生成、举报以及已发布的图片/编辑/语音动作；Video 只有在独立 Chat capability 与 Product Action contract 发布后进入 Chat。
 - **完整生成**：Image、条件 Video、Character/Freeplay、Presets、Image Edit、背景/姿势/服装、Prompt、Advanced Settings、异步状态与 Gallery 管理构成一条完整生成链。
 - **完整资产与分发**：My AI、Created、Characters、Presets、Media、Feed、Community、Creator Profile、Like/Follow/Share/Remix/Report 都属于目标产品范围。
-- **可靠且透明**：角色身份固定、生成可追踪、重试不重复执行或扣费；聊天历史和已交付媒体不因计划到期被锁回；定价与 dreamcoin 口径见 `ECONOMY_AND_PRICING.md`。
+- **可靠且透明**：角色身份固定、生成可追踪、重试不重复执行或扣费；聊天历史和已交付媒体不因计划到期被锁回；定价与 dreamcoin 口径见 [经济规格](ECONOMY_AND_PRICING.md)。
 
 ### 2.1 用户价值与产品承诺
 
@@ -47,6 +49,42 @@ iDream 是一个 **全面对标 OurDream.ai 的 18+ AI 角色扮演 / AI 伴侣�
 - 私有内容不会因收藏、生成、进入合集或复制而自动公开。日常角色与素材通过基础自动检查后进入准备与显式发布，不增加人工批准关卡；举报、申诉和异常处理保留。
 - 用户界面以角色、场景、费用、任务进度和作品表达能力；模型、工作流和内部执行标识仅在选型、问题追踪等确有需要时披露。
 
+### 2.3 从用户结果推导能力
+
+产品首先要让用户得到可持续使用的虚构角色体验与作品。每项功能须能解释它帮助谁完成什么，以及缺少它会阻断哪一步。以下是产品设计推导；用户偏好与商业效果仍需实测，不能由这张表证明。
+
+| 用户需要得到的结果 | 必须解决的问题 | 因而需要的能力 | 对应需求 |
+| --- | --- | --- | --- |
+| 找到或创造愿意互动的人物 | 选择、理解、表达人物设定 | 发现、详情、完整创建、可恢复草稿、形象与声音预览 | EX、CR、AC |
+| 在同一个故事或关系中继续互动 | 身份、上下文、场景与控制连续 | 单聊、记忆、指令、Scene、修订、群聊、语音输入与通话 | CH |
+| 把想象转成可用的媒体 | 控制画面、保留人物、理解等待与成本 | 图片、编辑、增强、参考生成、视频序列、声音、异步交付 | GN、CH |
+| 找回、继续使用与管理自己的成果 | 归属、持久化、访问权、删除边界 | My AI、Gallery、历史、Presets、下载、复制与账号管理 | PF、AC |
+| 传播作品并建立创作者关系 | 可见性、授权、来源、发现与收益 | 显式发布、Feed、Community、Remix、Comics、Packs、Creator Studio | PF |
+| 为新能力付费并核对所得 | 报价、付款、额度、到期、异常与结算 | 预付访问、Coin Store、账本、奖励、联盟与支持 | UP、AF、SF |
+| 从公开内容进入真实产品 | 内容可信、入口有效、任务衔接 | 内容索引、指南、比较页、联盟介绍、登录后恢复意图 | SE、AF、AC |
+
+年龄与账号边界、私密性、权限、内容策略、可恢复性和运营处置贯穿所有结果。它们是能力成立的前提，不能留到某个独立“设置页”再补。完整功能库存见 [功能地图](ProductFeatureMap.md)，逐项故事与跨域恢复见 [用户故事](UserStory.md)。
+
+### 2.4 产品循环与稳定对象
+
+```mermaid
+flowchart LR
+  A[发现或完整创建角色] --> B[聊天与故事互动]
+  A --> C[生成图片、视频与声音]
+  F[Freeplay 创作] --> C
+  B --> C
+  B --> D[保存与管理会话和作品]
+  C --> D
+  D --> B
+  D --> C
+  D --> E[显式发布与社区发现]
+  E --> A
+```
+
+账号与年龄边界决定谁可以进入；权益和报价决定是否可以发起新动作；支持与运营帮助失败的任务恢复。任何一路都可以独立带来价值，不强制用户先聊天、先公开或先购买才能进入其他合法路径。
+
+循环依靠稳定的产品对象连接：Character/Soul 表达人物，Release/Serving 固定正在使用的版本；产品 Turn 与 Scene 表达已经发生的互动；Generation Request、Delivery 与 MediaAsset 表达作品的产生和归属；发布、授权与 Grant 表达别人可以如何使用它；Entitlement 与 Ledger 表达新能力和费用。对象职责见 §7，领域术语沿用 [CONTEXT.md](../../CONTEXT.md)。
+
 ## 3. 用户与角色
 
 | 用户类型 | 目标 | 核心需求 |
@@ -69,7 +107,7 @@ iDream 是一个 **全面对标 OurDream.ai 的 18+ AI 角色扮演 / AI 伴侣�
 3. 提供完整多步角色创建、私有使用、公开发布、Release/Serving 与后续编辑管理，不用 Quick Create 替代完整创作能力。
 4. 让 Chat、Image、Image Edit、Voice 和条件 Video 按各自已发布 capability 可靠交付；动作—文案一致，重复执行与重复扣费为 0。
 5. 让 My AI、Gallery、Feed、Community 和 Creator Profile 构成完整的资产管理与发现/分发闭环。
-6. 建立简单、透明、可恢复的经济契约：先报价，后执行；未交付自动退款；计划到期不夺走既有历史和媒体。
+6. 建立简单、透明、可恢复的经济契约：先报价，后执行；明确失败、拦截或可退款取消按权威状态释放或退款；未知结果先核对，计划到期不夺走既有历史和媒体。
 7. 公开路由只有在存在真实产品能力或已发布内容时才能上线；路由数量和模板占位不能冒充完整对标。
 
 ### 4.1 明确非目标
@@ -82,6 +120,19 @@ iDream 是一个 **全面对标 OurDream.ai 的 18+ AI 角色扮演 / AI 伴侣�
 ### 4.2 完整对标的定量验收
 
 “有这个控件”不等于完整对标。当前带日期的公开广度基线统一记录在 `ProductFeatureMap.md §1.1`；每个维度必须在 parity matrix 中被判定为 `matched`、`equivalent` 或 `intentional_divergence`，并绑定产品理由与真实证据。未分类、只有极少选项或只展示静态入口，一律仍算缺口。观察值用于对标验收，不写死为运行时 Catalog。
+
+### 4.3 所有功能共同遵守的契约
+
+| 不变量 | 对用户的具体含义 | 契约入口 |
+| --- | --- | --- |
+| 人物与互动连续 | 创建、Chat、Generate 和发布使用明确的人物版本；改草稿不偷偷改变线上角色；记忆派生自已提交历史 | [Chat PRD](CHAT_SERVICE_PRD.md)、[图片系统](CHARACTER_IMAGE_GENERATION_SYSTEM.md) |
+| 用户拥有明确控制 | 私有保存、公开发布、分享、Remix 和删除各是独立动作；收藏或生成不自动公开；账号切换不串数据 | [用户故事](UserStory.md)、[内容策略](CONTENT_POLICY.md) |
+| 接纳、执行、交付分开 | “已接受”只表示请求成立，进度不是成果；用户能查看结果属于哪次请求，只有真实交付才宣称完成 | [后台规格](BackendFeatureSpec.md) |
+| 费用与权利可核对 | 执行前明示报价和权益；同一动作重放不重复执行或扣费；到期只限制新能力，既有成果按原权利保留 | [经济规格](ECONOMY_AND_PRICING.md) |
+| 失败与未知可以恢复 | 明确失败给原因与可行下一步；超时/断网先查原请求，不引导用户盲目再付一次；刷新后结果仍可查询 | [用户故事](UserStory.md) |
+| 公开承诺符合事实 | 功能、角色、内容、权益和指标均须有自己的发布依据；未发布与真实空结果分别表达 | [对标矩阵](PRODUCT_PARITY_MATRIX.md)、[当前覆盖](CURRENT_FUNCTIONAL_COVERAGE.md) |
+
+对会产生产品副作用的功能，最小完整链为：**可理解的输入 → 权限与报价 → 用户明确接纳 → 可追踪执行 → 交付或明确失败 → 持久化与费用/权利 → 刷新、重试或恢复**。只读能力同样须处理权限、有效结果、空态和失败。功能规格必须把这些部分写清，具体成功、异常和恢复场景由用户故事承接。
 
 ## 5. 信息架构
 
@@ -298,34 +349,27 @@ OurDream 公开可验证的页面族全部进入对标库存，但 iDream 只在
 
 ## 7. 产品实体与权威映射
 
-本节名称表达目标产品的职责和唯一权威，不声称每个名称都已按同名物理表落地。当前 schema、代码和 legacy compatibility 的真实状态仍以 `packages/main/prisma/schema.prisma`、`packages/*/src` 与 `CURRENT_FUNCTIONAL_COVERAGE.md` 为准。
+本节定义产品对象如何连接用户结果，不把概念名称当作已存在的物理表，也不在 PRD 重复维护字段表。实体、API、权限和状态转换详见 [后台规格](BackendFeatureSpec.md)，实际 schema 与执行边界见 [数据模型](../architecture/03-data-model.md) 及相关 ADR；实现证据统一进入当前覆盖。
 
-| 实体 | 关键字段 |
-| --- | --- |
-| User | id、email、displayName、ageGateAcceptedAt、createdAt；只承担账号与身份权威 |
-| Entitlement | userId、plan/offer snapshot、capability、limit/usage window、validFrom、benefitsEndAt；不得改变 Chat 人格或基础记忆 |
-| AgeVerification | id、userId、provider、status、jurisdiction、verifiedAt、expiresAt、metadata |
-| CharacterDraft | id、ownerId、brief、coreIdentity、soulDraft、visualDirection、candidateAssetIds、selectedAnchorAssetId、step |
-| CharacterPreviewJob | id、draftId、status、resultAssetId、error |
-| Character | id、name、age、description、creatorId、visibility、style、tags、currentContentVersionId、status、imageAssetId、stats |
-| CharacterContentVersion | id、characterId、version、personaSnapshot、openingSnapshot、appearanceSnapshot、contentHash、sourceType |
-| CharacterVisualProfile | id、characterId、version、status、identityPrompt、anchorAssetIds、referenceAssetIds、defaultSeed、adapterRefs、qualityScore、consistencyScore |
-| CharacterRelease / Serving | immutable content/visual/reference/voice snapshot 与唯一 runtime pointer |
-| RecentChat | sessionId、userId、characterId、memoryEnabled、content/release/visual pins、openingMessage、lastMessageAt |
-| ChatTurn | id、sessionId、attempt、userContent、assistantContent/status、Scene、memoryEnabled、terminalEvidence、identity pins |
-| ChatTurnAttachment | id、turnId、kind、status、generationJobId、mediaAssetId、errorCode、metadata |
-| CompanionMemoryAuthority | user-character aggregateId、monotonic version；Main committed Turns 可重建 official igrep workspace |
-| GenerationPreset | id、ownerId、scope、type、category、label、controls、visibility |
-| GenerationJob（Request aggregate） | id、userId、characterId、mode、accepted brief/controls、identity pins、status、reserved cost |
-| GenerationAttempt / Artifact / Delivery | requestId、attempt/transport lineage、immutable terminal evidence、artifact、target、delivery status |
-| MediaAsset | id、ownerId、type、url、thumbnailUrl、prompt、liked、visibility、safetyStatus |
-| Subscription（legacy physical name） | id、userId、plan、status、billingPeriod、provider、providerSubscriptionId、currentPeriodStart、currentPeriodEnd（公开映射为 benefitsEndAt，不代表 renewsAt） |
-| DreamcoinLedger | id、userId、delta、reason、sourceId/idempotencyKey、createdAt；append-only balance authority |
-| Referral | id、inviterId、inviteeId、code、status、rewardStatus、createdAt |
-| RedeemCode | id、code、reward、status、redeemedBy、redeemedAt |
-| ContentReport | id、reporterId、targetType、targetId、reason、status、reviewerId |
-| Appeal | id、userId、targetType、targetId、decisionId、status、appealText、resolvedAt |
-| RoutePage | path、template、title、description、canonical、contentStatus |
+| 产品对象（契约名） | 对用户或运营承担的职责 | 不可混淆的边界 | 详细契约 |
+| --- | --- | --- | --- |
+| 账号与年龄（User、AgeVerification） | 识别用户、隔离资产、决定受限能力访问 | 自助年龄确认与身份核验不同；账号失效不意味着请求已失败 | [后台规格](BackendFeatureSpec.md)、[内容策略](CONTENT_POLICY.md) |
+| 创建草稿与预览（CharacterDraft、CharacterPreviewJob） | 保存创作输入，比较人物候选并继续修改 | 预览失败不丢草稿；保存私有角色与公开发布分开 | [用户故事](UserStory.md)、[图片系统](CHARACTER_IMAGE_GENERATION_SYSTEM.md) |
+| 人物与内容版本（Character、CharacterContentVersion、Soul） | 固定名字、成年身份、人格、背景与开场 | 稳定人格、动态 Scene、用户指令和关系记忆分别有来源 | [Chat PRD](CHAT_SERVICE_PRD.md)、[Soul ADR](../architecture/18-character-soul-runtime-design.md) |
+| 视觉与声音身份（CharacterVisualProfile、Voice Identity） | 让用户在图片、视频与声音中认出同一个人物 | 候选、合格素材、采用和激活不同；新默认不重写旧请求身份 | [图片系统](CHARACTER_IMAGE_GENERATION_SYSTEM.md)、[声音验收](VOICE_RELEASE_CHECKLIST.md) |
+| 发布版本与正在服务的角色（CharacterRelease / Serving） | 明确线上使用哪一组内容、身份与图片 | 创作交接、发布候选、发布、暂停和回滚分开；草稿不改变 Serving | [运营指南](CHARACTER_ASSET_STUDIO_OPERATIONS_GUIDE.md)、[后台规格](BackendFeatureSpec.md) |
+| 会话（RecentChat） | 找回与角色的互动并继续当前故事 | 用户、角色、群聊参与者及版本有明确权限和关联 | [Chat PRD](CHAT_SERVICE_PRD.md) |
+| 产品 Turn 与附件（ChatTurn、ChatTurnAttachment） | 保存用户消息、选中回复及交付媒体 | Agent 运行和流式草稿不是历史；修订不能静默改写后续因果 | [Chat PRD](CHAT_SERVICE_PRD.md)、[ADR-21](../architecture/21-companion-chat-deep-runtime.md) |
+| 场景与陪伴记忆（Scene、CompanionMemoryAuthority） | 延续当前情境与用户已表达事实 | Scene 不等于长期记忆；记忆可暂停、纠正、删除重建，不另立历史权威 | [Chat PRD](CHAT_SERVICE_PRD.md) |
+| 可复用生成设置（GenerationPreset） | 保存与再次使用喜欢的背景、姿势、服装或 Look | 内置、自有、社区和自定义来源分别受权益与可见性约束 | [功能地图](ProductFeatureMap.md)、[用户故事](UserStory.md) |
+| 生成请求与执行（GenerationJob、GenerationAttempt） | 固定已接受的输入、参考、人物版本与报价，追踪进度和重试 | 一个请求可有多个执行尝试；重放不创建新的消费意图 | [后台规格](BackendFeatureSpec.md)、[图片系统](CHARACTER_IMAGE_GENERATION_SYSTEM.md) |
+| 产物、交付与资产（Artifact、Delivery、MediaAsset） | 证明作品确实生成、交付到正确位置并可再次访问 | 产物存在不等于交付完成；技术成功不等于符合画面或声音任务 | [后台规格](BackendFeatureSpec.md)、[用户故事](UserStory.md) |
+| 付费访问与权益（Entitlement、Subscription） | 表达已购买周期内可以发起的新能力 | Subscription 是历史物理名称，不承诺自动续费；到期不锁回既有资产 | [经济规格](ECONOMY_AND_PRICING.md) |
+| 费用与奖励（DreamcoinLedger、Referral、RedeemCode） | 核对余额、唯一消耗、退款和奖励 | 账本追加记录；推荐奖励不等于联盟佣金，预期收入不等于到账 | [经济规格](ECONOMY_AND_PRICING.md)、[后台规格](BackendFeatureSpec.md) |
+| 公开内容与作品授权（RoutePage、公开作品、Packs / Grant） | 决定哪些内容可以发现、谁可以怎样使用成果 | 目录库存不是已发布页面；合集不是 Pack；撤下与已有权利分别处理 | [用户故事](UserStory.md)、[后台规格](BackendFeatureSpec.md) |
+| 举报、申诉与支持（ContentReport、Appeal、Support ticket） | 给问题可追踪的回执、处理状态和解决结果 | 运营处置须记录对象、原因、权限与审计；帮助不被高级计划挡住 | [内容策略](CONTENT_POLICY.md)、[后台规格](BackendFeatureSpec.md) |
+
+Main PostgreSQL 保存产品 Turn、交付、权限和计费权威；Chat 的 AgentRun 与陪伴记忆承载执行、恢复和可重建投影。产品文档只声明这条必要边界；执行协议以 ADR-21 为准，不再维护一套平行的 Chat 数据模型。
 
 ## 8. 关键转化漏斗
 
@@ -441,7 +485,7 @@ Explore、Create、Chat、Generate、My AI、Feed/Community/Creator Economy、Up
 | 重复执行/重复扣费（红线） | 0 | 同一 effect identity 的重复 Generation / ledger settlement |
 | 审核误杀率（红线） | ≤ 2% | `content_reported` / moderation 申诉翻案率（`moderation_appeal_started` 翻案占比） |
 
-红线说明：生成成功率与审核误杀率是**体验/合规护栏**而非增长指标——低于/高于红线应触发告警与排障（见 09-observability、admin 后台），不以牺牲它们换转化。
+红线说明：生成成功率与审核误杀率是**体验/合规护栏**而非增长指标——低于/高于红线应触发告警与排障，见[运维手册](../architecture/10-operations.md)与[后台规格](BackendFeatureSpec.md)，不以牺牲它们换转化。
 
 ### 10.3 度量原则
 
