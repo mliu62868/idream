@@ -282,6 +282,61 @@ describe("ProfileWorkspace media pagination", () => {
     }
   });
 
+  async function type(selector: string, value: string) {
+    const input = container.querySelector<HTMLInputElement>(selector)!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+
+  it("changes the password beside the account controls and blocks a common one before sending", async () => {
+    await mountMedia("/profile");
+    await type('[aria-label="Current account password"]', "Current-pass-1004");
+    await type('[aria-label="New account password"]', "password123");
+    await click(button("Change password"));
+    expect(requests).not.toContain("/api/v1/account/password");
+    expect(container.querySelector('[data-testid="profile-account-status"]')?.textContent).toMatch(/too common/);
+
+    await type('[aria-label="Current account password"]', "Current-pass-1004");
+    await type('[aria-label="New account password"]', "A-much-better-passphrase");
+    await click(button("Change password"));
+    const call = vi.mocked(globalThis.fetch).mock.calls.find(([input]) => String(input) === "/api/v1/account/password");
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+      password: "Current-pass-1004", newPassword: "A-much-better-passphrase", expectedUserId: "viewer-a",
+    });
+    expect(container.querySelector('[data-testid="profile-account-status"]')?.textContent).toBe(
+      "Password changed. All other sessions were signed out.",
+    );
+    expect(container.querySelector('[data-testid="profile-status"]')).toBeNull();
+  });
+
+  it("explains a rejected display name next to the field and refreshes the header after saving", async () => {
+    let reject = true;
+    override = (path, init) => path === "/api/v1/profile" && init?.method === "PATCH" && reject
+      ? Promise.resolve(Response.json({ ok: false, error: { message: "Validation failed", details: {
+          fieldErrors: { displayName: ["Display name must be 80 characters or fewer."] },
+        } } }, { status: 400 }))
+      : undefined;
+    const profileChanged = vi.fn();
+    window.addEventListener("idream-profile-changed", profileChanged);
+    try {
+      await mountMedia("/profile");
+      await type('[aria-label="Display name"]', "Too long");
+      await click(button("Save profile"));
+      expect(container.querySelector('[data-testid="profile-settings-status"]')?.textContent).toBe(
+        "Display name must be 80 characters or fewer.",
+      );
+      expect(profileChanged).not.toHaveBeenCalled();
+      reject = false;
+      await click(button("Save profile"));
+      expect(container.querySelector('[data-testid="profile-settings-status"]')?.textContent).toBe("Profile updated.");
+      expect(profileChanged).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener("idream-profile-changed", profileChanged);
+    }
+  });
+
   it("preserves an unsaved profile name when focus confirms the same owner", async () => {
     await mountMedia("/profile");
     const name = container.querySelector<HTMLInputElement>('[aria-label="Display name"]')!;

@@ -15,6 +15,7 @@ vi.mock("next/link", () => ({
     createElement("a", { href }, children),
 }));
 
+import { AGE_GATE_HINT_ATTRIBUTE, ageGateHintScript } from "@/lib/age-gate";
 import { AgeGateBoundary } from "./AgeGateBoundary";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -81,6 +82,51 @@ describe("AgeGateBoundary browser-history recovery", () => {
     expect(container.querySelector('[role="dialog"]')).toBeNull();
     expect(container.querySelector("[data-age-gate-content]")?.hasAttribute("inert"))
       .toBe(false);
+  });
+});
+
+describe("age gate first-paint hint", () => {
+  afterEach(() => {
+    document.documentElement.removeAttribute(AGE_GATE_HINT_ATTRIBUTE);
+    document.cookie = "AdultContentAcceptedOD=; path=/; max-age=0";
+    vi.unstubAllGlobals();
+  });
+
+  it("marks the document only when the server-written acceptance cookie is present", () => {
+    new Function(ageGateHintScript)();
+    expect(document.documentElement.hasAttribute(AGE_GATE_HINT_ATTRIBUTE)).toBe(false);
+
+    document.cookie = "AdultContentAcceptedOD=true; path=/";
+    new Function(ageGateHintScript)();
+    expect(document.documentElement.getAttribute(AGE_GATE_HINT_ATTRIBUTE)).toBe("accepted");
+  });
+
+  it("keeps protected content gated while hinted, and drops the hint when Main refuses", async () => {
+    vi.stubGlobal("localStorage", memoryStorage());
+    document.cookie = "AdultContentAcceptedOD=true; path=/";
+    new Function(ageGateHintScript)();
+    let finishRestore: ((response: Response) => void) | undefined;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => {
+      finishRestore = resolve;
+    })));
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(createElement(AgeGateBoundary, null, createElement("main", null, "Detail")));
+    });
+
+    // Overlay is still rendered (hidden by the hint CSS), content is still inert.
+    const overlay = container.querySelector('[aria-label="Checking age access"]');
+    expect(overlay?.className).toContain("[html[data-age-gate-hint=accepted]_&]:hidden");
+    expect(container.querySelector("[data-age-gate-content]")?.hasAttribute("inert")).toBe(true);
+
+    await act(async () => finishRestore?.(new Response(null, { status: 403 })));
+    expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(document.documentElement.hasAttribute(AGE_GATE_HINT_ATTRIBUTE)).toBe(false);
+
+    await act(async () => root.unmount());
+    container.remove();
   });
 });
 

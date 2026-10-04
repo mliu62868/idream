@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { AffiliateClickTracker } from "@/components/ourdream/AffiliateClickTracker";
 import { AgeGateBoundary } from "@/components/ourdream/AgeGateBoundary";
 import { AnnouncementBanner } from "@/components/ourdream/AnnouncementBanner";
+import { ageGateHintScript } from "@/lib/age-gate";
 import { publicSiteOrigin } from "@/lib/public-site-origin";
 import "./globals.css";
 
@@ -35,7 +36,11 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="dark h-full antialiased">
+    // suppressHydrationWarning: ageGateHintScript 在水合前给 <html> 加 data 属性（见 lib/age-gate）。
+    <html lang="en" className="dark h-full antialiased" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: ageGateHintScript }} />
+      </head>
       <body className="min-h-full">
         <AffiliateClickTracker />
         <AgeGateBoundary>

@@ -27,7 +27,9 @@ describe("rate limit identity", () => {
     const forwarded = new Request("http://localhost/api/v1/reports", {
       headers: { "x-forwarded-for": "203.0.113.9, 70.41.3.18" },
     });
-    expect(rateLimitIdentity(forwarded, undefined)).toBe("ip:203.0.113.9");
+    // The rightmost hop is the address our single ingress proxy observed; a
+    // client-supplied value can only appear to its left.
+    expect(rateLimitIdentity(forwarded, undefined)).toBe("ip:70.41.3.18");
 
     const real = new Request("http://localhost/api/v1/reports", {
       headers: { "x-real-ip": "203.0.113.10" },

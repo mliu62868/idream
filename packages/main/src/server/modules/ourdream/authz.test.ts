@@ -72,7 +72,7 @@ describe("auth lifecycle (cookie session)", () => {
   it("signs up, sets a session cookie, grants the signup bonus, and reflects /me", async () => {
     const signup = await api("POST", "auth/signup", {
       ageGate: true,
-      body: { email: `${P}alice@test.local`, password: "password123", name: "Alice" },
+      body: { email: `${P}alice@test.local`, password: "Fixture-pass-1004", name: "Alice" },
     });
     expectOk(signup);
     expect(signup.setCookies.join(";")).toContain("idream_session=");
@@ -120,7 +120,7 @@ describe("auth lifecycle (cookie session)", () => {
     const signup = await api("POST", "auth/signup", {
       ageGate: true,
       anonymousId,
-      body: { email, password: "password123", name: "Immutable Signup" },
+      body: { email, password: "Fixture-pass-1004", name: "Immutable Signup" },
     });
     expectOk(signup);
 
@@ -145,7 +145,7 @@ describe("auth lifecycle (cookie session)", () => {
       const signup = await api("POST", "auth/signup", {
         ageGate: true,
         anonymousId: `${P}atomic-failure-anon`,
-        body: { email, password: "password123", name: "Atomic Failure" },
+        body: { email, password: "Fixture-pass-1004", name: "Atomic Failure" },
       });
       expectOk(signup);
       expect(signup.setCookies.join(";")).toContain("idream_session=");
@@ -162,7 +162,7 @@ describe("auth lifecycle (cookie session)", () => {
         const signup = await api("POST", "auth/signup", {
           ageGate: true,
           anonymousId: `${P}canonical-failure-anon`,
-          body: { email, password: "password123", name: "Canonical Failure" },
+          body: { email, password: "Fixture-pass-1004", name: "Canonical Failure" },
         });
         expectError(signup, 500, "internal");
         await expect(prisma.user.count({ where: { email } })).resolves.toBe(0);
@@ -185,7 +185,7 @@ describe("auth lifecycle (cookie session)", () => {
       Array.from({ length: 8 }, () => api("POST", "auth/signup", {
         ageGate: true,
         anonymousId,
-        body: { email, password: "password123", name: "Concurrent" },
+        body: { email, password: "Fixture-pass-1004", name: "Concurrent" },
       })),
     );
 
@@ -200,11 +200,11 @@ describe("auth lifecycle (cookie session)", () => {
     const email = `${P}bob@test.local`;
     await api("POST", "auth/signup", {
       ageGate: true,
-      body: { email, password: "password123", name: "Bob" },
+      body: { email, password: "Fixture-pass-1004", name: "Bob" },
     });
     const dup = await api("POST", "auth/signup", {
       ageGate: true,
-      body: { email, password: "password123", name: "Bob2" },
+      body: { email, password: "Fixture-pass-1004", name: "Bob2" },
     });
     expectError(dup, 409, "conflict");
 
@@ -214,7 +214,7 @@ describe("auth lifecycle (cookie session)", () => {
     expectError(badLogin, 401, "unauthorized");
 
     const goodLogin = await api("POST", "auth/login", {
-      body: { email, password: "password123" },
+      body: { email, password: "Fixture-pass-1004" },
     });
     expectOk(goodLogin);
     expect(goodLogin.setCookies.join(";")).toContain("idream_session=");
@@ -224,7 +224,7 @@ describe("auth lifecycle (cookie session)", () => {
     const email = `${P}telemetry-failure@test.local`;
     const signup = await api("POST", "auth/signup", {
       ageGate: true,
-      body: { email, password: "password123", name: "Telemetry Failure" },
+      body: { email, password: "Fixture-pass-1004", name: "Telemetry Failure" },
     });
     expectOk(signup);
     const userId = signup.data.user.id as string;
@@ -234,7 +234,7 @@ describe("auth lifecycle (cookie session)", () => {
       ["login", "age_gate_accepted"],
       async () => {
         const login = await api("POST", "auth/login", {
-          body: { email, password: "password123" },
+          body: { email, password: "Fixture-pass-1004" },
         });
         expectOk(login);
         expect(login.setCookies.join(";")).toContain("idream_session=");
@@ -293,7 +293,7 @@ describe("auth lifecycle (cookie session)", () => {
       ageGate: true,
       body: {
         email: `${P}operator@admin.idream.internal`,
-        password: "password123",
+        password: "Fixture-pass-1004",
         name: "Reserved Operator",
       },
     });
@@ -311,14 +311,14 @@ describe("auth lifecycle (cookie session)", () => {
     const first = await api("POST", "auth/signup", {
       ageGate: true,
       anonymousId,
-      body: { email: firstEmail, password: "password123", name: "Anon Owner" },
+      body: { email: firstEmail, password: "Fixture-pass-1004", name: "Anon Owner" },
     });
     expectOk(first);
 
     const second = await api("POST", "auth/signup", {
       ageGate: true,
       anonymousId,
-      body: { email: secondEmail, password: "password123", name: "Anon New" },
+      body: { email: secondEmail, password: "Fixture-pass-1004", name: "Anon New" },
     });
     expectOk(second);
 

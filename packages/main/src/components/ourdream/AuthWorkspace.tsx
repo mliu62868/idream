@@ -10,6 +10,7 @@ import {
 import { ArrowRight } from "lucide-react";
 import Link from "next/link";
 import { REFERRAL_REWARD } from "@idream/shared/coins";
+import { newPasswordProblem, PASSWORD_HINT } from "@/lib/password-policy";
 import { parseViewerAuthorityResponse } from "@/lib/public-api-contracts";
 import { authHrefForTarget, safeInternalAuthRedirect } from "./authRedirect";
 import { AccountRecovery, RecoveryCodeCard } from "./AccountRecovery";
@@ -71,6 +72,16 @@ export function AuthWorkspace({
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    // 与服务端同一份规则（lib/password-policy），提交前就告诉用户，不消耗注册额度。
+    const passwordProblem = mode === "signup" ? newPasswordProblem(password, email) : null;
+    if (mode === "signup" && !name.trim()) {
+      setStatus("Enter a display name.");
+      return;
+    }
+    if (passwordProblem) {
+      setStatus(passwordProblem);
+      return;
+    }
     setPending(true);
     setStatus("");
     try {
@@ -82,8 +93,7 @@ export function AuthWorkspace({
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(
-          // A blank display name is optional, not an invalid one.
-          mode === "signup" ? { email, password, name: name.trim() || undefined, ref } : { email, password },
+          mode === "signup" ? { email, password, name: name.trim(), ref } : { email, password },
         ),
       });
       const payload = (await response.json().catch(() => null)) as {
@@ -172,12 +182,23 @@ export function AuthWorkspace({
             <label className="block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
               Display name
               <input
+                aria-describedby="signup-display-name-hint"
                 className="mt-2 h-12 w-full rounded-[12px] bg-[rgb(36,36,36)] px-4 text-[14px] normal-case text-white outline-none"
                 disabled={!interactive}
+                maxLength={80}
                 onChange={(event) => setName(event.target.value)}
+                required
                 value={name}
               />
             </label>
+          )}
+          {mode === "signup" && (
+            <p
+              className="mt-1 text-[12px] font-medium text-[rgb(140,140,140)]"
+              id="signup-display-name-hint"
+            >
+              Shown publicly on characters and other content you publish.
+            </p>
           )}
           <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
             Email
@@ -185,6 +206,7 @@ export function AuthWorkspace({
               className="mt-2 h-12 w-full rounded-[12px] bg-[rgb(36,36,36)] px-4 text-[14px] normal-case text-white outline-none"
               disabled={!interactive}
               onChange={(event) => setEmail(event.target.value)}
+              required
               type="email"
               value={email}
             />
@@ -194,11 +216,22 @@ export function AuthWorkspace({
             <input
               className="mt-2 h-12 w-full rounded-[12px] bg-[rgb(36,36,36)] px-4 text-[14px] normal-case text-white outline-none"
               disabled={!interactive}
+              aria-describedby={mode === "signup" ? "signup-password-hint" : undefined}
+              autoComplete={mode === "signup" ? "new-password" : "current-password"}
               onChange={(event) => setPassword(event.target.value)}
+              required
               type="password"
               value={password}
             />
           </label>
+          {mode === "signup" && (
+            <p
+              className="mt-1 text-[12px] font-medium text-[rgb(140,140,140)]"
+              id="signup-password-hint"
+            >
+              {PASSWORD_HINT}
+            </p>
+          )}
           <button
             className="mt-5 flex h-12 w-full items-center justify-center gap-2 rounded-full bg-[linear-gradient(0deg,#ff1cac,#fd5fc2_50%,#ff79d1)] text-[14px] font-black text-white disabled:opacity-70"
             disabled={!interactive || pending}

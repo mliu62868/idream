@@ -2,7 +2,10 @@
 
 import { usePathname } from "next/navigation";
 import { createContext, useContext, useEffect, useState } from "react";
-import { AGE_GATE_COOKIE_NAME } from "@/lib/age-gate";
+import {
+  AGE_GATE_COOKIE_NAME,
+  AGE_GATE_HINT_ATTRIBUTE,
+} from "@/lib/age-gate";
 import { parseViewerAuthorityResponse } from "@/lib/public-api-contracts";
 import { AgeGate } from "./AgeGate";
 
@@ -10,8 +13,6 @@ export type AgeGateState = "checking" | "accepted" | "blocked";
 export type AgeGateHistoryRecoveryAction = "restore" | "recheck" | null;
 
 const AGE_GATE_STORAGE_KEY = "AdultContentAcceptedOD";
-const AGE_GATE_COOKIE =
-  "AdultContentAcceptedOD=true; path=/; max-age=31536000; samesite=lax";
 const ageGateBypassPrefixes = ["/safety", "/internal-preview"];
 const ageGateBypassExact = new Set(["/terms"]);
 
@@ -133,6 +134,13 @@ export function AgeGateBoundary({
   }, [pathname]);
 
   useEffect(() => {
+    // DB 判定未接受：首帧视觉提示作废，之后任何 checking 都回到黑色遮罩。
+    if (state === "blocked") {
+      document.documentElement.removeAttribute(AGE_GATE_HINT_ATTRIBUTE);
+    }
+  }, [state]);
+
+  useEffect(() => {
     if (state === "accepted") return;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
@@ -171,7 +179,7 @@ export function AgeGateFrame({
       {state === "checking" ? (
         <div
           aria-label="Checking age access"
-          className="fixed inset-0 z-50 grid place-items-center bg-black"
+          className="fixed inset-0 z-50 grid place-items-center bg-black [html[data-age-gate-hint=accepted]_&]:hidden"
           role="status"
         >
           <span className="sr-only">Checking age access</span>
@@ -241,6 +249,6 @@ async function restoreAgeGateAuthority() {
       policyVersion: "2026-06-13",
     }),
   });
+  // 年龄门 cookie 由 Main 在响应里 Set-Cookie；客户端不自行写出等效 cookie。
   if (!response.ok) throw new Error("Age gate restore failed");
-  document.cookie = AGE_GATE_COOKIE;
 }

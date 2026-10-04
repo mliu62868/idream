@@ -61,8 +61,8 @@ export function AgeGate({
         }),
       });
       if (!response.ok) throw new Error("Age gate accept failed");
+      // 年龄门 cookie 由 Main 在响应里 Set-Cookie（只在 DB 接受成功后），这里不再自写。
       localStorage.setItem("AdultContentAcceptedOD", "true");
-      document.cookie = "AdultContentAcceptedOD=true; path=/; max-age=31536000; samesite=lax";
       window.dispatchEvent(new Event("idream-age-gate-accepted"));
       onAccepted?.();
       setVisible(false);

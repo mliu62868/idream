@@ -88,8 +88,13 @@ function enabled(): boolean {
 /**
  * 限流身份。已登录用户按 userId，匿名按可信代理传来的客户端 IP。
  *
- * INVARIANT: 只认反代注入的头。生产必须让入口反代覆盖 x-forwarded-for，
- * 否则匿名请求会退化成共享一个桶 —— 那是保守方向的失败，可接受。
+ * INVARIANT: 取 x-forwarded-for 的**最右一跳**——那是唯一一层入口反代亲眼看到的
+ * 连接地址。部署前提：Main 前面恰好一层入口反代（覆盖或追加 XFF 都可以）。
+ * 客户端自带的 XFF 只会出现在左侧，追加型反代下也选不了自己的桶；以前取第一段时，
+ * 追加型反代会让客户端任选身份绕过限流。
+ * 无反代直连时 Next 只在缺头时补上 socket 地址，客户端自带的头原样透传 —— 这种部署
+ * 不受支持（见 docs/product/PRODUCTION_SECRET_CHECKLIST.md）。本机开发所有请求都是
+ * ::1，共用一个桶是真实情况，不是缺陷。
  */
 export function rateLimitIdentity(
   request: Request,
@@ -97,8 +102,8 @@ export function rateLimitIdentity(
 ): string {
   if (userId) return `user:${userId}`;
   const forwarded = request.headers.get("x-forwarded-for");
-  const first = forwarded?.split(",")[0]?.trim();
-  if (first) return `ip:${first}`;
+  const nearest = forwarded?.split(",").at(-1)?.trim();
+  if (nearest) return `ip:${nearest}`;
   const real = request.headers.get("x-real-ip")?.trim();
   if (real) return `ip:${real}`;
   return "ip:unknown";

@@ -126,7 +126,7 @@ describe("ourdream API dispatcher", () => {
       "/auth/signup",
       {
         email: testEmail,
-        password: "password123",
+        password: "Fixture-pass-1004",
         name: "API Smoke User",
       },
       { cookie: cookieHeader(accepted.cookies) },
