@@ -720,13 +720,14 @@ describe("ProfileWorkspace media pagination", () => {
     expect(container.querySelector('[data-testid="profile-account-management-panel"]')!.closest(".max-w-5xl")).toBe(libraryColumn);
   });
 
-  it("keeps the collection form behind Add to collection and opens the full image in a new tab", async () => {
+  it("keeps the collection form behind Add to collection and opens the full image in the viewer", async () => {
     await mountMedia();
     const card = container.querySelector('[data-media-id="image-1"]')!;
     expect(card.querySelector('[aria-label="Collection name"]')).toBeNull();
-    const fullImage = card.querySelector<HTMLAnchorElement>('a[aria-label="Open full image"]')!;
-    expect(fullImage.getAttribute("href")).toBe("/user-content/image-1.png");
-    expect(fullImage.getAttribute("target")).toBe("_blank");
+    await click(card.querySelector<HTMLButtonElement>('button[aria-label="View image larger"]')!);
+    expect(container.querySelector('[data-testid="media-lightbox-image"]')?.getAttribute("src")).toBe("/user-content/image-1.png");
+    await click(container.querySelector('[data-testid="media-lightbox"] button[aria-label="Close"]')!);
+    expect(container.querySelector('[data-testid="media-lightbox"]')).toBeNull();
     const toggle = [...card.querySelectorAll("button")].find((item) => item.textContent?.trim() === "Add to collection")!;
     await click(toggle);
     expect(toggle.getAttribute("aria-expanded")).toBe("true");

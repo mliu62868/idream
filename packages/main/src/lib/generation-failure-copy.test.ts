@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { generationFailureCopy } from "./generation-failure-copy";
+import { generationFailureCopy, unknownOutcomeCopy, UNKNOWN_SETTLEMENT_GRACE_MS } from "./generation-failure-copy";
 
 describe("generationFailureCopy", () => {
   it("explains an auto-settled unknown outcome without claiming an operator did it", () => {
@@ -33,5 +33,18 @@ describe("generationFailureCopy", () => {
 
   it("has nothing to say when there is no error code", () => {
     expect(generationFailureCopy(null)).toBeNull();
+  });
+});
+
+describe("unknownOutcomeCopy", () => {
+  it("promises the automatic refund on the sweeper's schedule instead of sending the reader to support", () => {
+    const copy = unknownOutcomeCopy(8);
+    expect(copy).toContain("8 coins are refunded automatically within about 30 minutes");
+    expect(copy).not.toMatch(/contact support|on hold/i);
+    expect(UNKNOWN_SETTLEMENT_GRACE_MS).toBe(30 * 60_000);
+  });
+
+  it("does not mention coins for an unpaid job", () => {
+    expect(unknownOutcomeCopy(0)).not.toContain("coins");
   });
 });

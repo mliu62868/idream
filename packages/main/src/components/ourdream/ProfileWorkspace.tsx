@@ -74,6 +74,7 @@ import {
 import { useReportDialog } from "./ReportDialog";
 import { activeEntitlementSummary } from "./entitlement-copy";
 import { LegacyTestAssetBadge } from "./LegacyTestAssetBadge";
+import { MediaLightbox, VideoPreview } from "./MediaLightbox";
 
 type ApiErrorPayload = {
   ok?: boolean;
@@ -2018,8 +2019,9 @@ function LibraryCard({
       ? characterAppealHref(character?.id ?? item.id, title)
       : null;
   const confirmMediaDelete = isMediaItem && deleteConfirmMediaId === item.id;
-  // 缩略图是 4:3 顶部裁切；原图只能靠这个链接看全。
-  const fullImageUrl = item.type === "image" && !mediaUnavailable ? item.url ?? source : undefined;
+  // 缩略图是 4:3 顶部裁切；原图 / 视频在站内大图查看里看全。
+  const fullMediaUrl = isVisualMediaItem && !mediaUnavailable ? item.url ?? source : undefined;
+  const [viewing, setViewing] = useState(false);
   const selectedCollection = collections?.find((collection) => collection.id === (selectedCollectionId || collections[0]?.id));
   const needsPublication = selectedCollection?.visibility === "public" && item.visibility !== "public_pack";
 
@@ -2075,17 +2077,12 @@ function LibraryCard({
               </audio>
             </div>
           ) : item.type === "video" && source ? (
-            <video
-              aria-label="Profile video"
+            <VideoPreview
               className="h-full w-full object-cover object-top"
-              controls
-              data-testid="profile-media-video"
-              playsInline
-              preload="none"
-            >
-              <source src={source} type={item.contentType ?? "video/mp4"} />
-              Video playback is not supported.
-            </video>
+              item={{ url: source, contentType: item.contentType }}
+              label="Profile video"
+              testId="profile-media-video"
+            />
           ) : source ? (
             <Image
               alt=""
@@ -2110,6 +2107,10 @@ function LibraryCard({
             />
           ) : null}
           <LegacyTestAssetBadge isSynthetic={isMediaItem && item.isSynthetic} />
+          {fullMediaUrl && item.type === "image" && (
+            // Pointer shortcut only; the labelled "View image larger" button below is the keyboard path.
+            <button aria-hidden="true" className="absolute inset-0 cursor-zoom-in" onClick={() => setViewing(true)} tabIndex={-1} type="button" />
+          )}
         </div>
       )}
       <div className="p-4">
@@ -2130,17 +2131,22 @@ function LibraryCard({
               >
                 <Download className="h-4 w-4" />
               </button>
-              {fullImageUrl && (
-                <a
-                  aria-label="Open full image"
+              {fullMediaUrl && (
+                <button
+                  aria-label={item.type === "video" ? "View video larger" : "View image larger"}
                   className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-black/30 text-white"
-                  href={fullImageUrl}
-                  rel="noopener noreferrer"
-                  target="_blank"
-                  title="Open full image"
+                  onClick={() => setViewing(true)}
+                  title="View larger"
+                  type="button"
                 >
                   <Maximize2 className="h-4 w-4" />
-                </a>
+                </button>
+              )}
+              {viewing && fullMediaUrl && (
+                <MediaLightbox
+                  media={{ type: item.type === "video" ? "video" : "image", url: fullMediaUrl, contentType: item.contentType, alt: title }}
+                  onClose={() => setViewing(false)}
+                />
               )}
               <button
                 aria-label="Report media"

@@ -1,4 +1,5 @@
 import type { SupportRequestCategory } from "@idream/shared/catalog";
+import { UNKNOWN_SETTLEMENT_GRACE_MINUTES } from "@/lib/generation-failure-copy";
 
 // SPEC: US-SF-01 self-service help, grouped by topic, each answer pointing at
 // the place in the product where the user acts.
@@ -6,6 +7,7 @@ import type { SupportRequestCategory } from "@idream/shared/catalog";
 // before changing a claim; when the product changes, change the article.
 //   recovery: AccountRecovery.tsx, AccountEmailVerification.tsx
 //   refunds: ai/local-pipeline.ts refundGeneration, GeneratorWorkspace job cards
+//   needs review: admin-v2/jobs/stale-unknown-dispatcher.ts (automatic settlement)
 //   memory: chat/MemoryPanel.tsx, chat/ChatContextSettings.tsx
 //   deletion: ProfileWorkspace.tsx "Delete account" copy
 //   publishing: ProfileWorkspace.tsx toggleCharacterVisibility, character-edit.ts
@@ -93,7 +95,7 @@ export const helpTopics: readonly HelpTopic[] = [
         id: "needs-review",
         question: "A job says \"Needs review\".",
         answer:
-          "The provider's result could not be confirmed, so the coins are held (neither charged nor refunded) until the team reconciles the job. Contact support with the Request ID shown on the card instead of starting the same job again.",
+          `The generator's result could not be confirmed yet. You are never charged twice: if the result doesn't arrive, the job is marked failed and its coins are refunded automatically within about ${UNKNOWN_SETTLEMENT_GRACE_MINUTES} minutes — nobody needs to step in. Wait for that instead of starting the same job again. If the card still says "Needs review" after that, contact support with the Request ID shown on it.`,
         links: [{ href: "/generate", label: "Generate" }],
         keywords: "stuck unknown pending timeout",
       },

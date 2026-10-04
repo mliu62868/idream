@@ -258,13 +258,18 @@ export async function advanceVideoSequences(limit = 10, cursor: VideoSequenceAdv
     try {
       if (row.status === "composing" && row.compositionLeaseAt && row.compositionLeaseAt.getTime() > Date.now()) continue;
       const statuses = await latestGenerationAttemptStatuses(row.scenes.map(scene => scene.generationJobId));
-      const failed = row.scenes.find(scene => ["failed", "blocked", "cancelled", "refunded"].includes(scene.generationJob.status) || statuses.get(scene.generationJobId) === "unknown");
+      const settledFailure = (scene: SequenceRow["scenes"][number]) => ["failed", "blocked", "cancelled", "refunded"].includes(scene.generationJob.status);
+      const failed = row.scenes.find(scene => settledFailure(scene) || statuses.get(scene.generationJobId) === "unknown");
       if (failed) {
+        // The unknown attempt is immutable evidence and outlives settlement. Once
+        // the Request itself is settled (the stale-unknown sweeper refunds it),
+        // the sequence has a definite failed outcome instead of waiting forever.
+        const stillUnknown = !settledFailure(failed);
         await prisma.$transaction(async tx => {
           await lockUserLedger(tx, row.userId);
           await tx.$queryRaw`SELECT id FROM video_sequences WHERE id = ${row.id} FOR UPDATE`;
           await stopUnstartedScenes(tx, row, "A preceding video scene failed or needs reconciliation");
-          await tx.videoSequence.updateMany({ where: { id: row.id, status: { in: ["generating", "unknown"] } }, data: { status: statuses.get(failed.generationJobId) === "unknown" ? "unknown" : "failed", errorCode: statuses.get(failed.generationJobId) === "unknown" ? "provider_outcome_unknown" : "video_scene_failed" } });
+          await tx.videoSequence.updateMany({ where: { id: row.id, status: { in: ["generating", "unknown"] } }, data: { status: stillUnknown ? "unknown" : "failed", errorCode: stillUnknown ? "provider_outcome_unknown" : "video_scene_failed" } });
         });
         continue;
       }

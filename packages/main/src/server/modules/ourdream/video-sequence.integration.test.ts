@@ -18,6 +18,7 @@ import { videoSequenceDtoSchema } from "@idream/shared/contracts";
 import { api, createCharacter, createMedia, createUser, dreamcoinBalance, expectError, expectOk, generationTestProviders, grantCoins, purgeTestData, runQueuedGenerationJobs } from "@/server/test/helpers";
 import { videoFixture, narrationFixture } from "@/server/test/video-fixtures";
 import { advanceVideoSequences } from "./video-sequence";
+import { reconcileUnknownGenerationRequest } from "@/server/modules/admin-v2/jobs/unknown-reconciliation";
 
 const P = "zt-video-sequence-";
 const profileId = `${P}profile`, sourceKeys: string[] = [];
@@ -118,10 +119,15 @@ describe("ordered video Requests, ledger settlement and packaging", () => {
     const native = await mockedNativeSuccess(), { sequence } = await create();
     await runQueuedGenerationJobs(10); expect(native).toHaveBeenCalledTimes(1);
     const partial = await read(sequence.id); expect(partial.scenes[0]?.assets).toHaveLength(1); expect(partial.scenes[1]?.job.status).toBe("queued");
+    const gallery = async () => { const page = await api("GET", "media", { userId, ageGate: true, query: { type: "video" } }); expectOk(page); return page.data.items as Array<{ id: string; provenance: { label: string } | null }>; };
+    // Until the composite exists, a paid scene clip is the user's only deliverable.
+    expect((await gallery()).map(item => [item.id, item.provenance?.label])).toEqual([[partial.scenes[0]!.assets[0]!.id, "Video scene 1"]]);
     await advanceVideoSequences(); await runQueuedGenerationJobs(10); expect(native).toHaveBeenCalledTimes(2);
     await Promise.all([advanceVideoSequences(), advanceVideoSequences()]);
     const result = await read(sequence.id); expect(result.status).toBe("completed"); expect(result.asset).toMatchObject({ width: 512, height: 512, metadata: { audio: "generated", narrationIsLipSync: false } });
     expect(await prisma.mediaAsset.count({ where: { ownerId: userId, metadata: { path: ["source"], equals: "video_sequence" } } })).toBe(1);
+    // Once delivered, the gallery shows the finished video alone; scenes stay downloadable from the sequence.
+    expect((await gallery()).map(item => item.id)).toEqual([result.asset!.id]);
     expect(await dreamcoinBalance(userId)).toBe(800);
     const content = await api("GET", `media/${result.asset!.id}/content`, { userId, ageGate: true }); expectOk(content); expect(content.bytes!.byteLength).toBeGreaterThan(100);
     const stranger = `${P}user-${randomUUID()}-reader`; await createUser({ id: stranger });
@@ -167,6 +173,15 @@ describe("ordered video Requests, ledger settlement and packaging", () => {
     const native = await mockedNativeSuccess(); await advanceVideoSequences(); await advanceVideoSequences();
     const result = await read(sequence.id); expect(result.status).toBe("unknown"); expect(result.cost).toEqual({ charged: 300, refunded: 200, finalCharge: 100 });
     expect(result.scenes.slice(1).map(scene => scene.job.status)).toEqual(["cancelled", "cancelled"]); expect(native).not.toHaveBeenCalled();
+    // Settling the Request (the stale-unknown sweeper's confirm_failed) gives the
+    // sequence a definite outcome; the immutable unknown attempt must not pin it.
+    const job = await prisma.generationJob.findUniqueOrThrow({ where: { id: sequence.scenes[0]!.job.id } });
+    await reconcileUnknownGenerationRequest({ requestId: job.id, actor: { id: `${userId}-operator`, role: "admin" },
+      command: { resolution: "confirm_failed", entityVersion: job.version, reason: "Controlled settlement", providerEvidenceRefs: [`attempt:${attempt.id}`], confirmation: `${job.id}:confirm_failed` },
+      idempotencyKey: `settle-${job.id}`, traceId: `settle-${job.id}` });
+    await advanceVideoSequences();
+    const settled = await read(sequence.id); expect(settled.status).toBe("failed"); expect(settled.cost).toEqual({ charged: 300, refunded: 300, finalCharge: 0 });
+    expect(await dreamcoinBalance(userId)).toBe(1000);
   });
 
   it("delivers a ready sequence behind ten older unknown sequences without repeating generation or charges", async () => {
@@ -265,6 +280,9 @@ describe("ordered video Requests, ledger settlement and packaging", () => {
     expect(tts).toHaveBeenCalledTimes(1); expect(tts).toHaveBeenCalledWith(expect.objectContaining({ requestId: `video-narration:${sequence.id}:0`, idempotencyKey: `video-narration:${sequence.id}:0`, voiceId: defaults.defaultVoiceId }));
     expect(await prisma.videoSequenceScene.findFirstOrThrow({ where: { sequenceId: sequence.id } })).toMatchObject({ narrationState: "completed", narrationMediaAssetId: expect.any(String) });
     expect(await prisma.voiceUsageFact.count({ where: { userId } })).toBe(0); expect(await prisma.chatTurn.count({ where: { session: { userId } } })).toBe(0); expect(await dreamcoinBalance(userId)).toBe(900); expect(native).toHaveBeenCalledTimes(1);
+    // The library lists the narrated video, not its scene clip or speech track.
+    const library = await api("GET", "media", { userId, ageGate: true }); expectOk(library);
+    expect((library.data.items as Array<{ id: string }>).map(item => item.id).filter(id => id !== userId.replace(/-owner$/, "-source"))).toEqual([result.asset!.id]);
   });
 
   it("delivers three complete narration assets and retries only missing speech or packaging without another debit", async () => {

@@ -1,4 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
+import { UNKNOWN_SETTLEMENT_GRACE_MS } from "@/lib/generation-failure-copy";
 import { logger } from "@/server/lib/logger";
 import { reconcileUnknownGenerationRequest } from "./unknown-reconciliation";
 
@@ -8,7 +9,7 @@ import { reconcileUnknownGenerationRequest } from "./unknown-reconciliation";
 //   「排队中」的任务：不报错、不能重试、不退币，连角色都因为「还有生成在跑」而删不掉。
 //   宽限期留给 provider 迟到的成功证据（late_after_* 通道仍然接得住），过了就必须
 //   且确认原执行没有继续推进后，才给用户一个确定的结局——失败并把币还回去，比无限期挂着诚实。
-const UNKNOWN_SETTLEMENT_GRACE_MS = 30 * 60_000;
+// INVARIANT: 宽限期与用户文案（Generate 卡片、帮助中心）同源，见 generation-failure-copy。
 
 const SWEEPER_ACTOR = {
   id: "system:generation-unknown-sweeper",

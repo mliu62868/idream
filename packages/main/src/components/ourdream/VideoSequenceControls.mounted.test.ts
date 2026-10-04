@@ -2,6 +2,7 @@
 import { act, createElement, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+vi.mock("next/link", () => ({ default: ({ children, href, ...props }: ComponentProps<"a">) => createElement("a", { href: String(href), ...props }, children) }));
 vi.mock("next/image", () => ({ default: ({ unoptimized: _unoptimized, ...props }: ComponentProps<"img"> & { unoptimized?: boolean }) => createElement("img", props) }));
 import { VideoSequenceControls } from "./VideoSequenceControls";
 
@@ -21,7 +22,7 @@ function deferred() { let resolve!: (value: Response) => void, reject!: (cause: 
 
 describe("Video sequence exact acceptance and recoverable delivery UI", () => {
   let container: HTMLDivElement, root: Root, calls: Array<{ path: string; init?: RequestInit }>, customize: (path: string, init?: RequestInit) => Promise<Response> | undefined;
-  const props: ComponentProps<typeof VideoSequenceControls> = { viewerScope: scope, characterId: "character-one", consistencyMode: "balanced" };
+  const props: ComponentProps<typeof VideoSequenceControls> = { viewerScope: scope, characterId: "character-one", consistencyMode: "balanced", coinsHref: "/coins?returnTo=%2Fgenerate" };
   beforeEach(() => {
     const storage = new Map<string, string>();
     vi.stubGlobal("localStorage", { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value), removeItem: (key: string) => storage.delete(key), clear: () => storage.clear() });
@@ -56,6 +57,26 @@ describe("Video sequence exact acceptance and recoverable delivery UI", () => {
     expect(JSON.parse(String(writes[0]!.init!.body))).toMatchObject({ characterId: "character-one", orientation: "1:1", quality: "preview", audio: "narration", quoteFingerprint: price.fingerprint, scenes: [{ prompt: "Wave in the garden", seconds: 3, narration: "Hello from the garden." }, { prompt: "Turn toward the sunset", seconds: 5, narration: "Let's watch the sunset." }] });
     expect(new Headers(writes[0]!.init!.headers).get("x-idream-viewer-scope")).toBe(scope);
     expect(JSON.parse(localStorage.getItem(storageKey)!)).toMatchObject({ id: "sequence-original", key: new Headers(writes[0]!.init!.headers).get("idempotency-key") });
+  });
+
+  it("explains an unaffordable quote and links to coins instead of only greying out acceptance", async () => {
+    customize = path => path.endsWith("/quote") ? Promise.resolve(envelope({ quote: { ...price, balance: 150 } })) : undefined;
+    await mount(); await type("Scene 1 prompt", "A calm wave"); await click("Review video price");
+    expect(button("Accept 200 coins & create video").disabled).toBe(true);
+    const link = container.querySelector<HTMLAnchorElement>('[data-testid="video-insufficient-balance"]');
+    expect(link?.getAttribute("href")).toBe("/coins?returnTo=%2Fgenerate");
+    expect(link?.textContent).toContain("Need 200 coins · you have 150.");
+  });
+
+  it("sets expectations while a sequence renders and promises the automatic refund for an unconfirmed scene", async () => {
+    customize = path => path.endsWith("/video-sequences") ? Promise.resolve(envelope({ sequences: [sequence()] })) : undefined;
+    await mount();
+    expect(container.textContent).toContain("Each scene usually takes several minutes");
+    await act(async () => root.unmount()); root = createRoot(container);
+    customize = path => path.endsWith("/video-sequences") ? Promise.resolve(envelope({ sequences: [sequence("unknown")] })) : path.includes("sequence-original") ? Promise.resolve(envelope({ sequence: sequence("unknown") })) : undefined;
+    await mount();
+    expect(container.textContent).toContain("refunded automatically within about 30 minutes");
+    expect(container.textContent).not.toMatch(/reconciliation/i);
   });
 
   it("ignores a quote whose selected character changed while its response was in flight", async () => {
