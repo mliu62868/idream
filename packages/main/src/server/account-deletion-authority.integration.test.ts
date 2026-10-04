@@ -230,7 +230,7 @@ describe("account deletion authority", () => {
 
   it("does not issue a credential session when deletion commits after login read", async () => {
     const email = `${P}login-race@example.com`;
-    const password = "password123";
+    const password = "Fixture-pass-1004";
     const signup = await api("POST", "auth/signup", {
       body: { email, password, name: "Login deletion race" },
     });

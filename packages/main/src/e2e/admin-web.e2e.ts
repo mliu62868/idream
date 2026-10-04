@@ -38,7 +38,7 @@ async function startAdminSession(page: Page) {
     headers: { "x-forwarded-for": `e2e-${email}` },
     data: {
       email,
-      password: "password123",
+      password: "Fixture-pass-1004",
       name: "E2E Admin Web",
     },
   });
@@ -59,7 +59,7 @@ async function startRoleSession(page: Page, role: "admin" | "support" | "analyst
   expect(ageGate.ok(), await ageGate.text()).toBeTruthy();
   const signup = await page.request.post("/api/v1/auth/signup", {
     headers: { "x-forwarded-for": `e2e-${email}` },
-    data: { email, password: "password123", name: `E2E ${role}` },
+    data: { email, password: "Fixture-pass-1004", name: `E2E ${role}` },
   });
   expect(signup.ok(), await signup.text()).toBeTruthy();
   return prisma.user.update({

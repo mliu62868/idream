@@ -67,11 +67,13 @@ import {
   invalidateViewerAuthority,
   announceViewerAuthorityChange,
   isTimeoutError,
+  VIEWER_PROFILE_CHANGED_EVENT,
   VIEWER_CHECK_TIMEOUT_MS,
   VIEWER_UNCONFIRMED_MESSAGE,
   type ViewerFetcher,
 } from "./viewer-auth";
 import { useReportDialog } from "./ReportDialog";
+import { newPasswordProblem, PASSWORD_HINT, PASSWORD_MAX_LENGTH } from "@/lib/password-policy";
 import { activeEntitlementSummary } from "./entitlement-copy";
 import { LegacyTestAssetBadge } from "./LegacyTestAssetBadge";
 
@@ -80,7 +82,9 @@ type ApiErrorPayload = {
   error?: { message?: string };
 };
 
-type ProfileMutationPayload = ApiErrorPayload & {
+type ProfileMutationPayload = {
+  ok?: boolean;
+  error?: { message?: string; details?: { fieldErrors?: { displayName?: string[] } } };
   data?: {
     user?: {
       displayName?: string | null;
@@ -525,6 +529,11 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
   const [deleteConfirmMediaId, setDeleteConfirmMediaId] = useState<string | null>(null);
   const [deleteConfirmCharacterId, setDeleteConfirmCharacterId] = useState<string | null>(null);
   const [status, setStatus] = useState("");
+  // INTENT: 账号设置与账号管理各有一条就地回执，渲染在各自卡片里；页面级 status 在
+  //   Billing 卡片下方，离这些按钮一屏远，连续操作时还互相覆盖。
+  const [settingsStatus, setSettingsStatus] = useState("");
+  const [accountStatus, setAccountStatus] = useState("");
+  const [newPassword, setNewPassword] = useState("");
   // INTENT: 库卡片的回执单独一条，渲染在卡片网格上方；和账号操作共用页面级 status 时，
   //   它落在全部卡片与 Billing 之后，手机上点完卡片操作根本看不到结果。
   const [libraryStatus, setLibraryStatus] = useState("");
@@ -845,7 +854,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
   async function saveProfile() {
     const nextName = profileName.trim();
     if (!nextName) {
-      setStatus("Enter a display name.");
+      setSettingsStatus("Enter a display name.");
       return;
     }
     try {
@@ -857,20 +866,22 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
       const payload = (await response.json()) as ProfileMutationPayload;
       if (!ownerRequestIsCurrent()) return;
       if (!response.ok || payload.ok === false) {
-        setStatus(payload.error?.message ?? "Profile update failed.");
+        setSettingsStatus(payload.error?.details?.fieldErrors?.displayName?.[0] ?? payload.error?.message ?? "Profile update failed.");
         return;
       }
       setProfileName(payload.data?.user?.displayName ?? nextName);
-      setStatus("Profile updated.");
+      setSettingsStatus("Profile updated.");
+      // 头部 AuthNav 的名字来自它自己的 /me 快照，通知它重新读取。
+      window.dispatchEvent(new Event(VIEWER_PROFILE_CHANGED_EVENT));
       await refreshProfile();
     } catch {
-      setStatus("Network error. Please try again.");
+      setSettingsStatus("Network error. Please try again.");
     }
   }
 
   async function savePreferences() {
     if (!preferencesAuthority.hasSnapshot) {
-      setStatus("Load your saved preferences before updating them.");
+      setSettingsStatus("Load your saved preferences before updating them.");
       return;
     }
     try {
@@ -884,9 +895,9 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
         body: JSON.stringify({ mutedTags }),
       });
       if (response.ok) setPreferencesAuthority(readyAuthorityStatus());
-      setStatus(response.ok ? "Preferences updated." : apiEnvelopeErrorMessage(await response.json().catch(() => null)) ?? "Preferences could not be saved. Please try again.");
+      setSettingsStatus(response.ok ? "Preferences updated." : apiEnvelopeErrorMessage(await response.json().catch(() => null)) ?? "Preferences could not be saved. Please try again.");
     } catch {
-      setStatus("Network error. Please try again.");
+      setSettingsStatus("Network error. Please try again.");
     }
   }
 
@@ -905,16 +916,16 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
         window.location.href = "/login";
         return;
       }
-      setStatus(apiEnvelopeErrorMessage(await response.json().catch(() => null)) ?? "Could not sign out other devices. Please try again.");
+      setAccountStatus(apiEnvelopeErrorMessage(await response.json().catch(() => null)) ?? "Could not sign out other devices. Please try again.");
     } catch {
-      setStatus("Network error. Please try again.");
+      setAccountStatus("Network error. Please try again.");
     }
   }
 
   async function requestAccountDeletion() {
     if (securityPending) return;
     if (deleteConfirm !== "DELETE") {
-      setStatus("Type DELETE to confirm account deletion.");
+      setAccountStatus("Type DELETE to confirm account deletion.");
       return;
     }
     setSecurityPending(true);
@@ -925,7 +936,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
       const prepared = await fetchForOwner("/api/v1/account/deletion-receipt", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
       const preparation = await prepared.json();
       if (!ownerRequestIsCurrent() || serial !== securityRequestSerialRef.current) return;
-      if (!prepared.ok || !preparation.ok) { setStatus(preparation.error?.message ?? "Password verification failed."); return; }
+      if (!prepared.ok || !preparation.ok) { setAccountStatus(preparation.error?.message ?? "Password verification failed."); return; }
       receipt = preparation.data.receipt;
       const response = await fetchForOwner("/api/v1/account/delete-request", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
       const payload = await response.json().catch(() => null);
@@ -935,14 +946,31 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
         window.location.href = accountDeletionLoginHref({ data: { receipt: payload?.data?.receipt ?? receipt } });
         return;
       }
-      setStatus(payload?.error?.message ?? "Account deletion failed. You can retry after correcting the error.");
+      setAccountStatus(payload?.error?.message ?? "Account deletion failed. You can retry after correcting the error.");
     } catch {
       if (!ownerRequestIsCurrent() || serial !== securityRequestSerialRef.current) return;
       if (receipt) { announceViewerAuthorityChange(); window.location.href = `/login#deletion=${encodeURIComponent(receipt)}`; return; }
-      setStatus("Password verification could not finish. Check your connection and try again.");
+      setAccountStatus("Password verification could not finish. Check your connection and try again.");
     } finally {
       if (serial === securityRequestSerialRef.current) { setSecurityPassword(""); setSecurityPending(false); }
     }
+  }
+
+  async function changePassword() {
+    if (securityPending) return;
+    const problem = newPasswordProblem(newPassword, profile?.user.email ?? undefined);
+    if (problem) { setAccountStatus(problem); return; }
+    setSecurityPending(true); setAccountStatus("");
+    const serial = ++securityRequestSerialRef.current;
+    try {
+      const response = await fetchForOwner("/api/v1/account/password", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: securityPassword, newPassword, expectedUserId: profileOwnerScope.replace(/^user:/, "") }) });
+      const payload = await response.json().catch(() => null);
+      if (!ownerRequestIsCurrent() || serial !== securityRequestSerialRef.current) return;
+      if (!response.ok || !payload?.ok) { setAccountStatus(payload?.error?.message ?? "Could not change your password."); return; }
+      setNewPassword("");
+      setAccountStatus("Password changed. All other sessions were signed out.");
+    } catch { if (serial === securityRequestSerialRef.current) setAccountStatus("The result could not be confirmed. Try logging in with your new password from another device, or retry."); }
+    finally { if (serial === securityRequestSerialRef.current) { setSecurityPassword(""); setSecurityPending(false); } }
   }
 
   async function generateRecoveryCode() {
@@ -953,10 +981,10 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
       const response = await fetchForOwner("/api/v1/account/recovery-code", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: securityPassword, expectedUserId: profileOwnerScope.replace(/^user:/, "") }) });
       const payload = await response.json();
       if (!ownerRequestIsCurrent() || serial !== securityRequestSerialRef.current) return;
-      if (!response.ok || !payload.ok) { setStatus(payload.error?.message ?? "Could not create a recovery code."); return; }
+      if (!response.ok || !payload.ok) { setAccountStatus(payload.error?.message ?? "Could not create a recovery code."); return; }
       setSavedRecoveryCode({ code: payload.data.recoveryCode, ownerId: profileOwnerScope.replace(/^user:/, "") });
-      setStatus("New recovery code created. Save it now; the previous code no longer works.");
-    } catch { if (serial === securityRequestSerialRef.current) setStatus("The code could not be received. Generate a new code and save it; any previous code may have been replaced."); }
+      setAccountStatus("New recovery code created. Save it now; the previous code no longer works.");
+    } catch { if (serial === securityRequestSerialRef.current) setAccountStatus("The code could not be received. Generate a new code and save it; any previous code may have been replaced."); }
     finally { if (serial === securityRequestSerialRef.current) { setSecurityPassword(""); setSecurityPending(false); } }
   }
 
@@ -1745,7 +1773,11 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
                   <input
                     aria-label="Display name"
                     className="min-w-0 flex-1 rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] normal-case text-white outline-none"
+                    maxLength={80}
                     onChange={(event) => setProfileName(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") void saveProfile();
+                    }}
                     value={profileName}
                   />
                   <button
@@ -1758,6 +1790,11 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
                   </button>
                 </div>
               </label>
+              {settingsStatus && (
+                <p aria-live="polite" className="mt-2 text-[12px] font-semibold text-[rgb(170,170,170)]" data-testid="profile-settings-status" role="status">
+                  {settingsStatus}
+                </p>
+              )}
               {profileOwnerScope ? <UserPersonaPanel key={profileOwnerScope} ownerScope={profileOwnerScope} /> : null}
               <div
                 className="mt-4 rounded-[10px] bg-[rgb(36,36,36)] p-3"
@@ -1865,8 +1902,18 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
                 </button>
               </div>
               <label className="mt-4 block text-sm font-bold">Current password<input className="mt-2 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 py-3 text-sm" aria-label="Current account password" autoComplete="current-password" type="password" value={securityPassword} onChange={(event) => setSecurityPassword(event.target.value)} /></label>
-              <p className="mt-2 text-sm leading-6 text-white/60">Confirm your password to replace a recovery code or delete your account.</p>
-              <button className="mt-3 rounded-full bg-[rgb(36,36,36)] px-4 py-3 text-sm font-bold disabled:opacity-40" type="button" disabled={securityPending || !securityPassword || !profileOwnerScope} onClick={generateRecoveryCode}>Generate new recovery code</button>
+              <p className="mt-2 text-sm leading-6 text-white/60">Confirm your password to change it, replace a recovery code or delete your account.</p>
+              <label className="mt-3 block text-sm font-bold">New password<input className="mt-2 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 py-3 text-sm" aria-label="New account password" aria-describedby="profile-new-password-hint" autoComplete="new-password" maxLength={PASSWORD_MAX_LENGTH} type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></label>
+              <p className="mt-1 text-[12px] leading-5 text-white/50" id="profile-new-password-hint">{PASSWORD_HINT} Other sessions are signed out.</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button className="rounded-full bg-[rgb(36,36,36)] px-4 py-3 text-sm font-bold disabled:opacity-40" type="button" disabled={securityPending || !securityPassword || !newPassword || !profileOwnerScope} onClick={changePassword}>Change password</button>
+                <button className="rounded-full bg-[rgb(36,36,36)] px-4 py-3 text-sm font-bold disabled:opacity-40" type="button" disabled={securityPending || !securityPassword || !profileOwnerScope} onClick={generateRecoveryCode}>Generate new recovery code</button>
+              </div>
+              {accountStatus && (
+                <p aria-live="polite" className="mt-3 text-[12px] font-semibold text-[rgb(170,170,170)]" data-testid="profile-account-status" role="status">
+                  {accountStatus}
+                </p>
+              )}
               {savedRecoveryCode && savedRecoveryCode.ownerId === profileOwnerScope.replace(/^user:/, "") && <div className="mt-4"><RecoveryCodeCard key={savedRecoveryCode.code} code={savedRecoveryCode.code} ownerId={savedRecoveryCode.ownerId} /></div>}
               {ownerId && <AccountEmailVerification key={`email:${ownerId}`} ownerId={ownerId} fetcher={fetchForOwner} />}
               {ownerId && <AccountAgeVerification key={`age:${ownerId}`} ownerId={ownerId} fetcher={fetchForOwner} />}

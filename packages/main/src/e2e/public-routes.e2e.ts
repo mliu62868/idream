@@ -54,7 +54,7 @@ async function startSignedInAdultSession(page: Page, routePath: string) {
   const signup = await page.request.post("/api/v1/auth/signup", {
     data: {
       email: uniqueEmail(routePath),
-      password: "password123",
+      password: "Fixture-pass-1004",
       name: "Route Smoke",
     },
   });

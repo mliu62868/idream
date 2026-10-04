@@ -102,6 +102,7 @@ import {
   clearAdminSessionCookie,
   verifyPassword,
   AFFILIATE_COOKIE,
+  AGE_GATE_COOKIE,
   affiliateAttributionCookie,
   parseCookieHeader,
 } from "@/server/lib/auth";
@@ -140,6 +141,7 @@ import { getOurdreamRoute, ourdreamRoutePaths } from "@/lib/ourdream-data";
 import { isPublicRouteDiscoverable } from "@/lib/public-route-authority";
 import { activeAnnouncements, readAnnouncements } from "@/server/announcements/store";
 import { logger } from "@/server/lib/logger";
+import { newPasswordProblem } from "@/lib/password-policy";
 import { dispatchAccountAccess, newRecoveryCode, storeRecoveryCode } from "./account-access";
 import { passwordAccountForUser } from "@/server/lib/auth/password-account";
 import { dispatchChatVideo } from "@/server/modules/chat/video-action";
@@ -316,15 +318,19 @@ const signupSchema = z.object({
     .string()
     .email("Enter a valid email address.")
     .transform((value) => value.toLowerCase()),
-  password: z.string().min(8, "Password must be at least 8 characters."),
+  password: z.string({ error: "Enter a password." }),
+  // INVARIANT: 显示名必填。displayName 会出现在公开创作者页与分享文案上；以前留空时
+  //   静默取邮箱 @ 前缀，等于把私密的邮箱局部变成公开名。
   name: z
-    .string()
+    .string({ error: "Enter a display name." })
     .trim()
-    .min(1, "Display name cannot be empty.")
-    .max(80, "Display name must be 80 characters or fewer.")
-    .optional(),
+    .min(1, "Enter a display name.")
+    .max(80, "Display name must be 80 characters or fewer."),
   // Referral code captured from /signup?ref=DREAM-XXXX (invite share link).
   ref: z.string().trim().min(1).max(64).optional(),
+}).superRefine((body, ctx) => {
+  const problem = newPasswordProblem(body.password, body.email);
+  if (problem) ctx.addIssue({ code: "custom", path: ["password"], message: problem });
 });
 
 // Referral economy (give/get): both the new user and the inviter receive dreamcoins
@@ -441,7 +447,7 @@ const mediaCollectionItemSchema = z.object({
 });
 
 const profilePatchSchema = z.object({
-  displayName: z.string().trim().min(1).max(80).optional(),
+  displayName: z.string().trim().min(1, "Enter a display name.").max(80, "Display name must be 80 characters or fewer.").optional(),
   // INVARIANT: 头像只能是站内相对路径（如本人 media 的 /api/v1/media/:id/content）。
   // 外部 URL 会让他人浏览时向任意主机发请求，且 next/image 未配置远程主机会直接渲染失败；
   // "//" 与反斜杠在浏览器里都会被解析成协议相对的外部地址。
@@ -567,14 +573,10 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
 
   if (resource === "auth") {
     // 凭据端点：便宜、可自动重复、失败无代价 —— 爆破与批量注册的入口。
-    if (id === "signup" && method === "POST") {
-      await enforceRateLimit(request, "authSignup");
-      return signup(request);
-    }
-    if (id === "login" && method === "POST") {
-      await enforceRateLimit(request, "authLogin");
-      return login(request);
-    }
+    // INTENT: 限流在 signup()/login() 内、表单格式校验之后计数——填错表单（空字段、邮箱格式、
+    //   弱密码）不扣额度；凭据错误、邮箱已注册仍然计数，爆破与枚举照样被挡。
+    if (id === "signup" && method === "POST") return signup(request);
+    if (id === "login" && method === "POST") return login(request);
     if (id === "logout" && method === "POST") return logout(request);
   }
 
@@ -885,6 +887,7 @@ async function loadAffiliateTerms(): Promise<AffiliateTerms> {
 
 async function signup(request: Request) {
   const body = signupSchema.parse(await jsonBody(request));
+  await enforceRateLimit(request, "authSignup");
   const ctx = await getAuthCtx(request);
   if (isReservedInternalEmail(body.email)) {
     throw Errors.badRequest("Email domain is reserved");
@@ -903,7 +906,7 @@ async function signup(request: Request) {
         emailVerified: false,
         dataClass: registeredUserDataClass(body.email),
         name: body.name,
-        displayName: body.name ?? body.email.split("@")[0],
+        displayName: body.name,
         ...(anonymousId ? { anonymousId } : {}),
         accounts: {
           create: {
@@ -1049,6 +1052,7 @@ async function claimableAnonymousId(
 
 async function login(request: Request) {
   const body = loginSchema.parse(await jsonBody(request));
+  await enforceRateLimit(request, "authLogin");
   const candidate = await prisma.user.findUnique({ where: { email: body.email }, select: { id: true } });
   const account = candidate ? await passwordAccountForUser(prisma, candidate.id) : null;
 
@@ -1126,7 +1130,7 @@ async function me(request: Request) {
     publicOfferAvailability(),
   ]);
 
-  return ok({
+  const response = ok({
     user: user ? userDTO(user) : null,
     anonymousId: ctx.anonymousId,
     ageGate: { accepted: ctx.ageGateAccepted },
@@ -1134,6 +1138,15 @@ async function me(request: Request) {
     entitlements: publicFeatureProjection(entitlements, availability),
     dreamcoins: { balance },
   });
+  // INTENT: DB 已接受、但这个浏览器还没有年龄门 cookie（换了设备登录）时补发，
+  //   让下次硬加载走首帧视觉提示，不再每次闪黑屏。cookie 只由服务端在 DB 接受后写。
+  if (
+    ctx.ageGateAccepted &&
+    parseCookieHeader(request.headers.get("cookie")).get(AGE_GATE_COOKIE) !== "true"
+  ) {
+    response.headers.append("set-cookie", ageGateCookie());
+  }
+  return response;
 }
 
 async function acceptAgeGate(request: Request) {

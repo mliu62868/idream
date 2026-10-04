@@ -19,6 +19,7 @@ import {
   announceViewerAuthorityChange,
   invalidateViewerAuthority,
   VIEWER_AUTH_CHANGE_STORAGE_KEY,
+  VIEWER_PROFILE_CHANGED_EVENT,
 } from "./viewer-auth";
 
 // SPEC: top-bar auth state. Reads /api/v1/me on mount; shows the signed-in user
@@ -94,10 +95,12 @@ function AuthNavContent() {
     }
     window.addEventListener("storage", onStorage);
     window.addEventListener("focus", refreshIdentity);
+    window.addEventListener(VIEWER_PROFILE_CHANGED_EVENT, refreshIdentity);
     document.addEventListener("visibilitychange", onVisible);
     return () => {
       window.removeEventListener("storage", onStorage);
       window.removeEventListener("focus", refreshIdentity);
+      window.removeEventListener(VIEWER_PROFILE_CHANGED_EVENT, refreshIdentity);
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, []);

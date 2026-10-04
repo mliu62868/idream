@@ -11,16 +11,24 @@ import { clearSessionCookie, createSessionToken, getAuthCtx, hashPassword, requi
 import { accountDeletionPublicState, accountDeletionSubjectHash, requestAccountDeletion } from "@/server/account-deletion-authority";
 import { passwordAccountForUser } from "@/server/lib/auth/password-account";
 import { accountMailAvailable } from "@/server/providers/account-mail";
+import { newPasswordProblem, PASSWORD_MAX_LENGTH } from "@/lib/password-policy";
 import { accountEmailAddressSchema, accountEmailProofSchema, consumeAccountEmailCode, requestAccountEmailCode, revokeAccountEmailCodes } from "./account-email-challenges";
 
 const YEAR_MS = 365 * 24 * 60 * 60 * 1_000;
-const passwordSchema = z.string().min(8).max(1024);
+// 形状只校验类型与上限；新密码规则由 requireAcceptableNewPassword 按账号邮箱判定，
+// 且必须在消耗恢复码/邮件码之前，免得一个被拒的弱密码白白烧掉凭证。
+const passwordSchema = z.string().max(PASSWORD_MAX_LENGTH);
 const reauthenticationSchema = z.object({ password: z.string().min(1).max(1024), expectedUserId: z.string().min(1), confirmation: z.string().optional() });
 const recoverySchema = z.object({
   email: z.string().email().transform((value) => value.toLowerCase()),
   recoveryCode: z.string().trim().min(1).max(128),
   password: passwordSchema,
 });
+
+function requireAcceptableNewPassword(password: string, email: string) {
+  const problem = newPasswordProblem(password, email);
+  if (problem) throw Errors.badRequest(problem, { fieldErrors: { password: [problem] } });
+}
 
 export function recoveryIdentifier(userId: string) {
   return `account-recovery:${userId}`;
@@ -79,6 +87,7 @@ export function readDeletionReceipt(token: string, now = Date.now()) {
 async function recoverAccess(request: Request) {
   await enforceRateLimit(request, "authRecovery");
   const body = recoverySchema.parse(await jsonBody(request));
+  requireAcceptableNewPassword(body.password, body.email);
   const code = newRecoveryCode();
   const token = createSessionToken();
   const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1_000);
@@ -119,6 +128,7 @@ export async function dispatchAccountAccess(request: Request, segments: string[]
     const retrying = Boolean(row.lastError || blobFailure || chatFailure?.lastError);
     return ok({ deletion: { id: row.id, status: row.status, requestedAt: row.requestedAt.toISOString(), graceEndsAt: row.graceEndsAt.toISOString(), completedAt: row.completedAt?.toISOString() ?? null, retrying, expiresAt: new Date(proof.expiresAt).toISOString() } });
   }
+  if (action === "password" && request.method === "POST") return changePassword(request);
   if (!["recovery-code", "deletion-receipt", "delete-request"].includes(action ?? "") || request.method !== "POST") return null;
   const user = requireUser(await getAuthCtx(request));
   await enforceRateLimit(request, "accountReauthenticate", user.id);
@@ -146,6 +156,34 @@ export async function dispatchAccountAccess(request: Request, segments: string[]
   });
   const response = ok({ requested: true, deletion: accountDeletionPublicState(deletion), receipt: deletionReceipt(deletion.id) });
   response.headers.append("set-cookie", clearSessionCookie());
+  return response;
+}
+
+// SPEC: 已登录用户凭当前密码改密码。成功后吊销该用户全部会话（含其它设备与后台控制台），
+//   给当前浏览器签发一个新会话，用户留在原页面。
+// INTENT: 与恢复码/邮件重置同一套「删全部会话 + 新建一个」做法：会话表没有「当前会话」以外的
+//   设备概念，全删再发比按 token 排除更不容易漏掉旧 token；恢复码保持不变（它是另一条凭证）。
+async function changePassword(request: Request) {
+  const user = requireUser(await getAuthCtx(request));
+  await enforceRateLimit(request, "accountReauthenticate", user.id);
+  const body = z.object({
+    password: z.string().min(1).max(PASSWORD_MAX_LENGTH),
+    newPassword: passwordSchema,
+    expectedUserId: z.string().min(1),
+  }).parse(await jsonBody(request));
+  if (body.expectedUserId !== user.id) throw Errors.conflict("Your account changed. Reload before changing account security.");
+  const token = createSessionToken();
+  const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1_000);
+  await prisma.$transaction(async (tx) => {
+    const active = await verifyCurrentPassword(tx, user.id, body.password);
+    requireAcceptableNewPassword(body.newPassword, active.email);
+    const account = await passwordAccountForUser(tx, user.id);
+    await tx.account.update({ where: { id: account!.id }, data: { password: hashPassword(body.newPassword) } });
+    await tx.session.deleteMany({ where: { userId: user.id } });
+    await tx.session.create({ data: { userId: user.id, token, expiresAt } });
+  });
+  const response = ok({ changed: true });
+  response.headers.append("set-cookie", sessionCookie(token, expiresAt));
   return response;
 }
 
@@ -182,6 +220,7 @@ async function dispatchEmailAccess(request: Request, segments: string[]): Promis
     }));
   }
   const { password } = z.object({ password: passwordSchema }).parse(payload);
+  requireAcceptableNewPassword(password, address);
   const recoveryCode = newRecoveryCode();
   const token = createSessionToken();
   const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1_000);

@@ -516,7 +516,7 @@ describe("referrals + account", () => {
 
     const firstSignup = await api("POST", "auth/signup", {
       ageGate: true,
-      body: { email: `${P}invitee@example.com`, password: "password123", name: "Invitee", ref: code },
+      body: { email: `${P}invitee@example.com`, password: "Fixture-pass-1004", name: "Invitee", ref: code },
     });
     expectOk(firstSignup);
     const firstInviteeId = firstSignup.data.user.id as string;
@@ -528,7 +528,7 @@ describe("referrals + account", () => {
       ageGate: true,
       body: {
         email: `${P}invitee2@example.com`,
-        password: "password123",
+        password: "Fixture-pass-1004",
         name: "Invitee 2",
         ref: code,
       },
@@ -575,7 +575,7 @@ describe("referrals + account", () => {
 
     const signup = await api("POST", "auth/signup", {
       ageGate: true,
-      body: { email: `${inviterId}-invitee@example.com`, password: "password123", name: "Invitee", ref: code },
+      body: { email: `${inviterId}-invitee@example.com`, password: "Fixture-pass-1004", name: "Invitee", ref: code },
     });
     expectOk(signup);
     const inviteeId = signup.data.user.id as string;
@@ -599,7 +599,7 @@ describe("referrals + account", () => {
     const inviterBefore = await dreamcoinBalance(inviterId);
     expectOk(await api("POST", "auth/signup", {
       ageGate: true,
-      body: { email: `${inviterId}-invitee@example.com`, password: "password123", name: "Invitee", ref: code },
+      body: { email: `${inviterId}-invitee@example.com`, password: "Fixture-pass-1004", name: "Invitee", ref: code },
     }));
     expect(await dreamcoinBalance(inviterId)).toBe(inviterBefore + 150);
   });
@@ -607,7 +607,7 @@ describe("referrals + account", () => {
   it("ignores an unknown ref code without blocking signup", async () => {
     const signup = await api("POST", "auth/signup", {
       ageGate: true,
-      body: { email: `${P}noref@example.com`, password: "password123", name: "NoRef", ref: "DREAM-DOESNOTEXIST" },
+      body: { email: `${P}noref@example.com`, password: "Fixture-pass-1004", name: "NoRef", ref: "DREAM-DOESNOTEXIST" },
     });
     expectOk(signup);
     // Only the base signup bonus — no referral grant from a bogus code.
@@ -617,7 +617,7 @@ describe("referrals + account", () => {
   it("signs out all sessions and processes a delete request", async () => {
     const userId = `${P}account`;
     const accountUser = await createUser({ id: userId });
-    await prisma.account.create({ data: { userId, providerId: "credential", accountId: accountUser.email, password: hashPassword("password123") } });
+    await prisma.account.create({ data: { userId, providerId: "credential", accountId: accountUser.email, password: hashPassword("Fixture-pass-1004") } });
     await prisma.session.create({
       data: { userId, token: `${P}tok-1`, expiresAt: new Date(Date.now() + 100000) },
     });
@@ -626,7 +626,7 @@ describe("referrals + account", () => {
     expectOk(signOut);
     expect(await prisma.session.count({ where: { userId } })).toBe(0);
 
-    const del = await api("POST", "account/delete-request", { userId, body: { password: "password123", confirmation: "DELETE", expectedUserId: userId } });
+    const del = await api("POST", "account/delete-request", { userId, body: { password: "Fixture-pass-1004", confirmation: "DELETE", expectedUserId: userId } });
     expectOk(del);
     const user = await prisma.user.findUnique({ where: { id: userId } });
     expect(user?.status).toBe("deleted");
@@ -634,7 +634,7 @@ describe("referrals + account", () => {
 
   it("delete request clears live sessions and blocks credential login", async () => {
     const email = `${P}account-delete-login@example.com`;
-    const password = "password123";
+    const password = "Fixture-pass-1004";
     const signup = await api("POST", "auth/signup", {
       body: { email, password, name: "Delete Login" },
     });
@@ -669,7 +669,7 @@ describe("referrals + account", () => {
     const userId = `${P}account-delete-outbox`;
     const eventId = `user_deleted_${userId}`;
     const accountUser = await createUser({ id: userId });
-    await prisma.account.create({ data: { userId, providerId: "credential", accountId: accountUser.email, password: hashPassword("password123") } });
+    await prisma.account.create({ data: { userId, providerId: "credential", accountId: accountUser.email, password: hashPassword("Fixture-pass-1004") } });
     await prisma.session.create({
       data: {
         userId,
@@ -677,7 +677,7 @@ describe("referrals + account", () => {
         expiresAt: new Date(Date.now() + 100_000),
       },
     });
-    const deleted = await api("POST", "account/delete-request", { userId, body: { password: "password123", confirmation: "DELETE", expectedUserId: userId } });
+    const deleted = await api("POST", "account/delete-request", { userId, body: { password: "Fixture-pass-1004", confirmation: "DELETE", expectedUserId: userId } });
     expectOk(deleted);
     expect(deleted.data).toMatchObject({
       requested: true,

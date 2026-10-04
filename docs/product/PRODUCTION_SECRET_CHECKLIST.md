@@ -59,7 +59,7 @@ Store these generated values:
 | `ADMIN_MODEL_DIAGNOSTICS_ENABLED` | Keep `false` for normal production Admin; set `true` only during engineering diagnostics |
 | `ADMIN_MODEL_LIBRARY_DIR` | Optional diagnostics-only server-side model import directory |
 
-The public ingress must **overwrite** (not append to) `X-Forwarded-For` before requests reach Main. Rate limits and the affiliate click de-duplication read its first value; an appended header lets a client choose its own IP and bypass both.
+Main must sit behind exactly one public ingress proxy that sets or appends `X-Forwarded-For`. Anonymous rate limits read its **rightmost** entry (the address that ingress observed), so a client-supplied header cannot choose its own bucket; exposing Main directly, or adding a second proxy hop without adjusting `rateLimitIdentity`, breaks that guarantee.
 
 ## Chat Service Values
 

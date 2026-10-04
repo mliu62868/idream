@@ -356,7 +356,7 @@ async function startSignedInAdultSession(page: Page, tag: string) {
   const signup = await page.request.post("/api/v1/auth/signup", {
     data: {
       email,
-      password: "password123",
+      password: "Fixture-pass-1004",
       name: `E2E ${tag}`,
     },
   });
@@ -1455,7 +1455,7 @@ test("help desk signup redirect preserves anonymous support request draft", asyn
   await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Helpdesk Signup Redirect");
   await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password").fill("password123");
+  await page.getByLabel("Password").fill("Fixture-pass-1004");
   await page.getByRole("button", { name: "Join Free" }).click();
   await completeSignupRecoveryCode(page);
 
@@ -1559,7 +1559,7 @@ test("help desk signup redirect preserves anonymous roadmap idea draft", async (
   await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Helpdesk Feedback Signup Redirect");
   await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password").fill("password123");
+  await page.getByLabel("Password").fill("Fixture-pass-1004");
   await page.getByRole("button", { name: "Join Free" }).click();
   await completeSignupRecoveryCode(page);
 
@@ -1680,7 +1680,7 @@ test("help desk signup redirect applies anonymous roadmap vote intent", async ({
 
   await page.getByLabel("Display name").fill("E2E Helpdesk Vote Signup Redirect");
   await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password").fill("password123");
+  await page.getByLabel("Password").fill("Fixture-pass-1004");
   await page.getByRole("button", { name: "Join Free" }).click();
   await completeSignupRecoveryCode(page);
 
@@ -1760,7 +1760,7 @@ test("help desk signup redirect preserves anonymous appeal draft", async ({ page
   await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Helpdesk Appeal Signup Redirect");
   await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password").fill("password123");
+  await page.getByLabel("Password").fill("Fixture-pass-1004");
   await page.getByRole("button", { name: "Join Free" }).click();
   await completeSignupRecoveryCode(page);
 
@@ -3029,7 +3029,7 @@ test("global header signup redirect returns anonymous generator intent", async (
   await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Generate Signup Redirect");
   await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password").fill("password123");
+  await page.getByLabel("Password").fill("Fixture-pass-1004");
   await page.getByRole("button", { name: "Join Free" }).click();
   await completeSignupRecoveryCode(page);
 
@@ -3071,7 +3071,7 @@ test("global header login redirect returns existing user to generator intent", a
   expect(authExploreClass?.split(/\s+/)).not.toContain("bg-[rgb(46,46,46)]");
 
   await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password").fill("password123");
+  await page.getByLabel("Password").fill("Fixture-pass-1004");
   await page.getByRole("button", { name: "Login" }).click();
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/generate");
@@ -3127,7 +3127,7 @@ test("generate preset signup redirect preserves anonymous preset draft", async (
   await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Generate Preset Signup Redirect");
   await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password").fill("password123");
+  await page.getByLabel("Password").fill("Fixture-pass-1004");
   await page.getByRole("button", { name: "Join Free" }).click();
   await completeSignupRecoveryCode(page);
 
@@ -3218,7 +3218,7 @@ test("create signup redirect returns anonymous draft to the builder", async ({ p
   await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Create Signup Redirect");
   await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password").fill("password123");
+  await page.getByLabel("Password").fill("Fixture-pass-1004");
   await page.getByRole("button", { name: "Join Free" }).click();
   await completeSignupRecoveryCode(page);
 
@@ -3510,7 +3510,7 @@ test("character detail signup redirect returns anonymous chat intent to the char
   await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Character Signup Redirect");
   await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password").fill("password123");
+  await page.getByLabel("Password").fill("Fixture-pass-1004");
   await page.getByRole("button", { name: "Join Free" }).click();
   await completeSignupRecoveryCode(page);
 
@@ -3545,7 +3545,7 @@ test("character detail like signup redirect returns anonymous intent and persist
   await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Character Like Signup Redirect");
   await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password").fill("password123");
+  await page.getByLabel("Password").fill("Fixture-pass-1004");
   await page.getByRole("button", { name: "Join Free" }).click();
   await completeSignupRecoveryCode(page);
 
@@ -3623,7 +3623,7 @@ test("character detail generate signup redirect preserves character intent", asy
   await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Character Generate Signup Redirect");
   await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password").fill("password123");
+  await page.getByLabel("Password").fill("Fixture-pass-1004");
   await page.getByRole("button", { name: "Join Free" }).click();
   await completeSignupRecoveryCode(page);
 
@@ -3948,7 +3948,7 @@ test("chat hub signup redirect returns anonymous user to the hub", async ({ page
   await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Chat Hub Signup Redirect");
   await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password").fill("password123");
+  await page.getByLabel("Password").fill("Fixture-pass-1004");
   await page.getByRole("button", { name: "Join Free" }).click();
   await completeSignupRecoveryCode(page);
 
@@ -4031,7 +4031,7 @@ test("chat session deep links prompt anonymous users to log back in", async ({ p
   expect(new URL(page.url()).searchParams.get("next")).toBe(sessionPath);
 
   await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password").fill("password123");
+  await page.getByLabel("Password").fill("Fixture-pass-1004");
   await page.getByRole("button", { name: "Login" }).click();
 
   await expect.poll(() => new URL(page.url()).pathname).toBe(sessionPath);
@@ -5197,7 +5197,7 @@ test("upgrade signup redirect returns anonymous checkout intent to plans", async
   await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Upgrade Signup Redirect");
   await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password").fill("password123");
+  await page.getByLabel("Password").fill("Fixture-pass-1004");
   await page.getByRole("button", { name: "Join Free" }).click();
   await completeSignupRecoveryCode(page);
 
@@ -5425,7 +5425,7 @@ test("creator profile signup redirect returns anonymous follow intent to creator
   await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Creator Follow Signup Redirect");
   await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password").fill("password123");
+  await page.getByLabel("Password").fill("Fixture-pass-1004");
   await page.getByRole("button", { name: "Join Free" }).click();
   await completeSignupRecoveryCode(page);
 
@@ -5470,7 +5470,7 @@ test("community signup redirect returns anonymous follow intent to creator", asy
   await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Community Follow Signup Redirect");
   await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password").fill("password123");
+  await page.getByLabel("Password").fill("Fixture-pass-1004");
   await page.getByRole("button", { name: "Join Free" }).click();
   await completeSignupRecoveryCode(page);
 
@@ -5705,7 +5705,7 @@ test("feed chat signup redirect lands the guest in the chat they asked for", asy
   await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Feed Chat Signup Redirect");
   await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password").fill("password123");
+  await page.getByLabel("Password").fill("Fixture-pass-1004");
   await page.getByRole("button", { name: "Join Free" }).click();
   await completeSignupRecoveryCode(page);
 
@@ -5749,7 +5749,7 @@ test("feed like signup redirect returns anonymous intent to focused feed item", 
   await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Feed Like Signup Redirect");
   await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password").fill("password123");
+  await page.getByLabel("Password").fill("Fixture-pass-1004");
   await page.getByRole("button", { name: "Join Free" }).click();
   await completeSignupRecoveryCode(page);
 
@@ -5818,7 +5818,7 @@ test("feed remix signup redirect preserves anonymous generator intent", async ({
   await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Feed Remix Signup Redirect");
   await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password").fill("password123");
+  await page.getByLabel("Password").fill("Fixture-pass-1004");
   await page.getByRole("button", { name: "Join Free" }).click();
   await completeSignupRecoveryCode(page);
 
@@ -6345,7 +6345,7 @@ test("profile prompts anonymous visitors to sign in before showing private contr
   await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Profile Signup Redirect");
   await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password").fill("password123");
+  await page.getByLabel("Password").fill("Fixture-pass-1004");
   await page.getByRole("button", { name: "Join Free" }).click();
   await completeSignupRecoveryCode(page);
 
@@ -6392,7 +6392,7 @@ test("profile subroutes preserve anonymous auth return targets", async ({ page }
   await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Profile Subroute Signup Redirect");
   await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password").fill("password123");
+  await page.getByLabel("Password").fill("Fixture-pass-1004");
   await page.getByRole("button", { name: "Join Free" }).click();
   await completeSignupRecoveryCode(page);
 
@@ -6571,7 +6571,7 @@ test("profile account management signs out sessions and deletes the account", as
   await expect(deleteButton).toBeDisabled();
   await page.getByLabel("Delete confirmation").fill("DELETE");
   await expect(deleteButton).toBeDisabled();
-  await page.getByLabel("Current account password").fill("password123");
+  await page.getByLabel("Current account password").fill("Fixture-pass-1004");
   await expect(deleteButton).toBeEnabled();
   const deletionResponses: Array<{ status: number; payload: { data: { receipt: string } } }> = [];
   await page.route("**/api/v1/account/delete-request", async (route) => {
@@ -6638,7 +6638,7 @@ test("profile account management signs out sessions and deletes the account", as
   await page.getByRole("link", { name: "Back to login", exact: true }).click();
   await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Email").filter({ visible: true }).fill(email);
-  await page.getByLabel("Password").filter({ visible: true }).fill("password123");
+  await page.getByLabel("Password").filter({ visible: true }).fill("Fixture-pass-1004");
   await page.getByRole("button", { name: "Login" }).click();
   await expect(page.getByTestId("auth-status")).toHaveText(
     `This account was deleted at your request. Erasure completes by ${deletion.graceEndsAt.toISOString().slice(0, 10)}; it can no longer be signed in to.`,

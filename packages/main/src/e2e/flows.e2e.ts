@@ -362,7 +362,7 @@ test("flow 2: signup through the UI creates an authenticated session", async ({ 
   await page
     .getByLabel("Password")
     .filter({ visible: true })
-    .fill("password123");
+    .fill("Fixture-pass-1004");
   await page.getByRole("button", { name: /join free/i }).click();
   await completeSignupRecoveryCode(page);
 
@@ -414,7 +414,7 @@ test("auth UI handles invalid login, duplicate signup recovery, logout, returnin
   await page
     .getByLabel("Password")
     .filter({ visible: true })
-    .fill("password123");
+    .fill("Fixture-pass-1004");
   await page.getByRole("button", { name: "Join Free" }).click();
   await completeSignupRecoveryCode(page);
   await expect(page).toHaveURL(/\/$/);
@@ -441,7 +441,7 @@ test("auth UI handles invalid login, duplicate signup recovery, logout, returnin
   await page
     .getByLabel("Password")
     .filter({ visible: true })
-    .fill("password123");
+    .fill("Fixture-pass-1004");
   await page.getByRole("button", { name: "Join Free" }).click();
   await expect(page.getByText("Email already registered")).toBeVisible();
   await expect(page.getByTestId("auth-status")).toHaveAttribute("role", "alert");
@@ -458,7 +458,7 @@ test("auth UI handles invalid login, duplicate signup recovery, logout, returnin
   await page
     .getByLabel("Password")
     .filter({ visible: true })
-    .fill("password123");
+    .fill("Fixture-pass-1004");
   await page.getByRole("button", { name: "Login" }).click();
   await expect(page).toHaveURL(/\/generate\?characterId=melissa-burke$/);
   await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
@@ -478,7 +478,7 @@ test("flow 3: chat session persists through the real server", async ({ page }) =
 
   await ctx.post("/api/v1/age-gate/accept", { data: { sourcePath: "/" } });
   const signup = await ctx.post("/api/v1/auth/signup", {
-    data: { email, password: "password123", name: "E2E Chat" },
+    data: { email, password: "Fixture-pass-1004", name: "E2E Chat" },
   });
   expect(signup.ok()).toBeTruthy();
 
@@ -525,7 +525,7 @@ test("flow 4/5/6: generation, billing, and moderation via the real server", asyn
   // Age gate must come first — proxy 403s every other /api/v1 path until accepted.
   await ctx.post("/api/v1/age-gate/accept", { data: { sourcePath: "/" } });
   const signup = await ctx.post("/api/v1/auth/signup", {
-    data: { email, password: "password123", name: "E2E API" },
+    data: { email, password: "Fixture-pass-1004", name: "E2E API" },
   });
   expect(signup.ok()).toBeTruthy();
 

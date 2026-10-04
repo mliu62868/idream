@@ -24,7 +24,7 @@ async function signedInAdult(page: Page, tag: string) {
   });
   expect(ageGate.ok(), await ageGate.text()).toBeTruthy();
   const signup = await page.request.post("/api/v1/auth/signup", {
-    data: { email, password: "password123", name: `E2E Proactive ${tag}` },
+    data: { email, password: "Fixture-pass-1004", name: `E2E Proactive ${tag}` },
   });
   expect(signup.ok(), await signup.text()).toBeTruthy();
   const user = await prisma.user.findUniqueOrThrow({

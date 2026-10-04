@@ -82,6 +82,9 @@ export function invalidateViewerAuthority(): void {
 
 export const VIEWER_AUTH_CHANGE_STORAGE_KEY = "idream.auth-change";
 
+/** Same identity, new public profile fields (display name): AuthNav re-reads /me. */
+export const VIEWER_PROFILE_CHANGED_EVENT = "idream-profile-changed";
+
 /** Other tabs still hold private state even when the mutating tab navigates. */
 export function announceViewerAuthorityChange(): void {
   invalidateViewerAuthority();
