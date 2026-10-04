@@ -1,3 +1,4 @@
+import { unknownOutcomeCopy } from "@/lib/generation-failure-copy";
 import { isRenderableMediaSource } from "@/lib/public-api-contracts";
 
 export const CREATE_PREVIEW_CANDIDATE_COUNT = 4;
@@ -263,7 +264,7 @@ async function pollCreatePreviewJob(
     if (snapshot.errorCode === "provider_outcome_unknown" && snapshot.status !== "completed" && snapshot.status !== "failed") {
       throw new CreatePreviewFlowError(
         "outcome_unknown",
-        `The preview result needs review. Contact support with request ${previewJobId} before generating more candidates.`,
+        unknownOutcomeCopy(0),
       );
     }
     if (snapshot.status === "completed") {

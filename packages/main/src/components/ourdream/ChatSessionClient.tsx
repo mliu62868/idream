@@ -78,6 +78,7 @@ import {
   type GenerationQuoteAuthority,
 } from "@/lib/generation-write-client";
 import { GroupSpeakerControls, mentionedGroupCharacter } from "./chat/GroupSpeakerControls";
+import { unknownOutcomeCopy } from "@/lib/generation-failure-copy";
 
 type ChatLoadState = "loading" | "ready" | "signed-out" | "error";
 type ChatUpgradeReason = "dreamcoins" | "messages";
@@ -2292,7 +2293,7 @@ function ChatImageAttachmentCard({
         <div className="min-w-0 flex-1">
           <p className="text-[12px] font-bold text-white">
             {requiresReview
-              ? "Image result needs review"
+              ? "Image result not confirmed yet"
               : paymentRequired
                 ? "Not enough dreamcoins"
               : tooManyActive
@@ -2314,7 +2315,7 @@ function ChatImageAttachmentCard({
           ) : (
             <p className="mt-0.5 line-clamp-2 text-[11px] leading-4 text-white/60">
               {requiresReview
-                ? `The result could not be confirmed. ${refundableCost ? `Your ${refundableCost} are on hold until we confirm it, and you won't be charged twice. ` : ""}Contact support before trying again.`
+                ? unknownOutcomeCopy(chargedCost)
                 : failed || attachment.status === "proposed"
                 ? paymentRequired
                   ? "Add dreamcoins to generate this image."
@@ -2336,8 +2337,7 @@ function ChatImageAttachmentCard({
       </div>
       {requiresReview ? (
         <div className="mt-3 text-[11px] text-white/70">
-          <Link className="underline" href="/helpdesk">Contact support</Link>
-          <p className="mt-1 break-all">Request: {attachment.generationJobId ?? attachment.id}</p>
+          <p className="break-all">Request: {attachment.generationJobId ?? attachment.id}</p>
         </div>
       ) : paymentRequired ? (
         <Link

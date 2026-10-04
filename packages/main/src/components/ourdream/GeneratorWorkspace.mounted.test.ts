@@ -1347,7 +1347,7 @@ describe("GeneratorWorkspace media journeys", () => {
     }));
     await mount();
     const card = container.querySelector('[data-generation-job-id="unknown-video"]');
-    expect(card?.textContent).toContain("Result needs review");
+    expect(card?.textContent).toContain("Result not confirmed yet");
     expect(card?.textContent).not.toMatch(/queued|rendering slot|coins are back|Retry/i);
     // The stale-unknown sweeper settles it without anyone; support has nothing to do.
     expect(card?.textContent).toContain("100 coins are refunded automatically within about 30 minutes");

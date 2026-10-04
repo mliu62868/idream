@@ -926,10 +926,11 @@ describe("ChatSessionClient streaming composer", () => {
     }] }];
     await mountSession();
     const card = container.querySelector('[data-testid="chat-image-attachment-card"]');
-    expect(card?.textContent).toContain("Image result needs review");
-    expect(card?.textContent).not.toMatch(/Generating image|being prepared|Retry image|refunded/);
+    expect(card?.textContent).toContain("Image result not confirmed yet");
+    expect(card?.textContent).not.toMatch(/Generating image|being prepared|Retry image|were returned/);
     expect(card?.querySelector(".animate-spin")).toBeNull();
-    expect(card?.querySelector('a[href="/helpdesk"]')?.textContent).toContain("Contact support");
+    expect(card?.textContent).toContain("marked failed automatically within about 30 minutes");
+    expect(card?.querySelector('a[href="/helpdesk"]')).toBeNull();
     const before = sessionReads;
     await act(async () => document.dispatchEvent(new Event("visibilitychange")));
     expect(sessionReads).toBe(before);

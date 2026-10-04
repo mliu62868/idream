@@ -4831,7 +4831,7 @@ export function generatorJobStatusLabel(
   status: string,
   errorCode: string | null,
 ) {
-  if (errorCode === "provider_outcome_unknown") return "Result needs review";
+  if (errorCode === "provider_outcome_unknown") return "Result not confirmed yet";
   if (!isCatalogMember(GENERATION_JOB_STATUSES, status)) return status;
   if (mode === "video" && status === "queued") {
     return "Waiting for a rendering slot";

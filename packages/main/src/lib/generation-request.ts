@@ -1,6 +1,6 @@
 "use client";
 
-import { generationFailureCopy } from "./generation-failure-copy";
+import { generationFailureCopy, unknownOutcomeCopy } from "./generation-failure-copy";
 import { isTerminalGenerationJobStatus } from "@idream/shared/catalog";
 import {
   parseGenerationQuoteResponse,
@@ -408,8 +408,9 @@ export type GenerationJobFact = {
 };
 
 /**
- * Polling stops at a terminal status or an outcome requiring operator review.
- * Unknown outcomes retain their reservation; stopping a spinner is not settlement.
+ * Polling stops at a terminal status or an unknown provider outcome. Unknown
+ * outcomes retain their reservation until the unknown sweeper settles them;
+ * stopping a spinner is not settlement.
  */
 export function pendingGenerationJobIds(
   jobs: readonly GenerationJobFact[],
@@ -449,7 +450,7 @@ export function projectServerJobArrival(
   if (!isTerminalGenerationJobStatus(job.status) && job.errorCode === "provider_outcome_unknown") {
     return {
       settled: true,
-      statusMessage: isActiveJob ? "The generation result needs review. Contact support before trying again." : null,
+      statusMessage: isActiveJob ? unknownOutcomeCopy(0) : null,
       showResults: false,
       refreshBalanceAndQuote: false,
     };

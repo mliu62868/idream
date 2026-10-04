@@ -34,6 +34,7 @@ import {
 } from "./draft-transfer";
 import { isRecord } from "./workspace-helpers";
 import { CREATE_SOUL_DETAIL_FIELDS } from "@/lib/create-soul-catalog";
+import { unknownOutcomeCopy } from "@/lib/generation-failure-copy";
 import {
   CREATE_PREVIEW_CANDIDATE_COUNT,
   continueCreatePreviewBatch,
@@ -527,7 +528,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
         setRestoredPreviewReviewId(serverPreviewJob.id);
         setPreviewStatus("paused");
         setStatus(serverPreviewJob.errorCode === "provider_outcome_unknown"
-          ? `The preview result needs review. Contact support with request ${serverPreviewJob.id}.`
+          ? unknownOutcomeCopy(0)
           : `Your saved preview is still processing. Check request ${serverPreviewJob.id} again later.`);
       }
       const applied = restored;
@@ -1835,7 +1836,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
                     {state.previewBatch.phase === "complete"
                       ? "completed"
                       : state.previewBatch.phase === "paused"
-                        ? state.previewBatch.failureReason === "outcome_unknown" ? "needs review" : "checking paused"
+                        ? state.previewBatch.failureReason === "outcome_unknown" ? "not confirmed yet" : "checking paused"
                       : state.previewBatch.phase === "failed" ? "failed"
                         : state.previewBatch.activeJobStatus === "running"
                           ? "processing"
@@ -1878,9 +1879,6 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
                       </p>
                     )}
                   </>
-                )}
-                {(restoredPreviewReviewId || state.previewBatch?.failureReason === "outcome_unknown") && (
-                  <Link className="text-[13px] text-white underline" href="/helpdesk">Contact support</Link>
                 )}
                 {previewCandidates.length > 0 && (
                   <div className="grid grid-cols-2 gap-3" data-testid="create-preview-candidates">

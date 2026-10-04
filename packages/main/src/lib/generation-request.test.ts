@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { unknownOutcomeCopy } from "./generation-failure-copy";
 import {
   createGenerationIdempotencyKeys,
   generationAuthorityActionForStatus,
@@ -629,7 +630,7 @@ describe("generation job settlement", () => {
     expect(pendingGenerationJobIds([job])).toEqual([]);
     expect(projectServerJobArrival(job)).toEqual({
       settled: true,
-      statusMessage: "The generation result needs review. Contact support before trying again.",
+      statusMessage: unknownOutcomeCopy(0),
       showResults: false,
       refreshBalanceAndQuote: false,
     });

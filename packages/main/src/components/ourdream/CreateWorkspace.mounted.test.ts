@@ -448,8 +448,9 @@ describe("CreateWorkspace identity confirmation", () => {
     await waitUntil(() => Boolean(container.querySelector('[data-testid="create-step-preview"]')));
     const check = () => [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "Check preview status");
     expect(check()).toBeDefined();
-    expect(container.textContent).toContain("unknown-preview");
-    expect(container.querySelector('a[href="/helpdesk"]')).not.toBeNull();
+    // The sweeper settles an unknown outcome on its own; the user is told so, not sent to support.
+    expect(container.textContent).toContain("marked failed automatically");
+    expect(container.querySelector('a[href="/helpdesk"]')).toBeNull();
     await act(async () => check()?.click());
     expect(check()).toBeDefined();
     completed = true;

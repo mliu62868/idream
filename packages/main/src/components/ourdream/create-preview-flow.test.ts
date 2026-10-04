@@ -64,7 +64,7 @@ describe("create preview batch", () => {
     });
     expect(failed).toMatchObject({ phase: "paused", failureReason: "outcome_unknown", activePreviewJobId: "job-4" });
     expect(read).toHaveBeenCalledTimes(1);
-    expect(failed.errorMessage).toContain("Contact support");
+    expect(failed.errorMessage).toContain("marked failed automatically");
     const restored = parseCreatePreviewBatch(JSON.parse(JSON.stringify(failed)))!;
     const retry = retryCreatePreviewBatch(restored, clock);
     expect(retry.activeRequestKey).toBe(failed.activeRequestKey);
