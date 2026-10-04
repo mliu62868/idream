@@ -10,6 +10,7 @@ import {
   Heart,
   ImageIcon,
   ListChecks,
+  Maximize2,
   Pencil,
   RefreshCw,
   Settings2,
@@ -30,6 +31,7 @@ import type { CharacterCardData } from "@/types/ourdream";
 import {
   GENERATION_JOB_STATUSES,
   isCatalogMember,
+  isTerminalGenerationJobStatus,
   type GenerationJobStatus,
   type MediaAssetVisibility,
 } from "@idream/shared/catalog";
@@ -38,7 +40,7 @@ import {
   isBuiltInMediaPlaceholderUrl,
   isPrivateMediaUrl,
 } from "@/lib/image-delivery";
-import { generationFailureCopy } from "@/lib/generation-failure-copy";
+import { generationFailureCopy, unknownOutcomeCopy } from "@/lib/generation-failure-copy";
 import {
   parseCharacterDetailResponse,
   parseCharacterLooksResponse,
@@ -95,6 +97,7 @@ import {
 import { publicOptimisticMutationFailure } from "./optimistic-write-state";
 import { useReportDialog } from "./ReportDialog";
 import { VideoSequenceControls, type VideoSequenceRecovery } from "./VideoSequenceControls";
+import { MediaLightbox, VideoPreview, type LightboxMedia } from "./MediaLightbox";
 import { canStartAgeGatedLoad } from "@/lib/age-gate";
 
 type MediaItem = {
@@ -591,6 +594,7 @@ export function GeneratorWorkspace() {
   const [view, setView] = useState<WorkspaceView>("create");
   const [status, setStatus] = useState("");
   const { openReport, reportDialog } = useReportDialog(setStatus);
+  const [lightboxMedia, setLightboxMedia] = useState<LightboxMedia | null>(null);
   const [configError, setConfigError] = useState("");
   const [failedMediaIds, setFailedMediaIds] = useState<Set<string>>(() => new Set());
   const [invalidPreviewMediaIds, setInvalidPreviewMediaIds] = useState<Set<string>>(() => new Set());
@@ -952,6 +956,28 @@ export function GeneratorWorkspace() {
   const insufficientBalanceHref = anonymousViewer
     ? authHrefForTarget("/signup", authReturnTarget)
     : `/coins?returnTo=${encodeURIComponent(authReturnTarget)}`;
+  function selectVideoMode() {
+    const firstVideoModel = config?.video.models[0];
+    setMode("video");
+    setFreeplay(false);
+    setModelSelection({
+      id: "",
+      explicit: false,
+    });
+    setOrientation(firstVideoModel?.orientations?.[0] ?? "");
+    setCount(1);
+  }
+  // SPEC: 回到 /generate 时若有进行中的视频任务，默认停在 Video —— 序列进度面板只在那里渲染。
+  // INTENT: 只在首个任务快照到达时判断一次，之后用户自己切走不再抢；Chat/Remix 带来的
+  //   generationContext 与未确认的表单各自决定模式，优先于这里。
+  const videoTabRestoredRef = useRef(false);
+  const hasActiveVideoJob = jobs.some((job) => job.mode === "video" && !isTerminalGenerationJobStatus(job.status));
+  useEffect(() => {
+    if (videoTabRestoredRef.current || !jobsAuthority.hasSnapshot || !videoModeEnabled) return;
+    videoTabRestoredRef.current = true;
+    if (generationContext.required || unconfirmedFormRef.current || mode !== "image" || !hasActiveVideoJob) return;
+    selectVideoMode();
+  });
   const selectedCharacter = useMemo(
     () => characters.find((character) => character.id === characterId) ?? null,
     [characterId, characters],
@@ -2653,17 +2679,7 @@ export function GeneratorWorkspace() {
                   className={`h-10 rounded-full text-[13px] font-bold ${
                     mode === "video" ? "bg-white text-[rgb(13,13,13)]" : "text-[rgb(170,170,170)]"
                   }`}
-                  onClick={() => {
-                    const firstVideoModel = config?.video.models[0];
-                    setMode("video");
-                    setFreeplay(false);
-                    setModelSelection({
-                      id: "",
-                      explicit: false,
-                    });
-                    setOrientation(firstVideoModel?.orientations?.[0] ?? "");
-                    setCount(1);
-                  }}
+                  onClick={selectVideoMode}
                   type="button"
                 >
                   Video
@@ -2993,7 +3009,7 @@ export function GeneratorWorkspace() {
               </div>
             ) : null}
 
-            {mode === "video" ? anonymousViewer ? <Link className="mt-4 flex h-12 w-full items-center justify-center rounded-full bg-[rgb(255,48,170)] text-[14px] font-black text-white" href={authHrefForTarget("/signup", authReturnTarget)}>Join free to generate</Link> : <VideoSequenceControls key={receiptOwnerScope ?? "signed-out"} viewerScope={receiptOwnerScope} characterId={generationBody.characterId} generationContextToken={generationBody.generationContextToken} consistencyMode={consistencyMode} seed={generationBody.seed} disabled={!modeAvailable || !contextReady || formUnconfirmed} unavailableMessage={modeUnavailableMessage ?? undefined} onStatusChange={refreshVideoSequenceAuthority} onRecoveryChange={recoverVideoSequenceContext} /> : <>
+            {mode === "video" ? anonymousViewer ? <Link className="mt-4 flex h-12 w-full items-center justify-center rounded-full bg-[rgb(255,48,170)] text-[14px] font-black text-white" href={authHrefForTarget("/signup", authReturnTarget)}>Join free to generate</Link> : <VideoSequenceControls key={receiptOwnerScope ?? "signed-out"} viewerScope={receiptOwnerScope} characterId={generationBody.characterId} generationContextToken={generationBody.generationContextToken} consistencyMode={consistencyMode} seed={generationBody.seed} disabled={!modeAvailable || !contextReady || formUnconfirmed} unavailableMessage={modeUnavailableMessage ?? undefined} coinsHref={insufficientBalanceHref} onStatusChange={refreshVideoSequenceAuthority} onRecoveryChange={recoverVideoSequenceContext} /> : <>
             <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
                 {imageEditMode
                   ? "Edit instructions"
@@ -3793,8 +3809,7 @@ export function GeneratorWorkspace() {
                     </div>
                     {job.errorCode === "provider_outcome_unknown" && (
                       <p className="mt-3 text-[12px] font-medium text-[rgb(170,170,170)]">
-                        The result could not be confirmed.{job.costDreamcoins > 0 ? ` Your ${job.costDreamcoins} coins are on hold until we confirm it, and you won't be charged twice.` : ""} Please contact support before trying again.
-                        {" "}<Link className="underline" href="/helpdesk">Contact support</Link>
+                        {unknownOutcomeCopy(job.costDreamcoins)}
                         <span className="mt-1 block break-all">Request: {job.id}</span>
                       </p>
                     )}
@@ -4199,6 +4214,15 @@ export function GeneratorWorkspace() {
                         </button>
                       ) : (
                         <>
+                          {item.type === "image" && !isUnavailable && (
+                            <button
+                              aria-label="View image larger"
+                              className="absolute inset-0 cursor-zoom-in"
+                              data-testid="gallery-media-open"
+                              onClick={() => setLightboxMedia({ type: "image", url: item.url, alt: galleryImageAlt(item) })}
+                              type="button"
+                            />
+                          )}
                           {item.type === "image" && (
                             <div className="absolute left-2 top-2 flex gap-2 opacity-100 md:opacity-0 md:transition-opacity md:group-hover:opacity-100 md:group-focus-within:opacity-100">
                               <IconButton
@@ -4288,6 +4312,12 @@ export function GeneratorWorkspace() {
                                 }`}
                               />
                             </IconButton>
+                            {item.type === "video" && !isUnavailable && (
+                              <IconButton label="View video larger"
+                                onClick={() => setLightboxMedia({ type: "video", url: item.url, contentType: item.contentType, alt: "Generated video" })}>
+                                <Maximize2 className="h-4 w-4" />
+                              </IconButton>
+                            )}
                             <IconButton label="Download" onClick={() => downloadMedia(item.id)}>
                               <Download className="h-4 w-4" />
                             </IconButton>
@@ -4368,6 +4398,7 @@ export function GeneratorWorkspace() {
         </div>
       </div>
       {reportDialog}
+      {lightboxMedia && <MediaLightbox media={lightboxMedia} onClose={() => setLightboxMedia(null)} />}
     </section>
   );
 }
@@ -4451,6 +4482,12 @@ function PresetSelect({
   );
 }
 
+function galleryImageAlt(item: MediaItem) {
+  const imageLabel = item.enhancement ? "Enhanced image" : "Image creation";
+  const characterName = item.provenance?.sourceCharacterName?.replace(/\s+/g, " ").trim().slice(0, 80);
+  return characterName ? `${imageLabel} · ${characterName}` : imageLabel;
+}
+
 function MediaPreview({
   item,
   loading,
@@ -4467,28 +4504,12 @@ function MediaPreview({
   testIdPrefix?: "gallery" | "latest-result";
 }) {
   if (item.type === "video") {
-    return (
-      <video
-        aria-label="Generated video"
-        className="h-full w-full object-contain"
-        controls
-        data-testid={`${testIdPrefix}-media-video`}
-        onError={onError}
-        playsInline
-        poster={item.thumbnailUrl !== item.url && !isBuiltInMediaPlaceholderUrl(item.thumbnailUrl) ? item.thumbnailUrl : undefined}
-        preload="none"
-      >
-        <source onError={onError} src={item.url} type={item.contentType ?? "video/mp4"} />
-        Video playback is not supported.
-      </video>
-    );
+    return <VideoPreview item={item} label="Generated video" onError={onError} testId={`${testIdPrefix}-media-video`} />;
   }
 
-  const imageLabel = item.enhancement ? "Enhanced image" : "Image creation";
-  const characterName = item.provenance?.sourceCharacterName?.replace(/\s+/g, " ").trim().slice(0, 80);
   return (
     <Image
-      alt={characterName ? `${imageLabel} · ${characterName}` : imageLabel}
+      alt={galleryImageAlt(item)}
       className="object-cover object-top"
       data-testid={`${testIdPrefix}-media-image`}
       fill
@@ -4816,7 +4837,7 @@ export function generatorJobStatusLabel(
     return "Waiting for a rendering slot";
   }
   if (mode === "video" && status === "running") {
-    return "Generating video · you can return later";
+    return "Generating video · usually takes several minutes, you can return later";
   }
   const label = jobStatusLabels[status];
   const reason = generationFailureCopy(errorCode);

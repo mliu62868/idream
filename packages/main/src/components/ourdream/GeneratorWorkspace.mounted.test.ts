@@ -1336,7 +1336,7 @@ describe("GeneratorWorkspace media journeys", () => {
     expect(quoteBodies.at(-1)?.controls.model).toBe("identity-model");
   });
 
-  it("shows an unconfirmed job with support access instead of queue or retry promises", async () => {
+  it("tells an unconfirmed job's owner about the automatic refund instead of queue, retry or support promises", async () => {
     const originalFetch = globalThis.fetch;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input).startsWith("/api/v1/generation/jobs")) return Response.json({ ok: true, data: { items: [{
@@ -1349,7 +1349,34 @@ describe("GeneratorWorkspace media journeys", () => {
     const card = container.querySelector('[data-generation-job-id="unknown-video"]');
     expect(card?.textContent).toContain("Result needs review");
     expect(card?.textContent).not.toMatch(/queued|rendering slot|coins are back|Retry/i);
-    expect(card?.querySelector('a[href="/helpdesk"]')?.textContent).toContain("Contact support");
+    // The stale-unknown sweeper settles it without anyone; support has nothing to do.
+    expect(card?.textContent).toContain("100 coins are refunded automatically within about 30 minutes");
+    expect(card?.querySelector('a[href="/helpdesk"]')).toBeNull();
+  });
+
+  it.each([
+    { jobStatus: "running", expected: "video" },
+    { jobStatus: "completed", expected: "image" },
+  ])("opens on the $expected tab when the latest video job is $jobStatus", async ({ jobStatus, expected }) => {
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/generation/config") return Response.json({ ok: true, data: {
+        ...config, entitlements: { premium_controls: true, video_generation: true },
+        video: { enabled: true, availability: { state: "available" }, requiredEntitlement: "video_generation",
+          recipes: [{ id: "video-recipe", rowId: "video-recipe-v1", label: "Animate character", mode: "video", useCase: "character", version: 1 }],
+          models: [{ id: "video-model", label: "Video", maxCount: 1, costMultiplier: 1, entitlement: null }] },
+      } });
+      if (path.startsWith("/api/v1/generation/jobs")) return Response.json({ ok: true, data: { items: [{
+        id: "video-job", mode: "video", status: jobStatus, errorCode: null,
+        outputCount: 1, costDreamcoins: 100, createdAt: new Date().toISOString(),
+      }] } });
+      if (path.endsWith("/video-sequences/capabilities")) return Response.json({ ok: true, data: { capabilities: videoCapabilities } });
+      if (path.endsWith("/video-sequences")) return Response.json({ ok: true, data: { sequences: [] } });
+      return originalFetch(input, init);
+    }));
+    await mount();
+    expect(container.querySelector('[aria-label="Video sequence"]') !== null).toBe(expected === "video");
   });
 
   it("keeps delivered videos accessible while video generation is disabled and after reconnect", async () => {

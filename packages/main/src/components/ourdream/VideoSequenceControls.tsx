@@ -2,11 +2,13 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import Image from "next/image";
+import Link from "next/link";
+import { UNKNOWN_SETTLEMENT_GRACE_MINUTES } from "@/lib/generation-failure-copy";
 import { videoSequenceRequestSchema, videoSequenceCapabilitiesSchema, videoSequenceQuoteSchema, videoSequenceDtoSchema,
   type VideoSequenceRequest, type VideoSequenceQuote, type VideoSequenceDto } from "@idream/shared/contracts";
 
 export type VideoSequenceRecovery = { request: VideoSequenceRequest; sourceImageAssetId: string | null };
-type Props = { viewerScope: string | null; characterId?: string; generationContextToken?: string; consistencyMode: "balanced" | "strict" | "creative"; seed?: string; disabled?: boolean; unavailableMessage?: string; onStatusChange?: () => void; onRecoveryChange?: (value: VideoSequenceRecovery | null) => void };
+type Props = { viewerScope: string | null; characterId?: string; generationContextToken?: string; consistencyMode: "balanced" | "strict" | "creative"; seed?: string; disabled?: boolean; unavailableMessage?: string; coinsHref: string; onStatusChange?: () => void; onRecoveryChange?: (value: VideoSequenceRecovery | null) => void };
 type Receipt = { key: string; request: VideoSequenceRequest; id: string | null };
 class VideoRequestError extends Error { constructor(message: string, readonly status: number) { super(message); } }
 
@@ -180,7 +182,7 @@ export function VideoSequenceControls(props: Props) {
   const statusLocked = busy || Boolean(receipt && receipt.id !== sequence?.id);
   const inputClass = "mt-1 w-full rounded-lg bg-white/10 px-3 py-2 text-sm text-white disabled:opacity-50";
   return <section className="mt-4 space-y-4" aria-label="Video sequence">
-    <p className="text-sm leading-6 text-white/70">Create up to three scenes from this character image, in order. Each completed scene keeps its own result and charge. If a scene fails or needs reconciliation, later scenes stop.</p>
+    <p className="text-sm leading-6 text-white/70">Create up to three scenes from this character image, in order. Each completed scene keeps its own result and charge. If a scene fails or its result can&apos;t be confirmed, later scenes stop.</p>
     {capabilities ? <div className="grid grid-cols-3 gap-3 text-sm">
       <label>Aspect ratio<select className={inputClass} aria-label="Video aspect ratio" disabled={locked} value={orientation} onChange={event => setOrientation(event.target.value as VideoSequenceRequest["orientation"])}>{capabilities.options.orientations.map(value => <option key={value}>{value}</option>)}</select></label>
       <label>Resolution<select className={inputClass} aria-label="Video resolution" disabled={locked} value={quality} onChange={event => setQuality(event.target.value as VideoSequenceRequest["quality"])}>{capabilities.options.qualities.map(value => <option value={value} key={value}>{value === "preview" ? "Preview · 512px wide" : "Standard · 768px wide"}</option>)}</select></label>
@@ -201,16 +203,21 @@ export function VideoSequenceControls(props: Props) {
       {quote.scenes.map((scene, ordinal) => <p key={scene.ordinal}>Scene {ordinal + 1} · {scene.video.durationSeconds.toFixed(2)}s · {scene.video.width}×{scene.video.height} · {quote.costs[ordinal]?.costDreamcoins} coins</p>)}
       <p className="mt-2 font-bold">Total {quote.costDreamcoins} coins · balance {quote.balance}</p>
       <p className="mt-2 text-white/70">Unexecuted scenes are refunded. Delivered scenes retain their charge. Retries reuse completed results at no additional cost.{quote.narrationExtendsLastFrame ? " Narration is included; a longer line extends the final frame until it finishes." : ""}</p>
+      {quote.balance < quote.costDreamcoins ? <Link className="mt-3 flex items-center justify-between gap-2 rounded-[10px] border border-[rgb(255,184,112)]/40 bg-[rgb(36,28,18)] px-4 py-3 text-[12px] font-semibold text-[rgb(255,184,112)]" data-testid="video-insufficient-balance" href={props.coinsHref}>
+        <span>Need {quote.costDreamcoins} coins · you have {quote.balance}. Remove a scene or get more coins.</span>
+        <span className="rounded-full bg-[rgb(255,48,170)] px-3 py-1 text-[11px] font-black text-white">Get coins</span>
+      </Link> : null}
       <button type="button" className="mt-3 rounded-full bg-white px-4 py-2 font-bold text-black disabled:opacity-50" disabled={locked || quote.balance < quote.costDreamcoins} onClick={() => void accept()}>Accept {quote.costDreamcoins} coins & create video</button>
     </div> : null}
     {error ? <p role="alert" className="text-sm text-amber-200">{error}</p> : null}
     {history.length > 1 ? <label className="block text-sm">Recent sequences<select className={inputClass} aria-label="Recent video sequences" value={sequence?.id ?? ""} disabled={busy || Boolean(receipt)} onChange={event => void loadSequence(event.target.value)}>{history.map(value => <option key={value.id} value={value.id}>{new Date(value.createdAt).toLocaleString()} · {value.status} · {value.cost.finalCharge} coins</option>)}</select></label> : null}
     {sequence ? <div className="space-y-2 rounded-xl border border-white/10 p-4 text-sm" aria-label="Video sequence status">
       <p role="status">Sequence {sequence.status} · reserved {sequence.cost.charged} · refunded {sequence.cost.refunded} · final charge {sequence.cost.finalCharge} coins</p>
+      {["generating", "composing"].includes(sequence.status) ? <p className="text-white/65">Each scene usually takes several minutes to render, then the scenes are joined into one video. You can leave this page; progress is saved and the finished video appears in your Gallery.</p> : null}
       {sequence.scenes[0]?.job.controls.sourceImageAssetId ? <div className="flex items-center gap-3"><Image alt="Original video reference" src={`/api/v1/media/${encodeURIComponent(sequence.scenes[0].job.controls.sourceImageAssetId)}/content`} width={80} height={96} unoptimized className="h-24 w-20 rounded-lg object-cover object-top" /><p>Original animation reference</p></div> : null}
       {sequence.scenes.map(scene => <p key={scene.ordinal}>Scene {scene.ordinal + 1}: {scene.job.status} · {scene.job.cost.finalCharge} coins{sequence.request.audio === "narration" ? ` · narration ${scene.narrationState === "completed" ? "ready" : scene.narrationState === "failed" ? "failed" : scene.narrationState === "running" ? "in progress" : "pending"}` : ""} {scene.assets.map(asset => <a key={asset.id} href={asset.downloadUrl} className="ml-2 underline">Download scene {scene.ordinal + 1}</a>)}</p>)}
       {sequence.asset ? <><video controls playsInline className="max-h-96 w-full rounded-lg" src={sequence.asset.url} /><a className="block underline" href={sequence.asset.downloadUrl}>Download complete video</a></> : null}
-      {sequence.status === "unknown" ? <p className="text-amber-200">A provider result needs reconciliation. Later scenes stopped; this request will not call that provider again automatically.</p> : null}
+      {sequence.status === "unknown" ? <p className="text-amber-200">We couldn&apos;t confirm a scene&apos;s result yet, so later scenes stopped and their coins were refunded. If that result doesn&apos;t arrive, the scene is marked failed and refunded automatically within about {UNKNOWN_SETTLEMENT_GRACE_MINUTES} minutes — there&apos;s nothing you need to do.</p> : null}
       {sequence.status === "failed" || sequence.status === "cancelled" ? <p className="text-white/65">Keep any completed scenes above. Unexecuted scenes have been stopped; review a new quote for any remaining work.</p> : null}
       {sequence.status === "composition_failed" ? <><p className="text-white/65">Your completed scenes are saved.{sequence.request.audio === "narration" ? " Completed narration is saved too; missing lines will be generated on retry." : ""}</p><button className="underline" type="button" disabled={statusLocked} onClick={() => void action("retry-composition")}>Retry finishing · no extra coins</button></> : null}
       {["generating", "composing", "unknown"].includes(sequence.status) ? <button className="underline" type="button" disabled={statusLocked} onClick={() => void action("stop")}>Stop remaining scenes</button> : null}

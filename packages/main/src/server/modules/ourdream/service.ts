@@ -2996,7 +2996,13 @@ async function listMedia(request: Request) {
       AND: [{ OR: [
         { contentType: null },
         { contentType: { not: "application/vnd.idream.pocket-tts-preset+json" } },
-      ] }],
+      ] },
+      // SPEC: 图库展示可交付物。视频序列交付成片后，各场景片段与旁白音频是成片的
+      //   中间产物，不再与成片并列（多场景时会把图库淹没）。
+      // INTENT: 只在成片存在时才收起；停止 / 失败 / 打包失败的序列没有成片，已扣费
+      //   的场景片段就是用户拿到的全部，必须留在图库。序列面板仍可逐段下载。
+      { NOT: { sourceJob: { videoScene: { sequence: { mediaAssetId: { not: null } } } } } },
+      { NOT: { videoNarrationScenes: { some: { sequence: { mediaAssetId: { not: null } } } } } }],
       // Apply the gallery's allowed kinds before its cursor/limit, so liked
       // voice clips cannot consume an image/video page or break its contract.
       type: types ? { in: types } : type ?? undefined,
@@ -5072,6 +5078,16 @@ function mediaProvenanceDTO(sourceJob?: {
       sourceId: sourceJob.sourceId,
       label: "From chat",
       chatSessionId: stringFromRecord(meta, "sessionId") ?? null,
+      href: null,
+    };
+  }
+
+  if (sourceJob.sourceType === "video_sequence_scene") {
+    const ordinal = numberFromRecord(meta, "ordinal");
+    return {
+      sourceType: sourceJob.sourceType,
+      sourceId: sourceJob.sourceId,
+      label: ordinal === undefined ? "Video scene" : `Video scene ${ordinal + 1}`,
       href: null,
     };
   }

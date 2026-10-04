@@ -135,7 +135,7 @@ describe("generator video product contract", () => {
       "Waiting for a rendering slot",
     );
     expect(generatorJobStatusLabel("video", "running", null)).toBe(
-      "Generating video · you can return later",
+      "Generating video · usually takes several minutes, you can return later",
     );
     expect(generatorJobStatusLabel("video", "completed", null)).toBe("Completed");
     expect(generatorJobStatusLabel("image", "running", null)).toBe("Generating");

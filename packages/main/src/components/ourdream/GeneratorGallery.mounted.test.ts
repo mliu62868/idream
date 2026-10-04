@@ -262,6 +262,29 @@ describe("GeneratorWorkspace Gallery filters and video playback", () => {
     expect(card.querySelector("video source")?.getAttribute("src")).toBe("/user-content/video-1.mp4");
   });
 
+  it("opens images and videos in an accessible viewer that Escape closes back to its opener", async () => {
+    await mount();
+    const imageCard = container.querySelector('[data-media-id="image-1"]')!;
+    const open = imageCard.querySelector<HTMLButtonElement>('button[aria-label="View image larger"]')!;
+    open.focus();
+    await click(open);
+    const dialog = container.querySelector<HTMLDialogElement>('dialog[data-testid="media-lightbox"]')!;
+    expect(dialog.open).toBe(true);
+    expect(dialog.querySelector("img")?.getAttribute("src")).toBe("/user-content/image-1.png");
+    expect(document.activeElement?.getAttribute("aria-label")).toBe("Close");
+    await act(async () => dialog.dispatchEvent(new Event("cancel", { cancelable: true })));
+    await settle();
+    expect(container.querySelector('[data-testid="media-lightbox"]')).toBeNull();
+    expect(document.activeElement).toBe(open);
+    await click(button("Videos"));
+    await click(container.querySelector('[data-media-id="video-1"] button[aria-label="View video larger"]')!);
+    const video = container.querySelector<HTMLVideoElement>('[data-testid="media-lightbox-video"]')!;
+    expect(video.getAttribute("src")).toBe("/user-content/video-1.mp4");
+    expect(video.hasAttribute("controls")).toBe(true);
+    await click(container.querySelector('[data-testid="media-lightbox"] button[aria-label="Close"]')!);
+    expect(container.querySelector('[data-testid="media-lightbox"]')).toBeNull();
+  });
+
   it("does not use the canonical video URL or a built-in placeholder as its poster", async () => {
     const originalFetch = globalThis.fetch;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -275,10 +298,12 @@ describe("GeneratorWorkspace Gallery filters and video playback", () => {
     await mount();
     await click(button("Videos"));
     expect(container.querySelector("video")?.getAttribute("poster")).toBeNull();
-    expect(container.querySelector("video source")?.getAttribute("src")).toBe("/user-content/canonical-video.mp4");
+    // Without a real poster the card loads metadata at the first frame instead of a black box.
+    expect(container.querySelector("video")?.getAttribute("preload")).toBe("metadata");
+    expect(container.querySelector("video source")?.getAttribute("src")).toBe("/user-content/canonical-video.mp4#t=0.001");
     const placeholderVideo = container.querySelector('[data-media-id="placeholder-video"] video');
     expect(placeholderVideo).not.toBeNull();
     expect(placeholderVideo?.getAttribute("poster")).toBeNull();
-    expect(placeholderVideo?.querySelector("source")?.getAttribute("src")).toBe("/user-content/placeholder-video.mp4");
+    expect(placeholderVideo?.querySelector("source")?.getAttribute("src")).toBe("/user-content/placeholder-video.mp4#t=0.001");
   });
 });
