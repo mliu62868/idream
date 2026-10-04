@@ -1573,10 +1573,19 @@ async function getCharacter(request: Request, id: string) {
   });
   if (!character) throw Errors.notFound("Character not found");
 
+  // SPEC: shareable = 匿名访客打开这个链接也能看到。非本人只能经由
+  //   directCharacterAudienceWhere 读到它，必然可分享；本人可能读到的是尚未
+  //   发布的角色，按同一判据再问一次，不在前端用 publicationState 近似。
+  const shareable = character.creatorId !== ctx.userId ||
+    (await prisma.character.count({
+      where: { AND: [{ id: character.id }, directCharacterAudienceWhere] },
+    })) > 0;
+
   await trackEvent("character_viewed", { characterId: character.id }, ctx);
   return ok({
     character: {
       ...(await characterDetailDTO(character, ctx.userId)),
+      shareable,
       voiceSampleAvailable: (await characterVoiceSampleProfile(character.id)) !== null,
     },
   });
@@ -2111,7 +2120,32 @@ async function draftResumePayload(draft: CharacterDraft, userId: string) {
     },
     previewJob,
     asset: asset ? mediaDTO(asset) : null,
+    previewCandidates: await draftPreviewCandidates(draft),
   };
+}
+
+// SPEC: 另一台设备没有本地批次信封，只能靠服务端找回候选图。返回草稿下所有已完成、
+//   且仍与当前外貌输入一致的候选（新的在前），而不是只取最新一条 —— 最新那张失败
+//   或仍在跑时，之前成功的候选不能跟着丢。
+async function draftPreviewCandidates(draft: CharacterDraft) {
+  const jobs = await prisma.characterPreviewJob.findMany({
+    where: { draftId: draft.id, status: "completed", resultAssetId: { not: null } },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    select: { id: true, resultAssetId: true },
+  });
+  const matching = [];
+  for (const job of jobs) {
+    if (await characterPreviewMatchesDraft(draft, job.id)) matching.push(job);
+  }
+  const assets = new Map((await prisma.mediaAsset.findMany({
+    where: { id: { in: matching.map((job) => job.resultAssetId!) } },
+  })).map((asset) => [asset.id, mediaDTO(asset)]));
+  return matching.flatMap((job) => {
+    const asset = assets.get(job.resultAssetId!);
+    return asset
+      ? [{ previewJobId: job.id, assetId: asset.id, url: asset.url, isSynthetic: asset.isSynthetic }]
+      : [];
+  });
 }
 
 // POST characters/:id/edit-draft — CR-06: open (or derive) the owner's edit

@@ -74,6 +74,14 @@ describe("CharacterDetailHero", () => {
     expect(container.querySelector('a[data-testid="character-detail-creator"]')).toBeNull();
   });
 
+  it("pins the hero frame to the card width so min-height cannot widen it past a phone screen", () => {
+    act(() => root.render(createElement(CharacterDetailHero, { character: baseCharacter })));
+    const frame = container.querySelector<HTMLElement>('[data-testid="character-detail-hero-frame"]');
+    // With an auto width, min-h-[440px] transfers through aspect-video into a 782px
+    // min-width and the face of a portrait image is cropped off on phones and tablets.
+    expect(frame?.className.split(" ")).toEqual(expect.arrayContaining(["aspect-video", "min-h-[440px]", "w-full"]));
+  });
+
   it("omits counts a character has not earned instead of showing zeros", () => {
     act(() => {
       root.render(

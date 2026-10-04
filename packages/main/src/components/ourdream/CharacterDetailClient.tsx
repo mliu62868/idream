@@ -156,6 +156,7 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
     }
   }
 
+  const notice = character ? publicationNotice(character) : null;
   return (
     <main className="min-h-screen bg-[rgb(13,13,13)] text-white">
       <div className="flex min-h-screen w-full">
@@ -203,8 +204,9 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
                     <Heart className="h-4 w-4" />
                     {character.liked ? "Liked" : "Like"}
                   </button>
-                  {/* 私有角色只有本人看得到，分享出去对方也打不开，所以不给这个按钮。 */}
-                  {(character.visibility === "public" || character.visibility === "unlisted") && (
+                  {/* 只有匿名访客也打得开的角色才给 Share：私有角色、以及保存为公开但还在
+                      等待发布的角色，链接发出去对方只会看到 404。判据由服务端 shareable 给出。 */}
+                  {character.shareable === true && (
                     <button
                       className="inline-flex h-12 items-center justify-center gap-2 rounded-full bg-[rgb(36,36,36)] px-5 text-[14px] font-bold text-white"
                       onClick={async () => setStatus(await shareOrCopy(`${window.location.origin}${window.location.pathname}`, character.title))}
@@ -223,6 +225,14 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
                     <Flag className="h-4 w-4" />
                     Report
                   </button>
+                  {notice && (
+                    <p
+                      className="basis-full text-[13px] font-medium leading-5 text-white/70"
+                      data-testid="character-detail-publication"
+                    >
+                      {notice}
+                    </p>
+                  )}
                 </div>}
                 character={character}
               />
@@ -310,6 +320,18 @@ function VoiceSampleButton({ characterId, onError }: Readonly<{
       {state === "loading" ? "Loading voice..." : state === "playing" ? "Stop voice" : "Hear voice"}
     </button>
   );
+}
+
+// SPEC: 作者保存为公开 / 仅链接后，角色要等发布完成才对外可见；这期间只有作者能
+//   打开本页，所以把状态写在 Share 原本的位置。
+// INTENT: 不承诺时限 —— 发布节奏尚未定（自动发布与否待产品拍板）。
+function publicationNotice(character: CharacterDetail) {
+  if (character.shareable !== false) return null;
+  if (character.visibility !== "public" && character.visibility !== "unlisted") return null;
+  const where = character.visibility === "public" ? "in Explore and by link" : "by link";
+  return character.publicationState === "pending_review"
+    ? `Preparing for publication. Only you can see this page for now; once it's published it will be available ${where} and you can share it.`
+    : `Awaiting publication. Only you can see this page for now; once it's published it will be available ${where} and you can share it.`;
 }
 
 // INTENT: 游客点 Chat 被带去注册；回来时带上 resume=chat，详情页自动接着开聊，

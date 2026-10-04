@@ -72,6 +72,20 @@ describe("Pack authoring, claims and viewer authority", () => {
     expect(writes[1]).toMatchObject({ path: "/api/v1/packs/pack-a/publish", body: { version: 8 } });
     expect(container.textContent).toContain("Withdraw this Pack before editing");
   });
+  it("names cover options and Gallery picks by position and caption, never by raw media id", async () => {
+    const uncaptioned: PackDetail = { ...pack(), manifest: { title: "Night album", description: "", visibility: "public", coverAssetId: null, claimUntil: null,
+      items: [{ mediaAssetId: "image-a", caption: "" }, { mediaAssetId: "audio-b", caption: "Second audio" }] } };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input); if (path === "/api/v1/me") return viewer(); if (path.includes("/sources")) return sources();
+      return envelope(uncaptioned);
+    }));
+    await act(async () => root.render(createElement(PackStudio, { id: "pack-a" })));
+    await until(() => container.querySelectorAll('input[type="checkbox"]').length === 2);
+    const cover = [...container.querySelectorAll("select")].find(select => select.closest("label")?.textContent?.includes("Public preview cover"))!;
+    expect([...cover.options].map(option => option.textContent)).toEqual(["No public cover", "1. Image"]);
+    const picks = [...container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].map(input => input.getAttribute("aria-label"));
+    expect(picks).toEqual(["Include Gallery image 1", "Include Gallery voice 2"]);
+  });
   it("drops a former creator's private editor and ignores a late Gallery result after the account changes", async () => {
     let id = "author-a", finish!: (response: Response) => void;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input) === "/api/v1/me" ? viewer(id) : String(input).includes("/sources") ? new Promise<Response>(resolve => { finish = resolve; }) : envelope(pack())));

@@ -55,8 +55,9 @@ export async function listChatSessions(userId: string) {
   const rows = await prisma.recentChat.findMany({
     where: { userId, groupId: null },
     orderBy: [{ lastMessageAt: "desc" }, { createdAt: "desc" }],
+    include: { character: { select: { name: true } } },
   });
-  return rows.map(publicSession);
+  return rows.map((row) => publicSession(row, row.character.name));
 }
 
 // A group member and a single-character session use exactly the same audience
@@ -130,11 +131,11 @@ export async function createChatSession(
   const activeKey = `${userId}:${characterId}`;
   const existing = await prisma.recentChat.findUnique({ where: { activeKey } });
   if (existing) {
-    if (existing.characterReleaseId === release?.id) return publicSession(existing);
+    if (existing.characterReleaseId === release?.id) return publicSession(existing, character.name);
     if (owner) {
       // Only a Release-pinned session behind a different live Release can move;
       // anything else would take the user-row lock for nothing.
-      if (!release || !existing.characterReleaseId) return publicSession(existing);
+      if (!release || !existing.characterReleaseId) return publicSession(existing, character.name);
       // Same lock ladder as beginChatTurn, so no reply can start between the
       // pending-reply check and the re-pin.
       const repinned = await prisma.$transaction(async (tx) => {
@@ -143,7 +144,7 @@ export async function createChatSession(
         if (session.activeKey !== activeKey) return null;
         return repinOwnerSessionToServingRelease(tx, userId, session);
       });
-      if (repinned) return publicSession(repinned);
+      if (repinned) return publicSession(repinned, character.name);
     }
     if (!owner) {
       // INVARIANT: a session keeps its immutable Release pin. When Serving moves,
@@ -168,7 +169,7 @@ export async function createChatSession(
         });
         return null;
       });
-      if (kept) return publicSession(kept);
+      if (kept) return publicSession(kept, character.name);
     }
   }
 
@@ -178,7 +179,9 @@ export async function createChatSession(
         sessionId: randomUUID(),
         userId,
         characterId,
-        title: optionalText(input.title, 120) ?? character.name,
+        // INVARIANT: title 只存用户自己起的会话名；默认名不落库，读时从角色名派生，
+        // 角色改名后旧会话标题随之更新，而用户改过的名字不受影响。
+        title: optionalText(input.title, 120),
         activeKey,
         characterContentVersionId: content?.id ?? null,
         characterReleaseId: release?.id ?? null,
@@ -191,13 +194,14 @@ export async function createChatSession(
         entryPlacementId: optionalText(input.entryPlacementId, 200),
       },
     });
-    return publicSession(created);
+    return publicSession(created, character.name);
   } catch (error) {
     if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") {
       throw error;
     }
     return publicSession(
       await prisma.recentChat.findUniqueOrThrow({ where: { activeKey } }),
+      character.name,
     );
   }
 }
@@ -227,7 +231,7 @@ export async function getChatSession(userId: string, sessionId: string) {
     });
   }
   return {
-    ...publicSession(session),
+    ...publicSession(session, session.character.name),
     ownerScope: `user:${userId}`,
     continuation: await chatSessionContinuation(prisma, userId, session),
     // The open page polls for a check-in only while one can arrive.
@@ -915,28 +919,34 @@ export async function archiveChatSession(userId: string, sessionId: string) {
       select: { id: true },
     });
     if (active) throw Errors.conflict("Cancel the active reply before archiving this chat");
-    return publicSession(await tx.recentChat.update({
+    const archived = await tx.recentChat.update({
       where: { sessionId: session.sessionId },
       data: { status: "archived", activeKey: null },
-    }));
+      include: { character: { select: { name: true } } },
+    });
+    return publicSession(archived, archived.character.name);
   });
 }
 
 export async function renameChatSession(userId: string, sessionId: string, title: string) {
   const session = await requireSession(userId, sessionId);
   if (session.groupId) throw Errors.conflict("Rename this conversation from its group chat");
-  return publicSession(await prisma.recentChat.update({
+  const renamed = await prisma.recentChat.update({
     where: { sessionId: session.sessionId },
     data: { title: requiredText(title, "title", 120) },
-  }));
+    include: { character: { select: { name: true } } },
+  });
+  return publicSession(renamed, renamed.character.name);
 }
 
 export async function setChatMemory(userId: string, sessionId: string, memoryEnabled: boolean) {
   const session = await requireSession(userId, sessionId);
-  return publicSession(await prisma.recentChat.update({
+  const updated = await prisma.recentChat.update({
     where: { sessionId: session.sessionId },
     data: { memoryEnabled, contextRevision: { increment: 1 } },
-  }));
+    include: { character: { select: { name: true } } },
+  });
+  return publicSession(updated, updated.character.name);
 }
 
 export async function chatVoiceAuthority(userId: string, sessionId: string, messageId: string) {
@@ -1649,6 +1659,7 @@ function begunResult(
   };
 }
 
+// SPEC: title = 用户手动起的会话名，没有就用角色当前名字（见 createChatSession）。
 function publicSession(session: {
   sessionId: string;
   characterId: string;
@@ -1658,11 +1669,11 @@ function publicSession(session: {
   lastMessageAt: Date | null;
   proactiveUnreadAt: Date | null;
   createdAt: Date;
-}) {
+}, characterName: string) {
   return {
     id: session.sessionId,
     characterId: session.characterId,
-    title: session.title,
+    title: session.title ?? characterName,
     status: session.status,
     memoryEnabled: session.memoryEnabled,
     lastMessageAt: session.lastMessageAt?.toISOString() ?? null,

@@ -608,6 +608,13 @@ const characterDetailSchema = publicCharacterCardSchema
     style: z.string().optional(),
     gender: z.string().optional(),
     visibility: z.string().optional(),
+    publicationState: z.enum([
+      "pending_review",
+      "awaiting_publication",
+      "live",
+      "not_public",
+    ]).optional(),
+    shareable: z.boolean().optional(),
     voiceSampleAvailable: z.boolean().optional(),
   })
   .passthrough();

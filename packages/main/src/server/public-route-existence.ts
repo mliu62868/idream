@@ -1,6 +1,6 @@
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { notFound } from "next/navigation";
-import { SESSION_COOKIE } from "@/server/lib/auth";
+import { getAuthCtx, SESSION_COOKIE } from "@/server/lib/auth";
 import { prisma } from "@/server/lib/db";
 import { publicPackAudienceWhere } from "@/server/modules/ourdream/pack-authority";
 import {
@@ -69,4 +69,30 @@ export function requirePublicPackForAnonymous(id: string, releaseId?: string) {
     id, ...publicPackAudienceWhere(),
     ...(releaseId ? { currentReleaseId: releaseId } : {}),
   }, select: { id: true } }));
+}
+
+// SPEC: 编辑器页（/creator-studio/comics/:id、/packs/:id/edit）只对存在、且属于当前登录者
+//   的对象渲染；不存在或属于别人一律真 404，而不是 200 + 空白编辑器。
+// INTENT: 未登录时对象存在就照常渲染，让客户端页面引导登录 —— 登录前分不出是不是本人的。
+//   DB 读失败时不下 404，留给客户端页面自己报错。
+async function notFoundUnlessEditable(read: () => Promise<{ creatorId: string | null } | null>) {
+  let owner: { creatorId: string | null } | null;
+  let viewerId: string | undefined;
+  try {
+    owner = await read();
+    viewerId = owner
+      ? (await getAuthCtx(new Request("http://idream.internal/", { headers: await headers() }))).userId
+      : undefined;
+  } catch {
+    return;
+  }
+  if (!owner || (viewerId && owner.creatorId !== viewerId)) notFound();
+}
+
+export function requireEditableComic(id: string) {
+  return notFoundUnlessEditable(() => prisma.comic.findFirst({ where: { id }, select: { creatorId: true } }));
+}
+
+export function requireEditablePack(id: string) {
+  return notFoundUnlessEditable(() => prisma.pack.findFirst({ where: { id }, select: { creatorId: true } }));
 }

@@ -158,6 +158,10 @@ describe("creator makes a live Character private", () => {
       }),
     ]);
 
+    const ownerLive = await api("GET", `characters/${characterId}`, { userId, ageGate: true });
+    expectOk(ownerLive);
+    expect(ownerLive.data.character).toMatchObject({ publicationState: "live", shareable: true });
+
     const updated = await api("PATCH", `characters/${characterId}`, {
       userId,
       ageGate: true,
@@ -189,6 +193,10 @@ describe("creator makes a live Character private", () => {
         publicationState: "not_public",
       }),
     ]);
+
+    const ownerPrivate = await api("GET", `characters/${characterId}`, { userId, ageGate: true });
+    expectOk(ownerPrivate);
+    expect(ownerPrivate.data.character).toMatchObject({ shareable: false });
 
     const after = await api("GET", "characters", {
       ageGate: true,

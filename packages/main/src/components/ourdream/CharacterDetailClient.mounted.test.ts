@@ -155,7 +155,10 @@ describe("CharacterDetailClient like relationship", () => {
     const writeText = vi.fn(async () => undefined);
     vi.stubGlobal("navigator", { ...navigator, share, clipboard: { writeText } });
     let visibility = "public";
-    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ok: true, data: { character: { ...character, visibility } } })));
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      ok: true,
+      data: { character: { ...character, visibility, shareable: visibility === "public" } },
+    })));
     window.history.replaceState(null, "", "/characters/character-1?entryExposureId=e1");
     await act(async () =>
       root.render(createElement(CharacterDetailClient, { id: "character-1" }))
@@ -171,6 +174,23 @@ describe("CharacterDetailClient like relationship", () => {
     );
     await waitUntil(() => Boolean(findButton("Like")));
     expect(findButton("Share")).toBeUndefined();
+    expect(document.querySelector('[data-testid="character-detail-publication"]')).toBeNull();
+  });
+
+  it("tells the owner a public character awaits publication instead of copying a link visitors cannot open", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      ok: true,
+      data: { character: { ...character, visibility: "public", publicationState: "awaiting_publication", shareable: false } },
+    })));
+    await act(async () =>
+      root.render(createElement(CharacterDetailClient, { id: "character-1" }))
+    );
+    await waitUntil(() => Boolean(findButton("Like")));
+    expect(findButton("Share")).toBeUndefined();
+    const notice = document.querySelector('[data-testid="character-detail-publication"]');
+    expect(notice?.textContent).toContain("Awaiting publication");
+    expect(notice?.textContent).toContain("Only you can see this page");
+    expect(notice?.textContent).not.toMatch(/minute|hour|day|soon/i);
   });
 
   it("offers Hear voice only for a Character with a voice, and plays it on click without autoplay", async () => {
