@@ -289,14 +289,17 @@ describe("plans billing mode", () => {
   it("markets video only from the authoritative Character I2V route", async () => {
     const planId = await setupPlan("alternate-video-profile");
     const alternateProfileId = `${P}alternate-video-profile`;
-    const [videoFlag, productionProfile] = await Promise.all([
+    // Every seeded production video route (the default Character recipe and H3)
+    // must be off before an alternate route can be shown not to market video.
+    const productionIds = ["seed-profile-video-redgraft-ltx25-v1", "seed-profile-video-h3-v1"];
+    const [videoFlag, productionProfiles] = await Promise.all([
       prisma.featureFlag.findUniqueOrThrow({
         where: { key: "video_gen" },
         select: { enabled: true, rolloutPercent: true },
       }),
-      prisma.generationModelProfile.findUniqueOrThrow({
-        where: { id: "seed-profile-video-redgraft-ltx25-v1" },
-        select: { enabled: true, rolloutPercent: true },
+      prisma.generationModelProfile.findMany({
+        where: { id: { in: productionIds } },
+        select: { id: true, enabled: true, rolloutPercent: true },
       }),
     ]);
 
@@ -317,8 +320,8 @@ describe("plans billing mode", () => {
       )?.features,
     ).toMatchObject({ videoGeneration: true });
 
-    await prisma.generationModelProfile.update({
-      where: { id: "seed-profile-video-redgraft-ltx25-v1" },
+    await prisma.generationModelProfile.updateMany({
+      where: { id: { in: productionIds } },
       data: { rolloutPercent: 0 },
     });
     await prisma.generationModelProfile.create({
@@ -348,10 +351,9 @@ describe("plans billing mode", () => {
       await prisma.generationModelProfile.delete({
         where: { id: alternateProfileId },
       });
-      await prisma.generationModelProfile.update({
-        where: { id: "seed-profile-video-redgraft-ltx25-v1" },
-        data: productionProfile,
-      });
+      for (const { id, ...state } of productionProfiles) {
+        await prisma.generationModelProfile.update({ where: { id }, data: state });
+      }
       await prisma.featureFlag.update({
         where: { key: "video_gen" },
         data: videoFlag,
