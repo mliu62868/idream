@@ -5,10 +5,14 @@ import type { VoiceInputController } from "@/hooks/useVoiceInput";
 
 const ACTION = "min-h-11 rounded-full px-3 text-[13px] font-semibold text-white hover:bg-white/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#ff7ac8]";
 const languageNames = new Intl.DisplayNames(["en"], { type: "language" });
+const TRANSCRIPT_NOTE = "Transcripts can contain mistakes. Review your editable draft before sending.";
 
 export function VoiceInputStatus({ voice }: Readonly<{ voice: VoiceInputController }>) {
   if (!voice.notice && !voice.capability?.supported) return null;
   const isRecording = voice.phase === "recording";
+  // INTENT: 这块在 sticky 输入区里。没在用麦克风时只留一行可展开的说明（语种 + 转写提醒仍在 DOM 里，
+  //   录音前可查）；开始用麦克风后再把转写提醒摊开，避免常驻两行挤占对话区（审计 P1-1）。
+  const engaged = voice.phase !== "idle" || Boolean(voice.candidate) || voice.canUndo;
   const languages = voice.capability?.languages.map(language => languageNames.of(language) ?? language).join(", ");
   return (
     <div className="pb-2 text-[13px] text-white/90" data-testid="voice-input-status">
@@ -41,8 +45,9 @@ export function VoiceInputStatus({ voice }: Readonly<{ voice: VoiceInputControll
       {voice.capability?.supported && languages ? <details className="max-w-prose pb-1 text-[12px] leading-5 text-white/70">
         <summary className="cursor-pointer">Voice input languages ({voice.capability.languages.length})</summary>
         <p>{languages}</p>
+        {engaged ? null : <p>{TRANSCRIPT_NOTE}</p>}
       </details> : null}
-      {voice.capability?.supported ? <p className="max-w-prose pb-1 text-[12px] leading-5 text-white/70">Transcripts can contain mistakes. Review your editable draft before sending.</p> : null}
+      {voice.capability?.supported && engaged ? <p className="max-w-prose pb-1 text-[12px] leading-5 text-white/70">{TRANSCRIPT_NOTE}</p> : null}
       {voice.phase === "requesting" || isRecording ? <p className="max-w-prose pb-1 text-[12px] leading-5 text-white/70">Your recording is transcribed on iDream’s servers. Audio isn’t saved to your chat.</p> : null}
       {voice.candidate ? <>
         <p className="max-h-32 overflow-auto whitespace-pre-wrap rounded-xl bg-white/5 p-3 leading-5">{voice.candidate}</p>
