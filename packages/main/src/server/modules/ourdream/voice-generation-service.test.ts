@@ -1130,6 +1130,28 @@ describe("voice generation service contract", () => {
     expect((asset.metadata as { costDreamcoins?: number }).costDreamcoins).toBe(2);
   });
 
+  it("does not count a clip already paid in coins against plan minutes granted later", async () => {
+    const userId = `${P}paid-then-plan-user`;
+    await createUser({ id: userId });
+    await grantCoins(userId, 100, "seed");
+    const paid = await api("POST", "generation/voice", {
+      userId,
+      ageGate: true,
+      body: await voiceReplyBody(userId, { characterId: CHAR, messageId: `${P}paid-before-plan`, text: "Hello" }),
+    });
+    expectOk(paid, 201);
+    expect(await dreamcoinBalance(userId)).toBe(98);
+    await grantVoice(userId, 0.01); // 600ms: room for one 500ms clip only if the paid clip is excluded.
+
+    const included = await api("POST", "generation/voice", {
+      userId,
+      ageGate: true,
+      body: await voiceReplyBody(userId, { characterId: CHAR, messageId: `${P}after-plan`, text: "Hello" }),
+    });
+    expectOk(included, 201);
+    expect(await dreamcoinBalance(userId)).toBe(98);
+  });
+
   it("is fully gated by the voice_gen feature flag (kill-switch)", async () => {
     const userId = `${P}flag-user`;
     await createUser({ id: userId });

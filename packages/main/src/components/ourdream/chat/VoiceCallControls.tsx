@@ -33,7 +33,8 @@ export function VoiceCallControls({ voice, disabled }: { voice: VoiceCallControl
       <p className="w-full text-xs text-white/55">Up to 3 minutes. Connection time is free. Voice minutes count generated reply audio; paid replies stay within this total budget.</p>
     </div> : null}
     {voice.quote ? <div className="mt-3 space-y-3">
-      <p className="text-xs text-white/75">{voice.quote.allowanceMinutes} included voice minutes. Each reply beyond your remaining minutes costs {voice.quote.costPerReply} coins, up to {voice.quote.maxCostDreamcoins} coins total. Recognition and replies take a few seconds after each sentence.</p>
+      {voice.quote.voiceFallback ? <p className="text-xs text-white/75">This Character&apos;s own voice is not available for calls yet, so this call uses the standard voice.</p> : null}
+      <p className="text-xs text-white/75">{voice.quote.allowanceMinutes > 0 ? `${(voice.quote.remainingAllowanceMs / 60_000).toFixed(1)} of ${voice.quote.allowanceMinutes} included voice minutes left.` : "No included voice minutes."} Each reply beyond your remaining minutes costs {voice.quote.costPerReply} coins, up to {voice.quote.maxCostDreamcoins} coins total. Recognition and replies take a few seconds after each sentence.</p>
       <div className="flex flex-wrap gap-2">
         <button type="button" className={button} disabled={busy} onClick={() => void voice.connect()}><Mic className="h-4 w-4" /> Accept &amp; connect microphone</button>
         <button type="button" className={button} disabled={busy} onClick={() => void voice.connect(false)}>Accept &amp; use recordings</button>
