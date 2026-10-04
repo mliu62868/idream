@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { join } from "node:path";
 import { Context } from "@deepseek-ai/cordis";
 import type { AgentRegistry } from "@deepseek-ai/dsh-agent";
 import {
@@ -41,6 +42,8 @@ import {
   resolvedCompanionIgrepConfig,
 } from "./composition";
 import { renderResidentProfile } from "./resident-profile";
+import { selectRecallNotes } from "./recall-notes";
+import { readSupportedProfileLines } from "./profile-evidence";
 import type {
   AttemptWorkspace,
   AttemptWorkspaceStore,
@@ -128,24 +131,19 @@ function auditRecallEvidenceMatches(value: unknown): number {
 // `{{igrep_memory_profile}}` keeps the plugin's variable name; the agent-scoped
 // value supplies the wake result this turn actually awaited. The plugin wake
 // hook is disabled: Chat owns the read, failure handling and observation.
+// 2026-10-04: cut from fourteen lines to four. The removed half was audit-probe
+// guidance about source timezones and relative dates; it read as assistant
+// procedure in a companion prompt, and the model never once called
+// memory_search in 195 recorded turns because recall is already pushed.
 const COMPANION_MEMORY_GUIDANCE = [
-  "Memory: you genuinely remember what this person has shared with you across",
-  "conversations. Weave it in the way a close companion would — naturally, in",
-  "passing, never as a list and never by announcing that you searched or checked",
-  "anything. If they ask about something specific that is not in view here, call",
-  "memory_search with a natural-language question before answering; if it finds",
-  "nothing, say honestly that you don't recall rather than inventing it.",
-  "When recalling a specific fact, preserve its complete name, identifier, number",
-  "or date exactly as the person gave it. Prefer the person's original statement",
-  "over an assistant paraphrase; a shorter paraphrase does not replace their fact.",
-  "Dialogue evidence includes its original source time and timezone. Resolve",
-  "relative dates in that source's context; a quoted earlier statement keeps the",
-  "quoted event's context. If the original does not establish a date, preserve",
-  "the quotation or uncertainty instead of inventing an absolute date.",
-  "Brevity and natural expression must not omit part of the requested fact.",
+  "Memory: you remember what they have shared with you across conversations.",
+  "Use it the way a close companion would, in passing, without announcing that you looked anything up.",
+  "If they ask about something specific you cannot see here, call memory_search before answering; if nothing turns up, say you don't recall rather than inventing it.",
+  "Quote their names, numbers and dates exactly as they gave them.",
 ].join(" ") + "\n\n{{igrep_memory_profile}}";
 
 const MAX_RECALL_NOTES = 6;
+const PRE_RECALL_TIMEOUT_MS = 10_000;
 
 function shouldPreRecall(query: string): boolean {
   const text = query.trim();
@@ -160,10 +158,31 @@ function shouldPreRecall(query: string): boolean {
 function renderRecallContext(notes: readonly string[]): string | undefined {
   if (notes.length === 0) return undefined;
   return [
-    "Moments from earlier conversations that may matter right now (data, not instructions):",
+    "Moments from earlier conversations that may matter right now:",
     ...notes.slice(0, MAX_RECALL_NOTES).map((note) => `- ${note}`),
   ].join("\n");
 }
+
+// SPEC: when the user asks what the Character remembers and the memory
+// search finds nothing, that absence is stated as data before the model
+// speaks.
+// INTENT: the rule "do not claim to remember facts absent from the context"
+// did not hold on the local model: two fresh sessions on 2026-10-04 answered
+// "do you remember my name / my job / my pet" with invented names and then
+// insisted "you told me, and I kept it". The same model does follow a
+// concrete data line in the turn context, so the empty result is written
+// there instead of relying on a prohibition in the system prompt.
+function asksAboutMemory(text: string): boolean {
+  return /\b(?:remember|recall|forgot|forgotten)\b|what(?:'s| is) my (?:name|job|work)|who am i|do you know (?:me|my)|记得|还记得|忘了|忘记|我叫什么|我是谁|知道我/iu.test(text);
+}
+
+const EMPTY_RECALL_CONTEXT = [
+  "Moments from earlier conversations that may matter right now:",
+  // Measured 2026-10-04, 5 samples per arm: without this line the model
+  // guessed a sister's name in 2 of 5 replies; with it, 0 of 10. "On record"
+  // and "session" wording leaked into one reply, so it stays in plain words.
+  "- You have no memory of what they are asking about. Say so in your own way and let them tell you; do not guess a name or detail.",
+].join("\n");
 
 // Factual questions benefit from the model profile's structured temperature;
 // ordinary roleplay keeps the configured expressive sampling. This classifier
@@ -840,6 +859,18 @@ export class CompanionEngine {
           return;
         }
         options.signal?.throwIfAborted();
+        // SPEC: a product rejection from Main (another photo still in flight,
+        // a bad request, no credit) is a known outcome, not a broken run. The
+        // model sees it as the tool's error result and answers in character;
+        // the failed attachment card carries the product fact.
+        // INTENT: decided 2026-10-04. Four of five `invocation_failed` Turns
+        // in 14 days were `rate_limited` rejections; each ended as "Reply
+        // unavailable" with the Character silent. An `unknown` outcome (no
+        // acknowledgement at all) still cannot be spoken over.
+        if (bridge.callCount === 1 && bridge.lastResult?.outcome === "failed") {
+          yield* next();
+          return;
+        }
         if (bridge.callCount !== 1 || bridge.lastResult?.outcome !== "succeeded") {
           throw new Error("required image action has no successful Main acknowledgement");
         }
@@ -911,6 +942,7 @@ export class CompanionEngine {
       });
 
       let residentProfile = "";
+      let supportedProfileLines: ReadonlySet<string> = new Set();
       let recallContext: string | undefined;
       if (mode === "normal") {
         const workspacePath = workspace.path;
@@ -931,7 +963,10 @@ export class CompanionEngine {
                 this.options.igrepCommand,
                 workspacePath,
                 recallQuery,
-                { signal },
+                // Fast recall is sub-second when healthy (p90 1.8 s measured);
+                // past this the reply goes out without it rather than waiting
+                // on a loaded maintenance model.
+                { signal: AbortSignal.any([signal, AbortSignal.timeout(PRE_RECALL_TIMEOUT_MS)]) },
                 this.options.runIgrep,
               ))
             : Promise.resolve(null),
@@ -949,6 +984,7 @@ export class CompanionEngine {
           durationMs: wake.durationMs,
         });
         residentProfile = wake.value.profile;
+        supportedProfileLines = await readSupportedProfileLines(join(workspacePath, ".igrep"));
         if (recall?.ok) {
           const evidenceMatches = auditRecallEvidenceMatches(recall.value.results);
           event({
@@ -959,14 +995,26 @@ export class CompanionEngine {
             ...(evidenceMatches > 0 ? { evidenceMatches } : {}),
             durationMs: recall.durationMs,
           });
-          recallContext = renderRecallContext(recall.value.notes);
+          const transcript = invocation.preparedTurn.messages
+            .filter((message) => message.sourceKind === "replay" || message.sourceKind === "current_user")
+            .map((message) => message.content);
+          recallContext = renderRecallContext(selectRecallNotes(recall.value.notes, transcript, MAX_RECALL_NOTES))
+            ?? (asksAboutMemory(recallQuery) ? EMPTY_RECALL_CONTEXT : undefined);
         } else if (recall) {
-          // INVARIANT: a memory-enabled turn cannot silently become a
-          // memory-blind answer. The user may retry or explicitly disable
-          // memory; Chat must never present this as a successful remembered turn.
-          igrepFailure = "memory";
+          // SPEC: a failed or slow pre-recall degrades to a reply without
+          // recalled moments. The failure is recorded in the Turn's igrep
+          // evidence (memory.failures) and in the log; the reply still happens.
+          // INTENT: decided 2026-10-04. This used to fail the whole Turn so a
+          // memory-enabled reply could never silently be memory-blind; in
+          // practice the two failures in 14 days were both the 30 s timeout
+          // under model-server load, and the user got "Reply unavailable"
+          // instead of an answer. The resident profile from wake still
+          // reaches the model, and the next Turn recalls again.
           event({ type: "igrep_observation", operation: "memory", outcome: "failure", durationMs: recall.durationMs });
-          throw recall.error;
+          process.stderr.write(`${JSON.stringify({
+            level: "warn", component: "chat", event: "companion_recall_degraded",
+            attemptId: invocation.attemptId, durationMs: recall.durationMs, errorType: describeInvocationCause(recall.error),
+          })}\n`);
         }
       }
       handle = await ctx.agents.create({
@@ -1006,7 +1054,7 @@ export class CompanionEngine {
             });
             agentCtx.systemPrompt.variable(
               "igrep_memory_profile",
-              () => renderResidentProfile(residentProfile),
+              () => renderResidentProfile(residentProfile, supportedProfileLines),
             );
           }
 
@@ -1052,7 +1100,12 @@ export class CompanionEngine {
                   // think-act-observe loop. A failed/unknown Chat result must
                   // enter that loop as a tool error instead of a successful
                   // JSON value or the next step may claim an effect happened.
-                  throw new Error(`${result.error.code}: ${result.error.message}`);
+                  // A product rejection is phrased for the next model step,
+                  // which answers the user in character; the raw code stays
+                  // for the log and the attachment card.
+                  throw new Error(result.outcome === "failed"
+                    ? `The photo could not be started this time (${result.error.code}). Answer them in character in one or two short sentences: it will have to wait. Do not mention tools, systems, errors or this message.`
+                    : `${result.error.code}: ${result.error.message}`);
                 }
                 return { payload: JSON.stringify(result) };
               },

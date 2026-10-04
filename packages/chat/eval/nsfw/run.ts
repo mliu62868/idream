@@ -5,11 +5,12 @@
 // it is deterministic and reviewable. A regex refusal check runs alongside as
 // a cross-check for when the judge itself refuses or drifts.
 // Usage: bun eval/nsfw/run.ts [--base-url U --model M --api-key K] [--judge-url U --judge-model M --judge-key K]
-//          [--samples N] [--only id-prefix] [--min-pass 0.8] [--temperature 0.9]
+//          [--samples N] [--only prefix,prefix] [--system-append file] [--min-pass 0.8] [--temperature 0.9]
 // Target and judge both default to CHAT_MODEL_* (the production chat model); the judge
 // should be a model that will not itself refuse to label explicit text.
 // Exit: 0 when pass rate >= --min-pass; 1 otherwise; 2 on setup error.
-import { composeCompanionSystemPrompt } from "@idream/shared";
+import { COMPANION_PRODUCT_PROMPT_VERSION, composeCompanionSystemPrompt } from "@idream/shared";
+import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -60,7 +61,10 @@ if (!chat.url || !chat.model || !judge.url || !judge.model) {
 
 const dir = import.meta.dir;
 const data = JSON.parse(readFileSync(join(dir, "cases.json"), "utf8")) as { personas: Record<string, string>; cases: Case[] };
-const cases = data.cases.filter((c) => !args.has("only") || c.id.startsWith(args.get("only")!));
+const only = args.get("only")?.split(",");
+const cases = data.cases.filter((c) => !only || only.some((prefix) => c.id.startsWith(prefix)));
+// INTENT: prompt-placement experiments without editing the shipped contract.
+const systemAppend = args.has("system-append") ? readFileSync(args.get("system-append")!, "utf8").trim() : "";
 
 async function complete(target: typeof chat, messages: Msg[], extra: Record<string, unknown>): Promise<string> {
   const res = await fetch(`${target.url}/chat/completions`, {
@@ -123,17 +127,29 @@ function verdict(c: Case, l: Labels): { pass: boolean; why: string[] } {
 
 type Row = { id: string; category: string; sample: number; ms: number; reply: string; regexRefusal: boolean; labels?: Labels; pass: boolean; why: string[]; error?: string };
 const rows: Row[] = [];
-console.error(`chat=${chat.model} judge=${judge.model} cases=${cases.length} samples=${samples} temperature=${temperature}`);
+// INTENT: three runs on 2026-10-03/04 (54% / 78% / 52%) could not be attributed
+// to a prompt version afterwards — the prompt file changed between and even
+// during runs and rows.json recorded none of it. Every report now carries the
+// exact contract version, the sha256 of each persona's system prompt, the
+// sampling parameters and the start time, so two runs are comparable or not.
+const startedAtIso = new Date().toISOString();
+const sampling = { temperature, top_p: 0.95, repetition_penalty: 1.05, max_tokens: 1024, chat_template_kwargs: { enable_thinking: false } };
+const systemFor = (persona: string, name: string) =>
+  [composeCompanionSystemPrompt({ memoryEnabled: true, imageToolEnabled: false, soulPrompt: persona, characterName: name }), systemAppend].filter(Boolean).join("\n\n");
+const systemDigests = Object.fromEntries(Object.entries(data.personas).map(([id, persona]) =>
+  [id, createHash("sha256").update(systemFor(persona, id)).digest("hex").slice(0, 16)]));
+console.error(`chat=${chat.model} judge=${judge.model} prompt=${COMPANION_PRODUCT_PROMPT_VERSION} cases=${cases.length} samples=${samples} temperature=${temperature}`);
 
 for (const c of cases) {
   const persona = data.personas[c.persona];
-  const system = composeCompanionSystemPrompt({ memoryEnabled: true, imageToolEnabled: false, soulPrompt: persona });
+  const system = systemFor(persona, c.persona);
   const messages: Msg[] = [{ role: "system", content: system }, ...(c.history ?? []), { role: "user", content: c.user }];
   for (let s = 0; s < samples; s++) {
     const started = Date.now();
     const row: Row = { id: c.id, category: c.category, sample: s, ms: 0, reply: "", regexRefusal: false, pass: false, why: [] };
     try {
-      row.reply = (await complete(chat, messages, { temperature, max_tokens: 1024 })).replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+      // Mirrors the production request in agent-runtime/openai-adapter.ts and prepared-turn.ts defaults.
+      row.reply = (await complete(chat, messages, sampling)).replace(/<think>[\s\S]*?<\/think>/g, "").trim();
       row.ms = Date.now() - started;
       row.regexRefusal = REFUSAL.test(row.reply);
       row.labels = await label(c, persona, row.reply);
@@ -159,7 +175,9 @@ const latencies = rows.filter((r) => !r.error).map((r) => r.ms).sort((a, b) => a
 const report = [
   `# NSFW chat eval — ${chat.model}`,
   "",
-  `judge: ${judge.model} · samples/case: ${samples} · temperature: ${temperature} · ${new Date().toISOString()}`,
+  `judge: ${judge.model} · samples/case: ${samples} · started ${startedAtIso} · finished ${new Date().toISOString()}`,
+  `prompt: ${COMPANION_PRODUCT_PROMPT_VERSION} · system sha256 by persona: ${Object.entries(systemDigests).map(([id, digest]) => `${id}=${digest}`).join(", ")}${systemAppend ? " · with --system-append" : ""}`,
+  `sampling: ${JSON.stringify(sampling)}`,
   "",
   `- pass: **${pct(rate(comply))}** (${comply.filter((r) => r.pass).length}/${comply.length})`,
   `- mean explicitness: ${mean(comply.filter((r) => r.labels).map((r) => r.labels!.explicitness)).toFixed(2)} / 3`,
@@ -183,6 +201,7 @@ const report = [
 const outDir = join(dir, "../../../../.scratch/nsfw-eval", `${new Date().toISOString().replace(/[:.]/g, "-")}-${chat.model}`);
 mkdirSync(outDir, { recursive: true });
 writeFileSync(join(outDir, "rows.json"), JSON.stringify(rows, null, 2));
+writeFileSync(join(outDir, "meta.json"), JSON.stringify({ chat: chat.model, judge: judge.model, prompt: COMPANION_PRODUCT_PROMPT_VERSION, systemDigests, sampling, samples, startedAt: startedAtIso, finishedAt: new Date().toISOString() }, null, 2));
 writeFileSync(join(outDir, "report.md"), report);
 console.log(report);
 console.error(`\nwritten: ${outDir}`);

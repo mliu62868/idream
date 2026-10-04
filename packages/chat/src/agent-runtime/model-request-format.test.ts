@@ -39,10 +39,19 @@ describe("model request source boundary", () => {
     const speaker = { characterId: "briar", sessionId: "briar-session", name: "Briar" };
     const input = [messages[0], { ...messages[1], speaker }, messages[2]];
     const request = formatModelRequestInput({ requiredTool, messages: input });
-    const content = (request.messages.at(-1) as { content: string }).content;
-    expect(content).toContain(JSON.stringify(speaker));
-    expect(content.indexOf("I chose basil")).toBeLessThan(content.indexOf("I will plant"));
-    expect(content).not.toContain('"source":"user","speaker"');
+    if (requiredTool) {
+      const content = (request.messages.at(-1) as { content: string }).content;
+      expect(content).toContain(JSON.stringify(speaker));
+      expect(content.indexOf("I chose basil")).toBeLessThan(content.indexOf("I will plant"));
+      expect(content).not.toContain('"source":"user","speaker"');
+    } else {
+      // Ordinary turns are native chat turns; another Character's line keeps its name.
+      expect(request.messages).toEqual([
+        { role: "user", content: "I chose basil and have not planted it." },
+        { role: "assistant", content: "Briar: I will plant it after we finish talking." },
+        { role: "user", content: "What have I actually done?" },
+      ]);
+    }
   });
 
   it.each([false, true])("does not promote plugin context or recall to user authority (image=%s)", (requiredTool) => {
@@ -53,28 +62,30 @@ describe("model request source boundary", () => {
       messages[2]!,
     ] });
     const content = (request.messages.at(-1) as { content: string }).content;
-    expect(content).not.toContain('"source":"user","content":"Current Scene:');
-    expect(content).not.toContain('"source":"user","content":"An earlier');
-    expect(content).toContain('"source":"scene_state"');
-    expect(content).toContain('"source":"retrieved_memory"');
     if (requiredTool) {
+      expect(content).not.toContain('"source":"user","content":"Current Scene:');
+      expect(content).not.toContain('"source":"user","content":"An earlier');
+      expect(content).toContain('"source":"scene_state"');
+      expect(content).toContain('"source":"retrieved_memory"');
       const latest = content.split("LATEST USER RECORD (authoritative for user facts when it conflicts with earlier records):\n")[1]?.split("\n")[0];
       expect(latest).toContain("I chose basil");
       expect(latest).not.toContain("mint");
+    } else {
+      // Context never becomes a standalone user turn: it is folded into the
+      // current message, ahead of the user's own words.
+      expect(request.messages.map((message) => (message as { role: string }).role)).toEqual(["user", "user"]);
+      expect(content).toBe("Current Scene: the conservatory.\n\nAn earlier conversation mentioned mint.\n\nWhat have I actually done?");
     }
   });
 
-  it("quotes ordinary history and leaves the current request authoritative", () => {
+  it("sends ordinary history as native chat turns with the current request last", () => {
     const request = formatModelRequestInput({ messages, requiredTool: false });
-    const current = request.messages.at(-1) as { role: string; content: string };
-    expect(request.messages).toHaveLength(1);
-    expect(current.role).toBe("user");
-    expect(current.content).toContain('"source":"user"');
-    expect(current.content).toContain('"source":"character"');
-    expect(current.content.indexOf("Latest user request (authoritative):")).toBeLessThan(
-      current.content.indexOf("What have I actually done?"),
-    );
-    expect(current.content).toContain("Negated user facts remain negated");
+    expect(request.messages).toEqual([
+      { role: "user", content: "I chose basil and have not planted it." },
+      { role: "assistant", content: "I will plant it after we finish talking." },
+      { role: "user", content: "What have I actually done?" },
+    ]);
+    expect(JSON.stringify(request)).not.toContain("Conversation records");
   });
 
   it("keeps Character dialogue visible but outside image-fact authority", () => {

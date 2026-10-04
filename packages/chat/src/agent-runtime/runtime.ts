@@ -24,6 +24,7 @@ import {
   loadIgrepPlugin,
 } from "./igrep.js";
 import { OpenAiCompatibleAdapter } from "./openai-adapter.js";
+import { llmProfileClaimVerifier } from "./profile-evidence.js";
 import {
   createReadinessProbe,
   probeWorkspaceRebuild,
@@ -78,7 +79,12 @@ function createRuntime(): AgentRuntime {
     }),
     igrepCommand: config.igrepCommand,
     igrepLlm: config.igrepLlm,
-    memoryBuilder: new IgrepMemoryBuilder(config.igrepCommand),
+    memoryBuilder: new IgrepMemoryBuilder(
+      config.igrepCommand,
+      undefined,
+      undefined,
+      llmProfileClaimVerifier(config.igrepLlm),
+    ),
     maxSteps: config.maxSteps,
     maxConcurrentAgents: config.maxConcurrentAgents,
   });

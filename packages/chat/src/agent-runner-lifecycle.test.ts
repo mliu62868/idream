@@ -401,109 +401,35 @@ describe("AgentRun account-erasure drain", () => {
     expect(vi.mocked(fetch).mock.calls[1]?.[1]?.body).toBe(request?.body);
   });
 
-  it.each([
-    { knownUsage: true, replyKnown: true },
-    { knownUsage: false, replyKnown: true },
-    { knownUsage: true, replyKnown: false },
-    { knownUsage: false, replyKnown: false },
-  ])("projects from the frozen attempt with scene usage=$knownUsage and reply usage=$replyKnown", async ({ knownUsage, replyKnown }) => {
+  it.each([true, false])("carries the Scene forward one version without projecting (reply usage known=%s)", async (replyKnown) => {
     const input = agentRunInput("Now we are at the beach.");
     input.snapshot.scene = { schemaVersion: 1, version: 4, location: "the kitchen", time: "tonight", participants: ["Mina"], emotionalBeat: "calm", unresolvedThreads: ["call the hotel"] };
     input.snapshot.sceneVersion = 4;
     store.readAgentRunInput.mockResolvedValue(input);
     const completed = Promise.withResolvers<void>();
     store.completeAgentRun.mockImplementationOnce(async () => { completed.resolve(); return undefined; });
-    projection.projectSceneForReply.mockImplementationOnce(async (source, options) => {
-      expect(store.writeAgentRunProposal).not.toHaveBeenCalled();
-      expect(options.signal.aborted).toBe(false);
-      const result = await unchangedProjection(source, options);
-      return { scene: { ...result.scene, location: "the beach" }, evidence: {
-        ...result.evidence, status: knownUsage ? "applied" : "failed", changeCount: knownUsage ? 1 : 0,
-        requests: [{ systemPromptDigest: "e".repeat(64), bodyDigest: "d".repeat(64), estimatedInputTokens: 123, source: "user", phaseId: "user:extraction" }],
-        usage: knownUsage ? { promptTokens: 23, completionTokens: 8, reasoningTokens: 2 } : null,
-      } };
-    });
     runtime.runCompanion.mockImplementationOnce(async (invocation, port, signal) => {
       const candidate = terminalCandidate(invocation.attemptId);
       await port.commit({ ...candidate, usage: replyKnown ? candidate.usage : null }, signal);
     });
     await acceptAgentRun(input);
     await completed.promise;
-    expect(projection.projectSceneForReply).toHaveBeenCalledExactlyOnceWith({
-      previous: input.snapshot.scene, userText: input.snapshot.userContent, assistantText: "I stay beside you.",
-      attemptId: "assistant-1:1", userMessageId: "user-message-1", assistantMessageId: "assistant-1",
-    }, expect.objectContaining({ maxInputTokens: 4_000, profile: expect.objectContaining({ model: "test-model" }) }));
+    expect(projection.projectSceneForReply).not.toHaveBeenCalled();
+    expect(store.appendAgentRunEvent.mock.calls.filter(([, , kind]) => kind === "scene.projected")).toHaveLength(0);
     expect(store.writeAgentRunProposal).toHaveBeenCalledWith("turn-1", 1, expect.objectContaining({
       terminal: expect.objectContaining({
-        status: "sent", sceneVersion: 5, scene: expect.objectContaining({ version: 5, location: "the beach" }),
-        promptTokens: knownUsage && replyKnown ? 43 : null, completionTokens: knownUsage && replyKnown ? 16 : null,
-        terminalEvidence: expect.objectContaining({ replyUsage: replyKnown ? { promptTokens: 20, completionTokens: 8, reasoningTokens: 0 } : null, sceneProjection: expect.objectContaining({ anchorVersion: 4, usage: knownUsage ? expect.any(Object) : null }) }),
+        status: "sent", sceneVersion: 5,
+        scene: { ...input.snapshot.scene, version: 5 },
+        promptTokens: replyKnown ? 20 : null, completionTokens: replyKnown ? 8 : null,
+        terminalEvidence: expect.not.objectContaining({ sceneProjection: expect.anything() }),
       }),
     }));
-    expect(store.appendAgentRunEvent).toHaveBeenCalledWith("turn-1", 1, "scene.projected", expect.objectContaining({ anchorVersion: 4 }));
     expect(stream.appendStreamEvent).toHaveBeenCalledWith("stream:assistant-1", expect.objectContaining({
-      type: "done", attempt: 1, usage: { promptTokens: knownUsage && replyKnown ? 43 : null, completionTokens: knownUsage && replyKnown ? 16 : null },
+      type: "done", attempt: 1, usage: { promptTokens: replyKnown ? 20 : null, completionTokens: replyKnown ? 8 : null },
     }));
   });
 
-  it.each([
-    { knownUsage: true, replyKnown: true },
-    { knownUsage: false, replyKnown: true },
-    { knownUsage: true, replyKnown: false },
-    { knownUsage: false, replyKnown: false },
-  ])("replays the exact degraded checkpoint without reprojecting, with Scene usage=$knownUsage and reply usage=$replyKnown", async ({ knownUsage, replyKnown }) => {
-    const input = agentRunInput("Now we are at the beach.");
-    input.snapshot.scene = { schemaVersion: 1, version: 4, location: "the kitchen", time: null, participants: ["Mina"], emotionalBeat: null, unresolvedThreads: [] };
-    input.snapshot.sceneVersion = 4;
-    store.readAgentRunInput.mockResolvedValue(input);
-    let proposal: AgentRunProposal | null = null;
-    store.readAgentRunProposal.mockImplementation(async () => proposal);
-    store.writeAgentRunProposal.mockImplementationOnce(async (_turnId, _attempt, value) => { proposal = value; });
-    projection.projectSceneForReply.mockImplementationOnce(async (source, options) => {
-      const result = await unchangedProjection(source, options);
-      return { scene: { ...result.scene, location: "the beach" }, evidence: {
-        ...result.evidence, status: "degraded", acceptedPhaseIds: ["user:extraction"], changeCount: 1,
-        failureCode: knownUsage ? "scene_value_mismatch" : "scene_projection_usage_missing",
-        requests: (["user", "assistant"] as const).map(source => ({ systemPromptDigest: "e".repeat(64), bodyDigest: source === "user" ? "d".repeat(64) : "b".repeat(64), estimatedInputTokens: 123, source, phaseId: `${source}:extraction` })),
-        usage: knownUsage ? { promptTokens: 46, completionTokens: 16, reasoningTokens: 2 } : null,
-      } };
-    });
-    runtime.runCompanion.mockImplementationOnce(async (invocation, port, signal) => {
-      await port.commit({ ...terminalCandidate(invocation.attemptId), ...(!replyKnown ? { usage: null } : {}) }, signal);
-    });
-    vi.mocked(fetch).mockResolvedValueOnce(Response.json({ accepted: false }));
-
-    await acceptAgentRun(input);
-    await vi.waitFor(() => expect(logs.error).toHaveBeenCalledWith(expect.objectContaining({ turnId: "turn-1" }), "AgentRun failed"));
-    await cancelAgentRunsForUser("user-1");
-    expect(store.writeAgentRunProposal).toHaveBeenCalledOnce();
-    expect(store.completeAgentRun).not.toHaveBeenCalled();
-    expect(proposal).toMatchObject({ terminal: {
-      status: "sent", sceneVersion: 5, scene: { version: 5, location: "the beach" },
-      promptTokens: knownUsage && replyKnown ? 66 : null, completionTokens: knownUsage && replyKnown ? 24 : null,
-      terminalEvidence: { sceneProjection: { status: "degraded", acceptedPhaseIds: ["user:extraction"], changeCount: 1, usage: knownUsage ? { promptTokens: 46, completionTokens: 16, reasoningTokens: 2 } : null } },
-    } });
-    const initialBody = vi.mocked(fetch).mock.calls[0]?.[1]?.body;
-    expect(JSON.parse(String(initialBody))).toEqual(store.writeAgentRunProposal.mock.calls[0]?.[2].terminal);
-
-    store.listIncompleteAgentRuns.mockResolvedValueOnce({ runs: [{ turnId: "turn-1", attempt: 1, userId: "user-1" }], failures: [] });
-    vi.mocked(fetch).mockResolvedValueOnce(Response.json({ accepted: true, duplicate: true, terminalMessageId: "assistant-1", committedAt: "2026-08-28T12:00:00.000Z" }));
-    await recoverIncompleteAgentRuns();
-    await cancelAgentRunsForUser("user-1");
-
-    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(fetch).mock.calls[1]?.[1]?.body).toBe(initialBody);
-    expect(runtime.runCompanion).toHaveBeenCalledOnce();
-    expect(projection.projectSceneForReply).toHaveBeenCalledOnce();
-    expect(store.writeAgentRunProposal).toHaveBeenCalledOnce();
-    expect(store.appendAgentRunEvent.mock.calls.filter(([, , kind]) => kind === "scene.projected")).toHaveLength(1);
-    expect(store.completeAgentRun).toHaveBeenCalledExactlyOnceWith("turn-1", 1, expect.objectContaining({ outcome: "committed" }));
-    expect(stream.appendStreamEvent).toHaveBeenCalledWith("stream:assistant-1", expect.objectContaining({
-      type: "done", usage: { promptTokens: knownUsage && replyKnown ? 66 : null, completionTokens: knownUsage && replyKnown ? 24 : null },
-    }));
-  });
-
-  it.each([false, true])("preserves the original anchor when cancelled, after a verified checkpoint=%s", async afterCheckpoint => {
+  it("preserves the original Scene anchor when the run is cancelled", async () => {
     const input = agentRunInput("Now we are at the beach.");
     input.snapshot.scene = { schemaVersion: 1, version: 4, location: "the kitchen", time: null, participants: ["Mina"], emotionalBeat: null, unresolvedThreads: [] };
     input.snapshot.sceneVersion = 4;
@@ -511,25 +437,15 @@ describe("AgentRun account-erasure drain", () => {
     const completed = Promise.withResolvers<void>();
     store.completeAgentRun.mockImplementationOnce(async () => { completed.resolve(); return undefined; });
     const controller = new AbortController();
-    store.appendAgentRunEvent.mockImplementation(async (_turnId, _attempt, kind) => {
-      if (afterCheckpoint && kind === "scene.projected") controller.abort(new Error("run deadline"));
-    });
-    projection.projectSceneForReply.mockImplementationOnce(async (source, options) => {
-      const result = await unchangedProjection(source, options);
-      return { scene: afterCheckpoint ? { ...result.scene, location: "the beach" } : result.scene, evidence: {
-        ...result.evidence, status: afterCheckpoint ? "degraded" : "cancelled", acceptedPhaseIds: afterCheckpoint ? ["user:extraction"] : [], changeCount: afterCheckpoint ? 1 : 0,
-        requests: [{ systemPromptDigest: "e".repeat(64), bodyDigest: "d".repeat(64), estimatedInputTokens: 123, source: "user", phaseId: "user:extraction" }],
-      } };
-    });
     runtime.runCompanion.mockImplementationOnce(async (invocation, port) => {
-      if (!afterCheckpoint) controller.abort(new Error("run deadline"));
+      controller.abort(new Error("run deadline"));
       await port.emit({ invocationId: invocation.invocationId, attemptId: invocation.attemptId, sequence: 1, occurredAt: "2026-08-28T12:00:00.000Z", type: "cancelled", reason: "timeout" });
       await port.commit(terminalCandidate(invocation.attemptId), controller.signal);
     });
     await acceptAgentRun(input);
     await completed.promise;
     expect(store.writeAgentRunProposal).toHaveBeenCalledExactlyOnceWith("turn-1", 1, expect.objectContaining({
-      terminal: expect.objectContaining({ status: "cancelled", sceneVersion: 4, scene: input.snapshot.scene, content: "", terminalEvidence: expect.objectContaining({ reply: expect.objectContaining({ model: "test-model", usage: { promptTokens: 20, completionTokens: 8, reasoningTokens: 0 } }), sceneProjection: expect.objectContaining({ status: afterCheckpoint ? "degraded" : "cancelled", acceptedPhaseIds: afterCheckpoint ? ["user:extraction"] : [], requests: [expect.any(Object)] }) }) }),
+      terminal: expect.objectContaining({ status: "cancelled", sceneVersion: 4, scene: input.snapshot.scene, content: "" }),
     }));
   });
 

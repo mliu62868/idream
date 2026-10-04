@@ -10,7 +10,7 @@ describe("resolvePolicy (SSoT)", () => {
       imageToolEnabled: true,
     });
     expect(p.model).toBe(currentModel());
-    expect(p.maxContextMessages).toBe(12);
+    expect(p.maxContextMessages).toBe(24);
     expect(p.rateLimitPerHour).toBe(60);
     expect(p.memoryEnabled).toBe(true);
   });
@@ -38,7 +38,7 @@ describe("resolvePolicy (SSoT)", () => {
       imageToolEnabled: true,
     });
     expect(p.model).toBe(currentModel());
-    expect(p.maxContextMessages).toBe(24);
+    expect(p.maxContextMessages).toBe(48);
     expect(p.memoryEnabled).toBe(true);
     expect(p.unlimitedMessages).toBe(true);
     expect(p.rateLimitPerHour).toBe(600);

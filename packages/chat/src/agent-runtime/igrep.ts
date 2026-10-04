@@ -24,6 +24,7 @@ import type {
   MemoryProbe,
   MemoryStatus,
 } from "./workspace";
+import { verifyProfileEvidence, type ProfileClaimVerifier } from "./profile-evidence";
 import { logger } from "../logger";
 
 // SPEC: the normal profile exposes exactly one model-visible igrep surface:
@@ -423,6 +424,7 @@ export class IgrepMemoryBuilder {
     private readonly command: string,
     private readonly probe: MemoryProbe = new IgrepMemoryProbe(command),
     private readonly run: RunJsonCommand = runJsonCommand,
+    private readonly verifyClaim?: ProfileClaimVerifier,
   ) {}
 
   async build(
@@ -607,6 +609,10 @@ export class IgrepMemoryBuilder {
         Object.assign(session, await ingest(session));
       }
       await verifyMemorySourceCorpus(workspace, sessions, signal);
+    }
+    // A rejected derivation has no profile; an unverified one renders nothing.
+    if (!rejectionReason && this.verifyClaim) {
+      await verifyProfileEvidence(join(workspace, ".igrep"), this.verifyClaim, signal);
     }
     await this.run({
       command: this.command,

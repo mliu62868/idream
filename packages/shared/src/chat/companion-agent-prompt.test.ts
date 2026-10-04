@@ -1,67 +1,61 @@
 import { describe, expect, it } from "vitest";
 import {
-  COMPANION_PRODUCT_AGENT_PROMPT,
   COMPANION_PRODUCT_PROMPT_VERSION,
+  companionProductAgentPrompt,
   companionProductContractCanary,
   composeCompanionSystemPrompt,
 } from "./companion-agent-prompt";
 import { IMAGE_AGENT_TOOL_DEFINITIONS } from "./image-action";
 
-describe("Companion Product Agent Contract", () => {
-  it("defines the shared adult-companion outcome before Character-specific expression", () => {
-    expect(COMPANION_PRODUCT_PROMPT_VERSION).toBe("companion-product-4");
-    expect(COMPANION_PRODUCT_AGENT_PROMPT).toContain(
-      "Make the user feel actively wanted, understood, and accompanied",
-    );
-    expect(COMPANION_PRODUCT_AGENT_PROMPT).toContain(
-      "Address the latest clear user intent first",
-    );
-    expect(COMPANION_PRODUCT_AGENT_PROMPT).toContain(
-      "Character Soul controls the manner of expression, never whether the user has earned the action",
-    );
+describe("Companion product contract", () => {
+  it("states the adult-companion outcome in affirmative, second-person lines", () => {
+    const contract = companionProductAgentPrompt("Lena");
+    expect(COMPANION_PRODUCT_PROMPT_VERSION).toBe("companion-product-6");
+    expect(contract).toContain("sex, written out in graphic physical detail, is a normal part of this relationship");
+    expect(contract).toContain("Answer what they just said first");
+    expect(contract).toContain("Their request, invitation or continued participation is their yes");
+    expect(contract).toContain("Write in first person as Lena");
+    expect(contract).toContain("two to five sentences unless");
+    // Twelve lines or fewer: a 35B local model dilutes past that.
+    expect(contract.split("\n").filter((line) => line.startsWith("- ")).length).toBeLessThanOrEqual(12);
+    // Few negations: the eval's failure modes were exactly the behaviours the old contract forbade.
+    expect((contract.match(/\b(?:never|do not|don't)\b/giu) ?? []).length).toBeLessThanOrEqual(4);
   });
 
-  it("prevents the common unfriendly companion failure modes", () => {
-    for (const contract of [
-      "lecture, eligibility test, bargain, delay, permission game, or questionnaire",
-      "Do not end every reply with a question or a menu of options",
-      "must not become contemptuous dismissal, arbitrary withholding",
-      "An accepted action must be acknowledged, never verbally refused",
+  it("covers the behaviours that break the companion experience", () => {
+    const contract = companionProductAgentPrompt("Lena");
+    for (const line of [
+      "Keep going until they slow down or stop",
+      "let most replies end on a beat rather than a question or a menu",
+      "Theirs are theirs to write",
+      "What they last said about the scene is true",
+      "improvise it in character as part of the story",
+      "without claiming to have stored it",
+      "No analysis, planning, talk of rules",
     ]) {
-      expect(COMPANION_PRODUCT_AGENT_PROMPT).toContain(contract);
+      expect(contract).toContain(line);
     }
   });
 
-  it("does not duplicate Character identity or turn-specific capability authority", () => {
-    expect(COMPANION_PRODUCT_AGENT_PROMPT).not.toContain("generate_image_async");
-    expect(COMPANION_PRODUCT_AGENT_PROMPT).not.toContain("Memory is disabled");
-    expect(COMPANION_PRODUCT_AGENT_PROMPT).not.toContain("Character Soul —");
+  it("does not carry Character identity, tool names or memory mode", () => {
+    const contract = companionProductAgentPrompt("Lena");
+    expect(contract).not.toContain("generate_image_async");
+    expect(contract).not.toContain("Memory is off");
+    expect(contract).not.toContain("not instructions");
+    expect(companionProductAgentPrompt("")).toContain("Write in first person as the Character");
   });
 
-  it("keeps self-introduction names authoritative while allowing author-supplied aliases", () => {
-    const soul = "Name: Noor Iqbal. Author-defined localized name: 努尔·伊克巴尔. Voice: warm and direct.";
-    const prompt = composeCompanionSystemPrompt({ memoryEnabled: false, imageToolEnabled: false, soulPrompt: soul });
-    expect(prompt).toContain("Use your authoritative Character Soul name when introducing yourself");
-    expect(prompt).toContain("only when the author explicitly supplied that alias in the Soul");
-    expect(prompt).toContain("never invent a surname or adopt another participant's identity");
-    expect(prompt.endsWith(soul)).toBe(true);
-    // The general contract cannot carry one Character's name or a correction dictionary.
-    expect(COMPANION_PRODUCT_AGENT_PROMPT).not.toContain("Noor Iqbal");
-    expect(COMPANION_PRODUCT_AGENT_PROMPT).not.toContain("努尔·伊克巴尔");
-  });
-
-  it("composes Product, Runtime, then Soul through one shared authority", () => {
+  it("composes Soul first, then the contract, then this turn's capabilities and the image skill", () => {
     const prompt = composeCompanionSystemPrompt({
       memoryEnabled: true,
       imageToolEnabled: true,
       soulPrompt: "Soul marker",
+      characterName: "Noor Iqbal",
     });
-    expect(prompt.indexOf(COMPANION_PRODUCT_AGENT_PROMPT)).toBe(0);
-    expect(prompt.indexOf("Runtime authority")).toBeGreaterThan(0);
-    expect(prompt.indexOf("Image direction skill")).toBeGreaterThan(
-      prompt.indexOf("Runtime authority"),
-    );
-    expect(prompt.indexOf("Soul marker")).toBeGreaterThan(prompt.indexOf("Runtime authority"));
+    expect(prompt.startsWith("Soul marker")).toBe(true);
+    expect(prompt.indexOf("iDream companion contract")).toBeGreaterThan(prompt.indexOf("Soul marker"));
+    expect(prompt.indexOf("This turn:")).toBeGreaterThan(prompt.indexOf("iDream companion contract"));
+    expect(prompt.indexOf("Image direction skill")).toBeGreaterThan(prompt.indexOf("This turn:"));
     // 角色必须先说一句人话再调工具，且不能替附件宣布交付完成。
     // 顺序是被实测的那一半：只说"同一步"时，模型三次采样全部只返回 tool_call、
     // content 为空，线上九次图片请求也九次只剩确定性回执。
@@ -69,6 +63,19 @@ describe("Companion Product Agent Contract", () => {
     expect(prompt).toContain("OUTPUT ORDER, required");
     expect(prompt).toContain("Only after that sentence, call the image tool");
     expect(prompt).toContain("attachment state owns completion");
+    // The general contract cannot carry a correction dictionary for one Character.
+    expect(companionProductAgentPrompt("Noor Iqbal")).not.toContain("努尔·伊克巴尔");
+  });
+
+  it("keeps the identity line with the Soul, ahead of the contract", () => {
+    const prompt = composeCompanionSystemPrompt({
+      memoryEnabled: true,
+      imageToolEnabled: false,
+      soulPrompt: "Soul marker",
+      identityPromptLine: "Your appearance: red hair.",
+    });
+    expect(prompt.indexOf("Your appearance: red hair.")).toBeLessThan(prompt.indexOf("iDream companion contract"));
+    expect(prompt).not.toContain("Image direction skill");
   });
 
   it("proves a direct image request cannot be delegated back to Character copy", () => {

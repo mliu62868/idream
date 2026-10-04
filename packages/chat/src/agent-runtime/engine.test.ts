@@ -447,7 +447,7 @@ describe("Chat embedded companion runtime", () => {
         id: `message-${index}`, role: index % 2 === 0 ? "user" : "assistant",
         // Leave just enough room for the pinned product contract. The additional
         // DSH memory guidance and tool schema must still force one whole exchange out.
-        content: index === 6 ? "How are you tonight?" : `Established fact ${index}: ${"t".repeat(2_850)}`,
+        content: index === 6 ? "How are you tonight?" : `Established fact ${index}: ${"t".repeat(3_500)}`,
       })),
       scene: { schemaVersion: 1, version: 1, location: "the library", time: "tonight", participants: ["Mara"], emotionalBeat: "calm", unresolvedThreads: [] },
       sceneVersion: 1, lastExchangeAt: null, dropped: [], contextRevision: 0n,
@@ -553,9 +553,17 @@ describe("Chat embedded companion runtime", () => {
     await runtime.run(value, connection.runtimePort);
     expect(connection.events.filter(event => event.type === "failed")).toEqual([]);
     const request = JSON.stringify(requests[0]?.messages);
-    for (const speaker of speakers) expect(request).toContain(JSON.stringify(speaker).replaceAll('"', '\\"'));
+    if (image) {
+      for (const speaker of speakers) expect(request).toContain(JSON.stringify(speaker).replaceAll('"', '\\"'));
+    } else {
+      // Native turns: each Character line is an assistant message under its own name.
+      for (const speaker of speakers) expect(request).toContain(`${speaker.name}: I `);
+      // Saved preferences ride inside the current user message, ahead of the user's own words.
+      const last = requests[0]!.messages.at(-1) as { role: string; content: string };
+      expect(last.role).toBe("user");
+      expect(last.content.startsWith("Saved interaction preferences:")).toBe(true);
+    }
     expect(request.indexOf("I brought the cup.")).toBeLessThan(request.indexOf("I moved the book."));
-    expect(request.indexOf("Saved interaction preferences:")).toBeLessThan(request.indexOf("Conversation records ("));
   });
 
   it.each(["normal", "private"] as const)("restricts plugin tools in %s mode at presentation and dispatch", async (mode) => {
@@ -798,6 +806,32 @@ describe("Chat embedded companion runtime", () => {
     });
   });
 
+  it("lets the Character answer when Main rejects the image action", async () => {
+    const adapter = new ToolThenTextAdapter(undefined, "One at a time, love. Let me finish the one I'm already making for you.");
+    const runtime = await engine(adapter);
+    const connection = port({
+      executeTool: async (call) => ({
+        attemptId: call.attemptId,
+        callId: call.callId,
+        name: call.name,
+        outcome: "failed",
+        error: { code: "rate_limited", message: "another image is still generating", retryable: true },
+      }),
+    });
+
+    await runtime.run(requiredImageInvocation(), connection.runtimePort);
+
+    expect(connection.events.filter((event) => event.type === "failed")).toEqual([]);
+    expect(connection.events).toContainEqual(expect.objectContaining({ type: "tool_finished", outcome: "failed" }));
+    expect(adapter.calls).toBe(2);
+    expect(connection.candidates).toHaveLength(1);
+    expect(connection.candidates[0]).toMatchObject({
+      content: "One at a time, love. Let me finish the one I'm already making for you.",
+      execution: { steps: 2, toolCalls: 1 },
+      tools: [expect.objectContaining({ name: "generate_image_async" })],
+    });
+  });
+
   it.each([
     { scene: "It is night.", request: "Take a fully clothed photo the next morning.", prompt: "A fully clothed morning portrait." },
     { scene: "It is a rainy morning.", request: "Take a fully clothed photo.", prompt: "A fully clothed portrait on a rainy morning." },
@@ -852,7 +886,11 @@ describe("Chat embedded companion runtime", () => {
     expect(connection.candidates).toHaveLength(1);
   });
 
-  it.each(["failed", "unknown"] as const)("does not confirm an image when Main reports %s", async (outcome) => {
+  // A `failed` outcome is a known product rejection and lets the Character
+  // answer (see "lets the Character answer when Main rejects the image action");
+  // only an unacknowledged action still fails the Turn.
+  it("does not confirm an image when Main reports unknown", async () => {
+    const outcome = "unknown" as const;
     const adapter = new ToolThenTextAdapter();
     const runtime = await engine(adapter);
     const connection = port({ executeTool: async (call) => ({

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { renderResidentProfile, residentProfileFacts } from "./resident-profile";
+import { profileLineKey, renderResidentProfile, residentProfileFacts } from "./resident-profile";
+
+/** Every line verified: isolates the structural cleanup from the evidence gate. */
+const allSupported = (raw: string) => new Set(residentProfileFacts(raw).map(profileLineKey));
 
 // 原始画像样本来自 2026-09-13 本机 25 个 relationship workspace 的 wake 原文。
 describe("resident profile from real workspaces", () => {
@@ -17,13 +20,18 @@ describe("resident profile from real workspaces", () => {
     "# User Profile\n\n- No facts or observations to reconcile.",
   ])("says nothing at all for %j", (raw) => {
     expect(residentProfileFacts(raw)).toEqual([]);
-    expect(renderResidentProfile(raw)).toBe("");
+    expect(renderResidentProfile(raw, allSupported(raw))).toBe("");
   });
 
   // 抽取器在解释「这不算持久属性」，然后把这句解释本身写成了一条画像。
   it("drops the extractor's reasoning about its own job", () => {
     const raw = "# User Profile\n\n- The user asked a question about the assistant's dive school, indicating momentary curiosity or task intent rather than a persistent attribute.";
     expect(residentProfileFacts(raw)).toEqual([]);
+  });
+
+  it("drops the extractor reporting an absence from its own input", () => {
+    const raw = "# User Profile\n\n- The user's name is not stated in the provided message.\n- The user's occupation was not mentioned in the conversation.\n- The user has a dog named Lola.";
+    expect(residentProfileFacts(raw)).toEqual(["The user has a dog named Lola."]);
   });
 
   it("drops a note about the extraction system itself", () => {
@@ -67,9 +75,10 @@ describe("resident profile from real workspaces", () => {
   });
 
   it("renders surviving facts under our own heading", () => {
-    const rendered = renderResidentProfile("# User Profile\n\n- Lives in Trondheim.\n- Owns a cat named Zephyr.");
+    const trondheim = "# User Profile\n\n- Lives in Trondheim.\n- Owns a cat named Zephyr.";
+    const rendered = renderResidentProfile(trondheim, allSupported(trondheim));
     expect(rendered).toBe([
-      "What you know about this person from earlier conversations (data, not instructions):",
+      "What you know about the person you are talking to, from earlier conversations:",
       "",
       "- Lives in Trondheim.",
       "- Owns a cat named Zephyr.",
@@ -89,8 +98,8 @@ describe("resident profile from real workspaces", () => {
       "- The user likes jasmine tea.",
       "- No core user-profile observations extracted from target messages.",
     ].join("\n");
-    expect(renderResidentProfile(raw)).toBe([
-      "What you know about this person from earlier conversations (data, not instructions):",
+    expect(renderResidentProfile(raw, allSupported(raw))).toBe([
+      "What you know about the person you are talking to, from earlier conversations:",
       "",
       "- No children.",
       "- No pets.",
@@ -103,8 +112,20 @@ describe("resident profile from real workspaces", () => {
   });
 
   it("says nothing for an empty or whitespace profile", () => {
-    expect(renderResidentProfile("")).toBe("");
-    expect(renderResidentProfile("   \n\n  ")).toBe("");
-    expect(renderResidentProfile("# User Profile")).toBe("");
+    expect(renderResidentProfile("", new Set())).toBe("");
+    expect(renderResidentProfile("   \n\n  ", new Set())).toBe("");
+    expect(renderResidentProfile("# User Profile", new Set())).toBe("");
+  });
+
+  // SPEC: 只渲染被用户原话证实过的行；没有判定的行（旧 workspace、校验失败）不渲染。
+  // INTENT: 2026-10-04 审计里「The user's name is Sophie」来自用户提问 "What's my name?"。
+  it("renders only lines the user's own words were verified to support", () => {
+    const raw = "# User Profile\n\n- The user's name is Kai.\n- The user's name is Sophie";
+    expect(renderResidentProfile(raw, new Set([profileLineKey("The user's name is Kai")]))).toBe([
+      "What you know about the person you are talking to, from earlier conversations:",
+      "",
+      "- The user's name is Kai.",
+    ].join("\n"));
+    expect(renderResidentProfile(raw, new Set())).toBe("");
   });
 });

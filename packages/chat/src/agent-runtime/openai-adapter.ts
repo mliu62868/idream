@@ -714,7 +714,15 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
           // after it can turn a complete answer into an idle timeout; usage
           // trailers before DONE have already been accounted for above.
           if (data === "[DONE]") break providerStream;
-          const payload = JSON.parse(data) as OpenAiStreamPayload;
+          let payload: OpenAiStreamPayload;
+          try {
+            payload = JSON.parse(data) as OpenAiStreamPayload;
+          } catch {
+            // A local server under load has answered a 200 stream with a plain
+            // error line; as a SyntaxError it was logged as an unclassified
+            // failure with no provider code.
+            throw new LlmError("provider sent a non-JSON stream event", "INVALID_RESPONSE");
+          }
           const chunks = processPayload(payload);
           if (chunks.some((chunk) => chunk.type === "text-delta"
             || chunk.type === "reasoning-delta"

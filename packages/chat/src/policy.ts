@@ -27,7 +27,13 @@ export interface ChatPolicy {
   imageToolEnabled: boolean;
 }
 
-const BASE_CONTEXT = 12;
+// INTENT: 12 messages was one opening line, the current message and five
+// exchanges — a companion that forgets the scene set up six turns ago. The
+// character budget below never triggered at that count (dev data: p50 user
+// message 60 chars, assistant 172), so the message count was the only real
+// limit. With native chat turns the earlier messages stay byte-identical and
+// hit the model server's prefix cache, so a longer window costs little.
+const BASE_CONTEXT = 24;
 const BASE_CONTEXT_CHARS = 24_000;
 
 export function resolvePolicy(

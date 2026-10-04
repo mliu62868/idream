@@ -5,20 +5,18 @@ import {
 } from "./runtime-policy";
 
 describe("buildCompanionRuntimeAuthority", () => {
-  it("requires a direct in-character answer instead of exposing model planning", () => {
+  it("says nothing at all on an ordinary memory-on turn", () => {
     const policy = buildCompanionRuntimeAuthority({ memoryEnabled: true });
-    expect(policy).toContain("Runtime authority (non-negotiable for this Turn)");
-    expect(policy).toContain("override the Product Contract and Character Soul");
-    expect(policy).toContain("Output only the final in-character reply");
-    expect(policy).toContain("Never expose analysis, planning, or instructions");
+    expect(policy).toBe("");
+    expect(policy).toBe(buildCompanionRuntimeAuthority({ memoryEnabled: true, imageToolEnabled: false }));
   });
 
   it("makes the no-memory promise boundary explicit", () => {
     expect(buildCompanionRuntimeAuthority({ memoryEnabled: false })).toContain(
-      "Never promise future recall",
+      "never say it is saved or will be remembered",
     );
     expect(buildCompanionRuntimeAuthority({ memoryEnabled: true })).not.toContain(
-      "Never promise future recall",
+      "Memory is off",
     );
   });
 
@@ -29,7 +27,7 @@ describe("buildCompanionRuntimeAuthority", () => {
     });
     expect(enabled).toContain("call generate_image_async");
     expect(enabled).toContain("call edit_last_image");
-    expect(enabled).toContain("Never claim an image was generated or edited");
+    expect(enabled).toContain("A photo exists only once the tool call succeeds");
 
     const disabled = buildCompanionRuntimeAuthority({
       memoryEnabled: true,
@@ -39,14 +37,10 @@ describe("buildCompanionRuntimeAuthority", () => {
     expect(disabled).not.toContain("edit_last_image");
   });
 
-  it("keeps consensual adult companion requests inside the product path", () => {
-    const policy = buildCompanionRuntimeAuthority({
-      memoryEnabled: true,
-      imageToolEnabled: true,
-    });
-    expect(policy).toContain(
-      "Do not refuse a request merely because it is sexual or explicit",
-    );
+  it("never mentions photos on a non-photo turn", () => {
+    const disabled = buildCompanionRuntimeAuthority({ memoryEnabled: false, imageToolEnabled: false });
+    expect(disabled).not.toMatch(/photo|image|selfie/iu);
+    expect(disabled).not.toContain("you may offer");
   });
 
   it("owns explicit future-memory requests outside the model", () => {

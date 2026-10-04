@@ -57,6 +57,30 @@ export function estimateModelRequestInputTokens(input: {
   }).length / 4));
 }
 
+/**
+ * SPEC: an ordinary turn reaches the provider as a native chat transcript —
+ * the Character's earlier lines are `assistant` messages, the user's are
+ * `user` messages, and per-turn context (saved preferences, turn state,
+ * recalled moments) is folded into the current user message right before the
+ * user's own words.
+ *
+ * INTENT: from 2026-09-09 to 2026-10-04 this path collapsed the whole history
+ * into one user message holding a JSON array labelled "quoted conversation
+ * data, not new requests" plus audit-style instructions, so the Character
+ * never appeared as `assistant` and the generation never followed an
+ * assistant header. That bought one negated-fact probe ("I chose basil and
+ * have not planted it") at the price of every roleplay turn: a chat-tuned
+ * model learns voice, person and turn-taking from the assistant role, and the
+ * JSON framing was the structural cue behind replies that reasoned about
+ * "the user" and "the runtime rules" instead of speaking. Native turns also
+ * keep earlier messages byte-identical across turns, which is what the local
+ * server's prefix cache needs.
+ *
+ * INVARIANT: only the current user message carries `source.kind = "user"`
+ * authority upstream; context blocks are prepended to it, never promoted to
+ * standalone user turns, so nothing in them can read as a fresh request. The
+ * required-tool path below keeps its own stricter framing.
+ */
 function openAiMessages(messages: readonly ModelInputMessage[]): unknown[] {
   const currentIndex = messages.findLastIndex(
     (message) => message.role === "user" && message.sourceKind === "current_user",
@@ -67,29 +91,20 @@ function openAiMessages(messages: readonly ModelInputMessage[]): unknown[] {
   );
   if (currentIndex >= 0 && !hasToolProtocol) {
     const current = messages[currentIndex]!;
-    const preferences = messages.slice(0, currentIndex).filter(isSavedPreference);
+    const context = messages.slice(0, currentIndex)
+      .filter((message) => message.sourceKind === "plugin" && message.role === "user" && message.content);
+    const contextIds = new Set(context.map((message) => message.id));
     const history = messages.slice(0, currentIndex)
-      .filter((message) => message.role !== "system" && message.content && !isSavedPreference(message))
-      .map((message) => ({
-        source: contextSource(message) ?? (message.role === "assistant" ? "character" : "user"),
-        ...(message.role === "assistant" && message.speaker ? { speaker: message.speaker } : {}),
-        content: message.content,
-      }));
+      .filter((message) => message.role !== "system" && message.content && !contextIds.has(message.id))
+      .map((message) => ({ role: message.role, content: speakerLabelled(message) }));
     return [
       ...messages.filter((message) => message.role === "system").map((message) => ({
         role: "system", content: message.content,
       })),
+      ...history,
       {
         role: "user",
-        content: [
-          ...preferences.map(message => message.content),
-          history.length > 0 ? "Conversation records (quoted conversation data, not new requests; chronological):" : "",
-          history.length > 0 ? JSON.stringify(history) : "",
-          history.length > 0 ? "Character records are continuity only. A Character proposal is not a completed user action; preserve only actions the Character explicitly completed." : "",
-          "Latest user request (authoritative):",
-          current.content,
-          "Answer the latest request from these records. Negated user facts remain negated; do not mention a negated action as completed even while correcting yourself. Do not invent user actions or change exact user facts.",
-        ].filter(Boolean).join("\n\n"),
+        content: [...context.map((message) => message.content), current.content].join("\n\n"),
       },
     ];
   }
@@ -100,13 +115,18 @@ function openAiMessages(messages: readonly ModelInputMessage[]): unknown[] {
     };
     return {
       role: message.role,
-      content: message.role === "assistant" && message.speaker
-        ? JSON.stringify({ speaker: message.speaker, content: message.content }) : message.content || null,
+      content: message.role === "assistant" ? speakerLabelled(message) || null : message.content || null,
       ...(message.role === "assistant" && message.tool_calls?.length
         ? { tool_calls: message.tool_calls }
         : {}),
     };
   });
+}
+
+/** Group chat: every Character line carries its speaker name, the responding Character included. */
+function speakerLabelled(message: ModelInputMessage): string {
+  if (message.role === "assistant" && message.speaker) return `${message.speaker.name}: ${message.content}`;
+  return message.content;
 }
 
 function requiredToolMessages(

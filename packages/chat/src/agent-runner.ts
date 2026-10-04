@@ -36,7 +36,7 @@ import { logger } from "./logger.js";
 import {
   prepareCompanionTurn,
 } from "./prepared-turn.js";
-import { projectSceneForReply, type SceneProjectionEvidence } from "./scene.js";
+import type { SceneState } from "./scene.js";
 import { appendStreamEvent, streamKey } from "./stream.js";
 import { stableJson } from "./stable-json.js";
 
@@ -153,7 +153,6 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
   let committedAck: Extract<CompanionCommitAck, { accepted: true }> | null = null;
   let runtimeFailure: Extract<CompanionEvent, { type: "failed" }>["error"] | undefined;
   let runtimeCancellation: Extract<CompanionEvent, { type: "cancelled" }>["reason"] | undefined;
-  let sceneProjectionEvidence: SceneProjectionEvidence | undefined;
   let completedReply: Pick<CompanionTerminalCandidate, "provider" | "model" | "usage" | "modelRequests"> | undefined;
   let promptAttribution: TerminalPromptAttribution = {
     productPromptVersion: COMPANION_PRODUCT_PROMPT_VERSION,
@@ -214,22 +213,23 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
       executeTool: (call) => executeMainTool(call, snapshot.turnId, snapshot.attempt),
       commit: async (candidate, commitSignal) => {
         completedReply = { provider: candidate.provider, model: candidate.model, usage: candidate.usage, modelRequests: candidate.modelRequests };
-        const projection = await projectSceneForReply({
-          previous: context.scene,
-          userText: snapshot.userContent,
-          assistantText: candidate.content,
-          attemptId, userMessageId: snapshot.userMessageId, assistantMessageId: snapshot.assistantMessageId,
-        }, {
-          profile: wire.profile, apiKey: env.CHAT_MODEL_API_KEY,
-          openRouterProviderOnly: env.DSH_OPENROUTER_PROVIDER_ONLY,
-          maxInputTokens: wire.budget.maxInputTokens, signal: commitSignal ?? signal,
-        });
-        const { scene, evidence: sceneProjection } = projection;
-        sceneProjectionEvidence = sceneProjection;
-        await appendAgentRunEvent(turnId, attempt, "scene.projected", sceneProjection);
+        // SPEC: the Scene is carried forward unchanged, one version up, as
+        // Main's terminal contract requires. No projection runs.
+        // INTENT: decided 2026-10-04. Over 72 runs the two-to-four serial
+        // extraction calls per reply applied a change 14 times, failed the
+        // adversarial set 12/16, cost about 45% of the pre-done latency on the
+        // shared model server, and once held a finished reply until the 180 s
+        // deadline killed the Turn. `scene.ts` stays for the day a cheaper or
+        // more accurate projector earns its place back.
+        const scene: SceneState = {
+          ...context.scene,
+          version: context.scene.version + 1,
+          participants: [...context.scene.participants],
+          unresolvedThreads: [...context.scene.unresolvedThreads],
+        };
         (commitSignal ?? signal).throwIfAborted();
         const replyUsage = candidate.usage;
-        const completeUsage = replyUsage !== null && (sceneProjection.requests.length === 0 || sceneProjection.usage !== null);
+        const completeUsage = replyUsage !== null;
         const terminal: ChatTerminalCommit = {
           version: 1,
           turnId: snapshot.turnId,
@@ -239,8 +239,8 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
           status: "sent",
           content: candidate.content,
           model: candidate.model,
-          promptTokens: completeUsage ? replyUsage.promptTokens + (sceneProjection.usage?.promptTokens ?? 0) : null,
-          completionTokens: completeUsage ? replyUsage.completionTokens + (sceneProjection.usage?.completionTokens ?? 0) : null,
+          promptTokens: completeUsage ? replyUsage.promptTokens : null,
+          completionTokens: completeUsage ? replyUsage.completionTokens : null,
           sceneVersion: scene.version,
           scene,
           terminalEvidence: { ...terminalEvidence(
@@ -251,7 +251,7 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
             runtimeInstance,
             igrepObservations,
             promptAttribution,
-          ), replyUsage: candidate.usage, sceneProjection },
+          ), replyUsage: candidate.usage },
         };
         const proposal: AgentRunProposal = {
           schemaVersion: 1,
@@ -315,7 +315,7 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
         runtimeCancellation: cancellation.reason,
         runtimeFailure,
         reason,
-      }), ...(completedReply ? { reply: completedReply } : {}), ...(sceneProjectionEvidence ? { sceneProjection: sceneProjectionEvidence } : {}) },
+      }), ...(completedReply ? { reply: completedReply } : {}) },
     };
     const proposal: AgentRunProposal = {
       schemaVersion: 1,
