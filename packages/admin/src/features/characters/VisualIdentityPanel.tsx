@@ -266,9 +266,10 @@ export function VisualIdentityPanel({
       expectedActiveIdentityId: identityForm.identityId,
       expectedActiveIdentityVersion: identityForm.identityVersion,
       identityPrompt: identityPrompt.trim() || undefined,
-      negativeIdentityPrompt: negativeIdentityPrompt.trim() || undefined,
+      // An empty value is an explicit clear; omitting it would inherit the active value.
+      negativeIdentityPrompt: negativeIdentityPrompt.trim(),
       style,
-      defaultSeed: defaultSeed.trim() || undefined,
+      defaultSeed: defaultSeed.trim(),
       reason: identityReason.trim(),
       confirmation: identityConfirmed
         ? `${data.character.id}:visual-profile`

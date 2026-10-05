@@ -768,6 +768,48 @@ describe("Visual Passport (character visual profiles)", () => {
     ]);
   });
 
+  it("clears the negative prompt and default seed on an explicit empty value and inherits them when omitted", async () => {
+    const admin = await seedActor("admin", "clear");
+    const characterId = `${P}char-clear`;
+    const anchorAssetId = `${P}anchor-clear`;
+    await createCharacter({ id: characterId, name: "Clear Target" });
+    await createMedia({ id: anchorAssetId, ownerId: admin });
+    await prisma.mediaAsset.updateMany({ where: { id: anchorAssetId }, data: { characterId } });
+    const prior = await seedVisualProfile({
+      characterId,
+      version: 1,
+      status: "active",
+      identityPrompt: "original identity prompt",
+      anchorAssetIds: [anchorAssetId],
+    });
+    const mint = (expectedVersion: number, expectedId: string, extra: Record<string, unknown>) =>
+      call(createCharacterVisualProfile(
+        makeRequest("POST", `/${characterId}/visual-profiles`, {
+          userId: admin,
+          role: "admin",
+          body: {
+            expectedActiveIdentityId: expectedId,
+            expectedActiveIdentityVersion: expectedVersion,
+            identityPrompt: "original identity prompt",
+            reason: "edit identity settings",
+            confirmation: confirmationFor(characterId),
+            ...extra,
+          },
+        }),
+        characterId,
+      ));
+
+    const inherited = await mint(prior.version, prior.id, {});
+    expect(inherited.data?.item).toMatchObject({
+      negativeIdentityPrompt: "generic negative prompt",
+      defaultSeed: "seed-v1",
+    });
+    const v2 = inherited.data?.item as { id: string; version: number };
+    const cleared = await mint(v2.version, v2.id, { negativeIdentityPrompt: "", defaultSeed: "" });
+    expect(cleared.ok).toBe(true);
+    expect(cleared.data?.item).toMatchObject({ negativeIdentityPrompt: null, defaultSeed: null });
+  });
+
   it("404s creating a version for an unknown character", async () => {
     const admin = await seedActor("admin", "create404");
     const missingId = `${P}char-missing-create`;

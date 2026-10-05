@@ -1,5 +1,65 @@
 import type { CharacterWorkspaceDetail } from "@idream/shared/admin";
 
+const journey = {
+  projectionVersion: 1,
+  asOf: "2026-07-30T12:00:00.000Z",
+  stage: "visual_setup",
+  status: "blocked",
+  steps: [
+    {
+      code: "visual_identity",
+      state: "current",
+      deepLink: "/admin/characters/character-fixture",
+    },
+    {
+      code: "image_assets",
+      state: "upcoming",
+      deepLink: "/admin/characters/character-fixture",
+    },
+    {
+      code: "preview",
+      state: "upcoming",
+      deepLink: "/admin/characters/character-fixture",
+    },
+    {
+      code: "release",
+      state: "upcoming",
+      deepLink: "/admin/characters/character-fixture",
+    },
+    {
+      code: "live_monitor",
+      state: "upcoming",
+      deepLink: "/admin/characters/character-fixture",
+    },
+  ],
+  blockers: [],
+  primaryAction: {
+    code: "create_primary_portrait",
+    deepLink: "/admin/characters/character-fixture",
+    command: null,
+  },
+  assetPack: {
+    draft: {
+      availablePurposes: [],
+      missingPurposes: [],
+      completed: 0,
+      total: 3,
+    },
+    live: {
+      availablePurposes: [],
+      missingPurposes: [],
+      completed: 0,
+      total: 3,
+    },
+  },
+  release: {
+    servingState: "inactive",
+    currentReleaseId: null,
+    candidateReleaseId: null,
+    pendingRevision: null,
+  },
+} satisfies CharacterWorkspaceDetail["journey"];
+
 /**
  * SPEC: 一份完整、合法的 CharacterWorkspaceDetail，测试在其上做局部覆盖。
  * INTENT: 各测试原本各写各的 `{...} as unknown as CharacterWorkspaceDetail`，只填了
@@ -65,63 +125,41 @@ const base = {
       { tier: "free", provider: "mock", model: "fixture-model" },
     ],
   },
-  journey: {
-    projectionVersion: 1,
-    asOf: "2026-07-30T12:00:00.000Z",
-    stage: "visual_setup",
-    status: "blocked",
-    steps: [
-      {
-        code: "visual_identity",
-        state: "current",
-        deepLink: "/admin/characters/character-fixture",
-      },
-      {
-        code: "image_assets",
-        state: "upcoming",
-        deepLink: "/admin/characters/character-fixture",
-      },
-      {
-        code: "preview",
-        state: "upcoming",
-        deepLink: "/admin/characters/character-fixture",
-      },
-      {
-        code: "release",
-        state: "upcoming",
-        deepLink: "/admin/characters/character-fixture",
-      },
-      {
-        code: "live_monitor",
-        state: "upcoming",
-        deepLink: "/admin/characters/character-fixture",
-      },
-    ],
-    blockers: [],
-    primaryAction: {
-      code: "create_primary_portrait",
-      deepLink: "/admin/characters/character-fixture",
-      command: null,
-    },
-    assetPack: {
-      draft: {
-        availablePurposes: [],
-        missingPurposes: [],
-        completed: 0,
-        total: 3,
-      },
-      live: {
-        availablePurposes: [],
-        missingPurposes: [],
-        completed: 0,
-        total: 3,
-      },
-    },
-    release: {
-      servingState: "inactive",
+  journey,
+  portfolio: {
+    characterId: "character-fixture",
+    name: "Mira",
+    needsAttention: false,
+    serving: {
+      characterId: "character-fixture",
+      state: "inactive",
       currentReleaseId: null,
-      candidateReleaseId: null,
-      pendingRevision: null,
+      version: 0,
+      updatedAt: "2026-07-30T12:00:00.000Z",
+    },
+    currentRelease: null,
+    candidateRelease: null,
+    readiness: "unknown",
+    priority: "normal",
+    performance: [],
+    changeMarkers: [],
+    visualProduction: {
+      primaryImageUrl: null,
+      primaryImageSource: null,
+      draftPurposes: [],
+      livePurposes: [],
+      totalPurposes: 3,
+      deepLink: "/admin/characters/character-fixture?tab=assets",
+    },
+    journey,
+    operationalState: {
+      workflowState: "visual_setup",
+      readiness: "unknown",
+      checks: [],
+      blockers: [],
+      policyVersion: "fixture-policy",
+      entityVersion: 1,
+      lastVerifiedAt: null,
     },
   },
   mediaOperations: {

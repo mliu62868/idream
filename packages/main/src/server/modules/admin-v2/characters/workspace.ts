@@ -336,6 +336,7 @@ export async function getCharacterWorkspace(characterId: string) {
     project: projectDto(project, qualifiedRoute?.routeFingerprint ?? null),
     soul,
     journey: portfolioItem.journey,
+    portfolio: portfolioItem,
     mediaOperations,
     visual,
     voice: {

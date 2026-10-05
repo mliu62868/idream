@@ -16,6 +16,7 @@ import {
 } from "./characters-release";
 import {
   characterPerformanceSummarySchema,
+  characterPortfolioItemSchema,
   characterProductionJourneySchema,
 } from "./characters-performance";
 import {
@@ -818,6 +819,9 @@ export const characterWorkspaceDetailSchema = z
       })
       .strict(),
     journey: characterProductionJourneySchema,
+    // INTENT: the list card's lifecycle label and next action; the workspace header
+    // renders the same item so list and detail never disagree on "what now".
+    portfolio: characterPortfolioItemSchema,
     mediaOperations: characterMediaOperationsProjectionSchema,
     visual: characterVisualWorkspaceSchema,
     voice: characterVoiceWorkspaceSchema,

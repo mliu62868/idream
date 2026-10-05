@@ -206,6 +206,8 @@ export function projectCharacterProductionJourneySnapshot(input: {
   draftPurposes: readonly CharacterProductionPurpose[];
   draftPurposesNeedingReview: readonly CharacterProductionPurpose[];
   livePurposes: readonly CharacterProductionPurpose[];
+  /** The draft pack selects exactly the images the live Release serves. */
+  draftPackMatchesLive?: boolean;
   servingState: CharacterProductionJourney["release"]["servingState"];
   currentReleaseId: string | null;
   candidateReleaseId: string | null;
@@ -311,7 +313,14 @@ export function projectCharacterProductionJourneySnapshot(input: {
       };
       stage = "publishing";
       status = "ready";
-    } else if (liveNow && draft.completed === 0) {
+    } else if (
+      liveNow &&
+      !input.pendingRevision &&
+      (draft.completed === 0 || input.draftPackMatchesLive === true)
+    ) {
+      // SPEC: publishing leaves the draft pack in place, so a live Character whose
+      // draft pack is empty or equals the live pack, with no newer Revision, has
+      // nothing to preview; an unpublished Revision always goes back to Preview.
       primaryAction = {
         code: "monitor_live_character",
         deepLink: tabLink("monitor"),
@@ -358,6 +367,15 @@ export function projectCharacterProductionJourneySnapshot(input: {
         : null,
     },
   };
+}
+
+function samePack(
+  draft: CharacterProductionAssetPack,
+  live: CharacterProductionAssetPack,
+) {
+  return characterProductionPurposes.every(
+    (purpose) => draft[purpose] === live[purpose],
+  );
 }
 
 export async function projectCharacterProductionJourneys(
@@ -650,6 +668,10 @@ export async function projectCharacterProductionJourneys(
         livePurposes: availablePurposes(
           livePackByCharacter.get(characterId) ?? {},
           availableIds,
+        ),
+        draftPackMatchesLive: samePack(
+          draftPackByCharacter.get(characterId) ?? {},
+          livePackByCharacter.get(characterId) ?? {},
         ),
         servingState: (serving?.state ??
           "inactive") as CharacterProductionJourney["release"]["servingState"],

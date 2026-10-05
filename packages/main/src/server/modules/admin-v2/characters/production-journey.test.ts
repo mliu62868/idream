@@ -277,6 +277,31 @@ describe("Character Production Journey", () => {
     });
   });
 
+  it("monitors a live Character whose draft pack still equals the published pack", () => {
+    // Publishing does not clear the draft pack; the live card must not send the operator back to Preview.
+    const live = {
+      servingState: "live" as const,
+      currentReleaseId: "release-live",
+      livePurposes: allPurposes,
+      draftPurposes: allPurposes,
+    };
+    expect(journey({ ...live, draftPackMatchesLive: true }).primaryAction.code)
+      .toBe("monitor_live_character");
+    expect(journey({ ...live, draftPackMatchesLive: false }).primaryAction.code)
+      .toBe("preview_character");
+    expect(journey({
+      servingState: "live",
+      currentReleaseId: "release-live",
+      livePurposes: allPurposes,
+      pendingRevision: { id: "revision-2", revision: 2, createdAt: new Date("2026-10-01T00:00:00Z") },
+    }).primaryAction.code).toBe("preview_character");
+    expect(journey({
+      ...live,
+      draftPackMatchesLive: true,
+      pendingRevision: { id: "revision-2", revision: 2, createdAt: new Date("2026-10-01T00:00:00Z") },
+    }).primaryAction.code).toBe("preview_character");
+  });
+
   it("takes a complete image pack directly to preview without manual review", () => {
     expect(
       journey({

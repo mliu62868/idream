@@ -52,6 +52,10 @@ import { cn } from "@/lib/utils";
 import { characterWorkspacePermissions } from "./character-workspace-permissions";
 import { permissionDenied } from "./character-permission-denied";
 import { CharacterPortfolio } from "./CharacterPortfolio";
+import {
+  characterPortfolioState,
+  resolveCharacterPortfolioPrimaryAction,
+} from "./CharacterPortfolioCard";
 import { CharacterOverview } from "./CharacterOverview";
 import { VisualIdentityPanel } from "./VisualIdentityPanel";
 import { PreviewDiff } from "./PreviewDiff";
@@ -866,6 +870,12 @@ function CharacterDetail({
   const attentionDiagnosis = attentionMetric
     ? characterNoDataDiagnosis(attentionMetric)
     : null;
+  // SPEC: the header says what the list card says — one lifecycle label, one next step.
+  const lifecycle = characterPortfolioState(data.portfolio);
+  const nextStep = resolveCharacterPortfolioPrimaryAction(data.portfolio);
+  const nextStepTab = nextStep.href.includes("?tab=")
+    ? characterWorkspaceTabFromSearch(nextStep.href.slice(nextStep.href.indexOf("?")))
+    : null;
   const activeArea = characterWorkspaceAreaForTab(tab);
   const visibleTabs = characterWorkspaceAreaTabs[activeArea];
   const writesLocked = commandWritesLocked || data.activeCommand !== null;
@@ -902,16 +912,14 @@ function CharacterDetail({
               </h2>
               <p className="inline-flex items-center gap-2 text-sm text-[var(--ad-text-muted)]">
                 <span
-                  aria-hidden="true"
                   className={cn(
-                    "h-2 w-2 rounded-full",
-                    data.serving?.state === "live"
-                      ? "bg-[var(--ad-green-text)]"
-                      : "bg-[var(--ad-text-muted)]/45",
+                    "rounded-full px-2 py-0.5 text-xs font-semibold",
+                    lifecycle.badge,
                   )}
-                />
-                {t(data.serving?.state ?? "not_live")}{" "}
-                <span aria-hidden="true">·</span> {t(data.character.visibility)}
+                >
+                  {t(lifecycle.label)}
+                </span>
+                {t(data.character.visibility)}
               </p>
             </div>
             <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
@@ -1018,6 +1026,27 @@ function CharacterDetail({
               </Link>
             ) : null}
           </div>
+        </div>
+      ) : null}
+      {!attentionDiagnosis && nextStepTab !== tab ? (
+        <div
+          className="mt-4 flex flex-col gap-2 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-2 text-sm sm:flex-row sm:items-center sm:justify-between"
+          data-testid="character-next-step"
+          onClickCapture={onWorkspacePanelClick}
+        >
+          <p className="min-w-0">
+            <span className="mr-2 text-xs font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">
+              {t("Next step")}
+            </span>
+            <strong>{t(nextStep.eyebrow)}</strong>{" "}
+            <span className="text-[var(--ad-text-muted)]">{t(nextStep.description)}</span>
+          </p>
+          <Link
+            className="min-h-8 shrink-0 text-xs font-semibold underline underline-offset-4"
+            href={nextStep.href}
+          >
+            {t(nextStep.label)}
+          </Link>
         </div>
       ) : null}
       {attentionDiagnosis && attentionMetric && tab !== "monitor" ? (

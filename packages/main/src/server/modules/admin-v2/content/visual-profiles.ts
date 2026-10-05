@@ -521,8 +521,11 @@ export async function createCharacterVisualProfile(input: {
   };
   const derived = assembleIdentityPrompt(traits);
   const identityPrompt = body.identityPrompt ?? derived.identityPrompt;
+  // SPEC: omitted inherits the active version; an empty string is an explicit clear.
   const negativeIdentityPrompt =
-    body.negativeIdentityPrompt ?? active?.negativeIdentityPrompt ?? null;
+    body.negativeIdentityPrompt !== undefined
+      ? body.negativeIdentityPrompt || null
+      : (active?.negativeIdentityPrompt ?? null);
   const style = body.style ?? active?.style ?? "realistic";
   const source = body.identityPrompt ? "manual" : "derived";
   const traitsHash = body.identityPrompt ? traitsHashOf(traits) : derived.traitsHash;
@@ -542,7 +545,9 @@ export async function createCharacterVisualProfile(input: {
       styleTraits: toInputJson(styleTraits),
       anchorAssetIds: toInputJson(anchorAssetIds),
       defaultSeed:
-        body.defaultSeed ?? candidate?.item.job!.seed ?? active?.defaultSeed ?? null,
+        body.defaultSeed !== undefined
+          ? body.defaultSeed || null
+          : (candidate?.item.job!.seed ?? active?.defaultSeed ?? null),
       adapterRefs: toInputJson({
         identity: {
           traitsHash,

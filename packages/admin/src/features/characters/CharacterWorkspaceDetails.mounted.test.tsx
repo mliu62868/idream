@@ -16,7 +16,7 @@ vi.mock("@/lib/admin-v2-api", async (importOriginal) => {
 
 import { AdminI18nProvider } from "@/components/admin/i18n";
 import { AdminV2RequestError } from "@/lib/admin-v2-api";
-import { characterWorkspaceDetail } from "./character-workspace-fixture";
+import { characterWorkspaceDetail, withCharacterWorkspaceDetail } from "./character-workspace-fixture";
 import { CharacterWorkspace } from "./CharacterWorkspace";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 
@@ -658,5 +658,38 @@ describe("Character workspace details", () => {
       path.includes("/characters/character-detail/image-sources") &&
       new URL(path, "http://localhost").searchParams.get("purpose") === "character_library",
     )).toBe(true);
+  });
+  it("shows the list card's lifecycle label and next step in the header, and follows it in place", async () => {
+    // An inactive draft whose server-projected next step is the first identity portrait.
+    const draft = withCharacterWorkspaceDetail(workspace, {
+      portfolio: { journey: { primaryAction: { deepLink: "/admin/characters/character-detail?tab=assets" } } },
+    });
+    const original = adminV2Request.getMockImplementation()!;
+    adminV2Request.mockImplementation(async (path: string, ...args: unknown[]) =>
+      path === "/api/v2/admin/characters/character-detail" ? draft : original(path, ...args),
+    );
+    await act(async () => {
+      root.render(
+        <AdminI18nProvider locale="en">
+          <CharacterWorkspace actorId="operator-a" permissions={permissions}
+            view={{ kind: "detail", id: "character-detail" }} />
+        </AdminI18nProvider>,
+      );
+    });
+    await waitUntil(
+      () => container.querySelector('[data-testid="character-next-step"]') !== null,
+      "next step strip",
+    );
+    const header = container.querySelector("#character-workspace-title")?.parentElement;
+    expect(header?.textContent).toContain("Draft");
+    expect(header?.textContent).not.toContain("inactive");
+    const strip = container.querySelector('[data-testid="character-next-step"]')!;
+    expect(strip.textContent).toContain("Create first identity portrait");
+    const link = strip.querySelector("a")!;
+    await act(async () => {
+      link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    await waitUntil(() => container.querySelector("#character-panel-assets") !== null, "assets after next step");
+    expect(window.location.search).toBe("?tab=assets");
   });
 });
