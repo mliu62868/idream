@@ -1298,9 +1298,28 @@ export const adminZhCharacters: Record<string, string> = {
   "Repair the visual identity authority before publishing.":
     "发布前请修复视觉身份权威。",
   "Open visual identity": "打开视觉身份",
-  "Refresh the Character and resolve this release check before publishing.":
-    "刷新角色，并在发布前解决这项发布检查。",
-  "Review release checks": "查看发布检查",
+  "The Character Soul does not compile. Fix it before publishing.":
+    "角色设定无法编译，请先修复再发布。",
+  "Clear every Character Soul diagnostic before publishing. Warnings block too.":
+    "发布前须清零角色设定的全部诊断项，警告也会阻断发布。",
+  "Add an opening message before publishing.": "发布前请填写开场消息。",
+  "Platform issue. Engineering must resolve it before this Character can be published.":
+    "平台/工程问题，需工程处理后才能发布这个角色。",
+  "Unrecognized release check. Share this code with engineering.":
+    "未识别的发布检查，请把下面的代码发给工程。",
+  "Companion product contract": "陪伴产品契约",
+  "Legacy release": "历史版本",
+  "Historical editorial release with no automatic release check record. Publishing again runs the full checks.":
+    "历史编辑发布，无自动发布检查记录；重新发布会走完整检查。",
+  "Reason must be at least 3 characters, or leave it empty to use the default.":
+    "理由至少 3 个字符；留空则使用默认理由。",
+  "Retiring is permanent. The Character can never be published or rolled back again. Use Pause serving to take it offline temporarily.":
+    "停用不可撤销：停用后不能再发布，也不能回滚。只想暂时下线请用「暂停上线服务」。",
+  "I understand retiring cannot be undone": "我了解停用不可撤销",
+  "A candidate release is waiting. Publish or discard it before editing the character.":
+    "有待发布的候选版本，先发布或撤回后再改资料。",
+  "Publishing stays blocked until every item below is cleared, warnings included.":
+    "以下各项（包括警告）必须清零才能发布。",
   "Image review required": "需要审核图片",
   "Review the selected portrait, hero, and chat images before publishing.":
     "发布前请审核已选的主肖像、头图和聊天图片。",

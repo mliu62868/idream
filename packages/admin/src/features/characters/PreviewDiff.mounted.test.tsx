@@ -159,6 +159,28 @@ describe("Character launch preview — zh operators", () => {
     expect(container.textContent).not.toContain(
       "Full launch preview is waiting for the image pack",
     );
+    expect(container.querySelector("iframe")).toBeNull();
+  });
+
+  it("still renders what customers see when live and draft are identical", () => {
+    act(() => {
+      root.render(
+        <AdminI18nProvider locale="en">
+          <PreviewDiff data={characterWorkspaceDetail({
+            preview: {
+              live: { label: "Live", name: "Mira", renderUrl: "about:blank#live-render" },
+              changedFields: [],
+            },
+            journey: { release: { candidateReleaseId: null } },
+          })} />
+        </AdminI18nProvider>,
+      );
+    });
+
+    expect(container.textContent).toContain("Live and draft are identical");
+    expect(container.querySelector("iframe")?.getAttribute("src")).toBe(
+      "about:blank#live-render",
+    );
   });
 
   it("shows a ready preview without confirmation forms", () => {

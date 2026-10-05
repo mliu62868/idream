@@ -211,6 +211,21 @@ describe("Soul draft retention", () => {
     expect(container.querySelector('a[href$="?tab=release"]')?.textContent).toBe("Go to Release");
   });
 
+  it("blocks saving while a candidate release pins the draft and points to Release", async () => {
+    await render(actor, withCharacterWorkspaceDetail(data, { journey: { release: { candidateReleaseId: "candidate-1" } } }));
+    editName();
+    expect(container.textContent).toContain("A candidate release is waiting.");
+    expect(container.querySelector('a[href$="?tab=release"]')).not.toBeNull();
+    expect(saveButton().disabled).toBe(true);
+  });
+
+  it("says compiler diagnostics block publishing, warnings included", async () => {
+    await render(actor, withCharacterWorkspaceDetail(data, { soul: { current: {
+      diagnostics: [{ code: "long", path: ["detailsMarkdown"], severity: "warning", message: "Too long" }],
+    } } }));
+    expect(container.textContent).toContain("Publishing stays blocked until every item below is cleared");
+  });
+
   it("identifies an oversized trait locally and focuses the rejected field", async () => {
     await render();
     typeInto("Identity anchor", "Adult radio host");
