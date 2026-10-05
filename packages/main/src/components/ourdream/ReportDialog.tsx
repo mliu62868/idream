@@ -1,12 +1,14 @@
 "use client";
 
-import { useId, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import {
   CONTENT_REPORT_REASONS,
   DEFAULT_CONTENT_REPORT_REASON,
   type ContentReportReason,
 } from "@idream/shared/contracts";
 import { parseReportResponse } from "@/lib/public-api-contracts";
+import { useViewerGate, ViewerGateError, type ViewerGate } from "@/hooks/useViewerGate";
+import { isAbortError } from "@/lib/viewer-resource-client";
 import { authHrefForTarget, authNextTargetFromPath } from "./authRedirect";
 
 // SPEC: 站内所有举报入口的唯一实现 —— 选理由、可选补充说明、提交。
@@ -20,6 +22,11 @@ export type ReportTarget =
   | { kind: "character"; id: string }
   | { kind: "feedItem"; id: string }
   | { kind: "record"; targetType: string; targetId: string };
+
+type ReportDraft = { target: ReportTarget; reason: ContentReportReason; description: string };
+type ReportRecovery = ReportDraft & { nonce: string; returnTarget: string; expiresAt: number };
+const REPORT_RECOVERY_KEY = "idream:report-signup-draft";
+const REPORT_RECOVERY_QUERY = "reportDraft";
 
 export const REASON_LABELS: Record<ContentReportReason, string> = {
   underage_content: "Underage or minor-coded content",
@@ -60,14 +67,48 @@ export function reportRequest(
  * onStatus 走各页面自己的状态条，所以提交结果仍显示在用户当前看的地方。
  */
 export function useReportDialog(onStatus: (message: string) => void) {
-  const [target, setTarget] = useState<ReportTarget | null>(null);
+  const viewer = useViewerGate({ require: "any" });
+  const [draft, setDraft] = useState<ReportDraft | null>(null);
+  useEffect(() => viewer.gate.onOwnerChange?.(() => setDraft(null)), [viewer.gate]);
+  useEffect(() => {
+    if (viewer.identity?.kind !== "user") return;
+    const returned = new URL(window.location.href);
+    const nonce = returned.searchParams.get(REPORT_RECOVERY_QUERY);
+    if (!nonce) return;
+    let active = true;
+    returned.searchParams.delete(REPORT_RECOVERY_QUERY);
+    const returnTarget = `${returned.pathname}${returned.search}${returned.hash}`;
+    try {
+      const raw = window.sessionStorage.getItem(REPORT_RECOVERY_KEY);
+      const saved = raw ? JSON.parse(raw) as ReportRecovery : null;
+      const target = saved?.target;
+      const validTarget = target && (target.kind === "record"
+        ? typeof target.targetType === "string" && Boolean(target.targetType) && typeof target.targetId === "string" && Boolean(target.targetId)
+        : (target.kind === "character" || target.kind === "feedItem") && typeof target.id === "string" && Boolean(target.id));
+      if (!saved || saved.nonce !== nonce || saved.returnTarget !== returnTarget || typeof saved.expiresAt !== "number" || !Number.isFinite(saved.expiresAt) || saved.expiresAt <= Date.now() ||
+        !validTarget || !CONTENT_REPORT_REASONS.includes(saved.reason) || typeof saved.description !== "string" || saved.description.length > 2_000) return;
+      // Signup restores this tab's explicit report draft. It never submits it
+      // or exposes the user's note in the URL or another account's stored data.
+      queueMicrotask(() => {
+        if (!active) return;
+        try {
+          window.sessionStorage.removeItem(REPORT_RECOVERY_KEY);
+          window.history.replaceState(window.history.state, "", returnTarget);
+          setDraft({ target: saved.target, reason: saved.reason, description: saved.description });
+        } catch { onStatus("The saved report could not be restored. Open the report again to review it."); }
+      });
+    } catch { onStatus("The saved report could not be restored. Open the report again to review it."); }
+    return () => { active = false; };
+  }, [viewer.identity, onStatus]);
   return {
-    openReport: (next: ReportTarget) => setTarget(next),
-    reportDialog: target ? (
+    openReport: (target: ReportTarget) => setDraft({ target, reason: DEFAULT_CONTENT_REPORT_REASON, description: "" }),
+    reportDialog: draft ? (
       <ReportDialog
-        onClose={() => setTarget(null)}
+        key={`${viewer.scope ?? "anonymous"}:${JSON.stringify(draft.target)}`}
+        onClose={() => setDraft(null)}
         onStatus={onStatus}
-        target={target}
+        draft={draft}
+        viewer={viewer}
       />
     ) : null,
   };
@@ -76,29 +117,60 @@ export function useReportDialog(onStatus: (message: string) => void) {
 function ReportDialog({
   onClose,
   onStatus,
-  target,
+  draft,
+  viewer,
 }: Readonly<{
   onClose: () => void;
   onStatus: (message: string) => void;
-  target: ReportTarget;
+  draft: ReportDraft;
+  viewer: ViewerGate;
 }>) {
-  const [reason, setReason] = useState<ContentReportReason>(
-    DEFAULT_CONTENT_REPORT_REASON,
-  );
-  const [description, setDescription] = useState("");
+  const [reason, setReason] = useState(draft.reason);
+  const [description, setDescription] = useState(draft.description);
   const [pending, setPending] = useState(false);
+  const [error, setError] = useState("");
+  const mounted = useRef(true);
+  const writing = useRef(false);
+  useLayoutEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const titleId = useId();
   const descriptionId = useId();
 
   async function submit() {
+    if (writing.current) return;
+    setError("");
+    if (viewer.identity?.kind === "anonymous") {
+      try {
+        const returnTarget = authNextTargetFromPath(window.location.pathname, window.location.search, window.location.hash) ?? "/";
+        const returned = new URL(returnTarget, window.location.origin);
+        const nonce = globalThis.crypto?.randomUUID?.();
+        if (!nonce) throw new Error("A secure report recovery key is unavailable");
+        returned.searchParams.set(REPORT_RECOVERY_QUERY, nonce);
+        const recovery: ReportRecovery = { target: draft.target, reason, description, nonce, returnTarget, expiresAt: Date.now() + 15 * 60_000 };
+        window.sessionStorage.setItem(REPORT_RECOVERY_KEY, JSON.stringify(recovery));
+        window.location.assign(authHrefForTarget("/signup", `${returned.pathname}${returned.search}${returned.hash}`));
+      } catch {
+        const message = "The report draft could not be saved. Keep this dialog open and try again.";
+        setError(message); onStatus(message);
+      }
+      return;
+    }
+    writing.current = true;
     setPending(true);
     try {
-      const { url, body } = reportRequest(target, reason, description);
-      const response = await fetch(url, {
+      const expected = viewer.identity;
+      const before = await viewer.revalidate();
+      if (!before) throw new Error("Your account could not be checked. Reconnect and try again.");
+      if (!mounted.current || expected?.kind !== "user" || before !== expected) throw new ViewerGateError();
+      const { url, body } = reportRequest(draft.target, reason, description);
+      const response = await viewer.fetch(url, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
       });
+      const payload: unknown = response.ok ? await response.json() : null;
+      const after = await viewer.revalidate();
+      if (!after) throw new Error("The report could not be confirmed. Reconnect before submitting again.");
+      if (!mounted.current || after !== expected) throw new ViewerGateError();
       // 未登录时不要只丢一句失败 —— 举报入口在公开页面上，带 next 回跳回来。
       if (response.status === 401) {
         window.location.assign(
@@ -113,16 +185,19 @@ function ReportDialog({
         return;
       }
       if (!response.ok) {
-        onStatus("Could not submit the report. Please try again.");
+        const message = "Could not submit the report. Please try again.";
+        setError(message); onStatus(message);
         return;
       }
-      parseReportResponse(await response.json());
+      parseReportResponse(payload);
       onStatus("Report submitted.");
       onClose();
-    } catch {
-      onStatus("Could not submit the report. Please try again.");
+    } catch (error) {
+      if (!mounted.current || isAbortError(error)) return;
+      const message = error instanceof Error ? error.message : "Could not submit the report. Please try again.";
+      setError(message); onStatus(message);
     } finally {
-      setPending(false);
+      if (mounted.current) { writing.current = false; setPending(false); }
     }
   }
 
@@ -141,6 +216,8 @@ function ReportDialog({
         <p className="mt-1 text-[13px] text-[rgb(170,170,170)]">
           Pick the closest reason. Moderators read what you write here.
         </p>
+        {viewer.error ? <p role="alert">{viewer.error} <button className="underline" type="button" onClick={() => void viewer.revalidate()}>Retry account check</button></p> : null}
+        {error ? <p className="mt-3 text-sm text-amber-200" role="alert">{error}</p> : null}
         <fieldset className="mt-4 space-y-2">
           <legend className="sr-only">Reason</legend>
           {CONTENT_REPORT_REASONS.map((value) => (
@@ -185,7 +262,7 @@ function ReportDialog({
           </button>
           <button
             className="h-11 flex-1 rounded-full bg-[rgb(253,95,194)] text-[14px] font-black text-[rgb(13,13,13)] disabled:opacity-70"
-            disabled={pending}
+            disabled={pending || !viewer.identity}
             onClick={submit}
             type="button"
           >

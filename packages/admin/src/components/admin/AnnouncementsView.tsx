@@ -432,6 +432,12 @@ function AnnouncementForm({
   //         「在展示 / 已启用但不在窗口内」也永远只能显示前者——补上入口这两件事才同时成立。
   const [startsAt, setStartsAt] = useState(isoToLocalInput(editing?.startsAt ?? null));
   const [endsAt, setEndsAt] = useState(isoToLocalInput(editing?.endsAt ?? null));
+  // INVARIANT: The minute-only display loses seconds and DST occurrence information.
+  // Retain an unchanged endpoint's authoritative instant for both validation and submission.
+  const effectiveStartsAt = editing && startsAt === isoToLocalInput(editing.startsAt)
+    ? editing.startsAt : localInputToIso(startsAt);
+  const effectiveEndsAt = editing && endsAt === isoToLocalInput(editing.endsAt)
+    ? editing.endsAt : localInputToIso(endsAt);
   const [reason, setReason] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [err, setErr] = useState<string | null>(null);
@@ -456,8 +462,8 @@ function AnnouncementForm({
           body: body.trim(),
           href: href.trim() || null,
           level,
-          startsAt: localInputToIso(startsAt),
-          endsAt: localInputToIso(endsAt),
+          startsAt: effectiveStartsAt,
+          endsAt: effectiveEndsAt,
           reason: reason.trim(),
           confirmation: confirmation.trim(),
         });
@@ -472,8 +478,8 @@ function AnnouncementForm({
         level,
         active,
         // datetime-local 没有时区，按本机时区转成契约要的带偏移 ISO 串。
-        startsAt: localInputToIso(startsAt),
-        endsAt: localInputToIso(endsAt),
+        startsAt: effectiveStartsAt,
+        endsAt: effectiveEndsAt,
         reason: reason.trim(),
         confirmation: confirmation.trim(),
       });
@@ -513,8 +519,7 @@ function AnnouncementForm({
   } else if (!editing && trimmedTitle.length > 0 && confirmation.trim() !== trimmedTitle) {
     missing.push("the title typed again to confirm");
   }
-  // 窗口反了就别发出去 —— 权威不校验先后，这条会被存下来然后永远不显示。
-  if (!announcementWindowOrdered(startsAt, endsAt)) missing.push("an end time after the start time");
+  if (!announcementWindowOrdered(effectiveStartsAt ?? "", effectiveEndsAt ?? "")) missing.push("an end time after the start time");
   const canCreate = !busy && missing.length === 0;
 
   if (!canWrite) return <PermissionNotice permission="growth.promo.write" />;

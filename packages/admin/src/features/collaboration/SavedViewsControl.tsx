@@ -6,7 +6,7 @@ import {
   type SavedViewQueryState,
 } from "@idream/shared/admin";
 import { Bookmark, RefreshCcw, Save, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
@@ -43,8 +43,17 @@ export function SavedViewsControl({
   // SPEC: 只有「视图列表读不出来」留在控件里（它带重试）；保存 / 覆盖的成败一律走 toast。
   const [loadError, setLoadError] = useState<unknown>(null);
   const [confirmSpec, setConfirmSpec] = useState<ConfirmSpec | null>(null);
+  const [confirmRevision, setConfirmRevision] = useState(0);
+  const loadRequestId = useRef(0);
+  const labelEdited = useRef(false);
+  const labelRevision = useRef(0);
+  const stateKey = JSON.stringify(currentState);
+  const context = useRef({ scope, selectedId, stateKey, onApply });
+  // INVARIANT: 父工作区的应用回调还绑定当前工单；旧写回执不能恢复已离开的详情。
+  const contextIsCurrent = (draftRevision?: number) => context.current.scope === scope && context.current.selectedId === selectedId && context.current.stateKey === stateKey && context.current.onApply === onApply && (draftRevision === undefined || labelRevision.current === draftRevision);
 
   const clearSelection = useCallback(() => {
+    labelEdited.current = false;
     onSelectedChange(null);
     setLabel("");
     if (typeof window !== "undefined") {
@@ -52,30 +61,45 @@ export function SavedViewsControl({
     }
   }, [onSelectedChange]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (preserveLabel = false) => {
+    if (context.current.scope !== scope || context.current.selectedId !== selectedId) return;
+    const requestId = ++loadRequestId.current;
+    const isCurrent = () => requestId === loadRequestId.current && context.current.scope === scope && context.current.selectedId === selectedId;
     setLoading(true);
     setLoadError(null);
     try {
       const response = await adminV2Request(`/api/v2/admin/saved-views?scope=${scope}`, { schema: savedViewListSchema });
+      if (!isCurrent()) return;
       setViews([...response.items]);
       const selected = response.items.find((view) => view.id === selectedId);
-      if (selected) setLabel(selected.label);
+      if (selected) { if (!preserveLabel && !labelEdited.current) setLabel(selected.label); }
       else if (selectedId) clearSelection();
+      return response.items;
     } catch (cause) {
-      setLoadError(cause);
+      if (isCurrent()) setLoadError(cause);
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   }, [clearSelection, scope, selectedId]);
 
   useEffect(() => {
+    if (context.current.scope !== scope || context.current.selectedId !== selectedId) labelEdited.current = false;
+    if (context.current.scope !== scope || context.current.selectedId !== selectedId || context.current.stateKey !== stateKey || context.current.onApply !== onApply) setConfirmSpec(null);
+    context.current = { scope, selectedId, stateKey, onApply };
+  }, [scope, selectedId, stateKey, onApply]);
+
+  useEffect(() => {
     const timer = window.setTimeout(() => void load(), 0);
-    return () => window.clearTimeout(timer);
-  }, [load]);
+    return () => {
+      window.clearTimeout(timer);
+      loadRequestId.current += 1;
+    };
+  }, [load, scope, selectedId]);
 
   const select = (id: string) => {
     const view = views.find((item) => item.id === id);
     if (view) {
+      labelEdited.current = false;
       applySavedView(view, onSelectedChange, onApply);
       setLabel(view.label);
       toast({ tone: "success", title: t("Applied saved view {label}.", { label: view.label }) });
@@ -84,15 +108,19 @@ export function SavedViewsControl({
 
   const saveNew = async () => {
     if (!label.trim()) return;
+    const draftRevision = labelRevision.current;
     setBusy(true);
     try {
       const response = await adminV2Operation("POST /api/v2/admin/saved-views", {
         body: { scope, label: label.trim(), queryState: currentState },
       });
-      await load();
-      applySavedView(response.view, onSelectedChange, onApply);
-      setLabel(response.view.label);
       toast({ tone: "success", title: t("Saved view {label} created.", { label: response.view.label }) });
+      if (!contextIsCurrent(draftRevision)) return;
+      await load(true);
+      if (!contextIsCurrent(draftRevision)) return;
+      applySavedView(response.view, onSelectedChange, onApply);
+      labelEdited.current = false;
+      setLabel(response.view.label);
     } catch (cause) {
       failureToast(cause);
     } finally {
@@ -100,8 +128,9 @@ export function SavedViewsControl({
     }
   };
 
-  const updateSelected = async (current: SavedViewRecord) => {
-    if (!label.trim()) return;
+  const updateSelected = async (current: SavedViewRecord, draftLabel: string, draftState: SavedViewQueryState) => {
+    if (!draftLabel.trim()) return;
+    const draftRevision = labelRevision.current;
     setBusy(true);
     try {
       // INTENT: manifest 声明这个操作要 if-match，此前客户端不发、服务端也不读，
@@ -110,39 +139,49 @@ export function SavedViewsControl({
       const response = await adminV2Operation("PATCH /api/v2/admin/saved-views/:id", {
         path: { id: current.id },
         ifMatch: current.version,
-        body: { expectedVersion: current.version, label: label.trim(), queryState: currentState },
+        body: { expectedVersion: current.version, label: draftLabel.trim(), queryState: draftState },
       });
+      toast({ tone: "success", title: t("Saved view {label} updated.", { label: response.view.label }) });
+      if (!contextIsCurrent(draftRevision)) return;
       setViews((items) => items.map((item) => item.id === response.view.id ? response.view : item));
       applySavedView(response.view, onSelectedChange, onApply);
-      toast({ tone: "success", title: t("Saved view {label} updated.", { label: response.view.label }) });
+      labelEdited.current = false;
+      setLabel(response.view.label);
     } catch (cause) {
-      // SPEC: 别人抢先改过就先把服务端的新版本拉回来，再把错误抛回确认框。
-      // INTENT: 覆盖是在 ConfirmDialog 里发起的，异常抛回去它就地显示、不关框 ——
-      //         运营敲好的标签留着，重试只差再点一次。自己吞掉的话框会关，
-      //         错误落在框后面，看起来像是成功了。
-      if (cause instanceof AdminV2RequestError && cause.status === 409) await load();
+      // INVARIANT: 冲突后仍需明确确认读回的版本；草稿不能被服务端标签覆盖，
+      // 下一次提交也不能继续使用原确认框闭包里的旧版本。
+      if (cause instanceof AdminV2RequestError && cause.status === 409 && contextIsCurrent(draftRevision)) {
+        const freshViews = await load(true);
+        const fresh = freshViews?.find((view) => view.id === current.id);
+        if (fresh && contextIsCurrent(draftRevision)) {
+          confirmUpdate(fresh, draftLabel, draftState);
+          failureToast(cause);
+        }
+      }
       throw cause;
     } finally {
       setBusy(false);
     }
   };
 
-  // SPEC: 覆盖已保存视图前必须确认 —— 这是共享记录，别人下次打开看到的就是你写进去的查询。
+  // SPEC: 覆盖当前操作者的已保存视图前必须确认，其他操作者的私有记录不受影响。
   // INTENT: 后端只存当前 queryState，没有版本历史，覆盖确实不可恢复；按 ConfirmSpec 的约定，
   //         reversible:false 就得配确认串，不能只靠点一下。敲的是当前存着的那个名字
   //         （弹窗 placeholder 里写着），跟同一个 scope 里的删除流程用同一套口径。
   // 后端 PATCH 契约没有 reason 字段，所以 requireReason=false —— 不让运营填一个会被丢弃的原因。
-  const confirmUpdate = (current: SavedViewRecord) => {
+  const confirmUpdate = (current: SavedViewRecord, draftLabel = label, draftState = currentState) => {
+    // INVARIANT: 新版本需要重新键入确认，不能沿用旧版本已填写的名称。
+    setConfirmRevision((revision) => revision + 1);
     setConfirmSpec({
-      title: t("Overwrite the shared Saved View"),
+      title: t("Overwrite Saved View"),
       consequence: {
-        effect: t("Everyone using {label} sees this query the next time they open it. The stored v{version} query is replaced and cannot be recovered.", { label: current.label, version: current.version }),
+        effect: t("Your saved view {label} will use this query. Its stored v{version} query is replaced and cannot be recovered.", { label: current.label, version: current.version }),
         reversible: false,
       },
       destructive: { expectedName: current.label, inputLabel: t("Saved view name") },
       requireReason: false,
       submitLabel: t("Overwrite"),
-      onSubmit: () => updateSelected(current),
+      onSubmit: () => updateSelected(current, draftLabel, draftState),
     });
   };
 
@@ -152,11 +191,12 @@ export function SavedViewsControl({
   //         （confirmUpdate 上方）早就写着「跟同一个 scope 里的删除流程用同一套口径」，
   //         指的就是这条当时还不存在的流程。
   const confirmDelete = (view: SavedViewRecord) => {
+    setConfirmRevision((revision) => revision + 1);
     setConfirmSpec({
       title: t("Delete saved view {label}", { label: view.label }),
       destructive: { expectedName: view.label, inputLabel: t("Saved view name") },
       consequence: {
-        effect: t("The saved view is gone for everyone who uses it. There is no recycle bin."),
+        effect: t("Your saved view is deleted. There is no recycle bin."),
         reversible: false,
       },
       // 后端 DELETE 契约没有 reason 字段。
@@ -167,11 +207,12 @@ export function SavedViewsControl({
           path: { id: view.id },
           ifMatch: view.version,
         });
+        toast({ tone: "success", title: t("Saved view {label} deleted", { label: view.label }) });
+        if (!contextIsCurrent()) return;
         setViews((items) => items.filter((item) => item.id !== view.id));
         // 删掉的正好是当前选中的那个，就把选择和 URL 参数一起清干净 —— 留着会让
         // 下一次 load() 拿不到它、再走一遍 clearSelection，中间那一帧标签还是旧的。
         if (view.id === selectedId) clearSelection();
-        toast({ tone: "success", title: t("Saved view {label} deleted", { label: view.label }) });
       },
     });
   };
@@ -193,8 +234,8 @@ export function SavedViewsControl({
       <div className="border-t border-[var(--ad-border)] p-4">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
           <label className="grid min-w-0 flex-1 gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Select a server view")}<select className={fieldClass} disabled={loading} onChange={(event) => select(event.target.value)} value={selectedId ?? ""}><option value="">{loading ? t("Loading views…") : views.length === 0 ? t("No saved views yet") : t("Choose a saved view")}</option>{views.map((view) => <option key={view.id} value={view.id}>{view.label} · v{view.version}</option>)}</select></label>
-          <label className="grid min-w-0 flex-1 gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("View label")}<input className={fieldClass} maxLength={80} onChange={(event) => setLabel(event.target.value)} placeholder={t("e.g. Critical incidents I own")} value={label} /></label>
-          <div className="flex flex-wrap gap-2"><WorkspaceButton disabled={busy || label.trim().length === 0} onClick={() => void saveNew()}><Save className="h-4 w-4" />{t("Save new")}</WorkspaceButton>{selected ? <WorkspaceButton aria-label={t("Overwrite shared view {label} (v{version})", { label: selected.label, version: selected.version })} disabled={busy || label.trim().length === 0} onClick={() => confirmUpdate(selected)}>{t("Overwrite v")}{selected.version}</WorkspaceButton> : null}{selected ? <WorkspaceButton aria-label={t("Delete saved view {label}", { label: selected.label })} disabled={busy} onClick={() => confirmDelete(selected)}><Trash2 className="h-4 w-4" />{t("Delete")}</WorkspaceButton> : null}<WorkspaceButton disabled={loading || busy} onClick={() => void load()}><RefreshCcw className="h-4 w-4" />{t("Reload")}</WorkspaceButton></div>
+          <label className="grid min-w-0 flex-1 gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("View label")}<input className={fieldClass} maxLength={80} onChange={(event) => { labelEdited.current = true; labelRevision.current += 1; setLabel(event.target.value); }} placeholder={t("e.g. Critical incidents I own")} value={label} /></label>
+          <div className="flex flex-wrap gap-2"><WorkspaceButton disabled={busy || label.trim().length === 0} onClick={() => void saveNew()}><Save className="h-4 w-4" />{t("Save new")}</WorkspaceButton>{selected ? <WorkspaceButton aria-label={t("Overwrite saved view {label} (v{version})", { label: selected.label, version: selected.version })} disabled={busy || label.trim().length === 0} onClick={() => confirmUpdate(selected)}>{t("Overwrite v")}{selected.version}</WorkspaceButton> : null}{selected ? <WorkspaceButton aria-label={t("Delete saved view {label}", { label: selected.label })} disabled={busy} onClick={() => confirmDelete(selected)}><Trash2 className="h-4 w-4" />{t("Delete")}</WorkspaceButton> : null}<WorkspaceButton disabled={loading || busy} onClick={() => void load()}><RefreshCcw className="h-4 w-4" />{t("Reload")}</WorkspaceButton></div>
         </div>
         {loadError ? (
           <div className="mt-2">
@@ -202,7 +243,7 @@ export function SavedViewsControl({
           </div>
         ) : null}
       </div>
-      {confirmSpec ? <ConfirmDialog onClose={() => setConfirmSpec(null)} spec={confirmSpec} /> : null}
+      {confirmSpec ? <ConfirmDialog key={confirmRevision} onClose={() => setConfirmSpec((current) => current === confirmSpec ? null : current)} spec={confirmSpec} /> : null}
     </details>
   );
 }

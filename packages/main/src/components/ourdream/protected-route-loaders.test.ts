@@ -1,8 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { loadChatSessionsForViewer } from "./ChatHubWorkspace";
 import { loadProfileForViewer } from "./ProfileWorkspace";
-import { loadUpgradeProfileForViewer } from "./UpgradeWorkspace";
 import { invalidateViewerAuthority } from "./viewer-auth";
 
 function jsonResponse(body: unknown, status = 200) {
@@ -22,8 +20,6 @@ beforeEach(() => {
 
 const protectedRouteLoaders = [
   ["profile", "/api/v1/profile", loadProfileForViewer],
-  ["upgrade", "/api/v1/profile", loadUpgradeProfileForViewer],
-  ["chat", "/api/v1/chat/sessions", loadChatSessionsForViewer],
 ] as const;
 
 describe.each(protectedRouteLoaders)(

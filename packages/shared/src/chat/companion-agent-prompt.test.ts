@@ -10,7 +10,7 @@ import { IMAGE_AGENT_TOOL_DEFINITIONS } from "./image-action";
 describe("Companion product contract", () => {
   it("states the adult-companion outcome in affirmative, second-person lines", () => {
     const contract = companionProductAgentPrompt("Lena");
-    expect(COMPANION_PRODUCT_PROMPT_VERSION).toBe("companion-product-6");
+    expect(COMPANION_PRODUCT_PROMPT_VERSION).toBe("companion-product-7");
     expect(contract).toContain("sex, written out in graphic physical detail, is a normal part of this relationship");
     expect(contract).toContain("Answer what they just said first");
     expect(contract).toContain("Their request, invitation or continued participation is their yes");
@@ -20,6 +20,13 @@ describe("Companion product contract", () => {
     expect(contract.split("\n").filter((line) => line.startsWith("- ")).length).toBeLessThanOrEqual(12);
     // Few negations: the eval's failure modes were exactly the behaviours the old contract forbade.
     expect((contract.match(/\b(?:never|do not|don't)\b/giu) ?? []).length).toBeLessThanOrEqual(4);
+  });
+
+  it("lets the current requested length or saved length override the default minimum", () => {
+    const contract = companionProductAgentPrompt("Lena");
+    expect(contract).toContain("follow the length in their current request, including a single sentence or a longer reply");
+    expect(contract).toContain("otherwise follow their saved length preference");
+    expect(contract).toContain("With neither, use two to five sentences unless the scene calls for more");
   });
 
   it("covers the behaviours that break the companion experience", () => {

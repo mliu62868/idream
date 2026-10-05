@@ -327,6 +327,53 @@ describe("Admin v2 billing reads", () => {
     expectError(result, 400, "bad_request");
   });
 
+  it.each(["suspended", "deleted"] as const)(
+    "keeps an unresolved customer payment in reconciliation after the account becomes %s",
+    async (status) => {
+      const checkoutId = `${token}-checkout-${status}`;
+      await prisma.checkoutSession.create({
+        data: {
+          id: checkoutId,
+          userId: customerId,
+          planId,
+          provider: "mock",
+          providerSessionId: `${checkoutId}-invoice`,
+          providerInvoiceStatus: "settled",
+          amountCents: 100,
+          currency: "usd",
+          status: "provider_unknown",
+          failureCode: "provider_invoice_settled_after_abandonment",
+          needsReconciliation: true,
+        },
+      });
+      const reconciliation = () => adminV2Route(reconciliationRoute, {
+        path: "billing/reconciliation",
+        userId: actorId,
+        role: "admin",
+      });
+      try {
+        const before = await reconciliation();
+        expectOk(before);
+        expect(before.data.checkoutExceptions).toEqual(expect.arrayContaining([
+          expect.objectContaining({ id: checkoutId }),
+        ]));
+
+        await prisma.user.update({
+          where: { id: customerId },
+          data: { status, deletedAt: status === "deleted" ? new Date() : null },
+        });
+        const after = await reconciliation();
+        expectOk(after);
+        expect(after.data.checkoutExceptions).toEqual(expect.arrayContaining([
+          expect.objectContaining({ id: checkoutId, needsReconciliation: true }),
+        ]));
+      } finally {
+        await prisma.checkoutSession.delete({ where: { id: checkoutId } });
+        await prisma.user.update({ where: { id: customerId }, data: { status: "active", deletedAt: null } });
+      }
+    },
+  );
+
   // SPEC: 过期是惰性的——周期已结束但 status 仍是 'active' 的行，运营读数按产品口径算 expired。
   it("treats a lapsed 'active' row as expired in lists and the active count", async () => {
     const reconciliation = () => adminV2Route(reconciliationRoute, { path: "billing/reconciliation", userId: actorId, role: "admin" });

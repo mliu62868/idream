@@ -23,7 +23,7 @@ export async function getProviderOperations(request: Request) {
   const now = new Date();
   const to = query.to ? new Date(query.to) : now;
   const from = query.from ? new Date(query.from) : new Date(now.getTime() - DEFAULT_WINDOW_MS);
-  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from > to) {
     throw Errors.badRequest("Invalid provider window");
   }
   const createdAt = { gte: from, lte: to };

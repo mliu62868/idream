@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { DetailPage, DetailSection } from "@/components/admin/ui/DetailPage";
@@ -25,7 +25,7 @@ import { MediaAssetAuthorityNotice } from "./MediaAssetAuthority";
 // Image Library manages searchable metadata and safe archival only. Immutable
 // approve/reject decisions belong to Creative Runs; every active production,
 // Character, Release, and Campaign dependency must be repaired before archival.
-type PendingAction = "save" | "archive" | null;
+type PendingAction = { action: "save" | "archive"; assetId: string };
 
 export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: string }) {
   const { t, value } = useAdminI18n();
@@ -33,10 +33,35 @@ export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: st
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshWarning, setRefreshWarning] = useState<string | null>(null);
-  const [pending, setPending] = useState<PendingAction>(null);
+  const [pending, setPending] = useState<PendingAction | null>(null);
+  const [previousAuthority, setPreviousAuthority] = useState({ canReview, id });
+  const reviewPermission = useRef(canReview);
+  const writeIntent = useRef<PendingAction | null>(null);
   const [draft, setDraft] = useState<AssetDraft>({ tags: "", description: "" });
   const [draftAssetId, setDraftAssetId] = useState<string | null>(null);
   const { feedback, reportSuccess, clearFeedback } = useWriteFeedback();
+
+  // An identical action reopened after revocation is a new intent, not a retry
+  // of the removed dialog. Its receipt and close callback stay separate.
+  if (previousAuthority.canReview !== canReview || previousAuthority.id !== id) {
+    setPreviousAuthority({ canReview, id });
+    setPending(null);
+  }
+
+  useEffect(() => {
+    reviewPermission.current = canReview;
+    writeIntent.current = null;
+  }, [canReview, id]);
+
+  const isCurrentWrite = useCallback((intent: PendingAction) =>
+    reviewPermission.current && writeIntent.current === intent, []);
+
+  function beginAction(action: PendingAction["action"]) {
+    if (!reviewPermission.current) return;
+    const intent = { action, assetId: id };
+    writeIntent.current = intent;
+    setPending(intent);
+  }
 
   const reload = useCallback(async (propagateError = false) => {
     setLoading(true);
@@ -73,23 +98,25 @@ export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: st
 
   const shortId = id.slice(0, 8);
 
-  const confirmSpec: ConfirmSpec | null = useMemo(() => {
-    if (!row || !pending) return null;
+  const confirmSpec: ConfirmSpec = useMemo(() => {
     const shortIdSummary = t("Assets have no name — type the first 8 characters of the ID to confirm.");
-    if (pending === "save") {
+    if (pending?.action === "save") {
       return {
         title: t("Save"),
         submitLabel: t("Save"),
         onSubmit: async (reason) => {
+          if (!isCurrentWrite(pending)) return;
           await apiWrite(
             `${ASSETS_LIST}/${id}`,
             "PATCH",
             assetPatchPayload({ id, draft, reason }),
           );
+          if (!isCurrentWrite(pending)) return;
           reportSuccess(t("Saved. Tags and description are searchable for chat reuse now."));
           try {
             await reload(true);
           } catch (refreshError) {
+            if (!isCurrentWrite(pending)) return;
             setError(null);
             setRefreshWarning(
               refreshError instanceof Error
@@ -106,15 +133,18 @@ export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: st
       destructive: { expectedName: shortId },
       submitLabel: t("Archive"),
       onSubmit: async (reason) => {
+        if (!pending || !isCurrentWrite(pending)) return;
         await apiWrite(
           `${ASSETS_LIST}/${id}`,
           "PATCH",
           assetPatchPayload({ id, draft, reason, status: "archived" }),
         );
+        if (!isCurrentWrite(pending)) return;
         reportSuccess(t("Archived. {id} is out of the library and cannot be placed.", { id: shortId }));
         try {
           await reload(true);
           } catch (refreshError) {
+            if (!isCurrentWrite(pending)) return;
             setError(null);
             setRefreshWarning(
               refreshError instanceof Error
@@ -124,7 +154,7 @@ export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: st
         }
       },
     };
-  }, [pending, row, id, draft, shortId, t, reload, reportSuccess]);
+  }, [pending, id, draft, shortId, t, reload, reportSuccess, isCurrentWrite]);
 
   if (loading) {
     return <LoadingWorkspace label="Loading…" />;
@@ -159,8 +189,8 @@ export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: st
   const actions = canReview || refreshWarning ? (
     <>
       {refreshWarning ? <GhostButton onClick={() => void reload()}>{t("Refresh")}</GhostButton> : null}
-      {canReview ? <GhostButton disabled={Boolean(refreshWarning)} onClick={() => setPending("save")}>{t("Save")}</GhostButton> : null}
-      {canReview ? <DangerButton disabled={hasActiveAuthority || Boolean(refreshWarning)} onClick={() => setPending("archive")}>{t("Archive")}</DangerButton> : null}
+      {canReview ? <GhostButton disabled={Boolean(refreshWarning)} onClick={() => beginAction("save")}>{t("Save")}</GhostButton> : null}
+      {canReview ? <DangerButton disabled={hasActiveAuthority || Boolean(refreshWarning)} onClick={() => beginAction("archive")}>{t("Archive")}</DangerButton> : null}
     </>
   ) : null;
 
@@ -255,7 +285,11 @@ export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: st
         <pre className="mt-2 whitespace-pre-wrap">{JSON.stringify(row.sourceJob, null, 2)}</pre>
       </EngineeringDetails>
 
-      {confirmSpec ? <ConfirmDialog onClose={() => setPending(null)} spec={confirmSpec} /> : null}
+      {canReview && pending && pending.assetId === id ? <ConfirmDialog onClose={() => {
+        if (writeIntent.current !== pending) return;
+        writeIntent.current = null;
+        setPending((current) => current === pending ? null : current);
+      }} spec={confirmSpec} /> : null}
     </DetailPage>
   );
 }

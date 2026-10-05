@@ -10,7 +10,7 @@ const { adminV2Request } = vi.hoisted(() => ({
 }));
 
 // React 覆盖了 value 的 setter，直接赋值不会触发 onChange —— 走原型上的原生 setter 才行。
-function setReactValue(element: HTMLInputElement, value: string) {
+function setReactValue(element: HTMLInputElement | HTMLTextAreaElement, value: string) {
   Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), "value")?.set?.call(element, value);
   element.dispatchEvent(new Event("input", { bubbles: true }));
 }
@@ -443,8 +443,8 @@ describe("CaseWorkspace decision loop", () => {
     vi.restoreAllMocks();
   });
 
-  async function mount(permissions: { canAssign: boolean; canDecide: boolean; actorId?: string }) {
-    const workspace = <ToastProvider><CaseWorkspace actorId={permissions.actorId} canAssign={permissions.canAssign} canDecide={permissions.canDecide} initialCaseId="case-1" /></ToastProvider>;
+  async function mount(permissions: { canAssign: boolean; canDecide: boolean; actorId?: string }, locale: "en" | "zh" = "en") {
+    const workspace = <AdminI18nProvider locale={locale}><ToastProvider><CaseWorkspace actorId={permissions.actorId} canAssign={permissions.canAssign} canDecide={permissions.canDecide} initialCaseId="case-1" /></ToastProvider></AdminI18nProvider>;
     container.innerHTML = renderToString(workspace);
     await act(async () => {
       root = hydrateRoot(container, workspace);
@@ -464,6 +464,10 @@ describe("CaseWorkspace decision loop", () => {
   });
 
   it("selects readable evidence and sends the selected authority IDs", async () => {
+    const read = adminV2Request.getMockImplementation()!;
+    adminV2Request.mockImplementation(async (path, options) => path === "/api/v2/admin/cases/case-1"
+      ? { ...resolvedDetail, case: { ...resolvedCase, status: "in_progress" } }
+      : read(path, options));
     await mount({ canAssign: false, canDecide: true });
     expect(container.textContent).not.toContain("Evidence IDs (comma separated)");
     const evidence = container.querySelector<HTMLInputElement>('fieldset input[type="checkbox"]')!;
@@ -476,6 +480,45 @@ describe("CaseWorkspace decision loop", () => {
     await act(async () => verify().click());
     expect(adminV2Request).toHaveBeenCalledWith("/api/v2/admin/cases/case-1/verification", expect.objectContaining({ body: { entityVersion: 4, state: "passed", evidenceRefs: ["evidence-1"] } }));
     expect(container.querySelector("#case-evidence-title")?.closest("section")?.querySelector("details")?.open).toBe(false);
+  });
+
+  it.each([
+    ["closed", "incident_escalated"],
+    ["resolved", "incident_escalated"],
+    ["closed", "account_guidance_provided"],
+    ["resolved", "account_guidance_provided"],
+  ])("blocks passed/overridden verification of a %s Case after filling the %s note", async (status, action) => {
+    const read = adminV2Request.getMockImplementation()!;
+    adminV2Request.mockImplementation(async (path, options) => path === "/api/v2/admin/cases/case-1"
+      ? { ...resolvedDetail, case: { ...resolvedCase, status }, decisions: [{ ...resolvedDetail.decisions[0], decision: action }] }
+      : read(path, options));
+    await mount({ canAssign: false, canDecide: true });
+    const note = [...container.querySelectorAll("label")].find(label => label.textContent?.startsWith("Override reason") || label.textContent?.startsWith("Attestation note"))!.querySelector<HTMLTextAreaElement>("textarea")!;
+    await act(async () => setReactValue(note, "Controlled operator attestation after closure"));
+    const manual = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => ["Attest outcome", "Override verification"].includes(button.textContent ?? ""))!;
+    const authority = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Verify from authority");
+    expect(manual.disabled).toBe(true);
+    if (action === "incident_escalated") expect(authority?.disabled).toBe(true);
+    await act(async () => { manual.click(); authority?.click(); });
+    expect(adminV2Request.mock.calls.some(([path]) => path.endsWith("/verification"))).toBe(false);
+    expect(note.disabled).toBe(true);
+  });
+
+  it("keeps in-progress attestation available with the operator note and selected evidence", async () => {
+    const read = adminV2Request.getMockImplementation()!;
+    adminV2Request.mockImplementation(async (path, options) => path === "/api/v2/admin/cases/case-1"
+      ? { ...resolvedDetail, case: { ...resolvedCase, status: "in_progress" }, decisions: [{ ...resolvedDetail.decisions[0], decision: "account_guidance_provided" }] }
+      : read(path, options));
+    await mount({ canAssign: false, canDecide: true });
+    const note = [...container.querySelectorAll("label")].find(label => label.textContent?.startsWith("Attestation note"))!.querySelector<HTMLTextAreaElement>("textarea")!;
+    expect(note.disabled).toBe(false);
+    await act(async () => setReactValue(note, "Personally checked the controlled account guidance"));
+    const attest = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Attest outcome")!;
+    expect(attest.disabled).toBe(false);
+    await act(async () => attest.click());
+    expect(adminV2Request).toHaveBeenCalledWith("/api/v2/admin/cases/case-1/verification", expect.objectContaining({
+      body: { entityVersion: 4, state: "overridden", evidenceRefs: ["evidence-1"], overrideReason: "Personally checked the controlled account guidance" },
+    }));
   });
 
   it("offers attestation instead of a doomed authority check for actions without a verifier", async () => {
@@ -647,6 +690,51 @@ describe("CaseWorkspace decision loop", () => {
     expect(adminV2Request.mock.calls.some(([path]) => path.endsWith("/assignment"))).toBe(false);
   });
 
+  it.each([
+    ["support_request", "closed"],
+    ["billing_dispute", "closed"],
+    ["content_report", "closed"],
+    ["appeal", "closed"],
+    ["content_report", "resolved"],
+    ["appeal", "resolved"],
+  ])("requires reopening a %s / %s before recording another action on desktop or mobile", async (type, status) => {
+    const read = adminV2Request.getMockImplementation()!;
+    adminV2Request.mockImplementation(async (path, options) => path === "/api/v2/admin/cases/case-1"
+      ? { ...resolvedDetail, case: { ...resolvedCase, type, status } }
+      : read(path, options));
+    await mount({ canAssign: true, canDecide: true });
+    const outcome = [...container.querySelectorAll("label")].find(label => label.textContent === "Outcome reference")?.querySelector<HTMLInputElement>("input");
+    if (outcome) await act(async () => setReactValue(outcome, "ledger:controlled-evidence"));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-case-mobile-step="decision"]')!.click());
+    const label = ["support_request", "billing_dispute"].includes(type) ? "Record action" : "Record decision";
+    const recordButtons = [...container.querySelectorAll<HTMLButtonElement>("button")].filter(button => button.textContent === label);
+    expect(recordButtons).toHaveLength(2);
+    expect(recordButtons.every(button => button.disabled)).toBe(true);
+    await act(async () => recordButtons.forEach(button => button.click()));
+    expect(adminV2Request.mock.calls.some(([path]) => path.endsWith("/actions") || path.endsWith("/decisions"))).toBe(false);
+    expect(container.querySelector("#case-decision-title")?.closest("section")?.textContent).toContain("Reopen this case");
+    expect(container.querySelector<HTMLTextAreaElement>('textarea')).not.toBeNull();
+    expect([...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Reopen / create recurrence")?.disabled).toBe(false);
+    // Closed cases still permit private collaboration, independent of decisions.
+    expect(container.textContent).toContain("Comment");
+  });
+
+  it.each(["support_request", "billing_dispute"])("preserves the authority's resolved %s action path", async type => {
+    const read = adminV2Request.getMockImplementation()!;
+    adminV2Request.mockImplementation(async (path, options) => path === "/api/v2/admin/cases/case-1"
+      ? { ...resolvedDetail, case: { ...resolvedCase, type, status: "resolved" } }
+      : read(path, options));
+    await mount({ canAssign: false, canDecide: true });
+    const outcome = [...container.querySelectorAll("label")].find(label => label.textContent === "Outcome reference")?.querySelector<HTMLInputElement>("input");
+    if (outcome) await act(async () => setReactValue(outcome, "ledger:controlled-evidence"));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-case-mobile-step="decision"]')!.click());
+    const records = [...container.querySelectorAll<HTMLButtonElement>("button")].filter(button => button.textContent === "Record action");
+    expect(records).toHaveLength(2);
+    expect(records.every(button => !button.disabled)).toBe(true);
+    await act(async () => records[0]!.click());
+    expect(adminV2Request.mock.calls.some(([path]) => path === "/api/v2/admin/cases/case-1/actions")).toBe(true);
+  });
+
   it("refreshes the selected Case and current queue from the shell without resetting a pending write", async () => {
     const read = adminV2Request.getMockImplementation()!;
     let releaseAssignment!: () => void;
@@ -742,12 +830,41 @@ describe("CaseWorkspace decision loop", () => {
     expect(command?.[1]).toMatchObject({ method: "POST", idempotencyKey: expect.any(String) });
   });
 
+  it.each([
+    { locale: "en", status: "in_progress", state: "pending", action: "diagnostic_reviewed", expected: "Attest the recorded outcome manually before closing this case." },
+    { locale: "zh", status: "in_progress", state: "pending", action: "diagnostic_reviewed", expected: "关闭前，请先对已记录的处理结果进行人工自证。" },
+    { locale: "en", status: "in_progress", state: "pending", action: "incident_escalated", expected: "Close needs downstream verification to pass or be explicitly overridden first." },
+    { locale: "zh", status: "in_progress", state: "pending", action: "incident_escalated", expected: "关闭前需要下游验证通过，或被显式覆盖。" },
+    { locale: "en", status: "closed", state: "overridden", action: "diagnostic_reviewed", expected: "This case is already closed. Reopen it to continue work." },
+    { locale: "zh", status: "closed", state: "overridden", action: "diagnostic_reviewed", expected: "该工单已关闭。如需继续处理，请重新打开。" },
+  ] as const)("explains the actual close blocker for $action/$status in $locale", async ({ locale, status, state, action, expected }) => {
+    const read = adminV2Request.getMockImplementation()!;
+    adminV2Request.mockImplementation(async (path, options) => path === "/api/v2/admin/cases/case-1"
+      ? {
+          ...resolvedDetail,
+          case: {
+            ...resolvedCase,
+            status,
+            verification: { ...resolvedCase.verification, state },
+          },
+          decisions: [{ ...resolvedDetail.decisions[0]!, decision: action }],
+        }
+      : read(path, options));
+    await mount({ canAssign: false, canDecide: true }, locale);
+    const closeLabel = locale === "zh" ? "关闭工单" : "Close case";
+    const close = [...container.querySelectorAll("button")].find((button) => button.textContent === closeLabel);
+    expect(close?.disabled).toBe(true);
+    expect(close?.parentElement?.parentElement?.textContent).toContain(expected);
+    expect(container.textContent).not.toContain(locale === "zh" ? "需要先记录决策" : "needs a recorded decision first");
+    expect(adminV2Request.mock.calls.filter(([, options]) => options?.method === "POST")).toEqual([]);
+  });
+
   it("explains why closing is unavailable instead of showing a bare disabled button", async () => {
     adminV2Request.mockImplementation(async (path) => {
       if (path.startsWith("/api/v2/admin/collaboration/case/case-1/activity?")) {
         return { items: [], actors: [], watching: false, watcherIds: [], pageInfo: { endCursor: null, hasNextPage: false } };
       }
-      if (path === "/api/v2/admin/cases/case-1") return { ...resolvedDetail, case: adminCase };
+      if (path === "/api/v2/admin/cases/case-1") return { ...resolvedDetail, case: adminCase, decisions: [] };
       if (path.startsWith("/api/v2/admin/saved-views")) return { items: [] };
       return listResponse("mine");
     });

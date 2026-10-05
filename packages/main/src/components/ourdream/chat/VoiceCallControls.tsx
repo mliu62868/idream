@@ -82,7 +82,7 @@ export function VoiceCallControls({ voice, disabled, open, onClose }: { voice: V
       </> : <p className="text-xs text-white/60">Another tab controls this call. Wait for it to disconnect before resuming.</p>}
       <button type="button" className={`${button} text-rose-300`} disabled={!controlled || busy} onClick={() => void voice.end()}><PhoneOff className="h-4 w-4" /> End call</button>
       <button type="button" className={button} onClick={() => void voice.refresh()}>Check status</button>
-      {voice.phase === "error" && controlled ? <button type="button" className={button} onClick={voice.retry}>Retry original turn</button> : null}
+      {voice.phase === "error" && controlled && voice.canRetryOriginal ? <button type="button" className={button} onClick={voice.retry}>Retry original turn</button> : null}
     </div> : null}
     {voice.quote || voice.active ? <p id={recordingHelpId} className="mt-2 text-xs leading-5 text-white/55">English recordings: WAV, FLAC, MP3, Ogg/Opus, M4A/MP4/MOV, MKV/WebM or AAC. Up to 60 seconds and 8 MiB per recording.</p> : null}
     {voice.notice ? <p role={voice.phase === "error" ? "alert" : "status"} className="mt-3 text-xs text-white/70">{voice.notice}</p> : null}

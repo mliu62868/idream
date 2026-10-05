@@ -156,7 +156,7 @@ export function useAuthorityResource<T>(
           : "The authoritative projection could not be loaded";
         if (!token.isCurrent()) return null;
         if (mode === "foreground") {
-          setState((current) => authorityRequestFailed(current, key, message));
+          setState((current) => authorityRequestFailed(current, key, message, cause));
         } else {
           setRefreshError(message);
         }

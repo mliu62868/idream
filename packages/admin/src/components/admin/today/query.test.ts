@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activeTodayFilters, parseTodayUrl, todayAllWorkPath, todayBrowserPath, todayStatusGroups, withoutTodayFilters } from "./query";
+import { activeTodayFilters, parseTodayUrl, todayAllWorkPath, todayBrowserPath, todayStatusGroups, withoutTodayFilters, type TodayUrlState } from "./query";
 
 describe("Today All Work URL state", () => {
   it("round-trips filters and the stable cursor through shareable browser and authority URLs", () => {
@@ -28,5 +28,24 @@ describe("Today All Work URL state", () => {
       { key: "owner", value: "unassigned" },
     ]);
     expect(withoutTodayFilters(state)).toEqual({ tab: "all", limit: 25 });
+  });
+
+  it("restores snoozed work only from the literal true URL opt-in", () => {
+    const included = parseTodayUrl(new URLSearchParams("todayTab=all&includeSnoozed=true&severity=high"));
+    expect(included.includeSnoozed).toBe(true);
+    expect(included.severity).toBe("high");
+    for (const search of ["todayTab=all", "todayTab=all&includeSnoozed=false", "todayTab=all&includeSnoozed=1"]) {
+      expect(parseTodayUrl(new URLSearchParams(search)).includeSnoozed).toBeUndefined();
+    }
+    expect(withoutTodayFilters(included)).toEqual({ tab: "all", limit: 25 });
+  });
+
+  it("sends the snoozed opt-in as the authority's true string and omits it when off", () => {
+    const included = { tab: "all", limit: 25, includeSnoozed: true } satisfies TodayUrlState;
+    const excluded = { tab: "all", limit: 25 } satisfies TodayUrlState;
+    expect(new URL(todayBrowserPath(included), "http://admin.local").searchParams.get("includeSnoozed")).toBe("true");
+    expect(new URL(todayAllWorkPath(included, "support"), "http://admin.local").searchParams.get("includeSnoozed")).toBe("true");
+    expect(new URL(todayBrowserPath(excluded), "http://admin.local").searchParams.has("includeSnoozed")).toBe(false);
+    expect(new URL(todayAllWorkPath(excluded, "support"), "http://admin.local").searchParams.has("includeSnoozed")).toBe(false);
   });
 });

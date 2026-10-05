@@ -306,4 +306,132 @@ describe("GeneratorWorkspace Gallery filters and video playback", () => {
     expect(placeholderVideo?.getAttribute("poster")).toBeNull();
     expect(placeholderVideo?.querySelector("source")?.getAttribute("src")).toBe("/user-content/placeholder-video.mp4#t=0.001");
   });
+  it("updates the current Liked projection when a successful Like commits after its first empty read", async () => {
+    const pending = deferredResponse();
+    const originalFetch = globalThis.fetch;
+    let committed = false;
+    let likeCalls = 0;
+    let writeScope: string | null = null;
+    let likedReads = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/media/image-1/like") {
+        likeCalls += 1;
+        writeScope = new Headers(init?.headers).get("x-idream-viewer-scope");
+        return pending.promise;
+      }
+      if (path === "/api/v1/media?liked=1&types=image,video") {
+        likedReads += 1;
+        return Response.json({ ok: true, data: { items: committed ? [{ ...mediaItem("image-1"), liked: true }] : [], nextCursor: null } });
+      }
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(container.querySelector('[data-media-id="image-1"] button[aria-label="Like"]')!);
+    expect(likeCalls).toBe(1);
+    expect(writeScope).toBe(config.viewer.scope);
+    await click(button("Liked"));
+    expect(likedReads).toBeGreaterThan(0);
+    expect(container.querySelector('[data-media-id="image-1"]')).toBeNull();
+    committed = true;
+    pending.resolve(Response.json({ ok: true, data: { liked: true } }));
+    await settle();
+    await settle();
+    expect(likeCalls).toBe(1);
+    // The POST is now acknowledged and every UI read has settled; a persistent
+    // empty Liked snapshot is a stale projection, not a transient pending state.
+    expect(container.querySelector('[data-media-id="image-1"]')).not.toBeNull();
+    expect(container.querySelector('[data-media-id="image-1"] button[aria-label="Unlike"]')).not.toBeNull();
+  });
+
+  it("keeps the active Videos tab when an earlier image Like succeeds", async () => {
+    const pending = deferredResponse();
+    const originalFetch = globalThis.fetch;
+    let likeCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/v1/media/image-1/like") { likeCalls += 1; return pending.promise; }
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(container.querySelector('[data-media-id="image-1"] button[aria-label="Like"]')!);
+    await click(button("Videos"));
+    pending.resolve(Response.json({ ok: true, data: { liked: true } }));
+    await settle();
+    expect(likeCalls).toBe(1);
+    expect(container.querySelector('[data-media-id="video-1"]')).not.toBeNull();
+    expect(container.querySelector('[data-media-id="image-1"]')).toBeNull();
+    expect(requests.at(-1)).toBe("/api/v1/media?type=video");
+  });
+
+  it("does not let an earlier owner's late Like failure refresh or show an error for the new owner", async () => {
+    const pending = deferredResponse();
+    const originalFetch = globalThis.fetch;
+    let scope = config.viewer.scope;
+    let writeScope: string | null = null;
+    let writeSignal: AbortSignal | null | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/generation/config") return Response.json({ ok: true, data: { ...config, viewer: { authenticated: true, scope } } });
+      if (path === "/api/v1/media/image-1/like") {
+        writeScope = new Headers(init?.headers).get("x-idream-viewer-scope");
+        writeSignal = init?.signal;
+        return pending.promise;
+      }
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(container.querySelector('[data-media-id="image-1"] button[aria-label="Like"]')!);
+    expect(writeScope).toBe(config.viewer.scope);
+    scope = "user:next-gallery-viewer";
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await settle();
+    const reads = requests.filter(path => path.startsWith("/api/v1/media?")).length;
+    pending.resolve(Response.json({ ok: false, error: { message: "Original owner failure" } }, { status: 503 }));
+    await settle();
+    expect(writeSignal?.aborted).toBe(true);
+    expect(requests.filter(path => path.startsWith("/api/v1/media?")).length).toBe(reads);
+    expect(container.textContent).not.toContain("Could not update like.");
+    expect(container.textContent).not.toContain("Original owner failure");
+  });
+
+  it("restores the same owner's Gallery and explains an ordinary failed Like", async () => {
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/v1/media/image-1/like") return Response.json({ ok: false }, { status: 503 });
+      return originalFetch(input, init);
+    }));
+    await mount();
+    const reads = requests.filter(path => path === "/api/v1/media?type=image").length;
+    await click(container.querySelector('[data-media-id="image-1"] button[aria-label="Like"]')!);
+    expect(requests.filter(path => path === "/api/v1/media?type=image").length).toBeGreaterThan(reads);
+    expect(container.querySelector('[data-media-id="image-1"] button[aria-label="Like"]')).not.toBeNull();
+    expect(container.textContent).toContain("Could not update like. Restoring the current gallery.");
+  });
+
+  it("removes an unliked item from Liked immediately while keeping the original image", async () => {
+    const pending = deferredResponse();
+    const originalFetch = globalThis.fetch;
+    let liked = true;
+    let writeMethod: string | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/media/image-1/like") { writeMethod = init?.method; return pending.promise; }
+      if (path === "/api/v1/media?liked=1&types=image,video" || path === "/api/v1/media?type=image") {
+        requests.push(path);
+        return Response.json({ ok: true, data: { items: path.includes("liked=1") && !liked ? [] : [{ ...mediaItem("image-1"), liked }], nextCursor: null } });
+      }
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(button("Liked"));
+    await click(container.querySelector('[data-media-id="image-1"] button[aria-label="Unlike"]')!);
+    expect(writeMethod).toBe("DELETE");
+    expect(container.querySelector('[data-media-id="image-1"]')).toBeNull();
+    liked = false;
+    pending.resolve(Response.json({ ok: true, data: { liked: false } }));
+    await settle();
+    expect(container.querySelector('[data-media-id="image-1"]')).toBeNull();
+    await click(button("Images"));
+    expect(container.querySelector('[data-media-id="image-1"] button[aria-label="Like"]')).not.toBeNull();
+  });
 });

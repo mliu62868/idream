@@ -139,7 +139,11 @@ export function useVoiceCall(options: Options) {
       if (!existingId && blob) {
         const form = new FormData(); form.set("audio", blob, "utterance.webm");
         try { state = await request(`/${current.id}/utterances/${id}`, { method: "POST", body: form, signal }); }
-        catch (error) { if (!alive() || signal.aborted) throw error; state = await request(`/${current.id}/utterances/${id}`, { signal }); }
+        catch (error) {
+          if (!alive() || signal.aborted) throw error;
+          if (!transient(error)) { retryRecording.current = null; throw error; }
+          state = await request(`/${current.id}/utterances/${id}`, { signal });
+        }
       } else state = await request(`/${current.id}/utterances/${id}`, { signal });
       while (alive() && Date.now() < Date.parse(current.deadlineAt)) {
         if (state.userMessage && state.assistant) {
@@ -356,7 +360,7 @@ export function useVoiceCall(options: Options) {
   }
   useEffect(() => {
     const epoch = ++scopeEpoch.current;
-    liveCall.current = null; intent.current = null; phaseRef.current = "idle";
+    liveCall.current = null; intent.current = null; retryRecording.current = null; phaseRef.current = "idle";
     // Resource ownership changes immediately; publish its view after cleanup
     // and before the new server capability response can be applied.
     queueMicrotask(() => {
@@ -400,7 +404,9 @@ export function useVoiceCall(options: Options) {
     return () => { clearInterval(heartbeat); document.removeEventListener("visibilitychange", hidden); window.removeEventListener("pagehide", leaving); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  return { phase, call, quote, available, balance, otherCallSessionId, notice, microphoneActive, microphonePaused, prepare, connect, end, interrupt, toggleMute, refresh,
+  return { phase, call, quote, available, balance, otherCallSessionId, notice, microphoneActive, microphonePaused,
+    canRetryOriginal: Boolean(retryRecording.current && retryRecording.current.expiresAt > Date.now()),
+    prepare, connect, end, interrupt, toggleMute, refresh,
     finishSentence: () => { if (latest.current.ownerScope === options.ownerScope && latest.current.sessionPath === options.sessionPath && liveCall.current?.id === call?.id) microphoneClip.current?.send(); },
     discardSentence: () => { if (latest.current.ownerScope === options.ownerScope && latest.current.sessionPath === options.sessionPath && liveCall.current?.id === call?.id) microphoneClip.current?.discard?.(); },
     cancelQuote: () => { ++operationEpoch.current; setQuote(null); intent.current = null; setView("idle"); },

@@ -55,7 +55,7 @@ export function buildTurnStateBlock(context: BuiltContext, now: Date): string {
     lines.push(`Replying now: ${context.persona.name}`);
   }
   if (userPersona) {
-    lines.push(`About ${them}, in their own words: ${oneLine(userPersona.description)}${userPersona.name ? ` (they go by ${userPersona.name})` : ""}`);
+    lines.push(`About ${them}, in their own words: ${oneLine(userPersona.description)}${userPersona.name ? ` (they go by ${userPersona.name})` : ""}. This is their current saved profile; use it instead of earlier names or self-descriptions in the conversation history.`);
   }
   const pins = context.contextDirectives?.filter((item) => item.kind === "pinned_memory") ?? [];
   for (const pin of pins) lines.push(`${them === "them" ? "They" : them} asked you to keep in mind: ${oneLine(pin.content)}`);

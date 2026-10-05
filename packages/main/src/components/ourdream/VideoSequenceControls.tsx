@@ -8,7 +8,7 @@ import { videoSequenceRequestSchema, videoSequenceCapabilitiesSchema, videoSeque
   type VideoSequenceRequest, type VideoSequenceQuote, type VideoSequenceDto } from "@idream/shared/contracts";
 
 export type VideoSequenceRecovery = { request: VideoSequenceRequest; sourceImageAssetId: string | null };
-type Props = { viewerScope: string | null; characterId?: string; generationContextToken?: string; consistencyMode: "balanced" | "strict" | "creative"; seed?: string; disabled?: boolean; unavailableMessage?: string; coinsHref: string; onStatusChange?: () => void; onRecoveryChange?: (value: VideoSequenceRecovery | null) => void };
+type Props = { directionDraft?: { id: string; prompt: string }; viewerScope: string | null; characterId?: string; generationContextToken?: string; consistencyMode: "balanced" | "strict" | "creative"; seed?: string; disabled?: boolean; unavailableMessage?: string; coinsHref: string; onStatusChange?: () => void; onRecoveryChange?: (value: VideoSequenceRecovery | null) => void };
 type Receipt = { key: string; request: VideoSequenceRequest; id: string | null };
 class VideoRequestError extends Error { constructor(message: string, readonly status: number) { super(message); } }
 
@@ -16,6 +16,8 @@ class VideoRequestError extends Error { constructor(message: string, readonly st
 // authority; it never replaces an uncertain submission with a fresh paid key.
 export function VideoSequenceControls(props: Props) {
   const [scenes, setScenes] = useState<VideoSequenceRequest["scenes"]>([{ prompt: "", seconds: 5 }]);
+  const directionSeen = useRef<string | null>(null);
+  const [directionBlocked, setDirectionBlocked] = useState(false);
   const [orientation, setOrientation] = useState<VideoSequenceRequest["orientation"]>("2:3");
   const [quality, setQuality] = useState<VideoSequenceRequest["quality"]>("standard");
   const [audio, setAudio] = useState<VideoSequenceRequest["audio"]>("generated");
@@ -117,6 +119,19 @@ export function VideoSequenceControls(props: Props) {
     return () => { epoch.current += 1; };
   }, [props.viewerScope, storageKey, refresh, recoverOriginal, retainReceipt]);
   useEffect(() => {
+    const direction = props.directionDraft;
+    if (!direction || directionSeen.current === direction.id) return;
+    let cancelled = false;
+    // Recovery hydration runs first. An accepted or edited script is never replaced.
+    queueMicrotask(() => {
+      if (cancelled || directionSeen.current === direction.id) return;
+      directionSeen.current = direction.id;
+      if (receiptRef.current || busy || scenes.length !== 1 || scenes.some(scene => scene.prompt.trim() || scene.narration?.trim())) { setDirectionBlocked(true); return; }
+      setScenes([{ prompt: direction.prompt, seconds: scenes[0]?.seconds ?? 5 }]); setQuote(null); setDirectionBlocked(false);
+    });
+    return () => { cancelled = true; };
+  }, [props.directionDraft, busy, scenes]);
+  useEffect(() => {
     // Stopping future scenes does not stop a provider invocation already running.
     if (!sequence || (!["generating", "composing", "unknown"].includes(sequence.status) &&
       !sequence.scenes.some(scene => ["queued", "moderating_input", "running", "moderating_output"].includes(scene.job.status)))) return;
@@ -183,6 +198,7 @@ export function VideoSequenceControls(props: Props) {
   const inputClass = "mt-1 w-full rounded-lg bg-white/10 px-3 py-2 text-sm text-white disabled:opacity-50";
   return <section className="mt-4 space-y-4" aria-label="Video sequence">
     <p className="text-sm leading-6 text-white/70">Create up to three scenes from this character image, in order. Each completed scene keeps its own result and charge. If a scene fails or its result can&apos;t be confirmed, later scenes stop.</p>
+    {props.directionDraft ? <p role="status" className="text-sm text-white/70">{directionBlocked ? `Your existing script or original request was kept. Suggested correction: ${props.directionDraft.prompt}` : "Correction direction is in a new scene draft. Review its price before generating."}</p> : null}
     {capabilities ? <div className="grid grid-cols-3 gap-3 text-sm">
       <label>Aspect ratio<select className={inputClass} aria-label="Video aspect ratio" disabled={locked} value={orientation} onChange={event => setOrientation(event.target.value as VideoSequenceRequest["orientation"])}>{capabilities.options.orientations.map(value => <option key={value}>{value}</option>)}</select></label>
       <label>Resolution<select className={inputClass} aria-label="Video resolution" disabled={locked} value={quality} onChange={event => setQuality(event.target.value as VideoSequenceRequest["quality"])}>{capabilities.options.qualities.map(value => <option value={value} key={value}>{value === "preview" ? "Preview · 512px wide" : "Standard · 768px wide"}</option>)}</select></label>

@@ -9,7 +9,7 @@ import {
 function runtime(reply: string | Error, overrides: Partial<CharacterQuickStartRuntime> = {}) {
   return {
     available: true,
-    stream: vi.fn(async function* () {
+    stream: vi.fn(async function* (_input: Parameters<CharacterQuickStartRuntime["stream"]>[0]) {
       if (reply instanceof Error) throw reply;
       yield { delta: reply, done: false };
       yield { delta: "", done: true };
@@ -33,11 +33,14 @@ describe("mapQuickStartOutput", () => {
     });
   });
 
-  it("drops values outside the catalogs and malformed fields instead of failing", () => {
+  it("drops invalid enumerated fields while retaining a custom occupation", () => {
     expect(mapQuickStartOutput({
       name: "", gender: "nonbinary", style: "watercolor", occupation: "Barista-illustrator",
       personality: 3, relationship: "Soulmate", description: "x".repeat(1_001), eyeColor: "Green",
-    })).toEqual({ eyeColor: "Green" });
+    })).toEqual({ occupation: "Barista-illustrator", eyeColor: "Green" });
+    for (const occupation of ["", " ", "x".repeat(161), 3, null]) {
+      expect(mapQuickStartOutput({ occupation })).toEqual({});
+    }
     expect(mapQuickStartOutput(["not", "an", "object"])).toEqual({});
     expect(mapQuickStartOutput(null)).toEqual({});
   });
@@ -47,6 +50,14 @@ describe("mapQuickStartOutput", () => {
     expect(mapQuickStartOutput({ age: "31" }).age).toBe(31);
     expect(mapQuickStartOutput({ age: 400 }).age).toBe(120);
     expect(mapQuickStartOutput({ age: "mid-twenties" })).toEqual({});
+  });
+
+  it("preserves an accurately described occupation outside the suggestions", async () => {
+    const deps = runtime('{"name":"Rowan","age":28,"occupation":" Garden teacher "}');
+    await expect(generateCharacterQuickStart("A 28-year-old garden teacher", deps)).resolves.toEqual({
+      name: "Rowan", age: 28, occupation: "Garden teacher",
+    });
+    expect(deps.moderate).toHaveBeenNthCalledWith(2, "Rowan\nGarden teacher", "output");
   });
 
   it("refuses an implied minor rather than raising the age to 18", () => {

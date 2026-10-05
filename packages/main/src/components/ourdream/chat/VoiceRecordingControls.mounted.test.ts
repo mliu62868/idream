@@ -21,7 +21,7 @@ function voiceInput(overrides: Partial<VoiceInputController> = {}): VoiceInputCo
 
 function voiceCall(overrides: Partial<VoiceCallController> = {}): VoiceCallController {
   return {
-    phase: "listening", available: true, active: true, balance: 10, quote: null, otherCallSessionId: null, notice: null, microphoneActive: false, microphonePaused: false,
+    phase: "listening", available: true, active: true, canRetryOriginal: false, balance: 10, quote: null, otherCallSessionId: null, notice: null, microphoneActive: false, microphonePaused: false,
     call: { id: "11111111-1111-4111-8111-111111111111", sessionId: "session", characterId: "character", status: "active", language: "en", leaseToken: "owned-lease", leaseExpiresAt: "2026-10-02T12:00:15.000Z", deadlineAt: "2026-10-02T12:03:00.000Z", startedAt: "2026-10-02T12:00:00.000Z", endedAt: null, connectedMs: 0, maxCostDreamcoins: 2, costDreamcoins: 0, voiceDurationMs: 0, endReason: null },
     prepare: vi.fn(async () => undefined), connect: vi.fn(async () => undefined), end: vi.fn(async () => undefined), interrupt: vi.fn(async () => undefined),
     toggleMute: vi.fn(async () => undefined), refresh: vi.fn(async () => undefined), cancelQuote: vi.fn(), resume: vi.fn(async () => undefined), submitRecording: vi.fn(), retry: vi.fn(),
@@ -113,5 +113,16 @@ describe("recording scope and upload guidance", () => {
     Object.defineProperty(field, "files", { value: [file], configurable: true });
     await act(async () => field.dispatchEvent(new Event("change", { bubbles: true })));
     expect(voice.submitRecording).toHaveBeenCalledExactlyOnceWith(file); expect(field.value).toBe("");
+  });
+  it("offers an original-turn retry only while the controller owns a recoverable recording", async () => {
+    const rejected = voiceCall({ phase: "error", notice: "Recording is empty or exceeds the upload limit", canRetryOriginal: false });
+    await act(async () => root.render(createElement(VoiceCallControls, { voice: rejected, disabled: false, open: false, onClose: vi.fn() })));
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Recording is empty");
+    expect([...container.querySelectorAll("button")].some(button => button.textContent === "Retry original turn")).toBe(false);
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Send English call recording"]')?.disabled).toBe(false);
+    const accepted = voiceCall({ phase: "error", canRetryOriginal: true });
+    await act(async () => root.render(createElement(VoiceCallControls, { voice: accepted, disabled: false, open: false, onClose: vi.fn() })));
+    const retry = [...container.querySelectorAll("button")].find(button => button.textContent === "Retry original turn")!;
+    expect(retry).toBeDefined(); await act(async () => retry.click()); expect(accepted.retry).toHaveBeenCalledOnce();
   });
 });

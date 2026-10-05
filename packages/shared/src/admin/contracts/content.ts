@@ -599,6 +599,8 @@ export const contentCharacterAssistRequestSchema = z.object({
   seed: z.string().trim().min(3).max(400),
   gender: z.enum(GENDERS).optional(),
   style: z.enum(CHARACTER_STYLES).optional(),
+  // Existing probes consume nameIdeas; omission keeps that generation enabled.
+  includeNameIdeas: z.boolean().optional(),
 }).strict();
 
 export const contentCharacterAssistResponseSchema = z.object({

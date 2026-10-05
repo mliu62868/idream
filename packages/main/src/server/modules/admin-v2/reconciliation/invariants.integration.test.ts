@@ -110,6 +110,36 @@ describe("Admin cutover invariant report", () => {
     resetMetricsForTests();
   });
 
+  it.each(["serving_validation_stale", "serving_default_route_unqualified"])("keeps Release sample evidence and names the real Character for serving repair: %s", async (key) => {
+    const releaseId = `invariant-release-${suffix}`;
+    await prisma.characterRelease.create({ data: {
+      id: releaseId,
+      projectId: `invariant-project-${suffix}`,
+      revisionId: `invariant-revision-${suffix}`,
+      characterContentVersionId: `invariant-content-${suffix}`,
+      generationProvenance: {},
+      releasePlacementManifest: {},
+      snapshotHash: `invariant-snapshot-${suffix}`,
+      status: "published",
+      readiness: "ready",
+      publishedAt: new Date(),
+    } });
+    try {
+      await prisma.characterServing.create({ data: { characterId, currentReleaseId: releaseId, state: "live" } });
+      const report = await auditAdminCutoverInvariants(prisma);
+      expect(report.checks.find((check) => check.key === key)).toMatchObject({
+        status: "failed",
+        sampleIds: expect.arrayContaining([releaseId]),
+        sampleTargets: expect.arrayContaining([{ sampleId: releaseId, characterId }]),
+      });
+      const unrelated = report.checks.find((check) => check.key === "terminal_attempt_without_unique_terminal_event");
+      expect(unrelated).not.toHaveProperty("sampleTargets");
+    } finally {
+      await prisma.characterServing.deleteMany({ where: { characterId, currentReleaseId: releaseId } });
+      await prisma.characterRelease.deleteMany({ where: { id: releaseId } });
+    }
+  });
+
   describe("Creative Run projection invariants", () => {
     const runIds: string[] = [];
 

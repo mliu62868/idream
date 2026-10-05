@@ -53,4 +53,24 @@ describe("auth redirect helpers", () => {
     expect(safeInternalAuthRedirect("/api/v1/me", origin)).toBe("/");
     expect(safeInternalAuthRedirect("/admin", origin)).toBe("/");
   });
+
+  it("carries the safe original task through an authentication page", () => {
+    const target = "/create?draftResume=guest-intent&step=identity#voice";
+    expect(authNextTargetFromPath("/login", `ref=DREAM-ABC&next=${encodeURIComponent(target)}`)).toBe(target);
+    expect(authNextTargetFromPath("/signup", `next=${encodeURIComponent(target)}`)).toBe(target);
+    for (const next of ["https://evil.example/profile", "//evil.example/profile", "/\\evil.example/profile", "/login?next=%2Fprofile", "/api/v1/me"]) {
+      expect(authNextTargetFromPath("/login", `next=${encodeURIComponent(next)}`)).toBeNull();
+    }
+  });
+
+  it("encodes an explicitly carried invite without injecting another return target", () => {
+    const target = "/create?draftResume=guest-intent#voice";
+    const href = authHrefForTarget("/signup", target, " DREAM-ABC&next=//evil.example ");
+    const parsed = new URL(href, origin);
+    expect(parsed.pathname).toBe("/signup");
+    expect(parsed.searchParams.getAll("next")).toEqual([target]);
+    expect(parsed.searchParams.getAll("ref")).toEqual(["DREAM-ABC&next=//evil.example"]);
+    expect(authHrefForTarget("/login", null, " DREAM-ABC ")).toBe("/login?ref=DREAM-ABC");
+    expect(authHrefForTarget("/signup", null, " ")).toBe("/signup");
+  });
 });

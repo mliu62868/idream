@@ -838,7 +838,7 @@ export function CharacterVoicePanel({
                       : t("Submit as candidate")}
               </WorkspaceButton>
             </div>
-            {!canWrite ? (
+            {!canWrite && !busy ? (
               <p className="border-t border-[var(--ad-border)] px-5 py-3 text-xs text-[var(--ad-text-muted)] sm:px-6">
                 {t("Read-only: character write permission is required to change the voice.")}
               </p>

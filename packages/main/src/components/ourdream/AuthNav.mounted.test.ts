@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
-import { act, createElement, type ComponentProps } from "react";
+import { act, createElement, Fragment, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("next/link", () => ({ default: ({ children, href, ...props }: ComponentProps<"a">) => createElement("a", { href: String(href), ...props }, children) }));
-vi.mock("next/navigation", () => ({ usePathname: () => "/helpdesk", useSearchParams: () => new URLSearchParams() }));
+vi.mock("next/navigation", () => ({ usePathname: () => window.location.pathname, useSearchParams: () => new URLSearchParams(window.location.search) }));
 import { AuthNav } from "./AuthNav";
+import { MobileAppMenu } from "./MobileAppMenu";
 import { fetchViewerScope, invalidateViewerAuthority } from "./viewer-auth";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -15,6 +16,7 @@ describe("cross-tab account changes", () => {
   let reload: ReturnType<typeof vi.spyOn>;
   beforeEach(() => {
     viewer = "account-a";
+    window.history.replaceState(null, "", "/helpdesk");
     const entries = new Map<string, string>();
     vi.stubGlobal("localStorage", { getItem: (key: string) => entries.get(key) ?? null, setItem: (key: string, value: string) => entries.set(key, value), removeItem: (key: string) => entries.delete(key) });
     invalidateViewerAuthority();
@@ -50,5 +52,27 @@ describe("cross-tab account changes", () => {
     await act(async () => button.dispatchEvent(new MouseEvent("click", { bubbles: true }))); await settle();
     expect(window.localStorage.getItem("idream.auth-change")).toBeTruthy();
     expect(await fetchViewerScope()).toBe("anonymous:anonymous-1");
+  });
+  it.each([
+    ["/create?draftResume=guest-intent#voice", "/create?draftResume=guest-intent#voice"],
+    ["//evil.example/steal", null],
+  ])("keeps the current invite and safe return target in header and mobile auth links: %s", async (next, expectedNext) => {
+    viewer = null;
+    window.history.replaceState(null, "", `/login?ref=DREAM-E-DELUXE&next=${encodeURIComponent(next!)}`);
+    await act(async () => root.render(createElement(Fragment, null, createElement(AuthNav), createElement(MobileAppMenu, { currentPath: "/login" }))));
+    await settle();
+    const menu = container.querySelector<HTMLButtonElement>('[aria-label="Open navigation menu"]')!;
+    await act(async () => menu.click()); await settle();
+    const links = [...container.querySelectorAll("a")].filter((entry) => ["/login", "/signup"].includes(new URL(entry.href).pathname));
+    expect(links).toHaveLength(4);
+    for (const entry of links) {
+      const query = new URL(entry.href).searchParams;
+      expect(query.get("ref")).toBe("DREAM-E-DELUXE");
+      expect(query.get("next")).toBe(expectedNext);
+    }
+    const explore = [...container.querySelectorAll<HTMLAnchorElement>("nav a")].find((entry) => entry.getAttribute("href") === "/");
+    expect(explore).toBeDefined();
+    expect(new URL(explore!.href).searchParams.has("ref")).toBe(false);
+    expect(vi.mocked(fetch).mock.calls.every((call) => String(call[0]) === "/api/v1/me")).toBe(true);
   });
 });

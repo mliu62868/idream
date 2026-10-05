@@ -7,6 +7,7 @@ import { useAdminI18n } from "@/components/admin/i18n";
 import { useAdminFormat } from "@/components/admin/ui/format";
 import { DetailPage, DetailSection } from "@/components/admin/ui/DetailPage";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
+import { useUnsavedChanges } from "@/components/admin/ui/useUnsavedChanges";
 import { DangerButton, GhostButton, PrimaryButton } from "@/components/admin/ui/buttons";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { AssetImage } from "@/components/admin/ui/AssetImage";
@@ -35,6 +36,16 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
   const [refreshWarning, setRefreshWarning] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingAction>(null);
   const [copy, setCopy] = useState<Pick<PlacementDraft, "eyebrow" | "title" | "ctaLabel" | "href"> | null>(null);
+  const [writePermission, setWritePermission] = useState(canPublish);
+  // Revocation discards the write intent itself, so regrant cannot revive an
+  // earlier draft or a filled publication confirmation.
+  if (writePermission !== canPublish) {
+    setWritePermission(canPublish);
+    if (!canPublish) {
+      setCopy(null);
+      setPending(null);
+    }
+  }
   const { feedback, reportSuccess, clearFeedback } = useWriteFeedback();
 
   const reload = useCallback(async (propagateError = false) => {
@@ -60,9 +71,11 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
   }, [reload]);
 
   const row = useMemo(() => rows.find((item) => item.id === id), [rows, id]);
+  const { guard } = useUnsavedChanges(Boolean(copy &&
+    (["eyebrow", "title", "ctaLabel", "href"] as const).some(key => copy[key] !== String(row?.metadata?.[key] ?? ""))));
 
   const confirmSpec: ConfirmSpec | null = useMemo(() => {
-    if (!row || !pending) return null;
+    if (!canPublish || !row || !pending || (pending === "copy" && !copy)) return null;
     if (pending === "copy" && copy) return {
       title: t("Save changes"), submitLabel: t("Save changes"),
       onSubmit: async (reason) => {
@@ -143,10 +156,10 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
         }
       },
     };
-  }, [pending, row, id, t, value, reload, reportSuccess, copy]);
+  }, [canPublish, pending, row, id, t, value, reload, reportSuccess, copy]);
 
   if (loading) {
-    return <LoadingWorkspace label="Loading…" />;
+    return <>{guard}<LoadingWorkspace label="Loading…" /></>;
   }
 
   if (!row) {
@@ -198,6 +211,7 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
       status={row.status}
       title={value(row.slot)}
     >
+      {guard}
       <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
       {error ? <p role="alert" className="text-sm text-[var(--ad-red-text)]">{error}</p> : null}
       {refreshWarning ? <p role="status" className="rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]">{refreshWarning}</p> : null}
@@ -232,13 +246,13 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
       ) : null}
 
       <AssetImage asset={row.asset} preview />
-      {row.slot === "campaign" ? <DetailSection title={t("Campaign")}>{copy ? <div className="grid gap-3 sm:grid-cols-2">
+      {row.slot === "campaign" ? <DetailSection title={t("Campaign")}>{canPublish && copy ? <div className="grid gap-3 sm:grid-cols-2">
         {([
           ["eyebrow", "Campaign eyebrow", 80], ["title", "Campaign title", 120],
           ["ctaLabel", "Campaign CTA label", 60], ["href", "Campaign CTA href", 512],
         ] as const).map(([key, label, maxLength]) => <label key={key} className="grid gap-1 text-sm">{t(label)}<input aria-label={t(label)} className={INPUT_CLASS} maxLength={maxLength} value={copy[key]} onChange={event => setCopy({ ...copy, [key]: event.target.value })} /></label>)}
         <p className="text-sm text-[var(--ad-text-muted)]">{t("Add both a CTA label and destination, or leave both blank.")}</p>
-        <div className="flex gap-2"><GhostButton onClick={() => setCopy(null)}>{t("Cancel")}</GhostButton><PrimaryButton disabled={Boolean(refreshWarning) || !validCampaignDraft({ ...copy, slot: "campaign", targetType: "campaign" })} onClick={() => setPending("copy")}>{t("Save changes")}</PrimaryButton></div>
+        <div className="flex gap-2"><GhostButton onClick={() => { setCopy(null); setPending(null); }}>{t("Cancel")}</GhostButton><PrimaryButton disabled={Boolean(refreshWarning) || !validCampaignDraft({ ...copy, slot: "campaign", targetType: "campaign" })} onClick={() => setPending("copy")}>{t("Save changes")}</PrimaryButton></div>
       </div> : <><InfoGrid items={[
         { label: t("Campaign eyebrow"), value: String(row.metadata?.eyebrow ?? "—") },
         { label: t("Campaign title"), value: String(row.metadata?.title ?? "—") },

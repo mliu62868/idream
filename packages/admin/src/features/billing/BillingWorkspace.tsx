@@ -119,7 +119,7 @@ export function BillingWorkspace({
   // INTENT: 退款结算数字（冲销多少、余额落到哪、有没有还回来）只在 toast 里闪一下就没了，
   //         而这正是财务事后要核对的那几个数。留在页面上直到运营自己关掉。
   const [refundOutcome, setRefundOutcome] = useState<AdminSubscriptionRefundCommandResponse | null>(null);
-  // 游标分页没有页码，只有「上一页用的是哪个游标」。这条轨迹就是 Pagination 的第 N 页。
+  // 游标轨迹保留上一页；只有从首页空游标起算时，轨迹长度才能证明页码。
   const [trails, setTrails] = useState<BillingTrails>(emptyTrails);
   const requestGates = useRef({
     ledger: createLatestRequestGate(),
@@ -901,14 +901,15 @@ function ListPagination({ cursor, dataScope, loading, onNavigate, pageInfo, rowC
     <Pagination
       detail={`${t("customer owners:")} ${dataScope.includedDataClasses.join(" + ")} · ${t("excluded:")} ${dataScope.excludedDataClasses.join(" + ")}`}
       hasNext={Boolean(pageInfo.hasNextPage && pageInfo.endCursor)}
-      hasPrevious={trail.length > 0}
+      hasPrevious={Boolean(cursor)}
       loading={loading}
       onNext={() => {
         if (!pageInfo.endCursor) return;
         onNavigate(pageInfo.endCursor, [...trail, cursor]);
       }}
       onPrevious={() => onNavigate(trail.at(-1) ?? "", trail.slice(0, -1))}
-      page={trail.length + 1}
+      previousLabel={cursor && trail.length === 0 ? t("Back to first page") : undefined}
+      page={!cursor ? 1 : trail[0] === "" ? trail.length + 1 : null}
       pageSize={BILLING_PAGE_SIZE}
       rowCount={rowCount}
     />

@@ -431,9 +431,12 @@ describe("CharacterVoicePanel voice identity controls", () => {
     await render(pocketWorkspace());
     await chooseOfficialVoice("anna");
     await act(async () => { button("Use as character voice")?.click(); });
-    await render(pocketWorkspace(), { canActivate: false });
+    await render(pocketWorkspace(), { canActivate: false, canWrite: false });
     expect(button("Applying voice…")).toBeDefined();
     expect(button("Submit as candidate")).toBeUndefined();
+    expect(container.textContent).not.toContain(
+      "Read-only: character write permission is required to change the voice.",
+    );
     await act(async () => releaseCreate());
     expect(adminV2Request.mock.calls.map(([path]) => path)).toEqual([
       "/api/v2/admin/characters/character-pocket-1/voice-presets",

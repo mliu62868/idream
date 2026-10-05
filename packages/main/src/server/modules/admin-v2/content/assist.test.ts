@@ -8,6 +8,12 @@ import { adminV2 as adminV2Api } from "@/server/test/admin-v2-http";
 import { createUser, purgeTestData } from "@/server/test/helpers";
 import { generateCharacterDraft } from "./assist";
 import type { AdminTextGenerationRuntime } from "./text-generation";
+import { PipelineChatModel } from "@/server/providers/chat/pipeline";
+import {
+  contentCharacterAssistRequestSchema,
+  contentCharacterAssistResponseSchema,
+  contentTemplateCreateRequestSchema,
+} from "@idream/shared/admin";
 
 const P = "zt-assist-";
 const ASSIST = "/api/v2/admin/content/character-assist";
@@ -64,6 +70,100 @@ afterAll(async () => {
 });
 
 describe("character AI assist", () => {
+  it.each([false, undefined, true])("only skips unused name suggestions when includeNameIdeas is %s", async (includeNameIdeas) => {
+    const outputs = [
+      "An adult botanical curator welcomes visitors with patient warmth.",
+      "## Personality\nPatient and curious.\n\n## Voice\nWarm and measured.",
+      "Welcome to the conservatory. I saved a quiet path through the flowers for you.",
+      "Green jacket, dark hair, warm daylight and a composed stance.",
+      "Here are three distinctive names for the character based on the supplied concept",
+    ];
+    const requests: { max_tokens: number }[] = [];
+    const model = new PipelineChatModel({
+      baseUrl: "http://model.test/v1",
+      model: "test-model",
+      fetchImpl: async (_url, init) => {
+        requests.push(JSON.parse(String(init?.body)));
+        const content = outputs[requests.length - 1];
+        const finishReason = requests.length === 5 ? "length" : "stop";
+        return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\ndata: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: finishReason }] })}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
+      },
+    });
+    const runtime: AdminTextGenerationRuntime = {
+      provider: "pipeline", pipelineUrl: "http://model.test/v1", model: "test-model", stream: input => model.stream(input),
+    };
+    const body = contentCharacterAssistRequestSchema.parse({ seed: "A 30-year-old botanical curator", includeNameIdeas });
+    const draft = generateCharacterDraft(body, runtime, "unused-names-trace");
+    if (includeNameIdeas === false) {
+      const result = contentCharacterAssistResponseSchema.parse(await draft);
+      expect(result).toMatchObject({
+        description: outputs[0],
+        nameIdeas: [],
+        advancedDetails: { detailsMarkdown: outputs[1], firstMessage: outputs[2], visualBrief: outputs[3] },
+      });
+      expect(requests.map(request => request.max_tokens)).toEqual([192, 512, 192, 320]);
+    } else {
+      await expect(draft).rejects.toMatchObject({
+        code: "unavailable", status: 503,
+        details: { stage: "nameIdeas", failureKind: "output_limit", finishReason: "length", requestId: "unused-names-trace" },
+      });
+      expect(requests.map(request => request.max_tokens)).toEqual([192, 512, 192, 320, 64]);
+    }
+  });
+
+  it("rejects an overlong summary instead of silently cutting its second sentence at 200 characters", async () => {
+    const completeSentence = "An adult botanical curator welcomes visitors with warmth and quiet precision.";
+    const runtime = pipelineRuntime(systemPrompt => systemPrompt.includes("background bio")
+      ? `${completeSentence} She guides visitors through the conservatory with warmth and patient botanical knowledge while remembering their favorite plants and explaining their seasonal care in careful detail.`
+      : systemPrompt.includes("exactly 3 distinctive character names") ? "Mara\nElin\nNora" : "Complete operator draft.");
+    await expect(generateCharacterDraft({ seed: "A 30-year-old botanical curator" }, runtime)).rejects.toMatchObject({
+      code: "unavailable", details: { stage: "description", failureKind: "summary_limit", maxCharacters: 200 },
+    });
+  });
+
+  it("rejects an overlong summary without a complete sentence inside the limit before consuming later stages", async () => {
+    let requests = 0;
+    const runtime = pipelineRuntime(() => { requests += 1; return "An adult conservatory curator welcomes visitors with warmth ".repeat(5); });
+    await expect(generateCharacterDraft({ seed: "A 30-year-old botanical curator" }, runtime, "bounded-summary-trace")).rejects.toMatchObject({
+      code: "unavailable", status: 503,
+      details: { stage: "description", failureKind: "summary_limit", maxCharacters: 200, requestId: "bounded-summary-trace", modelRequestId: expect.any(String) },
+    });
+    expect(requests).toBe(1);
+  });
+
+  it("rejects a model-truncated personality and stops before consuming the remaining draft phases", async () => {
+    let requests = 0;
+    const model = new PipelineChatModel({
+      baseUrl: "http://model.test/v1",
+      model: "test-model",
+      fetchImpl: async () => {
+        requests += 1;
+        const content = requests === 1 ? "A patient adult botanist tending a conservatory." : "## Boundaries\nConsent is never forced, always";
+        return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\ndata: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: requests === 1 ? "stop" : "length" }] })}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
+      },
+    });
+    const runtime: AdminTextGenerationRuntime = {
+      provider: "pipeline", pipelineUrl: "http://model.test/v1", model: "test-model", stream: input => model.stream(input),
+    };
+    await expect(generateCharacterDraft({ seed: "A 30-year-old botanical curator" }, runtime, "operator-draft-trace")).rejects.toMatchObject({
+      code: "unavailable", status: 503,
+      details: { stage: "detailsMarkdown", failureKind: "output_limit", finishReason: "length", requestId: "operator-draft-trace", modelRequestId: expect.any(String) },
+    });
+    expect(requests).toBe(2);
+  });
+
+  it("identifies the failed draft phase and distinguishes a model timeout from a generic 503", async () => {
+    const runtime = pipelineRuntime((systemPrompt) => {
+      if (systemPrompt.includes("background bio")) return "A patient botanist tending an adult companion's conservatory.";
+      throw new DOMException("The model stream was aborted", "AbortError");
+    });
+    await expect(generateCharacterDraft({ seed: "A 30-year-old botanical curator" }, runtime)).rejects.toMatchObject({
+      code: "unavailable",
+      status: 503,
+      details: { stage: "detailsMarkdown", failureKind: "timeout", model: "test-model" },
+    });
+  });
+
   it("fails closed instead of returning saveable fields from the mock chat provider", async () => {
     const result = await adminV2Api("POST", ASSIST, {
       userId: `${P}admin`,
@@ -107,6 +207,7 @@ describe("character AI assist", () => {
 
     expect(result.status).toBe(200);
     expect(result.ok).toBe(true);
+    expect(contentTemplateCreateRequestSchema.parse({ name: "Mara", summary: result.data?.description, reason: "Review bounded operator summary" }).summary).toBe(result.data?.description);
     expect(result.data).toEqual({
       description:
         "Mara restores old paintings by day and sketches rain-soaked streets at night.",

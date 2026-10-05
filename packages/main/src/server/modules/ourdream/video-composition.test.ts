@@ -85,6 +85,19 @@ describe("real local video packaging", () => {
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
 
+  it("uses decoded picture durations when silent packaging removes a longer native soundtrack", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "idream-video-silent-timeline-check-"));
+    try {
+      const source = join(directory, "source.mp4"), extended = join(directory, "long-native-sound.mp4");
+      await writeFile(source, red);
+      await run("ffmpeg", ["-nostdin", "-v", "error", "-y", "-i", source, "-map", "0:v:0", "-map", "0:a:0", "-c:v", "copy", "-af", "apad=whole_dur=2", "-c:a", "aac", extended]);
+      const result = await composeVideoScenes({ scenes: [{ video: new Uint8Array(await readFile(extended)) }, { video: blue }], audio: "silent" });
+      expect(result.media).toMatchObject({ hasAudio: false, frameCount: 26 });
+      expect(result.sceneDurations).toEqual([13 / 24, 13 / 24]);
+      expect(result.media.durationSeconds).toBeCloseTo(26 / 24, 2);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
   it("fails closed on incompatible dimensions, missing sound, or an absent narration", async () => {
     await expect(composeVideoScenes({ scenes: [{ video: red }, { video: await videoFixture({ width: 96, height: 64 }) }], audio: "generated" })).rejects.toThrow("different dimensions");
     await expect(composeVideoScenes({ scenes: [{ video: await videoFixture({ audio: false }) }], audio: "generated" })).rejects.toThrow("soundtrack is missing");

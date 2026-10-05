@@ -56,6 +56,11 @@ const FILTER_LABELS: Record<GenerationJobFilterKey, string> = {
   sourceType: "Source type",
   userId: "User ID",
   characterId: "Character ID",
+  from: "From",
+  to: "To",
+  profileId: "Profile ID",
+  profileVersion: "Version",
+  recipeId: "Recipe ID",
   sort: "Sort",
 };
 
@@ -74,8 +79,13 @@ export function JobsView({ permissions }: { readonly permissions: JobsViewPermis
   const { toast } = useToast();
   const [retrySpec, setRetrySpec] = useState<ConfirmSpec | null>(null);
   const [selectedRows, setSelectedRows] = useState<string[]>([]);
-  // 游标分页没有页码，只有「上一页用的是哪个游标」。这条轨迹就是 Pagination 的第 N 页。
+  // INVARIANT: only a trail starting at the first page proves a page number.
+  // Browser history restores the trail for the exact query, including its cursor.
   const [cursorTrail, setCursorTrail] = useState<string[]>([]);
+  const visitedTrails = useRef(new Map<string, string[]>());
+  const activeQuery = useRef<string | null>(null);
+  // A receipt may finish after navigation; it only owns its original confirmation.
+  const confirmationIntent = useRef<ConfirmSpec | null>(null);
   const detailTriggerRef = useRef<HTMLButtonElement | null>(null);
   const jobsGate = useRef(createLatestRequestGate());
   const detailGate = useRef(createLatestRequestGate());
@@ -128,6 +138,15 @@ export function JobsView({ permissions }: { readonly permissions: JobsViewPermis
       query,
     ),
     load: (query, params) => {
+      const encoded = buildGenerationJobQuery(query);
+      if (activeQuery.current !== encoded) {
+        setSelectedRows([]);
+        confirmationIntent.current = null;
+        setRetrySpec(null);
+        activeQuery.current = encoded;
+      }
+      if (!query.cursor) visitedTrails.current.set(encoded, []);
+      setCursorTrail(visitedTrails.current.get(encoded) ?? []);
       void loadJobs(query);
       void showJobDetail(params.get("job")?.trim() || null);
     },
@@ -141,13 +160,14 @@ export function JobsView({ permissions }: { readonly permissions: JobsViewPermis
     return () => {
       gate.invalidate();
       details.invalidate();
+      confirmationIntent.current = null;
       window.removeEventListener(GENERATION_JOBS_REFRESH_EVENT, reload);
     };
   }, [reload]);
 
   // SPEC: 任何改变结果集的动作都回到第一页并清空勾选 —— 选中的行翻页后已经不在屏幕上了。
   function applyQuery(next: GenerationJobQueryDraft, trail: string[] = []) {
-    setCursorTrail(trail);
+    visitedTrails.current.set(buildGenerationJobQuery(next), trail);
     setSelectedRows([]);
     apply(next);
   }
@@ -225,25 +245,31 @@ export function JobsView({ permissions }: { readonly permissions: JobsViewPermis
           <IconAction
             icon={<RefreshCcw className="h-4 w-4" />}
             label="Retry"
-            onClick={() => setRetrySpec({
-              // ui/ConfirmDialog 直接渲染 spec 的 title/summary/submitLabel，不过 t()——
-              // 所以在调用点翻译，和本仓库其它 ConfirmSpec 调用点一致。
-              title: t("Retry Generation Request {id}", { id: shortId(item.id) }),
-              summary: t("Creates a new immutable Attempt only when no delivery has already succeeded."),
-              destructive: { expectedName: `${item.id}:retry` },
-              submitLabel: t("Create retry attempt"),
-              onSubmit: async (reason) => {
-                await adminV2Operation("POST /api/v2/admin/jobs/:id/commands/retry", {
-                  path: { id: item.id },
-                  body: {
-                    entityVersion: item.version,
-                    reason,
-                    confirmation: `${item.id}:retry`,
-                  },
-                });
-                await loadJobs(query);
-              },
-            })}
+            onClick={() => {
+              const spec: ConfirmSpec = {
+                // ui/ConfirmDialog 直接渲染 spec 的 title/summary/submitLabel，不过 t()——
+                // 所以在调用点翻译，和本仓库其它 ConfirmSpec 调用点一致。
+                title: t("Retry Generation Request {id}", { id: shortId(item.id) }),
+                summary: t("Creates a new immutable Attempt only when no delivery has already succeeded."),
+                destructive: { expectedName: `${item.id}:retry` },
+                submitLabel: t("Create retry attempt"),
+                onSubmit: async (reason) => {
+                  if (confirmationIntent.current !== spec) return;
+                  await adminV2Operation("POST /api/v2/admin/jobs/:id/commands/retry", {
+                    path: { id: item.id },
+                    body: {
+                      entityVersion: item.version,
+                      reason,
+                      confirmation: `${item.id}:retry`,
+                    },
+                  });
+                  if (confirmationIntent.current !== spec) return;
+                  await loadJobs(query);
+                },
+              };
+              confirmationIntent.current = spec;
+              setRetrySpec(spec);
+            }}
           />
         ) : null}
         {/* SPEC: 还在飞的请求要有一个人工中止阀。
@@ -262,31 +288,37 @@ export function JobsView({ permissions }: { readonly permissions: JobsViewPermis
             //            是同一个词；摆在「详情」旁边的操作列里，运营会把"中止这次生成"读成
             //            "关掉这一行"。这里要的是一个只有一种意思的动词。
             label="Abort"
-            onClick={() => setRetrySpec({
-              title: t("Cancel Generation Request {id}", { id: shortId(item.id) }),
-              summary: t("Stops the in-flight request, marks it cancelled, and refunds the reserved Dreamcoins."),
-              consequence: {
-                effect: t("The user's request ends with no output. Re-running means a new request at full price."),
-                reversible: false,
-              },
-              destructive: { expectedName: `${item.id}:cancel` },
-              submitLabel: t("Cancel request"),
-              onSubmit: async (reason) => {
-                const result = await adminV2Operation("POST /api/v2/admin/generation/requests/:id/commands/cancel", {
-                  path: { id: item.id },
-                  body: {
-                    entityVersion: item.version,
-                    reason,
-                    confirmation: `${item.id}:cancel`,
-                  },
-                });
-                toast({
-                  tone: "success",
-                  title: t("Request cancelled · {amount} Dreamcoins refunded", { amount: result.refundAmount }),
-                });
-                await loadJobs(query);
-              },
-            })}
+            onClick={() => {
+              const spec: ConfirmSpec = {
+                title: t("Cancel Generation Request {id}", { id: shortId(item.id) }),
+                summary: t("Stops the in-flight request, marks it cancelled, and refunds the reserved Dreamcoins."),
+                consequence: {
+                  effect: t("The user's request ends with no output. Re-running means a new request at full price."),
+                  reversible: false,
+                },
+                destructive: { expectedName: `${item.id}:cancel` },
+                submitLabel: t("Cancel request"),
+                onSubmit: async (reason) => {
+                  if (confirmationIntent.current !== spec) return;
+                  const result = await adminV2Operation("POST /api/v2/admin/generation/requests/:id/commands/cancel", {
+                    path: { id: item.id },
+                    body: {
+                      entityVersion: item.version,
+                      reason,
+                      confirmation: `${item.id}:cancel`,
+                    },
+                  });
+                  if (confirmationIntent.current !== spec) return;
+                  toast({
+                    tone: "success",
+                    title: t("Request cancelled · {amount} Dreamcoins refunded", { amount: result.refundAmount }),
+                  });
+                  await loadJobs(query);
+                },
+              };
+              confirmationIntent.current = spec;
+              setRetrySpec(spec);
+            }}
           />
         ) : null}
       </div>,
@@ -304,6 +336,11 @@ export function JobsView({ permissions }: { readonly permissions: JobsViewPermis
           { name: t("Source type"), value: draft.sourceType, onChange: (sourceType) => setDraft({ sourceType }), list: "job-source-facets" },
           { name: t("User ID"), value: draft.userId, onChange: (userId) => setDraft({ userId }) },
           { name: t("Character ID"), value: draft.characterId, onChange: (characterId) => setDraft({ characterId }) },
+          { name: t("From"), value: draft.from, onChange: (from) => setDraft({ from }), placeholder: "2026-10-01T00:00:00.000Z" },
+          { name: t("To"), value: draft.to, onChange: (to) => setDraft({ to }), placeholder: "2026-10-08T00:00:00.000Z" },
+          { name: t("Profile ID"), value: draft.profileId, onChange: (profileId) => setDraft({ profileId }) },
+          { name: t("Version"), value: draft.profileVersion, onChange: (profileVersion) => setDraft({ profileVersion }) },
+          { name: t("Recipe ID"), value: draft.recipeId, onChange: (recipeId) => setDraft({ recipeId }) },
         ]}
         onApply={() => applyQuery({ ...draft, cursor: undefined })}
         onReset={() => applyQuery(defaultGenerationJobQuery)}
@@ -390,7 +427,7 @@ export function JobsView({ permissions }: { readonly permissions: JobsViewPermis
         <Pagination
           detail={`${t("operational owners:")} ${jobs.data.dataScope.includedDataClasses.join(" + ")} · ${t("excluded:")} ${jobs.data.dataScope.excludedDataClasses.join(" + ")} · ${t("fresh as of")} ${format.dateTime(jobs.data.asOf)}`}
           hasNext={Boolean(jobs.data.pageInfo.hasNextPage && jobs.data.pageInfo.endCursor)}
-          hasPrevious={cursorTrail.length > 0}
+          hasPrevious={Boolean(query.cursor)}
           loading={jobs.loading}
           onNext={() => {
             const endCursor = jobs.data?.pageInfo.endCursor;
@@ -402,7 +439,8 @@ export function JobsView({ permissions }: { readonly permissions: JobsViewPermis
             const trail = cursorTrail.slice(0, -1);
             applyQuery({ ...query, cursor: cursorTrail.at(-1) || undefined }, trail);
           }}
-          page={cursorTrail.length + 1}
+          previousLabel={query.cursor && cursorTrail.length === 0 ? t("Back to first page") : undefined}
+          page={!query.cursor ? 1 : cursorTrail[0] === "" ? cursorTrail.length + 1 : null}
           pageSize={query.limit}
           pageSizeOptions={generationJobLimitOptions}
           rowCount={rows.length}
@@ -426,7 +464,10 @@ export function JobsView({ permissions }: { readonly permissions: JobsViewPermis
           }}
         />
       ) : null}
-      {retrySpec ? <ConfirmDialog onClose={() => setRetrySpec(null)} spec={retrySpec} /> : null}
+      {retrySpec ? <ConfirmDialog onClose={() => {
+        if (confirmationIntent.current === retrySpec) confirmationIntent.current = null;
+        setRetrySpec((current) => current === retrySpec ? null : current);
+      }} spec={retrySpec} /> : null}
     </div>
   );
 }

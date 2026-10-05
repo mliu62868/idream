@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const { apiGet, apiWrite } = vi.hoisted(() => ({ apiGet: vi.fn(), apiWrite: vi.fn() }));
 vi.mock("@/components/admin/api", () => ({ apiGet, apiWrite }));
 vi.mock("@/components/admin/i18n", () => ({ useAdminI18n: () => ({ t: (value: string) => value, value: (value: string) => value }) }));
+import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import { ComicReviewPanel } from "./ComicReviewPanel";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -57,6 +58,66 @@ describe("Comic review authority UI", () => {
       { version: 3, reason: "Reviewed every submitted page", decision: "approve", confirmation: "comic-fixture" },
     ]);
     expect(container.textContent).toContain("Remove published version 3");
+  });
+
+  it("reloads the inspected Comic after a decision conflict before enabling the current version", async () => {
+    let detailReads = 0;
+    let completeRefresh!: (value: typeof detail) => void;
+    apiGet.mockImplementation(async (path: string) => path.includes("?")
+      ? { items: [summary], nextCursor: null }
+      : ++detailReads === 1 ? { ...detail, version: 2 } : new Promise<typeof detail>(resolve => { completeRefresh = resolve; }));
+    apiWrite.mockRejectedValueOnce(new Error("Comic changed. Reload this Comic."))
+      .mockResolvedValueOnce({ ...detail, status: "published", publishedAt: "2026-09-10T01:00:00Z" });
+    await mount();
+    await act(async () => button("Review pages").click());
+    await reason("Reviewed every submitted page");
+    await act(async () => button("Approve version 2").click());
+    await act(async () => container.querySelector<HTMLButtonElement>('[role="alert"] button')!.click());
+    expect(detailReads).toBe(2);
+    expect(button("Approve version 2").disabled).toBe(true);
+    await act(async () => completeRefresh(detail));
+    expect(container.querySelector("textarea")!.value).toBe("Reviewed every submitted page");
+    expect(button("Approve version 3").disabled).toBe(false);
+    await act(async () => button("Approve version 3").click());
+    expect(apiWrite.mock.calls.map(call => call[2].version)).toEqual([2, 3]);
+    expect(container.textContent).toContain("Remove published version 3");
+  });
+
+  it("retries the exact deep-linked comic after its initial detail read fails outside the visible queue", async () => {
+    let detailReads = 0;
+    apiGet.mockImplementation(async (path: string) => {
+      if (path.includes("?")) return { items: [], nextCursor: null };
+      if (++detailReads === 1) throw new AdminV2RequestError("Detail authority temporarily unavailable", 503, "unavailable");
+      return detail;
+    });
+    const previous = window.location.href;
+    window.history.replaceState(null, "", "/admin/moderation?comic=comic-fixture");
+    try {
+      await mount();
+      expect(container.querySelector('[role="alert"]')).not.toBeNull();
+      await act(async () => container.querySelector<HTMLButtonElement>('[role="alert"] button')!.click());
+      expect(detailReads).toBe(2);
+      expect(container.textContent).toContain("A submitted page");
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+    } finally { window.history.replaceState(null, "", previous); }
+  });
+
+  it("separates failed reads from uncertain decisions and folds the original error into technical details", async () => {
+    apiGet.mockRejectedValueOnce(new AdminV2RequestError("Internal Comic authority address", 503, "unavailable"));
+    await mount();
+    let alert = container.querySelector('[role="alert"]')!;
+    expect(alert.textContent).toContain("Retry to load the latest data.");
+    expect(alert.querySelector("details")?.open).toBe(false);
+    expect(alert.querySelector("details")?.textContent).toContain("Internal Comic authority address");
+    await act(async () => alert.querySelector<HTMLButtonElement>("button")!.click());
+    await act(async () => button("Review pages").click());
+    await reason("Reviewed every submitted page");
+    apiWrite.mockRejectedValueOnce(new AdminV2RequestError("Internal Comic write address", 503, "unavailable"));
+    await act(async () => button("Approve version 3").click());
+    alert = container.querySelector('[role="alert"]')!;
+    expect(alert.textContent).toContain("whether the write landed is unknown");
+    expect(alert.querySelector("details")?.open).toBe(false);
+    expect(alert.querySelector("details")?.textContent).toContain("Internal Comic write address");
   });
 
   it("lets a reader inspect pages without exposing approval or removal commands", async () => {

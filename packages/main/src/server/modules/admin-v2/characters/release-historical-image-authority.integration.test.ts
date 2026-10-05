@@ -392,4 +392,54 @@ describe("Release historical image authority", () => {
     );
     expect(assetsBySlot(next.releasePlacementManifest)).toEqual(assetsBySlot(live.releasePlacementManifest));
   });
+
+  it("revalidates an unchanged draft after its live qualification becomes stale, without publishing or generating again", async () => {
+    const candidate = await imageCandidate("stale-unchanged-live");
+    const characterId = `${P}stale-unchanged-live`;
+    const actor = { id: `${characterId}-owner`, role: "admin" } as const;
+    const content = await prisma.characterContentVersion.create({ data: {
+      characterId, version: 1, contentHash: `${characterId}-initial`,
+      personaSnapshot: { name: "Mara", age: 28, gender: "female", personality: "Measured and observant." },
+      openingSnapshot: { firstMessage: "Old opening." }, appearanceSnapshot: { style: "realistic", structured: {} }, sourceType: "test",
+    } });
+    await prisma.characterRevision.create({ data: {
+      projectId: candidate.projectId, revision: 1, characterContentVersionId: content.id, projectSnapshot: {},
+    } });
+    const projectVersion = async () => (await prisma.characterProject.findUniqueOrThrow({ where: { id: candidate.projectId } })).version;
+    await createCharacterSoulVersion({
+      characterId, expectedProjectVersion: await projectVersion(), expectedContentVersionId: content.id,
+      actor, requestId: `${characterId}-soul`, persona: {
+        name: "Mara", age: 28, gender: "female", characterPromise: "A precise place to put the day down.",
+        detailsMarkdown: "Measured, observant, and gently challenging. Warm and concise. A former night-shift radio host.",
+        firstMessage: "What followed you home tonight?",
+      },
+    });
+    const purposeBySlot = { character_avatar: "character_cover", character_hero: "character_hero", character_chat: "character_chat" } as const;
+    const draftAssetPack = Object.fromEntries(candidate.releasePlacementManifest.placements.map(placement => [
+      purposeBySlot[placement.slotKey as keyof typeof purposeBySlot], {
+        assetId: placement.assetId, runId: placement.runId, itemId: placement.itemId,
+        reviewDecisionId: placement.reviewDecisionId, generationJobId: placement.generationJobId,
+        bootstrapIdentity: placement.bootstrapIdentity,
+        generationRouteFingerprint: candidate.generationProvenance.requiredReleaseRoute.routeFingerprint,
+      },
+    ]));
+    const cover = candidate.releasePlacementManifest.placements.find(placement => placement.slotKey === "character_avatar")!;
+    await prisma.characterProject.update({ where: { id: candidate.projectId }, data: { draftAssetPack, draftImageAssetId: cover.assetId } });
+    const projectVersionValue = await projectVersion();
+    const prepare = () => createCharacterRelease({
+      request: new Request("http://localhost"), characterId, expectedProjectVersion: projectVersionValue,
+      reason: "Revalidate unchanged serving qualification", actor, requestId: `${characterId}-release`,
+    });
+    const live = await prepare();
+    await prisma.characterRelease.update({ where: { id: live.id }, data: { status: "published", publishedAt: new Date(), readiness: "stale" } });
+    await prisma.characterServing.create({ data: { characterId, currentReleaseId: live.id, state: "live" } });
+    const jobsBefore = await prisma.generationJob.count({ where: { characterId } });
+    const next = await prepare();
+    expect(next).toMatchObject({ status: "approved", readiness: "ready", snapshotHash: live.snapshotHash, revisionId: live.revisionId });
+    expect(next.id).not.toBe(live.id);
+    expect(await prisma.characterServing.findUniqueOrThrow({ where: { characterId } })).toMatchObject({ currentReleaseId: live.id, state: "live" });
+    expect(await prisma.characterRelease.findUniqueOrThrow({ where: { id: live.id } })).toMatchObject({ status: "published", readiness: "stale" });
+    expect(await prisma.releaseValidationRun.findFirstOrThrow({ where: { releaseId: next.id }, orderBy: { startedAt: "desc" } })).toMatchObject({ result: "passed" });
+    expect(await prisma.generationJob.count({ where: { characterId } })).toBe(jobsBefore);
+  });
 });

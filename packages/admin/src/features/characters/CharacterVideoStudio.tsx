@@ -278,7 +278,7 @@ export function CharacterVideoStudio({
   readonly permissions: CharacterVideoPermissions;
   readonly runCommittedMutation: RunCommittedMutation;
 }) {
-  const { locale, t } = useAdminI18n();
+  const { locale, t, value } = useAdminI18n();
   const createIntentScope =
     `character-video:create:${actorId}:${data.character.id}`;
   const sources = useMemo(() => characterVideoSourceOptions(data), [data]);
@@ -507,7 +507,7 @@ export function CharacterVideoStudio({
           receipt.verification.runId !== receipt.committedTargetId
         ) {
           throw new Error(
-            `The saved video request is ${receipt.state}. Keep its exact request locked until a committed receipt is available.`,
+            t("The saved video request is {state}. Keep its exact request locked until a committed receipt is available.", { state: value(receipt.state) }),
           );
         }
         const recoveredBody = creativeRunCreateRequestSchema.safeParse(
@@ -594,7 +594,7 @@ export function CharacterVideoStudio({
       if (intent?.status === "committed_projection_pending") {
         setError(
           cause instanceof Error
-            ? `The video Run was committed, but exact projection verification is pending: ${cause.message}`
+            ? t("The video Run was committed, but exact projection verification is pending: {detail}", { detail: t(cause.message) })
             : "The video Run was committed, but exact projection verification is pending.",
         );
       } else if (intent?.status === "reconciliation_required") {

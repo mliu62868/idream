@@ -20,6 +20,8 @@ import {
 import { cn } from "@/lib/utils";
 import type { CharacterCardData, OurdreamRouteTemplate } from "@/types/ourdream";
 import { useAgeGateAccess } from "./AgeGateBoundary";
+import { useViewerGate, type ViewerIdentity } from "@/hooks/useViewerGate";
+import { isAbortError } from "@/lib/viewer-resource-client";
 
 const MIN_SUGGEST_QUERY_LENGTH = 2;
 
@@ -55,6 +57,8 @@ type SuggestStatus = "idle" | "loading" | "ready" | "error";
 
 export function AppSearch() {
   const { accepted: ageGateAccepted } = useAgeGateAccess();
+  const viewer = useViewerGate({ require: "any" });
+  const gatedFetch = viewer.fetch;
   const [activeIndex, setActiveIndex] = useState(-1);
   const [characters, setCharacters] = useState<CharacterCardData[]>([]);
   const [focused, setFocused] = useState(false);
@@ -62,12 +66,18 @@ export function AppSearch() {
   const [routes, setRoutes] = useState<SearchRouteSuggestion[]>([]);
   const [status, setStatus] = useState<SuggestStatus>("idle");
   const [tags, setTags] = useState<SearchTagSuggestion[]>([]);
+  const [suggestionOwner, setSuggestionOwner] = useState<ViewerIdentity | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const rootRef = useRef<HTMLDivElement>(null);
   const router = useRouter();
 
   const trimmedQuery = query.trim();
+  const displayStatus = viewer.error
+    ? "error"
+    : !viewer.identity || suggestionOwner !== viewer.identity ? "loading" : status;
 
   const suggestions = useMemo<SearchSuggestion[]>(() => {
+    if (suggestionOwner !== viewer.identity || status !== "ready") return [];
     const characterSuggestions = characters.map((character) => ({
       href: `/characters/${encodeURIComponent(character.id)}`,
       id: `character:${character.id}`,
@@ -92,19 +102,20 @@ export function AppSearch() {
       template: route.template,
     }));
     return [...characterSuggestions, ...tagSuggestions, ...routeSuggestions].slice(0, 8);
-  }, [characters, routes, tags]);
+  }, [characters, routes, tags, status, suggestionOwner, viewer.identity]);
 
   const panelOpen =
     focused &&
+    ageGateAccepted &&
     trimmedQuery.length >= MIN_SUGGEST_QUERY_LENGTH &&
-    (status === "loading" || status === "ready" || status === "error");
+    (displayStatus === "loading" || displayStatus === "ready" || displayStatus === "error");
   const activeSuggestion = suggestions[activeIndex];
   const searchStatusMessage =
-    panelOpen && status === "loading"
+    panelOpen && displayStatus === "loading"
       ? "Searching..."
-      : panelOpen && status === "error"
+      : panelOpen && displayStatus === "error"
         ? "Search suggestions unavailable"
-        : panelOpen && status === "ready" && suggestions.length === 0
+        : panelOpen && displayStatus === "ready" && suggestions.length === 0
           ? "No suggestions found"
           : "";
 
@@ -121,6 +132,7 @@ export function AppSearch() {
   useEffect(() => {
     if (
       !ageGateAccepted ||
+      !viewer.identity ||
       !focused ||
       trimmedQuery.length < MIN_SUGGEST_QUERY_LENGTH
     ) {
@@ -129,15 +141,19 @@ export function AppSearch() {
 
     const controller = new AbortController();
     const timer = window.setTimeout(async () => {
+      setSuggestionOwner(viewer.identity);
+      setActiveIndex(-1);
       setStatus("loading");
       try {
-        const response = await fetch(
+        const response = await gatedFetch(
           `/api/v1/search/suggest?q=${encodeURIComponent(trimmedQuery)}`,
           {
             headers: { accept: "application/json" },
+            cache: "no-store",
             signal: controller.signal,
           },
         );
+        if (controller.signal.aborted) return;
         if (!response.ok) {
           setCharacters([]);
           setRoutes([]);
@@ -147,12 +163,13 @@ export function AppSearch() {
         }
 
         const payload = parseSearchSuggestResponse(await response.json());
+        if (controller.signal.aborted) return;
         setCharacters(payload.characters);
         setRoutes(payload.routes);
         setTags(payload.tags);
         setStatus("ready");
       } catch (error) {
-        if (error instanceof DOMException && error.name === "AbortError") return;
+        if (controller.signal.aborted || isAbortError(error)) return;
         setCharacters([]);
         setRoutes([]);
         setTags([]);
@@ -164,7 +181,7 @@ export function AppSearch() {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [ageGateAccepted, focused, trimmedQuery]);
+  }, [ageGateAccepted, focused, gatedFetch, trimmedQuery, viewer.identity, viewer.revalidation, loadAttempt]);
 
   function handleBlur(event: FocusEvent<HTMLDivElement>) {
     const nextTarget = event.relatedTarget;
@@ -256,12 +273,12 @@ export function AppSearch() {
       {panelOpen ? (
         <div
           aria-label="Search suggestions"
-          aria-busy={status === "loading" ? "true" : undefined}
+          aria-busy={displayStatus === "loading" ? "true" : undefined}
           className="absolute left-0 right-0 top-[calc(100%+8px)] z-50 overflow-hidden rounded-[12px] border border-white/10 bg-[rgb(18,18,18)] p-1 shadow-[0_16px_40px_rgba(0,0,0,0.38)]"
           id="app-search-suggestions"
           role="listbox"
         >
-          {status === "loading" ? (
+          {displayStatus === "loading" ? (
             <div
               aria-live="polite"
               className="flex h-11 items-center gap-2 px-3 text-[12px] font-bold text-[rgb(170,170,170)]"
@@ -274,7 +291,7 @@ export function AppSearch() {
             </div>
           ) : null}
 
-          {status === "error" ? (
+          {displayStatus === "error" ? (
             <div
               aria-live="polite"
               className="px-3 py-3 text-[12px] font-bold text-[rgb(170,170,170)]"
@@ -283,10 +300,18 @@ export function AppSearch() {
               role="status"
             >
               Search suggestions unavailable
+              <button
+                aria-label="Retry search suggestions"
+                className="ml-2 rounded-full bg-white/10 px-3 py-1 text-white"
+                onClick={() => { if (viewer.error) void viewer.revalidate(); else setLoadAttempt(attempt => attempt + 1); }}
+                type="button"
+              >
+                Retry
+              </button>
             </div>
           ) : null}
 
-          {status === "ready" && suggestions.length === 0 ? (
+          {displayStatus === "ready" && suggestions.length === 0 ? (
             <div
               aria-live="polite"
               className="px-3 py-3 text-[12px] font-bold text-[rgb(170,170,170)]"
@@ -298,7 +323,7 @@ export function AppSearch() {
             </div>
           ) : null}
 
-          {status === "ready"
+          {displayStatus === "ready"
             ? suggestions.map((suggestion, index) => (
                 <Link
                   aria-label={`Open ${suggestion.label}`}

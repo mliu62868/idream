@@ -1,7 +1,7 @@
 "use client";
 
 // SPEC: 合规运营面板（BackendFeatureSpec 合规运营契约）。DSAR 数据导出/账号擦除 + 年龄验证人工复核。
-// INTENT: 自取数、无 props；样式对齐 TagsView。导出展示脱敏 JSON；擦除/override 需 reason+typed。
+// INTENT: 自取数，写入口按合规权限显示。导出绑定账号；擦除/override 需 reason+typed。
 // INVARIANTS: erase confirmation=userId、override confirmation=verificationId，均 reason≥3。
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Download, FileDown, Loader2, RefreshCcw, ShieldAlert, Trash2 } from "lucide-react";
@@ -12,6 +12,7 @@ import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { formatDateTime } from "@/components/admin/ui/format";
 import { StatusPill } from "@/components/admin/ui/StatusPill";
+import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
 import {
   authorityRequestFailed,
@@ -60,12 +61,18 @@ type AgeOverrideDraft = ConfirmDraft & {
   next: "verified" | "failed";
 };
 
-export function ComplianceView() {
+type EraseDraft = ConfirmDraft & { userId: string };
+type DsarError = { message: string; cause: unknown } & (
+  | { kind: "export"; userId: string }
+  | { kind: "erase"; draft: EraseDraft }
+);
+
+export function ComplianceView({ canWrite = false }: { canWrite?: boolean }) {
   return (
     <div className="space-y-6">
-      <DsarSection />
+      <DsarSection canWrite={canWrite} />
       <ErasureQueueSection />
-      <AgeVerificationSection />
+      <AgeVerificationSection canWrite={canWrite} />
     </div>
   );
 }
@@ -89,48 +96,83 @@ export const BLOCKER_COPY: Record<string, string> = {
     "A generation request of this account has not reached a terminal state — settle it in Jobs",
 };
 
-function DsarSection() {
+function DsarSection({ canWrite }: { canWrite: boolean }) {
   const { t, locale } = useAdminI18n();
   const [userId, setUserId] = useState("");
-  const [exported, setExported] = useState<unknown>(null);
+  const [exported, setExported] = useState<{ userId: string; data: unknown } | null>(null);
   const [busy, setBusy] = useState<"export" | "erase" | null>(null);
   // INVARIANT: 存异常对象而不只是它的 message —— AuthorityRequestError 要靠 cause 才能按错误码
   // 出人话（只有 message 时它退回「读不到最新数据」的通用兜底，运营读到的仍是 authority 英文原文）。
-  const [err, setErr] = useState<{ message: string; cause: unknown; retry: () => void } | null>(null);
-  const [eraseDraft, setEraseDraft] = useState<ConfirmDraft | null>(null);
+  const [err, setErr] = useState<DsarError | null>(null);
+  const [eraseDraft, setEraseDraft] = useState<EraseDraft | null>(null);
+  const [writePermission, setWritePermission] = useState(canWrite);
+  const requestGate = useRef(createLatestRequestGate());
   const { feedback, reportSuccess, clearFeedback } = useWriteFeedback();
 
-  async function exportData() {
+  // INVARIANT: 被撤销授权的确认必须重新填写；重新授权不能复活旧的危险操作。
+  if (writePermission !== canWrite) {
+    setWritePermission(canWrite);
+    if (!canWrite) {
+      setEraseDraft(null);
+      setErr(current => current?.kind === "erase" ? null : current);
+    }
+  }
+
+  useEffect(() => {
+    const gate = requestGate.current;
+    return () => gate.invalidate();
+  }, []);
+
+  function changeUserId(next: string) {
+    if (busy === "erase") return;
+    setUserId(next);
+    if (next.trim() === userId.trim()) return;
+    // INVARIANT: 预览、错误和确认都属于读取时的账号，切换账号同时作废迟到响应。
+    requestGate.current.invalidate();
+    setExported(null);
+    setEraseDraft(null);
+    setErr(null);
+    setBusy(null);
+    clearFeedback();
+  }
+
+  async function exportData(targetId: string) {
+    if (!targetId || targetId !== userId.trim() || busy !== null) return;
+    const request = requestGate.current.begin();
     setBusy("export");
     setErr(null);
+    setExported(null);
     clearFeedback();
     try {
       const data = await apiGet<{ export: unknown }>(
-        `/api/v2/admin/compliance/users/${encodeURIComponent(userId.trim())}/export`,
+        `/api/v2/admin/compliance/users/${encodeURIComponent(targetId)}/export`,
       );
-      setExported(data.export);
+      if (!request.isCurrent()) return;
+      setExported({ userId: targetId, data: data.export });
     } catch (error) {
-      setErr({ message: requestErrorMessage(error, t), cause: error, retry: () => void exportData() });
+      if (!request.isCurrent()) return;
+      setErr({ kind: "export", userId: targetId, message: requestErrorMessage(error, t), cause: error });
     } finally {
-      setBusy(null);
+      if (request.isCurrent()) setBusy(null);
     }
   }
 
   // SPEC: DSAR 的交付物是一个可以发给用户/监管的文件，不是一段屏幕上的 JSON。
   // INTENT: 不引下载库——Blob + objectURL 是原生的；用完立刻 revoke，不留悬挂引用。
   function downloadExport() {
-    if (exported === null) return;
-    const blob = new Blob([JSON.stringify(exported, null, 2)], { type: "application/json" });
+    if (exported === null || exported.userId !== userId.trim()) return;
+    const blob = new Blob([JSON.stringify(exported.data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = `dsar-export-${userId.trim() || "user"}.json`;
+    anchor.download = `dsar-export-${exported.userId}.json`;
     anchor.click();
     URL.revokeObjectURL(url);
   }
 
-  async function erase() {
-    if (!eraseDraft || !canConfirm(eraseDraft, userId.trim())) return;
+  async function erase(draft: EraseDraft | null = eraseDraft) {
+    if (!canWrite || busy !== null || !draft || draft.userId !== userId.trim() || !canConfirm(draft, draft.userId)) return;
+    const request = requestGate.current.begin();
     setBusy("erase");
     setErr(null);
     clearFeedback();
@@ -140,30 +182,33 @@ function DsarSection() {
         idempotent?: boolean;
         deletion: { graceEndsAt: string };
       }>(
-        `/api/v2/admin/compliance/users/${encodeURIComponent(userId.trim())}/erase`,
+        `/api/v2/admin/compliance/users/${encodeURIComponent(draft.userId)}/erase`,
         "POST",
         {
-          reason: eraseDraft.reason.trim(),
-          confirmation: eraseDraft.confirmation.trim(),
+          reason: draft.reason.trim(),
+          confirmation: draft.confirmation.trim(),
         },
       );
+      if (!request.isCurrent()) return;
       setEraseDraft(null);
+      setExported(null);
       // SPEC: 成功文案必须说出「什么时候真的会被删」。
       // INTENT: 旧文案说完成会出现在审计日志里——那是假的：完成路径一行审计都不写，
       //         而请求那行审计的 targetId 在完成时会被改写成不可逆的 subject ref，
       //         按用户 ID 也再查不到。权威在响应里给了准确的到期时间，照它说。
       reportSuccess(
         data.idempotent
-          ? t("{id} already has an erasure request — nothing changed.", { id: userId.trim() })
+          ? t("{id} already has an erasure request — nothing changed.", { id: draft.userId })
           : t("Access for {id} is revoked now. Erasure itself starts after {due}; track it in the queue below.", {
-            id: userId.trim(),
+            id: draft.userId,
             due: formatDateTime(data.deletion.graceEndsAt, locale),
           }),
       );
     } catch (error) {
-      setErr({ message: requestErrorMessage(error, t), cause: error, retry: () => void erase() });
+      if (!request.isCurrent()) return;
+      setErr({ kind: "erase", draft, message: requestErrorMessage(error, t), cause: error });
     } finally {
-      setBusy(null);
+      if (request.isCurrent()) setBusy(null);
     }
   }
 
@@ -173,67 +218,72 @@ function DsarSection() {
       <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
         {t("The export is redacted structured data with no raw prompt or chat text. Erasure revokes access immediately, then runs across Chat and storage after a grace period — the queue below is where it can be followed.")}
       </p>
+      {!canWrite ? <div className="mt-2 text-xs"><PermissionNotice permission="compliance.write" /></div> : null}
       <div className="mt-3 grid gap-3 md:grid-cols-[1fr_auto_auto]">
         <input
           aria-label={t("User ID")}
           className={inputClass}
-          onChange={(e) => setUserId(e.target.value)}
+          disabled={busy === "erase"}
+          onChange={(e) => changeUserId(e.target.value)}
           placeholder={t("User ID")}
           value={userId}
         />
         <button
           className="rounded-md inline-flex h-10 items-center gap-2 border border-[var(--ad-border)] px-3 text-sm disabled:opacity-50"
           disabled={busy !== null || !userId.trim()}
-          onClick={() => void exportData()}
+          onClick={() => void exportData(userId.trim())}
           type="button"
         >
           {busy === "export" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
           {t("Export")}
         </button>
-        <button
+        {canWrite ? <button
           className="rounded-md inline-flex h-10 items-center gap-2 border border-[var(--ad-red-text)]/20 px-3 text-sm text-[var(--ad-red-text)] disabled:opacity-50"
           disabled={busy !== null || !userId.trim()}
           onClick={() => {
             setErr(null);
             clearFeedback();
-            setEraseDraft({ reason: "", confirmation: "" });
+            setEraseDraft({ userId: userId.trim(), reason: "", confirmation: "" });
           }}
           type="button"
         >
           {busy === "erase" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
           {t("Erase")}
-        </button>
+        </button> : null}
       </div>
-      {eraseDraft ? (
+      {canWrite && eraseDraft ? (
         <section className="rounded-lg mt-3 border border-[var(--ad-red-text)]/20 bg-[var(--ad-red-bg)] p-3">
           <p className="text-xs font-semibold text-[var(--ad-red-text)]">
-            {t("Confirm erasure for")} <span className="font-mono">{userId.trim()}</span>
+            {t("Confirm erasure for")} <span className="font-mono">{eraseDraft.userId}</span>
           </p>
           <div className="mt-3 grid gap-3 md:grid-cols-[1fr_220px_auto_auto]">
             <input
               aria-label={t("Erase reason")}
               className={inputClass}
-              onChange={(e) => setEraseDraft({ ...eraseDraft, reason: e.target.value })}
+              disabled={busy !== null}
+              onChange={(e) => { setErr(null); setEraseDraft({ ...eraseDraft, reason: e.target.value }); }}
               placeholder={t("Reason (≥3 chars)")}
               value={eraseDraft.reason}
             />
             <input
               aria-label={t("Erase confirmation")}
               className={inputClass}
-              onChange={(e) => setEraseDraft({ ...eraseDraft, confirmation: e.target.value })}
+              disabled={busy !== null}
+              onChange={(e) => { setErr(null); setEraseDraft({ ...eraseDraft, confirmation: e.target.value }); }}
               placeholder={t("Type user ID")}
               value={eraseDraft.confirmation}
             />
             <button
               className="rounded-md inline-flex h-10 items-center justify-center border border-[var(--ad-border)] px-3 text-sm"
-              onClick={() => setEraseDraft(null)}
+              disabled={busy !== null}
+              onClick={() => { setEraseDraft(null); setErr(null); }}
               type="button"
             >
               {t("Cancel")}
             </button>
             <button
               className="inline-flex h-10 items-center justify-center bg-[var(--ad-red-bg)] px-3 text-sm font-semibold text-[var(--ad-red-text)] disabled:opacity-50"
-              disabled={busy !== null || !canConfirm(eraseDraft, userId.trim())}
+              disabled={busy !== null || !canConfirm(eraseDraft, eraseDraft.userId)}
               onClick={() => void erase()}
               type="button"
             >
@@ -242,9 +292,14 @@ function DsarSection() {
           </div>
         </section>
       ) : null}
-      {err ? (
+      {err && (err.kind === "export" || (canWrite && eraseDraft)) ? (
         <div className="mt-2">
-          <AuthorityRequestError cause={err.cause} message={err.message} onRetry={err.retry} />
+          <AuthorityRequestError
+            cause={err.cause}
+            message={err.message}
+            requestKind={err.kind === "export" ? "read" : "write"}
+            onRetry={() => err.kind === "export" ? void exportData(err.userId) : void erase(err.draft)}
+          />
         </div>
       ) : null}
       <div className="mt-2">
@@ -253,7 +308,7 @@ function DsarSection() {
       {exported ? (
         <div className="mt-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h3 className="text-xs font-semibold">{t("Export preview")}</h3>
+            <h3 className="text-xs font-semibold">{t("Export preview")} · <span className="font-mono">{exported.userId}</span></h3>
             <button
               className="rounded-md inline-flex h-9 items-center gap-2 border border-[var(--ad-border)] px-3 text-sm"
               onClick={downloadExport}
@@ -264,7 +319,7 @@ function DsarSection() {
             </button>
           </div>
           <pre className="rounded-lg mt-2 max-h-80 overflow-auto border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 text-xs">
-            {JSON.stringify(exported, null, 2)}
+            {JSON.stringify(exported.data, null, 2)}
           </pre>
         </div>
       ) : null}
@@ -292,9 +347,10 @@ function ErasureQueueSection() {
       setAuthority(authorityRequestSucceeded(queryKey, data));
     } catch (err) {
       if (!request.isCurrent()) return;
-      setAuthority((current) => authorityRequestFailed(current, queryKey, requestErrorMessage(err, t), err));
+      // 原文在工程通道呈现；语言变化只重绘译文，不重新请求初始范围。
+      setAuthority((current) => authorityRequestFailed(current, queryKey, err instanceof Error ? err.message : "Request failed", err));
     }
-  }, [t]);
+  }, []);
 
   useEffect(() => {
     const gate = requestGate.current;
@@ -369,6 +425,7 @@ function ErasureQueueSection() {
             cause={authority.cause}
             message={authority.error}
             onRetry={() => void load(scope)}
+            requestKind="read"
             snapshotAt={authority.data ? authority.refreshedAt : null}
           />
         </div>
@@ -408,17 +465,26 @@ function deletionRowNote(row: DeletionRow, t: (key: string, values?: Record<stri
   return t(WAITING_ON_COPY[row.waitingOn] ?? row.waitingOn);
 }
 
-function AgeVerificationSection() {
+function AgeVerificationSection({ canWrite }: { canWrite: boolean }) {
   const { t, value: valueLabel } = useAdminI18n();
   const [authority, setAuthority] = useState(() => createAuthorityState<AgeRow[]>());
   const [status, setStatus] = useState("pending");
   const [overrideDraft, setOverrideDraft] = useState<AgeOverrideDraft | null>(null);
   const [overrideBusy, setOverrideBusy] = useState(false);
-  const [overrideError, setOverrideError] = useState<string | null>(null);
+  const [overrideError, setOverrideError] = useState<unknown>(null);
+  const [writePermission, setWritePermission] = useState(canWrite);
   const { feedback, reportSuccess, clearFeedback } = useWriteFeedback();
   const requestGate = useRef(createLatestRequestGate());
   const initialStatus = useRef(status);
   const statusFilterId = useId();
+
+  if (writePermission !== canWrite) {
+    setWritePermission(canWrite);
+    if (!canWrite) {
+      setOverrideDraft(null);
+      setOverrideError(null);
+    }
+  }
 
   const load = useCallback(async (nextStatus: string) => {
     const queryKey = `status=${encodeURIComponent(nextStatus)}`;
@@ -435,11 +501,11 @@ function AgeVerificationSection() {
       setAuthority((current) => authorityRequestFailed(
         current,
         queryKey,
-        requestErrorMessage(err, t),
+        err instanceof Error ? err.message : "Request failed",
         err,
       ));
     }
-  }, [t]);
+  }, []);
 
   useEffect(() => {
     const gate = requestGate.current;
@@ -451,7 +517,7 @@ function AgeVerificationSection() {
   }, [load]);
 
   async function override() {
-    if (!overrideDraft || !canConfirm(overrideDraft, overrideDraft.id)) return;
+    if (!canWrite || overrideBusy || !overrideDraft || !canConfirm(overrideDraft, overrideDraft.id)) return;
     const draft = overrideDraft;
     setOverrideBusy(true);
     setOverrideError(null);
@@ -476,7 +542,7 @@ function AgeVerificationSection() {
       } : current);
       void load(status);
     } catch (err) {
-      setOverrideError(requestErrorMessage(err, t));
+      setOverrideError(err);
     } finally {
       setOverrideBusy(false);
     }
@@ -490,7 +556,7 @@ function AgeVerificationSection() {
       row.provider,
       <StatusPill key="status" status={row.status} />,
       row.jurisdiction ?? "—",
-      <div className="flex justify-end gap-2" key="actions">
+      ...(canWrite ? [<div className="flex justify-end gap-2" key="actions">
         <button
           className="inline-flex h-8 items-center gap-1 bg-[var(--ad-ink)] px-2 text-xs font-semibold text-white"
           disabled={overrideBusy}
@@ -508,11 +574,12 @@ function AgeVerificationSection() {
         >
           {t("Fail")}
         </button>
-      </div>,
+      </div>] : []),
     ],
   }));
 
   function startOverride(id: string, next: AgeOverrideDraft["next"]) {
+    if (!canWrite || overrideBusy) return;
     setAuthority((current) => ({ ...current, error: null }));
     clearFeedback();
     setOverrideError(null);
@@ -530,6 +597,7 @@ function AgeVerificationSection() {
           <select
             className="rounded-md h-9 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-2 text-sm outline-none focus:border-[var(--ad-ink)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]"
             id={statusFilterId}
+            disabled={overrideBusy}
             onChange={(e) => {
               const nextStatus = e.target.value;
               setStatus(nextStatus);
@@ -563,12 +631,13 @@ function AgeVerificationSection() {
             cause={authority.cause}
             message={authority.error}
             onRetry={() => void load(status)}
+            requestKind="read"
             snapshotAt={authority.data ? authority.refreshedAt : null}
           />
         </div>
       ) : null}
       <div className="px-3 pt-2"><WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} /></div>
-      {overrideDraft ? (
+      {canWrite && overrideDraft ? (
         <section className="rounded-lg m-3 border border-[var(--ad-yellow-text)]/20 bg-[var(--ad-yellow-bg)] p-3">
           <p className="text-xs font-semibold text-[var(--ad-yellow-text)]">
             {t("Confirm age verification override")}{" "}
@@ -578,19 +647,22 @@ function AgeVerificationSection() {
             <input
               aria-label={t("Override reason")}
               className={inputClass}
-              onChange={(e) => setOverrideDraft({ ...overrideDraft, reason: e.target.value })}
+              disabled={overrideBusy}
+              onChange={(e) => { setOverrideError(null); setOverrideDraft({ ...overrideDraft, reason: e.target.value }); }}
               placeholder={t("Reason (≥3 chars)")}
               value={overrideDraft.reason}
             />
             <input
               aria-label={t("Override confirmation")}
               className={inputClass}
-              onChange={(e) => setOverrideDraft({ ...overrideDraft, confirmation: e.target.value })}
+              disabled={overrideBusy}
+              onChange={(e) => { setOverrideError(null); setOverrideDraft({ ...overrideDraft, confirmation: e.target.value }); }}
               placeholder={t("Type verification ID")}
               value={overrideDraft.confirmation}
             />
             <button
               className="rounded-md inline-flex h-10 items-center justify-center border border-[var(--ad-border)] px-3 text-sm"
+              disabled={overrideBusy}
               onClick={() => {
                 setOverrideDraft(null);
                 setOverrideError(null);
@@ -610,7 +682,7 @@ function AgeVerificationSection() {
           </div>
           {overrideError ? (
             <div className="mt-3">
-              <AuthorityRequestError message={overrideError} onRetry={() => void override()} />
+              <AuthorityRequestError cause={overrideError} message={requestErrorMessage(overrideError, t)} onRetry={() => void override()} />
             </div>
           ) : null}
         </section>
@@ -629,7 +701,7 @@ function AgeVerificationSection() {
               t("Provider"),
               t("Status"),
               t("jurisdiction"),
-              { label: t("Actions"), align: "right" },
+              ...(canWrite ? [{ label: t("Actions"), align: "right" as const }] : []),
             ]}
             loading={authority.loading}
             minimumWidthClassName="min-w-[720px]"

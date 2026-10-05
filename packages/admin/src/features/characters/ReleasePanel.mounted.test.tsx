@@ -4,7 +4,7 @@ import type { AdminPermissionKey, CharacterWorkspaceDetail } from "@idream/share
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AdminI18nProvider } from "@/components/admin/i18n";
+import { AdminI18nProvider, translateAdmin } from "@/components/admin/i18n";
 import { createCharacterCommandJournal } from "./character-command-journal";
 import { characterWorkspaceDetail, withCharacterWorkspaceDetail } from "./character-workspace-fixture";
 import { characterWorkspacePermissions } from "./character-workspace-permissions";
@@ -35,6 +35,24 @@ function readyCharacter() {
       },
     },
     preview: { draft: { assetPackReady: true, opening: { firstMessage: "You made it." } } },
+  });
+}
+
+function unchangedLiveCharacter(readiness: "ready" | "stale") {
+  const data = readyCharacter();
+  const stamp = "2026-09-05T00:00:00.000Z";
+  const release: CharacterWorkspaceDetail["releases"][number]["release"] = {
+    id: "current-live-release", projectId: data.project.id, revisionId: "revision-fixture", characterContentVersionId: "content-fixture",
+    visualProfileId: null, visualProfileVersion: null, referenceSetRevisionId: null, generationProvenance: {}, releasePlacementManifest: {},
+    snapshotHash: "current-snapshot", readiness, status: "published", legacy: false, publishedAt: stamp,
+    supersedesId: null, rollbackOfReleaseId: null, version: 4, createdAt: stamp, updatedAt: stamp,
+  };
+  return characterWorkspaceDetail({
+    ...data,
+    serving: { state: "live", currentReleaseId: release.id, version: 5, updatedAt: stamp, characterId: data.character.id },
+    releases: [{ release, checks: [], monitors: [] }],
+    preview: { ...data.preview, live: { ...data.preview.draft, releaseId: release.id }, changedFields: [] },
+    journey: { ...data.journey, release: { ...data.journey.release, candidateReleaseId: null, currentReleaseId: release.id } },
   });
 }
 
@@ -79,6 +97,64 @@ describe("Character release history empty state", () => {
     return [...container.querySelectorAll<HTMLButtonElement>("button")]
       .find((button) => button.textContent?.trim() === "发布角色");
   }
+
+  it.each(["ready", "stale"] as const)("offers an unchanged draft again only when its current release is %s", async (readiness) => {
+    const request = vi.spyOn(transport, "adminV2Request");
+    await render(unchangedLiveCharacter(readiness));
+    expect(Boolean(publishButton())).toBe(readiness === "stale");
+    if (readiness === "stale") {
+      expect(container.textContent).toContain("线上版本的发布资格已失效。重新发布会检查当前图片和生成线路；内容可以保持不变。");
+      expect(container.textContent).not.toContain("没有需要发布的内容");
+    }
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("keeps stale-release recovery disabled without publish permission", async () => {
+    const request = vi.spyOn(transport, "adminV2Request");
+    await render(unchangedLiveCharacter("stale"), false);
+    expect(publishButton()?.disabled).toBe(true);
+    await act(async () => publishButton()!.click());
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("prepares a fresh candidate for stale recovery and keeps server qualification checks authoritative", async () => {
+    const request = vi.spyOn(transport, "adminV2Request").mockRejectedValue(new transport.AdminV2RequestError("Character is not ready to publish", 409, "conflict", { blockers: ["qualified_generation_route_missing"] }));
+    const data = unchangedLiveCharacter("stale");
+    await render(data);
+    await act(async () => publishButton()!.click());
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request.mock.calls[0][0]).toBe(`/api/v2/admin/characters/${data.character.id}/releases`);
+    expect(request.mock.calls[0][1]?.body).toMatchObject({ entityVersion: data.project.version });
+    expect(container.querySelector(`a[href="/admin/characters/${data.character.id}?tab=visual"]`)).not.toBeNull();
+    // Server blockers are shown with their repair link but never hide Publish:
+    // the next attempt is re-validated by the server.
+    expect(publishButton()).toBeDefined();
+    expect(data.serving?.currentReleaseId).toBe("current-live-release");
+  });
+
+  it("revalidates stale recovery through the normal fresh-candidate publish command", async () => {
+    const data = unchangedLiveCharacter("stale");
+    const request = vi.spyOn(transport, "adminV2Request").mockImplementation(async (path) => path.endsWith("/releases")
+      ? { id: "recovery-candidate", version: 1 }
+      : { commandId: "publish-recovery-command" });
+    await render(data);
+    await act(async () => publishButton()!.click());
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(request.mock.calls[1][0]).toContain("/releases/recovery-candidate/commands/publish");
+    expect(request.mock.calls[1][1]?.body).toMatchObject({ entityVersion: 1, confirmation: `${data.character.id}:recovery-candidate:publish` });
+  });
+
+  it("can discard a recovery candidate without publishing or replacing the current live release", async () => {
+    const data = unchangedLiveCharacter("stale");
+    const candidate = { ...data.releases[0], release: { ...data.releases[0].release, id: "recovery-candidate", status: "approved" as const, readiness: "ready" as const, publishedAt: null } };
+    const request = vi.spyOn(transport, "adminV2Request").mockResolvedValue({ commandId: "withdraw-recovery-command" });
+    await render({ ...data, releases: [...data.releases, candidate] });
+    await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === translateAdmin("zh", "Discard candidate"))!.click());
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request.mock.calls[0][0]).toContain("/releases/recovery-candidate/commands/withdraw");
+    expect(request.mock.calls[0][1]?.body).toMatchObject({ entityVersion: candidate.release.version });
+    expect(data.serving?.currentReleaseId).toBe("current-live-release");
+  });
 
   it("locks the workspace before creating a release candidate and keeps it locked through command acceptance", async () => {
     const data = readyCharacter();

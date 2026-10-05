@@ -15,12 +15,18 @@ export type ProviderResult<T> =
 export interface ChatChunk {
   delta: string;
   done: boolean;
+  /** The backend's terminal reason; output limited by length is not a complete draft. */
+  finishReason?: string;
 }
 
 export interface ChatModel {
   stream(input: {
     messages: Array<{ role: "system" | "user" | "assistant"; content: string }>;
     characterName?: string;
+    maxTokens?: number;
+    requestId?: string;
+    /** Admin drafts renew the wait budget only on model output, with a fixed total bound. */
+    timeoutMode?: "progress";
   }): AsyncIterable<ChatChunk>;
 }
 

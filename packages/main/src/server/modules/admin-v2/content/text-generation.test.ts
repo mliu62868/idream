@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { AppError } from "@/server/lib/errors";
+import { PipelineChatModel } from "@/server/providers/chat/pipeline";
 import {
   generateAdminText,
   type AdminTextGenerationRuntime,
@@ -41,6 +42,16 @@ const input = {
 };
 
 describe("admin text generation runtime", () => {
+  it("rejects nonempty text stopped at the model output limit in a JSON fallback response", async () => {
+    const model = new PipelineChatModel({
+      baseUrl: "http://model.test/v1", model: "test-model",
+      fetchImpl: async () => Response.json({ choices: [{ message: { content: "An open" }, finish_reason: "length" }] }),
+    });
+    await expect(generateAdminText(input, runtime(value => model.stream(value)), { stage: "visualBrief", requestId: "json-output-limit" })).rejects.toMatchObject({
+      code: "unavailable", details: { stage: "visualBrief", requestId: "json-output-limit", failureKind: "output_limit", finishReason: "length" },
+    });
+  });
+
   it("rejects the configured mock provider before streaming", async () => {
     let streamed = false;
     const result = unavailableCode(
@@ -106,7 +117,7 @@ describe("admin text generation runtime", () => {
       runtime(async function* stream() {
         yield { delta: "Real ", done: false };
         yield { delta: "operator draft", done: false };
-        yield { delta: "", done: true };
+        yield { delta: "", done: true, finishReason: "stop" };
       }),
     );
 

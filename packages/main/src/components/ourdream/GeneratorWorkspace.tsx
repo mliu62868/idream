@@ -22,6 +22,7 @@ import {
   FormEvent,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -52,6 +53,8 @@ import {
   parseMediaEnhancementQuoteResponse,
   parseUserPresetsResponse,
   parseWorkspaceMediaResponse,
+  parseMediaIntentFeedbackResponse,
+  type RuntimeMediaIntentFeedback,
   type RuntimeGenerationConfig,
   type RuntimeGenerationQuote,
 } from "@/lib/public-api-contracts";
@@ -111,6 +114,8 @@ type MediaItem = {
   height?: number | null;
   prompt: string | null;
   liked: boolean;
+  intentFeedbackAvailable?: boolean;
+  intentFeedback?: RuntimeMediaIntentFeedback | null;
   isSynthetic?: boolean;
   canEditIdentity?: boolean;
   visualProfileId?: string | null;
@@ -210,6 +215,7 @@ type CharacterLookItem = {
   label: string;
   status: string;
   appearanceDelta: Record<string, unknown>;
+  rebasedFromLookId?: string | null;
 };
 
 type BulkAction = "delete" | "visibility";
@@ -701,9 +707,32 @@ export function GeneratorWorkspace() {
   useEffect(() => { selectedEditSourceRef.current = selectedEditSource; }, [selectedEditSource]);
   const suspendedEditSourceRef = useRef<{ scope: string; source: MediaItem } | null>(null);
   const editSourceMediaId = selectedEditSource?.id ?? "";
+  const [intentEditor, setIntentEditor] = useState<{ item: MediaItem; surface: "generator" | "gallery" } | null>(null);
+  const [intentValue, setIntentValue] = useState<"match" | "mismatch">("mismatch");
+  const intentRatingRef = useRef<HTMLSelectElement>(null);
+  const [intentDirection, setIntentDirection] = useState("");
+  const [intentFeedbackError, setIntentFeedbackError] = useState("");
+  const [intentBusy, setIntentBusy] = useState(false);
+  const [intentUncertain, setIntentUncertain] = useState(false);
+  const [intentCanRetryOriginal, setIntentCanRetryOriginal] = useState(false);
+  const intentSerialRef = useRef(0);
+  const intentOperationRef = useRef<symbol | null>(null);
+  const intentSubmittedRef = useRef<{ assetId: string; value: "match" | "mismatch"; direction: string | null } | null>(null);
+  const [videoDirectionDraft, setVideoDirectionDraft] = useState<{ id: string; prompt: string } | null>(null);
   const [lookEditorMediaId, setLookEditorMediaId] = useState<string | null>(null);
+  const [editingLook, setEditingLook] = useState<CharacterLookItem | null>(null);
+  const [lookAction, setLookAction] = useState<"rebase" | "archive" | null>(null);
+  const [lookConfirmationProfileId, setLookConfirmationProfileId] = useState<string | null>(null);
+  const [lookUncertain, setLookUncertain] = useState(false);
+  const [activeLookProfileId, setActiveLookProfileId] = useState<string | null>(null);
   const [lookLabel, setLookLabel] = useState("");
   const [lookDescription, setLookDescription] = useState("");
+  const [lookSaving, setLookSaving] = useState(false);
+  const lookEditorRef = useRef<HTMLDivElement>(null);
+  const lookNameRef = useRef<HTMLInputElement>(null);
+  const lookEditorSerialRef = useRef(0);
+  const lookSaveSourceRef = useRef<{ mediaId: string; characterId: string | null; submittedLabel: string | null } | null>(null);
+  const lookSavingRef = useRef<symbol | null>(null);
   const [looks, setLooks] = useState<CharacterLookItem[]>([]);
   const [looksAuthority, setLooksAuthority] = useState(initialAuthorityStatus);
   const [selectedLookId, setSelectedLookId] = useState("");
@@ -1051,13 +1080,29 @@ export function GeneratorWorkspace() {
   const bulkDeleteArmed =
     selectedMediaIds.size > 0 && bulkDeleteConfirmKey === selectedMediaConfirmKey;
 
+  const closeLookEditor = useCallback(() => {
+    lookEditorSerialRef.current += 1;
+    lookSaveSourceRef.current = null;
+    lookSavingRef.current = null;
+    setLookSaving(false);
+    setLookEditorMediaId(null);
+    setEditingLook(null);
+    setLookAction(null);
+    setLookConfirmationProfileId(null);
+    setLookUncertain(false);
+    setLookLabel("");
+    setLookDescription("");
+  }, []);
+
   const invalidateLookScope = useCallback(() => {
     looksRequestSerialRef.current += 1;
     looksCharacterIdRef.current = "";
     setLooks([]);
     setSelectedLookId("");
     setLooksAuthority(initialAuthorityStatus());
-  }, []);
+    setActiveLookProfileId(null);
+    closeLookEditor();
+  }, [closeLookEditor]);
 
   const invalidateViewerRelativeCharacterAuthority = useCallback(
     (refresh: boolean) => {
@@ -1081,6 +1126,9 @@ export function GeneratorWorkspace() {
   }, []);
 
   const clearPrivateViewerProjections = useCallback(() => {
+    intentSerialRef.current += 1; intentOperationRef.current = null; intentSubmittedRef.current = null;
+    setIntentEditor(null); setIntentBusy(false); setIntentUncertain(false); setIntentDirection(""); setIntentFeedbackError(""); setIntentCanRetryOriginal(false); setVideoDirectionDraft(null);
+
     abortPrivateViewerRequests();
     suspendEnhancementReceipts(true);
     enhancementSerialRef.current += 1;
@@ -1102,7 +1150,17 @@ export function GeneratorWorkspace() {
     setDeleteConfirmMediaId(null);
     setBulkDeleteConfirmKey(null);
     setDeleteConfirmPresetId(null);
+    lookEditorSerialRef.current += 1;
+    lookSaveSourceRef.current = null;
+    lookSavingRef.current = null;
+    setLookSaving(false);
     setLookEditorMediaId(null);
+    setEditingLook(null);
+    setLookAction(null);
+    setLookConfirmationProfileId(null);
+    setLookUncertain(false);
+    setLookLabel("");
+    setLookDescription("");
     resetGenerationRequestScope(true);
     invalidateLookScope();
     setLooksAuthority(readyAuthorityStatus());
@@ -1484,14 +1542,15 @@ export function GeneratorWorkspace() {
           apiPayloadErrorMessage(raw) ?? "Saved Looks could not load.",
         );
       }
-      const items = parseCharacterLooksResponse(raw).items.filter(
-        (look) => look.status === "active",
-      );
+      const parsed = parseCharacterLooksResponse(raw);
+      const items = parsed.items.filter(look => look.status !== "archived");
+      setActiveLookProfileId(parsed.activeVisualProfileId ?? null);
       setLooks(items);
       setLooksAuthority(readyAuthorityStatus());
       setSelectedLookId((current) =>
-        items.some((look) => look.id === current) ? current : "",
+        items.some((look) => look.id === current && look.status === "active") ? current : "",
       );
+      return items;
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
       if (
@@ -1517,6 +1576,9 @@ export function GeneratorWorkspace() {
     privateViewerRequestIsCurrent,
     selectedCharacter?.canEditIdentity,
   ]);
+
+  const refreshLooksRef = useRef(refreshLooks);
+  useLayoutEffect(() => { refreshLooksRef.current = refreshLooks; }, [refreshLooks]);
 
   const refreshCharacters = useCallback(async () => {
     charactersRequestControllerRef.current?.abort();
@@ -1772,7 +1834,7 @@ export function GeneratorWorkspace() {
         void loadGeneratorLooksForViewer(
           config?.viewer.authenticated,
           selectedCharacter?.canEditIdentity === true,
-          refreshLooks,
+          async () => { await refreshLooks(); },
           () => {
             setLooks([]);
             setSelectedLookId("");
@@ -1992,28 +2054,38 @@ export function GeneratorWorkspace() {
   }
 
   async function toggleLike(item: MediaItem) {
+    const ticket = beginPrivateViewerRequest();
+    if (!ticket) return;
+    const current = () => !ticket.controller.signal.aborted && privateViewerRequestIsCurrent(ticket);
     const nextLiked = !item.liked;
-    // Optimistic: flip the heart. On the "liked" tab an unlike removes the card,
-    // since it no longer belongs there.
-    setMedia((current) => {
-      if (!nextLiked && galleryTab === "liked") {
-        return current.filter((m) => m.id !== item.id);
+    setMedia((items) => {
+      if (!nextLiked && galleryTabRef.current === "liked") {
+        return items.filter((media) => media.id !== item.id);
       }
-      return current.map((m) => (m.id === item.id ? { ...m, liked: nextLiked } : m));
+      return items.map((media) => media.id === item.id ? { ...media, liked: nextLiked } : media);
     });
     try {
       const response = await fetch(`/api/v1/media/${item.id}/like`, {
         method: nextLiked ? "POST" : "DELETE",
+        signal: ticket.controller.signal,
+        headers: { "x-idream-viewer-scope": ticket.scope },
       });
-      if (!response.ok) {
+      if (!current()) return;
+      if (response.ok) {
+        // A tab/filter read may have finished before this mutation committed.
+        void refreshMedia(galleryTabRef.current);
+      } else {
         const failure = publicOptimisticMutationFailure("gallery_like");
         setStatus(failure.status);
-        if (failure.reloadAuthority) void refreshMedia(galleryTab);
+        if (failure.reloadAuthority) void refreshMedia(galleryTabRef.current);
       }
     } catch {
+      if (!current()) return;
       const failure = publicOptimisticMutationFailure("gallery_like");
       setStatus(failure.status);
-      if (failure.reloadAuthority) void refreshMedia(galleryTab);
+      if (failure.reloadAuthority) void refreshMedia(galleryTabRef.current);
+    } finally {
+      finishPrivateViewerRequest(ticket);
     }
   }
 
@@ -2071,25 +2143,114 @@ export function GeneratorWorkspace() {
     feedbackType: "identity_match" | "identity_mismatch",
     sourceSurface: "generator" | "gallery" = "gallery",
   ) {
-    const response = await fetch(`/api/v1/media/${item.id}/feedback`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ feedbackType, sourceSurface }),
-    }).catch(() => null);
-    if (!response) {
-      setStatus("Couldn't save identity feedback. Check your connection and try again.");
-      return;
+    const ticket = beginPrivateViewerRequest();
+    if (!ticket) return;
+    const current = () => !ticket.controller.signal.aborted && privateViewerRequestIsCurrent(ticket);
+    try {
+      const response = await fetch(`/api/v1/media/${item.id}/feedback`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-idream-viewer-scope": ticket.scope },
+        body: JSON.stringify({ feedbackType, sourceSurface }),
+      });
+      const payload = (await response.json().catch(() => null)) as ApiPayload<unknown> | null;
+      if (!current()) return;
+      if (!response.ok || !payload?.ok) {
+        setStatus(payload?.error?.message ?? "Couldn't save identity feedback.");
+        return;
+      }
+      setStatus(
+        feedbackType === "identity_match"
+          ? "Recorded: looks like the character."
+          : "Recorded: identity doesn't match. Try another direction or generate again.",
+      );
+    } catch {
+      if (current()) setStatus("Identity feedback could not be confirmed. Check your connection before retrying.");
+    } finally {
+      finishPrivateViewerRequest(ticket);
     }
-    const payload = (await response.json().catch(() => null)) as ApiPayload<unknown> | null;
-    if (!response.ok || !payload?.ok) {
-      setStatus(payload?.error?.message ?? "Couldn't save identity feedback.");
-      return;
+  }
+
+  function openIntentFeedback(item: MediaItem, value: "match" | "mismatch", surface: "generator" | "gallery") {
+    if (intentOperationRef.current || intentSubmittedRef.current) { setIntentFeedbackError("Check the original feedback before starting another report."); return; }
+    const serial = ++intentSerialRef.current;
+    setIntentEditor({ item, surface }); setIntentValue(value); setIntentDirection(item.intentFeedback?.direction ?? "");
+    setIntentFeedbackError(""); setIntentUncertain(false); setIntentCanRetryOriginal(false);
+    window.setTimeout(() => {
+      if (serial !== intentSerialRef.current) return;
+      workspaceTopRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      intentRatingRef.current?.focus({ preventScroll: true });
+    }, 0);
+  }
+
+  function projectIntentFeedback(item: MediaItem, feedback: RuntimeMediaIntentFeedback) {
+    const update = (row: MediaItem) => row.id === item.id ? { ...row, intentFeedback: feedback } : row;
+    setMedia(rows => rows.map(update)); setLatestResults(rows => rows.map(update));
+    setIntentEditor(current => current?.item.id === item.id ? { ...current, item: update(current.item) } : current);
+  }
+
+  async function submitIntentFeedback(checkOnly = false, retryOriginal = false) {
+    const editor = intentEditor;
+    if (!editor || intentOperationRef.current || (!checkOnly && !retryOriginal && intentSubmittedRef.current)) return;
+    const submitted = checkOnly || retryOriginal ? intentSubmittedRef.current : { assetId: editor.item.id, value: intentValue, direction: intentDirection.trim() || null };
+    if (!submitted || (submitted.value === "mismatch" && !submitted.direction)) { setIntentFeedbackError("Describe which instructions were not followed."); return; }
+    const ticket = beginPrivateViewerRequest(); if (!ticket) return;
+    const serial = intentSerialRef.current, operation = Symbol("intent-feedback");
+    intentOperationRef.current = operation; setIntentBusy(true); setIntentFeedbackError(""); setIntentCanRetryOriginal(false);
+    if (!checkOnly) intentSubmittedRef.current = submitted;
+    const current = () => !ticket.controller.signal.aborted && privateViewerRequestIsCurrent(ticket) && serial === intentSerialRef.current && intentOperationRef.current === operation;
+    try {
+      const response = await fetch(`/api/v1/media/${encodeURIComponent(submitted.assetId)}/feedback`, {
+        method: checkOnly ? "GET" : "POST", cache: "no-store",
+        headers: { "content-type": "application/json", "x-idream-viewer-scope": ticket.scope },
+        ...(checkOnly ? { signal: ticket.controller.signal } : { body: JSON.stringify({ feedbackType: `intent_${submitted.value}`, sourceSurface: editor.surface, direction: submitted.direction ?? "" }) }),
+      });
+      const payload: unknown = await response.json(); if (!current()) return;
+      if (!response.ok) {
+        if (!checkOnly && response.status >= 400 && response.status < 500 && isRecord(payload) && payload.ok === false && isRecord(payload.error) && typeof payload.error.message === "string" && payload.error.message.trim()) {
+          intentSubmittedRef.current = null; setIntentUncertain(false); setIntentFeedbackError(payload.error.message); return;
+        }
+        throw new Error("Feedback could not be confirmed.");
+      }
+      const result = parseMediaIntentFeedbackResponse(payload);
+      if (result.ownerScope !== ticket.scope || result.mediaAssetId !== submitted.assetId) throw new Error("Feedback belongs to another result or viewer.");
+      if (checkOnly && (!result.feedback || result.feedback.value !== submitted.value || result.feedback.direction !== submitted.direction)) {
+        if (result.feedback) projectIntentFeedback(editor.item, result.feedback);
+        setIntentCanRetryOriginal(true); setIntentUncertain(true);
+        setIntentFeedbackError("This result has no matching recorded feedback. You may retry the original report below; your edited draft is kept separately."); return;
+      }
+      if (!result.feedback || result.feedback.actorId !== ticket.scope.slice(5) || result.feedback.mediaAssetId !== submitted.assetId || result.feedback.value !== submitted.value || result.feedback.direction !== submitted.direction) throw new Error("The original feedback is still unconfirmed.");
+      projectIntentFeedback(editor.item, result.feedback); intentSubmittedRef.current = null; setIntentUncertain(false);
+      setIntentFeedbackError("Feedback recorded. Your result is kept; no generation or coin charge was made.");
+    } catch {
+      if (current()) { setIntentUncertain(true); setIntentFeedbackError("Feedback may already be recorded. Check the original result before submitting again."); }
+    } finally {
+      finishPrivateViewerRequest(ticket);
+      if (current()) { intentOperationRef.current = null; setIntentBusy(false); }
     }
-    setStatus(
-      feedbackType === "identity_match"
-        ? "Recorded: looks like the character."
-        : "Recorded: identity doesn't match. Try another direction or generate again.",
-    );
+  }
+
+  function prepareIntentCorrection() {
+    if (!intentEditor || !intentDirection.trim() || intentBusy || intentUncertain) return;
+    const { item } = intentEditor, direction = intentDirection.trim();
+    if (item.type === "image") { editGalleryImage(item); setPrompt(direction); }
+    else {
+      if (pending || pendingReceipts.length > 0 || videoSequenceRecovery) { setIntentFeedbackError("Keep the original request and its edited script. Finish checking it before starting a new draft."); return; }
+      if (!item.characterId || (mode === "video" && characterId !== item.characterId)) { setIntentFeedbackError("Choose this result’s character in a new video draft before applying its correction."); return; }
+      if (generationContext.required) leaveGenerationContext();
+      if (item.characterId) { invalidateLookScope(); setCharacterId(item.characterId); setFreeplay(false); }
+      setMode("video"); setView("create"); setVideoDirectionDraft({ id: `${item.id}:${Date.now()}`, prompt: direction });
+    }
+    setStatus("Correction draft ready. Review a new price before generating; nothing was submitted.");
+  }
+
+  function intentButtons(item: MediaItem, surface: "generator" | "gallery") {
+    if (!item.intentFeedbackAvailable) return null;
+    const recorded = item.intentFeedback ? item.intentFeedback.value === "match" ? "Recorded: instructions followed" : `Recorded correction: ${item.intentFeedback.direction}` : null;
+    return <div aria-label="Instruction feedback" className="flex flex-wrap gap-1.5 rounded-lg bg-black/70 p-2 text-[11px] text-white">
+      <button className="min-h-8 rounded-full border border-white/20 px-2 py-1 font-semibold leading-4 transition-colors hover:bg-white/15" type="button" aria-label="Report intent match" onClick={() => openIntentFeedback(item, "match", surface)}>Instructions followed</button>
+      <button className="min-h-8 rounded-full border border-white/20 px-2 py-1 font-semibold leading-4 transition-colors hover:bg-white/15" type="button" aria-label="Report intent mismatch" onClick={() => openIntentFeedback(item, "mismatch", surface)}>Needs correction</button>
+      {recorded ? <p className="line-clamp-2 w-full break-words leading-4" title={recorded}>{recorded}</p> : null}
+    </div>;
   }
 
   function startNewMomentFromResult(item: MediaItem) {
@@ -2115,40 +2276,208 @@ export function GeneratorWorkspace() {
     }, 0);
   }
 
+  function revealLookEditor() {
+    const serial = lookEditorSerialRef.current;
+    window.setTimeout(() => {
+      if (serial !== lookEditorSerialRef.current) return;
+      const editor = lookEditorRef.current;
+      if (!editor) return;
+      editor.scrollIntoView({ behavior: "smooth", block: "start" });
+      lookNameRef.current?.focus({ preventScroll: true });
+    }, 0);
+  }
+
   function openLookEditor(item: MediaItem) {
+    closeLookEditor();
+    lookSaveSourceRef.current = { mediaId: item.id, characterId: item.characterId ?? null, submittedLabel: null };
     setLookEditorMediaId(item.id);
     setLookLabel("");
     setLookDescription("");
     setStatus("");
+    revealLookEditor();
   }
 
   async function saveMediaAsLook() {
+    if (lookSavingRef.current || lookUncertain) return;
     if (!lookEditorMediaId || !lookLabel.trim() || !lookDescription.trim()) {
       setStatus("Name the Look and describe the reusable outfit or styling.");
       return;
     }
-    const response = await fetch(`/api/v1/media/${lookEditorMediaId}/save-as-look`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        label: lookLabel.trim(),
-        appearanceDelta: { description: lookDescription.trim() },
-      }),
-    }).catch(() => null);
-    if (!response) {
-      setStatus("Couldn't save this Look. Check your connection and try again.");
+    const ticket = beginPrivateViewerRequest();
+    if (!ticket) {
+      setStatus("Reconnect the generator before saving this Look.");
       return;
     }
-    const payload = (await response.json().catch(() => null)) as ApiPayload<unknown> | null;
-    if (!response.ok || !payload?.ok) {
-      setStatus(payload?.error?.message ?? "Couldn't save this Look.");
-      return;
+    const editor = lookEditorSerialRef.current;
+    const operation = Symbol("save Look");
+    lookSavingRef.current = operation;
+    setLookSaving(true);
+    const current = () => lookSavingRef.current === operation &&
+      editor === lookEditorSerialRef.current && !ticket.controller.signal.aborted &&
+      privateViewerRequestIsCurrent(ticket);
+    const source = lookSaveSourceRef.current;
+    if (source) lookSaveSourceRef.current = { ...source, submittedLabel: lookLabel.trim() };
+    try {
+      // Closing or replacing an editor revokes its receipt, not a submitted
+      // write. The server checks this fixed owner before changing the Look.
+      const response = await fetch(`/api/v1/media/${lookEditorMediaId}/save-as-look`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-idream-viewer-scope": ticket.scope },
+        body: JSON.stringify({
+          label: lookLabel.trim(),
+          appearanceDelta: { description: lookDescription.trim() },
+        }),
+      });
+      const payload = (await response.json().catch(() => null)) as ApiPayload<unknown> | null;
+      if (!current()) return;
+      if (!response.ok || !payload?.ok) {
+        // A rejected 4xx is safe to correct. A lost or invalid acceptance
+        // receipt can already have committed and must be checked before retry.
+        if (response.ok || response.status >= 500) {
+          setLookUncertain(true);
+          void refreshLooksRef.current();
+        }
+        setStatus(payload?.error?.message ?? "Look save could not be confirmed. Check your saved Looks before retrying.");
+        return;
+      }
+      setLookEditorMediaId(null);
+      setLookLabel("");
+      setLookDescription("");
+      setStatus("Look saved. You can reuse it for this character.");
+      void refreshLooksRef.current();
+    } catch {
+      if (current()) {
+        setLookUncertain(true);
+        setStatus("Look save could not be confirmed. Check your saved Looks before retrying.");
+        void refreshLooksRef.current();
+      }
+    } finally {
+      finishPrivateViewerRequest(ticket);
+      if (lookSavingRef.current === operation) {
+        lookSavingRef.current = null;
+        if (!ticket.controller.signal.aborted) setLookSaving(false);
+      }
     }
-    setLookEditorMediaId(null);
-    setLookLabel("");
-    setLookDescription("");
-    setStatus("Look saved. You can reuse it for this character.");
-    void refreshLooks();
+  }
+
+  function openSavedLookEditor(look: CharacterLookItem) {
+    closeLookEditor();
+    setEditingLook(look);
+    setLookLabel(look.label);
+    setLookDescription(typeof look.appearanceDelta.description === "string" ? look.appearanceDelta.description : "");
+    setStatus("");
+    setView("gallery");
+    revealLookEditor();
+  }
+
+  async function checkSavedLookOutcome() {
+    if (lookSavingRef.current) return;
+    const editor = lookEditorSerialRef.current;
+    const source = lookSaveSourceRef.current;
+    const operation = Symbol("check Look");
+    lookSavingRef.current = operation;
+    setLookSaving(true);
+    try {
+      if (source) {
+        if (!source.characterId || !source.submittedLabel) {
+          setStatus("This image's saved Look could not be checked. Reconnect and check its character before trying again.");
+          return;
+        }
+        const ticket = beginPrivateViewerRequest();
+        if (!ticket) return;
+        const current = () => lookSavingRef.current === operation && editor === lookEditorSerialRef.current && !ticket.controller.signal.aborted && privateViewerRequestIsCurrent(ticket);
+        try {
+          // A gallery image can belong to a different character from the picker.
+          // Check the submitted source and name, while preserving any later draft.
+          const response = await fetch(`/api/v1/characters/${encodeURIComponent(source.characterId)}/looks`, {
+            cache: "no-store", signal: ticket.controller.signal, headers: { "x-idream-viewer-scope": ticket.scope },
+          });
+          const raw = await response.json().catch(() => null);
+          if (!current()) return;
+          if (!response.ok) throw new Error(apiPayloadErrorMessage(raw) ?? "Saved Looks for this image's character could not be checked.");
+          const items = parseCharacterLooksResponse(raw).items;
+          if (items.some(look => look.characterId !== source.characterId)) throw new Error("Saved Look character could not be confirmed.");
+          const found = items.some(look => look.status !== "archived" && look.label === source.submittedLabel && look.referenceAssetId === source.mediaId);
+          setLookUncertain(false);
+          setStatus(found ? `Found saved Look "${source.submittedLabel}" for this image's character. Your current draft is unchanged.`
+            : `No saved Look "${source.submittedLabel}" was found for this image's character. Check before submitting again.`);
+        } catch (error) {
+          if (current()) setStatus(requestErrorMessage(error, "Saved Looks for this image's character could not be checked."));
+        } finally {
+          finishPrivateViewerRequest(ticket);
+        }
+        return;
+      }
+      const items = await refreshLooksRef.current();
+      if (lookSavingRef.current !== operation || editor !== lookEditorSerialRef.current || !items) return;
+      setLookUncertain(false);
+      setLookAction(null);
+      setStatus("Saved Looks refreshed. Check the list before submitting again.");
+    } finally {
+      if (lookSavingRef.current === operation) {
+        lookSavingRef.current = null;
+        setLookSaving(false);
+      }
+    }
+  }
+
+  async function updateSavedLook(action: "edit" | "rebase" | "archive") {
+    const original = editingLook;
+    if (!original || lookSavingRef.current || lookUncertain || original.characterId !== characterId || freeplay) return;
+    const label = lookLabel.trim();
+    if (action === "edit" && !label) { setStatus("Name the Look before saving."); return; }
+    if (action === "rebase" && (!lookConfirmationProfileId || lookAction !== "rebase")) return;
+    if (action === "archive" && lookAction !== "archive") return;
+    const ticket = beginPrivateViewerRequest();
+    if (!ticket) return;
+    const editor = lookEditorSerialRef.current;
+    const operation = Symbol("update Look");
+    lookSavingRef.current = operation;
+    setLookSaving(true);
+    const current = () => lookSavingRef.current === operation && editor === lookEditorSerialRef.current &&
+      !ticket.controller.signal.aborted && privateViewerRequestIsCurrent(ticket);
+    const description = lookDescription.trim();
+    const body = action === "rebase" ? { status: "active", expectedVisualProfileId: lookConfirmationProfileId }
+      : { label, ...(description !== (original.appearanceDelta.description ?? "")
+        ? { appearanceDelta: { ...original.appearanceDelta, description } } : {}) };
+    try {
+      const response = await fetch(`/api/v1/characters/${encodeURIComponent(original.characterId)}/looks/${encodeURIComponent(original.id)}`, {
+        method: action === "archive" ? "DELETE" : "PATCH",
+        headers: { "content-type": "application/json", "x-idream-viewer-scope": ticket.scope },
+        ...(action === "archive" ? {} : { body: JSON.stringify(body) }),
+      });
+      const payload = response.status === 204 ? null : await response.json().catch(() => null) as ApiPayload<{ look: CharacterLookItem }> | null;
+      if (!current()) return;
+      if (!response.ok) {
+        setLookAction(null);
+        setLookUncertain(response.status >= 500);
+        setStatus(payload?.error?.message ?? "Look update could not be confirmed. Check your saved Looks before retrying.");
+        void refreshLooksRef.current();
+        return;
+      }
+      // The archive endpoint acknowledges its soft archive with 204. Other
+      // successful statuses cannot stand in for that receipt.
+      if (action === "archive" ? response.status !== 204 : payload?.ok !== true) throw new Error("Invalid Look receipt");
+      const returned = action === "archive" ? null : parseCharacterLooksResponse({ok: true, data: {items: [payload?.data?.look]}}).items[0];
+      if (returned && (returned.characterId !== original.characterId || (action === "rebase" && returned.status !== "active"))) throw new Error("Invalid Look receipt");
+      const items = await refreshLooksRef.current();
+      if (!current()) return;
+      if (!items || (action === "archive" ? items.some(look => look.id === original.id)
+        : !items.some(look => look.id === returned?.id))) throw new Error("Look state could not be confirmed");
+      if (action === "rebase" && returned && items.some(look => look.id === returned.id && look.status === "active")) setSelectedLookId(returned.id);
+      closeLookEditor();
+      setStatus(action === "archive" ? "Look archived. Your image and past generations are unchanged." : action === "rebase" ? "Look confirmed for the current identity. Check its new generation price." : "Look changes saved.");
+    } catch {
+      if (current()) {
+        setLookUncertain(true);
+        setLookAction(null);
+        setStatus("Look update could not be confirmed. Check your saved Looks before retrying.");
+        void refreshLooksRef.current();
+      }
+    } finally {
+      finishPrivateViewerRequest(ticket);
+      if (lookSavingRef.current === operation) { lookSavingRef.current = null; if (!ticket.controller.signal.aborted) setLookSaving(false); }
+    }
   }
 
   async function runIdentityMediaAction(
@@ -2161,28 +2490,34 @@ export function GeneratorWorkspace() {
       setStatus("Choose a character before updating identity.");
       return;
     }
-    const response = await fetch(`/api/v1/media/${item.id}/${action}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ characterId: targetCharacterId }),
-    }).catch(() => null);
-    if (!response) {
-      setStatus("Couldn't update the character. Check your connection and try again.");
-      return;
+    const ticket = beginPrivateViewerRequest();
+    if (!ticket) return;
+    const current = () => !ticket.controller.signal.aborted && privateViewerRequestIsCurrent(ticket);
+    try {
+      const response = await fetch(`/api/v1/media/${item.id}/${action}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-idream-viewer-scope": ticket.scope },
+        body: JSON.stringify({ characterId: targetCharacterId }),
+      });
+      const payload = (await response.json().catch(() => null)) as ApiPayload<unknown> | null;
+      if (!current()) return;
+      if (!response.ok || !payload?.ok) {
+        setStatus(payload?.error?.message ?? "Identity update could not be confirmed. Check the character before retrying.");
+        return;
+      }
+      setStatus(
+        action === "use-as-character-image"
+          ? "Character image updated."
+          : "Added to identity references.",
+      );
+      void refreshCharacters();
+      void refreshIdentityMedia();
+      void refreshMedia(galleryTabRef.current);
+    } catch {
+      if (current()) setStatus("Identity update could not be confirmed. Check the character before retrying.");
+    } finally {
+      finishPrivateViewerRequest(ticket);
     }
-    const payload = (await response.json().catch(() => null)) as ApiPayload<unknown> | null;
-    if (!response.ok || !payload?.ok) {
-      setStatus(payload?.error?.message ?? "Identity update failed.");
-      return;
-    }
-    setStatus(
-      action === "use-as-character-image"
-        ? "Character image updated."
-        : "Added to identity references.",
-    );
-    void refreshCharacters();
-    void refreshIdentityMedia();
-    void refreshMedia(galleryTab);
   }
 
   function canEditIdentityForMedia(item: MediaItem) {
@@ -2227,6 +2562,7 @@ export function GeneratorWorkspace() {
   }
 
   function switchGallery(tab: GalleryTab) {
+    galleryTabRef.current = tab;
     setGalleryTab(tab);
     setView("gallery");
     setManageMode(false);
@@ -2537,7 +2873,22 @@ export function GeneratorWorkspace() {
 
   return (
     <section className="px-4 py-8 md:px-[60px] md:py-12">
-      <div className="mx-auto max-w-6xl" ref={workspaceTopRef}>
+      <div className="mx-auto max-w-6xl scroll-mt-24" ref={workspaceTopRef}>
+      {intentEditor && !anonymousViewer && <section aria-label="Intent feedback editor" className="mb-4 space-y-3 rounded-xl border border-white/20 bg-black p-4 text-sm text-white">
+        <p className="font-bold">Instruction feedback · {intentEditor.item.type} result</p>
+        <p>Record whether the result followed your instructions, separately from identity. This keeps the result and costs no coins.</p>
+        <label className="grid max-w-sm gap-2 font-semibold">Rating<select ref={intentRatingRef} className="h-10 rounded-[10px] bg-[rgb(36,36,36)] px-3 text-sm text-white disabled:opacity-50" aria-label="Intent rating" value={intentValue} disabled={intentBusy} onChange={event => setIntentValue(event.target.value as "match" | "mismatch")}><option value="mismatch">Needs correction</option><option value="match">Instructions followed</option></select></label>
+        <label className="grid gap-2 font-semibold">Correction direction<textarea aria-label="Correction direction" maxLength={600} rows={3} value={intentDirection} disabled={intentBusy} onChange={event => setIntentDirection(event.target.value)} className="w-full rounded-[10px] bg-[rgb(36,36,36)] p-3 font-normal leading-6 disabled:opacity-50" /></label>
+        {intentEditor.item.intentFeedback ? <p className="break-words leading-6">Recorded: {intentEditor.item.intentFeedback.value === "match" ? "instructions followed" : intentEditor.item.intentFeedback.direction}</p> : null}
+        {intentFeedbackError && <p role="status">{intentFeedbackError}</p>}
+        {intentUncertain && intentCanRetryOriginal ? <p className="break-words leading-6">Original report: {intentSubmittedRef.current?.value} · {intentSubmittedRef.current?.direction ?? "Instructions followed"}</p> : null}
+        <div className="flex flex-wrap gap-3">
+          {intentUncertain ? <button className="min-h-10 rounded-full bg-white px-4 text-[12px] font-bold text-black disabled:opacity-50" type="button" disabled={intentBusy} onClick={() => void submitIntentFeedback(true)}>Check recorded feedback</button> : <button className="min-h-10 rounded-full bg-white px-4 text-[12px] font-bold text-black disabled:opacity-50" type="button" disabled={intentBusy || (intentValue === "mismatch" && !intentDirection.trim())} onClick={() => void submitIntentFeedback()}>Save intent feedback</button>}
+          {intentUncertain && intentCanRetryOriginal ? <button className="min-h-10 rounded-full border border-white/20 px-4 text-[12px] font-bold disabled:opacity-50" type="button" disabled={intentBusy} onClick={() => void submitIntentFeedback(false, true)}>Retry original feedback</button> : null}
+          <button className="min-h-10 rounded-full bg-[rgb(36,36,36)] px-4 text-[12px] font-bold disabled:opacity-50" type="button" disabled={intentBusy || intentUncertain || !intentDirection.trim()} onClick={prepareIntentCorrection}>Prepare correction draft</button>
+          <button className="min-h-10 rounded-full border border-white/20 px-4 text-[12px] font-bold disabled:opacity-50" type="button" disabled={intentBusy || intentUncertain} onClick={() => { intentSerialRef.current += 1; setIntentEditor(null); }}>Close feedback</button>
+        </div>
+      </section>}
         {/* 切换器必须和面板用同一个断点：面板已从 md 推到 lg，这里若还停在 md，
             768–1023 之间就会「切换器没了、面板也被 view 挡住」，用户够不到
             Jobs / Gallery。 */}
@@ -2963,7 +3314,7 @@ export function GeneratorWorkspace() {
                       value={selectedLookId}
                     >
                       <option value="">No saved Look</option>
-                      {looks.map((look) => (
+                      {looks.filter(look => look.status === "active").map((look) => (
                         <option key={look.id} value={look.id}>
                           {look.label}
                         </option>
@@ -2971,6 +3322,12 @@ export function GeneratorWorkspace() {
                     </select>
                   </label>
                 )}
+                {!anonymousViewer && looks.length > 0 ? <div className="mt-3 space-y-2" aria-label="Saved Looks">
+                  {looks.map(look => <div key={look.id} className="flex items-center justify-between gap-2 rounded-lg bg-white/5 p-2 text-xs">
+                    <div><span className="font-semibold text-white">{look.label}</span>{look.status === "needs_rebase" ? <p className="mt-1 text-[rgb(255,184,112)]">Needs identity confirmation</p> : null}</div>
+                    <button type="button" aria-label={`Manage Look: ${look.label}`} onClick={() => openSavedLookEditor(look)} className="rounded-full bg-white/10 px-3 py-2 font-semibold text-white">Manage</button>
+                  </div>)}
+                </div> : null}
                 {!anonymousViewer && generatorShowsSavedLooksEmpty(
                   selectedCharacter?.canEditIdentity === true,
                   looksAuthority,
@@ -3009,7 +3366,7 @@ export function GeneratorWorkspace() {
               </div>
             ) : null}
 
-            {mode === "video" ? anonymousViewer ? <Link className="mt-4 flex h-12 w-full items-center justify-center rounded-full bg-[rgb(255,48,170)] text-[14px] font-black text-white" href={authHrefForTarget("/signup", authReturnTarget)}>Join free to generate</Link> : <VideoSequenceControls key={receiptOwnerScope ?? "signed-out"} viewerScope={receiptOwnerScope} characterId={generationBody.characterId} generationContextToken={generationBody.generationContextToken} consistencyMode={consistencyMode} seed={generationBody.seed} disabled={!modeAvailable || !contextReady || formUnconfirmed} unavailableMessage={modeUnavailableMessage ?? undefined} coinsHref={insufficientBalanceHref} onStatusChange={refreshVideoSequenceAuthority} onRecoveryChange={recoverVideoSequenceContext} /> : <>
+            {mode === "video" ? anonymousViewer ? <Link className="mt-4 flex h-12 w-full items-center justify-center rounded-full bg-[rgb(255,48,170)] text-[14px] font-black text-white" href={authHrefForTarget("/signup", authReturnTarget)}>Join free to generate</Link> : <VideoSequenceControls key={receiptOwnerScope ?? "signed-out"} viewerScope={receiptOwnerScope} characterId={generationBody.characterId} generationContextToken={generationBody.generationContextToken} consistencyMode={consistencyMode} seed={generationBody.seed} directionDraft={videoDirectionDraft ?? undefined} disabled={!modeAvailable || !contextReady || formUnconfirmed} unavailableMessage={modeUnavailableMessage ?? undefined} coinsHref={insufficientBalanceHref} onStatusChange={refreshVideoSequenceAuthority} onRecoveryChange={recoverVideoSequenceContext} /> : <>
             <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
                 {imageEditMode
                   ? "Edit instructions"
@@ -3664,6 +4021,7 @@ export function GeneratorWorkspace() {
                           <LegacyTestAssetBadge isSynthetic={item.isSynthetic} />
                         </div>
                         <div className="grid gap-2 p-3">
+                          {intentButtons(item, "generator")}
                           {item.type === "image" && item.characterId && (
                             <div
                               aria-label="Character identity feedback"
@@ -4095,16 +4453,18 @@ export function GeneratorWorkspace() {
                   </div>
                 </section>
               )}
-              {lookEditorMediaId && (
-                <div className="mb-4 grid gap-3 rounded-[12px] border border-white/10 bg-[rgb(28,28,28)] p-4">
+              {(lookEditorMediaId || editingLook) && (
+                <div ref={lookEditorRef} className="mb-4 grid scroll-mt-24 gap-3 rounded-[12px] border border-white/10 bg-[rgb(28,28,28)] p-4">
                   <div>
-                    <h3 className="text-[14px] font-black text-white">Save as a reusable Look</h3>
+                    <h3 className="text-[14px] font-black text-white">{editingLook ? "Manage saved Look" : "Save as a reusable Look"}</h3>
                     <p className="mt-1 text-[12px] text-[rgb(170,170,170)]">
                       Save clothing, hair styling, and accessories—not the character&apos;s face.
                     </p>
                   </div>
                   <input
                     aria-label="Look name"
+                    ref={lookNameRef}
+                    disabled={lookSaving}
                     className="h-10 rounded-[8px] border border-white/10 bg-black/30 px-3 text-[13px] text-white outline-none focus:border-white/30"
                     onChange={(event) => setLookLabel(event.target.value)}
                     placeholder="Look name, e.g. Rainy day"
@@ -4112,25 +4472,41 @@ export function GeneratorWorkspace() {
                   />
                   <textarea
                     aria-label="Look styling description"
+                    disabled={lookSaving}
                     className="min-h-20 resize-y rounded-[8px] border border-white/10 bg-black/30 p-3 text-[13px] text-white outline-none focus:border-white/30"
                     onChange={(event) => setLookDescription(event.target.value)}
                     placeholder="Cream trench coat, loosely pinned curls, amber umbrella…"
                     value={lookDescription}
                   />
+                  {lookUncertain ? <div role="alert" className="text-xs text-[rgb(255,184,112)]">This write may already have completed. Check saved Looks before trying again.<button type="button" disabled={lookSaving} onClick={() => void checkSavedLookOutcome()} className="ml-2 underline">Check saved Looks</button></div> : null}
+                  {editingLook ? <div className="space-y-2 text-xs text-white/70">
+                    {editingLook.status === "needs_rebase" ? <p>Needs identity confirmation. Editing styling does not confirm a new identity.</p> : null}
+                    {lookAction === "rebase" ? <div role="alert">Your character&apos;s appearance has changed since this Look was saved. Confirm that its styling and reference image still suit the current character. This creates a new Look; past generations retain their original identity.
+                      <button type="button" disabled={lookSaving || lookUncertain || !lookConfirmationProfileId} onClick={() => void updateSavedLook("rebase")} className="m-2 rounded-full bg-white px-3 py-2 font-semibold text-black">Confirm identity change</button>
+                    </div> : lookAction === "archive" ? <div role="alert">This removes the Look from reuse and releases its active reference dependency. Your source image and past generations stay available.
+                      <button type="button" disabled={lookSaving || lookUncertain} onClick={() => void updateSavedLook("archive")} className="m-2 rounded-full bg-white px-3 py-2 font-semibold text-black">Confirm archive Look</button>
+                    </div> : <div className="flex flex-wrap gap-2">
+                      {editingLook.status === "needs_rebase" ? <button type="button" disabled={lookSaving || lookUncertain || !activeLookProfileId} onClick={() => { setLookAction("rebase"); setLookConfirmationProfileId(activeLookProfileId); }} className="rounded-full bg-white/10 px-3 py-2">Use with current identity</button> : null}
+                      <button type="button" disabled={lookSaving || lookUncertain} onClick={() => setLookAction("archive")} className="rounded-full bg-white/10 px-3 py-2">Archive Look</button>
+                    </div>}
+                    {lookAction ? <button type="button" disabled={lookSaving} onClick={() => setLookAction(null)} className="underline">Cancel Look action</button> : null}
+                  </div> : null}
                   <div className="flex justify-end gap-2">
                     <button
                       className="h-9 rounded-full bg-white/10 px-4 text-[12px] font-bold text-white"
-                      onClick={() => setLookEditorMediaId(null)}
+                      disabled={lookSaving}
+                      onClick={closeLookEditor}
                       type="button"
                     >
                       Cancel
                     </button>
                     <button
                       className="h-9 rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]"
-                      onClick={() => void saveMediaAsLook()}
+                      onClick={() => void (editingLook ? updateSavedLook("edit") : saveMediaAsLook())}
+                      disabled={lookSaving || lookUncertain}
                       type="button"
                     >
-                      Save Look
+                      {lookSaving ? "Saving Look…" : editingLook ? "Save Look changes" : "Save Look"}
                     </button>
                   </div>
                 </div>
@@ -4298,6 +4674,7 @@ export function GeneratorWorkspace() {
                                 {item.identity.selectedAsCharacterImage ? "Character image" : "Identity ref"}
                               </div>
                             )}
+                          {item.intentFeedbackAvailable && <div className="absolute inset-x-2 bottom-12">{intentButtons(item, "gallery")}</div>}
                           {item.provenance && (
                             <GalleryProvenanceBadge provenance={item.provenance} />
                           )}
@@ -4435,6 +4812,8 @@ function GalleryProvenanceBadge({
 
   return (
     <div className={className} data-testid="gallery-provenance-badge">
+
+
       {content}
     </div>
   );

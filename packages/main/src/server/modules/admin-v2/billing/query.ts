@@ -196,10 +196,10 @@ export async function billingReconciliation(request: Request) {
         user: {
           is: {
             dataClass: "customer",
-            status: "active",
-            deletedAt: null,
           },
         },
+        // Account access does not settle a payment. Keep unresolved customer
+        // checkouts visible while their account is suspended or awaiting erasure.
         OR: [
           { needsReconciliation: true },
           { status: "provider_unknown" },
@@ -252,4 +252,3 @@ export async function billingReconciliation(request: Request) {
     totals,
   };
 }
-

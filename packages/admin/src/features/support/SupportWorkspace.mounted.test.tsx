@@ -361,6 +361,69 @@ describe("SupportWorkspace customer replies", () => {
   });
 });
 
+describe("SupportWorkspace pending command permission changes", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  beforeEach(() => {
+    window.history.replaceState(null, "", "/admin/support");
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    apiGet.mockReset();
+    apiWrite.mockReset().mockResolvedValue({});
+  });
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+  });
+  async function render(canWrite: boolean) {
+    await act(async () => root.render(<ToastProvider><SupportWorkspace canViewPlaintext={false} canWrite={canWrite} /></ToastProvider>));
+    await waitUntil(() => container.textContent?.includes(baseTicket.ticketId) === true);
+  }
+  async function change(element: HTMLInputElement | HTMLTextAreaElement, next: string) {
+    expect(element).not.toBeNull();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, "value")!.set!.call(element, next);
+      element.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+  async function openFilledCommand(action: "Resolve" | "Close") {
+    apiGet.mockResolvedValue({ items: [{ ...baseTicket, status: action === "Close" ? "resolved" : "open" }], pageInfo: { endCursor: null, hasNextPage: false } });
+    await render(true);
+    const button = [...container.querySelectorAll("button")].find((node) => node.textContent?.trim() === action);
+    expect(button).toBeDefined();
+    await act(async () => button!.click());
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+    expect(dialog).not.toBeNull();
+    if (action === "Resolve") await change(dialog.querySelector('textarea[aria-label="Message to customer"]')!, "Your account question is resolved.");
+    await change(dialog.querySelector('input[aria-label="Reason"]')!, "Operator checked the account guidance.");
+    await change(dialog.querySelector('input[aria-label="Confirmation"]')!, baseTicket.ticketId);
+    expect([...dialog.querySelectorAll("button")].find((node) => node.textContent?.trim() === "Confirm")?.disabled).toBe(false);
+  }
+  it.each(["Resolve", "Close"] as const)("does not submit the already-filled %s command after write permission is revoked", async (action) => {
+    await openFilledCommand(action);
+    await render(false);
+    const staleDialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    const staleSubmit = staleDialog ? [...staleDialog.querySelectorAll("button")].find((node) => node.textContent?.trim() === "Confirm") : undefined;
+    if (staleSubmit) await act(async () => staleSubmit.click());
+
+    expect(apiWrite).not.toHaveBeenCalled();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+  it.each(["Resolve", "Close"] as const)("does not revive the already-filled %s command after revoke and regrant", async (action) => {
+    await openFilledCommand(action);
+    await render(false);
+    await render(true);
+    const staleDialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    const staleSubmit = staleDialog ? [...staleDialog.querySelectorAll("button")].find((node) => node.textContent?.trim() === "Confirm") : undefined;
+    if (staleSubmit) await act(async () => staleSubmit.click());
+
+    expect(apiWrite).not.toHaveBeenCalled();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+});
+
 const baseTicket = {
   ticketId: "SUP-CLOCK-1",
   userEmail: "customer@example.com",

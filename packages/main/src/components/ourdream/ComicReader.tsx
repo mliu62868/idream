@@ -61,7 +61,7 @@ export function ComicReader({ id }: { id: string }) {
     finally { setChatPending(false); }
   }
 
-  const error = unavailable || reader.status.error;
+  const error = unavailable || viewer.error || reader.status.error;
   // INVARIANT: a failed read takes the Comic off the page. `useViewerResource`
   // keeps the last good projection through a failure, which is right for a list
   // that hiccups; here the failure means this Comic is withdrawn or gone, and
@@ -112,8 +112,8 @@ export function ComicReader({ id }: { id: string }) {
     return () => { active = false; for (const cleanup of cleanups) cleanup(); };
   }, [comic]);
   return <ComicShell>
-    {reader.status.phase === "loading" && <p role="status">Loading Comic…</p>}
-    {error && <div role="alert"><p>{error}</p><button className={`${comicButton} mt-4`} onClick={() => { setUnavailable(""); void reader.refresh(); }} type="button">Reload Comic</button></div>}
+    {reader.status.phase === "loading" && !error && <p role="status">Loading Comic…</p>}
+    {error && <div role="alert"><p>{error}</p><button className={`${comicButton} mt-4`} onClick={() => { setUnavailable(""); if (viewer.error) void viewer.revalidate(); else void reader.refresh(); }} type="button">Reload Comic</button></div>}
     {chatError && <p role="alert" className="mb-4 text-pink-200">{chatError}</p>}
     {comic && <article className="mx-auto max-w-3xl">
       <header className="mb-10"><h1 className="break-words text-4xl font-black md:text-5xl">{comic.title}</h1>

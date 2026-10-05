@@ -545,7 +545,9 @@ export function ReleasePanel({
     ({ release }) => release.id === rollbackSourceId,
   );
   const noUnpublishedChanges = characterHasNoUnpublishedChanges(data);
-  const draftBlockers = candidate || noUnpublishedChanges
+  // Identical content does not restore a route qualification lost after a profile change.
+  const currentReleaseStale = current?.release.status === "published" && current.release.readiness === "stale";
+  const draftBlockers = candidate || (noUnpublishedChanges && !currentReleaseStale)
     ? []
     : characterReleaseDraftBlockers(data);
   // Server blockers stay visible but never hide or disable Publish: the next
@@ -561,7 +563,7 @@ export function ReleasePanel({
   ];
   const canPublish =
     data.serving?.state !== "retired" &&
-    (Boolean(candidate) || !noUnpublishedChanges);
+    (Boolean(candidate) || !noUnpublishedChanges || currentReleaseStale);
   // characterReleaseCreateRequestSchema requires 3+ characters; empty uses the default.
   const reasonTooShort = !candidate && reason.trim().length > 0 && reason.trim().length < 3;
   const retireIsPermanent =
@@ -646,7 +648,7 @@ export function ReleasePanel({
 
       <aside className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
         <h3 className="font-semibold">{t("Publish Character")}</h3>
-        {noUnpublishedChanges && !candidate ? (
+        {noUnpublishedChanges && !currentReleaseStale && !candidate ? (
           <p className="mt-3 text-sm text-[var(--ad-text-muted)]">
             {t("Live and draft are identical. There is nothing to release.")}
           </p>
@@ -669,6 +671,10 @@ export function ReleasePanel({
               </div>
             ))}
           </div>
+        ) : currentReleaseStale && !candidate ? (
+          <p className="mt-3 text-sm text-[var(--ad-text-muted)]">
+            {t("The live release qualification is stale. Publishing again checks the current images and generation route; the content can stay unchanged.")}
+          </p>
         ) : null}
 
         {error ? (

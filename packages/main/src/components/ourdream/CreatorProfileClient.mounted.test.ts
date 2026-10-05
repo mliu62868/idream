@@ -56,7 +56,7 @@ describe("CreatorProfileClient pagination", () => {
   }
 
   it("appends the final page and removes the load-more action when exhausted", async () => {
-    const fetcher = vi.fn(async (input: RequestInfo | URL) => String(input).includes("cursor=")
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => String(input) === "/api/v1/me" ? Response.json({ ok: true, data: { user: null } }) : String(input).includes("cursor=")
       ? page("creator-a", ["character-25"], null)
       : page("creator-a", Array.from({ length: 24 }, (_, i) => `character-${i + 1}`), "next+cursor"));
     vi.stubGlobal("fetch", fetcher);
@@ -71,6 +71,7 @@ describe("CreatorProfileClient pagination", () => {
   it("keeps the current cards and cursor after a page error, then retries the same page", async () => {
     let attempts = 0;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/v1/me") return Response.json({ ok: true, data: { user: null } });
       if (!String(input).includes("cursor=")) return page("creator-a", ["first"], "next");
       if (++attempts === 1) return Response.json({ error: { message: "Unavailable" } }, { status: 503 });
       return page("creator-a", ["last"], null);
@@ -89,6 +90,7 @@ describe("CreatorProfileClient pagination", () => {
     let resolveOld!: (value: Response) => void;
     let oldSignal: AbortSignal | undefined;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/v1/me") return Response.json({ ok: true, data: { user: null } });
       if (String(input).includes("cursor=")) {
         oldSignal = init?.signal ?? undefined;
         return new Promise<Response>((resolve) => { resolveOld = resolve; });
@@ -155,7 +157,7 @@ describe("CreatorProfileClient share and report", () => {
         return Response.json({ ok: true, data: { report: { id: "report-1" } } });
       }
       if (String(input).startsWith("/api/v1/comics")) return Response.json({ ok: true, data: { items: [], nextCursor: null } });
-      if (String(input) === "/api/v1/me") return Response.json({ ok: true, data: { user: null, ageGate: { accepted: true } } });
+      if (String(input) === "/api/v1/me") return Response.json({ ok: true, data: { user: { id: isSelf ? "creator-a" : "reporter-a" }, ageGate: { accepted: true } } });
       return Response.json({ ok: true, data: {
         creator: { id: "creator-a", displayName: "Creator A", image: null, isFollowing: false, isSelf, stats: { characters: 0, followers: 0, likes: "0", chats: "0" } },
         characters: [],

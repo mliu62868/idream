@@ -97,7 +97,17 @@ export const generationJobQuerySchema = adminCursorQuerySchema.extend({
   sourceType: z.string().trim().min(1).max(120).optional(),
   userId: adminIdSchema.optional(),
   characterId: adminIdSchema.optional(),
+  // SPEC: metric drilldowns retain the authority's frozen [from, to) creation window.
+  from: adminIsoDateTimeSchema.optional(),
+  to: adminIsoDateTimeSchema.optional(),
+  profileId: adminIdSchema.optional(),
+  // `null` selects historical requests that did not pin a version; omission selects all versions.
+  profileVersion: z.union([z.coerce.number().int().positive(), z.literal("null")]).optional(),
+  recipeId: adminIdSchema.optional(),
   sort: generationJobSortSchema.default("created_desc"),
+}).refine((query) => !query.from || !query.to || Date.parse(query.from) < Date.parse(query.to), {
+  message: "The generation job window must end after it starts",
+  path: ["to"],
 });
 
 export const generationJobListItemSchema = z

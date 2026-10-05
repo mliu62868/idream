@@ -27,6 +27,7 @@ import { AppError } from "@/server/lib/errors";
 import { fail, ok } from "@/server/lib/http";
 import { actorWithPermission, queryParams } from "@/server/modules/admin-v2/shared/authority";
 import { operationalAdminCaseWhere } from "@/server/modules/metric-data-scope";
+import { normalizeWorkPreferences } from "../shared/work-preferences";
 import {
   CASE_SEVERITY,
   COMMAND_FAILED_STATUSES,
@@ -605,8 +606,10 @@ function projectRow(
   permissions: ReadonlySet<AdminPermissionKey> = new Set(),
   preferenceVersions: ReadonlyMap<string, number> = new Map(),
   characterNames: ReadonlyMap<string, string> = new Map(),
+  snoozedUntilByKey: ReadonlyMap<string, Date | null> = new Map(),
 ): TodayWorkItem {
   const environment = deploymentEnvironment();
+  const snoozedUntil = snoozedUntilByKey.get(`${row.sourceType}:${row.row.id}`)?.toISOString() ?? null;
   if (row.sourceType === "collaboration_mention") {
     return {
       sourceType: row.sourceType,
@@ -633,6 +636,7 @@ function projectRow(
       environment,
       dataClass: row.target.dataClass,
       pinned: pinnedKeys.has(`${row.sourceType}:${row.row.id}`),
+      snoozedUntil,
       preferenceVersion: preferenceVersions.get(`${row.sourceType}:${row.row.id}`) ?? 0,
       claim: null,
     };
@@ -658,6 +662,7 @@ function projectRow(
       environment,
       dataClass: "customer",
       pinned: pinnedKeys.has(`${row.sourceType}:${item.id}`),
+      snoozedUntil,
       preferenceVersion: preferenceVersions.get(`${row.sourceType}:${item.id}`) ?? 0,
       claim: item.ownerId === null && permissions.has("case.assign") ? { entityVersion: item.version } : null,
     };
@@ -687,6 +692,7 @@ function projectRow(
       environment,
       dataClass: "internal",
       pinned: pinnedKeys.has(`${row.sourceType}:${item.id}`),
+      snoozedUntil,
       preferenceVersion: preferenceVersions.get(`${row.sourceType}:${item.id}`) ?? 0,
       claim: item.ownerId === null && permissions.has("ops.incident.manage") ? { entityVersion: item.version } : null,
     };
@@ -724,6 +730,7 @@ function projectRow(
       environment,
       dataClass: "internal",
       pinned: pinnedKeys.has(`${row.sourceType}:${item.id}`),
+      snoozedUntil,
       preferenceVersion: preferenceVersions.get(`${row.sourceType}:${item.id}`) ?? 0,
       claim: null,
     };
@@ -757,6 +764,7 @@ function projectRow(
       environment,
       dataClass: "internal",
       pinned: pinnedKeys.has(`${row.sourceType}:${item.id}`),
+      snoozedUntil,
       preferenceVersion: preferenceVersions.get(`${row.sourceType}:${item.id}`) ?? 0,
       claim: item.ownerId === null && permissions.has("creative.run.write") ? { entityVersion: item.version } : null,
     };
@@ -789,6 +797,7 @@ function projectRow(
     environment,
     dataClass: "audit",
     pinned: pinnedKeys.has(`${row.sourceType}:${item.id}`),
+    snoozedUntil,
     preferenceVersion: preferenceVersions.get(`${row.sourceType}:${item.id}`) ?? 0,
     claim: null,
   };
@@ -842,10 +851,11 @@ function queue(
   workMode: TodayWorkMode,
   permissions: ReadonlySet<AdminPermissionKey>,
   characterNames: ReadonlyMap<string, string>,
+  snoozedUntilByKey: ReadonlyMap<string, Date | null>,
 ) {
   return {
     totalCount: rows.totalCount,
-    items: sortItems(rows.rows.map((row) => projectRow(row, pinnedKeys, permissions, preferenceVersions, characterNames)), now, workMode).slice(0, QUEUE_LIMIT),
+    items: sortItems(rows.rows.map((row) => projectRow(row, pinnedKeys, permissions, preferenceVersions, characterNames, snoozedUntilByKey)), now, workMode).slice(0, QUEUE_LIMIT),
   };
 }
 
@@ -1173,7 +1183,7 @@ export async function buildTodayProjection(input: {
   const incidentReadable = input.permissions.has("ops.incident.read");
   const releaseReadable = input.permissions.has("character.release.read");
   const creativeReadable = input.permissions.has("creative.run.read");
-  const preferences = await db.operationalWorkPreference.findMany({
+  const preferences = normalizeWorkPreferences(await db.operationalWorkPreference.findMany({
     where: { actorId: input.actor.id },
     select: {
       actorId: true,
@@ -1183,10 +1193,12 @@ export async function buildTodayProjection(input: {
       pinned: true,
       snoozedUntil: true,
       version: true,
+      updatedAt: true,
     },
-  });
+  }));
   const pinnedKeys = new Set(preferences.filter((item) => item.pinned).map((item) => `${item.sourceType}:${item.sourceId}`));
   const preferenceVersions = new Map(preferences.map((item) => [`${item.sourceType}:${item.sourceId}`, item.version]));
+  const snoozedUntilByKey = new Map(preferences.map((item) => [`${item.sourceType}:${item.sourceId}`, item.snoozedUntil]));
   const snoozed = preferences.filter((item) => item.snoozedUntil && item.snoozedUntil > now);
   const snoozedCaseIds = snoozed.filter((item) => item.sourceType === "admin_case").map((item) => item.sourceId);
   const snoozedIncidentIds = snoozed.filter((item) => item.sourceType === "ops_incident").map((item) => item.sourceId);
@@ -1312,8 +1324,8 @@ export async function buildTodayProjection(input: {
   });
 
   const watchedPreferences = preferences.filter((item) => item.watching);
-  const watchedCaseIds = watchedPreferences.filter((item) => ["admin_case", "case"].includes(item.sourceType)).map((item) => item.sourceId);
-  const watchedIncidentIds = watchedPreferences.filter((item) => ["ops_incident", "incident"].includes(item.sourceType)).map((item) => item.sourceId);
+  const watchedCaseIds = watchedPreferences.filter((item) => item.sourceType === "admin_case").map((item) => item.sourceId);
+  const watchedIncidentIds = watchedPreferences.filter((item) => item.sourceType === "ops_incident").map((item) => item.sourceId);
   const watchedCommandIds = watchedPreferences.filter((item) => item.sourceType === "control_plane_command").map((item) => item.sourceId);
   const watchedMentionIds = new Set(watchedPreferences.filter((item) => item.sourceType === "collaboration_mention").map((item) => item.sourceId));
   const directlyWatchedReleaseIds = watchedPreferences.filter((item) => item.sourceType === "character_release").map((item) => item.sourceId);
@@ -1358,11 +1370,11 @@ export async function buildTodayProjection(input: {
 
   const characterNames = await characterNamesFor([...myShift.rows, ...nextBest.rows, ...unassigned.rows, ...watching.rows, ...recentlyResolved.rows]);
   return todayProjectionSchema.parse({
-    myShift: queue(myShift, pinnedKeys, preferenceVersions, now, workMode, input.permissions, characterNames),
-    nextBestActions: queue(nextBest, pinnedKeys, preferenceVersions, now, workMode, input.permissions, characterNames),
-    unassigned: queue(unassigned, pinnedKeys, preferenceVersions, now, workMode, input.permissions, characterNames),
-    watching: queue(watching, pinnedKeys, preferenceVersions, now, workMode, input.permissions, characterNames),
-    recentlyResolved: queue(recentlyResolved, pinnedKeys, preferenceVersions, now, workMode, input.permissions, characterNames),
+    myShift: queue(myShift, pinnedKeys, preferenceVersions, now, workMode, input.permissions, characterNames, snoozedUntilByKey),
+    nextBestActions: queue(nextBest, pinnedKeys, preferenceVersions, now, workMode, input.permissions, characterNames, snoozedUntilByKey),
+    unassigned: queue(unassigned, pinnedKeys, preferenceVersions, now, workMode, input.permissions, characterNames, snoozedUntilByKey),
+    watching: queue(watching, pinnedKeys, preferenceVersions, now, workMode, input.permissions, characterNames, snoozedUntilByKey),
+    recentlyResolved: queue(recentlyResolved, pinnedKeys, preferenceVersions, now, workMode, input.permissions, characterNames, snoozedUntilByKey),
     asOf: now.toISOString(),
     freshness: "fresh",
     workMode,
@@ -1390,6 +1402,7 @@ function allWorkQueryContext(query: TodayAllWorkQuery) {
     ownerId: query.ownerId ?? null,
     status: query.status ?? null,
     environment: query.environment ?? null,
+    includeSnoozed: query.includeSnoozed === true,
     limit: query.limit,
   });
 }
@@ -1489,11 +1502,11 @@ export async function buildTodayAllWork(input: {
     endOfToday.setUTCHours(23, 59, 59, 999);
     return query.sla === "due_today" ? { gte: now, lte: endOfToday } : query.sla === "upcoming" ? { gt: endOfToday } : undefined;
   })();
-  const preferences = await db.operationalWorkPreference.findMany({
+  const preferences = normalizeWorkPreferences(await db.operationalWorkPreference.findMany({
     where: { actorId: input.actor.id },
-    select: { sourceType: true, sourceId: true, pinned: true, snoozedUntil: true, version: true },
-  });
-  const activeSnoozes = preferences.filter((item) => item.snoozedUntil && item.snoozedUntil > now);
+    select: { actorId: true, sourceType: true, sourceId: true, watching: true, pinned: true, snoozedUntil: true, version: true, updatedAt: true },
+  }));
+  const activeSnoozes = query.includeSnoozed === true ? [] : preferences.filter((item) => item.snoozedUntil && item.snoozedUntil > now);
   const idsFor = (sourceType: TodayWorkItem["sourceType"], field: "pinned" | "snoozed") => preferences
     .filter((item) => item.sourceType === sourceType && (field === "pinned" ? item.pinned : activeSnoozes.includes(item)))
     .map((item) => item.sourceId);
@@ -1595,9 +1608,10 @@ export async function buildTodayAllWork(input: {
   });
   const pinnedKeys = new Set(preferences.filter((item) => item.pinned).map((item) => `${item.sourceType}:${item.sourceId}`));
   const preferenceVersions = new Map(preferences.map((item) => [`${item.sourceType}:${item.sourceId}`, item.version]));
+  const snoozedUntilByKey = new Map(preferences.map((item) => [`${item.sourceType}:${item.sourceId}`, item.snoozedUntil]));
   const characterNames = await characterNamesFor(rows.rows);
   const allItems = sortItems(
-    rows.rows.map((row) => projectRow(row, pinnedKeys, input.permissions, preferenceVersions, characterNames)),
+    rows.rows.map((row) => projectRow(row, pinnedKeys, input.permissions, preferenceVersions, characterNames, snoozedUntilByKey)),
     now,
     workMode,
   ).filter((item) => matchesAllWorkFilters(item, query, input.actor.id, now));

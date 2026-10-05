@@ -73,6 +73,7 @@ export function InvariantsWorkspace({ canRead }: { canRead: boolean }) {
         <AuthorityRequestError
           cause={report.cause}
           message={report.error}
+          requestKind="read"
           onRetry={() => void report.refresh()}
           snapshotAt={data ? report.refreshedAt : null}
         />
@@ -267,9 +268,17 @@ function CheckCard({ check }: { check: AdminInvariantCheck }) {
           <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--ad-text-muted)]">
             {t("Samples")}
           </span>
-          {check.sampleIds.map((id) => (
-            <CopyableId key={id} value={id} />
-          ))}
+          {check.sampleIds.map((id) => {
+            const target = check.sampleTargets?.find((sample) => sample.sampleId === id);
+            return <span className="inline-flex items-center gap-2" key={id}>
+              <CopyableId value={id} />
+              {target ? <a
+                aria-label={`${t("Go to Release")}: ${target.characterId}`}
+                className="text-xs underline"
+                href={`/admin/characters/${encodeURIComponent(target.characterId)}?tab=release`}
+              >{t("Go to Release")}</a> : null}
+            </span>;
+          })}
         </div>
       ) : null}
 

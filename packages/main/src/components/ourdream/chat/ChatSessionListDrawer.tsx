@@ -3,7 +3,7 @@
 import { chatFailureCopy } from "@/lib/chat-failure-copy";
 import { Archive, Compass, Pencil, Plus, Trash2, X } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { parseChatSessionsResponse } from "@/lib/public-api-contracts";
 
 // SPEC: Slide-over listing non-deleted chat sessions, revealed 50 at a time.
@@ -22,7 +22,11 @@ export function ChatSessionListDrawer({
   open,
   onClose,
   currentSessionId,
-}: Readonly<{ open: boolean; onClose: () => void; currentSessionId: string }>) {
+  onArchived,
+  fetchForViewer,
+}: Readonly<{ open: boolean; onClose: () => void; currentSessionId: string; onArchived?: (sessionId: string) => void;
+  fetchForViewer: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}>) {
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -36,6 +40,29 @@ export function ChatSessionListDrawer({
   const [draft, setDraft] = useState("");
   const [visibleCount, setVisibleCount] = useState(50);
   const scopeEpoch = useRef(0);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const closingRef = useRef(false);
+  const archiveReceiptEpoch = useRef(0);
+
+  useLayoutEffect(() => {
+    archiveReceiptEpoch.current += 1;
+    return () => { archiveReceiptEpoch.current += 1; };
+  }, [currentSessionId]);
+
+  useEffect(() => {
+    if (!open) return;
+    closingRef.current = false;
+    const dialog = dialogRef.current;
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    if (dialog && !dialog.open) dialog.showModal();
+    closeRef.current?.focus();
+    return () => {
+      closingRef.current = true;
+      if (dialog?.open) dialog.close();
+      if (opener?.isConnected) opener.focus();
+    };
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -54,7 +81,7 @@ export function ChatSessionListDrawer({
       setEditingId(null);
       setDeleteConfirmSessionId(null);
       try {
-        const res = await fetch("/api/v1/chat/sessions");
+        const res = await fetchForViewer("/api/v1/chat/sessions");
         if (!res.ok) throw new Error("sessions unavailable");
         const rows = parseChatSessionsResponse(await res.json());
         if (!cancelled) {
@@ -71,7 +98,7 @@ export function ChatSessionListDrawer({
       cancelled = true;
       if (scopeEpoch.current === epoch) scopeEpoch.current += 1;
     };
-  }, [open, retryIndex, currentSessionId]);
+  }, [open, retryIndex, currentSessionId, fetchForViewer]);
 
   async function archive(sessionId: string) {
     setDeleteConfirmSessionId(null);
@@ -81,12 +108,14 @@ export function ChatSessionListDrawer({
     }
     setArchiveConfirmSessionId(null);
     const epoch = scopeEpoch.current;
+    const receiptEpoch = archiveReceiptEpoch.current;
     setBusyId(sessionId);
     try {
-      const res = await fetch(
+      const res = await fetchForViewer(
         `/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/archive`,
         { method: "POST" },
       );
+      if (res.ok && receiptEpoch === archiveReceiptEpoch.current) onArchived?.(sessionId);
       if (epoch !== scopeEpoch.current) return;
       if (res.ok) {
         setSessions((current) =>
@@ -94,7 +123,16 @@ export function ChatSessionListDrawer({
             row.id === sessionId ? { ...row, status: "archived" } : row,
           ),
         );
-      } else setError(chatFailureCopy(await res.json().catch(() => null), "Couldn't archive this chat."));
+      } else {
+        const payload: unknown = await res.json().catch(() => null);
+        if (epoch !== scopeEpoch.current) return;
+        const error = payload && typeof payload === "object" ? (payload as { error?: unknown }).error : null;
+        const message = error && typeof error === "object"
+          ? (error as { message?: unknown }).message
+          : payload && typeof payload === "object" ? (payload as { message?: unknown }).message : null;
+        setError(res.status >= 400 && res.status < 500 && typeof message === "string" && message.trim()
+          ? message.trim() : chatFailureCopy(payload, "Couldn't archive this chat."));
+      }
     } catch {
       if (epoch === scopeEpoch.current) setError("Couldn't archive this chat.");
     } finally {
@@ -117,6 +155,7 @@ export function ChatSessionListDrawer({
   }
 
   async function saveRename(sessionId: string) {
+    if (closingRef.current || !open) return;
     const epoch = scopeEpoch.current;
     const title = draft.trim();
     if (!title) {
@@ -126,7 +165,7 @@ export function ChatSessionListDrawer({
     setBusyId(sessionId);
     setDeleteConfirmSessionId(null);
     try {
-      const res = await fetch(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}`, {
+      const res = await fetchForViewer(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ title }),
@@ -160,7 +199,7 @@ export function ChatSessionListDrawer({
     }
     setBusyId(sessionId);
     try {
-      const res = await fetch(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}`, {
+      const res = await fetchForViewer(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}`, {
         method: "DELETE",
       });
       if (epoch !== scopeEpoch.current) return;
@@ -181,16 +220,20 @@ export function ChatSessionListDrawer({
   if (!open) return null;
 
   function closeDrawer() {
+    closingRef.current = true;
     setDeleteConfirmSessionId(null);
     setArchiveConfirmSessionId(null);
+    cancelRename();
     onClose();
   }
 
   return (
-    <div
+    <dialog
       aria-label="Your chats"
       aria-modal="true"
-      className="fixed inset-0 z-50 flex"
+      className="fixed inset-0 z-50 m-0 h-dvh max-h-none w-full max-w-none bg-transparent p-0 backdrop:bg-transparent open:flex"
+      ref={dialogRef}
+      onCancel={event => { event.preventDefault(); closeDrawer(); }}
       role="dialog"
     >
       <button aria-label="Close" className="absolute inset-0 bg-black/60" onClick={closeDrawer} type="button" />
@@ -201,6 +244,7 @@ export function ChatSessionListDrawer({
             aria-label="Close your chats"
             className="grid h-8 w-8 place-items-center rounded-full bg-[rgb(36,36,36)] text-[rgb(170,170,170)] hover:text-white"
             onClick={closeDrawer}
+            ref={closeRef}
             type="button"
           >
             <X className="h-4 w-4" />
@@ -291,7 +335,7 @@ export function ChatSessionListDrawer({
                         void saveRename(row.id);
                       } else if (e.key === "Escape") {
                         e.preventDefault();
-                        cancelRename();
+                        closeDrawer();
                       }
                     }}
                     type="text"
@@ -364,6 +408,6 @@ export function ChatSessionListDrawer({
           ) : null}
         </div>
       </div>
-    </div>
+    </dialog>
   );
 }

@@ -8,6 +8,9 @@
 // "Check backend health — needs engineering"、"Unknown error"、
 // "Share the error code with engineering"。改 failureReasons.ts 的 title/hint 时同步改这里。
 export const adminZhPlatformOps: Record<string, string> = {
+  "The start of the window must not be after the end.": "开始时间不能晚于结束时间。",
+  "Selected test profile is unavailable": "已选择的测试配置不可用",
+  "Selected test profile is unavailable. Choose an available profile before running samples.": "已选择的测试配置不可用。请先选择可用配置，再运行样本。",
   "Shorten the combined image base and negative recipe body to 700 characters.": "请将图片基础负向词与负向配方正文的总长度缩短到 700 字符以内。",
   "The latest active negative recipe adds its body to the base negative prompt of image recipes with the same use case.": "同用途最近发布且仍有效的负向配方，其正文会加入图片配方的基础负向词。",
   "{label} is published. Its body supplements matching image recipes for new requests; accepted jobs keep their saved prompts.": "{label} 已发布。新请求会将其正文加入同用途图片配方的负向词；已接受的任务保留原提示词。",
@@ -1364,6 +1367,7 @@ export const adminZhPlatformOps: Record<string, string> = {
   "Not validated": "尚未验证",
   "Samples running": "样本生成中",
   "Ready to verify": "等待核验",
+  "Validated": "验证通过",
   "Validation failed": "验证失败",
   "Validation expired": "验证已失效",
   "Save sample scenes, preview their compiled prompts, run the matrix, then verify generated outputs before publishing.": "保存样本场景，预览拼接后的提示词，运行样本矩阵；核验实际产物后才能发布。",

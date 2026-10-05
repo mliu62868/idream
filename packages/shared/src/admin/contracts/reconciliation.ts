@@ -7,6 +7,10 @@ export const adminInvariantCheckSchema = z.object({
   status: z.enum(["passed", "failed", "unavailable"]),
   violationCount: z.number().int().nonnegative().nullable(),
   sampleIds: z.array(z.string().min(1)),
+  sampleTargets: z.array(z.object({
+    sampleId: z.string().min(1),
+    characterId: z.string().min(1),
+  }).strict()).optional(),
   evidence: z.string().min(1),
 }).strict();
 

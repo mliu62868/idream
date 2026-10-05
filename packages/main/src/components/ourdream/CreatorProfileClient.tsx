@@ -1,10 +1,11 @@
 "use client";
 
-import { apiEnvelopeErrorMessage } from "@/lib/viewer-resource-client";
+import { apiEnvelopeErrorMessage, isAbortError } from "@/lib/viewer-resource-client";
+import { useViewerGate, ViewerGateError, type ViewerGate } from "@/hooks/useViewerGate";
 import Image from "next/image";
 import Link from "next/link";
 import { ArrowLeft, Flag, HeartHandshake, Share2 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   parseCreatorResponse,
   parseFollowMutationResponse,
@@ -25,15 +26,21 @@ import { authHrefForTarget } from "./authRedirect";
 type CreatorProfile = PublicCreator["creator"];
 
 export function CreatorProfileClient({ id }: Readonly<{ id: string }>) {
-  // A client-side creator change must discard its cards, cursor and pending writes.
-  return <CreatorProfileContent id={id} key={id} />;
+  const viewer = useViewerGate({ require: "any" });
+  // Cards, self/follow controls and pending commands belong to both the creator
+  // and the confirmed viewer. Neither may inherit the previous pair's state.
+  return <CreatorProfileContent id={id} viewer={viewer} key={`${id}:${viewer.scope ?? (viewer.identity ? "anonymous" : "unconfirmed")}`} />;
 }
 
-function CreatorProfileContent({ id }: Readonly<{ id: string }>) {
+function CreatorProfileContent({ id, viewer }: Readonly<{ id: string; viewer: ViewerGate }>) {
   const { accepted: ageGateAccepted } = useAgeGateAccess();
+  const gatedFetch = viewer.fetch;
+  const mountedRef = useRef(true);
+  useLayoutEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
   const [creator, setCreator] = useState<CreatorProfile>();
   const [characters, setCharacters] = useState<CharacterCardData[]>([]);
-  const [status, setStatus] = useState("Loading creator...");
+  const [loadStatus, setLoadStatus] = useState("Loading creator...");
+  const [status, setStatus] = useState("");
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [retryAvailable, setRetryAvailable] = useState(false);
   const [followPending, setFollowPending] = useState(false);
@@ -41,17 +48,18 @@ function CreatorProfileContent({ id }: Readonly<{ id: string }>) {
   const [morePending, setMorePending] = useState(false);
   const moreRequest = useRef<AbortController | null>(null);
   const { openReport, reportDialog } = useReportDialog(setStatus);
+  const visibleStatus = [loadStatus, status].filter(Boolean).join(" ");
 
   useEffect(() => {
-    if (!ageGateAccepted) return;
+    if (!ageGateAccepted || !viewer.identity) return;
     const controller = new AbortController();
-    fetch(`/api/v1/creators/${encodeURIComponent(id)}`, { signal: controller.signal, cache: "no-store" })
+    gatedFetch(`/api/v1/creators/${encodeURIComponent(id)}`, { signal: controller.signal, cache: "no-store" })
       .then(async (response) => {
         const rawPayload: unknown = await response.json().catch(() => null);
         if (!response.ok) {
           const serverMessage = apiErrorMessage(rawPayload);
           if (!controller.signal.aborted) {
-            setStatus(creatorLoadErrorMessage(response.status, serverMessage));
+            setLoadStatus(creatorLoadErrorMessage(response.status, serverMessage));
             setRetryAvailable(response.status >= 500);
           }
           return;
@@ -61,35 +69,35 @@ function CreatorProfileContent({ id }: Readonly<{ id: string }>) {
         setCreator(payload.creator);
         setCharacters(payload.characters);
         setNextCursor(payload.nextCursor);
-        setStatus("");
+        setLoadStatus("");
       })
       .catch(() => {
         if (controller.signal.aborted) return;
-        setStatus(creatorLoadErrorMessage(null));
+        setLoadStatus(creatorLoadErrorMessage(null));
         setRetryAvailable(true);
       });
     return () => {
       controller.abort();
       moreRequest.current?.abort();
     };
-  }, [ageGateAccepted, id, loadAttempt]);
+  }, [ageGateAccepted, gatedFetch, id, loadAttempt, viewer.identity, viewer.revalidation]);
 
   async function loadMore() {
     if (!nextCursor || moreRequest.current) return;
     const controller = new AbortController();
     moreRequest.current = controller;
     setMorePending(true);
-    setStatus("");
+    setLoadStatus("");
     try {
       const query = new URLSearchParams({ cursor: nextCursor });
-      const response = await fetch(`/api/v1/creators/${encodeURIComponent(id)}?${query}`, {
+      const response = await gatedFetch(`/api/v1/creators/${encodeURIComponent(id)}?${query}`, {
         signal: controller.signal,
         cache: "no-store",
       });
       if (!response.ok) {
         if ([400, 409, 410].includes(response.status)) {
           if (!controller.signal.aborted) {
-            setStatus("This creator view has changed. Refresh the profile to continue.");
+            setLoadStatus("This creator view has changed. Refresh the profile to continue.");
             setRetryAvailable(true);
           }
           return;
@@ -103,8 +111,9 @@ function CreatorProfileContent({ id }: Readonly<{ id: string }>) {
         return [...current, ...payload.characters.filter((card) => !seen.has(card.id))];
       });
       setNextCursor(payload.nextCursor);
-    } catch {
-      if (!controller.signal.aborted) setStatus("Could not load more characters. Please try again.");
+    } catch (error) {
+      if (isAbortError(error)) return;
+      if (!controller.signal.aborted) setLoadStatus("Could not load more characters. Please try again.");
     } finally {
       if (!controller.signal.aborted) {
         moreRequest.current = null;
@@ -115,12 +124,25 @@ function CreatorProfileContent({ id }: Readonly<{ id: string }>) {
 
   async function toggleFollow() {
     if (!creator || creator.isSelf || followPending) return;
+    if (viewer.identity?.kind === "anonymous") {
+      window.location.assign(authHrefForTarget("/signup", `/creators/${encodeURIComponent(id)}`));
+      return;
+    }
     const next = !creator.isFollowing;
     setFollowPending(true);
     try {
-      const response = await fetch(`/api/v1/users/${creator.id}/follow`, {
+      const expected = viewer.identity;
+      const before = await viewer.revalidate();
+      if (!mountedRef.current) throw new ViewerGateError();
+      if (!before) throw new Error("Account confirmation unavailable");
+      if (before !== expected) throw new ViewerGateError();
+      const response = await gatedFetch(`/api/v1/users/${creator.id}/follow`, {
         method: next ? "POST" : "DELETE",
       });
+      const after = await viewer.revalidate();
+      if (!mountedRef.current) throw new ViewerGateError();
+      if (!after) throw new Error("Account confirmation unavailable");
+      if (after !== expected) throw new ViewerGateError();
       if (!response.ok) {
         if (response.status === 401) {
           window.location.assign(
@@ -132,6 +154,7 @@ function CreatorProfileContent({ id }: Readonly<{ id: string }>) {
         return;
       }
       const authority = parseFollowMutationResponse(await response.json());
+      if (!mountedRef.current) return;
       setCreator((current) =>
         current
           ? {
@@ -144,21 +167,24 @@ function CreatorProfileContent({ id }: Readonly<{ id: string }>) {
             }
           : current,
       );
-    } catch {
+    } catch (error) {
+      if (!mountedRef.current || isAbortError(error)) return;
       setStatus("Could not update follow. Please try again.");
     } finally {
-      setFollowPending(false);
+      if (mountedRef.current) setFollowPending(false);
     }
   }
 
   function retryLoad() {
+    if (viewer.error) { void viewer.revalidate(); return; }
     moreRequest.current?.abort();
     moreRequest.current = null;
     setMorePending(false);
     setCreator(undefined);
     setCharacters([]);
     setNextCursor(null);
-    setStatus("Loading creator...");
+    setLoadStatus("Loading creator...");
+    setStatus("");
     setRetryAvailable(false);
     setLoadAttempt((attempt) => attempt + 1);
   }
@@ -258,14 +284,14 @@ function CreatorProfileContent({ id }: Readonly<{ id: string }>) {
                 </div>
               </header>
 
-              {status && (
+              {visibleStatus && (
                 <p
                   aria-live="polite"
                   className="mt-4 text-[13px] font-bold text-[rgb(255,138,210)]"
                   data-testid="creator-profile-status"
                   role="status"
                 >
-                  {status}
+                  {visibleStatus}
                   {retryAvailable && <button className="ml-3 rounded-full border border-white/20 px-3 py-1 text-white" onClick={retryLoad} type="button">Refresh creator profile</button>}
                 </p>
               )}
@@ -307,8 +333,8 @@ function CreatorProfileContent({ id }: Readonly<{ id: string }>) {
               data-testid="creator-profile-status"
               role="status"
             >
-              {status}
-              {retryAvailable ? (
+              {viewer.error || visibleStatus}
+              {retryAvailable || viewer.error ? (
                 <button
                   className="ml-3 rounded-full border border-white/20 px-3 py-1 text-white"
                   onClick={retryLoad}

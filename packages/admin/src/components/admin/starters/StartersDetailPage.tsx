@@ -289,8 +289,8 @@ export function StartersDetailPage({ id, canWrite }: { id: string; canWrite: boo
           <DetailSection title={t("Category")}>
             <InfoGrid
               items={[
-                { label: t("Gender"), value: row.gender || "—" },
-                { label: t("Style"), value: row.style || "—" },
+                { label: t("Gender"), value: row.gender ? value(row.gender) : "—" },
+                { label: t("Style"), value: row.style ? value(row.style) : "—" },
               ]}
             />
           </DetailSection>

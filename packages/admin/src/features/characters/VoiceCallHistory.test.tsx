@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 const { request } = vi.hoisted(() => ({ request: vi.fn() }));
 vi.mock("@/lib/admin-v2-api", async importOriginal => ({ ...await importOriginal<typeof import("@/lib/admin-v2-api")>(), adminV2Request: request }));
 import { AdminI18nProvider } from "@/components/admin/i18n";
+import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import { VoiceCallHistory } from "./VoiceCallHistory";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -42,4 +43,38 @@ it("translates operator labels while preserving canonical Call and delivery evid
   expect(container.textContent).toContain("会话: canonical-session");
   expect(container.textContent).toContain("对话轮次 canonical-turn · 尝试 1 · 声音 canonical-voice · 素材 canonical-asset");
   expect(container.textContent).toContain("未结算");
+});
+
+it("gives read recovery without exposing raw authority errors in the default message", async () => {
+  request.mockRejectedValue(new AdminV2RequestError("Internal voice endpoint failure", 503, "unavailable", undefined, "voice-read-id"));
+  await load();
+  const alert = container.querySelector('[role="alert"]')!;
+  expect(alert.textContent).toContain("Retry to load the latest data.");
+  expect(alert.textContent).not.toContain("whether the write landed is unknown");
+  expect(alert.querySelector("details")?.open).toBe(false);
+  expect(alert.querySelector("details")?.textContent).toContain("voice-read-id");
+  expect(alert.querySelector("details")?.textContent).toContain("Internal voice endpoint failure");
+  request.mockResolvedValue({ items: [] });
+  await act(async () => alert.querySelector<HTMLButtonElement>("button")!.click());
+  expect(container.querySelector('[role="alert"]')).toBeNull();
+  expect(container.textContent).toContain("No voice calls for this Character");
+});
+
+it("localizes Call states, dates and amounts while folding provider codes into engineering details", async () => {
+  await act(async () => root.render(<AdminI18nProvider locale="zh"><VoiceCallHistory characterId="character" /></AdminI18nProvider>));
+  request.mockResolvedValue({ items: [{ id: "localized-call", sessionId: "session", userId: "customer", status: "ended", startedAt: "2026-10-04T12:00:00.000Z",
+    connectedMs: 12_000, voiceDurationMs: 2000, costDreamcoins: 1200, maxCostDreamcoins: 5000, provider: "pocket_tts", language: "en", endReason: "user_ended", settledAt: "2026-10-04T12:04:00.000Z",
+    utterances: [{ id: "utterance", turnId: "turn", replyAttempt: 1, status: "delivered", voiceRequestId: "voice", mediaAssetId: "asset", durationMs: 2000, costDreamcoins: 1200, errorCode: "voice_provider_busy" }] }] });
+  await load();
+  const history = container.querySelector("details")!;
+  const summary = history.querySelector("summary")!;
+  expect(summary.textContent).toContain("已结束");
+  expect(summary.textContent).toContain("2026年10月4日");
+  expect(summary.textContent).toContain("1,200/5,000 梦币");
+  expect(history.textContent).toContain("已交付");
+  expect(history.textContent).not.toContain("2026-10-04T12:04:00.000Z");
+  const technical = history.querySelector("details")!;
+  expect(technical.open).toBe(false);
+  expect(technical.textContent).toContain("user_ended");
+  expect(technical.textContent).toContain("voice_provider_busy");
 });

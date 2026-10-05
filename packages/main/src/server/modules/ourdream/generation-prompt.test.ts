@@ -6,6 +6,9 @@ import {
   sanitizeChatImageDirection,
 } from "./generation-prompt";
 import type { GenerationPromptCharacter, GenerationVisualProfile } from "./generation-character-authority";
+import { CHARACTER_CANONICAL_PORTRAIT_IDENTITY_PROMPT } from "@idream/shared/admin";
+import { characterVisualProfileSnapshotHash } from "../admin-v2/characters/release-snapshot";
+import { assembleIdentityPrompt, IDENTITY_ASSEMBLER_VERSION, toTraitRecord } from "./identity-assembler";
 
 const character: GenerationPromptCharacter = {
   id: "raya-reyes",
@@ -354,5 +357,209 @@ describe("image generation prompt", () => {
     expect(text).toContain("Locked identity: Pinned identity sentence from the sealed Visual Profile");
     expect(text).not.toContain("Raya Reyes, adult female companion");
     expect(text).toContain("Identity consistency: strict");
+  });
+
+  it("treats reference clothes as baseline when a saved Look and requested scene change them", () => {
+    const identity = "Raya Reyes, 27 years old, with an olive face, dark brown eyes and shoulder-length black hair, wearing a green sweater on a balcony";
+    const look = JSON.stringify({ description: "A navy wool coat with a silver brooch" });
+    const scene = "In a sunlit library beside a closed red notebook";
+    const text = buildGenerationPrompt({
+      mode: "image", character,
+      visualProfile: { identityPrompt: identity } as GenerationVisualProfile,
+      consistencyMode: "strict", userPrompt: scene, lookFragment: look,
+      presetFragment: "a leafy garden path, standing",
+    });
+    expect(text).toContain(`Locked identity: ${identity}`);
+    expect(text).toContain(`Active look: ${look}`);
+    expect(text).toContain(`Requested scene: ${scene}`);
+    expect(text).toContain("Active look and Requested scene override baseline clothing, pose and background in identity descriptions and reference images");
+    expect(text).toContain("Preserve the same adult face, age, hair, eye color, skin and body proportions");
+    expect(text).toContain("Scene details apply only where they do not conflict with the Active look or Requested scene");
+    expect(text.indexOf("override baseline")).toBeLessThan(text.indexOf("Locked identity:"));
+  });
+
+  it("rejects an oversized Look instead of dropping its final required detail", () => {
+    const look = JSON.stringify({ description: "Keep the coat detail. ".repeat(27) + "The silver brooch stays on the left lapel." });
+    expect(() => buildGenerationPrompt({
+      mode: "image", character, visualProfile: null, consistencyMode: "strict",
+      userPrompt: "In a sunlit library", lookFragment: look, presetFragment: "",
+    })).toThrow(/budget/);
+  });
+
+  it("rejects an oversized requested scene with a Look instead of clipping its final constraint", () => {
+    const scene = "Keep the library detail. ".repeat(40) + "The red notebook remains closed.";
+    expect(() => buildGenerationPrompt({
+      mode: "image", character, visualProfile: null, consistencyMode: "strict",
+      userPrompt: scene, lookFragment: JSON.stringify({ description: "A navy wool coat" }), presetFragment: "",
+    })).toThrow(/budget/);
+  });
+
+  it("keeps the full saved Look and scene when optional photo polish would exhaust their budget", () => {
+    const identity = "Adult identity face and hair traits. ".repeat(23).trim();
+    const look = JSON.stringify({ description: "Navy coat and silver details. ".repeat(7) + "The brooch stays on the left lapel." });
+    const scene = "In a sunlit library beside a closed red notebook. Keep only one notebook.";
+    const text = buildGenerationPrompt({
+      mode: "image", character,
+      visualProfile: { identityPrompt: identity } as GenerationVisualProfile,
+      consistencyMode: "strict", userPrompt: scene, lookFragment: look, presetFragment: "",
+    });
+    expect(text).toContain(`Locked identity: ${identity}`);
+    expect(text).toContain(`Active look: ${look}`);
+    expect(text).toContain(`Requested scene: ${scene}`);
+    expect(text.length).toBeLessThanOrEqual(2_000);
+  });
+
+  it("rejects a combined Look and identity overflow instead of truncating accepted image facts", () => {
+    expect(() => buildGenerationPrompt({
+      mode: "image", character,
+      visualProfile: { identityPrompt: "Adult identity face and hair traits. ".repeat(23) } as GenerationVisualProfile,
+      consistencyMode: "strict", userPrompt: "Keep the library detail. ".repeat(28),
+      lookFragment: JSON.stringify({ description: "Keep the coat detail. ".repeat(18) + "The brooch stays on the left lapel." }), presetFragment: "",
+    })).toThrow(/2000-character generation budget/);
+  });
+
+  it("keeps the final selected scene preset instead of spending its budget on photo polish", () => {
+    const identity = "Adult identity face and hair traits. ".repeat(18).trim();
+    const look = JSON.stringify({ description: "Navy coat and silver details. ".repeat(6) + "The brooch stays on the left lapel." });
+    const preset = "Library scene detail. ".repeat(20) + "Only one closed notebook is on the left.";
+    const text = buildGenerationPrompt({
+      mode: "image", character,
+      visualProfile: { identityPrompt: identity } as GenerationVisualProfile,
+      consistencyMode: "strict", userPrompt: "In a sunlit library", lookFragment: look, presetFragment: preset,
+    });
+    expect(text).toContain(`Locked identity: ${identity}`);
+    expect(text).toContain(`Active look: ${look}`);
+    expect(text).toContain(`Scene details: ${preset}`);
+    expect(text.length).toBeLessThanOrEqual(2_000);
+  });
+
+  it("rejects oversized selected scene details with a Look instead of clipping a required preset", () => {
+    expect(() => buildGenerationPrompt({
+      mode: "image", character, visualProfile: null, consistencyMode: "strict",
+      userPrompt: "In a sunlit library", lookFragment: JSON.stringify({ description: "A navy wool coat" }),
+      presetFragment: "Keep the library detail. ".repeat(25) + "Only one closed notebook is on the left.",
+    })).toThrow(/budget/);
+  });
+});
+
+describe("saved Look with a sealed derived portrait identity", () => {
+  function sealedProfile(overrides: Partial<GenerationVisualProfile> = {}): GenerationVisualProfile {
+    const profile = {
+      id: "sealed-visual-1", characterId: character.id, version: 1, style: "realistic",
+      faceTraits: { eyes: "dark brown", skinTone: "warm olive", faceShape: "oval",
+        prompt: "A bartender wearing a green sweater on an old balcony", scar: "small left cheek scar" },
+      hairTraits: { prompt: "shoulder-length black hair", parting: "center part" },
+      bodyTraits: { build: "athletic", hands: "long fingers" },
+      signatureTraits: { age: 27, birthmark: "crescent birthmark behind the left ear",
+        description: "A bartender on the old balcony", firstMessage: "Welcome to the old balcony",
+        detailsMarkdown: "## Premise\nThe old balcony is her story setting" },
+      styleTraits: { name: "Sealed Raya", age: "27", gender: "female", style: "realistic", description: "The old balcony biography" },
+      negativeIdentityPrompt: "identity drift", anchorAssetIds: ["sealed-canonical-portrait"],
+      ...overrides,
+    } as GenerationVisualProfile;
+    const assembled = assembleIdentityPrompt({ face: toTraitRecord(profile.faceTraits), hair: toTraitRecord(profile.hairTraits),
+      body: toTraitRecord(profile.bodyTraits), signature: toTraitRecord(profile.signatureTraits), style: toTraitRecord(profile.styleTraits) });
+    profile.identityPrompt = assembled.identityPrompt;
+    profile.adapterRefs = { identity: { source: "derived", assemblerVersion: IDENTITY_ASSEMBLER_VERSION, traitsHash: assembled.traitsHash } };
+    profile.immutableHash = characterVisualProfileSnapshotHash(profile);
+    return profile;
+  }
+
+  function lookPortrait(profile: GenerationVisualProfile, subject = character, overrides: { lookFragment?: string; sourceImageAssetId?: string; mode?: "image" | "video" } = {}) {
+    return buildGenerationPrompt({ mode: "image", character: subject, visualProfile: profile, consistencyMode: "strict",
+      userPrompt: "In a sunlit library beside one closed red notebook", presetFragment: "standing beside a bookshelf",
+      lookFragment: JSON.stringify({ description: "A navy coat with a silver brooch" }), ...overrides });
+  }
+
+  it("uses sealed stable facts and the canonical portrait without carrying the original clothing or premise into a Look", () => {
+    const profile = sealedProfile();
+    const original = structuredClone(profile);
+    const text = lookPortrait(profile);
+    expect(text).toContain(`Locked identity: Sealed Raya, adult female companion; 27 years old; realistic visual style`);
+    expect(text).toContain(CHARACTER_CANONICAL_PORTRAIT_IDENTITY_PROMPT);
+    for (const fact of ["dark brown", "warm olive", "oval", "small left cheek scar", "shoulder-length black hair", "center part", "athletic", "long fingers", "crescent birthmark behind the left ear"]) {
+      expect(text).toContain(fact);
+    }
+    expect(text).toContain('Active look: {"description":"A navy coat with a silver brooch"}');
+    expect(text).toContain("Requested scene: In a sunlit library beside one closed red notebook");
+    expect(text).not.toContain("green sweater");
+    expect(text).not.toContain("old balcony");
+    expect(text).not.toContain("bartender");
+    expect(profile).toEqual(original);
+  });
+
+  it("does not mix current mutable name, presentation, anchor or stable traits into the pinned Look identity", () => {
+    const profile = sealedProfile();
+    const mutable = { ...character, name: "Mutable Nova", age: 55, gender: "male", style: "anime",
+      appearance: { identityAnchor: "Mutable silver-haired face", stableTraits: ["violet eyes", "a new facial tattoo"] },
+      advancedDetails: { signature: { age: 55, marks: "new scar" } } };
+    const text = lookPortrait(profile, mutable);
+    expect(text).toBe(lookPortrait(profile));
+    expect(text).toContain("portrait photo of Sealed Raya");
+    expect(text).toContain("Subject: adult, female, realistic");
+    for (const leak of ["Mutable Nova", "55", "anime", "silver-haired", "violet eyes", "new facial tattoo", "new scar"]) expect(text).not.toContain(leak);
+  });
+
+  it("recognizes the derived cache by canonical traits hash when JSONB reorders keys and changes the capped prompt bytes", () => {
+    const profile = sealedProfile({ signatureTraits: { description: "Original premise. ".repeat(18),
+      detailsMarkdown: "Original old balcony story. ".repeat(15), firstMessage: "Welcome to the old balcony", birthmark: "crescent birthmark" } });
+    const oldPrompt = profile.identityPrompt;
+    profile.signatureTraits = { firstMessage: "Welcome to the old balcony", birthmark: "crescent birthmark",
+      detailsMarkdown: "Original old balcony story. ".repeat(15), description: "Original premise. ".repeat(18) };
+    const reassembled = assembleIdentityPrompt({ face: toTraitRecord(profile.faceTraits), hair: toTraitRecord(profile.hairTraits), body: toTraitRecord(profile.bodyTraits),
+      signature: toTraitRecord(profile.signatureTraits), style: toTraitRecord(profile.styleTraits) });
+    expect(reassembled.identityPrompt).not.toBe(oldPrompt);
+    expect(profile.adapterRefs).toMatchObject({ identity: { traitsHash: reassembled.traitsHash } });
+    // JSONB key order does not change the sealed content hash, either.
+    expect(characterVisualProfileSnapshotHash(profile)).toBe(profile.immutableHash);
+    const text = lookPortrait(profile);
+    expect(text).not.toContain("green sweater");
+    expect(text).not.toContain("Original premise");
+    expect(text).toContain("crescent birthmark");
+  });
+
+  it("retains unknown non-premise traits beyond the legacy eight-line cap", () => {
+    const signatureTraits = Object.fromEntries(Array.from({ length: 10 }, (_, index) => [`mark${index}`, `sealed mark ${index}`]));
+    const text = lookPortrait(sealedProfile({ signatureTraits }));
+    for (let index = 0; index < 10; index++) expect(text).toContain(`sealed mark ${index}`);
+  });
+
+  it("keeps full hair and body facts instead of truncating their stable tail", () => {
+    const hair = "Natural hair detail. ".repeat(10) + "A single white streak at the left temple";
+    const body = "Stable body detail. ".repeat(10) + "A small tattoo on the right wrist";
+    const text = lookPortrait(sealedProfile({ hairTraits: { prompt: hair }, bodyTraits: { detail: body } }));
+    expect(text).toContain(hair.trim());
+    expect(text).toContain(body.trim());
+  });
+
+  it("rejects complete projected stable facts that exceed the budget instead of silently clipping them", () => {
+    expect(() => lookPortrait(sealedProfile({ bodyTraits: { detail: "Stable body fact. ".repeat(130) + "Required wrist mark" } })))
+      .toThrow(/2000-character generation budget/);
+  });
+
+  it.each([
+    ["manual override", (profile: GenerationVisualProfile) => { profile.adapterRefs = { identity: { source: "manual", assemblerVersion: 1 } }; }],
+    ["missing adapter provenance", (profile: GenerationVisualProfile) => { profile.adapterRefs = {}; }],
+    ["unknown assembler", (profile: GenerationVisualProfile) => { profile.adapterRefs = { identity: { source: "derived", assemblerVersion: 2, traitsHash: "unknown" } }; }],
+    ["stale traits hash", (profile: GenerationVisualProfile) => { profile.adapterRefs = { identity: { source: "derived", assemblerVersion: 1, traitsHash: "mismatch" } }; }],
+    ["unsealed identity", (profile: GenerationVisualProfile) => { profile.immutableHash = "mismatch"; }],
+    ["no canonical anchor candidate", (profile: GenerationVisualProfile) => { profile.anchorAssetIds = []; }],
+    ["different character", (profile: GenerationVisualProfile) => { profile.characterId = "different-character"; }],
+    ["only free-text face", (profile: GenerationVisualProfile) => { Object.assign(profile, sealedProfile({ faceTraits: { prompt: "Keep the green sweater identity and unique face" } })); }],
+  ] as const)("keeps the original raw identity path for %s", (_label, change) => {
+    const profile = sealedProfile();
+    change(profile);
+    const legacyProfile = { identityPrompt: profile.identityPrompt } as GenerationVisualProfile;
+    expect(lookPortrait(profile)).toBe(lookPortrait(legacyProfile));
+    expect(lookPortrait(profile)).toContain(`Locked identity: ${profile.identityPrompt}`);
+  });
+
+  it.each([
+    ["no Look", { lookFragment: "" }],
+    ["source edit", { sourceImageAssetId: "owned-edit-source" }],
+    ["video", { mode: "video" as const }],
+  ])("keeps %s byte-compatible with the original portrait path", (_label, overrides) => {
+    const profile = sealedProfile();
+    expect(lookPortrait(profile, character, overrides)).toBe(lookPortrait({ identityPrompt: profile.identityPrompt } as GenerationVisualProfile, character, overrides));
   });
 });

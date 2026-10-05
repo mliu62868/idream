@@ -53,6 +53,14 @@ function cursorQueryHash(query: GenerationJobQuery) {
     sourceType: query.sourceType ?? null,
     userId: query.userId ?? null,
     characterId: query.characterId ?? null,
+    // Preserve existing v1 timeless cursor hashes; new metric filters bind their own scope.
+    ...(query.from || query.to || query.profileId || query.profileVersion !== undefined || query.recipeId ? {
+      from: query.from ?? null,
+      to: query.to ?? null,
+      profileId: query.profileId ?? null,
+      profileVersion: query.profileVersion ?? null,
+      recipeId: query.recipeId ?? null,
+    } : {}),
     sort: query.sort,
   })).digest("hex");
 }
@@ -65,6 +73,15 @@ function baseWhere(query: GenerationJobQuery): Prisma.GenerationJobWhereInput {
     sourceType: query.sourceType,
     userId: query.userId,
     characterId: query.characterId,
+    profileId: query.profileId,
+    profileVersion: query.profileVersion === "null" ? null : query.profileVersion,
+    recipeId: query.recipeId,
+    ...(query.from || query.to ? {
+      createdAt: {
+        ...(query.from ? { gte: new Date(query.from) } : {}),
+        ...(query.to ? { lt: new Date(query.to) } : {}),
+      },
+    } : {}),
     ...(query.search ? {
       OR: [
         { id: { contains: query.search, mode: "insensitive" } },

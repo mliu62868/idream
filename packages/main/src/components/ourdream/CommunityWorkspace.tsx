@@ -1,13 +1,15 @@
 "use client";
 
 import { ComicDiscovery } from "./ComicCatalog";
+import { useViewerGate, ViewerGateError, type ViewerGate } from "@/hooks/useViewerGate";
+import { isAbortError, type ResourceFetcher } from "@/lib/viewer-resource-client";
 
 import Image from "next/image";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { ChevronDown, ChevronLeft, ChevronRight, Flag, HeartHandshake, Users } from "lucide-react";
 import type { ReactNode } from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   parseCommunityCampaignsResponse,
   parseCommunityCollectionsResponse,
@@ -48,7 +50,7 @@ export const CHARACTER_EXPOSURE_EVENT = "character.exposure.recorded.v2";
 export async function requestCommunityFollow(
   creatorId: string,
   isFollowing: boolean,
-  fetcher: typeof fetch = fetch,
+  fetcher: ResourceFetcher = fetch,
 ) {
   const response = await fetcher(`/api/v1/users/${creatorId}/follow`, {
     method: isFollowing ? "DELETE" : "POST",
@@ -151,7 +153,15 @@ const COMMUNITY_INITIAL_CHARACTERS = 8;
 const COMMUNITY_INITIAL_COLLECTIONS = 3;
 
 export function CommunityWorkspace() {
+  const viewer = useViewerGate({ require: "any" });
+  return <CommunityViewerWorkspace key={viewer.scope ?? (viewer.identity ? "anonymous" : "unconfirmed")} viewer={viewer} />;
+}
+
+function CommunityViewerWorkspace({ viewer }: { viewer: ViewerGate }) {
   const { accepted: ageGateAccepted } = useAgeGateAccess();
+  const gatedFetch = viewer.fetch;
+  const mountedRef = useRef(true);
+  useLayoutEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
   const searchParams = useSearchParams();
   const focusedCollectionId = searchParams.get("collection")?.trim() ?? "";
   const [characters, setCharacters] = useState<CommunityCharacter[]>([]);
@@ -301,14 +311,14 @@ export function CommunityWorkspace() {
   }, [activeCampaign.id, ageGateAccepted]);
 
   useEffect(() => {
-    if (!ageGateAccepted) return;
+    if (!ageGateAccepted || !viewer.identity) return;
     let active = true;
     const controller = new AbortController();
     const leaderboardsQuery = query.toString();
 
     async function loadLeaderboards() {
       try {
-        const response = await fetch(
+        const response = await gatedFetch(
           `/api/v1/community/leaderboards?${leaderboardsQuery}`,
           { signal: controller.signal },
         );
@@ -360,10 +370,10 @@ export function CommunityWorkspace() {
       active = false;
       controller.abort();
     };
-  }, [ageGateAccepted, leaderboardsReloadToken, query]);
+  }, [ageGateAccepted, gatedFetch, leaderboardsReloadToken, query, viewer.identity, viewer.revalidation]);
 
   useEffect(() => {
-    if (!ageGateAccepted) return;
+    if (!ageGateAccepted || !viewer.identity) return;
     let active = true;
     const controller = new AbortController();
     const request = ++collectionRequestRef.current;
@@ -389,7 +399,7 @@ export function CommunityWorkspace() {
         ),
       );
       try {
-        const response = await fetch(
+        const response = await gatedFetch(
           `/api/v1/community/collections${collectionSearch}`,
           { signal: controller.signal },
         );
@@ -401,7 +411,7 @@ export function CommunityWorkspace() {
         setVisibleCollectionCount(COMMUNITY_INITIAL_COLLECTIONS);
         setCollectionsAuthority(readyAuthorityStatus());
       } catch (error) {
-        if (!active || controller.signal.aborted) return;
+        if (!active || controller.signal.aborted || isAbortError(error)) return;
         setCollectionsAuthority((current) =>
           failedAuthorityStatus(
             current,
@@ -418,7 +428,7 @@ export function CommunityWorkspace() {
       controller.abort();
       collectionPageControllerRef.current?.abort();
     };
-  }, [ageGateAccepted, collectionsReloadToken, focusedCollectionId]);
+  }, [ageGateAccepted, collectionsReloadToken, focusedCollectionId, gatedFetch, viewer.identity, viewer.revalidation]);
 
   async function showMoreCollections() {
     if (collectionsPageBusy || collectionsAuthority.phase !== "ready") return;
@@ -434,7 +444,7 @@ export function CommunityWorkspace() {
     setCollectionsPageBusy(true);
     setCollectionsPageError("");
     try {
-      const response = await fetch(`/api/v1/community/collections?cursor=${encodeURIComponent(collectionsNextCursor)}`, { signal: controller.signal });
+      const response = await gatedFetch(`/api/v1/community/collections?cursor=${encodeURIComponent(collectionsNextCursor)}`, { signal: controller.signal });
       if (!response.ok) throw new Error("More collections could not load.");
       const next = parseCommunityCollectionsResponse(await response.json());
       if (request !== collectionRequestRef.current) return;
@@ -450,14 +460,14 @@ export function CommunityWorkspace() {
   }
 
   useEffect(() => {
-    if (!ageGateAccepted) return;
+    if (!ageGateAccepted || !viewer.identity) return;
     let active = true;
     const controller = new AbortController();
 
     async function loadCampaigns() {
       setCampaignsAuthority(loadingAuthorityStatus);
       try {
-        const response = await fetch("/api/v1/community/campaigns", {
+        const response = await gatedFetch("/api/v1/community/campaigns", {
           signal: controller.signal,
         });
         if (!response.ok) {
@@ -485,7 +495,7 @@ export function CommunityWorkspace() {
       active = false;
       controller.abort();
     };
-  }, [ageGateAccepted, campaignsReloadToken]);
+  }, [ageGateAccepted, campaignsReloadToken, gatedFetch, viewer.identity, viewer.revalidation]);
 
   useEffect(() => {
     if (!ageGateAccepted || !focusedCollectionId) return;
@@ -493,13 +503,27 @@ export function CommunityWorkspace() {
   }, [ageGateAccepted, focusedCollectionId]);
 
   async function toggleFollowCreator(creatorId: string, isFollowing: boolean) {
+    if (viewer.identity?.kind === "anonymous") {
+      window.location.assign(authHrefForTarget("/signup", `/creators/${encodeURIComponent(creatorId)}`));
+      return;
+    }
     if (followPendingIds.has(creatorId)) return;
     setFollowPendingIds((current) => new Set(current).add(creatorId));
     try {
+      const expected = viewer.identity;
+      const before = await viewer.revalidate();
+      if (!mountedRef.current) throw new ViewerGateError();
+      if (!before) throw new Error("Account confirmation unavailable");
+      if (before !== expected) throw new ViewerGateError();
       const { response, authority, signupHref } = await requestCommunityFollow(
         creatorId,
         isFollowing,
+        gatedFetch,
       );
+      const after = await viewer.revalidate();
+      if (!mountedRef.current) throw new ViewerGateError();
+      if (!after) throw new Error("Account confirmation unavailable");
+      if (after !== expected) throw new ViewerGateError();
       if (!response.ok) {
         if (signupHref) {
           window.location.assign(signupHref);
@@ -527,10 +551,11 @@ export function CommunityWorkspace() {
             : item,
         ),
       );
-    } catch {
+    } catch (error) {
+      if (!mountedRef.current || isAbortError(error)) return;
       setStatus(publicOptimisticMutationFailure("follow").status);
     } finally {
-      setFollowPendingIds((current) => {
+      if (mountedRef.current) setFollowPendingIds((current) => {
         const nextPending = new Set(current);
         nextPending.delete(creatorId);
         return nextPending;
@@ -541,6 +566,7 @@ export function CommunityWorkspace() {
   return (
     <section className="px-4 py-8 md:px-[60px] md:py-12">
       <div className="mx-auto max-w-6xl">
+        {viewer.error && <p role="alert">{viewer.error} <button className="ml-2 underline" onClick={() => void viewer.revalidate()} type="button">Retry account check</button></p>}
         <div
           className="relative overflow-hidden rounded-[16px] bg-[rgb(18,18,18)]"
           data-testid="community-campaign-hero"

@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { act, createElement, type ComponentProps } from "react";
+import { act, createElement, Fragment, StrictMode, useLayoutEffect, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -17,12 +17,17 @@ vi.mock("./AgeGateBoundary", () => ({
 }));
 vi.mock("./AppSidebar", () => ({ AppSidebar: () => null }));
 vi.mock("./MobileBottomNav", () => ({ MobileBottomNav: () => null }));
-vi.mock("./chat/ChatSessionListDrawer", () => ({
-  ChatSessionListDrawer: () => null,
-}));
-vi.mock("./chat/MemoryPanel", () => ({ MemoryPanel: () => null }));
 
 import { ChatSessionClient } from "./ChatSessionClient";
+import { invalidateViewerAuthority } from "./viewer-auth";
+import { useViewerGate, type ViewerGate } from "@/hooks/useViewerGate";
+
+let sharedViewer: ViewerGate;
+function ViewerProbe() {
+  const viewer = useViewerGate({ require: "any" });
+  useLayoutEffect(() => { sharedViewer = viewer; });
+  return null;
+}
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -84,7 +89,184 @@ describe("ChatSessionClient streaming composer", () => {
   let sessionProactiveEnabled: boolean;
   let sessionContinuation: "available" | "character_unavailable" | "character_release_changed";
   let sessionReads: number;
+  let viewerId: string | null;
   let releaseSend: ((response: Response) => void) | undefined;
+
+  it("keeps drawer reads and row mutations bound to its displayed owner before a cookie-change broadcast", async () => {
+    const base = vi.mocked(fetch).getMockImplementation()!;
+    const reads: Array<string | null> = [], mutations: string[] = [];
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      const path = String(input), expected = new Headers(init?.headers).get("x-idream-viewer-scope");
+      if (path === "/api/v1/chat/sessions/session-1/experience") return Promise.resolve(Response.json({
+        settings: {responseLength: "auto", interactionIntensity: "balanced", sceneGeneration: "follow", version: 0}, editable: true,
+        catalog: {version: 1, items: [{id: "natural", version: 1, replyStyle: "natural", answerMaxOutputTokens: 512, messageUnits: 1, costDreamcoins: 0, label: "Natural", description: "Natural conversation", preferences: {responseLength: "auto", interactionIntensity: "balanced", sceneGeneration: "follow"}}]},
+      }));
+      if (path === "/api/v1/chat/sessions") {
+        reads.push(expected);
+        if (expected !== null && expected !== `user:${viewerId}`) return Promise.resolve(Response.json({error: "conflict", message: "Your account changed. Reload to continue."}, {status: 409}));
+        return Promise.resolve(Response.json([{id: "b-owned-session", title: "B confidential session", characterId: "b-character", status: "active", memoryEnabled: true, lastMessageAt: null}]));
+      }
+      if (path === "/api/v1/chat/sessions/b-owned-session" && init?.method === "PATCH") {
+        if (expected !== null && expected !== `user:${viewerId}`) return Promise.resolve(Response.json({error: "conflict", message: "Your account changed. Reload to continue."}, {status: 409}));
+        mutations.push(viewerId!);
+        return Promise.resolve(Response.json({title: "B row changed from stale A drawer"}));
+      }
+      return base(input, init);
+    });
+    await mountSession();
+    viewerId = "viewer-b";
+    // No focus or storage event: the browser cookie has changed before the
+    // existing A owner gate hears the delayed auth broadcast.
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="session-list-open"]')!.click());
+    await waitUntil(() => container.querySelectorAll('[data-testid="session-list-item"]').length > 0 || Boolean(container.querySelector('[data-testid="chat-drawer-status"][role="alert"]')));
+    expect.soft(container.textContent).not.toContain("B confidential session");
+    expect.soft(reads).toEqual(["user:viewer-a"]);
+    const row = container.querySelector('[data-testid="session-list-item"]');
+    if (row?.querySelector('a[href="/chat/b-owned-session"]')) {
+      await act(async () => row.querySelector<HTMLButtonElement>('[data-testid="session-rename"]')!.click());
+      const input = container.querySelector<HTMLInputElement>('[aria-label="Rename chat"]')!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "B row changed from stale A drawer");
+        input.dispatchEvent(new Event("input", {bubbles: true}));
+      });
+      await act(async () => input.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", bubbles: true, cancelable: true})));
+    }
+    expect(mutations).toEqual([]);
+  });
+
+  it("keeps normal drawer reads, rename, archive and delete on their original signed-in owner", async () => {
+    const base = vi.mocked(fetch).getMockImplementation()!;
+    const requests: Array<{method: string; scope: string | null; body?: unknown}> = [];
+    const rows = ["session-1", "session-2"].map(id => ({id, title: id, characterId: "character-1", status: "active", memoryEnabled: true, lastMessageAt: null}));
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      const path = String(input);
+      if (path === "/api/v1/chat/sessions" || (path.startsWith("/api/v1/chat/sessions/session-2") && init?.method)) {
+        requests.push({method: init?.method ?? "GET", scope: new Headers(init?.headers).get("x-idream-viewer-scope"), ...(init?.body ? {body: JSON.parse(String(init.body))} : {})});
+        return Promise.resolve(path === "/api/v1/chat/sessions" ? Response.json(rows)
+          : init?.method === "PATCH" ? Response.json({title: "Renamed owned chat"})
+          : init?.method === "POST" ? Response.json({id: "session-2", status: "archived"}) : Response.json({ok: true}));
+      }
+      return base(input, init);
+    });
+    await mountSession();
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="session-list-open"]')!.click());
+    await waitUntil(() => container.querySelectorAll('[data-testid="session-list-item"]').length === 2);
+    const row = [...container.querySelectorAll('[data-testid="session-list-item"]')].find(item => item.querySelector('a[href="/chat/session-2"]'))!;
+    await act(async () => row.querySelector<HTMLButtonElement>('[data-testid="session-rename"]')!.click());
+    const input = row.querySelector<HTMLInputElement>('[aria-label="Rename chat"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "Renamed owned chat");
+      input.dispatchEvent(new Event("input", {bubbles: true}));
+    });
+    await act(async () => input.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", bubbles: true, cancelable: true})));
+    expect(row.textContent).toContain("Renamed owned chat");
+    await act(async () => row.querySelector<HTMLButtonElement>('[data-testid="session-archive"]')!.click());
+    await act(async () => row.querySelector<HTMLButtonElement>('[data-testid="session-archive"]')!.click());
+    expect(row.textContent).toContain("Archived");
+    await act(async () => row.querySelector<HTMLButtonElement>('[data-testid="session-delete"]')!.click());
+    await act(async () => row.querySelector<HTMLButtonElement>('[data-testid="session-delete"]')!.click());
+    expect(container.querySelector('a[href="/chat/session-2"]')).toBeNull();
+    expect(messageInput()?.disabled).toBe(false);
+    expect(requests).toEqual([
+      {method: "GET", scope: "user:viewer-a"},
+      {method: "PATCH", scope: "user:viewer-a", body: {title: "Renamed owned chat"}},
+      {method: "POST", scope: "user:viewer-a"},
+      {method: "DELETE", scope: "user:viewer-a"},
+    ]);
+  });
+
+  it("does not revive an old drawer's delayed response body after its confirmed owner changes", async () => {
+    const base = vi.mocked(fetch).getMockImplementation()!;
+    let finishBody!: (rows: unknown) => void, readingBody = false;
+    const body = new Promise(resolve => { finishBody = resolve; });
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      if (String(input) === "/api/v1/chat/sessions") {
+        const response = Response.json([]);
+        response.json = () => { readingBody = true; return body; };
+        return Promise.resolve(response);
+      }
+      return base(input, init);
+    });
+    await mountSession();
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="session-list-open"]')!.click());
+    await waitUntil(() => readingBody);
+    viewerId = "viewer-b";
+    await act(async () => { await sharedViewer.revalidate(); });
+    expect(container.querySelector('dialog[aria-label="Your chats"]')).toBeNull();
+    await act(async () => finishBody([{id: "a-private-session", title: "A delayed confidential title", characterId: "character-1", status: "active", memoryEnabled: true, lastMessageAt: null}]));
+    expect(container.textContent).not.toContain("A delayed confidential title");
+    expect(container.querySelector('dialog[aria-label="Your chats"]')).toBeNull();
+    const read = vi.mocked(fetch).mock.calls.find(([url]) => String(url) === "/api/v1/chat/sessions");
+    expect(new Headers(read?.[1]?.headers).get("x-idream-viewer-scope")).toBe("user:viewer-a");
+  });
+
+  it("makes the current chat read-only as soon as archive succeeds inside its actual drawer", async () => {
+    let archived = false;
+    const base = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      const session = { id: "session-1", title: "Test chat", characterId: "character-1", status: archived ? "archived" : "active", memoryEnabled: true, lastMessageAt: null };
+      if (url === "/api/v1/chat/sessions") return Response.json([session]);
+      if (url === "/api/v1/chat/sessions/session-1/archive" && init?.method === "POST") {
+        archived = true; return Response.json({ ...session, status: "archived" });
+      }
+      const result = await base(input, init);
+      if (url === "/api/v1/chat/sessions/session-1") {
+        const data = await result.json(); data.data.session.status = archived ? "archived" : "active";
+        return Response.json(data);
+      }
+      return result;
+    });
+    await mountSession(); await act(async () => typeMessage("Keep my unsent note."));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="session-list-open"]')!.click());
+    await waitUntil(() => Boolean(container.querySelector('[aria-label="Archive chat"]')));
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Archive chat"]')!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Confirm archive chat"]')!.click());
+    await waitUntil(() => archived && Boolean(container.querySelector<HTMLButtonElement>('[data-testid="session-archive"]')?.disabled));
+    expect(messageInput()?.disabled).toBe(true);
+    expect(container.querySelector<HTMLButtonElement>('[aria-label="Send message"]')?.disabled).toBe(true);
+    expect(container.textContent).toContain("This conversation is archived");
+    expect(messageInput()?.value).toBe("Keep my unsent note.");
+  });
+
+  it("keeps the current chat and its unsent draft active when archive confirmation is cancelled", async () => {
+    const base = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation((input, init) => String(input) === "/api/v1/chat/sessions"
+      ? Promise.resolve(Response.json([{ id: "session-1", title: "Test chat", characterId: "character-1", status: "active", memoryEnabled: true, lastMessageAt: null }])) : base(input, init));
+    await mountSession(); await act(async () => typeMessage("Keep my unsent note."));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="session-list-open"]')!.click());
+    await waitUntil(() => Boolean(container.querySelector('[aria-label="Archive chat"]')));
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Archive chat"]')!.click());
+    expect(container.querySelector('[aria-label="Confirm archive chat"]')).not.toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Close your chats"]')!.click());
+    expect(messageInput()?.disabled).toBe(false); expect(messageInput()?.value).toBe("Keep my unsent note.");
+    expect(container.querySelector<HTMLButtonElement>('[aria-label="Send message"]')?.disabled).toBe(false);
+    expect(vi.mocked(fetch).mock.calls.filter(([url, init]) => String(url).endsWith("/archive") && init?.method === "POST")).toHaveLength(0);
+    expect(container.textContent).not.toContain("This conversation is archived");
+  });
+
+  it.each(["rejected-current", "successful-other"])("does not archive the current composer after a %s archive request", async outcome => {
+    const base = vi.mocked(fetch).getMockImplementation()!;
+    const targetId = outcome === "rejected-current" ? "session-1" : "session-2";
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      const url = String(input);
+      if (url === "/api/v1/chat/sessions") return Promise.resolve(Response.json(["session-1", "session-2"].map(id => ({ id, title: id, characterId: "character-1", status: "active", memoryEnabled: true, lastMessageAt: null }))));
+      if (url.endsWith("/archive") && init?.method === "POST") return Promise.resolve(outcome === "rejected-current"
+        ? Response.json({ error: "conflict", message: "Cancel the active reply before archiving this chat" }, { status: 409 })
+        : Response.json({ id: targetId, status: "archived" }));
+      return base(input, init);
+    });
+    await mountSession(); await act(async () => typeMessage("Keep my unsent note."));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="session-list-open"]')!.click());
+    await waitUntil(() => container.querySelectorAll('[data-testid="session-list-item"]').length === 2);
+    const row = [...container.querySelectorAll('[data-testid="session-list-item"]')].find(row => row.querySelector(`a[href="/chat/${targetId}"]`))!;
+    await act(async () => row.querySelector<HTMLButtonElement>('[data-testid="session-archive"]')!.click());
+    await act(async () => row.querySelector<HTMLButtonElement>('[data-testid="session-archive"]')!.click());
+    await waitUntil(() => outcome === "rejected-current" ? Boolean(container.textContent?.includes("Cancel the active reply before archiving this chat")) : Boolean(row.querySelector<HTMLButtonElement>('[data-testid="session-archive"]')?.disabled));
+    expect(messageInput()?.disabled).toBe(false); expect(messageInput()?.value).toBe("Keep my unsent note.");
+    expect(container.querySelector<HTMLButtonElement>('[aria-label="Send message"]')?.disabled).toBe(false);
+    expect(container.textContent).not.toContain("This conversation is archived");
+  });
 
   it("shows the Main-owned private-turn receipt on history regardless of the current session mode", async () => {
     sessionMessages = [
@@ -101,7 +283,125 @@ describe("ChatSessionClient streaming composer", () => {
     expect(container.querySelector('[data-message-id="user-1"] [data-testid="chat-private-turn"]')).toBeNull();
   });
 
+  it("explains a Main-confirmed length limit on history and after remount without marking normal, legacy or cancelled replies", async () => {
+    sessionMessages = [opening, userTurn,
+      { ...streamingReply, content: "The unfinished story", status: "sent", replyLimitReached: true },
+      { ...streamingReply, id: "normal-reply", content: "A complete reply.", status: "sent", replyLimitReached: false },
+      { ...streamingReply, id: "legacy-reply", content: "Legacy ending without punctuation", status: "sent" },
+      { ...streamingReply, id: "cancelled-reply", content: "", status: "cancelled", replyLimitReached: true },
+    ];
+    await mountSession();
+    const notice = "Reply reached the length limit. Ask the character to continue.";
+    expect(replyBubble()?.textContent).toContain(notice);
+    expect(container.querySelectorAll('[data-testid="chat-reply-limit"]')).toHaveLength(1);
+    expect(container.querySelector('[data-message-id="legacy-reply"]')?.textContent).toContain("Legacy ending without punctuation");
+    await act(async () => root.render(null));
+    await mountSession();
+    expect(replyBubble()?.textContent).toContain(notice);
+    expect(container.querySelectorAll('[data-testid="chat-reply-limit"]')).toHaveLength(1);
+  });
+
+  it.each([true, false])("uses the canonical length-limit flag after SSE completes (%s), without trusting streamed prose", async replyLimitReached => {
+    await startStreamingReply();
+    const stream = FakeEventSource.instances.at(-1)!;
+    await act(async () => stream.emit("delta", { delta: " unfinished", finishReason: "length" }));
+    expect(container.querySelector('[data-testid="chat-reply-limit"]')).toBeNull();
+    sessionMessages = [opening, userTurn, { ...streamingReply, content: "Canonical final text", status: "sent", replyLimitReached }];
+    await act(async () => stream.emit("done", { finishReason: "length" }));
+    await waitUntil(() => stream.closed);
+    expect(replyBubble()?.textContent).toContain("Canonical final text");
+    expect(Boolean(replyBubble()?.querySelector('[data-testid="chat-reply-limit"]'))).toBe(replyLimitReached);
+    expect(vi.mocked(fetch).mock.calls.filter(([url, init]) => String(url).endsWith("/messages") && init?.method === "POST")).toHaveLength(1);
+  });
+
+  it("removes the earlier attempt's length notice while the next attempt streams and after a normal completion", async () => {
+    sessionMessages = [opening, userTurn, { ...streamingReply, content: "Limited old answer", status: "sent", replyLimitReached: true }];
+    await mountSession();
+    expect(replyBubble()?.querySelector('[data-testid="chat-reply-limit"]')).not.toBeNull();
+    sessionMessages = [opening, userTurn, { ...streamingReply, attempt: 2 }];
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await waitUntil(() => FakeEventSource.instances.length === 1);
+    expect(replyBubble()?.querySelector('[data-testid="chat-reply-limit"]')).toBeNull();
+    const stream = FakeEventSource.instances[0]!;
+    sessionMessages = [opening, userTurn, { ...streamingReply, attempt: 2, content: "New complete answer.", status: "sent" }];
+    await act(async () => stream.emit("done", {}));
+    await waitUntil(() => stream.closed);
+    expect(replyBubble()?.textContent).toContain("New complete answer.");
+    expect(replyBubble()?.querySelector('[data-testid="chat-reply-limit"]')).toBeNull();
+  });
+
+  it("keeps a committed current archive authoritative after Escape closes its pending drawer", async () => {
+    let finishArchive!: (response: Response) => void;
+    const base = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      const url = String(input);
+      if (url === "/api/v1/chat/sessions") return Promise.resolve(Response.json([{ id: "session-1", title: "Test chat", characterId: "character-1", status: "active", memoryEnabled: true, lastMessageAt: null }]));
+      if (url.endsWith("/archive") && init?.method === "POST") return new Promise<Response>(resolve => { finishArchive = resolve; });
+      return base(input, init);
+    });
+    await mountSession(); await act(async () => typeMessage("Keep my unsent note."));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="session-list-open"]')!.click());
+    await waitUntil(() => Boolean(container.querySelector('[aria-label="Archive chat"]')));
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Archive chat"]')!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Confirm archive chat"]')!.click());
+    await act(async () => container.querySelector('dialog[aria-label="Your chats"]')!.dispatchEvent(new Event("cancel", { cancelable: true })));
+    expect(container.querySelector('[aria-label="Your chats"]')).toBeNull();
+    await act(async () => finishArchive(Response.json({ id: "session-1", status: "archived" })));
+    expect(messageInput()?.disabled).toBe(true);
+    expect(container.textContent).toContain("This conversation is archived");
+    expect(messageInput()?.value).toBe("Keep my unsent note.");
+  });
+
+  it("binds a memory clear to the owner who reviewed its impact even before cookie-change broadcast", async () => {
+    const clearOwners: string[] = [];
+    const base = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      const url = String(input);
+      if (url === "/api/v1/chat/groups") return Promise.resolve(Response.json({ ownerScope: `user:${viewerId}`, groups: [] }));
+      if (url === "/api/v1/chat/memory/character-1" && init?.method === "DELETE") {
+        const expected = new Headers(init.headers).get("x-idream-viewer-scope");
+        if (expected !== null && expected !== `user:${viewerId}`) return Promise.resolve(Response.json({ error: "conflict", message: "Your account changed. Reload to continue." }, { status: 409 }));
+        clearOwners.push(viewerId!);
+        return Promise.resolve(Response.json({}, { status: 503 }));
+      }
+      return base(input, init);
+    });
+    await mountSession();
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="memory-panel-open"]')!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="memory-clear"]')!.click());
+    expect(container.textContent).toContain("No active group chats with this character were found");
+    viewerId = "viewer-b";
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="memory-clear"]')!.click());
+    expect(clearOwners).not.toContain("viewer-b");
+    const requests = vi.mocked(fetch).mock.calls.filter(([url, init]) => String(url).includes("/memory/") && init?.method === "DELETE");
+    expect(requests).toHaveLength(1);
+    expect(new Headers(requests[0][1]?.headers).get("x-idream-viewer-scope")).toBe("user:viewer-a");
+  });
+
+  it("binds the memory impact read to the displayed owner before a cookie-change broadcast", async () => {
+    const base = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      if (String(input) === "/api/v1/chat/groups") {
+        const expected = new Headers(init?.headers).get("x-idream-viewer-scope");
+        return Promise.resolve(expected !== null && expected !== `user:${viewerId}`
+          ? Response.json({ error: "conflict", message: "Your account changed. Reload to continue." }, { status: 409 })
+          : Response.json({ ownerScope: `user:${viewerId}`, groups: [{ title: "B private group", status: "active", members: [{ characterId: "character-1" }] }] }));
+      }
+      return base(input, init);
+    });
+    await mountSession(); viewerId = "viewer-b";
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="memory-panel-open"]')!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="memory-clear"]')!.click());
+    expect(container.textContent).not.toContain("B private group");
+    expect(container.textContent).toContain("Nothing has been cleared");
+    expect(container.querySelector<HTMLButtonElement>('[data-testid="memory-clear"]')?.disabled).toBe(true);
+    const request = vi.mocked(fetch).mock.calls.find(([url]) => String(url) === "/api/v1/chat/groups");
+    expect(new Headers(request?.[1]?.headers).get("x-idream-viewer-scope")).toBe("user:viewer-a");
+  });
+
   beforeEach(() => {
+    invalidateViewerAuthority();
+    viewerId = "viewer-a";
     // Use run-owned browser storage, never Node's ambient localStorage shim.
     // It survives component remounts in a test, just like a real browser tab.
     const stored = new Map<string, string>();
@@ -136,6 +436,7 @@ describe("ChatSessionClient streaming composer", () => {
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
+        if (url === "/api/v1/me") return Response.json({ ok: true, data: { user: viewerId ? { id: viewerId } : null } });
         // These existing playback/cache cases model an already accepted clip;
         // first-time price acceptance has its own explicit test below.
         if (url === "/api/v1/generation/voice/quote") return Response.json({ ok: true, data: { quote: {
@@ -179,6 +480,7 @@ describe("ChatSessionClient streaming composer", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    invalidateViewerAuthority();
     vi.unstubAllGlobals();
   });
 
@@ -346,13 +648,10 @@ describe("ChatSessionClient streaming composer", () => {
     });
 
     expect(FakeEventSource.instances.at(-1)?.closed).toBe(true);
-    expect(fetch).toHaveBeenCalledWith(
-      "/api/v1/messages/assistant-1/cancel",
-      {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ attempt: 1 }),
-      },
-    );
+    const cancel = vi.mocked(fetch).mock.calls.find(([url]) => String(url) === "/api/v1/messages/assistant-1/cancel");
+    expect(cancel?.[1]).toMatchObject({ method: "POST", body: JSON.stringify({ attempt: 1 }) });
+    expect(new Headers(cancel?.[1]?.headers).get("content-type")).toBe("application/json");
+    expect(new Headers(cancel?.[1]?.headers).get("x-idream-viewer-scope")).toBe("user:viewer-a");
     expect(replyBubble()?.textContent).toContain("Once upon");
     expect(container.querySelector('[aria-label="Assistant is typing"]')).toBeNull();
     expect(container.querySelector('[data-testid="chat-stop-reply"]')).toBeNull();
@@ -383,9 +682,10 @@ describe("ChatSessionClient streaming composer", () => {
     expect(container.querySelector('[aria-label="Assistant is typing"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="chat-stop-reply"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="chat-session-status"]')?.textContent ?? "").not.toContain("Reply stopped");
-    expect(fetch).toHaveBeenCalledWith("/api/v1/messages/assistant-1/cancel", {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ attempt: 1 }),
-    });
+    const cancel = vi.mocked(fetch).mock.calls.find(([url]) => String(url) === "/api/v1/messages/assistant-1/cancel");
+    expect(cancel?.[1]).toMatchObject({ method: "POST", body: JSON.stringify({ attempt: 1 }) });
+    expect(new Headers(cancel?.[1]?.headers).get("content-type")).toBe("application/json");
+    expect(new Headers(cancel?.[1]?.headers).get("x-idream-viewer-scope")).toBe("user:viewer-a");
   });
 
   it.each(["user-1", "assistant-1"])(
@@ -1153,6 +1453,169 @@ describe("ChatSessionClient streaming composer", () => {
     expect(container.querySelector('[data-testid="chat-confirm-voice"]')).toBeNull();
   });
 
+  it("revokes private history, drafts, streams, audio and receipts when another surface confirms a new owner without focus", async () => {
+    sessionMessages = [{ ...opening, attachments: [{ id: "private-image", kind: "generated_image", status: "completed", mediaAssetId: "private-image", mediaUrl: "/media/private-a.png" }] }];
+    const pause = vi.fn();
+    vi.stubGlobal("Audio", class {
+      constructor(public src: string) {}
+      pause = pause;
+      async play() {}
+    });
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) === "/api/v1/generation/voice") return Response.json({ data: { contentUrl: "/voice/private.wav" } });
+      if (viewerId === "viewer-b" && String(input) === "/api/v1/chat/sessions/session-1") return Response.json({ ok: false }, { status: 503 });
+      return originalFetch(input, init);
+    });
+    await startStreamingReply();
+    expect(container.querySelector('img[data-asset-id="private-image"]')).not.toBeNull();
+    await act(async () => typeMessage("A private unsent draft"));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-message-id="assistant-0"] [data-testid="chat-play-voice"]')!.click());
+    const storageKey = `idream:generation-receipt:v1:${encodeURIComponent("user:viewer-a")}:private-request`;
+    const record = JSON.stringify({ kind: "generation", url: "/api/v1/generation/jobs", requestKey: "private-request", body: {
+      mode: "image", outputCount: 1, quoteAuthority: { profileId: "image", profileVersion: 1,
+        routeFingerprint: "a".repeat(64), pricingFingerprint: "b".repeat(64), outputCount: 1, costDreamcoins: 8 },
+    } });
+    const saved = JSON.stringify({ version: 1, ownerScope: "user:viewer-a", record, idempotencyKey: "private-request" });
+    window.localStorage.setItem(storageKey, saved);
+    await act(async () => window.dispatchEvent(new StorageEvent("storage", {
+      key: storageKey, oldValue: null, newValue: saved, storageArea: window.localStorage,
+    })));
+    expect(container.querySelector('[data-pending-request-key="private-request"]')).not.toBeNull();
+    const oldStream = FakeEventSource.instances.at(-1)!;
+    viewerId = "viewer-b";
+    await act(async () => { await sharedViewer.revalidate(); });
+    await act(async () => oldStream.emit("delta", { delta: "Late private answer" }));
+    expect(container.textContent).not.toContain("Hey there.");
+    expect(container.textContent).not.toContain("Once upon");
+    expect(container.textContent).not.toContain("Late private answer");
+    expect(container.querySelector('[data-testid="chat-header-avatars"] img')).toBeNull();
+    expect(container.querySelector('img[data-asset-id="private-image"]')).toBeNull();
+    expect(messageInput()).toBeNull();
+    expect(container.querySelector('[data-pending-request-key="private-request"]')).toBeNull();
+    expect(oldStream.closed).toBe(true);
+    expect(pause).toHaveBeenCalledOnce();
+    expect(window.localStorage.getItem(storageKey)).toBe(saved);
+  });
+
+  it("abandons an accepted send and its stream after shared owner change", async () => {
+    await mountSession();
+    await act(async () => { typeMessage("A private pending message"); });
+    await act(async () => { submitComposer(); });
+    viewerId = "viewer-b";
+    await act(async () => { await sharedViewer.revalidate(); });
+    await act(async () => { releaseSend?.(sendPayload()); });
+    expect(FakeEventSource.instances).toHaveLength(0);
+    expect(container.textContent).not.toContain("hello there");
+    expect(container.textContent).not.toContain("A private pending message");
+    expect(vi.mocked(fetch).mock.calls.filter(([input, init]) => String(input).endsWith("/messages") && init?.method === "POST")).toHaveLength(1);
+  });
+
+  it("abandons a late accepted voice quote after shared owner change", async () => {
+    const quote = Promise.withResolvers<Response>();
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => String(input) === "/api/v1/generation/voice/quote" ? quote.promise : originalFetch(input, init));
+    await mountSession();
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="chat-play-voice"]')!.click());
+    viewerId = "viewer-b";
+    await act(async () => { await sharedViewer.revalidate(); });
+    await act(async () => quote.resolve(Response.json({ ok: true, data: { quote: {
+      quoteToken: null, maxCostDreamcoins: 2, overflowCostDreamcoins: 2, allowanceMinutes: 0,
+      remainingAllowanceMs: 0, balance: 100, accepted: true, alreadyDelivered: false,
+    } } })));
+    expect(voiceRequests()).toHaveLength(0);
+    expect(container.querySelector('[data-testid="chat-confirm-voice"]')).toBeNull();
+  });
+
+  it("does not start a private stream when the send body arrives after shared owner change", async () => {
+    const body = Promise.withResolvers<unknown>();
+    const response = Response.json({});
+    const parse = vi.spyOn(response, "json").mockImplementation(() => body.promise);
+    await mountSession();
+    await act(async () => { typeMessage("A delayed reply"); });
+    await act(async () => { submitComposer(); releaseSend?.(response); });
+    expect(parse).toHaveBeenCalledOnce();
+    viewerId = "viewer-b";
+    await act(async () => { await sharedViewer.revalidate(); });
+    await act(async () => { body.resolve(await sendPayload().json()); });
+    expect(FakeEventSource.instances).toHaveLength(0);
+    expect(container.textContent).not.toContain("hello there");
+  });
+
+  it("revokes private group history and speaker controls on shared owner change", async () => {
+    await mountGroupSession();
+    expect(container.textContent).toContain("I brought the blue notebook.");
+    viewerId = "viewer-b";
+    await act(async () => { await sharedViewer.revalidate(); });
+    expect(container.textContent).not.toContain("I brought the blue notebook.");
+    expect(container.querySelector('[aria-label="Group speaker"]')).toBeNull();
+    expect(container.querySelector('[data-testid="chat-header-avatars"] img')).toBeNull();
+  });
+
+  it("does not read a private conversation before account confirmation and recovers a failed initial check with Retry", async () => {
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    let unavailable = true;
+    vi.mocked(fetch).mockImplementation(async (input, init) =>
+      unavailable && String(input) === "/api/v1/me" ? Response.json({ ok: false }, { status: 503 }) : originalFetch(input, init));
+    await act(async () => root.render(createElement(Fragment, null, createElement(ViewerProbe), createElement(ChatSessionClient, { id: "session-1" }))));
+    await waitUntil(() => Boolean(container.querySelector('[role="alert"]')));
+    expect(sessionReads).toBe(0);
+    expect(container.textContent).not.toContain("Hey there.");
+    unavailable = false;
+    await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Retry")!.click());
+    await waitUntil(() => Boolean(messageInput()));
+    expect(container.textContent).toContain("Hey there.");
+  });
+
+  it("keeps anonymous visitors on the private-chat login path without reading a signed-in session", async () => {
+    viewerId = null;
+    await act(async () => root.render(createElement(Fragment, null, createElement(ViewerProbe), createElement(ChatSessionClient, { id: "session-1" }))));
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="chat-session-auth-required"]')));
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    expect(sessionReads).toBe(0);
+    expect(container.querySelector<HTMLAnchorElement>('a[href^="/login?"]')?.href).toContain("chat%2Fsession-1");
+    expect(container.textContent).not.toContain("Hey there.");
+  });
+
+  it("retains a live session after StrictMode setup and still revokes it on a shared owner change", async () => {
+    await act(async () => root.render(createElement(StrictMode, null,
+      createElement(ViewerProbe), createElement(ChatSessionClient, { id: "session-1" }))));
+    await waitUntil(() => Boolean(messageInput()));
+    await act(async () => { typeMessage("StrictMode private turn"); });
+    await act(async () => { submitComposer(); releaseSend?.(sendPayload()); });
+    await waitUntil(() => FakeEventSource.instances.length > 0);
+    const source = FakeEventSource.instances.at(-1)!;
+    viewerId = "viewer-b";
+    await act(async () => { await sharedViewer.revalidate(); });
+    expect(source.closed).toBe(true);
+    expect(container.textContent).not.toContain("hello there");
+  });
+
+  it("keeps private history, draft and audio when shared revalidation confirms the same owner or has a network blip", async () => {
+    const pause = vi.fn();
+    vi.stubGlobal("Audio", class {
+      constructor(public src: string) {}
+      pause = pause;
+      async play() {}
+    });
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    let interrupted = false;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) === "/api/v1/generation/voice") return Response.json({ data: { contentUrl: "/voice/private.wav" } });
+      if (interrupted && String(input) === "/api/v1/me") return Response.json({ ok: false }, { status: 503 });
+      return originalFetch(input, init);
+    });
+    await mountSession();
+    await act(async () => typeMessage("Unsent draft"));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="chat-play-voice"]')!.click());
+    await act(async () => { await sharedViewer.revalidate(); });
+    interrupted = true;
+    await act(async () => { await sharedViewer.revalidate(); });
+    expect(container.textContent).toContain("Hey there.");
+    expect(messageInput()?.value).toBe("Unsent draft");
+    expect(pause).not.toHaveBeenCalled();
+  });
+
   it.each([401, 403, 404])("clears private chat content and voice when focus loses access with %s", async status => {
     const pause = vi.fn();
     vi.stubGlobal("Audio", class {
@@ -1642,13 +2105,13 @@ describe("ChatSessionClient streaming composer", () => {
       }
       return originalFetch(input, init);
     });
-    await act(async () => root.render(createElement(ChatSessionClient, { id: "group-1", groupMode: true })));
+    await act(async () => root.render(createElement(Fragment, null, createElement(ViewerProbe), createElement(ChatSessionClient, { id: "group-1", groupMode: true }))));
     await waitUntil(() => Boolean(container.querySelector('[aria-label="Group speaker"]')));
   }
 
   async function mountSession() {
     await act(async () => {
-      root.render(createElement(ChatSessionClient, { id: "session-1" }));
+      root.render(createElement(Fragment, null, createElement(ViewerProbe), createElement(ChatSessionClient, { id: "session-1" })));
     });
     await waitUntil(() => Boolean(messageInput()));
   }

@@ -13,6 +13,7 @@ import {
   type CreativeRunDetail,
 } from "@idream/shared/admin";
 import type { DurableMutationIntent } from "@/lib/durable-mutation-intent";
+import type { AdminI18nContextValue } from "@/components/admin/i18n-dictionary";
 
 export const characterAssetPurposes = ["character_cover", "character_hero", "character_chat"] as const;
 export type CharacterAssetPurpose = typeof characterAssetPurposes[number];
@@ -490,10 +491,13 @@ export function committedCharacterRunProjectionMatches(
 
 // SPEC: 已提交的 Run 暂时读不到 ≠ 提交失败。文案必须点明「重试校验即可，不要再发一次
 //       create」——否则运营台上的人会去点第二次生成，制造重复 Run。
-export function committedRunProjectionUnavailable(detail: string | null) {
+export function committedRunProjectionUnavailable(
+  detail: string | null,
+  translate: AdminI18nContextValue["t"],
+) {
   return detail
-    ? `The committed Run projection is still unavailable: ${detail}. Verification can be retried without another create request.`
-    : "The committed Run projection is still unavailable. Verification can be retried without another create request.";
+    ? translate("The committed Run projection is still unavailable: {detail}. Verification can be retried without another create request.", { detail: translate(detail) })
+    : translate("The committed Run projection is still unavailable. Verification can be retried without another create request.");
 }
 
 export function candidateState(item: CreativeRunDetail["items"][number], resultUnconfirmed = false) {

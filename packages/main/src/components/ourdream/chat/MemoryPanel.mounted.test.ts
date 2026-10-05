@@ -28,6 +28,7 @@ async function render(sessionId?: string): Promise<void> {
   await act(async () => {
     root.render(createElement(MemoryPanel, {
       open: true,
+      fetchForViewer: fetch,
       onClose: () => {},
       characterId: "raya-reyes",
       ...(sessionId ? { sessionId } : {}),
@@ -133,6 +134,7 @@ describe("MemoryPanel clear", () => {
   it("starts a fresh conversation after the reset succeeds", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
+      if (url === "/api/v1/chat/groups") return Response.json({ groups: [] });
       if (url.includes("/memory/")) {
         return new Response(JSON.stringify({ ok: true, archivedSessions: 1 }), {
           status: 200,
@@ -162,7 +164,7 @@ describe("MemoryPanel clear", () => {
   });
 
   it("does not claim a reset failure was a no-op", async () => {
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL) => new Response("{}", { status: 500 }));
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input) === "/api/v1/chat/groups" ? Response.json({ groups: [] }) : new Response("{}", { status: 500 }));
     vi.stubGlobal("fetch", fetchMock);
 
     await render();
@@ -173,6 +175,61 @@ describe("MemoryPanel clear", () => {
     expect(
       container.querySelector('[data-testid="memory-clear-error"]')?.textContent,
     ).toContain("Old chats may already be archived");
+  });
+
+  it("shows an active Call rejection without claiming any archive, and keeps the reviewed scope for an explicit retry after End", async () => {
+    let callActive = true;
+    const before = window.location.href;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/v1/chat/groups") return Response.json({ groups: [{
+        title: "Reviewed garden group", status: "active", members: [{ characterId: "raya-reyes" }],
+      }] });
+      if (init?.method === "DELETE") return callActive
+        ? Response.json({ error: "conflict", message: "End your voice call before clearing this Character's memory" }, { status: 409 })
+        : Response.json({ ok: true, archivedSessions: 1 });
+      return Response.json({ ok: true, data: { session: { id: "session-after-call-end" } } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await render(); await click(resetButton()); await click(resetButton());
+    expect.soft(container.querySelector('[role="alert"]')?.textContent ?? "").toContain("End your voice call before clearing this Character's memory");
+    expect.soft(container.textContent).not.toContain("Old chats may already be archived");
+    expect(container.querySelector('[data-testid="memory-clear-groups"]')?.textContent).toContain("Reviewed garden group");
+    expect(resetButton().disabled).toBe(false);
+    expect(window.location.href).toBe(before);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+    callActive = false; await click(resetButton());
+    expect(fetchMock.mock.calls.filter(([input]) => String(input) === "/api/v1/chat/groups")).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "DELETE")).toHaveLength(2);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+    expect(window.location.href).toContain("/chat/session-after-call-end");
+  });
+
+  it("shows a readable access rejection and keeps the confirmed impact without offering unknown-outcome recovery", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input) === "/api/v1/chat/groups"
+      ? Response.json({ groups: [] })
+      : Response.json({ error: "forbidden", message: "This account cannot clear this Character's memory" }, { status: 403 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await render(); await click(resetButton()); await click(resetButton());
+    expect.soft(container.querySelector('[role="alert"]')?.textContent ?? "").toContain("This account cannot clear this Character's memory");
+    expect.soft(container.textContent).not.toContain("Old chats may already be archived");
+    expect(resetButton().disabled).toBe(false);
+    expect(fetchMock.mock.calls.filter(([input]) => String(input) === "/api/v1/chat/groups")).toHaveLength(1);
+  });
+
+  it.each(["unreadable-4xx", "empty-4xx", "readable-5xx", "network"])("keeps an unknown clear outcome for %s instead of claiming a rejected no-op", async failure => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/v1/chat/groups") return Response.json({ groups: [] });
+      if (failure === "network") throw new TypeError("network lost after submission");
+      if (failure === "empty-4xx") return Response.json({ error: "conflict", message: "" }, { status: 409 });
+      return failure === "unreadable-4xx" ? new Response("<html>proxy unavailable</html>", { status: 403 })
+        : Response.json({ error: "internal", message: "Internal details must not be shown" }, { status: 500 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await render(); await click(resetButton()); await click(resetButton());
+    expect(container.querySelector('[data-testid="memory-clear-error"]')?.textContent).toContain("Old chats may already be archived");
+    expect(container.textContent).not.toContain("Internal details must not be shown");
+    expect(container.textContent).not.toContain("Nothing has been cleared");
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).includes("/memory/"))).toHaveLength(1);
   });
 
   it("names the group chats a one-to-one clear will archive before confirming", async () => {
@@ -205,6 +262,7 @@ describe("MemoryPanel check-ins", () => {
     await act(async () => {
       root.render(createElement(MemoryPanel, {
         open: true,
+        fetchForViewer: fetch,
         onClose: () => {},
         characterId: "raya-reyes",
         sessionId: "session-1",
@@ -226,5 +284,114 @@ describe("MemoryPanel check-ins", () => {
 
   it("leaves the chat page alone when the save fails", async () => {
     expect(await toggleCheckIns(503)).not.toHaveBeenCalled();
+  });
+});
+
+describe("Memory clear impact authority", () => {
+  async function renderScope(characterId: string, open = true, groupConversation = false) {
+    await act(async () => root.render(createElement(MemoryPanel, {
+      open, fetchForViewer: fetch, onClose: () => {}, characterId, memoryEnabled: true,
+      memoryPending: false, onToggleMemory: () => {}, groupConversation,
+    })));
+  }
+  it("does not submit clear before the group impact read has finished", async () => {
+    let finishGroups!: (response: Response) => void;
+    const calls: Array<{url: string; method: string}> = [];
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({url: String(input), method: init?.method ?? "GET"});
+      return String(input) === "/api/v1/chat/groups" ? new Promise<Response>(resolve => { finishGroups = resolve; }) : Promise.resolve(Response.json({}, {status: 503}));
+    }));
+    await render(); await click(resetButton()); await click(resetButton());
+    expect(calls.filter(call => call.method === "DELETE")).toHaveLength(0);
+    expect(resetButton().disabled).toBe(true);
+    await act(async () => finishGroups(Response.json({ groups: [{ title: "Owned group with this Character", status: "active", members: [{ characterId: "raya-reyes" }] }] })));
+    expect(container.textContent).toContain("Owned group with this Character");
+  });
+  it("does not treat a failed group impact lookup as confirmation that no groups are affected", async () => {
+    const calls: Array<{url: string; method: string}> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({url: String(input), method: init?.method ?? "GET"}); return Response.json({}, {status: 503});
+    }));
+    await render(); await click(resetButton()); await click(resetButton());
+    expect(calls.filter(call => call.method === "DELETE")).toHaveLength(0);
+    expect(resetButton().disabled).toBe(true);
+  });
+  it("allows the explicit confirmation after a successful impact read and keeps an uncertain clear outcome visible", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input) === "/api/v1/chat/groups"
+      ? Response.json({ groups: [{ title: "Owned group with this Character", status: "active", members: [{ characterId: "raya-reyes" }] }] }) : Response.json({}, {status: 503})));
+    await render(); await click(resetButton()); expect(container.textContent).toContain("Owned group with this Character");
+    expect(resetButton().disabled).toBe(false); await click(resetButton());
+    expect(vi.mocked(fetch).mock.calls.filter(([,init]) => init?.method === "DELETE")).toHaveLength(1);
+    expect(container.querySelector('[data-testid="memory-clear-error"]')?.textContent).toContain("Old chats may already be archived");
+  });
+  it("retries only the impact read after a failure, then enables an explicit confirmation", async () => {
+    let reads = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) !== "/api/v1/chat/groups") return Response.json({}, { status: 503 });
+      return ++reads === 1 ? Response.json({}, { status: 503 }) : Response.json({ groups: [] });
+    }));
+    await render(); await click(resetButton());
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Nothing has been cleared");
+    const retry = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Retry");
+    expect(retry).toBeDefined(); await click(retry!);
+    expect(reads).toBe(2);
+    expect(vi.mocked(fetch).mock.calls.every(([, init]) => !init?.method)).toBe(true);
+    expect(container.textContent).toContain("No active group chats with this character were found");
+    expect(resetButton().disabled).toBe(false);
+    await click(resetButton());
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "DELETE")).toHaveLength(1);
+  });
+  it.each([{ items: [] }, { groups: [{ title: "Unknown status", status: "unknown", members: [] }] }])("rejects a malformed successful impact response: %j", async payload => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json(payload)));
+    await render(); await click(resetButton()); await click(resetButton());
+    expect(resetButton().disabled).toBe(true);
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "DELETE")).toHaveLength(0);
+  });
+  it("does not project a late group response into another Character's confirmation", async () => {
+    let resolveOld!: (response: Response) => void;
+    let reads = 0;
+    vi.stubGlobal("fetch", vi.fn(() => ++reads === 1 ? new Promise<Response>(resolve => { resolveOld = resolve; }) : Promise.resolve(Response.json({ groups: [] }))));
+    await renderScope("raya-reyes"); await click(resetButton());
+    await renderScope("new-character");
+    expect(resetButton().getAttribute("aria-label")).toBe("Clear memory");
+    await click(resetButton());
+    await act(async () => resolveOld(Response.json({ groups: [{ title: "Old private group", status: "active", members: [{ characterId: "raya-reyes" }] }] })));
+    expect(container.textContent).not.toContain("Old private group");
+    expect(container.textContent).toContain("No active group chats with this character were found");
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "DELETE")).toHaveLength(0);
+  });
+  it("does not project a late clear rejection body into a different Character's panel", async () => {
+    let finishBody!: (body: unknown) => void;
+    const rejection = new Response(null, { status: 409 });
+    vi.spyOn(rejection, "json").mockImplementation(() => new Promise(resolve => { finishBody = resolve; }));
+    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => init?.method === "DELETE"
+      ? rejection : Response.json({ groups: [] })));
+    await renderScope("raya-reyes"); await click(resetButton()); await click(resetButton());
+    expect(finishBody).toBeDefined();
+    await renderScope("new-character");
+    await act(async () => finishBody({ error: "conflict", message: "End the old Character's voice call before clearing memory" }));
+    expect(container.textContent).not.toContain("End the old Character's voice call");
+    expect(container.querySelector('[data-testid="memory-clear-error"]')).toBeNull();
+    expect(resetButton().getAttribute("aria-label")).toBe("Clear memory");
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "DELETE")).toHaveLength(1);
+  });
+  it("requires a new impact read after closing and discards the old response", async () => {
+    let resolveOld!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(resolve => { resolveOld = resolve; })));
+    await renderScope("raya-reyes"); await click(resetButton());
+    await renderScope("raya-reyes", false);
+    await renderScope("raya-reyes");
+    await act(async () => resolveOld(Response.json({ groups: [{ title: "Old private group", status: "active", members: [{ characterId: "raya-reyes" }] }] })));
+    expect(container.textContent).not.toContain("Old private group");
+    expect(resetButton().getAttribute("aria-label")).toBe("Clear memory");
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+  });
+  it("loads and names the affected groups before confirming from a group conversation too", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ groups: [{ title: "Current shared chat", status: "active", members: [{ characterId: "raya-reyes" }] }] })));
+    await renderScope("raya-reyes", true, true); await click(resetButton());
+    expect(container.textContent).toContain("Current shared chat");
+    expect(resetButton().disabled).toBe(false);
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "DELETE")).toHaveLength(0);
   });
 });

@@ -7,35 +7,50 @@ import { shouldBypassNextImageOptimizer } from "@/lib/image-delivery";
 import { parseCharacterListResponse } from "@/lib/public-api-contracts";
 import type { CharacterCardData } from "@/types/ourdream";
 import { useAgeGateAccess } from "./AgeGateBoundary";
+import { useViewerGate, type ViewerGate } from "@/hooks/useViewerGate";
+import { isAbortError } from "@/lib/viewer-resource-client";
 
 type StripState = "loading" | "ready" | "error";
 
 export function PublicCharacterStrip() {
+  const viewer = useViewerGate({ require: "any" });
+  return <CharacterStripContent viewer={viewer} key={viewer.scope ?? (viewer.identity ? "anonymous" : "unconfirmed")} />;
+}
+
+function CharacterStripContent({ viewer }: Readonly<{ viewer: ViewerGate }>) {
   const { accepted: ageGateAccepted } = useAgeGateAccess();
   const [characters, setCharacters] = useState<CharacterCardData[]>([]);
   const [state, setState] = useState<StripState>("loading");
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const gatedFetch = viewer.fetch;
+  const displayState = viewer.error ? "error" : state;
 
   useEffect(() => {
-    if (!ageGateAccepted) return;
+    if (!ageGateAccepted || !viewer.identity) return;
+    const controller = new AbortController();
     const timer = window.setTimeout(() => {
-      void fetch("/api/v1/characters?sort=for-you&limit=4")
+      setState("loading");
+      void gatedFetch("/api/v1/characters?sort=for-you&limit=4", { cache: "no-store", signal: controller.signal })
         .then(async (response) => {
+          if (controller.signal.aborted) return;
           if (!response.ok) throw new Error("characters unavailable");
           const payload = parseCharacterListResponse(await response.json());
+          if (controller.signal.aborted) return;
           setCharacters(payload.items.slice(0, 4));
           setState("ready");
         })
-        .catch(() => {
+        .catch((error: unknown) => {
+          if (controller.signal.aborted || isAbortError(error)) return;
           setCharacters([]);
           setState("error");
         });
     }, 0);
-    return () => window.clearTimeout(timer);
-  }, [ageGateAccepted]);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [ageGateAccepted, gatedFetch, loadAttempt, viewer.identity, viewer.revalidation]);
 
   return (
     <section className="px-4 py-8 md:px-[60px] md:py-12">
-      {state === "loading" ? (
+      {displayState === "loading" ? (
         <p
           aria-live="polite"
           className="rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-8 text-center text-[13px] font-medium text-[rgb(170,170,170)]"
@@ -45,7 +60,7 @@ export function PublicCharacterStrip() {
           Loading public characters...
         </p>
       ) : null}
-      {state === "ready" && characters.length === 0 ? (
+      {displayState === "ready" && characters.length === 0 ? (
         <div
           aria-live="polite"
           className="rounded-[18px] border border-white/10 bg-[rgb(18,18,18)] p-6 md:flex md:items-center md:justify-between md:gap-8 md:p-8"
@@ -80,7 +95,7 @@ export function PublicCharacterStrip() {
           </div>
         </div>
       ) : null}
-      {state === "error" ? (
+      {displayState === "error" ? (
         <div
           aria-live="assertive"
           className="rounded-[18px] border border-white/10 bg-[rgb(18,18,18)] p-6 md:flex md:items-center md:justify-between md:gap-8 md:p-8"
@@ -95,10 +110,17 @@ export function PublicCharacterStrip() {
               Character showcase is temporarily unavailable
             </h2>
             <p className="mt-3 text-[14px] font-medium leading-6 text-[rgb(170,170,170)]">
-              The catalog could not be loaded, but character creation and the
-              rest of this guide are still available.
+              {viewer.error ?? "The catalog could not be loaded, but character creation and the rest of this guide are still available."}
             </p>
           </div>
+          <button
+            aria-label="Retry public characters"
+            className="mt-5 inline-flex h-10 shrink-0 items-center justify-center rounded-full bg-white/10 px-5 text-[13px] font-black text-white md:mt-0"
+            onClick={() => { if (viewer.error) void viewer.revalidate(); else setLoadAttempt(attempt => attempt + 1); }}
+            type="button"
+          >
+            Retry
+          </button>
           <Link
             className="mt-5 inline-flex h-10 shrink-0 items-center justify-center rounded-full bg-white px-5 text-[13px] font-black text-[rgb(13,13,13)] md:mt-0"
             href="/create"
@@ -107,7 +129,7 @@ export function PublicCharacterStrip() {
           </Link>
         </div>
       ) : null}
-      {state === "ready" && characters.length > 0 ? (
+      {displayState === "ready" && characters.length > 0 ? (
         <div className="grid gap-3 md:grid-cols-4">
           {characters.map((card, index) => (
             <Link

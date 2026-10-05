@@ -219,7 +219,7 @@ export const navItems: NavItem[] = [
       canRefund={ctx.permissions.has("billing.subscription.refund")}
     /> }),
   item({ id: "compliance", label: "Account Requests", href: "/admin/customer-ops/account-requests", icon: ShieldAlert, group: "Customers & Support", read: readForOperations("GET /api/v2/admin/compliance/account-deletions", "GET /api/v2/admin/compliance/age-verifications"),
-    render: () => <ComplianceView /> }),
+    render: (ctx) => <ComplianceView canWrite={ctx.permissions.has("compliance.write")} /> }),
 
   item({ id: "analytics", label: "Product Health", href: "/admin/growth/health", icon: BarChart3, group: "Analytics", read: readForOperations("GET /api/v2/admin/metrics"),
     render: (ctx) => <AnalyticsWorkspace

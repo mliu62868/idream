@@ -15,7 +15,7 @@ import { effectiveSubscriptionStatus } from "@/server/modules/ourdream/subscript
 const ACTIVE_CASE_STATUSES = ["new", "triaged", "in_progress", "waiting", "reopened"];
 
 export async function listCustomers(request: Request) {
-  await actorWithPermission(request, "customer.read");
+  const actor = await actorWithPermission(request, "customer.read");
   const query = queryParams(request, "GET /api/v2/admin/customers");
   const since30d = new Date(Date.now() - 30 * 24 * 60 * 60 * 1_000);
   const where: Prisma.UserWhereInput = {
@@ -57,7 +57,12 @@ export async function listCustomers(request: Request) {
         `),
         prisma.adminCase.groupBy({
           by: ["targetId"],
-          where: { targetType: "user", targetId: { in: customerIds }, status: { in: ACTIVE_CASE_STATUSES } },
+          where: {
+            targetType: "user",
+            targetId: { in: customerIds },
+            status: { in: ACTIVE_CASE_STATUSES },
+            ...(actor.role === "support" ? { type: { in: ["support_request", "billing_dispute"] } } : {}),
+          },
           _count: { _all: true },
         }),
         prisma.generationJob.groupBy({
@@ -117,7 +122,12 @@ export async function getCustomer360(request: Request, customerId: string) {
   }
 
   const since30d = new Date(Date.now() - 30 * 24 * 60 * 60 * 1_000);
-  const [subscription, ledger, recentChats, generations, adminCases, failedGenerationCount30d] = await Promise.all([
+  const caseWhere: Prisma.AdminCaseWhereInput = {
+    targetType: "user",
+    targetId: customerId,
+    ...(actor.role === "support" ? { type: { in: ["support_request", "billing_dispute"] } } : {}),
+  };
+  const [subscription, ledger, recentChats, generations, adminCases, activeCaseCount, failedGenerationCount30d] = await Promise.all([
     prisma.subscription.findFirst({
       where: { userId: customerId },
       include: { plan: true },
@@ -140,14 +150,12 @@ export async function getCustomer360(request: Request, customerId: string) {
       take: 20,
     }),
     prisma.adminCase.findMany({
-      where: {
-        targetType: "user",
-        targetId: customerId,
-        ...(actor.role === "support" ? { type: { in: ["support_request", "billing_dispute"] } } : {}),
-      },
+      where: caseWhere,
       orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
       take: 100,
     }),
+    // INVARIANT: 汇总覆盖全部可读活跃工单，不受详情最近100条的窗口限制。
+    prisma.adminCase.count({ where: { ...caseWhere, status: { in: ACTIVE_CASE_STATUSES } } }),
     prisma.generationJob.count({
       where: { userId: customerId, status: { in: ["failed", "blocked"] }, createdAt: { gte: since30d } },
     }),
@@ -175,7 +183,7 @@ export async function getCustomer360(request: Request, customerId: string) {
     },
     overview: {
       balanceDreamcoins: ledger[0]?.balanceAfter ?? 0,
-      activeCaseCount: adminCases.filter((item) => ACTIVE_CASE_STATUSES.includes(item.status)).length,
+      activeCaseCount,
       failedGenerationCount30d,
       lastActiveAt: lastActiveAt?.toISOString() ?? null,
     },

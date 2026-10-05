@@ -30,7 +30,7 @@ describe("companion prompt instruction hierarchy", () => {
     } as never);
 
     expect(prompt.startsWith("Speak softly.")).toBe(true);
-    expect(prompt).toContain("iDream companion contract (companion-product-6)");
+    expect(prompt).toContain("iDream companion contract (companion-product-7)");
     expect(prompt).toContain("Write in first person as Mira");
     // An ordinary memory-on turn adds no capability section: nothing about
     // photos or memory mode seeds the reply, and the bytes stay cacheable.
@@ -153,7 +153,7 @@ describe("per-turn state block", () => {
     expect(block).toBe([
       "Right now:",
       "- Time: 2026-08-24 15:04 UTC, Monday",
-      "- About Sam, in their own words: 29, nurse, lives alone with a parrot (they go by Sam)",
+      "- About Sam, in their own words: 29, nurse, lives alone with a parrot (they go by Sam). This is their current saved profile; use it instead of earlier names or self-descriptions in the conversation history.",
       "- Sam asked you to keep in mind: I am allergic to cats",
     ].join("\n"));
     expect(block).not.toContain("pin-1");

@@ -12,6 +12,27 @@ import {
 } from "./jobs";
 
 describe("Generation Jobs v2 contracts", () => {
+  it("accepts frozen metric bounds and exact pinned dimensions without breaking timeless queries", () => {
+    const scope = {
+      mode: "all", legacyStatus: "failed", from: "2026-07-05T12:00:00.000Z", to: "2026-07-12T12:00:00.000Z",
+      profileId: "profile-exact", profileVersion: "2", recipeId: "recipe-exact", sourceType: "generator",
+    };
+    expect(generationJobQuerySchema.parse(scope)).toMatchObject({ ...scope, profileVersion: 2 });
+    expect(generationJobQuerySchema.parse({ ...scope, profileVersion: "null" }).profileVersion).toBe("null");
+    expect(generationJobQuerySchema.parse({ mode: "all" })).toMatchObject({ mode: "all", sort: "created_desc" });
+    expect(generationJobQuerySchema.parse({ from: scope.from })).toMatchObject({ from: scope.from });
+    expect(generationJobQuerySchema.parse({ to: scope.to })).toMatchObject({ to: scope.to });
+  });
+
+  it("rejects malformed, empty, equal and inverted windows or unsupported profile versions", () => {
+    for (const query of [
+      { from: "yesterday" }, { to: "" },
+      { from: "2026-07-12T12:00:00.000Z", to: "2026-07-12T12:00:00.000Z" },
+      { from: "2026-07-13T12:00:00.000Z", to: "2026-07-12T12:00:00.000Z" },
+      { profileVersion: "0" }, { profileVersion: "2.5" }, { profileVersion: "latest" },
+    ]) expect(generationJobQuerySchema.safeParse(query).success).toBe(false);
+  });
+
   it("parses bounded server filters and explicit stable sort", () => {
     expect(generationJobQuerySchema.parse({
       search: "timeout",

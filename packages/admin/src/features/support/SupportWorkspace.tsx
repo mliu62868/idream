@@ -96,6 +96,9 @@ export function SupportWorkspace({
   const [savedViewError, setSavedViewError] = useState<string | null>(null);
   const [savedViewErrorCause, setSavedViewErrorCause] = useState<unknown>(undefined);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
+  const [commandConfirmation, setCommandConfirmation] = useState<ConfirmSpec | null>(null);
+  const [confirmationPermission, setConfirmationPermission] = useState(canWrite);
+  const writeAuthority = useRef({ canWrite });
   const [conversationTicket, setConversationTicket] = useState<string | null>(null);
   const [conversationRevision, setConversationRevision] = useState(0);
   const [savingView, setSavingView] = useState(false);
@@ -105,6 +108,16 @@ export function SupportWorkspace({
   //         所以第一页时 hasPrevious 为假 —— 置灰，而不是给一个点了会报错的按钮。
   const [cursorTrail, setCursorTrail] = useState<string[]>([]);
   const gate = useRef(createLatestRequestGate());
+
+  // A permission change invalidates the old ticket intent, including a later
+  // regrant. Personal saved-view confirmation uses its own read permission.
+  if (confirmationPermission !== canWrite) {
+    setConfirmationPermission(canWrite);
+    setCommandConfirmation(null);
+  }
+  useEffect(() => {
+    writeAuthority.current = { canWrite };
+  }, [canWrite]);
 
   const load = useCallback(async (next: SupportQuery) => {
     const request = gate.current.begin();
@@ -279,9 +292,10 @@ export function SupportWorkspace({
     includeResolution?: boolean;
   }) {
     if (!canWrite) return;
+    const authority = writeAuthority.current;
     const publicMessage = { value: "" };
     const needsMessage = input.status === "waiting_on_user" || input.status === "resolved";
-    setConfirmation({
+    setCommandConfirmation({
       title: t("{action} support request {id}", { action: t(input.label), id: input.id }),
       summary: needsMessage ? <label className="grid gap-2 font-medium">{t("Message to customer")}
         <textarea aria-label={t("Message to customer")} className="min-h-28 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3" maxLength={2000} onChange={(event) => { publicMessage.value = event.target.value; }} />
@@ -299,6 +313,7 @@ export function SupportWorkspace({
       reasonLabel: "Reason",
       submitLabel: "Confirm",
       onSubmit: async (reason) => {
+        if (!writeAuthority.current.canWrite || writeAuthority.current !== authority) return;
         if (needsMessage && !publicMessage.value.trim()) throw new Error(t("Write a message to the customer before continuing."));
         const body = {
           confirmation: input.id, reason,
@@ -551,6 +566,12 @@ export function SupportWorkspace({
         <ConfirmDialog
           onClose={() => setConfirmation(null)}
           spec={confirmation}
+        />
+      ) : null}
+      {canWrite && commandConfirmation ? (
+        <ConfirmDialog
+          onClose={() => setCommandConfirmation((current) => current === commandConfirmation ? null : current)}
+          spec={commandConfirmation}
         />
       ) : null}
     </section>

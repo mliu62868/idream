@@ -290,3 +290,61 @@ describe("mounted Call microphone and playback ownership", () => {
     expect(utterancePosts()).toHaveLength(0); expect(onTurn).toHaveBeenCalledOnce(); expect(voice.phase).toBe("speaking");
   });
 });
+
+describe("Call upload acknowledgement error authority", () => {
+  it.each([
+    [400, "Recording is empty or exceeds the upload limit"],
+    [409, "Wait for the current turn or interrupt it first"],
+    [422, "Invalid audio recording"],
+  ])("preserves a definite upload rejection (%s) instead of replacing it with a recovery 404", async (status, message) => {
+    const base = fetcher.getMockImplementation()!;
+    fetcher.mockImplementation((url, init) => {
+      if (/\/utterances\/[^/]+$/.test(url)) return Promise.resolve(init?.method === "POST"
+        ? Response.json({ error: "bad_request", message }, { status: Number(status) })
+        : Response.json({ error: { message: "Recording not found" } }, { status: 404 }));
+      return base(url, init);
+    });
+    await render({ controls: true }); await connect(false);
+    await act(async () => voice.submitRecording(new Blob([], { type: "audio/wav" }))); await flush();
+    expect(utterancePosts()).toHaveLength(1);
+    expect(voice.phase).toBe("error");
+    expect(voice.notice).toBe(message);
+    expect(container.textContent).toContain(message);
+    expect(voice.canRetryOriginal).toBe(false);
+    expect([...container.querySelectorAll("button")].some(button => button.textContent === "Retry original turn")).toBe(false);
+    expect(fetcher.mock.calls.filter(([url, init]) => /\/utterances\/[^/]+$/.test(url) && !init?.method)).toHaveLength(0);
+    expect(onTurn).not.toHaveBeenCalled(); expect(Player.instances).toHaveLength(0);
+    expect(getUserMedia).not.toHaveBeenCalled();
+  });
+  it.each([503, 429, "network"])("recovers an uncertain upload acknowledgement (%s) by checking the original ID and never reuploading", async failure => {
+    const base = fetcher.getMockImplementation()!;
+    fetcher.mockImplementation((url, init) => /\/utterances\/[^/]+$/.test(url) && init?.method === "POST"
+      ? failure === "network" ? Promise.reject(new TypeError("Failed to fetch")) : Promise.resolve(Response.json({ error: { message: "Service unavailable" } }, { status: Number(failure) })) : base(url, init));
+    await render({ controls: true }); await connect(false);
+    await act(async () => voice.submitRecording(new Blob(["controlled synthetic recording"], { type: "audio/wav" }))); await flush();
+    expect(utterancePosts()).toHaveLength(1);
+    const originalUrl = utterancePosts()[0][0];
+    expect(fetcher.mock.calls.filter(([url, init]) => url === originalUrl && !init?.method)).toHaveLength(1);
+    expect(onTurn).toHaveBeenCalledOnce(); expect(Player.instances).toHaveLength(1);
+    expect(voice.phase).toBe("speaking");
+    await act(async () => { Player.instances[0].onended?.(); }); await flush();
+    expect(voice.phase).toBe("listening"); expect(getUserMedia).not.toHaveBeenCalled();
+    expect(utterancePosts()).toHaveLength(1);
+  });
+  it("keeps an accepted recording available for original-ID retry when only reply audio playback failed", async () => {
+    await render({ controls: true }); await connect(false);
+    await act(async () => voice.submitRecording(new Blob(["English recording"]))); await flush();
+    expect(voice.phase).toBe("speaking");
+    await act(async () => { Player.instances[0].onerror?.(); }); await flush();
+    expect(voice.phase).toBe("error"); expect(voice.canRetryOriginal).toBe(true);
+    const retry = [...container.querySelectorAll("button")].find(button => button.textContent === "Retry original turn")!;
+    expect(retry).toBeDefined();
+    const originalUrl = utterancePosts()[0][0];
+    await act(async () => retry.click()); await flush();
+    expect(utterancePosts()).toHaveLength(1);
+    expect(fetcher.mock.calls.filter(([url, init]) => url === originalUrl && !init?.method)).toHaveLength(1);
+    expect(Player.instances).toHaveLength(2); expect(voice.phase).toBe("speaking");
+    await act(async () => { Player.instances[1].onended?.(); }); await flush();
+    expect(voice.phase).toBe("listening"); expect(voice.canRetryOriginal).toBe(false);
+  });
+});

@@ -4,7 +4,8 @@ import {
   hasHydratableMediaBlobAuthority,
   isMediaAssetOperationalForAuthority,
 } from "@/server/lib/media-asset-authority";
-import { referenceSetSnapshotHash } from "@/server/modules/admin-v2/characters/release-snapshot";
+import { characterVisualProfileSnapshotHash, referenceSetSnapshotHash } from "@/server/modules/admin-v2/characters/release-snapshot";
+import { toInputJson } from "@/server/lib/request-json";
 import { invalidateCharacterDraftAssetPack } from "@/server/modules/admin-v2/characters/draft-asset-authority";
 import {
   lockCharacterGenerationAuthority,
@@ -65,6 +66,9 @@ export async function createActiveCharacterVisualProfileVersion(
       position: reference.position,
       role: reference.role,
       weight: reference.weight,
+      ...(reference.crop === null ? {} : { crop: toInputJson(reference.crop) }),
+      qualityScore: reference.qualityScore,
+      identityScore: reference.identityScore,
       selectionReason: reference.selectionReason,
     })) ?? [];
   const anchorAssetIds = input.anchorAssetIds ?? inheritedReferences
@@ -85,8 +89,7 @@ export async function createActiveCharacterVisualProfileVersion(
     (!active || active.createdFrom.startsWith("generation_bootstrap"))
       ? `generation_bootstrap:${input.createdFrom}`
       : input.createdFrom;
-  const created = await tx.characterVisualProfile.create({
-    data: characterVisualProfileCreateData({
+  const values = characterVisualProfileCreateData({
       characterId: character.id,
       version,
       status: "active",
@@ -99,8 +102,21 @@ export async function createActiveCharacterVisualProfileVersion(
       advancedDetails: character.advancedDetails,
       anchorAssetIds,
       createdFrom,
-    }),
-  });
+    });
+  // Without a newly selected anchor, both edit callers have kept the visual
+  // traits unchanged. Append the version without replacing sealed identity
+  // facts with a fresh derivation from the Character's form projection.
+  if (!input.anchorAssetIds && active?.immutableHash &&
+      active.immutableHash === characterVisualProfileSnapshotHash(active)) {
+    Object.assign(values, {
+      style: active.style, identityPrompt: active.identityPrompt, negativeIdentityPrompt: active.negativeIdentityPrompt,
+      faceTraits: toInputJson(active.faceTraits), hairTraits: toInputJson(active.hairTraits), bodyTraits: toInputJson(active.bodyTraits),
+      signatureTraits: toInputJson(active.signatureTraits), styleTraits: toInputJson(active.styleTraits),
+      adapterRefs: toInputJson(active.adapterRefs),
+    });
+    values.immutableHash = characterVisualProfileSnapshotHash(values);
+  }
+  const created = await tx.characterVisualProfile.create({ data: values });
   if (input.anchorAssetIds) {
     await createReferenceSetRevision(tx, created, input.createdFrom);
   } else if (inheritedReferences.length > 0) {

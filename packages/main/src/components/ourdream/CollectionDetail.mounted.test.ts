@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("next/link", () => ({ default: ({ href, children, ...props }: ComponentProps<"a">) => createElement("a", { ...props, href: String(href) }, children) }));
 vi.mock("./AgeGateBoundary", () => ({ useAgeGateAccess: () => ({ accepted: true }) }));
 import { CollectionDetail } from "./CollectionDetail";
+import { invalidateViewerAuthority } from "./viewer-auth";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 function page(id: string, ids: string[], nextCursor: string | null, canManage = false, name = `${id} collection`, visibility = canManage ? "private" : "public") {
   return Response.json({ ok: true, data: {
@@ -17,9 +18,17 @@ function mutation(id: string) { return Response.json({ ok: true, data: { removed
 describe("CollectionDetail", () => {
   let root: Root;
   let container: HTMLDivElement;
-  beforeEach(() => { container = document.createElement("div"); document.body.append(container); root = createRoot(container); });
-  afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.unstubAllGlobals(); });
-  async function render(id = "a", onChanged?: () => void) { await act(async () => root.render(createElement(CollectionDetail, { id, key: id, onChanged }))); }
+  beforeEach(() => { invalidateViewerAuthority(); container = document.createElement("div"); document.body.append(container); root = createRoot(container); });
+  afterEach(async () => { await act(async () => root.unmount()); container.remove(); invalidateViewerAuthority(); vi.unstubAllGlobals(); });
+  async function render(id = "a", onChanged?: () => void) {
+    const collectionFetch = fetch;
+    // Account checks are a separate resource, outside collection read counts
+    // and delayed response ordinals. Report submission requires this identity.
+    vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => String(input) === "/api/v1/me"
+      ? Promise.resolve(Response.json({ ok: true, data: { user: { id: "collection-viewer" } } }))
+      : collectionFetch(input, init));
+    await act(async () => root.render(createElement(CollectionDetail, { id, key: id, onChanged })));
+  }
   async function waitFor(predicate: () => boolean) {
     const until = Date.now() + 2_000;
     while (!predicate()) { if (Date.now() > until) throw new Error(`Timed out: ${container.textContent}`); await act(async () => new Promise((resolve) => setTimeout(resolve, 0))); }

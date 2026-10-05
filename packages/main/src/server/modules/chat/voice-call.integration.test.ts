@@ -100,7 +100,145 @@ async function utterance(f: Fixture, call: Awaited<ReturnType<typeof start>>) {
     terminalEvidence: { authority: "controlled-call-test", prompt: { productPromptVersion: "companion-product-1", preparedTurnVersion: 4, systemPromptDigest: "a".repeat(64), soulFingerprint: "b".repeat(64) } } });
   return id;
 }
+
+async function archive(f: Fixture) {
+  const response = await proxyChatRequest(new Request(`http://localhost/api/v1/chat/sessions/${f.sessionId}/archive`, {
+    method: "POST", headers: { "x-idream-user-id": f.userId, "x-idream-viewer-scope": `user:${f.userId}` },
+  }), ["chat", "sessions", f.sessionId, "archive"]);
+  return { response, value: await response.json() };
+}
+async function clearMemory(f: Fixture) {
+  const response = await proxyChatRequest(new Request(`http://localhost/api/v1/chat/memory/${f.characterId}`, {
+    method: "DELETE", headers: { "x-idream-user-id": f.userId, "x-idream-viewer-scope": `user:${f.userId}` },
+  }), ["chat", "memory", f.characterId]);
+  return { response, value: await response.json() };
+}
+async function waitForBlockedCalls(holder: number, count: number) {
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    const result = await prisma.$queryRaw<Array<{ count: bigint }>>`WITH RECURSIVE blocked AS (
+      SELECT pid FROM pg_stat_activity WHERE ${holder} = ANY(pg_blocking_pids(pid))
+      UNION SELECT a.pid FROM pg_stat_activity a JOIN blocked b ON b.pid = ANY(pg_blocking_pids(a.pid))
+    ) SELECT COUNT(DISTINCT pid) AS count FROM blocked`;
+    if (Number(result[0]?.count) >= count) return;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  throw new Error(`Expected ${count} real operations queued behind the scoped user lock`);
+}
+
 describe("canonical Call recording, recovery and settlement", () => {
+  it.each(["active", "muted", "disconnected"])("rejects memory clear without changing any relationship state while an empty %s Call has not ended", async status => {
+    const f = await fixture(), call = await start(f, 0);
+    const pin = await prisma.chatContextDirective.create({ data: {
+      id: randomUUID(), userId: f.userId, characterId: f.characterId, kind: "pinned_memory", content: "My notebook is Cedar.",
+    } });
+    if (status !== "active") expect((await run(f, "POST", `/${call.id}/${status === "muted" ? "mute" : "disconnect"}`, { token: call.leaseToken })).response.status).toBe(200);
+    const before = await prisma.recentChat.findUniqueOrThrow({ where: { sessionId: f.sessionId } });
+    const rejected = await clearMemory(f);
+    expect.soft(rejected.response.status).toBe(409);
+    expect.soft(JSON.stringify(rejected.value)).toContain("End your voice call before clearing this Character's memory");
+    expect.soft(await prisma.recentChat.findUniqueOrThrow({ where: { sessionId: f.sessionId } })).toMatchObject({
+      status: "active", activeKey: before.activeKey, memoryEnabled: before.memoryEnabled, contextRevision: before.contextRevision,
+    });
+    expect.soft(await prisma.chatContextDirective.findUniqueOrThrow({ where: { id: pin.id } })).toMatchObject({ status: "active", content: "My notebook is Cedar.", version: 1 });
+    expect.soft(await prisma.mainOutboxEvent.count({ where: { aggregateType: "chat_relationship", aggregateId: `${f.userId}:${f.characterId}` } })).toBe(0);
+    expect.soft(await prisma.voiceCall.findUniqueOrThrow({ where: { id: call.id }, select: { status: true, activeKey: true, settledAt: true } })).toMatchObject({ status, activeKey: f.userId, settledAt: null });
+    expect.soft((await run(f, "GET", `/${call.id}`, { token: call.leaseToken })).response.status).toBe(200);
+    expect.soft((await run(f, "POST", `/${call.id}/end`, { token: call.leaseToken })).response.status).toBe(200);
+    expect((await clearMemory(f)).response.status).toBe(200);
+    expect(await prisma.recentChat.findUniqueOrThrow({ where: { sessionId: f.sessionId } })).toMatchObject({ status: "archived", activeKey: null, memoryEnabled: false });
+    expect(await prisma.chatContextDirective.findUniqueOrThrow({ where: { id: pin.id } })).toMatchObject({ status: "archived", content: "", version: 2 });
+    expect(await prisma.voiceCall.findUniqueOrThrow({ where: { id: call.id }, select: { status: true, activeKey: true } })).toMatchObject({ status: "ended", activeKey: null });
+    expect(await prisma.voiceCallUtterance.count({ where: { callId: call.id } })).toBe(0);
+    expect(await prisma.chatTurn.count({ where: { sessionId: f.sessionId } })).toBe(0);
+    expect(await prisma.voiceUsageFact.count({ where: { userId: f.userId } })).toBe(0);
+    expect(await dreamcoinBalance(f.userId)).toBe(20); expect(asr).not.toHaveBeenCalled(); expect(synthesize).not.toHaveBeenCalled();
+  });
+  it.each(["active", "muted", "disconnected"])("keeps an empty %s Call controllable by rejecting archive until it has ended", async status => {
+    const f = await fixture(), call = await start(f, 0);
+    if (status !== "active") expect((await run(f, "POST", `/${call.id}/${status === "muted" ? "mute" : "disconnect"}`, { token: call.leaseToken })).response.status).toBe(200);
+    const rejected = await archive(f);
+    expect(rejected.response.status).toBe(409);
+    expect(JSON.stringify(rejected.value)).toContain("End your voice call before archiving this chat");
+    expect((await prisma.recentChat.findUniqueOrThrow({ where: { sessionId: f.sessionId } })).status).toBe("active");
+    expect(await prisma.voiceCall.findUniqueOrThrow({ where: { id: call.id } })).toMatchObject({ status, activeKey: f.userId, settledAt: null });
+    expect((await run(f, "GET", `/${call.id}`, { token: call.leaseToken })).response.status).toBe(200);
+    expect((await run(f, "POST", `/${call.id}/end`, { token: call.leaseToken })).response.status).toBe(200);
+    expect((await archive(f)).response.status).toBe(200);
+    expect(await prisma.voiceCall.findUniqueOrThrow({ where: { id: call.id } })).toMatchObject({ status: "ended", activeKey: null });
+    expect(await prisma.voiceCallUtterance.count({ where: { callId: call.id } })).toBe(0);
+    expect(await prisma.chatTurn.count({ where: { sessionId: f.sessionId } })).toBe(0);
+    expect(await prisma.voiceUsageFact.count({ where: { userId: f.userId } })).toBe(0);
+    expect(await dreamcoinBalance(f.userId)).toBe(20); expect(asr).not.toHaveBeenCalled(); expect(synthesize).not.toHaveBeenCalled();
+  });
+  it.each(["start-first", "archive-first"])("serializes Call creation and archive through their real shared user lock (%s)", async order => {
+    const f = await fixture();
+    const body = { id: randomUUID(), clientLeaseToken: randomUUID(), language: "en", maxCostDreamcoins: 0, maxDurationMs: 180_000 };
+    const quote = await run(f, "POST", "/quote", { body }); expect(quote.response.status).toBe(200);
+    const intent = { ...body, quoteToken: quote.value.quoteToken };
+    let ready!: () => void, release!: () => void;
+    const readyPromise = new Promise<void>(resolve => { ready = resolve; });
+    const releasePromise = new Promise<void>(resolve => { release = resolve; });
+    let holder = 0;
+    const held = prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM users WHERE id = ${f.userId} FOR UPDATE`;
+      holder = (await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`)[0].pid;
+      ready(); await releasePromise;
+    }, { timeout: 10000 });
+    await readyPromise;
+    try {
+      const first = order === "start-first" ? run(f, "POST", "", { body: intent }) : archive(f);
+      await waitForBlockedCalls(holder, 1);
+      const second = order === "start-first" ? archive(f) : run(f, "POST", "", { body: intent });
+      await waitForBlockedCalls(holder, 2); release(); await held;
+      const [a, b] = await Promise.all([first, second]);
+      const started = order === "start-first" ? a : b, archived = order === "start-first" ? b : a;
+      expect(started.response.status).toBe(order === "start-first" ? 200 : 410);
+      expect(archived.response.status).toBe(order === "start-first" ? 409 : 200);
+      expect((await prisma.recentChat.findUniqueOrThrow({ where: { sessionId: f.sessionId } })).status).toBe(order === "start-first" ? "active" : "archived");
+      expect(await prisma.voiceCall.count({ where: { userId: f.userId, status: { not: "ended" } } })).toBe(order === "start-first" ? 1 : 0);
+      if (order === "start-first") expect((await run(f, "POST", `/${body.id}/end`, { token: body.clientLeaseToken })).response.status).toBe(200);
+      expect(await dreamcoinBalance(f.userId)).toBe(20); expect(asr).not.toHaveBeenCalled(); expect(synthesize).not.toHaveBeenCalled();
+    } finally { release(); await held; }
+  });
+
+  it.each(["start-first", "clear-first"])("serializes Call creation and memory clear through their real shared user lock (%s)", async order => {
+    const f = await fixture();
+    const body = { id: randomUUID(), clientLeaseToken: randomUUID(), language: "en", maxCostDreamcoins: 0, maxDurationMs: 180_000 };
+    const quote = await run(f, "POST", "/quote", { body }); expect(quote.response.status).toBe(200);
+    const intent = { ...body, quoteToken: quote.value.quoteToken };
+    let ready!: () => void, release!: () => void;
+    const readyPromise = new Promise<void>(resolve => { ready = resolve; });
+    const releasePromise = new Promise<void>(resolve => { release = resolve; });
+    let holder = 0;
+    const held = prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM users WHERE id = ${f.userId} FOR UPDATE`;
+      holder = (await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`)[0].pid;
+      ready(); await releasePromise;
+    }, { timeout: 10000 });
+    await readyPromise;
+    try {
+      const first = order === "start-first" ? run(f, "POST", "", { body: intent }) : clearMemory(f);
+      await waitForBlockedCalls(holder, 1);
+      const second = order === "start-first" ? clearMemory(f) : run(f, "POST", "", { body: intent });
+      await waitForBlockedCalls(holder, 2); release(); await held;
+      const [a, b] = await Promise.all([first, second]);
+      const started = order === "start-first" ? a : b, cleared = order === "start-first" ? b : a;
+      expect(started.response.status).toBe(order === "start-first" ? 200 : 410);
+      expect(cleared.response.status).toBe(order === "start-first" ? 409 : 200);
+      expect((await prisma.recentChat.findUniqueOrThrow({ where: { sessionId: f.sessionId } })).status).toBe(order === "start-first" ? "active" : "archived");
+      expect(await prisma.voiceCall.count({ where: { userId: f.userId, status: { not: "ended" } } })).toBe(order === "start-first" ? 1 : 0);
+      if (order === "start-first") {
+        expect((await run(f, "POST", `/${body.id}/end`, { token: body.clientLeaseToken })).response.status).toBe(200);
+        expect((await clearMemory(f)).response.status).toBe(200);
+      }
+      expect(await prisma.voiceCallUtterance.count({ where: { callId: body.id } })).toBe(0);
+      expect(await prisma.chatTurn.count({ where: { sessionId: f.sessionId } })).toBe(0);
+      expect(await prisma.voiceUsageFact.count({ where: { userId: f.userId } })).toBe(0);
+      expect(await dreamcoinBalance(f.userId)).toBe(20); expect(asr).not.toHaveBeenCalled(); expect(synthesize).not.toHaveBeenCalled();
+    } finally { release(); await held; }
+  });
+
   it("returns the original no_speech failure immediately and replays it without ASR, a Turn, TTS or coins", async () => {
     const f = await fixture(), call = await start(f), id = randomUUID(), audio = await recording();
     asr.mockResolvedValueOnce(Response.json({ requestId: id, status: "failed", errorCode: "no_speech" }));

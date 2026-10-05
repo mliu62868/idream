@@ -7,6 +7,7 @@ import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { assertIncidentReadable } from "@/server/modules/admin-v2/incidents/scope";
+import { updateWorkPreference } from "../shared/work-preferences";
 
 type Actor = { id: string; role: string };
 
@@ -96,47 +97,7 @@ export async function updateOperationalWorkPreference(input: {
 }) {
   await assertReadableSource(input.actor, input.permissions, input.sourceType, input.sourceId);
   return prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${input.actor.id}:${input.sourceType}:${input.sourceId}`}))`;
-    const prior = await tx.operationalWorkPreference.findUnique({
-      where: {
-        actorId_sourceType_sourceId: {
-          actorId: input.actor.id,
-          sourceType: input.sourceType,
-          sourceId: input.sourceId,
-        },
-      },
-    });
-    if ((prior?.version ?? 0) !== input.expectedVersion) {
-      throw Errors.versionConflict("Today preference version changed", {
-        expectedVersion: input.expectedVersion,
-        currentVersion: prior?.version ?? 0,
-      });
-    }
-    let preference;
-    if (!prior) {
-      preference = await tx.operationalWorkPreference.create({
-        data: {
-          actorId: input.actor.id,
-          sourceType: input.sourceType,
-          sourceId: input.sourceId,
-          watching: input.watching ?? false,
-          pinned: input.pinned ?? false,
-          snoozedUntil: input.snoozedUntil ?? null,
-        },
-      });
-    } else {
-      const changed = await tx.operationalWorkPreference.updateMany({
-        where: { id: prior.id, version: input.expectedVersion },
-        data: {
-          watching: input.watching,
-          pinned: input.pinned,
-          snoozedUntil: input.snoozedUntil,
-          version: { increment: 1 },
-        },
-      });
-      if (changed.count !== 1) throw Errors.versionConflict("Today preference version changed");
-      preference = await tx.operationalWorkPreference.findUniqueOrThrow({ where: { id: prior.id } });
-    }
+    const { before: prior, preference } = await updateWorkPreference(tx, { ...input, actorId: input.actor.id });
     await tx.adminAuditLog.create({
       data: {
         actorId: input.actor.id,

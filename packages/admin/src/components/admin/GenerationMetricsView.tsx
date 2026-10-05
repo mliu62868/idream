@@ -52,6 +52,7 @@ export type MetricsResponse = {
   placements: PlacementMetric[];
   placementEngagement: PlacementEngagementMetric[];
   remix: { total: number };
+  periods?: { current: { from: string; to: string } };
 };
 
 const WINDOW_OPTIONS = [7, 30] as const;
@@ -295,9 +296,9 @@ export function GenerationMetricsView() {
             current={windowTotals(metrics)}
             windowDays={windowDays}
           />
-          <ProfilesTable profiles={metrics.profiles} />
-          <RecipesTable recipes={metrics.recipes} />
-          <SourcesTable sources={metrics.sources} />
+          <ProfilesTable profiles={metrics.profiles} period={metrics.periods?.current} />
+          <RecipesTable recipes={metrics.recipes} period={metrics.periods?.current} />
+          <SourcesTable sources={metrics.sources} period={metrics.periods?.current} />
           <ReadonlyOpsView
             columns={[
               { key: "slot", label: "Slot", render: (row) => <span className="font-mono">{value(String(row.slot))}</span> },
@@ -451,13 +452,14 @@ function HeadlineTile({
 }
 
 // SPEC: 失败数是链接不是数字——点进去就是这一行在同一窗口里的失败任务列表，原因在那儿。
-function FailedCell({ buckets, jobsQuery }: { buckets: StatusBuckets; jobsQuery: string }) {
+function FailedCell({ buckets, jobsQuery }: { buckets: StatusBuckets; jobsQuery: string | null }) {
   const { t } = useAdminI18n();
   const rate = failureRate(buckets);
   const alarming = rate > 0.2;
   if (buckets.failed === 0) {
     return <span className="tabular-nums text-[var(--ad-text-muted)]">0</span>;
   }
+  if (!jobsQuery) return <span className="tabular-nums">{buckets.failed}</span>;
   return (
     <Link
       className={cn(
@@ -472,9 +474,19 @@ function FailedCell({ buckets, jobsQuery }: { buckets: StatusBuckets; jobsQuery:
   );
 }
 
-function failedJobsQuery(filter: { search?: string; sourceType?: string }) {
+type MetricsPeriod = NonNullable<MetricsResponse["periods"]>["current"];
+
+function failedJobsQuery(period: MetricsPeriod | undefined, filter: { profileId?: string; profileVersion?: number | null; recipeId?: string; sourceType?: string }) {
+  // INVARIANT: missing authority bounds cannot be replaced by a client-clock or timeless query.
+  if (!period) return null;
   const params = new URLSearchParams({ mode: "all", legacyStatus: "failed" });
-  if (filter.search) params.set("search", filter.search);
+  params.set("from", period.from);
+  params.set("to", period.to);
+  if (filter.profileId) {
+    params.set("profileId", filter.profileId);
+    params.set("profileVersion", String(filter.profileVersion ?? "null"));
+  }
+  if (filter.recipeId) params.set("recipeId", filter.recipeId);
   if (filter.sourceType) params.set("sourceType", filter.sourceType);
   return params.toString();
 }
@@ -504,7 +516,7 @@ function bucketsSummary(rows: readonly (StatusBuckets & { costDreamcoins: number
   });
 }
 
-function ProfilesTable({ profiles }: { profiles: ProfileMetric[] }) {
+function ProfilesTable({ profiles, period }: { profiles: ProfileMetric[]; period?: MetricsPeriod }) {
   const { t } = useAdminI18n();
   const columns: OpsColumn[] = [
     { key: "label", label: "Label", render: (row) => (row.label as string | null) ?? "–" },
@@ -524,7 +536,7 @@ function ProfilesTable({ profiles }: { profiles: ProfileMetric[] }) {
       render: (row) => (
         <FailedCell
           buckets={row as unknown as StatusBuckets}
-          jobsQuery={failedJobsQuery({ search: row.profileId as string })}
+          jobsQuery={failedJobsQuery(period, { profileId: row.profileId as string, profileVersion: row.profileVersion as number | null })}
         />
       ),
     },
@@ -544,7 +556,7 @@ function ProfilesTable({ profiles }: { profiles: ProfileMetric[] }) {
   );
 }
 
-function RecipesTable({ recipes }: { recipes: RecipeMetric[] }) {
+function RecipesTable({ recipes, period }: { recipes: RecipeMetric[]; period?: MetricsPeriod }) {
   const { t } = useAdminI18n();
   const columns: OpsColumn[] = [
     { key: "recipeId", label: "Recipe", render: (row) => <span className="font-mono">{row.recipeId as string}</span> },
@@ -556,7 +568,7 @@ function RecipesTable({ recipes }: { recipes: RecipeMetric[] }) {
       render: (row) => (
         <FailedCell
           buckets={row as unknown as StatusBuckets}
-          jobsQuery={failedJobsQuery({ search: row.recipeId as string })}
+          jobsQuery={failedJobsQuery(period, { recipeId: row.recipeId as string })}
         />
       ),
     },
@@ -575,7 +587,7 @@ function RecipesTable({ recipes }: { recipes: RecipeMetric[] }) {
   );
 }
 
-function SourcesTable({ sources }: { sources: SourceMetric[] }) {
+function SourcesTable({ sources, period }: { sources: SourceMetric[]; period?: MetricsPeriod }) {
   const { t, value } = useAdminI18n();
   const columns: OpsColumn[] = [
     { key: "sourceType", label: "Source", render: (row) => value(String(row.sourceType)) },
@@ -587,7 +599,7 @@ function SourcesTable({ sources }: { sources: SourceMetric[] }) {
       render: (row) => (
         <FailedCell
           buckets={row as unknown as StatusBuckets}
-          jobsQuery={failedJobsQuery({ sourceType: row.sourceType as string })}
+          jobsQuery={failedJobsQuery(period, { sourceType: row.sourceType as string })}
         />
       ),
     },

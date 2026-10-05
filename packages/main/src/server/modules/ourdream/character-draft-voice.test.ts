@@ -32,6 +32,7 @@ import {
   cleanupPreparedCharacterDraftVoice,
   getCharacterDraftVoiceCatalog,
   prepareCharacterDraftVoice,
+  prepareCharacterVoiceCopy,
   previewCharacterDraftVoice,
 } from "./character-draft-voice";
 
@@ -61,6 +62,31 @@ beforeEach(() => {
 });
 
 describe("character draft catalog voice", () => {
+  it("copies a saved preset and delivery independently of current system defaults", async () => {
+    mocks.defaults.mockRejectedValue(new Error("System defaults must not replace the saved voice"));
+    const delivery = { ...DEFAULT_FISH_AUDIO_DELIVERY, speed: 1.13 };
+    const prepared = await prepareCharacterVoiceCopy({
+      userId: "owner", sourceCharacterId: "original", presetVoiceId: "anna", model: "pocket-tts",
+      language: "english", delivery, sampleText: "Welcome to the balcony.",
+    });
+    expect(mocks.defaults).not.toHaveBeenCalled();
+    expect(prepared).toMatchObject({ presetVoiceId: "anna", model: "pocket-tts", language: "english", delivery });
+    expect(prepared.voiceId).not.toBe("anna");
+    expect(mocks.preview).toHaveBeenCalledWith({ voiceId: prepared.voiceId, delivery, text: "Welcome to the balcony." });
+  });
+
+  it("rejects and cleans a copy if the provider no longer produces the saved model", async () => {
+    mocks.createPreset.mockImplementation(async input => ({ ok: true, data: {
+      voiceId: input.voiceId, presetVoiceId: input.presetVoiceId, model: "changed-model", language: "english",
+    } }));
+    await expect(prepareCharacterVoiceCopy({
+      userId: "owner", sourceCharacterId: "original", presetVoiceId: "anna", model: "pocket-tts",
+      language: "english", delivery: DEFAULT_FISH_AUDIO_DELIVERY, sampleText: "Hello.",
+    })).rejects.toThrow(/same model and language/i);
+    expect(mocks.preview).not.toHaveBeenCalled();
+    expect(mocks.deleteVoice).toHaveBeenCalledWith({ voiceId: mocks.createPreset.mock.calls[0]![0].voiceId });
+  });
+
   it("exposes the current catalog and previews with the saved system delivery", async () => {
     expect(await getCharacterDraftVoiceCatalog()).toEqual({
       provider: "pocket_tts", defaultVoiceId: "alba", items: [

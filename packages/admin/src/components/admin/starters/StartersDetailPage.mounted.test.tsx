@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AdminV2RequestError } from "../api";
 import { AdminI18nProvider, translateAdmin } from "../i18n";
 import { StartersDetailPage } from "./StartersDetailPage";
+import { StartersSection } from "./StartersSection";
 import { STARTERS_LIST, type Starter } from "./starters-api";
 
 const { apiGet, apiWrite } = vi.hoisted(() => ({ apiGet: vi.fn(), apiWrite: vi.fn() }));
@@ -38,6 +39,10 @@ describe("starter detail version protection", () => {
     await act(async () => root.render(<AdminI18nProvider locale={locale}><StartersDetailPage id={starter.id} canWrite /></AdminI18nProvider>));
     await settle();
   }
+  async function renderSection(id: string) {
+    await act(async () => root.render(<AdminI18nProvider locale="en"><StartersSection canAssist={false} canWrite view={{ kind: "detail", id }} /></AdminI18nProvider>));
+    await settle();
+  }
   async function confirm(label: string, name?: string, locale: "en" | "zh" = "en") {
     await act(async () => {
       input(dialog().querySelector<HTMLInputElement>(`[aria-label="${translateAdmin(locale, "Reason (≥3)")}"]`)!, "Correct starter content");
@@ -45,6 +50,51 @@ describe("starter detail version protection", () => {
     });
     await act(async () => button(label, dialog()).click());
   }
+
+  it("shows the stored gender and style in the operator's language", async () => {
+    apiGet.mockResolvedValue({ template: { ...starter, style: "realistic" } });
+    await render("zh");
+    expect(container.textContent).toContain("女性");
+    expect(container.textContent).toContain("写实");
+    expect(container.textContent).not.toContain("female");
+    expect(container.textContent).not.toContain("realistic");
+  });
+
+  it("does not carry one starter's edited draft into another public detail route", async () => {
+    const other = { ...starter, id: "starter-two", name: "Second starter", summary: "Second summary", updatedAt: "2026-10-02T00:00:00.000Z" };
+    apiGet.mockImplementation(async (path: string) => ({ template: path.endsWith(other.id) ? other : starter }));
+    await renderSection(starter.id);
+    await act(async () => button("Edit profile").click());
+    await act(async () => input(field("Name (≥1)"), "Only starter one's unsaved draft"));
+
+    await renderSection(other.id);
+
+    expect(apiGet).toHaveBeenCalledWith(`${STARTERS_LIST}/${other.id}`);
+    expect(container.textContent).toContain(other.name);
+    expect(container.querySelector('input')).toBeNull();
+    expect(container.textContent).toContain(other.summary);
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(apiWrite).not.toHaveBeenCalled();
+  });
+
+  it("keeps the current starter when the previous public detail read arrives late", async () => {
+    const other = { ...starter, id: "starter-two", name: "Second starter", summary: "Second summary" };
+    let resolvePrevious!: (value: { template: Starter }) => void;
+    apiGet.mockImplementation((path: string) => path.endsWith(starter.id)
+      ? new Promise<{ template: Starter }>((resolve) => { resolvePrevious = resolve; })
+      : Promise.resolve({ template: other }));
+    await renderSection(starter.id);
+    expect(apiGet).toHaveBeenCalledWith(`${STARTERS_LIST}/${starter.id}`);
+    await renderSection(other.id);
+    expect(container.textContent).toContain(other.name);
+
+    await act(async () => resolvePrevious({ template: starter }));
+
+    expect(container.textContent).toContain(other.name);
+    expect(container.textContent).toContain(other.summary);
+    expect(container.textContent).not.toContain("Character not found.");
+    expect(apiWrite).not.toHaveBeenCalled();
+  });
 
   it("keeps the edited draft and its original version after a conflict and retry", async () => {
     apiWrite.mockRejectedValue(new AdminV2RequestError("Version changed", 409, "conflict", { blocker: "version_mismatch" }));

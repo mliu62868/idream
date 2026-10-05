@@ -22,9 +22,6 @@ import {
 //   - AuthWorkspace re-queries live after a failed sign-in to catch the
 //     "already authenticated" race, so it must see the mutation that just
 //     happened in this same tab.
-//   - UpgradeWorkspace's checkout resolves the viewer on demand precisely
-//     because the mount-time load may not have finished; a money path must not
-//     act on a remembered identity.
 //   - AgeGateBoundary reads `ageGate.accepted` and re-runs on every route
 //     change to notice an acceptance that just occurred.
 //   - AuthNav parses with the stricter `parseAuthMeResponse` (display name and

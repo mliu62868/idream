@@ -1,25 +1,26 @@
 "use client";
 
 import { RotateCcw, X } from "lucide-react";
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
+import { z } from "zod";
+import { chatFailureCode } from "@/lib/chat-failure-copy";
+import { parsePublicApiError } from "@/lib/public-api-contracts";
 import { MemoryToggle } from "./MemoryToggle";
 import { ChatContextSettings } from "./ChatContextSettings";
 import { ProactiveSettings } from "./ProactiveSettings";
 
+const clearScopeSchema = z.object({
+  groups: z.array(z.object({
+    title: z.string().nullable(),
+    status: z.enum(["active", "archived"]),
+    members: z.array(z.object({ characterId: z.string().min(1) })),
+  })),
+});
+
 // SPEC: Official igrep owns item-level generic memory inside DSH. The product
 // exposes memory on/off and clear all. Explicit user settings have separate,
 // labelled Main authority; they are not a list of igrep's inferred memories.
-export function MemoryPanel({
-  open,
-  onClose,
-  characterId,
-  sessionId,
-  memoryEnabled,
-  memoryPending,
-  onToggleMemory,
-  onProactiveChange,
-  groupConversation = false,
-}: Readonly<{
+type MemoryPanelProps = Readonly<{
   open: boolean;
   onClose: () => void;
   characterId: string | null;
@@ -29,13 +30,59 @@ export function MemoryPanel({
   onToggleMemory: () => void;
   onProactiveChange?: (enabled: boolean) => void;
   groupConversation?: boolean;
-}>) {
-  const [resetting, setResetting] = useState(false);
-  const [resetConfirm, setResetConfirm] = useState(false);
-  const [resetFailed, setResetFailed] = useState(false);
-  // Clearing a Character's memory also archives every group chat they are in;
-  // from a one-to-one chat the reader has to be told which ones before confirming.
-  const [affectedGroups, setAffectedGroups] = useState<string[]>([]);
+  fetchForViewer: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}>;
+
+export function MemoryPanel(props: MemoryPanelProps) {
+  return props.open ? <MemoryPanelContent key={JSON.stringify([props.characterId, props.sessionId, props.groupConversation ?? false])} {...props} /> : null;
+}
+
+function MemoryPanelContent({
+  open,
+  onClose,
+  characterId,
+  sessionId,
+  memoryEnabled,
+  memoryPending,
+  onToggleMemory,
+  onProactiveChange,
+  groupConversation = false,
+  fetchForViewer,
+}: MemoryPanelProps) {
+  const scope = JSON.stringify([characterId, sessionId, groupConversation]);
+  const [clearState, setClearState] = useState<{
+    scope: string;
+    status: "loading" | "ready" | "failed" | "clearing" | "uncertain";
+    groups: string[];
+    error?: string;
+  } | null>(null);
+  const requestEpoch = useRef(0);
+  useLayoutEffect(() => {
+    requestEpoch.current += 1;
+    return () => { requestEpoch.current += 1; };
+  }, [open, scope]);
+  const currentClear = clearState?.scope === scope ? clearState : null;
+  const resetConfirm = currentClear !== null;
+  const resetting = currentClear?.status === "clearing";
+  const resetFailed = currentClear?.status === "uncertain";
+  const canConfirm = currentClear?.status === "ready" || resetFailed;
+
+  async function loadClearScope() {
+    if (!characterId) return;
+    const epoch = ++requestEpoch.current;
+    setClearState({ scope, status: "loading", groups: [] });
+    try {
+      const response = await fetchForViewer("/api/v1/chat/groups", { cache: "no-store" });
+      if (!response.ok) throw new Error("group scope unavailable");
+      const raw = clearScopeSchema.parse(await response.json());
+      const groups = raw.groups
+        .filter(group => group.status === "active" && group.members.some(member => member.characterId === characterId))
+        .map(group => group.title || "Untitled group");
+      if (epoch === requestEpoch.current) setClearState({ scope, status: "ready", groups });
+    } catch {
+      if (epoch === requestEpoch.current) setClearState({ scope, status: "failed", groups: [] });
+    }
+  }
 
   // SPEC: 重置成功后把用户送进一段全新对话。
   // INTENT: 服务端会归档这个角色的活跃会话，所以留在原地的用户下一条消息必然被
@@ -44,63 +91,73 @@ export function MemoryPanel({
   async function clearMemory() {
     if (!characterId) return;
     if (!resetConfirm) {
-      setResetConfirm(true);
-      if (!groupConversation) {
-        void fetch("/api/v1/chat/groups", { cache: "no-store" })
-          .then(async (response) => (response.ok ? await response.json() : null))
-          .then((raw: { groups?: Array<{ title?: string; status?: string; members?: Array<{ characterId?: string }> }> } | null) => {
-            setAffectedGroups((raw?.groups ?? [])
-              .filter((group) => group.status === "active" && group.members?.some((member) => member.characterId === characterId))
-              .map((group) => group.title || "Untitled group"));
-          })
-          .catch(() => setAffectedGroups([]));
-      }
+      void loadClearScope();
       return;
     }
-    setResetting(true);
-    setResetFailed(false);
+    if (!canConfirm || !currentClear) return;
+    const epoch = ++requestEpoch.current;
+    const groups = currentClear.groups;
+    setClearState({ scope, status: "clearing", groups });
     try {
-      const response = await fetch(
+      const response = await fetchForViewer(
         `/api/v1/chat/memory/${encodeURIComponent(characterId)}`,
         { method: "DELETE" },
       );
+      if (epoch !== requestEpoch.current) return;
       if (!response.ok) {
-        setResetFailed(true);
+        if (response.status >= 400 && response.status < 500) {
+          const raw: unknown = await response.json().catch(() => null);
+          if (epoch !== requestEpoch.current) return;
+          // Main Chat uses a flat error envelope. Reuse the public parser
+          // after normalizing it; an unreadable receipt remains uncertain.
+          const rejection = parsePublicApiError(raw) ?? (
+            raw && typeof raw === "object" && "message" in raw
+              ? parsePublicApiError({ error: { code: chatFailureCode(raw), message: raw.message } })
+              : null
+          );
+          if (rejection?.code?.trim() && rejection.message.trim()) {
+            setClearState({ scope, status: "ready", groups, error: rejection.message });
+            return;
+          }
+        }
+        setClearState({ scope, status: "uncertain", groups });
         return;
       }
-      setResetConfirm(false);
       if (groupConversation) {
+        setClearState(null);
         window.location.href = "/chat/groups";
         return;
       }
-      const started = await fetch("/api/v1/chat/sessions", {
+      const started = await fetchForViewer("/api/v1/chat/sessions", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ characterId }),
       });
+      if (epoch !== requestEpoch.current) return;
       if (started.ok) {
         const payload = (await started.json().catch(() => null)) as
           | { data?: { session?: { id?: unknown } } }
           | null;
+        if (epoch !== requestEpoch.current) return;
         const sessionId = payload?.data?.session?.id;
         if (typeof sessionId === "string" && sessionId) {
+          setClearState(null);
           window.location.href = `/chat/${sessionId}`;
           return;
         }
       }
+      setClearState(null);
       window.location.href = "/chat";
     } catch {
-      setResetFailed(true);
-    } finally {
-      setResetting(false);
+      if (epoch === requestEpoch.current) setClearState({ scope, status: "uncertain", groups });
     }
   }
 
   if (!open) return null;
 
   function closePanel() {
-    setResetConfirm(false);
-    setAffectedGroups([]);
+    requestEpoch.current += 1;
+    setClearState(null);
     onClose();
   }
 
@@ -151,11 +208,13 @@ export function MemoryPanel({
             Clear memory
           </h3>
           {groupConversation ? <p className="mb-3 text-xs leading-5 text-white/70">Clearing this Character&apos;s memory also archives group conversations they belong to. Other Characters keep their own memories.</p> : null}
-          {!groupConversation && resetConfirm && affectedGroups.length > 0 ? (
+          {resetConfirm && canConfirm ? (
             <p className="mb-3 text-xs leading-5 text-[rgb(255,184,112)]" data-testid="memory-clear-groups" role="status">
-              This also archives {affectedGroups.length === 1 ? "the group chat" : `${affectedGroups.length} group chats`} with this character: {affectedGroups.join(", ")}. Archived groups stay readable but can&apos;t continue.
+              {currentClear.groups.length > 0 ? <>This also archives {currentClear.groups.length === 1 ? "the group chat" : `${currentClear.groups.length} group chats`} with this character: {currentClear.groups.join(", ")}. Archived groups stay readable but can&apos;t continue.</> : "No active group chats with this character were found."}
             </p>
           ) : null}
+          {currentClear?.status === "loading" ? <p className="mb-3 text-xs text-white/70" role="status">Checking which group chats will be archived…</p> : null}
+          {currentClear?.status === "failed" ? <div className="mb-3 text-xs text-[rgb(255,138,128)]" role="alert">Couldn&apos;t check which group chats will be archived. Nothing has been cleared.<button className="ml-2 underline" onClick={() => { void loadClearScope(); }} type="button">Retry</button></div> : null}
           <p className="mb-3 text-[12px] leading-4 text-[rgb(114,113,112)]">
             {resetConfirm
               ? "This clears learned memories and your pinned facts, and moves your current chats with this character to the archive. You'll start a new conversation. Your old chats stay readable. Custom instructions stay until you remove them."
@@ -165,13 +224,14 @@ export function MemoryPanel({
             aria-label={resetConfirm ? "Confirm clear memory" : "Clear memory"}
             className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-[rgb(36,36,36)] px-4 py-2 text-[13px] font-semibold text-[rgb(170,170,170)] transition-colors hover:text-white disabled:opacity-50"
             data-testid="memory-clear"
-            disabled={resetting || !characterId}
+            disabled={resetting || !characterId || (resetConfirm && !canConfirm)}
             onClick={clearMemory}
             type="button"
           >
             <RotateCcw className="h-4 w-4" />
             {resetConfirm ? "Confirm clear" : "Clear memory"}
           </button>
+          {currentClear?.error ? <p className="mt-2 text-[12px] leading-4 text-[rgb(255,138,128)]" data-testid="memory-clear-error" role="alert">{currentClear.error}</p> : null}
           {resetFailed ? (
             <p
               className="mt-2 text-[12px] leading-4 text-[rgb(255,138,128)]"

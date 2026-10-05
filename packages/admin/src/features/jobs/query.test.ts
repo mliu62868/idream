@@ -9,8 +9,22 @@ import {
 } from "./query";
 
 describe("Generation Jobs URL query", () => {
+  it("preserves the authority's frozen window and exact dimensions through URL normalization", () => {
+    const scope = { from: "2026-07-05T12:00:00.000Z", to: "2026-07-12T12:00:00.000Z", profileId: "p-exact", profileVersion: "2", recipeId: "r-exact" };
+    const params = new URLSearchParams({ mode: "all", legacyStatus: "failed", sourceType: "generator", ...scope });
+    const query = parseGenerationJobQuery(params);
+    expect(query).toMatchObject(scope);
+    const normalized = new URL(generationJobsWorkspaceUrl("/admin/ops/jobs", `?${params}`, query), "http://localhost");
+    for (const [key, value] of Object.entries(scope)) expect(normalized.searchParams.get(key)).toBe(value);
+    expect(changedGenerationJobFilters(query).map(filter => filter.key)).toEqual(expect.arrayContaining(Object.keys(scope)));
+    expect(parseGenerationJobQuery(new URLSearchParams("profileVersion=null")).profileVersion).toBe("null");
+    // Invalid URL bounds must reach authority validation, never silently become a timeless query.
+    expect(buildGenerationJobQuery(parseGenerationJobQuery(new URLSearchParams("from=bad&to=earlier")))).toContain("from=bad&to=earlier");
+  });
+
   it("round trips every visible control into the exact v2 API query", () => {
     const query = {
+      ...defaultGenerationJobQuery,
       search: "timeout",
       mode: "image" as const,
       legacyStatus: "failed",
@@ -29,6 +43,7 @@ describe("Generation Jobs URL query", () => {
 
   it("fails closed to supported defaults for stale URL state", () => {
     expect(parseGenerationJobQuery(new URLSearchParams("mode=audio&sort=random&limit=999&clientRows=50"))).toEqual({
+      ...defaultGenerationJobQuery,
       search: "",
       mode: "image",
       legacyStatus: "",

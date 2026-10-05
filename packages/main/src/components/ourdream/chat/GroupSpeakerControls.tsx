@@ -15,7 +15,9 @@ export function mentionedGroupCharacter(content: string, members: readonly Group
   if (!text.startsWith("@")) return null;
   const exact = members.filter(member => {
     const mention = `@${member.name.toLocaleLowerCase()}`;
-    return text === mention || text.startsWith(`${mention} `) || text.startsWith(`${mention},`) || text.startsWith(`${mention}:`);
+    // A full name stays authoritative before any whitespace, including a
+    // Shift+Enter line break, or either form of the comma / colon delimiter.
+    return text.startsWith(mention) && (text.length === mention.length || /[\s,:，：]/u.test(text[mention.length]));
   });
   // 一个成员的完整名字可能是另一个的前缀（Mira / Mira Vale），取最具体的那个。
   if (exact.length > 0) {
@@ -26,7 +28,7 @@ export function mentionedGroupCharacter(content: string, members: readonly Group
     return tied.length === 1 ? longest.characterId : null;
   }
 
-  const typed = text.slice(1).split(/[\s,:]/u)[0] ?? "";
+  const typed = text.slice(1).split(/[\s,:，：]/u)[0] ?? "";
   if (!typed) return null;
   const prefixed = members.filter(member =>
     member.name.toLocaleLowerCase().startsWith(typed),

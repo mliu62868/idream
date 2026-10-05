@@ -8,7 +8,7 @@ import {
   parseAuthMeResponse,
   type AuthUser,
 } from "@/lib/public-api-contracts";
-import { authHrefForTarget, authNextTargetFromPath } from "./authRedirect";
+import { authHrefForTarget, authNextTargetFromPath, signupReferralCode } from "./authRedirect";
 import {
   ACCOUNT_AUTHORITY_UNAVAILABLE,
   authNavLogoutPresentation,
@@ -46,9 +46,11 @@ function AuthNavContent() {
   const [hash, setHash] = useState("");
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const authTarget = authNextTargetFromPath(pathname, searchParams?.toString() ?? "", hash);
-  const loginHref = authHrefForTarget("/login", authTarget);
-  const signupHref = authHrefForTarget("/signup", authTarget);
+  const search = searchParams?.toString() ?? "";
+  const authTarget = authNextTargetFromPath(pathname, search, hash);
+  const referralCode = pathname === "/login" || pathname === "/signup" ? signupReferralCode(search) : undefined;
+  const loginHref = authHrefForTarget("/login", authTarget, referralCode);
+  const signupHref = authHrefForTarget("/signup", authTarget, referralCode);
   const mode = authNavMode(loadState, user !== null);
   const logoutPresentation = authNavLogoutPresentation(logoutState);
 

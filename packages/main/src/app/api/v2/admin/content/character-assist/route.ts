@@ -12,6 +12,6 @@ export function POST(request: Request) {
   return adminV2Route(request, async () => {
     await actorWithPermission(request, "content.official.write");
     const body = await jsonBody(request, "contentCharacterAssistRequestSchema");
-    return generateCharacterDraft(body);
+    return generateCharacterDraft(body, undefined, request.headers.get("x-request-id") ?? undefined);
   });
 }

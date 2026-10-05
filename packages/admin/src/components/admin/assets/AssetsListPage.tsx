@@ -65,6 +65,7 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
   const [pageInfo, setPageInfo] = useState<AdminPageInfo>(EMPTY_PAGE_INFO);
   const [urlRevision, setUrlRevision] = useState(0);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [previousCanReview, setPreviousCanReview] = useState(canReview);
   const [preflightBusy, setPreflightBusy] = useState(false);
   const [preflightBlockers, setPreflightBlockers] = useState<AssetDependencyFinding[]>([]);
   const [preflightError, setPreflightError] = useState<string | null>(null);
@@ -78,16 +79,42 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
   const [uploadRevision, setUploadRevision] = useState(0);
   const requestGate = useRef(createLatestRequestGate());
   const preflightRequestGate = useRef(createLatestRequestGate());
+  const reviewPermission = useRef(canReview);
+  const archiveIntent = useRef<readonly string[] | null>(null);
   const uploadInput = useRef<HTMLInputElement>(null);
+
+  // Revocation discards the draft; regrant must start a new preflight and confirmation.
+  if (previousCanReview !== canReview) {
+    setPreviousCanReview(canReview);
+    if (!canReview) {
+      setSelectedIds(new Set());
+      setPendingArchiveIds(null);
+      setPreflightBusy(false);
+      setPreflightBlockers([]);
+      setPreflightError(null);
+      setServerConflict(null);
+      setBulkStatus(null);
+    }
+  }
 
   const clearBulkFeedback = useCallback(() => {
     preflightRequestGate.current.invalidate();
+    archiveIntent.current = null;
+    setPendingArchiveIds(null);
     setPreflightBusy(false);
     setPreflightBlockers([]);
     setPreflightError(null);
     setServerConflict(null);
     setBulkStatus(null);
   }, []);
+
+  useEffect(() => {
+    reviewPermission.current = canReview;
+    if (!canReview) {
+      preflightRequestGate.current.invalidate();
+      archiveIntent.current = null;
+    }
+  }, [canReview]);
 
   const clearForNextQuery = useCallback(() => {
     requestGate.current.invalidate();
@@ -141,7 +168,11 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
   // 依赖预检有自己的在途请求，卸载时也要作废——它和列表请求不共用同一个闸。
   useEffect(() => {
     const preflightGate = preflightRequestGate.current;
-    return () => preflightGate.invalidate();
+    return () => {
+      preflightGate.invalidate();
+      archiveIntent.current = null;
+      reviewPermission.current = false;
+    };
   }, []);
 
   useDebouncedReload({ cursor, page, urlRevision, reload, search });
@@ -172,6 +203,7 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
   }, [clearBulkFeedback]);
 
   async function preflightSelectedAssets() {
+    if (!reviewPermission.current) return;
     const ids = canonicalAssetIds([...selectedIds]);
     if (ids.length === 0) return;
     const request = preflightRequestGate.current.begin();
@@ -190,7 +222,10 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
         })),
       );
       setPreflightBlockers(blockers);
-      if (blockers.length === 0) setPendingArchiveIds(ids);
+      if (blockers.length === 0 && reviewPermission.current) {
+        archiveIntent.current = ids;
+        setPendingArchiveIds(ids);
+      }
     } catch (loadError) {
       if (!request.isCurrent()) return;
       if (loadError instanceof AssetBulkArchiveError) {
@@ -265,8 +300,13 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
   }
 
   const submitBulkArchive = useCallback(async (assetIds: readonly string[], reason: string) => {
+    // A receipt may arrive after history navigation or a new confirmation. It
+    // belongs to the submitted set and must not replace the current workspace.
+    const isCurrent = () => reviewPermission.current && archiveIntent.current === assetIds;
+    if (!isCurrent()) return;
     try {
       const result = await bulkArchiveAssets({ assetIds, reason, fallbackMessage: t("Request failed") });
+      if (!isCurrent()) return;
       setSelectedIds(new Set());
       setPreflightBlockers([]);
       setServerConflict(null);
@@ -277,7 +317,7 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
       );
       await reload(cursor, page);
     } catch (submitError) {
-      if (submitError instanceof AssetBulkArchiveError) {
+      if (isCurrent() && submitError instanceof AssetBulkArchiveError) {
         setServerConflict(submitError.details);
       }
       throw submitError;
@@ -549,11 +589,13 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
           totalCount={pageInfo.totalCount ?? null}
         />
       </div>
-      {pendingArchiveIds ? (
+      {canReview && pendingArchiveIds ? (
         <BulkArchiveConfirmDialog
           assetIds={pendingArchiveIds}
           conflict={serverConflict}
           onClose={() => {
+            if (archiveIntent.current !== pendingArchiveIds) return;
+            archiveIntent.current = null;
             setPendingArchiveIds(null);
             setServerConflict(null);
           }}

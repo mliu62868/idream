@@ -10,12 +10,14 @@ vi.mock("./AgeGateBoundary", () => ({ useAgeGateAccess: () => ({ accepted: true 
 vi.mock("./ComicShell", () => ({ ComicShell: ({ children }: { children: ReactNode }) => createElement("main", {}, children) }));
 import { ComicReader } from "./ComicReader";
 import { ComicStudio } from "./ComicStudio";
+import { ComicCatalog } from "./ComicCatalog";
+import { invalidateViewerAuthority } from "./viewer-auth";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let container: HTMLDivElement;
 let root: Root;
-beforeEach(() => { container = document.createElement("div"); document.body.append(container); root = createRoot(container); });
-afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+beforeEach(() => { invalidateViewerAuthority(); container = document.createElement("div"); document.body.append(container); root = createRoot(container); });
+afterEach(async () => { await act(async () => root.unmount()); container.remove(); invalidateViewerAuthority(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 function comic(canManage = true): ComicDetail {
   return {
@@ -43,6 +45,36 @@ function button(label: string) { return [...container.querySelectorAll("button")
 async function click(target: HTMLButtonElement) { expect(target).toBeTruthy(); await act(async () => target.click()); }
 
 describe("Comic workspace authority and saved order", () => {
+  it.each(["catalog", "reader"] as const)("offers a working retry after the %s's initial account check fails", async (surface) => {
+    let accountUnavailable = true;
+    const reads: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      reads.push(path);
+      if (path === "/api/v1/me") return accountUnavailable
+        ? Response.json({ ok: false, error: { message: "Account check unavailable" } }, { status: 503 })
+        : viewer();
+      if (path.startsWith("/api/v1/comics?")) {
+        const { episodes: _episodes, reviewNote: _reviewNote, ...summary } = comic(false);
+        return envelope({ items: [summary], nextCursor: null });
+      }
+      return envelope(comic(false));
+    }));
+    await act(async () => root.render(surface === "catalog"
+      ? createElement(ComicCatalog)
+      : createElement(ComicReader, { id: "comic-a" })));
+    await until(() => Boolean(container.querySelector('[role="alert"]')));
+    expect(container.textContent).toContain("Account check unavailable");
+    expect(container.textContent).not.toContain(surface === "catalog" ? "Loading Comics…" : "Loading Comic…");
+    expect(reads.filter(path => path.startsWith("/api/v1/comics"))).toHaveLength(0);
+    accountUnavailable = false;
+    await click(button(surface === "catalog" ? "Retry" : "Reload Comic"));
+    await until(() => container.textContent?.includes("Night train") === true);
+    expect(reads.filter(path => path === "/api/v1/me")).toHaveLength(2);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    if (surface === "reader") expect(container.querySelectorAll("figure")).toHaveLength(2);
+  });
+
   it("restores a chapter deep link after pages load without moving the reader on focus refresh", async () => {
     const previousUrl = window.location.href;
     window.history.replaceState(null, "", "/comics/comic-a#chapter-chapter-a");

@@ -298,7 +298,7 @@ import {
 } from "./popular-ranking";
 import { duplicateCharacterForUser } from "./character-duplicate";
 import { updateCharacterForUser } from "./character-update";
-import { recordMediaIdentityFeedback } from "./media-feedback";
+import { recordMediaIdentityFeedback, recordMediaIntentFeedback, readMediaIntentFeedback, mediaIntentFeedbackProjection } from "./media-feedback";
 import { dispatchCustomerCareRequest } from "./customer-care";
 
 type ApiMethod = "GET" | "POST" | "PATCH" | "DELETE" | "PUT";
@@ -400,7 +400,8 @@ const presetCreateSchema = z.object({
 const mediaCollectionVisibilitySchema = z.enum(["private", "public"]);
 
 const generationFeedbackSchema = z.object({
-  feedbackType: z.enum(["identity_match", "identity_mismatch"]),
+  feedbackType: z.enum(["identity_match", "identity_mismatch", "intent_match", "intent_mismatch"]),
+  direction: z.string().trim().max(600).optional(),
   sourceSurface: z.enum(["chat", "generator", "gallery"]),
 });
 
@@ -426,6 +427,7 @@ const characterLookSchema = z.object({
 
 const characterLookPatchSchema = characterLookSchema.partial().extend({
   status: z.enum(["active", "archived"]).optional(),
+  expectedVisualProfileId: z.string().trim().min(1).optional(),
 });
 
 const mediaCollectionCreateSchema = z.object({
@@ -776,6 +778,7 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
     if (id && action === "like" && method === "POST") return likeMedia(request, id);
     if (id && action === "like" && method === "DELETE") return unlikeMedia(request, id);
     if (id && action === "feedback" && method === "POST") return recordMediaFeedback(request, id);
+    if (id && action === "feedback" && method === "GET") return getMediaFeedback(request, id);
     if (id && action === "use-as-character-image" && method === "POST") {
       return setMediaAsCharacterImage(request, id);
     }
@@ -1640,7 +1643,10 @@ async function listCharacterLooks(request: Request, characterId: string) {
     where: { characterId, ownerId: user.id, status: { not: "archived" } },
     orderBy: { updatedAt: "desc" },
   });
-  return ok({ items: items.map(characterLookDTO) });
+  const activeProfile = await prisma.characterVisualProfile.findFirst({
+    where: { characterId, status: "active" }, orderBy: { version: "desc" }, select: { id: true },
+  });
+  return ok({ items: items.map(characterLookDTO), activeVisualProfileId: activeProfile?.id ?? null });
 }
 
 async function createCharacterLook(request: Request, characterId: string) {
@@ -1743,6 +1749,11 @@ async function updateCharacterLook(request: Request, characterId: string, lookId
       : toInputJson(current.appearanceDelta);
     const requiresRebase = current.visualProfileId !== activeProfile.id;
     if (nextStatus === "active" && requiresRebase) {
+      // Metadata edits cannot consent to a different identity. The immutable
+      // profile observed at confirmation must still be current under this lock.
+      if (body.status !== "active" || body.expectedVisualProfileId !== activeProfile.id) {
+        throw Errors.conflict("The character identity changed. Review it and confirm the Look again.");
+      }
       return persistCharacterLook(tx, {
         characterId,
         visualProfileId: activeProfile.id,
@@ -3122,6 +3133,7 @@ async function listMedia(request: Request) {
               : [],
         );
     return mediaDTO(asset, {
+      intentFeedbackOwnerId: user.id,
       editableCharacterIds,
       imageEditModelIds,
     });
@@ -3490,6 +3502,10 @@ async function recordMediaFeedback(request: Request, id: string) {
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const body = generationFeedbackSchema.parse(await jsonBody(request));
+  if (body.feedbackType === "intent_match" || body.feedbackType === "intent_mismatch") {
+    return ok(await recordMediaIntentFeedback({ userId: user.id, mediaAssetId: id,
+      feedbackType: body.feedbackType, sourceSurface: body.sourceSurface, direction: body.direction }));
+  }
   return ok(
     await recordMediaIdentityFeedback({
       userId: user.id,
@@ -3498,6 +3514,13 @@ async function recordMediaFeedback(request: Request, id: string) {
       sourceSurface: body.sourceSurface,
     }),
   );
+}
+
+async function getMediaFeedback(request: Request, id: string) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  requireAgeGate(ctx); requireAgeVerified(ctx);
+  return ok(await readMediaIntentFeedback({ userId: user.id, mediaAssetId: id }));
 }
 
 async function setMediaAsCharacterImage(request: Request, id: string) {
@@ -4963,6 +4986,8 @@ function userDTO(user: {
 
 function mediaDTO(asset: {
   id: string;
+  ownerId?: string;
+  sourceJobId?: string | null;
   characterId?: string | null;
   type: string;
   url: string;
@@ -4985,6 +5010,7 @@ function mediaDTO(asset: {
     sourceMeta?: Prisma.JsonValue | null;
   } | null;
 }, options: {
+  intentFeedbackOwnerId?: string;
   editableCharacterIds?: ReadonlySet<string>;
   imageEditModelIds?: readonly string[];
 } = {}) {
@@ -4995,12 +5021,16 @@ function mediaDTO(asset: {
     numberFromRecord(metadata, "visualProfileVersion") ??
     numberFromRecord(quality, "visualProfileVersion");
   const characterId = asset.characterId ?? null;
+  const ownsIntent = Boolean(options.intentFeedbackOwnerId && options.intentFeedbackOwnerId === asset.ownerId);
+  const { intentFeedback: _intent, intentFeedbackHistory: _history, ...publicQuality } = quality;
   return {
     id: asset.id,
     characterId,
     // Lets the gallery title a card by who is in it instead of "Generated image".
     ...(asset.character?.name ? { characterName: asset.character.name } : {}),
     canEditIdentity: Boolean(characterId && options.editableCharacterIds?.has(characterId)),
+    intentFeedbackAvailable: Boolean(ownsIntent && (asset.type === "image" || asset.type === "video") && (asset.sourceJobId || (asset.type === "video" && metadata.source === "video_sequence" && typeof metadata.sequenceId === "string"))),
+    intentFeedback: ownsIntent ? mediaIntentFeedbackProjection(quality.intentFeedback) : null,
     imageEditModelIds: options.imageEditModelIds ?? [],
     enhanceEligible: isEnhanceEligible(asset),
     enhancement: asset.sourceJob?.sourceType === "media_enhance"
@@ -5023,7 +5053,7 @@ function mediaDTO(asset: {
       selectedAsCharacterImage: booleanFromRecord(quality, "selectedAsCharacterImage", false),
       addedToReferences: booleanFromRecord(quality, "addedToReferences", false),
     },
-    quality: Object.keys(quality).length > 0 ? quality : null,
+    quality: Object.keys(publicQuality).length > 0 ? publicQuality : null,
     isSynthetic: isSyntheticMediaAsset(asset.metadata),
     provenance: mediaProvenanceDTO(asset.sourceJob),
     createdAt: asset.createdAt,
@@ -5111,7 +5141,7 @@ function generationJobResponse(
   };
   return {
     job: generationJobDTO(job, latestAttemptStatus),
-    assets: job.assets.map((asset) => mediaDTO({ ...asset, sourceJob })),
+    assets: job.assets.map((asset) => mediaDTO({ ...asset, sourceJob }, { intentFeedbackOwnerId: job.userId })),
     events: job.events.map((event) => ({
       id: event.id,
       type: event.type,

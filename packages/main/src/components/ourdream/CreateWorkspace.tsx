@@ -143,6 +143,7 @@ function pickTags(value: unknown): string {
 
 /** 与服务端 MAX_CHARACTER_TAGS 一致（character-draft-write.ts）。 */
 const MAX_TAGS = 12;
+const MAX_QUICK_START_BRIEF_LENGTH = 500;
 const DEFAULT_PREVIEW = "/images/ourdream/character-placeholder.svg";
 const STORAGE_KEY_PREFIX = "ourdream.create.draft.v2";
 
@@ -178,6 +179,9 @@ export type WizardState = {
   confirmedPreviewJobId: string;
   confirmedPreviewUrl: string;
   step: number;
+  // Local authoring intent, restored across reload/sign-in but never saved as
+  // character fields or sent to the model without an explicit Prefill action.
+  quickStartBrief: string;
   name: string;
   age: number;
   gender: string;
@@ -205,6 +209,7 @@ const INITIAL: WizardState = {
   confirmedPreviewJobId: "",
   confirmedPreviewUrl: "",
   step: 0,
+  quickStartBrief: "",
   name: "",
   age: 21,
   gender: "female",
@@ -310,7 +315,6 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
     "loading" | "ready" | "error"
   >("loading");
   const [templatesAttempt, setTemplatesAttempt] = useState(0);
-  const [quickStartBrief, setQuickStartBrief] = useState("");
   const [quickStartPending, setQuickStartPending] = useState(false);
   const [quickStartError, setQuickStartError] = useState("");
   const [voiceCatalog, setVoiceCatalog] = useState<CharacterVoiceCatalog | null>(null);
@@ -342,6 +346,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
   }, []);
 
   const step = state.step;
+  const quickStartBrief = state.quickStartBrief;
   const previewCandidates = state.previewBatch?.candidates ?? state.restoredPreviewCandidates;
   const set = useCallback(
     <K extends keyof WizardState>(key: K, value: WizardState[K]) =>
@@ -1440,8 +1445,8 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
                     <input
                       className="min-w-0 flex-1 rounded-[10px] border border-white/10 bg-[rgb(13,13,13)] px-3 py-2 text-[14px] font-semibold leading-6 text-white outline-none focus:border-[rgb(253,95,194)]"
                       disabled={quickStartPending}
-                      maxLength={500}
-                      onChange={(event) => setQuickStartBrief(event.target.value)}
+                      maxLength={MAX_QUICK_START_BRIEF_LENGTH}
+                      onChange={(event) => set("quickStartBrief", event.target.value.slice(0, MAX_QUICK_START_BRIEF_LENGTH))}
                       placeholder="A sharp-tongued, soft-hearted 24-year-old illustrator who works at a café"
                       value={quickStartBrief}
                     />
@@ -1456,7 +1461,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
                   </div>
                 </label>
                 <p className="mt-1.5 text-[12px] text-[rgb(170,170,170)]">
-                  Fills in the steps below as a starting point. Nothing is created until you publish.
+                  Fills in the steps below as a starting point. Nothing is created until you save your character.
                 </p>
                 {quickStartError ? (
                   <p className="mt-1.5 text-[12px] font-semibold text-[rgb(255,140,140)]" role="alert">
@@ -1822,7 +1827,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
                 <p className="text-[13px] font-medium text-[rgb(170,170,170)]">
                   {state.restoredPreviewCandidates.length > 0 && !state.previewBatch
                     ? "Your saved preview is ready. Confirm this identity or generate new candidates."
-                    : `Generate up to four identity candidates and choose the image that should define how ${state.name} looks.`}
+                    : `Generate up to four free identity previews (0 DreamCoins) and choose the image that should define how ${state.name} looks.`}
                 </p>
                 {state.previewBatch && (
                   <p
@@ -1983,7 +1988,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
                 )}
                 {previewStatus === "failed" && (
                   <p className="text-[13px] font-semibold text-[rgb(255,140,140)]">
-                    Preview failed. Your draft is saved; retry before publishing.
+                    Preview failed. Your draft is saved; retry before saving your character.
                   </p>
                 )}
                 {previewStatus === "paused" && (
@@ -2001,7 +2006,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
                     ? editTarget?.published
                       ? "Keeping the current look. Changes go live after the new version is published."
                       : "Keeping the current identity image. Changes save as a new version."
-                    : "Identity confirmed. This character is ready to publish."}
+                    : "Identity confirmed. This character is ready to save. Choose who can see it below."}
                 </div>
                 <div>
                   <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">Visibility</p>
@@ -2069,7 +2074,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
 
             {step === 3 && !identityReady && (
               <p className="mt-3 text-[12px] font-semibold text-[rgb(255,184,112)]">
-                Confirm one identity image to unlock Publish. Your draft stays saved until then.
+                Confirm one identity image to choose visibility and save your character. Your draft stays saved until then.
               </p>
             )}
 
@@ -2322,6 +2327,7 @@ export function parseWizardDraft(value: unknown): WizardState | null {
       value.step < STEPS.length
         ? value.step
         : INITIAL.step,
+    quickStartBrief: draftString(value.quickStartBrief, MAX_QUICK_START_BRIEF_LENGTH),
     name: draftString(value.name, 80),
     age:
       typeof value.age === "number" &&

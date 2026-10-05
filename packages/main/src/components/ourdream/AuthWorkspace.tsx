@@ -12,10 +12,12 @@ import Link from "next/link";
 import { REFERRAL_REWARD } from "@idream/shared/coins";
 import { newPasswordProblem, PASSWORD_HINT } from "@/lib/password-policy";
 import { parseViewerAuthorityResponse } from "@/lib/public-api-contracts";
-import { authHrefForTarget, safeInternalAuthRedirect } from "./authRedirect";
+import { authHrefForTarget, safeInternalAuthRedirect, signupReferralCode } from "./authRedirect";
 import { AccountRecovery, RecoveryCodeCard } from "./AccountRecovery";
 import { announceViewerAuthorityChange } from "./viewer-auth";
 import { AccountDeletionStatus } from "./AccountDeletionStatus";
+
+export { signupReferralCode } from "./authRedirect";
 
 export function AuthWorkspace({
   mode,
@@ -60,7 +62,7 @@ export function AuthWorkspace({
   }, []);
 
   useEffect(() => {
-    // The cross-links keep ?next= so switching forms still returns to the task.
+    // Preserve the task and invite while switching forms; attribution still occurs only at signup.
     const frame = window.requestAnimationFrame(() => {
       setInteractive(true);
       setLoginRecoveryHref(authLoginRecoveryHref());
@@ -68,7 +70,7 @@ export function AuthWorkspace({
     });
     void redirectIfAlreadyAuthenticated();
     return () => window.cancelAnimationFrame(frame);
-  }, [redirectIfAlreadyAuthenticated]);
+  }, [locationSearch, redirectIfAlreadyAuthenticated]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -293,20 +295,16 @@ function authRedirectTarget() {
 
 function authSignupHref() {
   const target = authRedirectTarget();
-  return target === "/" ? "/signup" : authHrefForTarget("/signup", target);
+  return authHrefForTarget("/signup", target === "/" ? null : target, signupReferralCode(window.location.search));
 }
 
 function authLoginRecoveryHref() {
   const target = authRedirectTarget();
-  return target === "/" ? "/login" : authHrefForTarget("/login", target);
+  return authHrefForTarget("/login", target === "/" ? null : target, signupReferralCode(window.location.search));
 }
 
 // The invitee reward is only minted for a valid code, which the server decides at signup.
 export const signupReferralBonusCopy = `You're joining with an invite link: a valid invite adds ${REFERRAL_REWARD.inviteeDreamcoins} bonus dreamcoins to your new account.`;
-
-export function signupReferralCode(search: string) {
-  return new URLSearchParams(search).get("ref")?.trim() || undefined;
-}
 
 export function accountDeletionGraceEndsAtFromSearch(search: string) {
   const raw = new URLSearchParams(search).get("accountDeletionGraceEndsAt");
@@ -333,4 +331,3 @@ function fieldErrorSummary(fieldErrors?: Record<string, string[]>) {
     .filter((message) => message.trim().length > 0);
   return messages.length ? messages.join(" ") : null;
 }
-
