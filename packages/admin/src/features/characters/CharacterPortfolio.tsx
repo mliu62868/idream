@@ -4,7 +4,8 @@ import { useAdminI18n } from "@/components/admin/i18n";
 import Link from "next/link";
 import type { AdminPageInfo, CharacterPortfolioItem, DataQualityIssue } from "@idream/shared/admin";
 import { Plus, Search } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useAdminFormat } from "@/components/admin/ui/format";
 import { Pagination } from "@/components/admin/ui/Pagination";
 import {
@@ -72,7 +73,6 @@ export function CharacterPortfolio({
   const performanceMode = mode === "performance";
   const [search, setSearch] = useState("");
   const [servingState, setServingState] = useState("");
-  const [readiness, setReadiness] = useState("");
   const [attention, setAttention] = useState(false);
   const [workQueue, setWorkQueue] = useState<CharacterPortfolioWorkQueue | "">(
     "",
@@ -88,6 +88,12 @@ export function CharacterPortfolio({
   // INTENT: keyset 分页没有 offset，也没有 total——不自己记一份就只能一直往前翻。
   //         任何改查询的动作都清空它（applyQuery 默认参数），否则页码会挂在旧结果上。
   const [cursorStack, setCursorStack] = useState<readonly string[]>([]);
+  // SPEC: 地址栏是列表状态的权威；当前 state 对应的 URL 查询记在这里。
+  // INTENT: Next 16 同路径只改 query 不重挂载（侧栏点「Characters」就是这样），只在挂载时读
+  //         一次地址栏，URL 清空了筛选和分页却还生效。改由 useSearchParams 驱动恢复；
+  //         自己 push/replace 写出去的 URL 与这里相同，回流时跳过，免得冲掉搜索框草稿。
+  const locationQuery = useSearchParams()?.toString() ?? "";
+  const stateQuery = useRef<string | null>(null);
   const portfolioRequestQuery = new URLSearchParams(characterPortfolioQuery(applied, true));
   portfolioRequestQuery.set("includePerformance", String(performanceMode));
   const portfolioRequestKey = portfolioRequestQuery.toString();
@@ -141,14 +147,14 @@ export function CharacterPortfolio({
     ) => {
       if (!preserveSearchDraft) setSearch(next.search);
       setServingState(next.servingState ?? "");
-      setReadiness(next.readiness ?? "");
       setAttention(next.attention ?? false);
       setWorkQueue(next.workQueue ?? "");
       setSort(next.sort ?? CHARACTER_PORTFOLIO_DEFAULT_SORT);
       setApplied(next);
       setCursorStack(nextCursorStack);
+      stateQuery.current = characterPortfolioQuery(next);
       if (historyMode !== "none") {
-        const locationQuery = characterPortfolioQuery(next);
+        const locationQuery = stateQuery.current;
         window.history[historyMode === "push" ? "pushState" : "replaceState"](
           { cursorStack: nextCursorStack } satisfies PortfolioHistoryState,
           "",
@@ -160,25 +166,24 @@ export function CharacterPortfolio({
   );
 
   useEffect(() => {
-    const restore = (historyMode: "none" | "replace") => {
-      const stack = restoredCursorStack();
-      const next = parseCharacterPortfolioUrl(window.location.search);
-      applyQuery(stack.length === 0 ? { ...next, cursor: undefined } : next, historyMode, stack);
-    };
+    if (locationQuery === stateQuery.current) return;
+    const stack = restoredCursorStack();
+    const next = parseCharacterPortfolioUrl(window.location.search);
     // INTENT: 挂载时同步恢复即可——resource 的首轮取数排在 setTimeout(…, 0) 里，
     //         这一句先落地，那一轮就直接带着地址栏里的查询发出去，不会先打一发空查询。
-    restore("replace");
-    const onPopState = () => restore("none");
-    window.addEventListener("popstate", onPopState);
-    return () => window.removeEventListener("popstate", onPopState);
-  }, [applyQuery]);
+    //         挂载时顺手把地址栏规范化；之后（前进后退、侧栏链接）只跟随，不改写。
+    applyQuery(
+      stack.length === 0 ? { ...next, cursor: undefined } : next,
+      stateQuery.current === null ? "replace" : "none",
+      stack,
+    );
+  }, [applyQuery, locationQuery]);
 
   function apply(nextCursor?: string, nextCursorStack?: readonly string[]) {
     applyQuery(
       {
         search,
         servingState: servingState || undefined,
-        readiness: readiness || undefined,
         attention: attention || undefined,
         workQueue: workQueue || undefined,
         sort,
@@ -191,19 +196,9 @@ export function CharacterPortfolio({
 
   // INTENT: 排序不进"表单草稿"—— 换排序键会让当前游标失去意义（keyset 分页的游标是排序键
   //         的位置），所以它立即生效并回到第一页，而不是等运营再点一次 Search。
+  //         和翻页一样只带已生效的查询：搜索框里没提交的草稿既不跟着生效，也不被清掉。
   function changeSort(next: CharacterPortfolioSort) {
-    setSort(next);
-    applyQuery(
-      {
-        search,
-        servingState: servingState || undefined,
-        readiness: readiness || undefined,
-        attention: attention || undefined,
-        workQueue: workQueue || undefined,
-        sort: next,
-      },
-      "push",
-    );
+    applyQuery({ ...applied, cursor: undefined, sort: next }, "push", [], true);
   }
 
   function goToPage(direction: "next" | "previous") {
@@ -241,16 +236,17 @@ export function CharacterPortfolio({
     setAttention(nextAttention);
     setWorkQueue(nextWorkQueue ?? "");
     setServingState(nextServingState ?? "");
-    setReadiness("");
     applyQuery(
       {
-        search,
+        search: applied.search,
         servingState: nextServingState,
         attention: nextAttention || undefined,
         workQueue: nextWorkQueue,
         sort,
       },
       "push",
+      [],
+      true,
     );
   }
   const filterForm = (

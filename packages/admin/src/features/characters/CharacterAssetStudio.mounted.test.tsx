@@ -1035,7 +1035,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
     await waitUntil(
       () =>
         container.textContent?.includes(
-          "Image production could not be enabled. Your live images were not changed. Try again.",
+          "Image production preparation could not be confirmed. Refresh the page to check whether it was applied before trying again.",
         ) === true,
     );
 
@@ -1044,6 +1044,21 @@ describe("Character Asset Studio bootstrap route projection", () => {
     expect(container.firstElementChild?.firstElementChild).toBe(alert);
     expect(container.textContent).not.toContain(
       "Admin authority request failed (500)",
+    );
+
+    // 409 是服务端明确拒绝：说清楚是版本冲突、要刷新，而不是笼统的「请重试」。
+    adminV2Request.mockImplementation(async (path) => {
+      if (path.includes("/image-readiness/repair")) {
+        throw new AdminV2RequestError("Project version mismatch", 409, "conflict");
+      }
+      return { items: [], pageInfo: { endCursor: null, hasNextPage: false } };
+    });
+    await act(async () => enable?.click());
+    await waitUntil(
+      () =>
+        container.textContent?.includes(
+          "Image production was not enabled because this Character changed elsewhere. Refresh the page and try again.",
+        ) === true,
     );
   });
 

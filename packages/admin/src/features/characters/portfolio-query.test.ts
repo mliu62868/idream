@@ -8,15 +8,18 @@ import {
 } from "./portfolio-query";
 
 describe("Character Portfolio URL authority", () => {
-  it("restores product-state filters and ignores the retired project phase", () => {
-    expect(parseCharacterPortfolioUrl(
+  // INTENT: readiness 没有 UI 入口，是隐形筛选 —— 本页不读也不写它，和已退役的 phase 一样忽略。
+  it("restores product-state filters and ignores the retired phase and readiness", () => {
+    const restored = parseCharacterPortfolioUrl(
       "?search=aurora%20sky&phase=launch_ready&servingState=paused&readiness=blocked&cursor=opaque",
-    )).toEqual({
+    );
+    expect(restored).toEqual({
       search: "aurora sky",
       servingState: "paused",
-      readiness: "blocked",
       cursor: "opaque",
     });
+    expect(characterPortfolioEmptyView({ ...restored, search: "" })).toBe("filtered");
+    expect(characterPortfolioQuery(restored)).not.toContain("readiness");
   });
 
   it("drops unknown finite states and keeps browser URLs free of transport defaults", () => {

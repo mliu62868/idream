@@ -933,6 +933,23 @@ export function CharacterCreateWizard({
             <CharacterCreateError error={error} draftNotResumable={draftNotResumable} />
           </div>
         ) : null}
+        {/* INTENT: 409 后本页持有的 projectVersion 已过期，之后每次 autosave 都会再撞 409；
+            唯一出路是取回服务端最新版本，所以把恢复入口放在冲突旁边，而不是让运营刷新整页。 */}
+        {authority && saveState === "Conflict" ? (
+          <div className="mt-4 rounded-lg border border-[var(--ad-border)] p-3">
+            <p className="text-sm font-semibold">
+              {t("This draft was updated elsewhere.")}
+            </p>
+            <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">
+              {t("Autosave cannot succeed until you reload the latest version. Reloading replaces the unsaved changes on this page.")}
+            </p>
+            <div className="mt-3">
+              <WorkspaceButton onClick={() => void restoreDraft(authority.characterId)}>
+                {t("Reload draft")}
+              </WorkspaceButton>
+            </div>
+          </div>
+        ) : null}
         {recoveryNotice ? (
           <p
             className="mt-4 rounded-md bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]"

@@ -217,8 +217,8 @@ export const adminZhCharacters: Record<string, string> = {
   "Not started": "未开始",
   "Nothing is blocking this character": "当前没有阻塞项",
   "Official identity and production settings": "正式身份与生产设置",
-  "Open any image to keep adjusting it or set it as the current look again.":
-    "打开任意图片，可继续调整或重新设为当前形象。",
+  "Only images generated here for visual identity calibration. Open any image to keep adjusting it or set it as the current look again.":
+    "这里只收录在此为视觉身份校准生成的图片。打开任意图片，可继续调整或重新设为当前形象。",
   "Open run to retry": "打开这次生成去重试",
   "Optional fields can be written now or later in Soul. Publishing checks the opening line and Soul quality separately.":
     "选填项现在写或之后在「灵魂」里写都行。开场白与灵魂质量由发布环节单独把关。",
@@ -706,7 +706,7 @@ export const adminZhCharacters: Record<string, string> = {
   "Identity anchor": "身份锚点",
   "Identity and quality safeguards are automatic. Add only exclusions specific to this image.":
     "系统会自动应用身份与质量约束；这里只填写这张图片需要额外避免的内容。",
-  "Identity images": "身份图片",
+  "Identity reference images": "身份参考图",
   "Identity lock": "身份锁定",
   "Identity locked": "身份已锁定",
   "Identity match score ({minimum}–100 required)":
@@ -736,8 +736,6 @@ export const adminZhCharacters: Record<string, string> = {
   "Image pack in progress": "图片资产包制作中",
   "Incomplete packs": "资产包待补齐",
   "Image production": "图片生产",
-  "Image production could not be enabled. Your live images were not changed. Try again.":
-    "图片生产启用失败，线上图片未发生任何改变。请重试。",
   "Image production is ready": "图片生产已就绪",
   "Image production is waiting for visual setup": "图片生产正在等待视觉设置",
   "Image production readiness": "图片生产就绪度",
@@ -1447,7 +1445,7 @@ export const adminZhCharacters: Record<string, string> = {
     "视频已拒绝，不可变审核记录已保留在生产批次历史中。",
   "Video review": "视频审核",
   "Video review could not be saved": "视频审核保存失败",
-  "Video source images": "视频源图片",
+  "Images usable as video sources": "可用作视频源的图片",
   Videos: "视频",
   "View all": "查看全部",
   "View candidate {number}": "查看候选图 {number}",
@@ -1855,4 +1853,12 @@ export const adminZhCharacters: Record<string, string> = {
   "Review retired character": "查看停用角色",
   "Restore this archived draft before continuing character production.": "请先恢复这个已归档草稿，再继续角色制作。",
   "This character is retired. Review its release history.": "这个角色已停用，可查看其发布历史。",
+  "This draft was updated elsewhere.": "这个草稿已在别处更新。",
+  "Autosave cannot succeed until you reload the latest version. Reloading replaces the unsaved changes on this page.":
+    "重新加载最新版本前，自动保存不会成功。重新加载会覆盖本页未保存的修改。",
+  "Reload draft": "重新加载草稿",
+  "Image production was not enabled because this Character changed elsewhere. Refresh the page and try again.":
+    "图片生产未启用：这个角色已在别处被修改。请刷新页面后重试。",
+  "Image production preparation could not be confirmed. Refresh the page to check whether it was applied before trying again.":
+    "无法确认图片生产是否已启用。请先刷新页面核对是否已生效，再决定是否重试。",
 };

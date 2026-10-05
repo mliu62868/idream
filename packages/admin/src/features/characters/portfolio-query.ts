@@ -1,5 +1,4 @@
 import {
-  adminReadinessSchema,
   characterServingStateSchema,
   type CharacterPortfolioQuery,
 } from "@idream/shared/admin";
@@ -17,7 +16,6 @@ export type CharacterPortfolioEmptyView =
 export interface CharacterPortfolioUrlState {
   readonly search: string;
   readonly servingState?: string;
-  readonly readiness?: string;
   readonly attention?: boolean;
   readonly workQueue?: CharacterPortfolioWorkQueue;
   readonly sort?: CharacterPortfolioSort;
@@ -25,7 +23,6 @@ export interface CharacterPortfolioUrlState {
 }
 
 export const CHARACTER_PORTFOLIO_SERVING_STATES = characterServingStateSchema.options;
-export const CHARACTER_PORTFOLIO_READINESS_STATES = adminReadinessSchema.options;
 
 // SPEC: 排序选项与它们的运营文案。键取自契约的 sort 枚举 —— 契约增删一个值，这张表编译不过。
 // INTENT: 这里曾无条件写死 sort=project_id_asc，因为契约当时只有这一个值；authority 扩容后
@@ -66,11 +63,9 @@ function parseWorkQueue(
 export function parseCharacterPortfolioUrl(search: string): CharacterPortfolioUrlState {
   const params = new URLSearchParams(search);
   const servingState = characterServingStateSchema.safeParse(params.get("servingState"));
-  const readiness = adminReadinessSchema.safeParse(params.get("readiness"));
   return {
     search: params.get("search")?.trim() ?? "",
     servingState: servingState.success ? servingState.data : undefined,
-    readiness: readiness.success ? readiness.data : undefined,
     attention: params.get("attention") === "true" ? true : undefined,
     workQueue: parseWorkQueue(params.get("workQueue")),
     sort: parseSort(params.get("sort")),
@@ -92,18 +87,19 @@ export function characterPortfolioQuery(
   }
   if (state.search.trim()) params.set("search", state.search.trim());
   if (state.servingState) params.set("servingState", state.servingState);
-  if (state.readiness) params.set("readiness", state.readiness);
   if (state.attention) params.set("attention", "true");
   if (state.workQueue) params.set("workQueue", state.workQueue);
   if (state.cursor) params.set("cursor", state.cursor);
   return params.toString();
 }
 
-// SPEC: “问题已清空”只在运营清单本身为空时成立；一旦叠加搜索或 readiness，零结果只说明组合筛选没命中。
+// SPEC: “问题已清空”只在运营清单本身为空时成立；一旦叠加搜索，零结果只说明组合筛选没命中。
+// INTENT: admin 曾解析 ?readiness= 却没有任何 UI 入口 —— 隐形筛选，口径还和卡片的 unknown 不一致，已删除；
+//         服务端参数保留，只是本页不再读写它。
 export function characterPortfolioEmptyView(
   state: CharacterPortfolioUrlState,
 ): CharacterPortfolioEmptyView {
-  if (state.search.trim() || state.readiness) return "filtered";
+  if (state.search.trim()) return "filtered";
   if (state.attention) return "attention";
   if (state.workQueue === "live_asset_pack_incomplete") {
     return "live_asset_pack_incomplete";

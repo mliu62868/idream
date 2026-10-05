@@ -616,10 +616,23 @@ export function CharacterAssetStudio({
           ? "The live portrait is now the sealed identity reference. Image production is ready."
           : "The live portrait is now the sealed identity reference. A production administrator still needs to activate a compatible image route.",
       );
-    } catch {
-      setError(
-        "Image production could not be enabled. Your live images were not changed. Try again.",
-      );
+    } catch (cause) {
+      // INTENT: 只有服务端明确拒绝（4xx）才能断言线上图片没变；超时或 5xx 时提交可能已经落地，
+      //         这时让运营先刷新核对，而不是保证「什么都没发生」再诱导重试。
+      if (cause instanceof AdminV2RequestError && cause.status === 409) {
+        setError(
+          "Image production was not enabled because this Character changed elsewhere. Refresh the page and try again.",
+        );
+      } else if (
+        cause instanceof AdminV2RequestError &&
+        [400, 401, 403, 404, 422].includes(cause.status)
+      ) {
+        setError(cause.message);
+      } else {
+        setError(
+          "Image production preparation could not be confirmed. Refresh the page to check whether it was applied before trying again.",
+        );
+      }
     } finally {
       setBusy(null);
     }

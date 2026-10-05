@@ -12,6 +12,8 @@ vi.mock("@/components/admin/i18n", () => {
   return { useAdminI18n: () => context, AdminText: ({ text }: { text: string }) => <>{text}</> };
 });
 vi.mock("@/components/admin/ui/format", () => ({ useAdminFormat: () => ({ dateTime: (value: string) => value }) }));
+// Next 的 useSearchParams 跟随地址栏；测试里每次渲染直接读 window.location 来模拟。
+vi.mock("next/navigation", () => ({ useSearchParams: () => new URLSearchParams(window.location.search) }));
 vi.mock("./CharacterPortfolioCard", () => ({ CharacterPortfolioCard: ({ item }: { item: { characterId: string } }) => <article>{item.characterId}</article> }));
 
 import { CharacterPortfolio } from "./CharacterPortfolio";
@@ -90,6 +92,46 @@ describe("Character workspace shell refresh", () => {
     expect(query.has("search")).toBe(false);
     expect(search.value).toBe("unfinished search");
     expect(new URLSearchParams(window.location.search).has("search")).toBe(false);
+  });
+
+  // SPEC: 同路径只改 query 时 Next 不重挂载（侧栏点「Characters」）——列表必须跟着地址栏回到默认。
+  it("returns to the default list when the URL is cleared without a remount", async () => {
+    window.history.replaceState(null, "", "/admin/characters?search=Mira&servingState=live");
+    adminV2Operation.mockResolvedValue({ items: [], pageInfo: { endCursor: null, hasNextPage: false }, asOf: "2026-10-04T10:00:00Z" });
+    const portfolio = <CharacterPortfolio canCreate canRead canOpenAssets canOpenProjects mode="studio" />;
+    await act(async () => root.render(portfolio));
+    await waitUntil(() => adminV2Operation.mock.calls.length === 1);
+    expect(new URLSearchParams(adminV2Operation.mock.calls[0][1].query).get("servingState")).toBe("live");
+    await act(async () => {
+      window.history.pushState(null, "", "/admin/characters");
+      root.render(<CharacterPortfolio canCreate canRead canOpenAssets canOpenProjects mode="studio" />);
+    });
+    await waitUntil(() => adminV2Operation.mock.calls.length === 2);
+    const query = new URLSearchParams(adminV2Operation.mock.calls[1][1].query);
+    expect(query.has("search")).toBe(false);
+    expect(query.has("servingState")).toBe(false);
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Search characters"]')!.value).toBe("");
+  });
+
+  it("changes sort on the applied query without submitting an unfinished search", async () => {
+    adminV2Operation.mockResolvedValue({ items: [], pageInfo: { endCursor: null, hasNextPage: false }, asOf: "2026-10-04T10:00:00Z" });
+    await act(async () => root.render(<CharacterPortfolio canCreate canRead canOpenAssets canOpenProjects mode="studio" />));
+    await waitUntil(() => adminV2Operation.mock.calls.length === 1);
+    const search = container.querySelector<HTMLInputElement>('input[aria-label="Search characters"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(search, "unfinished search");
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const sort = container.querySelector<HTMLSelectElement>('select[aria-label="Sort characters"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(sort, "created_desc");
+      sort.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await waitUntil(() => adminV2Operation.mock.calls.length === 2);
+    const query = new URLSearchParams(adminV2Operation.mock.calls[1][1].query);
+    expect(query.get("sort")).toBe("created_desc");
+    expect(query.has("search")).toBe(false);
+    expect(search.value).toBe("unfinished search");
   });
 
   it("lets an operator retry the first failed chat-tool read", async () => {

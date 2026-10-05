@@ -311,13 +311,13 @@ export function VisualIdentityExperimentWorkbench({
       query: new URLSearchParams({
         targetType: "character",
         targetId: data.character.id,
+        // INTENT: 用途在服务端筛。先取最近 30 条再在客户端过滤，最近 30 条都是别的用途时历史就空了。
+        purpose: "identity_calibration",
         sort: "updated_desc",
         limit: "30",
       }),
     });
-    const experiments = response.items.filter(
-      (run) => run.purpose === "identity_calibration",
-    );
+    const experiments = [...response.items];
     setRuns(experiments);
     return experiments;
   }, [data.character.id]);
@@ -1192,7 +1192,7 @@ export function VisualIdentityExperimentWorkbench({
             </h3>
             <p className="mt-1 text-sm text-[var(--ad-text-muted)]">
               {t(
-                "Open any image to keep adjusting it or set it as the current look again.",
+                "Only images generated here for visual identity calibration. Open any image to keep adjusting it or set it as the current look again.",
               )}
             </p>
           </div>

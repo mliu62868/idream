@@ -546,6 +546,46 @@ describe("Character create wizard restore authority", () => {
     );
   });
 
+  // SPEC: autosave 撞 409 后本页版本已过期；必须给出取回最新版本的入口，否则之后每次保存都 409。
+  it("reloads the server draft after an autosave conflict and saves against its new version", async () => {
+    window.history.replaceState(null, "", "/admin/characters/new?draft=shared-character");
+    let restores = 0;
+    const patches: unknown[] = [];
+    adminV2Request.mockImplementation(async (_path, options) => {
+      if (options?.method === "PATCH") {
+        patches.push(options.body);
+        if (patches.length === 1) throw new AdminV2RequestError("Version mismatch", 409, "conflict");
+        return { version: 6 };
+      }
+      restores += 1;
+      return {
+        authority: { characterId: "shared-character", projectId: "shared-project", projectVersion: restores === 1 ? 3 : 5, deepLink: "/admin/characters/shared-character" },
+        draft: restores === 1 ? restoredDraft : { ...restoredDraft, persona: { ...restoredDraft.persona, name: "Server Mira" } },
+      };
+    });
+    await act(async () => root.render(<CharacterCreateWizard actorId="operator-a" canCreate />));
+    await waitUntil(() => container.textContent?.includes("Persona & conversation") === true);
+    await openReviewSection(container, 0);
+    const typeName = async (value: string) => {
+      const name = container.querySelector<HTMLInputElement>('[name="persona.name"]')!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(name, value);
+        name.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    };
+    await typeName("Local Mira");
+    await waitUntil(() => container.textContent?.includes("Reload draft") === true);
+    const reload = [...container.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Reload draft")!;
+    await act(async () => reload.click());
+    await waitUntil(() => container.textContent?.includes("version 5") === true);
+    expect(container.textContent).not.toContain("Reload draft");
+    await openReviewSection(container, 0);
+    expect(container.querySelector<HTMLInputElement>('[name="persona.name"]')!.value).toBe("Server Mira");
+    await typeName("Merged Mira");
+    await waitUntil(() => patches.length === 2);
+    expect(patches[1]).toMatchObject({ entityVersion: 5 });
+  });
+
   it("directs a non-resumable character to its settings without offering an ineffective retry", async () => {
     window.history.replaceState(null, "", "/admin/characters/new?draft=character-old");
     adminV2Request.mockRejectedValue(new AdminV2RequestError(

@@ -42,7 +42,7 @@ export function characterOperationsFacts(
       : data.journey.assetPack.draft;
   const changedCount = data.preview.changedFields.length;
   const releaseOrdinals = characterReleaseOrdinals(data.releases);
-  // SPEC: 身份图片按 mediaAssetId 去重后计数。
+  // SPEC: 身份参考图（anchors ∪ references）按 mediaAssetId 去重后计数；不是角色的全部图片。
   // INTENT: anchors 与 references 会重叠（已发布参考集里的图同时也是锚点），相加会把同一张
   // 图数两次 —— 这个角色实际 15 张，页面写 16。
   const identityImageCount = new Set(
@@ -82,7 +82,7 @@ export function characterOperationsFacts(
       alert: visiblePack.completed < visiblePack.total,
     },
     {
-      label: "Identity images",
+      label: "Identity reference images",
       value: String(identityImageCount),
       alert: identityImageCount === 0,
     },
@@ -91,7 +91,7 @@ export function characterOperationsFacts(
     // "Videos"，于是"视频 15"其实是 15 张图片（这个角色只有 1 个视频），而且数值恰好和图片数
     // 相同，误导更甚。0 张是真实信号：没有源图就生成不了视频。
     {
-      label: "Video source images",
+      label: "Images usable as video sources",
       value: String(
         data.visual.videoSources.filter((asset) => asset.available).length,
       ),

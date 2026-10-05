@@ -205,16 +205,16 @@ describe("Character detail facts", () => {
   it("counts identity images once and never calls source images videos", () => {
     const detail = workspace({});
     // shared-1 同时在 anchors 和 references 里，available 的去重后是 shared-1 + anchor-2。
-    expect(factValue(detail, "Identity images")).toMatchObject({ value: "2", alert: false });
-    expect(factValue(detail, "Video source images")).toMatchObject({ value: "1", alert: false });
+    expect(factValue(detail, "Identity reference images")).toMatchObject({ value: "2", alert: false });
+    expect(factValue(detail, "Images usable as video sources")).toMatchObject({ value: "1", alert: false });
     expect(characterOperationsFacts(detail).some((fact) => fact.label === "Videos")).toBe(false);
   });
 
 
   it("flags a character that has no usable identity image or video source", () => {
     const empty = workspace({ anchors: [], references: [], videoSources: [] });
-    expect(factValue(empty, "Identity images")).toMatchObject({ value: "0", alert: true });
-    expect(factValue(empty, "Video source images")).toMatchObject({ value: "0", alert: true });
+    expect(factValue(empty, "Identity reference images")).toMatchObject({ value: "0", alert: true });
+    expect(factValue(empty, "Images usable as video sources")).toMatchObject({ value: "0", alert: true });
   });
 
 

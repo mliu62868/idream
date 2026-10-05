@@ -34,6 +34,13 @@ import { SCOPES, STARTERS_LIST, type Starter } from "./starters-api";
 type StartersResponse = { items: Starter[]; pageInfo: AdminPageInfo };
 
 const PAGE_SIZE = 25;
+const STATUSES = ["active", "disabled"] as const;
+
+// SPEC: 地址栏里的 scope/status 只接受契约枚举里的值，其余回落 "all"。
+// INTENT: 契约是严格枚举，原样转发一个手改/过期链接里的非法值会让整页 400，「重试」也救不回来。
+function urlFilter(value: string | null, allowed: readonly string[]) {
+  return value !== null && allowed.includes(value) ? value : "all";
+}
 
 // SPEC: 角色模板列表页 —— 搜索/筛选 + 卡片网格（无图 monogram、范围·排序·标签数、上/下线状态）。
 // INTENT: 浏览页只浏览；创建在 /new，详情在 /<id>（spec §7 列表页）。
@@ -72,11 +79,13 @@ export function StartersListPage({ canWrite }: { canWrite: boolean }) {
 
   useUrlBootstrap(useCallback((params: URLSearchParams) => {
     setSearch(params.get("search") ?? "");
-    setScope(params.get("scope") ?? "all");
-    setStatus(params.get("status") ?? "all");
+    const urlScope = urlFilter(params.get("scope"), SCOPES);
+    const urlStatus = urlFilter(params.get("status"), STATUSES);
+    setScope(urlScope);
+    setStatus(urlStatus);
     setCursor(params.get("cursor") ?? undefined);
     setPage(params.get("cursor") ? listPageFromParams(params) : 1);
-    setAuthority((current) => authorityRequestStarted(current, startersQueryKey(params.get("search") ?? "", params.get("scope") ?? "all", params.get("status") ?? "all", params.get("cursor") ?? undefined)));
+    setAuthority((current) => authorityRequestStarted(current, startersQueryKey(params.get("search") ?? "", urlScope, urlStatus, params.get("cursor") ?? undefined)));
     setUrlRevision((revision) => revision + 1);
   }, []), requestGate);
 

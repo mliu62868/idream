@@ -251,6 +251,29 @@ describe("Visual Identity experiment activation", () => {
     vi.restoreAllMocks();
   });
 
+  // SPEC: 历史只含视觉身份校准 —— 用途必须由服务端筛，否则最近 30 条别的用途会把它挤空。
+  it("asks the authority for identity-calibration runs only", async () => {
+    await act(async () =>
+      root.render(
+        <VisualIdentityExperimentWorkbench
+          canActivate
+          canCreate
+          canReview
+          canUploadSource
+          data={data}
+          onActivateCandidate={vi.fn(async () => undefined)}
+        />,
+      ),
+    );
+    const listCall = () =>
+      adminV2Request.mock.calls.find(([path]) =>
+        String(path).includes("/api/v2/admin/creative/runs?"),
+      );
+    await waitUntil(() => listCall() !== undefined);
+    const query = new URL(String(listCall()![0]), "http://admin.test").searchParams;
+    expect(query.get("purpose")).toBe("identity_calibration");
+  });
+
   it("gives every generation selector an explicit accessible name", async () => {
     await act(async () =>
       root.render(
