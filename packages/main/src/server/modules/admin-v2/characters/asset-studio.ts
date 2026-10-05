@@ -1,6 +1,7 @@
 import { characterDraftImageSelectionResultSchema } from "@idream/shared/admin";
 import type { Prisma } from "@prisma/client";
 import { inTransaction } from "@/server/lib/db";
+import { assertNoCandidateRelease } from "./candidate-release-guard";
 import { Errors } from "@/server/lib/errors";
 import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
@@ -111,23 +112,11 @@ export async function selectCharacterDraftImage(
         { currentVersion: project.version },
       );
     }
-    const activeRelease = await tx.characterRelease.findFirst({
-      where: {
-        projectId: project.id,
-        status: "approved",
-      },
-      select: { id: true, status: true },
+    await assertNoCandidateRelease(tx, {
+      projectId: project.id,
+      characterId: input.characterId,
+      message: "The active Character Release already pins an immutable image set",
     });
-    if (activeRelease) {
-      throw Errors.conflict(
-        "The active Character Release already pins an immutable image set",
-        {
-          releaseId: activeRelease.id,
-          status: activeRelease.status,
-          deepLink: characterWorkspaceTabLink(input.characterId, "release"),
-        },
-      );
-    }
 
     const selection = await resolveSelectableCharacterImage(tx, {
       characterId: input.characterId,

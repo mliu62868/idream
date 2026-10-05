@@ -1189,6 +1189,11 @@ describe("Character operator workspace", () => {
   });
 
   it("autosaves with optimistic concurrency and writes audit/outbox atomically", async () => {
+    // Draft content is frozen beside a candidate Release; the operator discards it first.
+    await prisma.characterRelease.update({
+      where: { id: releaseId },
+      data: { status: "withdrawn" },
+    });
     const saved = await updateCharacterProjectDraft({
       characterId,
       expectedVersion: 1,

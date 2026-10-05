@@ -1839,7 +1839,7 @@ export const adminZhCharacters: Record<string, string> = {
   "Short description": "一句话简介",
   "Write a one-line description.": "写一句话简介。",
   "Give the character a name, short description, and opening message.": "填写角色名称、一句话简介和开场白。",
-  "Every new image of this Character is generated from this description.": "这个角色之后生成的每张新图片都会用到这段外观描述。",
+  "After publishing, new images reference this description. Characters with a locked visual identity follow the locked identity and its reference images.": "发布后，新图片会参考这段描述；已锁定视觉身份的角色以锁定的身份和参考图为准。",
   "Fix the highlighted fields to save.": "请先修正标红的字段再保存。",
   "Someone saved a newer version. Reload before saving again.": "已有人保存了更新的版本，请刷新后再保存。",
   "Changes could not be saved": "改动未能保存",

@@ -228,7 +228,7 @@ function SoulEditor({
         </div>
 
         <h3 className="mt-8 text-lg font-semibold">{t("Appearance")}</h3>
-        <p className="mt-1 text-sm text-[var(--ad-text-muted)]">{t("Every new image of this Character is generated from this description.")}</p>
+        <p className="mt-1 text-sm text-[var(--ad-text-muted)]">{t("After publishing, new images reference this description. Characters with a locked visual identity follow the locked identity and its reference images.")}</p>
         <div className="mt-4 grid gap-5 lg:grid-cols-2">
           <Area name="identityAnchor" error={fieldErrors.identityAnchor} label={t("Identity anchor")} value={visual.identityAnchor} onChange={(value) => setVisual({ identityAnchor: value })} />
           <Area name="stableTraits" error={fieldErrors.stableTraits} label={t("Stable traits (one per line)")} value={visual.stableTraits} onChange={(value) => setVisual({ stableTraits: value })} />

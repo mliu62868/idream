@@ -5,6 +5,7 @@ import type {
 import { loadCharacterSoulSnapshot } from "@idream/shared";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
+import { assertNoCandidateRelease } from "./candidate-release-guard";
 import { Errors } from "@/server/lib/errors";
 import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { operationalCharacterWhere } from "@/server/modules/metric-data-scope";
@@ -206,6 +207,13 @@ export async function updateCharacterProjectDraft(input: {
       where: { characterId: input.characterId },
     });
     if (!project) throw Errors.notFound("Character Project not found");
+    if (input.content) {
+      await assertNoCandidateRelease(tx, {
+        projectId: project.id,
+        characterId: input.characterId,
+        message: "Publish or discard the candidate Character Release before editing the draft",
+      });
+    }
     const currentRouteFingerprint = null;
     const changed = await tx.characterProject.updateMany({
       where: { id: project.id, version: input.expectedVersion },

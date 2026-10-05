@@ -111,4 +111,25 @@ describe("Character authoring content invariants", () => {
     expect(await prisma.controlPlaneCommand.count({ where: { actorId } })).toBe(0);
     expect(await prisma.moderationEvent.count({ where: { targetId: characterId, status: "blocked" } })).toBeGreaterThanOrEqual(2);
   });
+  it("rejects a Project content PATCH while a candidate Release pins the draft", async () => {
+    const { project, content } = await authority();
+    const revision = await prisma.characterRevision.findFirstOrThrow({ where: { projectId: project.id }, orderBy: { revision: "desc" } });
+    const candidate = await prisma.characterRelease.create({ data: {
+      projectId: project.id, revisionId: revision.id, characterContentVersionId: content.id,
+      generationProvenance: {}, releasePlacementManifest: {}, snapshotHash: `authoring-candidate-${suffix}`,
+    } });
+    try {
+      const response = await saveProject(request("PATCH", "project", project.version, {
+        entityVersion: project.version, content: { persona: { ...persona, name: "Behind the candidate" }, visualDirection: direction },
+        reason: "Edit beside a pending candidate",
+      }), { params: Promise.resolve({ id: characterId }) });
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ error: { details: {
+        releaseId: candidate.id, deepLink: `/admin/characters/${characterId}?tab=release`,
+      } } });
+      expect(await authority()).toEqual({ project, content });
+    } finally {
+      await prisma.characterRelease.delete({ where: { id: candidate.id } });
+    }
+  });
 });
