@@ -53,6 +53,7 @@ const releaseCheckLabels: Record<string, string> = {
   revision_is_immutable_and_pinned: "Pinned immutable revision",
   soul_snapshot_valid: "Soul snapshot",
   soul_release_policy: "Soul release policy",
+  companion_product_contract: "Companion product contract",
   opening_complete: "Opening message",
   visual_identity_exact_version: "Visual identity version",
   reference_set_published_snapshot: "Published reference set",
@@ -69,11 +70,13 @@ export function characterReleaseCheckLabel(checkKey: string) {
   return releaseCheckLabels[checkKey] ?? checkKey.replaceAll("_", " ");
 }
 
+// INVARIANT: href null = nothing an operator can fix in the workspace. Never link
+// back to the Release tab itself; that only sends the operator in a circle.
 type ReleaseBlockerGuidance = {
   readonly blocker: string;
   readonly message: string;
-  readonly action: string;
-  readonly href: string;
+  readonly action: string | null;
+  readonly href: string | null;
 };
 
 export function releaseBlockersFromError(cause: unknown): string[] {
@@ -113,6 +116,7 @@ export function releaseBlockerGuidance(
       "release_assets_customer_publishable",
       "release_asset_generation_authority",
       "release_avatar_manifest_available",
+      "approved_avatar_missing",
     ].includes(blocker)
   ) {
     return {
@@ -122,10 +126,16 @@ export function releaseBlockerGuidance(
       href: `${base}?tab=assets`,
     };
   }
-  if (["opening_complete", "soul_snapshot_valid", "soul_release_policy"].includes(blocker)) {
+  const soulMessages: Record<string, string> = {
+    soul_snapshot_valid: "The Character Soul does not compile. Fix it before publishing.",
+    soul_release_policy: "Clear every Character Soul diagnostic before publishing. Warnings block too.",
+    opening_complete: "Add an opening message before publishing.",
+    revision_missing: "Complete the Character Soul and opening message before publishing.",
+  };
+  if (soulMessages[blocker]) {
     return {
       blocker,
-      message: "Complete the Character Soul and opening message before publishing.",
+      message: soulMessages[blocker],
       action: "Open Character Soul",
       href: `${base}?tab=soul`,
     };
@@ -141,6 +151,12 @@ export function releaseBlockerGuidance(
       "active_reference_set_missing_or_empty",
       "active_reference_set_hash_invalid",
       "qualified_generation_route_missing",
+      "release_generation_authority_kind",
+      "visual_identity_missing",
+      "reference_set_not_active",
+      "reference_assets_unavailable",
+      "generation_route_unqualified",
+      "generation_route_stale",
     ].includes(blocker)
   ) {
     return {
@@ -150,24 +166,76 @@ export function releaseBlockerGuidance(
       href: `${base}?tab=visual`,
     };
   }
+  if (
+    [
+      "character_missing",
+      "project_missing",
+      "companion_product_contract",
+      "snapshot_hash_matches",
+    ].includes(blocker)
+  ) {
+    return {
+      blocker,
+      message: "Platform issue. Engineering must resolve it before this Character can be published.",
+      action: null,
+      href: null,
+    };
+  }
   return {
     blocker,
-    message: "Refresh the Character and resolve this release check before publishing.",
-    action: "Review release checks",
-    href: `${base}?tab=release`,
+    message: "Unrecognized release check. Share this code with engineering.",
+    action: null,
+    href: null,
   };
 }
 
+// Visual readiness codes that also fail a release check (visual identity, reference
+// set, qualified route). Anchor and trait completeness only gate image generation.
+const releaseBlockingVisualCodes = [
+  "visual_identity_missing",
+  "reference_set_not_active",
+  "reference_assets_unavailable",
+  "generation_route_unqualified",
+  "generation_route_stale",
+];
+
+// SPEC: every release check the workspace can predict, so publishing is blocked
+// before a candidate is created instead of after a 409.
+// INTENT: mirrors release-validation.ts. soul_release_policy fails on any
+// diagnostic, warnings included. Its legacy exemption only applies to imported
+// legacy Releases, never to one created here.
 export function characterReleaseDraftBlockers(
   data: CharacterWorkspaceDetail,
 ): string[] {
+  const blockers: string[] = [];
+  if (!data.soul.valid) blockers.push("soul_snapshot_valid");
+  else if (
+    data.soul.current.schemaVersion !== 3 ||
+    data.soul.current.diagnostics.length > 0
+  ) {
+    blockers.push("soul_release_policy");
+  }
+  const firstMessage = data.preview.draft.opening.firstMessage;
+  if (typeof firstMessage !== "string" || firstMessage.trim() === "") {
+    blockers.push("opening_complete");
+  }
   if (
     !data.project.draftAssetRouteAuthority.releaseReady ||
     !data.preview.draft.assetPackReady
   ) {
-    return ["release_asset_manifest_available"];
+    blockers.push("release_asset_manifest_available");
   }
-  return [];
+  for (const { code } of data.visual.readiness.blockers) {
+    if (releaseBlockingVisualCodes.includes(code)) blockers.push(code);
+  }
+  if (
+    data.project.draftAssetRouteAuthority.releaseBlockers.includes(
+      "qualified_generation_route_missing",
+    )
+  ) {
+    blockers.push("qualified_generation_route_missing");
+  }
+  return blockers;
 }
 
 function ReleaseSummary({
@@ -196,7 +264,13 @@ function ReleaseSummary({
         <StatusBadge value={release.status} />
         {!historical ? <StatusBadge value={release.readiness} /> : null}
         {serving ? <StatusBadge tone="good" value="serving now" /> : null}
+        {release.legacy ? <StatusBadge tone="neutral" value="Legacy release" /> : null}
       </div>
+      {release.legacy ? (
+        <p className="mt-2 text-xs text-[var(--ad-text-muted)]">
+          {t("Historical editorial release with no automatic release check record. Publishing again runs the full checks.")}
+        </p>
+      ) : null}
       {checks.length > 0 ? (
         <details className="mt-3 border-t border-[var(--ad-border)] pt-3">
           <summary className="cursor-pointer text-xs font-semibold">
@@ -277,9 +351,16 @@ export function ReleasePanel({
   const [reason, setReason] = useState("");
   const [selectedRollbackSourceId, setSelectedRollbackSourceId] = useState("");
   const [releaseConfirmed, setReleaseConfirmed] = useState(false);
+  const [retireAcknowledged, setRetireAcknowledged] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<CharacterCommandMessage | null>(null);
-  const [authorityBlockers, setAuthorityBlockers] = useState<string[]>([]);
+  // INTENT: server blockers describe the workspace they were returned for. A
+  // refreshed workspace is new evidence, so they drop instead of sticking around.
+  const [authority, setAuthority] = useState<{
+    readonly data: CharacterWorkspaceDetail;
+    readonly blockers: string[];
+  } | null>(null);
+  const authorityBlockers = authority?.data === data ? authority.blockers : [];
 
   const submitCommand = async (
     kind: "publish" | "rollback" | "withdraw",
@@ -328,7 +409,7 @@ export function ReleasePanel({
   const publishCharacter = async () => {
     setBusy("publish");
     setError(null);
-    setAuthorityBlockers([]);
+    setAuthority(null);
     try {
       const releaseRef = candidate
         ? { id: candidate.release.id, version: candidate.release.version }
@@ -349,7 +430,7 @@ export function ReleasePanel({
       await submitCommand("publish", releaseRef);
     } catch (cause) {
       const blockers = releaseBlockersFromError(cause);
-      if (blockers.length > 0) setAuthorityBlockers(blockers);
+      if (blockers.length > 0) setAuthority({ data, blockers });
       else {
         setError(
           cause instanceof Error
@@ -404,6 +485,7 @@ export function ReleasePanel({
       });
       if (outcome.kind === "accepted") {
         setReleaseConfirmed(false);
+        setRetireAcknowledged(false);
         return;
       }
       setError(commandSubmissionMessage(outcome, `Serving ${action}`));
@@ -463,11 +545,27 @@ export function ReleasePanel({
     ({ release }) => release.id === rollbackSourceId,
   );
   const noUnpublishedChanges = characterHasNoUnpublishedChanges(data);
-  const draftBlockers = characterReleaseDraftBlockers(data);
+  const draftBlockers = candidate || noUnpublishedChanges
+    ? []
+    : characterReleaseDraftBlockers(data);
+  // Server blockers stay visible but never hide or disable Publish: the next
+  // attempt is re-validated by the server anyway.
   const blockers = [...new Set([...draftBlockers, ...authorityBlockers])];
+  const blockerGuidance = [
+    ...new Map(
+      blockers.map((blocker) => {
+        const guidance = releaseBlockerGuidance(blocker, data.character.id);
+        return [`${guidance.message}|${guidance.href}`, guidance] as const;
+      }),
+    ).values(),
+  ];
   const canPublish =
     data.serving?.state !== "retired" &&
-    (Boolean(candidate) || (!noUnpublishedChanges && blockers.length === 0));
+    (Boolean(candidate) || !noUnpublishedChanges);
+  // characterReleaseCreateRequestSchema requires 3+ characters; empty uses the default.
+  const reasonTooShort = !candidate && reason.trim().length > 0 && reason.trim().length < 3;
+  const retireIsPermanent =
+    data.serving?.state === "live" || data.serving?.state === "paused";
   const confirmationVisible = characterReleaseConfirmationVisible({
     hasRollbackSource: rollbackSources.length > 0,
     servingState: data.serving?.state ?? null,
@@ -478,7 +576,7 @@ export function ReleasePanel({
       <div className="space-y-5">
         {data.releases.length === 0 ? (
           <EmptyState
-            hint={canPublish
+            hint={canPublish && draftBlockers.length === 0
               ? "Publish the current Character to create the first release."
               : "Complete the release requirements shown here before creating the first release."}
             title={t("No Character releases yet")}
@@ -552,25 +650,24 @@ export function ReleasePanel({
           <p className="mt-3 text-sm text-[var(--ad-text-muted)]">
             {t("Live and draft are identical. There is nothing to release.")}
           </p>
-        ) : blockers.length > 0 && !candidate ? (
-          <div className="mt-3 space-y-3 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]">
-            {blockers.map((blocker) => {
-              const guidance = releaseBlockerGuidance(
-                blocker,
-                data.character.id,
-              );
-              return (
-                <div key={blocker}>
-                  <p>{t(guidance.message)}</p>
+        ) : null}
+        {blockerGuidance.length > 0 ? (
+          <div className="mt-3 space-y-3 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]" data-testid="release-blockers">
+            {blockerGuidance.map((guidance) => (
+              <div key={`${guidance.message}|${guidance.href}`}>
+                <p>{t(guidance.message)}</p>
+                {guidance.href && guidance.action ? (
                   <Link
                     className="mt-1 inline-flex font-semibold underline"
                     href={guidance.href}
                   >
                     {t(guidance.action)}
                   </Link>
-                </div>
-              );
-            })}
+                ) : (
+                  <code className="mt-1 block break-all text-xs">{guidance.blocker}</code>
+                )}
+              </div>
+            ))}
           </div>
         ) : null}
 
@@ -586,7 +683,9 @@ export function ReleasePanel({
             disabled={
               !permissions.publishRelease ||
               Boolean(busy) ||
-              writesLocked
+              writesLocked ||
+              draftBlockers.length > 0 ||
+              reasonTooShort
             }
             onClick={() => void publishCharacter()}
             tone="primary"
@@ -622,6 +721,11 @@ export function ReleasePanel({
                   value={reason}
                 />
               </label>
+              {reasonTooShort ? (
+                <p className="mt-1 text-xs text-[var(--ad-red-text)]" role="alert">
+                  {t("Reason must be at least 3 characters, or leave it empty to use the default.")}
+                </p>
+              ) : null}
               <label className="mt-4 flex items-start gap-2 text-xs font-semibold">
                 <input
                   checked={releaseConfirmed}
@@ -682,13 +786,32 @@ export function ReleasePanel({
               </>
             ) : null}
             {data.serving && ["inactive", "live", "paused"].includes(data.serving.state) ? (
-              <WorkspaceButton
-                disabled={!permissions.publishRelease || !releaseConfirmed || Boolean(busy) || writesLocked}
-                onClick={() => void servingCommand("retire")}
-                tone="danger"
-              >
-                {t(data.serving.state === "inactive" ? "Archive draft" : "Retire Character")}
-              </WorkspaceButton>
+              <>
+                {/* INTENT: retiring a published Character cannot be undone (no
+                    restore, no rollback, no new release), unlike Pause. An
+                    inactive draft is archived instead and can be restored. */}
+                {retireIsPermanent ? (
+                  <div className="rounded-md bg-[var(--ad-red-bg)] p-3 text-xs text-[var(--ad-red-text)]">
+                    <p>{t("Retiring is permanent. The Character can never be published or rolled back again. Use Pause serving to take it offline temporarily.")}</p>
+                    <label className="mt-2 flex items-start gap-2 font-semibold">
+                      <input
+                        checked={retireAcknowledged}
+                        className="mt-0.5 h-4 w-4"
+                        onChange={(event) => setRetireAcknowledged(event.target.checked)}
+                        type="checkbox"
+                      />
+                      <span>{t("I understand retiring cannot be undone")}</span>
+                    </label>
+                  </div>
+                ) : null}
+                <WorkspaceButton
+                  disabled={!permissions.publishRelease || !releaseConfirmed || (retireIsPermanent && !retireAcknowledged) || Boolean(busy) || writesLocked}
+                  onClick={() => void servingCommand("retire")}
+                  tone="danger"
+                >
+                  {t(data.serving.state === "inactive" ? "Archive draft" : "Retire Character")}
+                </WorkspaceButton>
+              </>
             ) : null}
             {data.serving?.state === "retired" && data.serving.currentReleaseId === null ? (
               <>

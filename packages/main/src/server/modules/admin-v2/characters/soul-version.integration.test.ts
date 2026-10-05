@@ -342,6 +342,32 @@ describe("Character Soul version authority", () => {
     });
   });
 
+  it("rejects a Soul edit while a candidate Release pins the draft, like image placement does", async () => {
+    const current = await prisma.characterContentVersion.findFirstOrThrow({ where: { characterId }, orderBy: { version: "desc" } });
+    const loaded = loadCharacterSoulSnapshot(current.personaSnapshot);
+    if (!loaded.ok) throw new Error("fixture must have a valid Soul");
+    const project = await prisma.characterProject.findUniqueOrThrow({ where: { id: projectId } });
+    const revision = await prisma.characterRevision.findFirstOrThrow({ where: { projectId }, orderBy: { revision: "desc" } });
+    const candidate = await prisma.characterRelease.create({ data: {
+      projectId, revisionId: revision.id, characterContentVersionId: current.id,
+      generationProvenance: {}, releasePlacementManifest: {}, snapshotHash: `soul-version-candidate-${suffix}`,
+    } });
+    try {
+      await expect(createCharacterSoulVersion({
+        characterId, expectedProjectVersion: project.version, expectedContentVersionId: current.id,
+        actor: { id: actorId, role: "admin" },
+        persona: { ...loaded.snapshot.soul, firstMessage: "Pinned opening.", characterPromise: "Edited behind a pending candidate." },
+        requestId: `candidate-soul-${suffix}`,
+      })).rejects.toMatchObject({
+        code: "conflict",
+        details: { releaseId: candidate.id, status: "approved", deepLink: `/admin/characters/${characterId}?tab=release` },
+      });
+      expect(await prisma.characterContentVersion.count({ where: { characterId } })).toBe(current.version);
+    } finally {
+      await prisma.characterRelease.delete({ where: { id: candidate.id } });
+    }
+  });
+
   it("excludes removed characters before counting and paginating", async () => {
     const baseline = await listCharacterPortfolioData(prisma, characterPortfolioQuerySchema.parse({ includePerformance: false }));
     const removedId = `removed-portfolio-${suffix}`;

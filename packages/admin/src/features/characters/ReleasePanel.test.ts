@@ -144,9 +144,43 @@ describe("Character release panel", () => {
         },
         draftAssetRouteAuthority: { releaseReady: true },
       },
-      preview: { draft: { assetPackReady: true } },
+      preview: { draft: { assetPackReady: true, opening: { firstMessage: "You made it." } } },
     });
 
     expect(characterReleaseDraftBlockers(data)).toEqual([]);
+  });
+
+  it("predicts every release check the workspace can see", () => {
+    const blockers = (overrides: Parameters<typeof characterWorkspaceDetail>[0]) =>
+      characterReleaseDraftBlockers(characterWorkspaceDetail({
+        project: { draftAssetRouteAuthority: { releaseReady: true } },
+        preview: { draft: { assetPackReady: true, opening: { firstMessage: "Hi." } } },
+        ...overrides,
+      }));
+    const visualBlocker = (code: string) => ({ code, message: code, deepLink: "/admin/characters/character-fixture?tab=visual" });
+
+    expect(blockers({})).toEqual([]);
+    expect(blockers({ soul: { valid: false } })).toEqual(["soul_snapshot_valid"]);
+    // Warnings fail soul_release_policy too; the backend does not filter by severity.
+    expect(blockers({ soul: { current: { diagnostics: [{ code: "w", path: [], severity: "warning", message: "w" }] } } }))
+      .toEqual(["soul_release_policy"]);
+    expect(blockers({ soul: { current: { schemaVersion: 2 } } })).toEqual(["soul_release_policy"]);
+    expect(blockers({ preview: { draft: { assetPackReady: true, opening: { firstMessage: "  " } } } })).toEqual(["opening_complete"]);
+    expect(blockers({ visual: { readiness: { blockers: [
+      visualBlocker("reference_set_not_active"), visualBlocker("generation_route_stale"), visualBlocker("visual_traits_incomplete"),
+    ] } } })).toEqual(["reference_set_not_active", "generation_route_stale"]);
+    expect(blockers({ project: { draftAssetRouteAuthority: { releaseReady: true, releaseBlockers: ["qualified_generation_route_missing"] } } }))
+      .toEqual(["qualified_generation_route_missing"]);
+  });
+
+  it("routes every proposal blocker code to its fix, never back to the release tab", () => {
+    const href = (blocker: string) => releaseBlockerGuidance(blocker, "c1").href;
+    expect(href("approved_avatar_missing")).toBe("/admin/characters/c1?tab=assets");
+    expect(href("revision_missing")).toBe("/admin/characters/c1?tab=soul");
+    expect(href("release_generation_authority_kind")).toBe("/admin/characters/c1?tab=visual");
+    for (const blocker of ["character_missing", "project_missing", "companion_product_contract", "snapshot_hash_matches", "something_new"]) {
+      expect(releaseBlockerGuidance(blocker, "c1")).toMatchObject({ href: null, action: null });
+    }
+    expect(characterReleaseCheckLabel("companion_product_contract")).toBe("Companion product contract");
   });
 });

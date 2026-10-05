@@ -8,6 +8,7 @@ import { Errors } from "@/server/lib/errors";
 import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { operationalCharacterWhere } from "@/server/modules/metric-data-scope";
+import { characterWorkspaceTabLink } from "./character-deep-link";
 import { lockCharacterGenerationAuthority } from "./generation-authority-lock";
 import { characterContentModerationText, characterSoulVersionSnapshots } from "./draft-content";
 import { moderateText } from "@/server/moderation/text-authority";
@@ -66,6 +67,23 @@ export async function createCharacterSoulVersion(input: {
         projectVersion: project.version,
         contentVersionId: currentContent.id,
       });
+    }
+    // INVARIANT: same gate as image placement (asset-studio) and Visual Identity
+    // versions. A candidate pins its revision; a newer Soul would never ship with
+    // it, and the editor reads the candidate's opening/appearance as its baseline.
+    const candidateRelease = await tx.characterRelease.findFirst({
+      where: { projectId: project.id, status: "approved" },
+      select: { id: true, status: true },
+    });
+    if (candidateRelease) {
+      throw Errors.conflict(
+        "Publish or discard the candidate Character Release before editing the Soul",
+        {
+          releaseId: candidateRelease.id,
+          status: candidateRelease.status,
+          deepLink: characterWorkspaceTabLink(input.characterId, "release"),
+        },
+      );
     }
     const latestRevision = await tx.characterRevision.findFirst({
       where: { projectId: project.id },

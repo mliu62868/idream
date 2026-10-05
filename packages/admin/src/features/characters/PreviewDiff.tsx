@@ -88,18 +88,31 @@ export function PreviewDiff({ data }: { data: CharacterWorkspaceDetail }) {
       "draft_asset_generation_route_stale",
     );
   if (characterHasNoUnpublishedChanges(data)) {
+    // INTENT: nothing to compare, but operators still need to see what customers see.
+    const liveRenderUrl = data.preview.live?.renderUrl ?? null;
     return (
-      <section
-        className="border-y border-[var(--ad-border)] py-5"
-        role="status"
-      >
-        <h2 className="font-semibold">{t("Live and draft are identical")}</h2>
-        <p className="mt-1 text-sm leading-6 text-[var(--ad-text-muted)]">
-          {t(
-            "There are no unpublished changes. Nothing needs review or release.",
-          )}
-        </p>
-      </section>
+      <div className="space-y-5">
+        <section
+          className="border-y border-[var(--ad-border)] py-5"
+          role="status"
+        >
+          <h2 className="font-semibold">{t("Live and draft are identical")}</h2>
+          <p className="mt-1 text-sm leading-6 text-[var(--ad-text-muted)]">
+            {t(
+              "There are no unpublished changes. Nothing needs review or release.",
+            )}
+          </p>
+        </section>
+        {liveRenderUrl ? (
+          <iframe
+            className="h-[760px] w-full rounded-xl border border-[var(--ad-border)] bg-[rgb(13,13,13)]"
+            loading="lazy"
+            sandbox="allow-scripts allow-same-origin"
+            src={liveRenderUrl}
+            title={t("{label} real frontend renderer", { label: t("Live") })}
+          />
+        ) : null}
+      </div>
     );
   }
   if (!previewReady) {

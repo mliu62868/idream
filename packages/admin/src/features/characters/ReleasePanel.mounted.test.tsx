@@ -6,7 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AdminI18nProvider } from "@/components/admin/i18n";
 import { createCharacterCommandJournal } from "./character-command-journal";
-import { characterWorkspaceDetail } from "./character-workspace-fixture";
+import { characterWorkspaceDetail, withCharacterWorkspaceDetail } from "./character-workspace-fixture";
 import { characterWorkspacePermissions } from "./character-workspace-permissions";
 import { ReleasePanel } from "./ReleasePanel";
 import * as transport from "@/lib/admin-v2-api";
@@ -34,7 +34,7 @@ function readyCharacter() {
         character_chat: selection("chat"),
       },
     },
-    preview: { draft: { assetPackReady: true } },
+    preview: { draft: { assetPackReady: true, opening: { firstMessage: "You made it." } } },
   });
 }
 
@@ -166,6 +166,14 @@ describe("Character release history empty state", () => {
     expect(button).toBeDefined();
     expect(button.disabled).toBe(true);
     await act(async () => container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
+    if (state === "paused") {
+      // Retiring a published Character is permanent and needs its own acknowledgement.
+      expect(container.textContent).toContain("停用不可撤销");
+      expect(button.disabled).toBe(true);
+      await act(async () => container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')[1]!.click());
+    } else {
+      expect(container.textContent).not.toContain("停用不可撤销");
+    }
     expect(button.disabled).toBe(false);
     await act(async () => button.click());
     expect(request).toHaveBeenCalledWith("/api/v2/admin/characters/character-fixture/commands/retire", expect.objectContaining({ body: expect.objectContaining({ entityVersion: 9, confirmation: "character-fixture:retire" }) }));
@@ -221,7 +229,59 @@ describe("Character release history empty state", () => {
     expect(container.textContent).not.toContain("发布当前角色即可创建首个版本。");
     expect(container.textContent).not.toContain("事故或工单");
     expect(container.querySelector('a[href="/admin/characters/character-fixture?tab=assets"]')).not.toBeNull();
-    expect(publishButton()).toBeUndefined();
+    expect(container.querySelector('a[href="/admin/characters/character-fixture?tab=soul"]')).not.toBeNull();
+    expect(publishButton()?.disabled).toBe(true);
+  });
+
+  it("keeps Publish usable after a 409 and drops the server blockers once the workspace refreshes", async () => {
+    const data = readyCharacter();
+    vi.spyOn(transport, "adminV2Request").mockRejectedValue(new transport.AdminV2RequestError(
+      "Character is not ready to publish", 409, "conflict", { blockers: ["approved_avatar_missing", "snapshot_hash_matches"] },
+    ));
+    await render(data);
+    await act(async () => publishButton()!.click());
+    const blockers = container.querySelector('[data-testid="release-blockers"]');
+    expect(blockers?.querySelector('a[href="/admin/characters/character-fixture?tab=assets"]')).not.toBeNull();
+    expect(blockers?.textContent).toContain("snapshot_hash_matches");
+    expect(container.querySelector('a[href*="tab=release"]')).toBeNull();
+    expect(publishButton()?.disabled).toBe(false);
+
+    await render(withCharacterWorkspaceDetail(data, { project: { version: data.project.version + 1 } }));
+    expect(container.querySelector('[data-testid="release-blockers"]')).toBeNull();
+    expect(publishButton()?.disabled).toBe(false);
+  });
+
+  it("refuses a 1-2 character reason before the server rejects it", async () => {
+    const stamp = "2026-09-05T00:00:00.000Z";
+    await render(withCharacterWorkspaceDetail(readyCharacter(), {
+      serving: { characterId: "character-fixture", state: "live", currentReleaseId: "live-release", version: 5, updatedAt: stamp },
+      preview: { changedFields: ["persona"] },
+    }));
+    const reason = container.querySelector("textarea")!;
+    const type = async (value: string) => act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(reason, value);
+      reason.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await type("ok");
+    expect(publishButton()?.disabled).toBe(true);
+    expect(container.textContent).toContain("理由至少 3 个字符");
+    await type("");
+    expect(publishButton()?.disabled).toBe(false);
+  });
+
+  it("marks a legacy Release and explains it has no automatic check record", async () => {
+    const stamp = "2026-09-05T00:00:00.000Z";
+    await render(characterWorkspaceDetail({
+      serving: { characterId: "character-fixture", state: "live", currentReleaseId: "legacy-release", version: 5, updatedAt: stamp },
+      releases: [{ release: {
+        id: "legacy-release", projectId: "project-fixture", revisionId: "revision-fixture", characterContentVersionId: "content-fixture",
+        visualProfileId: null, visualProfileVersion: null, referenceSetRevisionId: null, generationProvenance: {}, releasePlacementManifest: {},
+        snapshotHash: "snapshot", readiness: "ready", status: "published", legacy: true, publishedAt: null,
+        supersedesId: null, rollbackOfReleaseId: null, version: 1, createdAt: stamp, updatedAt: stamp,
+      }, checks: [], monitors: [] }],
+    }));
+    expect(container.textContent).toContain("历史版本");
+    expect(container.textContent).toContain("重新发布会走完整检查");
   });
 
   it("keeps the publish action disabled without release permission", async () => {

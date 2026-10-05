@@ -163,6 +163,11 @@ function SoulEditor({
   };
 
   const releaseHref = `/admin/characters/${encodeURIComponent(data.character.id)}?tab=release`;
+  // INVARIANT: a pending candidate pins this draft and the server refuses a new
+  // Soul version (409) until it is published or discarded; the form also reads the
+  // candidate's opening and appearance, so saving now would silently roll them back.
+  const candidatePending = data.journey.release.candidateReleaseId !== null ||
+    data.releases.some(({ release }) => release.status === "approved");
   const unpublishedNotice = data.preview.live === null
     ? t(characterHasPublishedRelease(data)
       ? "This character has a published version but is currently offline."
@@ -173,6 +178,11 @@ function SoulEditor({
 
   return (
     <div className="space-y-5">
+      {candidatePending ? <div className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-[var(--ad-yellow-bg)] px-4 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">
+        <span>{t("A candidate release is waiting. Publish or discard it before editing the character.")}</span>
+        <Link className="min-h-9 content-center font-semibold underline" href={releaseHref}>{t("Go to Release")}</Link>
+      </div> : null}
+
       {dirty ? <div className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-[var(--ad-yellow-bg)] px-4 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">
         <span>{t(stale ? "Draft is based on an older version. Copy or discard it." : "Unsaved draft · kept in this tab")}</span>
         <button className="min-h-9 underline" disabled={busy} onClick={() => setDiscardOpen(true)} type="button">{t("Discard draft")}</button>
@@ -184,6 +194,7 @@ function SoulEditor({
       {data.soul.current.diagnostics.length > 0 ? (
         <section className="rounded-lg border border-[var(--ad-yellow-text)] bg-[var(--ad-yellow-bg)] p-4">
           <h3 className="font-semibold text-[var(--ad-yellow-text)]">{t("Compiler diagnostics")}</h3>
+          <p className="mt-1 text-sm text-[var(--ad-yellow-text)]">{t("Publishing stays blocked until every item below is cleared, warnings included.")}</p>
           <ul className="mt-2 space-y-2 text-sm text-[var(--ad-yellow-text)]">
             {data.soul.current.diagnostics.map((item) => (
               <li key={`${item.code}:${item.path.join(".")}`}>
@@ -242,7 +253,7 @@ function SoulEditor({
         </div> : null}
         <div className="sticky bottom-0 z-10 mt-5 flex items-center justify-between gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3">
           <p className="text-xs text-[var(--ad-text-muted)]">{t("Saved changes stay private until you publish the character.")}</p>
-          <WorkspaceButton disabled={!canWrite || busy || stale || !dirty} onClick={() => void save()} tone="primary">
+          <WorkspaceButton disabled={!canWrite || busy || stale || !dirty || candidatePending} onClick={() => void save()} tone="primary">
             {busy ? t("Saving…") : t("Save")}
           </WorkspaceButton>
         </div>
