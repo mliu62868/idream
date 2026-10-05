@@ -140,6 +140,21 @@ export function resolveCharacterPortfolioPrimaryAction(
     };
   }
   if (item.journey.status === "blocked") return journeyAction;
+  // INTENT: a paused Character with nothing new to publish has one decision left —
+  //         resume or keep it hidden — and that control lives under Release.
+  if (
+    item.serving.state === "paused" &&
+    item.journey.primaryAction.code === "monitor_live_character"
+  ) {
+    return {
+      description:
+        "Customers cannot open this paused character. Resume it or keep it hidden under Release availability.",
+      eyebrow: "Paused character",
+      href: `/admin/characters/${encodeURIComponent(item.characterId)}?tab=release`,
+      label: "Review paused character",
+      requiresAssets: false,
+    };
+  }
   if (item.readiness === "blocked") {
     return {
       description:

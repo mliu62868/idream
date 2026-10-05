@@ -314,13 +314,14 @@ export function projectCharacterProductionJourneySnapshot(input: {
       stage = "publishing";
       status = "ready";
     } else if (
-      liveNow &&
+      (liveNow || input.servingState === "paused") &&
       !input.pendingRevision &&
       (draft.completed === 0 || input.draftPackMatchesLive === true)
     ) {
       // SPEC: publishing leaves the draft pack in place, so a live Character whose
       // draft pack is empty or equals the live pack, with no newer Revision, has
       // nothing to preview; an unpublished Revision always goes back to Preview.
+      // A paused Character keeps its Release, so the same holds for it.
       primaryAction = {
         code: "monitor_live_character",
         deepLink: tabLink("monitor"),

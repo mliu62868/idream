@@ -287,6 +287,8 @@ describe("Character Production Journey", () => {
     };
     expect(journey({ ...live, draftPackMatchesLive: true }).primaryAction.code)
       .toBe("monitor_live_character");
+    expect(journey({ ...live, servingState: "paused", draftPackMatchesLive: true }).primaryAction.code)
+      .toBe("monitor_live_character");
     expect(journey({ ...live, draftPackMatchesLive: false }).primaryAction.code)
       .toBe("preview_character");
     expect(journey({

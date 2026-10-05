@@ -161,6 +161,9 @@ describe("Character Portfolio card", () => {
     expect(resolveCharacterPortfolioPrimaryAction(retired)).toMatchObject({ label: "Review retired character", requiresAssets: false });
     const paused = { ...item, serving: { ...item.serving, state: "paused" as const }, journey: journey("monitor_live_character", "live_operations", "/admin/characters/character-1?tab=monitor") };
     expect(characterPortfolioState(paused).label).toBe("Paused");
+    expect(resolveCharacterPortfolioPrimaryAction(paused)).toMatchObject({
+      label: "Review paused character", href: "/admin/characters/character-1?tab=release",
+    });
   });
 
   it("keeps long Character names readable instead of visually truncating them", () => {

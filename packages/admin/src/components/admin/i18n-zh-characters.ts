@@ -1861,4 +1861,7 @@ export const adminZhCharacters: Record<string, string> = {
     "图片生产未启用：这个角色已在别处被修改。请刷新页面后重试。",
   "Image production preparation could not be confirmed. Refresh the page to check whether it was applied before trying again.":
     "无法确认图片生产是否已启用。请先刷新页面核对是否已生效，再决定是否重试。",
+  "Customers cannot open this paused character. Resume it or keep it hidden under Release availability.": "暂停期间用户无法打开这个角色。可在「发布」的角色可用性里恢复上线或继续隐藏。",
+  "Paused character": "已暂停角色",
+  "Review paused character": "处理已暂停角色",
 };
