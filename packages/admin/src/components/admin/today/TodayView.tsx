@@ -207,6 +207,10 @@ export function TodayView({ data, onPreferenceChanged, workMode }: { data: Today
               <TodayFilter label="Owner" onChange={(value) => updateFilter({ owner: value as TodayUrlState["owner"] })} value={urlState.owner} values={["mine", "unassigned", "any"]} />
               <StatusFilter domain={urlState.domain} onChange={(value) => updateFilter({ status: value as TodayUrlState["status"] })} value={urlState.status} />
               <TodayFilter label="Environment" onChange={(value) => updateFilter({ environment: value as TodayUrlState["environment"] })} value={urlState.environment} values={["production", "staging", "development", "test"]} />
+              <label className="flex min-h-10 items-center gap-2 text-sm">
+                <input checked={urlState.includeSnoozed === true} onChange={(event) => updateFilter({ includeSnoozed: event.target.checked ? true : undefined })} type="checkbox" />
+                {t("Include snoozed")}
+              </label>
             </div>
           </details>
           {filters.length > 0 ? (
@@ -374,10 +378,12 @@ const FILTER_LABELS: Record<TodayFilterKey, string> = {
   ownerId: "Owner",
   status: "Status",
   environment: "Environment",
+  includeSnoozed: "Include snoozed",
 };
 
 function FilterChipLabel({ filterKey, value }: { filterKey: TodayFilterKey; value: string }) {
   const { t } = useAdminI18n();
+  if (filterKey === "includeSnoozed") return <span>{t("Include snoozed")}</span>;
   return <span>{t(FILTER_LABELS[filterKey])}: {t(value)}</span>;
 }
 

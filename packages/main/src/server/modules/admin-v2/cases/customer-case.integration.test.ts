@@ -356,6 +356,17 @@ describe("Support and billing Case depth", () => {
       "billing_dispute",
       "support_request",
     ]);
+    const listResponse = await listCustomers(new Request(
+      `http://localhost/api/v2/admin/customers?search=${encodeURIComponent(customerId)}`,
+      { headers },
+    ));
+    const listBody = await listResponse.json();
+    expect(listBody.data.items).toHaveLength(1);
+    expect(listBody.data.items[0].activeCaseCount).toBe(body.data.overview.activeCaseCount);
+    await expect(getCaseDetail(new Request(
+      `http://localhost/api/v2/admin/cases/restricted-review-case-${suffix}`,
+      { headers },
+    ), `restricted-review-case-${suffix}`)).rejects.toMatchObject({ code: "forbidden" });
 
     await prisma.adminUserPermission.create({
       data: {
@@ -370,6 +381,63 @@ describe("Support and billing Case depth", () => {
       `http://localhost/api/v2/admin/customers/${customerId}`,
       { headers },
     ), customerId)).rejects.toMatchObject({ code: "forbidden" });
+  });
+
+  it("counts readable active Cases outside the Customer 360 detail window", async () => {
+    const windowCustomerId = `window-customer-${suffix}`;
+    const windowActorId = `window-support-${suffix}`;
+    const olderActiveId = `window-active-case-${suffix}`;
+    const windowHeaders = { "x-idream-user-id": windowActorId, "x-idream-role": "support" };
+    await prisma.user.createMany({ data: [
+      { id: windowActorId, email: `${windowActorId}@idream.internal`, role: "support", status: "active", dataClass: "internal" },
+      { id: windowCustomerId, email: `${windowCustomerId}@customer.invalid`, role: "user", status: "active", dataClass: "customer" },
+    ] });
+    try {
+      await prisma.adminCase.createMany({ data: [
+        ...Array.from({ length: 100 }, (_, index) => ({
+          id: `window-newer-${index}-${suffix}`,
+          type: "support_request",
+          targetType: "user",
+          targetId: windowCustomerId,
+          caseKey: `window-newer-${index}-${suffix}`,
+          activeKey: adminCaseActiveKey("support_request", "user", windowCustomerId, `window-newer-${index}-${suffix}`),
+          status: "new",
+          priority: "normal",
+          slaDueAt: new Date("2026-10-06T00:00:00.000Z"),
+          updatedAt: new Date("2026-10-05T00:00:00.000Z"),
+        })),
+        {
+          id: olderActiveId,
+          type: "support_request",
+          targetType: "user",
+          targetId: windowCustomerId,
+          caseKey: `window-active-${suffix}`,
+          activeKey: adminCaseActiveKey("support_request", "user", windowCustomerId, `window-active-${suffix}`),
+          status: "waiting",
+          priority: "normal",
+          slaDueAt: new Date("2026-10-06T00:00:00.000Z"),
+          updatedAt: new Date("2026-10-01T00:00:00.000Z"),
+        },
+      ] });
+      const listResponse = await listCustomers(new Request(
+        `http://localhost/api/v2/admin/customers?search=${encodeURIComponent(windowCustomerId)}`,
+        { headers: windowHeaders },
+      ));
+      const detailResponse = await getCustomer360(new Request(
+        `http://localhost/api/v2/admin/customers/${windowCustomerId}`,
+        { headers: windowHeaders },
+      ), windowCustomerId);
+      const listBody = await listResponse.json();
+      const detailBody = await detailResponse.json();
+      expect(listBody.data.items).toHaveLength(1);
+      expect(listBody.data.items[0].activeCaseCount).toBe(101);
+      expect(detailBody.data.cases).toHaveLength(100);
+      expect(detailBody.data.cases.some((item: { id: string }) => item.id === olderActiveId)).toBe(false);
+      expect(detailBody.data.overview.activeCaseCount).toBe(101);
+    } finally {
+      await prisma.adminCase.deleteMany({ where: { targetType: "user", targetId: windowCustomerId } });
+      await prisma.user.deleteMany({ where: { id: { in: [windowActorId, windowCustomerId] } } });
+    }
   });
 
   it("creates a linked recurrence when a terminal Case is outside its reopen window", async () => {

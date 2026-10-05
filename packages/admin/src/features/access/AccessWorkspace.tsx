@@ -152,7 +152,7 @@ export function AccessWorkspace({
   const [query, setQuery] = useState<AccessQuery>(defaultAccessQuery);
   const [draft, setDraft] = useState<AccessQuery>(defaultAccessQuery);
   const [data, setData] = useState<AccessUserListResponse | null>(null);
-  // 游标分页没有页码，只有「上一页用的是哪个游标」。这条轨迹就是 Pagination 的第 N 页。
+  // 游标轨迹保留上一页；只有从首页空游标起算时，轨迹长度才能证明页码。
   const [cursorTrail, setCursorTrail] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -665,7 +665,7 @@ export function AccessWorkspace({
       {data ? (
         <Pagination
           hasNext={Boolean(data.pageInfo.hasNextPage && data.pageInfo.endCursor)}
-          hasPrevious={cursorTrail.length > 0}
+          hasPrevious={Boolean(query.cursor)}
           loading={loading}
           onNext={() => {
             const endCursor = data.pageInfo.endCursor;
@@ -675,7 +675,8 @@ export function AccessWorkspace({
           onPrevious={() =>
             navigate({ ...query, cursor: cursorTrail.at(-1) ?? "" }, "push", cursorTrail.slice(0, -1))
           }
-          page={cursorTrail.length + 1}
+          previousLabel={query.cursor && cursorTrail.length === 0 ? t("Back to first page") : undefined}
+          page={!query.cursor ? 1 : cursorTrail[0] === "" ? cursorTrail.length + 1 : null}
           pageSize={ACCESS_PAGE_SIZE}
           rowCount={users.length}
         />

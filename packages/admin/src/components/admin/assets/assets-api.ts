@@ -183,7 +183,7 @@ export function assetPatchPayload(params: {
   return {
     status: params.status,
     tags: splitTags(params.draft.tags),
-    description: params.draft.description.trim() || undefined,
+    description: params.draft.description.trim(),
     reason: params.reason,
     confirmation: params.id,
   };
@@ -291,12 +291,14 @@ export async function bulkArchiveAssets(params: {
     },
     body: JSON.stringify(payloadBody),
   });
+  // A successful header does not prove that the receipt was delivered. Keep the
+  // original key if reading or decoding the response body fails.
+  const payload = await response.json() as ApiEnvelope<ContentAssetBulkMutationResponse>;
   adminIdempotencyKeyLedger.settle(
     bulkScope,
     bulkKey,
     idempotencyOutcomeOfStatus(response.status),
   );
-  const payload = await response.json() as ApiEnvelope<ContentAssetBulkMutationResponse>;
   if (!payload.ok) {
     throw new AssetBulkArchiveError(
       payload.error.message ?? payload.error.code ?? params.fallbackMessage ?? "Bulk archive failed",

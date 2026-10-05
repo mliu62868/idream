@@ -21,6 +21,7 @@ import { CREATIVE_RUN_ITEM_STATES } from "../shared/state-transition-authority";
 interface ViolationRow {
   id: string;
   total: number;
+  characterId?: string | null;
 }
 
 interface SqlInvariant {
@@ -156,9 +157,10 @@ const sqlChecks: readonly SqlInvariant[] = [
     description: "Current Releases require an exact, non-revoked public qualification",
     evidence: `PublicCatalogQualification plus ReleaseValidationRun snapshotHash + ${CHARACTER_RELEASE_POLICY_VERSION}, or the editorial import policy`,
     query: Prisma.sql`
-      SELECT r.id, count(*) OVER()::int AS total
+      SELECT r.id, c.id AS "characterId", count(*) OVER()::int AS total
       FROM character_serving s
       JOIN character_releases r ON r.id = s."currentReleaseId"
+      LEFT JOIN characters c ON c.id = s."characterId"
       WHERE NOT EXISTS (
         SELECT 1
         FROM public_catalog_qualifications q
@@ -387,9 +389,10 @@ const sqlChecks: readonly SqlInvariant[] = [
     //   isEditorialLegacyVisualProfileProjection 走 TS 读的就是 requiredReleaseRoute，
     //   两处实现同一判据，SQL 这处漂了。
     query: Prisma.sql`
-      SELECT r.id, count(*) OVER()::int AS total
+      SELECT r.id, c.id AS "characterId", count(*) OVER()::int AS total
       FROM character_serving s
       JOIN character_releases r ON r.id = s."currentReleaseId"
+      LEFT JOIN characters c ON c.id = s."characterId"
       WHERE r.legacy = FALSE
       AND NOT EXISTS (
         SELECT 1 FROM generation_route_qualifications q
@@ -1401,12 +1404,18 @@ async function runServingReleaseChecks(db: InvariantDb): Promise<AdminInvariantC
 async function runSqlCheck(db: InvariantDb, check: SqlInvariant): Promise<AdminInvariantCheck> {
   const rows = await db.$queryRaw<ViolationRow[]>(check.query);
   const count = rows[0]?.total ?? 0;
+  // Keep immutable sample evidence separate from the existing Character an operator can repair.
+  // A missing Character stays a violation, with no guessed workspace link.
+  const sampleTargets = rows.flatMap((row) => row.characterId
+    ? [{ sampleId: row.id, characterId: row.characterId }]
+    : []);
   return {
     key: check.key,
     description: check.description,
     status: count === 0 ? "passed" : "failed",
     violationCount: count,
     sampleIds: rows.map((row) => row.id),
+    ...(sampleTargets.length > 0 ? { sampleTargets } : {}),
     evidence: check.evidence,
   };
 }

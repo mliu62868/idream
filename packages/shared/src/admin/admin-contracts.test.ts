@@ -11,6 +11,7 @@ import {
   characterReleaseRollbackCommandRequestSchema,
   characterReleaseSchema,
   caseVerificationRequestSchema,
+  contentCharacterAssistRequestSchema,
   creativeRunSchema,
   creativeReviewDecisionRequestSchema,
   creativePlacementPublishRequestSchema,
@@ -27,6 +28,14 @@ import {
 const now = "2026-07-11T12:00:00.000Z";
 
 describe("Admin API v2 public contracts", () => {
+  it("lets assist callers omit unused name suggestions without changing the legacy request", () => {
+    const seed = "A 30-year-old botanical curator";
+    expect(contentCharacterAssistRequestSchema.parse({ seed })).toEqual({ seed });
+    expect(contentCharacterAssistRequestSchema.parse({ seed, includeNameIdeas: false })).toEqual({ seed, includeNameIdeas: false });
+    expect(contentCharacterAssistRequestSchema.parse({ seed, includeNameIdeas: true })).toEqual({ seed, includeNameIdeas: true });
+    expect(contentCharacterAssistRequestSchema.safeParse({ seed, includeNameIdeas: "false" }).success).toBe(false);
+  });
+
   it("separates new backfill options from persisted Run continuation", () => {
     expect(adminBackfillRequestSchema.parse({})).toEqual({ dryRun: true });
     expect(adminBackfillRequestSchema.parse({ runId: "run_1" })).toEqual({

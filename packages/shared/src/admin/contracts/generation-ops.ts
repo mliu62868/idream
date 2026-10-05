@@ -18,6 +18,7 @@ import {
 } from "./common";
 import { servingRolloutPercentSchema } from "./feature-flags";
 import { generationJobDataScopeSchema } from "./jobs";
+import { adminOverviewWindowQuerySchema } from "./overviews";
 
 /**
  * SPEC: the metric-side operational scope — wider than the user-side one because operational
@@ -825,12 +826,7 @@ export const generationMetricsResponseSchema = z
 // Provider operations rollup
 // ---------------------------------------------------------------------------
 
-export const generationProviderOpsQuerySchema = z
-  .object({
-    from: z.string().trim().min(1).optional(),
-    to: z.string().trim().min(1).optional(),
-  })
-  .strict();
+export const generationProviderOpsQuerySchema = adminOverviewWindowQuerySchema;
 
 export const generationProviderOpsResponseSchema = z
   .object({

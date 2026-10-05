@@ -47,6 +47,7 @@ export async function getGenerationMetrics(request: Request) {
   const windowMs = windowDays * 24 * 60 * 60 * 1000;
   const now = new Date();
   const since = new Date(now.getTime() - windowMs);
+  const currentRange = { gte: since, lt: now };
   // 紧邻的等长上一周期，用来回答「失败率在上升吗」。半开区间，两期不重叠也不留缝。
   const previousSince = new Date(since.getTime() - windowMs);
   const previousRange = { gte: previousSince, lt: since };
@@ -65,25 +66,25 @@ export async function getGenerationMetrics(request: Request) {
   ] = await Promise.all([
     prisma.generationJob.groupBy({
       by: ["profileId", "profileVersion", "status"],
-      where: operationalGenerationJobWhere({ createdAt: { gte: since }, status: COUNTED_STATUS }),
+      where: operationalGenerationJobWhere({ createdAt: currentRange, status: COUNTED_STATUS }),
       _count: { _all: true },
       _sum: { costDreamcoins: true },
     }),
     prisma.generationJob.groupBy({
       by: ["recipeId", "status"],
-      where: operationalGenerationJobWhere({ createdAt: { gte: since }, status: COUNTED_STATUS }),
+      where: operationalGenerationJobWhere({ createdAt: currentRange, status: COUNTED_STATUS }),
       _count: { _all: true },
       _sum: { costDreamcoins: true },
     }),
     prisma.generationJob.groupBy({
       by: ["sourceType", "status"],
-      where: operationalGenerationJobWhere({ createdAt: { gte: since }, status: COUNTED_STATUS }),
+      where: operationalGenerationJobWhere({ createdAt: currentRange, status: COUNTED_STATUS }),
       _count: { _all: true },
       _sum: { costDreamcoins: true },
     }),
     prisma.mediaAssetPlacement.groupBy({
       by: ["slot", "status"],
-      where: operationalMediaAssetPlacementWhere({ createdAt: { gte: since } }),
+      where: operationalMediaAssetPlacementWhere({ createdAt: currentRange }),
       _count: { _all: true },
     }),
     prisma.$queryRaw<Array<{ profileId: string; profileVersion: number | null; avgMs: number | null }>>`
@@ -92,6 +93,7 @@ export async function getGenerationMetrics(request: Request) {
       FROM "generation_jobs" jobs
       JOIN "users" owners ON owners.id = jobs."userId"
       WHERE jobs."createdAt" >= ${since}
+        AND jobs."createdAt" < ${now}
         AND jobs."completedAt" IS NOT NULL
         AND jobs."profileId" IS NOT NULL
         AND owners."dataClass" IN (${OPERATIONAL_USER_DATA_CLASS_SQL})
@@ -106,13 +108,14 @@ export async function getGenerationMetrics(request: Request) {
       FROM "analytics_events"
       WHERE name IN ('placement_impression','placement_click')
         AND "createdAt" >= ${since}
+        AND "createdAt" < ${now}
         AND "dataClass" IN (${OPERATIONAL_EVENT_DATA_CLASS_SQL})
       GROUP BY 1,2
     `,
     prisma.analyticsEvent.count({
       where: operationalAnalyticsEventWhere({
         name: "feed_item_remixed",
-        createdAt: { gte: since },
+        createdAt: currentRange,
       }),
     }),
     prisma.generationJob.groupBy({

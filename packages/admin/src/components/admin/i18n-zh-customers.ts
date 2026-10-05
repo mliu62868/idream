@@ -123,8 +123,13 @@ export const adminZhCustomers: Record<string, string> = {
   "Close case": "关闭工单",
   "Close case detail": "关闭工单详情",
   "Close customer detail": "关闭客户详情",
-  "Close needs a recorded decision first — this case is {status}, not resolved.":
-    "关闭前需要先记录决策 —— 该工单当前是{status}，不是已解决。",
+  "Close needs a recorded decision first.": "关闭前需要先记录决策。",
+  "Attest the recorded outcome manually before closing this case.":
+    "关闭前，请先对已记录的处理结果进行人工自证。",
+  "This case is already closed. Reopen it to continue work.":
+    "该工单已关闭。如需继续处理，请重新打开。",
+  "Close needs this case to be resolved first — current state: {status}.":
+    "关闭前，工单需要先达到已解决状态 —— 当前状态：{status}。",
   "Close needs downstream verification to pass or be explicitly overridden first.":
     "关闭前需要下游验证通过，或被显式覆盖。",
   "Closing is the end of this customer problem. Reopening it later files a new lifecycle entry.":
@@ -165,8 +170,6 @@ export const adminZhCustomers: Record<string, string> = {
   "Escalate": "升级",
   "Every signed delta requires a reason, target confirmation, unique idempotency key, and server-side audit.":
     "每笔有符号变更都需要原因、目标确认、唯一幂等键和服务端审计。",
-  "Everyone using {label} sees this query the next time they open it. The stored v{version} query is replaced and cannot be recovered.":
-    "所有使用「{label}」的人下次打开时看到的就是这份查询。已存的 v{version} 查询会被直接替换，且无法恢复。",
   "Evidence IDs (comma separated)": "证据 ID（逗号分隔）",
   "Evidence, decision, downstream verification, and closure stay attached to the customer problem.":
     "证据、决策、下游验证与闭环始终关联到该客户问题。",
@@ -239,8 +242,8 @@ export const adminZhCustomers: Record<string, string> = {
     "内容举报和申诉的决策不会写下游结果引用，自动验证没有可读的依据。请在下方填写带审计的覆盖理由——对这类工单这就是正常路径，不是例外。",
   "Override verification": "覆盖验证",
   "Overwrite": "覆盖",
-  "Overwrite shared view {label} (v{version})": "覆盖共享视图 {label}（v{version}）",
-  "Overwrite the shared Saved View": "覆盖共享的已保存视图",
+  "Overwrite saved view {label} (v{version})": "覆盖已保存视图 {label}（v{version}）",
+  "Overwrite Saved View": "覆盖已保存视图",
   "Overwrite v": "覆盖 v",
   "Ownership transferred; the case was reloaded from authority.": "负责人已移交，工单已从权威数据重新加载。",
   "Park this case on a dependency": "挂起该工单等待依赖",
@@ -344,6 +347,9 @@ export const adminZhCustomers: Record<string, string> = {
   "The late-settlement exception closes and leaves the reconciliation queue. There is no command to reopen it.": "这条迟到结算异常会关闭并移出对账队列。后台没有重新打开它的命令。",
   "The on-call rotation is paged and the escalation timestamp is recorded for good.": "会呼叫值班同事，升级时间戳会永久写入这条工单。",
   "The saved view is gone for everyone who uses it. There is no recycle bin.": "所有人都会失去这个保存视图。后台没有回收站。",
+  "Your saved view {label} will use this query. Its stored v{version} query is replaced and cannot be recovered.":
+    "你的已保存视图「{label}」将使用这份查询。已存的 v{version} 查询会被替换，且无法恢复。",
+  "Your saved view is deleted. There is no recycle bin.": "你的已保存视图会被删除，后台没有回收站。",
   "The ticket moves to this status and its SLA clock is recalculated. Another status command moves it back.": "工单进入该状态并重算 SLA 计时。再发一条状态命令就能改回去。",
   "This asset is not customer-publishable.": "此图片资产不可向用户发布。",
   "Ticket, user, subject, or notes": "工单、用户、主题或备注",

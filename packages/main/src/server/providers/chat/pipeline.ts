@@ -3,6 +3,16 @@ import type { ChatChunk, ChatModel } from "../types";
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
+export class PipelineChatRequestError extends Error {
+  constructor(
+    message: string,
+    readonly kind: "timeout" | "http" | "network" | "response",
+    readonly requestId: string,
+    readonly status?: number,
+    readonly timeoutPhase?: "first_token" | "idle" | "deadline",
+  ) { super(message); this.name = "PipelineChatRequestError"; }
+}
+
 export interface PipelineChatModelConfig {
   baseUrl: string;
   apiKey?: string;
@@ -28,12 +38,24 @@ export class PipelineChatModel implements ChatModel {
 
   async *stream(input: Parameters<ChatModel["stream"]>[0]): AsyncIterable<ChatChunk> {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    const requestId = input.requestId ?? crypto.randomUUID();
+    const progressBudget = input.timeoutMode === "progress";
+    let timeoutPhase: PipelineChatRequestError["timeoutPhase"];
+    let waitPhase: "first_token" | "idle" = "first_token";
+    const abort = (phase: NonNullable<typeof timeoutPhase>) => {
+      timeoutPhase = phase;
+      controller.abort();
+    };
+    let timeout = setTimeout(() => abort(progressBudget ? waitPhase : "deadline"), this.timeoutMs);
+    // Admin's five bounded drafts may progress slowly on the shared local GPU.
+    // Continuous output can renew idle waiting, but cannot run forever.
+    const deadline = progressBudget ? setTimeout(() => abort("deadline"), 180_000) : undefined;
     try {
       const response = await this.fetchImpl(this.endpoint, {
         method: "POST",
         headers: {
           "content-type": "application/json",
+          "x-request-id": requestId,
           ...(this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}),
         },
         body: JSON.stringify({
@@ -41,6 +63,7 @@ export class PipelineChatModel implements ChatModel {
           messages: input.messages,
           characterName: input.characterName,
           stream: true,
+          ...(input.maxTokens === undefined ? {} : { max_tokens: input.maxTokens }),
           // Match the chat service adapter: self-hosted Qwen reasoning models can
           // spend the whole probe budget in hidden thinking before emitting content.
           chat_template_kwargs: { enable_thinking: false },
@@ -48,22 +71,36 @@ export class PipelineChatModel implements ChatModel {
         signal: controller.signal,
       });
       if (!response.ok) {
-        throw new Error(`Pipeline chat request failed with HTTP ${response.status}`);
+        throw new PipelineChatRequestError(`Pipeline chat request failed with HTTP ${response.status}`, "http", requestId, response.status);
       }
 
       const contentType = response.headers.get("content-type") ?? "";
       if (contentType.includes("application/json")) {
-        const json = (await response.json().catch(() => ({}))) as unknown;
+        const json = await response.json() as unknown;
         const content = contentFromJson(json);
         if (content) yield { delta: content, done: false };
-        yield { delta: "", done: true };
+        const finishReason = finishReasonFromJson(json);
+        yield { delta: "", done: true, ...(finishReason ? { finishReason } : {}) };
         return;
       }
 
-      if (!response.body) throw new Error("Pipeline chat response body is missing");
-      yield* streamSseChat(response.body);
+      if (!response.body) throw new PipelineChatRequestError("Pipeline chat response body is missing", "response", requestId, response.status);
+      for await (const chunk of streamSseChat(response.body)) {
+        if (progressBudget && chunk.delta.length > 0) {
+          waitPhase = "idle";
+          clearTimeout(timeout);
+          timeout = setTimeout(() => abort("idle"), this.timeoutMs);
+        }
+        yield chunk;
+      }
+    } catch (cause) {
+      if (timeoutPhase) throw new PipelineChatRequestError("The chat model exceeded its request budget", "timeout", requestId, undefined, timeoutPhase);
+      if (cause instanceof PipelineChatRequestError) throw cause;
+      if (cause instanceof SyntaxError) throw new PipelineChatRequestError("The chat model returned invalid JSON", "response", requestId);
+      throw new PipelineChatRequestError("The chat model connection failed", "network", requestId);
     } finally {
       clearTimeout(timeout);
+      clearTimeout(deadline);
     }
   }
 }
@@ -83,26 +120,33 @@ async function* streamSseChat(body: ReadableStream<Uint8Array>) {
         yield { delta: "", done: true };
         return;
       }
-      const content = deltaFromSsePayload(payload);
-      if (content) yield { delta: content, done: false };
+      const chunk = chunkFromSsePayload(payload);
+      if (chunk) yield chunk;
     }
   }
   yield { delta: "", done: true };
 }
 
-function deltaFromSsePayload(payload: string) {
+function chunkFromSsePayload(payload: string): ChatChunk | undefined {
   try {
     const json = JSON.parse(payload) as unknown;
     const record = asRecord(json);
     const choices = record.choices;
     const first = Array.isArray(choices) ? choices[0] : undefined;
-    if (!isRecord(first)) return "";
+    if (!isRecord(first)) return undefined;
     const delta = first.delta;
-    if (!isRecord(delta)) return "";
-    return typeof delta.content === "string" ? delta.content : "";
+    const content = isRecord(delta) && typeof delta.content === "string" ? delta.content : "";
+    const finishReason = finishReasonFromJson(json);
+    return content || finishReason ? { delta: content, done: false, ...(finishReason ? { finishReason } : {}) } : undefined;
   } catch {
-    return "";
+    return undefined;
   }
+}
+
+function finishReasonFromJson(value: unknown): string | undefined {
+  const choices = asRecord(value).choices;
+  const first = Array.isArray(choices) ? choices[0] : undefined;
+  return isRecord(first) && typeof first.finish_reason === "string" ? first.finish_reason : undefined;
 }
 
 function contentFromJson(value: unknown) {

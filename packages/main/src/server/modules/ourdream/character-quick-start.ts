@@ -9,9 +9,10 @@ import type { ChatModel } from "@/server/providers/types";
 // INTENT: this is only a prefill. Nothing is written here: no draft, no
 //   character, no image. The client applies the fields through the same path as
 //   a template and the user still walks and edits all five wizard steps.
-// INVARIANT: every returned field is one the wizard already has; catalog-backed
-//   fields carry only catalog members. An invalid field is dropped rather than
-//   failing the whole draft — a partial prefill is still useful.
+// INVARIANT: every returned field is one the wizard already has; enumerated
+//   fields carry only catalog members. Occupation suggestions do not constrain
+//   a character's actual profession or specialty. Invalid fields are dropped
+//   rather than failing the whole draft — a partial prefill is still useful.
 // INVARIANT: an implied age under 18 is refused, never raised to 18.
 
 export const characterQuickStartRequestSchema = z.object({
@@ -52,7 +53,8 @@ const fieldSchemas = {
   description: text(1_000),
   firstMessage: text(4_000),
   personality: catalog(PERSONALITIES),
-  occupation: catalog(OCCUPATIONS),
+  occupation: text(160).transform((value) =>
+    OCCUPATIONS.find((item) => item.toLowerCase() === value.toLowerCase()) ?? value),
   relationship: catalog(RELATIONSHIPS),
 } as const;
 
@@ -139,9 +141,9 @@ export function quickStartMessages(brief: string): Parameters<ChatModel["stream"
         '- "description": one or two sentences that sell the character, written in the language of the idea.',
         '- "firstMessage": the character\'s opening chat message, in character, 1-3 sentences, in the language of the idea.',
         `- "personality": copy exactly one of: ${PERSONALITIES.join("; ")}.`,
-        `- "occupation": copy exactly one of: ${OCCUPATIONS.join("; ")}.`,
+        '- "occupation": the occupation described in the idea, in a short English phrase. Preserve its specialty; do not replace it with a related profession. Omit it if unknown.',
         `- "relationship" (to the user): copy exactly one of: ${RELATIONSHIPS.join("; ")}.`,
-        "For personality, occupation and relationship pick the closest listed value; never write a value that is not listed.",
+        "For personality and relationship pick the closest listed value; never write a value that is not listed.",
       ].join("\n"),
     },
     { role: "user", content: brief },

@@ -470,6 +470,49 @@ afterAll(async () => {
 });
 
 describe("image generation service contract", () => {
+  async function lookConfirmationFixture(suffix: string, status = "needs_rebase") {
+    const userId = `${P}look-confirm-${suffix}-user`;
+    const characterId = `${P}look-confirm-${suffix}-char`;
+    await createUser({id: userId});
+    await createCharacter({id: characterId, creatorId: userId, source: "user", visibility: "private"});
+    const anchorId = `${P}look-confirm-${suffix}-anchor`;
+    await prisma.mediaAsset.create({data: {id: anchorId, ownerId: userId, characterId, type: "image", url: "/images/ourdream/card-sophie.webp", storageKey: `${anchorId}.webp`, visibility: "private", safetyStatus: "passed", metadata: {}}});
+    const values = {characterId, style: "realistic", identityPrompt: "Adult woman, dark curls", negativeIdentityPrompt: "different face",
+      faceTraits: {}, hairTraits: {color: "dark"}, bodyTraits: {}, signatureTraits: {}, styleTraits: {style: "realistic"}, anchorAssetIds: [anchorId], adapterRefs: {}, createdFrom: "test"};
+    const oldId = `${P}look-confirm-${suffix}-v1`, activeId = `${P}look-confirm-${suffix}-v2`;
+    await prisma.characterVisualProfile.create({data: {...values, id: oldId, version: 1, status: "inactive", immutableHash: characterVisualProfileSnapshotHash({...values, version: 1})}});
+    await prisma.characterVisualProfile.create({data: {...values, id: activeId, version: 2, status: "active", immutableHash: characterVisualProfileSnapshotHash({...values, version: 2})}});
+    const look = await prisma.characterLook.create({data: {id: `${P}look-confirm-${suffix}`, ownerId: userId, characterId, visualProfileId: oldId,
+      label: "Raincoat", status, appearanceDelta: {description: "Cream raincoat", outfit: {fabric: "cotton", pattern: "plain"}}, referenceAssetId: null}});
+    return {userId, characterId, oldId, activeId, look};
+  }
+
+  it("exposes the active visual identity alongside saved Looks for explicit compatibility confirmation", async () => {
+    const f = await lookConfirmationFixture("read");
+    const listed = await api("GET", `characters/${f.characterId}/looks`, {userId: f.userId, ageGate: true});
+    expectOk(listed);
+    expect(listed.data.activeVisualProfileId).toBe(f.activeId);
+    expect(listed.data.items).toEqual([expect.objectContaining({id: f.look.id, visualProfileId: f.oldId, status: "needs_rebase"})]);
+  });
+
+  it.each(["missing", "stale"])("refuses a %s identity confirmation before creating a rebased Look or any charge", async mode => {
+    const f = await lookConfirmationFixture(mode);
+    const balance = await dreamcoinBalance(f.userId);
+    const response = await api("PATCH", `characters/${f.characterId}/looks/${f.look.id}`, {userId: f.userId, ageGate: true,
+      body: {status: "active", ...(mode === "stale" ? {expectedVisualProfileId: f.oldId} : {})}});
+    expectError(response, 409, "conflict");
+    expect(await prisma.characterLook.findMany({where: {characterId: f.characterId}})).toEqual([f.look]);
+    expect(await prisma.generationJob.count({where: {userId: f.userId}})).toBe(0);
+    expect(await dreamcoinBalance(f.userId)).toBe(balance);
+  });
+
+  it("does not turn a metadata edit of an older active Look into an unconfirmed identity rebase", async () => {
+    const f = await lookConfirmationFixture("metadata", "active");
+    const response = await api("PATCH", `characters/${f.characterId}/looks/${f.look.id}`, {userId: f.userId, ageGate: true, body: {label: "Evening raincoat"}});
+    expectError(response, 409, "conflict");
+    expect(await prisma.characterLook.findMany({where: {characterId: f.characterId}})).toEqual([f.look]);
+  });
+
   it("keeps implicit no-reference routes on public T2I and skips cheaper inaccessible profiles", async () => {
     const userId = `${P}implicit-route-user`;
     const characterId = `${P}implicit-route-character`;
@@ -5538,7 +5581,7 @@ describe("image generation service contract", () => {
       {
         userId,
         ageGate: true,
-        body: { status: "active" },
+        body: { status: "active", expectedVisualProfileId: activeProfileV2.id },
       },
     );
     expectOk(reactivated);
@@ -5560,7 +5603,7 @@ describe("image generation service contract", () => {
       {
         userId,
         ageGate: true,
-        body: { status: "active" },
+        body: { status: "active", expectedVisualProfileId: activeProfileV2.id },
       },
     );
     expectError(unavailableRebase, 409, "conflict");
@@ -6383,5 +6426,111 @@ describe("image generation service contract", () => {
       costDreamcoins: quote.costs[0]?.costDreamcoins,
     });
     await runQueuedGenerationJobs(4);
+  });
+});
+
+
+describe("owned media instruction feedback authority", () => {
+  async function fixture(label: string, type: "image" | "video", sequence = false, initialStatus = "completed", foreignSequenceOwner = false) {
+    const userId = `${P}intent-${label}`, mediaId = `${P}intent-${label}-media`, jobId = `${P}intent-${label}-job`, sequenceId = `${P}intent-${label}-sequence`;
+    await createUser({ id: userId });
+    await prisma.generationJob.create({ data: { id: jobId, userId, mode: type, controls: {}, presetIds: [], outputCount: 1, status: "completed" } });
+    await prisma.mediaAsset.create({ data: { id: mediaId, ownerId: userId, sourceJobId: sequence ? null : jobId, type, url: `/user-content/${mediaId}.${type === "video" ? "mp4" : "png"}`, visibility: "private", safetyStatus: "passed", metadata: { source: sequence ? "video_sequence" : "generation", ...(sequence ? { sequenceId, sceneGenerationJobIds: [jobId], durationSeconds: 9.125, audio: "narration" } : {}), quality: { retainedFact: "keep" } } } });
+    const sequenceOwner = foreignSequenceOwner ? `${userId}-other` : userId;
+    if (foreignSequenceOwner) await createUser({ id: sequenceOwner });
+    if (sequence) await prisma.videoSequence.create({ data: { id: sequenceId, userId: sequenceOwner, idempotencyKey: `${sequenceId}-key`, requestFingerprint: "a".repeat(64), acceptedQuote: {}, request: { scenes: [{ prompt: "A calm wave.", seconds: 3, narration: "Hello." }], orientation: "1:1", quality: "preview", audio: "narration" }, voicePin: { provider: "pocket_tts", voiceId: "alba", settingVersion: 1, language: "en", model: "pocket-tts" }, audio: "narration", status: initialStatus, mediaAssetId: mediaId } });
+    return { userId, mediaId, jobId, sequenceId, options: { userId, ageGate: true, headers: { "x-idream-viewer-scope": `user:${userId}` } } };
+  }
+  const mismatch = { feedbackType: "intent_mismatch", sourceSurface: "gallery", direction: "Keep the camera still and use a terracotta pot." };
+
+  it.each(["image", "video"] as const)("records and revises %s intent independently, with idempotent concurrent submissions and no generation charge", async type => {
+    const f = await fixture(type, type), balance = await dreamcoinBalance(f.userId);
+    const baselineJob = await prisma.generationJob.findUnique({ where: { id: f.jobId } });
+    const [first, replay] = await Promise.all([api("POST", `media/${f.mediaId}/feedback`, { ...f.options, body: mismatch }), api("POST", `media/${f.mediaId}/feedback`, { ...f.options, body: { ...mismatch, direction: `  ${mismatch.direction}  ` } })]);
+    expectOk(first); expectOk(replay); expect(replay.data).toEqual(first.data);
+    expect(first.data).toMatchObject({ mediaAssetId: f.mediaId, ownerScope: `user:${f.userId}`, target: { kind: "generation_job", generationJobId: f.jobId }, feedback: { dimension: "intent", value: "mismatch", direction: mismatch.direction, revision: 1 } });
+    const read = await api("GET", `media/${f.mediaId}/feedback`, f.options); expectOk(read); expect(read.data).toEqual(first.data);
+    const changed = await api("POST", `media/${f.mediaId}/feedback`, { ...f.options, body: { ...mismatch, direction: "Use the requested pot." } }); expectOk(changed); expect(changed.data.feedback.revision).toBe(2);
+    const matched = await api("POST", `media/${f.mediaId}/feedback`, { ...f.options, body: { feedbackType: "intent_match", sourceSurface: "gallery" } }); expectOk(matched); expect(matched.data.feedback).toMatchObject({ value: "match", direction: null, revision: 3 });
+    const rows = await prisma.generationFeedback.findMany({ where: { actorId: f.userId, mediaAssetId: f.mediaId }, orderBy: { revision: "asc" } });
+    expect(rows.map(row => ({ dimension: row.dimension, revision: row.revision, active: row.active }))).toEqual([{ dimension: "intent", revision: 1, active: false }, { dimension: "intent", revision: 2, active: false }, { dimension: "intent", revision: 3, active: true }]);
+    expect(rows[1]?.supersedesId).toBe(rows[0]?.id); expect(rows[2]?.supersedesId).toBe(rows[1]?.id);
+    expect(await prisma.generationJobEvent.count({ where: { jobId: f.jobId, type: "user_feedback" } })).toBe(3);
+    const asset = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: f.mediaId } });
+    expect(asset.metadata).toMatchObject({ quality: { retainedFact: "keep", intentFeedback: matched.data.feedback, intentFeedbackHistory: [first.data.feedback, changed.data.feedback, matched.data.feedback] } });
+    expect(await prisma.generationJob.findUnique({ where: { id: f.jobId } })).toEqual(baselineJob);
+    expect(await prisma.referenceCandidate.count({ where: { mediaAssetId: f.mediaId } })).toBe(0);
+    expect(await prisma.generationAttempt.count({ where: { requestId: f.jobId } })).toBe(0);
+    expect(await dreamcoinBalance(f.userId)).toBe(balance);
+    const gallery = await api("GET", "media", { ...f.options, query: { type } }); expectOk(gallery);
+    expect(gallery.data.items.find((item: { id: string }) => item.id === f.mediaId)).toMatchObject({ intentFeedbackAvailable: true, intentFeedback: matched.data.feedback });
+  });
+
+  it.each(["adopted", "wrong-result", "wrong-draft-owner", "wrong-character"] as const)("binds %s preview feedback to the canonical Create adoption without loosening normal cross-character authority", async scenario => {
+    const f = await fixture(`preview-${scenario}`, "image"), characterId = `${P}intent-preview-${scenario}-char`, draftId = `${P}intent-preview-${scenario}-draft`, previewId = `${P}intent-preview-${scenario}-preview`;
+    const foreign = `${P}intent-preview-${scenario}-foreign`; await createUser({ id: foreign });
+    await createCharacter({ id: characterId, creatorId: f.userId, status: "approved", visibility: "private" });
+    await prisma.characterDraft.create({ data: { id: draftId, ownerId: scenario === "wrong-draft-owner" ? foreign : f.userId, name: "Adopted preview character", appearance: {}, hair: {}, body: {}, tags: [], advancedDetails: { submittedCharacterId: scenario === "wrong-character" ? `${characterId}-other` : characterId } } });
+    await prisma.characterPreviewJob.create({ data: { id: previewId, draftId, status: "completed", resultAssetId: scenario === "wrong-result" ? `${f.mediaId}-other` : f.mediaId, completedAt: new Date() } });
+    // Create claims only the asset's Character FK. The preview job's null pin remains immutable.
+    await prisma.generationJob.update({ where: { id: f.jobId }, data: { sourceType: "character_preview", sourceId: previewId } });
+    await prisma.mediaAsset.update({ where: { id: f.mediaId }, data: { characterId } });
+    const beforeAsset = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: f.mediaId } });
+    const response = await api("POST", `media/${f.mediaId}/feedback`, { ...f.options, body: mismatch });
+    if (scenario === "adopted") {
+      expectOk(response); expect(response.data.feedback).toMatchObject({ dimension: "intent", value: "mismatch", target: { kind: "generation_job", generationJobId: f.jobId } });
+      const read = await api("GET", `media/${f.mediaId}/feedback`, f.options); expectOk(read); expect(read.data).toEqual(response.data);
+      expect(await prisma.generationFeedback.count({ where: { mediaAssetId: f.mediaId, dimension: "intent" } })).toBe(1);
+    } else {
+      expectError(response, 409); expectError(await api("GET", `media/${f.mediaId}/feedback`, f.options), 409);
+      expect(await prisma.generationFeedback.count({ where: { mediaAssetId: f.mediaId } })).toBe(0);
+      expect(await prisma.mediaAsset.findUniqueOrThrow({ where: { id: f.mediaId } })).toEqual(beforeAsset);
+    }
+    expect((await prisma.generationJob.findUniqueOrThrow({ where: { id: f.jobId } })).characterId).toBeNull();
+    expect((await prisma.mediaAsset.findUniqueOrThrow({ where: { id: f.mediaId } })).characterId).toBe(characterId);
+    expect(await prisma.characterVisualProfile.count({ where: { characterId } })).toBe(0);
+    expect(await prisma.referenceCandidate.count({ where: { mediaAssetId: f.mediaId } })).toBe(0);
+  });
+
+  it("records the completed sequence as one whole-result judgement without assigning it to a scene job", async () => {
+    const f = await fixture("sequence", "video", true), balance = await dreamcoinBalance(f.userId);
+    const first = await api("POST", `media/${f.mediaId}/feedback`, { ...f.options, body: mismatch }); expectOk(first);
+    expect(first.data.feedback).toMatchObject({ target: { kind: "video_sequence", sequenceId: f.sequenceId }, revision: 1, value: "mismatch" }); expect(first.data.feedback.eventId).toBeUndefined();
+    const replay = await api("POST", `media/${f.mediaId}/feedback`, { ...f.options, body: mismatch }); expectOk(replay); expect(replay.data).toEqual(first.data);
+    const changed = await api("POST", `media/${f.mediaId}/feedback`, { ...f.options, body: { feedbackType: "intent_match", sourceSurface: "gallery" } }); expectOk(changed); expect(changed.data.feedback.revision).toBe(2);
+    const read = await api("GET", `media/${f.mediaId}/feedback`, f.options); expectOk(read); expect(read.data).toEqual(changed.data);
+    const asset = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: f.mediaId } });
+    expect(asset.sourceJobId).toBeNull(); expect(asset.metadata).toMatchObject({ sequenceId: f.sequenceId, sceneGenerationJobIds: [f.jobId], durationSeconds: 9.125, audio: "narration", quality: { retainedFact: "keep", intentFeedbackHistory: [first.data.feedback, changed.data.feedback] } });
+    expect(await prisma.generationFeedback.count({ where: { mediaAssetId: f.mediaId } })).toBe(0);
+    expect(await prisma.generationJobEvent.count({ where: { jobId: f.jobId } })).toBe(0);
+    expect(await prisma.referenceCandidate.count({ where: { mediaAssetId: f.mediaId } })).toBe(0);
+    expect(await dreamcoinBalance(f.userId)).toBe(balance);
+  });
+
+  it("refuses wrong-owner, deleted, bad source, invalid direction and stale viewer scopes without recording feedback", async () => {
+    const f = await fixture("reject", "image"), other = `${P}intent-other`; await createUser({ id: other });
+    expectError(await api("POST", `media/${f.mediaId}/feedback`, { userId: other, ageGate: true, body: mismatch }), 404);
+    expectError(await api("POST", `media/${f.mediaId}/feedback`, { ...f.options, userId: other, body: mismatch }), 409);
+    expectError(await api("GET", `media/${f.mediaId}/feedback`, { ...f.options, userId: other }), 409);
+    expectError(await api("POST", `media/${f.mediaId}/feedback`, { ...f.options, body: { ...mismatch, direction: " " } }), 400);
+    expectError(await api("POST", `media/${f.mediaId}/feedback`, { ...f.options, body: { ...mismatch, direction: "x".repeat(601) } }), 400);
+    const foreignCharacter = `${P}intent-foreign-char`; await createCharacter({ id: foreignCharacter, creatorId: f.userId, status: "approved", visibility: "private" });
+    await prisma.generationJob.update({ where: { id: f.jobId }, data: { characterId: foreignCharacter } });
+    expectError(await api("POST", `media/${f.mediaId}/feedback`, { ...f.options, body: mismatch }), 409);
+    await prisma.mediaAsset.update({ where: { id: f.mediaId }, data: { deletedAt: new Date() } });
+    expectError(await api("POST", `media/${f.mediaId}/feedback`, { ...f.options, body: mismatch }), 404);
+    expectError(await api("GET", `media/${f.mediaId}/feedback`, f.options), 404);
+    expect(await prisma.generationFeedback.count({ where: { mediaAssetId: f.mediaId } })).toBe(0);
+    expect(await prisma.generationJobEvent.count({ where: { jobId: f.jobId } })).toBe(0);
+  });
+
+  it.each(["pending", "different-result", "wrong-owner"] as const)("rejects a sequence with %s authority without attributing anything to its scenes", async scenario => {
+    const f = await fixture(`sequence-${scenario}`, "video", true, scenario === "pending" ? "composing" : "completed", scenario === "wrong-owner");
+    if (scenario === "different-result") await prisma.videoSequence.update({ where: { id: f.sequenceId }, data: { mediaAssetId: null } });
+    expectError(await api("POST", `media/${f.mediaId}/feedback`, { ...f.options, body: mismatch }), 409);
+    expectError(await api("GET", `media/${f.mediaId}/feedback`, f.options), 409);
+    expect(await prisma.generationFeedback.count({ where: { mediaAssetId: f.mediaId } })).toBe(0);
+    expect(await prisma.generationJobEvent.count({ where: { jobId: f.jobId } })).toBe(0);
+    expect((await prisma.mediaAsset.findUniqueOrThrow({ where: { id: f.mediaId } })).metadata).not.toHaveProperty("quality.intentFeedback");
   });
 });

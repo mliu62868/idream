@@ -463,11 +463,13 @@ export function ReleasePanel({
     ({ release }) => release.id === rollbackSourceId,
   );
   const noUnpublishedChanges = characterHasNoUnpublishedChanges(data);
+  // Identical content does not restore a route qualification lost after a profile change.
+  const currentReleaseStale = current?.release.status === "published" && current.release.readiness === "stale";
   const draftBlockers = characterReleaseDraftBlockers(data);
   const blockers = [...new Set([...draftBlockers, ...authorityBlockers])];
   const canPublish =
     data.serving?.state !== "retired" &&
-    (Boolean(candidate) || (!noUnpublishedChanges && blockers.length === 0));
+    (Boolean(candidate) || ((!noUnpublishedChanges || currentReleaseStale) && blockers.length === 0));
   const confirmationVisible = characterReleaseConfirmationVisible({
     hasRollbackSource: rollbackSources.length > 0,
     servingState: data.serving?.state ?? null,
@@ -548,7 +550,7 @@ export function ReleasePanel({
 
       <aside className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
         <h3 className="font-semibold">{t("Publish Character")}</h3>
-        {noUnpublishedChanges && !candidate ? (
+        {noUnpublishedChanges && !currentReleaseStale && !candidate ? (
           <p className="mt-3 text-sm text-[var(--ad-text-muted)]">
             {t("Live and draft are identical. There is nothing to release.")}
           </p>
@@ -572,6 +574,10 @@ export function ReleasePanel({
               );
             })}
           </div>
+        ) : currentReleaseStale && !candidate ? (
+          <p className="mt-3 text-sm text-[var(--ad-text-muted)]">
+            {t("The live release qualification is stale. Publishing again checks the current images and generation route; the content can stay unchanged.")}
+          </p>
         ) : null}
 
         {error ? (

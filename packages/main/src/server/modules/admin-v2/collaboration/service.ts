@@ -14,6 +14,8 @@ import { ok } from "@/server/lib/http";
 import { actorWithPermission, jsonBody, queryParams, type AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { canonicalJsonHash, requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
 import { effectivePermissions } from "@/server/admin/effective-permissions";
+import { assignReviewCaseInTransaction } from "../cases/service";
+import { normalizeWorkPreferences, updateWorkPreference, workPreferenceSourceTypes } from "../shared/work-preferences";
 
 const targetDescriptors: Record<CollaborationTargetType, { read: AdminPermissionKey; write: AdminPermissionKey; exists: (id: string) => Promise<unknown> }> = {
   creative_run: { read: "creative.run.read", write: "creative.run.write", exists: (id) => prisma.contentProductionBatch.findUnique({ where: { id }, select: { id: true } }) },
@@ -73,15 +75,27 @@ async function transferCollaborationAuthority(
     readonly targetId: string;
     readonly expectedVersion: number;
     readonly ownerId: string;
+    readonly actor: AdminActor;
+    readonly reason: string;
+    readonly requestId: string;
   },
 ) {
+  if (input.targetType === "case") {
+    const updated = await assignReviewCaseInTransaction(tx, {
+      caseId: input.targetId,
+      expectedVersion: input.expectedVersion,
+      ownerId: input.ownerId,
+      actor: input.actor,
+      reason: input.reason,
+      requestId: input.requestId,
+    });
+    return { ownerId: updated.ownerId, version: updated.version } satisfies CollaborationAuthority;
+  }
   const where = { id: input.targetId, version: input.expectedVersion };
   const data = { ownerId: input.ownerId, version: { increment: 1 } };
   const updated = input.targetType === "creative_run"
       ? await tx.contentProductionBatch.updateMany({ where, data })
-      : input.targetType === "case"
-        ? await tx.adminCase.updateMany({ where, data })
-        : await tx.opsIncident.updateMany({ where, data });
+      : await tx.opsIncident.updateMany({ where, data });
   if (updated.count !== 1) throw Errors.conflict("Collaboration target changed; reload before handing it off");
   return { ownerId: input.ownerId, version: input.expectedVersion + 1 } satisfies CollaborationAuthority;
 }
@@ -198,11 +212,10 @@ export async function listActivity(request: Request, rawTargetType: string, targ
     take: query.limit + 1,
   });
   const items = rows.slice(0, query.limit).map(activityDto);
-  const preferences = await prisma.operationalWorkPreference.findMany({
-    where: { sourceType: targetType, sourceId: targetId, watching: true },
-    select: { actorId: true },
+  const preferences = normalizeWorkPreferences(await prisma.operationalWorkPreference.findMany({
+    where: { sourceType: { in: workPreferenceSourceTypes(targetType) }, sourceId: targetId },
     orderBy: { actorId: "asc" },
-  });
+  })).filter(preference => preference.watching);
   return ok({
     items,
     actors: await resolveCollaborationActors([
@@ -286,6 +299,9 @@ export async function createActivity(request: Request, rawTargetType: string, ta
             targetId,
             expectedVersion: input.expectedVersion!,
             ownerId: input.metadata.handoffToActorId!,
+            actor,
+            reason: input.body,
+            requestId: key,
           })
         : before;
       if (authority) {
@@ -359,21 +375,18 @@ export async function setWatching(request: Request, rawTargetType: string, targe
   const key = requireIdempotencyKey(request);
   const hash = canonicalJsonHash({ targetType, targetId, input });
   const result = await prisma.$transaction(async (tx) => {
+    const sourceTypes = workPreferenceSourceTypes(targetType);
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${actor.id}:${sourceTypes[0]}:${targetId}`}))`;
     const previous = await tx.adminCollaborationActivity.findUnique({
       where: { actorId_idempotencyKey: { actorId: actor.id, idempotencyKey: key } },
     });
     if (previous) {
       if (activityRequestHash(previous) !== hash) throw Errors.conflict("Idempotency key was reused with a different watch request");
-      const preference = await tx.operationalWorkPreference.findUniqueOrThrow({
-        where: { actorId_sourceType_sourceId: { actorId: actor.id, sourceType: targetType, sourceId: targetId } },
-      });
+      const preference = normalizeWorkPreferences(await tx.operationalWorkPreference.findMany({ where: { actorId: actor.id, sourceId: targetId, sourceType: { in: sourceTypes } } }))[0];
+      if (!preference) throw Errors.notFound("Work preference not found");
       return { preference, duplicate: true };
     }
-    const preference = await tx.operationalWorkPreference.upsert({
-      where: { actorId_sourceType_sourceId: { actorId: actor.id, sourceType: targetType, sourceId: targetId } },
-      create: { actorId: actor.id, sourceType: targetType, sourceId: targetId, watching: input.watching },
-      update: { watching: input.watching },
-    });
+    const { preference } = await updateWorkPreference(tx, { actorId: actor.id, sourceType: targetType, sourceId: targetId, watching: input.watching });
     await tx.adminCollaborationActivity.create({
       data: {
         targetType,

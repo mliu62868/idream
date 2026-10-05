@@ -5,7 +5,7 @@ import { ExternalLink, Menu } from "lucide-react";
 import { useId, useState } from "react";
 import { primaryNavItems, secondaryNavItems } from "@/lib/ourdream-data";
 import { useViewerGate } from "@/hooks/useViewerGate";
-import { authHrefForTarget } from "./authRedirect";
+import { authHrefForTarget, authNextTargetFromPath, signupReferralCode } from "./authRedirect";
 import { cn } from "@/lib/utils";
 
 const accountItems = [
@@ -32,13 +32,16 @@ export function MobileAppMenu({
   // A signed-out visitor gets Log in / Join free here: on the narrowest phones
   // the top bar keeps only Join free so the search box stays usable.
   const guest = useViewerGate({ require: "any" }).identity?.kind === "anonymous";
+  const search = open ? window.location.search : "";
+  const authTarget = authNextTargetFromPath(currentPath, search, open ? window.location.hash : "");
+  const referralCode = currentPath === "/login" || currentPath === "/signup" ? signupReferralCode(search) : undefined;
   const menuItems = [
     ...primaryNavItems,
     ...secondaryNavItems,
     ...(guest
       ? [
-          { label: "Log in", href: authHrefForTarget("/login", currentPath) },
-          { label: "Join free", href: authHrefForTarget("/signup", currentPath) },
+          { label: "Log in", href: authHrefForTarget("/login", authTarget, referralCode) },
+          { label: "Join free", href: authHrefForTarget("/signup", authTarget, referralCode) },
           { label: "Upgrade", href: "/upgrade" },
         ]
       : accountItems),

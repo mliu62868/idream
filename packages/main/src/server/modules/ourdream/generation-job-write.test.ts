@@ -228,6 +228,65 @@ describe("createGenerationJobForUser", () => {
   });
 });
 
+describe("public generation prompt budget responses", () => {
+  async function lookFixture(key: string, appearanceDelta: { description: string }, identityPrompt = "The same adult face and brown hair") {
+    const userId = `${P}prompt-budget-${key}`;
+    const characterId = `${userId}-char`;
+    await createUser({ id: userId, dataClass: "customer" });
+    await grantPremiumControls(userId);
+    await grantCoins(userId, 200, "seed");
+    await createCharacter({ id: characterId, creatorId: userId, source: "user", visibility: "private" });
+    const visualProfile = await prisma.characterVisualProfile.create({ data: {
+      characterId, status: "active", identityPrompt, faceTraits: {}, hairTraits: {}, bodyTraits: {},
+      signatureTraits: {}, styleTraits: {}, anchorAssetIds: [], adapterRefs: {}, createdFrom: "generation_bootstrap:test",
+    } });
+    const look = await prisma.characterLook.create({ data: {
+      characterId, visualProfileId: visualProfile.id, ownerId: userId, label: "Current styling", appearanceDelta,
+    } });
+    return { userId, characterId, visualProfileId: visualProfile.id, lookId: look.id };
+  }
+
+  it.each([
+    { key: "scene", prompt: "x".repeat(901), look: "blue jacket", identity: undefined, budget: 900 },
+    { key: "look", prompt: "Read by the window", look: "x".repeat(501), identity: undefined, budget: 500 },
+    { key: "combined", prompt: "x".repeat(850), look: "blue jacket", identity: "x".repeat(900), budget: 2000 },
+  ])("returns a readable 400 for schema-valid $key facts without reserving or charging", async ({ key, prompt, look, identity, budget }) => {
+    const fixture = await lookFixture(key, { description: look }, identity);
+    const body = generationJobSchema.parse({ characterId: fixture.characterId, visualProfileId: fixture.visualProfileId,
+      prompt, controls: { lookId: fixture.lookId }, outputCount: 1 });
+    const openingBalance = await dreamcoinBalance(fixture.userId);
+    const attemptsBefore = await prisma.generationAttempt.count();
+    const outboxBefore = await prisma.mainOutboxEvent.count();
+
+    const response = await api("POST", "generation/jobs", { userId: fixture.userId, ageGate: true, body });
+
+    expect(response.status).toBe(400);
+    expect(response.error).toMatchObject({ code: "bad_request", message: expect.stringContaining(`${budget}-character generation budget`) });
+    expect(response.error?.message).not.toBe("Internal error");
+    expect(await prisma.generationJob.count({ where: { userId: fixture.userId } })).toBe(0);
+    expect(await prisma.generationAttempt.count()).toBe(attemptsBefore);
+    expect(await prisma.mainOutboxEvent.count()).toBe(outboxBefore);
+    expect(await prisma.dreamcoinLedger.count({ where: { userId: fixture.userId, reason: "generation_spend" } })).toBe(0);
+    expect(await dreamcoinBalance(fixture.userId)).toBe(openingBalance);
+  });
+
+  it("still admits complete short Look directions at their accepted quote", async () => {
+    const fixture = await lookFixture("short", { description: "blue jacket" });
+    const response = await api("POST", "generation/jobs", { userId: fixture.userId, ageGate: true,
+      body: { characterId: fixture.characterId, visualProfileId: fixture.visualProfileId,
+        prompt: "Read by the window", controls: { lookId: fixture.lookId }, outputCount: 1 } });
+    expectOk(response, 202);
+    expect(response.status).toBe(202);
+    const job = await prisma.generationJob.findFirstOrThrow({ where: { userId: fixture.userId } });
+    expect(job.prompt).toContain("Requested scene: Read by the window");
+    expect(job.prompt).toContain('Active look: {"description":"blue jacket"}');
+    expect(job.lookId).toBe(fixture.lookId);
+    expect(await prisma.generationAttempt.count({ where: { requestId: job.id } })).toBe(1);
+    expect(await prisma.dreamcoinLedger.findMany({ where: { userId: fixture.userId, reason: "generation_spend" }, select: { sourceId: true, delta: true } }))
+      .toEqual([{ sourceId: job.id, delta: -job.costDreamcoins }]);
+  });
+});
+
 describe("retryGenerationJobForUser", () => {
   async function seedFailedJob(userId: string, jobId: string) {
     return prisma.generationJob.create({

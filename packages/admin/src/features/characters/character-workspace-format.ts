@@ -31,8 +31,8 @@ export function percent(value: number | null) {
   return value === null ? "N/A" : `${(value * 100).toFixed(1)}%`;
 }
 
-// SPEC: 线上版本与当前草稿没有差异、也没有候选 Release 时，发布链路已经闭合。
-// INTENT: 这不是“准备工作不完整”；继续要求运营再提 Release 只会制造无效劳动。
+// SPEC: 线上版本与当前草稿没有差异、也没有候选 Release 时，没有待发布的内容修改。
+// INVARIANT: 内容一致不证明运行资格仍有效；发布面板独立处理 current Release stale。
 export function characterHasNoUnpublishedChanges(
   data: Pick<CharacterWorkspaceDetail, "journey" | "preview">,
 ) {

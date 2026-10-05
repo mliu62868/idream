@@ -34,10 +34,15 @@ export const adminOverviewWindowSchema = z
 /** Shared by the three window-scoped overviews; the manifest binds it per operation. */
 export const adminOverviewWindowQuerySchema = z
   .object({
-    from: z.string().trim().min(1).optional(),
-    to: z.string().trim().min(1).optional(),
+    from: z.string().trim().min(1).refine((value) => !Number.isNaN(Date.parse(value)), "Invalid window date").optional(),
+    to: z.string().trim().min(1).refine((value) => !Number.isNaN(Date.parse(value)), "Invalid window date").optional(),
   })
-  .strict();
+  .strict()
+  // Defaults belong to the authority; explicit endpoints already define an inclusive window.
+  .refine(({ from, to }) => !from || !to || Date.parse(from) <= Date.parse(to), {
+    message: "The start of the window must not be after the end.",
+    path: ["from"],
+  });
 
 export const adminFeatureFlagSummarySchema = z
   .object({

@@ -49,7 +49,7 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
   const [pricingDraft, setPricingDraft] = useState<PricingDraft>(defaultPricingDraft);
   const [rows, setRows] = useState<PricingRecord[] | null>(null);
   const [pageInfo, setPageInfo] = useState<PageInfo>(emptyPageInfo);
-  // 游标分页没有页码，只有「上一页用的是哪个游标」。这条轨迹就是 Pagination 的第 N 页。
+  // 游标轨迹保留上一页；只有从首页空游标起算时，轨迹长度才能证明页码。
   const [cursorTrail, setCursorTrail] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [writing, setWriting] = useState(false);
@@ -271,14 +271,15 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
       {rows ? (
         <Pagination
           hasNext={Boolean(pageInfo.hasNextPage && pageInfo.endCursor)}
-          hasPrevious={cursorTrail.length > 0}
+          hasPrevious={Boolean(query.cursor)}
           loading={loading}
           onNext={() => {
             if (!pageInfo.endCursor) return;
             navigate({ ...query, cursor: pageInfo.endCursor }, "push", [...cursorTrail, query.cursor]);
           }}
           onPrevious={() => navigate({ ...query, cursor: cursorTrail.at(-1) ?? "" }, "push", cursorTrail.slice(0, -1))}
-          page={cursorTrail.length + 1}
+          previousLabel={query.cursor && cursorTrail.length === 0 ? t("Back to first page") : undefined}
+          page={!query.cursor ? 1 : cursorTrail[0] === "" ? cursorTrail.length + 1 : null}
           pageSize={PRICING_PAGE_SIZE}
           rowCount={rows.length}
         />

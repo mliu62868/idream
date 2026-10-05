@@ -2,14 +2,13 @@
 
 import { Check, Crown } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   parseCheckoutResponse,
   parsePlansResponse,
   parseProfileResponse,
   parsePublicApiError,
-  parseViewerAuthorityResponse,
   type PublicBillingMode as BillingMode,
   type PublicPlan as Plan,
 } from "@/lib/public-api-contracts";
@@ -24,11 +23,10 @@ import {
   type PendingCheckoutIntent,
 } from "@/lib/billing-checkout-intent";
 import { useAgeGateAccess } from "./AgeGateBoundary";
+import { useViewerGate } from "@/hooks/useViewerGate";
+import { isAbortError } from "@/lib/viewer-resource-client";
 import { safeInternalAuthRedirect } from "./authRedirect";
-import {
-  fetchProtectedForViewer,
-  type ViewerFetcher,
-} from "./viewer-auth";
+import { VIEWER_UNCONFIRMED_MESSAGE } from "./viewer-auth";
 import {
   configuredEntitlementBenefits,
   FREE_CHAT_SUMMARY,
@@ -39,16 +37,11 @@ type CheckoutResult =
   | { kind: "redirect"; message: string; url: string }
   | { kind: "error"; message: string };
 
-export function loadUpgradeProfileForViewer(fetcher: ViewerFetcher = fetch) {
-  return fetchProtectedForViewer(
-    "/api/v1/profile",
-    { cache: "no-store" },
-    fetcher,
-  );
-}
-
 export function UpgradeWorkspace() {
   const { accepted: ageGateAccepted } = useAgeGateAccess();
+  const viewer = useViewerGate({ require: "any" });
+  const viewerId = viewer.identity?.kind === "user" ? viewer.identity.userId : null;
+  const gatedFetch = viewer.fetch;
   const [plans, setPlans] = useState<Plan[]>([]);
   const [billingMode, setBillingMode] = useState<BillingMode | null>(null);
   const [checkoutResult, setCheckoutResult] = useState<CheckoutResult | null>(null);
@@ -58,11 +51,12 @@ export function UpgradeWorkspace() {
   // Lowercased "name billingPeriod" of the user's active plan; "" when unknown
   // (logged out / free / fetch failed) so no card gets marked as current.
   const [activePlan, setActivePlan] = useState("");
-  const [viewerId, setViewerId] = useState<string | null>(null);
-  const [viewerResolved, setViewerResolved] = useState(false);
   const [checkoutIntents, setCheckoutIntents] = useState<
     PendingCheckoutIntent[]
   >([]);
+  const requestSerialRef = useRef(0);
+  const writingRef = useRef(false);
+  const aliveRef = useRef(true);
   // P1-D: a failed/slow plans fetch must not masquerade as "no plans". Track
   // load lifecycle so we can show a spinner and a retryable error instead of
   // a blank grid.
@@ -98,44 +92,37 @@ export function UpgradeWorkspace() {
   }, []);
 
   useEffect(() => {
-    if (!ageGateAccepted) return;
-    const controller = new AbortController();
-    void loadUpgradeViewerId(fetch, controller.signal)
-      .then((id) => {
-        if (controller.signal.aborted) return;
-        setViewerId(id);
-        setViewerResolved(true);
-        setCheckoutIntents(
-          id
-            ? readPendingCheckoutIntents(window.sessionStorage, id)
-            : [],
-        );
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) setViewerResolved(false);
-      });
-    return () => controller.abort();
-  }, [ageGateAccepted]);
+    aliveRef.current = true;
+    return () => { aliveRef.current = false; requestSerialRef.current += 1; };
+  }, []);
+  useEffect(() => viewer.gate.onOwnerChange?.(() => {
+    requestSerialRef.current += 1;
+    writingRef.current = false;
+    setPendingPlan("");
+    setActivePlan("");
+    setCheckoutIntents([]);
+    setCheckoutResult({ kind: "error", message: "Your account changed. Review the current account before continuing." });
+  }), [viewer.gate]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setCheckoutIntents(viewerId
+      ? readPendingCheckoutIntents(window.sessionStorage, viewerId)
+      : []), 0);
+    return () => window.clearTimeout(timer);
+  }, [viewerId]);
 
   // Best-effort current-plan lookup; any failure simply leaves the cards unmarked.
   useEffect(() => {
-    if (!ageGateAccepted) return;
+    if (!ageGateAccepted || !viewerId) return;
     let alive = true;
     const timer = window.setTimeout(() => {
-      void loadUpgradeProfileForViewer()
-        .then((result) =>
-          result.viewer === "authenticated" && result.response.ok
-            ? result.response.json()
-            : null,
-        )
+      void gatedFetch("/api/v1/profile", { cache: "no-store" })
+        .then((response) => response.ok ? response.json() : null)
         .then((payload: unknown) => {
           if (!alive || payload === null) return;
-          const plan = parseProfileResponse(payload).subscription?.plan;
-          if (plan) {
-            setActivePlan(
-              `${plan.name} ${plan.billingPeriod}`.toLowerCase(),
-            );
-          }
+          const profile = parseProfileResponse(payload);
+          if (profile.user.id !== viewerId) return;
+          const plan = profile.subscription?.plan;
+          setActivePlan(plan ? `${plan.name} ${plan.billingPeriod}`.toLowerCase() : "");
         })
         .catch(() => undefined);
     }, 0);
@@ -143,7 +130,7 @@ export function UpgradeWorkspace() {
       alive = false;
       window.clearTimeout(timer);
     };
-  }, [ageGateAccepted]);
+  }, [ageGateAccepted, gatedFetch, viewerId, viewer.revalidation]);
 
   function persistCheckoutIntents(
     authorityViewerId: string,
@@ -158,6 +145,10 @@ export function UpgradeWorkspace() {
   }
 
   async function checkout(plan: Plan) {
+    if (writingRef.current || !viewer.identity) return;
+    writingRef.current = true;
+    const serial = ++requestSerialRef.current;
+    const isCurrent = () => aliveRef.current && serial === requestSerialRef.current;
     setPendingPlan(plan.id);
     setCheckoutResult(null);
     const autoConfirm = billingMode?.autoConfirmAvailable === true;
@@ -168,11 +159,15 @@ export function UpgradeWorkspace() {
     };
     const intentFingerprint = checkoutIntentFingerprint(intentInput);
     try {
-      let authorityViewerId = viewerId;
-      if (!viewerResolved) {
-        authorityViewerId = await loadUpgradeViewerId();
-        setViewerId(authorityViewerId);
-        setViewerResolved(true);
+      // The cookie can change before focus. Confirm the displayed owner before
+      // writing, and retain that owner's key until its result is confirmed.
+      const authority = await viewer.revalidate();
+      if (!isCurrent()) return;
+      if (!authority) throw new Error(VIEWER_UNCONFIRMED_MESSAGE);
+      const authorityViewerId = authority.kind === "user" ? authority.userId : null;
+      if (authorityViewerId !== viewerId) {
+        setCheckoutResult({ kind: "error", message: "Your account changed. Review the current account before continuing." });
+        return;
       }
       if (!authorityViewerId) {
         window.location.assign(signupUrlForCheckout(plan, returnTarget));
@@ -192,11 +187,12 @@ export function UpgradeWorkspace() {
       const pendingIntents = upsertPendingCheckoutIntent(restored, intent);
       persistCheckoutIntents(authorityViewerId, pendingIntents);
 
-      const response = await fetch("/api/v1/billing/checkout", {
+      const response = await gatedFetch("/api/v1/billing/checkout", {
         method: "POST",
         headers: {
           "content-type": "application/json",
           "idempotency-key": intent.idempotencyKey,
+          "x-idream-viewer-scope": `user:${authorityViewerId}`,
         },
         body: JSON.stringify({
           planId: plan.id,
@@ -205,6 +201,15 @@ export function UpgradeWorkspace() {
         }),
       });
       const rawPayload: unknown = await response.json().catch(() => null);
+      if (!isCurrent()) return;
+      const confirmed = await viewer.revalidate();
+      if (!isCurrent()) return;
+      if (confirmed?.kind !== "user" || confirmed.userId !== authorityViewerId) {
+        setCheckoutResult({ kind: "error", message: confirmed
+          ? "Your account changed. Review the current account before continuing."
+          : VIEWER_UNCONFIRMED_MESSAGE });
+        return;
+      }
       const error = parsePublicApiError(rawPayload);
       if (response.status === 401 || error?.code === "unauthorized") {
         window.location.assign(signupUrlForCheckout(plan, returnTarget));
@@ -262,14 +267,15 @@ export function UpgradeWorkspace() {
           url: payload.invoice.checkoutUrl,
         });
       }
-    } catch {
+    } catch (cause) {
+      if (!isCurrent() || isAbortError(cause)) return;
       setCheckoutResult({
         kind: "error",
         message:
           "Checkout state could not be verified or saved. Retry to resume the same purchase intent when the connection and browser storage are available.",
       });
     } finally {
-      setPendingPlan("");
+      if (isCurrent()) { writingRef.current = false; setPendingPlan(""); }
     }
   }
 
@@ -284,6 +290,7 @@ export function UpgradeWorkspace() {
           Visit the Dreamcoin Store
         </Link>
       </p>
+      {viewer.error && <p className="mx-auto mb-5 max-w-5xl text-pink-200" role="alert">{viewer.error} <button className="ml-3 underline" onClick={() => void viewer.revalidate()} type="button">Retry account check</button></p>}
       {plansState === "loading" && (
         <p
           aria-live="polite"
@@ -400,7 +407,8 @@ export function UpgradeWorkspace() {
               disabled={
                 pendingPlan !== "" ||
                 isActive ||
-                !returnTargetReady
+                !returnTargetReady ||
+                !viewer.identity
               }
               onClick={() => checkout(plan)}
               type="button"
@@ -495,16 +503,4 @@ function returnTargetActionLabel(returnTarget: string) {
   if (returnTarget.startsWith("/chat/")) return "Continue chat";
   if (returnTarget.startsWith("/generate")) return "Start generating";
   return "Continue";
-}
-
-async function loadUpgradeViewerId(
-  fetcher: ViewerFetcher = fetch,
-  signal?: AbortSignal,
-) {
-  const response = await fetcher("/api/v1/me", {
-    cache: "no-store",
-    signal,
-  });
-  if (!response.ok) throw new Error("Viewer authority unavailable");
-  return parseViewerAuthorityResponse(await response.json()).user?.id ?? null;
 }

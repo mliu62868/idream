@@ -4,6 +4,8 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
 const { adminV2Request } = vi.hoisted(() => ({ adminV2Request: vi.fn() }));
 
 vi.mock("@/lib/admin-v2-api", async (importOriginal) => {
@@ -242,6 +244,145 @@ describe("Today operator actions", () => {
     expect(claims).toHaveLength(2);
     expect(claims[0][1]).toMatchObject({ method: "POST", body: { sourceId: "case-1", entityVersion: 4 } });
     expect(toast()?.textContent).toContain("Claimed 2 items");
+  });
+
+  it("keeps mixed bulk unknown and rejected items selected and preserves each request's evidence", async () => {
+    const writeText = vi.fn();
+    Object.defineProperty(globalThis.navigator, "clipboard", { configurable: true, value: { writeText } });
+    adminV2Request.mockImplementation(async (path: string, options?: { method?: string; body?: { sourceId?: string } }) => {
+      if (path.startsWith("/api/v2/admin/today/all-work")) return allWorkResponse(8);
+      if (path === "/api/v2/admin/today/claim" && options?.method === "POST") {
+        if (options.body?.sourceId === "case-a") return { ownerId: "current-operator", entityVersion: 5 };
+        if (options.body?.sourceId === "case-b") throw new AdminV2RequestError("Gateway response lost for case-b", 502, "unavailable", undefined, "bulk-req-b");
+        if (options.body?.sourceId === "case-c") throw new AdminV2RequestError("Case permission denied for case-c", 403, "forbidden", undefined, "bulk-req-c");
+      }
+      throw new Error(`Unexpected request ${options?.method ?? "GET"} ${path}`);
+    });
+    await mount([claimable("case-a"), claimable("case-b"), claimable("case-c")]);
+    const selectedInput = (id: string) => container.querySelector<HTMLInputElement>(`input[aria-label="Select case ${id}"]`)!;
+    await click(selectedInput("case-a"));
+    await click(selectedInput("case-b"));
+    await click(selectedInput("case-c"));
+    const bulk = container.querySelector('[data-testid="today-bulk-actions"]')!;
+    await click(buttons(bulk).find((button) => button.textContent?.includes("Claim")));
+    await settle();
+
+    const claims = adminV2Request.mock.calls.filter(([path]) => path === "/api/v2/admin/today/claim");
+    expect(claims.map(([, options]) => options.body.sourceId)).toEqual(["case-a", "case-b", "case-c"]);
+    expect.soft(toast()?.textContent).toContain("1 succeeded, 1 rejected, 1 unknown");
+    expect.soft(toast()?.textContent).toMatch(/current state.*before retrying/i);
+    expect.soft(selectedInput("case-a").checked).toBe(false);
+    expect.soft(selectedInput("case-b").checked).toBe(true);
+    expect.soft(selectedInput("case-c").checked).toBe(true);
+    expect.soft(container.querySelector('[data-testid="today-bulk-actions"]')?.textContent).toContain("2 selected");
+    await click(buttons(document.body).find((button) => button.textContent?.includes("Copy for engineering")));
+    const copied = String(writeText.mock.calls.at(-1)?.[0]);
+    for (const evidence of ["admin_case", "case-b", "bulk-req-b", "Gateway response lost for case-b", "case-c", "bulk-req-c", "Case permission denied for case-c"]) {
+      expect.soft(copied).toContain(evidence);
+    }
+  });
+
+  it("unlocks bulk actions after a rejected refresh without losing item outcomes or engineering evidence", async () => {
+    const refresh = vi.fn(async () => { throw new AdminV2RequestError("Queue refresh unavailable", 503, "unavailable", undefined, "refresh-req-1"); });
+    const writeText = vi.fn();
+    Object.defineProperty(globalThis.navigator, "clipboard", { configurable: true, value: { writeText } });
+    adminV2Request.mockImplementation(async (path: string, options?: { method?: string; body?: { sourceId?: string } }) => {
+      if (path.startsWith("/api/v2/admin/today/all-work")) return allWorkResponse(8);
+      if (path === "/api/v2/admin/today/claim" && options?.method === "POST") {
+        if (options.body?.sourceId === "case-a") return { ownerId: "current-operator", entityVersion: 5 };
+        if (options.body?.sourceId === "case-b") throw new AdminV2RequestError("Gateway response lost for case-b", 502, "unavailable", undefined, "bulk-req-b");
+        if (options.body?.sourceId === "case-c") throw new AdminV2RequestError("Case permission denied for case-c", 403, "forbidden", undefined, "bulk-req-c");
+      }
+      throw new Error(`Unexpected request ${options?.method ?? "GET"} ${path}`);
+    });
+    await act(async () => root.render(createElement(ToastProvider, null, createElement(TodayView, { data: data([claimable("case-a"), claimable("case-b"), claimable("case-c")]), workMode: "support", onPreferenceChanged: refresh }))));
+    await settle();
+    for (const checkbox of container.querySelectorAll('input[type="checkbox"]')) await click(checkbox);
+    await click(buttons(container.querySelector('[data-testid="today-bulk-actions"]')!).find((button) => button.textContent?.includes("Claim")));
+    await settle();
+
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(toast()?.textContent).toContain("1 succeeded, 1 rejected, 1 unknown");
+    expect(toast()?.textContent).toContain("The queue could not refresh. Check the current state before retrying.");
+    const remaining = container.querySelector('[data-testid="today-bulk-actions"]')!;
+    expect(remaining.textContent).toContain("2 selected");
+    for (const label of ["Claim", "Watch"]) expect(buttons(remaining).find((button) => button.textContent === label)?.disabled).toBe(false);
+    expect(adminV2Request.mock.calls.filter(([path]) => path === "/api/v2/admin/today/claim")).toHaveLength(3);
+    await click(buttons(document.body).find((button) => button.textContent?.includes("Copy for engineering")));
+    const copied = String(writeText.mock.calls.at(-1)?.[0]);
+    for (const evidence of ["admin_case", "case-b", "bulk-req-b", "case-c", "bulk-req-c", "refresh-req-1", "Queue refresh unavailable"]) expect(copied).toContain(evidence);
+  });
+
+  it("clears a restored snooze without a surviving Undo toast using the current actor preference version", async () => {
+    const item = { ...claimable("case-restored-snooze"), preferenceVersion: 7, snoozedUntil: new Date(Date.now() + 86_400_000).toISOString() };
+    const restored = data([]);
+    // Watching is an existing persistent read of watched items, including their snooze preference.
+    restored.projection.watching = { totalCount: 1, items: [item] };
+    window.history.replaceState(null, "", "/admin/today?queue=watching");
+    adminV2Request.mockImplementation(async (path: string, options?: { method?: string }) => {
+      if (path.startsWith("/api/v2/admin/today/all-work")) return allWorkResponse(0);
+      if (path === "/api/v2/admin/today/preferences" && options?.method === "PUT") return { version: 8 };
+      throw new Error(`Unexpected request ${options?.method ?? "GET"} ${path}`);
+    });
+    await act(async () => root.render(createElement(ToastProvider, null, createElement(TodayView, { data: restored, workMode: "support" }))));
+    await settle();
+    expect(toast()).toBeNull();
+    expect(buttons(document.body).some((button) => button.textContent === "Undo")).toBe(false);
+    const preview = container.querySelector('[data-testid="today-preview"]')!;
+    await click(preview.querySelector('summary[aria-label="More actions"]')!);
+    const clear = buttons(preview).find((button) => button.textContent === "Clear snooze");
+    expect(clear, "A fresh snapshot must offer a persistent way to undo snooze").toBeDefined();
+    await click(clear);
+    await settle();
+
+    const writes = adminV2Request.mock.calls.filter(([path, options]) => path === "/api/v2/admin/today/preferences" && options.method === "PUT");
+    expect(writes).toHaveLength(1);
+    expect(writes[0][1]).toMatchObject({ method: "PUT", ifMatch: 7, body: { sourceType: "admin_case", sourceId: item.sourceId, snoozedUntil: null } });
+    expect(toast()?.textContent).toContain("Snooze cleared");
+  });
+
+  it("includes snoozed work from All Work, resets paging and restores that choice after reload", async () => {
+    const snoozed = { ...claimable("case-included-snooze"), preferenceVersion: 7, snoozedUntil: new Date(Date.now() + 86_400_000).toISOString() };
+    window.history.replaceState(null, "", "/admin/today?todayTab=all&severity=high");
+    adminV2Request.mockImplementation(async (path: string) => {
+      const query = new URL(path, "http://admin.local").searchParams;
+      if (query.get("limit") === "1") return allWorkResponse(2);
+      if (query.get("includeSnoozed") === "true") return { ...allWorkResponse(2), items: [snoozed] };
+      if (query.get("cursor")) return { ...allWorkResponse(2), items: [claimable("old-page-two")] };
+      return { ...allWorkResponse(2), items: [claimable("old-page-one")], pageInfo: { endCursor: "next-snooze-cursor", hasNextPage: true } };
+    });
+    const includeInput = () => container.querySelector<HTMLInputElement>('input[aria-label="Include snoozed"]')
+      ?? [...container.querySelectorAll("label")].find((label) => label.textContent?.trim() === "Include snoozed")?.querySelector<HTMLInputElement>('input[type="checkbox"]') ?? undefined;
+    await mount([]);
+    await click(buttons(container.querySelector('[data-testid="today-all-work"]')!).find((button) => button.textContent?.includes("Next page")));
+    await settle();
+    expect(new URLSearchParams(window.location.search).get("cursor")).toBe("next-snooze-cursor");
+    const include = includeInput();
+    expect(include, "All Work must expose its actor-scoped snoozed opt-in").toBeDefined();
+    expect(include?.checked).toBe(false);
+    await click(include);
+    await settle();
+
+    const paths = adminV2Request.mock.calls.map(([path]) => String(path)).filter((path) => new URL(path, "http://admin.local").searchParams.get("limit") === "25");
+    const query = new URL(paths.at(-1)!, "http://admin.local").searchParams;
+    expect(query.get("includeSnoozed")).toBe("true");
+    expect(query.has("cursor")).toBe(false);
+    expect(query.get("severity")).toBe("high");
+    expect(new URLSearchParams(window.location.search).get("includeSnoozed")).toBe("true");
+    expect(window.history.state.pageCursors).toEqual([]);
+    expect(container.querySelector('[data-testid="today-all-work"]')?.textContent).toContain("Page 1");
+    expect(container.textContent).toContain(snoozed.sourceId);
+
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await mount([]);
+    expect(includeInput()?.checked).toBe(true);
+    const restoredPath = String(adminV2Request.mock.calls.filter(([path]) => new URL(String(path), "http://admin.local").searchParams.get("limit") === "25").at(-1)?.[0]);
+    expect(new URL(restoredPath, "http://admin.local").searchParams.get("includeSnoozed")).toBe("true");
+    expect(new URL(restoredPath, "http://admin.local").searchParams.has("cursor")).toBe(false);
+    await click(includeInput());
+    await settle();
+    expect(new URLSearchParams(window.location.search).has("includeSnoozed")).toBe(false);
   });
 
   it("says what the authority said and keeps the raw failure as evidence, not as a reason", async () => {

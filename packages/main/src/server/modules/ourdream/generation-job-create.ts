@@ -265,19 +265,27 @@ export async function createGenerationJobForUser(
   );
   const seed = body.seed ?? visualProfile?.defaultSeed ?? null;
   const presetFragment = await resolvePresetPromptFragment(body.controls, userId);
-  const prompt = buildGenerationPrompt({
-    mode: body.mode,
-    character,
-    visualProfile,
-    consistencyMode,
-    userPrompt: body.prompt,
-    presetFragment,
-    lookFragment: selectedLook ? JSON.stringify(selectedLook.appearanceDelta) : "",
-    sourceType: options.source?.sourceType,
-    sourceImageAssetId: typeof requestedSourceImageAssetId === "string"
-      ? requestedSourceImageAssetId
-      : undefined,
-  });
+  let prompt: string;
+  try {
+    prompt = buildGenerationPrompt({
+      mode: body.mode,
+      character,
+      visualProfile,
+      consistencyMode,
+      userPrompt: body.prompt,
+      presetFragment,
+      lookFragment: selectedLook ? JSON.stringify(selectedLook.appearanceDelta) : "",
+      sourceType: options.source?.sourceType,
+      sourceImageAssetId: typeof requestedSourceImageAssetId === "string"
+        ? requestedSourceImageAssetId
+        : undefined,
+    });
+  } catch (error) {
+    // A complete direction that exceeds the compiler's budget is a correctable
+    // request error, rejected before reservation or debit, not a route failure.
+    if (error instanceof RangeError) throw Errors.badRequest(error.message);
+    throw error;
+  }
   const negativePrompt =
     body.mode === "image"
       ? imageNegativePrompt(

@@ -89,12 +89,12 @@ describe("shared companion authority contracts", () => {
     expect(projectCompanionProbeDshEvidence(evidence, "normal")).toMatchObject({ ok: false, error: expect.stringContaining("execution.tools") });
   });
 
-  it("does not relabel prior-contract terminal evidence as current probe qualification", () => {
+  it.each(["companion-product-1", "companion-product-6"])("does not relabel prior-contract terminal evidence as current probe qualification (%s)", (version) => {
     const evidence = imageToolEvidence(imageReservation);
-    const historical = { ...evidence, prompt: { ...evidence.prompt, productPromptVersion: "companion-product-1" } };
+    const historical = { ...evidence, prompt: { ...evidence.prompt, productPromptVersion: version } };
     expect(projectCompanionProbeDshEvidence(historical, "normal"))
       .toMatchObject({ ok: false, error: expect.stringContaining("prompt.productPromptVersion") });
-    expect(historical.prompt.productPromptVersion).toBe("companion-product-1");
+    expect(historical.prompt.productPromptVersion).toBe(version);
   });
 
   it("accepts only contiguous, complete user-assistant rebuild exchanges", () => {

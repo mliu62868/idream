@@ -35,6 +35,24 @@ describe("group speaker mention", () => {
     expect(mentionedGroupCharacter("@Mira Vale hey", overlapping)).toBe("mira-vale");
   });
 
+  it.each(["\n", "\t", "\u00a0", "，", "："])("honors an exact name followed by %j before a longer overlapping name", separator => {
+    const overlapping = [
+      { characterId: "mira", sessionId: "member-1", name: "Mira" },
+      { characterId: "mira-vale", sessionId: "member-2", name: "Mira Vale" },
+    ];
+    expect(mentionedGroupCharacter(`@Mira${separator}你好`, overlapping)).toBe("mira");
+    expect(mentionedGroupCharacter(`@Mira Vale${separator}你好`, overlapping)).toBe("mira-vale");
+  });
+
+  it.each(["，", "："])("recognizes an unambiguous first name followed by %s", separator => {
+    expect(mentionedGroupCharacter(`@Bailey${separator}你好`, members)).toBe("bailey");
+    const ambiguous = [
+      ...members,
+      { characterId: "bailey-2", sessionId: "member-3", name: "Bailey Winters" },
+    ];
+    expect(mentionedGroupCharacter(`@Bailey${separator}你好`, ambiguous)).toBeNull();
+  });
+
   it.each([
     ["no mention at all", "Hello you two"],
     ["a mention that is not at the start", "Hey @Nova what do you think"],

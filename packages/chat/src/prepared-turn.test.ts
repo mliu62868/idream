@@ -73,6 +73,55 @@ function context(): BuiltContext {
 }
 
 describe("PreparedTurn budget", () => {
+  it("makes the frozen current user profile replace historical self-descriptions without dropping the transcript", () => {
+    const source = context();
+    source.recentMessages = [
+      { id: "previous-user", role: "user", content: "My name is Casey and I face the west balcony." },
+      { id: "previous-assistant", role: "assistant", content: "Casey, your balcony faces west." },
+      { id: "current", role: "user", content: "What is my current name and balcony direction?" },
+    ];
+    source.userPersona = { enabled: true, name: "Jules", description: "My balcony faces east.", version: 2 };
+    const prepared = compilePreparedTurn(source, "current");
+    const state = prepared.messages.find(message => message.id === "state:current")!;
+    expect(state.content).toContain("they go by Jules");
+    expect(state.content).toContain("This is their current saved profile; use it instead of earlier names or self-descriptions in the conversation history.");
+    expect(prepared.messages.find(message => message.id === "previous-user")?.content).toBe(source.recentMessages[0].content);
+    expect(prepared.messages.find(message => message.id === "previous-assistant")?.content).toBe(source.recentMessages[1].content);
+    expect(prepared.messages.findIndex(message => message.id === state.id)).toBeGreaterThan(prepared.messages.findIndex(message => message.id === "previous-assistant"));
+    expect(prepared.messages.at(-1)?.content).toBe(source.recentMessages[2].content);
+    expect(prepared.messages[0].content).not.toContain("Jules");
+    expect(source.userPersona.version).toBe(2);
+
+    source.userPersona = { ...source.userPersona, enabled: false };
+    const disabled = compilePreparedTurn(source, "current").messages.find(message => message.id === "state:current")!.content;
+    expect(disabled).not.toContain("Jules");
+    expect(disabled).not.toContain("current saved profile");
+  });
+
+  it.each(["Please acknowledge in one short sentence.", "Please give a detailed thirty-step plan."])(
+    "keeps current length requests above the default while preserving Brief and pinned authority: %s",
+    (request) => {
+      const source = context();
+      source.experience = { version: 1, responseLength: "short", interactionIntensity: "balanced", sceneGeneration: "follow" };
+      source.contextDirectives = [{ id: "instruction", kind: "custom_instruction", version: 1, content: "Keep replies concise and ask before choosing an action." }];
+      source.recentMessages = [{ id: "current", role: "user", content: request }];
+      const prepared = compilePreparedTurn(source, "current");
+      const system = prepared.messages.find(message => message.role === "system")!.content;
+      expect(system).toContain("follow the length in their current request, including a single sentence or a longer reply");
+      expect(system).toContain("otherwise follow their saved length preference");
+      expect(system).toContain("With neither, use two to five sentences unless the scene calls for more");
+      expect(prepared.messages.find(message => message.id === "preferences:current")?.content).toContain("Keep replies to one to three sentences.");
+      expect(prepared.messages.at(-1)?.content).toBe(request);
+      expect(prepared.trace.productPromptVersion).toBe(COMPANION_PRODUCT_PROMPT_VERSION);
+      expect(prepared.trace.soulFingerprint).toBe(source.persona.soulFingerprint);
+      expect(prepared.trace.characterContentVersionId).toBe(source.persona.characterContentVersionId);
+      expect(prepared.profile.answerMaxOutputTokens).toBe(512);
+      expect(prepared.tools).toEqual([]);
+      expect(prepared.requiredAction).toBeNull();
+      expect(prepared.context.experience).toEqual(source.experience);
+    },
+  );
+
   it.each([false, true].flatMap(memoryEnabled => ["text", "native", "json"].map(mode => ({ memoryEnabled, mode }))))(
     "delivers saved preferences outside quoted facts without granting authority (memory=$memoryEnabled, mode=$mode)",
     async ({ memoryEnabled, mode }) => {

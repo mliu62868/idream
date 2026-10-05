@@ -97,7 +97,7 @@ export function CharacterAssetStudio({
   commitProjectMutation: CharacterAssetProjectMutation;
   productionOnly?: boolean;
 }) {
-  const { locale, t } = useAdminI18n();
+  const { locale, t, value } = useAdminI18n();
   const subject = resolveCharacterAssetSubject({
     draftName: data.preview.draft?.name,
     draftDescription: data.preview.draft?.description,
@@ -460,7 +460,7 @@ export function CharacterAssetStudio({
           // SPEC: 失败的是不是「刚提交、还在等投影」的那一条，决定它进旁注还是进主错误。
           const route = runLoader.routeFailure(selectedRunId, cause);
           if (route.kind === "recoverable") {
-            setRefreshWarning(committedRunProjectionUnavailable(route.detail));
+            setRefreshWarning(committedRunProjectionUnavailable(route.detail, t));
           } else if (route.kind === "fatal") {
             setError(route.detail ?? "Creative Run could not be loaded");
           }
@@ -474,7 +474,7 @@ export function CharacterAssetStudio({
       controller.abort();
       window.clearTimeout(timer);
     };
-  }, [loadRun, runLoader, selectedRun?.id, selectedRunId]);
+  }, [loadRun, runLoader, selectedRun?.id, selectedRunId, t]);
 
   const pollingRunId = selectedRun?.id ?? null;
   const shouldPollSelectedRun =
@@ -495,14 +495,14 @@ export function CharacterAssetStudio({
         if (!context.cancelled) {
           setRefreshWarning(
             cause instanceof Error
-              ? `Automatic refresh was delayed: ${cause.message}. Retrying in the background; Refresh is also available.`
+              ? t("Automatic refresh was delayed: {detail}. Retrying in the background; Refresh is also available.", { detail: t(cause.message) })
               : "Automatic refresh was delayed. Retrying in the background; Refresh is also available.",
           );
         }
         return 8_000;
       }
     },
-    [loadRun, loadRuns, pollingRunId],
+    [loadRun, loadRuns, pollingRunId, t],
   );
   usePollingTask(
     pollingRunId && shouldPollSelectedRun ? pollAssetRun : null,
@@ -689,6 +689,7 @@ export function CharacterAssetStudio({
           setRefreshWarning(
             committedRunProjectionUnavailable(
               cause instanceof Error ? cause.message : null,
+              t,
             ),
           );
         }
@@ -773,8 +774,8 @@ export function CharacterAssetStudio({
         }
         setError(
           receipt.state === "failed"
-            ? `The saved generation command ${receipt.commandId} is terminally failed. Its key remains locked for operator investigation; do not submit a replacement Run.`
-            : `The saved generation request is ${receipt.state}. Keep this workspace locked and reconcile again after the server reaches a terminal receipt.`,
+            ? t("The saved generation command {commandId} is terminally failed. Its key remains locked for operator investigation; do not submit a replacement Run.", { commandId: receipt.commandId ?? "—" })
+            : t("The saved generation request is {state}. Keep this workspace locked and reconcile again after the server reaches a terminal receipt.", { state: value(receipt.state) }),
         );
       } catch (cause) {
         setError(
@@ -964,7 +965,7 @@ export function CharacterAssetStudio({
       if (!isProjectionRequestCancellation(refreshCause)) {
         setRefreshWarning(
           refreshCause instanceof Error
-            ? `The Run was created, but the latest projection could not be refreshed: ${refreshCause.message}. Choose Verify created Run to retry safely.`
+            ? t("The Run was created, but the latest projection could not be refreshed: {detail}. Choose Verify created Run to retry safely.", { detail: t(refreshCause.message) })
             : "The Run was created, but the latest projection could not be refreshed. Choose Verify created Run to retry safely.",
         );
       }
@@ -1097,8 +1098,8 @@ export function CharacterAssetStudio({
         }
         setError(
           receipt.state === "failed"
-            ? `The saved review command ${receipt.commandId} is terminally failed. Its key remains locked for operator investigation; do not submit a replacement decision.`
-            : `The saved review request is ${receipt.state}. Keep this workspace locked and reconcile again after the server reaches a terminal receipt.`,
+            ? t("The saved review command {commandId} is terminally failed. Its key remains locked for operator investigation; do not submit a replacement decision.", { commandId: receipt.commandId ?? "—" })
+            : t("The saved review request is {state}. Keep this workspace locked and reconcile again after the server reaches a terminal receipt.", { state: value(receipt.state) }),
         );
       } catch (cause) {
         setError(
@@ -1139,7 +1140,7 @@ export function CharacterAssetStudio({
       if (currentIntent.status === "committed_projection_pending") {
         setRefreshWarning(
           cause instanceof Error
-            ? `The review was committed, but verification is still pending: ${cause.message}`
+            ? t("The review was committed, but verification is still pending: {detail}", { detail: t(cause.message) })
             : "The review was committed, but verification is still pending.",
         );
       } else if (
@@ -1336,8 +1337,8 @@ export function CharacterAssetStudio({
         }
         setError(
           receipt.state === "failed"
-            ? `The saved selection command ${receipt.commandId} is terminally failed. Its key remains locked for operator investigation; do not submit a replacement selection.`
-            : `The saved selection request is ${receipt.state}. Keep this workspace locked and reconcile again after the server reaches a terminal receipt.`,
+            ? t("The saved selection command {commandId} is terminally failed. Its key remains locked for operator investigation; do not submit a replacement selection.", { commandId: receipt.commandId ?? "—" })
+            : t("The saved selection request is {state}. Keep this workspace locked and reconcile again after the server reaches a terminal receipt.", { state: value(receipt.state) }),
         );
       } catch (cause) {
         setError(
@@ -1358,7 +1359,7 @@ export function CharacterAssetStudio({
       } catch (cause) {
         setRefreshWarning(
           cause instanceof Error
-            ? `Selection authority is still refreshing: ${cause.message}`
+            ? t("Selection authority is still refreshing: {detail}", { detail: t(cause.message) })
             : "Selection authority is still refreshing.",
         );
       } finally {
@@ -1418,7 +1419,7 @@ export function CharacterAssetStudio({
       if (currentIntent.status === "committed_projection_pending") {
         setRefreshWarning(
           cause instanceof Error
-            ? `Selection was committed, but authority verification is still pending: ${cause.message}`
+            ? t("Selection was committed, but authority verification is still pending: {detail}", { detail: t(cause.message) })
             : "Selection was committed, but authority verification is still pending.",
         );
       } else if (
@@ -1554,7 +1555,7 @@ export function CharacterAssetStudio({
             });
             setSelectionMutationIntent(committedIntent);
             setMessage(
-              `Identity version ${nextIdentityVersion}, its sealed Reference Set, and the draft primary image were committed.`,
+              t("Identity version {version}, its sealed Reference Set, and the draft primary image were committed.", { version: nextIdentityVersion }),
             );
             return result;
           }
@@ -1839,7 +1840,7 @@ export function CharacterAssetStudio({
             <div className="mx-4 mb-4 flex flex-col gap-3 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)] sm:mx-5 sm:flex-row sm:items-center sm:justify-between">
               <span>
                 {t(
-                  `The active image route changed. ${data.project.draftAssetRouteAuthority.stalePurposes.length} selected asset${data.project.draftAssetRouteAuthority.stalePurposes.length === 1 ? "" : "s"} remain in history but cannot be published.`,
+                  "The active image route changed. {count} selected assets remain in history but cannot be published.", { count: data.project.draftAssetRouteAuthority.stalePurposes.length },
                 )}
               </span>
               <WorkspaceButton
@@ -1873,7 +1874,7 @@ export function CharacterAssetStudio({
         <div className="flex flex-col gap-3 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)] sm:flex-row sm:items-center sm:justify-between">
           <span>
             {t(
-              `The active image route changed. ${data.project.draftAssetRouteAuthority.stalePurposes.length} selected asset${data.project.draftAssetRouteAuthority.stalePurposes.length === 1 ? "" : "s"} remain in history but cannot be published.`,
+              "The active image route changed. {count} selected assets remain in history but cannot be published.", { count: data.project.draftAssetRouteAuthority.stalePurposes.length },
             )}
           </span>
           <WorkspaceButton
@@ -1968,7 +1969,7 @@ export function CharacterAssetStudio({
           className="rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]"
           role="status"
         >
-          {refreshWarning}
+          {t(refreshWarning)}
         </p>
       ) : null}
       <div className={characterAssetStudioLayoutClass}>
@@ -2295,7 +2296,7 @@ export function CharacterAssetStudio({
             <p className="text-sm leading-6 text-[var(--ad-text-muted)]">
               {t("Choose the image that fits this Character. Selection updates the draft; publishing updates the live Character.")}
             </p>
-            {!permissions.selectDraft ? <p className="text-sm">{t("Character editing permission is required to select an image.")}</p> : null}
+            {!permissions.selectDraft && busy === null ? <p className="text-sm">{t("Character editing permission is required to select an image.")}</p> : null}
           </aside>
         ) : null}
       </div>

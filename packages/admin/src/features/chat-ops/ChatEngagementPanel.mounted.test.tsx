@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const { adminV2Operation } = vi.hoisted(() => ({ adminV2Operation: vi.fn() }));
 vi.mock("@/lib/admin-v2-operation", () => ({ adminV2Operation }));
 import { ChatEngagementPanel } from "./ChatEngagementPanel";
+import { AdminV2RequestError } from "@/lib/admin-v2-api";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 afterEach(() => { vi.clearAllMocks(); document.body.innerHTML = ""; });
 const response = (id: string) => ({
@@ -12,6 +13,20 @@ const response = (id: string) => ({
   pageInfo: { endCursor: null, hasNextPage: false }, asOf: "2026-09-13T12:00:00.000Z", freshness: "fresh",
 });
 describe("Chat engagement operations panel", () => {
+  it("identifies a failed read without suggesting an unknown write and preserves its request ID", async () => {
+    const host = document.createElement("div"); document.body.append(host); const root = createRoot(host);
+    adminV2Operation.mockRejectedValue(new AdminV2RequestError(
+      "Engagement projection temporarily unavailable", 503, "unavailable", undefined, "admin-audit-engagement-read",
+    ));
+    await act(async () => { root.render(<ChatEngagementPanel userId="customer" characterId="character" />); });
+    await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-pressed]')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+    const alert = host.querySelector('[role="alert"]')!;
+    expect(alert.textContent).toContain("Retry to load the latest data.");
+    expect(alert.textContent).not.toContain("whether the write landed is unknown");
+    expect(alert.querySelector("details")?.textContent).toContain("admin-audit-engagement-read");
+    await act(async () => { root.unmount(); });
+  });
   it("loads on demand, filters requests, and ignores a stale response after switching views", async () => {
     const host = document.createElement("div"); document.body.append(host);
     const root = createRoot(host);

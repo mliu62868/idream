@@ -1211,6 +1211,30 @@ const mediaProvenanceSchema = z
   })
   .passthrough();
 
+const mediaIntentTargetSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("generation_job"), generationJobId: nonEmptyString }).strict(),
+  z.object({ kind: z.literal("video_sequence"), sequenceId: nonEmptyString }).strict(),
+]);
+export const mediaIntentFeedbackSchema = z.object({
+  id: nonEmptyString, dimension: z.literal("intent"), value: z.enum(["match", "mismatch"]),
+  direction: z.string().max(600).nullable(), revision: z.number().int().positive(),
+  sourceSurface: z.enum(["chat", "generator", "gallery"]), actorId: nonEmptyString,
+  mediaAssetId: nonEmptyString, target: mediaIntentTargetSchema, createdAt: timestamp,
+  eventId: nonEmptyString.optional(),
+}).strict();
+export type RuntimeMediaIntentFeedback = z.infer<typeof mediaIntentFeedbackSchema>;
+const mediaIntentFeedbackResponseSchema = successEnvelope(z.object({
+  mediaAssetId: nonEmptyString, ownerScope: nonEmptyString, target: mediaIntentTargetSchema,
+  feedback: mediaIntentFeedbackSchema.nullable(),
+}).superRefine((result, ctx) => {
+  const feedback = result.feedback;
+  if (!feedback) return;
+  const sameTarget = feedback.target.kind === result.target.kind && (feedback.target.kind === "generation_job"
+    ? result.target.kind === "generation_job" && feedback.target.generationJobId === result.target.generationJobId
+    : result.target.kind === "video_sequence" && feedback.target.sequenceId === result.target.sequenceId);
+  if (feedback.mediaAssetId !== result.mediaAssetId || `user:${feedback.actorId}` !== result.ownerScope || !sameTarget) ctx.addIssue({ code: "custom", message: "Feedback receipt authority does not match its result" });
+}));
+
 const workspaceMediaItemSchema = z
   .object({
     id: nonEmptyString,
@@ -1225,6 +1249,8 @@ const workspaceMediaItemSchema = z
     liked: z.boolean(),
     isSynthetic: z.boolean().optional(),
     canEditIdentity: z.boolean().optional(),
+    intentFeedbackAvailable: z.boolean().optional(),
+    intentFeedback: mediaIntentFeedbackSchema.nullable().optional(),
     imageEditModelIds: z.array(nonEmptyString).optional(),
     enhanceEligible: z.boolean().optional(),
     enhancement: z.object({ sourceMediaId: nonEmptyString, scale: z.literal(2) }).strict().nullish(),
@@ -1275,7 +1301,10 @@ const userPresetsResponseSchema = successEnvelope(
   z.object({ items: z.array(userPresetSchema) }),
 );
 const characterLooksResponseSchema = successEnvelope(
-  z.object({ items: z.array(characterLookSchema) }),
+  z.object({
+    items: z.array(characterLookSchema),
+    activeVisualProfileId: nonEmptyString.nullable().optional(),
+  }),
 );
 const generatorCharactersResponseSchema = successEnvelope(
   z.object({ items: z.array(publicCharacterCardSchema) }).passthrough(),
@@ -1401,6 +1430,7 @@ const chatMessageSchema = z
     /** Main pins this per Turn; a later session toggle cannot change it. */
     memoryEnabled: z.boolean().optional(),
     status: z.string().optional(),
+    replyLimitReached: z.boolean().optional(),
     replyToMessageId: nonEmptyString.nullable().optional(),
     attachments: z.array(chatAttachmentSchema).optional(),
     sceneVersion: z.number().int().nonnegative().optional(),
@@ -1808,6 +1838,10 @@ export function parseGenerationJobsResponse(payload: unknown) {
     payload,
     "generation jobs",
   ).data;
+}
+
+export function parseMediaIntentFeedbackResponse(payload: unknown) {
+  return parseContract(mediaIntentFeedbackResponseSchema, payload, "media intent feedback").data;
 }
 
 export function parseWorkspaceMediaResponse(payload: unknown) {

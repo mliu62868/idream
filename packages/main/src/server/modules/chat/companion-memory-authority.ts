@@ -309,12 +309,6 @@ export async function clearCompanionMemory(userId: string, characterId: string) 
       select: { sessionId: true, groupId: true },
     });
     if (sessions.length === 0) throw Errors.notFound("Chat relationship not found");
-    // Clear includes explicitly pinned facts. Saved interaction preferences are
-    // settings, remain visible, and can be removed separately in the same panel.
-    await tx.chatContextDirective.updateMany({
-      where: { userId, characterId, kind: "pinned_memory", status: "active" },
-      data: { status: "archived", content: "", version: { increment: 1 } },
-    });
     const sessionIds = sessions.map((session) => session.sessionId);
     const groupIds = [...new Set(sessions.flatMap(session => session.groupId ? [session.groupId] : []))];
     // Clear ends conversations containing this Character. A group cannot keep
@@ -323,6 +317,19 @@ export async function clearCompanionMemory(userId: string, characterId: string) 
       where: { userId, groupId: { in: groupIds } }, select: { sessionId: true },
     }) : [];
     const endingSessionIds = [...new Set([...sessionIds, ...affectedGroupSessions.map(session => session.sessionId)])];
+    // Call controls require an active session. The shared user lock also
+    // prevents a Call from starting between this check and the archive.
+    const liveCall = await tx.voiceCall.findFirst({
+      where: { userId, sessionId: { in: endingSessionIds }, status: { not: "ended" } },
+      select: { id: true },
+    });
+    if (liveCall) throw Errors.conflict("End your voice call before clearing this Character's memory");
+    // Clear includes explicitly pinned facts. Saved interaction preferences are
+    // settings, remain visible, and can be removed separately in the same panel.
+    await tx.chatContextDirective.updateMany({
+      where: { userId, characterId, kind: "pinned_memory", status: "active" },
+      data: { status: "archived", content: "", version: { increment: 1 } },
+    });
     const active = await tx.chatTurn.findMany({
       where: {
         sessionId: { in: endingSessionIds },

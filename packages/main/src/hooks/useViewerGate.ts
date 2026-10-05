@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } fr
 import {
   invalidateViewerAuthority,
   resolveViewerAuthority,
+  VIEWER_AUTH_CHANGE_STORAGE_KEY,
   type ViewerAuthority,
 } from "@/components/ourdream/viewer-auth";
 import {
@@ -57,9 +58,9 @@ export type ViewerIdentity =
 const ANONYMOUS: ViewerIdentity = { kind: "anonymous" };
 
 export type ViewerSession = {
-  /** `null` until the server has answered once. */
+  /** `null` until confirmed, or after an auth mutation revokes the previous answer. */
   identity: ViewerIdentity | null;
-  /** Set only while no viewer has ever been confirmed. */
+  /** Set only while the current viewer is unconfirmed. */
   error: string | null;
   /** Bumped whenever admitted reads have to run again. */
   revalidation: number;
@@ -69,7 +70,7 @@ export type ViewerSessionStore = {
   read: () => ViewerSession;
   subscribe: (listener: () => void) => () => void;
   /** Re-reads the viewer. Resolves with the confirmed identity, or null if it could not be read. */
-  revalidate: () => Promise<ViewerIdentity | null>;
+  revalidate: (fresh?: boolean) => Promise<ViewerIdentity | null>;
   /**
    * Drops the confirmed viewer, so the next subscriber resolves it again.
    *
@@ -102,6 +103,7 @@ export function createViewerSession(
 ): ViewerSessionStore {
   let session = UNRESOLVED;
   let inFlight: Promise<ViewerIdentity | null> | null = null;
+  let requestEpoch = 0;
   const listeners = new Set<() => void>();
 
   function publish(next: ViewerSession) {
@@ -127,9 +129,9 @@ export function createViewerSession(
   }
 
   function reject(message: string) {
-    // INVARIANT: a confirmed viewer survives a failed re-read. One unlucky
-    // `/api/v1/me` must not sign the page out and discard what it is showing;
-    // only a viewer that was never confirmed surfaces the failure.
+    // INVARIANT: an ordinary failed re-read preserves a confirmed viewer.
+    // An explicit auth mutation has already revoked that answer, so failure
+    // leaves the page unconfirmed with a retry instead of restoring its owner.
     if (session.identity !== null) return;
     publish({
       identity: null,
@@ -138,12 +140,23 @@ export function createViewerSession(
     });
   }
 
-  function revalidate(): Promise<ViewerIdentity | null> {
+  function revalidate(fresh = false): Promise<ViewerIdentity | null> {
+    // An auth mutation happened after an older /me may already have captured
+    // its answer. That read cannot confirm this mutation or later restore the
+    // previous owner. Ordinary focus/visibility checks still share one read.
+    if (fresh) {
+      requestEpoch += 1;
+      inFlight = null;
+      // The other tab already changed authentication. Do not keep its old
+      // private projection while the new /me is slow or unavailable.
+      publish({ identity: null, error: null, revalidation: session.revalidation + 1 });
+    }
+    const epoch = requestEpoch;
     // One tab switch fires focus and visibilitychange together, and every gate
     // on the page asks at once; they share the one read in flight.
     inFlight ??= resolve()
       .then((authority) =>
-        accept(
+        epoch === requestEpoch ? accept(
           authority.user
             ? {
                 kind: "user",
@@ -151,9 +164,10 @@ export function createViewerSession(
                 scope: `user:${authority.user.id}`,
               }
             : ANONYMOUS,
-        ),
+        ) : null,
       )
       .catch((error: unknown) => {
+        if (epoch !== requestEpoch) return null;
         reject(
           requestErrorMessage(
             error,
@@ -163,7 +177,7 @@ export function createViewerSession(
         return null;
       })
       .finally(() => {
-        inFlight = null;
+        if (epoch === requestEpoch) inFlight = null;
       });
     return inFlight;
   }
@@ -181,6 +195,7 @@ export function createViewerSession(
     },
     revalidate,
     forget() {
+      requestEpoch += 1;
       session = UNRESOLVED;
       inFlight = null;
     },
@@ -199,6 +214,10 @@ const onFocus = () => void sharedSession.revalidate();
 const onVisibilityChange = () => {
   if (document.visibilityState === "visible") void sharedSession.revalidate();
 };
+const onAuthChange = (event: StorageEvent) => {
+  if (event.key !== VIEWER_AUTH_CHANGE_STORAGE_KEY || event.storageArea !== window.localStorage) return;
+  void sharedSession.revalidate(true);
+};
 
 /**
  * INTENT: one focus listener for the whole page. Fifteen components kept their
@@ -209,12 +228,14 @@ function subscribeSharedSession(listener: () => void): () => void {
   const unsubscribe = sharedSession.subscribe(listener);
   if (domSubscribers++ === 0) {
     window.addEventListener("focus", onFocus);
+    window.addEventListener("storage", onAuthChange);
     document.addEventListener("visibilitychange", onVisibilityChange);
   }
   return () => {
     unsubscribe();
     if (--domSubscribers === 0) {
       window.removeEventListener("focus", onFocus);
+      window.removeEventListener("storage", onAuthChange);
       document.removeEventListener("visibilitychange", onVisibilityChange);
       sharedSession.forget();
     }
@@ -231,7 +252,7 @@ export type ViewerGate = {
   identity: ViewerIdentity | null;
   /** `user:<id>` while signed in, else null. */
   scope: string | null;
-  /** Set only while no viewer has ever been confirmed. */
+  /** Set only while the current viewer is unconfirmed. */
   error: string | null;
   /** Changes whenever gated reads must run again — put it in the refresh effect's deps. */
   revalidation: number;
@@ -357,9 +378,10 @@ export function useViewerGate(options?: ViewerGateOptions): ViewerGate {
   // the generation must move before a child's passive refresh effect asks for a
   // ticket, or that read goes out under the old generation and is aborted here.
   useLayoutEffect(() => {
-    // Subscription remounts temporarily forget the session. No new owner has
-    // been confirmed yet; anonymous is an explicit identity, not null.
-    if (session.identity === null) return;
+    // A subscription remount starts unresolved. An auth mutation instead
+    // revokes a previously admitted owner and must reset even mounted public
+    // resources before another viewer can be confirmed.
+    if (session.identity === null && session.revalidation === 0) return;
     const previous = seenRef.current;
     seenRef.current = session.identity;
     // The first answer is not a change: nothing private has been read yet.
@@ -373,7 +395,7 @@ export function useViewerGate(options?: ViewerGateOptions): ViewerGate {
     for (const ticket of liveRef.current) ticket.controller.abort();
     liveRef.current.clear();
     for (const reset of resetsRef.current) reset();
-  }, [session.identity]);
+  }, [session.identity, session.revalidation]);
 
   // INVARIANT: unmounting aborts what this surface still has in the air. The set
   // is read inside the cleanup, not during render, so nothing here depends on

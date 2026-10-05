@@ -55,7 +55,7 @@ export function CmsRenderer({ page, directory, label = "iDream guide" }: Readonl
           <nav className="mt-8 flex flex-wrap gap-3 text-sm text-white/75" aria-label="On this page">{body.sections.map((section, index) => <a className="underline" key={section.heading} href={`#section-${index + 1}`}>{section.heading}</a>)}</nav>
           {body.sections.map((section, index) => (
             <section
-              className="mt-10 rounded-[16px] border border-white/10 bg-[rgb(18,18,18)] p-6"
+              className="mt-10 scroll-mt-24 rounded-[16px] border border-white/10 bg-[rgb(18,18,18)] p-6"
               key={section.heading}
               id={`section-${index + 1}`}
             >

@@ -8,6 +8,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ExperimentsView } from "./ExperimentsView";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
+import { AdminI18nProvider } from "./i18n";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
   .IS_REACT_ACT_ENVIRONMENT = true;
@@ -47,6 +48,16 @@ describe("ExperimentsView lifecycle commands", () => {
     await act(async () => root.unmount());
     container.remove();
     vi.unstubAllGlobals();
+  });
+
+  it("shows a stopped experiment in Chinese after the lifecycle completes", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => Response.json({
+      ok: true, data: { items: String(input).includes("/flag-monitoring") ? [] : [{ ...runningExperiment, status: "stopped" }] },
+    })));
+    await act(async () => root.render(<AdminI18nProvider locale="zh"><ExperimentsView /></AdminI18nProvider>));
+    await waitFor(() => container.textContent?.includes(runningExperiment.key) ?? false);
+    expect(container.textContent).toContain("已停止");
+    expect(container.textContent).not.toContain("stopped");
   });
 
   it("requires a confirmation and carries the operator's own reason into the audit payload", async () => {
@@ -283,6 +294,46 @@ describe("ExperimentsView lifecycle commands", () => {
     expect(JSON.parse(String(nextDraft?.body)).salt).not.toBe(JSON.parse(String(writes[0][1]?.body)).salt);
     expect(new Headers(nextDraft?.headers).get("idempotency-key"))
       .not.toBe(new Headers(writes[0][1]?.headers).get("idempotency-key"));
+  });
+
+  it.each([
+    ["server", "The authority did not answer.", "Retry to load the latest data."],
+    ["network", "The browser could not reach the admin authority.", "Retry to load the latest data."],
+    ["permission", "Your account does not hold the permission this action needs.", "Ask an admin owner to grant it"],
+  ])("keeps %s flag-monitoring failures factual and retryable while experiment rows stay readable", async (failure, headline, recovery) => {
+    let failed = true;
+    let monitoringReads = 0;
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      if (String(input).includes("/flag-monitoring")) {
+        monitoringReads += 1;
+        if (failed && failure === "network") throw new TypeError("Network disconnected");
+        if (failed) return Response.json({ ok: false, error: {
+          code: failure === "permission" ? "forbidden" : "unavailable",
+          message: failure === "permission" ? "Missing analytics permission" : "Flag authority unavailable",
+          requestId: "request-flag-monitoring-failure",
+        } }, { status: failure === "permission" ? 403 : 503 });
+        return Response.json({ ok: true, data: { items: [{ key: "recovered.flag", enabled: true, rolloutPercent: 50 }] } });
+      }
+      return Response.json({ ok: true, data: { items: [runningExperiment], pageInfo: { hasNextPage: false, endCursor: null } } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await act(async () => root.render(<ExperimentsView />));
+    await waitFor(() => monitoringReads === 1 && pageButton("Refresh").disabled === false);
+    const panel = container.querySelector<HTMLElement>('section[aria-labelledby="flag-monitoring-heading"]')!;
+    const error = panel.querySelector<HTMLElement>('[role="alert"]');
+    expect(error).not.toBeNull();
+    expect(error?.textContent).toContain(headline);
+    expect(error?.textContent).toContain(recovery);
+    expect(container.textContent).toContain(`${runningExperiment.key} · v2`);
+    if (failure !== "permission") expect(panel.textContent).not.toContain("permission set");
+    if (failure !== "network") expect(error?.textContent).toContain("request-flag-monitoring-failure");
+    failed = false;
+    const retry = [...error!.querySelectorAll<HTMLButtonElement>("button")].find(node => node.textContent?.trim() === "Retry")!;
+    await act(async () => retry.click());
+    await waitFor(() => panel.textContent?.includes("recovered.flag") === true);
+    expect(panel.querySelector('[role="alert"]')).toBeNull();
+    expect(monitoringReads).toBe(2);
+    expect(container.textContent).toContain(`${runningExperiment.key} · v2`);
   });
 
   function mockPagedExperiments() {

@@ -1538,7 +1538,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
               </p>
             </div>
           ) : visibleItems.length > 0 ? (
-            <div className="grid gap-3 md:grid-cols-3">
+            <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
               {visibleItems.map((item, index) => (
                 <LibraryCard
                   failedImageIds={failedImageIds}
@@ -2193,7 +2193,7 @@ function LibraryCard({
           </p>
         )}
         {isMediaItem && (
-          <div className="mt-4 grid gap-3">
+          <div className="mt-4 grid min-w-0 grid-cols-1 gap-3">
             <div className="flex gap-2">
               <button
                 aria-label="Download media"
@@ -2250,9 +2250,9 @@ function LibraryCard({
               <FolderPlus className="h-3.5 w-3.5" />
               Add to collection
             </button>
-            {collectionOpen && <div className="grid gap-3 rounded-[12px] border border-white/10 bg-black/20 p-3">
+            {collectionOpen && <div className="grid min-w-0 grid-cols-1 gap-3 rounded-[12px] border border-white/10 bg-black/20 p-3">
               {(collections?.length ?? 0) > 0 && (
-                <div className="grid gap-2">
+                <div className="grid min-w-0 grid-cols-1 gap-2">
                   <div className="flex gap-2">
                     <select
                       aria-label="Existing collection"
@@ -2268,7 +2268,7 @@ function LibraryCard({
                     </select>
                     <button
                       aria-label="Add media to collection"
-                      className="inline-flex h-9 items-center justify-center rounded-full bg-[rgb(46,46,46)] px-3 text-[12px] font-bold text-white disabled:opacity-50"
+                      className="inline-flex h-9 shrink-0 items-center justify-center rounded-full bg-[rgb(46,46,46)] px-3 text-[12px] font-bold text-white disabled:opacity-50"
                       disabled={collectionBusy || (needsPublication && !publishMedia)}
                       onClick={() => void addToSelectedCollection()}
                       type="button"
@@ -2282,10 +2282,10 @@ function LibraryCard({
                   </label>}
                 </div>
               )}
-              <div className="grid gap-2">
+              <div className="grid min-w-0 grid-cols-1 gap-2">
                 <input
                   aria-label="Collection name"
-                  className="h-9 rounded-[10px] bg-[rgb(18,18,18)] px-3 text-[12px] font-semibold text-white outline-none placeholder:text-[rgb(114,113,112)]"
+                  className="h-9 w-full min-w-0 rounded-[10px] bg-[rgb(18,18,18)] px-3 text-[12px] font-semibold text-white outline-none placeholder:text-[rgb(114,113,112)]"
                   onChange={(event) => setCollectionName(event.target.value)}
                   placeholder="New collection name"
                   value={collectionName}

@@ -373,6 +373,7 @@ export const adminZhCommon: Record<string, string> = {
   "Owner ID": "负责人 ID",
   "Page": "页",
   "Page {page}": "第 {page} 页",
+  "Page position unknown": "页码未知",
   "Page {page} of {pageCount}": "第 {page} / {pageCount} 页",
   "Passed": "通过",
   "Paste from clipboard": "从剪贴板粘贴",

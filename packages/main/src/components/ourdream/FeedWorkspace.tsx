@@ -4,19 +4,22 @@ import Image from "next/image";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Flag, Heart, Images, MessageCircle, RefreshCcw, Repeat2, Share2 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   parseFeedResponse,
   type PublicFeedItem,
 } from "@/lib/public-api-contracts";
 import { shouldBypassNextImageOptimizer } from "@/lib/image-delivery";
 import { shareOrCopy } from "@/lib/utils";
+import { useViewerGate, ViewerGateError, type ViewerGate, type ViewerIdentity } from "@/hooks/useViewerGate";
+import { isAbortError, type ResourceFetcher } from "@/lib/viewer-resource-client";
 import { useAgeGateAccess } from "./AgeGateBoundary";
 import { authHrefForTarget } from "./authRedirect";
 import { countLabel } from "./workspace-helpers";
 import { feedLoadFailure, shouldApplyFeedResponse } from "./feed-load-state";
 import { useReportDialog } from "./ReportDialog";
 import { ComicDiscovery } from "./ComicCatalog";
+import { VIEWER_UNCONFIRMED_MESSAGE } from "./viewer-auth";
 
 type FeedCharacterItem = Extract<PublicFeedItem, { type: "character" }>;
 type FeedCollectionItem = Extract<PublicFeedItem, { type: "collection" }>;
@@ -33,16 +36,26 @@ type FeedActionPayload = {
     focusedItemId?: string | null;
     shareUrl?: string;
     remixUrl?: string;
+    liked?: boolean;
   };
   error?: { message?: string };
 };
 
 export function FeedWorkspace() {
+  const viewer = useViewerGate({ require: "any" });
+  // The personalized cards, cursors, optimistic actions and report dialog all
+  // belong to one confirmed actor. An account change discards the whole subtree.
+  return <FeedViewerWorkspace key={viewer.scope ?? (viewer.identity ? "anonymous" : "unconfirmed")} viewer={viewer} />;
+}
+
+function FeedViewerWorkspace({ viewer }: { viewer: ViewerGate }) {
   const { accepted: ageGateAccepted } = useAgeGateAccess();
+  const gatedFetch = viewer.fetch;
   const searchParams = useSearchParams();
   const sharedItemId = searchParams.get("item")?.trim() ?? "";
   const [items, setItems] = useState<FeedItem[]>([]);
   const [status, setStatus] = useState("");
+  const [loadStatus, setLoadStatus] = useState("");
   const { openReport, reportDialog } = useReportDialog(setStatus);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -54,6 +67,13 @@ export function FeedWorkspace() {
   const requestSerialRef = useRef(0);
   const requestControllerRef = useRef<AbortController | null>(null);
   const loadedScopeRef = useRef<string | null>(null);
+  const mountedRef = useRef(true);
+  const likePendingRef = useRef(new Set<string>());
+
+  useLayoutEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   const loadFeed = useCallback(async (cursor?: string) => {
     if (!ageGateAccepted) return;
@@ -86,6 +106,7 @@ export function FeedWorkspace() {
         cursor,
         requestedItemId,
         controller.signal,
+        gatedFetch,
       );
       if (!shouldApplyFeedResponse({
         requestSerial,
@@ -102,7 +123,7 @@ export function FeedWorkspace() {
         loadedScopeRef.current = requestedItemId;
         const nextFocusedItemId = payload.data.focusedItemId;
         setFocusedItemId(nextFocusedItemId);
-        setStatus(nextFocusedItemId ? "Showing shared dream." : "");
+        setLoadStatus(nextFocusedItemId ? "Showing shared dream." : "");
       }
       setItems((current) => (cursor ? [...current, ...fresh] : fresh));
       setLikedIds((current) => {
@@ -110,11 +131,18 @@ export function FeedWorkspace() {
         for (const item of fresh) {
           if (item.type === "character" && item.character.liked) next.add(item.id);
         }
+        // A confirmation refresh may finish before a like. Keep that optimistic
+        // choice until its own authoritative response settles or rolls it back.
+        for (const id of likePendingRef.current) {
+          if (current.has(id)) next.add(id);
+          else next.delete(id);
+        }
         return next;
       });
       setNextCursor(payload.data.nextCursor);
       setSnapshotStale(false);
     } catch (error) {
+      if (isAbortError(error)) return;
       if (!shouldApplyFeedResponse({
         requestSerial,
         currentSerial: requestSerialRef.current,
@@ -128,7 +156,7 @@ export function FeedWorkspace() {
         hasSnapshot: loadedScopeRef.current !== null,
       });
       setSnapshotStale(failure.snapshotStale);
-      setStatus(failure.status);
+      setLoadStatus(failure.status);
     } finally {
       if (!shouldApplyFeedResponse({
         requestSerial,
@@ -138,7 +166,7 @@ export function FeedWorkspace() {
       if (cursor) setLoadingMore(false);
       else setLoading(false);
     }
-  }, [ageGateAccepted, sharedItemId]);
+  }, [ageGateAccepted, gatedFetch, sharedItemId]);
 
   useEffect(() => {
     if (!ageGateAccepted) return;
@@ -154,11 +182,33 @@ export function FeedWorkspace() {
       requestControllerRef.current?.abort();
       window.removeEventListener("idream-age-gate-accepted", reload);
     };
-  }, [ageGateAccepted, loadFeed]);
+  }, [ageGateAccepted, loadFeed, viewer.revalidation]);
+
+  async function fetchForViewer(input: RequestInfo | URL, init?: RequestInit) {
+    const expected = viewer.identity;
+    const matches = (identity: ViewerIdentity | null) => expected !== null && identity !== null &&
+      expected.kind === identity.kind && (expected.kind !== "user" || (identity.kind === "user" && expected.scope === identity.scope));
+    // A cookie can move before the focus event. The request must still be for
+    // the actor whose cards the user acted on, and late receipts cannot migrate.
+    const before = await viewer.revalidate();
+    if (!mountedRef.current) throw new ViewerGateError();
+    if (!before) throw new Error(VIEWER_UNCONFIRMED_MESSAGE);
+    if (!matches(before)) throw new ViewerGateError();
+    const response = await gatedFetch(input, init);
+    const after = await viewer.revalidate();
+    if (!mountedRef.current) throw new ViewerGateError();
+    if (!after) throw new Error(VIEWER_UNCONFIRMED_MESSAGE);
+    if (!matches(after)) throw new ViewerGateError();
+    return response;
+  }
 
   async function startChat(characterId: string) {
+    if (viewer.identity?.kind === "anonymous") {
+      window.location.assign(signupUrlForFeedChat(characterId));
+      return;
+    }
     try {
-      const response = await fetch("/api/v1/chat/sessions", {
+      const response = await fetchForViewer("/api/v1/chat/sessions", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ characterId }),
@@ -167,6 +217,7 @@ export function FeedWorkspace() {
         data?: { session?: { id: string } };
         error?: { message?: string };
       };
+      if (!mountedRef.current) return;
       if (payload.data?.session?.id) {
         window.location.assign(`/chat/${payload.data.session.id}`);
         return;
@@ -179,15 +230,21 @@ export function FeedWorkspace() {
       } else {
         setStatus(payload.error?.message ?? "Could not start chat. Please try again.");
       }
-    } catch {
+    } catch (error) {
+      if (!mountedRef.current || isAbortError(error)) return;
       setStatus("Could not start chat. Please try again.");
     }
   }
 
   // 切换点赞：乐观更新 + 单飞，防止重复点击虚增计数；失败回滚。
   async function toggleLike(itemId: string) {
-    if (likePending.has(itemId)) return;
+    if (viewer.identity?.kind === "anonymous") {
+      window.location.assign(authHrefForTarget("/signup", feedItemReturnTarget(itemId)));
+      return;
+    }
+    if (likePendingRef.current.has(itemId)) return;
     const liked = likedIds.has(itemId);
+    likePendingRef.current.add(itemId);
     setLikePending((current) => new Set(current).add(itemId));
     setLikedIds((current) => {
       const next = new Set(current);
@@ -196,10 +253,11 @@ export function FeedWorkspace() {
       return next;
     });
     try {
-      const response = await fetch(`/api/v1/feed/items/${encodeURIComponent(itemId)}/like`, {
+      const response = await fetchForViewer(`/api/v1/feed/items/${encodeURIComponent(itemId)}/like`, {
         method: liked ? "DELETE" : "POST",
       });
       const payload = (await response.json()) as FeedActionPayload;
+      if (!mountedRef.current) return;
       if (!response.ok || payload.ok !== true) {
         setLikedIds((current) => {
           const next = new Set(current);
@@ -212,8 +270,16 @@ export function FeedWorkspace() {
           return;
         }
         setStatus(payload.error?.message ?? "Could not save your like. Please try again.");
+      } else {
+        setLikedIds((current) => {
+          const next = new Set(current);
+          if (payload.data?.liked ?? !liked) next.add(itemId);
+          else next.delete(itemId);
+          return next;
+        });
       }
-    } catch {
+    } catch (error) {
+      if (!mountedRef.current || isAbortError(error)) return;
       setLikedIds((current) => {
         const next = new Set(current);
         if (liked) next.add(itemId);
@@ -222,46 +288,61 @@ export function FeedWorkspace() {
       });
       setStatus("Could not save your like. Please try again.");
     } finally {
-      setLikePending((current) => {
-        const next = new Set(current);
-        next.delete(itemId);
-        return next;
-      });
+      if (mountedRef.current) {
+        likePendingRef.current.delete(itemId);
+        setLikePending((current) => {
+          const next = new Set(current);
+          next.delete(itemId);
+          return next;
+        });
+      }
     }
   }
 
   async function remix(item: FeedCharacterItem) {
     setStatus("Preparing remix...");
     try {
-      const response = await fetch(`/api/v1/feed/items/${encodeURIComponent(item.id)}/remix`, {
+      const response = await fetchForViewer(`/api/v1/feed/items/${encodeURIComponent(item.id)}/remix`, {
         method: "POST",
       });
       const payload = (await response.json()) as FeedActionPayload;
+      if (!mountedRef.current) return;
       const remixUrl = payload.data?.remixUrl;
       if (!response.ok || payload.ok !== true || !remixUrl) {
         setStatus(payload.error?.message ?? "Remix unavailable.");
         return;
       }
       window.location.assign(remixUrl);
-    } catch {
+    } catch (error) {
+      if (!mountedRef.current || isAbortError(error)) return;
       setStatus("Remix unavailable.");
     }
   }
 
   async function share(itemId: string) {
     try {
-      const response = await fetch(`/api/v1/feed/items/${encodeURIComponent(itemId)}/share`, {
+      const response = await fetchForViewer(`/api/v1/feed/items/${encodeURIComponent(itemId)}/share`, {
         method: "POST",
       });
       const payload = (await response.json()) as FeedActionPayload;
+      if (!mountedRef.current) return;
       if (!response.ok || payload.ok !== true || !payload.data?.shareUrl) {
         setStatus(payload.error?.message ?? "Share unavailable.");
         return;
       }
-      setStatus(await shareOrCopy(new URL(payload.data.shareUrl, window.location.origin).toString(), "iDream"));
-    } catch {
+      const message = await shareOrCopy(new URL(payload.data.shareUrl, window.location.origin).toString(), "iDream");
+      if (mountedRef.current) setStatus(message);
+    } catch (error) {
+      if (!mountedRef.current || isAbortError(error)) return;
       setStatus("Could not share this item. Please try again.");
     }
+  }
+
+  const displayedStatus = status || viewer.error || loadStatus;
+  function retryFeed() {
+    setStatus("");
+    if (viewer.error) void viewer.revalidate();
+    else void loadFeed();
   }
 
   return (
@@ -281,25 +362,22 @@ export function FeedWorkspace() {
           </div>
           <button
             className="inline-flex h-10 shrink-0 items-center gap-2 rounded-full bg-[rgb(36,36,36)] px-4 text-[13px] font-bold text-white"
-            disabled={loading || loadingMore}
-            onClick={() => {
-              setStatus("");
-              void loadFeed();
-            }}
+            disabled={(loading || loadingMore) && !viewer.error}
+            onClick={retryFeed}
             type="button"
           >
             <RefreshCcw className="h-4 w-4" />
             Restart
           </button>
         </div>
-        {status && (
+        {displayedStatus && (
           <p
             aria-live="polite"
             className="mb-5 rounded-[12px] bg-[rgb(36,36,36)] px-4 py-3 text-[13px] font-semibold text-[rgb(220,220,220)]"
             data-testid="feed-status"
             role="status"
           >
-            {status}
+            {displayedStatus}
           </p>
         )}
         <div
@@ -347,10 +425,10 @@ export function FeedWorkspace() {
             </article>
           ))}
         </div>
-        {loading && items.length === 0 && (
+        {loading && !viewer.error && items.length === 0 && (
           <p className="mt-6 text-[13px] font-medium text-[rgb(170,170,170)]">Loading feed…</p>
         )}
-        {!loading && items.length === 0 && !status && (
+        {!loading && items.length === 0 && !displayedStatus && (
           <div className="mt-6 rounded-[12px] border border-white/10 bg-[rgb(18,18,18)] p-6 text-center text-[13px] font-medium text-[rgb(170,170,170)]">
             No dreams yet. <Link className="underline" href="/explore">Explore characters</Link> to get started.
           </div>
@@ -360,7 +438,7 @@ export function FeedWorkspace() {
             页头的 Restart 虽然能重试，但它在手机上会被挤出视口（见同文件页头的
             min-w-0 修复），于是「出错了 + 没有出口」在小屏上同时成立。空状态本来
             就有 CTA，错误态没道理没有。 */}
-        {!loading && items.length === 0 && Boolean(status) && (
+        {(!loading || viewer.error) && items.length === 0 && Boolean(displayedStatus) && (
           <div
             className="mt-6 rounded-[12px] border border-[rgb(255,184,112)]/30 bg-[rgb(18,18,18)] p-6 text-center"
             data-testid="feed-error"
@@ -370,15 +448,12 @@ export function FeedWorkspace() {
               Feed could not load
             </p>
             <p className="mx-auto mt-2 max-w-md text-[13px] font-medium leading-6 text-[rgb(170,170,170)]">
-              {status}
+              {displayedStatus}
             </p>
             <button
               className="mt-5 inline-flex h-11 items-center justify-center rounded-full bg-white px-6 text-[13px] font-black text-[rgb(13,13,13)] disabled:opacity-60"
-              disabled={loading || loadingMore}
-              onClick={() => {
-                setStatus("");
-                void loadFeed();
-              }}
+              disabled={(loading || loadingMore) && !viewer.error}
+              onClick={retryFeed}
               type="button"
             >
               Try again
@@ -543,16 +618,17 @@ function CollectionFeedCard({
 class FeedLoadError extends Error {}
 
 async function fetchFeedPayload(
-  cursor?: string,
-  sharedItemId?: string,
-  signal?: AbortSignal,
+  cursor: string | undefined,
+  sharedItemId: string,
+  signal: AbortSignal,
+  fetcher: ResourceFetcher,
 ) {
   const params = new URLSearchParams();
   params.set("limit", String(FEED_PAGE_SIZE));
   if (cursor) params.set("cursor", cursor);
   if (sharedItemId) params.set("item", sharedItemId);
   const query = params.toString() ? `?${params.toString()}` : "";
-  const response = await fetch(`/api/v1/feed${query}`, { signal });
+  const response = await fetcher(`/api/v1/feed${query}`, { signal, cache: "no-store" });
   const payload: unknown = await response.json();
   if (!response.ok) {
     return {

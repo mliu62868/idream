@@ -31,6 +31,7 @@ describe("Community public collection pages", () => {
   function installFetcher(next: () => Response) {
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
+      if (url === "/api/v1/me") return Response.json({ ok: true, data: { user: null } });
       if (url.includes("/collections?cursor=")) return next();
       if (url.endsWith("/collections")) return collections(Array.from({ length: 20 }, (_, i) => `collection-${i + 1}`), "page+2");
       if (url.includes("/campaigns")) return Response.json({ ok: true, data: { campaigns: [] } });
@@ -65,6 +66,7 @@ describe("Community public collection pages", () => {
     let firstPage!: (value: Response) => void;
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
+      if (url === "/api/v1/me") return Response.json({ ok: true, data: { user: null } });
       if (url === "/api/v1/community/collections?collection=new-focus") return new Promise<Response>((resolve) => { firstPage = resolve; });
       if (url.includes("/collections?cursor=")) return collections(["new-last"], null);
       if (url.endsWith("/collections")) return collections(Array.from({ length: 20 }, (_, i) => `old-${i}`), "old-cursor");

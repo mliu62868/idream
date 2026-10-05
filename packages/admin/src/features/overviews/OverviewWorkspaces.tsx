@@ -7,7 +7,7 @@ import type { MetricDashboardResponse } from "@idream/shared/admin";
 import { ExternalLink } from "lucide-react";
 import type { FormEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { apiGet } from "@/components/admin/api";
+import { apiGet, AdminV2RequestError } from "@/components/admin/api";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
@@ -347,6 +347,8 @@ async function loadState<T>(
     if (request.isCurrent())
       setState((current) => ({
         ...current,
+        // An invalid URL window has no result; previous rows must not stand in for it.
+        data: cause instanceof AdminV2RequestError && cause.status === 400 ? null : current.data,
         loading: false,
         // 非 Error 的抛出物没有错误码可映射，就用调用点的兜底句子当 authority 原文。
         error: cause instanceof Error ? cause : new Error(fallback),
@@ -410,8 +412,10 @@ function WindowForm({
   onSubmit: (value: OverviewQuery) => void;
 }) {
   const { t } = useAdminI18n();
+  const invertedWindow = Boolean(draft.from && draft.to && Date.parse(draft.from) > Date.parse(draft.to));
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (invertedWindow) return;
     onSubmit(draft);
   }
   return (
@@ -443,6 +447,7 @@ function WindowForm({
       />
       <button
         className="h-10 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]"
+        disabled={invertedWindow}
         type="submit"
       >
 
@@ -456,6 +461,7 @@ function WindowForm({
 
         {t("Reset")}
       </button>
+      {invertedWindow ? <p className="w-full text-sm text-[var(--ad-danger)]" role="alert">{t("The start of the window must not be after the end.")}</p> : null}
     </form>
   );
 }

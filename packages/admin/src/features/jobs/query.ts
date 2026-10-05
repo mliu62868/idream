@@ -10,6 +10,11 @@ export type GenerationJobQueryDraft = {
   sourceType: string;
   userId: string;
   characterId: string;
+  from: string;
+  to: string;
+  profileId: string;
+  profileVersion: string;
+  recipeId: string;
   sort: GenerationJobSort;
   limit: number;
   cursor?: string;
@@ -46,10 +51,12 @@ export const generationJobLimitOptions = [10, 25, 50, 100];
 const limitOptions = generationJobLimitOptions;
 
 export type GenerationJobFilterKey =
-  | "search" | "mode" | "legacyStatus" | "provider" | "sourceType" | "userId" | "characterId" | "sort";
+  | "search" | "mode" | "legacyStatus" | "provider" | "sourceType" | "userId" | "characterId"
+  | "from" | "to" | "profileId" | "profileVersion" | "recipeId" | "sort";
 
 const filterKeys: GenerationJobFilterKey[] = [
-  "search", "mode", "legacyStatus", "provider", "sourceType", "userId", "characterId", "sort",
+  "search", "mode", "legacyStatus", "provider", "sourceType", "userId", "characterId",
+  "from", "to", "profileId", "profileVersion", "recipeId", "sort",
 ];
 
 // SPEC: 相对默认查询「改了哪几项」—— 折叠筛选面板后，芯片就是这张表。
@@ -77,6 +84,11 @@ export const defaultGenerationJobQuery: GenerationJobQueryDraft = {
   sourceType: "",
   userId: "",
   characterId: "",
+  from: "",
+  to: "",
+  profileId: "",
+  profileVersion: "",
+  recipeId: "",
   sort: "created_desc",
   limit: 25,
   cursor: undefined,
@@ -91,6 +103,11 @@ export function buildGenerationJobQuery(query: GenerationJobQueryDraft) {
   append(params, "sourceType", query.sourceType);
   append(params, "userId", query.userId);
   append(params, "characterId", query.characterId);
+  append(params, "from", query.from);
+  append(params, "to", query.to);
+  append(params, "profileId", query.profileId);
+  append(params, "profileVersion", query.profileVersion);
+  append(params, "recipeId", query.recipeId);
   params.set("sort", query.sort);
   params.set("limit", String(query.limit));
   append(params, "cursor", query.cursor);
@@ -127,6 +144,12 @@ export function parseGenerationJobQuery(params: URLSearchParams): GenerationJobQ
     sourceType: params.get("sourceType")?.trim() ?? "",
     userId: params.get("userId")?.trim() ?? "",
     characterId: params.get("characterId")?.trim() ?? "",
+    // Preserve bounds for authority validation: an invalid deep link must not widen to all time.
+    from: params.get("from")?.trim() ?? "",
+    to: params.get("to")?.trim() ?? "",
+    profileId: params.get("profileId")?.trim() ?? "",
+    profileVersion: params.get("profileVersion")?.trim() ?? "",
+    recipeId: params.get("recipeId")?.trim() ?? "",
     sort: sort && sortOptions.includes(sort) ? sort : "created_desc",
     limit: limitOptions.includes(limit) ? limit : 25,
     cursor: params.get("cursor")?.trim() || undefined,

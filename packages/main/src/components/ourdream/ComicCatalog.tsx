@@ -64,15 +64,16 @@ export function ComicDiscovery({ creatorId, mine = false, compact = false }: { c
     const start = window.setTimeout(() => void load(), 0);
     return () => window.clearTimeout(start);
   }, [accepted, load, viewer.revalidation]);
+  const failure = error || viewer.error;
   return <section aria-label={mine ? "Your Comics" : "Comics"} className="my-8">
     <header className="mb-5 flex flex-wrap items-center justify-between gap-4">
       <div><h2 className={`${compact ? "text-2xl" : "text-4xl"} font-black`}>{mine ? "Your Comics" : "Comics"}</h2>
         <p className="mt-2 max-w-prose text-sm text-neutral-300">{mine ? "Build a story from your Gallery. Arrange chapters, save a draft, then submit it for publication." : "Stories from the community, one page at a time."}</p></div>
       <Link className={comicButton} href={mine ? "/creator-studio/comics/new" : compact ? "/comics" : "/creator-studio/comics"}>{mine ? "Create Comic" : compact ? "Browse Comics" : "Create a Comic"}</Link>
     </header>
-    {error && <p className="mb-4 text-sm text-pink-200" role="alert">{error} <button className="ml-2 underline" onClick={() => void load()} type="button">Retry</button></p>}
-    {loading && !items.length && <p role="status" className="py-8 text-neutral-300">Loading Comics…</p>}
-    {!loading && !error && !items.length && <p className="rounded-xl border border-white/10 px-5 py-8 text-neutral-300">{mine ? "Your first story starts here. Create a Comic and add images from your Gallery." : "No published Comics yet. New stories will appear here."}</p>}
+    {failure && <p className="mb-4 text-sm text-pink-200" role="alert">{failure} <button className="ml-2 underline" onClick={() => { if (viewer.error) void viewer.revalidate(); else void load(); }} type="button">Retry</button></p>}
+    {loading && !failure && !items.length && <p role="status" className="py-8 text-neutral-300">Loading Comics…</p>}
+    {!loading && !failure && !items.length && <p className="rounded-xl border border-white/10 px-5 py-8 text-neutral-300">{mine ? "Your first story starts here. Create a Comic and add images from your Gallery." : "No published Comics yet. New stories will appear here."}</p>}
     <ul className={`grid gap-5 ${compact ? "sm:grid-cols-2 xl:grid-cols-4" : "sm:grid-cols-2 xl:grid-cols-3"}`}>
       {items.map((item) => <li key={item.id} className="min-w-0">
         <Link className="group block" href={mine ? `/creator-studio/comics/${encodeURIComponent(item.id)}` : `/comics/${encodeURIComponent(item.id)}`}>

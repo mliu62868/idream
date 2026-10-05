@@ -11,8 +11,8 @@ export type PageInfo = { endCursor: string | null; hasNextPage: boolean };
 export const emptyPageInfo: PageInfo = { endCursor: null, hasNextPage: false };
 
 export type PaginationPosition = {
-  /** 1-based page the operator is looking at. */
-  page: number;
+  /** 1-based page, or null when a restored cursor has no known position. */
+  page: number | null;
   pageSize: number;
   /** Rows actually returned for this page — the upper bound when the total is unknown. */
   rowCount: number;
@@ -21,10 +21,10 @@ export type PaginationPosition = {
 };
 
 // SPEC: 「第 N 条–第 M 条 / 共 X 条」与「第 N / M 页」的算法在这里，单独可测。
-// INVARIANT: totalCount 为 null 时不编造总页数 —— 游标分页的后端确实不知道。
+// INVARIANT: 游标未绑定首页起点时，不编造页码或条目位置；totalCount 未知时不编造总页数。
 export function paginationSummary({ page, pageSize, rowCount, totalCount = null }: PaginationPosition) {
-  const from = rowCount === 0 ? 0 : (page - 1) * pageSize + 1;
-  const to = (page - 1) * pageSize + rowCount;
+  const from = page === null ? null : rowCount === 0 ? 0 : (page - 1) * pageSize + 1;
+  const to = page === null ? null : (page - 1) * pageSize + rowCount;
   const pageCount = totalCount === null ? null : Math.max(1, Math.ceil(totalCount / pageSize));
   return { from, to, pageCount };
 }
@@ -72,7 +72,7 @@ export function Pagination({
     >
       <div className="min-w-0 space-y-1">
         <p className="text-xs text-[var(--ad-text-muted)]">
-          {loading && rowCount === 0 ? t("Loading…") : totalCount === null
+          {loading && rowCount === 0 ? t("Loading…") : from === null || to === null || totalCount === null
             ? t("Showing {count} rows", { count: rowCount })
             : t("Showing {from}–{to} of {total}", { from, to, total: totalCount })}
         </p>
@@ -94,7 +94,7 @@ export function Pagination({
           </label>
         ) : null}
         <span className="text-xs tabular-nums text-[var(--ad-text-muted)]">
-          {pageCount === null ? t("Page {page}", { page }) : t("Page {page} of {pageCount}", { page, pageCount })}
+          {page === null ? t("Page position unknown") : pageCount === null ? t("Page {page}", { page }) : t("Page {page} of {pageCount}", { page, pageCount })}
         </span>
         <button className={buttonClass} disabled={loading || !hasPrevious} onClick={onPrevious} type="button">
           <ChevronLeft className="h-4 w-4" />{previousLabel ?? t("Previous page")}

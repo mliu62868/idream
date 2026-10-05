@@ -163,8 +163,8 @@ export class BackendImageModel implements ImageModel {
     const workflowControlSlots = resolveWorkflowControlSlots(descriptor, input.controls);
     let prompt = input.prompt;
     if (descriptor.workflowKey === "qwen-image-edit-multi-reference") {
-      // The scene is encoded first, independently of the caller's reference order.
-      prompt = `Edit <image1>, the source image. Replace the person's face and hair in <image1> with <image2>'s exact identity, facial features, hair and skin details. Preserve <image1>'s framing, pose, clothes, background and lighting except for the requested changes. <image2> is an identity reference only; do not copy its scene, pose or clothes.\n\n${prompt}`;
+      // The source is encoded first; its identity reference must not force unrelated face/hair edits.
+      prompt = `Edit <image1>, the source image. Apply only the requested changes. Preserve <image1>'s identity, face, hair, framing, pose, clothes, background and lighting unless the requested edit explicitly changes them. <image2> is an identity reference only; it identifies the same person. Do not copy its scene, pose or clothes.\n\n${prompt}`;
     } else if (descriptor.workflowKey === "qwen-image-edit-multi-identity") {
       const lookReference = input.referenceImages?.some((reference) => reference.role === "look_reference");
       prompt = `The person in <image1> is the subject: preserve their face, facial features, hair and skin details. ${lookReference ? "<image2> is a look reference for the requested clothing and styling; preserve the identity from <image1>." : "<image2> is a supporting reference of the same person, not a second subject."} The references do not define the new scene, pose or background.\n\n${prompt}`;

@@ -63,7 +63,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
   const [codes, setCodes] = useState<AuthorityState>(emptyAuthority);
   const [referrals, setReferrals] = useState<AuthorityState>(emptyAuthority);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
-  // 游标分页没有页码，只有「上一页用的是哪个游标」。这条轨迹就是 Pagination 的第 N 页。
+  // 游标轨迹保留上一页；只有从首页空游标起算时，轨迹长度才能证明页码。
   const [trails, setTrails] = useState<PromoTrails>(emptyTrails);
   const gates = useRef({
     codes: createLatestRequestGate(),
@@ -726,19 +726,21 @@ function Pager({
   state: AuthorityState;
   trail: string[];
 }) {
+  const { t } = useAdminI18n();
   // 还没拿到过任何一页时不画分页条 —— 那时连「有没有下一页」都不知道。
   if (!state.rows) return null;
   return (
     <Pagination
       hasNext={Boolean(state.pageInfo.hasNextPage && state.pageInfo.endCursor)}
-      hasPrevious={trail.length > 0}
+      hasPrevious={Boolean(cursor)}
       loading={state.loading}
       onNext={() => {
         if (!state.pageInfo.endCursor) return;
         onNavigate(state.pageInfo.endCursor, [...trail, cursor]);
       }}
       onPrevious={() => onNavigate(trail.at(-1) ?? "", trail.slice(0, -1))}
-      page={trail.length + 1}
+      previousLabel={cursor && trail.length === 0 ? t("Back to first page") : undefined}
+      page={!cursor ? 1 : trail[0] === "" ? trail.length + 1 : null}
       pageSize={PROMO_PAGE_SIZE}
       rowCount={state.rows.length}
     />

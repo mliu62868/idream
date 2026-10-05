@@ -1,5 +1,7 @@
 import type { Prisma } from "@prisma/client";
+import { CHARACTER_CANONICAL_PORTRAIT_IDENTITY_PROMPT } from "@idream/shared/admin";
 import { isRecord } from "@/server/lib/request-json";
+import { characterVisualProfileSnapshotHash } from "../admin-v2/characters/release-snapshot";
 import { pruneUndefined } from "./json-values";
 import type {
   GenerationPromptCharacter,
@@ -7,7 +9,9 @@ import type {
 } from "./generation-character-authority";
 import {
   assembleIdentityPrompt,
+  IDENTITY_ASSEMBLER_VERSION,
   toTraitRecord,
+  traitsHashOf,
   type IdentityTraits,
 } from "./identity-assembler";
 import type {
@@ -150,9 +154,14 @@ export function buildGenerationPrompt(input: {
   sourceImageAssetId?: string;
 }) {
   const chat = isChatContinuitySource(input.sourceType);
-  const userPrompt = chat
+  const look = requirePromptBudget(cleanPromptText(input.lookFragment, Infinity), 500);
+  const userPrompt = chat || look
     ? requirePromptBudget(input.userPrompt?.trim() ?? "", 900)
     : cleanPromptText(input.userPrompt, 900);
+  const preset = look
+    ? requirePromptBudget(cleanPromptText(input.presetFragment, Infinity), 500)
+    : cleanPromptText(input.presetFragment, 500);
+  const portraitLook = input.mode === "image" && input.character && !input.sourceImageAssetId ? look : "";
   const base =
     input.mode === "image"
       ? buildImageGenerationPrompt({
@@ -162,13 +171,14 @@ export function buildGenerationPrompt(input: {
           userPrompt,
           sourceType: input.sourceType,
           sourceImageAssetId: input.sourceImageAssetId,
+          lookFragment: portraitLook,
+          presetFragment: portraitLook ? preset : "",
         })
       : buildVideoGenerationPrompt(input.character, userPrompt);
-  const preset = cleanPromptText(input.presetFragment, 500);
-  const look = cleanPromptText(input.lookFragment, 500);
-  const compiled = [base, look ? `Active look: ${look}` : null, preset ? `Scene details: ${preset}` : null]
+  const compiled = [base, look && !portraitLook ? `Active look: ${look}` : null, preset && !portraitLook ? `Scene details: ${preset}` : null]
     .filter(Boolean).join(". ");
   if (chat && compiled.length > 2_000) throw new RangeError("The complete Chat image facts and pinned identity exceed the 2000-character generation budget");
+  if (look && compiled.length > 2_000) throw new RangeError("The complete image facts, active Look and pinned identity exceed the 2000-character generation budget");
   return chat ? compiled : clampPrompt(compiled, 2_000);
 }
 
@@ -179,6 +189,8 @@ function buildImageGenerationPrompt(input: {
   userPrompt: string;
   sourceType?: string;
   sourceImageAssetId?: string;
+  lookFragment: string;
+  presetFragment: string;
 }) {
   const request =
     input.userPrompt ||
@@ -214,10 +226,13 @@ function buildImageGenerationPrompt(input: {
 
   const character = input.character;
   const visualProfile = input.visualProfile;
+  const lookIdentity = input.lookFragment && visualProfile
+    ? sealedLookIdentity(visualProfile, character.id)
+    : null;
   const presentation = [
     "adult",
-    cleanPromptText(character.gender, 80),
-    cleanPromptText(character.style, 80),
+    cleanPromptText(lookIdentity?.gender ?? character.gender, 80),
+    cleanPromptText(lookIdentity?.style ?? character.style, 80),
   ].filter(Boolean);
   // INTENT: 一个角色只有一种描述法。Release 有没有 pin 身份，决定的是**走不走参考图路由**
   // （那是 Release 权威，不在这里）；它不该决定这个角色在提示词里被怎么描述。此前没有
@@ -226,15 +241,25 @@ function buildImageGenerationPrompt(input: {
   // 控件，对 16 个公开角色里的 15 个逐字节无效，点了等于没点。
   // 标签保持两种，因为它们说的是两件不同的真事：pin 了 Visual Profile 时那段文字是密封
   // 版本化的，确实"锁定"；没 pin 时只是从角色内容现推的描述，叫 locked 就是撒谎。
-  const direction = visualDirectionOf(character);
-  const identityPrompt = visualProfile
+  const direction = lookIdentity
+    ? { anchor: CHARACTER_CANONICAL_PORTRAIT_IDENTITY_PROMPT, stableTraits: [] }
+    : visualDirectionOf(character);
+  const identityPrompt = lookIdentity?.identityPrompt ?? (visualProfile
     ? cleanPromptText(visualProfile.identityPrompt, 900)
-    : assembleIdentityPrompt(direction.traits).identityPrompt;
+    : assembleIdentityPrompt(visualDirectionOf(character).traits).identityPrompt);
   const identityLabel = visualProfile ? "Locked identity" : "Character identity";
 
   const mandatory = [
-      `High quality in-character portrait photo of ${cleanPromptText(character.name, 120)}`,
+      `High quality in-character portrait photo of ${cleanPromptText(lookIdentity?.name ?? character.name, 120)}`,
       presentation.length ? `Subject: ${presentation.join(", ")}` : null,
+      // Preserve sealed stable facts. A guarded derived cache is projected above;
+      // manual or unknown identities keep their original text and receive the
+      // current Look/Moment priority rules without rewriting sealed storage.
+      ...(input.lookFragment ? [
+        "Active look and Requested scene override baseline clothing, pose and background in identity descriptions and reference images",
+        "Preserve the same adult face, age, hair, eye color, skin and body proportions",
+        "Scene details apply only where they do not conflict with the Active look or Requested scene",
+      ] : []),
       identityPrompt ? `${identityLabel}: ${identityPrompt}` : null,
       direction.anchor ? `Visual identity anchor: ${direction.anchor}` : null,
       direction.stableTraits.length
@@ -246,18 +271,74 @@ function buildImageGenerationPrompt(input: {
       // yacht biography competing with a conservatory). Identity comes from
       // the pinned visual facts above; the moment comes from the request.
       `Requested scene: ${request}`,
+      input.lookFragment ? `Active look: ${input.lookFragment}` : null,
+      input.presetFragment ? `Scene details: ${input.presetFragment}` : null,
     ]
       .filter(Boolean)
       .join(". ");
   const finish = "single coherent subject, face and body matching the character, expressive eyes, natural pose, well-lit visible face, properly exposed, sharp focus, detailed skin and hair, clean photographic composition";
-  if (isChatContinuitySource(input.sourceType)) {
-    if (mandatory.length > 2_000) throw new RangeError("The complete Chat image facts and pinned identity exceed the 2000-character generation budget");
+  if (isChatContinuitySource(input.sourceType) || input.lookFragment) {
+    if (mandatory.length > 2_000) throw new RangeError(isChatContinuitySource(input.sourceType)
+      ? "The complete Chat image facts and pinned identity exceed the 2000-character generation budget"
+      : "The complete image facts, active Look and pinned identity exceed the 2000-character generation budget");
     // Photographic polish may be omitted, never a required visual fact.
     return mandatory.length + finish.length + 2 <= 2_000
       ? `${mandatory}. ${finish}`
       : mandatory;
   }
   return clampPrompt(`${mandatory}. ${finish}`, 2_000);
+}
+
+/**
+ * A derived identity cache may include its original scene in face.prompt and
+ * premise fields. Only a new portrait with a Look projects sealed stable facts;
+ * manual/unknown/stale profiles retain their original prompt. JSONB may reorder
+ * capped v1 prompt lines, so provenance and canonical hashes decide derivation,
+ * not raw prompt byte equality. The full canonical portrait protects facial
+ * geometry and marks that were described only in that scene-shaped container.
+ *
+ * Anchor candidates do not prove dispatch authority. The caller still locks and
+ * validates the exact reference revision and available media before admission.
+ */
+function sealedLookIdentity(profile: GenerationVisualProfile, characterId: string) {
+  const adapter = isRecord(profile.adapterRefs) ? profile.adapterRefs : {};
+  const identity = isRecord(adapter.identity) ? adapter.identity : {};
+  if (identity.source !== "derived" || identity.assemblerVersion !== IDENTITY_ASSEMBLER_VERSION ||
+      profile.characterId !== characterId || !Number.isInteger(profile.version) || profile.version < 1 ||
+      !Array.isArray(profile.anchorAssetIds) || !profile.anchorAssetIds.some(assetId => typeof assetId === "string" && assetId.trim())) return null;
+  const traits: IdentityTraits = {
+    face: toTraitRecord(profile.faceTraits), hair: toTraitRecord(profile.hairTraits),
+    body: toTraitRecord(profile.bodyTraits), signature: toTraitRecord(profile.signatureTraits),
+    style: toTraitRecord(profile.styleTraits),
+  };
+  if (identity.traitsHash !== traitsHashOf(traits) ||
+      !profile.immutableHash || characterVisualProfileSnapshotHash(profile) !== profile.immutableHash) return null;
+
+  const without = (record: Record<string, string>, excluded: readonly string[]) =>
+    Object.fromEntries(Object.entries(record).filter(([key]) => !excluded.includes(key)));
+  const face = without(traits.face, ["prompt"]);
+  const signature = without(traits.signature, ["description", "firstMessage", "detailsMarkdown"]);
+  const { name, age, gender, style } = traits.style;
+  const ageNumber = Number(age);
+  if (![name, age, gender, style].every(value => typeof value === "string" && value.trim()) ||
+      !Number.isInteger(ageNumber) || ageNumber < 18 ||
+      ![face, traits.hair, traits.body].every(group => Object.values(group).some(value => value.trim()))) return null;
+
+  // Keep every unknown non-premise trait, including full hair/body descriptions.
+  // The outer compiler rejects overflow rather than the v1 assembler's line and
+  // value caps silently dropping a distinguishing mark or required stable tail.
+  const details = [
+    ["Appearance face", face], ["Appearance hair", traits.hair],
+    ["Appearance body", traits.body], ["Character detail signature", signature],
+  ] as const;
+  const identityPrompt = [
+    `${cleanPromptText(name, Infinity)}, adult ${cleanPromptText(gender, Infinity)} companion`,
+    `${cleanPromptText(age, Infinity)} years old`, `${cleanPromptText(style, Infinity)} visual style`,
+    ...details.flatMap(([label, group]) => Object.entries(group)
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+      .map(([key, value]) => `${label} ${cleanPromptText(key, Infinity)}: ${cleanPromptText(value, Infinity)}`)),
+  ].join("; ");
+  return { name, gender, style, identityPrompt };
 }
 
 /**

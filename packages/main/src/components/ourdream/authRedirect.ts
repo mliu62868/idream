@@ -35,9 +35,16 @@ const allowedAuthRedirectPrefixes = [
 
 const authRoutes = new Set<string>(["/login", "/signup"]);
 
-export function authHrefForTarget(route: AuthRoute, target: string | null) {
-  if (!target) return route;
-  return `${route}?next=${encodeURIComponent(target)}`;
+export function authHrefForTarget(route: AuthRoute, target: string | null, referralCode?: string) {
+  const query = [];
+  if (target) query.push(`next=${encodeURIComponent(target)}`);
+  const ref = referralCode?.trim();
+  if (ref) query.push(`ref=${encodeURIComponent(ref)}`);
+  return `${route}${query.length ? `?${query.join("&")}` : ""}`;
+}
+
+export function signupReferralCode(search: string) {
+  return new URLSearchParams(search).get("ref")?.trim() || undefined;
 }
 
 export function authNextTargetFromPath(
@@ -46,7 +53,12 @@ export function authNextTargetFromPath(
   hash = "",
 ) {
   if (!pathname || !pathname.startsWith("/") || pathname.startsWith("//")) return null;
-  if (pathname === "/" || authRoutes.has(pathname)) return null;
+  if (pathname === "/") return null;
+  if (authRoutes.has(pathname)) {
+    // Only first-party paths are accepted; the inert origin also rejects backslash host escapes.
+    const target = safeInternalAuthRedirect(new URLSearchParams(search).get("next"), "https://idream.invalid");
+    return target === "/" ? null : target;
+  }
 
   const normalizedSearch = search.startsWith("?") ? search.slice(1) : search;
   const normalizedHash = hash.startsWith("#") ? hash : "";

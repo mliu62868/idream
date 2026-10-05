@@ -136,7 +136,136 @@ describe("JobsView request cancellation", () => {
     expect(window.location.search).toContain(`job=${second.request.id}`);
     expect(adminV2Request).not.toHaveBeenCalled();
   });
+
+  it("restores browser page positions and clears off-page selections on back and forward", async () => {
+    window.history.replaceState(null, "", "/admin/ops/jobs?limit=10&userId=user-1&from=2026-08-01T00%3A00%3A00.000Z&to=2026-09-01T00%3A00%3A00.000Z");
+    pagedJobs();
+    await act(async () => root.render(<ToastProvider><JobsView permissions={allowed} /></ToastProvider>));
+    await waitUntil(() => rowCheckbox("page-first") !== null);
+    const firstUrl = window.location.href;
+    await click(findButton("Next page"));
+    await waitUntil(() => rowCheckbox("page-cursor-two") !== null);
+    const secondUrl = window.location.href;
+    await click(rowCheckbox("page-cursor-two"));
+    expect(container.textContent).toContain("1 selected");
+
+    await restoreUrl(firstUrl);
+    await waitUntil(() => rowCheckbox("page-first") !== null);
+    expect(pager().textContent).toContain("Page 1 of 3");
+    expect(pager().textContent).toContain("Showing 1–1 of 30");
+    expect(findButton("Previous page")?.hasAttribute("disabled")).toBe(true);
+    expect(container.textContent).not.toContain("1 selected");
+
+    await restoreUrl(secondUrl);
+    await waitUntil(() => rowCheckbox("page-cursor-two") !== null);
+    expect(pager().textContent).toContain("Page 2 of 3");
+    expect(pager().textContent).toContain("Showing 11–11 of 30");
+    expect(container.textContent).not.toContain("1 selected");
+    expect(new URLSearchParams(window.location.search).get("userId")).toBe("user-1");
+    expect(new URLSearchParams(window.location.search).get("from")).toBe("2026-08-01T00:00:00.000Z");
+    expect(adminV2Request).not.toHaveBeenCalled();
+  });
+
+  it("does not invent page positions for a shared cursor or its following pages", async () => {
+    window.history.replaceState(null, "", "/admin/ops/jobs?limit=10&cursor=cursor-two");
+    pagedJobs();
+    await act(async () => root.render(<ToastProvider><JobsView permissions={allowed} /></ToastProvider>));
+    await waitUntil(() => rowCheckbox("page-cursor-two") !== null);
+    expect(pager().textContent).toContain("Page position unknown");
+    expect(pager().textContent).toContain("Showing 1 rows");
+    expect(pager().textContent).not.toMatch(/Page \d|Showing \d+–\d+/);
+
+    await click(findButton("Next page"));
+    await waitUntil(() => rowCheckbox("page-cursor-three") !== null);
+    expect(pager().textContent).toContain("Page position unknown");
+    await click(findButton("Previous page"));
+    await waitUntil(() => rowCheckbox("page-cursor-two") !== null);
+    expect(pager().textContent).toContain("Page position unknown");
+    await click(findButton("Back to first page"));
+    await waitUntil(() => rowCheckbox("page-first") !== null);
+    expect(pager().textContent).toContain("Page 1 of 3");
+    expect(new URLSearchParams(window.location.search).has("cursor")).toBe(false);
+    expect(findButton("Previous page")?.hasAttribute("disabled")).toBe(true);
+  });
+
+  it("keeps the table selection and page when only job detail history changes", async () => {
+    window.history.replaceState(null, "", "/admin/ops/jobs?limit=10");
+    pagedJobs();
+    await act(async () => root.render(<ToastProvider><JobsView permissions={allowed} /></ToastProvider>));
+    await waitUntil(() => rowCheckbox("page-first") !== null);
+    await click(findButton("Next page"));
+    await waitUntil(() => rowCheckbox("page-cursor-two") !== null);
+    const tableUrl = window.location.href;
+    await click(rowCheckbox("page-cursor-two"));
+    await click(findButton("Details"));
+    await waitUntil(() => container.textContent?.includes("route-page-cursor-two") === true);
+    await restoreUrl(tableUrl);
+    await waitUntil(() => container.querySelector('[aria-labelledby="generation-job-detail-title"]') === null);
+    expect(pager().textContent).toContain("Page 2 of 3");
+    expect(container.textContent).toContain("1 selected");
+    expect(rowCheckbox("page-cursor-two")?.checked).toBe(true);
+    expect(adminV2Request).not.toHaveBeenCalled();
+  });
+
+  it.each(["Abort", "Retry"])("does not let a late %s receipt replace a restored query or close its new confirmation", async (action) => {
+    window.history.replaceState(null, "", "/admin/ops/jobs?limit=10");
+    pagedJobs(action === "Retry" ? "failed" : "running");
+    let finish!: (result: unknown) => void;
+    adminV2Request.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    await act(async () => root.render(<ToastProvider><JobsView permissions={allowed} /></ToastProvider>));
+    await waitUntil(() => rowCheckbox("page-first") !== null);
+    await click(findButton(action));
+    const firstDialog = await waitForDialog();
+    await type(firstDialog, "Reason (≥3)", "Old explicitly submitted intent");
+    await type(firstDialog, "Type the name to confirm", `page-first:${action === "Retry" ? "retry" : "cancel"}`);
+    await click(findButton(action === "Retry" ? "Create retry attempt" : "Cancel request", firstDialog));
+    await waitUntil(() => adminV2Request.mock.calls.length === 1);
+
+    await restoreUrl(`${window.location.origin}/admin/ops/jobs?limit=10&cursor=cursor-two`);
+    await waitUntil(() => rowCheckbox("page-cursor-two") !== null);
+    await click(findButton(action));
+    const secondDialog = await waitForDialog();
+    await type(secondDialog, "Reason (≥3)", "New current query intent");
+    const readsBeforeReceipt = apiGet.mock.calls.length;
+    await act(async () => finish({ requestId: "page-first", status: "cancelled", version: 4, refundAmount: 8 }));
+    expect(apiGet.mock.calls).toHaveLength(readsBeforeReceipt);
+    expect(rowCheckbox("page-cursor-two")).not.toBeNull();
+    expect(new URLSearchParams(window.location.search).get("cursor")).toBe("cursor-two");
+    expect(document.querySelector('[role="dialog"]')).toBe(secondDialog);
+    expect(secondDialog.querySelector<HTMLInputElement>('[aria-label="Reason (≥3)"]')!.value).toBe("New current query intent");
+    expect(adminV2Request.mock.calls).toHaveLength(1);
+  });
+
+  function pager() {
+    return container.querySelector<HTMLElement>('[data-testid="admin-pagination"]')!;
+  }
+
+  function rowCheckbox(id: string) {
+    return container.querySelector<HTMLInputElement>(`input[aria-label="Select row ${id}"]`);
+  }
+
+  function pagedJobs(status: "running" | "failed" = "running") {
+    apiGet.mockImplementation(async (path: string) => {
+      const url = new URL(path, window.location.origin);
+      if (url.pathname.startsWith("/api/v2/admin/jobs/")) return jobDetail(url.pathname.split("/").at(-1)!);
+      const cursor = url.searchParams.get("cursor");
+      const list = jobList(status);
+      return {
+        ...list,
+        items: [{ ...list.items[0]!, id: `page-${cursor || "first"}` }],
+        summary: { ...list.summary, totalCount: 30 },
+        pageInfo: { endCursor: cursor === "cursor-three" ? null : cursor ? "cursor-three" : "cursor-two", hasNextPage: cursor !== "cursor-three" },
+      };
+    });
+  }
 });
+
+async function restoreUrl(href: string) {
+  await act(async () => {
+    window.history.replaceState(window.history.state, "", href);
+    window.dispatchEvent(new PopStateEvent("popstate", { state: window.history.state }));
+  });
+}
 
 const allowed = { retry: true, cancel: true, reconcile: true };
 

@@ -4,6 +4,7 @@ import type { CharacterWorkspaceDetail } from "@idream/shared/admin";
 import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AdminI18nProvider } from "@/components/admin/i18n";
 
 const { adminV2Request } = vi.hoisted(() => ({
   adminV2Request: vi.fn<
@@ -22,20 +23,6 @@ vi.mock("@/lib/admin-v2-api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/admin-v2-api")>();
   return { ...actual, adminV2Request };
 });
-vi.mock("@/components/admin/i18n", () => ({
-  adminDateLocale: () => undefined,
-  useAdminI18n: () => ({
-    locale: "en" as const,
-    t: (value: string, values?: Readonly<Record<string, string | number>>) =>
-      Object.entries(values ?? {}).reduce(
-        (text, [key, replacement]) =>
-          text.replaceAll(`{${key}}`, String(replacement)),
-        value,
-      ),
-    value: (value: string) => value.replaceAll("_", " "),
-  }),
-}));
-
 import {
   characterWorkspaceDetail,
   withCharacterWorkspaceDetail,
@@ -253,6 +240,58 @@ describe("Character Asset Studio bootstrap route projection", () => {
     vi.restoreAllMocks();
   });
 
+  it("explains a pending first portrait and retries its committed projection in Chinese without recreating it", async () => {
+    const create = deferred<{ batch: { id: string }; replayed: boolean }>();
+    const bootstrapData = withCharacterWorkspaceDetail(data, {
+      visual: {
+        identityBootstrap: {
+          profile: {
+            profileKey: "bootstrap-profile-v1",
+            profileVersion: 1,
+            label: "First portrait profile",
+            workflowKey: "bootstrap-workflow",
+            workflowVersion: 1,
+            orientation: "4:5",
+          },
+        },
+      },
+    });
+    let detailReads = 0;
+    adminV2Request.mockImplementation(async (path, options) => {
+      if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") {
+        return create.promise;
+      }
+      if (path === "/api/v2/admin/creative/runs/chinese-first-portrait") {
+        detailReads += 1;
+        throw new Error("projection replica unavailable");
+      }
+      return { items: [], pageInfo: { endCursor: null, hasNextPage: false } };
+    });
+    await act(async () => root.render(
+      <AdminI18nProvider locale="zh">
+        <CharacterAssetStudio actorId="operator-zh" data={bootstrapData}
+          commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
+          onContinue={() => undefined} onProjectReload={async () => undefined}
+          permissions={{ read: true, create: true, review: true, selectDraft: true }} />
+      </AdminI18nProvider>,
+    ));
+    const button = (label: string) => [...container.querySelectorAll("button")]
+      .find((item) => item.textContent?.includes(label));
+    await waitUntil(() => button("生成 1 张肖像")?.disabled === false);
+    await act(async () => button("生成 1 张肖像")?.click());
+    expect(container.textContent).toContain("请等待当前图片制作操作完成。");
+    await act(async () => create.resolve({ batch: { id: "chinese-first-portrait" }, replayed: false }));
+    await waitUntil(() => detailReads === 1);
+    expect(container.textContent).toContain("首张肖像生成已提交，结果会自动显示在这里。");
+    expect(container.textContent).toContain("已创建的生成任务结果仍不可用：projection replica unavailable");
+    expect(button("核验已创建的图片任务")).toBeDefined();
+    expect(container.textContent).not.toContain("Choose Verify created Run");
+    await act(async () => button("核验已创建的图片任务")?.click());
+    await waitUntil(() => detailReads === 2);
+    expect(container.textContent).toContain("可以再次核验，无需重新创建生成任务。");
+    expect(adminV2Request.mock.calls.filter(([, options]) => options?.method === "POST")).toHaveLength(1);
+  });
+
   it.each([
     ["succeeded", "ready"],
     ["partially_succeeded", "ready"],
@@ -456,6 +495,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
     const runId = "bootstrap-to-hero-run";
     const assetId = "bootstrap-to-hero-asset";
     const referenceSetId = "bootstrap-to-hero-references";
+    const bootstrapCommit = deferred<{ referenceSetRevisionId: string }>();
     const run = {
       id: runId,
       purpose: "character_cover",
@@ -503,21 +543,24 @@ describe("Character Asset Studio bootstrap route projection", () => {
         };
       }
       if (path.endsWith("/identity-bootstrap") && options?.method === "POST") {
-        return { referenceSetRevisionId: referenceSetId };
+        return bootstrapCommit.promise;
       }
       throw new Error(`Unexpected Admin request: ${path}`);
     });
     function BootstrapJourney() {
       const [current, setCurrent] = useState(data);
+      const [writesLocked, setWritesLocked] = useState(false);
       return <CharacterAssetStudio
         actorId="operator-bootstrap"
         data={current}
-        permissions={{ read: true, create: true, review: true, selectDraft: true }}
+        permissions={{ read: true, create: !writesLocked, review: !writesLocked, selectDraft: !writesLocked }}
         onContinue={() => undefined}
         onProjectReload={async () => undefined}
         commitProjectMutation={async ({ commit, afterRefresh }) => {
+          setWritesLocked(true);
           const result = await commit();
           setCurrent(readyData);
+          setWritesLocked(false);
           afterRefresh?.();
           return { result, refreshed: true };
         }}
@@ -528,6 +571,8 @@ describe("Character Asset Studio bootstrap route projection", () => {
     const select = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Set as identity"));
     expect(select?.disabled).toBe(false);
     await act(async () => select?.click());
+    expect(container.textContent).not.toContain("Character editing permission is required to select an image.");
+    await act(async () => bootstrapCommit.resolve({ referenceSetRevisionId: referenceSetId }));
     await waitUntil(() => container.textContent?.includes("Identity bootstrap authority is verified") === true);
     const generateHero = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Generate 1 hero image"));
     expect(generateHero, "The next image must be creatable without remounting the studio").toBeDefined();

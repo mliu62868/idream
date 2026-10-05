@@ -12,10 +12,8 @@ import {
 import type { CharacterCardData } from "@/types/ourdream";
 import { useAgeGateAccess } from "./AgeGateBoundary";
 import { authHrefForTarget } from "./authRedirect";
-import {
-  fetchProtectedForViewer,
-  type ViewerFetcher,
-} from "./viewer-auth";
+import { useViewerGate, type ViewerGate } from "@/hooks/useViewerGate";
+import { isAbortError } from "@/lib/viewer-resource-client";
 
 // SPEC: /chat landing — a real hub listing the user's chat sessions (most-recent
 //       first), each linking into /chat/{id}. Empty → guide to Explore; logged-out
@@ -26,34 +24,32 @@ import {
 type HubState = "loading" | "ready" | "error" | "signed-out";
 type FeaturedState = "loading" | "ready" | "error";
 
-export function loadChatSessionsForViewer(fetcher: ViewerFetcher = fetch) {
-  return fetchProtectedForViewer(
-    "/api/v1/chat/sessions",
-    { cache: "no-store" },
-    fetcher,
-  );
+export function ChatHubWorkspace() {
+  const viewer = useViewerGate({ require: "any" });
+  return <ChatHubContent viewer={viewer} key={viewer.scope ?? (viewer.identity ? "anonymous" : "unconfirmed")} />;
 }
 
-export function ChatHubWorkspace() {
+function ChatHubContent({ viewer }: Readonly<{ viewer: ViewerGate }>) {
   const { accepted: ageGateAccepted } = useAgeGateAccess();
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [state, setState] = useState<HubState>("loading");
   const [visibleCount, setVisibleCount] = useState(50);
   const loadEpoch = useRef(0);
+  const gatedFetch = viewer.fetch;
+  const displayState = viewer.error ? "error" : state;
 
   const load = useCallback(async () => {
-    if (!ageGateAccepted) return;
+    if (!ageGateAccepted || !viewer.identity) return;
     const epoch = ++loadEpoch.current;
     setState("loading");
     try {
-      const result = await loadChatSessionsForViewer();
-      if (epoch !== loadEpoch.current) return;
-      if (result.viewer === "anonymous") {
+      if (viewer.identity.kind === "anonymous") {
         setSessions([]);
         setState("signed-out");
         return;
       }
-      const res = result.response;
+      const res = await gatedFetch("/api/v1/chat/sessions", { cache: "no-store" });
+      if (epoch !== loadEpoch.current) return;
       if (res.status === 401) {
         setSessions([]);
         setState("signed-out");
@@ -69,18 +65,19 @@ export function ChatHubWorkspace() {
       );
       setVisibleCount(50);
       setState("ready");
-    } catch {
+    } catch (error) {
+      if (isAbortError(error)) return;
       if (epoch === loadEpoch.current) setState("error");
     }
-  }, [ageGateAccepted]);
+  }, [ageGateAccepted, gatedFetch, viewer.identity]);
 
   // Defer the first fetch past a macrotask so the initial render commits before any
   // setState (matches ExploreWorkspace/ProfileWorkspace; avoids set-state-in-effect).
   useEffect(() => {
-    if (!ageGateAccepted) return;
+    if (!ageGateAccepted || !viewer.identity) return;
     const timer = window.setTimeout(() => void load(), 0);
     return () => { window.clearTimeout(timer); loadEpoch.current += 1; };
-  }, [ageGateAccepted, load]);
+  }, [ageGateAccepted, load, viewer.identity, viewer.revalidation]);
 
   return (
     <section className="px-4 py-10 md:px-[60px]">
@@ -106,7 +103,7 @@ export function ChatHubWorkspace() {
         <Link className="mt-5 inline-flex min-h-11 items-center rounded-full border border-white/20 px-5 text-sm font-bold hover:bg-white/10" href="/chat/groups">Create or open a group chat</Link>
         <div className="mt-6 grid gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
           <div className="rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-4 md:p-6">
-            {state === "loading" && (
+            {displayState === "loading" && (
               <p
                 aria-live="polite"
                 className="p-10 text-center text-[13px] font-medium text-[rgb(170,170,170)]"
@@ -117,7 +114,7 @@ export function ChatHubWorkspace() {
               </p>
             )}
 
-            {state === "error" && (
+            {displayState === "error" && (
               <div
                 aria-live="assertive"
                 className="p-10 text-center"
@@ -131,7 +128,7 @@ export function ChatHubWorkspace() {
                 </p>
                 <button
                   className="mt-6 inline-flex h-11 items-center justify-center rounded-full bg-white px-5 text-[14px] font-bold text-[rgb(13,13,13)]"
-                  onClick={() => void load()}
+                  onClick={() => { if (viewer.error) void viewer.revalidate(); else void load(); }}
                   type="button"
                 >
                   Retry
@@ -139,7 +136,7 @@ export function ChatHubWorkspace() {
               </div>
             )}
 
-            {state === "signed-out" && (
+            {displayState === "signed-out" && (
               <div className="p-10 text-center" data-testid="chat-hub-auth-required">
                 <MessageCircle className="mx-auto h-10 w-10 text-[rgb(114,113,112)]" />
                 <h2 className="mt-4 text-[22px] font-black uppercase">Sign in to see your chats</h2>
@@ -163,7 +160,7 @@ export function ChatHubWorkspace() {
               </div>
             )}
 
-            {state === "ready" && sessions.length === 0 && (
+            {displayState === "ready" && sessions.length === 0 && (
               <div className="p-10 text-center">
                 <MessageCircle className="mx-auto h-10 w-10 text-[rgb(114,113,112)]" />
                 <h2 className="mt-4 text-[22px] font-black uppercase">No chats yet</h2>
@@ -189,7 +186,7 @@ export function ChatHubWorkspace() {
               </div>
             )}
 
-            {state === "ready" && sessions.length > 0 && (
+            {displayState === "ready" && sessions.length > 0 && (
               <ul className="grid gap-3 md:grid-cols-2">
                 {sessions.slice(0, visibleCount).map((row) => (
                   <li key={row.id}>
@@ -229,21 +226,23 @@ export function ChatHubWorkspace() {
                 ))}
               </ul>
             )}
-            {state === "ready" && visibleCount < sessions.length ? (
+            {displayState === "ready" && visibleCount < sessions.length ? (
               <button className="mt-4 rounded-full bg-white/10 px-4 py-2 text-sm font-bold" onClick={() => setVisibleCount(count => count + 50)} type="button">
                 Load more chats
               </button>
             ) : null}
           </div>
 
-          {state !== "loading" ? <ChatStartPanel /> : null}
+          {displayState !== "loading" ? <ChatStartPanel viewer={viewer} /> : null}
         </div>
       </div>
     </section>
   );
 }
 
-function ChatStartPanel() {
+function ChatStartPanel({ viewer }: Readonly<{ viewer: ViewerGate }>) {
+  const gatedFetch = viewer.fetch;
+  const loadEpoch = useRef(0);
   const { accepted: ageGateAccepted } = useAgeGateAccess();
   const [featuredCharacters, setFeaturedCharacters] = useState<
     CharacterCardData[]
@@ -252,24 +251,27 @@ function ChatStartPanel() {
 
   const loadFeaturedCharacters = useCallback(async () => {
     if (!ageGateAccepted) return;
+    const epoch = ++loadEpoch.current;
     setFeaturedState("loading");
     try {
-      const response = await fetch("/api/v1/characters?sort=for-you&limit=3");
+      const response = await gatedFetch("/api/v1/characters?sort=for-you&limit=3");
       if (!response.ok) throw new Error("characters unavailable");
       const payload = parseCharacterListResponse(await response.json());
+      if (epoch !== loadEpoch.current) return;
       setFeaturedCharacters(payload.items.slice(0, 3));
       setFeaturedState("ready");
-    } catch {
+    } catch (error) {
+      if (epoch !== loadEpoch.current || isAbortError(error)) return;
       setFeaturedCharacters([]);
       setFeaturedState("error");
     }
-  }, [ageGateAccepted]);
+  }, [ageGateAccepted, gatedFetch]);
 
   useEffect(() => {
-    if (!ageGateAccepted) return;
+    if (!ageGateAccepted || !viewer.identity) return;
     const timer = window.setTimeout(() => void loadFeaturedCharacters(), 0);
-    return () => window.clearTimeout(timer);
-  }, [ageGateAccepted, loadFeaturedCharacters]);
+    return () => { window.clearTimeout(timer); loadEpoch.current += 1; };
+  }, [ageGateAccepted, loadFeaturedCharacters, viewer.identity, viewer.revalidation]);
 
   return (
     <aside

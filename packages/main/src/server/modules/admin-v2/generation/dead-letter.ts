@@ -424,7 +424,8 @@ async function stageGenerationRetry(
   } = await reserveRetryGenerationAttempt(tx, {
     requestId: input.job.id,
     expectedRequestVersion: input.job.version,
-    eligibleLatestStatuses: ["failed"],
+    // Canonical authority also permits a separately confirmed unknown failure;
+    // the immutable old Attempt must remain unknown when a new Attempt is reserved.
     dispatch: { eventType: "generation.retry.dispatch.v2" },
   });
   await writeDeadLetterAudit(tx, input.actor, input.requestId, {

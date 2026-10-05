@@ -57,6 +57,8 @@ export function RecipesDetailPage({ canWrite, id }: { canWrite: boolean; id: str
   const [saving, setSaving] = useState(false);
   const [awaitingReadback, setAwaitingReadback] = useState(false);
   const [publishReady, setPublishReady] = useState(false);
+  // Matrix readback remounts validation; this recipe-scoped selection must survive that refresh.
+  const [validationProfileId, setValidationProfileId] = useState("");
   const { feedback, reportSuccess, clearFeedback } = useWriteFeedback();
   const { guard } = useUnsavedChanges(Boolean(draft && !awaitingReadback && JSON.stringify(draft) !== JSON.stringify(editBaseline)));
 
@@ -339,7 +341,7 @@ export function RecipesDetailPage({ canWrite, id }: { canWrite: boolean; id: str
         </>
       )}
 
-      {!editing ? <RecipeValidationSection canWrite={canWrite && !awaitingReadback} key={`${row.id}:${row.updatedAt}`} recipe={row} onReady={setPublishReady} onChanged={async () => { await reload(); }} /> : null}
+      {!editing ? <RecipeValidationSection canWrite={canWrite && !awaitingReadback} key={`${row.id}:${row.updatedAt}`} recipe={row} profileId={validationProfileId} onProfileChange={setValidationProfileId} onReady={setPublishReady} onChanged={async () => { await reload(); }} /> : null}
 
       {confirmSpec ? <ConfirmDialog onClose={() => setPending(null)} spec={confirmSpec} /> : null}
     </DetailPage>

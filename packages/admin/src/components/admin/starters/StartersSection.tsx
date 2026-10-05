@@ -17,6 +17,7 @@ export function StartersSection({
   canAssist: boolean;
 }) {
   if (view.kind === "new") return <StartersNewPage canAssist={canAssist} canWrite={canWrite} />;
-  if (view.kind === "detail") return <StartersDetailPage canWrite={canWrite} id={view.id} />;
+  // INVARIANT: 模板切换创建新的详情实例，草稿、确认与迟到读取不能跨 ID 沿用。
+  if (view.kind === "detail") return <StartersDetailPage key={view.id} canWrite={canWrite} id={view.id} />;
   return <StartersListPage canWrite={canWrite} />;
 }

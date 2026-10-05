@@ -7,6 +7,8 @@ import { requestErrorMessage } from "@/components/admin/section-kit";
 import { FormPage, FormSection, Field, FormFooter, INPUT_CLASS, TEXTAREA_CLASS } from "@/components/admin/ui/FormPage";
 import { GhostButton, PrimaryButton } from "@/components/admin/ui/buttons";
 import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
+import { RequestErrorDetails } from "@/components/admin/ui/RequestErrorDetails";
+import { operatorErrorCopy } from "@/components/admin/ui/request-error-copy";
 import { SCOPES, STARTER_GENDERS, STARTER_STYLES, STARTERS_LIST, starterPayload, tagsFromText, type StarterDraft } from "./starters-api";
 
 const EMPTY_DRAFT: StarterDraft = {
@@ -25,14 +27,14 @@ export function StartersNewPage({ canWrite, canAssist }: { canWrite: boolean; ca
   const [seed, setSeed] = useState("");
   const [assisting, setAssisting] = useState(false);
   const [creating, setCreating] = useState(false);
-  const [assistError, setAssistError] = useState<string | null>(null);
+  const [assistError, setAssistError] = useState<{ message: string; cause: unknown } | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
 
   function patch(partial: Partial<StarterDraft>) {
     setDraft((current) => ({ ...current, ...partial }));
   }
 
-  // AI 辅助：一句话 seed → 填充 summary（截断 200）+ 把性格特质并入 tags（原样搬运旧单页视图逻辑）。
+  // AI 辅助填写摘要、角色细节、首条消息与美术方向；运营填写的名称与标签保留。
   async function assist() {
     if (seed.trim().length === 0) return;
     setAssisting(true);
@@ -42,19 +44,18 @@ export function StartersNewPage({ canWrite, canAssist }: { canWrite: boolean; ca
         description: string;
         advancedDetails: { detailsMarkdown: string; firstMessage: string; visualBrief: string };
       }>(
-        "/api/v2/admin/content/character-assist", "POST", { seed: seed.trim() },
+        "/api/v2/admin/content/character-assist", "POST", { seed: seed.trim(), includeNameIdeas: false },
       );
-      const summary = data.description.slice(0, 200);
       const existing = tagsFromText(draft.tags);
       patch({
-        summary,
+        summary: data.description,
         detailsMarkdown: data.advancedDetails.detailsMarkdown,
         firstMessage: data.advancedDetails.firstMessage,
         visualBrief: data.advancedDetails.visualBrief,
         tags: existing.join(", "),
       });
     } catch (assistError) {
-      setAssistError(requestErrorMessage(assistError, t));
+      setAssistError({ message: requestErrorMessage(assistError, t), cause: assistError });
     } finally {
       setAssisting(false);
     }
@@ -88,7 +89,7 @@ export function StartersNewPage({ canWrite, canAssist }: { canWrite: boolean; ca
       title={t("New starter template")}
     >
       {canWrite ? null : <PermissionNotice permission="content.template.write" />}
-      {canAssist ? <FormSection hint={t("One-line inspiration — AI fills description and tags.")} title={t("AI assist")}>
+      {canAssist ? <FormSection hint={t("One-line inspiration — AI drafts a summary, character details, first message, and art direction.")} title={t("AI assist")}>
         <div className="flex items-end gap-2 sm:col-span-2">
           <Field className="flex-1" label={t("Inspiration")}>
             <input className={INPUT_CLASS} onChange={(e) => setSeed(e.target.value)} value={seed} />
@@ -99,9 +100,10 @@ export function StartersNewPage({ canWrite, canAssist }: { canWrite: boolean; ca
           </GhostButton>
         </div>
         {assistError ? (
-          <p className="text-sm text-[var(--ad-red-text)]" role="alert">
-            {assistError}
-          </p>
+          <div className="text-sm text-[var(--ad-red-text)]" role="alert">
+            <p>{t(assistError.message)}</p>
+            <RequestErrorDetails technical={operatorErrorCopy(assistError.cause).technical} />
+          </div>
         ) : null}
       </FormSection> : null}
       <FormSection title={t("Basic info")}>

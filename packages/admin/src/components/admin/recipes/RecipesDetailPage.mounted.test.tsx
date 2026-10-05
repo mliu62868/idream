@@ -275,6 +275,62 @@ it("keeps a confirmed recipe write until a failed readback is retried, without o
   expect(field("Body").value).toBe(recipe.body);
 });
 
+it.each([true, false])("keeps the operator's test profile across matrix save, without substituting an unavailable profile (available=%s)", async (available) => {
+  const recipe = {
+    id: "recipe-profile-selection", recipeKey: "freeplay", label: "Draft matrix", mode: "image", useCase: "freeplay",
+    body: "Operator template", negativeBase: null, version: 1, status: "draft",
+    sampleMatrix: [{ prompt: "Original scene", orientation: "1:1" }], dryRunSummary: null,
+    createdAt: "2026-09-01T00:00:00.000Z", updatedAt: "2026-09-01T00:00:00.000Z",
+  };
+  const profiles = [
+    { id: "audit-batch-four", label: "Audit batch 4", mode: "image", status: "active", allowedOrientations: ["1:1"] },
+    { id: "default-image", label: "Default image", mode: "image", status: "active", allowedOrientations: ["1:1"] },
+  ];
+  const fetchMock = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async (input, init) => {
+    const path = String(input);
+    if (path.includes("/model-profiles")) return Response.json({ ok: true, data: { items: profiles.filter(profile => recipe.version === 1 || available || profile.id === "audit-batch-four") } });
+    if (path.includes("/preview")) return Response.json({ ok: true, data: {
+      fingerprint: "a".repeat(64), profileId: new URL(path, "http://localhost").searchParams.get("profileId"),
+      samples: recipe.sampleMatrix.map((sample, index) => ({ ...sample, index, negativePrompt: "", issues: [] })),
+      issues: [], validation: { status: "not_run", issues: [], jobs: [] },
+    } });
+    if (init?.method === "PATCH") {
+      Object.assign(recipe, JSON.parse(String(init.body)), { version: 2, updatedAt: "2026-09-01T00:01:00.000Z" });
+    }
+    if (path.endsWith("/commands/test-matrix")) return Response.json({ ok: true, data: { fingerprint: "a".repeat(64), jobs: [] } });
+    return Response.json({ ok: true, data: { recipe } });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  await act(async () => root.render(<RecipesDetailPage canWrite id={recipe.id} />));
+  const profileSelect = () => [...container.querySelectorAll("label")]
+    .find(label => label.querySelector("span")?.textContent === "Test profile")?.querySelector("select");
+  await waitFor(() => profileSelect()?.value === "audit-batch-four");
+  await act(async () => {
+    profileSelect()!.value = "default-image";
+    profileSelect()!.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await waitFor(() => fetchMock.mock.calls.some(([path]) => String(path).includes("profileId=default-image")));
+  await changeInput(field("Sample scene 1"), "Saved operator scene");
+  await act(async () => button("Save sample matrix")?.click());
+  await waitFor(() => recipe.version === 2 && profileSelect()?.options.length === 2);
+  expect(profileSelect()?.value).toBe("default-image");
+  if (!available) {
+    expect(container.textContent).toContain("Selected test profile is unavailable. Choose an available profile before running samples.");
+    expect(button("Run sample matrix")?.disabled).toBe(true);
+    expect(button("Verify results")?.disabled).toBe(true);
+    expect(fetchMock.mock.calls.some(([path]) => String(path).includes("/commands/test-matrix"))).toBe(false);
+    return;
+  }
+  await waitFor(() => button("Run sample matrix")?.disabled === false);
+  await act(async () => button("Run sample matrix")?.click());
+  const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+  expect(dialog.textContent).toContain("Default image");
+  expect(dialog.textContent).not.toContain("Audit batch 4");
+  await confirm(dialog, "Run sample matrix");
+  const create = fetchMock.mock.calls.find(([path]) => String(path).endsWith("/commands/test-matrix"));
+  expect(JSON.parse(String(create?.[1]?.body))).toMatchObject({ profileId: "default-image" });
+});
+
 it("offers preview, real matrix jobs and result verification before publishing without a client-invented summary", async () => {
   const recipe = {
     id: "recipe-verified", recipeKey: "freeplay", label: "Freeplay recipe", mode: "image", useCase: "freeplay",

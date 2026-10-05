@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { ArrowLeft, Flag, Heart, Loader2, MessageCircle, Share2, Sparkles, Square, Volume2 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   parseCharacterDetailResponse,
   parseCharacterLikeResponse,
@@ -23,50 +23,64 @@ import { MobileBottomNav } from "./MobileBottomNav";
 import { SiteFooter } from "./SiteFooter";
 import { apiEnvelopeErrorMessage } from "@/lib/viewer-resource-client";
 import { shareOrCopy } from "@/lib/utils";
+import { useViewerGate, ViewerGateError, type ViewerGate } from "@/hooks/useViewerGate";
+import { isAbortError } from "@/lib/viewer-resource-client";
 
 type CharacterDetail = PublicCharacterDetail;
 
 export function CharacterDetailClient({ id }: Readonly<{ id: string }>) {
-  return <CharacterDetailView id={id} key={id} />;
+  const viewer = useViewerGate({ require: "any" });
+  return <CharacterDetailView id={id} viewer={viewer} key={`${id}:${viewer.scope ?? (viewer.identity ? "anonymous" : "unconfirmed")}`} />;
 }
 
-function CharacterDetailView({ id }: Readonly<{ id: string }>) {
+function CharacterDetailView({ id, viewer }: Readonly<{ id: string; viewer: ViewerGate }>) {
+  const gatedFetch = viewer.fetch;
+  const mountedRef = useRef(true);
+  const pendingCommand = useRef(false);
+  useLayoutEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
   const { accepted: ageGateAccepted } = useAgeGateAccess();
   const [character, setCharacter] = useState<CharacterDetail>();
-  const [status, setStatus] = useState("Loading character...");
+  const [status, setStatus] = useState("");
+  const [loadStatus, setLoadStatus] = useState("Loading character...");
   const [busy, setBusy] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const [retryAvailable, setRetryAvailable] = useState(false);
   const { openReport, reportDialog } = useReportDialog(setStatus);
 
   useEffect(() => {
-    if (!ageGateAccepted) return;
+    if (!ageGateAccepted || !viewer.identity || pendingCommand.current) return;
     const controller = new AbortController();
-    fetch(`/api/v1/characters/${id}`, {
+    gatedFetch(`/api/v1/characters/${encodeURIComponent(id)}`, {
       cache: "no-store",
       signal: controller.signal,
     })
       .then(async (response) => {
+        if (controller.signal.aborted) return;
         if (!response.ok) {
           // Distinguish failure categories: 403 is the age gate, 404 is a
           // genuine missing character, anything else is a load/server error.
           if (response.status === 403) {
-            setStatus("Accept the age gate or sign in to view this character.");
+            setLoadStatus("Accept the age gate or sign in to view this character.");
           } else if (response.status === 404) {
-            setStatus("This character could not be found.");
+            setLoadStatus("This character could not be found.");
           } else {
-            setStatus("Could not load this character. Please try again.");
+            setLoadStatus("Could not load this character. Please try again.");
           }
+          setRetryAvailable(response.status >= 500);
           return;
         }
         const payload = parseCharacterDetailResponse(await response.json());
+        if (controller.signal.aborted) return;
         setCharacter(payload.character);
-        setStatus("");
+        setLoadStatus("");
       })
       .catch((error: unknown) => {
-        if (error instanceof DOMException && error.name === "AbortError") return;
-        setStatus("Could not load this character. Please try again.");
+        if (controller.signal.aborted || isAbortError(error)) return;
+        setRetryAvailable(true);
+        setLoadStatus("Could not load this character. Please try again.");
       });
     return () => controller.abort();
-  }, [ageGateAccepted, id]);
+  }, [ageGateAccepted, gatedFetch, id, loadAttempt, viewer.identity, viewer.revalidation]);
 
   // SPEC: 服务端元数据对非公开角色刻意退化成通用标题并 noindex —— 它是可被爬虫和缓存
   //       读到的，不能泄露私有角色名。标签页标题是本人才看得到的，读出来才不算泄露。
@@ -79,7 +93,7 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
 
   const resumedChat = useRef(false);
   useEffect(() => {
-    if (!character || resumedChat.current) return;
+    if (!character || viewer.identity?.kind !== "user" || resumedChat.current) return;
     const params = new URLSearchParams(window.location.search);
     if (params.get("resume") !== "chat") return;
     resumedChat.current = true;
@@ -92,7 +106,12 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
   }, [character]);
 
   async function startChat() {
-    if (!character) return;
+    if (!character || pendingCommand.current) return;
+    if (viewer.identity?.kind === "anonymous") {
+      window.location.assign(signupUrlForCurrentCharacter("chat"));
+      return;
+    }
+    pendingCommand.current = true;
     setBusy(true);
     setStatus("");
     try {
@@ -103,7 +122,7 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
       const completeAttribution = entryExposureId && journeyId && placementId
         ? { entryExposureId, journeyId, placementId }
         : {};
-      const response = await fetch("/api/v1/chat/sessions", {
+      const response = await fetchForViewer("/api/v1/chat/sessions", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ characterId: character.id, ...completeAttribution }),
@@ -118,20 +137,28 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
         return;
       }
       const payload = parseChatSessionCreateResponse(await response.json());
+      if (!mountedRef.current) return;
       window.location.href = `/chat/${payload.session.id}`;
-    } catch {
+    } catch (error) {
+      if (!mountedRef.current || isAbortError(error)) return;
       setStatus("Could not start chat. Please try again.");
     } finally {
-      setBusy(false);
+      pendingCommand.current = false;
+      if (mountedRef.current) setBusy(false);
     }
   }
 
   async function likeCharacter() {
-    if (!character) return;
+    if (!character || pendingCommand.current) return;
+    if (viewer.identity?.kind === "anonymous") {
+      window.location.assign(signupUrlForCurrentCharacter());
+      return;
+    }
+    pendingCommand.current = true;
     setBusy(true);
     setStatus("");
     try {
-      const response = await fetch(`/api/v1/characters/${character.id}/like`, {
+      const response = await fetchForViewer(`/api/v1/characters/${character.id}/like`, {
         method: character.liked ? "DELETE" : "POST",
       });
       if (response.status === 401) {
@@ -143,19 +170,44 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
         return;
       }
       const payload = parseCharacterLikeResponse(await response.json());
+      if (!mountedRef.current) return;
       setCharacter({
         ...character,
         liked: payload.liked,
         ...(payload.likesCount === undefined ? {} : { likesCount: payload.likesCount, likes: payload.likes ?? String(payload.likesCount) }),
       });
       setStatus(payload.liked ? "Character liked." : "Character like removed.");
-    } catch {
+    } catch (error) {
+      if (!mountedRef.current || isAbortError(error)) return;
       setStatus("Could not save your like. Please try again.");
     } finally {
-      setBusy(false);
+      pendingCommand.current = false;
+      if (mountedRef.current) setBusy(false);
     }
   }
 
+  async function fetchForViewer(input: RequestInfo | URL, init?: RequestInit) {
+    const expected = viewer.identity;
+    const before = await viewer.revalidate();
+    if (!mountedRef.current) throw new ViewerGateError();
+    if (!before) throw new Error("Account confirmation unavailable");
+    if (before !== expected) throw new ViewerGateError();
+    const response = await gatedFetch(input, init);
+    const after = await viewer.revalidate();
+    if (!mountedRef.current) throw new ViewerGateError();
+    if (!after) throw new Error("Account confirmation unavailable");
+    if (after !== expected) throw new ViewerGateError();
+    return response;
+  }
+
+  function retryLoad() {
+    if (viewer.error) { void viewer.revalidate(); return; }
+    setLoadStatus("Loading character...");
+    setRetryAvailable(false);
+    setLoadAttempt(attempt => attempt + 1);
+  }
+
+  const displayedStatus = viewer.error || [loadStatus, status].filter(Boolean).join(" ");
   const notice = character ? publicationNotice(character) : null;
   return (
     <main className="min-h-screen bg-[rgb(13,13,13)] text-white">
@@ -193,7 +245,7 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
                     Generate
                   </Link>
                   {character.voiceSampleAvailable && (
-                    <VoiceSampleButton characterId={character.id} onError={setStatus} />
+                    <VoiceSampleButton characterId={character.id} onError={setStatus} viewer={viewer} />
                   )}
                   <button
                     className="inline-flex h-12 items-center justify-center gap-2 rounded-full bg-[rgb(36,36,36)] px-5 text-[14px] font-bold text-white"
@@ -236,17 +288,18 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
                 </div>}
                 character={character}
               />
-              {status && (
+              {displayedStatus && (
                   <p
                     aria-live="polite"
                     className="mt-5 text-[13px] font-medium text-[rgb(170,170,170)]"
                     data-testid="character-detail-status"
                     role="status"
                   >
-                    {status}
+                    {displayedStatus}
+                    {retryAvailable && <button className="ml-3 rounded-full border border-white/20 px-3 py-1 text-white" onClick={retryLoad} type="button">Retry</button>}
                   </p>
               )}
-              <SimilarCharacters character={character} />
+              <SimilarCharacters character={character} viewer={viewer} />
             </div>
           ) : (
             <div
@@ -255,7 +308,8 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
               data-testid="character-detail-status"
               role="status"
             >
-              {status}
+              {displayedStatus}
+              {(viewer.error || retryAvailable) && <button className="ml-3 rounded-full border border-white/20 px-3 py-1 text-white" onClick={retryLoad} type="button">Retry</button>}
             </div>
           )}
         </section>
@@ -271,12 +325,15 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
 
 // SPEC: 开聊前试听角色声音。只在点击时取音频（不自动播放、不在进页时触发合成）；
 //   取回的音频留在内存里，重复播放不再请求。服务端说明见 character-voice-sample.ts。
-function VoiceSampleButton({ characterId, onError }: Readonly<{
+function VoiceSampleButton({ characterId, onError, viewer }: Readonly<{
+  viewer: ViewerGate;
   characterId: string;
   onError: (message: string) => void;
 }>) {
   const [state, setState] = useState<"idle" | "loading" | "playing">("idle");
   const audio = useRef<HTMLAudioElement | null>(null);
+  const mountedRef = useRef(true);
+  useLayoutEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
   useEffect(() => () => {
     audio.current?.pause();
     if (audio.current) URL.revokeObjectURL(audio.current.src);
@@ -292,16 +349,25 @@ function VoiceSampleButton({ characterId, onError }: Readonly<{
     }
     setState("loading");
     try {
+      const expected = viewer.identity;
+      const confirmed = await viewer.revalidate();
+      if (!mountedRef.current) throw new ViewerGateError();
+      if (!confirmed) throw new Error("Account confirmation unavailable");
+      if (confirmed !== expected) throw new ViewerGateError();
       if (!audio.current) {
-        const response = await fetch(`/api/v1/characters/${encodeURIComponent(characterId)}/voice-sample`);
+        const response = await viewer.fetch(`/api/v1/characters/${encodeURIComponent(characterId)}/voice-sample`);
         if (!response.ok) throw new Error(`voice sample ${response.status}`);
-        const element = new Audio(URL.createObjectURL(await response.blob()));
+        const blob = await response.blob();
+        if (!mountedRef.current) throw new ViewerGateError();
+        const element = new Audio(URL.createObjectURL(blob));
         element.onended = () => setState("idle");
         audio.current = element;
       }
       await audio.current.play();
+      if (!mountedRef.current) { audio.current.pause(); return; }
       setState("playing");
-    } catch {
+    } catch (error) {
+      if (!mountedRef.current || isAbortError(error)) return;
       setState("idle");
       onError("Could not play this voice sample. Please try again.");
     }
@@ -346,19 +412,20 @@ function signupUrlForCurrentCharacter(resume?: "chat") {
 
 // SPEC: the detail page ends with a next step — other public characters of the same style
 // and gender — instead of an empty page below the hero. Reuses the Explore list endpoint.
-function SimilarCharacters({ character }: Readonly<{ character: CharacterDetail }>) {
+function SimilarCharacters({ character, viewer }: Readonly<{ character: CharacterDetail; viewer: ViewerGate }>) {
+  const gatedFetch = viewer.fetch;
   const [cards, setCards] = useState<CharacterCardData[]>([]);
   useEffect(() => {
     const controller = new AbortController();
     const params = new URLSearchParams({ sort: "popular", limit: "7" });
     if (character.style) params.set("style", character.style);
     if (character.gender) params.set("gender", character.gender);
-    fetch(`/api/v1/characters?${params.toString()}`, { signal: controller.signal })
+    gatedFetch(`/api/v1/characters?${params.toString()}`, { signal: controller.signal })
       .then(async (response) => (response.ok ? parseCharacterListResponse(await response.json()).items : []))
-      .then((items) => setCards(items.filter((item) => item.id !== character.id).slice(0, 6)))
+      .then((items) => { if (!controller.signal.aborted) setCards(items.filter((item) => item.id !== character.id).slice(0, 6)); })
       .catch(() => undefined);
     return () => controller.abort();
-  }, [character.id, character.style, character.gender]);
+  }, [character.id, character.style, character.gender, gatedFetch, viewer.revalidation]);
   if (cards.length === 0) return null;
   return (
     <section aria-label="More like this" className="mt-10" data-testid="character-detail-similar">

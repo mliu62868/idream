@@ -911,6 +911,11 @@ export async function archiveChatSession(userId: string, sessionId: string) {
   return prisma.$transaction(async (tx) => {
     const { session } = await lockChatScope(tx, { userId, at: { session: sessionId } });
     if (session.groupId) throw Errors.conflict("Archive this conversation from its group chat");
+    const call = await tx.voiceCall.findFirst({
+      where: { userId, sessionId: session.sessionId, status: { not: "ended" } },
+      select: { id: true },
+    });
+    if (call) throw Errors.conflict("End your voice call before archiving this chat");
     // INVARIANT: admission only runs Turns of active sessions, so a reply left
     // pending here would never be admitted, never end, and the spinner would
     // outlive the conversation. Same rule as archiving or deleting a group.
@@ -1637,6 +1642,7 @@ function begunResult(
     userStatus: string;
     assistantContent: string;
     assistantStatus: string;
+    terminalEvidence?: Prisma.JsonValue;
     createdAt: Date;
     memoryEnabled: boolean;
     sceneVersion: number;
@@ -1696,6 +1702,7 @@ function publicMessages(session: {
     origin?: string | null;
     assistantContent: string;
     assistantStatus: string;
+    terminalEvidence?: Prisma.JsonValue;
     attempt: number;
     sceneVersion: number;
     scene: Prisma.JsonValue | null;
@@ -1768,6 +1775,7 @@ function publicAssistantMessage(turn: {
   userMessageId: string;
   assistantContent: string;
   assistantStatus: string;
+  terminalEvidence?: Prisma.JsonValue;
   attempt: number;
   sceneVersion: number;
   scene: Prisma.JsonValue | null;
@@ -1792,6 +1800,8 @@ function publicAssistantMessage(turn: {
     role: "assistant" as const,
     content: turn.assistantContent,
     status: turn.assistantStatus,
+    ...(turn.assistantStatus === "sent" && jsonRecord(turn.terminalEvidence ?? null).finishReason === "length"
+      ? { replyLimitReached: true } : {}),
     attempt: turn.attempt,
     replyToMessageId: turn.userMessageId,
     sceneVersion: turn.sceneVersion,

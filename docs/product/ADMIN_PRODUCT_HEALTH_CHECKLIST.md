@@ -125,6 +125,7 @@ Admin 应让运营把“发现问题或机会”推进到“用户得到正确�
 | 收入与营销 | 订单与账务 | `/admin/customer-ops/billing` | BL |
 | 收入与营销 | 定价 | `/admin/growth/offers?view=pricing` | PR |
 | 收入与营销 | 促销 | `/admin/growth/offers?view=promo` | PM |
+| 收入与营销 | 联盟申请与归因 | `/admin/growth/affiliates` | EXT-09、EXT-10 |
 | 数据分析 | 产品健康 | `/admin/growth/health` | MT |
 | 数据分析 | 角色表现 | `/admin/growth/characters` | MT |
 | 数据分析 | 实验 | `/admin/growth/experiments` | EX |
@@ -420,6 +421,8 @@ Admin 应让运营把“发现问题或机会”推进到“用户得到正确�
 | [ ] EXT-13 | 公开内容族与渠道：完整 Images/Videos/Glossary/Authors、联盟素材及获客页均可供给/发布/撤回/追踪；现有 CMS 覆盖不足逐族登记 | PRD SE-01～SE-08 | A/U/E |
 
 新增 Admin 能力可复用现有领域工作台，不要求为每个 EXT 单独建菜单；但运营必须能发现并完整执行，而不是只给一个 API 名称。
+
+EXT-10 的已装配只读分支：使用 `growth.promo.read` 从 `/admin/growth/affiliates` 找到有真实访问/注册记录的申请，打开“查看归因”，核对 `GET /api/v2/admin/affiliate/applications/{id}/attribution` 的申请 ID、UTC 日期筛选、分页与刷新读回。对照同版本 Main 权威记录，分别核验去重访问/已观测注册的全范围总数、当前页明细、`asOf`、当前规则及每条访问冻结的归因窗口/规则/条款版本；已观测注册与当前账号资格的有效、待确认、撤销状态不得混淆。读取和筛选不执行申请决定或付款；归因状态不授权佣金或支付。没有真实归因样本记该分支阻塞，空态检查可单独记录；该只读分支不代替 EXT-09 的申请人结果、EXT-10 的用户链接/素材/重复与自邀或 EXT-11 的财务闭环验收。
 
 ## 6. 跨页面完整流程清单
 

@@ -19,7 +19,7 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => new URLSearchParams(window.location.search),
 }));
 
-import { CreateWorkspace, draftStorageKeyForScope, initialCharacterDraft } from "./CreateWorkspace";
+import { CreateWorkspace, draftStorageKeyForScope, initialCharacterDraft, parseWizardDraft } from "./CreateWorkspace";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 beforeEach(() => window.history.replaceState(null, "", "/create"));
@@ -930,4 +930,128 @@ describe("CreateWorkspace quick start", () => {
       await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
     }
   }
+});
+
+
+describe("CreateWorkspace Quick Start intent restoration", () => {
+  let root: Root, container: HTMLDivElement, viewer: string | null;
+  let calls: Array<{ path: string; body: unknown }>;
+  async function settle() {
+    for (let i = 0; i < 8; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+  }
+  beforeEach(() => {
+    const store = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => store.set(key, String(value)),
+      removeItem: (key: string) => store.delete(key),
+    });
+    window.sessionStorage.clear(); window.history.replaceState(null, "", "/create");
+    viewer = null; calls = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/me") return Response.json({ ok: true, data: { user: viewer ? { id: viewer } : null, anonymousId: viewer ? null : "guest-creator" } });
+      if (path === "/api/v1/character-drafts/quick-start") {
+        calls.push({ path, body: JSON.parse(String(init?.body)) });
+        return viewer ? Response.json({ ok: true, data: { draft: { name: "Garden Teacher", age: 29, occupation: "Garden teacher" } } })
+          : Response.json({ ok: false, error: { message: "Sign in" } }, { status: 401 });
+      }
+      if (path === "/api/v1/character-voices") return Response.json({ ok: true, data: { provider: "pocket_tts", defaultVoiceId: "alba", items: [{ id: "alba", label: "Alba", description: "Official English voice" }] } });
+      if (path === "/api/v1/character-drafts/current") return Response.json({ ok: true, data: { draft: null } });
+      if (init?.method && init.method !== "GET") {
+        calls.push({ path, body: JSON.parse(String(init.body)) });
+        return Response.json({ ok: true, data: { draft: { id: "intent-draft", updatedAt: "2026-10-04T12:00:00.000Z" } } });
+      }
+      return Response.json({ ok: true, data: { items: [], nextCursor: null } });
+    }));
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+  });
+  afterEach(async () => {
+    await act(async () => root.unmount()); container.remove(); window.sessionStorage.clear();
+    vi.unstubAllGlobals(); vi.restoreAllMocks();
+  });
+  async function mount() { await act(async () => root.render(createElement(CreateWorkspace))); await settle(); }
+  async function writeIdea(brief: string) {
+    const input = container.querySelector<HTMLInputElement>('[data-testid="create-quick-start"] input')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, brief);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await settle();
+  }
+  async function remount() { await act(async () => root.unmount()); root = createRoot(container); await mount(); }
+
+  it("preserves an anonymous Quick Start idea through signup and waits for an explicit Prefill on return", async () => {
+    await mount();
+    const brief = "A 29-year-old garden teacher who grows lavender";
+    await writeIdea(brief);
+    expect(container.querySelector<HTMLInputElement>('[data-testid="create-quick-start"] input')?.value).toBe(brief);
+    await act(async () => container.querySelector<HTMLFormElement>('[data-testid="create-quick-start"]')!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }))); await settle();
+    expect(calls).toEqual([{ path: "/api/v1/character-drafts/quick-start", body: { brief } }]);
+    expect(window.location.pathname).toBe("/signup");
+    const target = new URLSearchParams(window.location.search).get("next")!;
+    expect(target).toContain("/create?draftResume=");
+    const envelope = JSON.parse(window.sessionStorage.getItem("ourdream.create.draft.transfer.v1")!);
+    expect(envelope.sourceScope).toBe("anonymous:guest-creator");
+    expect(envelope.nonce).toBe(new URL(target, "http://localhost").searchParams.get("draftResume"));
+    await act(async () => root.unmount()); viewer = "resumed-creator";
+    window.history.replaceState(null, "", target); root = createRoot(container); await mount();
+    expect(window.location.pathname).toBe("/create");
+    expect(new URLSearchParams(window.location.search).get("draftResume")).toBeNull();
+    expect(calls).toHaveLength(1);
+    expect(container.querySelector<HTMLInputElement>('[data-testid="create-quick-start"] input')?.value).toBe(brief);
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="create-quick-start"] button')!.click()); await settle();
+    expect(calls).toEqual(Array.from({ length: 2 }, () => ({ path: "/api/v1/character-drafts/quick-start", body: { brief } })));
+    expect(container.querySelector<HTMLInputElement>("#create-field-name")?.value).toBe("Garden Teacher");
+    expect(container.querySelector('[data-testid="create-status"]')?.textContent).toContain("Prefilled");
+  });
+
+  it.each([null, "creator-a"])("keeps the %s viewer's unsubmitted idea editable across a local remount and lets them clear it", async actor => {
+    viewer = actor; await mount(); await writeIdea("A 30-year-old lavender grower"); await remount();
+    expect(container.querySelector<HTMLInputElement>('[data-testid="create-quick-start"] input')?.value).toBe("A 30-year-old lavender grower");
+    expect(calls).toHaveLength(0);
+    await writeIdea(""); await remount();
+    expect(container.querySelector<HTMLInputElement>('[data-testid="create-quick-start"] input')?.value).toBe("");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("does not read another signed-in viewer's saved idea", async () => {
+    viewer = "creator-a"; await mount(); await writeIdea("Private creator A idea");
+    viewer = "creator-b"; await remount();
+    expect(container.querySelector<HTMLInputElement>('[data-testid="create-quick-start"] input')?.value).toBe("");
+    expect(container.textContent).not.toContain("Private creator A idea"); expect(calls).toHaveLength(0);
+  });
+
+  it("restores only bounded text ideas from legacy local snapshots", () => {
+    expect(parseWizardDraft({ ...initialCharacterDraft(), quickStartBrief: "x".repeat(600) })?.quickStartBrief).toBe("x".repeat(500));
+    expect(parseWizardDraft({ ...initialCharacterDraft(), quickStartBrief: { private: "invalid" } })?.quickStartBrief).toBe("");
+    const legacy = { ...initialCharacterDraft(), name: "Legacy creator" }; delete (legacy as Partial<typeof legacy>).quickStartBrief;
+    expect(parseWizardDraft(legacy)).toMatchObject({ name: "Legacy creator", quickStartBrief: "" });
+  });
+
+  it("keeps the local idea out of server draft fields when the user saves the next step", async () => {
+    viewer = "creator-a"; await mount(); await writeIdea("A private unsent garden teacher idea");
+    const name = container.querySelector<HTMLInputElement>("#create-field-name")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(name, "Garden Teacher");
+      name.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="create-next"]')!.click()); await settle();
+    expect(calls.map(call => call.path)).toEqual(["/api/v1/character-drafts", "/api/v1/character-drafts/intent-draft"]);
+    expect(calls[1]?.body).toMatchObject({ name: "Garden Teacher", step: 1 });
+    expect(JSON.stringify(calls)).not.toContain("quickStartBrief");
+    expect(JSON.stringify(calls)).not.toContain("private unsent garden teacher idea");
+  });
+
+  it("lets the user apply a template without submitting or erasing the separate idea", async () => {
+    const normal = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation((input, init) => String(input) === "/api/v1/character-templates"
+      ? Promise.resolve(Response.json({ ok: true, data: { items: [{ id: "garden-template", name: "Garden Template", style: "anime", gender: "male", summary: "Curated garden character" }] } }))
+      : normal(input, init));
+    viewer = "creator-a"; await mount(); await writeIdea("My editable garden idea");
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Garden Template")!.click()); await settle();
+    expect(JSON.parse(window.localStorage.getItem(draftStorageKeyForScope("user:creator-a"))!)).toMatchObject({ style: "anime", gender: "male", description: "Curated garden character", quickStartBrief: "My editable garden idea" });
+    expect(container.querySelector<HTMLInputElement>('[data-testid="create-quick-start"] input')?.value).toBe("My editable garden idea");
+    expect(calls).toHaveLength(0);
+  });
 });

@@ -76,7 +76,7 @@ export function ExperimentsView() {
   // INVARIANT: 存异常对象 —— AuthorityRequestError 要靠 cause 才能按错误码出人话，
   // 只有 message 时运营读到的仍是 authority 的英文原文。
   const [error, setError] = useState<unknown>(null);
-  const [monitoringUnavailable, setMonitoringUnavailable] = useState(false);
+  const [monitoringError, setMonitoringError] = useState<unknown>(null);
   const [pending, setPending] = useState<{ row: ManagedExperiment; command: LifecycleCommand } | null>(null);
   const [pageInfo, setPageInfo] = useState<PageInfo>(emptyPageInfo);
   const [page, setPage] = useState(1);
@@ -91,6 +91,7 @@ export function ExperimentsView() {
     const request = requestGate.begin();
     setLoading(true);
     setError(null);
+    setMonitoringError(null);
     // Rows and forward cursors belong to the read that produced them. A failed
     // replacement must not leave them actionable under the new URL filters.
     setExperiments([]);
@@ -104,11 +105,12 @@ export function ExperimentsView() {
         const monitoring = await apiGet<{ items: FlagRow[] }>("/api/v2/admin/analytics/flag-monitoring");
         if (!request.isCurrent()) return;
         setFlags(monitoring.items);
-        setMonitoringUnavailable(false);
-      } catch {
+        setMonitoringError(null);
+      } catch (cause) {
         if (!request.isCurrent()) return;
         setFlags([]);
-        setMonitoringUnavailable(true);
+        // 403、断网和服务异常需要不同恢复动作，不能把未知失败解释为缺少权限。
+        setMonitoringError(cause);
       }
     } catch (reason) {
       if (request.isCurrent()) setError(reason);
@@ -295,7 +297,8 @@ export function ExperimentsView() {
       </section>
 
       <section aria-labelledby="flag-monitoring-heading" className="rounded-lg border border-[var(--ad-yellow-text)]/25 bg-[var(--ad-yellow-bg)] p-4">
-        <h3 className="text-sm font-semibold" id="flag-monitoring-heading">{t("Flag Monitoring")} ({flags.length})</h3><p className="mt-1 text-xs">{t("Directional only · no assignment or exposure records")}</p><p className="mt-2 text-xs">{t("Feature flags remain rollout monitoring and never inherit managed experiment lift.")}</p>{monitoringUnavailable ? <p className="mt-2 text-xs" role="status">{t("Flag monitoring is unavailable for this permission set; managed experiments are still shown.")}</p> : null}
+        <h3 className="text-sm font-semibold" id="flag-monitoring-heading">{t("Flag Monitoring")} ({flags.length})</h3><p className="mt-1 text-xs">{t("Directional only · no assignment or exposure records")}</p><p className="mt-2 text-xs">{t("Feature flags remain rollout monitoring and never inherit managed experiment lift.")}</p>
+        {monitoringError ? <div className="mt-3"><AuthorityRequestError cause={monitoringError} message={requestErrorMessage(monitoringError, t)} requestKind="read" onRetry={reload} /></div> : null}
         <ul className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{flags.map((flag) => <li className="rounded-md border border-current/20 p-3 text-xs" key={flag.key}><span className="font-mono">{flag.key}</span><br />{flag.enabled ? t("enabled") : t("disabled")} · {flag.rolloutPercent}%</li>)}</ul>
       </section>
 

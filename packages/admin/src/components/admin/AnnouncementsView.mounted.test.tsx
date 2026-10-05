@@ -6,6 +6,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AnnouncementsView } from "./AnnouncementsView";
+import { AdminI18nProvider } from "./i18n";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { syncListUrl } from "./section-kit";
 
@@ -49,7 +50,97 @@ describe("AnnouncementsView edit", () => {
     await act(async () => root.unmount());
     container.remove();
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
   });
+
+  it.each([
+    { scenario: "seconds and milliseconds", startsAt: "2026-10-07T14:00:45.123Z", endsAt: "2026-10-07T15:00:55.456Z", displayedStart: "2026-10-07T10:00" },
+    { scenario: "a valid window within one minute", startsAt: "2026-10-07T14:00:10.000Z", endsAt: "2026-10-07T14:00:50.000Z", displayedStart: "2026-10-07T10:00" },
+    { scenario: "the second occurrence of a DST fallback time", startsAt: "2026-11-01T06:30:00.000Z", endsAt: "2026-11-01T07:30:00.000Z", displayedStart: "2026-11-01T01:30" },
+  ])("preserves unchanged schedule endpoints when editing copy for $scenario", async ({ startsAt, endsAt, displayedStart }) => {
+    vi.stubEnv("TZ", "America/New_York");
+    await openScheduledAnnouncement({ startsAt, endsAt });
+    const times = container.querySelectorAll<HTMLInputElement>('input[type="datetime-local"]');
+    expect(times[0].value).toBe(displayedStart);
+    await changeInput(container.querySelector<HTMLInputElement>('input[placeholder="Body"]')!, "Corrected announcement copy");
+    await confirmScheduledEdit();
+    const save = saveButton();
+    expect(save.disabled).toBe(false);
+    await act(async () => save.click());
+    expect(patchCalls()).toHaveLength(1);
+    expect(JSON.parse(String(patchCalls()[0][1]?.body))).toMatchObject({
+      entityVersion: announcement.version, body: "Corrected announcement copy", startsAt, endsAt,
+    });
+  });
+
+  it("validates an edited end against the original DST instant rather than its ambiguous local display", async () => {
+    vi.stubEnv("TZ", "America/New_York");
+    await openScheduledAnnouncement({ startsAt: "2026-11-01T06:30:00.000Z", endsAt: "2026-11-01T07:30:00.000Z" });
+    const times = container.querySelectorAll<HTMLInputElement>('input[type="datetime-local"]');
+    await confirmScheduledEdit();
+    // 01:45 is interpreted as the first occurrence (05:45Z), before the retained 06:30Z start.
+    await changeInput(times[1], "2026-11-01T01:45");
+    expect(saveButton().disabled).toBe(true);
+    expect(container.textContent).toContain("an end time after the start time");
+    expect(patchCalls()).toHaveLength(0);
+    await changeInput(times[1], "2026-11-01T02:00");
+    expect(saveButton().disabled).toBe(false);
+    await act(async () => saveButton().click());
+    expect(JSON.parse(String(patchCalls()[0][1]?.body))).toMatchObject({
+      startsAt: "2026-11-01T06:30:00.000Z", endsAt: "2026-11-01T07:00:00.000Z",
+    });
+  });
+
+  it("allows deliberately clearing both schedule endpoints", async () => {
+    vi.stubEnv("TZ", "America/New_York");
+    await openScheduledAnnouncement({ startsAt: "2026-10-07T14:00:45.123Z", endsAt: "2026-10-07T15:00:55.456Z" });
+    const times = container.querySelectorAll<HTMLInputElement>('input[type="datetime-local"]');
+    await changeInput(times[0], "");
+    await changeInput(times[1], "");
+    await confirmScheduledEdit();
+    expect(saveButton().disabled).toBe(false);
+    await act(async () => saveButton().click());
+    expect(JSON.parse(String(patchCalls()[0][1]?.body))).toMatchObject({ startsAt: null, endsAt: null });
+  });
+
+  it("validates and converts deliberately entered schedule endpoints for a new announcement", async () => {
+    vi.stubEnv("TZ", "America/New_York");
+    await act(async () => root.render(<AdminI18nProvider locale="en"><AnnouncementsView canWrite /></AdminI18nProvider>));
+    await waitFor(() => container.querySelector('[aria-label="Edit announcement"]') !== null);
+    await changeInput(container.querySelector<HTMLInputElement>('input[placeholder="Title"]')!, "New scheduled notice");
+    await changeInput(container.querySelector<HTMLInputElement>('input[placeholder="Body"]')!, "A new scheduled announcement");
+    await changeInput(container.querySelector<HTMLInputElement>('input[placeholder="Reason (≥3)"]')!, "Schedule a notice");
+    await changeInput(container.querySelector<HTMLInputElement>('[aria-label="Announcement create confirmation"]')!, "New scheduled notice");
+    const times = container.querySelectorAll<HTMLInputElement>('input[type="datetime-local"]');
+    await changeInput(times[0], "2026-10-07T10:00");
+    await changeInput(times[1], "2026-10-07T09:00");
+    const create = () => [...container.querySelectorAll<HTMLButtonElement>("button")].find(node => node.textContent?.trim() === "Create")!;
+    expect(create().disabled).toBe(true);
+    await changeInput(times[1], "2026-10-07T11:00");
+    expect(create().disabled).toBe(false);
+    await act(async () => create().click());
+    const post = fetchMock.mock.calls.find(([, init]) => init?.method === "POST")!;
+    expect(JSON.parse(String(post[1]?.body))).toMatchObject({ startsAt: "2026-10-07T14:00:00.000Z", endsAt: "2026-10-07T15:00:00.000Z" });
+  });
+
+  async function openScheduledAnnouncement(schedule: { startsAt: string; endsAt: string }) {
+    const scheduled = { ...announcement, ...schedule };
+    fetchMock.mockImplementation(async (_input: string | URL | Request, init?: RequestInit) => init?.method === "PATCH"
+      ? Response.json({ ok: true, data: { announcement: scheduled } })
+      : Response.json({ ok: true, data: { items: [scheduled], pageInfo: { endCursor: null, hasNextPage: false } } }));
+    await act(async () => root.render(<AdminI18nProvider locale="en"><AnnouncementsView canWrite /></AdminI18nProvider>));
+    await waitFor(() => container.querySelector('[aria-label="Edit announcement"]') !== null);
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Edit announcement"]')!.click());
+  }
+
+  async function confirmScheduledEdit() {
+    await changeInput(container.querySelector<HTMLInputElement>('input[placeholder="Reason (≥3)"]')!, "Correct the scheduled announcement");
+    await changeInput(container.querySelector<HTMLInputElement>('[aria-label="Announcement create confirmation"]')!, announcement.id);
+  }
+
+  function saveButton() {
+    return [...container.querySelectorAll<HTMLButtonElement>("button")].find(node => node.textContent?.trim() === "Save changes")!;
+  }
 
   it("asks before discarding edited announcement copy for another row and does not prompt for unchanged inputs", async () => {
     const other = { ...announcement, id: "ann-other", title: "Another announcement" };

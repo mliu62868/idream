@@ -1,6 +1,20 @@
 import { describe, expect, it } from "vitest";
 import { hasAdminZh, translateAdmin } from "./i18n";
 
+it("renders a completed recipe validation in both operator languages", () => {
+  expect(translateAdmin("en", "Validated")).toBe("Validated");
+  expect(translateAdmin("zh", "Validated")).toBe("验证通过");
+});
+
+it.each([
+  ["AI text generation exceeded the summary character limit. Try a shorter seed", "AI 生成的摘要超过字数上限，请缩短灵感描述后重试。"],
+  ["AI text generation reached its output limit before completing the draft. Try a shorter seed", "AI 生成在草稿完成前达到输出上限，请缩短灵感描述后重试。"],
+  ["AI text generation is temporarily unavailable. Check the chat model connection and try again", "AI 文本生成暂时不可用，请检查聊天模型连接后重试。"],
+])("localizes the precise AI draft failure: %s", (message, chinese) => {
+  expect(translateAdmin("en", message)).toBe(message);
+  expect(translateAdmin("zh", message)).toBe(chinese);
+});
+
 // SPEC: 三件套页面自有文案必须有 zh（运营面不漏英文）。每落一个三件套，扩这张表。
 // 注意：枚举/状态词（approved/draft/archived/female/…/realistic/…）不进 zh 表——
 // 它们走 value()/zhValues 通道（已覆盖，加进 zh 表反而重复破坏 SSoT）。
@@ -11,7 +25,7 @@ export const STARTERS_KEYS = [
   "Create the first starter template to get started.", "Description & tags", "Edit profile",
   "Engineering details", "Gender", "Generate with AI", "Inactive", "Inspiration", "Loading…",
   "Manage starter templates for user character creation.", "Name (≥1)", "New starter template",
-  "No starter templates yet.", "Offline", "One-line inspiration — AI fills description and tags.",
+  "No starter templates yet.", "Offline", "One-line inspiration — AI drafts a summary, character details, first message, and art direction.",
   "Publish", "Published", "Reason (≥3)", "Request failed", "Save changes", "Scope",
   "Search by name", "Sort order", "Status", "Style", "Summary (≤200)",
   "Tags (comma-separated, ≤12)",

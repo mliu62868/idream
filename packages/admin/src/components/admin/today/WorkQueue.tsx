@@ -6,6 +6,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
+import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import { formatDateTime, formatRelativeTime } from "@/components/admin/ui/format";
 import { failureFeedback, type ActionFeedback } from "./feedback";
 import { formatTime, todayOperationalText } from "./format";
@@ -125,32 +126,42 @@ export function WorkQueue({
     setSelected(next);
   }
 
-  // SPEC: 批量逐条串行执行，把 N 次结果收敛成一条反馈。
-  // INTENT: 串行是为了让每条都带着自己那一版 preferenceVersion / entityVersion 提交；
-  //         并发发出去只会互相把版本号打旧，换来一批 409。
+  // SPEC: 批量逐条串行执行，逐项保留权威拒绝和未知结果，不能用最后一条错误解释整批。
+  // INVARIANT: 只有明确成功的项才取消选择；断网/5xx 不能证明写入未发生，重试前须读回。
   async function runBulk(successMessage: string, run: (item: TodayWorkItem) => Promise<unknown>, items = selectedItems) {
     if (items.length === 0) return;
     setBusy(true);
     let done = 0;
-    let lastError: unknown = null;
-    for (const item of items) {
-      try {
-        await run(item);
-        done += 1;
-      } catch (error) {
-        lastError = error;
+    let rejected = 0;
+    let unknown = 0;
+    const succeeded = new Set<string>();
+    const details: string[] = [];
+    try {
+      for (const item of items) {
+        try {
+          await run(item);
+          done += 1;
+          succeeded.add(workItemKey(item));
+        } catch (error) {
+          const isRejected = error instanceof AdminV2RequestError && [400, 401, 402, 403, 404, 409, 410, 429].includes(error.status);
+          if (isRejected) rejected += 1;
+          else unknown += 1;
+          details.push(`${workItemKey(item)} (${isRejected ? "rejected" : "unknown"})\n${failureFeedback(error).detail}`);
+        }
       }
+      let feedback: ActionFeedback = rejected + unknown > 0
+        ? { tone: "error", message: "{done} succeeded, {failed} rejected, {unknown} unknown", values: { done, failed: rejected, unknown }, nextStep: "Check each item's current state and technical details before retrying.", detail: details.join("\n\n") }
+        : { tone: "success", message: successMessage, values: { count: done } };
+      setSelected((current) => new Set([...current].filter((key) => !succeeded.has(key))));
+      try {
+        await onPreferenceChanged();
+      } catch (error) {
+        feedback = { ...feedback, tone: "error", nextStep: "The queue could not refresh. Check the current state before retrying.", detail: [...details, `refresh:\n${failureFeedback(error).detail}`].join("\n\n") };
+      }
+      onFeedback(feedback);
+    } finally {
+      setBusy(false);
     }
-    const failed = items.length - done;
-    if (failed > 0) {
-      const failure = failureFeedback(lastError);
-      onFeedback({ ...failure, message: "{done} succeeded, {failed} failed", values: { done, failed } });
-    } else {
-      onFeedback({ tone: "success", message: successMessage, values: { count: done } });
-    }
-    setSelected(new Set());
-    await onPreferenceChanged();
-    setBusy(false);
   }
 
   const itemProps = {
@@ -331,6 +342,8 @@ function RelatedCreativeRuns({
 function WorkItem({ density, detail, onPreview, previewKey, item, locale, now, onFeedback, onPreferenceChanged, onToggleSelected, selected, watchedQueue }: WorkItemProps) {
   const { t } = useAdminI18n();
   const title = todayWorkItemTitle(item, t);
+  const snoozedUntil = item.snoozedUntil && new Date(item.snoozedUntil) > now ? item.snoozedUntil : null;
+  const snoozeLabel = snoozedUntil ? t("Snoozed until {time}", { time: formatTime(snoozedUntil, locale) }) : null;
   const [busy, setBusy] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -408,6 +421,7 @@ function WorkItem({ density, detail, onPreview, previewKey, item, locale, now, o
             label={item.pinned ? t("Unpin") : t("Pin")}
             onClick={() => void setPreference({ pinned: !item.pinned }, item.pinned ? "Unpinned" : "Pinned")}
           />
+          {snoozedUntil ? <MenuAction disabled={busy} icon={Bell} label={t("Clear snooze")} onClick={() => void setPreference({ snoozedUntil: null }, "Snooze cleared")} /> : null}
           {snoozeOptions(now).map((option) => (
             <MenuAction
               disabled={busy}
@@ -438,6 +452,7 @@ function WorkItem({ density, detail, onPreview, previewKey, item, locale, now, o
         <SeverityChip severity={item.severity} />
       </div>
       <div className="mt-4 flex flex-wrap items-center gap-3 text-sm"><span>{t(item.sourceStatus)}</span><SlaChip item={item} locale={locale} now={now} /></div>
+      {snoozeLabel ? <p className="mt-2 text-xs text-[var(--ad-text-muted)]">{snoozeLabel}</p> : null}
       <p className="mt-5 break-words text-sm leading-6 text-[var(--ad-text-muted)]">{todayOperationalText(item.summary, locale)}</p>
       <div className="mt-5 flex flex-wrap items-center gap-3">
         {onToggleSelected ? <button className="inline-flex min-h-10 items-center gap-2 text-sm disabled:opacity-40" disabled={busy} onClick={() => void setPreference({ watching: !watchedQueue }, watchedQueue ? "Removed from Watching" : "Added to Watching")} type="button"><Eye className="h-4 w-4" />{t(watchedQueue ? "Unwatch" : "Watch")}</button> : null}
@@ -459,6 +474,7 @@ function WorkItem({ density, detail, onPreview, previewKey, item, locale, now, o
     <button data-today-preview aria-pressed={previewKey === workItemKey(item)} aria-label={t("Preview {title}", { title })} className="min-w-0 flex-1 text-left focus-visible:outline-2 focus-visible:outline-offset-4" onClick={() => onPreview?.(item)} type="button">
       <span className="flex items-start gap-2"><SeverityChip severity={item.severity} /><span className="min-w-0 break-words text-sm font-semibold leading-5">{item.pinned ? <Pin aria-hidden className="mr-1 inline h-3 w-3" /> : null}{title}</span></span>
       <span className={`${density === "compact" ? "mt-1.5" : "mt-3"} block truncate text-sm text-[var(--ad-text-muted)]`}>{todayOperationalText(item.summary, locale)}</span>
+      {snoozeLabel ? <span className="mt-1 block text-xs text-[var(--ad-text-muted)]">{snoozeLabel}</span> : null}
       <span className={`${density === "compact" ? "mt-1.5" : "mt-3"} flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--ad-text-muted)]`}><span className="max-w-full truncate">{item.ownerId ?? t("Unassigned")}{item.sourceType === "ops_incident" ? ` · ${item.sourceId.slice(-8)}` : ""}</span><SlaChip item={item} locale={locale} now={now} /></span>
     </button>
   </div>;

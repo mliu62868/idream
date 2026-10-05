@@ -17,7 +17,7 @@ import {
   Video,
   X,
 } from "lucide-react";
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { voiceClipQuoteSchema, type VoiceClipQuote } from "@idream/shared/contracts";
 import {
   parseChatSendResponse,
@@ -79,6 +79,7 @@ import {
 } from "@/lib/generation-write-client";
 import { GroupSpeakerControls, mentionedGroupCharacter } from "./chat/GroupSpeakerControls";
 import { unknownOutcomeCopy } from "@/lib/generation-failure-copy";
+import { useViewerGate, type ViewerGate } from "@/hooks/useViewerGate";
 
 type ChatLoadState = "loading" | "ready" | "signed-out" | "error";
 type ChatUpgradeReason = "dreamcoins" | "messages";
@@ -216,7 +217,24 @@ export function chatAttachmentCostLabel(attachment: {
 }
 
 export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: string; groupMode?: boolean }>) {
+  const viewer = useViewerGate({ require: "any" });
+  // A confirmed owner change revokes the whole private conversation, including
+  // drawers, drafts, playback and pending receipts. Same-owner revalidation
+  // keeps this subtree and its readable history through a network blip.
+  return <ChatSessionContent id={id} groupMode={groupMode} viewer={viewer}
+    key={`${groupMode ? "group" : "single"}:${id}:${viewer.scope ?? (viewer.identity ? "anonymous" : "unconfirmed")}`} />;
+}
+
+function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; groupMode: boolean; viewer: ViewerGate }>) {
   const { accepted: ageGateAccepted } = useAgeGateAccess();
+  const mountedRef = useRef(true);
+  const gatedFetch = viewer.fetch;
+  const fetchForSession = useCallback(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (!mountedRef.current) throw new DOMException("Conversation owner changed", "AbortError");
+    const response = await gatedFetch(input, init);
+    if (!mountedRef.current) throw new DOMException("Conversation owner changed", "AbortError");
+    return response;
+  }, [gatedFetch]);
   const [title, setTitle] = useState("Chat");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loadState, setLoadState] = useState<ChatLoadState>("loading");
@@ -334,6 +352,21 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
     },
   });
   const sessionMutationEpochRef = useRef(0);
+  useLayoutEffect(() => {
+    mountedRef.current = true;
+    const sources = streamSources.current;
+    return () => {
+      mountedRef.current = false;
+      sessionMutationEpochRef.current += 1;
+      suspendGenerationReceipts(true);
+      for (const source of sources.values()) source.close();
+      sources.clear();
+      audioRef.current?.pause();
+      if (audioRef.current) audioRef.current.src = "";
+      audioRef.current = null;
+      voicePlaybackIntentRef.current += 1;
+    };
+  }, [suspendGenerationReceipts]);
   const hasActiveAttachment = messages.some((message) =>
     (message.attachments ?? []).some((attachment) =>
       chatAttachmentIsActive(attachment.status, attachment.errorCode),
@@ -401,7 +434,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
   }, [messages]);
 
   useEffect(() => {
-    if (!ageGateAccepted) return;
+    if (!ageGateAccepted || !viewer.identity) return;
     let cancelled = false;
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
@@ -437,6 +470,10 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
       setContinuation("available");
       setSendOutcomeUnknown(false);
       setCanUpdateIdentity(false);
+      if (viewer.identity?.kind === "anonymous") {
+        setLoadState("signed-out");
+        return;
+      }
       const epoch = sessionMutationEpochRef.current;
       fetchSession(controller.signal)
         .then((session) => {
@@ -462,14 +499,15 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
       controller.abort();
       window.clearTimeout(timer);
     };
-    // The loader intentionally reruns only when the route session id changes.
+    // Same-owner refreshes use the background focus check; a confirmed owner
+    // or route change gets a new private subtree and this initial loader.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ageGateAccepted, id, groupMode]);
+  }, [ageGateAccepted, id, groupMode, viewer.identity]);
 
   useEffect(() => {
-    if (groupMode || !ageGateAccepted) return;
+    if (groupMode || !ageGateAccepted || viewer.identity?.kind !== "user") return;
     const controller = new AbortController();
-    void fetch(`/api/v1/chat/${encodeURIComponent(id)}/video`, {
+    void fetchForSession(`/api/v1/chat/${encodeURIComponent(id)}/video`, {
       cache: "no-store",
       headers: { accept: "application/json" },
       signal: controller.signal,
@@ -486,10 +524,10 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
         if (!controller.signal.aborted) setVideoCapability({ sessionId: id, enabled: false });
       });
     return () => controller.abort();
-  }, [ageGateAccepted, groupMode, id]);
+  }, [ageGateAccepted, groupMode, id, viewer.identity, fetchForSession]);
 
   useEffect(() => {
-    if (!ageGateAccepted) return;
+    if (!ageGateAccepted || viewer.identity?.kind !== "user") return;
     let controller: AbortController | null = null;
     const focus = () => {
       controller?.abort();
@@ -550,7 +588,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
     return () => { controller?.abort(); window.removeEventListener("focus", focus); };
     // Revalidate the same session's owner, never the cached viewer from /me.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ageGateAccepted, id, suspendGenerationReceipts]);
+  }, [ageGateAccepted, id, suspendGenerationReceipts, viewer.identity]);
 
   useEffect(() => {
     const sources = streamSources.current;
@@ -685,7 +723,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
         const body = { characterId: sourceCharacterId, messageId, sessionId: sourceSessionId, text, intent: "play" };
         const headers = { "content-type": "application/json", "x-idream-viewer-scope": receiptContext.persistence.ownerScope };
         if (!acceptedQuoteToken) {
-          const quoted = await fetch("/api/v1/generation/voice/quote", {
+          const quoted = await fetchForSession("/api/v1/generation/voice/quote", {
             method: "POST", headers, cache: "no-store", body: JSON.stringify(body),
           });
           const payload = await quoted.json().catch(() => null);
@@ -702,7 +740,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
         // Stopping playback or starting dictation revokes permission to spend
         // on a quote that completed after the reader changed their intent.
         if (!receiptContext.isCurrent() || playbackIntent !== voicePlaybackIntentRef.current) return { url: null, reason: "failed" };
-        const response = await fetch("/api/v1/generation/voice", {
+        const response = await fetchForSession("/api/v1/generation/voice", {
           method: "POST",
           headers,
           body: JSON.stringify({ ...body, quoteToken: acceptedQuoteToken }),
@@ -854,7 +892,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
           };
     sendIntentRef.current = intent;
     try {
-      const response = await fetch(`${sessionPath}/messages`, {
+      const response = await fetchForSession(`${sessionPath}/messages`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -942,7 +980,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
   async function openUpdatedCharacterChat(updatedCharacterId: string, draft: string): Promise<boolean> {
     try {
       if (!receiptOwnerScope) return false;
-      const response = await fetch("/api/v1/chat/sessions", {
+      const response = await fetchForSession("/api/v1/chat/sessions", {
         method: "POST",
         // The draft belongs to this account; if another tab switched accounts, refuse.
         headers: { "content-type": "application/json", "x-idream-viewer-scope": receiptOwnerScope },
@@ -950,6 +988,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
       });
       if (!response.ok) return false;
       const nextId = parseChatSessionCreateResponse(await response.json()).session.id;
+      if (!mountedRef.current) return false;
       if (nextId === id || !stashChatReleaseHandoff(nextId, draft)) return false;
       window.location.assign(`/chat/${encodeURIComponent(nextId)}`);
       return true;
@@ -986,7 +1025,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
     stopVoice();
     sessionMutationEpochRef.current += 1;
     try {
-      const response = await fetch(`/api/v1/messages/${encodeURIComponent(messageId)}`, {
+      const response = await fetchForSession(`/api/v1/messages/${encodeURIComponent(messageId)}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ content: next }),
@@ -1037,7 +1076,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
   }
 
   async function fetchSession(signal?: AbortSignal): Promise<ChatSession> {
-    const response = await fetch(`${sessionPath}${groupMode && selectedSpeakerRef.current ? `?speaker=${encodeURIComponent(selectedSpeakerRef.current)}` : ""}`, {
+    const response = await fetchForSession(`${sessionPath}${groupMode && selectedSpeakerRef.current ? `?speaker=${encodeURIComponent(selectedSpeakerRef.current)}` : ""}`, {
       cache: "no-store",
       signal,
     });
@@ -1047,6 +1086,8 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
     ).session;
     if (session.id !== id) throw new Error("Chat unavailable");
     if (groupMode !== Boolean(session.group)) throw new Error("Chat unavailable");
+    if (viewer.scope && session.ownerScope !== viewer.scope) throw chatSessionFetchError(403);
+    if (viewer.identity?.kind === "anonymous" && session.ownerScope.startsWith("user:")) throw chatSessionFetchError(403);
     return session;
   }
 
@@ -1153,7 +1194,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
     setMemoryPending(true);
     sessionMutationEpochRef.current += 1;
     try {
-      const response = await fetch(`/api/v1/chat/sessions/${encodeURIComponent(executionSessionId)}/memory`, {
+      const response = await fetchForSession(`/api/v1/chat/sessions/${encodeURIComponent(executionSessionId)}/memory`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ memoryEnabled: next }),
@@ -1181,7 +1222,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
     stopVoice();
     sessionMutationEpochRef.current += 1;
     try {
-      const response = await fetch(`/api/v1/messages/${encodeURIComponent(messageId)}`, {
+      const response = await fetchForSession(`/api/v1/messages/${encodeURIComponent(messageId)}`, {
         method: "DELETE",
       });
       if (response.ok) {
@@ -1229,7 +1270,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
       const current = () => epoch === sessionMutationEpochRef.current && receiptContext!.isCurrent();
       let quoteAuthority = confirmedQuote;
       if (!quoteAuthority && !hasUnconfirmedGenerationRetry(jobId, receiptContext.keys.retry)) {
-        const response = await fetch(`/api/v1/generation/jobs/${encodeURIComponent(jobId)}/retry/quote`, { method: "POST", cache: "no-store", headers: { "x-idream-viewer-scope": receiptContext.persistence.ownerScope } });
+        const response = await fetchForSession(`/api/v1/generation/jobs/${encodeURIComponent(jobId)}/retry/quote`, { method: "POST", cache: "no-store", headers: { "x-idream-viewer-scope": receiptContext.persistence.ownerScope } });
         const payload: unknown = await response.json().catch(() => null);
         if (!response.ok) throw new GenerationRequestError(apiPayloadErrorMessage(payload) ?? "Couldn't check the media retry price.", response.status);
         const { quote } = parseGenerationRetryQuoteResponse(payload);
@@ -1291,7 +1332,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
     setStatus(null);
     setDeleteConfirmMessageId(null);
     try {
-      const response = await fetch(`/api/v1/media/${encodeURIComponent(mediaAssetId)}/add-to-identity`, {
+      const response = await fetchForSession(`/api/v1/media/${encodeURIComponent(mediaAssetId)}/add-to-identity`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(sourceCharacterId ? { characterId: sourceCharacterId } : {}),
@@ -1308,7 +1349,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
   ) {
     setStatus(null);
     try {
-      const response = await fetch(`/api/v1/media/${encodeURIComponent(mediaAssetId)}/feedback`, {
+      const response = await fetchForSession(`/api/v1/media/${encodeURIComponent(mediaAssetId)}/feedback`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ feedbackType, sourceSurface: "chat" }),
@@ -1382,7 +1423,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
     setDeleteConfirmMessageId(null);
     sessionMutationEpochRef.current += 1;
     try {
-      const response = await fetch(
+      const response = await fetchForSession(
         `/api/v1/messages/${encodeURIComponent(messageId)}/regenerate`,
         { method: "POST" },
       );
@@ -1446,6 +1487,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
   }
 
   function streamAssistant(streamUrl: string, assistantId: string, fallback: string) {
+    if (!mountedRef.current) return;
     const requestedAttempt = new URL(streamUrl, window.location.origin).searchParams.get("attempt");
     const attempt = Number(requestedAttempt);
     if (!Number.isSafeInteger(attempt) || attempt <= 0
@@ -1571,7 +1613,7 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
     let completionWonRace = false;
     const results = await Promise.all(
       stoppedReplies.map(async ({ messageId, attempt }) => {
-        const response = await fetch(
+        const response = await fetchForSession(
           `/api/v1/messages/${encodeURIComponent(messageId)}/cancel`,
           { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ attempt }) },
         );
@@ -1838,6 +1880,11 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
                           Not saved to long-term memory. This turn stays in chat history.
                         </p>
                       ) : null}
+                      {!isUser && message.status === "sent" && message.replyLimitReached === true ? (
+                        <p className="mt-2 text-[11px] leading-4 text-white/60" data-testid="chat-reply-limit" role="status">
+                          Reply reached the length limit. Ask the character to continue.
+                        </p>
+                      ) : null}
                       {(message.attachments ?? []).length > 0 ? (
                         <div className="mt-3 space-y-2">
                           {message.attachments?.map((attachment) => attachment.kind === "generated_video" ? <ChatVideoAttachmentCard
@@ -2045,18 +2092,24 @@ export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: stri
               </div>
             </>
           ) : (
-            <ChatSessionUnavailablePanel loadState={loadState} sessionId={id} groupMode={groupMode} />
+            <ChatSessionUnavailablePanel loadState={viewer.error ? "error" : loadState} sessionId={id} groupMode={groupMode}
+              accountError={viewer.error} onRetryAccount={() => void viewer.revalidate()} />
           )}
         </section>
       </div>
       <MobileBottomNav activeHref="/chat" />
       <ChatSessionListDrawer
+        fetchForViewer={fetchForSession}
         open={sessionsOpen}
         onClose={() => setSessionsOpen(false)}
         currentSessionId={id}
+        onArchived={sessionId => {
+          if (sessionId === id) { setConversationArchived(true); cancelEdit(); }
+        }}
       />
       <MemoryPanel
         key={executionSessionId}
+        fetchForViewer={fetchForSession}
         open={memoryOpen}
         onClose={() => setMemoryOpen(false)}
         characterId={characterId}
@@ -2076,7 +2129,9 @@ function ChatSessionUnavailablePanel({
   loadState,
   sessionId,
   groupMode = false,
-}: Readonly<{ loadState: Exclude<ChatLoadState, "ready">; sessionId: string; groupMode?: boolean }>) {
+  accountError,
+  onRetryAccount,
+}: Readonly<{ loadState: Exclude<ChatLoadState, "ready">; sessionId: string; groupMode?: boolean; accountError?: string | null; onRetryAccount?: () => void }>) {
   const loginTarget = `/chat/${groupMode ? "groups/" : ""}${encodeURIComponent(sessionId)}`;
 
   if (loadState === "loading") {
@@ -2130,10 +2185,12 @@ function ChatSessionUnavailablePanel({
     >
       <MessageCircle className="mx-auto h-10 w-10 text-[rgb(114,113,112)]" />
       <h2 className="mt-4 text-[22px] font-black uppercase text-white">Chat unavailable</h2>
-      <p className="mx-auto mt-3 max-w-md text-[14px] leading-6 text-[rgb(170,170,170)]">
-        This conversation could not be loaded. Open your chat hub or start a new conversation.
+      <p className="mx-auto mt-3 max-w-md text-[14px] leading-6 text-[rgb(170,170,170)]" role={accountError ? "alert" : undefined}>
+        {accountError || "This conversation could not be loaded. Open your chat hub or start a new conversation."}
       </p>
       <div className="mt-6 flex flex-wrap justify-center gap-2">
+        {accountError ? <button type="button" onClick={onRetryAccount}
+          className="inline-flex min-h-11 items-center justify-center rounded-full bg-white px-5 text-[14px] font-bold text-[rgb(13,13,13)]">Retry</button> : null}
         <Link
           className="inline-flex h-11 items-center justify-center rounded-full bg-white px-5 text-[14px] font-bold text-[rgb(13,13,13)]"
           href="/chat"

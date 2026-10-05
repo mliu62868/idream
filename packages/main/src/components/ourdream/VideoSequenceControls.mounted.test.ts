@@ -45,6 +45,31 @@ describe("Video sequence exact acceptance and recoverable delivery UI", () => {
   async function type(label: string, value: string) { const field = container.querySelector<HTMLTextAreaElement>(`[aria-label="${label}"]`)!; await act(async () => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, value); field.dispatchEvent(new Event("input", { bubbles: true })); }); }
   async function select(label: string, value: string) { const field = container.querySelector<HTMLSelectElement>(`[aria-label="${label}"]`)!; await act(async () => { field.value = value; field.dispatchEvent(new Event("change", { bubbles: true })); }); }
 
+  it("prefills a new correction script but requires explicit current price review before any generation", async () => {
+    await mount({ ...props, directionDraft: { id: "intent-one", prompt: "Keep the camera still." } });
+    expect(container.querySelector<HTMLTextAreaElement>('[aria-label="Scene 1 prompt"]')?.value).toBe("Keep the camera still.");
+    expect(calls.filter(call => call.init?.method === "POST")).toHaveLength(0);
+    await click("Review video price");
+    expect(JSON.parse(String(calls.find(call => call.path.endsWith("/quote"))?.init?.body)).scenes[0].prompt).toBe("Keep the camera still.");
+    expect(calls.filter(call => call.init?.method === "POST" && !call.path.endsWith("/quote"))).toHaveLength(0);
+  });
+
+  it("keeps an edited script when an instruction correction is offered", async () => {
+    await mount(); await type("Scene 1 prompt", "My existing script");
+    await mount({ ...props, directionDraft: { id: "intent-two", prompt: "A suggested correction." } });
+    expect(container.querySelector<HTMLTextAreaElement>('[aria-label="Scene 1 prompt"]')?.value).toBe("My existing script");
+    expect(container.textContent).toContain("Your existing script or original request was kept"); expect(calls.filter(call => call.init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("keeps an uncertain paid receipt and its script ahead of a new correction direction", async () => {
+    customize = (path, init) => path.endsWith("/video-sequences") && init?.method === "POST" ? Promise.reject(new TypeError("Connection lost")) : undefined;
+    await mount(); await type("Scene 1 prompt", "Original accepted script"); await click("Review video price"); await click("Accept 200 coins & create video");
+    const saved = localStorage.getItem(storageKey);
+    await mount({ ...props, directionDraft: { id: "intent-three", prompt: "Never replace the original." } });
+    expect(localStorage.getItem(storageKey)).toBe(saved); expect(container.querySelector<HTMLTextAreaElement>('[aria-label="Scene 1 prompt"]')?.value).toBe("Original accepted script");
+    expect(calls.filter(call => call.init?.method === "POST" && !call.path.endsWith("/quote"))).toHaveLength(1);
+  });
+
   it("reviews all scene prices and the longer-narration rule before one paid submission", async () => {
     await mount(); await select("Video aspect ratio", "1:1"); await select("Video resolution", "preview"); await select("Video sound", "narration");
     await type("Scene 1 prompt", "Wave in the garden"); await type("Scene 1 narration", "Hello from the garden."); await select("Scene 1 duration", "3"); await click("Add scene");

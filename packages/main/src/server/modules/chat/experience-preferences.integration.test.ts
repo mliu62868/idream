@@ -4,7 +4,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { proxyChatRequest } from "@/server/bff/chat-proxy";
 import { createCharacter, createUser, purgeTestData } from "@/server/test/helpers";
-import { beginChatTurn, commitChatTerminal, createChatSession, editChatTurn, regenerateChatTurn, setChatMemory } from "./turn-ledger";
+import { beginChatTurn, cancelChatTurn, commitChatTerminal, createChatSession, editChatTurn, getChatSession, regenerateChatTurn, setChatMemory } from "./turn-ledger";
 import { clearCompanionMemory } from "./companion-memory-authority";
 import { DEFAULT_PROFILE_EXPERIENCE } from "./conversation-profiles";
 
@@ -40,17 +40,62 @@ async function fixture() {
   return { userId, characterId: character.id, sessionId: session.id, call, begin };
 }
 
-async function finish(snapshot: NonNullable<Awaited<ReturnType<typeof beginChatTurn>>["snapshot"]>) {
+async function finish(snapshot: NonNullable<Awaited<ReturnType<typeof beginChatTurn>>["snapshot"]>, finishReason?: "stop" | "length") {
   await commitChatTerminal({
     version: 1, turnId: snapshot.turnId, sessionId: snapshot.sessionId, assistantMessageId: snapshot.assistantMessageId,
     attempt: snapshot.attempt, status: "sent", content: "I'm here.", model: "fixture", promptTokens: 2, completionTokens: 2,
     sceneVersion: snapshot.sceneVersion + 1,
     scene: { schemaVersion: 1, version: snapshot.sceneVersion + 1, location: null, time: null, participants: [], emotionalBeat: null, unresolvedThreads: [] },
-    terminalEvidence: { authority: "test", prompt: { productPromptVersion: "companion-product-1", preparedTurnVersion: 4, systemPromptDigest: "a".repeat(64), soulFingerprint: "b".repeat(64) } },
+    terminalEvidence: { authority: "test", ...(finishReason ? { finishReason } : {}), prompt: { productPromptVersion: "companion-product-1", preparedTurnVersion: 4, systemPromptDigest: "a".repeat(64), soulFingerprint: "b".repeat(64) } },
   });
 }
 
 describe("versioned conversation preferences", () => {
+  it("projects a persisted length limit without exposing terminal internals or changing the frozen budget and usage", async () => {
+    const f = await fixture();
+    await f.call("PUT", { responseLength: "short", interactionIntensity: "gentle", sceneGeneration: "follow", version: 0 });
+    const original = await f.begin();
+    await finish(original.snapshot!, "length");
+    const detail = await getChatSession(f.userId, f.sessionId);
+    const reply = detail.messages.find(message => message.id === original.assistant.id);
+    expect(reply).toMatchObject({ id: original.assistant.id, attempt: 1, status: "sent", replyLimitReached: true });
+    expect(reply).not.toHaveProperty("terminalEvidence");
+    expect(reply).not.toHaveProperty("runtimeTrace");
+    expect(detail.messages.find(message => message.id === original.userMessage.id)).not.toHaveProperty("replyLimitReached");
+    expect((await getChatSession(f.userId, f.sessionId)).messages).toEqual(detail.messages);
+    expect((await prisma.chatTurn.findUniqueOrThrow({ where: { id: original.snapshot!.turnId } })).executionSnapshot).toEqual(original.snapshot);
+    expect(await prisma.chatTurnUsageFact.count({ where: { turnId: original.snapshot!.turnId } })).toBe(1);
+    expect(original.snapshot?.experience?.responseLength).toBe("short");
+  });
+
+  it.each(["stop", undefined] as const)("does not infer truncation for a normal or legacy finish (%s)", async finishReason => {
+    const f = await fixture();
+    const original = await f.begin();
+    await finish(original.snapshot!, finishReason);
+    const reply = (await getChatSession(f.userId, f.sessionId)).messages.find(message => message.id === original.assistant.id);
+    expect(reply).toMatchObject({ attempt: 1, status: "sent" });
+    expect(reply).not.toHaveProperty("replyLimitReached");
+  });
+
+  it("clears the old length receipt on regenerate and does not mark a user cancellation as a length limit", async () => {
+    const f = await fixture();
+    await setChatMemory(f.userId, f.sessionId, false);
+    const original = await f.begin();
+    await finish(original.snapshot!, "length");
+    expect((await getChatSession(f.userId, f.sessionId)).messages.find(message => message.id === original.assistant.id)).toMatchObject({ replyLimitReached: true });
+    const regenerated = await regenerateChatTurn(f.userId, original.assistant.id);
+    expect(regenerated).toMatchObject({ assistantMessageId: original.assistant.id, attempt: 2, status: "pending" });
+    const pending = (await getChatSession(f.userId, f.sessionId)).messages.find(message => message.id === original.assistant.id);
+    expect(pending).toMatchObject({ attempt: 2, status: "pending" });
+    expect(pending).not.toHaveProperty("replyLimitReached");
+    await cancelChatTurn(f.userId, original.assistant.id, 2);
+    const cancelled = (await getChatSession(f.userId, f.sessionId)).messages.find(message => message.id === original.assistant.id);
+    expect(cancelled).toMatchObject({ attempt: 2, status: "cancelled" });
+    expect(cancelled).not.toHaveProperty("replyLimitReached");
+    expect(await prisma.chatTurnUsageFact.count({ where: { turnId: original.snapshot!.turnId } })).toBe(1);
+    expect(regenerated.snapshot.experience).toEqual(original.snapshot?.experience);
+  });
+
   it("publishes explicit profile capabilities and costs, rejects obsolete selections, and freezes the selected version", async () => {
     const f = await fixture();
     const catalog = (await f.call("GET")).json.catalog;

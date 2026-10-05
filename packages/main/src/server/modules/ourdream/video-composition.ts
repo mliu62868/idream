@@ -56,7 +56,10 @@ export async function composeVideoScenes(input: {
           "-af", "asetpts=PTS-STARTPTS,apad", "-t", String(seconds), "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2");
       } else {
         if (input.audio === "generated" && !media.hasAudio) throw new Error("Generated soundtrack is missing");
-        durations.push(media.durationSeconds);
+        // Silent output discards the native audio, whose trailing samples can
+        // make the source container longer than its decoded picture timeline.
+        if (input.audio === "silent" && media.frameCount === null) throw new Error("Silent video requires a decoded picture frame count");
+        durations.push(input.audio === "silent" ? media.frameCount! / 24 : media.durationSeconds);
         args.push("-map", "0:v:0", ...(input.audio === "silent" ? ["-an"] : ["-map", "0:a:0"]), "-c", "copy");
       }
       args.push("-movflags", "+faststart", outputPath);

@@ -3,7 +3,7 @@ import type { TodayAllWorkQuery, TodaySourceStatus, TodaySourceType } from "@idr
 export type TodayTab = "summary" | "all";
 export type TodayUrlState = Omit<Partial<TodayAllWorkQuery>, "limit"> & { tab: TodayTab; queue?: "priority" | "mine" | "unassigned" | "watching" | "resolved"; limit: number };
 
-export const TODAY_FILTER_KEYS = ["domain", "severity", "sla", "owner", "ownerId", "status", "environment"] as const;
+export const TODAY_FILTER_KEYS = ["domain", "severity", "sla", "owner", "ownerId", "status", "environment", "includeSnoozed"] as const;
 export type TodayFilterKey = typeof TODAY_FILTER_KEYS[number];
 
 /**
@@ -52,6 +52,7 @@ export function parseTodayUrl(params: URLSearchParams): TodayUrlState {
     ownerId: optional(params.get("ownerId")),
     status: optional(params.get("status")) as TodayUrlState["status"],
     environment: optional(params.get("environment")) as TodayUrlState["environment"],
+    includeSnoozed: params.get("includeSnoozed") === "true" ? true : undefined,
     cursor: optional(params.get("cursor")),
     limit: 25,
   };
@@ -59,7 +60,7 @@ export function parseTodayUrl(params: URLSearchParams): TodayUrlState {
 
 export function todayAllWorkPath(state: TodayUrlState, workMode: string) {
   const params = new URLSearchParams({ workMode, limit: String(state.limit) });
-  for (const key of ["domain", "severity", "sla", "owner", "ownerId", "status", "environment", "cursor"] as const) {
+  for (const key of [...TODAY_FILTER_KEYS, "cursor"] as const) {
     const value = state[key];
     if (value) params.set(key, String(value));
   }
@@ -70,7 +71,7 @@ export function todayBrowserPath(state: TodayUrlState) {
   const params = new URLSearchParams();
   if (state.tab === "all") params.set("todayTab", "all");
   else if (state.queue && state.queue !== "priority") params.set("queue", state.queue);
-  for (const key of ["domain", "severity", "sla", "owner", "ownerId", "status", "environment", "cursor"] as const) {
+  for (const key of [...TODAY_FILTER_KEYS, "cursor"] as const) {
     const value = state[key];
     if (value) params.set(key, String(value));
   }

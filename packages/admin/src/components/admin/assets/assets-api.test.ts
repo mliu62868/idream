@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { contentAssetPatchRequestSchema } from "@idream/shared/admin";
 import {
   ASSETS_BULK,
   ASSETS_BULK_PREFLIGHT,
@@ -140,6 +141,24 @@ describe("assetAuthorityDependencyView", () => {
 });
 
 describe("assetPatchPayload", () => {
+  it("preserves an explicit cleared description through JSON and the shared PATCH contract", () => {
+    const payload = assetPatchPayload({
+      id: "asset-123",
+      draft: { tags: "neon", description: "  \n\t " },
+      reason: "Remove outdated search description",
+    });
+    const body = contentAssetPatchRequestSchema.parse(
+      JSON.parse(JSON.stringify(payload)),
+    );
+    expect(body).toMatchObject({ description: "", tags: ["neon"] });
+    expect(body).not.toHaveProperty("status");
+    // Omission remains a partial update; clearing is represented only by an explicit empty string.
+    expect(contentAssetPatchRequestSchema.parse({
+      reason: "Keep existing description",
+      confirmation: "asset-123",
+    })).not.toHaveProperty("description");
+  });
+
   it("only exposes the Library archive state mutation and trims blank description", () => {
     expect(
       assetPatchPayload({
@@ -217,6 +236,45 @@ describe("bulk asset archival", () => {
         confirmation: "asset-a,asset-b",
       }),
     });
+  });
+
+  it("reuses the original bulk key when a 200 response body is interrupted, and settles only the readable replay", async () => {
+    const interruptedBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"ok":true,"data":'));
+        controller.error(new DOMException("Response body interrupted after headers", "AbortError"));
+      },
+    });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(interruptedBody, { status: 200 }))
+      .mockImplementation(async () => Response.json({ ok: true, data: { updatedIds: ["body-loss-asset"] } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const intent = { assetIds: ["body-loss-asset"], reason: "Retire body-loss audit upload" };
+
+    await expect(bulkArchiveAssets(intent)).rejects.toThrow("Response body interrupted after headers");
+    await expect(bulkArchiveAssets(intent)).resolves.toEqual({ updatedIds: ["body-loss-asset"] });
+    const firstKey = new Headers(fetchMock.mock.calls[0][1]?.headers).get("idempotency-key");
+    expect(firstKey).toBeTruthy();
+    expect(new Headers(fetchMock.mock.calls[1][1]?.headers).get("idempotency-key")).toBe(firstKey);
+    expect(fetchMock.mock.calls[1][1]?.body).toBe(fetchMock.mock.calls[0][1]?.body);
+
+    await bulkArchiveAssets(intent);
+    expect(new Headers(fetchMock.mock.calls[2][1]?.headers).get("idempotency-key")).not.toBe(firstKey);
+  });
+
+  it.each([503, 409])("keeps the existing unknown-versus-answered key contract for a readable %s rejection", async (status) => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json({ ok: false, error: { message: "Archive rejected" } }, { status }))
+      .mockResolvedValueOnce(Response.json({ ok: true, data: { updatedIds: [`readable-${status}-asset`] } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const intent = { assetIds: [`readable-${status}-asset`], reason: "Verify readable rejection semantics" };
+    await expect(bulkArchiveAssets(intent)).rejects.toThrow("Archive rejected");
+    await bulkArchiveAssets(intent);
+    const firstKey = new Headers(fetchMock.mock.calls[0][1]?.headers).get("idempotency-key");
+    const retryKey = new Headers(fetchMock.mock.calls[1][1]?.headers).get("idempotency-key");
+    expect(firstKey).toBeTruthy();
+    if (status === 503) expect(retryKey).toBe(firstKey);
+    else expect(retryKey).not.toBe(firstKey);
   });
 
   it("preflights every canonical target in one POST and preserves exact blocker IDs", async () => {

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { adminIdSchema, adminIsoDateTimeSchema } from "./common";
+import { adminOverviewWindowQuerySchema } from "./overviews";
 
 /**
  * SPEC: 财务滥用信号总览（多账号设备簇 / 推荐农场 / 人工调整异常）。
@@ -7,12 +8,7 @@ import { adminIdSchema, adminIsoDateTimeSchema } from "./common";
  *         `dataScope` 与 `window` 一起发出去，读的人才知道这些数字是在什么范围、什么时间窗上算的。
  */
 
-export const riskAbuseQuerySchema = z
-  .object({
-    from: z.string().trim().min(1).optional(),
-    to: z.string().trim().min(1).optional(),
-  })
-  .strict();
+export const riskAbuseQuerySchema = adminOverviewWindowQuerySchema;
 
 export const riskAbuseOverviewSchema = z
   .object({

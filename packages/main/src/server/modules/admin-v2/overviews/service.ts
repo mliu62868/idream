@@ -25,7 +25,7 @@ function resolveWindow(query: WindowQuery, label: string) {
   const from = query.from
     ? new Date(query.from)
     : new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from > to) {
     throw Errors.badRequest(`Invalid ${label} window`);
   }
   return { from, to, createdAt: { gte: from, lte: to } };

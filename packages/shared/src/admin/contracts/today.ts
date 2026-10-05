@@ -85,6 +85,7 @@ export const todayWorkItemSchema = z
     environment: adminEnvironmentSchema,
     dataClass: adminDataClassSchema,
     pinned: z.boolean(),
+    snoozedUntil: adminIsoDateTimeSchema.nullable().optional(),
     preferenceVersion: z.number().int().nonnegative(),
     claim: z
       .object({
@@ -105,6 +106,7 @@ export const todayAllWorkQuerySchema = z
     ownerId: adminIdSchema.optional(),
     status: todaySourceStatusSchema.optional(),
     environment: adminEnvironmentSchema.optional(),
+    includeSnoozed: z.literal("true").transform(() => true as const).optional(),
     cursor: z.string().trim().min(1).optional(),
     limit: z.coerce.number().int().min(1).max(50).default(25),
   })

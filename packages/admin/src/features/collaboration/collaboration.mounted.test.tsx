@@ -66,8 +66,8 @@ describe("collaboration write safety", () => {
     vi.restoreAllMocks();
   });
 
-  // 覆盖共享视图会改变同事下次打开看到的查询，此前一点即写，没有任何确认。
-  it("requires a confirmation before overwriting a shared Saved View", async () => {
+  // 覆盖个人已保存视图不可恢复，必须保留确认。
+  it("requires a confirmation before overwriting the operator's Saved View", async () => {
     adminV2Request.mockImplementation(async () => ({ items: [savedView] }));
     await act(async () => {
       root = createRoot(container);
@@ -81,16 +81,15 @@ describe("collaboration write safety", () => {
 
     expect(adminV2Request.mock.calls.every(([, init]) => init?.method !== "PATCH")).toBe(true);
     const dialog = document.querySelector('[role="dialog"]');
-    expect(dialog?.textContent).toContain("Overwrite the shared Saved View");
+    expect(dialog?.textContent).toContain("Overwrite Saved View");
     expect(dialog?.textContent).toContain("Overdue billing");
     // 后端只存当前 queryState，没有版本历史 —— 覆盖不可恢复，所以要常驻红条 + 确认串。
     expect(dialog?.textContent).toContain("This cannot be undone.");
     expect(dialog?.querySelector('input[aria-label="Saved view name"]')).not.toBeNull();
   });
 
-  // 删除此前在 Cases / Incidents 上没有入口，视图只进不出；补上入口的同时必须和 Support 一样
-  // 要求敲名字 —— 后台没有回收站，误点就是所有人一起失去这个视图。
-  it("requires the view name before deleting a shared Saved View", async () => {
+  // 删除同样要求敲名字：当前操作者的私有视图没有回收站。
+  it("requires the view name before deleting the operator's Saved View", async () => {
     adminV2Request.mockImplementation(async () => ({ items: [savedView] }));
     await act(async () => {
       root = createRoot(container);

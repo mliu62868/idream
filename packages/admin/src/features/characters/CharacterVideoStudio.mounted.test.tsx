@@ -3,6 +3,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AdminI18nProvider } from "@/components/admin/i18n";
 
 const { adminV2Request, runCommittedMutationSpy } = vi.hoisted(() => ({
   adminV2Request: vi.fn(),
@@ -23,30 +24,6 @@ vi.mock("@/lib/admin-v2-api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/admin-v2-api")>();
   return { ...actual, adminV2Request };
 });
-vi.mock("@/components/admin/i18n", () => ({
-  adminDateLocale: () => undefined,
-  // ui/format 的 formatDreamcoins 走 translateAdmin 查 "{cost} DC"，不经过 useAdminI18n。
-  translateAdmin: (
-    _locale: string,
-    value: string,
-    values?: Readonly<Record<string, string | number>>,
-  ) => Object.entries(values ?? {}).reduce(
-    (text, [key, replacement]) => text.replaceAll(`{${key}}`, String(replacement)),
-    value,
-  ),
-  useAdminI18n: () => ({
-    locale: "en" as const,
-    t: (
-      value: string,
-      values?: Readonly<Record<string, string | number>>,
-    ) => Object.entries(values ?? {}).reduce(
-      (text, [key, replacement]) =>
-        text.replaceAll(`{${key}}`, String(replacement)),
-      value,
-    ),
-  }),
-}));
-
 import { characterWorkspaceDetail } from "./character-workspace-fixture";
 import {
   CharacterVideoStudio,
@@ -297,6 +274,46 @@ describe("Character Video Studio", () => {
     await act(async () => root.unmount());
     container.remove();
     vi.restoreAllMocks();
+  });
+
+  it("explains committed video recovery in Chinese and verifies by GET without creating a duplicate", async () => {
+    let body: Record<string, unknown> = {};
+    let projectionAvailable = false;
+    adminV2Request.mockImplementation(async (path, options) => {
+      if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") {
+        body = options.body;
+        return { batch: { id: "video-run-1" }, replayed: false };
+      }
+      if (path.endsWith("/video-run-1")) {
+        if (!projectionAvailable) throw new Error("projection replica unavailable");
+        return { ...pendingRun, title: body.title,
+          reviewContext: { ...pendingRun.reviewContext, brief: body.brief, orientation: body.orientation } };
+      }
+      return { items: [], pageInfo: { endCursor: null, hasNextPage: false } };
+    });
+    await act(async () => root.render(
+      <AdminI18nProvider locale="zh">
+        <CharacterVideoStudio actorId="actor-zh" data={data} onCreateImage={vi.fn()}
+          permissions={{ create: true, read: true }} runCommittedMutation={runCommittedMutation} />
+      </AdminI18nProvider>,
+    ));
+    const button = (label: string) => [...container.querySelectorAll("button")]
+      .find((item) => item.textContent?.includes(label));
+    await waitUntil(() => button("生成视频")?.disabled === false);
+    await act(async () => button("生成视频")?.click());
+    await waitUntil(() => readActiveDurableMutationIntent({
+      scope: "character-video:create:actor-zh:character-video-1",
+    })?.status === "committed_projection_pending");
+    expect(container.querySelector('[role="alert"]')?.textContent)
+      .toContain("视频任务已提交，正在等待核验完整结果：projection replica unavailable");
+    expect(button("核验已创建的视频")).toBeDefined();
+    projectionAvailable = true;
+    await act(async () => button("核验已创建的视频")?.click());
+    await waitUntil(() => readActiveDurableMutationIntent({
+      scope: "character-video:create:actor-zh:character-video-1",
+    }) === null);
+    expect(container.textContent).toContain("已创建的视频任务现已可见，未重复提交生成请求。");
+    expect(adminV2Request.mock.calls.filter(([, options]) => options?.method === "POST")).toHaveLength(1);
   });
 
   it("puts adopted image slots first and de-duplicates the same source", () => {

@@ -46,8 +46,8 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
   const [listError, setListError] = useState<unknown>(null);
   const [detailError, setDetailError] = useState<unknown>(null);
   // SPEC: 「上一页」重发自己走过的那个游标，不给后端发 `before`。
-  // INTENT: 后端确实支持反向 keyset，但页码只有翻页栈知道 —— 用同一份栈同时回答
-  //         「能不能回去」和「这是第几页」，两个读数就不会互相打架。栈空即第一页，置灰。
+  // INVARIANT: 栈首为空游标才证明从首页起算；恢复 URL 后栈空但游标非空时页位未知，
+  //            仍可通过清游标回首页，不能把空栈解释成第一页。
   const [cursorTrail, setCursorTrail] = useState<string[]>([]);
   const history = useRef(createWorkspaceHistoryController(initialUrlState));
   const listRequestId = useRef(0);
@@ -217,14 +217,15 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
             <div className="border-t border-[var(--ad-border)] p-4">
               <Pagination
                 hasNext={Boolean(list.pageInfo.hasNextPage && list.pageInfo.endCursor)}
-                hasPrevious={cursorTrail.length > 0}
+                hasPrevious={Boolean(query.cursor)}
                 loading={loading}
                 onNext={() => {
                   if (!list.pageInfo.endCursor) return;
                   goToPage(list.pageInfo.endCursor, [...cursorTrail, query.cursor ?? ""]);
                 }}
                 onPrevious={() => goToPage(cursorTrail.at(-1) || undefined, cursorTrail.slice(0, -1))}
-                page={cursorTrail.length + 1}
+                previousLabel={query.cursor && cursorTrail.length === 0 ? t("Back to first page") : undefined}
+                page={!query.cursor ? 1 : cursorTrail[0] === "" ? cursorTrail.length + 1 : null}
                 pageSize={CUSTOMER_PAGE_SIZE}
                 rowCount={list.items.length}
                 // 后端 count 出来的筛选后总行数；缺席时传 null，分页条就只说"本页几条"。

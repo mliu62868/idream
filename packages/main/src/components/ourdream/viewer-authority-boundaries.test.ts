@@ -19,26 +19,24 @@ const DIRECT_VIEWER_READERS: Record<string, string> = {
   // 这一份是权威本身：所有人的答案都来自它。
   "viewer-auth.ts": "解析 /api/v1/me 的唯一实现",
 
-  // 以下五个是 viewer-auth.ts 文件头 INVARIANT 声明的豁免，各自需要一个
+  // 以下四个是 viewer-auth.ts 文件头 INVARIANT 声明的豁免，各自需要一个
   // 共享缓存给不出的答案：
   "AuthWorkspace.tsx": "登录失败后实时复查，必须看见本标签页刚发生的写入",
   "AgeGateBoundary.tsx": "每次路由变化重读 ageGate.accepted，要看见刚刚的接受",
   "AuthNav.tsx": "用更严的 parseAuthMeResponse 取显示名与邮箱，且有自己的不可用态",
   "CreateWorkspace.tsx": "按 viewer 给 localStorage 草稿分域，陈旧 id 会在共用浏览器上串号",
-  "CollectionDetail.tsx": "合集所有权判定，尚未迁移",
 
   // 以下是尚未迁移到 useViewerGate 的存量面。迁一个删一行。
-  "GeneratorWorkspace.tsx": "自有 epoch/scope 三元组，未迁移",
-  "ChatSessionClient.tsx": "自有 sessionMutationEpoch，未迁移",
   "HelpDeskWorkspace.tsx": "自有 viewerScope，未迁移",
   "HelpDeskConversation.tsx": "自有 owner 判定，未迁移",
   "CoinStoreWorkspace.tsx": "自有 scope + generation + signedInAs 重读，未迁移",
-  "ChatVideoAttachmentCard.tsx": "自有 owner 判定，未迁移",
   "RecoveryCodeCard.tsx": "自有 serial，未迁移",
 };
 
 const ROOT = path.join(process.cwd(), "src/components/ourdream");
-const DIRECT_READ = /fetch\(\s*["'`]\/api\/v1\/me/;
+// `/media` and `/messages` do not resolve the viewer; the endpoint boundary is
+// part of this inventory's contract, not just a common URL prefix.
+const DIRECT_READ = /fetch\(\s*["'`]\/api\/v1\/me(?:["'`]|\?)/;
 
 async function sourceFiles(root: string): Promise<string[]> {
   const entries = await readdir(root, { withFileTypes: true });
@@ -55,6 +53,13 @@ async function sourceFiles(root: string): Promise<string[]> {
 }
 
 describe("viewer authority direct reads", () => {
+  it("recognizes the me endpoint without counting media or message requests as identity reads", () => {
+    expect(DIRECT_READ.test('fetch("/api/v1/me", { cache: "no-store" })')).toBe(true);
+    expect(DIRECT_READ.test('fetch(`/api/v1/me?refresh=1`)')).toBe(true);
+    expect(DIRECT_READ.test('fetch("/api/v1/media?type=image")')).toBe(false);
+    expect(DIRECT_READ.test('fetch(`/api/v1/messages/${id}/cancel`)')).toBe(false);
+  });
+
   it("scans a non-empty ourdream tree that still contains its gated surfaces", async () => {
     const names = (await sourceFiles(ROOT)).map((file) => path.basename(file));
 

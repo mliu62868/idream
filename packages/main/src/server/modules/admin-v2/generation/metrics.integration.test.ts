@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { adminV2 } from "@/server/test/admin-v2-http";
 
@@ -71,5 +71,46 @@ describe("generation metrics profile attribution", () => {
     expect(response.data.profiles).toEqual(expect.arrayContaining([
       expect.objectContaining({ profileId: `${token}-profile-v1`, profileVersion: 1, label: "Profile version 1", workflowKey: "workflow-v1", avgDurationMs: 2_000 }),
     ]));
+  });
+
+  it("counts only the returned frozen half-open period and drills to the same failed jobs", async () => {
+    const now = new Date("2026-10-05T12:00:00.000Z");
+    const from = new Date("2026-09-28T12:00:00.000Z");
+    const scopeProfile = `${token}-frozen`;
+    const recipeId = `${token}-recipe`;
+    const rows = [
+      { key: "from", createdAt: from, status: "failed" },
+      { key: "inside", createdAt: new Date("2026-10-01T12:00:00.000Z"), status: "failed" },
+      { key: "before", createdAt: new Date(from.getTime() - 1), status: "failed" },
+      { key: "to", createdAt: now, status: "failed" },
+      { key: "future-completed", createdAt: new Date(now.getTime() + 1), status: "completed" },
+    ];
+    await prisma.generationJob.createMany({ data: rows.map(row => ({
+      id: `${token}-frozen-${row.key}`, userId: customerId, mode: "image", controls: {}, presetIds: [],
+      profileId: scopeProfile, profileVersion: 2, recipeId, sourceType: `${token}-source`, status: row.status,
+      createdAt: row.createdAt, completedAt: row.status === "completed" ? new Date(row.createdAt.getTime() + 1_000) : null,
+    })) });
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(now);
+    try {
+      const response = await adminV2("GET", "/api/v2/admin/generation/metrics?days=7", { userId: adminId, role: "admin" });
+      expect(response.status, JSON.stringify(response.error)).toBe(200);
+      const metric = response.data.profiles.find((row: { profileId: string }) => row.profileId === scopeProfile);
+      expect(metric).toMatchObject({ total: 2, failed: 2, completed: 0, profileVersion: 2, avgDurationMs: null });
+      expect(response.data.recipes.find((row: { recipeId: string }) => row.recipeId === recipeId)).toMatchObject({ total: 2, failed: 2 });
+      expect(response.data.sources.find((row: { sourceType: string }) => row.sourceType === `${token}-source`)).toMatchObject({ total: 2, failed: 2 });
+      const period = response.data.periods.current;
+      expect(period).toMatchObject({ from: from.toISOString(), to: now.toISOString() });
+      const jobs = await adminV2("GET", "/api/v2/admin/jobs", { userId: adminId, role: "admin", query: {
+        mode: "all", legacyStatus: "failed", from: period.from, to: period.to,
+        profileId: scopeProfile, profileVersion: "2", recipeId, sourceType: `${token}-source`,
+      } });
+      expect(jobs.status, JSON.stringify(jobs.error)).toBe(200);
+      expect(jobs.data.summary.totalCount).toBe(metric.failed);
+      expect(jobs.data.items.map((row: { id: string }) => row.id).sort()).toEqual([`${token}-frozen-from`, `${token}-frozen-inside`].sort());
+    } finally {
+      vi.useRealTimers();
+      await prisma.generationJob.deleteMany({ where: { profileId: scopeProfile } });
+    }
   });
 });

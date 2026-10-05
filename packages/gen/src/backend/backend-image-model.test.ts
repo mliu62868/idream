@@ -162,6 +162,50 @@ describe("BackendImageModel", () => {
     expect(submittedSlots(backend).prompt).toContain("Add a red scarf; keep the source framing.");
   });
 
+  it.each([
+    ["a planter recolor", "Change only the pale herb pot to unglazed terracotta brown. Keep the same face, shoulder-length brown hair, green eyes, burgundy sweater, denim jacket, pose and balcony framing."],
+    ["a sweater recolor", "Change only the burgundy sweater to forest green. Keep the source face, shoulder-length brown hair, green eyes, denim jacket, pose and balcony framing."],
+  ])("does not force face or hair replacement for %s", async (_edit, requestedEdit) => {
+    const workflow = workflowDescriptorSchema.parse(JSON.parse(readFileSync(
+      new URL("../../workflows/qwen-image-edit-multi-reference.json", import.meta.url), "utf8",
+    )));
+    const backend = makeStubBackend();
+    const result = await modelWithDescriptor(backend, workflow).generate({
+      prompt: requestedEdit, count: 1, model: workflow.modelId, seed: "source-detail-preservation",
+      controls: { workflowKey: workflow.workflowKey, workflowVersion: workflow.version, width: 832, height: 1024 },
+      referenceImages: [
+        { assetId: "source", role: "source_image", b64Json: Buffer.from(PNG).toString("base64") },
+        { assetId: "same-person", role: "identity_anchor", b64Json: Buffer.from(PNG).toString("base64") },
+      ],
+    });
+    expect(result.ok).toBe(true);
+    expect(backend.submit).toHaveBeenCalledTimes(1);
+    const slots = submittedSlots(backend);
+    expect(slots).toMatchObject({ width: 832, height: 1024, seed: stableNumericSeed("source-detail-preservation") });
+    expect(slots.prompt).toContain(requestedEdit);
+    expect(slots.prompt).toContain("<image2> is an identity reference only");
+    expect(slots.prompt).not.toContain("Replace the person's face and hair");
+  });
+
+  it("allows explicitly requested face and hair edits without changing other source details", async () => {
+    const workflow = workflowDescriptorSchema.parse(JSON.parse(readFileSync(
+      new URL("../../workflows/qwen-image-edit-multi-reference.json", import.meta.url), "utf8",
+    )));
+    const requestedEdit = "Add freckles to the source face and change the hair to a short silver bob. Keep the same person, pose, clothes and background.";
+    const backend = makeStubBackend();
+    const result = await modelWithDescriptor(backend, workflow).generate({
+      prompt: requestedEdit, count: 1, model: workflow.modelId,
+      controls: { workflowKey: workflow.workflowKey, workflowVersion: workflow.version },
+      referenceImages: [
+        { assetId: "identity", role: "identity_anchor", b64Json: Buffer.from(PNG).toString("base64") },
+        { assetId: "source", role: "source_image", b64Json: Buffer.from(PNG).toString("base64") },
+      ],
+    });
+    expect(result.ok).toBe(true);
+    expect(submittedSlots(backend).prompt).toContain(requestedEdit);
+    expect(submittedSlots(backend).prompt).toContain("unless the requested edit explicitly changes them");
+  });
+
   it("addresses the REDQW21 identity reference as <image1> only when one is bound", async () => {
     const workflow = workflowDescriptorSchema.parse(JSON.parse(readFileSync(
       new URL("../../workflows/redqw21.json", import.meta.url), "utf8",

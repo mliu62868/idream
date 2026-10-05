@@ -164,6 +164,167 @@ describe("GeneratorWorkspace media journeys", () => {
     expect(container.textContent).toContain("100 coins");
   }
 
+  it.each(["image", "video"] as const)("brings the opened %s feedback editor into view and keyboard focus without submitting", async type => {
+    const originalFetch = globalThis.fetch;
+    const mutations: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (init?.method === "POST" && (path.endsWith("/feedback") || path === "/api/v1/generation/jobs")) mutations.push(path);
+      if (path.startsWith("/api/v1/media?")) return Response.json({ ok: true, data: { items: [{ ...mediaItem("visible-editor-result", type), intentFeedbackAvailable: true }], nextCursor: null } });
+      return originalFetch(input, init);
+    }));
+    await mount();
+    if (type === "video") await click(button("Videos"));
+    const scroll = vi.spyOn(Element.prototype, "scrollIntoView");
+    const opener = button("Report intent mismatch");
+    opener.focus();
+    expect(document.activeElement, "the keyboard starts on the selected Gallery result's report action").toBe(opener);
+    await click(opener);
+    const editor = container.querySelector<HTMLElement>('[aria-label="Intent feedback editor"]');
+    expect(editor, "click creates the requested editor").not.toBeNull();
+    expect.soft(editor!.contains(document.activeElement), "opening a form outside the current view moves keyboard focus into that form").toBe(true);
+    expect.soft(scroll.mock.contexts.some(target => target instanceof Element && (target === editor || target.contains(editor))), "opening feedback exposes the editor using its existing workspace scroll boundary").toBe(true);
+    expect(mutations, "opening feedback must not save a report or submit paid generation").toEqual([]);
+    expect(container.textContent).toContain("100 coins");
+  });
+
+  it("does not reveal a feedback editor after its deferred opening was closed", async () => {
+    const originalFetch = globalThis.fetch;
+    const mutations: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (init?.method === "POST" && (path.endsWith("/feedback") || path === "/api/v1/generation/jobs")) mutations.push(path);
+      if (path.startsWith("/api/v1/media?")) return Response.json({ ok: true, data: { items: [{ ...mediaItem("closed-editor-result"), intentFeedbackAvailable: true }], nextCursor: null } });
+      return originalFetch(input, init);
+    }));
+    await mount();
+    vi.useFakeTimers();
+    const scroll = vi.spyOn(Element.prototype, "scrollIntoView");
+    await act(async () => { button("Report intent mismatch").dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    expect(vi.getTimerCount(), "hold the deferred opening until the editor is closed").toBeGreaterThan(0);
+    expect(container.querySelector('[aria-label="Intent feedback editor"]')).not.toBeNull();
+    await act(async () => { button("Close feedback").dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    expect(container.querySelector('[aria-label="Intent feedback editor"]')).toBeNull();
+    const nextAction = button("Videos");
+    nextAction.focus();
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    expect(scroll, "a stale opening must not jump away from the user's next action").not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(nextAction);
+    expect(mutations).toEqual([]);
+  });
+
+  it.each(["image", "video"] as const)("records %s intent separately from identity and paid generation", async (type) => {
+    const originalFetch = globalThis.fetch;
+    const writes: Array<{ body: Record<string, unknown>; scope: string | null }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.startsWith("/api/v1/media?")) return Response.json({ ok: true, data: { items: [{ ...mediaItem("intent-result", type), intentFeedbackAvailable: true }], nextCursor: null } });
+      if (path === "/api/v1/media/intent-result/feedback") {
+        const body = JSON.parse(String(init?.body));
+        writes.push({ body, scope: new Headers(init?.headers).get("x-idream-viewer-scope") });
+        return Response.json({ ok: true, data: { mediaAssetId: "intent-result", ownerScope: "user:generator-viewer", target: { kind: "generation_job", generationJobId: "intent-job" }, feedback: {
+          id: "intent-receipt", dimension: "intent", value: "mismatch", direction: "Keep the camera still and use a terracotta pot.", revision: 1, sourceSurface: "gallery", actorId: "generator-viewer", mediaAssetId: "intent-result", target: { kind: "generation_job", generationJobId: "intent-job" }, createdAt: "2026-10-04T12:00:00.000Z",
+        } } });
+      }
+      return originalFetch(input, init);
+    }));
+    await mount();
+    if (type === "video") await click(button("Videos"));
+    const card = container.querySelector('[data-testid="gallery-media-card"]')!;
+    expect(card.querySelector('button[aria-label="Report intent mismatch"]'), "report instruction mismatch without misrating identity").not.toBeNull();
+    await click(card.querySelector('button[aria-label="Report intent mismatch"]')!);
+    expect(writes).toHaveLength(0);
+    const direction = container.querySelector('textarea[aria-label="Correction direction"]') as HTMLTextAreaElement;
+    await act(async () => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(direction, "Keep the camera still and use a terracotta pot."); direction.dispatchEvent(new Event("input", { bubbles: true })); });
+    await click(button("Save intent feedback"));
+    expect(writes).toEqual([{ body: { feedbackType: "intent_mismatch", sourceSurface: "gallery", direction: "Keep the camera still and use a terracotta pot." }, scope: "user:generator-viewer" }]);
+    expect(container.textContent).toContain("Keep the camera still and use a terracotta pot.");
+    expect(requests.some(path => path === "/api/v1/generation/jobs")).toBe(false);
+    expect(container.textContent).toContain("100 coins");
+  });
+
+  it.each(["503", "null", "false"] as const)("checks the original asset after %s feedback ACK and retries its exact intent only on explicit request", async kind => {
+    const original = globalThis.fetch, writes: Record<string, unknown>[] = [], reads: string[] = [];
+    const direction = "Use the requested terracotta pot.";
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.startsWith("/api/v1/media?")) { const type = new URL(path, "http://localhost").searchParams.get("type") === "video" ? "video" : "image"; return Response.json({ ok: true, data: { items: [{ ...mediaItem(type === "image" ? "original-intent" : "other-video", type), intentFeedbackAvailable: true }], nextCursor: null } }); }
+      if (path === "/api/v1/media/original-intent/feedback") {
+        expect(new Headers(init?.headers).get("x-idream-viewer-scope")).toBe("user:generator-viewer");
+        const target = { kind: "generation_job", generationJobId: "original-job" };
+        if (init?.method === "GET") { reads.push(path); return Response.json({ ok: true, data: { mediaAssetId: "original-intent", ownerScope: "user:generator-viewer", target, feedback: null } }); }
+        writes.push(JSON.parse(String(init?.body)));
+        if (writes.length === 1) return kind === "503" ? Response.json({ ok: false }, { status: 503 }) : Response.json(kind === "null" ? null : { ok: false });
+        return Response.json({ ok: true, data: { mediaAssetId: "original-intent", ownerScope: "user:generator-viewer", target, feedback: { id: "feedback-original", dimension: "intent", value: "mismatch", direction, revision: 1, sourceSurface: "gallery", actorId: "generator-viewer", mediaAssetId: "original-intent", target, createdAt: "2026-10-04T12:00:00.000Z" } } });
+      }
+      return original(input, init);
+    }));
+    await mount(); await click(button("Report intent mismatch"));
+    const field = container.querySelector<HTMLTextAreaElement>('[aria-label="Correction direction"]')!;
+    const type = async (text: string) => act(async () => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, text); field.dispatchEvent(new Event("input", { bubbles: true })); });
+    await type(direction); await click(button("Save intent feedback"));
+    expect(writes).toHaveLength(1); expect(button("Close feedback").disabled).toBe(true);
+    await type("My later draft must not replace the original report."); await click(button("Videos"));
+    await click(button("Check recorded feedback")); expect(reads).toEqual(["/api/v1/media/original-intent/feedback"]); expect(writes).toHaveLength(1);
+    await click(button("Retry original feedback")); expect(writes).toEqual([{ feedbackType: "intent_mismatch", sourceSurface: "gallery", direction }, { feedbackType: "intent_mismatch", sourceSurface: "gallery", direction }]);
+    expect(field.value).toBe("My later draft must not replace the original report."); expect(container.textContent).toContain(`Recorded: ${direction}`);
+    expect(button("Close feedback").disabled).toBe(false); expect(container.textContent).toContain("100 coins");
+  });
+
+  it("discards the previous actor's late intent receipt without projecting it into the new gallery", async () => {
+    const original = globalThis.fetch, write = deferredResponse(); let changed = false;
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/generation/config" && changed) return Promise.resolve(Response.json({ ok: true, data: { ...config, viewer: { authenticated: true, scope: "user:new-owner" } } }));
+      if (path.startsWith("/api/v1/media?")) return Promise.resolve(Response.json({ ok: true, data: { items: [{ ...mediaItem(changed ? "new-owner-media" : "old-owner-media"), intentFeedbackAvailable: true }], nextCursor: null } }));
+      if (path === "/api/v1/media/old-owner-media/feedback") { expect(new Headers(init?.headers).get("x-idream-viewer-scope")).toBe("user:generator-viewer"); return write.promise; }
+      return original(input, init);
+    }));
+    await mount(); await click(button("Report intent match")); await click(button("Save intent feedback"));
+    changed = true; await act(async () => window.dispatchEvent(new Event("focus"))); await settle();
+    const target = { kind: "generation_job", generationJobId: "old-job" };
+    write.resolve(Response.json({ ok: true, data: { mediaAssetId: "old-owner-media", ownerScope: "user:generator-viewer", target, feedback: { id: "old-feedback", dimension: "intent", value: "match", direction: null, revision: 1, sourceSurface: "gallery", actorId: "generator-viewer", mediaAssetId: "old-owner-media", target, createdAt: "2026-10-04T12:00:00.000Z" } } })); await settle();
+    expect(container.querySelector('[aria-label="Intent feedback editor"]')).toBeNull(); expect(container.textContent).not.toContain("Feedback recorded.");
+    expect(container.querySelector('[data-media-id="old-owner-media"]')).toBeNull(); expect(container.querySelector('[data-media-id="new-owner-media"]')).not.toBeNull();
+  });
+
+  it.each(["actor", "asset", "target"] as const)("refuses an unknown feedback readback with a foreign %s inside an otherwise owned envelope", async kind => {
+    const original = globalThis.fetch; let posts = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.startsWith("/api/v1/media?")) return Response.json({ ok: true, data: { items: [{ ...mediaItem("readback-asset"), intentFeedbackAvailable: true }], nextCursor: null } });
+      if (path === "/api/v1/media/readback-asset/feedback") {
+        if (init?.method === "POST") { posts += 1; return Response.json({ ok: false }, { status: 503 }); }
+        const target = { kind: "generation_job", generationJobId: "readback-job" };
+        return Response.json({ ok: true, data: { mediaAssetId: "readback-asset", ownerScope: "user:generator-viewer", target, feedback: { id: "foreign-feedback", dimension: "intent", value: "mismatch", direction: "Foreign private instruction", revision: 2, sourceSurface: "gallery", actorId: kind === "actor" ? "other-owner" : "generator-viewer", mediaAssetId: kind === "asset" ? "other-asset" : "readback-asset", target: kind === "target" ? { ...target, generationJobId: "other-job" } : target, createdAt: "2026-10-04T12:00:00.000Z" } } });
+      }
+      return original(input, init);
+    }));
+    await mount(); await click(button("Report intent match")); await click(button("Save intent feedback")); await click(button("Check recorded feedback"));
+    expect(posts).toBe(1); expect(container.textContent).not.toContain("Foreign private instruction");
+    expect([...container.querySelectorAll("button")].some(item => item.textContent === "Retry original feedback")).toBe(false);
+    expect(button("Close feedback").disabled).toBe(true); expect(container.textContent).toContain("Feedback may already be recorded");
+  });
+
+  it("prepares an image correction as visible edit instructions and a new quote without submitting generation", async () => {
+    const original = globalThis.fetch, generationWrites: unknown[] = [], correctionQuotes: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.startsWith("/api/v1/media?")) return Response.json({ ok: true, data: { items: [{ ...mediaItem("correct-image"), intentFeedbackAvailable: true }], nextCursor: null } });
+      if (path === "/api/v1/media/correct-image/variation/quote") { correctionQuotes.push(JSON.parse(String(init?.body))); return Response.json({ ok: true, data: { quote } }); }
+      if (path === "/api/v1/generation/jobs" && init?.method === "POST") generationWrites.push(init.body);
+      return original(input, init);
+    }));
+    await mount(); await click(button("Report intent mismatch"));
+    const field = container.querySelector<HTMLTextAreaElement>('[aria-label="Correction direction"]')!;
+    await act(async () => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, "Use a terracotta pot and keep the face."); field.dispatchEvent(new Event("input", { bubbles: true })); });
+    await click(button("Prepare correction draft"));
+    expect(container.querySelector<HTMLTextAreaElement>('[aria-label="Edit instructions"]')?.value).toBe("Use a terracotta pot and keep the face.");
+    expect(container.querySelector('[data-testid="image-edit-source-card"][data-media-id="correct-image"]')?.getAttribute("aria-pressed")).toBe("true");
+    expect(generationWrites).toHaveLength(0); expect(correctionQuotes).not.toHaveLength(0);
+    expect(correctionQuotes[correctionQuotes.length - 1]).toMatchObject({ consistencyMode: "balanced" });
+  });
+
   it.each([false, true])("restores an owned Chat context (source image: %s), requotes edits and never generates on arrival", async (withImage) => {
     window.history.replaceState(null, "", "/generate?characterId=character&chatSessionId=chat-session&chatTurnId=chat-turn&chatAttempt=1" + (withImage ? "&chatMediaAssetId=chat-image" : ""));
     const originalFetch = globalThis.fetch;
@@ -835,6 +996,275 @@ describe("GeneratorWorkspace media journeys", () => {
     });
     await click(button("Save Look"));
     expect(writes).toEqual([{ label: "Rainy day", appearanceDelta: { description: "Cream raincoat and amber umbrella" } }]);
+  });
+
+  it("does not project a prior viewer's accepted identity feedback into the new viewer", async () => {
+    const originalFetch = globalThis.fetch;
+    const pending = deferredResponse();
+    let actor = "first";
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/generation/config") return Response.json({ok: true, data: {...config, viewer: {authenticated: true, scope: `user:${actor}`}}});
+      if (path.startsWith("/api/v1/media?")) return Response.json({ok: true, data: {items: [{...mediaItem(`source-${actor}`), characterId: `character-${actor}`, canEditIdentity: true}], nextCursor: null}});
+      if (path === "/api/v1/media/source-first/feedback") return pending.promise;
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(button("Looks like character"));
+    actor = "second";
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await settle();
+    expect(container.querySelector('[data-media-id="source-second"]')).not.toBeNull();
+    pending.resolve(Response.json({ok: true, data: {saved: true}}, {status: 201}));
+    await settle();
+    expect(container.textContent).not.toContain("Recorded: looks like the character.");
+  });
+
+  it("does not project a prior viewer's accepted identity image update into the new viewer", async () => {
+    const originalFetch = globalThis.fetch;
+    const pending = deferredResponse();
+    let actor = "first";
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/generation/config") return Response.json({ok: true, data: {...config, viewer: {authenticated: true, scope: `user:${actor}`}}});
+      if (path.startsWith("/api/v1/media?")) return Response.json({ok: true, data: {items: [{...mediaItem(`source-${actor}`), characterId: `character-${actor}`, canEditIdentity: true}], nextCursor: null}});
+      if (path === "/api/v1/media/source-first/use-as-character-image") return pending.promise;
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(button("Use as character image"));
+    actor = "second";
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await settle();
+    expect(container.querySelector('[data-media-id="source-second"]')).not.toBeNull();
+    pending.resolve(Response.json({ok: true, data: {saved: true}}, {status: 201}));
+    await settle();
+    expect(container.textContent).not.toContain("Character image updated.");
+  });
+
+  it("keeps the selected Videos gallery when an image identity update finishes late", async () => {
+    const originalFetch = globalThis.fetch;
+    const pending = deferredResponse();
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.startsWith("/api/v1/media?")) {
+        const type = new URL(path, "http://localhost").searchParams.get("type");
+        return Response.json({ok: true, data: {items: [type === "video" ? mediaItem("current-video", "video") : {...mediaItem("owned-image"), characterId: "character", canEditIdentity: true}], nextCursor: null}});
+      }
+      if (path === "/api/v1/media/owned-image/add-to-identity") return pending.promise;
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(button("Add to identity"));
+    await click(button("Videos"));
+    expect(container.querySelector('[data-media-id="current-video"]')).not.toBeNull();
+    pending.resolve(Response.json({ok: true, data: {saved: true}}, {status: 201}));
+    await settle();
+    expect(container.querySelector('[data-media-id="current-video"]')).not.toBeNull();
+    expect(container.querySelector('[data-media-id="owned-image"]')).toBeNull();
+  });
+
+  it.each([
+    ["Looks like character", "feedback", {feedbackType: "identity_match", sourceSurface: "gallery"}, "Recorded: looks like the character."],
+    ["Use as character image", "use-as-character-image", {characterId: "owned-character"}, "Character image updated."],
+    ["Add to identity", "add-to-identity", {characterId: "owned-character"}, "Added to identity references."],
+  ] as const)("keeps %s bound to its original owner and source", async (label, action, body, status) => {
+    const originalFetch = globalThis.fetch;
+    const writes: Array<{body: unknown; scope: string | null; signal: AbortSignal | null | undefined}> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.startsWith("/api/v1/media?")) return Response.json({ok: true, data: {items: [{...mediaItem("owned-source"), characterId: "owned-character", canEditIdentity: true}], nextCursor: null}});
+      if (path === `/api/v1/media/owned-source/${action}`) {
+        writes.push({body: JSON.parse(String(init?.body)), scope: new Headers(init?.headers).get("x-idream-viewer-scope"), signal: init?.signal});
+        return Response.json({ok: true, data: {saved: true}}, {status: 201});
+      }
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(button(label));
+    expect(writes).toEqual([{body, scope: config.viewer.scope, signal: undefined}]);
+    expect(container.textContent).toContain(status);
+  });
+
+  it("discards an old identity feedback body after a new viewer is confirmed", async () => {
+    const originalFetch = globalThis.fetch;
+    let resolveBody!: (value: unknown) => void;
+    const body = new Promise<unknown>(resolve => { resolveBody = resolve; });
+    let actor = "first";
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/generation/config") return Response.json({ok: true, data: {...config, viewer: {authenticated: true, scope: `user:${actor}`}}});
+      if (path.startsWith("/api/v1/media?")) return Response.json({ok: true, data: {items: [{...mediaItem(`source-${actor}`), characterId: `character-${actor}`, canEditIdentity: true}], nextCursor: null}});
+      if (path === "/api/v1/media/source-first/feedback") {
+        const response = Response.json({});
+        vi.spyOn(response, "json").mockImplementation(() => body);
+        return response;
+      }
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(button("Looks like character"));
+    actor = "second";
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await settle();
+    expect(container.querySelector('[data-media-id="source-second"]')).not.toBeNull();
+    resolveBody({ok: true, data: {saved: true}});
+    await settle();
+    expect(container.textContent).not.toContain("Recorded: looks like the character.");
+  });
+
+  async function fillLook(name: string, description: string) {
+    const nameField = container.querySelector<HTMLInputElement>('[aria-label="Look name"]')!;
+    const descriptionField = container.querySelector<HTMLTextAreaElement>('[aria-label="Look styling description"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(nameField, name);
+      nameField.dispatchEvent(new Event("input", { bubbles: true }));
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(descriptionField, description);
+      descriptionField.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await settle();
+  }
+
+  it("preserves a newer Look draft when the older saved Look response arrives", async () => {
+    const originalFetch = globalThis.fetch;
+    const pending = deferredResponse();
+    const writes: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.startsWith("/api/v1/media?")) return Response.json({ok: true, data: {items: [
+        {...mediaItem("source-one"), characterId: "leo", canEditIdentity: true},
+        {...mediaItem("source-two"), characterId: "leo", canEditIdentity: true},
+      ], nextCursor: null}});
+      if (path === "/api/v1/media/source-one/save-as-look") { writes.push(JSON.parse(String(init?.body))); return pending.promise; }
+      return originalFetch(input, init);
+    }));
+    await mount();
+    const cards = container.querySelectorAll('[data-media-id]');
+    const saveButtons = [...container.querySelectorAll('button')].filter(item => item.textContent?.trim() === "Save as Look" || item.getAttribute("aria-label") === "Save as Look");
+    expect(saveButtons).toHaveLength(2);
+    expect(cards.length).toBeGreaterThanOrEqual(2);
+    await click(saveButtons[0]!);
+    await fillLook("First accepted Look", "Cream raincoat");
+    await click(button("Save Look"));
+    expect(writes).toEqual([{label: "First accepted Look", appearanceDelta: {description: "Cream raincoat"}}]);
+    await click(saveButtons[1]!);
+    await fillLook("Second unsaved Look", "Amber scarf");
+    pending.resolve(Response.json({ok: true, data: {look: {id: "saved-first"}}}, {status: 201}));
+    await settle();
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Look name"]')?.value).toBe("Second unsaved Look");
+    expect(container.querySelector<HTMLTextAreaElement>('[aria-label="Look styling description"]')?.value).toBe("Amber scarf");
+  });
+
+  it("does not clear a new viewer's Look draft with a previous viewer's late receipt", async () => {
+    const originalFetch = globalThis.fetch;
+    const pending = deferredResponse();
+    let actor = "first";
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/generation/config") return Response.json({ok: true, data: {...config, viewer: {authenticated: true, scope: `user:${actor}`}}});
+      if (path.startsWith("/api/v1/media?")) return Response.json({ok: true, data: {items: [{...mediaItem(`source-${actor}`), characterId: `character-${actor}`, canEditIdentity: true}], nextCursor: null}});
+      if (path === "/api/v1/media/source-first/save-as-look") return pending.promise;
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(button("Save as Look"));
+    await fillLook("First accepted Look", "Cream raincoat");
+    await click(button("Save Look"));
+    actor = "second";
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await settle();
+    expect(container.querySelector('[data-media-id="source-second"]')).not.toBeNull();
+    await click(button("Save as Look"));
+    await fillLook("New viewer private draft", "Amber scarf");
+    pending.resolve(Response.json({ok: true, data: {look: {id: "saved-first"}}}, {status: 201}));
+    await settle();
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Look name"]')?.value).toBe("New viewer private draft");
+    expect(container.textContent).not.toContain("Look saved. You can reuse it for this character.");
+  });
+
+
+  it("drops a prior owner's Look response body that finishes after the new editor is ready", async () => {
+    const originalFetch = globalThis.fetch;
+    let resolveBody!: (value: unknown) => void;
+    const body = new Promise<unknown>(resolve => { resolveBody = resolve; });
+    let actor = "first";
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/generation/config") return Response.json({ok: true, data: {...config, viewer: {authenticated: true, scope: `user:${actor}`}}});
+      if (path.startsWith("/api/v1/media?")) return Response.json({ok: true, data: {items: [{...mediaItem(`source-${actor}`), characterId: `character-${actor}`, canEditIdentity: true}], nextCursor: null}});
+      if (path === "/api/v1/media/source-first/save-as-look") {
+        const response = Response.json({});
+        vi.spyOn(response, "json").mockImplementation(() => body);
+        return response;
+      }
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(button("Save as Look"));
+    await fillLook("First accepted Look", "Cream raincoat");
+    await click(button("Save Look"));
+    actor = "second";
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await settle();
+    await click(button("Save as Look"));
+    await fillLook("Second private draft", "Amber scarf");
+    resolveBody({ok: true, data: {look: {id: "saved-first"}}});
+    await settle();
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Look name"]')?.value).toBe("Second private draft");
+    expect(container.querySelector<HTMLTextAreaElement>('[aria-label="Look styling description"]')?.value).toBe("Amber scarf");
+    expect(container.textContent).not.toContain("Look saved. You can reuse it for this character.");
+  });
+
+  it("submits a Look once with the current owner scope and keeps its accepted draft fixed", async () => {
+    const originalFetch = globalThis.fetch;
+    const pending = deferredResponse();
+    const writes: Array<{body: unknown; scope: string | null}> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.startsWith("/api/v1/media?")) return Response.json({ok: true, data: {items: [{...mediaItem("look-source"), characterId: "leo", canEditIdentity: true}], nextCursor: null}});
+      if (path === "/api/v1/media/look-source/save-as-look") {
+        writes.push({body: JSON.parse(String(init?.body)), scope: new Headers(init?.headers).get("x-idream-viewer-scope")});
+        return pending.promise;
+      }
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(button("Save as Look"));
+    await fillLook("Rainy day", "Cream raincoat");
+    const save = button("Save Look");
+    await act(async () => {
+      save.dispatchEvent(new MouseEvent("click", {bubbles: true}));
+      save.dispatchEvent(new MouseEvent("click", {bubbles: true}));
+    });
+    await settle();
+    expect(writes).toEqual([{body: {label: "Rainy day", appearanceDelta: {description: "Cream raincoat"}}, scope: config.viewer.scope}]);
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Look name"]')?.disabled).toBe(true);
+    pending.resolve(Response.json({ok: true, data: {look: {id: "saved-look"}}}, {status: 201}));
+    await settle();
+    expect(container.textContent).toContain("Look saved. You can reuse it for this character.");
+    expect(container.querySelector('[aria-label="Look name"]')).toBeNull();
+  });
+
+  it.each(["rejected", "unknown"] as const)("keeps the owned Look draft after a %s save result", async result => {
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.startsWith("/api/v1/media?")) return Response.json({ok: true, data: {items: [{...mediaItem("look-source"), characterId: "leo", canEditIdentity: true}], nextCursor: null}});
+      if (path === "/api/v1/media/look-source/save-as-look") {
+        if (result === "unknown") throw new TypeError("Response lost");
+        return Response.json({ok: false, error: {message: "The source is unavailable"}}, {status: 409});
+      }
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(button("Save as Look"));
+    await fillLook("Rainy day", "Cream raincoat");
+    await click(button("Save Look"));
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Look name"]')?.value).toBe("Rainy day");
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Look name"]')?.disabled).toBe(false);
+    expect(container.querySelector<HTMLTextAreaElement>('[aria-label="Look styling description"]')?.value).toBe("Cream raincoat");
+    expect(container.textContent).toContain(result === "unknown" ? "Look save could not be confirmed. Check your saved Looks before retrying." : "The source is unavailable");
+    expect(container.textContent).not.toContain("Look saved. You can reuse it for this character.");
   });
 
   it.each((["generation", "variation", "retry"] as const).flatMap((kind) =>
@@ -1675,4 +2105,340 @@ describe("GeneratorWorkspace media journeys", () => {
     await settle();
     expect(calls).not.toContain("/api/v1/media/image-1/variation");
   });
+  function installSavedLooksFixture(initialStatus = "active") {
+    const originalFetch = globalThis.fetch;
+    const character = {id: "look-character", title: "Look character", age: "28", description: "Adult audit character", likes: "0", chats: "0", creator: "Audit creator", image: "/images/ourdream/card-sophie.webp", canEditIdentity: true};
+    const fixture = { activeVisualProfileId: "visual-new", items: [{id: "saved-look", characterId: character.id, visualProfileId: "visual-old", label: "Rainy day", status: initialStatus,
+      appearanceDelta: {description: "Cream raincoat", outfit: "Trench coat", accessories: ["Amber umbrella"]}, referenceAssetId: "owned-look-source", rebasedFromLookId: null as string | null}] };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/characters?limit=60") return Response.json({ok: true, data: {items: [character]}});
+      if (path === "/api/v1/characters/look-character/looks" && (!init?.method || init.method === "GET")) return Response.json({ok: true, data: fixture});
+      return originalFetch(input, init);
+    }));
+    return fixture;
+  }
+
+  it.each(["new", "saved"] as const)("reveals the %s Look editor and focuses its name without saving or generating", async kind => {
+    installSavedLooksFixture();
+    const originalFetch = globalThis.fetch;
+    const mutations: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (init?.method && init.method !== "GET") mutations.push(path);
+      if (path.startsWith("/api/v1/media?")) return Response.json({ ok: true, data: { items: [{
+        ...mediaItem("look-editor-source"), characterId: "look-character", canEditIdentity: true,
+      }], nextCursor: null } });
+      return originalFetch(input, init);
+    }));
+    await mount();
+    const scroll = vi.spyOn(Element.prototype, "scrollIntoView");
+    const opener = button(kind === "new" ? "Save as Look" : "Manage Look: Rainy day");
+    opener.focus();
+    expect(document.activeElement).toBe(opener);
+    await click(opener);
+    const name = container.querySelector<HTMLInputElement>('[aria-label="Look name"]');
+    expect(name, "the selected action opens its real Look editor").not.toBeNull();
+    expect(name!.value).toBe(kind === "new" ? "" : "Rainy day");
+    expect(container.querySelector<HTMLTextAreaElement>('[aria-label="Look styling description"]')!.value).toBe(kind === "new" ? "" : "Cream raincoat");
+    expect.soft(document.activeElement, "opening a Look form transfers keyboard focus into its name field").toBe(name);
+    expect.soft(scroll.mock.contexts, "reveal the actual Look editor, including when opened from below it").toContain(name!.parentElement);
+    expect(mutations, "opening a Look must not save, archive, rebase, quote, or generate").toEqual([]);
+    expect(container.textContent).toContain("100 coins");
+
+    await click(button("Cancel"));
+    expect(container.querySelector('[aria-label="Look name"]')).toBeNull();
+    vi.useFakeTimers();
+    scroll.mockClear();
+    await act(async () => { opener.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    expect(vi.getTimerCount(), "hold the deferred reveal while the user closes the editor").toBeGreaterThan(0);
+    expect(container.querySelector('[aria-label="Look name"]')).not.toBeNull();
+    await act(async () => { button("Cancel").dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    expect(container.querySelector('[aria-label="Look name"]')).toBeNull();
+    const nextAction = button("Videos");
+    nextAction.focus();
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    expect(scroll, "a closed Look's deferred reveal must not move the viewport").not.toHaveBeenCalled();
+    expect(document.activeElement, "a closed Look must not steal focus from the user's next action").toBe(nextAction);
+    expect(mutations).toEqual([]);
+  });
+
+  it("keeps a saved Look requiring identity confirmation visible without offering it for generation", async () => {
+    installSavedLooksFixture("needs_rebase");
+    await mount();
+    expect(container.textContent).toContain("Rainy day");
+    expect(container.textContent).toContain("Needs identity confirmation");
+    expect(container.textContent).not.toContain("No saved Looks for this character yet");
+    const selector = container.querySelector<HTMLSelectElement>('[aria-label="Character Look"]');
+    expect(selector?.querySelector('option[value="saved-look"]')).toBeNull();
+    expect(button("Manage Look: Rainy day")).toBeDefined();
+  });
+
+  it("edits a Look's name and description without dropping other styling or reference authority or activating a stale identity", async () => {
+    const fixture = installSavedLooksFixture("needs_rebase");
+    const base = globalThis.fetch; const writes: Array<{body: unknown; headers: Headers}> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/v1/characters/look-character/looks/saved-look" && init?.method === "PATCH") {
+        writes.push({body: JSON.parse(String(init.body)), headers: new Headers(init.headers)});
+        fixture.items[0] = {...fixture.items[0]!, label: "Rainy evening", appearanceDelta: {...fixture.items[0]!.appearanceDelta, description: "Navy raincoat and amber umbrella"}};
+        return Response.json({ok: true, data: {look: fixture.items[0]}});
+      }
+      return base(input, init);
+    }));
+    await mount(); await click(button("Manage Look: Rainy day"));
+    await fillLook("Rainy evening", "Navy raincoat and amber umbrella");
+    await click(button("Save Look changes"));
+    expect(writes).toHaveLength(1);
+    expect(writes[0]!.body).toEqual({label: "Rainy evening", appearanceDelta: {description: "Navy raincoat and amber umbrella", outfit: "Trench coat", accessories: ["Amber umbrella"]}});
+    expect(writes[0]!.headers.get("x-idream-viewer-scope")).toBe("user:generator-viewer");
+    expect(container.textContent).toContain("Needs identity confirmation");
+    expect(container.querySelector('option[value="saved-look"]')).toBeNull();
+  });
+
+  it("requires an explicit separate confirmation before rebasing and selects the returned new Look instead of its historical ID", async () => {
+    const fixture = installSavedLooksFixture("needs_rebase");
+    const base = globalThis.fetch; const writes: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/v1/characters/look-character/looks/saved-look" && init?.method === "PATCH") {
+        writes.push(JSON.parse(String(init.body)));
+        const fresh = {...fixture.items[0]!, id: "rebased-look", status: "active", visualProfileId: "visual-new", rebasedFromLookId: "saved-look"};
+        fixture.items = [fresh]; return Response.json({ok: true, data: {look: fresh}});
+      }
+      return base(input, init);
+    }));
+    await mount(); await click(button("Manage Look: Rainy day"));
+    await click(button("Use with current identity"));
+    expect(writes).toEqual([]);
+    expect(container.textContent).toContain("Your character's appearance has changed");
+    await click(button("Confirm identity change"));
+    expect(writes).toEqual([{status: "active", expectedVisualProfileId: "visual-new"}]);
+    expect(container.querySelector<HTMLSelectElement>('[aria-label="Character Look"]')?.value).toBe("rebased-look");
+    expect(container.querySelector('option[value="saved-look"]')).toBeNull();
+  });
+
+  it("archives a Look only after confirmation and removes reuse without deleting the source image or generating", async () => {
+    const fixture = installSavedLooksFixture();
+    const base = globalThis.fetch; const writes: Array<{path: string; init?: RequestInit}> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "DELETE") {
+        writes.push({path: String(input), init}); fixture.items = []; return new Response(null, {status: 204});
+      }
+      return base(input, init);
+    }));
+    await mount(); await click(button("Manage Look: Rainy day")); await click(button("Archive Look"));
+    expect(writes).toEqual([]); expect(container.textContent).toContain("Your source image and past generations stay available");
+    await click(button("Cancel Look action")); expect(writes).toEqual([]);
+    await click(button("Archive Look")); await click(button("Confirm archive Look"));
+    expect(writes.map(w => w.path)).toEqual(["/api/v1/characters/look-character/looks/saved-look"]);
+    expect(new Headers(writes[0]!.init?.headers).get("x-idream-viewer-scope")).toBe("user:generator-viewer");
+    expect(writes[0]!.init?.signal).toBeUndefined();
+    expect(container.querySelector('option[value="saved-look"]')).toBeNull();
+    expect(vi.mocked(fetch).mock.calls.some(([path, init]) => String(path) === "/api/v1/generation/jobs" && init?.method === "POST")).toBe(false);
+  });
+
+  it("keeps selected character Looks after a different character's saved Look receipt", async () => {
+    const originalFetch = globalThis.fetch;
+    const pending = deferredResponse();
+    const attrs = {age: "28", description: "Adult audit character", likes: "0", chats: "0", creator: "Audit creator"};
+    const chars = [{...attrs, id: "character-a", title: "Character A", image: "/a.png", canEditIdentity: true}, {...attrs, id: "character-b", title: "Character B", image: "/b.png", canEditIdentity: true}];
+    const reads: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/characters?limit=60") return Response.json({ok: true, data: {items: chars}});
+      if (path.startsWith("/api/v1/media?")) return Response.json({ok: true, data: {items: [{...mediaItem("source-a"), characterId: "character-a", canEditIdentity: true}], nextCursor: null}});
+      if (path === "/api/v1/media/source-a/save-as-look") return pending.promise;
+      if (path.endsWith("/looks")) {
+        reads.push(path);
+        const c = path.includes("character-b") ? "b" : "a";
+        return Response.json({ok: true, data: {items: [{id: `look-${c}`, characterId: `character-${c}`, label: `Saved Look ${c.toUpperCase()}`, status: "active", appearanceDelta: {description: `${c} scarf`}}]}});
+      }
+      return originalFetch(input, init);
+    }));
+    await mount();
+    expect(container.querySelector<HTMLSelectElement>('[aria-label="Character"]')?.value).toBe("character-a");
+    expect(container.querySelector<HTMLSelectElement>('[aria-label="Character Look"]')?.textContent).toContain("Saved Look A");
+    await click(button("Save as Look"));
+    await fillLook("Accepted A Look", "Cream raincoat");
+    await click(button("Save Look"));
+    await act(async () => {
+      const field = container.querySelector<HTMLSelectElement>('[aria-label="Character"]')!;
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(field, "character-b");
+      field.dispatchEvent(new Event("change", {bubbles: true}));
+    });
+    await settle();
+    expect(container.querySelector<HTMLSelectElement>('[aria-label="Character Look"]')?.textContent).toContain("Saved Look B");
+    pending.resolve(Response.json({ok: true, data: {look: {id: "new-a"}}}, {status: 201}));
+    await settle();
+    expect(container.querySelector<HTMLSelectElement>('[aria-label="Character"]')?.value).toBe("character-b");
+    expect(container.querySelector<HTMLSelectElement>('[aria-label="Character Look"]')?.textContent).toContain("Saved Look B");
+    expect(container.querySelector<HTMLSelectElement>('[aria-label="Character Look"]')?.textContent).not.toContain("Saved Look A");
+  });
+  it("renames a structured Look without inventing a description or resending its reference and can explicitly rebase the unchanged styling", async () => {
+    const fixture = installSavedLooksFixture("needs_rebase");
+    delete (fixture.items[0]!.appearanceDelta as Partial<typeof fixture.items[0]["appearanceDelta"]>).description;
+    const originalDelta = structuredClone(fixture.items[0]!.appearanceDelta);
+    const base = globalThis.fetch; const writes: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/v1/characters/look-character/looks/saved-look" && init?.method === "PATCH") {
+        const body = JSON.parse(String(init.body)); writes.push(body);
+        fixture.items[0] = {...fixture.items[0]!, label: body.label ?? fixture.items[0]!.label,
+          ...(body.status === "active" ? {id: "structured-rebased", status: "active", visualProfileId: "visual-new", rebasedFromLookId: "saved-look"} : {})};
+        return Response.json({ok: true, data: {look: fixture.items[0]}});
+      }
+      return base(input, init);
+    }));
+    await mount(); await click(button("Manage Look: Rainy day"));
+    expect(container.querySelector<HTMLTextAreaElement>('[aria-label="Look styling description"]')?.value).toBe("");
+    await fillLook("Structured raincoat", ""); await click(button("Save Look changes"));
+    expect(writes).toEqual([{label: "Structured raincoat"}]);
+    expect(fixture.items[0]!.appearanceDelta).toEqual(originalDelta); expect(fixture.items[0]!.referenceAssetId).toBe("owned-look-source");
+    await click(button("Manage Look: Structured raincoat")); await click(button("Use with current identity")); await click(button("Confirm identity change"));
+    expect(writes[1]).toEqual({status: "active", expectedVisualProfileId: "visual-new"});
+    expect(fixture.items[0]!.appearanceDelta).toEqual(originalDelta); expect(fixture.items[0]!.referenceAssetId).toBe("owned-look-source");
+    expect(container.querySelector<HTMLSelectElement>('[aria-label="Character Look"]')?.value).toBe("structured-rebased");
+  });
+
+  it("keeps the draft after an uncertain update and rereads saved Looks before permitting another explicit write", async () => {
+    const fixture = installSavedLooksFixture(); const base = globalThis.fetch; let writes = 0, reads = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/v1/characters/look-character/looks/saved-look" && init?.method === "PATCH") {writes += 1; return Response.json({ok: false}, {status: 503});}
+      if (String(input) === "/api/v1/characters/look-character/looks") reads += 1;
+      return base(input, init);
+    }));
+    await mount(); await click(button("Manage Look: Rainy day")); await fillLook("My retained draft", "Navy raincoat");
+    await click(button("Save Look changes"));
+    expect(writes).toBe(1); expect(container.textContent).toContain("could not be confirmed");
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Look name"]')?.value).toBe("My retained draft");
+    expect(button("Save Look changes").disabled).toBe(true);
+    const before = reads; await click(button("Check saved Looks"));
+    expect(reads).toBeGreaterThan(before); expect(writes).toBe(1); expect(button("Save Look changes").disabled).toBe(false);
+    expect(fixture.items[0]!.id).toBe("saved-look");
+  });
+
+  it("requires a new explicit confirmation after the active identity changes rather than replaying a stale confirmation", async () => {
+    const fixture = installSavedLooksFixture("needs_rebase"); const base = globalThis.fetch; const writes: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/v1/characters/look-character/looks/saved-look" && init?.method === "PATCH") {
+        writes.push(JSON.parse(String(init.body)));
+        return Response.json({ok: false, error: {message: "The character identity changed. Review it and confirm the Look again."}}, {status: 409});
+      }
+      return base(input, init);
+    }));
+    await mount(); await click(button("Manage Look: Rainy day")); await fillLook("Retained name", "Retained styling");
+    await click(button("Use with current identity")); fixture.activeVisualProfileId = "visual-newer";
+    await click(button("Confirm identity change"));
+    expect(writes).toEqual([{status: "active", expectedVisualProfileId: "visual-new"}]);
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Look name"]')?.value).toBe("Retained name");
+    expect(container.textContent).toContain("Review it and confirm the Look again");
+    expect([...container.querySelectorAll("button")].some(b => b.textContent === "Confirm identity change")).toBe(false);
+    await click(button("Use with current identity")); await click(button("Confirm identity change"));
+    expect(writes[1]).toEqual({status: "active", expectedVisualProfileId: "visual-newer"});
+  });
+
+  it("does not clear a later saved-Look editor with an older accepted update body", async () => {
+    const fixture = installSavedLooksFixture(); fixture.items.push({...fixture.items[0]!, id: "second-look", label: "Second Look"});
+    const base = globalThis.fetch, pending = deferredResponse(); let written = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/looks/saved-look") && init?.method === "PATCH") {written += 1; return pending.promise;}
+      return base(input, init);
+    }));
+    await mount(); await click(button("Manage Look: Rainy day")); await fillLook("First write", "First styling");
+    await act(async () => {button("Save Look changes").click(); button("Save Look changes").click();}); await settle();
+    expect(written).toBe(1);
+    await click(button("Manage Look: Second Look")); await fillLook("Later unsaved draft", "Amber scarf");
+    pending.resolve(Response.json({ok: true, data: {look: fixture.items[0]}})); await settle();
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Look name"]')?.value).toBe("Later unsaved draft");
+    expect(container.querySelector<HTMLTextAreaElement>('[aria-label="Look styling description"]')?.value).toBe("Amber scarf");
+    expect(container.textContent).not.toContain("Look changes saved");
+  });
+
+  it.each([
+    {status: 200, payload: null},
+    {status: 200, payload: {ok: false}},
+    {status: 503, payload: {ok: false}},
+  ])("requires rereading Looks before resubmitting an uncertain save ($status, $payload)", async ({status, payload}) => {
+    installSavedLooksFixture(); const base = globalThis.fetch; let writes = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.startsWith("/api/v1/media?")) return Response.json({ok: true, data: {items: [{...mediaItem("look-source"), characterId: "look-character", canEditIdentity: true}], nextCursor: null}});
+      if (path === "/api/v1/media/look-source/save-as-look") {writes += 1; return Response.json(payload, {status});}
+      return base(input, init);
+    }));
+    await mount(); await click(button("Save as Look")); await fillLook("Retained source Look", "Amber raincoat"); await click(button("Save Look"));
+    expect(writes).toBe(1); expect(button("Save Look").disabled).toBe(true);
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Look name"]')?.value).toBe("Retained source Look");
+    expect(container.textContent).toContain("could not be confirmed");
+    await click(button("Check saved Looks")); expect(writes).toBe(1); expect(button("Save Look").disabled).toBe(false);
+  });
+
+  it.each([null, {ok: false}])("does not claim an archive succeeded from a malformed HTTP200 receipt (%s)", async payload => {
+    installSavedLooksFixture(); const base = globalThis.fetch; let writes = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/looks/saved-look") && init?.method === "DELETE") {writes += 1; return Response.json(payload);}
+      return base(input, init);
+    }));
+    await mount(); await click(button("Manage Look: Rainy day")); await click(button("Archive Look")); await click(button("Confirm archive Look"));
+    expect(writes).toBe(1); expect(container.textContent).not.toContain("Look archived.");
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Look name"]')?.value).toBe("Rainy day");
+    expect(button("Check saved Looks")).toBeDefined(); expect(button("Save Look changes").disabled).toBe(true);
+  });
+
+  it.each(["edit", "archive"] as const)("retains a draft and unknown-result recovery when %s succeeds but the saved Looks reread fails", async action => {
+    const fixture = installSavedLooksFixture(); const base = globalThis.fetch; let writes = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.endsWith("/looks/saved-look") && (init?.method === "DELETE" || init?.method === "PATCH")) {
+        writes += 1;
+        return action === "archive" ? new Response(null, {status: 204}) : Response.json({ok: true, data: {look: fixture.items[0]}});
+      }
+      if (path === "/api/v1/characters/look-character/looks" && writes > 0) return Response.json({ok: false}, {status: 503});
+      return base(input, init);
+    }));
+    await mount(); await click(button("Manage Look: Rainy day")); await fillLook("Keep this draft", "Amber raincoat");
+    if (action === "archive") {await click(button("Archive Look")); await click(button("Confirm archive Look"));}
+    else await click(button("Save Look changes"));
+    expect(writes).toBe(1); expect(container.textContent).not.toContain(action === "archive" ? "Look archived." : "Look changes saved.");
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Look name"]')?.value).toBe("Keep this draft");
+    expect(button("Check saved Looks")).toBeDefined(); expect(button("Save Look changes").disabled).toBe(true);
+    await click(button("Check saved Looks")); expect(writes).toBe(1); expect(button("Save Look changes").disabled).toBe(true);
+  });
+
+  it("checks the source character before unlocking an uncertain Look save from another character's gallery image", async () => {
+    const base = globalThis.fetch; const reads: string[] = []; let writes = 0, sourceReadable = false;
+    const attrs = {age: "28", description: "Adult audit character", likes: "0", chats: "0", creator: "Audit creator", canEditIdentity: true};
+    const chars = [{...attrs, id: "character-a", title: "Character A", image: "/a.png"}, {...attrs, id: "character-b", title: "Character B", image: "/b.png"}];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/characters?limit=60") return Response.json({ok: true, data: {items: chars}});
+      if (path.startsWith("/api/v1/media?")) return Response.json({ok: true, data: {items: [{...mediaItem("source-b"), characterId: "character-b", canEditIdentity: true}], nextCursor: null}});
+      if (path === "/api/v1/media/source-b/save-as-look") {writes += 1; return Response.json({ok: false}, {status: 503});}
+      if (path.endsWith("/looks")) {
+        reads.push(path);
+        return path.includes("character-b") ? (sourceReadable
+          ? Response.json({ok: true, data: {items: [{id: "accepted-b", characterId: "character-b", label: "Source B retained draft", status: "active", appearanceDelta: {description: "Amber raincoat"}, referenceAssetId: "source-b"}], activeVisualProfileId: "visual-b"}})
+          : Response.json({ok: false}, {status: 503}))
+          : Response.json({ok: true, data: {items: [], activeVisualProfileId: "visual-a"}});
+      }
+      return base(input, init);
+    }));
+    await mount();
+    expect(container.querySelector<HTMLSelectElement>('[aria-label="Character"]')?.value).toBe("character-a");
+    await click(button("Save as Look")); await fillLook("Source B retained draft", "Amber raincoat"); await click(button("Save Look"));
+    expect(writes).toBe(1); expect(button("Save Look").disabled).toBe(true);
+    await fillLook("Later unsent draft", "Navy scarf");
+    const before = reads.length; await click(button("Check saved Looks"));
+    expect.soft(reads.slice(before)).toContain("/api/v1/characters/character-b/looks");
+    expect.soft(button("Save Look").disabled).toBe(true);
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Look name"]')?.value).toBe("Later unsent draft");
+    sourceReadable = true; await click(button("Check saved Looks"));
+    expect(container.textContent).toContain("Found saved Look \"Source B retained draft\" for this image's character");
+    expect(container.querySelector<HTMLSelectElement>('[aria-label="Character"]')?.value).toBe("character-a");
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Look name"]')?.value).toBe("Later unsent draft");
+    expect(container.querySelector<HTMLTextAreaElement>('[aria-label="Look styling description"]')?.value).toBe("Navy scarf");
+    expect(button("Save Look").disabled).toBe(false);
+    const readInit = vi.mocked(fetch).mock.calls.find(([path]) => String(path) === "/api/v1/characters/character-b/looks")?.[1];
+    expect(new Headers(readInit?.headers).get("x-idream-viewer-scope")).toBe("user:generator-viewer");
+    expect(writes).toBe(1);
+  });
+
 });

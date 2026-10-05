@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   generationJobDetailResponseSchema,
@@ -266,6 +266,28 @@ describe("Generation Jobs v2 server query", () => {
     expect(cancelled.items.map((item) => item.id)).toEqual([jobIds[4]]);
   });
 
+  it("restores an existing version-1 timeless cursor without allowing it into a new scoped query", async () => {
+    // SPEC: an already-open Jobs URL contains the pre-window v1 hash, not a cursor
+    // minted by this deployment. Keep that wire fixture independent of the current producer.
+    const oldQuery = {
+      search: null, mode: "image", legacyStatus: "failed", provider: null, sourceType: null,
+      userId: customerId, characterId: null, sort: "created_desc",
+    };
+    const cursor = Buffer.from(JSON.stringify({
+      version: 1, sort: "created_desc", primary: sameCreatedAt.toISOString(), id: jobIds[1],
+      queryHash: createHash("sha256").update(JSON.stringify(oldQuery)).digest("hex"),
+    })).toString("base64url");
+    const params = new URLSearchParams({ mode: "image", legacyStatus: "failed", userId: customerId, sort: "created_desc", limit: "2", cursor });
+    const response = await listJobsRoute(request(params.toString()));
+    expect(response.status, await response.clone().text()).toBe(200);
+    const page = generationJobListResponseSchema.parse((await response.json()).data);
+    expect(page.items.map(item => item.id)).toEqual([jobIds[0]]);
+    expect(page.summary.totalCount).toBe(3);
+    expect(page.pageInfo).toEqual({ endCursor: null, hasNextPage: false });
+    params.set("from", new Date(sameCreatedAt.getTime() - 1).toISOString());
+    expect((await listJobsRoute(request(params.toString()))).status).toBe(400);
+  });
+
   it("exposes the production list DTO through an injectable query authority", async () => {
     const data = await queryGenerationJobsV2Authority({
       db: prisma,
@@ -286,6 +308,76 @@ describe("Generation Jobs v2 server query", () => {
     expect(data.items[0]?.id).toBe(jobIds[0]);
     expect(data.summary.totalCount).toBe(1);
     expect(data.asOf).toBe("2026-07-12T00:00:00.000Z");
+  });
+
+  it("keeps a frozen half-open window, exact dimensions and aggregates across pages", async () => {
+    const scopeUser = `jobs-window-customer-${suffix}`;
+    const from = "2026-07-05T12:00:00.000Z";
+    const to = "2026-07-12T12:00:00.000Z";
+    const profileId = `profile-${suffix}`;
+    const recipeId = `recipe-${suffix}`;
+    await prisma.user.create({ data: { id: scopeUser, email: `${scopeUser}@example.test`, role: "user", status: "active", dataClass: "customer" } });
+    const records = [
+      { key: "from", createdAt: from },
+      { key: "inside", createdAt: "2026-07-06T12:00:00.000Z" },
+      { key: "before", createdAt: "2026-07-05T11:59:59.999Z" },
+      { key: "to", createdAt: to },
+      { key: "other-version", createdAt: from, profileVersion: 2 },
+      { key: "unversioned", createdAt: from, profileVersion: null },
+      { key: "profile-prefix", createdAt: from, profileId: `${profileId}-other` },
+      { key: "recipe-prefix", createdAt: from, recipeId: `${recipeId}-other` },
+      { key: "other-source", createdAt: from, sourceType: "creative_run" },
+      { key: "completed", createdAt: from, status: "completed" },
+    ];
+    try {
+      await prisma.generationJob.createMany({ data: records.map(row => ({
+        id: `${scopeUser}-${row.key}`, userId: scopeUser, mode: "image", controls: {}, presetIds: [],
+        status: row.status ?? "failed", sourceType: row.sourceType ?? "generator", profileId: row.profileId ?? profileId,
+        profileVersion: "profileVersion" in row ? row.profileVersion : 1, recipeId: row.recipeId ?? recipeId,
+        outputCount: 1, costDreamcoins: 3, createdAt: new Date(row.createdAt),
+      })) });
+      const scope = new URLSearchParams({ mode: "all", legacyStatus: "failed", userId: scopeUser, from, to, profileId, profileVersion: "1", recipeId, sourceType: "generator", limit: "1" });
+      const read = async (params: URLSearchParams) => {
+        const response = await listJobsRoute(request(params.toString()));
+        expect(response.status, await response.clone().text()).toBe(200);
+        return generationJobListResponseSchema.parse((await response.json()).data);
+      };
+      const first = await read(scope);
+      expect(first.items.map(row => row.id)).toEqual([`${scopeUser}-inside`]);
+      expect(first.summary).toEqual({ totalCount: 2, totalCostDreamcoins: 6, totalOutputCount: 2, totalDeliveredOutputCount: 0 });
+      expect(first.facets.sourceTypes).toEqual([{ value: "generator", count: 2 }]);
+      expect(first.facets.legacyStatuses).toEqual([{ value: "failed", count: 2 }]);
+      expect(first.pageInfo.hasNextPage).toBe(true);
+      const next = new URLSearchParams(scope);
+      next.set("cursor", first.pageInfo.endCursor!);
+      const second = await read(next);
+      expect(second.items.map(row => row.id)).toEqual([`${scopeUser}-from`]);
+      expect(second.summary).toEqual(first.summary);
+      expect(second.pageInfo.hasNextPage).toBe(false);
+      for (const [key, changed] of [["from", "2026-07-04T12:00:00.000Z"], ["to", "2026-07-13T12:00:00.000Z"], ["profileId", `${profileId}-other`], ["profileVersion", "2"], ["recipeId", `${recipeId}-other`], ["sourceType", "creative_run"], ["legacyStatus", "completed"]]) {
+        const different = new URLSearchParams(next);
+        different.set(key!, changed!);
+        const response = await listJobsRoute(request(different.toString()));
+        expect(response.status, `cursor must reject changed ${key}`).toBe(400);
+      }
+      const clearedScope = new URLSearchParams(next);
+      for (const key of ["from", "to", "profileId", "profileVersion", "recipeId"]) clearedScope.delete(key);
+      expect((await listJobsRoute(request(clearedScope.toString()))).status).toBe(400);
+      const unversioned = new URLSearchParams(scope);
+      unversioned.set("profileVersion", "null");
+      expect((await read(unversioned)).items.map(row => row.id)).toEqual([`${scopeUser}-unversioned`]);
+      const legacy = await read(new URLSearchParams({ mode: "all", legacyStatus: "failed", userId: scopeUser, limit: "100" }));
+      expect(legacy.summary.totalCount).toBe(9);
+      for (const bounds of [{ from: "bad" }, { from: to, to: from }, { from: to, to }]) {
+        const invalid = new URLSearchParams({ mode: "all" });
+        for (const [key, value] of Object.entries(bounds)) if (value !== undefined) invalid.set(key, value);
+        const response = await listJobsRoute(request(invalid.toString()));
+        expect(response.status).toBe(400);
+      }
+    } finally {
+      await prisma.generationJob.deleteMany({ where: { userId: scopeUser } });
+      await prisma.user.delete({ where: { id: scopeUser } });
+    }
   });
 
   it("enforces effective permission and fails closed on unsupported query state", async () => {

@@ -59,6 +59,7 @@ export function ChatEngagementPanel({
       {resource.error && <AuthorityRequestError
         cause={resource.cause}
         message={resource.error}
+        requestKind="read"
         onRetry={() => void resource.refresh()}
         snapshotAt={data ? resource.refreshedAt : null}
       />}

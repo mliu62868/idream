@@ -57,6 +57,38 @@ export async function prepareCharacterDraftVoice(input: {
   draftId: string;
 }): Promise<PreparedCharacterDraftVoice> {
   const settings = await assertCurrentCatalogSelection(input);
+  return preparePresetCharacterVoice({
+    ...input, delivery: settings.delivery, language: env.POCKET_TTS_LANGUAGE,
+    sampleText: "Hello, it's good to meet you. I'm happy we can spend some time together.",
+  });
+}
+
+export async function prepareCharacterVoiceCopy(input: {
+  userId: string;
+  sourceCharacterId: string;
+  presetVoiceId: string;
+  model: string;
+  language: string;
+  delivery: FishAudioDeliverySettings;
+  sampleText: string;
+}): Promise<PreparedCharacterDraftVoice> {
+  // A saved identity must not follow a later change to system voice defaults.
+  return preparePresetCharacterVoice({
+    userId: input.userId, draftId: `duplicate-${input.sourceCharacterId}-${randomUUID()}`,
+    voiceId: input.presetVoiceId, language: input.language, delivery: input.delivery,
+    sampleText: input.sampleText, expectedModel: input.model,
+  });
+}
+
+async function preparePresetCharacterVoice(input: {
+  userId: string;
+  draftId: string;
+  voiceId: string;
+  language: string;
+  delivery: FishAudioDeliverySettings;
+  sampleText: string;
+  expectedModel?: string;
+}): Promise<PreparedCharacterDraftVoice> {
   // INVARIANT: ordinary catalog selection follows the clip provider, independent
   // of the Admin cloning provider. Each Character owns a real, distinct alias.
   const voice = createVoicePortsForKey("pocket_tts").identity;
@@ -65,16 +97,19 @@ export async function prepareCharacterDraftVoice(input: {
   const referenceKey = `voice-references/drafts/${input.draftId}/${voiceId}.json`;
   const previewKey = `voice-previews/drafts/${input.draftId}/${voiceId}.wav`;
   const storedKeys: string[] = [];
-  const sampleText = "Hello, it's good to meet you. I'm happy we can spend some time together.";
+  const sampleText = input.sampleText;
   try {
     const created = await voice.createPresetVoice({
-      voiceId, presetVoiceId: input.voiceId, language: env.POCKET_TTS_LANGUAGE,
+      voiceId, presetVoiceId: input.voiceId, language: input.language,
     });
     if (!created.ok) throw Errors.unavailable("Could not save the selected catalog voice", created.error);
     if (created.data.voiceId !== voiceId || created.data.presetVoiceId !== input.voiceId) {
       throw Errors.unavailable("Catalog voice provider returned a different identity");
     }
-    const preview = await voice.previewVoice({ text: sampleText, voiceId, delivery: settings.delivery });
+    if (input.expectedModel && (created.data.model !== input.expectedModel || created.data.language !== input.language)) {
+      throw Errors.unavailable("The saved character voice can no longer be copied with the same model and language");
+    }
+    const preview = await voice.previewVoice({ text: sampleText, voiceId, delivery: input.delivery });
     if (!preview.ok) throw Errors.unavailable("Could not verify the selected catalog voice", preview.error);
     const storedPreview = await providers.blob.putPrivate({
       key: previewKey, body: preview.data.body, contentType: preview.data.contentType,
@@ -93,7 +128,7 @@ export async function prepareCharacterDraftVoice(input: {
     return {
       userId: input.userId, draftId: input.draftId, provider: "pocket_tts",
       presetVoiceId: input.voiceId, voiceId, model: created.data.model, language: created.data.language,
-      delivery: settings.delivery, sampleText,
+      delivery: input.delivery, sampleText,
       reference: {
         id: `media_voice_reference_${voiceId}`, key: storedReference.data.key,
         sizeBytes: storedReference.data.size, sha256: createHash("sha256").update(descriptor).digest("hex"),

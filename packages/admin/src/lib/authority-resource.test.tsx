@@ -3,6 +3,7 @@
 import { act, useCallback, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AdminV2RequestError } from "./admin-v2-api";
 import {
   useAuthorityResource,
   usePollingTask,
@@ -143,6 +144,32 @@ describe("useAuthorityResource", () => {
       loading: false,
       error: null,
     });
+  });
+
+  it("preserves the authority failure for permission guidance and request tracing, then clears it on recovery", async () => {
+    const cause = new AdminV2RequestError(
+      "Permission denied for engagement projection",
+      403,
+      "forbidden",
+      { permission: "chat.ops.read" },
+      "admin-audit-forbidden-read",
+    );
+    const load = vi.fn<() => Promise<Row>>()
+      .mockRejectedValueOnce(cause)
+      .mockResolvedValue({ id: "run-1", state: "succeeded" });
+    let latest: AuthorityResource<Row> | null = null;
+
+    await act(async () => {
+      root.render(<Harness queryKey="run-1" load={load} onState={(r) => { latest = r; }} />);
+    });
+    await advance(1);
+    expect(latest!.error).toBe(cause.message);
+    expect(latest!.cause).toBe(cause);
+
+    await act(async () => { await latest!.refresh(); });
+    expect(latest!.data?.id).toBe("run-1");
+    expect(latest!.error).toBeNull();
+    expect(latest!.cause).toBeUndefined();
   });
 
   it("keeps last-good data and routes a background poll failure to refreshError", async () => {
